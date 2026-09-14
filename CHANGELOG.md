@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.0.14] - 2026-09-15
+
+### 修正
+
+- 升級 Yuzora 後自動同步 WSL／SSH 的主機輔助程式並刷新各 Session 的功能資訊，修正舊輔助程式導致 Spaces 拖曳與上移／下移停用；保留既有 HERDR 工作與來源設定。
+- 改善 WSL HERDR 終端機捲動與快速連續滾輪操作，避免影響 Agent 輸入；切換或關閉連線時丟棄尚未處理的捲動操作。
+- 捲軸僅在該 HERDR session 支援完整捲動資訊時啟用。
+- pane scroll metadata 暫時不可用時回退至相容的 terminal scroll，避免 0.8.2 以上 runtime 的滑輪操作中斷。
+- HERDR 終端輸入傳送失敗時自動重新連線同一個 Session，避免連線失效後永久停在輸入暫停狀態。
+- HERDR 終端機複製會整理段落前後的多餘空白，保留 Markdown、程式碼、清單、表格及圖形排版；依安裝系統使用 LF 或 CRLF，Windows 上的 WSL 亦使用 CRLF。大型選取改在背景排版，連續複製保留最後一次結果。
+- WSL HERDR Space 拖曳排序在 WebView 無法取得 pointer capture 時仍能完成，並以列位置 fallback 判定放置目標。
+
+### 新增
+
+- 在支援排序的 HERDR Session 中，可拖曳 Space 或使用右鍵選單的上移／下移調整順序，並依 runtime 能力移動完整 worktree 群組。
+
+### 改善
+
+- Spaces／Agents 切換改為分頁樣式，並保留上次選擇。
+- 合併高頻捲動請求並在背景同步捲軸範圍，避免快速捲動塞滿主機請求佇列。
+
+### 安裝說明
+
+- macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。
+- Windows Authenticode 尚未啟用，安裝或首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.13] - 2026-09-12
 
 ### Fixed

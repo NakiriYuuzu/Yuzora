@@ -88,6 +88,10 @@ export interface HerdrApiCapability {
   tabCreate: boolean
   workspaceFocus: boolean
   workspaceCreate: boolean
+  /** Protocol workspace.move { workspace_id, insert_index }. */
+  workspaceMove?: boolean
+  /** Newer HERDR runtimes reorder a contiguous workspace block atomically. */
+  workspaceMoveBlock?: boolean
   workspaceRename: boolean
   workspaceClose: boolean
   tabRename: boolean
@@ -282,6 +286,8 @@ export interface HerdrSpaceInfo {
   /** Raw `workspaces[].tab_count` summary; prefer snapshot.tabs ownership when present. */
   tabCount?: number
   /** Read-only worktree provenance (snapshot + worktree.list merge). */
+  /** Official workspace.worktree.repo_key or worktree.list source.repo_key; never a path. */
+  worktreeGroupKey?: string | null
   repoKey?: string | null
   repoName?: string | null
   repoRoot?: string | null
@@ -454,6 +460,20 @@ export interface HerdrWorkspaceCreateRequest {
   cwd?: string | null
   label?: string | null
   focus?: boolean | null
+}
+
+export interface HerdrWorkspaceOrderResult { workspaceIds: string[] }
+
+export interface HerdrWorkspaceMoveRequest {
+  sessionName?: string | null
+  workspaceId: string
+  insertIndex: number
+}
+
+export interface HerdrWorkspaceMoveBlockRequest {
+  sessionName?: string | null
+  workspaceIds: string[]
+  beforeWorkspaceId?: string | null
 }
 
 export interface HerdrWorkspaceCreateResult {

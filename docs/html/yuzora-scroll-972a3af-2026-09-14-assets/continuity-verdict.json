@@ -1,0 +1,17 @@
+{
+  "beforeVersion": "0.0.13",
+  "afterVersion": "0.0.14",
+  "session": "scroll-e2e-972a3af",
+  "paneUnchanged": true,
+  "terminalUnchanged": true,
+  "shellPidBefore": 31591,
+  "shellPidAfter": 31591,
+  "jobPidBefore": 48251,
+  "jobPidAfter": 48251,
+  "continuous": true,
+  "lastTick": {
+    "pid": 48251,
+    "tick": 228
+  },
+  "scope": "Manual macOS .app replacement only; signed updater not run"
+}

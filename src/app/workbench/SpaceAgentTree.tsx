@@ -8,6 +8,8 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type PointerEvent,
+  type MouseEvent,
 } from "react";
 import {
   ChevronsDownUp,
@@ -19,7 +21,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector";
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation";
@@ -29,11 +31,12 @@ import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
 
 import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents";
 import type { HerdrAgentInfo, HerdrSpaceInfo } from "@/lib/herdrTypes";
-import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider";
+import { parseRuntimeScope, runtimeOwner, sessionScope } from "@/lib/herdrProvider";
 import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
 import { chooseWorkspaceFolder } from "@/state/folderPickerStore";
 import { workspacePathBasename } from "@/lib/paths";
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions";
+import { canMoveHerdrWorkspace, moveHerdrWorkspace } from "@/lib/herdrWorkspaceActions";
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
 import { SpaceCharacter } from "./SpaceCharacter";
@@ -84,9 +87,20 @@ export function SpaceAgentTree() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [inspected, setInspected] = useState<HerdrAgentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reorderError, setReorderError] = useState<string | null>(null);
   const [creatingSpace, setCreatingSpace] = useState(false);
   const [creatingTerminal, setCreatingTerminal] = useState<string | null>(null);
   const terminalCreationInFlight = useRef(false);
+  const [draggedSpaceKey, setDraggedSpaceKey] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ key: string; after: boolean } | null>(null);
+  const dropTargetRef = useRef<{ key: string; after: boolean } | null>(null);
+  const [movingSpaceKey, setMovingSpaceKey] = useState<string | null>(null);
+  const draggedSpaceRef = useRef<{ key: string; sessionName: string; workspaceId: string } | null>(null);
+  const gestureCleanup = useRef<(() => void) | null>(null);
+  const movingRef = useRef(false);
+  const treeContainer = useRef<HTMLDivElement>(null);
+  useEffect(() => () => gestureCleanup.current?.(), []);
+  const suppressClickRef = useRef(false);
   // All is a view filter, never a runtime Session name or process context.
   const [requestedScope, setScopeSession] = useState<string | null>(null);
   const scopeSession = sessions.some((item) => item.name === requestedScope) ? requestedScope : null;
@@ -144,6 +158,114 @@ export function SpaceAgentTree() {
       caps?.server.compatible !== false && !!caps?.server.running &&
       !!caps.api.snapshot && !!caps.api.workspaceFocus &&
       !!caps.api.tabCreate && !!caps.terminal.create;
+  }
+
+  function canReorderSpace(node: TreeNode) {
+    return node.kind === "project" && canMoveHerdrWorkspace(node.sessionName, node.space.id);
+  }
+
+  function clearSpaceDrag() {
+    draggedSpaceRef.current = null;
+    dropTargetRef.current = null;
+    setDraggedSpaceKey(null);
+    setDropTarget(null);
+  }
+
+  function updatePointerDropTarget(clientX: number, clientY: number) {
+    const source = draggedSpaceRef.current, container = treeContainer.current;
+    if (!source || !container) return null;
+    const viewport = container.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    const clip = viewport?.getBoundingClientRect();
+    const hit = document.elementFromPoint?.(clientX, clientY);
+    const inside = !clip || (clientX >= clip.left && clientX <= clip.right && clientY >= clip.top && clientY <= clip.bottom);
+    // Actual occlusion beats geometric fallback. A null hit may occur during capture.
+    const hitScope = hit?.closest<HTMLElement>("[data-session-scope]")?.dataset.sessionScope;
+    const occluded = hit && (!container.contains(hit) || (hitScope !== undefined && hitScope !== source.sessionName));
+    let next: { key: string; after: boolean } | null = null;
+    if (inside && !occluded) {
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-space-key]')];
+      let distance = Infinity;
+      for (const row of rows) {
+        const node = all.find(item => item.key === row.dataset.spaceKey);
+        if (!node || node.sessionName !== source.sessionName || !canReorderSpace(node)) continue;
+        const rect = row.getBoundingClientRect();
+        if (!rect.height || !rect.width || (clip && (rect.bottom <= clip.top || rect.top >= clip.bottom))) continue;
+        if (clientX < rect.left || clientX > rect.right) continue;
+        const after = clientY > rect.top + rect.height / 2;
+        const delta = Math.abs(clientY - (after ? rect.bottom : rect.top));
+        if (delta < distance) { distance = delta; next = { key: node.key, after }; }
+      }
+    }
+    dropTargetRef.current = next;
+    setDropTarget(current => current?.key === next?.key && current?.after === next?.after ? current : next);
+    return next;
+  }
+
+  function onSpacePointerDown(event: PointerEvent<HTMLElement> | MouseEvent<HTMLElement>, node: TreeNode) {
+    if (!canReorderSpace(node) || event.button !== 0 || gestureCleanup.current || movingRef.current) return;
+    const pointerId = "pointerId" in event ? event.pointerId : null;
+    const source = { key: node.key, sessionName: node.sessionName, workspaceId: node.space.id, owner: JSON.stringify(runtimeOwner(node.sessionName)) };
+    const startX = event.clientX, startY = event.clientY, element = event.currentTarget;
+    let active = false;
+    suppressClickRef.current = false;
+    const moveName = pointerId === null ? "mousemove" : "pointermove";
+    const upName = pointerId === null ? "mouseup" : "pointerup";
+    const matches = (e: Event) => pointerId === null || (e as globalThis.PointerEvent).pointerId === pointerId;
+    const cleanup = () => {
+      window.removeEventListener(moveName, move, true);
+      window.removeEventListener(upName, up, true);
+      window.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", key, true);
+      gestureCleanup.current = null;
+      if (pointerId !== null && element.hasPointerCapture?.(pointerId)) element.releasePointerCapture(pointerId);
+    };
+    const cancel = (e?: Event) => {
+      if (e?.type === "pointercancel" && !matches(e)) return;
+      cleanup(); clearSpaceDrag();
+    };
+    const key = (e: KeyboardEvent | globalThis.KeyboardEvent) => { if (e.key === "Escape") cancel(); };
+    const move = (e: Event) => {
+      if (!matches(e)) return;
+      const point = e as globalThis.MouseEvent;
+      if (!active && Math.hypot(point.clientX - startX, point.clientY - startY) < 5) return;
+      if (!active) {
+        active = true; suppressClickRef.current = true;
+        draggedSpaceRef.current = source; setDraggedSpaceKey(source.key);
+        try { if (pointerId !== null) element.setPointerCapture?.(pointerId); } catch { /* Global listeners retain this gesture. */ }
+      }
+      e.preventDefault(); updatePointerDropTarget(point.clientX, point.clientY);
+    };
+    const up = (e: Event) => {
+      if (!matches(e)) return;
+      const point = e as globalThis.MouseEvent;
+      const target = active ? updatePointerDropTarget(point.clientX, point.clientY) : null;
+      cleanup(); clearSpaceDrag();
+      // Suppress only the click synthesized by this drop, not a later click
+      // on a child row (which does not start a project drag gesture).
+      if (active) window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+      if (target) void moveSpace(source, target);
+    };
+    window.addEventListener(moveName, move, true);
+    window.addEventListener(upName, up, true);
+    window.addEventListener("pointercancel", cancel, true);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", key, true);
+    gestureCleanup.current = cleanup;
+  }
+
+  async function moveSpace(source: { key: string; sessionName: string; workspaceId: string; owner: string }, target: { key: string; after: boolean }) {
+    if (source.owner !== JSON.stringify(runtimeOwner(source.sessionName))) return;
+    const node = all.find(item => item.key === target.key);
+    if (!node || source.sessionName !== node.sessionName || !canReorderSpace(node) || movingRef.current) return;
+    movingRef.current = true; setMovingSpaceKey(source.key); setError(null); setReorderError(null);
+    try {
+      await moveHerdrWorkspace(source.sessionName, source.workspaceId, node.space.id, target.after);
+    } catch (cause) {
+      setReorderError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      movingRef.current = false; setMovingSpaceKey(null);
+    }
   }
   async function addTerminal(node: TreeNode) {
     if (terminalCreationInFlight.current || creatingSpace || !canAddTerminal(node.sessionName)) return;
@@ -224,12 +346,12 @@ export function SpaceAgentTree() {
           const snapshot = runtimes[sessionName]?.snapshot;
           const groups = new Map<string, HerdrSpaceInfo[]>();
           for (const space of snapshot?.spaces ?? []) {
-            const key = space.repoKey ?? space.id;
+            const key = space.worktreeGroupKey ?? space.repoKey ?? space.id;
             groups.set(key, [...(groups.get(key) ?? []), space]);
           }
           return [...groups.entries()].map(
             ([group, spaces], index): TreeNode => {
-              const first = spaces[0],
+              const first = spaces.find(space => space.isLinkedWorktree === false) ?? spaces[0],
                 root = first.repoRoot ?? first.path ?? first.label;
               const identityKey = spacePresentationKey(sessionName, root);
               const identity = resolveProjectPresentation(
@@ -489,16 +611,17 @@ export function SpaceAgentTree() {
   }
 
   return (
-    <div className="space-tree-panel">
-      <ToggleGroup type="single" value={viewMode} aria-label={t("viewMode", { ns: "spaceNavigation" })}
-        className="gap-1 p-2" onValueChange={(value) => {
+    <div ref={treeContainer} className="space-tree-panel" aria-busy={movingSpaceKey !== null}>
+      <Tabs value={viewMode} className="space-tree-view-tabs" onValueChange={(value) => {
           if (value !== "spaces" && value !== "agents") return;
           setViewMode(value);
           try { localStorage.setItem("yuzora.sidebar.view", value); } catch { /* In-memory preference remains usable. */ }
         }}>
-        <ToggleGroupItem value="spaces" className="flex-1 px-3 py-1">Spaces</ToggleGroupItem>
-        <ToggleGroupItem value="agents" className="flex-1 px-3 py-1">Agents</ToggleGroupItem>
-      </ToggleGroup>
+        <TabsList aria-label={t("viewMode", { ns: "spaceNavigation" })} className="space-tree-view-switcher">
+          <TabsTrigger value="spaces">Spaces</TabsTrigger>
+          <TabsTrigger value="agents">Agents</TabsTrigger>
+        </TabsList>
+      </Tabs>
       <HerdrLauncher
         scope={scopeSession}
         onCreateSpace={createSpace}
@@ -508,9 +631,9 @@ export function SpaceAgentTree() {
           setSelectedAgent(null);
         }}
       />
-      {error && (
+      {(error || reorderError) && (
         <p className="space-tree-notice" role="alert">
-          {error}
+          {error || reorderError}
         </p>
       )}
       <ScrollArea
@@ -583,7 +706,7 @@ export function SpaceAgentTree() {
             const notice = sessionNotice(item.name);
             return (
               <Fragment key={item.name}>
-                <div className="tree-session-heading">
+                <div className="tree-session-heading" data-session-scope={item.name}>
                   <strong title={sessionLabel(item.name)}>{sessionLabel(item.name)}</strong>
                   {viewMode === "spaces" && <Button
                     variant="ghost"
@@ -624,11 +747,17 @@ export function SpaceAgentTree() {
                     <div
                       key={node.key}
                       role="none"
-                      className={`tree-row-shell tree-row-${node.kind}`}
+                      data-session-scope={node.sessionName}
+                      data-space-key={node.kind === "project" ? node.key : undefined}
+                      className={`tree-row-shell tree-row-${node.kind} ${draggedSpaceKey ? "select-none" : ""}`}
+                      data-dragging={draggedSpaceKey === node.key ? "true" : undefined}
+                      data-drop-target={dropTarget?.key === node.key ? (dropTarget.after ? "after" : "before") : undefined}
                       data-current={containsSelection}
                       style={
-                        { "--space-color": node.color?.background } as CSSProperties
+                        { "--space-color": node.color?.background, touchAction: node.kind === "project" ? "none" : undefined } as CSSProperties
                       }
+                      onPointerDownCapture={node.kind === "project" ? (event) => onSpacePointerDown(event, node) : undefined}
+                      onMouseDownCapture={node.kind === "project" ? (event) => { if (!window.PointerEvent) onSpacePointerDown(event, node); } : undefined}
                     >
                       <Button
                         ref={(element) => {
@@ -658,6 +787,7 @@ export function SpaceAgentTree() {
                               : t("inspectHint")
                             : `${t("pendingCount", { count: node.pending })} · ${t("folderHint")}`,
                           node.kind === "project" ? t("editShortcut") : null,
+                          node.kind === "project" ? t(canReorderSpace(node) ? "dragSpaceHint" : "dragSpaceUnavailable") : null,
                         ]
                           .filter(Boolean)
                           .join(" · ")}
@@ -667,12 +797,25 @@ export function SpaceAgentTree() {
                             : (node.space.path ?? undefined)
                         }
                         className={`space-tree-row tree-${node.kind}`}
+                        // Native HTML5 drag sessions suppress pointer events in WKWebView.
+                        // Pointer Events own the gesture so macOS WebView and touch/pen
+                        // input share the same reliable path into HERDR workspace.move.
+                        draggable={false}
                         style={{ paddingLeft: 6 + (node.level - 1) * 10 }}
                         onFocus={() => setFocusKey(node.key)}
                         onKeyDown={(event) => onKey(event, node)}
-                        onClick={() => activate(node)}
+                        onClick={(event) => {
+                          if (suppressClickRef.current) {
+                            suppressClickRef.current = false;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            return;
+                          }
+                          activate(node);
+                        }}
+                        onDragStart={(event) => event.preventDefault()}
                         onContextMenu={
-                          node.kind === "worktree"
+                          (node.kind === "project" || node.kind === "worktree")
                             ? contextMenuHandler({
                                 kind: "herdrSpace",
                                 sessionName: node.sessionName,
@@ -797,6 +940,12 @@ export function SpaceAgentTree() {
                           })}
                           tabIndex={node.key === tabKey ? 0 : -1}
                           onClick={(event) => {
+                            if (suppressClickRef.current) {
+                              suppressClickRef.current = false;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              return;
+                            }
                             editTrigger.current = event.currentTarget;
                             setFocusKey(node.key);
                             setEditingSpace(node);

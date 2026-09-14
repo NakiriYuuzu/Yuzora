@@ -8,21 +8,53 @@ import { HerdrBridge } from "./HerdrBridge"
 import { shouldPollHerdrSnapshots } from "./herdrBridgePolicy"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
 
+vi.mock("@/lib/herdrProvider", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/herdrProvider")>(),
+  runtimeOwner: vi.fn(() => null)
+}))
+import { runtimeOwner } from "@/lib/herdrProvider"
+import { useHostStore } from "@/state/hostStore"
+import type { ConnectedHost } from "@/lib/hostIpc"
+const initialHostState = useHostStore.getState()
+
 const initialWorkspaceState = useWorkspaceStore.getState()
 const initialHerdrState = useHerdrStore.getState()
 
 describe("HerdrBridge attachment reconciliation", () => {
   beforeEach(() => {
     cleanup()
+    vi.mocked(runtimeOwner).mockReset().mockReturnValue(null)
+    useHostStore.setState(initialHostState, true)
     useWorkspaceStore.setState(initialWorkspaceState, true)
   })
 
   afterEach(() => {
     cleanup()
+    vi.mocked(runtimeOwner).mockReset().mockReturnValue(null)
+    useHostStore.setState(initialHostState, true)
     useWorkspaceStore.setState(initialWorkspaceState, true)
     useHerdrStore.setState(initialHerdrState, true)
     useUiStore.setState(uiInitialState)
     vi.restoreAllMocks()
+  })
+
+  it("reloads capabilities for every running remote Session when its helper generation changes", async () => {
+    const connected: ConnectedHost = { owner: { hostId: "wsl:ubuntu", generation: 1 }, hello: { protocol: 1, version: "0.0.14", os: "linux", arch: "x86_64", home: "/home/test", methods: ["herdrCall"] } }
+    vi.mocked(runtimeOwner).mockReturnValue(connected.owner)
+    const sessions = ["default", "work"].map(name => ({ name, runtimeId: JSON.stringify(["wsl:ubuntu", name]), hostId: "wsl:ubuntu", default: name === "default", running: true, sessionDir: `/tmp/${name}`, socketPath: `/tmp/${name}.sock` }))
+    const bootstrap = vi.fn(async (scope?: string | null) => {
+      useHerdrStore.setState(state => ({ runtimesBySession: { ...state.runtimesBySession, [scope!]: { ...state.runtimesBySession[scope!], connectionState: "ready" } } }))
+    })
+    useHerdrStore.setState({ ...herdrInitialState, sessions, bootstrap, refreshSessions: vi.fn(async () => undefined), releaseAllAttachments: vi.fn(async () => undefined) })
+    render(<HerdrBridge />)
+    await waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(2))
+    const replacement = { ...connected, owner: { ...connected.owner, generation: 2 } }
+    act(() => {
+      vi.mocked(runtimeOwner).mockReturnValue(replacement.owner)
+      useHostStore.setState({ hosts: { "wsl:ubuntu": { connection: replacement, connecting: false, error: null, target: { kind: "wsl", distro: "Ubuntu-26.04" }, attempt: 0, retryAt: 0 } } })
+    })
+    await waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(4))
+    for (const session of sessions) expect(bootstrap.mock.calls.filter(([scope]) => scope === session.runtimeId)).toHaveLength(2)
   })
 
   it("restores the focused Herdr tab after file-session hydration settles", async () => {

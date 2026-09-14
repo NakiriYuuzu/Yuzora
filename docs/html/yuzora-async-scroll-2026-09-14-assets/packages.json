@@ -1,0 +1,19 @@
+{
+  "source_sha": "8e7c451700e8594116c59bc7c801f6dcc9afc7c7",
+  "ci_url": "https://github.com/NakiriYuuzu/Yuzora/actions/runs/34792451637",
+  "status": "success",
+  "artifacts": {
+    "Yuzora_0.0.14_x64_en-US.msi": {
+      "sha256": "6ba34c94cd44a25054ee5da751412bad2acde15050db6cbbd36f58ce9220ea21",
+      "bytes": 82993152
+    },
+    "Yuzora_0.0.14_x64-setup.exe": {
+      "sha256": "24f3262bceea909c494f3c07259385cce4d324ee60972233528da22e15cc3cf6",
+      "bytes": 56944372
+    },
+    "Yuzora_0.0.14_aarch64.dmg": {
+      "sha256": "9e825e21b07cf2fbc2707998316592e057647720a63d465a50804e2133b03ad0",
+      "bytes": 89370663
+    }
+  }
+}

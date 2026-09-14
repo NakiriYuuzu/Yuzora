@@ -1,5 +1,7 @@
 {
   "contextMenu": {
+    "cmHerdrMoveSpaceUp": "Move Up",
+    "cmHerdrMoveSpaceDown": "Move Down",
     "cmCmdPalette": "Command palette…",
     "cmRefresh": "Refresh",
     "cmSettings": "Settings…",
@@ -46,6 +48,10 @@
     "cmCopyUrl": "Copy URL",
     "cmOpenExternal": "Open in Default Browser",
     "disabled": {
+      "herdrLinkedWorktree": "Move the parent Space to keep its worktrees together",
+      "herdrGroupIncomplete": "Worktree group information is incomplete",
+      "herdrFirstSpace": "Already the first Space in this session",
+      "herdrLastSpace": "Already the last Space in this session",
       "targetUnavailable": "The item is no longer available",
       "nothingToDo": "There is nothing to do",
       "noSelection": "No content is selected",

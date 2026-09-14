@@ -8,6 +8,7 @@ import {
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
+import type { PaneScrollController, PaneScrollInfo } from "./herdrScrollController"
 import type {
   HerdrTerminalEvent,
   HerdrTerminalMode,
@@ -44,6 +45,11 @@ export function normalizeTerminalWheelRows(
       : Math.abs(deltaY) / 16
   return Math.min(rows, Math.max(1, Math.round(rawRows)))
 }
+
+// HERDR pane.get is a remote IPC/RPC round trip. Keep a short-lived local
+// snapshot for standalone callers. Mounted terminal pages share their pane
+// controller with the scrollbar, so wheel/drag never use separate cached positions.
+const PANE_SCROLL_CACHE_MS = 160
 
 export interface TerminalTransportOpenArgs {
   cols: number
@@ -111,6 +117,16 @@ export interface HerdrTerminalTransportOptions {
   takeover?: boolean
   /** Named Herdr session for HERDR_SESSION connector routing. */
   sessionName?: string | null
+  /** True when the official pane scroll API is available for this terminal. */
+  paneScrollEnabled?: () => boolean
+  /** True when at least one verified scroll transport is available. */
+  scrollEnabled?: () => boolean
+  /** Disable the legacy terminal command when pane scrolling is the only safe transport. */
+  terminalScrollEnabled?: () => boolean
+  /** Publish the authoritative pane state returned by pane.scroll without another read. */
+  onPaneScroll?: (state: PaneScrollInfo) => void
+  /** Share the scrollbar's optimistic position and immediate writer. */
+  paneScrollController?: () => PaneScrollController | null
   onAttachment?: (info: {
     sessionId: string
     mode: HerdrTerminalMode
@@ -136,6 +152,11 @@ export function createHerdrTerminalTransport(
     mode: initialMode = "control",
     takeover: initialTakeover = true,
     sessionName = null,
+    paneScrollEnabled,
+    scrollEnabled,
+    terminalScrollEnabled,
+    onPaneScroll,
+    paneScrollController,
     onAttachment,
     onPaneId
   } = options
@@ -153,6 +174,24 @@ export function createHerdrTerminalTransport(
   let disposed = false
   type InputQueue = { frames: Array<{ text: string; paste: boolean }>; bytes: number; drain: Promise<void> | null }
   let inputQueue: InputQueue | null = null
+  let pendingScrollDelta = 0
+  let scrollDrain: Promise<void> | null = null
+  let scrollDrainToken: symbol | null = null
+  let scrollDrainGeneration = 0
+  // A rejected legacy connector command is not safe to retry: some bridges
+  // close the connector while processing terminal.scroll. Trip the breaker
+  // for this attachment and let a reconnect renegotiate capabilities.
+  let terminalScrollUnavailable = false
+  let paneScrollCache: { state: PaneScrollInfo; at: number } | null = null
+  const clearPaneScrollCache = () => { paneScrollCache = null }
+  const discardScroll = () => {
+    pendingScrollDelta = 0
+    scrollDrainGeneration += 1
+    clearPaneScrollCache()
+    scrollDrain = null
+    scrollDrainToken = null
+    paneScrollController?.()?.reset()
+  }
   const discardInput = () => {
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
     inputQueue = null
@@ -173,6 +212,7 @@ export function createHerdrTerminalTransport(
       // Backend already enforces first-full + contiguous; still ignore exact dups.
       if (lastSeq !== null && event.seq <= lastSeq) return
       lastSeq = event.seq
+      paneScrollController?.()?.frame()
       onEvent({
         type: "output",
         data: decodeFrameBytes(event.bytesBase64),
@@ -205,6 +245,8 @@ export function createHerdrTerminalTransport(
   ) => {
     if (disposed) return
     discardInput()
+    discardScroll()
+    terminalScrollUnavailable = false
     const generation = ++openGeneration
     lastSeq = null
     lastCols = cols
@@ -221,6 +263,7 @@ export function createHerdrTerminalTransport(
         if (disposed || generation !== openGeneration) return
         if (event.type === "closed") {
           discardInput()
+          discardScroll()
           sessionId = null
           lastSeq = null
           openGeneration += 1
@@ -305,26 +348,128 @@ export function createHerdrTerminalTransport(
       await herdrTerminalResize(sessionId, cols, rows)
     },
     async scroll(delta) {
-      if (disposed || !sessionId || mode !== "control" || delta === 0) return
-      const direction = delta < 0 ? "up" : "down"
-      const lines = Math.max(1, Math.abs(Math.trunc(delta)))
-      try {
-        await herdrTerminalScroll(sessionId, direction, lines)
-      } catch (error) {
-        // Some Windows HERDR builds expose pane scrolling but reject the
-        // connector-level terminal.scroll command. Reuse the official pane
-        // API in that case instead of dropping the wheel gesture.
-        if (!paneId || !sessionName) throw error
-        const state = await readPaneScroll(sessionName, paneId)
-        if (!state) throw error
-        const nextOffset = direction === "up"
-          ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
-          : Math.max(0, state.offsetFromBottom - lines)
-        await setPaneScroll(sessionName, paneId, nextOffset)
+      if (
+        disposed
+        || !sessionId
+        || mode !== "control"
+        || delta === 0
+        || scrollEnabled?.() === false
+      ) return
+      // A rejected connector command is terminal for this attachment unless
+      // the caller supplied an addressable pane fallback. Preserve the
+      // no-retry breaker for legacy runtimes that have neither transport.
+      if (
+        terminalScrollUnavailable
+        && !(paneScrollEnabled?.() && paneId && sessionName)
+      ) return
+      // Wheel events can arrive faster than a remote host can acknowledge
+      // them. Keep one request in flight and coalesce the rest so scrolls
+      // cannot fill the same HERDR queue used by terminal input.
+      const amount = Math.trunc(delta)
+      if (!Number.isFinite(amount) || amount === 0) return
+      const shared = paneScrollController?.()
+      if (shared && paneScrollEnabled?.() && (terminalScrollEnabled?.() !== true || terminalScrollUnavailable)) {
+        shared.scroll(amount)
+        return
       }
+      pendingScrollDelta += amount
+      const generation = scrollDrainGeneration
+      const activeSessionId = sessionId
+      if (scrollDrain && scrollDrainGeneration === generation) return scrollDrain
+      const drainToken = Symbol("scroll-drain")
+      scrollDrainToken = drainToken
+      const drain = (async () => {
+        try {
+          while (
+            !disposed
+            && generation === scrollDrainGeneration
+            && sessionId === activeSessionId
+            && mode === "control"
+            && pendingScrollDelta !== 0
+          ) {
+            const nextDelta = pendingScrollDelta
+            pendingScrollDelta = 0
+            const direction = nextDelta < 0 ? "up" : "down"
+            const lines = Math.max(1, Math.abs(nextDelta))
+            // Native HERDR's connector command is the fast path. WSL uses the
+            // pane API because terminal.scroll can tear down its bridge. Once
+            // a native connector rejects, trip the breaker and use the pane
+            // API for the remainder of this attachment.
+            const usePaneScroll = paneScrollEnabled?.()
+              && paneId
+              && sessionName
+              && (terminalScrollEnabled?.() !== true || terminalScrollUnavailable)
+            if (usePaneScroll) {
+              // A pane may legitimately have no scroll metadata yet (for
+              // example before its first full frame). Keep the older
+              // connector command as the compatible fallback instead of
+              // turning a transient null into a visible wheel error.
+              const now = Date.now()
+              const cached = paneScrollCache && now - paneScrollCache.at <= PANE_SCROLL_CACHE_MS
+                ? paneScrollCache.state
+                : null
+              const state = cached ?? await readPaneScroll(sessionName, paneId).catch(error => {
+                if (terminalScrollEnabled?.() === false || terminalScrollUnavailable) throw error
+                return null
+              })
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
+              if (state) {
+                const nextOffset = direction === "up"
+                  ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
+                  : Math.max(0, state.offsetFromBottom - lines)
+                const nextState = await setPaneScroll(sessionName, paneId, nextOffset)
+                if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
+                paneScrollCache = {
+                  state: nextState ?? { ...state, offsetFromBottom: nextOffset },
+                  at: Date.now()
+                }
+                onPaneScroll?.(paneScrollCache.state)
+                continue
+              }
+            }
+            if (terminalScrollEnabled?.() === false || terminalScrollUnavailable) {
+              throw new Error("pane-scroll-state-unavailable")
+            }
+            try {
+              await herdrTerminalScroll(activeSessionId, direction, lines)
+            } catch (error) {
+              terminalScrollUnavailable = true
+              // Older connectors may reject terminal.scroll while still
+              // supporting the pane API. Preserve the fallback for callers
+              // that explicitly opted into pane scrolling after a capability
+              // refresh.
+              if (!paneScrollEnabled?.() || !paneId || !sessionName) throw error
+              const state = await readPaneScroll(sessionName, paneId)
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
+              if (!state) throw error
+              const nextOffset = direction === "up"
+                ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
+                : Math.max(0, state.offsetFromBottom - lines)
+              const nextState = await setPaneScroll(sessionName, paneId, nextOffset)
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
+              paneScrollCache = {
+                state: nextState ?? { ...state, offsetFromBottom: nextOffset },
+                at: Date.now()
+              }
+              onPaneScroll?.(paneScrollCache.state)
+            }
+          }
+        } catch (error) {
+          if (generation === scrollDrainGeneration) pendingScrollDelta = 0
+          throw error
+        } finally {
+          if (scrollDrainToken === drainToken) {
+            scrollDrainToken = null
+            scrollDrain = null
+          }
+        }
+      })()
+      scrollDrain = drain
+      return drain
     },
     detach() {
       discardInput()
+      discardScroll()
       disposed = true
       openGeneration += 1
       eventHandler = null
@@ -333,6 +478,7 @@ export function createHerdrTerminalTransport(
     },
     detachSession() {
       discardInput()
+      discardScroll()
       openGeneration += 1
       const id = sessionId
       sessionId = null
@@ -341,6 +487,7 @@ export function createHerdrTerminalTransport(
     },
     async release() {
       discardInput()
+      discardScroll()
       openGeneration += 1
       if (!sessionId) return
       const id = sessionId
@@ -351,6 +498,7 @@ export function createHerdrTerminalTransport(
     },
     async dispose() {
       discardInput()
+      discardScroll()
       disposed = true
       openGeneration += 1
       eventHandler = null
@@ -368,6 +516,8 @@ export function createHerdrTerminalTransport(
         throw new Error("Herdr transport is not open")
       }
       // Explicit Take Control: release observer connector, reopen as control+takeover.
+      discardInput()
+      discardScroll()
       if (sessionId) {
         const previous = sessionId
         sessionId = null

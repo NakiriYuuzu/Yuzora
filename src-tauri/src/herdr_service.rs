@@ -170,6 +170,36 @@ pub async fn herdr_workspace_create(
 }
 
 #[tauri::command]
+pub async fn herdr_workspace_move(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    workspace_id: String,
+    insert_index: u32,
+) -> Result<yuzora_host::herdr_service::HerdrWorkspaceOrderResult, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.workspace_move(session_name.as_deref(), workspace_id, insert_index)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_workspace_move_block(
+    state: tauri::State<'_, HerdrState>,
+    session_name: Option<String>,
+    workspace_ids: Vec<String>,
+    before_workspace_id: Option<String>,
+) -> Result<yuzora_host::herdr_service::HerdrWorkspaceOrderResult, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.workspace_move_block(session_name.as_deref(), workspace_ids, before_workspace_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn herdr_workspace_rename(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,

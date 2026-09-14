@@ -1,5 +1,9 @@
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
 import type { IDisposable, Terminal } from "@xterm/xterm"
+import { isWindowsPlatform } from "@/lib/platform"
+import { createTerminalCopyQueue } from "./terminalCopyQueue"
+import { createTerminalCopyFormatter } from "./terminalCopyWorker"
+import { terminalSelectionSnapshot } from "./terminalSelectionSnapshot"
 
 export interface TerminalClipboardController extends IDisposable {
   flushPendingPaste: () => void
@@ -10,6 +14,7 @@ interface TerminalClipboardOptions {
   pasteText?: (text: string) => void
   pasteImage?: (image?: Blob) => void
   copyOnSelect?: () => boolean
+  onCopyError?: (error: unknown) => void
 }
 
 function browserClipboard(): Clipboard | null {
@@ -17,16 +22,21 @@ function browserClipboard(): Clipboard | null {
   return navigator.clipboard ?? null
 }
 
-async function writeClipboardText(text: string): Promise<void> {
+async function writeClipboardText(text: string, isCurrent: () => boolean): Promise<void> {
   try {
     await writeText(text)
     return
   } catch (pluginError) {
+    if (!isCurrent()) return
     const clipboard = browserClipboard()
     if (!clipboard?.writeText) throw pluginError
     await clipboard.writeText(text)
   }
 }
+
+const copyFormatter = createTerminalCopyFormatter()
+const copyQueue = createTerminalCopyQueue({ format: copyFormatter.format, write: writeClipboardText })
+let clipboardControllers = 0
 
 async function readClipboardText(): Promise<string> {
   try {
@@ -47,6 +57,8 @@ export function installTerminalClipboardHandling(
   term: Terminal,
   options: TerminalClipboardOptions = {}
 ): TerminalClipboardController {
+  const copyOwner = {}
+  clipboardControllers++
   let disposed = false
   let pendingPaste: string | null = null
   let initialConnectionSetup = true
@@ -55,6 +67,8 @@ export function installTerminalClipboardHandling(
   const textarea = term.textarea
   let selecting = false
   let selectionTimer: ReturnType<typeof setTimeout> | undefined
+  const handledCopyKeys = new WeakSet<KeyboardEvent>()
+  let shortcutCopyThisTurn = false
 
   const canPaste = () => !disposed && (options.canPaste?.() ?? true)
 
@@ -71,7 +85,13 @@ export function installTerminalClipboardHandling(
 
   const copySelection = () => {
     if (disposed || !term.hasSelection()) return
-    void writeClipboardText(term.getSelection()).catch(() => undefined)
+    if (selectionTimer) { clearTimeout(selectionTimer); selectionTimer = undefined }
+    copyQueue.copy({
+      owner: copyOwner,
+      text: terminalSelectionSnapshot(term),
+      lineEnding: isWindowsPlatform() ? "crlf" : "lf",
+      onError: (error) => options.onCopyError?.(error),
+    })
   }
 
   const pasteClipboard = () => {
@@ -115,7 +135,12 @@ export function installTerminalClipboardHandling(
     if (key === "c") {
       if (!term.hasSelection()) return true
       event.preventDefault()
-      copySelection()
+      if (!event.repeat && !handledCopyKeys.has(event)) {
+        handledCopyKeys.add(event)
+        shortcutCopyThisTurn = true
+        queueMicrotask(() => { shortcutCopyThisTurn = false })
+        copySelection()
+      }
       return false
     }
     if (key === "v") {
@@ -137,11 +162,9 @@ export function installTerminalClipboardHandling(
   }
   const handleCopy = (event: ClipboardEvent) => {
     if (!term.hasSelection()) return
-    const selection = term.getSelection()
     event.preventDefault()
     event.stopImmediatePropagation()
-    event.clipboardData?.setData("text/plain", selection)
-    void writeClipboardText(selection).catch(() => undefined)
+    if (!shortcutCopyThisTurn) copySelection()
   }
   const handlePaste = (event: ClipboardEvent) => {
     event.preventDefault()
@@ -165,6 +188,7 @@ export function installTerminalClipboardHandling(
     selecting = false
     if (selectionTimer) clearTimeout(selectionTimer)
     selectionTimer = setTimeout(() => {
+      selectionTimer = undefined
       if (!disposed && options.copyOnSelect?.()) copySelection()
     }, 0)
   }
@@ -187,7 +211,10 @@ export function installTerminalClipboardHandling(
       if (text !== null && canPaste()) deliverPaste(text)
     },
     dispose: () => {
+      if (disposed) return
       disposed = true
+      copyQueue.cancel(copyOwner)
+      if (--clipboardControllers === 0) copyFormatter.dispose()
       pendingPaste = null
       if (selectionTimer) clearTimeout(selectionTimer)
       element?.removeEventListener("mousedown", handleMouseDown, true)

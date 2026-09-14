@@ -25,7 +25,9 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
-import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
+import { herdrScrollStrategyForRuntime, supportsHerdrPaneScrollCandidate } from "@/lib/herdrCapabilities"
+import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
+import { useHostStore } from "@/state/hostStore"
 import {
   herdrLayoutExport,
   herdrLayoutSetSplitRatio,
@@ -178,7 +180,7 @@ export function HerdrTerminalPage({
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
-  const { terminals, agents, resolvedTabId } = useHerdrStore(useShallow((s) => {
+  const { terminals, agents, resolvedTabId, focusedPaneId: snapshotFocusedPaneId, focusedTerminalId: snapshotFocusedTerminalId } = useHerdrStore(useShallow((s) => {
     const snapshot = (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
       ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null)
     // Focus updates replace the snapshot and tab flags. A mounted page only
@@ -192,7 +194,9 @@ export function HerdrTerminalPage({
     return {
       terminals: snapshot?.terminals,
       agents: snapshot?.agents,
-      resolvedTabId: knownTab ? herdrTabId : fromTerminal?.tabId ?? fromAgent?.tabId ?? herdrTabId
+      resolvedTabId: knownTab ? herdrTabId : fromTerminal?.tabId ?? fromAgent?.tabId ?? herdrTabId,
+      focusedPaneId: snapshot?.focusedPaneId ?? null,
+      focusedTerminalId: snapshot?.focusedTerminalId ?? null
     }
   }))
   const targetCapabilities = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.capabilities : null)
@@ -215,7 +219,6 @@ export function HerdrTerminalPage({
       targetCapabilities.terminal.takeover &&
       targetCapabilities.terminal.input &&
       targetCapabilities.terminal.resize &&
-      targetCapabilities.terminal.scroll &&
       targetCapabilities.terminal.release
   )
   const [hasConnectedSession, setHasConnectedSession] = useState(sessionCanConnect)
@@ -370,6 +373,23 @@ export function HerdrTerminalPage({
     }
     return map
   }, [terminals, agents])
+  // WSL projections can arrive with the page's original paneId unset while
+  // the authoritative snapshot already carries it. Resolve that identity once
+  // here so the legacy single-pane path can mount the same scrollbar as BSP.
+  const resolvedPaneId = useMemo(
+    () => paneId
+      ?? terminals?.find((item) => item.terminalId === terminalId)?.paneId
+      ?? agents?.find((item) => item.terminalId === terminalId)?.paneId
+      // Legacy WSL pages can be restored before their scoped `panes[]`
+      // projection arrives. If this is the focused terminal, the snapshot's
+      // focused pane is still an authoritative identity for the probe.
+      ?? (snapshotFocusedPaneId
+        && (!snapshotFocusedTerminalId || snapshotFocusedTerminalId === terminalId)
+        ? snapshotFocusedPaneId
+        : null)
+      ?? null,
+    [agents, paneId, snapshotFocusedPaneId, snapshotFocusedTerminalId, terminalId, terminals]
+  )
 
   const onSplitRatioChanged = useCallback(
     (splitPath: boolean[], ratio: number) => {
@@ -480,7 +500,7 @@ export function HerdrTerminalPage({
     leafActive: boolean
   ): ReactNode => {
     if (node.type === "pane") {
-      const leafPaneId = node.paneId ?? paneId ?? null
+      const leafPaneId = node.paneId ?? resolvedPaneId
       const leafTerminalId =
         (leafPaneId ? paneToTerminal.get(leafPaneId) : null) ??
         (path.length === 0 ? terminalId : null)
@@ -565,7 +585,7 @@ export function HerdrTerminalPage({
       sessionRunningOverride={surfaceSessionRunning}
       connectorEnabledOverride={canOpenTerminalConnector}
       terminalId={terminalId}
-      paneId={paneId}
+      paneId={resolvedPaneId}
       label={null}
       title={title}
       active={active}
@@ -592,7 +612,7 @@ export function HerdrTerminalPage({
       sessionRunningOverride={surfaceSessionRunning}
       connectorEnabledOverride={canOpenTerminalConnector}
       terminalId={terminalId}
-      paneId={paneId}
+      paneId={resolvedPaneId}
       label={null}
       title={title}
       active={active}
@@ -732,6 +752,19 @@ function HerdrTerminalLeaf({
     () => resolveSessionName(sessions, herdrSessionId),
     [sessions, herdrSessionId]
   )
+  const targetHostId = useMemo(
+    () => {
+      const session = sessions.find((candidate) => sessionScope(candidate) === targetSessionName)
+      if (session?.hostId) return session.hostId
+      if (!targetSessionName?.startsWith("[")) return null
+      try {
+        return parseRuntimeScope(targetSessionName).hostId
+      } catch {
+        return null
+      }
+    },
+    [sessions, targetSessionName]
+  )
   const baseCwd = useHerdrStore((s) => resolveHerdrTerminalBaseCwd({
     snapshot: targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null,
     terminalId,
@@ -749,18 +782,28 @@ function HerdrTerminalLeaf({
   const releaseAttachment = useHerdrStore((s) => s.releaseAttachment)
 
   const terminalViewportId = useId()
-  const scrollbarRefreshRef = useRef<(() => void) | null>(null)
+  const scrollbarRefreshRef = useRef<((state?: import("@/terminal/herdrScrollController").PaneScrollInfo | null) => void) | null>(null)
+  const paneScrollControllerRef = useRef<import("@/terminal/herdrScrollController").PaneScrollController | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
-    const capabilities = targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null
-    if (!capabilities) return false
-    const methods = capabilities.api.methods ?? []
-    // Windows HERDR builds may report terminal scrolling before the pane
-    // methods are listed in the capability snapshot. Mount the proxy so its
-    // official pane API probe can establish the real state instead of hiding
-    // the scrollbar entirely.
-    return (methods.includes("pane.get") && methods.includes("pane.scroll"))
-      || capabilities.terminal.scroll
+    // A selected runtime is projected to the global capabilities field while
+    // its scoped record is being reconciled. Keep the scrollbar capability
+    // gate consistent with the connector gate so WSL pages do not lose their
+    // scrollbar during that projection window.
+    const capabilities = (targetSessionName ? state.runtimesBySession[targetSessionName]?.capabilities : null)
+      ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+    // The proxy scrollbar polls the separate pane API. Older runtimes use the
+    // connector wheel command and must not mount a pane proxy that will keep
+    // retrying unsupported methods.
+    return supportsHerdrPaneScrollCandidate(capabilities)
   })
+  const supportsScrollInfoRef = useRef(supportsScrollInfo)
+  useEffect(() => {
+    supportsScrollInfoRef.current = supportsScrollInfo
+  }, [supportsScrollInfo])
+  // Some protocol-22 snapshots omit pane_id even though terminal_id is the
+  // addressable pane key. Let the official pane probe validate this candidate
+  // instead of hiding the scrollbar before it can read the range.
+  const scrollPaneId = paneId ?? (supportsScrollInfo ? terminalId : null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -841,6 +884,9 @@ function HerdrTerminalLeaf({
     clipboardRef.current = installTerminalClipboardHandling(term, {
       pasteText: (text) => { void transportRef.current?.paste(text).catch(() => undefined) },
       copyOnSelect: () => useTerminalSettingsStore.getState().copyOnSelect,
+      onCopyError: () => {
+        if (!disposedRef.current) setStatusMessage(t("clipboardCopyFailed", { ns: "terminal" }))
+      },
       pasteImage: (image) => {
         const transport = transportRef.current
         const sessionId = transport?.getSessionId?.()
@@ -872,9 +918,11 @@ function HerdrTerminalLeaf({
       event.preventDefault()
       event.stopPropagation()
       void transport.scroll(event.deltaY < 0 ? -rows : rows)
-        .then(() => scrollbarRefreshRef.current?.())
         .catch((error) => {
-          if (!disposedRef.current) setStatusMessage(error instanceof Error ? error.message : String(error))
+          if (!disposedRef.current) {
+            const message = error instanceof Error ? error.message : String(error)
+            setStatusMessage(message === "pane-scroll-state-unavailable" ? t("unavailable", { ns: "terminalScroll" }) : message)
+          }
         })
       return false
     })
@@ -950,12 +998,31 @@ function HerdrTerminalLeaf({
 
     const transport = createHerdrTerminalTransport({
       terminalId,
-      paneId,
+      paneId: scrollPaneId,
       mode: "control",
       takeover: true,
       // Use the resolved runtime scope for both connector and pane-scroll
       // fallback. The legacy `live` token has no addressable pane namespace.
       sessionName: contextSessionName,
+      paneScrollEnabled: () => supportsScrollInfoRef.current,
+      onPaneScroll: (state) => scrollbarRefreshRef.current?.(state),
+      paneScrollController: () => paneScrollControllerRef.current,
+      scrollEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return herdrScrollStrategyForRuntime(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined) !== "unavailable"
+      },
+      terminalScrollEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return herdrScrollStrategyForRuntime(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined) === "terminal"
+      },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
         registerAttachment(attachmentKey, {
@@ -1059,6 +1126,12 @@ function HerdrTerminalLeaf({
           ? t("herdrTerminal.inputPaused") : event.message
         setStatusMessage(message)
         outputQueueRef.current?.push(`\r\n[Herdr: ${message}]\r\n`)
+        // An uncertain input delivery means the connector generation may have
+        // died (common after a WSL helper restart). Reopen the same attachment
+        // once so a freshly opened Session is usable without requiring a
+        // second manual tab close/reopen. The recovery guard prevents loops if
+        // the replacement connector is also unavailable.
+        if (event.message === "terminal-input-failed") recoverOutput()
         return
       }
       if (event.type === "control") {
@@ -1146,7 +1219,7 @@ function HerdrTerminalLeaf({
       fitRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [herdrSessionId, terminalId, pagePath, attachmentKey, connectorEnabled])
+  }, [herdrSessionId, terminalId, pagePath, attachmentKey, connectorEnabled, scrollPaneId, targetHostId, targetSessionName, contextSessionName])
 
   useEffect(() => {
     if (!sessionIsStopped) return
@@ -1302,9 +1375,11 @@ function HerdrTerminalLeaf({
       )}
       <div className="flex min-h-0 flex-1">
         <div id={terminalViewportId} ref={containerRef} className="min-h-0 min-w-0 flex-1" />
-        <HerdrScrollbar sessionName={contextSessionName} paneId={paneId ?? ""}
-          enabled={active && visible && sessionCanConnect && !!paneId && supportsScrollInfo}
+        <HerdrScrollbar sessionName={contextSessionName} paneId={scrollPaneId ?? ""}
+          enabled={active && visible && sessionCanConnect && !!scrollPaneId && supportsScrollInfo}
           viewportId={terminalViewportId} refreshRef={scrollbarRefreshRef}
+          controllerRef={paneScrollControllerRef}
+          onError={(error) => { if (!disposedRef.current) setStatusMessage(String(error)) }}
           canScroll={() => !disposedRef.current && document.visibilityState !== "hidden" && visibleRef.current && activeRef.current && openReadyRef.current
             && termRef.current?.buffer.active.type === "normal" && !!transportRef.current?.canWrite()} />
       </div>

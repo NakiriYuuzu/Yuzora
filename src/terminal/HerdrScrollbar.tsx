@@ -1,28 +1,36 @@
+import { herdrErrorKind } from "@/lib/herdrErrors"
+import { recordHerdrScrollMetric } from "./herdrScrollTelemetry"
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
 import { useTranslation } from "react-i18next"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { createPaneScrollController, offsetFromProxyScroll, proxyScrollTop, scrollProxyContentHeight, type PaneScrollInfo } from "./herdrScrollController"
+import { createPaneScrollController, offsetFromProxyScroll, proxyScrollTop, scrollProxyContentHeight, type PaneScrollController, type PaneScrollInfo } from "./herdrScrollController"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 
 /** A shadcn coordinate proxy for HERDR's server-owned viewport. The spacer is
- * sized from official row counts; xterm itself never accumulates fake history. */
-export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refreshRef, viewportId }: {
+ * sized from official row counts; xterm itself never accumulates fake history.
+ * Position changes are optimistic and dispatched immediately. */
+export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refreshRef, controllerRef, onError, viewportId }: {
   sessionName: string
   paneId: string
   enabled: boolean
   canScroll: () => boolean
-  refreshRef: RefObject<(() => void) | null>
+  refreshRef: RefObject<((state?: PaneScrollInfo | null) => void) | null>
+  controllerRef?: RefObject<PaneScrollController | null>
+  onError?: (error: unknown) => void
   viewportId: string
 }) {
   const { t } = useTranslation("terminalScroll")
   const viewport = useRef<HTMLDivElement>(null)
   const controller = useRef<ReturnType<typeof createPaneScrollController> | null>(null)
   const permission = useRef(canScroll)
+  const errorHandler = useRef(onError)
   const synchronizedTop = useRef(0)
   const [state, setState] = useState<PaneScrollInfo | null>(null)
   const [height, setHeight] = useState(0)
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null)
   const [writable, setWritable] = useState(false)
   useEffect(() => { permission.current = canScroll }, [canScroll])
+  useEffect(() => { errorHandler.current = onError }, [onError])
   useLayoutEffect(() => {
     const element = viewport.current
     if (!element) return
@@ -35,13 +43,22 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
   useEffect(() => {
     if (!enabled) return
     const active = createPaneScrollController({
-      read: () => readPaneScroll(sessionName, paneId),
-      write: (offset) => setPaneScroll(sessionName, paneId, offset),
+      read: (signal) => readPaneScroll(sessionName, paneId, signal),
+      write: (offset, signal) => setPaneScroll(sessionName, paneId, offset, signal),
       allowed: () => permission.current(),
-      change: setState,
+      change: (next) => { setState(next); if (next) setUnavailableReason(null) },
+      metric: (metric) => recordHerdrScrollMetric({ ...metric, session: sessionName, pane: paneId }),
+      error: (error) => { setUnavailableReason(herdrErrorKind(error)); errorHandler.current?.(error) },
     })
     controller.current = active
-    const refresh = () => { const writable = permission.current(); setWritable(writable); if (writable) void active.refresh() }
+    if (controllerRef) controllerRef.current = active
+    const refresh = (next?: PaneScrollInfo | null) => {
+      const writable = permission.current()
+      setWritable(writable)
+      if (!writable) { active.reset(); return }
+      if (next !== undefined) active.sync(next)
+      else void active.refresh()
+    }
     refreshRef.current = refresh
     refresh()
     const timer = window.setInterval(refresh, 1000)
@@ -49,9 +66,10 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
       window.clearInterval(timer)
       active.dispose()
       controller.current = null
+      if (controllerRef?.current === active) controllerRef.current = null
       refreshRef.current = null
     }
-  }, [enabled, sessionName, paneId, refreshRef])
+  }, [enabled, sessionName, paneId, refreshRef, controllerRef])
   const current = enabled && writable ? state : null
   const disabled = !current || current.maxOffsetFromBottom === 0
   useLayoutEffect(() => {
@@ -69,7 +87,7 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
     aria-valuemin={current ? 0 : undefined} aria-valuemax={current?.maxOffsetFromBottom}
     aria-valuenow={current ? current.maxOffsetFromBottom - current.offsetFromBottom : undefined}
     aria-disabled={disabled} data-disabled={disabled} tabIndex={disabled ? -1 : 0}
-    title={t(current ? "hint" : "unavailable")}
+    title={current ? t("hint") : t(unavailableReason ? `reason.${unavailableReason}` : "unavailable")}
     viewportProps={{
       "data-testid": "herdr-scroll-proxy",
       onScroll: (event) => {

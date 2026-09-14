@@ -3,6 +3,7 @@ import { herdrEventsRelease, herdrEventsSubscribe } from "@/lib/herdrIpc"
 import { runtimeOwner, sessionScope } from "@/lib/herdrProvider"
 import { isHerdrPagePath } from "@/lib/herdrPages"
 import { canonicalPathKey } from "@/lib/paths"
+import { useHostStore } from "@/state/hostStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS, shouldPollHerdrSnapshots, shouldRefreshWorktreeInventory } from "./herdrBridgePolicy"
@@ -10,6 +11,7 @@ import { HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS, shouldPollHerdrSnapshots, shouldRef
 interface RuntimeSubscription {
   scope: string
   identity: string
+  needsBootstrap: boolean
   inFlight: boolean
   connecting: boolean
   subscriptionId: string | null
@@ -178,9 +180,11 @@ export function HerdrBridge() {
         const state = useHerdrStore.getState()
         const runtime = state.runtimesBySession[entry.scope]
         let ok = true
-        if (runtime?.connectionState !== "ready") {
+        if (entry.needsBootstrap || runtime?.connectionState !== "ready") {
           await state.bootstrap(entry.scope)
+          if (!current(entry)) return
           ok = useHerdrStore.getState().runtimesBySession[entry.scope]?.connectionState === "ready"
+          if (ok) entry.needsBootstrap = false
         } else if (force || shouldPollHerdrSnapshots(runtime.capabilities, !!entry.subscriptionId, Date.now() - entry.lastSnapshot, HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS)) {
           ok = await state.refreshSnapshot(entry.scope)
           if (ok) entry.lastSnapshot = Date.now()
@@ -217,7 +221,7 @@ export function HerdrBridge() {
       for (const [scope, identity] of wanted) {
         let entry = active.get(scope)
         if (!entry) {
-          entry = {scope, identity, inFlight:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
+          entry = {scope, identity, needsBootstrap:runtimeOwner(scope) !== null, inFlight:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
           active.set(scope, entry)
         }
         void refresh(entry).catch(() => undefined)
@@ -233,6 +237,15 @@ export function HerdrBridge() {
     }
     void poll()
     const interval = setInterval(() => void poll(), 4000)
+    // Helper replacement keeps named Session IDs. Refresh every Session's
+    // capability contract immediately when its connection generation changes.
+    const unsubscribeHosts = useHostStore.subscribe((state, previous) => {
+      if (state.hosts === previous.hosts) return
+      const ids = new Set([...Object.keys(state.hosts), ...Object.keys(previous.hosts)])
+      if (![...ids].some(id => state.hosts[id]?.connection !== previous.hosts[id]?.connection)) return
+      reconcileRuntimes()
+      void poll()
+    })
     const unsubscribeWorkspaceRestore = useWorkspaceStore.subscribe((state, previous) => {
       if (!state.sessionRestoreReady || previous.sessionRestoreReady) return
       const scope = useHerdrStore.getState().selectedSessionName
@@ -257,6 +270,7 @@ export function HerdrBridge() {
     return () => {
       cancelledRef.current = true
       clearInterval(interval)
+      unsubscribeHosts()
       unsubscribeWorkspaceRestore()
       unsubscribeFocus()
       const entries = [...active.values()]

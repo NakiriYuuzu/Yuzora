@@ -1,0 +1,26 @@
+{
+  "base": "ac03ed3de7a3a604aac073b060c2eb63d15f6360",
+  "candidate": "8e7c451700e8594116c59bc7c801f6dcc9afc7c7",
+  "build": "cargo build --locked --release; same standalone Cargo.lock, same source directory; only herdr_transport.rs replaced",
+  "os": "macOS 26.6.2 (25G83) arm64",
+  "herdr": "0.9.0 protocol 22",
+  "timing": "dispatch to terminal.frame receipt; excludes WebView painting and RDP latency",
+  "files": {
+    "helper-before": "4ee860322fd9192ca5bf718eb9021136d1d74039f0e4dedfcd6736a0549ae053",
+    "helper-after": "abf763b3a194d735cc50a49ffee50177a1357c33a1cce614978df88ad2d57c99",
+    "baseline-source/src-tauri/host/Cargo.lock": "6ed541d2487fcd40b37dfc2cb79237149fa28a0a0bc785e939295f55b0220386"
+  },
+  "readiness_probe": {
+    "n": 30,
+    "peer_delay_ms": 5,
+    "before": {
+      "p50_ms": 104.411,
+      "p95_ms": 109.77
+    },
+    "after": {
+      "p50_ms": 6.301,
+      "p95_ms": 6.357
+    },
+    "mode": "cargo test unoptimized; same machine and test"
+  }
+}

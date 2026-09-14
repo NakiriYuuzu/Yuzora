@@ -329,13 +329,302 @@ describe("createHerdrTerminalTransport", () => {
     const transport = createHerdrTerminalTransport({
       terminalId: "t1",
       paneId: "pane-1",
-      sessionName: "default"
+      sessionName: "default",
+      paneScrollEnabled: () => true
     })
     await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
     await transport.scroll?.(-3)
 
     expect(readPaneScroll).toHaveBeenCalledWith("default", "pane-1")
     expect(setPaneScroll).toHaveBeenCalledWith("default", "pane-1", 7)
+  })
+
+  it("uses pane scrolling directly when the official pane API is available", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue({
+      offsetFromBottom: 4,
+      maxOffsetFromBottom: 20,
+      viewportRows: 24
+    })
+    vi.mocked(setPaneScroll).mockResolvedValue(null)
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[wsl-host,default]",
+      paneScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    expect(readPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1")
+    expect(setPaneScroll).toHaveBeenCalledWith("[wsl-host,default]", "pane-1", 7)
+  })
+
+  it("keeps native scrolling on the connector fast path when pane metrics are available", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-native",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[native,default]",
+      paneScrollEnabled: () => true,
+      terminalScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-native", "up", 3)
+    expect(readPaneScroll).not.toHaveBeenCalled()
+    expect(setPaneScroll).not.toHaveBeenCalled()
+  })
+
+  it("reuses a short-lived pane snapshot during wheel bursts", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane-cache",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue({
+      offsetFromBottom: 10,
+      maxOffsetFromBottom: 40,
+      viewportRows: 24
+    })
+    vi.mocked(setPaneScroll).mockImplementation(async (_session, _pane, offset) => ({
+      offsetFromBottom: offset,
+      maxOffsetFromBottom: 40,
+      viewportRows: 24
+    }))
+
+    const onPaneScroll = vi.fn()
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "default",
+      paneScrollEnabled: () => true,
+      onPaneScroll
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-2)
+    await transport.scroll?.(-2)
+    await transport.scroll?.(-2)
+
+    expect(readPaneScroll).toHaveBeenCalledOnce()
+    expect(setPaneScroll).toHaveBeenNthCalledWith(1, "default", "pane-1", 12)
+    expect(setPaneScroll).toHaveBeenNthCalledWith(3, "default", "pane-1", 16)
+    expect(onPaneScroll).toHaveBeenLastCalledWith({ offsetFromBottom: 16, maxOffsetFromBottom: 40, viewportRows: 24 })
+  })
+
+  it("falls back to terminal.scroll when pane metadata is temporarily unavailable", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane-null",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue(null)
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "default",
+      paneScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-pane-null", "up", 3)
+    expect(setPaneScroll).not.toHaveBeenCalled()
+  })
+
+  it("keeps pane-only runtimes safe when the pane probe has no range yet", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-pane-probe",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(readPaneScroll).mockResolvedValue(null)
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[wsl:Debian,default]",
+      paneScrollEnabled: () => true,
+      scrollEnabled: () => true,
+      terminalScrollEnabled: () => false
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await expect(transport.scroll?.(-3)).rejects.toThrow("pane-scroll-state-unavailable")
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    expect(readPaneScroll).toHaveBeenCalledWith("[wsl:Debian,default]", "pane-1")
+  })
+
+  it("does not call an unverified scroll transport", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-no-scroll",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      scrollEnabled: () => false
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-3)
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    expect(readPaneScroll).not.toHaveBeenCalled()
+  })
+
+  it("coalesces concurrent wheel requests into one remote scroll at a time", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-burst",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    let release!: () => void
+    vi.mocked(herdrTerminalScroll).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = resolve })
+    ).mockResolvedValue(undefined)
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+
+    const first = transport.scroll?.(-2)
+    const second = transport.scroll?.(-3)
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(1)
+    release()
+    await Promise.all([first, second])
+
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(2)
+    expect(herdrTerminalScroll).toHaveBeenLastCalledWith("sess-burst", "up", 3)
+  })
+
+  it("does not write a delayed pane scroll after the session is detached", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-delayed",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    let resolveRead!: (state: { offsetFromBottom: number; maxOffsetFromBottom: number; viewportRows: number }) => void
+    vi.mocked(readPaneScroll).mockImplementation(
+      () => new Promise((resolve) => { resolveRead = resolve })
+    )
+    vi.mocked(setPaneScroll).mockResolvedValue(null)
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "[wsl-host,default]",
+      paneScrollEnabled: () => true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    const pending = transport.scroll?.(-3)
+    await Promise.resolve()
+    transport.detachSession?.()
+    resolveRead({ offsetFromBottom: 4, maxOffsetFromBottom: 20, viewportRows: 24 })
+    await pending
+
+    expect(setPaneScroll).not.toHaveBeenCalled()
+  })
+
+  it("drops stale wheel delta after a scroll error", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-error",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockRejectedValueOnce(new Error("scroll unavailable"))
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    const failed = transport.scroll?.(-3)?.catch((error) => error)
+    const queued = transport.scroll?.(-2)?.catch((error) => error)
+    await Promise.all([failed, queued])
+    await transport.scroll?.(-1)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledOnce()
+  })
+
+  it("does not retry a rejected terminal scroll on the same attachment", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-breaker",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockRejectedValue(new Error("connector closed"))
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+
+    await expect(transport.scroll?.(-1)).rejects.toThrow("connector closed")
+    await transport.scroll?.(-1)
+    expect(herdrTerminalScroll).toHaveBeenCalledOnce()
+  })
+
+  it("ignores fractional scroll deltas without poisoning the drain", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-fraction",
+      target: "t1",
+      mode: "control",
+      role: "controller",
+      cols: 80,
+      rows: 24,
+      takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    await transport.scroll?.(-0.5)
+    await transport.scroll?.(-2)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-fraction", "up", 2)
   })
 })
 

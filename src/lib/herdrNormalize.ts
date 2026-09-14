@@ -94,6 +94,7 @@ export function normalizeHerdrSnapshot(
       agentCount: undefined,
       terminalCount: asNumber(ws.pane_count) ?? undefined,
       tabCount: asNumber(ws.tab_count) ?? undefined,
+      worktreeGroupKey: snapshotProvenance.worktreeGroupKey ?? null,
       repoKey: snapshotProvenance.repoKey ?? null,
       repoName: snapshotProvenance.repoName ?? null,
       repoRoot: snapshotProvenance.repoRoot ?? null,

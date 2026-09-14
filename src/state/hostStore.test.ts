@@ -10,7 +10,7 @@ vi.mock("@/lib/herdrProvider", () => ({ registerRuntimeHost: mocks.register, unr
 vi.mock("./sshStore", () => ({ useSshStore: { getState: () => mocks.ssh } }))
 
 const host = (generation = 1): ConnectedHost => ({ owner: { hostId: "host", generation }, hello: { protocol: 1, version: "test", os: "linux", arch: "x86_64", home: "/home/test", methods: ["herdrStart"] } })
-const config = { hostId: "host", label: "Server", kind: "ssh" as const, helper: "/helper", binary: "/herdr" }
+const config = { hostId: "host", label: "Server", kind: "ssh" as const, helper: "/helper", binary: "/herdr", artifactIdentity: "a".repeat(64) }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail }); return { promise, resolve, reject } }
 beforeEach(() => {
   vi.resetModules()
@@ -21,7 +21,7 @@ beforeEach(() => {
   mocks.ssh.hosts = []
   mocks.disconnect.mockResolvedValue(undefined)
   mocks.request.mockResolvedValue({})
-  mocks.check.mockResolvedValue({ check: { canApply: true }, requiresInstall: false })
+  mocks.check.mockResolvedValue({ check: { canApply: true }, requiresInstall: false, artifactIdentity: "a".repeat(64) })
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -106,6 +106,7 @@ it.each([false, true])("queues one explicit setup behind a health check (failure
   mocks.request.mockReturnValueOnce(health.promise)
   mocks.prepare.mockResolvedValue({ connection: host(2), helper: "/updated-helper", binary: "/herdr" })
   useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledOnce())
   const setup = useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" })
   await expect(useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" })).rejects.toThrow("already in progress")
   useHostStore.getState().reconcile()
@@ -167,6 +168,18 @@ it("preserves the existing connection and configuration when a candidate is inco
   expect(mocks.disconnect).not.toHaveBeenCalled()
   expect(useHostStore.getState().configs.host).toBe(config)
   expect(useHostStore.getState().hosts.host.connection).toBe(connected)
+})
+it("releases a connected host before retrying an update blocked by host-already-connected", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const connected = host()
+  useHostStore.setState({ configs: { host: config }, hosts: { host: { connection: connected, connecting: false, error: null, target: { kind: "ssh", sessionId: "ssh-1" }, attempt: 0, retryAt: 0 } } })
+  mocks.prepare
+    .mockRejectedValueOnce(new Error("host-already-connected"))
+    .mockResolvedValueOnce({ connection: host(2), helper: "/updated-helper", binary: "/updated-herdr" })
+  await expect(useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" })).resolves.toEqual(host(2))
+  expect(mocks.disconnect).toHaveBeenCalledWith(connected.owner)
+  expect(mocks.prepare).toHaveBeenCalledTimes(2)
+  expect(mocks.register).toHaveBeenCalledWith(host(2), "/updated-herdr", "Server", "ssh")
 })
 it("keeps WSL dormant by default and disconnects only the helper when disabled", async () => {
   const { useHostStore } = await import("./hostStore")
@@ -269,4 +282,106 @@ it("surfaces repair for a saved WSL helper without startup capability", async ()
   expect(mocks.request).not.toHaveBeenCalled()
   expect(mocks.register).not.toHaveBeenCalled()
   expect(useHostStore.getState().hosts.host.error).toContain("herdr-start-unavailable")
+})
+
+
+it.each([undefined, { source: "default" as const }, { source: "global" as const }, { source: "custom" as const, customPath: "/herdr" }])("upgrades the saved WSL helper before publishing while preserving HERDR policy %j", async (selection) => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  const saved = { ...config, kind: "wsl" as const, distro: "Ubuntu-26.04", selection, artifactIdentity: "b".repeat(64) }
+  const prepared = { connection: host(2), helper: "/new/yuzora-host", binary: saved.binary, artifactIdentity: "a".repeat(64) }
+  mocks.prepare.mockResolvedValue(prepared)
+  useHostStore.setState({ configs: { host: saved } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledWith(prepared.connection, saved.binary, saved.label, "wsl"))
+  expect(mocks.prepare).toHaveBeenCalledWith("host", { kind: "wsl", distro: "Ubuntu-26.04" }, { source: "custom", customPath: saved.binary })
+  expect(mocks.connect).not.toHaveBeenCalled()
+  expect(useHostStore.getState().configs.host).toMatchObject({ binary: saved.binary, helper: prepared.helper, selection: selection ?? { source: "custom", customPath: saved.binary }, artifactIdentity: saved.artifactIdentity, helperArtifactIdentity: prepared.artifactIdentity })
+  expect(JSON.parse(localStorage.getItem("yuzora.runtime.hosts.v2")!)[0].helper).toBe(prepared.helper)
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith(prepared.connection.owner, { method: "hello" }))
+  expect(mocks.check).toHaveBeenCalledOnce()
+  expect(mocks.prepare).toHaveBeenCalledOnce()
+})
+
+it("retains the old connection and reports a failed helper update without redeploying on every health check", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const saved = { ...config, artifactIdentity: "b".repeat(64) }
+  const connected = host()
+  mocks.prepare.mockRejectedValue(new Error("host-artifact-checksum-mismatch"))
+  useHostStore.setState({ configs: { host: saved }, hosts: { host: { connection: connected, connecting: false, error: null, target: { kind: "ssh", sessionId: "ssh-1" }, attempt: 0, retryAt: 0 } } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(useHostStore.getState().hosts.host.error).toContain("host-artifact-checksum-mismatch"))
+  expect(useHostStore.getState().configs.host).toBe(saved)
+  expect(useHostStore.getState().hosts.host.connection).toBe(connected)
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2))
+  expect(mocks.prepare).toHaveBeenCalledOnce()
+  expect(mocks.disconnect).not.toHaveBeenCalled()
+})
+
+it("reconnects the saved helper if a replacement fails after the old helper is released", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const saved = { ...config, artifactIdentity: "b".repeat(64) }
+  const connected = host()
+  mocks.prepare.mockRejectedValueOnce(new Error("host-already-connected")).mockRejectedValueOnce(new Error("new helper failed"))
+  mocks.connect.mockResolvedValue(host(3))
+  useHostStore.setState({ configs: { host: saved }, hosts: { host: { connection: connected, connecting: false, error: null, target: { kind: "ssh", sessionId: "ssh-1" }, attempt: 0, retryAt: 0 } } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledWith(host(3), saved.binary, saved.label, "ssh"))
+  expect(mocks.connect).toHaveBeenCalledWith("host", { kind: "ssh", sessionId: "ssh-1" }, saved.helper)
+  expect(useHostStore.getState().configs.host).toBe(saved)
+  expect(useHostStore.getState().hosts.host.error).toContain("new helper failed")
+})
+
+it("discards an automatic helper update when WSL is disabled during deployment", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
+  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  const saved = { ...config, kind: "wsl" as const, distro: "Ubuntu", artifactIdentity: "b".repeat(64) }
+  const result = deferred<{ connection: ConnectedHost; helper: string; binary: string; artifactIdentity: string }>()
+  mocks.prepare.mockReturnValue(result.promise)
+  useHostStore.setState({ configs: { host: saved } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.prepare).toHaveBeenCalledOnce())
+  useRuntimePreferencesStore.getState().setWslEnabled(false)
+  result.resolve({ connection: host(2), helper: "/new/helper", binary: "/herdr", artifactIdentity: "a".repeat(64) })
+  await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(host(2).owner))
+  expect(mocks.register).not.toHaveBeenCalled()
+  expect(useHostStore.getState().configs.host).toBe(saved)
+})
+
+
+it("migrates a v1 managed config and retains the separate helper identity after reloading", async () => {
+  const directory = `/home/test/.local/share/yuzora/runtimes/0.0.13-linux-x86_64-${"b".repeat(64)}`
+  const saved = { ...config, binary: `${directory}/herdr`, helper: `${directory}/yuzora-host`, artifactIdentity: undefined }
+  localStorage.setItem("yuzora.runtime.hosts.v1", JSON.stringify([saved]))
+  const prepared = { connection: host(2), helper: "/new/yuzora-host", binary: saved.binary, artifactIdentity: "a".repeat(64) }
+  mocks.prepare.mockResolvedValue(prepared)
+  const { useHostStore } = await import("./hostStore")
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledOnce())
+  expect(useHostStore.getState().configs.host.selection).toEqual({ source: "default" })
+  vi.resetModules()
+  const reloaded = (await import("./hostStore")).useHostStore
+  expect(reloaded.getState().configs.host).toMatchObject({ binary: saved.binary, helper: prepared.helper, selection: { source: "default" }, helperArtifactIdentity: prepared.artifactIdentity })
+  mocks.connect.mockResolvedValue(host(3))
+  reloaded.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledWith("host", { kind: "ssh", sessionId: "ssh-1" }, prepared.helper))
+  expect(mocks.prepare).toHaveBeenCalledOnce()
+})
+
+it("rolls back a helper update if saving its paths fails", async () => {
+  const { useHostStore } = await import("./hostStore")
+  const saved = { ...config, artifactIdentity: "b".repeat(64) }
+  mocks.prepare.mockResolvedValue({ connection: host(2), helper: "/new/helper", binary: saved.binary, artifactIdentity: "a".repeat(64) })
+  mocks.connect.mockResolvedValue(host(3))
+  vi.stubGlobal("localStorage", { setItem: () => { throw new Error("disk full") } })
+  useHostStore.setState({ configs: { host: saved } })
+  useHostStore.getState().reconcile()
+  await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledWith(host(3), saved.binary, saved.label, "ssh"))
+  expect(mocks.disconnect).toHaveBeenCalledWith(host(2).owner)
+  expect(useHostStore.getState().configs.host).toBe(saved)
+  expect(useHostStore.getState().hosts.host.error).toContain("disk full")
 })

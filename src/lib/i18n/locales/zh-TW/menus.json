@@ -1,5 +1,7 @@
 {
   "contextMenu": {
+    "cmHerdrMoveSpaceUp": "上移",
+    "cmHerdrMoveSpaceDown": "下移",
     "cmCmdPalette": "命令面板…",
     "cmRefresh": "重新整理",
     "cmSettings": "設定…",
@@ -46,6 +48,10 @@
     "cmCopyUrl": "複製 URL",
     "cmOpenExternal": "在預設瀏覽器中開啟",
     "disabled": {
+      "herdrLinkedWorktree": "請移動所屬 Space，以保留完整 worktree 群組",
+      "herdrGroupIncomplete": "Worktree 群組資訊不完整",
+      "herdrFirstSpace": "已是此 Session 的第一個 Space",
+      "herdrLastSpace": "已是此 Session 的最後一個 Space",
       "targetUnavailable": "目標項目已不存在",
       "nothingToDo": "目前沒有可執行的內容",
       "noSelection": "未選取內容",

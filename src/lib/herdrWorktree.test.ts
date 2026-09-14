@@ -263,10 +263,20 @@ describe("applyWorktreeEntryToSpace / snapshot provenance", () => {
       })
     ).toEqual({
       path: "/Users/me/yuzora",
+      worktreeGroupKey: "k",
       repoKey: "k",
       repoName: "yuzora",
       repoRoot: "/Users/me/yuzora",
       isLinkedWorktree: true
     })
   })
+})
+
+it('preserves official group identity from worktree.list when snapshot omits it', () => {
+  const merged = applyWorktreeEntryToSpace(
+    { id: 'root', label: 'root', focused: true, order: 0 },
+    { path: '/repo', branch: 'main', isLinkedWorktree: false, isDetached: false, isPrunable: false, isBare: false, label: 'root', openWorkspaceId: 'root' },
+    { repoKey: 'official-repository', repoName: 'repo', repoRoot: '/repo', sourceCheckoutPath: '/repo' }
+  )
+  expect(merged.worktreeGroupKey).toBe('official-repository')
 })

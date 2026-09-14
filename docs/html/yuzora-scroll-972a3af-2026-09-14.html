@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>972a3af 原生捲動驗收</title>
+<style>body{font:16px/1.7 system-ui,sans-serif;color:#17202a;max-width:1100px;margin:40px auto;padding:0 20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #cbd5e1;text-align:left;padding:10px}th{background:#edf2f7}code{background:#edf2f7}h1,h2{line-height:1.3}.note{padding:16px;background:#fff6dc}a{color:#155e75}</style></head><body>
+<h1>Yuzora 0.0.14 候選版捲動驗收</h1>
+<p>2026-09-14 · 候選程式 <code>972a3af6425124194a3ab0a0ccd22219225a3371</code> · 分支 <code>release/v0.0.14</code> · <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34766186412">完整 CI 與兩平台候選包：SUCCESS</a>。</p>
+<p>macOS 26.6.2（25G83）、arm64、HERDR 0.9.0／protocol 22、Pi 0.85.1。實際從 CI DMG 取出 App，驗證 bundle seal 後安裝至 /Applications/Yuzora.app；原 0.0.11 App 與設定已備份於本機測試目錄。未變更 HERDR 版本與既有 server。</p>
+<h2>實際結果</h2><table><thead><tr><th>案例</th><th>結果</th><th>證據與界線</th></tr></thead><tbody>
+<tr><td>候選包、架構與 runtime payload</td><td>PASS</td><td>CI macOS／Windows installers 成功。macOS codesign --verify --deep --strict 與四個 Unix payload version/hash 驗證成功。App executable SHA-256：ac6cd04e5588b8a64dce7f9f8737a34fbae1ab5e16bbbc8384620f23abd8292d。</td></tr>
+<tr><td>macOS Terminal wheel</td><td>PASS（功能）</td><td>專用 Session scroll-e2e-972a3af、2000 行 fixture；使用原生 viewport 中央 wheel。官方 pane offset 到 104；其後連續八次向上捲動，畫面從約第 987 行移至第 379 行，未出現輸入暫停或 connector exit。</td></tr>
+<tr><td>macOS scrollbar 拖曳與焦點</td><td>PASS（功能）</td><td>原生拖曳右側 thumb 到中段，AX scrollbar value 988，畫面顯示第 987–1062 行；焦點仍為 Terminal input。原生前後畫面已在本次對話的 CUA 截圖中記錄。</td></tr>
+<tr><td>捲動後輸入與中文貼上</td><td>PASS</td><td>原生輸入後畫面回到底部，顯示 AFTER_SCROLL_972a3af 中文貼上成功；命令成功執行。此案例不等於中文 IME 組字驗收。</td></tr>
+<tr><td>Pi TUI 啟動、辨識、捲動與本地輸入</td><td>PASS（限定範圍）</td><td>專用 pane w1:p2 啟動 Pi 0.85.1，sidebar 辨識 pi／待命；向上、向下 wheel 可瀏覽先前歷史並回到 Pi，輸入 PI_INPUT_LOCAL_TEST 後清除，未送出模型請求。測試 Pi 已正常退出。</td></tr>
+<tr><td>v0.0.13 → 0.0.14 手動 App 升級</td><td>PASS（同一工作延續）</td><td>兩個真實套件依序啟動。Session、pane、terminal ID 相同；shell PID 31591、持續工作 PID 48251 均未變。替換前 tick 121，候選重連後 tick 150，後續超過 200；逐行 log 無缺號。使用者既有 server PID 40242 持續存活。</td></tr>
+<tr><td>Windows 原生與 Windows + Ubuntu-26.04 WSL</td><td>BLOCKED</td><td>Windows App 連到授權目標 192.168.213.129 後停在「憑證無法驗證到 root certificate」提示，已要求使用者手動核對／連線。未按 Continue，未操作另一台主機。Windows installer 已下載，未宣稱已安裝或 E2E 通過。</td></tr>
+<tr><td>signed updater、runtime 版本交接、中文 IME、長時間資源 soak、完整模型回應</td><td>NOT RUN</td><td>候選包 updater-disabled；本次 manual bundle replacement 不驗證 signed updater。Pi 啟動出現既有 provider discovery fetch failed，沒有送出模型請求。其餘項目本次未完整執行。</td></tr>
+</tbody></table>
+<h2>同機 runtime 路徑比較</h2>
+<p>同一 Mac、同一 HERDR 0.9.0 Session／pane，2000 行 fixture、80×24，持續的官方 terminal controller；每種路徑 50 次上下交替。指標為指令送出至收到新的 terminal.frame；使用 CI 產物內的正式 helper，沒有 mock。這是路徑差異量測，並非兩個 App 的完整 UI paint p50／p95。</p>
+<table><thead><tr><th>路徑</th><th>frame p50</th><th>frame p95</th><th>完整 RPC p50</th></tr></thead><tbody>
+<tr><td>connector terminal.scroll（v0.0.13 及本候選原生優先路徑）</td><td>17.63ms</td><td>19.68ms</td><td>17.65ms</td></tr>
+<tr><td>pane.get → pane.scroll（先前 v0.0.14 優先路徑，無 cache）</td><td>376.80ms</td><td>392.04ms</td><td>479.09ms</td></tr>
+<tr><td>僅 pane.scroll（已有位置）</td><td>137.31ms</td><td>144.65ms</td><td>238.86ms</td></tr>
+</tbody></table>
+<p>本機的兩條完整路徑 frame p50 差約 21 倍。另一輪獨立 connector 測量 n=100，p50 17.72ms、p95 21.32ms。這支持恢復 native connector 優先順序的修正方向；WSL 仍走 pane 路徑，不能據此推論 WSL 同樣提速。pane 呼叫的 shared facade 仍會檢查 Session 與 server identity；本次未為效能省略這些檢查。</p>
+<p>原生 wheel 與拖曳已看到正確輸出，沒有重現單次等待一秒才移動；工具操作本身含固定等待，不能用工具 wall time 宣稱 App 互動延遲。UI paint 的正式 profiler p50／p95 與拖曳幀率仍未量測。macOS 當次 UI 資源讀值約 5–8% CPU、131–147MB，僅為 spot observation，並非穩態／峰值結論。</p>
+<h2>證據</h2><ul>
+<li><a href="yuzora-scroll-972a3af-2026-09-14-assets/scroll-comparison.json">150 次逐筆 frame/RPC 延遲</a></li>
+<li><a href="yuzora-scroll-972a3af-2026-09-14-assets/compare-scroll.ts.txt">實際量測程式快照（只供本次命名 Session 使用）</a></li>
+<li><a href="yuzora-scroll-972a3af-2026-09-14-assets/continuity-verdict.json">升級 identity 與連續性檢查</a>、<a href="yuzora-scroll-972a3af-2026-09-14-assets/continuity.txt">專用工作逐行 log</a></li>
+</ul>
+<h2>已排除的無效操作與發布狀態</h2>
+<p>UI 工具初期多次回傳 noWindowsAvailable，系統 folder picker 的 Open 未能完成，textarea 定位的連續 scroll 也未可靠觸發 viewport；這些操作沒有算入 PASS。後續以實際前景 viewport 座標成功進行 wheel／drag。原生點擊聚焦後的中文 paste 成功；一次 clipboard timeout 造成測試文字重複、命令失敗，清空該測試 shell 行後已恢復。</p>
+<p class="note">本次是 972a3af 的局部原生驗收；不代表 v0.0.10–v0.0.14 的全功能矩陣已完成。Windows／WSL 原生驗收與 signed updater 仍是發布門檻，未 merge、未建立 tag、未發布正式版。</p>
+</body></html>

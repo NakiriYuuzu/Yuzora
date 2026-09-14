@@ -1,5 +1,14 @@
 {
   "label": "Terminal scrollback",
   "hint": "Drag to scroll. Home: oldest output. End: latest output.",
-  "unavailable": "Scroll range unavailable for this terminal. Use the terminal wheel when supported."
+  "unavailable": "Scroll range unavailable for this terminal. Use the terminal wheel when supported.",
+  "reason": {
+    "unsupported": "This HERDR runtime does not support pane scroll metadata.",
+    "permission-denied": "Scrolling requires terminal control permission.",
+    "unknown-capability": "Waiting for HERDR scroll capabilities.",
+    "busy": "HERDR is busy; scroll synchronization could not complete.",
+    "disconnected": "The runtime connection closed. Reconnect to restore scrolling.",
+    "timeout": "Scroll synchronization timed out.",
+    "temporary": "Scroll synchronization failed."
+  }
 }

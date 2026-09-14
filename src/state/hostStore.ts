@@ -6,7 +6,7 @@ import { useSshStore } from "./sshStore"
 import { useRuntimePreferencesStore } from "./runtimePreferencesStore"
 import type { HerdrRuntimeSelection } from "@/lib/herdrTypes"
 
-export interface HostConfig { hostId: string; label: string; kind: "ssh" | "wsl"; distro?: string; helper: string; binary: string; selection?: HerdrRuntimeSelection; artifactIdentity?: string; verifiedAt?: number }
+export interface HostConfig { hostId: string; label: string; kind: "ssh" | "wsl"; distro?: string; helper: string; binary: string; selection?: HerdrRuntimeSelection; artifactIdentity?: string; helperArtifactIdentity?: string; verifiedAt?: number }
 export function selectionForHost(config?: HostConfig): HerdrRuntimeSelection {
   if (config?.selection) return config.selection
   if (!config) return { source: "default" }
@@ -28,6 +28,7 @@ function load(): Record<string, HostConfig> {
       else if (row.selection?.source === "custom" && typeof row.selection.customPath === "string") config.selection = { source: "custom", customPath: row.selection.customPath }
       config.selection = selectionForHost(config)
       if (typeof row.artifactIdentity === "string" && /^[a-f0-9]{64}$/.test(row.artifactIdentity)) config.artifactIdentity = row.artifactIdentity
+      if (typeof row.helperArtifactIdentity === "string" && /^[a-f0-9]{64}$/.test(row.helperArtifactIdentity)) config.helperArtifactIdentity = row.helperArtifactIdentity
       if (typeof row.verifiedAt === "number") config.verifiedAt = row.verifiedAt
       return [[row.hostId, config]]
     }))
@@ -50,6 +51,11 @@ function begin(hostId: string, kind: HostOperation["kind"]): HostOperation {
   return operation
 }
 const paused = new Set<string>()
+// One inspection per saved helper/target per App run. A failed deployment must
+// not be repeated by the four-second health poll; explicit setup can retry it.
+const helperChecks = new Map<string, { key: string; error: string | null }>()
+const helperCheckKey = (config: HostConfig, target: HostTarget) =>
+  JSON.stringify([target, config.helper, config.binary, config.helperArtifactIdentity ?? config.artifactIdentity])
 
 export const useHostStore = create<HostState>((set, get) => {
   const close = async (hostId: string) => {
@@ -97,17 +103,35 @@ export const useHostStore = create<HostState>((set, get) => {
         if (inspection.check && !inspection.check.canApply) throw new Error("runtime-incompatible: " + JSON.stringify(inspection.check))
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
         update(hostId, { connection: previous?.connection ?? null, connecting: true, error: null, target, attempt: 0, retryAt: 0 })
-        const prepared = await prepareHost(hostId, target, selection)
+        let prepared: Awaited<ReturnType<typeof prepareHost>>
+        try {
+          prepared = await prepareHost(hostId, target, selection)
+        } catch (error) {
+          // A host update normally prepares the replacement before closing the
+          // current connection so the old runtime keeps serving work. Some
+          // helpers reject a second connection for the same host with
+          // `host-already-connected`; release only that existing connection and
+          // retry the prepare step instead of leaving updates permanently
+          // blocked.
+          const message = error instanceof Error ? error.message : String(error)
+          const connected = get().hosts[hostId]?.connection ?? previous?.connection
+          if (message !== "host-already-connected" || !connected) throw error
+          await close(hostId)
+          connectionWasClosed = true
+          if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed", { cause: error })
+          prepared = await prepareHost(hostId, target, selection)
+        }
         preparedConnection = prepared.connection
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
         connectionWasClosed = true
         await close(hostId)
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
-        const config: HostConfig = { hostId, label, kind: target.kind, ...(target.kind === "wsl" ? { distro: target.distro } : {}), binary: prepared.binary, helper: prepared.helper, selection: { ...selection }, artifactIdentity: prepared.artifactIdentity, verifiedAt: Date.now() }
+        const config: HostConfig = { hostId, label, kind: target.kind, ...(target.kind === "wsl" ? { distro: target.distro } : {}), binary: prepared.binary, helper: prepared.helper, selection: { ...selection }, artifactIdentity: prepared.artifactIdentity, helperArtifactIdentity: prepared.artifactIdentity, verifiedAt: Date.now() }
         const configs = { ...get().configs, [hostId]: config }
         window.localStorage.setItem(STORAGE, JSON.stringify(Object.values(configs)))
         registerRuntimeHost(prepared.connection, prepared.binary, label, target.kind)
         set({ configs })
+        helperChecks.set(hostId, { key: helperCheckKey(config, target), error: null })
         update(hostId, { connection: prepared.connection, connecting: false, error: null, target, attempt: 0, retryAt: 0 })
         restoreFiles(prepared.connection)
         return prepared.connection
@@ -152,13 +176,75 @@ export const useHostStore = create<HostState>((set, get) => {
         void (async () => {
           let opened: ConnectedHost | null = null
           try {
-            if (previous?.connection && JSON.stringify(previous.target) === JSON.stringify(target)) {
-              try { await requestHost(previous.connection.owner, { method: "hello" }) }
+            const key = helperCheckKey(config, target)
+            if (helperChecks.get(hostId)?.key !== key) {
+              const inspectionState = { key, error: null as string | null }
+              helperChecks.set(hostId, inspectionState)
+              try {
+                // The helper follows the installed App; the HERDR client keeps
+                // its exact saved path and source policy, including active old
+                // managed clients. Never replace or restart a running server.
+                const selection = { source: "custom" as const, customPath: config.binary }
+                const inspection = await checkHostRuntime(hostId, target, selection)
+                if (!current(hostId, token, target, config)) return
+                if (inspection.artifactIdentity !== (config.helperArtifactIdentity ?? config.artifactIdentity)) {
+                  if (!inspection.check?.canApply) throw new Error("runtime-incompatible: " + JSON.stringify(inspection.check))
+                  let prepared: Awaited<ReturnType<typeof prepareHost>>
+                  try { prepared = await prepareHost(hostId, target, selection) }
+                  catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    if (message !== "host-already-connected" || !get().hosts[hostId]?.connection) throw error
+                    // prepareHost already deployed and verified the immutable
+                    // replacement. Release only our helper, retaining HERDR.
+                    await close(hostId)
+                    if (!current(hostId, token, target, config)) return
+                    prepared = await prepareHost(hostId, target, selection)
+                  }
+                  opened = prepared.connection
+                  if (!current(hostId, token, target, config)) {
+                    await disconnectHost(opened.owner).catch(() => undefined)
+                    return
+                  }
+                  if (prepared.binary !== config.binary || prepared.artifactIdentity !== inspection.artifactIdentity)
+                    throw new Error("host-helper-update-identity-changed")
+                  await close(hostId)
+                  if (!current(hostId, token, target, config)) {
+                    await disconnectHost(opened.owner).catch(() => undefined)
+                    return
+                  }
+                  const updated: HostConfig = { ...config, selection: selectionForHost(config), helper: prepared.helper, helperArtifactIdentity: prepared.artifactIdentity, verifiedAt: Date.now() }
+                  const configs = { ...get().configs, [hostId]: updated }
+                  window.localStorage.setItem(STORAGE, JSON.stringify(Object.values(configs)))
+                  registerRuntimeHost(opened, config.binary, config.label, config.kind)
+                  set({ configs })
+                  helperChecks.set(hostId, { key: helperCheckKey(updated, target), error: null })
+                  update(hostId, { connection: opened, connecting: false, error: null, target, attempt: 0, retryAt: 0 })
+                  restoreFiles(opened)
+                  return
+                }
+              } catch (error) {
+                if (opened) await disconnectHost(opened.owner).catch(() => undefined)
+                opened = null
+                if (!current(hostId, token, target, config)) return
+                inspectionState.error = "host-helper-update-failed: " + String(error)
+                // Keep serving with the saved helper, or reconnect it below if
+                // a failed replacement had required releasing the connection.
+              } finally {
+                if (!current(hostId, token, target, config) && helperChecks.get(hostId) === inspectionState)
+                  helperChecks.delete(hostId)
+              }
+            }
+            const helperError = helperChecks.get(hostId)?.error ?? null
+            const connected = get().hosts[hostId]
+            if (connected?.connection && JSON.stringify(connected.target) === JSON.stringify(target)) {
+              try { await requestHost(connected.connection.owner, { method: "hello" }) }
               catch (error) {
                 // A full request queue has not touched the transport. Keep its
                 // generation and try the health check on the next interval.
                 if (!["host-request-limit", "host-request-wait-timeout"].includes(error instanceof Error ? error.message : String(error))) throw error
               }
+              if (!current(hostId, token, target, config)) return
+              update(hostId, { ...connected, connecting: false, error: helperError })
               return
             }
             await close(hostId)
@@ -182,7 +268,7 @@ export const useHostStore = create<HostState>((set, get) => {
               }
             }
             registerRuntimeHost(opened, config.binary, config.label, config.kind)
-            update(hostId, { connection: opened, connecting: false, error: null, target, attempt: 0, retryAt: 0 })
+            update(hostId, { connection: opened, connecting: false, error: helperError, target, attempt: 0, retryAt: 0 })
             restoreFiles(opened)
           } catch (error) {
             if (opened) await disconnectHost(opened.owner).catch(() => undefined)

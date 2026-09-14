@@ -13,6 +13,12 @@ export interface UpdaterMetadata {
   [key: string]: unknown
 }
 
+export interface ReleaseMetadataContext {
+  repository: string
+  tag: string
+  signatures?: ReadonlyMap<string, string>
+}
+
 function record(value: unknown, label: string): UnknownRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`)
@@ -33,7 +39,8 @@ function assetName(url: string): string {
 export function finalizeUpdaterMetadata(
   value: unknown,
   releaseAssetNames: Iterable<string>,
-  expectedVersion: string
+  expectedVersion: string,
+  releaseContext?: ReleaseMetadataContext
 ): UpdaterMetadata {
   const metadata = record(value, "updater metadata")
   const rawPlatforms = record(metadata.platforms, "updater metadata platforms")
@@ -64,10 +71,18 @@ export function finalizeUpdaterMetadata(
   assert(platforms["windows-x86_64"], "windows-x86_64 MSI metadata is required")
 
   const assetNames = new Set(releaseAssetNames)
-  for (const platform of Object.values(platforms)) {
+  for (const [key, platform] of Object.entries(platforms)) {
     const artifact = assetName(platform.url)
     assert(assetNames.has(artifact), `missing updater asset ${artifact}`)
     assert(assetNames.has(`${artifact}.sig`), `missing signature asset ${artifact}.sig`)
+    if (releaseContext) {
+      const expectedUrl = `https://github.com/${releaseContext.repository}/releases/download/${encodeURIComponent(releaseContext.tag)}/${encodeURIComponent(artifact)}`
+      assert(platform.url === expectedUrl, `${key} URL must reference ${releaseContext.repository}@${releaseContext.tag}`)
+      const expectedSignature = releaseContext.signatures?.get(artifact)
+      if (expectedSignature !== undefined) {
+        assert(platform.signature.trim() === expectedSignature.trim(), `${key} signature does not match ${artifact}.sig`)
+      }
+    }
   }
 
   return {
@@ -121,7 +136,7 @@ if (import.meta.main) {
   const expectedVersion = tag.startsWith("v") ? tag.slice(1) : tag
   const metadata = await Bun.file(metadataPath).json()
   const assets = await fetchReleaseAssetNames(repository, tag, token)
-  const finalized = finalizeUpdaterMetadata(metadata, assets, expectedVersion)
+  const finalized = finalizeUpdaterMetadata(metadata, assets, expectedVersion, { repository, tag })
 
   await Bun.write(metadataPath, `${JSON.stringify(finalized, null, 2)}\n`)
   console.log(

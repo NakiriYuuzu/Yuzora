@@ -1,0 +1,61 @@
+{
+  "status": "PASS",
+  "note": "Browser Worker and frame heartbeat; no native clipboard IPC",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+  "results": [
+    {
+      "codeUnits": 10240,
+      "outputCodeUnits": 9574,
+      "correct": true,
+      "samples": 50,
+      "dispatchMs": {
+        "p50": 1.5,
+        "p95": 2,
+        "max": 3
+      },
+      "resultMs": {
+        "p50": 1.5,
+        "p95": 2,
+        "max": 3
+      },
+      "maxFrameGapMs": 16.5,
+      "longTasks": []
+    },
+    {
+      "codeUnits": 102400,
+      "outputCodeUnits": 95750,
+      "correct": true,
+      "samples": 50,
+      "dispatchMs": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "max": 0.4
+      },
+      "resultMs": {
+        "p50": 16.4,
+        "p95": 22.9,
+        "max": 70
+      },
+      "maxFrameGapMs": 16.4,
+      "longTasks": []
+    },
+    {
+      "codeUnits": 1048576,
+      "outputCodeUnits": 980486,
+      "correct": true,
+      "samples": 50,
+      "dispatchMs": {
+        "p50": 0.3,
+        "p95": 0.5,
+        "max": 0.6
+      },
+      "resultMs": {
+        "p50": 182.2,
+        "p95": 208.5,
+        "max": 213.1
+      },
+      "maxFrameGapMs": 17.2,
+      "longTasks": []
+    }
+  ]
+}

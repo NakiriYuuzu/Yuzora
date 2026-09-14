@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { HerdrScrollbar } from "./HerdrScrollbar"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
+import type { PaneScrollController } from "./herdrScrollController"
 vi.mock("./herdrScrollIpc", () => ({ readPaneScroll: vi.fn(), setPaneScroll: vi.fn() }))
 let resizeCallbacks: Array<() => void> = []
 const base = { offsetFromBottom: 0, maxOffsetFromBottom: 100, viewportRows: 25 }
@@ -47,13 +48,13 @@ it("uses the real shadcn track and thumb to scroll the server without moving inp
   input.focus()
   fireEvent.pointerDown(bar, { button: 0, pointerId: 1, clientY: 0 })
   fireEvent.scroll(proxy)
-  await waitFor(() => expect(setPaneScroll).toHaveBeenLastCalledWith("work", "w1:p1", 100))
+  await waitFor(() => expect(setPaneScroll).toHaveBeenLastCalledWith("work", "w1:p1", 100, expect.any(AbortSignal)))
   fireEvent.pointerUp(bar, { pointerId: 1 })
   fireEvent.pointerDown(thumb, { button: 0, pointerId: 2, clientY: 10 })
   fireEvent.pointerMove(bar, { pointerId: 2, clientY: 170 })
   fireEvent.scroll(proxy)
   fireEvent.pointerUp(bar, { pointerId: 2 })
-  await waitFor(() => expect(setPaneScroll).toHaveBeenLastCalledWith("work", "w1:p1", 0))
+  await waitFor(() => expect(setPaneScroll).toHaveBeenLastCalledWith("work", "w1:p1", 0, expect.any(AbortSignal)))
   expect(document.activeElement).toBe(input)
   expect(ancestor).not.toHaveBeenCalled()
 })
@@ -80,4 +81,29 @@ it("does not invent a thumb when HERDR omits its range", async () => {
   await waitFor(() => expect(readPaneScroll).toHaveBeenCalledOnce())
   expect(view.container.querySelector('[data-slot="scroll-area-thumb"]')).toBeNull()
   expect(screen.queryByRole("scrollbar")).toBeNull()
+})
+
+it("keeps wheel and drag responsive while delayed acknowledgements resize the real overflow", async () => {
+  const replies: Array<(value: typeof base) => void> = []
+  vi.mocked(setPaneScroll).mockImplementation(() => new Promise((resolve) => replies.push(resolve)))
+  const controllerRef: { current: PaneScrollController | null } = { current: null }
+  render(<HerdrScrollbar sessionName="work" paneId="w1:p1" enabled canScroll={() => true} controllerRef={controllerRef} refreshRef={{ current: null }} viewportId="terminal" />)
+  const bar = await screen.findByRole("scrollbar")
+  const proxy = screen.getByTestId("herdr-scroll-proxy")
+  act(() => controllerRef.current!.scroll(-10))
+  expect(bar).toHaveAttribute("aria-valuenow", "90")
+  expect(proxy.scrollTop).toBe(720)
+  proxy.scrollTop = 400
+  fireEvent.scroll(proxy)
+  act(() => controllerRef.current!.scroll(-5))
+  expect(bar).toHaveAttribute("aria-valuenow", "45")
+  expect(setPaneScroll).toHaveBeenCalledTimes(1)
+  await act(async () => replies[0]({ ...base, offsetFromBottom: 10, maxOffsetFromBottom: 200 }))
+  expect(proxy.scrollHeight).toBe(1800)
+  expect(bar).toHaveAttribute("aria-valuemax", "200")
+  expect(bar).toHaveAttribute("aria-valuenow", "145")
+  await waitFor(() => expect(setPaneScroll).toHaveBeenLastCalledWith("work", "w1:p1", 55, expect.any(AbortSignal)))
+  fireEvent.scroll(proxy)
+  expect(setPaneScroll).toHaveBeenCalledTimes(2)
+  await act(async () => replies[1]({ ...base, offsetFromBottom: 55, maxOffsetFromBottom: 200 }))
 })

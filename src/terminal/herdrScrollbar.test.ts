@@ -9,7 +9,7 @@ it("maps the shadcn proxy to server rows, with top=maximum and bottom=zero", () 
   expect(offsetFromProxyScroll(state, 400, 800)).toBe(50)
   expect(scrollProxyContentHeight({ ...state, maxOffsetFromBottom: 0 }, 200)).toBe(200)
 })
-it("coalesces dragging to the latest absolute position and drops late closed-pane replies", async () => {
+it("coalesces drag positions while a request is in flight and drops late closed-pane replies", async () => {
   let resolve!: (value: typeof state) => void
   const write = vi.fn().mockImplementationOnce(() => new Promise((done) => { resolve = done })).mockResolvedValue(state)
   const change = vi.fn()

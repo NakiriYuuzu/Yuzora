@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/herdrProvider", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/herdrProvider")>(),
+  runtimeOwner: vi.fn(() => null),
   canonicalRuntimeWorkspace: vi.fn(async (_scope: string, path: string) => path)
 }))
 vi.mock("@/state/folderPickerStore", () => ({ chooseWorkspaceFolder: vi.fn() }))
@@ -39,6 +40,7 @@ import {
   herdrWorkspaceFocus,
   herdrWorktreeList
 } from "@/lib/herdrIpc"
+import { runtimeOwner } from "@/lib/herdrProvider"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { herdrInitialState, useHerdrStore } from "./herdrStore"
@@ -293,6 +295,7 @@ describe("herdrStore", () => {
       groups: [{ tabs: [], activePath: null }],
       activeGroupIndex: 0
     })
+    vi.mocked(runtimeOwner).mockReset().mockReturnValue(null)
     vi.mocked(herdrSessions).mockReset().mockResolvedValue(sessions)
     vi.mocked(herdrCapabilities).mockReset().mockResolvedValue(caps)
     vi.mocked(herdrSnapshot).mockReset().mockResolvedValue(rawSnapshot)
@@ -393,6 +396,24 @@ describe("herdrStore", () => {
 
     expect(herdrSnapshot).toHaveBeenCalledTimes(2)
     expect(useHerdrStore.getState().snapshot?.version).toBe("0.8.1")
+  })
+
+  it("does not reuse or apply a capability response from an old helper generation", async () => {
+    const scope = '["wsl:ubuntu","default"]'
+    let resolveOld!: (value: typeof caps) => void
+    const oldCaps = new Promise<typeof caps>((resolve) => { resolveOld = resolve })
+    vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 1 })
+    vi.mocked(herdrCapabilities).mockReturnValueOnce(oldCaps)
+    const oldBootstrap = useHerdrStore.getState().bootstrap(scope)
+    vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 2 })
+    const newCaps = { ...caps, api: { ...caps.api, workspaceMove: true, workspaceMoveBlock: true } }
+    vi.mocked(herdrCapabilities).mockResolvedValueOnce(newCaps)
+    await useHerdrStore.getState().bootstrap(scope)
+    expect(herdrCapabilities).toHaveBeenCalledTimes(2)
+    resolveOld(caps)
+    await oldBootstrap
+    expect(useHerdrStore.getState().runtimesBySession[scope].capabilities).toEqual(newCaps)
+    expect(useHerdrStore.getState().runtimesBySession[scope].connectionState).toBe("ready")
   })
 
   it("bootstraps capabilities + normalized snapshot for selected session", async () => {
@@ -1393,4 +1414,37 @@ describe("herdrStore", () => {
     expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(before.tabs)
     expect(useWorkspaceStore.getState().workspacePath).toBe(before.workspace)
   })
+  it("keeps focus and authoritative order when a pre-drop snapshot arrives late", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const before = useHerdrStore.getState().snapshot!
+    let resolve!: (value: typeof rawSnapshot) => void
+    const latest = { ...rawSnapshot, snapshot: { ...rawSnapshot.snapshot, workspaces: [...rawSnapshot.snapshot.workspaces].reverse().map((w, number) => ({ ...w, number })) } }
+    vi.mocked(herdrSnapshot).mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValueOnce(latest)
+    const reading = useHerdrStore.getState().refreshSnapshot("default")
+    useHerdrStore.getState().setWorkspaceReordering("default", true)
+    expect(useHerdrStore.getState().applyWorkspaceOrder("default", ["ws-2", "ws-1"])).toBe(true)
+    useHerdrStore.getState().setWorkspaceReordering("default", false)
+    resolve(rawSnapshot)
+    await reading
+    const after = useHerdrStore.getState().snapshot!
+    expect(after.spaces.map(s => s.id)).toEqual(["ws-2", "ws-1"])
+    expect(after.focusedPaneId).toBe(before.focusedPaneId)
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(useHerdrStore.getState().applyWorkspaceOrder("default", ["missing", "ws-1"])).toBe(false)
+  })
+
+  it("does not apply or repeatedly poll snapshots during a workspace mutation", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrSnapshot).mockClear()
+    useHerdrStore.getState().setWorkspaceReordering("default", true)
+    try {
+      useHerdrStore.getState().applyWorkspaceOrder("default", ["ws-2", "ws-1"])
+      expect(await useHerdrStore.getState().refreshSnapshot("default")).toBe(false)
+      expect(herdrSnapshot).toHaveBeenCalledOnce()
+      expect(useHerdrStore.getState().snapshot!.spaces.map(s => s.id)).toEqual(["ws-2", "ws-1"])
+    } finally { useHerdrStore.getState().setWorkspaceReordering("default", false) }
+  })
+
 })

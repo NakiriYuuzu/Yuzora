@@ -1,0 +1,89 @@
+Window: "未命名", App: 文字編輯.
+0 標準視窗 未命名, Secondary Actions: Raise, URL: file:///Users/yuuzu/Library/Mobile%20Documents/com~apple~TextEdit/Documents/%E6%9C%AA%E5%91%BD%E5%90%8D.rtf
+	1 捲動區 Secondary Actions: Scroll Left, Scroll Right, Scroll Up, Scroll Down
+		2 文字項目區域 (settable) ID: First Text View, Value: HERDR COPY QA 第一段
+
+Second paragraph
+
+- parent
+  - child
+
+```py
+  if ok:
+    print("a  b")
+```
+
+| key | value |
+| --- | --- |
+| a   | b     |
+
+COPY_QA_END
+		3 捲軸 (disabled, settable, float) 0.1851851791143417
+		4 捲軸 (disabled, settable, float) 0.615384578704834
+		5 尺標
+			6 尺標標記 (settable, float) Value: 0, Secondary Actions: Delete
+			7 尺標標記 (settable, float) Value: 20.31746031746032, Secondary Actions: Delete
+			8 尺標標記 (settable, float) Value: 0, Secondary Actions: Delete
+			9 尺標標記 (settable, float) Value: 1.26984126984127, Secondary Actions: Delete
+			10 尺標標記 (settable, float) Value: 2.53968253968254, Secondary Actions: Delete
+			11 尺標標記 (settable, float) Value: 3.809523809523809, Secondary Actions: Delete
+			12 尺標標記 (settable, float) Value: 5.079365079365079, Secondary Actions: Delete
+			13 尺標標記 (settable, float) Value: 6.349206349206349, Secondary Actions: Delete
+			14 尺標標記 (settable, float) Value: 7.619047619047619, Secondary Actions: Delete
+			15 尺標標記 (settable, float) Value: 8.888888888888889, Secondary Actions: Delete
+			16 尺標標記 (settable, float) Value: 10.15873015873016, Secondary Actions: Delete
+			17 尺標標記 (settable, float) Value: 11.42857142857143, Secondary Actions: Delete
+			18 尺標標記 (settable, float) Value: 12.6984126984127, Secondary Actions: Delete
+			19 尺標標記 (settable, float) Value: 13.96825396825397, Secondary Actions: Delete
+			20 尺標標記 (settable, float) Value: 15.23809523809524, Secondary Actions: Delete
+	21 container
+		22 註記框 Description: 粗體, Help: 粗體文字, Value: 0
+		23 註記框 Description: 斜體, Help: 將文字設為斜體, Value: 0
+		24 註記框 Description: 加底線, Help: 底線文字, Value: 0
+		25 註記框 Description: 刪除線, Help: 為文字加上刪除線, Value: 0
+	26 顏色框 Description: 文字顏色, Help: 按一下來選擇文字顏色, Value: rgb 1 1 1 1, Secondary Actions: 顯示顏色面板
+	27 顏色框 Description: 文字背景顏色, Help: 按一下來選擇文字背景顏色, Value: rgb 0.117647 0.117647 0.117647 1, Secondary Actions: 顯示顏色面板
+	28 彈出式按鈕 Description: 字樣, Help: 選擇字樣, Value: Helvetica
+	29 彈出式按鈕 Description: 樣式, Help: 選擇樣式, Value: 標準體
+	30 下拉式方塊 (settable) Description: 字體大小, Help: 設定字體大小, Value: 12, Secondary Actions: Confirm
+		31 按鈕 字體大小
+	32 container
+		33 註記框 Description: 齊左, Help: 文字向左對齊, Value: 1
+		34 註記框 Description: 中央對齊, Help: 文字置中, Value: 0
+		35 註記框 Description: 齊右, Help: 文字向右對齊, Value: 0
+		36 註記框 Description: 完全齊行, Help: 文字齊行, Value: 0
+	37 選單按鈕 Description: 列表樣式, Help: 列出項目符號和編號方式
+	38 彈出式按鈕 Description: 行距, Help: 行距與段落間距, Value: 1.0
+	39 關閉按鈕
+	40 全螢幕按鈕 Help: 此按鈕也有可縮放視窗的動作, Secondary Actions: 縮放視窗
+	41 縮到最小按鈕
+	42 選單按鈕 (disabled) 已編輯, Description: 文件動作
+	43 文字 —
+	44 影像 未命名
+	45 文字 未命名
+46 menu bar
+	47 文字編輯
+	48 檔案
+	49 編輯
+	50 格式
+	51 顯示方式
+	52 視窗
+	53 輔助說明
+
+The focused UI element is 2 文字項目區域 (settable) ID: First Text View, Value: HERDR COPY QA 第一段
+
+Second paragraph
+
+- parent
+  - child
+
+```py
+  if ok:
+    print("a  b")
+```
+
+| key | value |
+| --- | --- |
+| a   | b     |
+
+COPY_QA_END

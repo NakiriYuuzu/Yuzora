@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Space 上下移選單與檢查結果</title>
+<style>body{max-width:1000px;margin:40px auto;padding:0 24px;font:16px/1.7 system-ui;color:#26343b;background:#fafaf8}table{border-collapse:collapse;width:100%}th,td{border:1px solid #cbd2d5;padding:10px;text-align:left;vertical-align:top}code{overflow-wrap:anywhere}a{color:#176477}</style>
+<h1>Space 右鍵選單：上移／下移</h1>
+<p>2026-09-14 · release/v0.0.14 · 基準 e6579f78e1271b22570df02ce0fa5977ff735b04。此為既有候選分支的增量修正，未發布正式版。</p>
+<h2>行為與修改位置</h2>
+<p>Space 根列及工作區列的右鍵選單新增「上移／下移」（英文 Move Up / Move Down）。移動限制於同一 Session，相鄰目標依側邊欄 root group 順序解析；不跳過 metadata 不完整的相鄰群組。第一個 Space 停用上移，最後一個停用下移。linked worktree 不可獨立移動，附停用原因；root 以 workspace.move_block 移動完整群組。</p>
+<p><code>src/lib/herdrWorkspaceActions.ts</code> 共用 drag／選單 mutation，沿用 optimistic order、權威回傳、單次 snapshot reconciliation 及明確 unsupported 才 legacy fallback 的規則。同 Session 進行中的操作不重複送出。<code>herdrWorkspaceReorder.ts</code> 解析相鄰群組；<code>SpaceAgentTree.tsx</code> 與 <code>contextMenuDefs.ts</code> 接入既有選單；兩份 <code>menus.json</code> 提供雙語文字。</p>
+<h2>Typecheck 與 CI 實際診斷</h2>
+<p>修改前，本機 <code>bun run typecheck</code>（TS 7.0.2）與 TS 6.0.3 的 src 型別檢查均通過，未重現原先描述的型別錯誤。最新基準 CI 的 Typecheck 步驟亦通過，真正失敗為 <a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/34819391916">release-contract.test.ts 的單一六案例 fixture 超過 5000ms</a>。現將六個 subprocess fixtures 分成獨立測試，保留簽章、版本及 artifact 拒絕驗證，子程序另設 4000ms timeout 並檢查 error/signal。</p>
+<p>完整測試另捕捉到 HerdrTerminalPage 的 Profiler 案例偶發計入尚未完成的 mount commit；已先等待非同步初始化完成，再同步測量單一 attachment store 更新。未修改 Terminal 實作或降低重繪斷言。最終完整執行全部通過。</p>
+<h2>驗證矩陣</h2>
+<table><tr><th>檢查</th><th>結果</th><th>證據與限制</th></tr>
+<tr><td>Typecheck</td><td>PASS</td><td>bun run typecheck，兩份 tsconfig；未關閉 strict 或排除測試。</td></tr>
+<tr><td>Frontend tests</td><td>PASS</td><td>225 files / 2743 tests；46.98s。包含 root context-menu click、上下移權威順序、原清單 legacy insertion、完整群組、child／metadata 拒絕、stale menu、並行操作防護與失敗只 reconcile。</td></tr>
+<tr><td>Lint</td><td>PASS</td><td>完整檢查 0 errors / 52 既有 warnings；修改檔案另檢查。</td></tr>
+<tr><td>Frontend production build</td><td>PASS</td><td>bun run build；保留既有 chunk size 警告。</td></tr>
+<tr><td>macOS packaged native E2E</td><td>PASS</td><td>macOS 26.6.2 / arm64；App 0.0.14 / HERDR 0.9.0；獨立 identifier dev.yuuzu.yuzora.acceptance，既有隔離測試 Session scroll-acceptance。以實際原生右鍵選單點擊驗證上下移，CLI 只讀比對順序。一般 Space、group、child 停用、首尾停用均通過。測試後還原順序。</td></tr>
+<tr><td>Bundle</td><td>PASS</td><td>Apple Silicon release App，codesign --verify --deep --strict。候選用 createUpdaterArtifacts=false；未修改正式 updater 設定。Executable SHA256：<code>48a0bbf65e9103482cf346d83237cdf8d63a3ff0cf3db48b4cb32430a09b5617</code>。</td></tr>
+<tr><td>UI screenshot</td><td>BLOCKED</td><td>本次 CUA 回傳 Screenshot unavailable；保存實際原生 accessibility 選單文字與 HERDR 權威順序，不把文字證據當成截圖。</td></tr>
+<tr><td>Windows native / WSL2 Ubuntu 26.04 原生選單驗收</td><td>NOT RUN</td><td>本增量未重跑遠端桌面；前次候選紀錄為 RDP 0x204，不以 macOS 或 mock routing 宣稱 Windows／WSL 原生 PASS。</td></tr>
+<tr><td>Signed updater / installer 升級、全版本回歸</td><td>NOT RUN</td><td>沿用前次完整驗收的未完成項目，本增量不宣稱整體發布門檻已完成。</td></tr></table>
+<h2>原生證據</h2>
+<p>原始 [w2,w4,w5,w3,w1]；B 下移後 [w4,w5,w2,w3,w1]；復原 B 後 group 下移為 [w2,w3,w4,w5,w1]；最後還原原始順序。w4/w5 全程相鄰並一起移動，focus 仍為 w1。</p>
+<ul><li><a href="space-menu-2026-09-14-assets/native-order.json">HERDR 原始／一般下移／群組下移／復原順序</a></li><li><a href="space-menu-2026-09-14-assets/mac-child-menu.txt">linked worktree 原生停用原因</a></li><li><a href="space-menu-2026-09-14-assets/mac-last-menu.txt">最後一個 Space 原生下移停用</a></li></ul>
+<p>Git：變更推送至既有候選分支 release/v0.0.14 與 PR #103；提交 SHA／推送結果以最終回覆與 Git 紀錄為準。本報告不代表最新 CI 或 installers 已通過。</p>
+</html>

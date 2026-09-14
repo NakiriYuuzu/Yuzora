@@ -401,6 +401,8 @@ pub fn run() {
             herdr_service::herdr_terminal_create,
             herdr_service::herdr_workspace_focus,
             herdr_service::herdr_workspace_create,
+            herdr_service::herdr_workspace_move,
+            herdr_service::herdr_workspace_move_block,
             herdr_service::herdr_workspace_rename,
             herdr_service::herdr_workspace_close,
             herdr_service::herdr_worktree_list,
@@ -585,6 +587,7 @@ mod command_inventory_tests {
         let inventory_source = include_str!("lib.rs");
         for cmd in [
             "herdr_service::herdr_workspace_rename",
+            "herdr_service::herdr_workspace_move",
             "herdr_service::herdr_workspace_close",
             "herdr_service::herdr_worktree_list",
             "herdr_service::herdr_tab_create",

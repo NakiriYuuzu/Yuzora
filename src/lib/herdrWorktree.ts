@@ -74,6 +74,9 @@ export function applyWorktreeEntryToSpace(
   return {
     ...space,
     path,
+    // worktree.list source.repo_key is the same official repository identity;
+    // protocol-22 snapshots may omit workspace.worktree entirely.
+    worktreeGroupKey: source.repoKey,
     repoKey: source.repoKey,
     repoName: source.repoName,
     repoRoot: source.repoRoot,
@@ -97,6 +100,7 @@ export function spaceProvenanceFromSnapshotWorktree(
   const isLinked = worktree.is_linked_worktree
   return {
     path: asString(worktree.checkout_path) ?? undefined,
+    worktreeGroupKey: asString(worktree.repo_key),
     repoKey: asString(worktree.repo_key),
     repoName: asString(worktree.repo_name),
     repoRoot: asString(worktree.repo_root),

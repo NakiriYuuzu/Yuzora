@@ -1,0 +1,120 @@
+{
+  "sourceCommit": "19bdf4e126c9a17a2f2e295fe7f28bafcae881da",
+  "ciRun": 34855693524,
+  "ciResult": "PASS",
+  "frontendTests": {
+    "files": 229,
+    "tests": 2788,
+    "result": "PASS"
+  },
+  "windowsInstaller": {
+    "result": "PASS",
+    "exitCode": 0,
+    "rebootPerformed": false,
+    "filesInUseChoice": "Do not close applications",
+    "msiSha256": "42be6cf0b3604e2ea5937420537c3d47297f9c0f992d2fddbaae102ce6d0a54a",
+    "nsisSha256": "0f626b063d5b8d1927f5301d57322c6725a4335cc3995b5a9b8ce166cc8307e2",
+    "appSha256": "086bd36550cf055bccb7904be86255b3c0a0d31dc9e142e9dde377976ee11f9f",
+    "installedNativeHerdrHashMatchesLock": true
+  },
+  "wslHelper": {
+    "automaticMigration": "PASS",
+    "beforeVersion": "0.0.13",
+    "afterVersion": "0.0.14",
+    "sha256": "f82c36e8326a7a7fa647f8753a73717f72ffdd5a74a528478f2d57daecd453cf",
+    "preservedClientVersion": "0.9.0",
+    "preservedClientDirectory": "0.0.13 managed runtime",
+    "artifactIdentity": "75d71d0a9ad624f7c5a52282408a04c5752170cbd4de4b4910b54b2a6e48ec49",
+    "workspaceMove": true,
+    "workspaceMoveBlock": true
+  },
+  "wslContinuity": {
+    "result": "PASS",
+    "session": "yuzora-helper-upgrade-20260914",
+    "serverPid": 68267,
+    "serverStartTime": "786006",
+    "workerPid": 69369,
+    "ticksBeforeInstall": 9096,
+    "ticksAfterInstall": 13862,
+    "ticksAtNaturalCompletion": 14400,
+    "contiguous": true,
+    "paneTerminalIdsUnchanged": true
+  },
+  "nativeHerdrContinuity": {
+    "result": "PASS",
+    "pid": 25588,
+    "startTimeUnixMs": 1789388643545
+  },
+  "wslNativeReorder": {
+    "down": {
+      "result": "PASS",
+      "workspaceOrder": [
+        "w1",
+        "w3",
+        "w2"
+      ]
+    },
+    "up": {
+      "result": "PASS",
+      "workspaceOrder": [
+        "w1",
+        "w2",
+        "w3"
+      ]
+    },
+    "drag": {
+      "result": "PASS",
+      "workspaceOrder": [
+        "w3",
+        "w1",
+        "w2"
+      ]
+    }
+  },
+  "windowsNativeReorder": {
+    "down": {
+      "result": "PASS",
+      "workspaceOrder": [
+        "w2",
+        "w4",
+        "w3"
+      ]
+    },
+    "up": {
+      "result": "PASS",
+      "workspaceOrder": [
+        "w2",
+        "w4",
+        "w3"
+      ]
+    },
+    "drag": {
+      "result": "PASS",
+      "workspaceOrder": [
+        "w2",
+        "w3",
+        "w4"
+      ]
+    }
+  },
+  "wslScroll": {
+    "result": "PASS",
+    "pane": "w2:p2",
+    "maxOffset": 357,
+    "wheelOffset": 13,
+    "thumbOffset": 269
+  },
+  "windowsScroll": {
+    "result": "PASS",
+    "pane": "w4:p2",
+    "maxOffset": 357,
+    "wheelOffset": 13
+  },
+  "limitations": {
+    "signedUpdater": "NOT RUN",
+    "sshNativeUpgrade": "NOT RUN",
+    "allHistoricalVersions": "NOT RUN",
+    "newPerformanceBenchmark": "NOT RUN",
+    "newGroupNativeReorder": "NOT RUN"
+  }
+}

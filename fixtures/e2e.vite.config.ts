@@ -20,6 +20,7 @@ export default defineConfig({
         "fixtures/git-graph-wide.html",
         "fixtures/markdown-reading.html",
         "fixtures/syntax-highlight-e2e.html",
+        "fixtures/herdr-copy-e2e.html",
       ].map(file => path.join(root, file)),
     },
   },
