@@ -171,10 +171,16 @@ manifest_check = false
     const paneId = paneSnapshot.panes.find(p => p.terminal_id === pane.terminal_id)!.pane_id
     const output = windows ? "1..400 | ForEach-Object { Write-Output ('SCROLL_ROW_' + $_) }\r" : "i=1; while [ $i -le 400 ]; do printf 'SCROLL_ROW_%s\\n' \"$i\"; i=$((i+1)); done\n"
     controller.stdin.write(JSON.stringify({ type: "terminal.input", text: output }) + "\n")
-    await control(row => row.type === "terminal.frame" && typeof row.bytes === "string" && Buffer.from(row.bytes, "base64").toString().includes("SCROLL_ROW_400"))
     type Scroll = { pane: { pane_id: string; scroll: { offset_from_bottom: number; max_offset_from_bottom: number; viewport_rows: number } } }
-    const info = await api<Scroll>("pane.get", { pane_id: paneId })
-    check(info.pane.scroll.max_offset_from_bottom > 0, "missing actual overflow")
+    // Connector frames are ANSI deltas. The final line may update only its
+    // numeric suffix, so a substring search in one frame is not an output oracle.
+    let info = await api<Scroll>("pane.get", { pane_id: paneId })
+    const historyDeadline = Date.now() + 10000
+    while ((info.pane.scroll?.max_offset_from_bottom ?? 0) < 300 && Date.now() < historyDeadline) {
+      await sleep(100)
+      info = await api<Scroll>("pane.get", { pane_id: paneId })
+    }
+    check(info.pane.scroll?.max_offset_from_bottom >= 300, "fixture did not produce the required real scrollback")
     const moved = await api<Scroll>("pane.scroll", { pane_id: paneId, offset_from_bottom: 100 })
     check(moved.pane.pane_id === paneId && moved.pane.scroll.offset_from_bottom === 100, "pane.scroll authoritative range mismatch")
     console.log("PASS pane.get/pane.scroll real history and exact pane identity")
