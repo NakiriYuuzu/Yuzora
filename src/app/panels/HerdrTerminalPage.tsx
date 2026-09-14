@@ -883,6 +883,9 @@ function HerdrTerminalLeaf({
     clipboardRef.current = installTerminalClipboardHandling(term, {
       pasteText: (text) => { void transportRef.current?.paste(text).catch(() => undefined) },
       copyOnSelect: () => useTerminalSettingsStore.getState().copyOnSelect,
+      onCopyError: () => {
+        if (!disposedRef.current) setStatusMessage(t("clipboardCopyFailed", { ns: "terminal" }))
+      },
       pasteImage: (image) => {
         const transport = transportRef.current
         const sessionId = transport?.getSessionId?.()

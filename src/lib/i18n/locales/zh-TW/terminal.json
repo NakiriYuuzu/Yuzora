@@ -20,5 +20,6 @@
   "fontPreviewSample": "繁體中文 · 日本語 · 0123456789",
   "copyOnSelect": "選取後自動複製",
   "copyOnSelectDescription": "拖曳選取終端文字並放開滑鼠後，自動複製到剪貼簿。關閉後可手動複製。",
-  "clipboardPasteFailed": "無法貼上剪貼簿圖片：{{message}}"
+  "clipboardPasteFailed": "無法貼上剪貼簿圖片：{{message}}",
+  "clipboardCopyFailed": "無法複製選取的文字，請重新選取並複製。"
 }

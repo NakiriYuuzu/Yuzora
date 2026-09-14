@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn()
 }))
 
-import { formatTerminalSelection, installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
+import { installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
 
 const readTextMock = vi.mocked(readText)
 
@@ -43,17 +43,83 @@ afterEach(() => {
   readTextMock.mockReset()
   vi.mocked(writeText).mockReset()
   vi.useRealTimers()
+  vi.restoreAllMocks()
   document.body.replaceChildren()
 })
 
 describe("terminal image paste and selection copy", () => {
-  it("prettifies terminal selections without changing code and table layout", () => {
-    expect(formatTerminalSelection("\r\n  const value = 1  \r\n| key | value |   \r\n| --- | --- |   \r\n| a   |  b    |   \r\n\r\n")).toBe(
-      "  const value = 1\n| key | value |\n| --- | --- |\n| a   |  b    |"
-    )
+  it.each([
+    ['Windows native', 'Windows NT 10.0', '\r\n'],
+    ['Windows with WSL', 'Windows NT 10.0', '\r\n'],
+    ['macOS', 'Macintosh', '\n'],
+    ['Linux', 'Linux', '\n'],
+  ])('writes %s clipboard line endings using the app OS, not the session shell', async (_, userAgent, eol) => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent)
+    const { element, term } = terminalStub()
+    vi.mocked(writeText).mockResolvedValue(undefined)
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue('  one\r\n  two\rthree')
+    const controller = installTerminalClipboardHandling(term, { canPaste: () => false })
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, cancelable: true }))
+    await Promise.resolve()
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(['one', 'two', 'three'].join(eol))
+    controller.dispose()
   })
 
-  it("removes only outer blank lines and line-end terminal padding", async () => {
+  it('handles keyboard/custom-key/native-copy duplication once and cancels pending auto-copy', async () => {
+    vi.useFakeTimers()
+    const { element, term } = terminalStub()
+    vi.mocked(writeText).mockResolvedValue(undefined)
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue('  once')
+    const controller = installTerminalClipboardHandling(term, { copyOnSelect: () => true })
+    element.dispatchEvent(new MouseEvent('mousedown', { button: 0 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    const key = new KeyboardEvent('keydown', { key: 'c', metaKey: true, cancelable: true })
+    element.dispatchEvent(key)
+    vi.mocked(term.attachCustomKeyEventHandler).mock.calls[0][0](key)
+    element.dispatchEvent(new Event('copy', { cancelable: true }))
+    await vi.runAllTimersAsync()
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('once')
+    expect(term.getSelection).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('tries browser fallback only after plugin failure and reports both failures once', async () => {
+    const fallback = vi.fn().mockRejectedValue(new Error('denied'))
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: fallback } })
+    const { element, term } = terminalStub(), onCopyError = vi.fn()
+    vi.mocked(writeText).mockRejectedValue(new Error('plugin denied'))
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue('  content')
+    const controller = installTerminalClipboardHandling(term, { onCopyError })
+    element.dispatchEvent(new Event('copy', { cancelable: true }))
+    await vi.waitFor(() => expect(onCopyError).toHaveBeenCalledOnce())
+    expect(fallback).toHaveBeenCalledExactlyOnceWith('content')
+    fallback.mockResolvedValue(undefined)
+    element.dispatchEvent(new Event('copy', { cancelable: true }))
+    await vi.waitFor(() => expect(fallback).toHaveBeenCalledTimes(2))
+    expect(onCopyError).toHaveBeenCalledOnce()
+    controller.dispose()
+    if (original) Object.defineProperty(navigator, 'clipboard', original)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+  })
+
+  it('preserves Ctrl+C without selection and never clears the clipboard for empty text', async () => {
+    const { element, term } = terminalStub()
+    const controller = installTerminalClipboardHandling(term)
+    const event = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, cancelable: true })
+    element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue(' \t\n')
+    element.dispatchEvent(new Event('copy', { cancelable: true }))
+    await Promise.resolve()
+    expect(writeText).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+  it("left-aligns prose and removes terminal padding", async () => {
     const { element, term } = terminalStub()
     vi.mocked(writeText).mockResolvedValue(undefined)
     vi.mocked(term.hasSelection).mockReturnValue(true)
@@ -61,11 +127,11 @@ describe("terminal image paste and selection copy", () => {
     const controller = installTerminalClipboardHandling(term)
     element.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, cancelable: true }))
     await Promise.resolve()
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("  output")
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("output")
     controller.dispose()
   })
 
-  it("uses the same pretty text for the native ClipboardEvent payload", async () => {
+  it("routes native ClipboardEvent through one formatted plugin write", async () => {
     const { element, term } = terminalStub()
     vi.mocked(writeText).mockResolvedValue(undefined)
     vi.mocked(term.hasSelection).mockReturnValue(true)
@@ -76,8 +142,8 @@ describe("terminal image paste and selection copy", () => {
     const controller = installTerminalClipboardHandling(term)
     element.dispatchEvent(event)
     await Promise.resolve()
-    expect(setData).toHaveBeenCalledExactlyOnceWith("text/plain", "  one\n  two")
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("  one\n  two")
+    expect(setData).not.toHaveBeenCalled()
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("one  \ntwo")
     controller.dispose()
   })
 
