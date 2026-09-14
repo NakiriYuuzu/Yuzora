@@ -10,6 +10,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
+#[cfg(any(windows, test))]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ pub(crate) type LocalStream = interprocess::local_socket::Stream;
 #[cfg(test)]
 pub(crate) type LocalListener = interprocess::local_socket::Listener;
 
+#[cfg(any(windows, test))]
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
@@ -255,7 +257,7 @@ pub(crate) fn read_local_ndjson_line(
         match poll_local_stream_read(stream, &mut buffer) {
             Ok(LocalStreamRead::Data(read)) => pending.extend_from_slice(&buffer[..read]),
             Ok(LocalStreamRead::Pending) => {
-                sleep_until(deadline);
+                wait_local_ready(stream, false, deadline).map_err(BoundedNdjsonReadError::Io)?;
             }
             Ok(LocalStreamRead::Closed) => {
                 if pending.is_empty() {
@@ -301,7 +303,7 @@ pub(crate) fn write_local_all_until(
             // A nonblocking Windows named pipe reports a full output buffer as
             // a successful zero-byte write. Treat that as backpressure and let
             // the same deadline used for WouldBlock terminate the request.
-            Ok(0) if cfg!(windows) => sleep_until(Some(deadline)),
+            Ok(0) if cfg!(windows) => wait_local_ready(stream, true, Some(deadline))?,
             Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
@@ -317,7 +319,7 @@ pub(crate) fn write_local_all_until(
                         | io::ErrorKind::Interrupted
                 ) =>
             {
-                sleep_until(Some(deadline));
+                wait_local_ready(stream, true, Some(deadline))?;
             }
             Err(error) => return Err(error),
         }
@@ -329,6 +331,54 @@ fn deadline_exceeded(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|value| Instant::now() >= value)
 }
 
+/// Unix sockets (including the WSL helper) can wait for readiness instead of
+/// adding 100ms to each pane RPC. Keep the named-pipe fallback and all caller
+/// deadlines; an idle Unix connection sleeps in the kernel, not a busy loop.
+fn wait_local_ready(
+    stream: &LocalStream,
+    writable: bool,
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsFd, AsRawFd};
+        let LocalStream::UdSocket(socket) = stream;
+        let remaining = deadline.map(|value| value.saturating_duration_since(Instant::now()));
+        let timeout = remaining.map_or(-1, |duration| {
+            duration
+                .as_millis()
+                .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0))
+                .min(i32::MAX as u128) as i32
+        });
+        let mut descriptor = libc::pollfd {
+            fd: socket.as_fd().as_raw_fd(),
+            events: if writable {
+                libc::POLLOUT
+            } else {
+                libc::POLLIN
+            },
+            revents: 0,
+        };
+        // SAFETY: the borrowed socket remains alive and poll receives exactly
+        // one initialized descriptor. It does not take ownership of the fd.
+        let result = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let _ = (stream, writable);
+        sleep_until(deadline);
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
 fn sleep_until(deadline: Option<Instant>) {
     let remaining = deadline
         .map(|value| value.saturating_duration_since(Instant::now()))
@@ -362,6 +412,50 @@ mod tests {
         let path = unique_local_socket_path(label);
         let listener = bind_local_listener(&path).expect("bind local listener");
         (listener, path)
+    }
+
+    /// Opt-in timing probe: CI load must not turn a latency benchmark into a
+    /// flaky correctness test. Uses the same local-socket reader as pane RPC.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "same-machine transport latency benchmark"]
+    fn local_readiness_latency_probe() {
+        let (listener, path) = local_pair("readiness-latency");
+        let advertised = path.to_string_lossy().into_owned();
+        let (send, recv) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            while recv.recv().is_ok() {
+                thread::sleep(Duration::from_millis(5));
+                stream.write_all(b"{}\n").unwrap();
+            }
+        });
+        let mut client = connect_framing_test_client(&advertised);
+        let mut pending = Vec::new();
+        let mut samples = Vec::new();
+        for _ in 0..30 {
+            let started = Instant::now();
+            send.send(()).unwrap();
+            assert_eq!(
+                read_framing_test_line(&mut client, &mut pending)
+                    .unwrap()
+                    .as_deref(),
+                Some("{}\n")
+            );
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        drop(send);
+        server.join().unwrap();
+        let _ = std::fs::remove_file(path);
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "local-readiness n=30 p50={:.3}ms p95={:.3}ms samples={samples:?}",
+            samples[14], samples[28]
+        );
+        assert!(
+            samples[14] < 50.0,
+            "reader should wake on readiness, not a 100ms poll"
+        );
     }
 
     fn connect_framing_test_client(advertised: &str) -> LocalStream {

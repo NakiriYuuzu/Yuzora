@@ -782,6 +782,7 @@ function HerdrTerminalLeaf({
 
   const terminalViewportId = useId()
   const scrollbarRefreshRef = useRef<((state?: import("@/terminal/herdrScrollController").PaneScrollInfo | null) => void) | null>(null)
+  const paneScrollControllerRef = useRef<import("@/terminal/herdrScrollController").PaneScrollController | null>(null)
   const supportsScrollInfo = useHerdrStore((state) => {
     // A selected runtime is projected to the global capabilities field while
     // its scoped record is being reconciled. Keep the scrollbar capability
@@ -998,6 +999,7 @@ function HerdrTerminalLeaf({
       sessionName: contextSessionName,
       paneScrollEnabled: () => supportsScrollInfoRef.current,
       onPaneScroll: (state) => scrollbarRefreshRef.current?.(state),
+      paneScrollController: () => paneScrollControllerRef.current,
       scrollEnabled: () => {
         const state = useHerdrStore.getState()
         const capabilities = (targetSessionName
@@ -1369,6 +1371,8 @@ function HerdrTerminalLeaf({
         <HerdrScrollbar sessionName={contextSessionName} paneId={scrollPaneId ?? ""}
           enabled={active && visible && sessionCanConnect && !!scrollPaneId && supportsScrollInfo}
           viewportId={terminalViewportId} refreshRef={scrollbarRefreshRef}
+          controllerRef={paneScrollControllerRef}
+          onError={(error) => { if (!disposedRef.current) setStatusMessage(String(error)) }}
           canScroll={() => !disposedRef.current && document.visibilityState !== "hidden" && visibleRef.current && activeRef.current && openReadyRef.current
             && termRef.current?.buffer.active.type === "normal" && !!transportRef.current?.canWrite()} />
       </div>

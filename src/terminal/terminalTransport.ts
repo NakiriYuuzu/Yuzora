@@ -8,7 +8,7 @@ import {
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
-import type { PaneScrollInfo } from "./herdrScrollController"
+import type { PaneScrollController, PaneScrollInfo } from "./herdrScrollController"
 import type {
   HerdrTerminalEvent,
   HerdrTerminalMode,
@@ -126,6 +126,8 @@ export interface HerdrTerminalTransportOptions {
   terminalScrollEnabled?: () => boolean
   /** Publish the authoritative pane state returned by pane.scroll without another read. */
   onPaneScroll?: (state: PaneScrollInfo) => void
+  /** Share the scrollbar's optimistic position and bounded background writer. */
+  paneScrollController?: () => PaneScrollController | null
   onAttachment?: (info: {
     sessionId: string
     mode: HerdrTerminalMode
@@ -155,6 +157,7 @@ export function createHerdrTerminalTransport(
     scrollEnabled,
     terminalScrollEnabled,
     onPaneScroll,
+    paneScrollController,
     onAttachment,
     onPaneId
   } = options
@@ -186,6 +189,9 @@ export function createHerdrTerminalTransport(
     pendingScrollDelta = 0
     scrollDrainGeneration += 1
     clearPaneScrollCache()
+    scrollDrain = null
+    scrollDrainToken = null
+    paneScrollController?.()?.reset()
   }
   const discardInput = () => {
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
@@ -255,6 +261,7 @@ export function createHerdrTerminalTransport(
         if (disposed || generation !== openGeneration) return
         if (event.type === "closed") {
           discardInput()
+          discardScroll()
           sessionId = null
           lastSeq = null
           openGeneration += 1
@@ -357,7 +364,12 @@ export function createHerdrTerminalTransport(
       // them. Keep one request in flight and coalesce the rest so scrolls
       // cannot fill the same HERDR queue used by terminal input.
       const amount = Math.trunc(delta)
-      if (amount === 0) return
+      if (!Number.isFinite(amount) || amount === 0) return
+      const shared = paneScrollController?.()
+      if (shared && paneScrollEnabled?.() && (terminalScrollEnabled?.() !== true || terminalScrollUnavailable)) {
+        shared.scroll(amount)
+        return
+      }
       pendingScrollDelta += amount
       const generation = scrollDrainGeneration
       const activeSessionId = sessionId
@@ -401,6 +413,7 @@ export function createHerdrTerminalTransport(
                   ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
                   : Math.max(0, state.offsetFromBottom - lines)
                 const nextState = await setPaneScroll(sessionName, paneId, nextOffset)
+                if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
                 paneScrollCache = {
                   state: nextState ?? { ...state, offsetFromBottom: nextOffset },
                   at: Date.now()
@@ -426,6 +439,7 @@ export function createHerdrTerminalTransport(
                 ? Math.min(state.maxOffsetFromBottom, state.offsetFromBottom + lines)
                 : Math.max(0, state.offsetFromBottom - lines)
               const nextState = await setPaneScroll(sessionName, paneId, nextOffset)
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
               paneScrollCache = {
                 state: nextState ?? { ...state, offsetFromBottom: nextOffset },
                 at: Date.now()
