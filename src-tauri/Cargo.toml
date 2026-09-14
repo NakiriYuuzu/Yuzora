@@ -72,7 +72,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 tempfile = "3"
-interprocess = "=2.4.2"
+interprocess = "=2.4.4"
 tauri-plugin-window-state = "2.4.1"
 tauri-plugin-process = "2.3.1"
 
