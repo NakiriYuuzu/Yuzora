@@ -1,0 +1,13 @@
+{
+  "workspaceOrder": [
+    "w2",
+    "w1",
+    "w3"
+  ],
+  "paneIds": [
+    "w2:p1",
+    "w1:p1",
+    "w3:p1"
+  ],
+  "ticks": 141
+}

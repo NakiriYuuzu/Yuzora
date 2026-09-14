@@ -20,7 +20,10 @@ export interface HerdrReorderPlan {
 export function herdrReorderMembers(spaces: HerdrSpaceInfo[], sourceId: string): HerdrSpaceInfo[] | null {
   const source = spaces.find(s => s.id === sourceId)
   if (!source || source.isLinkedWorktree) return null
-  if (source.worktreeGroupKey) return [source, ...spaces.filter(s => s.id !== source.id && s.worktreeGroupKey === source.worktreeGroupKey)]
+  if (source.worktreeGroupKey) {
+    if (spaces.some(s => s.repoKey === source.worktreeGroupKey && s.worktreeGroupKey !== source.worktreeGroupKey)) return null
+    return [source, ...spaces.filter(s => s.id !== source.id && s.worktreeGroupKey === source.worktreeGroupKey)]
+  }
   if (source.repoKey && spaces.some(s => s.id !== source.id && s.repoKey === source.repoKey)) return null
   return [source]
 }

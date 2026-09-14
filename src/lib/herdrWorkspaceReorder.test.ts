@@ -34,3 +34,6 @@ it('refuses ambiguous inventory-only grouping and same-group drops', () => {
   expect(herdrReorderMembers([{ ...space('a'), repoKey: 'r' }, { ...space('b'), repoKey: 'r' }], 'a')).toBeNull()
   expect(planHerdrWorkspaceReorder([space('a', 'r'), space('b', 'r', true)], 'a', 'b', false)).toBeNull()
 })
+it('refuses a partly identified group instead of dropping its unknown members', () => {
+  expect(herdrReorderMembers([space('a', 'r'), { ...space('b'), repoKey: 'r' }], 'a')).toBeNull()
+})

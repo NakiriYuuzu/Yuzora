@@ -1,0 +1,17 @@
+{
+  "workspaceOrder": [
+    "w2",
+    "w1",
+    "w4",
+    "w5",
+    "w3"
+  ],
+  "serverPid": 58186,
+  "shellPid": 58243,
+  "workerPid": 58263,
+  "terminal": "term_65b6c23d53e3a1",
+  "pane": "w1:p1",
+  "ticks": 501,
+  "continuity": "PASS: same session, terminal, pane and processes; consecutive ticks across candidate restart",
+  "groupDrag": "PASS: w4,w5 moved together before w3; dragging linked child did not change order"
+}

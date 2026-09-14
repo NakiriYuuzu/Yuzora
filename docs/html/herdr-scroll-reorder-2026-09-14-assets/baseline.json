@@ -1,0 +1,12 @@
+{
+  "model": "serialized 40ms RPC, 32 total admission slots, 200 gestures every 4ms",
+  "calls": 200,
+  "peakAdmitted": 32,
+  "limitErrors": 146,
+  "finalServerOffset": 194,
+  "visibleOffset": 200,
+  "inputP50Ms": 0.014667000000031294,
+  "inputP95Ms": 0.04487500000001887,
+  "gestureDurationMs": 921.300417,
+  "settleAfterGestureMs": 3014.1634169999998
+}

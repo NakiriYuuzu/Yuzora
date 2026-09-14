@@ -12,7 +12,7 @@ export interface HerdrScrollMetric {
   elapsedMs?: number
   errorClass?: string
 }
-let enabled = false
+let enabled = import.meta.env.VITE_YUZORA_SCROLL_DIAGNOSTICS === "1"
 const samples: HerdrScrollMetric[] = []
 export function enableHerdrScrollTelemetry(value: boolean) { enabled = value; samples.length = 0 }
 export function readHerdrScrollTelemetry() { return samples.slice() }
@@ -20,4 +20,10 @@ export function recordHerdrScrollMetric(metric: HerdrScrollMetric) {
   if (!enabled) return
   if (samples.length === 512) samples.shift()
   samples.push(metric)
+}
+
+// Test builds can inspect the bounded, content-free ring without adding a
+// product setting or exposing diagnostics in normal release builds.
+if (enabled && typeof window !== 'undefined') {
+  Object.defineProperty(window, '__yuzoraScrollDiagnostics', { configurable: true, value: { read: readHerdrScrollTelemetry, enable: enableHerdrScrollTelemetry } })
 }
