@@ -276,15 +276,24 @@ export function SpaceAgentTree() {
     try {
       const caps = useHerdrStore.getState().runtimesBySession[source.sessionName]?.capabilities?.api;
       const supportsBlock = Boolean(caps?.workspaceMoveBlock || caps?.methods?.includes("workspace.move_block"));
+      const supportsLegacy = Boolean(caps?.workspaceMove || caps?.methods?.includes("workspace.move"));
       if (supportsBlock) {
         // workspace.move_block is the stable reorder contract on newer WSL
         // runtimes. It addresses the item before the insertion point, with
         // null meaning append, and avoids legacy insert-index rejection.
-        await herdrWorkspaceMoveBlock({
-          sessionName: source.sessionName,
-          workspaceIds: [source.workspaceId],
-          beforeWorkspaceId,
-        });
+        try {
+          await herdrWorkspaceMoveBlock({
+            sessionName: source.sessionName,
+            workspaceIds: [source.workspaceId],
+            beforeWorkspaceId,
+          });
+        } catch (blockError) {
+          // A stale capability cache can advertise the newer method while
+          // the running bridge still only accepts workspace.move. Preserve
+          // compatibility without hiding a failure when no fallback exists.
+          if (!supportsLegacy) throw blockError;
+          await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex });
+        }
       } else {
         await herdrWorkspaceMove({ sessionName: source.sessionName, workspaceId: source.workspaceId, insertIndex });
       }
