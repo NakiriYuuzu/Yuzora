@@ -65,7 +65,9 @@ describe("release workflow contracts", () => {
     )
   })
 
-  it("executes the beta publish verification against signed fixtures without network or publishing", () => {
+  // Each subprocess fixture gets its own timeout budget; shared CI runners can
+  // take over five seconds to execute the entire six-case batch.
+  it.each(['valid', 'missing-signature', 'unexpected-asset', 'universal-mac', 'wrong-version', 'empty-signature'])("verifies beta publish fixture %s without network or publishing", (scenario) => {
     const verifyAssets = releaseWorkflow().jobs["publish-beta-release"].steps.find((step) => step.name === "Verify beta release assets")!.run!
     const version = "0.0.10-beta.2"
     const tag = `v${version}`
@@ -96,17 +98,23 @@ describe("release workflow contracts", () => {
     }`
     const run = (names: string[], value = metadata) => spawnSync("bash", ["-c", `${stub}\n${verifyAssets}`], {
       encoding: "utf8",
+      timeout: 4_000,
       env: { PATH: process.env.PATH, TAG_NAME: tag,
         RELEASE_FIXTURE: JSON.stringify({ isDraft: true, isPrerelease: true, body: "Beta notes", assets: names.map((name) => ({ name })) }),
         METADATA_FIXTURE: JSON.stringify(value) },
     })
-    const valid = run(assets)
-    expect(valid.status, valid.stderr).toBe(0)
-    for (const invalid of [assets.filter((name) => name !== `${msi}.sig`), [...assets, "Yuzora-windows-x64.msi"], assets.map((name) => name.replace("aarch64.dmg", "universal.dmg"))]) {
-      expect(run(invalid).status).not.toBe(0)
-    }
-    expect(run(assets, { ...metadata, version: "0.0.10-beta.1" }).status).not.toBe(0)
-    expect(run(assets, { ...metadata, platforms: { ...metadata.platforms, "windows-x86_64": { ...metadata.platforms["windows-x86_64"], signature: "" } } }).status).not.toBe(0)
+    const names = scenario === 'missing-signature' ? assets.filter(name => name !== `${msi}.sig`)
+      : scenario === 'unexpected-asset' ? [...assets, "Yuzora-windows-x64.msi"]
+      : scenario === 'universal-mac' ? assets.map(name => name.replace("aarch64.dmg", "universal.dmg"))
+      : assets
+    const value = scenario === 'wrong-version' ? { ...metadata, version: "0.0.10-beta.1" }
+      : scenario === 'empty-signature' ? { ...metadata, platforms: { ...metadata.platforms, "windows-x86_64": { ...metadata.platforms["windows-x86_64"], signature: "" } } }
+      : metadata
+    const result = run(names, value)
+    expect(result.error).toBeUndefined()
+    expect(result.signal).toBeNull()
+    if (scenario === 'valid') expect(result.status, result.stderr).toBe(0)
+    else expect(result.status).not.toBe(0)
   })
 
   it.each(["stable", "candidate"])("rejects an Intel or universal macOS App in the %s matrix", (lane) => {

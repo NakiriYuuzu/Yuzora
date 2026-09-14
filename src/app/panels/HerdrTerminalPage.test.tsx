@@ -338,8 +338,10 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible /></Profiler>)
     await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
     const [key, record] = [...useHerdrStore.getState().attachments][0]
+    // Finish asynchronous mount work before measuring this synchronous store update.
+    await act(async () => {})
     renderCommit.mockClear()
-    await act(async () => {
+    act(() => {
       useHerdrStore.getState().registerAttachment("other-page", { ...record, pagePath: "other-page" })
     })
     expect(renderCommit).not.toHaveBeenCalled()
