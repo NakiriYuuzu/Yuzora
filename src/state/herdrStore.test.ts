@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/herdrProvider", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/herdrProvider")>(),
+  runtimeOwner: vi.fn(() => null),
   canonicalRuntimeWorkspace: vi.fn(async (_scope: string, path: string) => path)
 }))
 vi.mock("@/state/folderPickerStore", () => ({ chooseWorkspaceFolder: vi.fn() }))
@@ -39,6 +40,7 @@ import {
   herdrWorkspaceFocus,
   herdrWorktreeList
 } from "@/lib/herdrIpc"
+import { runtimeOwner } from "@/lib/herdrProvider"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { herdrInitialState, useHerdrStore } from "./herdrStore"
@@ -293,6 +295,7 @@ describe("herdrStore", () => {
       groups: [{ tabs: [], activePath: null }],
       activeGroupIndex: 0
     })
+    vi.mocked(runtimeOwner).mockReset().mockReturnValue(null)
     vi.mocked(herdrSessions).mockReset().mockResolvedValue(sessions)
     vi.mocked(herdrCapabilities).mockReset().mockResolvedValue(caps)
     vi.mocked(herdrSnapshot).mockReset().mockResolvedValue(rawSnapshot)
@@ -393,6 +396,24 @@ describe("herdrStore", () => {
 
     expect(herdrSnapshot).toHaveBeenCalledTimes(2)
     expect(useHerdrStore.getState().snapshot?.version).toBe("0.8.1")
+  })
+
+  it("does not reuse or apply a capability response from an old helper generation", async () => {
+    const scope = '["wsl:ubuntu","default"]'
+    let resolveOld!: (value: typeof caps) => void
+    const oldCaps = new Promise<typeof caps>((resolve) => { resolveOld = resolve })
+    vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 1 })
+    vi.mocked(herdrCapabilities).mockReturnValueOnce(oldCaps)
+    const oldBootstrap = useHerdrStore.getState().bootstrap(scope)
+    vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 2 })
+    const newCaps = { ...caps, api: { ...caps.api, workspaceMove: true, workspaceMoveBlock: true } }
+    vi.mocked(herdrCapabilities).mockResolvedValueOnce(newCaps)
+    await useHerdrStore.getState().bootstrap(scope)
+    expect(herdrCapabilities).toHaveBeenCalledTimes(2)
+    resolveOld(caps)
+    await oldBootstrap
+    expect(useHerdrStore.getState().runtimesBySession[scope].capabilities).toEqual(newCaps)
+    expect(useHerdrStore.getState().runtimesBySession[scope].connectionState).toBe("ready")
   })
 
   it("bootstraps capabilities + normalized snapshot for selected session", async () => {

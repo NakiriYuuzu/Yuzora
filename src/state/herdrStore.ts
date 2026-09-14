@@ -1,4 +1,4 @@
-import { canonicalRuntimeWorkspace, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
+import { canonicalRuntimeWorkspace, runtimeOwner, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
 import { bindWorkspaceRoot, directoryForSelection, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
 import { create } from "zustand"
 
@@ -431,12 +431,16 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       get().selectedSessionName ??
       sessionScope(get().sessions.find((s) => s.default)) ??
       HERDR_LIVE_SESSION_ID
-    const existing = bootstrapInFlight.get(resolved)
+    const owner = JSON.stringify(runtimeOwner(resolved))
+    const key = JSON.stringify([resolved, owner])
+    const current = () => JSON.stringify(runtimeOwner(resolved)) === owner
+    const existing = bootstrapInFlight.get(key)
     if (existing) return existing
 
     const task = (async () => {
       set((state) => withRuntime(state, resolved, {
         connectionState: "connecting",
+        capabilities: null,
         errorMessage: null
       }))
       try {
@@ -452,6 +456,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         }
 
         const capabilities = await herdrCapabilities(resolved)
+        if (!current()) throw new StaleRuntimeResponse()
         if (isStoppedReason(capabilities.api.reason) || !capabilities.server.running) {
           set((state) =>
             withRuntime(state, resolved, {
@@ -489,6 +494,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
         set((state) => withRuntime(state, resolved, { capabilities }))
         const raw = await herdrSnapshot(resolved)
+        if (!current()) throw new StaleRuntimeResponse()
         const snapshot = normalizeHerdrSnapshot(raw, resolved)
         get().applySnapshot(resolved, snapshot)
         set((state) =>
@@ -500,7 +506,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         // Authoritative inventory reconcile after snapshot recovery.
         await get().refreshWorktreeInventory(resolved)
       } catch (error) {
-        if (error instanceof StaleRuntimeResponse) return
+        if (!current() || error instanceof StaleRuntimeResponse) return
         const message = error instanceof Error ? error.message : String(error)
         if (isStoppedReason(message)) {
           set((state) =>
@@ -519,10 +525,10 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           })
         )
       } finally {
-        bootstrapInFlight.delete(resolved)
+        bootstrapInFlight.delete(key)
       }
     })()
-    bootstrapInFlight.set(resolved, task)
+    bootstrapInFlight.set(key, task)
     return task
   },
 

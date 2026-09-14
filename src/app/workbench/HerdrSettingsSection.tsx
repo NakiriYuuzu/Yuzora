@@ -140,6 +140,7 @@ function NativeRuntimeSettings() {
 function RemoteRuntimeSettings({ hostId, label, target }: { hostId: string; label: string; target: HostTarget }) {
   const { t } = useTranslation("runtimeSettings")
   const config = useHostStore(s => s.configs[hostId])
+  const hostError = useHostStore(s => s.hosts[hostId]?.error)
   const [selection, setSelection] = useState(() => selectionForHost(config))
   const [current, setCurrent] = useState<HostRuntimeCheck | null>(null)
   const [desired, setDesired] = useState<HostRuntimeCheck | null>(null)
@@ -178,6 +179,7 @@ function RemoteRuntimeSettings({ hostId, label, target }: { hostId: string; labe
       {config?.verifiedAt && <p className="text-sm text-muted-foreground">{t("lastVerified")}: {new Date(config.verifiedAt).toLocaleString()}</p>}
       {current?.check && <RuntimeCheckView check={current.check} />}
       {currentError && <RuntimeError error={currentError} />}
+      {hostError && <RuntimeError error={hostError} />}
     </CardContent></Card>
     <Card size="sm"><CardHeader><CardTitle>{t("desired")}</CardTitle><CardDescription>{t("remoteApplyHint")}</CardDescription></CardHeader><CardContent className="flex flex-col gap-3">
       <RuntimeSourceFields value={selection} disabled={busy} onChange={value => { generation.current++; setSelection(value); setDesired(null); setError(null); setNotice(null) }} />
