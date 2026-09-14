@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn()
 }))
 
-import { installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
+import { formatTerminalSelection, installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
 
 const readTextMock = vi.mocked(readText)
 
@@ -47,6 +47,40 @@ afterEach(() => {
 })
 
 describe("terminal image paste and selection copy", () => {
+  it("prettifies terminal selections without changing code and table layout", () => {
+    expect(formatTerminalSelection("\r\n  const value = 1  \r\n| key | value |   \r\n| --- | --- |   \r\n| a   |  b    |   \r\n\r\n")).toBe(
+      "  const value = 1\n| key | value |\n| --- | --- |\n| a   |  b    |"
+    )
+  })
+
+  it("removes only outer blank lines and line-end terminal padding", async () => {
+    const { element, term } = terminalStub()
+    vi.mocked(writeText).mockResolvedValue(undefined)
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue("\n\n  output\t \n\t\n")
+    const controller = installTerminalClipboardHandling(term)
+    element.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, cancelable: true }))
+    await Promise.resolve()
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("  output")
+    controller.dispose()
+  })
+
+  it("uses the same pretty text for the native ClipboardEvent payload", async () => {
+    const { element, term } = terminalStub()
+    vi.mocked(writeText).mockResolvedValue(undefined)
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue("\n  one  \n  two \t\n")
+    const setData = vi.fn()
+    const event = new Event("copy", { bubbles: true, cancelable: true }) as ClipboardEvent
+    Object.defineProperty(event, "clipboardData", { value: { setData } })
+    const controller = installTerminalClipboardHandling(term)
+    element.dispatchEvent(event)
+    await Promise.resolve()
+    expect(setData).toHaveBeenCalledExactlyOnceWith("text/plain", "  one\n  two")
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("  one\n  two")
+    controller.dispose()
+  })
+
   it.each([
     { key: "v", code: "KeyV", altKey: true },
     { key: "√", code: "KeyV", altKey: true }

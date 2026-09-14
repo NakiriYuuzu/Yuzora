@@ -39,6 +39,26 @@ async function readClipboardText(): Promise<string> {
 }
 
 /**
+ * Convert xterm's cell-oriented selection into copy-friendly plain text.
+ *
+ * Terminal selections commonly contain right-side cell padding and blank rows
+ * from the viewport. Keep every newline and every meaningful space inside the
+ * selection so code blocks, tables, and tree output retain their layout.
+ */
+export function formatTerminalSelection(selection: string): string {
+  const lines = selection
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+
+  let start = 0
+  let end = lines.length
+  while (start < end && lines[start].length === 0) start += 1
+  while (end > start && lines[end - 1].length === 0) end -= 1
+  return lines.slice(start, end).join("\n")
+}
+
+/**
  * Owns terminal copy/paste across xterm keyboard, menu ClipboardEvents, and
  * Tauri WebView clipboard fallbacks. Copy remains available in observe mode;
  * callers gate only paste delivery through `canPaste`.
@@ -71,7 +91,9 @@ export function installTerminalClipboardHandling(
 
   const copySelection = () => {
     if (disposed || !term.hasSelection()) return
-    void writeClipboardText(term.getSelection()).catch(() => undefined)
+    const selection = formatTerminalSelection(term.getSelection())
+    if (selection.length === 0) return
+    void writeClipboardText(selection).catch(() => undefined)
   }
 
   const pasteClipboard = () => {
@@ -137,9 +159,10 @@ export function installTerminalClipboardHandling(
   }
   const handleCopy = (event: ClipboardEvent) => {
     if (!term.hasSelection()) return
-    const selection = term.getSelection()
+    const selection = formatTerminalSelection(term.getSelection())
     event.preventDefault()
     event.stopImmediatePropagation()
+    if (selection.length === 0) return
     event.clipboardData?.setData("text/plain", selection)
     void writeClipboardText(selection).catch(() => undefined)
   }
