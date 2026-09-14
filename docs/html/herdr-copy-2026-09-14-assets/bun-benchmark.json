@@ -1,0 +1,88 @@
+{
+  "runtime": "Bun 1.3.14",
+  "platform": "darwin",
+  "arch": "arm64",
+  "baseline": "4e6dc6a",
+  "units": "milliseconds",
+  "note": "No native clipboard IPC or WebView paint is measured.",
+  "results": [
+    {
+      "codeUnits": 10240,
+      "samples": 50,
+      "coldDispatchToResultMs": 1.667,
+      "outputCodeUnits": 9771,
+      "baselineMs": {
+        "p50": 0.069,
+        "p95": 0.158,
+        "max": 0.313
+      },
+      "synchronousNewFormatMs": {
+        "p50": 0.597,
+        "p95": 1.258,
+        "max": 2.631
+      },
+      "callerDispatchMs": {
+        "p50": 0.599,
+        "p95": 1.191,
+        "max": 1.567
+      },
+      "dispatchToResultMs": {
+        "p50": 0.604,
+        "p95": 1.194,
+        "max": 1.568
+      }
+    },
+    {
+      "codeUnits": 102400,
+      "samples": 50,
+      "coldDispatchToResultMs": 29.084,
+      "outputCodeUnits": 97741,
+      "baselineMs": {
+        "p50": 0.632,
+        "p95": 0.762,
+        "max": 0.862
+      },
+      "synchronousNewFormatMs": {
+        "p50": 5.307,
+        "p95": 6.832,
+        "max": 9.182
+      },
+      "callerDispatchMs": {
+        "p50": 0.043,
+        "p95": 0.114,
+        "max": 0.127
+      },
+      "dispatchToResultMs": {
+        "p50": 5.339,
+        "p95": 7.69,
+        "max": 10.843
+      }
+    },
+    {
+      "codeUnits": 1048576,
+      "samples": 50,
+      "coldDispatchToResultMs": 83.038,
+      "outputCodeUnits": 1000909,
+      "baselineMs": {
+        "p50": 7.013,
+        "p95": 8.442,
+        "max": 11.995
+      },
+      "synchronousNewFormatMs": {
+        "p50": 59.486,
+        "p95": 68.621,
+        "max": 76.731
+      },
+      "callerDispatchMs": {
+        "p50": 0.111,
+        "p95": 0.264,
+        "max": 0.291
+      },
+      "dispatchToResultMs": {
+        "p50": 59.305,
+        "p95": 65.42,
+        "max": 72.838
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "macos": "26.6.2",
+  "arch": "arm64",
+  "herdr": "0.9.0",
+  "session": "scroll-acceptance",
+  "pane": "w6:p1",
+  "keyboardCopy": {
+    "status": "PASS",
+    "matchesExpected": true,
+    "hasCR": false,
+    "systemSentinelReplaced": true
+  },
+  "nativeEditMenuCopy": {
+    "status": "PASS",
+    "matchesKeyboard": true,
+    "systemSentinelReplaced": true
+  },
+  "copyOnSelect": {
+    "status": "PASS",
+    "matchesKeyboard": true,
+    "systemSentinelReplaced": true
+  },
+  "externalTextEditPaste": {
+    "status": "PASS",
+    "matchesFixtureVisually": true
+  }
+}
