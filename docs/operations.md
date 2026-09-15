@@ -38,9 +38,9 @@ Issue 與 PR 的完整工作流程見 [`docs/agents/pull-request-workflow.md`](a
 - Tag 只能由 Release workflow 建立，且只能指向已合併、required CI 全部成功的 immutable `main` commit。
 - 已發布的 version、tag 與 artifacts 視為不可變；修正已發布版本時建立新的 patch version。
 
-### 預期的 GitHub 保護設定
+### GitHub 保護設定
 
-`main` 應透過 branch protection 或 repository ruleset 強制：
+`main` 已透過 GitHub branch protection 強制：
 
 - Require a pull request before merging。
 - Require status checks to pass before merging。
@@ -58,7 +58,7 @@ Required CI checks：
 
 `v*` tags 應另設 tag ruleset，限制建立、更新與刪除權限。若 workflow job 名稱改變，必須同步更新 required check contexts。
 
-> 查證狀態：2026-08-15 GitHub API 回報 `main` 尚未啟用 branch protection，repository rulesets 亦為空。在設定完成前，以上規則只能靠維護者人工遵守，不能視為已由平台強制；任何 direct push 都可能略過 PR、candidate 與使用者驗證 gate。
+> 查證狀態：2026-09-15 GitHub API 回報 `main` 已啟用 branch protection，`protected=true`。規則要求 PR、strict required checks、conversation resolution，啟用 admin enforcement，禁止 force push 與刪除；required approving review count 為 0，因目前 repository 只有單一 maintainer。Repository rulesets 仍為空；tag ruleset 與 protected environment 仍屬後續維護項目。
 
 ---
 
