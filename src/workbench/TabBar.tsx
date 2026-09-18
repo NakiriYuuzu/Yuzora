@@ -1,3 +1,4 @@
+import { activateRuntimeWorkbenchTab, activateWorkbenchTab, visibleWorkbenchTabs } from "@/lib/workbenchTabNavigation"
 import { useEffect, useLayoutEffect, useRef, type DragEvent, type KeyboardEvent } from "react"
 import { Bot, Globe, Plus, SquareTerminal, Pin } from "lucide-react"
 import { useTranslation } from "react-i18next"
@@ -37,7 +38,6 @@ import { findRuntimeSession, parseRuntimeScope } from "@/lib/herdrProvider"
 
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
-    const activationIntentRef = useRef(0)
     const closingHerdrPagesRef = useRef(new Set<string>())
     const viewportRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
@@ -88,7 +88,6 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const canCreateHerdrTerminal = useHerdrStore((s) => s.canCreateTerminal())
     const canFocusHerdrTab = useHerdrStore((s) => s.canFocusSelectedTab())
     const canMoveHerdrTab = useHerdrStore((s) => s.canMoveSelectedTab())
-    const activateHerdrTab = useHerdrStore((s) => s.activateTab)
     const svgClosedPaths = useSvgPreviewStore((s) => s.closedPaths)
     const toggleSvgPreview = useSvgPreviewStore((s) => s.toggle)
     const forgetSvgPreview = useSvgPreviewStore((s) => s.forget)
@@ -99,21 +98,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const runtimeWorkspaceByTabId = new Map(
         herdrSelectedSnapshot?.tabs.map((tab) => [tab.id, tab.workspaceId]) ?? []
     )
-    const projectedTabs = group.tabs.filter((tab) => {
-        if (tab.kind !== "herdr-terminal") return true
-        // Before Herdr selection is hydrated, retain the last-known page strip.
-        // Once a selected Space exists, projection becomes strictly Space-owned.
-        if (!herdrSelectedSessionName || !herdrSelectedSpaceId) return true
-        const sessionName =
-            tab.herdrSessionId === "live"
-                ? (herdrSessions.find((session) => session.default) ?? herdrSessions[0])?.name ?? "live"
-                : tab.herdrSessionId ?? "live"
-        if (sessionName !== herdrSelectedSessionName) return false
-        const workspaceId =
-            tab.herdrWorkspaceId ??
-            (tab.herdrTabId ? runtimeWorkspaceByTabId.get(tab.herdrTabId) : null)
-        return workspaceId === herdrSelectedSpaceId
-    }).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+    const projectedTabs = visibleWorkbenchTabs(groupIndex)
     const showHerdrTabsMenu = Boolean(herdrSelectedSessionName)
 
     function onOpenBrowserTab() {
@@ -132,40 +117,11 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     async function onOpenHerdrTab(tabId: string) {
         const tab = visibleHerdrTabs.find((candidate) => candidate.id === tabId)
         if (!tab) return
-        activationIntentRef.current += 1
-        await activateHerdrTab(tab)
-    }
-
-    async function onActivateOpenHerdrPage(tab: TabInfo, runtimeTab: HerdrTabInfo) {
-        const activationIntent = ++activationIntentRef.current
-        const previousPath =
-            useWorkspaceStore.getState().groups[groupIndex]?.activePath ?? null
-        // Keep already-open terminal pages responsive while the Herdr focus
-        // transaction runs. The store action dedupes the page after success.
-        setActiveTab(groupIndex, tab.path)
-        const result = await activateHerdrTab(runtimeTab)
-        if (activationIntentRef.current !== activationIntent) return
-        if (result?.ok !== false) return
-
-        // Roll back only if this failed activation still owns the visible page;
-        // a newer click must never be overwritten by an older completion.
-        const currentPath =
-            useWorkspaceStore.getState().groups[groupIndex]?.activePath ?? null
-        if (
-            currentPath === tab.path &&
-            previousPath &&
-            previousPath !== tab.path
-        ) {
-            setActiveTab(groupIndex, previousPath)
-        }
+        await activateRuntimeWorkbenchTab(tab)
     }
 
     function onActivate(tab: TabInfo, herdrRuntimeTab: HerdrTabInfo | undefined) {
-        if (tab.kind === "herdr-terminal" && herdrRuntimeTab) {
-            void onActivateOpenHerdrPage(tab, herdrRuntimeTab)
-        } else {
-            setActiveTab(groupIndex, tab.path)
-        }
+        void activateWorkbenchTab(groupIndex, tab, herdrRuntimeTab)
         void logUserAction("switch_tab", `switch to ${tab.path}`)
     }
 

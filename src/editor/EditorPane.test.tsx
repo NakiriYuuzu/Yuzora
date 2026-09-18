@@ -57,6 +57,30 @@ afterEach(() => {
 })
 
 describe("EditorPane", () => {
+    it.each(["unchanged", "unmounted", "edited", "lineEnding", "workspace", "reloaded"])(
+        "settles an in-flight save without clearing newer changes: %s", async (scenario) => {
+            useWorkspaceStore.setState({ workspacePath: "/w", groups: [{ activePath: PATH, tabs: [{ path: PATH, name: "a.ts", dirty: false, externallyModified: false }] }], activeGroupIndex: 0 })
+            let finish!: (value: number) => void
+            saveFile.mockImplementationOnce(() => new Promise<number>(resolve => { finish = resolve }))
+            const onReady = vi.fn()
+            const pane = render(<EditorPane path={PATH} groupIndex={0} onReady={onReady} />)
+            await waitFor(() => expect(onReady).toHaveBeenCalled())
+            const [view, save] = onReady.mock.calls[0] as [EditorView, () => void]
+            act(() => view.dispatch({ changes: { from: 0, insert: "saved " } }))
+            await act(async () => { save(); await Promise.resolve() })
+            expect(saveFile).toHaveBeenCalledOnce()
+            act(() => {
+                if (scenario === "unmounted") pane.unmount()
+                if (scenario === "edited") view.dispatch({ changes: { from: 0, insert: "newer " } })
+                if (scenario === "lineEnding") useWorkspaceStore.getState().setLineEnding(PATH, "crlf")
+                if (scenario === "workspace") useWorkspaceStore.setState({ workspacePath: "/other" })
+                if (scenario === "reloaded") documentGeneration.mockReturnValue(1)
+            })
+            await act(async () => { finish(0); await Promise.resolve() })
+            expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(!["unchanged", "unmounted"].includes(scenario))
+        }
+    )
+
     it.each(["md", "ts", "json", "log"])("keeps a large %s document editable and saveable by its document surface", async (extension) => {
         const path = `/w/large.${extension}`
         useWorkspaceStore.setState({ workspacePath: "/w", groups: [{ activePath: path, tabs: [{ path, name: `large.${extension}`, dirty: false, externallyModified: false }] }], activeGroupIndex: 0 })

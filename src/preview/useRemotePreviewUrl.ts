@@ -1,17 +1,22 @@
 import { useEffect, useState } from "react"
 import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { useHostStore } from "@/state/hostStore"
+import { useWorkspaceStore } from "@/state/workspaceStore"
+import { browserTarget, resolveFilePreviewUrl } from "./filePreview"
 import { acquireRemotePreviewUrl, needsRemotePreviewTunnel } from "./remotePreviewUrl"
 
 /** A mounted preview owns its tunnel; source navigation remains host-relative. */
 export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string | null, reloadNonce: number) {
   const hostId = workspace ? parseRemoteFilePath(workspace)?.hostId : undefined
   const connection = useHostStore((state) => hostId ? state.hosts[hostId]?.connection : null)
+  const capability = useWorkspaceStore((state) => state.workspaceCapabilityId)
+  const file = !!sourceUrl && browserTarget(sourceUrl).kind === "file"
   const remote = needsRemotePreviewTunnel(workspace, sourceUrl)
+  const sourceOrigin = remote && sourceUrl ? new URL(sourceUrl).origin : sourceUrl
   const [result, setResult] = useState<{ key: string; url: string | null; error: string | null } | null>(null)
-  const key = JSON.stringify([workspace, sourceUrl, connection?.owner.generation, reloadNonce])
+  const key = JSON.stringify([workspace, sourceOrigin, connection?.owner.generation, file ? capability : null, reloadNonce])
   useEffect(() => {
-    if (!remote || !workspace || !sourceUrl) return
+    if ((!remote && !file) || !workspace || !sourceOrigin) return
     let closed = false
     let lease: Awaited<ReturnType<typeof acquireRemotePreviewUrl>> | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -19,7 +24,12 @@ export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string 
     const assertLive = () => { if (closed) throw new Error("Preview was closed") }
     const open = async () => {
       try {
-        lease = await acquireRemotePreviewUrl(workspace, sourceUrl, assertLive)
+        if (file) {
+          const url = await resolveFilePreviewUrl(workspace, sourceOrigin)
+          if (!closed) setResult({ key, url, error: null })
+          return
+        }
+        lease = await acquireRemotePreviewUrl(workspace, sourceOrigin, assertLive)
         if (closed) { await lease.close(); return }
         setResult({ key, url: lease.url, error: null })
       } catch (error) {
@@ -31,7 +41,13 @@ export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string 
     }
     void open()
     return () => { closed = true; clearTimeout(timer); void lease?.close() }
-  }, [remote, workspace, sourceUrl, connection, key])
-  if (!remote) return { url: sourceUrl, error: null }
-  return result?.key === key ? result : { url: null, error: null }
+  }, [remote, file, workspace, sourceOrigin, connection, key])
+  if (!remote && !file) return { url: sourceUrl, error: null }
+  if (result?.key !== key || !result.url || !sourceUrl) return result?.key === key ? result : { url: null, error: null }
+  if (file) return result
+  const projected = new URL(sourceUrl)
+  const tunnel = new URL(result.url)
+  projected.hostname = tunnel.hostname
+  projected.port = tunnel.port
+  return { ...result, url: projected.href }
 }

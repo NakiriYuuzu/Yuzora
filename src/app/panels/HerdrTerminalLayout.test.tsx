@@ -65,6 +65,7 @@ vi.mock("@xterm/xterm", () => {
     focus = vi.fn()
     refresh = vi.fn()
     reset = vi.fn()
+    resize = vi.fn()
     dispose = vi.fn()
     loadAddon = vi.fn()
     onData = vi.fn(() => ({ dispose: vi.fn() }))
@@ -78,6 +79,7 @@ vi.mock("@xterm/xterm", () => {
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
     fit = vi.fn()
+    proposeDimensions = vi.fn(() => ({ cols: 80, rows: 24 }))
     activate = vi.fn()
     dispose = vi.fn()
   }
@@ -203,7 +205,9 @@ function seed(layoutSetSplitRatio = true) {
 }
 
 describe("HerdrTerminalPage BSP layout surface", () => {
+  let viewportRect: ReturnType<typeof vi.spyOn>
   beforeEach(() => {
+    viewportRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 600 } as DOMRect)
     cleanup()
     seed()
     layoutMock.set({ ...layoutMock.get(), zoomed: false, focusedPaneId: "p1" })
@@ -217,6 +221,7 @@ describe("HerdrTerminalPage BSP layout surface", () => {
 
   afterEach(() => {
     cleanup()
+    viewportRect.mockRestore()
   })
 
   it("renders nested BSP splits and opens independent control connectors", async () => {

@@ -1,3 +1,4 @@
+import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
 import { terminalFontStack } from "@/terminal/terminalFonts"
 import {
@@ -818,6 +819,7 @@ function HerdrTerminalLeaf({
   const disposedRef = useRef(false)
   const openReadyRef = useRef(false)
   const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
+  const fitViewportRef = useRef<(() => void) | null>(null)
   const activeRef = useRef(active)
   const visibleRef = useRef(visible)
   const tabIdRef = useRef(tabId)
@@ -840,8 +842,7 @@ function HerdrTerminalLeaf({
   useEffect(() => {
     let cancelled = false
     void document.fonts?.load(`${fontSize}px ${terminalFontStack(fontFamily)}`).then(() => {
-      const fit = fitRef.current
-      if (!cancelled && !disposedRef.current && visibleRef.current && fit) safeFit(fit)
+      if (!cancelled && !disposedRef.current && visibleRef.current) fitViewportRef.current?.()
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [fontFamily, fontSize])
@@ -927,6 +928,11 @@ function HerdrTerminalLeaf({
       return false
     })
     termRef.current = term
+    const unregisterFocus = registerTerminalFocusTarget(attachmentKey, {
+      pagePath,
+      active: () => !disposedRef.current && activeRef.current && visibleRef.current,
+      focus: () => safeFocus(term)
+    })
     fitRef.current = fitAddon
     targetOpenRef.current = installTerminalTargetOpen(term, {
       getCwd: () => cwdRef.current
@@ -952,14 +958,11 @@ function HerdrTerminalLeaf({
     outputQueueRef.current = queue
     registerTerminalOutputQueue(attachmentKey, queue)
 
-    // Inactive Herdr pages stay mounted with `visibility: hidden`, so their
-    // container still has an authoritative size. Fit before opening the
-    // connector to avoid a default 80×24 frame and first-switch reflow.
-    safeFit(fitAddon)
-    lastSizeRef.current = terminalSize(term)
-
     if (!connectorEnabled) {
+      safeFit(fitAddon)
+      lastSizeRef.current = terminalSize(term)
       term.options.disableStdin = true
+      fitViewportRef.current = () => safeFit(fitAddon)
       const resizeObserver = new ResizeObserver(() => {
         if (disposedRef.current || !visibleRef.current) return
         safeFit(fitAddon)
@@ -990,9 +993,11 @@ function HerdrTerminalLeaf({
         outputQueueRef.current?.dispose()
         unregisterTerminalOutputQueue(attachmentKey)
         transportRef.current = null
+        unregisterFocus()
         term.dispose()
         termRef.current = null
         fitRef.current = null
+        fitViewportRef.current = null
       }
     }
 
@@ -1051,6 +1056,45 @@ function HerdrTerminalLeaf({
     })
     transportRef.current = transport
 
+    let hasFrame = false
+    let openStarted = false
+    let fitTimer: number | null = null
+    const fitAndPublish = () => {
+      if (disposedRef.current || (openStarted && !visibleRef.current)) return
+      const bounds = container.getBoundingClientRect()
+      if (bounds.width <= 0 || bounds.height <= 0) {
+        if (!openStarted && visibleRef.current) scheduleFit()
+        return
+      }
+      let next: { cols: number; rows: number } | undefined
+      try { next = fitAddon.proposeDimensions() } catch { return }
+      if (!next || !Number.isSafeInteger(next.cols) || !Number.isSafeInteger(next.rows)
+        || next.cols < 2 || next.rows < 1) {
+        // Font metrics can settle after the last ResizeObserver notification.
+        if (!openStarted && visibleRef.current) scheduleFit()
+        return
+      }
+      if (openStarted && next.cols === lastSizeRef.current.cols && next.rows === lastSizeRef.current.rows) return
+      lastSizeRef.current = next
+      // Once output exists, its grid belongs to the frame being decoded. A
+      // local fit must not reflow it while older ANSI writes are still queued.
+      if (!hasFrame) term.resize(next.cols, next.rows)
+      if (!openStarted) openTransport()
+      else void transport.resize(next.cols, next.rows).catch(() => undefined)
+    }
+    const scheduleFit = () => {
+      if (fitTimer !== null) window.clearTimeout(fitTimer)
+      // BSP mounts can start at zero width; animated sidebars emit a series
+      // of intermediate sizes. Sending these to the PTY destroys its layout.
+      fitTimer = window.setTimeout(() => {
+        fitTimer = null
+        // WKWebView may pause animation frames while a native child view owns
+        // focus. Connection readiness must not depend on a paint callback.
+        fitAndPublish()
+      }, 80)
+    }
+    fitViewportRef.current = scheduleFit
+
     let recovering = false
     const recoverOutput = () => {
       if (recovering || transport.isDisposed?.()) return
@@ -1091,12 +1135,17 @@ function HerdrTerminalLeaf({
         const missedEvents = previousSeq === null ? 0 : event.seq - previousSeq - 1
         outputQueueRef.current?.noteBackendLoss(0, Math.max(0, missedEvents))
         if (event.full) {
+          hasFrame = true
           lastOutputSeqRef.current = event.seq
           // Herdr full frames already bracket one authoritative screen update
-          // with synchronized-output mode and clear the viewport themselves.
+          // with synchronized-output mode and redraw the viewport cells.
           // Resetting xterm before that atomic frame paints an intermediate
           // empty viewport, visible as a one-frame shake on every scroll.
-          outputQueueRef.current?.replace(event.data)
+          outputQueueRef.current?.replace(event.data, () => {
+            if (event.width && event.height && (term.cols !== event.width || term.rows !== event.height)) {
+              term.resize(event.width, event.height)
+            }
+          })
           queue.setVisible(visibleRef.current)
           if (visibleRef.current) queue.flushNow()
           setStatusMessage(null)
@@ -1145,7 +1194,9 @@ function HerdrTerminalLeaf({
       }
     }
 
-    void transport
+    const openTransport = () => {
+      openStarted = true
+      void transport
       .open({
         cols: lastSizeRef.current.cols,
         rows: lastSizeRef.current.rows,
@@ -1156,16 +1207,8 @@ function HerdrTerminalLeaf({
         openReadyRef.current = true
         scrollbarRefreshRef.current?.()
         clipboardRef.current?.flushPendingPaste()
-        // ResizablePanel can report a tiny provisional width during the first
-        // layout pass. Fit and publish the authoritative viewport once the
-        // connector is ready and the browser has painted the BSP surface.
-        window.requestAnimationFrame(() => {
-          if (disposedRef.current || !visibleRef.current) return
-          safeFit(fitAddon)
-          const next = terminalSize(term)
-          lastSizeRef.current = next
-          void transport.resize(next.cols, next.rows).catch(() => undefined)
-        })
+        const size = lastSizeRef.current
+        void transport.resize(size.cols, size.rows).catch(() => undefined)
       })
       .catch((error) => {
         if (disposedRef.current) return
@@ -1173,14 +1216,12 @@ function HerdrTerminalLeaf({
         setStatusMessage(message)
         outputQueueRef.current?.push(`\r\n[Failed to open Herdr terminal: ${message}]\r\n`)
       })
+    }
+    scheduleFit()
 
     const resizeObserver = new ResizeObserver(() => {
-      if (disposedRef.current || !visibleRef.current) return
-      safeFit(fitAddon)
-      const next = terminalSize(term)
-      if (next.cols === lastSizeRef.current.cols && next.rows === lastSizeRef.current.rows) return
-      lastSizeRef.current = next
-      void transport.resize(next.cols, next.rows).catch(() => undefined)
+      if (disposedRef.current || (openStarted && !visibleRef.current)) return
+      scheduleFit()
     })
     resizeObserver.observe(container)
     observerRef.current = resizeObserver
@@ -1214,9 +1255,12 @@ function HerdrTerminalLeaf({
       recoverOutputRef.current = null
       transportRef.current = null
       void useHerdrStore.getState().releaseAttachment(attachmentKey).catch(() => undefined)
+      unregisterFocus()
       term.dispose()
       termRef.current = null
       fitRef.current = null
+      fitViewportRef.current = null
+      if (fitTimer !== null) window.clearTimeout(fitTimer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [herdrSessionId, terminalId, pagePath, attachmentKey, connectorEnabled, scrollPaneId, targetHostId, targetSessionName, contextSessionName])
@@ -1240,7 +1284,7 @@ function HerdrTerminalLeaf({
     term.options.fontSize = fontSize
     term.options.fontFamily = terminalFontStack(fontFamily)
     if (!visibleRef.current) return
-    safeFit(fitAddon)
+    fitViewportRef.current?.()
   }, [fontSize, fontFamily])
 
   useLayoutEffect(() => {
@@ -1250,12 +1294,7 @@ function HerdrTerminalLeaf({
     previousVisibleRef.current = visible
     if (!visible || !term || !fitAddon) return
     if (becameVisible) {
-      safeFit(fitAddon)
-      const next = terminalSize(term)
-      if (next.cols !== lastSizeRef.current.cols || next.rows !== lastSizeRef.current.rows) {
-        lastSizeRef.current = next
-        void transportRef.current?.resize(next.cols, next.rows).catch(() => undefined)
-      }
+      fitViewportRef.current?.()
       term.refresh(0, term.rows - 1)
     }
     if (active) safeFocus(term)

@@ -82,7 +82,7 @@ export const previewInitialState = {
 function isAllowedPreviewUrl(rawUrl: string): boolean {
     try {
         const url = new URL(rawUrl)
-        return url.protocol === "http:" || url.protocol === "https:"
+        return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "yuzora-preview:"
     } catch {
         return false
     }

@@ -5338,20 +5338,23 @@ mod tests {
 
     #[test]
     fn implemented_methods_exist_in_official_protocol22_schema() {
-        // Method inventory extracted from the pinned 0.9.0 `api schema --json`.
-        let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures/herdr-0.9.0-methods.json"))
-                .unwrap();
-        assert_eq!(schema["protocol"], 22);
-        let methods = collect_schema_methods(&schema);
-        for method in IMPLEMENTED_API_METHODS {
-            assert!(methods.contains(*method), "official schema lacks {method}");
+        // Keep the old server contract alongside the bundled client inventory.
+        for fixture in [
+            include_str!("../tests/fixtures/herdr-0.9.0-methods.json"),
+            include_str!("../tests/fixtures/herdr-0.9.1-methods.json"),
+        ] {
+            let schema: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            assert_eq!(schema["protocol"], 22);
+            let methods = collect_schema_methods(&schema);
+            for method in IMPLEMENTED_API_METHODS {
+                assert!(methods.contains(*method), "official schema lacks {method}");
+            }
         }
     }
 
     #[test]
     fn subscriptions_match_official_protocol22_required_fields() {
-        // Extracted from the bundled official 0.9.0 `api schema --json`.
+        // Official 0.9.0 baseline, retained for old server compatibility.
         let schema: serde_json::Value = serde_json::from_str(include_str!(
             "../tests/fixtures/herdr-0.9.0-subscriptions.json"
         ))

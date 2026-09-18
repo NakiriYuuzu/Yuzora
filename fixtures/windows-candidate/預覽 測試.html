@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<title>Windows Browser 驗收</title>
+<link rel="stylesheet" href="/styles.css">
+<script type="module" src="./scripts/main.mjs"></script>
+<main>
+  <h1>HTML 預覽驗收</h1>
+  <p id="module-status">等待 JS module</p>
+  <section id="card"><h2>選取這張卡片</h2><p>繁體中文與 English 123</p><img src="./assets/check.svg" alt="綠色勾號" width="64" height="64"></section>
+  <button id="counter">點擊次數：0</button>
+  <p><a href="./sub/子頁 測試.htm">開啟子目錄 HTM</a></p>
+  <iframe id="same-origin" title="同源子頁" src="./frame.html"></iframe>
+  <div id="shadow-host"></div>
+  <section id="form-card"><h2>表單排除測試（僅假資料）</h2><label>密碼 <input type="password" value="DEMO-PASSWORD-ONLY"></label><label>文字 <input value="DEMO-FORM-VALUE"></label><textarea>DEMO-DRAFT-ONLY</textarea></section>
+  <details><summary>超大元素</summary><section id="large-element"></section></details>
+  <button id="boundary">測試越界資源拒絕</button><output id="boundary-result"></output>
+</main>
+</html>

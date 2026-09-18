@@ -22,6 +22,17 @@ export function remotePreviewDisplayUrl(workspace: string, url: string): string 
   return project(url, lease.port)
 }
 
+export function remotePreviewSourceUrl(workspace: string, value: string): string {
+  const lease = active.get(workspace)
+  const url = new URL(value)
+  if (!lease || url.hostname !== "127.0.0.1" || url.port !== String(lease.port)) return value
+  lease.assertCurrent()
+  const source = new URL(lease.source)
+  url.hostname = source.hostname
+  url.port = source.port
+  return url.href
+}
+
 export async function acquireRemotePreviewUrl(workspace: string, url: string, assertLive: () => void) {
   const source = new URL(url)
   if (!needsRemotePreviewTunnel(workspace, url)) throw new Error("Invalid remote preview URL")

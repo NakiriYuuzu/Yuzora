@@ -1,3 +1,4 @@
+import { browserTarget, isHtmlFile, openHtmlPreview } from "@/preview/filePreview"
 import i18n from "@/lib/i18n"
 import { canMoveHerdrWorkspace, moveHerdrWorkspace } from "@/lib/herdrWorkspaceActions"
 import { adjacentHerdrWorkspace, herdrReorderMembers } from "@/lib/herdrWorkspaceReorder"
@@ -442,6 +443,11 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   file: [
+    item<"file">("cmPreviewHtml", {
+      availability: (request) => !request.isDirectory && isHtmlFile(request.path) && currentWorkspace(request.workspacePath) ? available() : hidden(),
+      danger: false,
+      executor: async (request) => { await openHtmlPreview(request.workspacePath, request.path, request.sourceGroupIndex); return CONTEXT_MENU_COMPLETED },
+    }),
     item<"file">("cmNewFile", {
       availability: directoryCreationAvailability,
       danger: false,
@@ -498,6 +504,11 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   tab: [
+    item<"tab">("cmPreviewHtml", {
+      availability: (request) => isHtmlFile(request.path) && currentWorkspace(request.workspacePath) ? available() : hidden(),
+      danger: false,
+      executor: async (request) => { if (!request.workspacePath) return CONTEXT_MENU_CANCELLED; await openHtmlPreview(request.workspacePath, request.path, request.groupIndex); return CONTEXT_MENU_COMPLETED },
+    }),
     item<"tab">("cmCopyFullPath", {
       label: () => i18n.t("copyFullPath", { ns: "contextActions" }),
       availability: (request) => {
@@ -560,6 +571,11 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   editor: [
+    item<"editor">("cmPreviewHtml", {
+      availability: (request) => isHtmlFile(request.path) && currentWorkspace(request.workspacePath) ? available() : hidden(),
+      danger: false,
+      executor: async (request) => { if (!request.workspacePath) return CONTEXT_MENU_CANCELLED; await openHtmlPreview(request.workspacePath, request.path, request.groupIndex); return CONTEXT_MENU_COMPLETED },
+    }),
     item<"editor">("cmCopyFullPath", {
       label: () => i18n.t("copyFullPath", { ns: "contextActions" }),
       availability: (request) => editorExists(request) ? available() : disabled(DISABLED_TARGET),
@@ -777,7 +793,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       executor: copyPreviewUrl,
     }),
     item<"preview">("cmOpenExternal", {
-      availability: previewUrlAvailability,
+      availability: (request) => request.url && browserTarget(request.url).kind === "file" ? hidden() : previewUrlAvailability(request),
       danger: false,
       executor: openPreviewExternally,
     }),

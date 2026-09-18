@@ -1,6 +1,6 @@
 [package]
 name = "yuzora"
-version = "0.0.14"
+version = "0.0.15"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -30,6 +30,7 @@ serde_json = "1"
 semver = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 base64 = "0.23"
+percent-encoding = "2"
 keyring = "4.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.9.0"

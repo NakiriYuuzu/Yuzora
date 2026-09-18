@@ -1,4 +1,4 @@
-import { bindingLabel, useKeyboardSettingsStore, dispatchAppShortcut } from "@/state/keyboardSettingsStore"
+import { bindingLabel, useKeyboardSettingsStore } from "@/state/keyboardSettingsStore"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
@@ -34,7 +34,6 @@ import { useUpdateStore } from "@/state/updateStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
 import { applyAccentPreference, type AccentPreference } from "@/theme/accent"
-import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import "./workbench/workbench-shell.css"
 
 const DEFAULT_NAV_WIDTH = 288
@@ -261,14 +260,6 @@ export function AppShell() {
     document.documentElement.dataset.botAnimations = String(botAnimations)
     return () => { delete document.documentElement.dataset.botAnimations }
   }, [botAnimations])
-
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      dispatchAppShortcut(event, "newTerminal", () => { void openNewTerminalTab() })
-    }
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
-  }, [])
 
   // cmHideSidebar (context menu) → same effect as the rail's manual toggle.
   useEffect(() => {

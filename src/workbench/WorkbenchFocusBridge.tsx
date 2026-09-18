@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { isTauri } from "@/lib/platform"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+import { focusActiveTerminal } from "@/terminal/terminalFocus"
 
 const workbenchInput = ".cm-content, .xterm-helper-textarea, .tiptap[contenteditable=true]"
 const editable = "input, textarea, [contenteditable=true]"
@@ -21,7 +22,7 @@ export function WorkbenchFocusBridge() {
     useEffect(() => {
         const initial = document.activeElement
         let last: HTMLElement | null = initial instanceof HTMLElement && initial.matches(workbenchInput) ? initial : null
-        let preserveField = false
+        let preserveField: HTMLElement | null = null
         let disposed = false
         let timer: ReturnType<typeof setTimeout> | undefined
         let unlisten: (() => void) | undefined
@@ -30,16 +31,20 @@ export function WorkbenchFocusBridge() {
             if (!(target instanceof HTMLElement)) return
             if (target.matches(workbenchInput)) {
                 last = target
-                preserveField = false
-            } else if (target.matches(editable)) preserveField = true
+                preserveField = null
+            } else if (target.matches(editable)) preserveField = target
         }
         const restore = () => {
             clearTimeout(timer)
             timer = setTimeout(() => {
-                if (disposed || preserveField || !last || !available(last)) return
+                if (disposed) return
                 if (useTextInputDialogStore.getState().pending ||
                     document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open], [role="menu"][data-state="open"]')) return
                 const active = document.activeElement
+                if (preserveField && available(preserveField) && active === preserveField) return
+                if (active instanceof HTMLElement && active.matches(editable) && !active.matches(workbenchInput)) return
+                if (focusActiveTerminal()) return
+                if (!last || !available(last)) return
                 if (active && active !== document.body && active !== document.documentElement && active !== last) return
                 last.focus({ preventScroll: true })
             }, 0)

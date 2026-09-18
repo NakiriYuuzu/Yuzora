@@ -1,5 +1,9 @@
 {
   "emptyTitle": "開啟網站",
   "emptyDescription": "在網址列輸入網站位址。",
-  "browserFrameTitle": "瀏覽器"
+  "browserFrameTitle": "瀏覽器",
+  "selectElement": "選取元素",
+  "selectElementHint": "點選元素以複製 AI 上下文，Esc 取消。",
+  "elementCopied": "已複製元素上下文",
+  "elementCopyFailed": "無法複製元素上下文，請重新選取後再試。"
 }

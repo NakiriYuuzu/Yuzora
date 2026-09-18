@@ -7,7 +7,7 @@ import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
 import { getDocument, updateBuffer, documentGeneration } from "./documentRegistry"
-import { registerView, unregisterView } from "./viewRegistry"
+import { getView, registerView, unregisterView } from "./viewRegistry"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
 import { saveFile } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
@@ -102,11 +102,18 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
                             void showMixedLineEndingSaveError()
                             return
                         }
+                        const savedDocument = view.state.doc
                         recentlySaved.mark(path)
                         void saveFile(path, serialized.content)
                             .then(() => {
-                                markDirty(path, false)
-                                markExternallyModified(path, false)
+                                const current = useWorkspaceStore.getState()
+                                if (current.workspacePath === workspacePath
+                                    && documentGeneration(path) === generation
+                                    && (getView(path) ?? view).state.doc.eq(savedDocument)
+                                    && current.getLineEnding(path) === lineEnding) {
+                                    markDirty(path, false)
+                                    markExternallyModified(path, false)
+                                }
                                 void logUserAction("save_file", `save ${path}`)
                             })
                             // Save failed: dirty stays true (markDirty(false) never runs)

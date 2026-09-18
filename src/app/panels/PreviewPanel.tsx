@@ -1,5 +1,8 @@
+import { Button } from "@/components/ui/button"
+import { Scan } from "lucide-react"
+import { browserTarget } from "@/preview/filePreview"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { useEffect, useRef, useState } from "react"
-import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { isTauri } from "@/lib/platform"
 import {
   ArrowLeft,
@@ -19,13 +22,14 @@ import i18n from "@/lib/i18n"
 import {
   previewClose,
   previewOpenUrl,
-  previewNavigationState,
   previewSetBounds,
   previewSetVisible,
 } from "@/lib/ipc"
 import { cn } from "@/lib/utils"
 import { BrowserFrame } from "@/preview/BrowserFrame"
 import { useRemotePreviewUrl } from "@/preview/useRemotePreviewUrl"
+import { usePreviewInteractions } from "@/preview/usePreviewInteractions"
+import { useFilePreviewReload } from "@/preview/useFilePreviewReload"
 import {
   enqueueNativePreviewOperation,
   goBackPreview,
@@ -107,9 +111,12 @@ export function PreviewPanel() {
   const previewVisibleRef = useRef(previewVisible)
   const consumedNativeNavigationRef = useRef<{ url: string; token: number } | null>(null)
 
-  const external = !!nav.url && (!isLocalPreviewUrl(nav.url)
-    || (isTauri() && !!workspace && !parseRemoteFilePath(workspace)))
+  const external = !!nav.url && (isTauri() || !isLocalPreviewUrl(nav.url))
   const renderedPreview = useRemotePreviewUrl(workspace, nav.url, nav.reloadNonce)
+  const { selecting, selectionFeedback, toggleElementSelection } = usePreviewInteractions({
+    workspace, url: nav.url, nativeSessionId, external, previewVisible,
+  })
+  useFilePreviewReload(workspace, nav.url, reportPreviewReloadError)
   const nativeNavigationSync = workspace ? nativeNavigationSyncs[workspace] ?? null : null
   const previewTarget: PreviewCommandTarget | null = workspace ? {
     workspacePath: workspace,
@@ -128,37 +135,12 @@ export function PreviewPanel() {
   }, [workspace])
 
 
-  useEffect(() => {
-    if (!isTauri() || !external || !previewVisible || !workspace || !nativeSessionId) return
-    let disposed = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async () => {
-      try {
-        await enqueueNativePreviewOperation(async () => {
-          const state = usePreviewStore.getState()
-          if (disposed || state.nativeRequest !== null || state.nativeSession?.sessionId !== nativeSessionId
-            || useWorkspaceStore.getState().workspacePath !== workspace) return
-          const generation = state.nativeRequestToken
-          const snapshot = await previewNavigationState(nativeSessionId)
-          const latest = usePreviewStore.getState()
-          if (!disposed && latest.nativeRequestToken === generation) latest.receiveNativeNavigation(snapshot)
-        })
-      } catch {
-        // Closing/replacing the native owner can race an in-flight snapshot.
-      } finally {
-        if (!disposed) timer = setTimeout(() => void poll(), 250)
-      }
-    }
-    void poll()
-    return () => { disposed = true; clearTimeout(timer) }
-  }, [external, nativeSessionId, previewVisible, workspace])
-
   // --- native child webview ---
   // Open/navigate the native webview to the external URL, positioned over the
   // placeholder <div>. previewOpenUrl reuses an existing webview (just navigates),
   // so re-running on url change doesn't recreate it.
   useEffect(() => {
-    if (!isTauri() || !external || !nav.url || !workspace) return
+    if (!isTauri() || !external || !nav.url || !workspace || !renderedPreview.url) return
     if (nativeNavigationSync?.url === nav.url) {
       consumedNativeNavigationRef.current = nativeNavigationSync
       usePreviewStore.getState().consumeNativeNavigationSync(
@@ -190,7 +172,7 @@ export function PreviewPanel() {
           return
         }
         const rect = currentHost.getBoundingClientRect()
-        await previewOpenUrl(targetUrl, rect.left, rect.top, rect.width, rect.height, sessionId)
+        await previewOpenUrl(renderedPreview.url!, rect.left, rect.top, rect.width, rect.height, sessionId)
       } catch (error) {
         if (usePreviewStore.getState().nativeRequestIsCurrent(requestToken)) {
           usePreviewStore.getState().closeNativeSession()
@@ -225,20 +207,20 @@ export function PreviewPanel() {
     return () => {
       cancelled = true
     }
-  }, [external, nativeNavigationSync, nav.url, workspace])
+  }, [external, nativeNavigationSync, nav.url, workspace, renderedPreview.url])
 
   // Close the webview when the preview is no longer showing an external URL, and
   // on unmount (the panel unmounts when another tab becomes active — a stray
   // native layer would otherwise float over the editor).
   useEffect(() => {
     if (!isTauri()) return
-    if (!external) {
+    if (!external || !renderedPreview.url) {
       // The Rust child webview is a singleton. Closing it invalidates whichever
       // workspace owned the proof ledger, including an external -> other-workspace
       // local transition where `workspace` is no longer the previous owner.
       requestNativePreviewClose(workspace, reportPreviewReloadError)
     }
-  }, [external, workspace])
+  }, [external, workspace, renderedPreview.url])
   useEffect(() => {
     return () => {
       if (isTauri()) requestNativePreviewClose(null)
@@ -282,7 +264,7 @@ export function PreviewPanel() {
     previewVisibleRef.current = previewVisible
   }, [previewVisible])
   useEffect(() => {
-    if (!isTauri() || !external || !workspace || !nav.url) return
+    if (!isTauri() || !external || !workspace || !nav.url || !renderedPreview.url) return
     const targetWorkspace = workspace
     const targetUrl = nav.url
     void enqueueNativePreviewOperation(async () => {
@@ -300,7 +282,10 @@ export function PreviewPanel() {
       }
       await previewSetVisible(shouldShow)
     })
-  }, [external, nav.url, previewVisible, workspace])
+  }, [external, nav.url, previewVisible, workspace, renderedPreview.url])
+
+  const sourceTarget = nav.url ? browserTarget(nav.url) : null
+  const displayedUrl = sourceTarget?.kind === "file" ? workspacePathForDisplay(sourceTarget.path) : nav.url
 
   const submitUrl = () => {
     if (!workspace || urlDraft === null) return
@@ -335,10 +320,10 @@ export function PreviewPanel() {
       <div data-testid="preview-frame-shell"
         className="flex min-h-0 max-w-full flex-1 overflow-hidden rounded-[8px] border border-(--line-1) bg-(--paper-0)"
         style={{ width: frameWidth, flex: nav.frame === "mobile" ? "0 1 auto" : "1 1 auto" }}>
-        {external ? (
-          <div ref={webviewHostRef} data-testid="preview-webview-host" className="min-h-0 flex-1 bg-white" />
-        ) : renderedPreview.error ? (
+        {renderedPreview.error ? (
           <p role="alert" className="p-4 text-sm text-destructive">{renderedPreview.error}</p>
+        ) : external ? (
+          <div ref={webviewHostRef} data-testid="preview-webview-host" className="min-h-0 flex-1 bg-white" />
         ) : <BrowserFrame url={renderedPreview.url} reloadNonce={nav.reloadNonce} />}
       </div>
     </div>
@@ -402,11 +387,15 @@ export function PreviewPanel() {
           <RotateCw className="size-[13px]" aria-hidden="true" />
         </button>
 
+        {isTauri() && <Button type="button" variant={selecting ? "secondary" : "ghost"} size="icon-sm"
+          disabled={!nativeSessionId || !canReload} aria-label={t("selectElement")} title={t(selecting ? "selectElementHint" : "selectElement")}
+          aria-pressed={selecting} onClick={() => void toggleElementSelection()}><Scan /></Button>}
+
         <input
           aria-label={tp("previewPanel.urlLabel")}
           aria-invalid={urlError ? true : undefined}
           aria-describedby={urlError ? "preview-url-error" : undefined}
-          value={urlDraft ?? nav.url ?? ""}
+          value={urlDraft ?? displayedUrl ?? ""}
           placeholder={tp("previewPanel.urlPlaceholder")}
           disabled={!workspace}
           spellCheck={false}
@@ -452,7 +441,7 @@ export function PreviewPanel() {
           )}
         </button>
 
-        {nav.url && (
+        {nav.url && sourceTarget?.kind !== "file" && (
           <button
             type="button"
             aria-label={tp("previewPanel.openExternally")}
@@ -480,6 +469,7 @@ export function PreviewPanel() {
       ) : null}
 
 
+      {selectionFeedback && <p role="status" className="px-3 py-1 text-xs text-muted-foreground">{selectionFeedback}</p>}
       {body}
     </div>
   )

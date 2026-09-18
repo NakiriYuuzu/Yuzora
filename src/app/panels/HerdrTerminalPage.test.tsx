@@ -1,6 +1,7 @@
 import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
 import { Profiler } from "react"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -13,7 +14,9 @@ const xtermMock = vi.hoisted(() => {
   type KeyHandler = (event: KeyboardEvent) => boolean
 
   const state = {
-    terminals: [] as TerminalMock[]
+    terminals: [] as TerminalMock[],
+    measurements: 0,
+    proposedSize: { cols: 80, rows: 24 } as { cols: number; rows: number } | undefined,
   }
 
   class TerminalMock {
@@ -61,6 +64,7 @@ const xtermMock = vi.hoisted(() => {
     write = vi.fn((_data: string, onProcessed?: () => void) => onProcessed?.())
     focus = vi.fn()
     reset = vi.fn()
+    resize = vi.fn((cols: number, rows: number) => { this.cols = cols; this.rows = rows })
     refresh = vi.fn()
     hasSelection = vi.fn(() => this.selection.length > 0)
     getSelection = vi.fn(() => this.selection)
@@ -105,6 +109,7 @@ const xtermMock = vi.hoisted(() => {
     })
     dispose = vi.fn()
     fit = vi.fn()
+    proposeDimensions = vi.fn(() => { state.measurements++; return state.proposedSize })
   }
 
   return {
@@ -113,6 +118,8 @@ const xtermMock = vi.hoisted(() => {
     FitAddon: FitAddonMock,
     reset() {
       state.terminals = []
+      state.measurements = 0
+      state.proposedSize = { cols: 80, rows: 24 }
     }
   }
 })
@@ -295,7 +302,7 @@ function replaceSessionInventory(
   })
 }
 
-function frame(seq: number, text: string, full = false): HerdrTerminalEvent {
+function frame(seq: number, text: string, full = false): Extract<HerdrTerminalEvent, { type: "frame" }> {
   return {
     type: "frame",
     sessionId: "sess-1",
@@ -308,7 +315,9 @@ function frame(seq: number, text: string, full = false): HerdrTerminalEvent {
   }
 }
 
+let viewportRect: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
+  viewportRect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 600 } as DOMRect)
   clipboardMock.readText.mockResolvedValue("")
   clipboardMock.writeText.mockResolvedValue(undefined)
   navigatorClipboardMock.readText.mockResolvedValue("")
@@ -318,12 +327,14 @@ beforeEach(() => {
     configurable: true
   })
 })
+afterEach(() => viewportRect.mockRestore())
 
 describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
   beforeEach(() => {
     cleanup()
     xtermMock.reset()
     herdrIpcMock.reset()
+    useTerminalSettingsStore.setState({ fontSize: 12 })
     herdrIpcMock.herdrTerminalOpen.mockClear()
     herdrIpcMock.herdrTerminalRelease.mockClear()
     seedSessions([{ name: "default", default: true, running: true }])
@@ -601,6 +612,76 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     expect(term.write.mock.calls[0][0]).not.toContain(
       "[Yuzora: hidden terminal output was truncated]"
     )
+  })
+
+  it("applies frame geometry only when its full ANSI snapshot is written", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit({ ...frame(1, "first", true), width: 100, height: 30 })
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    expect(term.resize).toHaveBeenLastCalledWith(100, 30)
+    expect(term.resize.mock.invocationCallOrder.at(-1)).toBeLessThan(term.write.mock.invocationCallOrder[0])
+    expect(term.reset).not.toHaveBeenCalled()
+  })
+
+  it("waits for measurable pane layout before opening a controller", async () => {
+    viewportRect.mockReturnValue({ width: 0, height: 600 } as DOMRect)
+    xtermMock.state.proposedSize = { cols: 2, rows: 15 }
+    const view = render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+    viewportRect.mockReturnValue({ width: 800, height: 600 } as DOMRect)
+    xtermMock.state.proposedSize = { cols: 80, rows: 24 }
+    view.rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active={false} visible={false} />)
+    view.rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledWith(expect.objectContaining({ cols: 80, rows: 24 })))
+  })
+
+  it("does not depend on animation frames to open a measured terminal", async () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(123)
+    try {
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    } finally { raf.mockRestore() }
+  })
+
+  it("retries initial measurement when xterm font metrics become ready after layout", async () => {
+    xtermMock.state.proposedSize = undefined
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(xtermMock.state.measurements).toBeGreaterThan(0))
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+    xtermMock.state.proposedSize = { cols: 80, rows: 24 }
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+  })
+
+  it("publishes a font-driven fit without reflowing the last rendered frame before acknowledgement", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 55, 15))
+    expect([term.cols, term.rows]).toEqual([80, 24])
+    herdrIpcMock.emit({ ...frame(2, "resized", true), width: 55, height: 15 })
+    await waitFor(() => expect([term.cols, term.rows]).toEqual([55, 15]))
+  })
+
+  it("coalesces intermediate fits before resizing the server", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledOnce())
+    herdrIpcMock.herdrTerminalResize.mockClear()
+    xtermMock.state.proposedSize = { cols: 30, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 20 }))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    expect(herdrIpcMock.herdrTerminalResize).not.toHaveBeenCalled()
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledExactlyOnceWith("sess-1", 55, 15))
   })
 
   it("does not render terminal pages for unrelated runtime snapshot updates", async () => {

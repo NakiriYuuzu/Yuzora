@@ -81,7 +81,7 @@ fn revision(bytes: &[u8]) -> String {
         .collect()
 }
 
-async fn read_regular(sftp: &SftpSession, path: &str) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_regular(sftp: &SftpSession, path: &str) -> Result<Vec<u8>, String> {
     let metadata = sftp
         .symlink_metadata(path)
         .await

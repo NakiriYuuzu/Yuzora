@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { gitMutationsBlocked, useGitStore } from "@/state/gitStore"
+import { gitErrorIsSnapshot, gitMutationsBlocked, useGitStore } from "@/state/gitStore"
 import { useOverlayPresence } from "@/state/overlayStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import type { BranchInfo, TagInfo } from "@/lib/types"
@@ -593,7 +593,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                     )}
                     {lastError && (
                         <InlineNotice>
-                            <p role="alert">{lastError}</p>
+                            <p role="alert">{gitErrorIsSnapshot() ? t("branchPopover.snapshotFailed", { ns: "menus", message: lastError }) : lastError}</p>
                             <Button variant="outline" size="sm" disabled={busy != null} onClick={() => void retrySnapshot()}>
                                 {t("retry", { ns: "gitWorkflow" })}
                             </Button>

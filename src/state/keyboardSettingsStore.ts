@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { isMacPlatform } from "@/lib/platform"
+import type { PreviewShortcutBinding } from "@/lib/previewTypes"
 
 export const APP_COMMANDS = [
     { id: "commandPalette", defaultBinding: "Mod+K" },
@@ -11,15 +12,34 @@ export const APP_COMMANDS = [
     { id: "modeFiles", defaultBinding: "Mod+Alt+2" },
     { id: "modeGit", defaultBinding: "Mod+Alt+3" },
     { id: "modeDatabase", defaultBinding: "Mod+Alt+4" },
+    { id: "tab1", defaultBinding: "Mod+1" },
+    { id: "tab2", defaultBinding: "Mod+2" },
+    { id: "tab3", defaultBinding: "Mod+3" },
+    { id: "tab4", defaultBinding: "Mod+4" },
+    { id: "tab5", defaultBinding: "Mod+5" },
+    { id: "tab6", defaultBinding: "Mod+6" },
+    { id: "tab7", defaultBinding: "Mod+7" },
+    { id: "tab8", defaultBinding: "Mod+8" },
+    { id: "tab9", defaultBinding: "Mod+9" },
+    { id: "nextTab", defaultBinding: "Ctrl+Tab" },
+    { id: "previousTab", defaultBinding: "Ctrl+Shift+Tab" },
 ] as const
 export type AppCommandId = typeof APP_COMMANDS[number]["id"]
+export function tabShortcutBindings(): PreviewShortcutBinding[] {
+    const mac = isMacPlatform()
+    return APP_COMMANDS.filter(command => /^(tab[1-9]|nextTab|previousTab)$/.test(command.id)).map(command => {
+        const parts = (useKeyboardSettingsStore.getState().overrides[command.id] ?? command.defaultBinding).split("+")
+        return { id: command.id, key: parts.pop()!.toUpperCase(), ctrl: parts.includes("Ctrl") || (parts.includes("Mod") && !mac), meta: parts.includes("Mod") && mac, alt: parts.includes("Alt"), shift: parts.includes("Shift") }
+    })
+}
 type Overrides = Partial<Record<AppCommandId, string>>
 export const KEYBOARD_STORAGE_KEY = "yuzora.keyboard.v1"
 
 export function normalizeBinding(value: string): string | null {
     const parts = value.trim().split("+").map(p => p.trim())
-    const key = parts.pop()?.toUpperCase()
-    if (!key || !/^(?:[A-Z0-9`,.;/[\]\\-]|F(?:[1-9]|1[0-2]))$/.test(key)) return null
+    const rawKey = parts.pop()?.toUpperCase()
+    const key = rawKey === "TAB" ? "Tab" : rawKey
+    if (!key || !/^(?:[A-Z0-9`,.;/[\]\\-]|Tab|F(?:[1-9]|1[0-2]))$/.test(key)) return null
     const modifiers = parts.map(p => ({ mod: "Mod", ctrl: "Ctrl", shift: "Shift", alt: "Alt" })[p.toLowerCase()])
     if (!modifiers.length || modifiers.some(p => !p) || new Set(modifiers).size !== modifiers.length) return null
     if (modifiers.includes("Mod") && modifiers.includes("Ctrl")) return null
@@ -34,7 +54,7 @@ function bindingValueError(value: string): "invalid" | "reserved" | null {
     const normalized = normalizeBinding(value)
     if (!normalized) return "invalid"
     // Protect editing, browser/OS and terminal protocol keys on both platforms.
-    if (/^(Mod|Ctrl)\+(?:[ACFVXZYWQHNOPRSTUL]|Tab)$/.test(normalized) || normalized === "Alt+F4" || /^(Mod|Ctrl)\+Shift\+[ACVXYZ345]$/.test(normalized)) return "reserved"
+    if (/^(Mod|Ctrl)\+[ACFVXZYWQHNOPRSTUL]$/.test(normalized) || normalized === "Alt+F4" || /^(Mod|Ctrl)\+Shift\+[ACVXYZ345]$/.test(normalized)) return "reserved"
     return null
 }
 
@@ -90,19 +110,22 @@ export const useKeyboardSettingsStore = create<{
 export function dispatchAppShortcut(event: KeyboardEvent, id: AppCommandId, run: () => void): boolean {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState("AltGraph")) return false
     const target = event.target instanceof Element ? event.target : null
-    if (target?.closest('[role="dialog"], [data-shortcut-capture]')) return false
+    if (target?.closest('[role="dialog"], [role="alertdialog"], dialog[open], [data-shortcut-capture]')) return false
+    if (document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open]')) return false
     const command = APP_COMMANDS.find(c => c.id === id)!
     const binding = useKeyboardSettingsStore.getState().overrides[id] ?? command.defaultBinding
     const parts = binding.split("+")
-    const key = parts.pop()!
+    const key = parts.pop()!.toUpperCase()
     const mac = isMacPlatform()
     const meta = parts.includes("Mod") && mac
     const ctrl = parts.includes("Ctrl") || (parts.includes("Mod") && !mac)
     if (event.metaKey !== meta || event.ctrlKey !== ctrl || event.altKey !== parts.includes("Alt") || event.shiftKey !== parts.includes("Shift") || (event.key.toUpperCase() !== key && !((parts.includes("Shift") || parts.includes("Alt")) && /^[0-9]$/.test(key) && event.code === `Digit${key}`))) return false
     // Plain Ctrl chords are terminal protocol input. App shortcuts do not intercept them.
-    if (target?.closest('.xterm') && !event.metaKey) return false
-    if (target?.closest('input, textarea, [contenteditable="true"]') && !target.closest('.cm-editor') && !event.metaKey) return false
+    const tabNavigation = id === "nextTab" || id === "previousTab" || /^tab[1-9]$/.test(id)
+    if (target?.closest('.xterm') && !event.metaKey && !tabNavigation) return false
+    if (target?.closest('input, textarea, [contenteditable="true"]') && !target.closest('.cm-editor') && !event.metaKey && !tabNavigation) return false
     event.preventDefault()
+    if (tabNavigation) event.stopPropagation()
     run()
     return true
 }

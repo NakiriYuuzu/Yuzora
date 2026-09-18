@@ -1,3 +1,6 @@
+import { assertFilePreviewCurrent, browserTarget } from "./filePreview"
+import { remotePreviewDisplayUrl } from "./remotePreviewUrl"
+import { workspacePathForDisplay } from "@/lib/paths"
 import { writeText } from "@tauri-apps/plugin-clipboard-manager"
 import { openUrl } from "@tauri-apps/plugin-opener"
 
@@ -181,7 +184,14 @@ export async function reloadPreview(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
-  if (isLocalPreviewUrl(target.url)
+  if (browserTarget(target.url).kind === "file") {
+    try { assertFilePreviewCurrent(target.url) }
+    catch {
+      usePreviewStore.getState().reload(target.workspacePath)
+      return completed()
+    }
+  }
+  if ((isLocalPreviewUrl(target.url) || browserTarget(target.url).kind === "file")
     && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
     usePreviewStore.getState().reload(target.workspacePath)
     return completed()
@@ -217,7 +227,8 @@ export async function copyPreviewUrl(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
-  await writeText(target.url)
+  const source = browserTarget(target.url)
+  await writeText(source.kind === "file" ? workspacePathForDisplay(source.path) : target.url)
   return completed()
 }
 
@@ -225,7 +236,8 @@ export async function openPreviewExternally(
   target: PreviewCommandTarget
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
-  const url = (await import("./remotePreviewUrl")).remotePreviewDisplayUrl(target.workspacePath, target.url)
+  if (browserTarget(target.url).kind === "file") return cancelled()
+  const url = remotePreviewDisplayUrl(target.workspacePath, target.url)
   if (!previewTargetHasUrl(target)) return cancelled()
   await openUrl(url)
   return completed()

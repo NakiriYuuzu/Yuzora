@@ -29,6 +29,7 @@ pub mod host_wsl;
 pub mod logging;
 pub mod path_capability;
 pub mod perf_service;
+mod preview_resources;
 pub mod preview_webview;
 pub mod process_kill;
 mod reveal_directory;
@@ -42,6 +43,23 @@ pub mod ssh_service;
 pub mod update_channel;
 pub mod watcher;
 pub mod workspace_trust;
+
+fn main_webview_commands<F>(
+    handler: F,
+) -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static
+where
+    F: Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static,
+{
+    move |invoke| {
+        if invoke.message.webview_ref().label() != "main" {
+            invoke
+                .resolver
+                .reject("Browser content cannot invoke application commands");
+            return true;
+        }
+        handler(invoke)
+    }
+}
 
 const DATABASE_SHUTDOWN_THREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -198,6 +216,17 @@ pub fn run() {
         .manage(preview_webview::PreviewWebviewState(std::sync::Mutex::new(
             None,
         )))
+        .manage(preview_resources::PreviewResourceState::default())
+        .register_asynchronous_uri_scheme_protocol(
+            preview_resources::SCHEME,
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                let label = context.webview_label().to_string();
+                tauri::async_runtime::spawn(async move {
+                    responder.respond(preview_resources::respond(app, label, request).await);
+                });
+            },
+        )
         .manage(path_capability::WorkspacePathState::new())
         .manage(path_capability::DownloadDestinationState::new())
         .manage(sftp_tree::TreeState::default())
@@ -271,7 +300,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(main_webview_commands(tauri::generate_handler![
             reveal_directory::open_workspace_directory,
             update_channel::check_preview_update,
             update_channel::check_release_update,
@@ -337,6 +366,10 @@ pub fn run() {
             db_profiles::db_test_connection,
             db_profiles::db_postgres_transport_challenge,
             perf_service::perf_snapshot,
+            preview_resources::preview_resource_open,
+            preview_resources::preview_resource_close,
+            preview_webview::preview_interactions,
+            preview_webview::preview_select_element,
             preview_webview::preview_open_url,
             preview_webview::preview_navigation_state,
             preview_webview::preview_set_bounds,
@@ -428,7 +461,7 @@ pub fn run() {
             herdr_service::herdr_agent_read,
             herdr_service::herdr_events_subscribe,
             herdr_service::herdr_events_release
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")
         .run(move |app, event| {

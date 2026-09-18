@@ -1,5 +1,9 @@
 {
   "emptyTitle": "Open a website",
   "emptyDescription": "Enter a website address in the URL bar.",
-  "browserFrameTitle": "Browser"
+  "browserFrameTitle": "Browser",
+  "selectElement": "Select element",
+  "selectElementHint": "Click an element to copy its AI context. Esc cancels.",
+  "elementCopied": "Element context copied",
+  "elementCopyFailed": "Could not copy the element context. Try selecting it again."
 }

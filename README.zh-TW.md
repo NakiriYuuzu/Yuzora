@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.14-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.15-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -145,7 +145,7 @@ macOS 安裝檔**未經 Apple Developer ID 簽章或公證**，首次開啟可�
 | Terminal | xterm.js ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-Yuzora 隨附 HERDR 0.9.0。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
+Yuzora 隨附 HERDR 0.9.1，透過 private protocol 22 與 schema 檢查保留 0.9.0 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
 
 Agent 由使用者在 HERDR 終端機手動啟動。舊 WSL Pi Plugin、獨立本機／SSH 終端機與 LSP 設定已移除；Browser 可開啟網站及自行在終端機啟動的服務。
 

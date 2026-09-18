@@ -16,6 +16,9 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 // deliberately small since the happy paths are already covered there.
 
 const ipcMocks = vi.hoisted(() => ({
+  renderedPreview: null as { url: string | null; error: string | null } | null,
+  previewInteractions: vi.fn(),
+  previewSelectElement: vi.fn(),
   previewNavigationState: vi.fn(),
   requestDevServerAuthorization: vi.fn(),
   previewOpenUrl: vi.fn(),
@@ -28,6 +31,14 @@ const ipcMocks = vi.hoisted(() => ({
   openUrl: vi.fn(),
   showActionError: vi.fn(),
 }))
+
+vi.mock("@/preview/useRemotePreviewUrl", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/preview/useRemotePreviewUrl")>()
+  return { useRemotePreviewUrl: (...args: Parameters<typeof original.useRemotePreviewUrl>) => {
+    const value = original.useRemotePreviewUrl(...args)
+    return ipcMocks.renderedPreview ?? value
+  } }
+})
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => ipcMocks.openUrl(...args),
@@ -45,6 +56,8 @@ vi.mock("@/state/workspaceTrustStore", async (importOriginal) => ({
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/ipc")>()),
+  previewInteractions: (...args: unknown[]) => ipcMocks.previewInteractions(...args),
+  previewSelectElement: (...args: unknown[]) => ipcMocks.previewSelectElement(...args),
   previewNavigationState: (...args: unknown[]) => ipcMocks.previewNavigationState(...args),
   previewOpenUrl: (...args: unknown[]) => ipcMocks.previewOpenUrl(...args),
   previewSetBounds: (...args: unknown[]) => ipcMocks.previewSetBounds(...args),
@@ -89,6 +102,9 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  ipcMocks.renderedPreview = null
+  ipcMocks.previewInteractions.mockResolvedValue(null)
+  ipcMocks.previewSelectElement.mockResolvedValue(undefined)
   installLocalStorage()
   useWorkspaceStore.setState({ workspacePath: "/workspace" })
   useAppDialogStore.setState({ pending: null })
@@ -155,6 +171,33 @@ describe("PreviewPanel", () => {
 })
 
 describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
+  it("cancels element selection with Escape while the toolbar keeps focus", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    render(<PreviewPanel />)
+    await waitFor(() => expect(usePreviewStore.getState().nativeSession).not.toBeNull())
+    const button = screen.getByRole("button", { name: i18n.t("selectElement", { ns: "preview" }) })
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"))
+    fireEvent.keyDown(button, { key: "Escape" })
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "false"))
+    expect(ipcMocks.previewSelectElement).toHaveBeenCalledWith(expect.any(String), false)
+  })
+
+  it("shows the child after an asynchronous workspace resource URL resolves", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    ipcMocks.renderedPreview = { url: null, error: null }
+    const view = render(<PreviewPanel />)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    ipcMocks.previewSetVisible.mockClear()
+    ipcMocks.renderedPreview = { url: "https://example.com", error: null }
+    view.rerender(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalled())
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true))
+    expect(ipcMocks.previewSetVisible.mock.invocationCallOrder.at(-1)).toBeGreaterThan(ipcMocks.previewOpenUrl.mock.invocationCallOrder.at(-1)!)
+  })
+
   it("opens the webview, syncs bounds/visibility on mount, and closes it on unmount", async () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     usePreviewStore.getState().navigate("/workspace", "https://example.com")
