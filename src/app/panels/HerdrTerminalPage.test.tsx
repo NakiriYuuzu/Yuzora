@@ -665,8 +665,32 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
     await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 55, 15))
     expect([term.cols, term.rows]).toEqual([80, 24])
+    // Enlarging the font on the old 24-row grid clips the bottom of the
+    // viewport until the server sends its new 15-row screen.
+    expect(term.options.fontSize).toBe(12)
     herdrIpcMock.emit({ ...frame(2, "resized", true), width: 55, height: 15 })
     await waitFor(() => expect([term.cols, term.rows]).toEqual([55, 15]))
+    expect(term.options.fontSize).toBe(22)
+  })
+
+  it("keeps the rendered font while an obsolete resize frame is queued", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 55, 15))
+    xtermMock.state.proposedSize = { cols: 40, rows: 10 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 30 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 40, 10))
+    herdrIpcMock.emit({ ...frame(2, "intermediate", true), width: 55, height: 15 })
+    expect(term.write).toHaveBeenCalledOnce()
+    expect(term.options.fontSize).toBe(12)
+    herdrIpcMock.emit({ ...frame(3, "current", true), width: 40, height: 10 })
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
+    expect([term.options.fontSize, term.cols, term.rows]).toEqual([30, 40, 10])
   })
 
   it("coalesces intermediate fits before resizing the server", async () => {
@@ -682,6 +706,118 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
     expect(herdrIpcMock.herdrTerminalResize).not.toHaveBeenCalled()
     await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledExactlyOnceWith("sess-1", 55, 15))
+  })
+
+  it("cancels an in-flight font resize when the user returns to the displayed font", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    herdrIpcMock.herdrTerminalResize.mockClear()
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 55, 15))
+    xtermMock.state.proposedSize = { cols: 80, rows: 24 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 12 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenLastCalledWith("sess-1", 80, 24))
+    herdrIpcMock.emit({ ...frame(2, "obsolete", true), width: 55, height: 15 })
+    expect(term.write).toHaveBeenCalledOnce()
+    herdrIpcMock.emit(frame(3, "restored", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
+    expect([term.options.fontSize, term.cols, term.rows]).toEqual([12, 80, 24])
+  })
+
+  it("preserves deltas after an accepted resize frame waiting behind an xterm write", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    let finish!: () => void
+    term.write.mockImplementationOnce((_data, callback) => { finish = callback! })
+    herdrIpcMock.emit(frame(2, "busy"))
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 55, 15))
+    herdrIpcMock.emit({ ...frame(3, "resized", true), width: 55, height: 15 })
+    herdrIpcMock.emit({ ...frame(4, "delta"), width: 55, height: 15 })
+    finish()
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(3))
+    expect(term.write.mock.calls[2][0]).toBe("resizeddelta")
+    expect([term.options.fontSize, term.cols, term.rows]).toEqual([22, 55, 15])
+  })
+
+  it("rejects obsolete dimensions even after a matching frame in a font A-B-A sequence", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    for (const [fontSize, cols, rows] of [[22, 55, 15], [30, 40, 10], [22, 55, 15]]) {
+      xtermMock.state.proposedSize = { cols, rows }
+      act(() => useTerminalSettingsStore.setState({ fontSize }))
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenLastCalledWith("sess-1", cols, rows))
+    }
+    herdrIpcMock.emit({ ...frame(2, "matching-first", true), width: 55, height: 15 })
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
+    herdrIpcMock.emit({ ...frame(3, "obsolete-middle", true), width: 40, height: 10 })
+    expect(term.write).toHaveBeenCalledTimes(2)
+    expect([term.options.fontSize, term.cols, term.rows]).toEqual([22, 55, 15])
+    herdrIpcMock.emit({ ...frame(4, "matching-latest", true), width: 55, height: 15 })
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(3))
+  })
+
+  it("retains the fitted font when a newer full frame replaces the queued acknowledgement", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    let finish!: () => void
+    term.write.mockImplementationOnce((_data, callback) => { finish = callback! })
+    herdrIpcMock.emit(frame(2, "busy"))
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 55, 15))
+    herdrIpcMock.emit({ ...frame(3, "ack", true), width: 55, height: 15 })
+    herdrIpcMock.emit({ ...frame(4, "latest", true), width: 55, height: 15 })
+    finish()
+    await waitFor(() => expect(term.write).toHaveBeenCalledTimes(3))
+    expect(term.write.mock.calls[2][0]).toBe("latest")
+    expect([term.options.fontSize, term.cols, term.rows]).toEqual([22, 55, 15])
+  })
+
+  it("updates an observer font without waiting for a controller-owned resize", async () => {
+    const open = herdrIpcMock.herdrTerminalOpen.getMockImplementation()!
+    herdrIpcMock.herdrTerminalOpen.mockImplementationOnce(async (args) => ({
+      ...await open(args), mode: "observe", role: "observer", takeover: false
+    }))
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    herdrIpcMock.herdrTerminalResize.mockClear()
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(term.options.fontSize).toBe(22))
+    expect(herdrIpcMock.herdrTerminalResize).not.toHaveBeenCalled()
+    expect([term.cols, term.rows]).toEqual([80, 24])
+  })
+
+  it("commits a font change that fits the existing grid without requiring another frame", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+    herdrIpcMock.herdrTerminalResize.mockClear()
+    act(() => useTerminalSettingsStore.setState({ fontSize: 13 }))
+    await waitFor(() => expect(term.options.fontSize).toBe(13))
+    expect(herdrIpcMock.herdrTerminalResize).not.toHaveBeenCalled()
   })
 
   it("does not render terminal pages for unrelated runtime snapshot updates", async () => {

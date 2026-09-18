@@ -14,10 +14,16 @@ export function registerTerminalFocusTarget(key: string, target: FocusTarget): (
     return () => { if (targets.get(key) === target) targets.delete(key) }
 }
 
-export function focusActiveTerminal(pagePath?: string): boolean {
-    if (useTextInputDialogStore.getState().pending || document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open], [role="menu"][data-state="open"]')) return false
+export function activeTerminalFocusPath(): string | undefined {
+    if (useTextInputDialogStore.getState().pending || document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open], [role="menu"][data-state="open"]')) return undefined
     const state = useWorkspaceStore.getState()
     const activePath = state.groups[state.activeGroupIndex]?.activePath
+    return [...targets.values()].some((entry) => entry.pagePath === activePath && entry.active()) ? activePath ?? undefined : undefined
+}
+
+export function focusActiveTerminal(pagePath?: string): boolean {
+    const activePath = activeTerminalFocusPath()
+    if (!activePath) return false
     if (pagePath && pagePath !== activePath) return false
     const target = [...targets.values()].find((entry) => entry.pagePath === activePath && entry.active())
     if (!target) return false

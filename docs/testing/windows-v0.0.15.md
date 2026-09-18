@@ -1,6 +1,19 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：待使用者實機測試。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：首次 Windows 回報有兩項阻擋問題，修正後待重新驗證。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## 2026-09-18 首次回報與重測
+
+先前提供的候選來源為 `4a601ecce337f7ce227378b48adb4526f9b5187a`、CI run `35306428894`；使用者尚未回報實際安裝器 hash 與系統版本。以下只記錄使用者確認的範圍，不代表完整細項已驗收。
+
+| 類別 | 使用者結果 | 下一步 |
+|---|---|---|
+| Terminal 渲染 | 一般操作 OK，但切換文字大小時異常嚴重 | 阻擋；新候選重測 R1／R2 |
+| Terminal 焦點 | 切回應用程式後仍不聚焦 HERDR | 阻擋；新候選重測 F1，另確認 F2 |
+| HERDR 相容性 | 可以 | 記錄相容性通過；H1／H2 詳細環境與步驟待補 |
+| WSL 存檔、Git、快捷鍵、HTML／元素複製 | 未測試 | W1～W3、G1～G2、K1～K4、B1～E4 維持待測 |
+
+優先重測時，先輸出 400 行，反覆切換字級 `14 → 26 → 10 → 30 → 14`，在一般 shell／常用 TUI 及分割 pane 各測一輪。調整過程與完成後都需檢查末行／prompt，不能只檢查最終畫面。接著讓作用中 pane 可直接輸入，Alt+Tab 切離並返回，確認無需點擊即可繼續輸入；搜尋欄、命名對話框或 Browser 為目前輸入位置時，也需確認不搶焦點。
 
 ## 測試資料與回報
 

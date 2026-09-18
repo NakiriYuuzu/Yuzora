@@ -820,6 +820,7 @@ function HerdrTerminalLeaf({
   const openReadyRef = useRef(false)
   const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
   const fitViewportRef = useRef<(() => void) | null>(null)
+  const requestedFontRef = useRef({ fontSize, fontFamily: terminalFontStack(fontFamily) })
   const activeRef = useRef(active)
   const visibleRef = useRef(visible)
   const tabIdRef = useRef(tabId)
@@ -1001,6 +1002,8 @@ function HerdrTerminalLeaf({
       }
     }
 
+    let expectedFrameSize: { cols: number; rows: number } | null = null
+    let awaitingFull = false
     const transport = createHerdrTerminalTransport({
       terminalId,
       paneId: scrollPaneId,
@@ -1030,6 +1033,10 @@ function HerdrTerminalLeaf({
       },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
+        // Resize responses belong to one connector generation. Recovery and
+        // taking control start with a new authoritative screen.
+        expectedFrameSize = null
+        awaitingFull = false
         registerAttachment(attachmentKey, {
           sessionId,
           pagePath,
@@ -1059,6 +1066,7 @@ function HerdrTerminalLeaf({
     let hasFrame = false
     let openStarted = false
     let fitTimer: number | null = null
+    let fittedFont: { fontSize: number; fontFamily: string; cols: number; rows: number } | null = null
     const fitAndPublish = () => {
       if (disposedRef.current || (openStarted && !visibleRef.current)) return
       const bounds = container.getBoundingClientRect()
@@ -1067,12 +1075,34 @@ function HerdrTerminalLeaf({
         return
       }
       let next: { cols: number; rows: number } | undefined
-      try { next = fitAddon.proposeDimensions() } catch { return }
+      const requestedFont = requestedFontRef.current
+      const renderedFont = { fontSize: term.options.fontSize, fontFamily: term.options.fontFamily }
+      try {
+        // xterm measures font changes synchronously. Measure the requested
+        // font and restore the displayed one in the same task, before paint.
+        // The old screen must keep its old cell size until its new grid arrives.
+        term.options.fontSize = requestedFont.fontSize
+        term.options.fontFamily = requestedFont.fontFamily
+        next = fitAddon.proposeDimensions()
+      } catch { return }
+      finally {
+        if (hasFrame) {
+          term.options.fontSize = renderedFont.fontSize
+          term.options.fontFamily = renderedFont.fontFamily
+        }
+      }
       if (!next || !Number.isSafeInteger(next.cols) || !Number.isSafeInteger(next.rows)
         || next.cols < 2 || next.rows < 1) {
         // Font metrics can settle after the last ResizeObserver notification.
         if (!openStarted && visibleRef.current) scheduleFit()
         return
+      }
+      fittedFont = { ...requestedFont, ...next }
+      if (term.cols === next.cols && term.rows === next.rows || openReadyRef.current && !transport.canWrite()) {
+        // Observers cannot resize the controller's screen. No new frame is
+        // required when the existing screen already fits, either.
+        term.options.fontSize = requestedFont.fontSize
+        term.options.fontFamily = requestedFont.fontFamily
       }
       if (openStarted && next.cols === lastSizeRef.current.cols && next.rows === lastSizeRef.current.rows) return
       lastSizeRef.current = next
@@ -1080,7 +1110,19 @@ function HerdrTerminalLeaf({
       // local fit must not reflow it while older ANSI writes are still queued.
       if (!hasFrame) term.resize(next.cols, next.rows)
       if (!openStarted) openTransport()
-      else void transport.resize(next.cols, next.rows).catch(() => undefined)
+      else {
+        const requestSize = next
+        if (hasFrame && transport.canWrite()) {
+          expectedFrameSize = requestSize
+          awaitingFull = true
+        }
+        void transport.resize(next.cols, next.rows).catch(() => {
+          if (expectedFrameSize === requestSize) {
+            expectedFrameSize = null
+            awaitingFull = false
+          }
+        })
+      }
     }
     const scheduleFit = () => {
       if (fitTimer !== null) window.clearTimeout(fitTimer)
@@ -1134,7 +1176,19 @@ function HerdrTerminalLeaf({
         lastOutputSeqRef.current = event.seq
         const missedEvents = previousSeq === null ? 0 : event.seq - previousSeq - 1
         outputQueueRef.current?.noteBackendLoss(0, Math.max(0, missedEvents))
+        if (expectedFrameSize && transport.canWrite()
+          && (event.width !== expectedFrameSize.cols || event.height !== expectedFrameSize.rows
+            || awaitingFull && !event.full)) {
+          // A fast second font change can overtake the first resize response.
+          // Keep the last complete screen until the matching full frame, rather
+          // than displaying another row count at the old font size.
+          return
+        }
         if (event.full) {
+          const frameFont = fittedFont && event.width === fittedFont.cols && event.height === fittedFont.rows ? fittedFont : null
+          // Following deltas belong to this accepted snapshot, even when a
+          // previous xterm write is still finishing. Do not discard them.
+          awaitingFull = false
           hasFrame = true
           lastOutputSeqRef.current = event.seq
           // Herdr full frames already bracket one authoritative screen update
@@ -1142,6 +1196,11 @@ function HerdrTerminalLeaf({
           // Resetting xterm before that atomic frame paints an intermediate
           // empty viewport, visible as a one-frame shake on every scroll.
           outputQueueRef.current?.replace(event.data, () => {
+            const font = fittedFont && event.width === fittedFont.cols && event.height === fittedFont.rows ? fittedFont : frameFont
+            if (font) {
+              term.options.fontSize = font.fontSize
+              term.options.fontFamily = font.fontFamily
+            }
             if (event.width && event.height && (term.cols !== event.width || term.rows !== event.height)) {
               term.resize(event.width, event.height)
             }
@@ -1277,15 +1336,20 @@ function HerdrTerminalLeaf({
   }, [sessionIsStopped, attachmentKey, releaseAttachment])
 
   useEffect(() => {
+    const requestedChanged = requestedFontRef.current.fontSize !== fontSize
+      || requestedFontRef.current.fontFamily !== terminalFontStack(fontFamily)
+    requestedFontRef.current = { fontSize, fontFamily: terminalFontStack(fontFamily) }
     const term = termRef.current
     const fitAddon = fitRef.current
     if (!term || !fitAddon || disposedRef.current) return
-    if (term.options.fontSize === fontSize && term.options.fontFamily === terminalFontStack(fontFamily)) return
-    term.options.fontSize = fontSize
-    term.options.fontFamily = terminalFontStack(fontFamily)
+    if (!requestedChanged && term.options.fontSize === fontSize && term.options.fontFamily === terminalFontStack(fontFamily)) return
+    if (!connectorEnabled) {
+      term.options.fontSize = fontSize
+      term.options.fontFamily = terminalFontStack(fontFamily)
+    }
     if (!visibleRef.current) return
     fitViewportRef.current?.()
-  }, [fontSize, fontFamily])
+  }, [fontSize, fontFamily, connectorEnabled])
 
   useLayoutEffect(() => {
     const term = termRef.current
