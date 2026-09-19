@@ -1,6 +1,17 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：2026-09-20，8a2f91c 安裝版已通過一般欄位、Browser 表單切回與游標保留，以及重啟後點頁籤的定向驗證；追加發現加號選單會搶走新 Terminal 命名框的首次焦點，已建立失敗回歸並修補，待新候選實測。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：2026-09-20，一般欄位、Browser 表單切回與游標保留，以及重啟後點頁籤已有安裝版定向通過。3736d25 實機確認首次命名焦點仍失敗，追加修補等待選單退出動畫完成才開始建立 Terminal；新候選安裝驗收待完成。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## 3736d25 實機結果與選單退出動畫修補
+
+CI `35459830057` 首次 Windows HERDR 契約測試出現 `pane.scroll authoritative range mismatch`，相同 SHA 重跑失敗 job 後通過；原因尚未確認，未放寬斷言。Windows artifact `10590310306`；NSIS SHA-256 `b8ba87a091295b9f648b8a49019b71a8bafcea07c3125da8f46abb0b4199ddf9` 在 Windows 核對後安裝。仍保留三個已重新比對雜湊相同的使用中 runtime 檔案。
+
+- 重啟後點既有 Terminal 直接收到 `#tab3736`，工作列切回直接收到 `#return3736`；取消命名後直接收到 `#cancel3736`。
+- 從加號建立 Terminal，不點欄位直接輸入 `qa3736a` 未出現；按一次 Tab 後 `x` 可取代預設名稱。上一版 close-autofocus guard 不足以修復實機，不計通過。
+- 使用 Codex 內建瀏覽器載入真實 TabBar／DropdownMenu／TextInputDialogHost 與產品 CSS，確認 input 取得焦點後，退出動畫中的 menu 又取得焦點，卸載後落到 body。舊 jsdom 測試未涵蓋 CSS 動畫。
+- 修補將建立操作移至 menu close-autofocus 完成後；這段期間若 Session／Space 改變則取消。動畫生命週期回歸在旧碼失敗；修補後含快速／延遲建立及工作區切換共 54 項相關測試通過。相同瀏覽器流程可直接輸入並取代預設名稱，Windows 新安裝包仍待驗證。
+
+8a2f91c 後續亦已完成 `/mnt/c` 中文／空白新檔十次儲存與重新開啟；隔離 `/home` repo 的不可寫入失敗保留 dirty、恢复權限後存檔成功；Git 真實 checkout 衝突、fetch 錯誤跨工作區隔離與恢復；0／1／9／10 頁籤、pin 與雙分割數字鍵。詳細證據保留於分版本驗收報告，不等同完整矩陣通過。
 
 ## 8a2f91c 安裝版結果與命名首次焦點修補
 

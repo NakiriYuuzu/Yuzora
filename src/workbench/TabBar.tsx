@@ -11,7 +11,6 @@ import { type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
 import type { HerdrTabInfo } from "../lib/herdrTypes"
 import { useUiStore } from "../state/uiStore"
 import { useConfirmDialogStore } from "../state/confirmDialogStore"
-import { useTextInputDialogStore } from "../state/textInputDialogStore"
 import { useHerdrStore } from "../state/herdrStore"
 import { dropDocument } from "../editor/documentRegistry"
 import { saveDirtyTab } from "../editor/saveDocument"
@@ -40,6 +39,7 @@ import { findRuntimeSession, parseRuntimeScope } from "@/lib/herdrProvider"
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
     const closingHerdrPagesRef = useRef(new Set<string>())
+    const createAfterMenuCloseRef = useRef<(() => void) | null>(null)
     const viewportRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
         const viewport = viewportRef.current
@@ -520,9 +520,13 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                     align="end"
                     className="w-[260px]"
                     onCloseAutoFocus={(event) => {
-                        // Fast terminal creation can open the naming dialog
-                        // before the menu finishes restoring its trigger.
-                        if (useTextInputDialogStore.getState().pending) event.preventDefault()
+                        const create = createAfterMenuCloseRef.current
+                        if (!create) return
+                        createAfterMenuCloseRef.current = null
+                        event.preventDefault()
+                        // Exit animations keep the menu's focus scope alive.
+                        // Start creation only after it releases keyboard focus.
+                        queueMicrotask(create)
                     }}
                 >
                     <DropdownMenuGroup>
@@ -540,7 +544,14 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             <DropdownMenuItem
                                 data-testid="herdr-new-tab-menu-item"
                                 disabled={!canCreateHerdrTerminal || !herdrSelectedSpaceId}
-                                onSelect={() => void onCreateHerdrTab()}
+                                onSelect={() => {
+                                    createAfterMenuCloseRef.current = () => {
+                                        const runtime = useHerdrStore.getState()
+                                        if (runtime.selectedSessionName !== herdrSelectedSessionName
+                                            || runtime.selectedSpaceId !== herdrSelectedSpaceId) return
+                                        void onCreateHerdrTab()
+                                    }
+                                }}
                                 className="gap-[9px] px-[9px] py-[7px]"
                             >
                                 <SquareTerminal className="size-[15px]" aria-hidden="true" />

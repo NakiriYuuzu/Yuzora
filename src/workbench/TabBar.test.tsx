@@ -1,4 +1,4 @@
-import { expect, test, afterEach, beforeEach, vi } from "vitest"
+import { expect, test, afterEach, beforeEach, onTestFinished, vi } from "vitest"
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 
@@ -818,7 +818,19 @@ test("ADE tab menu lists existing Herdr tabs and activates the selected runtime 
     expect(await screen.findByTestId("herdr-open-tab-tab-1")).toHaveAttribute("data-disabled")
 })
 
-test.each(["before", "after"])("ADE tab menu keeps naming focus when creation resolves %s menu teardown", async (timing) => {
+test.each(["immediate", "delayed", "workspace-change"])("ADE tab menu waits for animated teardown before terminal creation: %s", async (timing) => {
+    const getComputedStyle = window.getComputedStyle.bind(window)
+    const styleSpy = vi.spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
+        const style = getComputedStyle(element, pseudo)
+        if (element.getAttribute("role") === "menu") {
+            // Radix retains the closing menu until its CSS exit animation ends.
+            Object.defineProperty(style, "animationName", {
+                get: () => element.getAttribute("data-state") === "closed" ? "exit" : "enter"
+            })
+        }
+        return style
+    })
+    onTestFinished(() => styleSpy.mockRestore())
     const created = {
         herdrSessionId: "default",
         workspaceId: "ws-1",
@@ -828,7 +840,7 @@ test.each(["before", "after"])("ADE tab menu keeps naming focus when creation re
         title: "New shell"
     }
     const createTerminalInSelectedSpace = vi.fn(async () => {
-        if (timing === "after") await new Promise((resolve) => setTimeout(resolve, 50))
+        if (timing === "delayed") await new Promise((resolve) => setTimeout(resolve, 50))
         return created
     })
     useWorkspaceStore.setState({
@@ -859,7 +871,24 @@ test.each(["before", "after"])("ADE tab menu keeps naming focus when creation re
         button: 0,
         ctrlKey: false
     })
+    const menu = await screen.findByRole("menu")
     fireEvent.click(await screen.findByTestId("herdr-new-tab-menu-item"))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)) })
+    expect(menu).toHaveAttribute("data-state", "closed")
+    expect(createTerminalInSelectedSpace).not.toHaveBeenCalled()
+    if (timing === "workspace-change") {
+        act(() => { useHerdrStore.setState({ selectedSpaceId: "other-space" }) })
+    }
+    const animationEnd = new Event("animationend", { bubbles: true })
+    Object.defineProperty(animationEnd, "animationName", { value: "exit" })
+    fireEvent(menu, animationEnd)
+    if (timing === "workspace-change") {
+        await waitFor(() => expect(menu).not.toBeInTheDocument())
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+        expect(createTerminalInSelectedSpace).not.toHaveBeenCalled()
+        expect(useTextInputDialogStore.getState().pending).toBeNull()
+        return
+    }
 
     await waitFor(() => {
         expect(useTextInputDialogStore.getState().pending).toMatchObject({
