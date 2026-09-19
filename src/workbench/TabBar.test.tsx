@@ -27,6 +27,7 @@ vi.mock("@/lib/herdrIpc", async (importOriginal) => ({
 }))
 
 import { TabBar } from "./TabBar"
+import { TextInputDialogHost } from "./TextInputDialogHost"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { useAppDialogStore } from "../state/appDialogStore"
 import { useContextMenuStore } from "../state/contextMenuStore"
@@ -817,13 +818,18 @@ test("ADE tab menu lists existing Herdr tabs and activates the selected runtime 
     expect(await screen.findByTestId("herdr-open-tab-tab-1")).toHaveAttribute("data-disabled")
 })
 
-test("ADE tab menu creates a persistent Herdr tab and immediately requests its name", async () => {
-    const createTerminalInSelectedSpace = vi.fn().mockResolvedValue({
+test.each(["before", "after"])("ADE tab menu keeps naming focus when creation resolves %s menu teardown", async (timing) => {
+    const created = {
         herdrSessionId: "default",
+        workspaceId: "ws-1",
         terminalId: "term-new",
         paneId: "pane-new",
         tabId: "tab-new",
         title: "New shell"
+    }
+    const createTerminalInSelectedSpace = vi.fn(async () => {
+        if (timing === "after") await new Promise((resolve) => setTimeout(resolve, 50))
+        return created
     })
     useWorkspaceStore.setState({
         workspacePath: "/w",
@@ -848,7 +854,7 @@ test("ADE tab menu creates a persistent Herdr tab and immediately requests its n
         createTerminalInSelectedSpace
     })
 
-    render(<TabBar groupIndex={0} />)
+    render(<><TabBar groupIndex={0} /><TextInputDialogHost /></>)
     fireEvent.pointerDown(screen.getByTestId("tabs-add-menu-0"), {
         button: 0,
         ctrlKey: false
@@ -860,6 +866,12 @@ test("ADE tab menu creates a persistent Herdr tab and immediately requests its n
             initialValue: "New shell"
         })
     })
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" })
+    // Let the menu's deferred focus restoration finish as it does when the
+    // native Terminal creation resolves while its add menu is closing.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    expect(name).toHaveFocus()
+    expect([name.selectionStart, name.selectionEnd]).toEqual([0, "New shell".length])
     useTextInputDialogStore.getState().respond("Build shell")
 
     await waitFor(() => {
@@ -876,6 +888,16 @@ test("ADE tab menu creates a persistent Herdr tab and immediately requests its n
         tabId: "tab-new",
         label: "Build shell"
     })
+})
+
+test("closing the add menu without a naming dialog restores the trigger", async () => {
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    const trigger = screen.getByTestId("tabs-add-menu-0")
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    const menu = await screen.findByRole("menu")
+    fireEvent.keyDown(menu, { key: "Escape" })
+    await waitFor(() => expect(trigger).toHaveFocus())
 })
 
 test("tab path tooltip 移除 extended prefix，但 context target 保留 raw path", () => {

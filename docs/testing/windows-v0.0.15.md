@@ -1,6 +1,19 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：2026-09-20，e89e916 已通過一般欄位、命名游標、重啟後點頁籤及 HTML 原生導覽的安裝版定向驗證；另發現原生 Browser 表單切回後無法輸入，追加 Windows 子視窗焦點修補，待新候選實測。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：2026-09-20，8a2f91c 安裝版已通過一般欄位、Browser 表單切回與游標保留，以及重啟後點頁籤的定向驗證；追加發現加號選單會搶走新 Terminal 命名框的首次焦點，已建立失敗回歸並修補，待新候選實測。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## 8a2f91c 安裝版結果與命名首次焦點修補
+
+CI `35454735412` 成功，Windows artifact `10587768685`；Windows 核對 NSIS SHA-256 `c4d18174c256f6aa18aff783de040d2e3fa9159579d76a3eb80f2c0e71b70f27` 後安裝。
+
+- Browser textarea `ab` 切回後接續 `cd` 得到 `abcd`；游標左移兩格再切回加 `x` 得到 `abxcd`。文字 input 接續 `xy`，Browser 可見時主介面篩選欄接續 `qa save`，彼此不搶焦點。重啟後點 qa958 頁籤直接輸入 `#tab8a`，工作列切回直接輸入 `#return8a`。
+- `/mnt/c/Users/Yuuzu/qa0919/qa save.txt` 十次增量儲存，dirty 每次消失且沒有錯誤，`cat` 核對為 `1234567890`；中文新檔、不可寫入與斷線仍待測。
+- 選取修改過的假表單 `#form-card`，輸出移除 password／input 值與 textarea 內容。超大 `#large-element` 的尺寸為 800×55677，複製結果有 `[HTML truncated]`、樣式與來源；保存後核對為 29,263 字元／53,832 UTF-8 bytes，App 可繼續操作。Esc 後一般按鈕恢復互動；不同焦點與導覽競態尚未全測。
+- 最新安裝版 ping／top 抽樣自 01:39:23 至 02:00:10，至少 20 分 47 秒；字級 12→28→10→12、分割 50/50→35/65→65/35→50/50，未見擠字或錯行。右 pane 切回後直接 `h` 開啟 top help，Esc 可回復。背景 RDP 滾輪未可靠送達，不計本輪捲動通過；抽樣不能排除每一個瞬時閃爍。
+- Git 底部入口 fetch、main→qa-git→新建 qa-git-8a→main，清單與 `git branch`／`git reflog`／`git status -sb` 一致。同名分支的真實錯誤有提示，重新讀取後可恢復；無效 remote、寫入中切工作區與刷新失敗仍待測。
+- 命名完成及取消後直接輸入 Terminal 通過；從加號新增時，命名框首次不能輸入重現兩次。真實 TabBar／DropdownMenu／TextInputDialogHost 回歸確認，選單延遲卸載後焦點落到加號 trigger。修補僅在命名請求仍開啟時取消選單的 close autofocus；涵蓋建立回應早於／晚於選單卸載，以及一般 Esc 關閉仍返回 trigger。相關 47 tests 通過，安裝版重測仍待完成。
+
+此輪未停止原有 pi 或其他 Session。同版本 NSIS 仍只保留三個先前已核驗相同的 locked runtime 檔案，不計乾淨升級／MSI 通過。
 
 ## e89e916 安裝版結果與 Browser 焦點追加修補
 

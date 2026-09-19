@@ -11,6 +11,7 @@ import { type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
 import type { HerdrTabInfo } from "../lib/herdrTypes"
 import { useUiStore } from "../state/uiStore"
 import { useConfirmDialogStore } from "../state/confirmDialogStore"
+import { useTextInputDialogStore } from "../state/textInputDialogStore"
 import { useHerdrStore } from "../state/herdrStore"
 import { dropDocument } from "../editor/documentRegistry"
 import { saveDirtyTab } from "../editor/saveDocument"
@@ -515,7 +516,15 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         <Plus className="size-[14px]" aria-hidden="true" />
                     </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-[260px]">
+                <DropdownMenuContent
+                    align="end"
+                    className="w-[260px]"
+                    onCloseAutoFocus={(event) => {
+                        // Fast terminal creation can open the naming dialog
+                        // before the menu finishes restoring its trigger.
+                        if (useTextInputDialogStore.getState().pending) event.preventDefault()
+                    }}
+                >
                     <DropdownMenuGroup>
                         <DropdownMenuItem
                             data-testid="open-browser-tab-menu-item"
