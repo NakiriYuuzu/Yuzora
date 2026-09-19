@@ -1,6 +1,18 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：2026-09-19，a186b41 已通過一般欄位與重啟後點頁籤的定向驗證；驗收另發現命名全選與 HTML 導覽空白，已追加修補，待最新候選實測。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：2026-09-20，e89e916 已通過一般欄位、命名游標、重啟後點頁籤及 HTML 原生導覽的安裝版定向驗證；另發現原生 Browser 表單切回後無法輸入，追加 Windows 子視窗焦點修補，待新候選實測。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## e89e916 安裝版結果與 Browser 焦點追加修補
+
+候選 `e89e9161f8674929f91662de89e9dc6b13ccf8b2`、CI `35449597731` 全數成功，Windows artifact `10586674246`；Windows 端核對 NSIS SHA-256 `231be11c7bfa74e288c50ae8d7ffaac5e23ff65dc095dc62909752a131722681` 後安裝。
+
+- 一般檔案篩選欄 `focus` 切至 Chrome 再返回，直接接續成 `focus.txt`；重啟後點既有 Terminal 頁籤直接收到 `#e89tab`，工作列返回直接收到 `#return89`。
+- 命名兩輪切回保留文字與中間游標：`qa89` → `qa89def` → `qa89xdef`，完成命名後 Terminal 直接收到 `#named89`。
+- WSL `/home` 中文／空白 HTML 的 CSS、相對 JS module/import、SVG 載入；主頁／子目錄 HTM 連結及 Back／Forward 直接顯示，無需手動重新整理。
+- ping／top 抽樣觀察自 9 月 19 日 23:43:46 至 9 月 20 日 00:06:39，至少 22 分 53 秒。字級 12→27→26→10→30→14→12 未見擠字／錯行。抽樣不能排除所有瞬時閃爍；本候選的捲動操作曾誤碰 splitter，不能算乾淨的 scroll 通過證據。已恢復 12px 與 50/50 分割。
+- 原有 Session 持續執行；同版本 NSIS 安裝仍只保留三個先前已核驗相同雜湊的 locked runtime 檔案，不能算乾淨升級或 MSI 通過。
+
+Browser 表單另有可重複失敗：textarea 先輸入 `ab`，工作列 Chrome → Yuzora 後 `cd` 不出現，點欄位再輸入則成功；文字 input 先加 `x`，切回後 `y` 也不出現。主 WebView 的欄位恢復不涵蓋原生 child WebView。追加修補在 `WM_ACTIVATE` 失活前記住取得鍵盤焦點的 HWND，啟用後只恢復仍可見且仍屬於目前前景視窗的子視窗，不重新選取 DOM 欄位。Windows 原生測試涵蓋恢復、隱藏及銷毀目標；是否修復 WebView2 表單仍以新安裝版重跑為準。
 
 ## HTML 原生導覽追加修補
 

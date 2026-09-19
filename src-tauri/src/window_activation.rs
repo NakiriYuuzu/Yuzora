@@ -28,17 +28,27 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
 
 #[cfg(windows)]
 mod native {
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicPtr, Ordering},
+        Arc,
+    };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         UI::{
+            Input::KeyboardAndMouse::{GetFocus, SetFocus},
             Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass},
-            WindowsAndMessaging::{WA_INACTIVE, WM_ACTIVATE, WM_NCDESTROY},
+            WindowsAndMessaging::{
+                GetForegroundWindow, IsChild, IsWindowVisible, WA_INACTIVE, WM_ACTIVATE,
+                WM_NCDESTROY,
+            },
         },
     };
 
     const SUBCLASS_ID: usize = 0x59555a46;
-    struct Listener(Arc<dyn Fn(bool) + Send + Sync>);
+    struct Listener {
+        notify: Box<dyn Fn(bool) + Send + Sync>,
+        focused_child: AtomicPtr<std::ffi::c_void>,
+    }
 
     pub(super) fn install(
         hwnd: HWND,
@@ -49,7 +59,10 @@ mod native {
             if GetWindowSubclass(hwnd, Some(activation_proc), SUBCLASS_ID, &mut existing) != 0 {
                 return Ok(());
             }
-            let listener = Box::into_raw(Box::new(Listener(Arc::new(notify))));
+            let listener = Box::into_raw(Box::new(Arc::new(Listener {
+                notify: Box::new(notify),
+                focused_child: AtomicPtr::new(std::ptr::null_mut()),
+            })));
             if SetWindowSubclass(hwnd, Some(activation_proc), SUBCLASS_ID, listener as usize) == 0 {
                 drop(Box::from_raw(listener));
                 return Err("failed to observe Windows window activation".into());
@@ -68,7 +81,7 @@ mod native {
     ) -> LRESULT {
         if message == WM_NCDESTROY {
             RemoveWindowSubclass(hwnd, Some(activation_proc), id);
-            let listener = Box::from_raw(data as *mut Listener);
+            let listener = Box::from_raw(data as *mut Arc<Listener>);
             let result = DefSubclassProc(hwnd, message, wparam, lparam);
             drop(listener);
             return result;
@@ -76,14 +89,37 @@ mod native {
         // Hold a separate reference across DefSubclassProc: default processing
         // can reenter this callback, including destroying the window.
         let notification = (message == WM_ACTIVATE).then(|| {
-            (
-                Arc::clone(&(*(data as *const Listener)).0),
-                (wparam & 0xffff) != WA_INACTIVE as usize,
-            )
+            let listener = Arc::clone(&*(data as *const Arc<Listener>));
+            let active = (wparam & 0xffff) != WA_INACTIVE as usize;
+            if !active {
+                // Capture before default deactivation clears keyboard ownership.
+                // This includes the native Browser, whose focused DOM field is
+                // inaccessible to the main WebView's focus bridge.
+                let focused = GetFocus();
+                listener.focused_child.store(
+                    if IsChild(hwnd, focused) != 0 {
+                        focused
+                    } else {
+                        std::ptr::null_mut()
+                    },
+                    Ordering::Relaxed,
+                );
+            }
+            (listener, active)
         });
         let result = DefSubclassProc(hwnd, message, wparam, lparam);
-        if let Some((notify, active)) = notification {
-            notify(active);
+        if let Some((listener, active)) = notification {
+            let focused = listener.focused_child.load(Ordering::Relaxed);
+            if active
+                && GetForegroundWindow() == hwnd
+                && IsChild(hwnd, focused) != 0
+                && IsWindowVisible(focused) != 0
+            {
+                // Restore the existing child; do not focus a DOM element or
+                // change its caret. A closed/hidden Browser must stay unfocused.
+                SetFocus(focused);
+            }
+            (listener.notify)(active);
         }
         result
     }
@@ -96,8 +132,65 @@ mod native {
             Mutex,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, SendMessageW, HWND_MESSAGE, WA_ACTIVE, WA_CLICKACTIVE,
+            CreateWindowExW, DestroyWindow, SendMessageW, SetForegroundWindow, ShowWindow,
+            HWND_MESSAGE, SW_HIDE, WA_ACTIVE, WA_CLICKACTIVE, WS_CHILD, WS_VISIBLE,
         };
+
+        #[test]
+        fn activation_restores_the_existing_child_but_not_hidden_or_destroyed_children() {
+            struct TestWindow(HWND);
+            impl Drop for TestWindow {
+                fn drop(&mut self) {
+                    unsafe { DestroyWindow(self.0) };
+                }
+            }
+            let class = [83u16, 84, 65, 84, 73, 67, 0]; // STATIC
+            unsafe {
+                let create = |parent, style| {
+                    let hwnd = CreateWindowExW(
+                        0,
+                        class.as_ptr(),
+                        std::ptr::null(),
+                        style,
+                        0,
+                        0,
+                        80,
+                        60,
+                        parent,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                    );
+                    assert!(!hwnd.is_null());
+                    TestWindow(hwnd)
+                };
+                let window = create(std::ptr::null_mut(), WS_VISIBLE);
+                let child = create(window.0, WS_CHILD | WS_VISIBLE);
+                install(window.0, |_| {}).unwrap();
+                SetForegroundWindow(window.0);
+                assert_eq!(GetForegroundWindow(), window.0);
+                SetFocus(child.0);
+                assert_eq!(GetFocus(), child.0);
+                SendMessageW(window.0, WM_ACTIVATE, WA_INACTIVE as usize, 0);
+                SetFocus(window.0);
+                SendMessageW(window.0, WM_ACTIVATE, WA_ACTIVE as usize, 0);
+                assert_eq!(GetFocus(), child.0);
+
+                SendMessageW(window.0, WM_ACTIVATE, WA_INACTIVE as usize, 0);
+                ShowWindow(child.0, SW_HIDE);
+                SetFocus(window.0);
+                SendMessageW(window.0, WM_ACTIVATE, WA_ACTIVE as usize, 0);
+                assert_eq!(GetFocus(), window.0);
+
+                let replacement = create(window.0, WS_CHILD | WS_VISIBLE);
+                SetFocus(replacement.0);
+                SendMessageW(window.0, WM_ACTIVATE, WA_INACTIVE as usize, 0);
+                drop(replacement);
+                SetFocus(window.0);
+                SendMessageW(window.0, WM_ACTIVATE, WA_ACTIVE as usize, 0);
+                assert_eq!(GetFocus(), window.0);
+            }
+        }
 
         #[test]
         fn native_activation_is_independent_of_webview_focus_and_releases_listener() {
