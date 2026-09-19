@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import i18n from "@/lib/i18n"
 import { useAppDialogStore } from "@/state/appDialogStore"
+import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { usePreviewStore } from "@/state/previewStore"
@@ -108,6 +109,7 @@ beforeEach(() => {
   installLocalStorage()
   useWorkspaceStore.setState({ workspacePath: "/workspace" })
   useAppDialogStore.setState({ pending: null })
+  useConfirmDialogStore.setState({ pending: null })
   useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
   ipcMocks.requestDevServerAuthorization.mockResolvedValue("challenge-1")
   ipcMocks.previewBack.mockImplementation(async () => { usePreviewStore.getState().syncNativeBack("/workspace") })
@@ -125,6 +127,7 @@ afterEach(async () => {
   usePreviewStore.getState().reset()
   useWorkspaceStore.setState({ workspacePath: null })
   useAppDialogStore.setState({ pending: null })
+  useConfirmDialogStore.setState({ pending: null })
   useContextMenuStore.setState({ request: null })
   useTextInputDialogStore.setState({ pending: null })
   delete (globalThis as { isTauri?: boolean }).isTauri
@@ -296,6 +299,33 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
     opening.resolve(undefined)
     await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
     expect(ipcMocks.previewSetVisible).not.toHaveBeenCalledWith(true)
+  })
+
+  it.each([false, true])("hides the native preview for an unsaved decision and restores it on cancel (opening=%s)", async (opening) => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const open = deferred<void>()
+    if (opening) ipcMocks.previewOpenUrl.mockImplementationOnce(() => open.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    render(<PreviewPanel />)
+    if (opening) await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalledOnce())
+    else await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true))
+    ipcMocks.previewSetVisible.mockClear()
+
+    let decision!: Promise<string>
+    act(() => {
+      decision = useConfirmDialogStore.getState().requestUnsavedDecision({
+        title: "Unsaved changes",
+        description: "Save before closing?",
+        saveLabel: "Save",
+      })
+    })
+    if (opening) await act(async () => open.resolve(undefined))
+
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
+    expect(ipcMocks.previewSetVisible).not.toHaveBeenCalledWith(true)
+    act(() => useConfirmDialogStore.getState().respond("cancel"))
+    await expect(decision).resolves.toBe("cancel")
+    await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenLastCalledWith(true))
   })
 
   it("does not reopen an external preview when the app language changes", async () => {

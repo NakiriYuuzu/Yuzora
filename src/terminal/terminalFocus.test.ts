@@ -3,7 +3,7 @@ import { focusActiveTerminal, registerTerminalFocusTarget, requestTerminalFocus 
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 
-afterEach(() => { vi.useRealTimers(); document.body.innerHTML = "" })
+afterEach(() => { vi.useRealTimers(); document.body.innerHTML = ""; useTextInputDialogStore.setState({ pending: null }) })
 it("resolves the current terminal identity after a view is replaced", () => {
     const path = "yuzora://herdr/one"
     useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
@@ -53,4 +53,46 @@ it("focuses only the active split pane and preserves dialogs and other input fie
     dialog.setAttribute("aria-modal", "true")
     expect(focusActiveTerminal()).toBe(false)
     removeInactive(); removeActive()
+})
+
+it("waits for the naming input to unmount before restoring terminal focus", () => {
+    vi.useFakeTimers()
+    const path = "yuzora://herdr/new"
+    useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+    const dialog = document.body.appendChild(document.createElement("div"))
+    dialog.setAttribute("aria-modal", "true")
+    const input = dialog.appendChild(document.createElement("input"))
+    const terminal = document.body.appendChild(document.createElement("textarea"))
+    terminal.className = "xterm-helper-textarea"
+    const release = registerTerminalFocusTarget("new", { pagePath: path, active: () => true, focus: () => terminal.focus() })
+    try {
+        input.focus()
+        requestTerminalFocus(path)
+        vi.advanceTimersByTime(1)
+        expect(document.activeElement).toBe(input)
+        dialog.remove()
+        vi.advanceTimersByTime(100)
+        expect(document.activeElement).toBe(terminal)
+    } finally { release() }
+})
+
+it.each(["tab", "input"])("abandons delayed dialog restoration when the user chooses another %s", (action) => {
+    vi.useFakeTimers()
+    const path = "yuzora://herdr/new"
+    useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+    const dialog = document.body.appendChild(document.createElement("div"))
+    dialog.setAttribute("aria-modal", "true")
+    const naming = dialog.appendChild(document.createElement("input"))
+    naming.focus()
+    const focus = vi.fn()
+    const release = registerTerminalFocusTarget("new", { pagePath: path, active: () => true, focus })
+    try {
+        requestTerminalFocus(path)
+        vi.advanceTimersByTime(1)
+        dialog.remove()
+        if (action === "tab") useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: "/file" }] })
+        else document.body.appendChild(document.createElement("input")).focus()
+        vi.runAllTimers()
+        expect(focus).not.toHaveBeenCalled()
+    } finally { release() }
 })

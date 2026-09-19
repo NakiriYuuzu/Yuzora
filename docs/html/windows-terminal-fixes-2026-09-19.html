@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Windows Terminal 與 Browser 修補 — 2026-09-19</title>
+<style>body{max-width:960px;margin:48px auto;padding:0 24px;font:16px/1.7 system-ui,sans-serif;background:#faf9f6;color:#242824}h1{font-size:30px}h2{font-size:21px;margin-top:32px}table{border-collapse:collapse;width:100%}td,th{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}code{background:#eeeee8;padding:2px 5px;border-radius:4px}.status{padding:16px 20px;border-left:4px solid #8a6419;background:#f7efd9}a{color:#315b44}</style></head>
+<body><h1>Windows Terminal 與 Browser 修補</h1><p>2026-09-19 · release/v0.0.15 · 基準 <code>c6fcb16</code> 後續修補</p>
+<p class="status">程式修補與前端檢查完成；Windows WebView2 字級回歸已通過。已安裝的舊候選不含修補，返回視窗焦點、對話框與完整矩陣仍須換候選重測。這不是候選驗收通過或發布許可。</p>
+<h2>根因與修補</h2><table><thead><tr><th>問題</th><th>證據與處理</th></tr></thead><tbody>
+<tr><td>Windows 改字級擠字</td><td>以 400 行輸出，26px → 10px 重現整行擠到左側。正式 HERDR 元件加固定 frame，以及直接更新 xterm 字級，均能在 Windows WebView2 153 重現。字級已改變時，重用的隱藏量測節點仍同步回傳前一字級寬度，錯誤結果被快取。補丁在字型變更時重建四個量測 span 及其容器；不重建可見 terminal、buffer 或 Session。</td></tr>
+<tr><td>返回 App 沒有鍵盤焦點</td><td>native activation 現在不以 document.hasFocus() 為唯一判斷：確認原生視窗仍作用中後，要求 main WebView 取得鍵盤焦點，再恢復當前 pane。DOM focus 不重複發出 native 請求。相關取消與重入案例已通過；修補後的 Windows 安裝包仍待實機確認。</td></tr>
+<tr><td>命名／信任提示關閉後沒聚焦</td><td>命名輸入尚未卸載時保留等待；普通輸入欄仍終止恢復。新工作區信任提示允許或取消後，對提示開啟前的頁面發出焦點請求；已切頁則取消。</td></tr>
+<tr><td>Browser 蓋住未儲存確認框</td><td>中央 overlay gate 漏接 confirmDialog store。已補接，並測試 Browser 已開啟與開啟中兩種情境：確認框存在時隱藏 native child，取消後恢復。</td></tr>
+</tbody></table>
+<h2>驗證</h2><ul>
+<li>修補前 Browser 兩個回歸案例失敗；命名卸載及信任提示允許／取消案例也先確認失敗，再修正。</li>
+<li>Windows 正式 HERDR 元件字級序列：14 → 26 → 10 → 30 → 14 → 18 → 12 → 24 → 14。修補前 26px 的五字元寬約 114px（預期 78px），10px 字距約 −9.59px；正式補丁後九次全部符合字寬斷言，底部 marker 正確。</li>
+<li>永久 fixture 檢查 regular、bold、italic、bold italic、中文，以及底部 marker；於 Codex Browser 與 Windows WebView2 驗證；移除補丁的同一 fixture 在 Windows 26px 確實失敗。GUI 證據保留於本次對話工具輸出。</li>
+<li><code>bun install --frozen-lockfile</code>、238 files／2,867 tests、typecheck、build 通過；lint 0 errors／52 warnings，與本輪修補前相同。</li>
+<li>版本一致性與 Stable updater contract 檢查通過。本輪未改 Rust／Host，未重跑其完整測試。</li>
+</ul>
+<h2>驗收界線</h2><p>Windows 原生字級驗證使用同一份 production HERDR 元件與真實 xterm，僅替換 IPC peer；不是更新安裝包後的完整 App 驗收。新候選須優先重測 R1／R2、F1／F2、B8。原有 Git、WSL 與 Browser 的有限 smoke 結果不提升為整列矩陣通過；其餘待測項目保留。</p>
+<p>全程使用 Codex Browser／computer-use，Windows App 未被額外 Raise 至 macOS 前景；沒有使用 Playwright 或停止現有 HERDR Session。</p>
+<h2>相關檔案</h2><ul><li><a href="../testing/windows-v0.0.15.md">Windows 完整驗收清單</a></li><li><a href="../../patches/README.md">xterm 補丁維護說明</a></li><li><a href="../../fixtures/xterm-font-regression.html">字形回歸 fixture（由 Vite／靜態 bundle 載入）</a></li></ul>
+</body></html>

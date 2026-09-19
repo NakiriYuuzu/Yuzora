@@ -1,6 +1,27 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：首次 Windows 回報有兩項阻擋問題，修正後待重新驗證。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：2026-09-19 接續驗證仍有失敗，完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## 2026-09-19 修補與證據界線
+
+以下修補新增於本次候選迭代，已安裝的 `c6fcb16` 候選不包含它們；完整候選驗收仍未通過。
+
+- **R1 字級**：在 Windows App 背景操作中，以 `seq 1 400` 建立基準，`12 → 14 → 26 → 10` 在 10px 重現整行擠至左側。將正式 HERDR 元件與固定 frame 放入 Windows WebView2 153，也能重現；不經 HERDR 的直接 xterm 字級更新同樣失敗。26px 的五字元實際寬約 114px、格線預期約 78px；10px 字距約 −9.59px。原因是隱藏量測節點同步回傳前一字級的寬度，錯誤值被快取。Bun 的 xterm 6.0.0 補丁在字型改變時重建小型量測子樹，不重建 visible terminal 或 Session。正式補丁在 Windows WebView2 的完整元件重跑九次字級循環後，字寬與底部 marker 全數通過。這仍不等同於新安裝包的完整 R1／R2 驗收。
+- **F1 返回 App**：native activation 即使 `document.hasFocus()` 為 true，也會先檢查原生視窗仍作用中，再要求 main WebView 取得鍵盤焦點。DOM focus 事件不重複觸發 native focus，保留切頁／其他輸入／對話框的取消條件。這個分支已有回歸測試，修補後的 Windows 原生視窗仍需換候選驗證。
+- **F2 命名／信任對話框**：命名輸入框仍在卸載時等待，不把它誤判為使用者選中的其他欄位；信任提示允許或取消後，依提示開啟前的頁面身分恢復焦點。切頁、改用其他輸入欄，以及信任期間換頁都有保護測試。修補後的 Windows 安裝包仍待測。
+- **B8 原生層級**：未儲存確認 store 納入 Browser overlay gate；新增已開啟／開啟中兩種情境，均驗證隱藏以及取消後恢復。原版的兩個案例先失敗，修補後通過。安裝包仍需重測原生對話框可見性。
+
+檢查：`bun install --frozen-lockfile`、238 files／2,867 tests、typecheck、build 通過；lint 0 errors／52 warnings，與本輪修補前相同。未改 Rust／Host，本輪沒有重跑其完整測試。永久瀏覽器回歸入口：[`fixtures/xterm-font-regression.html`](../../fixtures/xterm-font-regression.html)，檢查實際 regular／bold／italic／bold italic／中文字寬與底部 marker；Windows WebView2 與 Codex Browser 均通過，移除補丁的同一 fixture 在 Windows 26px 確實失敗。必須由 Vite 或靜態 bundle 載入，不使用 jsdom 判斷視覺結果。補丁維護說明：[`patches/README.md`](../../patches/README.md)。
+
+## 2026-09-19 Windows App 接續驗證
+
+候選 head `c6fcb16aa58cf9dd8fce2d3879108a9a5a7deb0b`、CI `35344294526` 仍未通過驗收，完整矩陣尚未完成。本次透過 Windows App 背景操作重新確認：從 Windows 工作列切離並返回後，Terminal 必須再次點擊才可輸入；新開 WSL 工作區、完成信任對話框後也有相同焦點問題。前段字級切換的渲染失敗仍待修復與受控重測。
+
+另新增 B8：Browser 為作用中頁籤時，關閉另一個 dirty 檔案，原生 Browser 會蓋住儲存確認對話框；Esc 可取消並保留修改，先切至該檔案再關閉可避開此問題。
+
+有限檢查已確認 Git popup fetch／建立分支／切回 main 的一輪操作、WSL `/mnt/c` 空白檔名的兩次儲存、檔案樹／編輯器 HTML 預覽、成功儲存後更新及基本元素上下文複製可運作。這些結果不代表相應整列案例全數通過。背景 RDP 的快速輸入、直接修飾鍵與中文輸入不可靠，未送達的快捷鍵不判定為產品缺陷。
+
+詳細結果保存於本次執行輸出 `output/windows-acceptance-2026-09-19/report.md` 與 `results.json`（非版本控制檔案）；下方尚未完整覆蓋的矩陣維持待測。未合併 PR #107 或發布版本。
 
 ## 2026-09-18 首次回報與重測
 
@@ -77,6 +98,7 @@ for i in $(seq 1 400); do printf 'ROW_%03d\n' "$i"; done
 | B5 | 關閉 Browser 再由右鍵重開；切工作區再返回；遠端斷線、重連再重開 | 不出現持續的 resource expired；新工作區不顯示舊檔，重連後可讀取 | 待測 |
 | B6 | 正常資源可用後按 fixture「越界資源」按鈕；上一層放假 outside.txt | 越界請求被拒絕，不能取得上一層檔案內容 | 待測 |
 | B7 | 遠端啟動使用者管理的 localhost 服務並在 Browser 開啟；前進／返回／重整 | 仍走 Host tunnel，HTTP／常用 WebSocket 互動正常 | 待測 |
+| B8 | Browser 作用中，關閉另一個 dirty 檔案；分別取消、儲存、捨棄，再測 Browser 尚在載入時開啟確認框 | 確認框不被 native Browser 蓋住；取消保留 dirty；關閉確認框後 Browser 正常恢復 | 舊候選失敗；修補後安裝包待測 |
 | E1 | 啟用選取元素，移動到 card 後點擊，貼到文字編輯器 | 外框正確、複製成功提示；內容含來源、selector、文字、HTML、尺寸與樣式 | 待測 |
 | E2 | 選同源 iframe 按鈕、open shadow DOM 按鈕；另用可嵌入的跨來源 iframe | 可選同源及 open shadow 子元素；跨來源只選 iframe 自身 | 待測 |
 | E3 | 選取模式按 Esc（toolbar 焦點／Browser 焦點各一次）；選取中導覽或切工作區 | 選取取消，不誤複製；新頁不套用舊元素結果 | 待測 |

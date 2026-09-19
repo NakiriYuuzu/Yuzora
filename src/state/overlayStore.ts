@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { create } from "zustand"
 
 import { useAppDialogStore } from "./appDialogStore"
+import { useConfirmDialogStore } from "./confirmDialogStore"
 import { useContextMenuStore } from "./contextMenuStore"
 import { useDiffModalStore } from "./diffModalStore"
 import { useSshStore } from "./sshStore"
@@ -46,6 +47,7 @@ export function useOverlayPresence(active: boolean): void {
 // True when ANY overlay is open (see the module comment).
 export function useAnyOverlayOpen(): boolean {
     const appDialogOpen = useAppDialogStore((s) => s.pending !== null)
+    const confirmDialogOpen = useConfirmDialogStore((s) => s.pending !== null)
     const settingsOpen = useUiStore((s) => s.settingsOpen)
     const resolverOpen = useUiStore((s) => s.resolverPath !== null)
     const contextMenuOpen = useContextMenuStore((s) => s.request !== null)
@@ -55,6 +57,7 @@ export function useAnyOverlayOpen(): boolean {
     const localCount = useOverlayStore((s) => s.count)
     return (
         appDialogOpen ||
+        confirmDialogOpen ||
         settingsOpen ||
         resolverOpen ||
         contextMenuOpen ||

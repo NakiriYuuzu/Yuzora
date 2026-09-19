@@ -80,6 +80,48 @@ it.each([0, 75])("restores keyboard input when its WebView activates %i ms after
   } finally { release() }
 })
 
+it("reacquires native keyboard ownership even if document focus survived taskbar switching", async () => {
+  native.enabled = true
+  vi.spyOn(document, "hasFocus").mockReturnValue(true)
+  let keyboardOwned = false
+  native.focusWebview.mockImplementation(async () => {
+    keyboardOwned = true
+    // Reclaiming the WebView itself emits a DOM focus event. It must not
+    // recursively request native focus again.
+    fireEvent.focus(window)
+  })
+  const path = "yuzora://herdr/native-focus"
+  useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+  const view = render(<><WorkbenchFocusBridge /><textarea className="xterm-helper-textarea" /></>)
+  const terminal = view.container.querySelector("textarea")!
+  const release = registerTerminalFocusTarget("native-focus", { pagePath: path, active: () => true,
+    focus: () => { if (keyboardOwned) terminal.focus() } })
+  try {
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { native.callback!({ payload: true }); await vi.runAllTimersAsync() })
+    expect(document.activeElement).toBe(terminal)
+    expect(native.focusWebview).toHaveBeenCalledOnce()
+  } finally { release() }
+})
+
+it("does not poll or focus a native window which is no longer active", async () => {
+  native.enabled = true
+  vi.spyOn(document, "hasFocus").mockReturnValue(false)
+  native.isFocused.mockResolvedValue(false)
+  const path = "yuzora://herdr/inactive-window"
+  useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+  const focus = vi.fn()
+  const release = registerTerminalFocusTarget("inactive-window", { pagePath: path, active: () => true, focus })
+  render(<WorkbenchFocusBridge />)
+  try {
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { native.callback!({ payload: true }); await vi.runAllTimersAsync() })
+    expect(native.focusWebview).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally { release() }
+})
+
 it.each(["blur", "tab", "field", "dialog", "unmount"])("cancels pending native focus after %s", async (action) => {
   native.enabled = true
   vi.spyOn(document, "hasFocus").mockReturnValue(false)

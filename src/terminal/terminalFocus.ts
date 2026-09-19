@@ -39,7 +39,10 @@ export function requestTerminalFocus(pagePath: string): void {
         const state = useWorkspaceStore.getState()
         if (state.groups[state.activeGroupIndex]?.activePath !== pagePath) return
         const active = document.activeElement
-        if (active instanceof Element && active.closest('input, textarea, [contenteditable="true"]') && !active.closest('.xterm, [data-state="closed"]')) return
+        // A naming dialog may have resolved before React/Radix unmounts its
+        // focused input. Wait for that teardown, but preserve ordinary fields.
+        if (active instanceof Element && active.closest('input, textarea, [contenteditable="true"]')
+            && !active.closest('.xterm, [aria-modal="true"], dialog, [data-state="closed"]')) return
         if (!focusActiveTerminal(pagePath) && remaining > 0) setTimeout(() => attempt(remaining - 1), 50)
     }
     setTimeout(() => attempt(100), 0)

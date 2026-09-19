@@ -6,6 +6,7 @@ import { useGitStore } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { WorkspaceTrustHost } from "@/workbench/WorkspaceTrustHost"
+import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 
 const ipcMocks = vi.hoisted(() => ({
     workspaceTrustStatus: vi.fn(),
@@ -156,6 +157,47 @@ it("cancels the current grant prompt on Escape", async () => {
         expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
     })
     expect(ipcMocks.workspaceTrustGrant).not.toHaveBeenCalled()
+})
+
+it.each(["grant", "cancel"])("restores the new workspace terminal after trust %s", async (decision) => {
+    ipcMocks.workspaceTrustStatus.mockResolvedValue({
+        state: "untrusted", canonicalPath: "/workspace", challengeId: "grant-focus", repoPresent: true
+    })
+    ipcMocks.workspaceTrustGrant.mockResolvedValue({ state: "trusted", canonicalPath: "/workspace", repoPresent: true })
+    const path = "yuzora://herdr/workspace"
+    useWorkspaceStore.setState({ workspacePath: "/workspace", groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+    const view = render(<><WorkspaceTrustHost /><textarea className="xterm-helper-textarea" /></>)
+    const terminal = view.container.querySelector("textarea")!
+    const release = registerTerminalFocusTarget("trust-focus", { pagePath: path, active: () => true, focus: () => terminal.focus() })
+    try {
+        const dialog = await screen.findByRole("alertdialog")
+        expect(document.activeElement).not.toBe(terminal)
+        if (decision === "grant") fireEvent.click(screen.getByRole("button", { name: i18n.t("workspaceTrust.grant", { ns: "workbench" }) }))
+        else fireEvent.keyDown(dialog, { key: "Escape" })
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+        await waitFor(() => expect(document.activeElement).toBe(terminal))
+    } finally { release() }
+})
+
+it("does not focus a different page selected while workspace trust is pending", async () => {
+    ipcMocks.workspaceTrustStatus.mockResolvedValue({
+        state: "untrusted", canonicalPath: "/workspace", challengeId: "grant-stale", repoPresent: true
+    })
+    const path = "yuzora://herdr/original"
+    const nextPath = "yuzora://herdr/next"
+    useWorkspaceStore.setState({ workspacePath: "/workspace", groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+    const focus = vi.fn()
+    const release = registerTerminalFocusTarget("next-trust", { pagePath: nextPath, active: () => true, focus })
+    render(<WorkspaceTrustHost />)
+    try {
+        const dialog = await screen.findByRole("alertdialog")
+        useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: nextPath }] })
+        fireEvent.keyDown(dialog, { key: "Escape" })
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+        // Let Radix teardown and the scheduled focus request both complete.
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        expect(focus).not.toHaveBeenCalled()
+    } finally { release() }
 })
 
 it("moves focus into the trust dialog", async () => {

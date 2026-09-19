@@ -46,16 +46,17 @@ export function WorkbenchFocusBridge() {
             return Boolean(preserveField && available(preserveField) && active === preserveField)
                 || active instanceof HTMLElement && active.matches(editable) && !active.matches(workbenchInput)
         }
-        const restore = () => {
+        const restore = (nativeActivation = false) => {
             clearTimeout(timer)
             const intent = generation
             timer = setTimeout(() => { void (async () => {
                 if (intent !== generation || blocked()) return
                 const path = activeTerminalFocusPath()
-                if (path && isTauri() && !document.hasFocus()) {
+                if (path && isTauri() && (nativeActivation || !document.hasFocus())) {
                     // On WebView2, activating the outer window does not always
                     // give its WebView keyboard ownership. DOM focus alone can
-                    // leave the xterm textarea selected but unable to receive keys.
+                    // leave the xterm textarea selected but unable to receive keys,
+                    // even if document.hasFocus() still reports true.
                     if (!nativeFocus || nativeFocusGeneration !== intent) {
                         nativeFocusGeneration = intent
                         const request = (async () => {
@@ -85,13 +86,14 @@ export function WorkbenchFocusBridge() {
             })().catch(() => undefined)
             }, 0)
         }
+        const restoreDocument = () => restore()
         document.addEventListener("focusin", remember)
         document.addEventListener("pointerdown", cancel, true)
-        window.addEventListener("focus", restore)
+        window.addEventListener("focus", restoreDocument)
         window.addEventListener("blur", cancel)
         if (isTauri()) {
             void getCurrentWindow().onFocusChanged(({ payload }) => {
-                if (payload) restore()
+                if (payload) restore(true)
                 else cancel()
             }).then((release) => { if (disposed) release(); else unlisten = release })
                 .catch(() => undefined)
@@ -102,7 +104,7 @@ export function WorkbenchFocusBridge() {
             unlisten?.()
             document.removeEventListener("focusin", remember)
             document.removeEventListener("pointerdown", cancel, true)
-            window.removeEventListener("focus", restore)
+            window.removeEventListener("focus", restoreDocument)
             window.removeEventListener("blur", cancel)
         }
     }, [])
