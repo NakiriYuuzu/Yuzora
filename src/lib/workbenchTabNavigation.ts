@@ -2,6 +2,7 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore, type TabInfo } from "@/state/workspaceStore"
 import type { HerdrTabInfo } from "./herdrTypes"
+import { requestTerminalFocus } from "@/terminal/terminalFocus"
 
 export type TabNavigation = { index: number } | { direction: 1 | -1 }
 let navigationIntent = 0
@@ -52,10 +53,19 @@ export async function activateWorkbenchTab(groupIndex: number, tab: TabInfo, run
     if (tab.kind !== "herdr-terminal") return
     const runtime = useHerdrStore.getState()
     const target = runtimeTab ?? runtime.snapshot?.tabs.find((item) => item.id === tab.herdrTabId)
-    if (!target) return
+    if (!target) {
+        requestTerminalFocus(tab.path)
+        return
+    }
     const result = await runtime.activateTab(target)
     const live = useWorkspaceStore.getState()
-    if (result?.ok === false && navigationIntent === intent && previousPath && live.workspacePath === state.workspacePath && live.activeGroupIndex === groupIndex && live.groups[groupIndex]?.activePath === tab.path) {
-        live.setActiveTab(groupIndex, previousPath)
+    if (navigationIntent !== intent || live.workspacePath !== state.workspacePath
+        || live.activeGroupIndex !== groupIndex || live.groups[groupIndex]?.activePath !== tab.path) return
+    if (result?.ok === false) {
+        if (previousPath) live.setActiveTab(groupIndex, previousPath)
+    } else {
+        // Selecting an already-active restored tab does not rerun the pane's
+        // active/visible effects; move focus off the tab button after activation.
+        requestTerminalFocus(tab.path)
     }
 }

@@ -1,6 +1,16 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：2026-09-19 接續驗證仍有失敗，完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：2026-09-19，95807f8 已通過 Terminal 工作列返回的定向驗證；一般欄位／點頁籤的追加修補待新候選實測，完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## 一般欄位與重啟後頁籤焦點
+
+95807f8（CI 35439917925）已實際安裝，Windows 端 NSIS SHA-256 為 `b3ac9bece39cd7eecc00f7c7ce6555d8af7a4f41a15fa030191c536048aa9e2e`。工作列 Chrome → Yuzora 的單 pane 兩輪、左右 pane 各一輪均可直接輸入到正確 pane；命名／取消後直接輸入與 Browser 上確認框的取消／捨棄亦通過。原 Session 與 400 行歷史保留。
+
+追加問題有受控重現：篩選欄或命名對話框切回後沒有接收文字；重啟後點已有 Terminal 頁籤，焦點留在頁籤按鈕。前者是欄位保護也跳過了 native WebView 鍵盤恢復；後者是已作用中的頁籤不觸發 pane 的 active／visible effect，啟用入口也未要求焦點。
+
+追加修補保留一般欄位及選取範圍，只恢復 native 鍵盤接收權；仍核對視窗、工作區、頁面、欄位與取消世代。可見 native Browser 的舊 main-document 欄位不拿來搶焦點。HERDR 頁籤在 runtime 啟用成功且選擇仍有效後要求焦點，等候 pane 掛載；啟用失敗或較新的選擇不聚焦舊頁。
+
+回歸先失敗後通過；相關 77 項測試及完整前端 238 files／2,880 tests、typecheck／build 通過，lint 0 errors／52 既有 warnings。本輪未改 Rust／Host。下一候選追加驗收：欄位與對話框保留游標／選取、已作用中頁籤重點、重啟後首次點頁籤、快速切頁／欄位、Browser 防搶焦點；R2 仍需一般 shell 與 TUI 各至少 10 分鐘。
 
 ## 2026-09-19 安裝版重測與 Windows 啟用事件
 

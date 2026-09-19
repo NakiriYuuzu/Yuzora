@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { isTauri } from "@/lib/platform"
 import { isWorkbenchWindowActive } from "@/lib/ipc"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 import { activeTerminalFocusPath, focusActiveTerminal } from "@/terminal/terminalFocus"
 
 const workbenchInput = ".cm-content, .xterm-helper-textarea, .tiptap[contenteditable=true]"
@@ -48,28 +49,52 @@ export function WorkbenchFocusBridge() {
             return Boolean(preserveField && available(preserveField) && active === preserveField)
                 || active instanceof HTMLElement && active.matches(editable) && !active.matches(workbenchInput)
         }
+        const focusNative = (intent: number, current: () => boolean) => {
+            if (!nativeFocus || nativeFocusGeneration !== intent) {
+                nativeFocusGeneration = intent
+                const request = (async () => {
+                    if (!await isWorkbenchWindowActive() || intent !== generation || disposed || !current()) return false
+                    await getCurrentWebview().setFocus()
+                    return true
+                })().finally(() => { if (nativeFocus === request) nativeFocus = undefined })
+                nativeFocus = request
+            }
+            return nativeFocus
+        }
         const restore = (nativeActivation = false) => {
             clearTimeout(timer)
             const intent = generation
             timer = setTimeout(() => { void (async () => {
-                if (intent !== generation || blocked()) return
+                if (intent !== generation || disposed) return
+                const field = document.activeElement
+                const workspace = useWorkspaceStore.getState()
+                const groupIndex = workspace.activeGroupIndex
+                const pagePath = workspace.groups[groupIndex]?.activePath
+                const browserVisible = workspace.groups.some(group => group.activePath === PREVIEW_TAB_PATH
+                    || group.tabs.some(tab => tab.path === group.activePath && tab.kind === "preview"))
+                if (nativeActivation && isTauri() && field instanceof HTMLElement && field.matches(editable)
+                    && !field.matches(".xterm-helper-textarea") && available(field)
+                    && (!browserVisible || field.closest('[aria-modal="true"], dialog[open]'))) {
+                    // Reclaim native keyboard ownership without changing the DOM
+                    // field, its selection, or a dialog's focus trap. A visible
+                    // child Browser can retain a stale main-document activeElement.
+                    await focusNative(intent, () => {
+                        const current = useWorkspaceStore.getState()
+                        return document.activeElement === field && available(field)
+                            && current.workspacePath === workspace.workspacePath
+                            && current.activeGroupIndex === groupIndex
+                            && current.groups[groupIndex]?.activePath === pagePath
+                    })
+                    return
+                }
+                if (blocked()) return
                 const path = activeTerminalFocusPath()
                 if (path && isTauri() && (nativeActivation || !document.hasFocus())) {
                     // On WebView2, activating the outer window does not always
                     // give its WebView keyboard ownership. DOM focus alone can
                     // leave the xterm textarea selected but unable to receive keys,
                     // even if document.hasFocus() still reports true.
-                    if (!nativeFocus || nativeFocusGeneration !== intent) {
-                        nativeFocusGeneration = intent
-                        const request = (async () => {
-                            if (!await isWorkbenchWindowActive() || intent !== generation || blocked()
-                                || activeTerminalFocusPath() !== path) return false
-                            await getCurrentWebview().setFocus()
-                            return true
-                        })().finally(() => { if (nativeFocus === request) nativeFocus = undefined })
-                        nativeFocus = request
-                    }
-                    if (!await nativeFocus) return
+                    if (!await focusNative(intent, () => !blocked() && activeTerminalFocusPath() === path)) return
                     if (intent !== generation || blocked() || activeTerminalFocusPath() !== path) return
                 }
                 const focusInput = (remaining: number) => {

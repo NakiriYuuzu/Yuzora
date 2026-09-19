@@ -4,9 +4,10 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { useUiStore } from "@/state/uiStore"
 import type { HerdrSnapshot, HerdrTabInfo } from "./herdrTypes"
 import { activateWorkbenchTab, navigateWorkbenchTabs, tabNavigationIndex, visibleWorkbenchTabs } from "./workbenchTabNavigation"
+import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 
 const originalRuntime = useHerdrStore.getState()
-afterEach(() => { useHerdrStore.setState(originalRuntime, true); vi.restoreAllMocks() })
+afterEach(() => { useHerdrStore.setState(originalRuntime, true); vi.restoreAllMocks(); vi.useRealTimers(); document.body.innerHTML = "" })
 const file = (path: string, pinned = false): TabInfo => ({ path, name: path, pinned, dirty: false, externallyModified: false })
 
 it("selects numbered tabs and wraps adjacent navigation", () => {
@@ -16,6 +17,47 @@ it("selects numbered tabs and wraps adjacent navigation", () => {
     expect(tabNavigationIndex(0, 12, { index: 8 })).toBe(8)
     expect(tabNavigationIndex(8, 9, { direction: 1 })).toBe(0)
     expect(tabNavigationIndex(0, 9, { direction: -1 })).toBe(8)
+})
+
+it.each(["existing", "mounting"])("focuses the %s Terminal after selecting its already-active tab", async (readiness) => {
+    vi.useFakeTimers()
+    const path = "yuzora://herdr/selected"
+    const tab: TabInfo = { ...file(path), kind: "herdr-terminal", herdrTabId: "selected" }
+    const runtimeTab = { id: "selected" } as HerdrTabInfo
+    useWorkspaceStore.setState({ workspacePath: "/w", activeGroupIndex: 0, groups: [{ activePath: path, tabs: [tab] }] })
+    vi.spyOn(useHerdrStore.getState(), "activateTab").mockResolvedValue({ ok: true })
+    const button = document.body.appendChild(document.createElement("button"))
+    const input = document.body.appendChild(document.createElement("textarea"))
+    input.className = "xterm-helper-textarea"
+    button.focus()
+    let ready = readiness === "existing"
+    const release = registerTerminalFocusTarget("selected", { pagePath: path, active: () => ready, focus: () => input.focus() })
+    try {
+        await activateWorkbenchTab(0, tab, runtimeTab)
+        vi.advanceTimersByTime(1)
+        ready = true
+        vi.runAllTimers()
+        expect(document.activeElement).toBe(input)
+    } finally { release() }
+})
+
+it("does not focus a late successful activation after newer tab selection", async () => {
+    vi.useFakeTimers()
+    const path = "yuzora://herdr/late"
+    const tab: TabInfo = { ...file(path), kind: "herdr-terminal", herdrTabId: "late" }
+    useWorkspaceStore.setState({ workspacePath: "/w", activeGroupIndex: 0, groups: [{ activePath: "/file", tabs: [file("/file"), tab] }] })
+    let finish!: (result: Awaited<ReturnType<typeof originalRuntime.activateTab>>) => void
+    vi.spyOn(useHerdrStore.getState(), "activateTab").mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const focus = vi.fn()
+    const release = registerTerminalFocusTarget("late", { pagePath: path, active: () => true, focus })
+    try {
+        const pending = activateWorkbenchTab(0, tab, { id: "late" } as HerdrTabInfo)
+        await activateWorkbenchTab(0, file("/file"))
+        finish({ ok: true })
+        await pending
+        vi.runAllTimers()
+        expect(focus).not.toHaveBeenCalled()
+    } finally { release() }
 })
 
 it("uses pinned-first visible order only in the active split group", async () => {
