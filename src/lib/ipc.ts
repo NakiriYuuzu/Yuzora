@@ -11,6 +11,9 @@ import type { PreviewInteractionSnapshot, PreviewResourceLease, PreviewResourceS
 // `platform.ts` (which owns `isTauri`).
 export { invoke }
 
+/** Top-level activation, including Windows when a child WebView has lost focus. */
+export const isWorkbenchWindowActive = () => invoke<boolean>("workbench_is_window_active")
+
 import type {
     FileNode,
     WorkspaceOpenResult,

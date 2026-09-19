@@ -3,14 +3,16 @@ import { act, cleanup, fireEvent, render } from "@testing-library/react"
 import { WorkbenchFocusBridge } from "./WorkbenchFocusBridge"
 import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-const native = vi.hoisted(() => ({ enabled: false, callback: null as null | ((event: { payload: boolean }) => void), release: vi.fn(), focusWebview: vi.fn(), isFocused: vi.fn().mockResolvedValue(true) }))
+const native = vi.hoisted(() => ({ enabled: false, callback: null as null | ((event: { payload: boolean }) => void), activation: null as null | ((event: { payload: boolean }) => void), release: vi.fn(), releaseActivation: vi.fn(), focusWebview: vi.fn(), legacyIsFocused: vi.fn().mockResolvedValue(true), isFocused: vi.fn().mockResolvedValue(true) }))
+vi.mock("@/lib/ipc", () => ({ isWorkbenchWindowActive: native.isFocused }))
 vi.mock("@/lib/platform", () => ({ isTauri: () => native.enabled }))
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
   onFocusChanged: async (callback: (event: { payload: boolean }) => void) => { native.callback = callback; return native.release },
-  isFocused: native.isFocused
+  listen: async (_event: string, callback: (event: { payload: boolean }) => void) => { native.activation = callback; return native.releaseActivation },
+  isFocused: native.legacyIsFocused
 }) }))
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ setFocus: native.focusWebview }) }))
-beforeEach(() => { vi.useFakeTimers(); native.enabled = false; native.callback = null; native.release.mockClear(); native.focusWebview.mockReset(); native.isFocused.mockResolvedValue(true) })
+beforeEach(() => { vi.useFakeTimers(); native.enabled = false; native.callback = null; native.activation = null; native.release.mockClear(); native.releaseActivation.mockClear(); native.focusWebview.mockReset(); native.legacyIsFocused.mockResolvedValue(true); native.isFocused.mockResolvedValue(true) })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
 it.each(["cm-content", "xterm-helper-textarea"])("restores last %s after application focus", (className) => {
   const view = render(<><WorkbenchFocusBridge /><textarea className={className} /></>)
@@ -101,6 +103,49 @@ it("reacquires native keyboard ownership even if document focus survived taskbar
     await act(async () => { native.callback!({ payload: true }); await vi.runAllTimersAsync() })
     expect(document.activeElement).toBe(terminal)
     expect(native.focusWebview).toHaveBeenCalledOnce()
+  } finally { release() }
+})
+
+it("restores on Windows activation even when neither WebView nor DOM emits focus", async () => {
+  native.enabled = true
+  native.legacyIsFocused.mockResolvedValue(false)
+  let webviewFocused = false
+  vi.spyOn(document, "hasFocus").mockImplementation(() => webviewFocused)
+  native.focusWebview.mockImplementation(async () => { webviewFocused = true })
+  const path = "yuzora://herdr/windows-activation"
+  useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+  const view = render(<><WorkbenchFocusBridge /><textarea className="xterm-helper-textarea" /></>)
+  const terminal = view.container.querySelector("textarea")!
+  const release = registerTerminalFocusTarget("windows-activation", { pagePath: path, active: () => true,
+    focus: () => { if (webviewFocused) terminal.focus() } })
+  try {
+    await act(async () => { await Promise.resolve() })
+    expect(native.activation).not.toBeNull()
+    await act(async () => { native.activation!({ payload: true }); await vi.runAllTimersAsync() })
+    expect(document.activeElement).toBe(terminal)
+    expect(native.focusWebview).toHaveBeenCalledOnce()
+    view.unmount()
+    expect(native.releaseActivation).toHaveBeenCalledOnce()
+  } finally { release() }
+})
+
+it("cancels activation restoration when Windows switches to another app before the native query resolves", async () => {
+  native.enabled = true
+  vi.spyOn(document, "hasFocus").mockReturnValue(false)
+  let resolveActive!: (value: boolean) => void
+  native.isFocused.mockImplementationOnce(() => new Promise(resolve => { resolveActive = resolve }))
+  const path = "yuzora://herdr/windows-activation"
+  useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })
+  const focus = vi.fn()
+  const release = registerTerminalFocusTarget("windows-activation", { pagePath: path, active: () => true, focus })
+  render(<WorkbenchFocusBridge />)
+  try {
+    await act(async () => { await Promise.resolve() })
+    expect(native.activation).not.toBeNull()
+    await act(async () => { native.activation!({ payload: true }); await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { native.activation!({ payload: false }); resolveActive(true); await vi.runAllTimersAsync() })
+    expect(native.focusWebview).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
   } finally { release() }
 })
 

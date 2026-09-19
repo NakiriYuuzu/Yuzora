@@ -42,6 +42,7 @@ mod sftp_tree;
 pub mod ssh_service;
 pub mod update_channel;
 pub mod watcher;
+mod window_activation;
 pub mod workspace_trust;
 
 fn main_webview_commands<F>(
@@ -232,6 +233,12 @@ pub fn run() {
         .manage(sftp_tree::TreeState::default())
         .setup(|app| {
             use tauri::{Emitter, Manager};
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = window_activation::install(&window) {
+                    eprintln!("window activation observer unavailable: {error}");
+                }
+            }
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -301,6 +308,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(main_webview_commands(tauri::generate_handler![
+            window_activation::workbench_is_window_active,
             reveal_directory::open_workspace_directory,
             update_channel::check_preview_update,
             update_channel::check_release_update,

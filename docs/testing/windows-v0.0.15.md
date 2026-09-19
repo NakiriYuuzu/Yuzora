@@ -2,6 +2,21 @@
 
 狀態：2026-09-19 接續驗證仍有失敗，完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
 
+## 2026-09-19 安裝版重測與 Windows 啟用事件
+
+已安裝 `bb54e55`（CI `35435109518`、artifact `10581438716`），Windows 端核對 NSIS SHA-256 為 `377f38b614128e28505b4ee684da430990c404efe75237c8186bb47eb386fde2`。
+
+- **R1 字級部分通過**：既有 WSL `qa0919` Session 的 400 行輸出，逐次在設定切換 `14 → 26 → 10 → 30 → 14`，每次關閉設定後字元與底部 prompt 均可讀，沒有擠成極窄一列。長時間 TUI／分割 stress 尚未完成。
+- **F2 命名與取消通過**：新 Terminal 完成命名後直接輸入 `#named`，另一個新 Terminal 取消命名後直接輸入 `#cancel`，兩者均不需要再次點擊 Terminal。信任提示與分割／其他欄位案例仍待測。
+- **B8 通過**：Browser 作用中時關閉非作用中的 dirty HTML，儲存確認框可見且可操作；取消後 Browser 恢復且保留修改，再次關閉／捨棄僅清除測試修改。
+- **F1 仍失敗**：工作列切至 Chrome 再返回後，逐字輸入 `#return` 未出現；點擊 Terminal 後相同輸入成功。原生 Console 的暫時診斷確認：失焦事件會送達，但工作列返回缺少 WebView／DOM focus 事件；另一筆原生 focus=true 時，Tauri `isFocused()` 仍回傳 false，而 DOM 已有焦點。
+
+F1 後續修補：Windows 透過頂層 HWND 的 `WM_ACTIVATE` 通知前端，與 WebView 的 GotFocus 分開；恢復前以 `GetForegroundWindow` 確認真正的前景視窗，其他平台沿用既有焦點查詢。切頁、對話框、其他輸入欄與切離視窗仍可取消恢復。新增「沒有 WebView focus 事件」及非同步啟用後切離的回歸案例，先失敗後通過；Windows CI 另執行真實 HWND subclass 的事件與釋放測試。新修補仍需下一份候選安裝包驗證。
+
+本次 NSIS 同版本重新安裝遇到執行中的 `conpty.dll`、`conpty/x64/OpenConsole.exe`、`herdr.exe` 鎖定。逐一核對 SHA-256 與 `herdr-runtime.json` 完全相同後保留原檔，未停止現有 Session。這是本次已核驗相同檔案的處理，不代表不同 runtime 的升級可略過錯誤，也不能算無阻礙安裝通過。
+
+啟用事件修補的本機檢查：238 files／2,869 tests、typecheck、build、Rust all-targets check、Rust tests（381 單元及 1 integration 通過，4 項 ignored）與 clippy 90 項既有 baseline 通過；lint 0 errors／52 warnings。完整矩陣仍未驗收。
+
 ## 2026-09-19 修補與證據界線
 
 以下修補新增於本次候選迭代，已安裝的 `c6fcb16` 候選不包含它們；完整候選驗收仍未通過。

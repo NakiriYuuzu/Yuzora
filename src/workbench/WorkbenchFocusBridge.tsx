@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { isTauri } from "@/lib/platform"
+import { isWorkbenchWindowActive } from "@/lib/ipc"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { activeTerminalFocusPath, focusActiveTerminal } from "@/terminal/terminalFocus"
 
@@ -27,6 +28,7 @@ export function WorkbenchFocusBridge() {
         let disposed = false
         let timer: ReturnType<typeof setTimeout> | undefined
         let unlisten: (() => void) | undefined
+        let unlistenActivation: (() => void) | undefined
         let generation = 0
         let nativeFocus: Promise<boolean> | undefined
         let nativeFocusGeneration = -1
@@ -60,7 +62,7 @@ export function WorkbenchFocusBridge() {
                     if (!nativeFocus || nativeFocusGeneration !== intent) {
                         nativeFocusGeneration = intent
                         const request = (async () => {
-                            if (!await getCurrentWindow().isFocused() || intent !== generation || blocked()
+                            if (!await isWorkbenchWindowActive() || intent !== generation || blocked()
                                 || activeTerminalFocusPath() !== path) return false
                             await getCurrentWebview().setFocus()
                             return true
@@ -92,16 +94,24 @@ export function WorkbenchFocusBridge() {
         window.addEventListener("focus", restoreDocument)
         window.addEventListener("blur", cancel)
         if (isTauri()) {
-            void getCurrentWindow().onFocusChanged(({ payload }) => {
+            const onActivation = ({ payload }: { payload: boolean }) => {
                 if (payload) restore(true)
                 else cancel()
-            }).then((release) => { if (disposed) release(); else unlisten = release })
+            }
+            void getCurrentWindow().onFocusChanged(onActivation)
+                .then((release) => { if (disposed) release(); else unlisten = release })
+                .catch(() => undefined)
+            // Windows taskbar activation can precede (or omit) WebView GotFocus.
+            // Observe the top-level HWND independently to restart restoration.
+            void getCurrentWindow().listen<boolean>("workbench:window-activation", onActivation)
+                .then((release) => { if (disposed) release(); else unlistenActivation = release })
                 .catch(() => undefined)
         }
         return () => {
             disposed = true
             clearTimeout(timer)
             unlisten?.()
+            unlistenActivation?.()
             document.removeEventListener("focusin", remember)
             document.removeEventListener("pointerdown", cancel, true)
             window.removeEventListener("focus", restoreDocument)
