@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
-import { isTauri } from "@/lib/platform"
+import { isTauri, isWindowsPlatform } from "@/lib/platform"
 import { isWorkbenchWindowActive } from "@/lib/ipc"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
@@ -119,11 +119,20 @@ export function WorkbenchFocusBridge() {
         window.addEventListener("focus", restoreDocument)
         window.addEventListener("blur", cancel)
         if (isTauri()) {
+            let windowActive = false
             const onActivation = ({ payload }: { payload: boolean }) => {
+                if (payload === windowActive) return
+                windowActive = payload
                 if (payload) restore(true)
                 else cancel()
             }
-            void getCurrentWindow().onFocusChanged(onActivation)
+            void getCurrentWindow().onFocusChanged(event => {
+                // Windows emits this for WebView GotFocus, including feedback
+                // from our own setFocus call. Only the outer HWND activation
+                // event may reacquire native focus there; otherwise the async
+                // feedback starts an endless focus loop after each request.
+                if (!isWindowsPlatform()) onActivation(event)
+            })
                 .then((release) => { if (disposed) release(); else unlisten = release })
                 .catch(() => undefined)
             // Windows taskbar activation can precede (or omit) WebView GotFocus.
