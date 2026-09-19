@@ -9,6 +9,7 @@ import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { usePreviewStore } from "@/state/previewStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { openHtmlPreview } from "@/preview/filePreview"
 
 // This file focuses on coverage panels.test.tsx's "PreviewPanel dev server flow"
 // describe block doesn't already have: the no-candidates branch, an IPC-rejection
@@ -21,6 +22,8 @@ const ipcMocks = vi.hoisted(() => ({
   previewInteractions: vi.fn(),
   previewSelectElement: vi.fn(),
   previewNavigationState: vi.fn(),
+  previewResourceOpen: vi.fn(),
+  previewResourceClose: vi.fn(),
   requestDevServerAuthorization: vi.fn(),
   previewOpenUrl: vi.fn(),
   previewSetBounds: vi.fn(),
@@ -60,6 +63,8 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
   previewInteractions: (...args: unknown[]) => ipcMocks.previewInteractions(...args),
   previewSelectElement: (...args: unknown[]) => ipcMocks.previewSelectElement(...args),
   previewNavigationState: (...args: unknown[]) => ipcMocks.previewNavigationState(...args),
+  previewResourceOpen: (...args: unknown[]) => ipcMocks.previewResourceOpen(...args),
+  previewResourceClose: (...args: unknown[]) => ipcMocks.previewResourceClose(...args),
   previewOpenUrl: (...args: unknown[]) => ipcMocks.previewOpenUrl(...args),
   previewSetBounds: (...args: unknown[]) => ipcMocks.previewSetBounds(...args),
   previewSetVisible: (...args: unknown[]) => ipcMocks.previewSetVisible(...args),
@@ -135,6 +140,29 @@ afterEach(async () => {
 })
 
 describe("PreviewPanel", () => {
+
+  it("keeps the native child alive when a workspace HTML link changes the document path", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    useWorkspaceStore.setState({ workspaceCapabilityId: "html-qa" })
+    ipcMocks.previewResourceOpen.mockResolvedValue({
+      id: "0123456789abcdef0123456789abcdef",
+      url: "yuzora-preview://0123456789abcdef0123456789abcdef/index.html"
+    })
+    await act(async () => { await openHtmlPreview("/workspace", "/workspace/index.html", 0) })
+    render(<PreviewPanel />)
+    await waitFor(() => expect(usePreviewStore.getState().nativeSession).not.toBeNull())
+    ipcMocks.previewClose.mockClear()
+    const sessionId = usePreviewStore.getState().nativeSession!.sessionId!
+    const next = "yuzora-preview://0123456789abcdef0123456789abcdef/sub/%E5%AD%90%E9%A0%81%20test.htm?x=1#card"
+    await act(async () => {
+      usePreviewStore.getState().receiveNativeNavigation({ sessionId, url: next, canGoBack: true, canGoForward: false })
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(ipcMocks.previewClose).not.toHaveBeenCalled()
+    expect(ipcMocks.previewOpenUrl).toHaveBeenCalledOnce()
+    expect(usePreviewStore.getState().nativeSession?.currentUrl).toBe(next)
+    expect(usePreviewStore.getState().nativeNavigationSyncs["/workspace"]).toBeUndefined()
+  })
 
   it.each([
     ["localhost:5173", "http://localhost:5173"],

@@ -1,6 +1,10 @@
 # Windows v0.0.15 候選版驗收清單
 
-狀態：2026-09-19，95807f8 已通過 Terminal 工作列返回的定向驗證；一般欄位／點頁籤的追加修補待新候選實測，完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+狀態：2026-09-19，a186b41 已通過一般欄位與重啟後點頁籤的定向驗證；驗收另發現命名全選與 HTML 導覽空白，已追加修補，待最新候選實測。完整矩陣尚未完成。請使用 release PR **最新 head** 的 `yuzora-release-candidate-windows-x86-64` artifact，內含 NSIS `setup.exe` 與 MSI；每次修正後更換候選檔與 SHA。候選版停用 updater，不驗證正式 OTA。
+
+## HTML 原生導覽追加修補
+
+a186b41 的 WSL `/home` 隔離 fixture 已確認中文／空白 HTML、根 CSS、相對 JS module/import、SVG 與同源 iframe 正常載入。但點子目錄 HTM 連結後 Browser 空白，手動重新整理才恢復；返回主頁亦重現。原因是文件路徑改變時，資源解析 hook 短暫回傳 null，Panel 關閉已完成導覽的 native child；後續原生導覽同步又抑制重開。檔案 URL 改以工作區資源識別維持 lease，路徑／query／hash 分別映射；工作區、capability、Host generation 與 reloadNonce 仍使舊結果失效。真實 Panel／hook／store 的回歸先確認錯誤呼叫 previewClose，修補後 Browser 相關 68 tests 通過。
 
 ## a186b41 安裝後追加發現
 

@@ -13,8 +13,12 @@ export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string 
   const file = !!sourceUrl && browserTarget(sourceUrl).kind === "file"
   const remote = needsRemotePreviewTunnel(workspace, sourceUrl)
   const sourceOrigin = remote && sourceUrl ? new URL(sourceUrl).origin : sourceUrl
+  // A file lease covers the workspace, not an individual document. Native link
+  // navigation already loaded the next path; do not briefly return null and
+  // tear down that child while resolving the same lease for the new path.
+  const sourceIdentity = file && sourceUrl ? new URL(sourceUrl).host : sourceOrigin
   const [result, setResult] = useState<{ key: string; url: string | null; error: string | null } | null>(null)
-  const key = JSON.stringify([workspace, sourceOrigin, connection?.owner.generation, file ? capability : null, reloadNonce])
+  const key = JSON.stringify([workspace, sourceIdentity, connection?.owner.generation, file ? capability : null, reloadNonce])
   useEffect(() => {
     if ((!remote && !file) || !workspace || !sourceOrigin) return
     let closed = false
@@ -44,8 +48,13 @@ export function useRemotePreviewUrl(workspace: string | null, sourceUrl: string 
   }, [remote, file, workspace, sourceOrigin, connection, key])
   if (!remote && !file) return { url: sourceUrl, error: null }
   if (result?.key !== key || !result.url || !sourceUrl) return result?.key === key ? result : { url: null, error: null }
-  if (file) return result
   const projected = new URL(sourceUrl)
+  if (file) {
+    const resource = new URL(result.url)
+    projected.protocol = resource.protocol
+    projected.host = resource.host
+    return { ...result, url: projected.href }
+  }
   const tunnel = new URL(result.url)
   projected.hostname = tunnel.hostname
   projected.port = tunnel.port
