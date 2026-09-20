@@ -29,9 +29,10 @@ jobs:
         run: bun run lint
       - name: Typecheck
         run: bun run typecheck
-      - name: Build Pages companions and demo
+      - name: Build localized Pages and demo
         run: |
           bun run site:companions
+          bun run site:seo
           bun run demo:build
       - name: Test
         run: bun run test

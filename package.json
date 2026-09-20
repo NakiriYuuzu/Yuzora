@@ -9,6 +9,7 @@
     "build": "bun run typecheck && vite build",
     "demo:dev": "vite --config vite.demo.config.ts",
     "demo:build": "vite build --config vite.demo.config.ts",
+    "site:seo": "bun scripts/generate-site-pages.mjs",
     "site:companions": "bun scripts/generate-site-companions.tsx",
     "runtime:verify": "bun scripts/verify-host-resources.ts",
     "host:prepare": "bun scripts/prepare-host-resources.ts",

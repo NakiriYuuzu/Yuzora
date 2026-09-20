@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path"
 import process from "node:process"
 
 import { describe, expect, it } from "vitest"
+import { I18N } from "../site/i18n.js"
 
 const root = process.cwd()
 const htmlSource = readFileSync(resolve(root, "site/index.html"), "utf8")
@@ -97,8 +98,7 @@ describe("GitHub Pages product page", () => {
     )
 
     for (const key of keys) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      expect(appSource.match(new RegExp(`"${escaped}"\\s*:`, "g"))?.length, key).toBe(2)
+      for (const locale of Object.values(I18N)) expect(locale[key], key).toBeTruthy()
     }
   })
 
@@ -145,12 +145,11 @@ describe("GitHub Pages product page", () => {
 
   it("localizes metadata and accessible labels with the selected language", () => {
     for (const key of ["meta.title", "meta.description", "meta.ogDescription"]) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      expect(appSource.match(new RegExp(`"${escaped}"\\s*:`, "g"))?.length, key).toBe(2)
+      for (const locale of Object.values(I18N)) expect(locale[key], key).toBeTruthy()
     }
-    expect(appSource).toContain('meta[name="description"]')
-    expect(appSource).toContain('meta[property="og:description"]')
-    expect(appSource).toContain('meta[property="og:image"]')
+    expect(page.title).toBe(I18N["zh-Hant"]["meta.title"])
+    expect(page.querySelector('meta[name="description"]').content).toBe(I18N["zh-Hant"]["meta.description"])
+    expect(page.querySelector('meta[property="og:image"]').content).toMatch(/^https:\/\//)
     expect(page.querySelectorAll("video[data-i18n-aria-label]")).toHaveLength(3)
     expect(page.querySelector("#gh-stars[data-i18n-aria-label='github.stars']")).not.toBeNull()
     expect(appSource).toContain('I18N[currentLang]["github.stars"]')

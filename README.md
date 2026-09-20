@@ -6,7 +6,7 @@
 
 **Build with agents. Run on HERDR.**
 
-<samp>An open-source desktop ADE fused with the HERDR runtime</samp>
+<samp>AI coding agent workspace for macOS and Windows, powered by HERDR</samp>
 
 <br />
 
@@ -16,7 +16,7 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
-<samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://github.yuuzu.net/Yuzora/">Website</a></samp>
+<samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://github.yuuzu.net/Yuzora/en/">Website</a></samp>
 
 <br />
 <br />
@@ -27,14 +27,20 @@
 
 <br />
 
-> Yuzora is an **Agent Development Environment (ADE)** built around HERDR as its
-> execution and terminal runtime. Spaces, named Sessions, Attention and Agents are
-> projected into one desktop surface, while editor, git, SSH/SFTP, databases and a
-> browser remain close at hand. Built with Tauri and local-first by default.
+> Yuzora is an **AI coding agent workspace for macOS and Windows**, built with Tauri.
+> Run your CLI agents, such as Claude Code, Codex or Pi, in persistent HERDR terminal Sessions.
+> Keep your code editor, Git diffs, SSH/SFTP, WSL, SQL databases and HTML preview in one
+> local-first desktop app. Agent CLIs and their accounts are managed by you.
 
 <br />
 
 ## Features
+
+### What's new in v0.0.15
+
+- Configurable tab shortcuts, including Ctrl+Tab and direct selection of tabs 1–9.
+- Preview saved workspace HTML from local, WSL and SSH folders; select browser elements and copy context for AI edits.
+- HERDR 0.9.1 integration, terminal focus and rendering fixes, plus Git operation and WSL save fixes.
 
 ### What's new in v0.0.14
 

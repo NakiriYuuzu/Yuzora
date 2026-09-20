@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora SEO 實作與驗證 — 2026-09-20</title>
+<style>body{max-width:860px;margin:48px auto;padding:0 24px;font:17px/1.8 system-ui,sans-serif;color:#202938;background:#fafafa}h1{font-size:30px}h2{font-size:22px;margin-top:32px}a{color:#2456cc}code{background:#e9edf4;padding:2px 5px}li{margin:8px 0}</style>
+<main>
+<h1>Yuzora SEO 實作與驗證</h1>
+<p>2026-09-20。改善 GitHub 專案搜尋資訊，以及官網被搜尋引擎讀取、理解和分享的能力。</p>
+<h2>完成內容</h2>
+<ul>
+<li>GitHub About 已設定英文用途介紹、HTTPS homepage 與 13 個相關 topics，API 讀回確認成功。</li>
+<li>中英文獨立靜態網址：<a href="https://github.yuuzu.net/Yuzora/">繁體中文</a>、<a href="https://github.yuuzu.net/Yuzora/en/">English</a>。英文正文與可及性標籤不依賴 JavaScript 翻譯。</li>
+<li>加入各語言 title／description、canonical、互相指向的 hreflang、Open Graph、Twitter 預覽與 SoftwareApplication JSON-LD。</li>
+<li>建置產生雙語 sitemap；Demo 使用 noindex。CI 與 Pages 都執行相同產生流程。</li>
+<li>更新中英文 README 的用途與 v0.0.15 功能，並補上 <a href="../seo.md">SEO 維護與站長收錄流程</a>。</li>
+</ul>
+<h2>本機驗證</h2>
+<ul>
+<li>官網測試 37 項通過；完整前端測試 239 個檔案、2,895 項通過。</li>
+<li>lint 通過，0 errors、52 個既有 warnings；typecheck、App build、Demo build 通過。</li>
+<li>重跑 <code>site:seo</code> 的三個產物完全一致。</li>
+<li>Codex in-app Browser：中文 → 英文、英文功能錨點 → 中文同錨點、主題切換、英文 Demo 實際載入與桌面／390px 寬英文首屏通過。沒有使用 Playwright。</li>
+<li>靜態測試核對不執行 JS 時的翻譯、資源路徑、分享圖片、schema、sitemap 及平台範圍。</li>
+</ul>
+<h2>範圍與後續</h2>
+<p>本次不修改桌面／Host 執行邏輯，因此未重跑本機 Rust 測試；合併前仍以 PR 的完整 CI 為準。此紀錄是本機驗證，不代表已完成 Google／Bing 所有權驗證、索引提交或排名提升。</p>
+<p>站長需向 Google Search Console 與 Bing Webmaster Tools 提交 <code>https://github.yuuzu.net/Yuzora/sitemap.xml</code>。網域根目錄 robots 與 Cloudflare 政策由網域管理者維護；不在專案子路徑放置無效的 robots.txt。</p>
+</main>
+</html>

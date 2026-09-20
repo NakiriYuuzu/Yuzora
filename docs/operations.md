@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-12（v0.0.13 修正 WSL Windows 磁碟路徑的 Explorer 開啟，候選另行驗收）；Release／Pages 流程最後查證：2026-09-12。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-12（v0.0.13 修正 WSL Windows 磁碟路徑的 Explorer 開啟，候選另行驗收）；Release／Pages 流程最後查證：2026-09-12；Pages SEO 建置流程更新：2026-09-20。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -69,7 +69,7 @@ Required CI checks：
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生／Unix host installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
-| Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
+| Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
 
@@ -82,7 +82,7 @@ Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflo
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
 - PostgreSQL 暫停第一頁的記憶體回歸測試先暖機並固定 helper PIDs，再限制查詢造成的 RSS 增量小於 64 MiB；不以跨平台差異很大的程序總 RSS 判斷是否保留未讀資料。128 MiB 結果的舊無界讀取負向驗證必須仍超限。
-- Frontend job 在測試前執行 `site:companions` 與 `demo:build`，讓官網 artifact 測試在乾淨 checkout 也能驗證 `demo/` 連結，並在 merge 前驗證 Pages 建置；Demo Vite 設定也納入 typecheck。此 build check 不代表瀏覽器互動驗收。
+- Frontend job 在測試前執行 `site:companions`、`site:seo` 與 `demo:build`，讓官網 artifact 測試在乾淨 checkout 也能驗證 `demo/` 連結，並在 merge 前驗證 Pages 建置；Demo Vite 設定也納入 typecheck。此 build check 不代表瀏覽器互動驗收。
 - `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
 - 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消。
 - 現行 PR CI 沒有獨立執行 `check:version` 與 `check:updater-release`；在新增 blocking contract job 前，Release PR 必須保留第 5 節的本機 preflight 證據。
@@ -231,6 +231,7 @@ bun install --frozen-lockfile
 bun run lint
 bun run typecheck
 bun run site:companions
+bun run site:seo
 bun run demo:build
 bun run test
 bun run build
@@ -591,18 +592,18 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 ### 來源與觸發
 
 - 沿用 GitHub Actions 部署，Pages source 維持 `build_type=workflow`，不建立 `gh-pages` 分支。
-- Deploy artifact 是完整 `site/` 目錄，包含靜態官網 `index.html`、`styles.css`、`app.js`、`downloads.js`、`assets/` 與建置後的 `demo/`。網站 PNG favicon fallback 與桌面 app 圖示由同一品牌來源生成；inline SVG Logo 跟隨頁面主題。
+- Deploy artifact 是完整 `site/` 目錄，包含靜態官網 `index.html`、`styles.css`、`app.js`、`i18n.js`、`downloads.js`、`assets/`，以及建置後的 `en/`、`sitemap.xml` 與 `demo/`。網站 PNG favicon fallback 與桌面 app 圖示由同一品牌來源生成；inline SVG Logo 跟隨頁面主題。
 - `CI` 成功的 `main` push 會觸發 Pages 部署，也可從 Actions 手動 dispatch `Deploy Pages`；兩條路徑都必須先通過同一 `head_sha` 的成功 CI 查證。
 - Deploy job 以已查證的 exact SHA 建置完整 `site/` artifact。這個 gate 只驗證 CI 與來源一致性，仍不取代瀏覽器 smoke test。
-- Workflow 使用 Bun `1.3.14`，依序執行 `bun install --frozen-lockfile`、`bun run site:companions` 與 `bun run demo:build`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。Demo 使用相對 asset URL，支援 `/Yuzora/demo/` repository subpath；`site/demo/` 是忽略的建置產物，不提交。
+- Workflow 使用 Bun `1.3.14`，依序執行 `bun install --frozen-lockfile`、`bun run site:companions`、`bun run site:seo` 與 `bun run demo:build`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。Demo 使用相對 asset URL，支援 `/Yuzora/demo/` repository subpath；`site/demo/` 是忽略的建置產物，不提交。
 - 官網保持靜態 ES module；Demo 由 Vite bundle。兩者皆不得在發布頁面引用 `node_modules` runtime path。`site:companions` 會更新官網角色 markup 與 `assets/brand/companions.css`，來源是 App 的 SpaceCharacter。
 - `site-remotion/` 是影片原始碼，不包含在 Pages artifact。
 
 ### 產品頁維護邊界
 
-- 產品頁是靜態 HTML／CSS／ES module；`app.js` 負責中英文、light/dark theme、section reveal、active navigation、影片 viewport lifecycle、GitHub star badge 與 command palette，平台下載仍由 `downloads.js` 負責。Demo 入口沿用目前語言與主題。
+- 產品頁是靜態 HTML／CSS／ES module；`site:seo` 產生可獨立索引的中英文頁面；`app.js` 負責語言連結、light/dark theme、section reveal、active navigation、影片 viewport lifecycle、GitHub star badge 與 command palette，平台下載仍由 `downloads.js` 負責。Demo 入口沿用目前語言與主題。
 - `src/demo/` 使用正式 AppShell 與隔離的記憶體 transport，範例終端機、檔案、Git 與 SQL 不連接真實 host；桌面 entry 不引用 Demo。不可把 Demo 擴充成公開的原生 IPC／主機代理。
-- 語言切換必須同步 still src、video source、poster、alt、placeholder、aria-label 與 meta/OG content；新增 markup key 時，`app.js` 的 `zh-Hant` 與 `en` dictionaries 必須同時提供。
+- 中文首頁與 `/en/` 各有 canonical、hreflang、社群預覽及 SoftwareApplication JSON-LD。語言切換使用真實連結，不以 localStorage 覆寫網址的語言。新增 markup key 時，`site/i18n.js` 的 `zh-Hant` 與 `en` dictionaries 必須同時提供，中文 HTML 也須同步；`site:seo` 在建置時轉換英文 still、video、poster 與可及性標籤。詳見 [SEO 維護與搜尋收錄](seo.md)。
 - Theme 遵循系統偏好並保存至 `yuzora-theme`；no-JS、mobile 與 `prefers-reduced-motion` 必須保持內容可讀，不得依賴動畫才能看見主要資訊。
 - Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
@@ -610,7 +611,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 
 ### 產品頁 smoke test
 
-- Canonical URL 可開啟，HTTP 正確導向 HTTPS。
+- 中英文 canonical URL 可開啟，HTTP 正確導向 HTTPS；`/Yuzora/sitemap.xml` 只列出兩個正式語言網址。
 - Hero、三步工作流、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 可讀。
 - 中文／英文切換後，全部 still、poster、video source、placeholder、meta content 與 accessibility labels 正確。
 - Light/dark theme 初始值、手動切換與 persistence 正確；mobile 沒有水平捲軸，no-JS 與 reduced motion 不會隱藏主要內容。
