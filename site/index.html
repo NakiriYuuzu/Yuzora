@@ -3,12 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yuzora · ADE × HERDR</title>
-<meta name="description" content="Yuzora 是融合 Agent Development Environment 與 HERDR runtime 的開源桌面工作面。Spaces、Sessions、Agents、編輯器、終端機、SSH 與資料庫，同一個環境。">
-<meta property="og:title" content="Yuzora · ADE × HERDR">
-<meta property="og:description" content="讓 agent 開發，直接運轉在 HERDR。開源桌面 ADE：Spaces、Sessions、Agents 與編輯器、終端機、SSH、資料庫共用同一個工作面。">
+<!-- seo:start -->
+<title>Yuzora — AI 程式開發工作區｜macOS 與 Windows</title>
+<meta name="description" content="Yuzora 是 macOS 與 Windows 的開源 AI 程式開發工作區，整合 HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，集中使用你的 coding agents。">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<link rel="canonical" href="https://github.yuuzu.net/Yuzora/">
+<link rel="alternate" hreflang="zh-Hant" href="https://github.yuuzu.net/Yuzora/">
+<link rel="alternate" hreflang="en" href="https://github.yuuzu.net/Yuzora/en/">
+<link rel="alternate" hreflang="x-default" href="https://github.yuuzu.net/Yuzora/">
 <meta property="og:type" content="website">
-<meta property="og:image" content="assets/ade-herdr-runtime-zh.png">
+<meta property="og:site_name" content="Yuzora">
+<meta property="og:url" content="https://github.yuuzu.net/Yuzora/">
+<meta property="og:locale" content="zh_TW">
+<meta property="og:locale:alternate" content="en_US">
+<meta property="og:title" content="Yuzora — AI 程式開發工作區｜macOS 與 Windows">
+<meta property="og:description" content="在 macOS 與 Windows 集中使用 AI coding agents。HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，一個 Yuzora 工作區。">
+<meta property="og:image" content="https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png">
+<meta property="og:image:width" content="1440">
+<meta property="og:image:height" content="960">
+<meta property="og:image:alt" content="Yuzora 主工作面：Space rail、named Sessions、Agents 與 HERDR terminal pages">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Yuzora — AI 程式開發工作區｜macOS 與 Windows">
+<meta name="twitter:description" content="在 macOS 與 Windows 集中使用 AI coding agents。HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，一個 Yuzora 工作區。">
+<meta name="twitter:image" content="https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png">
+<meta name="twitter:image:alt" content="Yuzora 主工作面：Space rail、named Sessions、Agents 與 HERDR terminal pages">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","@id":"https://github.yuuzu.net/Yuzora/#application","name":"Yuzora","url":"https://github.yuuzu.net/Yuzora/","description":"Yuzora 是 macOS 與 Windows 的開源 AI 程式開發工作區，整合 HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，集中使用你的 coding agents。","applicationCategory":"DeveloperApplication","operatingSystem":["macOS (Apple Silicon)","Windows (x64)"],"inLanguage":["zh-Hant","en"],"image":"https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png","screenshot":"https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png","downloadUrl":"https://github.yuuzu.net/Yuzora/#download","sameAs":"https://github.com/NakiriYuuzu/Yuzora","author":{"@type":"Person","name":"NakiriYuuzu","url":"https://github.com/NakiriYuuzu"}}</script>
+<!-- seo:end -->
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/svg+xml" href="assets/brand/yuzora-mark.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -76,7 +96,7 @@
     <a data-nav data-spy="demo" href="#demo" data-i18n="nav.demo">試用 Demo</a>
     <a data-nav data-spy="brand" href="#brand" data-i18n="nav.brand">品牌</a>
     <a data-nav href="https://github.com/NakiriYuuzu/Yuzora" target="_blank" rel="noopener">GitHub</a>
-    <button class="lang-toggle" id="lang-toggle" aria-label="切換語言" data-i18n-aria-label="nav.language">EN</button>
+    <a class="lang-toggle" id="lang-toggle" href="./en/" lang="en" hreflang="en" aria-label="Read in English">EN</a>
     <button class="theme-toggle" id="theme-toggle" aria-label="切換深淺色" data-i18n-aria-label="nav.theme">
       <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 14.2A8.2 8.2 0 0 1 9.8 3.8a8.2 8.2 0 1 0 10.4 10.4Z"/></svg>
       <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
@@ -97,10 +117,10 @@
   <div class="shell">
     <p class="kicker hero-load" id="hero-kicker" data-i18n="hero.kicker">開源桌面 ADE · HERDR RUNTIME</p>
     <h1 class="hero-load">
-      <span data-i18n="hero.h1a">讓 agent 開發，</span><br>
+      <span data-i18n="hero.h1a">Yuzora，AI 開發工作區。</span><br>
       <span data-i18n="hero.h1b">直接運轉在 </span><em class="accent" data-i18n="hero.h1acc">HERDR</em><span data-i18n="hero.h1c">。</span>
     </h1>
-    <p class="lede hero-load" data-i18n="hero.sub">Yuzora 把 Spaces、Sessions、Agents 與編輯器、終端機、SSH、資料庫收進同一個桌面工作面；介面之下，是同一套 HERDR runtime。</p>
+    <p class="lede hero-load" data-i18n="hero.sub">在 macOS 與 Windows 使用 Claude Code、Codex、Pi 等 CLI coding agents。Yuzora 整合 HERDR 終端機、程式編輯器、Git、SSH／SFTP、WSL、資料庫與 HTML 預覽，讓專案與 agent 工作集中在同一處。</p>
     <div class="cta-row hero-load">
       <a class="btn-primary" id="primary-download" href="#download" aria-describedby="download-device-note">
         <span data-i18n="hero.cta">下載 Yuzora</span>
@@ -121,7 +141,7 @@
     <span class="float-wrap tag-4"><span class="float-tag" data-depth="20"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>SSH · SFTP</span></span>
     <div class="hero-shot-wrap">
       <img class="hero-shot" id="hero-shot" data-imgstem="ade-herdr-runtime"
-           src="assets/ade-herdr-runtime-zh.png" width="2560" height="1600"
+           src="assets/ade-herdr-runtime-zh.png" width="1440" height="960" fetchpriority="high"
            alt="Yuzora 主工作面：Space rail、named Sessions、Agents 與 HERDR terminal pages" data-i18n-alt="hero.alt">
     </div>
   </div>
@@ -267,7 +287,7 @@
       </article>
       <article class="bento-card bento-c reveal" style="--d: 0.05s">
         <h3 data-i18n="bento.cT">內嵌瀏覽器</h3>
-        <p data-i18n="bento.cD">開啟網站與已執行的服務，支援原生 webview、導覽歷史與遠端連線。</p>
+        <p data-i18n="bento.cD">預覽本機、WSL 或 SSH 工作區的 HTML，開啟網站與執行中的服務，選取元素並複製上下文交給 AI 修改。</p>
       </article>
       <article class="bento-card bento-d reveal" style="--d: 0.12s">
         <h3 data-i18n="bento.dT">自動更新</h3>
@@ -331,7 +351,7 @@
 </section>
 
 <!-- Brand identity -->
-<section id="demo" class="demo-section"><div class="shell"><div class="demo-intro"><div><p class="demo-eyebrow">MEET YOUR NEXT WORKSPACE</p><h2 data-i18n="demo.title">先玩一下，再一起開工。</h2><p data-i18n="demo.description">打開檔案、試試 Git diff、跑一段示範 SQL，或幫工作面換個顏色。你的 Space 夥伴也在等你。</p><a class="btn btn-primary" href="demo/" data-demo-link data-i18n="demo.open">開啟互動 Demo ↗</a><p class="demo-note" data-i18n="demo.note">使用範例資料，操作只保留在此瀏覽器分頁。</p></div><div id="site-companions" aria-hidden="true"><!-- companions:start --><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:6.062350019086398s;--character-blink-phase:-0.26417811403242586s;--character-look-duration:14.937480776111592s;--character-look-phase:-2.043573131122992s;--character-body-duration:6.372668440342865s;--character-body-phase:-0.9883418183987785s;--character-body-animation:character-nod" data-shell="box" data-face="curious" data-detail="patch" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g fill="currentColor"><ellipse cx="29" cy="43" rx="3.2" ry="6.5" transform="rotate(-8 29 43)"></ellipse><ellipse cx="51" cy="41" rx="3.2" ry="6.5" transform="rotate(-8 51 41)"></ellipse></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M37 53q3 4 6 0"></path></g></g></svg></span></span></div><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:5.454568830603378s;--character-blink-phase:-5.58110688424048s;--character-look-duration:12.37383406603176s;--character-look-phase:-3.6097166552221167s;--character-body-duration:6.064657672030403s;--character-body-phase:-5.836169095516119s;--character-body-animation:character-sway" data-shell="cloud" data-face="smile" data-detail="freckles" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M24 44q5-9 10 0M46 44q5-9 10 0"></path></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M35 52q5 7 10 0"></path></g></g></svg></span></span></div><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:6.068299019359127s;--character-blink-phase:-1.8062805315976243s;--character-look-duration:13.943098776972029s;--character-look-phase:-9.227329353821942s;--character-body-duration:8.241902974766928s;--character-body-phase:-8.817191335817723s;--character-body-animation:character-nod" data-shell="round" data-face="sleepy" data-detail="none" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="m25 42 9 1m12 0 9-1"></path></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><ellipse cx="40" cy="54" rx="2.5" ry="1.5"></ellipse></g></g></svg></span></span></div><!-- companions:end --></div></div><button class="demo-preview" id="demo-launch" type="button" aria-label="載入互動 Demo / Load interactive demo"><img src="assets/ade-herdr-runtime-zh.png" data-imgstem="ade-herdr-runtime" alt="Yuzora interactive demo" loading="lazy"><span data-i18n="demo.load">點一下，進入你的示範工作面 →</span></button><div id="demo-frame-host"></div></div></section>
+<section id="demo" class="demo-section"><div class="shell"><div class="demo-intro"><div><p class="demo-eyebrow">MEET YOUR NEXT WORKSPACE</p><h2 data-i18n="demo.title">先玩一下，再一起開工。</h2><p data-i18n="demo.description">打開檔案、試試 Git diff、跑一段示範 SQL，或幫工作面換個顏色。你的 Space 夥伴也在等你。</p><a class="btn btn-primary" href="demo/" data-demo-link data-i18n="demo.open">開啟互動 Demo ↗</a><p class="demo-note" data-i18n="demo.note">使用範例資料，操作只保留在此瀏覽器分頁。</p></div><div id="site-companions" aria-hidden="true"><!-- companions:start --><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:4.491904930987968s;--character-blink-phase:-4.374671369177349s;--character-look-duration:10.950454358869663s;--character-look-phase:-13.151046934642862s;--character-body-duration:6.840136567549596s;--character-body-phase:-0.7601581541947853s;--character-body-animation:character-nod" data-shell="box" data-face="curious" data-detail="patch" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g fill="currentColor"><ellipse cx="29" cy="43" rx="3.2" ry="6.5" transform="rotate(-8 29 43)"></ellipse><ellipse cx="51" cy="41" rx="3.2" ry="6.5" transform="rotate(-8 51 41)"></ellipse></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M37 53q3 4 6 0"></path></g></g></svg></span></span></div><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:5.196053260192578s;--character-blink-phase:-5.247749645876073s;--character-look-duration:12.210304489510854s;--character-look-phase:-14.432663399233366s;--character-body-duration:6.978268233564849s;--character-body-phase:-1.3262711738717694s;--character-body-animation:character-nod" data-shell="cloud" data-face="smile" data-detail="freckles" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M24 44q5-9 10 0M46 44q5-9 10 0"></path></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M35 52q5 7 10 0"></path></g></g></svg></span></span></div><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:4.465969072773841s;--character-blink-phase:-5.9350252350734705s;--character-look-duration:12.989112959860208s;--character-look-phase:-2.610787528653547s;--character-body-duration:7.621628490547609s;--character-body-phase:-7.608969222826676s;--character-body-animation:character-sway" data-shell="round" data-face="sleepy" data-detail="none" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="m25 42 9 1m12 0 9-1"></path></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><ellipse cx="40" cy="54" rx="2.5" ry="1.5"></ellipse></g></g></svg></span></span></div><!-- companions:end --></div></div><button class="demo-preview" id="demo-launch" type="button" aria-label="載入互動 Demo / Load interactive demo"><img src="assets/ade-herdr-runtime-zh.png" data-imgstem="ade-herdr-runtime" alt="Yuzora interactive demo" loading="lazy"><span data-i18n="demo.load">點一下，進入你的示範工作面 →</span></button><div id="demo-frame-host"></div></div></section>
 
 <section class="brand-section" id="brand" aria-labelledby="brand-title">
   <div class="shell">
@@ -428,6 +448,7 @@
       </div>
       <nav class="footer-links" aria-label="頁尾連結" data-i18n-aria-label="a11y.footerNav">
         <a href="#brand" data-i18n="nav.brand">品牌</a>
+        <a href="sitemap.xml">Sitemap</a>
         <a href="https://github.com/NakiriYuuzu/Yuzora" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/NakiriYuuzu/Yuzora/issues" target="_blank" rel="noopener">Issues</a>
         <a href="https://github.com/NakiriYuuzu/Yuzora/releases" target="_blank" rel="noopener">Releases</a>

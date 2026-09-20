@@ -6,7 +6,7 @@
 
 **讓 agent 開發，直接運轉在 HERDR。**
 
-<samp>融合 Agent Development Environment 與 HERDR runtime 的開源桌面環境</samp>
+<samp>macOS 與 Windows 的 AI 程式開發工作區，以 HERDR 驅動</samp>
 
 <br />
 
@@ -27,13 +27,20 @@
 
 <br />
 
-> Yuzora 是以 HERDR 作為執行與終端 runtime 的 **Agent Development Environment（ADE）**。
-> Spaces、named Sessions、Attention 與 Agents 投影在同一個桌面表面；編輯器、git、SSH/SFTP、
-> 資料庫與瀏覽器仍可並用。以 Tauri 打造，預設在地執行。
+> Yuzora 是以 Tauri 打造的 **AI 程式開發工作區，支援 macOS 與 Windows**。
+> 在可持續執行的 HERDR 終端 Session 使用 Claude Code、Codex、Pi 等 CLI coding agents，
+> 並在同一個桌面 App 操作程式編輯器、Git diff、SSH／SFTP、WSL、SQL 資料庫與 HTML 預覽。
+> 預設在地執行；Agent CLI 與使用帳號由使用者自行管理。
 
 <br />
 
 ## 功能
+
+### v0.0.15 更新
+
+- 可設定頁籤快捷鍵，包含 Ctrl+Tab 與直接選取第 1～9 個頁籤。
+- 預覽本機、WSL 與 SSH 工作區已儲存的 HTML；在瀏覽器選取元素並複製 AI 修改所需的上下文。
+- 整合 HERDR 0.9.1，修正終端焦點與渲染問題、Git 操作與 WSL 存檔誤報。
 
 ### v0.0.13 更新
 
