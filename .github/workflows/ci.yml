@@ -112,6 +112,11 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked --lib herdr_ -- --test-threads=1
 
+      - name: Native window activation test
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo test --locked --lib window_activation -- --test-threads=1
+
   # Release PRs must provide runnable installers before merge so the user can
   # complete platform validation. These are Actions artifacts only: no tag,
   # GitHub Release, updater signature, or publication happens from a PR.

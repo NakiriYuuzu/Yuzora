@@ -7,6 +7,7 @@ import { ExternalChangeBridge } from "@/workbench/ExternalChangeBridge";
 import { ExternalChangeResolver } from "@/workbench/ExternalChangeResolver";
 import { GitBridge } from "@/workbench/GitBridge";
 import { FileDropBridge } from "@/workbench/FileDropBridge";
+import { WorkbenchKeyboardBridge } from "@/workbench/WorkbenchKeyboardBridge";
 import { WorkbenchFocusBridge } from "@/workbench/WorkbenchFocusBridge";
 import { HerdrBridge } from "@/workbench/HerdrBridge";
 import { SshBridge } from "@/workbench/SshBridge";
@@ -34,6 +35,7 @@ function App() {
       <SessionRestoreBridge />
       <HerdrBridge />
       <WorkbenchFocusBridge />
+      <WorkbenchKeyboardBridge />
       <SshBridge />
       <SshHostKeyHost />
       <SftpHost />

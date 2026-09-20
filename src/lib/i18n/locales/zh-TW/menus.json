@@ -118,7 +118,8 @@
     "cmHerdrSplitDown": "向下分割",
     "cmHerdrZoomPane": "縮放窗格",
     "cmHerdrSwapPane": "與焦點窗格交換",
-    "cmHerdrClosePane": "關閉窗格"
+    "cmHerdrClosePane": "關閉窗格",
+    "cmPreviewHtml": "在此預覽"
   },
   "tabBar": {
     "noOpenTabs": "沒有開啟的分頁",
@@ -237,7 +238,8 @@
     "alternateLocalDescription": "{{derived}} 已存在。請為 {{remote}} 輸入不同的本地名稱。",
     "emptyTagsTitle": "沒有 Git 標籤",
     "emptyTagsDescription": "建立或抓取標籤後會顯示在這裡。",
-    "resultsTags": "Git 標籤"
+    "resultsTags": "Git 標籤",
+    "snapshotFailed": "Git 狀態更新失敗，已完成的操作不會重送。{{message}}"
   },
   "conflictBanner": {
     "opInProgress": "{{op}} 進行中",

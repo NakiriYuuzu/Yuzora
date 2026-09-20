@@ -49,7 +49,7 @@ Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact 
 - `src/workbench/`＝功能表面與 glue：EditorArea、TabBar、各 SplitView，以及 **Bridge 模式**——`HerdrBridge` 與其他 `*Bridge`／`*Host` 在 `src/App.tsx` 以扁平兄弟節點掛載，把 Tauri/runtime 事件接進 stores；`AppShell` 保持純版面，跨 store 協調寫在 Bridge。
 - `src/state/`＝zustand stores；HERDR runtime 狀態集中於獨立 typed `herdrStore`，並按 named Session 隔離 snapshot、capabilities 與連線狀態。
 - 子系統：`src-tauri/src/herdr_service.rs`＋`src/lib/herdrIpc.ts`／`herdrTypes.ts`（HERDR public API、capability/schema gating 與官方 terminal connector）、`src/editor/`（CodeMirror 6 語法編輯）、`src/terminal/`（xterm 與 HERDR terminal transport）、`src/preview/`（Browser：原生子 webview 與遠端 loopback forwarding；程式內保留 preview 命名）。
-- 產品範圍：terminal 統一由 HERDR 提供；編輯器不含 LSP；Browser 開啟網站與已執行的服務，不提供靜態 Preview server 或 Dev Server 管理。Markdown／SVG／圖片檢視仍屬編輯器功能。見 `.yuuzu/adr/0004-herdr-terminals-browser-only.html`。
+- 產品範圍：terminal 統一由 HERDR 提供；編輯器不含 LSP；Browser 開啟網站、已執行的服務及工作區 HTML（受限自訂資源協定），支援選取元素複製 AI 上下文；不提供專案 Dev Server 管理。Markdown／SVG／圖片檢視仍屬編輯器功能。見 `.yuuzu/adr/0004-herdr-terminals-browser-only.html`。
 - HERDR 主機路由：Windows 使用原生 named pipe，WSL 預設關閉並由設定啟用；macOS／Linux 原生及 SSH runtime 保留。來源切換先驗證 client／各 Session，相容性 gate 不放寬，不自動停止 server；原生來源保存後重啟 Yuzora 生效。見 `.yuuzu/adr/0005-native-windows-opt-in-wsl.html`。
 - 路徑 alias：`@/` → `src/`。
 

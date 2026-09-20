@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { retryBusyGitRead } from "@/lib/gitReadRetry"
 
 import {
     gitBootstrap,
@@ -328,6 +329,10 @@ function readyRoot(env: GitEnvironment | null | undefined): string | null {
     return env?.status === "ready" ? env.root : null
 }
 
+export function gitErrorIsSnapshot(): boolean {
+    return foregroundError === null && useGitStore.getState().lastError !== null
+}
+
 function statusRequestIsCurrent(
     env: GitEnvironment | null | undefined,
     rootAtFetch: string,
@@ -570,7 +575,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
                     const epochAtFetch = statusEpoch
                     let completedCurrentFullRequest = false
                     try {
-                        const status = await gitStatus(rootAtFetch, requestPaths)
+                        const status = await retryBusyGitRead(() => gitStatus(rootAtFetch, requestPaths), () => statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch))
                         if (generation !== refreshFlightGen) return
                         // Re-check after the await: the environment can flip to
                         // non-ready while the fetch is in flight (detect() switching to
@@ -644,7 +649,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         if (!rootAtFetch || get().snapshotStale) return
         const epochAtFetch = statusEpoch
         try {
-            const status = await gitStatus(rootAtFetch, paths)
+            const status = await retryBusyGitRead(() => gitStatus(rootAtFetch, paths), () => statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch))
             if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
                 statusRefreshError = null
                 set((state) => ({ status, lastError: foregroundError ?? branchRefreshError, statusRevision: state.statusRevision + 1 }))
@@ -672,7 +677,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         const epochAtFetch = branchEpoch
         const seqAtFetch = ++branchRequestSeq
         try {
-            const branches = await gitBranches(rootAtFetch)
+            const branches = await retryBusyGitRead(() => gitBranches(rootAtFetch), () => branchRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch))
             if (branchRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
                 branchResponseSeq = seqAtFetch
                 branchRefreshError = null

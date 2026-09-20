@@ -8,6 +8,18 @@ beforeEach(() => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
 })
 describe("app shortcut bindings", () => {
+    it("normalizes and dispatches tab navigation inside terminal inputs", () => {
+        expect(normalizeBinding("ctrl+shift+tab")).toBe("Ctrl+Shift+Tab")
+        const run = vi.fn()
+        const terminal = document.createElement("div")
+        terminal.className = "xterm"
+        const input = terminal.appendChild(document.createElement("textarea"))
+        input.addEventListener("keydown", event => dispatchAppShortcut(event, "nextTab", run))
+        const event = new KeyboardEvent("keydown", { key: "Tab", ctrlKey: true, cancelable: true })
+        input.dispatchEvent(event)
+        expect(run).toHaveBeenCalledOnce()
+        expect(event.defaultPrevented).toBe(true)
+    })
     it("normalizes order and rejects ambiguous or unmodified input", () => {
         expect(normalizeBinding("shift+mod+k")).toBe("Mod+Shift+K")
         for (const value of ["K", "Mod+Ctrl+K", "Mod+Mod+K", "Mod+Enter"]) expect(normalizeBinding(value)).toBeNull()

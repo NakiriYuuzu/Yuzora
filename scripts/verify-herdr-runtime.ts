@@ -7,12 +7,15 @@ import { createInterface } from "node:readline"
 import { HERDR_RESOURCE_VERSION } from "./prepare-herdr-resources"
 import { removeRuntimeFixture } from "./runtime-fixture-cleanup"
 import methodFixture from "../src-tauri/host/tests/fixtures/herdr-0.9.0-methods.json"
+import methodFixture091 from "../src-tauri/host/tests/fixtures/herdr-0.9.1-methods.json"
 
 // Uses only temporary XDG roots and its own named server. Never stops a user's server.
 check(process.argv[2], "usage: bun scripts/verify-herdr-runtime.ts /absolute/path/to/herdr")
 const binary = await realpath(process.argv[2])
 const expectedVersion = process.argv[3] ?? HERDR_RESOURCE_VERSION.baseVersion
-check(["0.8.2", "0.9.0"].includes(expectedVersion), "unverified runtime version; update compatibility fixtures first")
+check(["0.8.2", "0.9.0", "0.9.1"].includes(expectedVersion), "unverified runtime version; update compatibility fixtures first")
+const serverBinary = process.argv[4] ? await realpath(process.argv[4]) : binary
+const serverVersion = process.argv[5] ?? expectedVersion
 const expectedProtocol = expectedVersion === "0.8.2" ? 20 : 22
 // Keep Unix socket paths below macOS's length limit, including the session suffix.
 const windows = process.platform === "win32"
@@ -24,10 +27,11 @@ Object.assign(env, { XDG_CONFIG_HOME: join(root, "cfg"), XDG_STATE_HOME: join(ro
 if (windows) Object.assign(env, { APPDATA: join(root, "cfg"), LOCALAPPDATA: join(root, "state") })
 const children: ChildProcessWithoutNullStreams[] = []
 const sockets: Socket[] = []
+const frameTrace: Record<string, unknown>[] = []
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function check(ok: unknown, message: string): asserts ok { if (!ok) throw new Error(message) }
-function start(args: string[]) {
-  const child = spawn(binary, ["--session", session, ...args], { cwd: join(root, "work"), env, stdio: "pipe" })
+function start(args: string[], executable = binary) {
+  const child = spawn(executable, ["--session", session, ...args], { cwd: join(root, "work"), env, stdio: "pipe" })
   children.push(child)
   return child
 }
@@ -45,14 +49,16 @@ async function command(args: string[]) {
     return JSON.parse(output)
   } finally { clearTimeout(timer) }
 }
-function collect(input: NodeJS.ReadableStream) {
+function collect(input: NodeJS.ReadableStream, stream = "api") {
   const rows: Record<string, unknown>[] = []
   let failure: Error | null = null
   const reader = createInterface({ input })
   reader.on("line", line => {
     try {
       if (line.length > 2_000_000 || rows.length >= 2000) throw new Error("runtime output limit")
-      rows.push(JSON.parse(line))
+      const row = JSON.parse(line)
+      rows.push(row)
+      if (process.env.YUZORA_HERDR_FRAME_TRACE && row.type === "terminal.frame") frameTrace.push({ ...row, stream })
     } catch (error) { failure = error as Error; reader.close() }
   })
   input.on("error", error => { failure = error })
@@ -85,9 +91,10 @@ manifest_check = false
   const schema = await command(["api", "schema", "--json"])
   check(schema.protocol === expectedProtocol, "unexpected official schema protocol")
   const methods = schema.schemas.request.oneOf.map((entry: { properties: { method: { const: string } } }) => entry.properties.method.const)
-  if (expectedVersion === "0.9.0") check(JSON.stringify(methods) === JSON.stringify(methodFixture.methods), "official method fixture must match the pinned binary")
+  const fixture = expectedVersion === "0.9.1" ? methodFixture091 : methodFixture
+  if (expectedVersion !== "0.8.2") check(JSON.stringify(methods) === JSON.stringify(fixture.methods), "official method fixture must match the pinned binary")
   console.log(`Verified HERDR ${expectedVersion} protocol ${schema.protocol} method schema`)
-  server = start(["server"])
+  server = start(["server"], serverBinary)
   server.stdout.resume()
   server.stderr.resume()
   let status
@@ -99,7 +106,7 @@ manifest_check = false
   }
   check(status?.server?.compatible === true, "isolated server must match its client")
   check(status.client.version === expectedVersion, "unexpected client version")
-  check(status.server.version === expectedVersion, "unexpected server version")
+  check(status.server.version === serverVersion, "unexpected server version")
   check(status.client.protocol === expectedProtocol && status.server.protocol === expectedProtocol, "status protocol mismatch")
   check(typeof status.server.socket === "string", "missing isolated socket marker")
   const socketRelative = relative(root, status.server.socket)
@@ -138,12 +145,12 @@ manifest_check = false
   check(pane?.terminal_id, "snapshot must expose terminal identity")
   const observer = start(["terminal", "session", "observe", pane.terminal_id, "--cols", "80", "--rows", "24"])
   observer.stderr.resume()
-  const observe = collect(observer.stdout)
+  const observe = collect(observer.stdout, "observer")
   const first = await observe(row => row.type === "terminal.frame")
   check(first.full === true && typeof first.seq === "number" && typeof first.bytes === "string", "official observer frame contract changed")
   const controller = start(["terminal", "session", "control", pane.terminal_id, "--cols", "80", "--rows", "24"])
   controller.stderr.resume()
-  const control = collect(controller.stdout)
+  const control = collect(controller.stdout, "controller")
   await control(row => row.type === "terminal.frame")
   const input = windows ? "Write-Output ('YUZORA_' + 'RUNTIME_OK')\r" : "printf 'YUZORA_%s\\n' 'RUNTIME_OK'\n"
   controller.stdin.write(JSON.stringify({ type: "terminal.input", text: input }) + "\n")
@@ -183,11 +190,22 @@ manifest_check = false
     check(info.pane.scroll?.max_offset_from_bottom >= 300, "fixture did not produce the required real scrollback")
     const moved = await api<Scroll>("pane.scroll", { pane_id: paneId, offset_from_bottom: 100 })
     check(moved.pane.pane_id === paneId && moved.pane.scroll.offset_from_bottom === 100, "pane.scroll authoritative range mismatch")
+    if (process.env.YUZORA_HERDR_FRAME_TRACE) {
+      // Finish captures at the live bottom with an acknowledged full frame.
+      // Otherwise the final captured delta races the scroll acknowledgement
+      // and a correct history viewport can look like a displaced live screen.
+      await api<Scroll>("pane.scroll", { pane_id: paneId, offset_from_bottom: 0 })
+      controller.stdin.write(JSON.stringify({ type: "terminal.resize", cols: 101, rows: 30 }) + "\n")
+      const expanded = await control(row => row.type === "terminal.frame" && row.full === true && row.width === 101 && row.height === 30)
+      controller.stdin.write(JSON.stringify({ type: "terminal.resize", cols: 100, rows: 30 }) + "\n")
+      await control(row => row.type === "terminal.frame" && row.full === true && row.width === 100 && row.height === 30 && Number(row.seq) > Number(expanded.seq))
+    }
     console.log("PASS pane.get/pane.scroll real history and exact pane identity")
   } else console.log("NOT RUN pane scroll metadata: method unavailable on this runtime")
   controller.stdin.write(JSON.stringify({ type: "terminal.release" }) + "\n")
-  console.log(`HERDR ${expectedVersion} protocol ${schema.protocol}: snapshot, live events, observer, controller, input and resize passed`)
+  console.log(`HERDR client ${expectedVersion} / server ${serverVersion} protocol ${schema.protocol}: snapshot, live events, observer, controller, input and resize passed`)
 } finally {
+  if (process.env.YUZORA_HERDR_FRAME_TRACE) await writeFile(process.env.YUZORA_HERDR_FRAME_TRACE, JSON.stringify(frameTrace))
   for (const socket of sockets) socket.destroy()
   for (const child of children) if (child !== server && child.exitCode === null) child.stdin.end()
   try { if (server) await command(["session", "stop", session, "--json"]) }

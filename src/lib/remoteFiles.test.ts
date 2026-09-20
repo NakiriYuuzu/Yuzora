@@ -17,6 +17,26 @@ beforeEach(() => {
 })
 
 describe("remote documents", () => {
+  it("serializes overlapping saves so the second uses the first committed revision", async () => {
+    const owner = { hostId: "overlapping-saves", generation: 1 }
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/mnt/c/project", capabilityId: "workspace" })
+    const root = await registerRuntimeWorkspace(owner, "/mnt/c/project", () => true)
+    const file = root + "/new.txt"
+    await readRemoteFile(file)
+    let revision = "original"
+    let disk = "old"
+    vi.mocked(invoke).mockImplementation(async (_command, args) => {
+      const operation = (args as { operation: { params: { revision: string; content: string } } }).operation
+      await Promise.resolve()
+      if (operation.params.revision !== revision) throw new Error("file-conflict")
+      disk = operation.params.content
+      revision += "-saved"
+      return { revision }
+    })
+    const outcomes = await Promise.allSettled([saveRemoteFile(file, "first"), saveRemoteFile(file, "second")])
+    expect(outcomes.map(outcome => outcome.status)).toEqual(["fulfilled", "fulfilled"])
+    expect(disk).toBe("second")
+  })
   it("a discarded reload cannot authorize saving over an unseen remote revision", async () => {
     const owner = { hostId: "discarded-reload", generation: 1 }
     vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/project", capabilityId: "workspace" })

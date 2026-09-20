@@ -7,7 +7,7 @@
     "one": "One Light / Dark"
   },
   "preview": "語法高亮預覽",
-  "keyboardScope": "僅設定 App 快捷鍵。Mod 在 macOS 表示 Command，在 Windows/Linux 表示 Ctrl。請輸入如 Mod+Shift+K。編輯器編輯／儲存與終端協定快捷鍵保留原有綁定；終端輸入不攔截 Ctrl 快捷鍵。",
+  "keyboardScope": "僅設定 App 快捷鍵。Mod 在 macOS 表示 Command，在 Windows/Linux 表示 Ctrl。請輸入如 Mod+Shift+K。編輯器編輯／儲存與終端協定快捷鍵保留原有綁定；頁籤切換快捷鍵也適用於終端輸入。",
   "commands": {
     "commandPalette": "命令面板",
     "newTerminal": "新增終端分頁",
@@ -17,13 +17,24 @@
     "modeAde": "切換至 ADE",
     "modeFiles": "切換至 Files",
     "modeGit": "切換至 Git",
-    "modeDatabase": "切換至 Database"
+    "modeDatabase": "切換至 Database",
+    "tab1": "選取第 1 個頁籤",
+    "tab2": "選取第 2 個頁籤",
+    "tab3": "選取第 3 個頁籤",
+    "tab4": "選取第 4 個頁籤",
+    "tab5": "選取第 5 個頁籤",
+    "tab6": "選取第 6 個頁籤",
+    "tab7": "選取第 7 個頁籤",
+    "tab8": "選取第 8 個頁籤",
+    "tab9": "選取第 9 個頁籤",
+    "nextTab": "下一個頁籤",
+    "previousTab": "上一個頁籤"
   },
   "search": "搜尋快捷鍵",
   "apply": "套用",
   "reset": "恢復預設",
   "errors": {
-    "invalid": "請輸入 Mod/Ctrl/Alt/Shift 加一個字母、數字、標點鍵或 F1–F12。",
+    "invalid": "請輸入 Mod/Ctrl/Alt/Shift 加一個字母、數字、標點鍵、Tab 或 F1–F12。",
     "reserved": "此快捷鍵保留供文字編輯或系統使用。",
     "conflict": "此快捷鍵與其他 App 指令衝突。"
   }

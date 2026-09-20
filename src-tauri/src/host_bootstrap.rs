@@ -656,7 +656,7 @@ mod tests {
             validate_manifest(&manifest, "linux-x86_64").unwrap_err(),
             "herdr-artifact-version-mismatch"
         );
-        manifest.herdr.version = "0.9.0".into();
+        manifest.herdr.version = "0.9.1".into();
         manifest.herdr.protocol = 22;
         validate_manifest(&manifest, "linux-x86_64").unwrap();
     }

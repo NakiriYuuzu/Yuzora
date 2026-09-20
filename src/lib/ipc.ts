@@ -1,6 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core"
 import { parseRemoteFilePath } from "./runtimeIdentity"
 import { invokeNativeGit, closeNativeGitWorkspace } from "./nativeGit"
+import { notifyFileSaved } from "./fileSaveEvents"
+import type { PreviewInteractionSnapshot, PreviewResourceLease, PreviewResourceSource, PreviewShortcutBinding } from "./previewTypes"
 
 // Re-exported so feature modules that carry their own domain logic around a
 // command (the log-event envelope builder) can
@@ -8,6 +10,9 @@ import { invokeNativeGit, closeNativeGitWorkspace } from "./nativeGit"
 // core directly. `@tauri-apps/api/core` should be imported only here and in
 // `platform.ts` (which owns `isTauri`).
 export { invoke }
+
+/** Top-level activation, including Windows when a child WebView has lost focus. */
+export const isWorkbenchWindowActive = () => invoke<boolean>("workbench_is_window_active")
 
 import type {
     FileNode,
@@ -130,8 +135,10 @@ export function readFileBase64(path: string, maxBytes: number): Promise<FileBase
 }
 
 export function saveFile(path: string, content: string): Promise<number> {
-    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.saveRemoteFile(path, content))
-    return invoke("save_file", { path, content })
+    const saved = parseRemoteFilePath(path)
+        ? import("./remoteFiles").then((remote) => remote.saveRemoteFile(path, content))
+        : invoke<number>("save_file", { path, content })
+    return saved.then((result) => { notifyFileSaved(path); return result })
 }
 
 export function fsCreateFile(workspace: string, path: string): Promise<void> {
@@ -588,4 +595,20 @@ export function previewNavigationState(sessionId: string): Promise<import("@/sta
 
 export function previewReload(): Promise<void> {
     return invoke("preview_reload")
+}
+
+export function previewResourceOpen(source: PreviewResourceSource, path: string): Promise<PreviewResourceLease> {
+    return invoke("preview_resource_open", { source, path })
+}
+
+export function previewResourceClose(id: string): Promise<void> {
+    return invoke("preview_resource_close", { id })
+}
+
+export function previewInteractions(sessionId: string, bindings: PreviewShortcutBinding[]): Promise<PreviewInteractionSnapshot | null> {
+    return invoke("preview_interactions", { sessionId, bindings })
+}
+
+export function previewSelectElement(sessionId: string, active: boolean): Promise<void> {
+    return invoke("preview_select_element", { sessionId, active })
 }

@@ -1,3 +1,4 @@
+import { requestTerminalFocus } from "@/terminal/terminalFocus"
 import i18n from "@/lib/i18n"
 import { herdrTabClose, herdrTabRename } from "@/lib/herdrIpc"
 import { useHerdrStore } from "@/state/herdrStore"
@@ -135,10 +136,14 @@ export async function openCreatedHerdrTabAndRequestName({
                 candidate.herdrSessionId === sessionName &&
                 candidate.herdrTabId === tabId
         )
-    await renameHerdrTabWithDialog({
-        sessionName,
-        tabId,
-        currentLabel: initialTitle,
-        pagePath: page?.path ?? null
-    })
+    try {
+        await renameHerdrTabWithDialog({
+            sessionName,
+            tabId,
+            currentLabel: initialTitle,
+            pagePath: page?.path ?? null
+        })
+    } finally {
+        if (page) requestTerminalFocus(page.path)
+    }
 }

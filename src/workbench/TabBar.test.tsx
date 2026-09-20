@@ -1,4 +1,4 @@
-import { expect, test, afterEach, beforeEach, vi } from "vitest"
+import { expect, test, afterEach, beforeEach, onTestFinished, vi } from "vitest"
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 
@@ -27,6 +27,7 @@ vi.mock("@/lib/herdrIpc", async (importOriginal) => ({
 }))
 
 import { TabBar } from "./TabBar"
+import { TextInputDialogHost } from "./TextInputDialogHost"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { useAppDialogStore } from "../state/appDialogStore"
 import { useContextMenuStore } from "../state/contextMenuStore"
@@ -817,13 +818,30 @@ test("ADE tab menu lists existing Herdr tabs and activates the selected runtime 
     expect(await screen.findByTestId("herdr-open-tab-tab-1")).toHaveAttribute("data-disabled")
 })
 
-test("ADE tab menu creates a persistent Herdr tab and immediately requests its name", async () => {
-    const createTerminalInSelectedSpace = vi.fn().mockResolvedValue({
+test.each(["immediate", "delayed", "workspace-change"])("ADE tab menu waits for animated teardown before terminal creation: %s", async (timing) => {
+    const getComputedStyle = window.getComputedStyle.bind(window)
+    const styleSpy = vi.spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
+        const style = getComputedStyle(element, pseudo)
+        if (element.getAttribute("role") === "menu") {
+            // Radix retains the closing menu until its CSS exit animation ends.
+            Object.defineProperty(style, "animationName", {
+                get: () => element.getAttribute("data-state") === "closed" ? "exit" : "enter"
+            })
+        }
+        return style
+    })
+    onTestFinished(() => styleSpy.mockRestore())
+    const created = {
         herdrSessionId: "default",
+        workspaceId: "ws-1",
         terminalId: "term-new",
         paneId: "pane-new",
         tabId: "tab-new",
         title: "New shell"
+    }
+    const createTerminalInSelectedSpace = vi.fn(async () => {
+        if (timing === "delayed") await new Promise((resolve) => setTimeout(resolve, 50))
+        return created
     })
     useWorkspaceStore.setState({
         workspacePath: "/w",
@@ -848,18 +866,41 @@ test("ADE tab menu creates a persistent Herdr tab and immediately requests its n
         createTerminalInSelectedSpace
     })
 
-    render(<TabBar groupIndex={0} />)
+    render(<><TabBar groupIndex={0} /><TextInputDialogHost /></>)
     fireEvent.pointerDown(screen.getByTestId("tabs-add-menu-0"), {
         button: 0,
         ctrlKey: false
     })
+    const menu = await screen.findByRole("menu")
     fireEvent.click(await screen.findByTestId("herdr-new-tab-menu-item"))
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 60)) })
+    expect(menu).toHaveAttribute("data-state", "closed")
+    expect(createTerminalInSelectedSpace).not.toHaveBeenCalled()
+    if (timing === "workspace-change") {
+        act(() => { useHerdrStore.setState({ selectedSpaceId: "other-space" }) })
+    }
+    const animationEnd = new Event("animationend", { bubbles: true })
+    Object.defineProperty(animationEnd, "animationName", { value: "exit" })
+    fireEvent(menu, animationEnd)
+    if (timing === "workspace-change") {
+        await waitFor(() => expect(menu).not.toBeInTheDocument())
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+        expect(createTerminalInSelectedSpace).not.toHaveBeenCalled()
+        expect(useTextInputDialogStore.getState().pending).toBeNull()
+        return
+    }
 
     await waitFor(() => {
         expect(useTextInputDialogStore.getState().pending).toMatchObject({
             initialValue: "New shell"
         })
     })
+    const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Name" })
+    // Let the menu's deferred focus restoration finish as it does when the
+    // native Terminal creation resolves while its add menu is closing.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    expect(name).toHaveFocus()
+    expect([name.selectionStart, name.selectionEnd]).toEqual([0, "New shell".length])
     useTextInputDialogStore.getState().respond("Build shell")
 
     await waitFor(() => {
@@ -876,6 +917,16 @@ test("ADE tab menu creates a persistent Herdr tab and immediately requests its n
         tabId: "tab-new",
         label: "Build shell"
     })
+})
+
+test("closing the add menu without a naming dialog restores the trigger", async () => {
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    const trigger = screen.getByTestId("tabs-add-menu-0")
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    const menu = await screen.findByRole("menu")
+    fireEvent.keyDown(menu, { key: "Escape" })
+    await waitFor(() => expect(trigger).toHaveFocus())
 })
 
 test("tab path tooltip 移除 extended prefix，但 context target 保留 raw path", () => {

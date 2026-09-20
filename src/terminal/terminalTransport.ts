@@ -22,6 +22,8 @@ export type TerminalTransportOutputEvent = {
   droppedBytes: number
   truncated: boolean
   full?: boolean
+  width?: number
+  height?: number
 }
 
 export type TerminalTransportEvent =
@@ -219,7 +221,9 @@ export function createHerdrTerminalTransport(
         seq: event.seq,
         droppedBytes: 0,
         truncated: false,
-        full: event.full
+        full: event.full,
+        width: event.width,
+        height: event.height,
       })
       return
     }

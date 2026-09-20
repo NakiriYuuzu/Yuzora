@@ -118,7 +118,8 @@
     "cmHerdrSplitDown": "Split down",
     "cmHerdrZoomPane": "Zoom pane",
     "cmHerdrSwapPane": "Swap with focused pane",
-    "cmHerdrClosePane": "Close pane"
+    "cmHerdrClosePane": "Close pane",
+    "cmPreviewHtml": "Preview here"
   },
   "tabBar": {
     "noOpenTabs": "No open tabs",
@@ -237,7 +238,8 @@
     "alternateLocalDescription": "{{derived}} already exists. Enter a different local name for {{remote}}.",
     "emptyTagsTitle": "No Git tags",
     "emptyTagsDescription": "Create or fetch tags to see them here.",
-    "resultsTags": "Git tags"
+    "resultsTags": "Git tags",
+    "snapshotFailed": "Git state could not be refreshed. Completed operations are not repeated. {{message}}"
   },
   "conflictBanner": {
     "opInProgress": "{{op}} in progress",

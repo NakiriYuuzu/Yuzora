@@ -23,14 +23,14 @@ describe("prepare Herdr resources", () => {
     expect(() => archiveExtractionCommand("win32", "archive.zip", "runtime")).toThrow("SystemRoot")
     expect(archiveExtractionCommand("darwin", "/tmp/archive.zip", "/tmp/runtime")).toEqual(["unzip", "-q", "/tmp/archive.zip", "-d", "/tmp/runtime"])
   })
-  it("pins protocol-22 Herdr v0.9.0 Stable resources for both released desktop platforms", () => {
+  it("pins protocol-22 Herdr v0.9.1 Stable resources for both released desktop platforms", () => {
     expect(HERDR_RESOURCE_VERSION).toEqual({
-      baseVersion: "0.9.0",
+      baseVersion: "0.9.1",
       protocol: 22,
       licenseSha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     })
-    expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.9.0/")
-    expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.9.0/")
+    expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.9.1/")
+    expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.9.1/")
     expect(Object.keys(HERDR_RESOURCE_TARGETS).sort()).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64", "windows-x86_64"])
     expect(resourceTargetIdsForHost("darwin")).toEqual(["macos-aarch64", "macos-x86_64"])
     expect(resourceTargetIdsForHost("win32")).toEqual(["windows-x86_64"])

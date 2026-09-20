@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Windows Terminal 與 Browser 修補 — 2026-09-19</title>
+<style>body{max-width:960px;margin:48px auto;padding:0 24px;font:16px/1.7 system-ui,sans-serif;background:#faf9f6;color:#242824}h1{font-size:30px}h2{font-size:21px;margin-top:32px}table{border-collapse:collapse;width:100%}td,th{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}code{background:#eeeee8;padding:2px 5px;border-radius:4px}.status{padding:16px 20px;border-left:4px solid #8a6419;background:#f7efd9}a{color:#315b44}</style></head>
+<body><h1>Windows Terminal 與 Browser 修補</h1><p>2026-09-19 · release/v0.0.15 · 基準 <code>c6fcb16</code> 後續修補</p>
+<p class="status">a186b41 Windows 安裝版已通過一般篩選欄切回、游標保留，以及重啟後首次／再次點 Terminal 頁籤直接輸入。驗收另重現命名欄反覆全選、HTML 連結導覽後空白，已追加修補與回歸，待最新候選實測。完整矩陣尚未完成，這不是驗收通過或發布許可。</p>
+<h2>原生驗收追加修正</h2><p>Windows WebView GotFocus 的延遲回報被當成視窗再次啟用，造成 setFocus 回饋循環；命名欄每次 focus 又全選，輸入 def 最後只剩 f。82f9eab 改由 HWND 啟用事件要求鍵盤接收權、合併重複通知，命名初始值僅首次全選。三個回歸先失敗，相關 84 tests、完整 2,883 tests 與 build 通過。</p><p>WSL /home fixture 的中文空白路徑、CSS、JS module/import、SVG 正常載入；點 HTM 子頁則空白、重整恢復。文件 URL 解析期間短暫空值誤關 native child，已改為同工作區 lease 維持有效，僅投射新文件路徑，保留 Host generation／capability 失效邊界。真實 Panel／hook 回歸先失敗後通過，Browser 相關 68 tests 通過。</p><p>長時間 TUI：95807f8 的 ping／top 觀察至少 20 分 37 秒，完成字級與分割比例循環、捲動停留與恢復追蹤；a186b41 更新後仍接續同程序，另觀察約 15 分鐘並調整分割比例，未見擠縮或錯行。這是原生畫面抽樣，不能排除每個短暫閃爍。</p>
+<h2>一般欄位與頁籤追加修補</h2><p>一般欄位保護原先也跳過 native WebView 的鍵盤恢復。現在保留欄位及選取範圍，只恢復鍵盤接收權，並核對視窗／工作區／頁面／欄位身分；可見 Browser 的舊 main-document 欄位不拿來搶焦點。已有 Terminal 頁籤再次點選時，active／visible effect 不會重跑；啟用成功後改由入口要求正確 pane 的焦點，等候掛載並取消過期要求。</p><p>回歸先失敗後通過，相關 77 tests、完整 238 files／2,880 tests、typecheck／build 通過；lint 0 errors／52 既有 warnings。本輪未改 Rust／Host。新安裝包與長時間 shell／TUI 仍待驗收。95807f8 的 CI 35439917925 成功，Windows 端 NSIS SHA-256 為 <code>b3ac9bece39cd7eecc00f7c7ce6555d8af7a4f41a15fa030191c536048aa9e2e</code>；以下 bb54e55 與初期內容保留作為修補歷程。</p>
+<h2>安裝版追加證據</h2><p>bb54e55／CI 35435109518／NSIS SHA-256 <code>377f38b614128e28505b4ee684da430990c404efe75237c8186bb47eb386fde2</code>。Windows 端核對後安裝，400 行輸出於 14 → 26 → 10 → 30 → 14 字級均可讀；命名、取消命名後直接輸入成功；Browser 作用中時的未儲存確認框可操作，取消保留編輯並恢復 Browser。</p><p>F1 仍可重現。Console 紀錄顯示工作列返回缺少 WebView／DOM focus；原生 focus=true 後 Tauri isFocused() 仍可能為 false。追加修補使用 WM_ACTIVATE 與 GetForegroundWindow，保留前端身分及輸入欄保護。新增兩個回歸案例先失敗後通過，前端 2,869 tests、Rust 381 單元及 1 integration、clippy baseline 均通過。Windows HWND subclass 測試加入 CI，新安裝版驗收待完成。</p><p>重新安裝遇到三個使用中的 HERDR runtime 檔案鎖定；各檔雜湊均與候選 manifest 相同後保留，未停止 Session。此處理不能推廣至不同 runtime 的升級，I1 仍未全數通過。</p>
+<h2>根因與修補</h2><table><thead><tr><th>問題</th><th>證據與處理</th></tr></thead><tbody>
+<tr><td>Windows 改字級擠字</td><td>以 400 行輸出，26px → 10px 重現整行擠到左側。正式 HERDR 元件加固定 frame，以及直接更新 xterm 字級，均能在 Windows WebView2 153 重現。字級已改變時，重用的隱藏量測節點仍同步回傳前一字級寬度，錯誤結果被快取。補丁在字型變更時重建四個量測 span 及其容器；不重建可見 terminal、buffer 或 Session。</td></tr>
+<tr><td>返回 App 沒有鍵盤焦點</td><td>native activation 現在不以 document.hasFocus() 為唯一判斷：確認原生視窗仍作用中後，要求 main WebView 取得鍵盤焦點，再恢復當前 pane。DOM focus 不重複發出 native 請求。相關取消與重入案例已通過；修補後的 Windows 安裝包仍待實機確認。</td></tr>
+<tr><td>命名／信任提示關閉後沒聚焦</td><td>命名輸入尚未卸載時保留等待；普通輸入欄仍終止恢復。新工作區信任提示允許或取消後，對提示開啟前的頁面發出焦點請求；已切頁則取消。</td></tr>
+<tr><td>Browser 蓋住未儲存確認框</td><td>中央 overlay gate 漏接 confirmDialog store。已補接，並測試 Browser 已開啟與開啟中兩種情境：確認框存在時隱藏 native child，取消後恢復。</td></tr>
+</tbody></table>
+<h2>驗證</h2><ul>
+<li>修補前 Browser 兩個回歸案例失敗；命名卸載及信任提示允許／取消案例也先確認失敗，再修正。</li>
+<li>Windows 正式 HERDR 元件字級序列：14 → 26 → 10 → 30 → 14 → 18 → 12 → 24 → 14。修補前 26px 的五字元寬約 114px（預期 78px），10px 字距約 −9.59px；正式補丁後九次全部符合字寬斷言，底部 marker 正確。</li>
+<li>永久 fixture 檢查 regular、bold、italic、bold italic、中文，以及底部 marker；於 Codex Browser 與 Windows WebView2 驗證；移除補丁的同一 fixture 在 Windows 26px 確實失敗。GUI 證據保留於本次對話工具輸出。</li>
+<li><code>bun install --frozen-lockfile</code>、238 files／2,867 tests、typecheck、build 通過；lint 0 errors／52 warnings，與本輪修補前相同。</li>
+<li>版本一致性與 Stable updater contract 檢查通過。本輪未改 Rust／Host，未重跑其完整測試。</li>
+</ul>
+<h2>驗收界線</h2><p>Windows 原生字級驗證使用同一份 production HERDR 元件與真實 xterm，僅替換 IPC peer；不是更新安裝包後的完整 App 驗收。新候選須優先重測 R1／R2、F1／F2、B8。原有 Git、WSL 與 Browser 的有限 smoke 結果不提升為整列矩陣通過；其餘待測項目保留。</p>
+<p>全程使用 Codex Browser／computer-use，Windows App 未被額外 Raise 至 macOS 前景；沒有使用 Playwright 或停止現有 HERDR Session。</p>
+<h2>相關檔案</h2><ul><li><a href="../testing/windows-v0.0.15.md">Windows 完整驗收清單</a></li><li><a href="../../patches/README.md">xterm 補丁維護說明</a></li><li><a href="../../fixtures/xterm-font-regression.html">字形回歸 fixture（由 Vite／靜態 bundle 載入）</a></li></ul>
+</body></html>

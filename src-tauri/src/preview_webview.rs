@@ -62,6 +62,7 @@ fn parse_web_url(url: &str) -> Result<Url, String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
     match parsed.scheme() {
         "http" | "https" => Ok(parsed),
+        _ if crate::preview_resources::is_resource_url(&parsed) => Ok(parsed),
         other => Err(format!("unsupported preview scheme: {other}")),
     }
 }
@@ -79,6 +80,7 @@ pub fn preview_open_url(
     state: tauri::State<'_, PreviewWebviewState>,
 ) -> Result<(), String> {
     let parsed = parse_web_url(&url)?;
+    let parsed = crate::preview_resources::native_url(parsed, cfg!(target_os = "windows"))?;
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
 
     // A new frontend owner must not inherit callbacks or history from a closed
@@ -90,6 +92,10 @@ pub fn preview_open_url(
         if let Some(previous) = guard.take() {
             previous.webview.close().map_err(|e| e.to_string())?;
         }
+        crate::preview_resources::activate_url(&app, None);
+    }
+    if !crate::preview_resources::activate_url(&app, Some(&parsed)) {
+        return Err("Preview resource expired".into());
     }
 
     if let Some(preview) = guard.as_ref() {
@@ -103,9 +109,15 @@ pub fn preview_open_url(
     let window = app
         .get_window("main")
         .ok_or_else(|| "main window missing".to_string())?;
+    let navigation_app = app.clone();
     let builder = WebviewBuilder::new(PREVIEW_LABEL, WebviewUrl::External(parsed))
         .focused(false)
-        .on_navigation(|url| matches!(url.scheme(), "http" | "https"));
+        .initialization_script_for_all_frames(include_str!("preview_interaction.js"))
+        .on_navigation(move |url| {
+            (matches!(url.scheme(), "http" | "https")
+                || crate::preview_resources::is_resource_url(url))
+                && crate::preview_resources::allows_navigation(&navigation_app, url)
+        });
     let webview = window
         .add_child(
             builder,
@@ -170,6 +182,7 @@ pub fn preview_close(
     } else {
         Ok(())
     };
+    crate::preview_resources::activate_url(&app, None);
     drop(guard);
     focus_main_webview(&app);
     close_result
@@ -339,6 +352,83 @@ pub async fn preview_forward(app: AppHandle, session_id: Option<String>) -> Resu
 #[tauri::command(async)]
 pub fn preview_reload(state: tauri::State<'_, PreviewWebviewState>) -> Result<(), String> {
     eval_history(&state, "location.reload()")
+}
+
+async fn interaction_eval(
+    app: AppHandle,
+    session_id: String,
+    script: String,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<PreviewWebviewState>();
+    let webview = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let preview = guard
+            .as_ref()
+            .filter(|preview| preview.session_id.as_ref() == Some(&session_id))
+            .ok_or("Preview owner changed")?;
+        preview.webview.clone()
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = Mutex::new(Some(sender));
+    webview
+        .eval_with_callback(script, move |result| {
+            if let Ok(mut sender) = sender.lock() {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(result);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), receiver)
+        .await
+        .map_err(|_| "Preview interaction timed out")?
+        .map_err(|e| e.to_string())?;
+    if state
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .as_ref()
+        .is_none_or(|preview| preview.session_id.as_ref() != Some(&session_id))
+    {
+        return Err("Preview owner changed".into());
+    }
+    if result.len() > 131072 {
+        return Err("Preview selection too large".into());
+    }
+    serde_json::from_str(&result).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_interactions(
+    app: AppHandle,
+    session_id: String,
+    bindings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if bindings.to_string().len() > 8192 {
+        return Err("Too many preview shortcuts".into());
+    }
+    interaction_eval(
+        app,
+        session_id,
+        format!("window.__yuzoraBrowser?.poll({bindings}) ?? null"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn preview_select_element(
+    app: AppHandle,
+    session_id: String,
+    active: bool,
+) -> Result<(), String> {
+    let action = if active { "start" } else { "stop" };
+    interaction_eval(
+        app,
+        session_id,
+        format!("(() => {{ window.__yuzoraBrowser?.{action}(); return null; }})()"),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[cfg(test)]

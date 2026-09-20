@@ -217,6 +217,10 @@ impl WorkspaceFiles {
             file.write_all(content.as_bytes())
                 .map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())?;
+            // DrvFS can keep the renamed destination invisible to a new openat
+            // until the scratch writer closes. Finish that handle before the
+            // replacement so the response can read back the committed revision.
+            drop(file);
             let current = dir.open_file(&SafeRelativePath::parse(relative.leaf().as_str())?)?;
             let (current_bytes, current_meta) = read_bounded(current.file)?;
             if digest(&current_bytes, &current_meta) != revision {
@@ -235,6 +239,43 @@ impl WorkspaceFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_file_save_returns_the_revision_used_by_the_next_save() {
+        // Run with TMPDIR on /mnt/c, /mnt/d and /home for the WSL/DrvFS matrix.
+        let root = tempfile::tempdir().unwrap();
+        let mut files = WorkspaceFiles::default();
+        let opened = files.open(root.path().to_str().unwrap()).unwrap();
+        let id = opened["capabilityId"].as_str().unwrap();
+        let path = "新建 文件.txt";
+        files.create(id, path, false).unwrap();
+        let mut snapshot = files.read(id, path).unwrap();
+        for index in 0..30 {
+            let content = format!("第 {index} 次儲存\r\n");
+            let saved = files
+                .write(id, path, &content, snapshot["revision"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(
+                std::fs::read(root.path().join(path)).unwrap(),
+                content.as_bytes()
+            );
+            let read = files.read(id, path).unwrap();
+            assert_eq!(saved["revision"], read["revision"]);
+            assert_eq!(saved["file"]["content"], content);
+            snapshot = saved;
+        }
+        std::fs::write(root.path().join(path), "external").unwrap();
+        assert_eq!(
+            files
+                .write(id, path, "mine", snapshot["revision"].as_str().unwrap())
+                .unwrap_err(),
+            "file-conflict"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(path)).unwrap(),
+            "external"
+        );
+    }
+
     #[test]
     fn mutations_are_owned_and_never_replace_existing_targets_or_follow_links() {
         let root = tempfile::tempdir().unwrap();

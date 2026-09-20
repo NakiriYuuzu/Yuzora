@@ -257,6 +257,17 @@ export function runtimeWorkspaceService(uri: string) {
   }
 }
 
+export function remotePreviewSource(uri: string) {
+  const { workspace } = resolve(uri)
+  const backend = workspace.backend
+  return {
+    source: backend.kind === "runtime"
+      ? { kind: "runtime" as const, owner: backend.owner, workspace: backend.capabilityId }
+      : { kind: "sftp" as const, sessionId: backend.sessionId, root: workspace.root },
+    assertCurrent: () => assertBackend(uri, backend)
+  }
+}
+
 export function connectedWorkspaceOwners(): ConnectionOwner[] {
   const owners = new Map<string, ConnectionOwner>()
   for (const workspace of workspaces.values()) if (workspace.backend.kind === "runtime" && workspace.backend.isCurrent()) {
@@ -382,7 +393,26 @@ export async function readRemoteFile(uri: string, recordRevision = true): Promis
   return snapshot.result
 }
 
-export async function saveRemoteFile(uri: string, content: string): Promise<number> {
+const pendingSaves = new Map<string, Promise<number>>()
+
+export function saveRemoteFile(uri: string, content: string): Promise<number> {
+  let backend: Backend
+  try { backend = resolve(uri).workspace.backend } catch (error) { return Promise.reject(error) }
+  const release = retainRemoteWorkspace(uri)
+  const previous = pendingSaves.get(uri)
+  const write = () => {
+    // A queued edit still belongs to the connection on which it was requested.
+    assertBackend(uri, backend)
+    return saveRemoteFileNow(uri, content)
+  }
+  const saved = (previous ? previous.catch(() => undefined).then(write) : write()).finally(release)
+  pendingSaves.set(uri, saved)
+  const clear = () => { if (pendingSaves.get(uri) === saved) pendingSaves.delete(uri) }
+  void saved.then(clear, clear)
+  return saved
+}
+
+async function saveRemoteFileNow(uri: string, content: string): Promise<number> {
   const release = retainRemoteWorkspace(uri)
   try {
     const { workspace, path, relative } = resolve(uri)

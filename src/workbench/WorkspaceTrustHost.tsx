@@ -16,6 +16,7 @@ import { useGitStore } from "@/state/gitStore"
 import { useOverlayPresence } from "@/state/overlayStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
+import { requestTerminalFocus } from "@/terminal/terminalFocus"
 
 export function WorkspaceTrustHost() {
     const { t } = useTranslation("workbench")
@@ -39,9 +40,15 @@ export function WorkspaceTrustHost() {
                 if (status.state === "trusted") return
                 if (!status.challengeId) return
                 if (status.state !== "invalid" && status.repoPresent !== true) return
+                const workspace = useWorkspaceStore.getState()
+                const terminalPath = workspace.groups[workspace.activeGroupIndex]?.activePath
                 const granted = await useWorkspaceTrustStore.getState().requestWorkspaceGrant(status)
-                if (cancelled || !granted) return
+                if (cancelled) return
                 if (useWorkspaceStore.getState().workspacePath !== workspacePath) return
+                // The terminal may mount behind the trust prompt. Restore it
+                // after either decision, using the original page identity.
+                if (terminalPath) requestTerminalFocus(terminalPath)
+                if (!granted) return
                 await useGitStore.getState().detect(workspacePath)
             } catch {
                 // Status / grant errors stay in the trust store.

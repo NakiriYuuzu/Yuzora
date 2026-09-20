@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
@@ -45,6 +45,7 @@ function TextInputDialogForm({
 }) {
     const { t } = useTranslation("menus")
     const [value, setValue] = useState(pending.initialValue ?? "")
+    const selectedInitialValue = useRef(false)
     const trimmed = value.trim()
 
     return (
@@ -73,7 +74,11 @@ function TextInputDialogForm({
                         value={value}
                         placeholder={pending.placeholder}
                         onChange={(event) => setValue(event.target.value)}
-                        onFocus={(event) => event.currentTarget.select()}
+                        onFocus={(event) => {
+                            if (selectedInitialValue.current) return
+                            selectedInitialValue.current = true
+                            event.currentTarget.select()
+                        }}
                     />
                 </Field>
                 <DialogFooter className="mt-4">

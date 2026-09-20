@@ -89,6 +89,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch",
+  },
   "overrides": {
     "@codemirror/state": "6.7.4",
     "@codemirror/view": "6.43.11",

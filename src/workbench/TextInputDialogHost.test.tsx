@@ -83,3 +83,19 @@ test("cancel resolves null without submitting a name", async () => {
 
     await expect(result).resolves.toBeNull()
 })
+
+test("selects the initial name once and preserves the caret when window focus returns", async () => {
+    render(<TextInputDialogHost />)
+    act(() => {
+        void useTextInputDialogStore.getState().request({
+            title: "Rename tab", label: "Name", initialValue: "Old name", confirmLabel: "Rename"
+        })
+    })
+    const input = await screen.findByLabelText<HTMLInputElement>("Name")
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 8])
+    input.setSelectionRange(3, 3)
+    // Native keyboard reacquisition can redispatch focus while this remains
+    // the active DOM element; returning to the app must not reselect its text.
+    fireEvent.focus(input)
+    expect([input.selectionStart, input.selectionEnd]).toEqual([3, 3])
+})

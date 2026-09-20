@@ -9,6 +9,8 @@ on:
       - 'src/lib/herdr*'
       - 'src/terminal/herdr*'
       - 'src-tauri/host/src/herdr*'
+      - 'src-tauri/herdr-runtime.json'
+      - 'src-tauri/host/tests/fixtures/herdr-*'
       - '.github/workflows/herdr-compatibility.yml'
 permissions:
   contents: read
@@ -42,3 +44,12 @@ jobs:
       - name: Verify current runtime on Windows
         if: runner.os == 'Windows'
         run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe
+      - name: Verify 0.9.0 baseline and mixed versions on macOS
+        if: runner.os == 'macOS'
+        run: bun scripts/prepare-herdr-baseline.ts 0.9.0 src-tauri/resources/herdr/macos-aarch64/herdr
+      - name: Verify 0.9.0 baseline and mixed versions on Linux
+        if: runner.os == 'Linux'
+        run: bun scripts/prepare-herdr-baseline.ts 0.9.0 src-tauri/resources/herdr/linux-x86_64/herdr
+      - name: Verify 0.9.0 baseline and mixed versions on Windows
+        if: runner.os == 'Windows'
+        run: bun scripts/prepare-herdr-baseline.ts 0.9.0 src-tauri/resources/herdr/windows-x86_64/herdr.exe
