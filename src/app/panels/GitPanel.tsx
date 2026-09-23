@@ -258,7 +258,7 @@ function GitTabActions() {
             size="icon-sm"
             aria-label={t("gitPanel.moreActionsAriaLabel")}
             disabled={busy != null || snapshotStale}
-            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 @min-[720px]/git-panel:hidden"
+            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 @min-[720px]/git-panel:hidden"
           >
             <MoreHorizontal className="size-[15px]" aria-hidden="true" />
           </Button>
@@ -310,7 +310,7 @@ function GitActionButton({
       aria-label={label}
       disabled={busy != null || stale}
       onClick={onClick}
-      className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-(--ink-3)"
+      className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-(--ink-3)"
     >
       <svg
         width="15"

@@ -800,7 +800,7 @@ function RemotePane({
               </button>
               <div
                 data-sftp-row-actions
-                className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100"
+                className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 {transferable || (entry.isDir && !entry.isSymlink && entry.nameSafe !== false && isSafeLeafName(entry.name)) ? (
                   <IconButton
@@ -921,7 +921,7 @@ function IconButton({
       disabled={disabled}
       className={cn(
         "flex size-[20px] items-center justify-center rounded-[5px] text-(--ink-4) transition-colors hover:bg-(--yz-hover) hover:text-(--ink-1) disabled:opacity-40",
-        hoverOnly && "opacity-0 group-hover:opacity-100"
+        hoverOnly && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
       )}
     >
       <Icon className="size-[13px]" aria-hidden="true" />

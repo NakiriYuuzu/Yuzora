@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
     Dialog,
     DialogContent,
@@ -241,11 +242,11 @@ export function GitRollbackDialog() {
 
                     {hasDeletable && (
                         <label className="flex items-start gap-2 text-[12px] text-(--ink-2)">
-                            <input
-                                type="checkbox"
+                            <Checkbox
+                                className="mt-px"
                                 checked={deleteUntrackedOrAdded}
                                 disabled={submitting}
-                                onChange={(event) => setDeleteUntrackedOrAdded(event.target.checked)}
+                                onCheckedChange={(checked) => setDeleteUntrackedOrAdded(checked === true)}
                             />
                             <span>{t("gitRollbackDialog.deleteUntrackedOrAdded")}</span>
                         </label>

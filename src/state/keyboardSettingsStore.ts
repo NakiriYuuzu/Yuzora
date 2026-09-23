@@ -7,6 +7,7 @@ export const APP_COMMANDS = [
     { id: "newTerminal", defaultBinding: "Ctrl+`" },
     { id: "settings", defaultBinding: "Mod+," },
     { id: "toggleSidebar", defaultBinding: "Mod+Shift+B" },
+    { id: "toggleTools", defaultBinding: "Mod+Alt+B" },
     { id: "toggleBrowser", defaultBinding: "Mod+Shift+P" },
     { id: "modeAde", defaultBinding: "Mod+Alt+1" },
     { id: "modeFiles", defaultBinding: "Mod+Alt+2" },
@@ -25,6 +26,9 @@ export const APP_COMMANDS = [
     { id: "previousTab", defaultBinding: "Ctrl+Shift+Tab" },
 ] as const
 export type AppCommandId = typeof APP_COMMANDS[number]["id"]
+export function effectiveBinding(id: AppCommandId, overrides: Overrides): string {
+    return overrides[id] ?? APP_COMMANDS.find(c => c.id === id)!.defaultBinding
+}
 export function tabShortcutBindings(): PreviewShortcutBinding[] {
     const mac = isMacPlatform()
     return APP_COMMANDS.filter(command => /^(tab[1-9]|nextTab|previousTab)$/.test(command.id)).map(command => {
@@ -107,6 +111,13 @@ export const useKeyboardSettingsStore = create<{
     }
 })
 
+// macOS Option turns B into ∫ and 1 into ¡, so Alt/Shift chords fall back to the physical key.
+function physicalKeyCode(key: string): string | null {
+    if (/^[0-9]$/.test(key)) return `Digit${key}`
+    if (/^[A-Z]$/.test(key)) return `Key${key}`
+    return null
+}
+
 export function dispatchAppShortcut(event: KeyboardEvent, id: AppCommandId, run: () => void): boolean {
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState("AltGraph")) return false
     const target = event.target instanceof Element ? event.target : null
@@ -119,7 +130,7 @@ export function dispatchAppShortcut(event: KeyboardEvent, id: AppCommandId, run:
     const mac = isMacPlatform()
     const meta = parts.includes("Mod") && mac
     const ctrl = parts.includes("Ctrl") || (parts.includes("Mod") && !mac)
-    if (event.metaKey !== meta || event.ctrlKey !== ctrl || event.altKey !== parts.includes("Alt") || event.shiftKey !== parts.includes("Shift") || (event.key.toUpperCase() !== key && !((parts.includes("Shift") || parts.includes("Alt")) && /^[0-9]$/.test(key) && event.code === `Digit${key}`))) return false
+    if (event.metaKey !== meta || event.ctrlKey !== ctrl || event.altKey !== parts.includes("Alt") || event.shiftKey !== parts.includes("Shift") || (event.key.toUpperCase() !== key && !((parts.includes("Shift") || parts.includes("Alt")) && event.code === physicalKeyCode(key)))) return false
     // Plain Ctrl chords are terminal protocol input. App shortcuts do not intercept them.
     const tabNavigation = id === "nextTab" || id === "previousTab" || /^tab[1-9]$/.test(id)
     if (target?.closest('.xterm') && !event.metaKey && !tabNavigation) return false

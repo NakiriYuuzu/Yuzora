@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { AppShell } from "./AppShell"
+import { AppShell, WORKBENCH_LAYOUT_STORAGE_KEY } from "./AppShell"
 import { saveAppearanceSettings } from "@/app/workbench/settingsStorage"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 
@@ -32,6 +32,7 @@ function leftToggle() { return document.querySelector<HTMLButtonElement>('button
 function rightToggle() { return document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-tools"]')! }
 beforeEach(() => {
   vi.clearAllMocks()
+  try { localStorage.removeItem(WORKBENCH_LAYOUT_STORAGE_KEY) } catch { /* Storage-less runtime. */ }
   useUiStore.setState({ ...uiInitialState, mode: "ade" })
   resize(1440)
 })

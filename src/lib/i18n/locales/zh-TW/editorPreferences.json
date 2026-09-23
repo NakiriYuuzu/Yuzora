@@ -13,6 +13,7 @@
     "newTerminal": "新增終端分頁",
     "settings": "開啟設定",
     "toggleSidebar": "切換側邊欄",
+    "toggleTools": "切換右側工作工具",
     "toggleBrowser": "切換 Browser",
     "modeAde": "切換至 ADE",
     "modeFiles": "切換至 Files",

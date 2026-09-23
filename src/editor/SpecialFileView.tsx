@@ -1,5 +1,5 @@
 import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener"
-import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { copyTextInBackground } from "@/lib/clipboardFeedback"
 import { useTranslation } from "react-i18next"
 import type { OpenFileResult } from "../lib/types"
 
@@ -25,7 +25,7 @@ export function SpecialFileView({
             <div className="special-actions">
                 <button onClick={() => void revealItemInDir(path)}>{t("specialFileView.revealInSystem")}</button>
                 <button onClick={() => void openPath(path)}>{t("specialFileView.openExternally")}</button>
-                <button onClick={() => void writeText(path)}>{t("specialFileView.copyPath")}</button>
+                <button onClick={() => copyTextInBackground(path)}>{t("specialFileView.copyPath")}</button>
             </div>
         </div>
     )

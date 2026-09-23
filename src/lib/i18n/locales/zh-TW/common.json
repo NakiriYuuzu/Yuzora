@@ -5,5 +5,9 @@
   "dialog": {
     "resize": "調整對話框大小",
     "resetSize": "重設對話框大小為 App 視窗的 80%"
+  },
+  "clipboard": {
+    "copied": "已複製到剪貼簿",
+    "copyFailed": "無法複製到剪貼簿，請再試一次。"
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { fullDateTime, relativeTime } from "./relativeTime"
+import { fullDate, fullDateTime, relativeTime } from "./relativeTime"
 
 // Fixed reference clock: 2026-07-03 12:00:00 local.
 const NOW = new Date(2026, 6, 3, 12, 0, 0)
@@ -41,6 +41,13 @@ describe("relativeTime", () => {
     it("shows a short date at 30 days and beyond", () => {
         // 40 days before 2026-07-03 → 2026-05-24.
         expect(relativeTime(ago(40 * 86400), NOW)).toBe("May 24")
+    })
+})
+
+describe("fullDate", () => {
+    it("formats a zero-padded local year-month-day string", () => {
+        const ts = Math.floor(new Date(2026, 0, 5, 23, 59, 0).getTime() / 1000)
+        expect(fullDate(ts)).toBe("2026-01-05")
     })
 })
 

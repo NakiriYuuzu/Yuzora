@@ -43,14 +43,21 @@ export function relativeTime(timestamp: number, now: Date = new Date()): string 
     return `${MONTHS[d.getMonth()]} ${d.getDate()}`
 }
 
-// Full committed-date string for the details panel (§2 L834 mono 10px, e.g.
-// "2026-07-03 14:22"). Local time, zero-padded.
-export function fullDateTime(timestamp: number): string {
+// Date-only string for the Log graph date column (e.g. "2026-07-03"). Local
+// time, zero-padded.
+export function fullDate(timestamp: number): string {
     const d = new Date(timestamp * 1000)
     const yyyy = d.getFullYear()
     const mm = String(d.getMonth() + 1).padStart(2, "0")
     const dd = String(d.getDate()).padStart(2, "0")
+    return `${yyyy}-${mm}-${dd}`
+}
+
+// Full committed-date string for the details panel (§2 L834 mono 10px, e.g.
+// "2026-07-03 14:22"). Local time, zero-padded.
+export function fullDateTime(timestamp: number): string {
+    const d = new Date(timestamp * 1000)
     const hh = String(d.getHours()).padStart(2, "0")
     const min = String(d.getMinutes()).padStart(2, "0")
-    return `${yyyy}-${mm}-${dd} ${hh}:${min}`
+    return `${fullDate(timestamp)} ${hh}:${min}`
 }

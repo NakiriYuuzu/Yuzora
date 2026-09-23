@@ -77,3 +77,11 @@ it("matches macOS Option-digit mode shortcuts even when event.key is a symbol", 
     expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "¡", code: "Digit1", metaKey: true, altKey: true }), "modeAde", run)).toBe(true)
     expect(run).toHaveBeenCalledOnce()
 })
+
+it("matches macOS Option-letter shortcuts even when event.key is a symbol", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    const run = vi.fn()
+    expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "∫", code: "KeyB", metaKey: true, altKey: true }), "toggleTools", run)).toBe(true)
+    expect(run).toHaveBeenCalledOnce()
+    expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "∫", code: "KeyB", metaKey: true }), "toggleTools", run)).toBe(false)
+})

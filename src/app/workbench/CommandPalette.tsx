@@ -1,4 +1,5 @@
-import { dispatchAppShortcut } from "@/state/keyboardSettingsStore"
+import { bindingLabel, dispatchAppShortcut, effectiveBinding, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore"
+import { useSftpStore } from "@/state/sftpStore"
 import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -6,7 +7,10 @@ import { Command as CommandPrimitive } from "cmdk"
 import {
   BotIcon,
   MonitorPlayIcon,
+  PanelLeftIcon,
+  PanelRightIcon,
   SearchIcon,
+  ServerIcon,
   SettingsIcon,
   SquareTerminalIcon,
   WaypointsIcon,
@@ -20,6 +24,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
+import { Kbd } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Dialog,
@@ -50,6 +55,12 @@ interface CommandPaletteProps {
 
 const ITEM_CLASS =
   "h-[42px] gap-[13px] rounded-[12px]! px-[13px] transition-colors duration-100 data-selected:bg-(--yz-active)"
+const MODE_COMMANDS: Record<Mode, AppCommandId> = {
+  ade: "modeAde",
+  files: "modeFiles",
+  git: "modeGit",
+  database: "modeDatabase",
+}
 const HERDR_PALETTE_SPACE_LIMIT = 64
 const HERDR_PALETTE_AGENT_LIMIT = 128
 
@@ -64,6 +75,8 @@ const HERDR_PALETTE_AGENT_LIMIT = 128
  */
 export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSettings }: CommandPaletteProps) {
   const { t } = useTranslation("workbench")
+  const shortcutOverrides = useKeyboardSettingsStore((s) => s.overrides)
+  const shortcutFor = (id: AppCommandId) => bindingLabel(effectiveBinding(id, shortcutOverrides))
   // Register with the preview child-webview z-order gate: while the palette is
   // open the native webview must hide so it can't paint over this dialog.
   useOverlayPresence(open)
@@ -119,12 +132,13 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   // query switches to command-only mode by feeding the hook an empty query.
   const { events, loading } = useWorkspaceSearch(open && showWorkspace ? search : "", caseSensitive)
 
-  type Cmd = { value: string; label: string; icon: LucideIcon; onSelect: () => void; className: string }
+  type Cmd = { value: string; label: string; icon: LucideIcon; onSelect: () => void; className: string; shortcut?: AppCommandId }
   const commands: Cmd[] = [
     ...MODES.map((m) => ({
-      value: m.label,
-      label: m.label,
+      value: `${m.label} ${m.id}`,
+      label: t(`commands.${MODE_COMMANDS[m.id]}`, { ns: "editorPreferences" }),
       icon: m.icon,
+      shortcut: MODE_COMMANDS[m.id],
       onSelect: () => {
         onSelectMode(m.id)
         setPaletteOpen(false)
@@ -135,6 +149,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       value: t("newTerminal", { ns: "workTabs" }),
       label: t("newTerminal", { ns: "workTabs" }),
       icon: SquareTerminalIcon,
+      shortcut: "newTerminal",
       onSelect: () => {
         void openNewTerminalTab()
         setPaletteOpen(false)
@@ -145,9 +160,42 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       value: t("commandPalette.togglePreview"),
       label: t("commandPalette.togglePreview"),
       icon: MonitorPlayIcon,
+      shortcut: "toggleBrowser",
       onSelect: () => {
         togglePreviewTab()
         setPaletteOpen(false)
+      },
+      className: ITEM_CLASS,
+    },
+    {
+      value: `${t("commands.toggleSidebar", { ns: "editorPreferences" })} sidebar`,
+      label: t("commands.toggleSidebar", { ns: "editorPreferences" }),
+      icon: PanelLeftIcon,
+      shortcut: "toggleSidebar",
+      onSelect: () => {
+        setPaletteOpen(false)
+        useUiStore.getState().requestSidebarToggle()
+      },
+      className: ITEM_CLASS,
+    },
+    {
+      value: `${t("commands.toggleTools", { ns: "editorPreferences" })} tools`,
+      label: t("commands.toggleTools", { ns: "editorPreferences" }),
+      icon: PanelRightIcon,
+      shortcut: "toggleTools",
+      onSelect: () => {
+        setPaletteOpen(false)
+        useUiStore.getState().requestToolsToggle()
+      },
+      className: ITEM_CLASS,
+    },
+    {
+      value: `${t("commandPalette.remoteTools")} ssh sftp`,
+      label: t("commandPalette.remoteTools"),
+      icon: ServerIcon,
+      onSelect: () => {
+        setPaletteOpen(false)
+        useSftpStore.getState().setPanelOpen(true)
       },
       className: ITEM_CLASS,
     },
@@ -237,11 +285,12 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       value: t("commandPalette.settings"),
       label: t("commandPalette.settings"),
       icon: SettingsIcon,
+      shortcut: "settings",
       onSelect: () => {
         onOpenSettings()
         setPaletteOpen(false)
       },
-      className: "h-[42px] gap-3",
+      className: ITEM_CLASS,
     },
   ]
   const visibleCommands = commands.filter((c) => matchesCommand(c.label, c.value))
@@ -251,6 +300,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       dispatchAppShortcut(event, "commandPalette", () => setPaletteOpen(!open))
       dispatchAppShortcut(event, "settings", onOpenSettings)
       dispatchAppShortcut(event, "toggleSidebar", useUiStore.getState().requestSidebarToggle)
+      dispatchAppShortcut(event, "toggleTools", useUiStore.getState().requestToolsToggle)
       dispatchAppShortcut(event, "toggleBrowser", togglePreviewTab)
       dispatchAppShortcut(event, "modeAde", () => onSelectMode("ade"))
       dispatchAppShortcut(event, "modeFiles", () => onSelectMode("files"))
@@ -313,7 +363,12 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
                       <span className="flex size-[28px] shrink-0 items-center justify-center rounded-[9px] bg-(--yz-hover)">
                         <Icon className="size-[16px]" aria-hidden="true" />
                       </span>
-                      <span className="text-[14px] font-medium">{c.label}</span>
+                      <span className="min-w-0 flex-1 truncate text-[14px] font-medium">{c.label}</span>
+                      {c.shortcut && (
+                        <Kbd className="h-auto shrink-0 rounded-[5px] bg-(--yz-active) px-[6px] py-px font-mono text-[11px] text-(--ink-3)">
+                          {shortcutFor(c.shortcut)}
+                        </Kbd>
+                      )}
                     </CommandItem>
                   )
                 })}

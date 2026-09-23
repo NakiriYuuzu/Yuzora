@@ -19,7 +19,7 @@ import {
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
-import { Badge } from "@/components/ui/badge"
+import { Kbd } from "@/components/ui/kbd"
 import { Tabs,TabsList,TabsTrigger,TabsContent } from "@/components/ui/tabs"
 import { FieldGroup } from "@/components/ui/field"
 import { InputGroup,InputGroupInput,InputGroupAddon,InputGroupButton } from "@/components/ui/input-group"
@@ -56,7 +56,7 @@ import { useUpdateStore } from "@/state/updateStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { workspacePathForDisplay } from "@/lib/paths"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
-import { SettingCard, Segmented, ToggleRow } from "./settingsPrimitives"
+import { SettingCard, SettingsRowGroup, Segmented, ToggleRow } from "./settingsPrimitives"
 import { BrandMark } from "@/components/BrandMark"
 import { HerdrSettingsSection } from "@/app/workbench/HerdrSettingsSection"
 import { GitSection } from "./GitSection"
@@ -308,6 +308,7 @@ export function SettingsDialog({
             <InputGroupInput ref={searchRef} aria-label={td("search")} placeholder={td("searchPlaceholder")} value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{
               if(event.key==='Enter'&&searchResults[0]&&!event.nativeEvent.isComposing){event.preventDefault();openSearchResult(searchResults[0])}
             }}/>
+            {!query&&<InputGroupAddon align="inline-end" aria-hidden="true"><Kbd className="settings-search-kbd">{isWindows?"Ctrl F":"⌘F"}</Kbd></InputGroupAddon>}
             {query&&<InputGroupAddon align="inline-end"><InputGroupButton aria-label={td("clearSearch")} size="icon-xs" onClick={()=>{setQuery('');searchRef.current?.focus()}}><X aria-hidden="true"/></InputGroupButton></InputGroupAddon>}
           </InputGroup>
           <DialogClose asChild><Button variant="ghost" size="icon-sm" aria-label={tw("settings.closeSettings")}><X aria-hidden="true"/></Button></DialogClose>
@@ -323,7 +324,7 @@ export function SettingsDialog({
                 </div>)}
               </TabsList>
             </ScrollArea>
-            <div data-testid="settings-sidebar-footer" className="settings-sidebar-footer shrink-0"><Badge variant="outline">Yuzora</Badge><span>{appVersion ? tw("settings.appVersionValue", { version: appVersion }) : tw("settings.appName")}</span></div>
+            <div data-testid="settings-sidebar-footer" className="settings-sidebar-footer shrink-0"><span className="settings-version-dot" aria-hidden="true"/><span>{appVersion ? tw("settings.appVersionValue", { version: appVersion }) : tw("settings.appName")}</span></div>
           </aside>
           <div className="settings-main">
             <ScrollArea key={query.trim()?'search':section} className="settings-content-scroll" viewportClassName="settings-content-viewport" focusable>
@@ -331,7 +332,7 @@ export function SettingsDialog({
                 <div className="settings-page-heading"><h3>{td("resultsTitle")}</h3><p role="status">{td("resultsCount",{count:searchResults.length,query})}</p></div>
                 {searchResults.length?<div className="settings-result-list">{searchResults.map(result=><Button key={result.key} variant="ghost" className="settings-result" onClick={()=>openSearchResult(result)}><span><small>{result.category}</small><strong>{result.label}</strong></span><ArrowRight aria-hidden="true"/></Button>)}</div>:<Empty><EmptyHeader><EmptyTitle>{td("noResults")}</EmptyTitle><EmptyDescription>{td("noResultsHint")}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" onClick={()=>{setQuery('');searchRef.current?.focus()}}>{td("clearSearch")}</Button></EmptyContent></Empty>}
               </div>:<TabsContent value={section} ref={contentRef} className="settings-page" tabIndex={0} data-design="settings-content" data-design-label={tw(`settings.sections.${section}.label`)}>
-                <div className="settings-page-heading"><span className="settings-page-eyebrow">{td(`groups.${SETTINGS_GROUPS.find(group=>group.sections.some(id=>id===section))!.id}`)}</span><h3>{tw(`settings.sections.${active.id}.label`)}</h3><p>{tw(`settings.sections.${active.id}.sub`)}</p></div>
+                <div className="settings-page-heading"><span className="settings-page-icon" aria-hidden="true"><active.icon/></span><div><span className="settings-page-eyebrow">{td(`groups.${SETTINGS_GROUPS.find(group=>group.sections.some(id=>id===section))!.id}`)}</span><h3>{tw(`settings.sections.${active.id}.label`)}</h3><p>{tw(`settings.sections.${active.id}.sub`)}</p></div></div>
 
             {section === "appearance" && (
               <FieldGroup className="settings-fields">
@@ -350,7 +351,7 @@ export function SettingsDialog({
                   <p className="settings-inline-hint">{td("paletteHint")}</p>
                 </SettingCard>
 
-                <div className="flex flex-col">
+                <SettingsRowGroup>
                   <ToggleRow
                     label={tw("settings.leftSidebarBackground")}
                     sub={tw("settings.leftSidebarBackgroundSub")}
@@ -363,7 +364,7 @@ export function SettingsDialog({
                     checked={rightSidebarBackground}
                     onCheckedChange={enabled => onSidebarBackgroundChange("right", enabled)}
                   />
-                </div>
+                </SettingsRowGroup>
 
                 <SettingCard label={tw("settings.language")}>
                   <Segmented
@@ -378,21 +379,20 @@ export function SettingsDialog({
                   />
                 </SettingCard>
 
-                <ToggleRow
-                  label={tw("settings.botAnimations")}
-                  sub={tw("settings.botAnimationsSub")}
-                  checked={botAnimations}
-                  onCheckedChange={onBotAnimationsChange}
-                />
-
-                <div className="flex flex-col">
+                <SettingsRowGroup>
+                  <ToggleRow
+                    label={tw("settings.botAnimations")}
+                    sub={tw("settings.botAnimationsSub")}
+                    checked={botAnimations}
+                    onCheckedChange={onBotAnimationsChange}
+                  />
                   <ToggleRow
                     label={tw("settings.moveOpenedWorkspaceToTop")}
                     sub={tw("settings.moveOpenedWorkspaceToTopSub")}
                     checked={moveOpenedWorkspaceToTop}
                     onCheckedChange={setMoveOpenedWorkspaceToTop}
                   />
-                </div>
+                </SettingsRowGroup>
               </FieldGroup>
             )}
 
@@ -412,14 +412,14 @@ export function SettingsDialog({
 
                 <div className="settings-editor-preview" aria-label={td("editorPreview")} style={{fontSize}}><div><span>workspace.ts</span><span>{fontSize}px · JetBrains Mono</span></div><pre><code><span>1  </span>const workspace = "Yuzora";{"\n"}<span>2  </span>// {td("editorSample")}{"\n"}<span>3  </span>await agent.read();</code></pre></div>
 
-                <div className="flex flex-col">
+                <SettingsRowGroup>
                   <ToggleRow
                     label={tw("settings.showMinimap")}
                     sub={tw("settings.showMinimapSub")}
                     checked={minimap}
                     onCheckedChange={setMinimap}
                   />
-                </div>
+                </SettingsRowGroup>
               </FieldGroup>
             )}
 
@@ -447,16 +447,16 @@ export function SettingsDialog({
             {section === "git" && <GitSection />}
 
             {section === "about" && (
-              <div className="flex flex-col gap-[14px]">
+              <FieldGroup className="settings-fields">
                 <SettingCard
                   label={tw("settings.currentVersion")}
                   sub={tw("settings.currentVersionSub")}
                 >
-                  <span className="font-mono text-[13px] font-semibold text-(--ink-1)">
+                  <span className="settings-version-value"><BrandMark /><span>
                     {appVersion
                       ? tw("settings.appVersionValue", { version: appVersion })
                       : tw("settings.appName")}
-                  </span>
+                  </span></span>
                 </SettingCard>
                 {currentReleaseNotes && appVersion && (
                   <SettingCard
@@ -468,8 +468,9 @@ export function SettingsDialog({
                 )}
                 <UpdateChannelSettings />
                 <SettingCard label={tw("settings.updates")} sub={tw("settings.updatesSub")}>
-                  <div className="flex min-h-[32px] items-center justify-between gap-[12px]">
-                    <span aria-live="polite" className="text-[11.5px] text-(--ink-2)">
+                  <div className="settings-update-row">
+                    <span aria-live="polite" className="settings-update-status" data-status={updateStatus}>
+                      {updateStatus === "idle" && tw("settings.updateNotChecked")}
                       {updateStatus === "checking" && tw("settings.checkingForUpdates")}
                       {updateStatus === "up-to-date" && tw("settings.upToDate")}
                       {updateStatus === "available" && availableUpdate
@@ -560,11 +561,11 @@ export function SettingsDialog({
                     </p>
                   )}
                 </SettingCard>
-              </div>
+              </FieldGroup>
             )}
+                <p className="settings-page-note"><Info aria-hidden="true"/><span>{td("preferencesHint")}</span></p>
               </TabsContent>}
             </ScrollArea>
-            <footer className="settings-content-footer"><Info aria-hidden="true"/><span>{td("preferencesHint")}</span></footer>
           </div>
         </Tabs>
       </DialogContent>
@@ -633,7 +634,8 @@ function SafetySettingsSection({
   }, [open, onRefreshTrustList])
 
   return (
-    <div className="flex flex-col gap-[14px]">
+    <FieldGroup className="settings-fields">
+      <SettingsRowGroup>
       <ToggleRow
         label={tw("settings.reconcileExternalChanges")}
         sub={tw("settings.reconcileExternalChangesSub")}
@@ -647,6 +649,7 @@ function SafetySettingsSection({
         checked={confirmGit}
         onCheckedChange={onConfirmGitChange}
       />
+      </SettingsRowGroup>
       <SettingCard
         label={tw("settings.trustedWorkspaces")}
         sub={tw("settings.trustedWorkspacesSub")}
@@ -689,6 +692,6 @@ function SafetySettingsSection({
           </ScrollArea>
         )}
       </SettingCard>
-    </div>
+    </FieldGroup>
   )
 }

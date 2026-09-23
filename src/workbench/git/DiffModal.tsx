@@ -490,7 +490,7 @@ export function DiffModal() {
                                     key={m}
                                     value={m}
                                     aria-label={m === "unified" ? t("diffModal.unified") : t("diffModal.split")}
-                                    className="h-[26px] rounded-[7px] px-[12px] text-[11px] font-semibold transition-all duration-[140ms] data-[state=on]:bg-(--yz-solid) data-[state=on]:text-(--ink-0) data-[state=on]:shadow-(--shadow-xs) data-[state=off]:text-(--ink-3)"
+                                    className="h-[26px] rounded-[7px] px-[12px] text-[11px] font-semibold transition-[background-color,color,box-shadow] duration-[140ms] data-[state=on]:bg-(--yz-solid) data-[state=on]:text-(--ink-0) data-[state=on]:shadow-(--shadow-xs) data-[state=off]:text-(--ink-3)"
                                 >
                                     {m === "unified" ? t("diffModal.unified") : t("diffModal.split")}
                                 </ToggleGroupItem>
@@ -504,7 +504,7 @@ export function DiffModal() {
                             aria-label={t("diffModal.close")}
                             title={t("diffModal.close")}
                             onClick={() => close()}
-                            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-0)"
+                            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-[background-color,color,box-shadow] duration-150 hover:bg-(--paper-2) hover:text-(--ink-0)"
                         >
                             <svg
                                 width="16"

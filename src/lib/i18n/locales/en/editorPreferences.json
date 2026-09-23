@@ -13,6 +13,7 @@
     "newTerminal": "New terminal tab",
     "settings": "Open settings",
     "toggleSidebar": "Toggle sidebar",
+    "toggleTools": "Toggle workspace tools",
     "toggleBrowser": "Toggle Browser",
     "modeAde": "Switch to ADE",
     "modeFiles": "Switch to Files",

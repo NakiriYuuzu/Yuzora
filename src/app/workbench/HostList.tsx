@@ -142,7 +142,7 @@ export function HostList() {
                       </button>
                     </div>
                   ) : (
-                    <div className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100">
+                    <div className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                       <button
                         type="button"
                         aria-label={t("ssh.editHost", { name: host.name })}
