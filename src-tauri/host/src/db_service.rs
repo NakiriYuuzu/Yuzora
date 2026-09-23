@@ -2146,9 +2146,13 @@ async fn pg_open_with_timeout(
     }
 
     let mut cfg = endpoint.postgres_config();
-    cfg.dbname(&database)
-        .user(&user)
-        .password(password.expose_secret());
+    cfg.dbname(if database.trim().is_empty() {
+        "postgres"
+    } else {
+        &database
+    })
+    .user(&user)
+    .password(password.expose_secret());
 
     // Password is attached only after the transport policy is accepted. The
     // Connection future's concrete type differs per TLS choice, but it is
@@ -2412,7 +2416,9 @@ async fn mssql_connect(
     let mut config = MssqlConfig::new();
     config.host(&endpoint.host);
     config.port(endpoint.port);
-    config.database(&database);
+    if !database.trim().is_empty() {
+        config.database(&database);
+    }
     config.authentication(AuthMethod::sql_server(&user, password.expose_secret()));
     if trust_cert {
         config.trust_cert();
@@ -3355,6 +3361,29 @@ pub async fn query_worker_loop() -> Result<(), DatabaseError> {
                 };
                 write_frame(&mut stdout, &WorkerResponse::Version { value }).await?;
             }
+            WorkerRequest::ListDatabases => {
+                let result = match &mut engine {
+                    LiveNetwork::Postgres(live) => live.client.query(
+                        "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND has_database_privilege(datname, 'CONNECT') ORDER BY datname", &[],
+                    ).await.map(|rows| rows.iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>())
+                        .map_err(|error| postgres_database_error(&error)),
+                    LiveNetwork::Mssql(client) => {
+                        mssql_run_query(client, "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name", 10000).await
+                            .map(|result| match result {
+                                QueryResult::Select { rows, .. } => rows.into_iter().filter_map(|row| match row.into_iter().next() {
+                                    Some(DbValue::Text { value }) => Some(value),
+                                    _ => None,
+                                }).collect(),
+                                _ => Vec::new(),
+                            }).map_err(|error| mssql_database_error(&error))
+                    }
+                };
+                let response = match result {
+                    Ok(databases) => WorkerResponse::Databases { databases },
+                    Err(error) => WorkerResponse::Error { error },
+                };
+                write_frame(&mut stdout, &response).await?;
+            }
             WorkerRequest::ListTables => {
                 let result = match &mut engine {
                     LiveNetwork::Postgres(live) => pg_list_tables(&live.client).await,
@@ -4057,6 +4086,32 @@ pub async fn probe_unregistered(
             .await
             .map_err(|_| DatabaseOperationalError::connection_failed()),
     }
+}
+
+pub async fn list_databases_in_state(
+    state: &DbState,
+    identity: ConnectionIdentity,
+) -> Result<Vec<String>, DatabaseOperationalError> {
+    let actor = get_exact_actor(state, &identity)?;
+    let lease = actor.acquire_metadata().map_err(actor_error)?;
+    let result = match actor.handle() {
+        DbHandle::Postgres(pg) => pg.worker().list_databases().await,
+        DbHandle::Mssql(worker) => worker.list_databases().await,
+        DbHandle::Sqlite(_) | DbHandle::RemoteSqlite(_) => Ok(vec!["main".into()]),
+    };
+    actor.settle_metadata(&lease).map_err(actor_error)?;
+    result.map_err(|error| {
+        cleanup_server_disconnect(
+            state,
+            &identity,
+            operation_failure_with_database_error(
+                &actor,
+                DatabaseOperationalErrorCode::MetadataFailed,
+                "database catalog request failed",
+                error,
+            ),
+        )
+    })
 }
 
 pub async fn list_tables_in_state(
@@ -6845,6 +6900,10 @@ pub mod integration_harness {
 
         pub async fn list_tables(&self) -> Result<Vec<TableInfo>, DatabaseOperationalError> {
             list_tables_in_state(&self.runtime.state, self.identity.clone()).await
+        }
+
+        pub async fn list_databases(&self) -> Result<Vec<String>, DatabaseOperationalError> {
+            list_databases_in_state(&self.runtime.state, self.identity.clone()).await
         }
 
         pub async fn table_columns(

@@ -65,6 +65,7 @@ import {
     dbProfileNeedsTransportAcknowledgement,
     dbProfileUiErrorCode,
     loadSavedConnections,
+    identityOf,
     resultPageKey,
     useDbStore
 } from "./dbStore"
@@ -3516,5 +3517,53 @@ describe("SQLite source workspace identity", () => {
         expect(mockProfileCreate.mock.calls.every(([request]) => request.credential === null)).toBe(true)
         await useDbStore.getState().updateSaved(saved[0].id, { kind: "sqlite", path, workspace: workspaces[1] })
         expect(useDbStore.getState().saved.find((entry) => entry.id === saved[0].id)?.workspace).toEqual(workspaces[1])
+    })
+})
+
+describe("database workbench writes", () => {
+    it("refreshes acknowledged network writes without retrying when commit evidence is unavailable", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "unknown" })
+        await useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        expect(mockQueryRun).toHaveBeenCalledOnce()
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId]).toMatchObject({ running: false, editUnconfirmed: true })
+    })
+
+    it("waits for cursor release, preserves the SQL buffer and never retries a conflicting edit", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        useDbStore.getState().setSql("SELECT * FROM users")
+        await useDbStore.getState().runQuery()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const pendingRelease = deferred<DbResultPage>()
+        const owner = mockQueryRun.mock.calls[0][0]
+        mockResultSessionRelease.mockImplementationOnce(() => pendingRelease.promise)
+        mockRunResultOnce({ kind: "execute", affectedRows: "0", effectOutcome: "none" })
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editConflict")
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        const resultOwner: DbResultSessionOwner = { ...owner, statementExecutionId: `${owner.queryRunId}:0` as never, resultSessionId: `${owner.queryRunId}:0:result` as never }
+        pendingRelease.resolve(wirePage(resultOwner, { lifecycle: "released" }))
+        await outcome
+        expect(mockQueryRun).toHaveBeenCalledTimes(2)
+        const descriptor = identity.descriptorId
+        expect(useDbStore.getState().queryBuckets[descriptor].sql).toBe("SELECT * FROM users")
+        expect(useDbStore.getState().queryBuckets[descriptor].running).toBe(false)
+    })
+
+    it("rejects stale connection identities before sending a mutation", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        await expect(useDbStore.getState().executeTableStatement({ ...identity, connectionGeneration: "old" as never }, "UPDATE users SET id = 2")).rejects.toThrow("staleConnection")
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
+    it("connects without a selected database and blocks SQL until the user selects one", async () => {
+        await useDbStore.getState().openConfig({ kind: "postgres", host: "localhost", port: 5432, user: "reader", database: "", password: "test", transportMode: "verifyFull" })
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        expect(mockList).not.toHaveBeenCalled()
+        useDbStore.getState().setSql("SELECT 1")
+        await useDbStore.getState().runQuery()
+        expect(mockQueryRun).not.toHaveBeenCalled()
     })
 })

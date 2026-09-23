@@ -82,6 +82,12 @@
     "sftpErrorSourceChanged": "來源檔案在傳輸期間變更，已保留原目的檔案。"
   },
   "databasePanel": {
+    "queryCard": "查詢",
+    "resultCard": "結果",
+    "connected": "已連線",
+    "offline": "未連線",
+    "statementCount_one": "{{count}} 個 statement",
+    "statementCount_other": "{{count}} 個 statements",
     "emptyTitle": "尚未設定資料庫連線",
     "emptyDescription": "新增連線以瀏覽資料表並在此執行查詢。",
     "activeProfile": "使用中的 profile",
@@ -150,6 +156,9 @@
       "noCurrentStatement": "請將游標置於 statement 內，或選取要執行的 SQL。"
     },
     "runPrompt": "執行查詢以檢視結果",
+    "elapsed": "{{ms}} ms",
+    "resizeResults": "調整編輯器與結果大小",
+    "runPromptShortcut": "執行游標所在的 statement",
     "rowsAffected_one": "{{value}} 筆資料受影響",
     "rowsAffected_other": "{{value}} 筆資料受影響",
     "rowsAffectedUnavailable": "無法取得受影響的資料筆數",

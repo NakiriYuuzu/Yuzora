@@ -3,21 +3,18 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog"
 import {
   AlertTriangle,
   Check,
-  ChevronDown,
   ChevronRight,
-  Database,
   Eye,
-  History,
   KeyRound,
   Pencil,
+  Plus,
+  Search,
   Table2,
   Trash2,
   X
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
-import { DashedActionButton } from "@/app/workbench/DashedActionButton"
-import { EmptyState } from "@/app/workbench/EmptyState"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,6 +26,7 @@ import {
   AlertDialogTitle
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -38,9 +36,11 @@ import {
   DialogTitle
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { Field as FormField, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { SqliteLocationFields } from "./SqliteLocationFields"
+import { DatabaseTableActions } from "@/app/panels/DatabaseTableActions"
 import { useHostStore } from "@/state/hostStore"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { dbObjectRefKey } from "@/lib/databaseSql"
@@ -67,6 +67,7 @@ import { contextMenuHandler } from "@/state/contextMenuStore"
 import {
   dbProfileNeedsCredentialPrompt,
   dbProfileUiErrorCode,
+  queryFor,
   savedConnectionAddress,
   useDbStore,
   type DbProfileUiErrorCode,
@@ -97,6 +98,7 @@ export function DatabaseNavContent() {
   const reconnectRequest = useDbStore((s) => s.reconnectRequest)
   const consumeReconnectRequest = useDbStore((s) => s.consumeReconnectRequest)
   const recoverProfile = useDbStore((s) => s.recoverProfile)
+  const savedCount = useDbStore((s) => s.saved.length)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState<DialogMode>("new")
@@ -206,27 +208,35 @@ export function DatabaseNavContent() {
   }, [consumeReconnectRequest, reconnectRequest])
 
   return (
-    <div data-testid="db-nav-root" className="flex h-full min-h-0 flex-col gap-[8px] overflow-hidden">
+    <div data-testid="db-nav-root" className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="database-nav-header flex h-11 shrink-0 items-center gap-2 border-b border-(--line-1) pr-3">
+        <h2 id="db-saved-heading" className="min-w-0 truncate text-[13px] font-medium text-(--ink-1)">
+          {t("database.savedConnectionsHeading")}
+        </h2>
+        {savedCount > 0 && (
+          <span aria-hidden="true" className="shrink-0 font-mono text-[11px] text-(--ink-4) tabular-nums">{savedCount}</span>
+        )}
+      </div>
       {(visibleProfileError || actionError) && (
-        <p role="alert" className="rounded-[8px] bg-(--danger-soft) px-[8px] py-[6px] text-[11px] text-(--destructive)">
+        <p role="alert" className="mx-2 mt-2 shrink-0 rounded-(--r-xs) bg-(--danger-soft) px-2.5 py-1.5 text-[12px] text-(--destructive)">
           {actionError ? t(`database.profileError.${actionError}`) : visibleProfileError}
         </p>
       )}
       {recovery.length > 0 && (
-        <ScrollArea className="max-h-[96px] shrink-0 rounded-[8px] border border-(--line-1)" viewportClassName="p-[7px]">
-        <section aria-label={t("database.recoveryHeading")} className="flex flex-col gap-[4px]">
-          <span className="flex items-center gap-[5px] text-[10px] font-semibold tracking-[0.06em] text-(--ink-3) uppercase">
-            <AlertTriangle className="size-[12px]" aria-hidden="true" />
+        <ScrollArea className="mx-2 mt-2 max-h-[112px] shrink-0 rounded-(--r-xs) bg-(--amber-soft)" viewportClassName="px-2.5 py-2">
+        <section aria-label={t("database.recoveryHeading")} className="flex flex-col gap-1.5">
+          <span className="flex items-center gap-1.5 text-[12px] font-medium text-(--ink-1)">
+            <AlertTriangle className="size-3.5" aria-hidden="true" />
             {t("database.recoveryHeading")}
           </span>
           {recovery.map((row) => (
-            <div key={row.operationId} className="flex items-center gap-[5px] text-[11px] text-(--ink-2)">
-              <span className="min-w-0 flex-1 truncate">
-                {t(`database.recoveryKind.${row.kind}`)} · {row.descriptorId}
+            <div key={row.operationId} className="flex flex-wrap items-center gap-1 text-[11.5px] text-(--ink-2)">
+              <span className="min-w-0 flex-1 basis-full truncate font-mono" title={row.descriptorId}>
+                {t(`database.recoveryKind.${row.kind}`)} {row.descriptorId}
               </span>
               {row.allowedActions.includes("resume") && (
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
                   disabled={recoveryBusy}
                   onClick={() => void executeRecoveryAction(row.operationId, "resume").then((outcome) => {
@@ -241,7 +251,7 @@ export function DatabaseNavContent() {
               )}
               {row.allowedActions.includes("abort") && (
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="ghost"
                   disabled={recoveryBusy}
                   onClick={() => void executeRecoveryAction(row.operationId, "abort")}
@@ -251,7 +261,7 @@ export function DatabaseNavContent() {
               )}
               {row.allowedActions.includes("retryCleanup") && (
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
                   disabled={recoveryBusy}
                   onClick={() => void executeRecoveryAction(row.operationId, "retryCleanup")}
@@ -266,15 +276,23 @@ export function DatabaseNavContent() {
       )}
       <div
         data-testid="db-region-grid"
-        className="grid min-h-0 flex-1 grid-rows-[minmax(40px,0.8fr)_minmax(40px,1.4fr)_minmax(24px,0.7fr)] gap-[8px] overflow-hidden"
+        className="grid min-h-0 flex-1 grid-rows-[fit-content(40%)_minmax(96px,1fr)_auto] overflow-hidden"
       >
         <SavedConnectionsRegion onOpenEdit={openEdit} onError={setActionError} />
         <DatabaseObjectTreeRegion />
         <RecentQueriesRegion />
       </div>
 
-      <div data-testid="db-new-connection" className="shrink-0">
-        <DashedActionButton label={t("database.newConnection")} onClick={openNew} />
+      <div data-testid="db-new-connection" className="shrink-0 border-t border-(--line-1) p-1.5">
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={openNew}
+          className="h-8 w-full justify-start gap-2 px-2.5 text-[12.5px] font-normal text-(--ink-2) hover:bg-(--db-hover) hover:text-(--ink-1)"
+        >
+          <Plus aria-hidden="true" />
+          {t("database.newConnection")}
+        </Button>
       </div>
 
       <Dialog
@@ -350,6 +368,8 @@ export function DatabaseNavContent() {
   )
 }
 
+const rowActionClass = "flex size-6 items-center justify-center rounded-[5px] text-(--ink-3) transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:outline-2 focus-visible:outline-(--ring)"
+
 function SavedConnectionsRegion({
   onOpenEdit,
   onError
@@ -376,27 +396,18 @@ function SavedConnectionsRegion({
       aria-labelledby="db-saved-heading"
       className="flex min-h-0 flex-col overflow-hidden"
     >
-      <h2
-        id="db-saved-heading"
-        className="shrink-0 px-[8px] pb-[3px] text-[10px] font-semibold tracking-[0.08em] text-(--ink-4) uppercase"
-      >
-        {t("database.savedConnectionsHeading")}
-      </h2>
       <ScrollArea
         data-testid="db-saved-scroll"
         className="min-h-0 flex-1"
         viewportClassName="[&>div]:block!"
       >
         {saved.length === 0 ? (
-          <div className="flex min-h-[72px] items-center justify-center px-[8px]">
-            <EmptyState
-              icon={Database}
-              title={t("database.emptyTitle")}
-              description={t("database.emptyDescription")}
-            />
+          <div className="px-4 py-5">
+            <p className="text-[12.5px] font-medium text-(--ink-2)">{t("database.emptyTitle")}</p>
+            <p className="mt-1 text-[12px] text-(--ink-3)">{t("database.emptyDescription")}</p>
           </div>
         ) : (
-          <ul className="flex flex-col gap-[2px]">
+          <ul className="flex flex-col gap-px p-1.5">
             {saved.map((entry) => {
               const live = liveByDescriptorId.get(entry.id)
               const isActive = entry.id === activeDescriptorId
@@ -429,10 +440,8 @@ function SavedConnectionsRegion({
                       address: savedConnectionAddress(entry)
                     })}
                     className={cn(
-                      "group flex min-h-[38px] items-center gap-[7px] rounded-[8px] px-[8px] py-[3px] text-[12.5px] transition-colors",
-                      isActive
-                        ? "bg-(--yz-solid) text-(--ink-1)"
-                        : "text-(--ink-2) hover:bg-(--yz-hover)"
+                      "group relative flex h-10 items-center rounded-(--r-xs) transition-colors",
+                      isActive ? "bg-(--db-selected)" : "hover:bg-(--db-hover)"
                     )}
                   >
                     <button
@@ -440,29 +449,25 @@ function SavedConnectionsRegion({
                       aria-current={isActive ? "true" : undefined}
                       onClick={() => void openOrReconnectSavedConnection(entry.id)}
                       title={savedConnectionAddress(entry)}
-                      className="flex min-w-0 flex-1 items-center gap-[7px] text-left"
+                      className="flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-(--r-xs) px-2.5 text-left outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
                     >
-                      <Database
-                        className={cn(
-                          "size-[14px] shrink-0",
-                          isActive ? "text-(--yz-accent-ink)" : "text-(--ink-3)"
-                        )}
-                        aria-hidden="true"
-                      />
-                      <span className="flex min-w-0 flex-col">
-                        <span className={cn("truncate font-medium", !live && "text-(--ink-3)")}>
+                      <StatusDot status={status} />
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className={cn(
+                          "truncate text-[13px] leading-[18px]",
+                          isActive ? "font-medium text-(--ink-1)" : live ? "text-(--ink-1)" : "text-(--ink-2)"
+                        )}>
                           {entry.name}
                         </span>
-                        <span className="truncate text-[10.5px] text-(--ink-4)">
-                          {kindLabel(entry.kind)}
-                          {live ? "" : ` · ${t("database.savedOffline")}`}
-                          {credentialNote ? ` · ${credentialNote}` : ""}
+                        <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-(--ink-3)">
+                          <span className="truncate">{kindLabel(entry.kind)}{credentialNote ? ` · ${credentialNote}` : ""}</span>
+                          {!live && <span className="sr-only">{t("database.savedOffline")}</span>}
                         </span>
                       </span>
+                      <StatusBadge status={status} error={session?.error ?? null} />
                     </button>
-                    <StatusBadge status={status} error={session?.error ?? null} />
                     {confirmDeleteId === entry.id ? (
-                      <div className="flex shrink-0 items-center gap-[2px]">
+                      <div className="absolute right-1.5 flex items-center gap-0.5 rounded-(--r-xs) border border-(--line-1) bg-(--paper-0) p-0.5 shadow-xs">
                         <button
                           type="button"
                           aria-label={t("database.confirmRemove", { name: entry.name })}
@@ -472,48 +477,51 @@ function SavedConnectionsRegion({
                               onError(dbProfileUiErrorCode(error))
                             })
                           }}
-                          className="flex size-[18px] items-center justify-center rounded-[5px] text-(--destructive) transition-colors hover:bg-(--danger-soft)"
+                          className={cn(rowActionClass, "text-(--destructive) hover:bg-(--danger-soft) hover:text-(--destructive)")}
                         >
-                          <Check className="size-[12px]" aria-hidden="true" />
+                          <Check className="size-3.5" aria-hidden="true" />
                         </button>
                         <button
                           type="button"
                           aria-label={t("database.cancelRemove")}
                           onClick={() => setConfirmDeleteId(null)}
-                          className="flex size-[18px] items-center justify-center rounded-[5px] text-(--ink-4) transition-colors hover:bg-(--yz-hover) hover:text-(--ink-1)"
+                          className={rowActionClass}
                         >
-                          <X className="size-[12px]" aria-hidden="true" />
+                          <X className="size-3.5" aria-hidden="true" />
                         </button>
                       </div>
                     ) : (
-                      <div className="flex shrink-0 items-center gap-[2px] opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                      <div className="absolute right-1.5 flex items-center gap-0.5 rounded-(--r-xs) border border-(--line-1) bg-(--paper-0) p-0.5 opacity-0 shadow-xs transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 motion-reduce:transition-none">
                         {entry.kind !== "sqlite" && entry.credentialState === "stored" && (
                           <button
                             type="button"
                             aria-label={t("database.removeCredential", { name: entry.name })}
+                            title={t("database.removeCredential", { name: entry.name })}
                             onClick={() => void removeCredential(entry.id).catch((error) => {
                               onError(dbProfileUiErrorCode(error))
                             })}
-                            className="flex size-[18px] items-center justify-center rounded-[5px] text-(--ink-4) transition-colors hover:bg-(--yz-hover) hover:text-(--ink-1)"
+                            className={rowActionClass}
                           >
-                            <KeyRound className="size-[12px]" aria-hidden="true" />
+                            <KeyRound className="size-3.5" aria-hidden="true" />
                           </button>
                         )}
                         <button
                           type="button"
                           aria-label={t("database.editConnection", { name: entry.name })}
+                          title={t("database.editConnection", { name: entry.name })}
                           onClick={() => onOpenEdit(entry)}
-                          className="flex size-[18px] items-center justify-center rounded-[5px] text-(--ink-4) transition-colors hover:bg-(--yz-hover) hover:text-(--ink-1)"
+                          className={rowActionClass}
                         >
-                          <Pencil className="size-[12px]" aria-hidden="true" />
+                          <Pencil className="size-3.5" aria-hidden="true" />
                         </button>
                         <button
                           type="button"
                           aria-label={t("database.forgetConnection", { name: entry.name })}
+                          title={t("database.forgetConnection", { name: entry.name })}
                           onClick={() => setConfirmDeleteId(entry.id)}
-                          className="flex size-[18px] items-center justify-center rounded-[5px] text-(--ink-4) transition-colors hover:bg-(--yz-hover) hover:text-(--ink-1)"
+                          className={rowActionClass}
                         >
-                          <Trash2 className="size-[12px]" aria-hidden="true" />
+                          <Trash2 className="size-3.5" aria-hidden="true" />
                         </button>
                       </div>
                     )}
@@ -568,6 +576,13 @@ function groupDatabaseObjects(objects: DbTable[]): DbObjectCatalogGroup[] {
     }))
 }
 
+/** Case-insensitive name filter for the object tree. An empty query keeps all. */
+function filterDatabaseObjects(objects: DbTable[], query: string): DbTable[] {
+  const needle = query.trim().toLocaleLowerCase()
+  if (!needle) return objects
+  return objects.filter((object) => object.name.toLocaleLowerCase().includes(needle))
+}
+
 function DatabaseObjectTreeRegion() {
   const { t } = useTranslation("workbench")
   const connections = useDbStore((s) => s.connections)
@@ -581,8 +596,13 @@ function DatabaseObjectTreeRegion() {
   const loadTables = useDbStore((s) => s.loadTables)
   const loadColumns = useDbStore((s) => s.loadColumns)
   const openTableQuery = useDbStore((s) => s.openTableQuery)
+  const activeTableKey = useDbStore((s) => {
+    const table = s.activeDescriptorId ? queryFor(s, s.activeDescriptorId).table : null
+    return table ? dbObjectRefKey(table) : null
+  })
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set())
   const [expandedObjects, setExpandedObjects] = useState<Set<string>>(() => new Set())
+  const [filter, setFilter] = useState("")
 
   const activeConn = connections.find((connection) =>
     connection.descriptorId === activeDescriptorId
@@ -591,7 +611,11 @@ function DatabaseObjectTreeRegion() {
     ? (tableBuckets[activeDescriptorId] ?? (activeConnId ? tables[activeConnId] : undefined) ?? [])
     : []
   const activeTableError = activeDescriptorId ? tableErrors[activeDescriptorId] ?? null : null
-  const groups = groupDatabaseObjects(activeTables)
+  const filtering = filter.trim().length > 0
+  const visibleTables = filterDatabaseObjects(activeTables, filter)
+  const groups = groupDatabaseObjects(visibleTables)
+  // While filtering, every matching branch stays open so matches are never hidden.
+  const isExpanded = (key: string) => filtering || !collapsedGroups.has(key)
 
   function toggleGroup(key: string) {
     setCollapsedGroups((current) => {
@@ -606,15 +630,15 @@ function DatabaseObjectTreeRegion() {
     if (!activeDescriptorId) return
     const refKey = dbObjectRefKey(object)
     const expansionKey = `${activeDescriptorId}:${refKey}`
-    const isExpanded = expandedObjects.has(expansionKey)
+    const objectExpanded = expandedObjects.has(expansionKey)
     setExpandedObjects((current) => {
       const next = new Set(current)
-      if (isExpanded) next.delete(expansionKey)
+      if (objectExpanded) next.delete(expansionKey)
       else next.add(expansionKey)
       return next
     })
     if (
-      !isExpanded
+      !objectExpanded
       && columnBuckets[activeDescriptorId]?.[refKey] === undefined
       && !columnErrors[activeDescriptorId]?.[refKey]
     ) {
@@ -622,26 +646,53 @@ function DatabaseObjectTreeRegion() {
     }
   }
 
+  const connected = !!activeConn && !!activeDescriptorId
+
   return (
     <section
       data-testid="db-object-region"
       aria-labelledby="db-object-heading"
-      className="flex min-h-0 flex-col overflow-hidden"
+      className="flex min-h-0 flex-col overflow-hidden border-t border-(--line-1)"
     >
-      <h2
-        id="db-object-heading"
-        className="shrink-0 px-[8px] pb-[3px] text-[10px] font-semibold tracking-[0.08em] text-(--ink-4) uppercase"
-      >
-        {t("database.objectTreeHeading")}
-      </h2>
+      <h2 id="db-object-heading" className="sr-only">{t("database.objectTreeHeading")}</h2>
+      <div className="shrink-0 px-2 pt-2 pb-1.5">
+        <InputGroup className="h-7 rounded-(--r-xs) border-(--line-1) bg-(--paper-0) shadow-none">
+          <InputGroupAddon>
+            <Search className="size-3.5" aria-hidden="true" />
+          </InputGroupAddon>
+          <InputGroupInput
+            type="search"
+            value={filter}
+            disabled={!connected || activeTables.length === 0}
+            onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && filter) {
+                event.preventDefault()
+                setFilter("")
+              }
+            }}
+            placeholder={t("database.filterObjectsPlaceholder")}
+            aria-label={t("database.filterObjects")}
+            className="text-[12.5px] [&::-webkit-search-cancel-button]:hidden"
+          />
+          {activeTables.length > 0 && (
+            <InputGroupAddon align="inline-end">
+              <span aria-hidden="true" className="font-mono text-[11px] text-(--ink-4) tabular-nums">
+                {filtering ? `${visibleTables.length}/${activeTables.length}` : activeTables.length}
+              </span>
+            </InputGroupAddon>
+          )}
+        </InputGroup>
+      </div>
       <ScrollArea
         data-testid="db-object-scroll"
         className="min-h-0 flex-1"
+        viewportClassName="px-1.5 pb-2 [&>div]:block!"
       >
         {activeTableError && activeDescriptorId && (
           <div
             role="alert"
-            className="mx-[4px] mb-[4px] flex items-start gap-[7px] rounded-[7px] border border-(--line-1) bg-(--amber-soft) px-[8px] py-[6px] text-[11px] text-(--ink-2)"
+            className="mb-1.5 flex items-start gap-2 rounded-(--r-xs) bg-(--amber-soft) px-2.5 py-2 text-[12px] text-(--ink-2)"
           >
             <span className="min-w-0 flex-1">
               {activeTableError.code === "connectionBusy"
@@ -649,7 +700,7 @@ function DatabaseObjectTreeRegion() {
                 : t("database.tableRefreshFailed")}
             </span>
             <Button
-              size="sm"
+              size="xs"
               variant="outline"
               aria-label={t("database.retryObjectRefresh")}
               onClick={() => void loadTables(activeDescriptorId)}
@@ -658,28 +709,34 @@ function DatabaseObjectTreeRegion() {
             </Button>
           </div>
         )}
-        {!activeConn || !activeDescriptorId ? (
-          <p className="px-[8px] py-[4px] text-[12px] text-(--ink-4)">
+        {!connected ? (
+          <p className="px-2.5 py-2 text-[12px] text-(--ink-3)">
             {t("database.noActiveConnectionObjects")}
           </p>
+        ) : activeTables.length === 0 ? (
+          <p className="px-2.5 py-2 text-[12px] text-(--ink-3)">{t("database.noTables")}</p>
         ) : groups.length === 0 ? (
-          <p className="px-[8px] py-[4px] text-[12px] text-(--ink-4)">{t("database.noTables")}</p>
+          <p role="status" className="px-2.5 py-2 text-[12px] text-(--ink-3)">
+            {t("database.noObjectMatches", { query: filter.trim() })}
+          </p>
         ) : (
-          <ul className="flex flex-col gap-[1px]">
+          <ul className="flex flex-col">
             {groups.map((catalogGroup) => {
               const catalogKey = JSON.stringify([activeDescriptorId, "catalog", catalogGroup.catalog])
-              const catalogExpanded = !collapsedGroups.has(catalogKey)
+              const catalogExpanded = isExpanded(catalogKey)
               return (
                 <li key={catalogKey}>
                   <TreeGroupToggle
                     expanded={catalogExpanded}
                     label={t("database.catalogGroup", { name: catalogGroup.catalog })}
+                    kindLabel={t("database.catalogShort")}
+                    name={catalogGroup.catalog}
                     level="catalog"
                     groupKey={catalogKey}
                     onClick={() => toggleGroup(catalogKey)}
                   />
                   {catalogExpanded && (
-                    <ul className="pl-[9px]">
+                    <ul className="ml-[13px] border-l border-(--line-1) pl-1">
                       {catalogGroup.schemas.map((schemaGroup) => {
                         const schemaKey = JSON.stringify([
                           activeDescriptorId,
@@ -687,18 +744,20 @@ function DatabaseObjectTreeRegion() {
                           catalogGroup.catalog,
                           schemaGroup.schema
                         ])
-                        const schemaExpanded = !collapsedGroups.has(schemaKey)
+                        const schemaExpanded = isExpanded(schemaKey)
                         return (
                           <li key={schemaKey}>
                             <TreeGroupToggle
                               expanded={schemaExpanded}
                               label={t("database.schemaGroup", { name: schemaGroup.schema })}
+                              kindLabel={t("database.schemaShort")}
+                              name={schemaGroup.schema}
                               level="schema"
                               groupKey={schemaKey}
                               onClick={() => toggleGroup(schemaKey)}
                             />
                             {schemaExpanded && (
-                              <ul className="pl-[9px]">
+                              <ul className="ml-[13px] border-l border-(--line-1) pl-1">
                                 {(["table", "view"] as const).map((kind) => {
                                   const objects = kind === "table" ? schemaGroup.tables : schemaGroup.views
                                   if (objects.length === 0) return null
@@ -709,7 +768,7 @@ function DatabaseObjectTreeRegion() {
                                     schemaGroup.schema,
                                     kind
                                   ])
-                                  const kindExpanded = !collapsedGroups.has(kindKey)
+                                  const kindExpanded = isExpanded(kindKey)
                                   return (
                                     <li key={kindKey}>
                                       <TreeGroupToggle
@@ -718,11 +777,12 @@ function DatabaseObjectTreeRegion() {
                                           ? t("database.tableGroupHeading")
                                           : t("database.viewGroupHeading")}
                                         level="kind"
+                                        count={objects.length}
                                         groupKey={kindKey}
                                         onClick={() => toggleGroup(kindKey)}
                                       />
                                       {kindExpanded && (
-                                        <ul className="pl-[9px]">
+                                        <ul className="flex flex-col">
                                           {objects.map((object) => {
                                             const refKey = dbObjectRefKey(object)
                                             const expansionKey = `${activeDescriptorId}:${refKey}`
@@ -730,13 +790,18 @@ function DatabaseObjectTreeRegion() {
                                             const columns = columnBuckets[activeDescriptorId]?.[refKey]
                                             const columnError = columnErrors[activeDescriptorId]?.[refKey] ?? null
                                             const Icon = object.kind === "view" ? Eye : Table2
+                                            const isActive = activeTableKey === refKey
                                             return (
                                               <li
                                                 key={refKey}
                                                 data-testid="db-object-row"
                                                 data-object-ref={refKey}
                                               >
-                                                <div className="flex h-[26px] items-center rounded-[7px] text-(--ink-2) hover:bg-(--yz-hover) hover:text-(--ink-1)">
+                                                <DatabaseTableActions descriptorId={activeDescriptorId} table={object}>
+                                                <div
+                                                  data-active={isActive || undefined}
+                                                  className="group/object flex h-7 items-center rounded-(--r-xs) text-(--ink-2) transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) data-active:bg-(--db-selected) data-active:text-(--ink-1)"
+                                                >
                                                   <button
                                                     type="button"
                                                     aria-label={objectExpanded
@@ -744,63 +809,77 @@ function DatabaseObjectTreeRegion() {
                                                       : t("database.expandColumns", { name: object.name })}
                                                     aria-expanded={objectExpanded}
                                                     onClick={() => toggleObject(object)}
-                                                    className="flex size-[24px] shrink-0 items-center justify-center rounded-[6px] text-(--ink-4) hover:text-(--ink-1)"
+                                                    className="flex h-full w-5 shrink-0 items-center justify-center rounded-(--r-xs) text-(--ink-4) outline-none hover:text-(--ink-1) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
                                                   >
-                                                    {objectExpanded
-                                                      ? <ChevronDown className="size-[12px]" aria-hidden="true" />
-                                                      : <ChevronRight className="size-[12px]" aria-hidden="true" />}
+                                                    <ChevronRight
+                                                      className={cn("size-3 transition-transform motion-reduce:transition-none", objectExpanded && "rotate-90")}
+                                                      aria-hidden="true"
+                                                    />
                                                   </button>
                                                   <button
                                                     type="button"
                                                     onClick={() => void openTableQuery(object)}
                                                     title={`${object.catalog}.${object.schema}.${object.name}`}
-                                                    className="flex min-w-0 flex-1 items-center gap-[7px] pr-[8px] text-left text-[12.5px]"
+                                                    className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-(--r-xs) pr-2 text-left outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
                                                   >
-                                                    <Icon className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
-                                                    <span className="truncate font-mono">{object.name}</span>
+                                                    <Icon
+                                                      aria-hidden="true"
+                                                      className={cn("size-3.5 shrink-0", isActive ? "text-(--yz-accent-ink)" : "text-(--ink-4) group-hover/object:text-(--ink-3)")}
+                                                    />
+                                                    <span className="truncate font-mono text-[12px]">{object.name}</span>
                                                   </button>
                                                 </div>
+                                                </DatabaseTableActions>
                                                 {objectExpanded && (
-                                                  <div className="ml-[24px] border-l border-(--line-1) pl-[8px]">
+                                                  <div className="mb-1 ml-[9px] border-l border-(--line-1) pl-3">
                                                     {columnError ? (
-                                                      <div role="alert" className="flex items-start gap-[5px] py-[4px] text-[10.5px] text-(--ink-3)">
+                                                      <div role="alert" className="flex items-center gap-1.5 py-1 text-[11.5px] text-(--ink-3)">
                                                         <span className="min-w-0 flex-1">
                                                           {columnError.code === "connectionBusy"
                                                             ? t("database.tableConnectionBusy")
                                                             : t("database.columnRefreshFailed")}
                                                         </span>
-                                                        <button
+                                                        <Button
                                                           type="button"
+                                                          size="xs"
+                                                          variant="ghost"
                                                           aria-label={t("database.retryColumns", { name: object.name })}
                                                           onClick={() => void loadColumns(activeDescriptorId, object)}
-                                                          className="shrink-0 rounded-[5px] px-[5px] py-[1px] text-(--yz-accent-ink) hover:bg-(--yz-hover)"
+                                                          className="text-(--yz-accent-ink)"
                                                         >
                                                           {t("database.retry")}
-                                                        </button>
+                                                        </Button>
                                                       </div>
                                                     ) : columns === undefined ? (
-                                                      <p role="status" className="py-[3px] text-[10.5px] text-(--ink-4)">
+                                                      <p role="status" className="py-1 text-[11.5px] text-(--ink-3)">
                                                         {t("database.loadingColumns")}
                                                       </p>
                                                     ) : columns.length === 0 ? (
-                                                      <p className="py-[3px] text-[10.5px] text-(--ink-4)">
+                                                      <p className="py-1 text-[11.5px] text-(--ink-3)">
                                                         {t("database.noColumns")}
                                                       </p>
                                                     ) : (
-                                                      <ul>
+                                                      <ul className="py-0.5">
                                                         {columns.map((column) => (
                                                           <li
                                                             key={column.name}
-                                                            className="flex min-h-[22px] items-center gap-[5px] py-[2px] font-mono text-[10.5px] text-(--ink-3)"
+                                                            title={`${column.name} ${column.type}`}
+                                                            className="flex h-[22px] items-center gap-1.5 font-mono text-[11px] text-(--ink-3)"
                                                           >
-                                                            <span className="min-w-0 flex-1 truncate text-(--ink-2)">
+                                                            <span className="min-w-0 truncate text-(--ink-2)">
                                                               {column.name}
                                                             </span>
-                                                            <span className="max-w-[84px] truncate">{column.type}</span>
-                                                            <span>{column.notnull
-                                                              ? t("database.columnNotNull")
-                                                              : t("database.columnNullable")}</span>
-                                                            {column.pk && <span>{t("database.columnPrimaryKey")}</span>}
+                                                            {column.pk && (
+                                                              <span className="shrink-0 text-[10px] font-medium text-(--yz-accent-ink)">
+                                                                {t("database.columnPrimaryKey")}
+                                                              </span>
+                                                            )}
+                                                            <span className="ml-auto max-w-[96px] shrink-0 truncate text-(--ink-4)">{column.type}</span>
+                                                            <span className={cn("shrink-0 text-[10px]", column.notnull ? "text-(--ink-3)" : "text-(--ink-4)")}>
+                                                              {column.notnull
+                                                                ? t("database.columnNotNull")
+                                                                : t("database.columnNullable")}
+                                                            </span>
                                                           </li>
                                                         ))}
                                                       </ul>
@@ -835,14 +914,20 @@ function DatabaseObjectTreeRegion() {
 function TreeGroupToggle({
   expanded,
   label,
+  kindLabel,
+  name,
   level,
   groupKey,
+  count,
   onClick
 }: {
   expanded: boolean
   label: string
+  kindLabel?: string
+  name?: string
   level: "catalog" | "schema" | "kind"
   groupKey: string
+  count?: number
   onClick: () => void
 }) {
   return (
@@ -852,13 +937,25 @@ function TreeGroupToggle({
       data-group-level={level}
       data-group-key={groupKey}
       aria-expanded={expanded}
+      aria-label={name !== undefined ? label : undefined}
       onClick={onClick}
-      className="flex h-[24px] w-full items-center gap-[4px] rounded-[6px] px-[4px] text-left text-[11px] font-medium text-(--ink-3) hover:bg-(--yz-hover) hover:text-(--ink-1)"
+      className="flex h-7 w-full items-center gap-1.5 rounded-(--r-xs) pr-2 pl-1 text-left text-[12px] text-(--ink-2) outline-none transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
     >
-      {expanded
-        ? <ChevronDown className="size-[12px] shrink-0" aria-hidden="true" />
-        : <ChevronRight className="size-[12px] shrink-0" aria-hidden="true" />}
-      <span className="truncate">{label}</span>
+      <ChevronRight
+        className={cn("size-3 shrink-0 text-(--ink-4) transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
+        aria-hidden="true"
+      />
+      {name !== undefined ? (
+        <span className="flex min-w-0 items-baseline gap-1.5" aria-hidden="true">
+          <span className="shrink-0 text-[11px] text-(--ink-4)">{kindLabel}</span>
+          <span className="truncate font-mono text-[12px] text-(--ink-1)">{name}</span>
+        </span>
+      ) : (
+        <span className="truncate font-medium text-(--ink-3)">{label}</span>
+      )}
+      {count !== undefined && (
+        <span aria-hidden="true" className="ml-auto shrink-0 font-mono text-[11px] text-(--ink-4) tabular-nums">{count}</span>
+      )}
     </button>
   )
 }
@@ -877,7 +974,7 @@ function RecentQueriesRegion() {
     <section
       data-testid="db-history-region"
       aria-labelledby="db-history-heading"
-      className="flex max-h-[168px] min-h-0 flex-col overflow-hidden"
+      className="flex max-h-[200px] min-h-0 flex-col overflow-hidden border-t border-(--line-1)"
     >
       <button
         id="db-history-heading"
@@ -885,26 +982,29 @@ function RecentQueriesRegion() {
         data-testid="db-history-toggle"
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
-        className="flex h-[24px] shrink-0 items-center gap-[5px] rounded-[6px] px-[8px] text-left text-[10px] font-semibold tracking-[0.08em] text-(--ink-4) uppercase hover:bg-(--yz-hover) hover:text-(--ink-2)"
+        className="flex h-9 shrink-0 items-center gap-1.5 px-2.5 text-left text-[12px] font-medium text-(--ink-2) outline-none transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
       >
-        {expanded
-          ? <ChevronDown className="size-[12px]" aria-hidden="true" />
-          : <ChevronRight className="size-[12px]" aria-hidden="true" />}
-        <History className="size-[12px]" aria-hidden="true" />
+        <ChevronRight
+          className={cn("size-3 shrink-0 text-(--ink-4) transition-transform motion-reduce:transition-none", expanded && "rotate-90")}
+          aria-hidden="true"
+        />
         <span className="min-w-0 flex-1 truncate">{t("database.recentQueriesHeading")}</span>
-        <span className="font-mono text-[9px]" aria-hidden="true">{historyEntries.length}</span>
+        {historyEntries.length > 0 && (
+          <span className="font-mono text-[11px] font-normal text-(--ink-4) tabular-nums" aria-hidden="true">{historyEntries.length}</span>
+        )}
       </button>
       {expanded && (
         <ScrollArea
           data-testid="db-history-scroll"
-          className="min-h-0 max-h-[144px]"
+          className="min-h-0 max-h-[164px]"
+          viewportClassName="px-1.5 pb-1.5 [&>div]:block!"
         >
           {historyEntries.length === 0 ? (
-            <p className="px-[8px] py-[4px] text-[11px] text-(--ink-4)">
+            <p className="px-2.5 pb-1.5 text-[12px] text-(--ink-3)">
               {t("database.noRecentQueries")}
             </p>
           ) : (
-            <ul className="flex flex-col gap-[1px]">
+            <ul className="flex flex-col">
               {historyEntries.map((entry, index) => (
                 <li
                   key={`${entry.ranAt}-${index}`}
@@ -914,22 +1014,22 @@ function RecentQueriesRegion() {
                     type="button"
                     onClick={() => setSql(entry.sql)}
                     title={entry.sql}
-                    className="flex h-[26px] w-full items-center gap-[7px] rounded-[7px] px-[8px] text-left text-[12.5px] text-(--ink-2) transition-colors hover:bg-(--yz-hover) hover:text-(--ink-1)"
+                    className="flex h-7 w-full items-center gap-2 rounded-(--r-xs) px-2.5 text-left text-(--ink-2) outline-none transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
                   >
-                    {entry.ok ? (
-                      <History className="size-[13px] shrink-0 text-(--ink-3)" aria-hidden="true" />
-                    ) : (
-                      <span
-                        role="img"
-                        aria-label={t("database.historyFailed")}
-                        title={entry.error}
-                        className="size-[6px] shrink-0 rounded-full bg-(--destructive)"
-                      />
-                    )}
-                    <span className="min-w-0 flex-1 truncate font-mono">
+                    <span className="flex size-2 shrink-0 items-center justify-center">
+                      {!entry.ok && (
+                        <span
+                          role="img"
+                          aria-label={t("database.historyFailed")}
+                          title={entry.error}
+                          className="size-1.5 rounded-full bg-(--destructive)"
+                        />
+                      )}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
                       {entry.sql.split("\n")[0]}
                     </span>
-                    <span className="shrink-0 font-mono text-[10px] text-(--ink-4)">
+                    <span className="shrink-0 font-mono text-[10.5px] text-(--ink-4) tabular-nums">
                       {relativeTime(Math.floor(entry.ranAt / 1000))}
                     </span>
                   </button>
@@ -943,6 +1043,21 @@ function RecentQueriesRegion() {
   )
 }
 
+function StatusDot({ status }: { status: DbSessionStatus }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "size-2 shrink-0 rounded-full",
+        status === "connected" && "bg-(--term-ok)",
+        status === "connecting" && "bg-(--term-amber) motion-safe:animate-pulse",
+        status === "error" && "bg-(--destructive)",
+        status === "disconnected" && "border border-(--ink-4)"
+      )}
+    />
+  )
+}
+
 function StatusBadge({
   status,
   error
@@ -952,29 +1067,19 @@ function StatusBadge({
 }) {
   const { t } = useTranslation("workbench")
   const map: Record<DbSessionStatus, { label: string; className: string }> = {
-    connecting: {
-      label: t("database.statusConnecting"),
-      className: "bg-(--amber-soft) text-(--ink-2)"
-    },
-    connected: {
-      label: t("database.statusConnected"),
-      className: "bg-(--yz-hover) text-(--term-ok)"
-    },
-    error: { label: t("database.statusError"), className: "bg-(--danger-soft) text-(--destructive)" },
-    disconnected: {
-      label: t("database.statusOffline"),
-      className: "bg-(--yz-hover) text-(--ink-4)"
-    }
+    connecting: { label: t("database.statusConnecting"), className: "text-(--ink-2)" },
+    // Connected/offline are already carried by the status dot and row tone;
+    // keep the word for assistive tech without repeating it visually.
+    connected: { label: t("database.statusConnected"), className: "sr-only" },
+    error: { label: t("database.statusError"), className: "font-medium text-(--destructive)" },
+    disconnected: { label: t("database.statusOffline"), className: "sr-only" }
   }
   const { label, className } = map[status]
   return (
     <span
       data-status={status === "disconnected" ? "offline" : status}
       title={status === "error" && error ? t(`database.profileError.${error}`) : undefined}
-      className={cn(
-        "shrink-0 rounded-(--r-pill) px-[7px] py-[1px] text-[10px] font-medium",
-        className
-      )}
+      className={cn("shrink-0 text-[11px]", className)}
     >
       {label}
     </span>
@@ -993,7 +1098,7 @@ function savedProfileTarget(entry: SavedDbConnection): DbProfileTarget | null {
   if (entry.kind === "sqlite") {
     return entry.path ? { kind: "sqlite", path: entry.path, ...(entry.workspace ? { workspace: entry.workspace } : {}) } : null
   }
-  if (!entry.host || !entry.port || !entry.database || !entry.user) return null
+  if (!entry.host || !entry.port || typeof entry.database !== "string" || !entry.user) return null
   if (entry.kind === "postgres") {
     return {
       kind: "postgres",
@@ -1186,7 +1291,6 @@ function NewConnectionDialog({
     (kind === "sqlite"
       ? path.trim().length > 0 && (!sqliteWorkspace || (path.trim().startsWith("/") && sqliteWorkspace.canonicalPath.startsWith("/")))
       : host.trim().length > 0 &&
-        database.trim().length > 0 &&
         user.trim().length > 0 &&
         ((isEdit && credentialAction !== "replace") || password.length > 0) &&
         Number.isFinite(portNum) &&
@@ -1687,10 +1791,9 @@ function NewConnectionDialog({
                 </fieldset>
               ) : (
                 <label className="flex items-center gap-[7px] text-[12px] text-(--ink-2)">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={trustCert}
-                    onChange={(e) => setTrustCert(e.target.checked)}
+                    onCheckedChange={(checked) => setTrustCert(checked === true)}
                   />
                   {t("database.trustCert")}
                 </label>

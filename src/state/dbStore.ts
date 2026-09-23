@@ -210,6 +210,8 @@ export interface DbQueryRunGroup {
 
 export interface DbQueryState {
     sql: string
+    table?: DbTable | null
+    editUnconfirmed?: boolean
     running: boolean
     result: DbQueryResult | null
     error: DbQueryErrorState | null
@@ -317,6 +319,7 @@ interface DbState {
     loadColumns: (descriptorId: string, table: DbTable) => Promise<void>
     setSql: (sql: string) => void
     runQuery: (target?: DatabaseSqlTargetRequest) => Promise<void>
+    executeTableStatement: (identity: DbConnectionIdentity, sql: string, expectedRows?: string) => Promise<void>
     cancelQuery: () => Promise<void>
     selectStatementTab: (statementExecutionId: DbStatementExecutionId) => void
     previousResultPage: (owner: DbResultSessionOwner) => Promise<void>
@@ -375,7 +378,7 @@ function profileTargetOf(config: DbOpenConfig): DbProfileTarget {
 }
 
 function profileName(target: DbProfileTarget): string {
-    return target.kind === "sqlite" ? basename(target.path) : `${target.database}@${target.host}`
+    return target.kind === "sqlite" ? basename(target.path) : target.database ? `${target.database}@${target.host}` : target.host
 }
 
 function savedFromProfile(profile: DbProfileDescriptor): SavedDbConnection {
@@ -412,7 +415,7 @@ function savedFromProfile(profile: DbProfileDescriptor): SavedDbConnection {
     }
 }
 
-function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null {
+export function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null {
     if (saved.kind === "sqlite" && saved.path) {
         return {
             descriptorId: saved.id as DbDescriptorId,
@@ -426,7 +429,7 @@ function profileFromSaved(saved: SavedDbConnection): DbProfileDescriptor | null 
         saved.kind !== "sqlite" &&
         saved.host &&
         saved.port &&
-        saved.database &&
+        typeof saved.database === "string" &&
         saved.user
     ) {
         const target: DbProfileTarget = saved.kind === "postgres"
@@ -770,7 +773,7 @@ function savedConfigGeneration(saved: SavedDbConnection | undefined): number | n
     return saved ? (saved.configGeneration ?? 1) : null
 }
 
-function identityOf(connection: DbConnection | undefined): DbConnectionIdentity | null {
+export function identityOf(connection: DbConnection | undefined): DbConnectionIdentity | null {
     if (!connection?.connectionGeneration) return null
     return {
         descriptorId: connection.descriptorId as DbDescriptorId,
@@ -2272,6 +2275,8 @@ export const useDbStore = create<DbState>()((set, get) => {
                 (connection) => connection.connId === descriptorOrConnectionId
             )?.descriptorId
         if (!descriptorId) return
+        const profile = state.saved.find(item => item.id === descriptorId)
+        if (profile?.kind !== "sqlite" && profile?.database === "") return
         const connection = liveConnectionForDescriptor(state, descriptorId)
         const identity = identityOf(connection ?? undefined)
         const configGeneration = savedConfigGeneration(
@@ -2428,7 +2433,8 @@ export const useDbStore = create<DbState>()((set, get) => {
             if (!descriptorId) return {}
             const connection = liveConnectionForDescriptor(state, descriptorId)
             if (!connection) return {}
-            const next = { ...queryFor(state, descriptorId), sql }
+            const previous = queryFor(state, descriptorId)
+            const next = { ...previous, sql, table: sql === previous.sql ? previous.table : null }
             return {
                 queryBuckets: { ...state.queryBuckets, [descriptorId]: next },
                 queries: { ...state.queries, [connection.connId]: next }
@@ -2439,6 +2445,8 @@ export const useDbStore = create<DbState>()((set, get) => {
         const state = get()
         const descriptorId = state.activeDescriptorId
         if (!descriptorId) return
+        const profile = state.saved.find(item => item.id === descriptorId)
+        if (profile?.kind !== "sqlite" && profile?.database === "") return
         const connection = liveConnectionForDescriptor(state, descriptorId)
         const identity = identityOf(connection ?? undefined)
         const configGeneration = savedConfigGeneration(
@@ -2883,12 +2891,86 @@ export const useDbStore = create<DbState>()((set, get) => {
         })
     },
 
+    executeTableStatement: async (identity, sql, expectedRows) => {
+        const descriptorId = identity.descriptorId
+        const initial = get()
+        if (!exactConnection(initial, identity)) throw new Error("staleConnection")
+        const current = queryFor(initial, descriptorId)
+        if (current.running || current.runGroup?.run?.transactionMayBeOpen) throw new Error("connectionBusy")
+        const configGeneration = savedConfigGeneration(initial.saved.find(profile => profile.id === descriptorId))
+        if (configGeneration === null) throw new Error("staleConnection")
+        const token = beginOperation(descriptorId, "query", ["page"])
+        const owner: DbQueryRunOwner = { ...identity, queryRunId: `${descriptorId}:edit:${token}` as DbQueryRunId }
+        const isCurrent = () => operationStillCurrent(get(), descriptorId, configGeneration, "query", token, identity)
+        const markRunning = (running: boolean) => set(state => {
+            if (!operationStillCurrent(state, descriptorId, configGeneration, "query", token, identity)) return {}
+            const next = { ...queryFor(state, descriptorId), running, ...(running ? { editUnconfirmed: false } : {}) }
+            return { queryBuckets: { ...state.queryBuckets, [descriptorId]: next }, queries: { ...state.queries, [identity.connectionId]: next } }
+        })
+        markRunning(true)
+        let run: DbQueryRun | null = null
+        try {
+            const previous = current.runGroup?.run ? resultSessionOwners(current.runGroup.run) : []
+            // Release all independent cursors before requesting the connection's write lease.
+            const released = await Promise.allSettled(previous.map(session => dbResultSessionRelease(session)))
+            set(state => {
+                if (!operationStillCurrent(state, descriptorId, configGeneration, "query", token, identity)) return {}
+                let query = queryFor(state, descriptorId)
+                for (let index = 0; index < released.length; index++) {
+                    const result = released[index]
+                    const resultOwner = previous[index]
+                    const page = exactResultPageState(query, resultOwner)
+                    if (!page || (result.status === "rejected" && operationalErrorState(result.reason, "queryFailed").code !== "staleConnection")) continue
+                    query = queryWithResultPageState(query, resultOwner, {
+                        ...page.state,
+                        page: { ...page.state.page, lifecycle: "released", hasNext: false },
+                        loading: false,
+                        released: true,
+                    }) ?? query
+                }
+                return { queryBuckets: { ...state.queryBuckets, [descriptorId]: query }, queries: { ...state.queries, [identity.connectionId]: query } }
+            })
+            for (const result of released) {
+                if (result.status === "rejected" && operationalErrorState(result.reason, "queryFailed").code !== "staleConnection") throw result.reason
+            }
+            if (!isCurrent()) throw new Error("staleConnection")
+            run = await dbQueryRun({ ...owner, mode: "primary", statements: [{ sql, transactionBoundary: "none" }] })
+            if (!queryRunMatchesOwner(run, owner) || !isCurrent()) throw new Error("staleConnection")
+            const statement = run.statements[0]
+            if (statement.result.kind === "error" || statement.result.kind === "cancelled") throw new Error("editFailed")
+            if (statement.result.kind !== "execute" || run.transactionMayBeOpen || run.connectionTerminated || statement.effectOutcome === "transactionPending" || statement.effectOutcome === "rolledBack") throw new Error("editUncertain")
+            if (expectedRows !== undefined && statement.result.affectedRows !== expectedRows) throw new Error("editConflict")
+            // Network drivers can acknowledge Execute + row count without an
+            // authoritative commit outcome. Refresh once and show that distinction;
+            // never present a completed write as retryable or resend it.
+            if (statement.effectOutcome === "unknown") set(state => {
+                if (!isCurrent()) return {}
+                const next = { ...queryFor(state, descriptorId), editUnconfirmed: true }
+                return { queryBuckets: { ...state.queryBuckets, [descriptorId]: next }, queries: { ...state.queries, [identity.connectionId]: next } }
+            })
+        } finally {
+            if (run) await Promise.allSettled(resultSessionOwners(run).map(session => dbResultSessionRelease(session)))
+            markRunning(false)
+        }
+    },
+
     openTableQuery: async (table) => {
         const descriptorId = get().activeDescriptorId
         if (!descriptorId) return
-        const kind = liveConnectionForDescriptor(get(), descriptorId)?.kind ?? "sqlite"
-        get().setSql(buildTableQuery(kind, table))
+        const connection = liveConnectionForDescriptor(get(), descriptorId)
+        const identity = identityOf(connection ?? undefined)
+        if (!connection || !identity || queryFor(get(), descriptorId).running) return
+        const sql = buildTableQuery(connection.kind, table)
+        get().setSql(sql)
         await get().runQuery()
+        if (!exactConnection(get(), identity) || queryFor(get(), descriptorId).sql !== sql) return
+        await get().loadColumns(descriptorId, table)
+        set(state => {
+            const query = queryFor(state, descriptorId)
+            if (!exactConnection(state, identity) || query.sql !== sql || query.lastSql !== sql) return {}
+            const next = { ...query, table }
+            return { queryBuckets: { ...state.queryBuckets, [descriptorId]: next }, queries: { ...state.queries, [connection.connId]: next } }
+        })
     },
 
     recordHistory: (descriptorId, entry) =>

@@ -157,13 +157,10 @@ impl PostgresTransportChallengeRegistry {
                 "verify-full transport does not require a challenge",
             ));
         }
-        if request.host.trim().is_empty()
-            || request.user.trim().is_empty()
-            || request.database.trim().is_empty()
-        {
+        if request.host.trim().is_empty() || request.user.trim().is_empty() {
             return Err(ProfileError::new(
                 ProfileErrorCode::InvalidRequest,
-                "PostgreSQL transport challenge requires host, user, and database",
+                "PostgreSQL transport challenge requires host and user",
             ));
         }
         self.sweep();

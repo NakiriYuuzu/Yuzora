@@ -24,6 +24,7 @@ function setUserAgent(userAgent: string) {
 
 vi.mock("@/lib/ipc", () => ({
   dbListTables: vi.fn(),
+  dbTableColumns: vi.fn(),
   dbQueryRun: vi.fn(),
   dbQueryCancel: vi.fn(),
   dbResultPagePrevious: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("@/lib/ipc", () => ({
 
 import {
   dbListTables,
+  dbTableColumns,
   dbProfileCreate,
   dbQueryCancel,
   dbQueryRun,
@@ -184,6 +186,11 @@ beforeEach(() => {
   useDbStore.getState().reset()
   vi.clearAllMocks()
   mockList.mockResolvedValue([])
+  vi.mocked(dbTableColumns).mockResolvedValue([
+    { name: "id", type: "INTEGER", pk: true, notnull: true },
+    { name: "name", type: "TEXT", pk: false, notnull: false },
+    { name: "age", type: "INTEGER", pk: false, notnull: false },
+  ])
   mockQueryRun.mockImplementation(async (request) => panelRunFromResult(request, threeCol))
   mockQueryCancel.mockResolvedValue({ outcome: "cancelled" })
   mockResultPagePrevious.mockImplementation(async (owner) => panelWirePage(owner))
@@ -219,6 +226,44 @@ async function openWithResult(): Promise<void> {
   useDbStore.getState().setSql("SELECT * FROM t")
   await useDbStore.getState().runQuery()
 }
+
+it("edits a table cell only after explicit save, then reloads the exact table", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  const input = await screen.findByRole("textbox", { name: "Value" })
+  const before = mockQueryRun.mock.calls.length
+  fireEvent.change(input, { target: { value: "O'Brien" } })
+  expect(mockQueryRun.mock.calls).toHaveLength(before)
+  mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "committed" })
+  mockRunResultOnce({ ...threeCol, rows: [[threeCol.rows[0][0], { kind: "text", value: "O'Brien" }, threeCol.rows[0][2]]] })
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await screen.findByText("O'Brien")
+  expect(mockQueryRun.mock.calls[before][0]).toMatchObject({ connectionId: "db-1", statements: [{ sql: `UPDATE "main"."people" SET "name" = 'O''Brien' WHERE "id" = 1 AND "name" = 'alice'` }] })
+  expect(mockQueryRun.mock.calls[before + 1][0].statements[0].sql).toBe('SELECT * FROM "main"."people" LIMIT 100')
+})
+
+it("keeps arbitrary query results read-only even when their columns resemble a table", async () => {
+  await openWithResult()
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+it("bounds rendered database rows and reveals later rows when scrolling", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  mockRunResultOnce({ ...threeCol, rows: Array.from({ length: 1000 }, (_, i) => [{ kind: "integer", value: String(i) }, { kind: "text", value: `record-${i}` }, { kind: "integer", value: "30" }]) })
+  useDbStore.getState().setSql("SELECT * FROM large_table")
+  await useDbStore.getState().runQuery()
+  render(<DatabasePanel />)
+  expect(screen.getAllByRole("row").length).toBeLessThan(60)
+  expect(screen.queryByText("record-700")).not.toBeInTheDocument()
+  const viewport = screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]')!
+  fireEvent.scroll(viewport, { target: { scrollTop: 700 * 29 } })
+  expect(await screen.findByText("record-700")).toBeInTheDocument()
+})
 
 async function openWithStreamingResult(): Promise<DbResultSessionOwner> {
   await useDbStore.getState().openConnection("/a.db")
@@ -810,7 +855,7 @@ describe("DatabasePanel active profile header", () => {
     const header = screen.getByRole("group", {
       name: "Active database profile: Analytics reader",
     })
-    expect(header).toHaveTextContent("Active profile")
+    expect(header).toHaveTextContent("SQL query")
     expect(header).toHaveTextContent("Analytics reader")
     expect(header).toHaveTextContent("PostgreSQL")
     expect(header).toHaveTextContent("analyst@analytics.internal:5432/warehouse")

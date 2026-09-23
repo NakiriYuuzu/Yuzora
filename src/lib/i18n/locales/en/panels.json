@@ -82,6 +82,12 @@
     "sftpErrorSourceChanged": "The source file changed during transfer. The destination was kept."
   },
   "databasePanel": {
+    "queryCard": "Query",
+    "resultCard": "Result",
+    "connected": "Connected",
+    "offline": "Offline",
+    "statementCount_one": "{{count}} statement",
+    "statementCount_other": "{{count}} statements",
     "emptyTitle": "Database connections are not configured",
     "emptyDescription": "Add a connection to browse tables and run queries here.",
     "activeProfile": "Active profile",
@@ -150,6 +156,9 @@
       "noCurrentStatement": "Place the cursor inside a statement or select SQL to run."
     },
     "runPrompt": "Run a query to see results",
+    "elapsed": "{{ms}} ms",
+    "resizeResults": "Resize editor and results",
+    "runPromptShortcut": "runs the statement at the cursor",
     "rowsAffected_one": "{{value}} row affected",
     "rowsAffected_other": "{{value}} rows affected",
     "rowsAffectedUnavailable": "Affected row count unavailable",
