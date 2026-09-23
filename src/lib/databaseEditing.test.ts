@@ -32,6 +32,16 @@ describe("database editing", () => {
         expect(() => parseEditedDbValue(row[0], "", true, metadata[0])).toThrow("notNullable")
         expect(() => parseEditedDbValue({ kind: "boolean", value: true }, "yes", false, metadata[0])).toThrow("invalidValue")
     })
+    it("infers a null cell's value kind from integer type names rather than substrings", () => {
+        const nullable = (type: string): DbColumn => ({ name: "value", type, pk: false, notnull: false })
+        expect(parseEditedDbValue({ kind: "null" }, "1 day", false, nullable("interval"))).toEqual({ kind: "text", value: "1 day" })
+        expect(parseEditedDbValue({ kind: "null" }, "(1,2)", false, nullable("point"))).toEqual({ kind: "text", value: "(1,2)" })
+        expect(parseEditedDbValue({ kind: "null" }, "[1,5)", false, nullable("int4range"))).toEqual({ kind: "text", value: "[1,5)" })
+        for (const type of ["int", "INTEGER", "int4", "bigint", "SMALLINT", "unsigned big int"]) {
+            expect(parseEditedDbValue({ kind: "null" }, " 42 ", false, nullable(type))).toEqual({ kind: "integer", value: "42" })
+        }
+        expect(() => parseEditedDbValue({ kind: "null" }, "1 day", false, nullable("bigint"))).toThrow("invalidValue")
+    })
     it("builds dialect-specific schema operations and restricts new-column types", () => {
         expect(buildTableEdit("mssql", table, { kind: "renameColumn", column: "old]name", name: "new'column" })).toBe(`EXEC [db].sys.sp_rename N'[main].[odd"table].[old]]name]', N'new''column', N'COLUMN'`)
         expect(buildTableEdit("sqlite", table, { kind: "addColumn", name: "description", type: "TEXT" })).toContain('ADD "description" TEXT NULL')

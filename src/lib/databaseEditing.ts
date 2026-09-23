@@ -39,7 +39,7 @@ export function parseEditedDbValue(original: DbValue, text: string, isNull: bool
     let kind = original.kind
     if (kind === "null") {
         const type = column.type.toLowerCase()
-        kind = /bool|^bit$/.test(type) ? "boolean" : /int/.test(type) ? "integer" : /decimal|numeric|real|float|double|money/.test(type) ? "decimal" : /json/.test(type) ? "json" : "text"
+        kind = /bool|^bit$/.test(type) ? "boolean" : /\b(?:tiny|small|medium|big)?int(?:eger|[248])?\b/.test(type) ? "integer" : /decimal|numeric|real|float|double|money/.test(type) ? "decimal" : /json/.test(type) ? "json" : "text"
     }
     if (kind === "binary") throw new Error("readOnlyCell")
     if (kind === "boolean") {
