@@ -28,7 +28,7 @@ export function DatabaseTableActions({ descriptorId, table, children }: { descri
     const [column, setColumn] = useState("")
     const [type, setType] = useState("")
     const [busy, setBusy] = useState(false)
-    const [error, setError] = useState(false)
+    const [error, setError] = useState<string | null>(null)
     const kind = connection?.kind ?? "sqlite"
     let statement = ""
     try {
@@ -45,13 +45,13 @@ export function DatabaseTableActions({ descriptorId, table, children }: { descri
         setName(table.name)
         setOperation("renameTable")
         setColumn("")
-        setError(false)
+        setError(null)
         await useDbStore.getState().loadColumns(descriptorId, table)
     }
     async function save() {
         if (!identity || !statement || busy) return
         setBusy(true)
-        setError(false)
+        setError(null)
         try {
             await useDbStore.getState().executeTableStatement(identity, statement)
             await useDbStore.getState().loadTables(descriptorId)
@@ -61,7 +61,16 @@ export function DatabaseTableActions({ descriptorId, table, children }: { descri
             const current = queryFor(state, descriptorId).table
             if (state.activeDescriptorId === descriptorId && current && dbObjectRefKey(current) === dbObjectRefKey(table)) await state.openTableQuery(nextTable)
             setIdentity(null)
-        } catch { setError(true) } finally { setBusy(false) }
+        } catch (failure) {
+            const code = failure instanceof Error ? failure.message : "editFailed"
+            setError(["staleConnection", "connectionBusy", "editUncertain", "editCancelled"].includes(code) ? code : "editFailed")
+        } finally { setBusy(false) }
+    }
+    // While applying, Cancel stops the pending change; the dialog stays open to
+    // report whether it was cancelled or had already completed.
+    function cancel() {
+        if (!busy) setIdentity(null)
+        else if (identity) void useDbStore.getState().cancelTableStatement(identity)
     }
 
     return <>
@@ -82,8 +91,8 @@ export function DatabaseTableActions({ descriptorId, table, children }: { descri
                     {operation === "addColumn" && <Field><FieldLabel>{t("type")}</FieldLabel><Select value={type || NEW_COLUMN_TYPES[kind][0]} disabled={busy} onValueChange={setType}><SelectTrigger aria-label={t("type")}><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{NEW_COLUMN_TYPES[kind].map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectGroup></SelectContent></Select><FieldDescription>{t("newColumnNullable")}</FieldDescription></Field>}
                 </FieldGroup>
                 {statement && <ScrollArea className="max-h-28 rounded-md border bg-muted p-3" orientation="both"><pre className="font-mono text-xs">{statement}</pre></ScrollArea>}
-                {error && <Alert variant="destructive"><AlertDescription>{t("editFailed")}</AlertDescription></Alert>}
-                <DialogFooter><Button variant="outline" disabled={busy} onClick={() => setIdentity(null)}>{t("cancel")}</Button><Button disabled={busy || !statement || (operation === "renameTable" && name.trim() === table.name)} onClick={() => void save()}>{busy ? t("saving") : t("applySchema")}</Button></DialogFooter>
+                {error && <Alert variant="destructive"><AlertDescription>{t(error)}</AlertDescription></Alert>}
+                <DialogFooter><Button variant="outline" onClick={cancel}>{t("cancel")}</Button><Button disabled={busy || !statement || (operation === "renameTable" && name.trim() === table.name)} onClick={() => void save()}>{busy ? t("saving") : t("applySchema")}</Button></DialogFooter>
             </DialogContent>
         </Dialog>}
     </>

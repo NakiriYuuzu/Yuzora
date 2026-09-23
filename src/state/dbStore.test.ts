@@ -3551,6 +3551,116 @@ describe("database workbench writes", () => {
         expect(useDbStore.getState().queryBuckets[descriptor].running).toBe(false)
     })
 
+    const interruptedEdit = (request: DbQueryRunRequest): DbQueryRun => queryRunWithStatements(request, [{
+        statementExecutionId: `${request.queryRunId}:statement:0` as never,
+        statementIndex: 0,
+        sql: request.statements[0].sql,
+        effectOutcome: "none",
+        result: {
+            kind: "cancelled",
+            error: { engine: "sqlite", message: "interrupted", code: "SQLITE_INTERRUPT", position: null, detail: null, hint: null, retryability: "retryable" }
+        }
+    }])
+
+    function holdNextRun() {
+        const run = deferred<DbQueryRun>()
+        const sent: { request?: DbQueryRunRequest } = {}
+        mockQueryRun.mockImplementationOnce((request) => {
+            sent.request = request
+            return run.promise
+        })
+        return { run, sent }
+    }
+
+    it("cancels a sent edit through its exact edit owner and reports the cancellation", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const { run, sent } = holdNextRun()
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editCancelled")
+        await vi.waitFor(() => expect(sent.request).toBeDefined())
+
+        await useDbStore.getState().cancelTableStatement(identity)
+
+        const request = sent.request!
+        expect(request.queryRunId).toContain(":edit:")
+        expect(mockQueryCancel).toHaveBeenCalledWith({ ...identity, queryRunId: request.queryRunId })
+        run.resolve(interruptedEdit(request))
+        await outcome
+        expect(mockQueryRun).toHaveBeenCalledOnce()
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("never sends an edit cancelled while earlier cursors are still releasing", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        useDbStore.getState().setSql("SELECT * FROM users")
+        await useDbStore.getState().runQuery()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const pendingRelease = deferred<DbResultPage>()
+        const owner = mockQueryRun.mock.calls[0][0]
+        mockResultSessionRelease.mockImplementationOnce(() => pendingRelease.promise)
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editCancelled")
+
+        await useDbStore.getState().cancelTableStatement(identity)
+        const resultOwner: DbResultSessionOwner = { ...owner, statementExecutionId: `${owner.queryRunId}:0` as never, resultSessionId: `${owner.queryRunId}:0:result` as never }
+        pendingRelease.resolve(wirePage(resultOwner, { lifecycle: "released" }))
+        await outcome
+
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(mockQueryCancel).not.toHaveBeenCalled()
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("moves only the edited profile offline when the save loses its server", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        await useDbStore.getState().openConnection("/b.db")
+        const [a, b] = useDbStore.getState().saved.map((saved) => saved.id)
+        const identity = identityOf(useDbStore.getState().connections.find((connection) => connection.descriptorId === b))!
+        mockQueryRun.mockRejectedValueOnce({ code: "serverDisconnected", message: "socket closed" })
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("editUncertain")
+
+        expect(useDbStore.getState().connections.map((connection) => connection.descriptorId)).toEqual([a])
+        expect(useDbStore.getState().activeDescriptorId).toBe(a)
+        expect(useDbStore.getState().sessions[b]).toMatchObject({ status: "disconnected", connId: null, error: "serverDisconnected" })
+        expect(useDbStore.getState().queryBuckets[b].running).toBe(false)
+    })
+
+    it("moves the profile offline when cancelling a sent edit terminates its connection", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const { run, sent } = holdNextRun()
+        mockQueryCancel.mockResolvedValueOnce({ outcome: "cancelledConnectionTerminated" })
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editUncertain")
+        await vi.waitFor(() => expect(sent.request).toBeDefined())
+
+        await useDbStore.getState().cancelTableStatement(identity)
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        run.resolve(queryRunWithStatements(sent.request!, [executeExecution(sent.request!, 0, "committed")]))
+        await outcome
+
+        expect(useDbStore.getState().connections).toHaveLength(0)
+        expect(useDbStore.getState().sessions[identity.descriptorId]).toMatchObject({ status: "disconnected", error: null })
+    })
+
+    it("moves the profile offline when the edit run reports a terminated connection", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockQueryRun.mockImplementationOnce(async (request) =>
+            queryRunWithStatements(request, [executeExecution(request, 0)], { connectionTerminated: true })
+        )
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("editUncertain")
+
+        expect(useDbStore.getState().connections).toHaveLength(0)
+        expect(useDbStore.getState().sessions[identity.descriptorId]).toMatchObject({ status: "disconnected", error: null })
+    })
+
     it("rejects stale connection identities before sending a mutation", async () => {
         await useDbStore.getState().openConnection("/workbench.db")
         const identity = identityOf(useDbStore.getState().connections[0])!

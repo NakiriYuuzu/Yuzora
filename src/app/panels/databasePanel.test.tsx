@@ -245,6 +245,63 @@ it("edits a table cell only after explicit save, then reloads the exact table", 
   expect(mockQueryRun.mock.calls[before + 1][0].statements[0].sql).toBe('SELECT * FROM "main"."people" LIMIT 100')
 })
 
+it("cancels a saving cell edit through its exact edit owner and keeps the dialog open to report it", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  fireEvent.change(await screen.findByRole("textbox", { name: "Value" }), { target: { value: "carol" } })
+  let request: DbQueryRunRequest | undefined
+  let settleRun!: (run: DbQueryRun) => void
+  mockQueryRun.mockImplementationOnce((nextRequest) => {
+    request = nextRequest
+    return new Promise((resolve) => {
+      settleRun = resolve
+    })
+  })
+
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await waitFor(() => expect(request).toBeDefined())
+  const sent = request!
+  expect(sent.queryRunId).toContain(":edit:")
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+
+  await waitFor(() => expect(mockQueryCancel).toHaveBeenCalledWith({
+    descriptorId: sent.descriptorId,
+    connectionId: sent.connectionId,
+    connectionGeneration: sent.connectionGeneration,
+    queryRunId: sent.queryRunId,
+  }))
+  expect(screen.getByRole("dialog")).toBeVisible()
+  await act(async () => {
+    settleRun({
+      ...panelRunFromResult(sent, threeCol),
+      statements: [{
+        statementExecutionId: `${sent.queryRunId}:statement:0` as never,
+        statementIndex: 0,
+        sql: sent.statements[0].sql,
+        effectOutcome: "unknown" as const,
+        result: {
+          kind: "cancelled" as const,
+          error: {
+            engine: "yuzora" as const,
+            message: "query cancelled",
+            code: "cancelled",
+            position: null,
+            detail: null,
+            hint: null,
+            retryability: "notRetryable" as const,
+          },
+        },
+      }],
+    })
+  })
+
+  expect(await screen.findByText("Save was cancelled. Refresh the table to confirm the current data.")).toBeVisible()
+  expect(screen.getByRole("dialog")).toBeVisible()
+})
+
 it("locks the editor/results split while the table data view hides the query editor", async () => {
   await useDbStore.getState().openConnection("/a.db")
   const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }

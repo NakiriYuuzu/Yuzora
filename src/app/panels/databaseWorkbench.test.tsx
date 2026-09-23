@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { DatabaseCatalogPicker } from "./DatabaseCatalogPicker"
 import { DatabaseTableActions } from "./DatabaseTableActions"
 import { useDbStore } from "@/state/dbStore"
@@ -45,4 +45,23 @@ it("opens the table designer by context menu and applies exactly the SQL shown",
     await waitFor(() => expect(execute).toHaveBeenCalledWith({ descriptorId: "profile", connectionId: "conn", connectionGeneration: "1" }, sql))
     expect(loadTables).toHaveBeenCalledWith("profile")
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+})
+
+it("keeps the table designer open while cancelling an applying change, then reports the cancellation", async () => {
+    vi.spyOn(useDbStore.getState(), "loadColumns").mockResolvedValue()
+    let rejectApply!: (reason: unknown) => void
+    const execute = vi.spyOn(useDbStore.getState(), "executeTableStatement").mockImplementation(() => new Promise<void>((_, reject) => { rejectApply = reject }))
+    const cancel = vi.spyOn(useDbStore.getState(), "cancelTableStatement").mockResolvedValue()
+    render(<DatabaseTableActions descriptorId="profile" table={table}><button>users</button></DatabaseTableActions>)
+    fireEvent.contextMenu(screen.getByRole("button", { name: "users" }))
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Edit table" }))
+    fireEvent.change(await screen.findByRole("textbox", { name: "New name" }), { target: { value: "people" } })
+    fireEvent.click(screen.getByRole("button", { name: "Apply change" }))
+    await waitFor(() => expect(execute).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(cancel).toHaveBeenCalledWith({ descriptorId: "profile", connectionId: "conn", connectionGeneration: "1" })
+    expect(screen.getByRole("dialog")).toBeVisible()
+    await act(async () => rejectApply(new Error("editCancelled")))
+    expect(await screen.findByText("Save was cancelled. Refresh the table to confirm the current data.")).toBeVisible()
+    expect(screen.getByRole("dialog")).toBeVisible()
 })

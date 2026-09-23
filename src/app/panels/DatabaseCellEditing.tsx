@@ -56,8 +56,15 @@ export function DatabaseCellEditing({ children, identity, kind, table, metadata,
             if (state.activeDescriptorId === editing.identity.descriptorId && current && dbObjectRefKey(current) === dbObjectRefKey(editing.table)) await state.openTableQuery(editing.table)
         } catch (failure) {
             const code = failure instanceof Error ? failure.message : "editFailed"
-            setError(["invalidValue", "notNullable", "editConflict", "staleConnection", "connectionBusy", "editUncertain"].includes(code) ? code : "editFailed")
+            setError(["invalidValue", "notNullable", "editConflict", "staleConnection", "connectionBusy", "editUncertain", "editCancelled"].includes(code) ? code : "editFailed")
         } finally { setBusy(false) }
+    }
+
+    // While saving, Cancel stops the pending write; the dialog stays open to
+    // report whether it was cancelled or had already completed.
+    function cancel() {
+        if (!busy) setEditing(null)
+        else if (editing) void useDbStore.getState().cancelTableStatement(editing.identity)
     }
 
     return <CellEditingContext value={context}>
@@ -70,7 +77,7 @@ export function DatabaseCellEditing({ children, identity, kind, table, metadata,
                     <Field orientation="horizontal"><Checkbox id="database-cell-null" checked={isNull} onCheckedChange={checked => setIsNull(checked === true)} disabled={busy || editing?.column.notnull || editing?.column.pk} /><FieldLabel htmlFor="database-cell-null">NULL</FieldLabel></Field>
                 </FieldGroup>
                 {error && <Alert variant="destructive"><AlertDescription>{t(error)}</AlertDescription></Alert>}
-                <DialogFooter><Button variant="outline" disabled={busy} onClick={() => setEditing(null)}>{t("cancel")}</Button><Button disabled={busy} onClick={() => void save()}>{busy ? t("saving") : t("save")}</Button></DialogFooter>
+                <DialogFooter><Button variant="outline" onClick={cancel}>{t("cancel")}</Button><Button disabled={busy} onClick={() => void save()}>{busy ? t("saving") : t("save")}</Button></DialogFooter>
             </DialogContent>
         </Dialog>
     </CellEditingContext>

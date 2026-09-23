@@ -42,6 +42,7 @@
   "staleConnection": "The connection changed. Reopen the table before editing.",
   "connectionBusy": "Finish the running query or transaction before editing.",
   "editUncertain": "The server did not confirm the change. Check the data before retrying.",
+  "editCancelled": "Save was cancelled. Refresh the table to confirm the current data.",
   "editFailed": "The change could not be saved. Check the column constraints, permissions and connection, then refresh the table.",
   "editAcceptedUnconfirmed": "The command completed, but the connection did not confirm its commit status. Check the refreshed data before saving again."
 }

@@ -320,6 +320,9 @@ interface DbState {
     setSql: (sql: string) => void
     runQuery: (target?: DatabaseSqlTargetRequest) => Promise<void>
     executeTableStatement: (identity: DbConnectionIdentity, sql: string, expectedRows?: string) => Promise<void>
+    /** Cancel the table edit in flight on this exact connection. The edit's own
+     *  promise reports the outcome; a write is never resent or rolled back here. */
+    cancelTableStatement: (identity: DbConnectionIdentity) => Promise<void>
     cancelQuery: () => Promise<void>
     selectStatementTab: (statementExecutionId: DbStatementExecutionId) => void
     previousResultPage: (owner: DbResultSessionOwner) => Promise<void>
@@ -709,6 +712,15 @@ let columnRequestSequence = 0
 const currentColumnRequests = new Map<string, number>()
 let resultPageRequestSequence = 0
 const currentResultPageRequests = new Map<string, number>()
+// Table edits settle outside Query run groups, so the exact in-flight owner is
+// kept here for the edit dialogs' Cancel and for lost-connection projection.
+interface ActiveTableEdit {
+    owner: DbQueryRunOwner
+    sent: boolean
+    cancelRequested: boolean
+    connectionTerminated: boolean
+}
+const activeTableEdits = new Map<string, ActiveTableEdit>()
 
 function columnRequestKey(descriptorId: string, objectKey: string): string {
     return JSON.stringify([descriptorId, objectKey])
@@ -2901,6 +2913,8 @@ export const useDbStore = create<DbState>()((set, get) => {
         if (configGeneration === null) throw new Error("staleConnection")
         const token = beginOperation(descriptorId, "query", ["page"])
         const owner: DbQueryRunOwner = { ...identity, queryRunId: `${descriptorId}:edit:${token}` as DbQueryRunId }
+        const edit: ActiveTableEdit = { owner, sent: false, cancelRequested: false, connectionTerminated: false }
+        activeTableEdits.set(descriptorId, edit)
         const isCurrent = () => operationStillCurrent(get(), descriptorId, configGeneration, "query", token, identity)
         const markRunning = (running: boolean) => set(state => {
             if (!operationStillCurrent(state, descriptorId, configGeneration, "query", token, identity)) return {}
@@ -2934,11 +2948,16 @@ export const useDbStore = create<DbState>()((set, get) => {
                 if (result.status === "rejected" && operationalErrorState(result.reason, "queryFailed").code !== "staleConnection") throw result.reason
             }
             if (!isCurrent()) throw new Error("staleConnection")
+            if (edit.cancelRequested) throw new Error("editCancelled")
+            edit.sent = true
             run = await dbQueryRun({ ...owner, mode: "primary", statements: [{ sql, transactionBoundary: "none" }] })
             if (!queryRunMatchesOwner(run, owner) || !isCurrent()) throw new Error("staleConnection")
+            if (run.connectionTerminated) edit.connectionTerminated = true
+            if (edit.connectionTerminated) throw new Error("editUncertain")
             const statement = run.statements[0]
-            if (statement.result.kind === "error" || statement.result.kind === "cancelled") throw new Error("editFailed")
-            if (statement.result.kind !== "execute" || run.transactionMayBeOpen || run.connectionTerminated || statement.effectOutcome === "transactionPending" || statement.effectOutcome === "rolledBack") throw new Error("editUncertain")
+            if (statement.result.kind === "cancelled") throw new Error(edit.cancelRequested ? "editCancelled" : "editFailed")
+            if (statement.result.kind === "error") throw new Error("editFailed")
+            if (statement.result.kind !== "execute" || run.transactionMayBeOpen || statement.effectOutcome === "transactionPending" || statement.effectOutcome === "rolledBack") throw new Error("editUncertain")
             if (expectedRows !== undefined && statement.result.affectedRows !== expectedRows) throw new Error("editConflict")
             // Network drivers can acknowledge Execute + row count without an
             // authoritative commit outcome. Refresh once and show that distinction;
@@ -2948,9 +2967,43 @@ export const useDbStore = create<DbState>()((set, get) => {
                 const next = { ...queryFor(state, descriptorId), editUnconfirmed: true }
                 return { queryBuckets: { ...state.queryBuckets, [descriptorId]: next }, queries: { ...state.queries, [identity.connectionId]: next } }
             })
+        } catch (error) {
+            // A write sent to a connection that then dropped has an unknown
+            // outcome. Like the Query runner, move only this exact profile
+            // offline, then report the edit as unconfirmed.
+            const disconnected = operationalErrorCode(error, "queryFailed") === "serverDisconnected"
+            if (edit.connectionTerminated || disconnected) {
+                projectExactServerDisconnect(identity, undefined, edit.connectionTerminated ? null : "serverDisconnected")
+                if (edit.sent) throw new Error("editUncertain", { cause: error })
+            }
+            throw error
         } finally {
+            if (activeTableEdits.get(descriptorId) === edit) activeTableEdits.delete(descriptorId)
             if (run) await Promise.allSettled(resultSessionOwners(run).map(session => dbResultSessionRelease(session)))
             markRunning(false)
+        }
+    },
+
+    cancelTableStatement: async (identity) => {
+        const edit = activeTableEdits.get(identity.descriptorId)
+        if (
+            !edit ||
+            edit.owner.connectionId !== identity.connectionId ||
+            edit.owner.connectionGeneration !== identity.connectionGeneration
+        ) return
+        edit.cancelRequested = true
+        // Before the write is sent, the flag alone stops it.
+        if (!edit.sent) return
+        try {
+            const { outcome } = await dbQueryCancel(edit.owner)
+            if (outcome !== "cancelledConnectionTerminated") return
+            // A running edit projects the lost connection when it settles; an
+            // edit that already settled cannot, so project it here.
+            if (activeTableEdits.get(identity.descriptorId) === edit) edit.connectionTerminated = true
+            else projectExactServerDisconnect(identity, undefined, null)
+        } catch {
+            // The write already settled or has not reached the host yet; its
+            // own result decides what the dialog reports.
         }
     },
 
@@ -2989,6 +3042,7 @@ export const useDbStore = create<DbState>()((set, get) => {
         pendingLegacyHistoryCleanup = hasLegacyHistoryStorageKey()
         currentColumnRequests.clear()
         currentResultPageRequests.clear()
+        activeTableEdits.clear()
         set({ ...dbInitialState, saved: loadSavedConnections() })
     }
     })
