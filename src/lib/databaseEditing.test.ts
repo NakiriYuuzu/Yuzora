@@ -26,6 +26,12 @@ describe("database editing", () => {
         expect(dbValueLiteral("postgres", { kind: "text", value: "\\'" })).toBe("E'\\\\'''" )
         expect(dbValueLiteral("mssql", { kind: "text", value: "中文" })).toBe("N'中文'")
     })
+    it("keeps NULL cells in binary columns read-only instead of writing a text literal", () => {
+        for (const [kind, type] of [["sqlite", "BLOB"], ["postgres", "bytea"], ["mssql", "varbinary"], ["mssql", "image"]] as const) {
+            const binary: DbColumn[] = [metadata[0], { name: "payload", type, pk: false, notnull: false }]
+            expect(() => buildCellUpdate(kind, table, binary, ["id", "payload"], [row[0], { kind: "null" }], "payload", { kind: "text", value: "abc" })).toThrow("readOnlyCell")
+        }
+    })
     it("validates numeric, boolean and nullable values without JS numeric conversion", () => {
         expect(parseEditedDbValue(row[0], "9223372036854775806", false, metadata[0])).toEqual({ kind: "integer", value: "9223372036854775806" })
         expect(() => parseEditedDbValue(row[0], "1; DELETE", false, metadata[0])).toThrow("invalidValue")

@@ -54,6 +54,12 @@ export function parseEditedDbValue(original: DbValue, text: string, isNull: bool
     return value
 }
 
+/** Binary columns have no editable literal, so they stay read-only even while a
+ * cell is NULL; an edit would otherwise write text into the binary column. */
+export function isBinaryDbColumn(column: DbColumn): boolean {
+    return /blob|bytea|binary|image/i.test(column.type)
+}
+
 // PostgreSQL resolves `real = numeric` as float8 equality, so a real cell would never
 // match its own displayed value; compare in the column's own precision instead.
 function predicateLiteral(kind: DbKind, column: DbColumn, value: DbValue): string {
@@ -67,7 +73,7 @@ export function buildCellUpdate(kind: DbKind, table: DbTable, metadata: DbColumn
     const column = metadata.find(item => item.name === columnName)
     const keys = metadata.filter(item => item.pk)
     const index = columns.indexOf(columnName)
-    if (table.kind !== "table" || !column || keys.length === 0 || index < 0 || columns.length !== new Set(columns).size) throw new Error("readOnlyCell")
+    if (table.kind !== "table" || !column || isBinaryDbColumn(column) || keys.length === 0 || index < 0 || columns.length !== new Set(columns).size) throw new Error("readOnlyCell")
     if (value.kind === "null" && (column.notnull || column.pk)) throw new Error("notNullable")
     const predicates = keys.map(key => {
         const original = row[columns.indexOf(key.name)]

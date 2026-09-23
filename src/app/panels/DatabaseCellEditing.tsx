@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { buildCellUpdate, parseEditedDbValue } from "@/lib/databaseEditing"
+import { buildCellUpdate, isBinaryDbColumn, parseEditedDbValue } from "@/lib/databaseEditing"
 import { dbObjectRefKey } from "@/lib/databaseSql"
 import { formatDbValue, type DbColumn, type DbConnectionIdentity, type DbKind, type DbTable, type DbValue } from "@/lib/types"
 import { queryFor, useDbStore } from "@/state/dbStore"
@@ -27,7 +27,10 @@ export function DatabaseCellEditing({ children, identity, kind, table, metadata,
         if (!identity || !table || table.kind !== "table" || disabled || !metadata.some(column => column.pk)) return null
         const byName = new Map(metadata.map(column => [column.name, column]))
         return {
-            editable: (name, value) => byName.has(name) && value.kind !== "binary" && value.kind !== "json",
+            editable: (name, value) => {
+                const column = byName.get(name)
+                return column !== undefined && !isBinaryDbColumn(column) && value.kind !== "binary" && value.kind !== "json"
+            },
             edit: (columns, row, name) => {
                 const original = row[columns.indexOf(name)]
                 const column = byName.get(name)

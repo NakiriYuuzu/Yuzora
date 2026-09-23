@@ -302,6 +302,23 @@ it("cancels a saving cell edit through its exact edit owner and keeps the dialog
   expect(screen.getByRole("dialog")).toBeVisible()
 })
 
+it("keeps NULL cells in binary columns read-only", async () => {
+  vi.mocked(dbTableColumns).mockResolvedValue([
+    { name: "id", type: "INTEGER", pk: true, notnull: true },
+    { name: "name", type: "TEXT", pk: false, notnull: false },
+    { name: "payload", type: "BLOB", pk: false, notnull: false },
+  ])
+  await useDbStore.getState().openConnection("/a.db")
+  mockRunResultOnce({ ...threeCol, columns: ["id", "name", "payload"], rows: [[threeCol.rows[0][0], threeCol.rows[0][1], { kind: "null" }]] })
+  await useDbStore.getState().openTableQuery({ catalog: "main", schema: "main", name: "people", kind: "table" })
+  render(<DatabasePanel />)
+  // The text cell proves editing metadata has loaded before checking the binary cell.
+  await waitFor(() => expect(screen.getByText("alice").closest("td")).toHaveAttribute("tabindex", "0"))
+  expect(screen.getByText("NULL").closest("td")).not.toHaveAttribute("tabindex")
+  fireEvent.doubleClick(screen.getByText("NULL"))
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
 it("locks the editor/results split while the table data view hides the query editor", async () => {
   await useDbStore.getState().openConnection("/a.db")
   const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
