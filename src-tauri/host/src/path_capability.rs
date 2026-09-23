@@ -130,10 +130,8 @@ fn windows_ordinary_leaf(name: &str) -> bool {
     if name.ends_with(' ') || name.ends_with('.') {
         return false;
     }
+    // Dotfiles such as `.gitignore` have an empty stem and are ordinary names.
     let stem = name.split_once('.').map(|(head, _)| head).unwrap_or(name);
-    if stem.is_empty() {
-        return false;
-    }
     let stem = stem.to_ascii_uppercase();
     !matches!(
         stem.as_str(),
@@ -1535,11 +1533,18 @@ mod win_at {
                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
                 FILE_ATTRIBUTE_NORMAL,
             ),
-            (RelativeKind::File, RelativeMode::OpenDelete)
-            | (RelativeKind::Any, RelativeMode::OpenDelete) => (
+            (RelativeKind::File, RelativeMode::OpenDelete) => (
                 DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 FILE_OPEN,
                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                0,
+            ),
+            // Rename accepts files and directories. Links are still opened
+            // themselves, so callers reject them by handle.
+            (RelativeKind::Any, RelativeMode::OpenDelete) => (
+                DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_OPEN,
+                FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
                 0,
             ),
             (RelativeKind::Any, RelativeMode::OpenAttrs) => (
@@ -1761,6 +1766,8 @@ mod tests {
         }
         assert!(windows_ordinary_leaf("report.txt"));
         assert!(windows_ordinary_leaf("中文.txt"));
+        assert!(windows_ordinary_leaf(".gitignore"));
+        assert!(windows_ordinary_leaf(".yuzora-save-0123"));
     }
 
     #[cfg(windows)]
