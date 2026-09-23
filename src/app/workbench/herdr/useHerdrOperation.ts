@@ -31,8 +31,11 @@ export function useHerdrOperation(sessionName: string) {
         closeRemovedHerdrPages(scope, request, value)
         // A failed refresh must never turn a successful mutation into a retry.
         await store.refreshSessions()
-        if (useHerdrStore.getState().sessions.some(s => sessionScope(s) === scope && s.running)) {
-          await store.bootstrap(scope)
+        const running = useHerdrStore.getState().sessions.some(s => sessionScope(s) === scope && s.running)
+        // Always re-bootstrap: a stopped or deleted Session must drop its stale
+        // ready runtime and capabilities instead of keeping tools enabled.
+        await store.bootstrap(scope)
+        if (running) {
           store.bumpTopologyRevision()
           const refreshed = useHerdrStore.getState().runtimesBySession[scope]
           if (refreshed?.connectionState !== "ready") throw new Error(refreshed?.errorMessage ?? "Session refresh failed")

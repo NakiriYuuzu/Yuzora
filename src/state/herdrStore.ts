@@ -524,10 +524,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
             errorMessage: message
           })
         )
-      } finally {
-        bootstrapInFlight.delete(key)
       }
-    })()
+    })().finally(() => {
+      // A stopped Session settles synchronously; clearing only after the task
+      // is registered keeps a settled bootstrap from blocking later ones.
+      if (bootstrapInFlight.get(key) === task) bootstrapInFlight.delete(key)
+    })
     bootstrapInFlight.set(key, task)
     return task
   },
