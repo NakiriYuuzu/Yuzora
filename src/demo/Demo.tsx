@@ -9,6 +9,7 @@ import { AppShell } from "@/app/AppShell";
 import { AppDialogHost } from "@/workbench/AppDialogHost";
 import { ConfirmDialogHost } from "@/workbench/ConfirmDialogHost";
 import { TextInputDialogHost } from "@/workbench/TextInputDialogHost";
+import { ToasterHost } from "@/workbench/ToasterHost";
 import { Button } from "@/components/ui/button";
 import { SpaceCharacter } from "@/app/workbench/SpaceCharacter";
 import { useWorkspaceStore } from "@/state/workspaceStore";
@@ -17,6 +18,8 @@ import { useDbStore, type DbQueryState } from "@/state/dbStore";
 import type { DbConnectionGeneration } from "@/lib/types";
 import { useGitStore } from "@/state/gitStore";
 import { useSftpStore } from "@/state/sftpStore";
+import { useHerdrToolsStore } from "@/state/herdrToolsStore";
+import { useHerdrNativeStore } from "@/state/herdrNativeStore";
 import { useUiStore } from "@/state/uiStore";
 import { normalizeHerdrSnapshot } from "@/lib/herdrNormalize";
 import { isAccentPreference } from "@/theme/accent";
@@ -83,6 +86,25 @@ function Demo() {
     [],
   );
   useEffect(() => {
+    // HERDR tools need a live HERDR server, so the demo points to the desktop app.
+    const unsubscribeTools = useHerdrToolsStore.subscribe((state, previous) => {
+      if (state.selection && !previous.selection) {
+        setNotice(true);
+        useHerdrToolsStore.getState().close();
+      }
+    });
+    const unsubscribeNative = useHerdrNativeStore.subscribe((state, previous) => {
+      if (state.selection && !previous.selection) {
+        setNotice(true);
+        useHerdrNativeStore.getState().close();
+      }
+    });
+    return () => {
+      unsubscribeTools();
+      unsubscribeNative();
+    };
+  }, []);
+  useEffect(() => {
     const listener = () => setNotice(true);
     window.addEventListener("demo-unavailable", listener);
     return () => window.removeEventListener("demo-unavailable", listener);
@@ -139,6 +161,7 @@ function Demo() {
         <AppDialogHost />
         <ConfirmDialogHost />
         <TextInputDialogHost />
+        <ToasterHost />
       </div>
       {notice && (
         <div className="demo-notice" role="status">
