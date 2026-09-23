@@ -67,7 +67,9 @@ export function runSearchTask(doc: Text, task: SearchTask): SearchTaskResult {
             }
             return match
         }
-        const match = last(0, task.from) ?? last(query.regexp ? task.to : Math.max(0, task.from - queryLength), doc.length)
+        // CodeMirror's findPrevious wraps a regex search from the selection start,
+        // so a sole current match is found again instead of reported missing.
+        const match = last(0, task.from) ?? last(query.regexp ? task.from : Math.max(0, task.from - queryLength), doc.length)
         if (match) result.ranges = [match]
     } else {
         const limit = task.action === "select" ? 1000 : 100000

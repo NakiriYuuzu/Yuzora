@@ -55,6 +55,13 @@ describe("background document search", () => {
         expect(runSearchTask(doc, { ...input, action: "replace" })).toMatchObject({ changes: [{ from: 4, to: 4, insert: "> " }], ranges: [{ from: 8, to: 8 }] })
     })
 
+    it("wraps a regex previous-match search from the selection start like CodeMirror", () => {
+        const input = task({ action: "prev", from: 0, to: 6 })
+        input.query = { ...input.query, regexp: true }
+        expect(runSearchTask(Text.of(["needle"]), input).ranges).toEqual([{ from: 0, to: 6 }])
+        expect(runSearchTask(Text.of(["needle other needle"]), input).ranges).toEqual([{ from: 13, to: 19 }])
+    })
+
     it("replaces only the selected current match, then finds the next", () => {
         expect(runSearchTask(Text.of(["needle needle"]), task({ action: "replace", to: 6 }))).toMatchObject({ changes: [{ from: 0, to: 6, insert: "changed" }], ranges: [{ from: 7, to: 13 }] })
         expect(runSearchTask(Text.of(["needle needle"]), task({ action: "replace" })).changes).toBeUndefined()
