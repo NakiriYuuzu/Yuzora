@@ -5,7 +5,7 @@ vi.mock("@/lsp/lspManager", () => ({ restartWorkspace: vi.fn(async () => {}) }))
 vi.mock("@/state/sshStore", () => ({ useSshStore: { getState: vi.fn() } }))
 import { invoke, sftpListDir } from "./ipc"
 import { useSshStore } from "@/state/sshStore"
-import { createRemotePath, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, renameRemotePath, saveRemoteFile } from "./remoteFiles"
+import { createRemotePath, listRemoteDir, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, renameRemotePath, saveRemoteFile } from "./remoteFiles"
 import { remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
 import { canonicalPathKey, nativePathJoin, nativePathParent, relativePathWithin } from "./paths"
 
@@ -123,6 +123,29 @@ describe("remote documents", () => {
     await saveRemoteFile(unchanged, "mine")
     expect(invoke).toHaveBeenLastCalledWith("host_request", { owner: { ...owner, generation: 2 }, operation: { method: "filesWrite", params: { workspace: "after", path: "unchanged.txt", content: "mine", revision: "original" } } })
     await expect(saveRemoteFile(changed, "mine")).rejects.toThrow("Compare")
+  })
+
+  it("re-enables Windows host saves after reconnecting with host-relative paths", async () => {
+    const owner = { hostId: "reconnect-windows", generation: 1 }
+    const windowsRoot = String.raw`\\?\C:\Work`
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: windowsRoot, capabilityId: "before" })
+    const file = nativePathJoin(await registerRuntimeWorkspace(owner, windowsRoot, () => true), "src/file.ts")
+    await readRemoteFile(file)
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: windowsRoot, capabilityId: "after" }).mockResolvedValueOnce({ revision: "original" })
+    await reconnectRemoteWorkspaces({ ...owner, generation: 2 }, () => true)
+    expect(invoke).toHaveBeenCalledWith("host_request", { owner: { ...owner, generation: 2 }, operation: { method: "filesRead", params: { workspace: "after", path: "src/file.ts" } } })
+    vi.mocked(invoke).mockResolvedValueOnce({ revision: "saved" })
+    await saveRemoteFile(file, "mine")
+    expect(invoke).toHaveBeenLastCalledWith("host_request", { owner: { ...owner, generation: 2 }, operation: { method: "filesWrite", params: { workspace: "after", path: "src/file.ts", content: "mine", revision: "original" } } })
+  })
+  it("lists a Windows drive-root workspace without doubling its separator", async () => {
+    const owner = { hostId: "windows-drive-root", generation: 1 }
+    const driveRoot = "\\\\?\\C:\\"
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: driveRoot, capabilityId: "drive" })
+    const root = await registerRuntimeWorkspace(owner, driveRoot, () => true)
+    vi.mocked(invoke).mockResolvedValueOnce([{ name: "Users", path: "Users", isDir: true }])
+    expect((await listRemoteDir(root)).map((entry) => entry.path)).toEqual([remoteFilePath(owner.hostId, String.raw`\\?\C:\Users`, driveRoot)])
+    expect(invoke).toHaveBeenLastCalledWith("host_request", { owner, operation: { method: "filesList", params: { workspace: "drive", path: "" } } })
   })
 
   it("releases a reopened capability if its connection became stale during opening", async () => {

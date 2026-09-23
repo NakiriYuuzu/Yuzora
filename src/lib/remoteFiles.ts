@@ -1,7 +1,7 @@
 import { invoke, sftpListDir } from "./ipc"
 import { requestHost } from "./hostIpc"
 import type { ConnectionOwner } from "./runtimeIdentity"
-import { parseRemoteFilePath, remoteFilePath, sameConnection, relativeRemoteHostPath } from "./runtimeIdentity"
+import { joinRemoteHostPath, parseRemoteFilePath, remoteFilePath, sameConnection, relativeRemoteHostPath } from "./runtimeIdentity"
 import type { FileNode, OpenFileResult, WorkspaceOpenResult } from "./types"
 import { useSshStore } from "@/state/sshStore"
 import { Channel } from "@tauri-apps/api/core"
@@ -139,7 +139,8 @@ export async function reconnectRemoteWorkspaces(owner: ConnectionOwner, isCurren
     const workspace = previous
     for (const [path, original] of [...revisions]) {
       if (original.backend !== before) continue
-      const relative = parseRemoteFilePath(path)!.path.slice(previous.root.length).replace(/^\//, "")
+      const relative = relativeRemoteHostPath(previous.root, parseRemoteFilePath(path)!.path)
+      if (relative === null) continue
       const read = await requestHost<ReadResult>(owner, { method: "filesRead", params: { workspace: opened.capabilityId, path: relative } }).catch(() => null)
       if (!isCurrent() || workspaces.get(uri) !== workspace) return
       if (revisions.get(path) === original && read?.revision === original.revision) revisions.set(path, { backend, revision: original.revision })
@@ -365,7 +366,7 @@ export async function listRemoteDir(uri: string): Promise<FileNode[]> {
     }
     const entries = await requestHost<FileNode[]>(backend.owner, { method: "filesList", params: { workspace: backend.capabilityId, path: relative } })
     assertBackend(uri, backend)
-    return entries.map((entry) => ({ ...entry, path: remoteFilePath(workspace.hostId, `${workspace.root.replace(/\/$/, "")}/${entry.path}`, workspace.root) }))
+    return entries.map((entry) => ({ ...entry, path: remoteFilePath(workspace.hostId, joinRemoteHostPath(workspace.root, entry.path), workspace.root) }))
   } finally { await release() }
 }
 

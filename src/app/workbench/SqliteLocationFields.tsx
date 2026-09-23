@@ -7,8 +7,9 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { isAbsolutePath, nativePathParent } from "@/lib/paths"
 import { listRemoteDir, registerRuntimeWorkspace, releaseRemoteWorkspace, retainRemoteWorkspace } from "@/lib/remoteFiles"
-import { parseRemoteFilePath, remoteFilePath } from "@/lib/runtimeIdentity"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import type { DbSqliteWorkspace, FileNode } from "@/lib/types"
 import { useHostStore } from "@/state/hostStore"
 
@@ -44,7 +45,7 @@ export function SqliteLocationFields({ path, onPathChange, workspace, onWorkspac
       <FieldLabel htmlFor="database-file-path">{t("database.fieldFile")}</FieldLabel>
       <div className="flex gap-2">
         <Input id="database-file-path" value={path} disabled={disabled} onChange={(event) => onPathChange(event.target.value)} placeholder={t("database.filePlaceholder")} className="flex-1" />
-        <Button type="button" variant="outline" disabled={disabled || (!!workspace && !workspace.canonicalPath.startsWith("/"))} onClick={() => workspace ? setBrowsing(true) : onBrowseLocal()}>{t("database.browse")}</Button>
+        <Button type="button" variant="outline" disabled={disabled || (!!workspace && !isAbsolutePath(workspace.canonicalPath))} onClick={() => workspace ? setBrowsing(true) : onBrowseLocal()}>{t("database.browse")}</Button>
       </div>
     </Field>
     {browsing && workspace && <RemoteSqliteBrowser key={JSON.stringify(workspace)} workspace={workspace} onClose={() => setBrowsing(false)} onChoose={(workspace, path) => { onWorkspaceChange(workspace); onPathChange(path); setBrowsing(false) }} />}
@@ -100,7 +101,7 @@ function RemoteSqliteBrowser({ workspace, onClose, onChoose }: {
       {busy && <p role="status">{t("database.sqliteBrowsing")}</p>}
       {error && <p role="alert">{t("database.sqliteBrowseFailed")}</p>}
       <ScrollArea className="h-64"><div className="flex flex-col gap-1">
-        {location?.workspaceRoot && location.path !== location.workspaceRoot && <Button variant="ghost" disabled={busy} onClick={() => void browse(remoteFilePath(location.hostId, location.path.slice(0, location.path.lastIndexOf("/")) || "/", location.workspaceRoot!))}>..</Button>}
+        {location?.workspaceRoot && location.path !== location.workspaceRoot && <Button variant="ghost" disabled={busy} onClick={() => void browse(nativePathParent(cwd!))}>..</Button>}
         {rows.map((row) => <Button key={row.path} variant="ghost" className="justify-start" disabled={busy || !connection || error} onClick={() => {
           if (row.isDir) { void browse(row.path); return }
           if (useHostStore.getState().hosts[workspace.hostId]?.connection !== connection) return

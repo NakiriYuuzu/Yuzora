@@ -1046,6 +1046,22 @@ describe("DatabaseNavContent saved connections", () => {
     expect(mockOpenFileDialog).not.toHaveBeenCalled()
   })
 
+  it("accepts Windows host paths for a remote SQLite workspace", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    useHostStore.setState({ configs: { "host-w": { hostId: "host-w", label: "Windows build host", kind: "ssh", helper: "C:\\yuzora\\yuzora-host.exe", binary: "C:\\yuzora\\herdr.exe" } } })
+    render(<DatabaseNavContent />)
+    fireEvent.click(screen.getByText("New connection…"))
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Database file location" }), { key: "ArrowDown" })
+    fireEvent.keyDown(await screen.findByRole("option", { name: "Windows build host" }), { key: "Enter" })
+    fireEvent.change(screen.getByLabelText("Source workspace folder"), { target: { value: String.raw`C:\repo` } })
+    fireEvent.change(screen.getByLabelText("File"), { target: { value: String.raw`C:\repo\data.db` } })
+    expect(screen.getByText("Browse…")).toBeEnabled()
+    const target = { kind: "sqlite", path: String.raw`C:\repo\data.db`, workspace: { hostId: "host-w", canonicalPath: String.raw`C:\repo` } }
+    fireEvent.click(screen.getByText("Test connection"))
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith(expect.objectContaining({ target, credential: null })))
+    await waitFor(() => expect(screen.getByText("Save and Connect")).toBeEnabled())
+  })
+
   it("treats a cancelled SQLite picker as a no-op but surfaces a rejected picker safely", async () => {
     useDbStore.setState({ connections: [], saved: [], activeConnId: null })
     render(<DatabaseNavContent />)

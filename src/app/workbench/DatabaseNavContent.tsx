@@ -45,6 +45,7 @@ import { useHostStore } from "@/state/hostStore"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { dbObjectRefKey } from "@/lib/databaseSql"
 import { dbPostgresTransportChallenge, dbTestConnection } from "@/lib/ipc"
+import { isAbsolutePath } from "@/lib/paths"
 import { relativeTime } from "@/lib/relativeTime"
 import type {
   DbDescriptorId,
@@ -1299,7 +1300,7 @@ function NewConnectionDialog({
     && password.length === 0
   const validConfig =
     (kind === "sqlite"
-      ? path.trim().length > 0 && (!sqliteWorkspace || (path.trim().startsWith("/") && sqliteWorkspace.canonicalPath.startsWith("/")))
+      ? path.trim().length > 0 && (!sqliteWorkspace || (isAbsolutePath(path.trim()) && isAbsolutePath(sqliteWorkspace.canonicalPath)))
       : host.trim().length > 0 &&
         user.trim().length > 0 &&
         ((isEdit && credentialAction !== "replace") || password.length > 0) &&

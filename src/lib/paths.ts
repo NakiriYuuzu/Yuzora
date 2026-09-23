@@ -1,4 +1,4 @@
-import { parseRemoteFilePath, remoteFilePath, relativeRemoteHostPath } from "./runtimeIdentity"
+import { joinRemoteHostPath, parseRemoteFilePath, remoteFilePath, relativeRemoteHostPath } from "./runtimeIdentity"
 
 // cwd 必須是絕對路徑才可用來 spawn agent：posix 以 "/" 開頭、Windows 磁碟機開頭
 // （C:\ 或 C:/），或 Windows 的 UNC／verbatim 前綴（\\server\share、\\?\C:\…）。
@@ -244,7 +244,7 @@ export function nativePathJoin(dir: string, name: string): string {
   const remote = parseRemoteFilePath(dir)
   if (remote) {
     if (remote.workspaceRoot === null) throw new Error("Remote document requires workspace binding")
-    return remoteFilePath(remote.hostId, `${remote.path.replace(/\/$/, "")}/${name.replace(/^\/+/, "")}`, remote.workspaceRoot)
+    return remoteFilePath(remote.hostId, joinRemoteHostPath(remote.path, name), remote.workspaceRoot)
   }
   if (!name) return dir
   if (!dir) return name
@@ -271,7 +271,10 @@ export function nativePathJoin(dir: string, name: string): string {
 export function nativePathParent(path: string): string {
   const remote = parseRemoteFilePath(path)
   if (remote) {
-    const parent = remote.path.replace(/\/$/, "").slice(0, remote.path.replace(/\/$/, "").lastIndexOf("/")) || "/"
+    // POSIX host names may contain `\`; Windows host paths use the native rules below.
+    const parent = remote.path.startsWith("/")
+      ? remote.path.replace(/\/$/, "").slice(0, remote.path.replace(/\/$/, "").lastIndexOf("/")) || "/"
+      : nativePathParent(remote.path)
     if (remote.workspaceRoot === null) throw new Error("Remote document requires workspace binding")
     return remoteFilePath(remote.hostId, parent, remote.workspaceRoot)
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { runtimeKey, sameConnection, remoteFilePath, parseRemoteFilePath, relativeRemoteHostPath } from "./runtimeIdentity"
-import { nativePathJoin, relativePathWithin, samePathIdentity } from "./paths"
+import { nativePathJoin, nativePathParent, relativePathWithin, samePathIdentity } from "./paths"
 
 describe("runtime authority", () => {
   it("round-trips Windows host paths and keeps child documents within their workspace", () => {
@@ -13,6 +13,25 @@ describe("runtime authority", () => {
       expect(nativePathJoin(nativePathJoin(remoteFilePath("windows-host", root), "src"), "file.ts")).toBe(uri)
       expect(relativeRemoteHostPath(root, `${root}-other\\file.ts`)).toBeNull()
       expect(() => remoteFilePath("windows-host", `${root}\\..\\secret`, root)).toThrow()
+    }
+  })
+  it("compares Windows host paths case-insensitively while POSIX host paths stay case-sensitive", () => {
+    expect(relativeRemoteHostPath(String.raw`C:\Work`, String.raw`c:\work\Src\file.ts`)).toBe("Src/file.ts")
+    expect(relativeRemoteHostPath(String.raw`\\?\C:\Work`, String.raw`\\?\c:\WORK`)).toBe("")
+    expect(relativeRemoteHostPath(String.raw`\\Server\Share\Work`, String.raw`\\server\share\work\file.ts`)).toBe("file.ts")
+    expect(relativeRemoteHostPath("/Work", "/work/file.ts")).toBeNull()
+    expect(relativeRemoteHostPath("/", "/work/file.ts")).toBe("work/file.ts")
+  })
+  it("walks Windows host parents and joins children at drive roots", () => {
+    const root = String.raw`C:\Work`
+    expect(nativePathParent(remoteFilePath("windows-host", String.raw`C:\Work\src\file.ts`, root))).toBe(remoteFilePath("windows-host", String.raw`C:\Work\src`, root))
+    expect(nativePathParent(remoteFilePath("windows-host", root))).toBe(remoteFilePath("windows-host", "C:\\", root))
+    const share = String.raw`\\server\share\Work`
+    expect(nativePathParent(remoteFilePath("windows-host", share))).toBe(remoteFilePath("windows-host", String.raw`\\server\share`, share))
+    for (const drive of ["C:\\", "\\\\?\\C:\\"]) {
+      const file = remoteFilePath("windows-host", `${drive}data.db`, drive)
+      expect(nativePathJoin(remoteFilePath("windows-host", drive), "data.db")).toBe(file)
+      expect(nativePathParent(file)).toBe(remoteFilePath("windows-host", drive))
     }
   })
   it("isolates a shared file in overlapping workspaces and preserves encoded authorities", () => {

@@ -36,6 +36,18 @@ it("isolates owners and rejects paths outside the workspace", async () => {
   expect(receive).toHaveBeenCalledExactlyOnceWith({ type: "match", path: root + "/%E4%B8%AD%E6%96%87%20file.txt", matches: [] })
 })
 
+it("accepts Windows host matches inside a verbatim workspace root", async () => {
+  const windowsRoot = String.raw`\\?\C:\Work`
+  const uri = remoteFilePath(owner.hostId, windowsRoot)
+  vi.mocked(runtimeWorkspaceService).mockReturnValue({ owner, root: windowsRoot, uri, capabilityId: "cap", assertCurrent })
+  const receive = vi.fn()
+  await searchRemoteWorkspace(uri, "needle", true, receive)
+  channel().onmessage(frame(String.raw`\\?\C:\Work-other\a.ts`))
+  expect(receive).not.toHaveBeenCalled()
+  channel().onmessage(frame(String.raw`\\?\C:\Work\src\a.ts`))
+  expect(receive).toHaveBeenCalledExactlyOnceWith({ type: "match", path: remoteFilePath(owner.hostId, String.raw`\\?\C:\Work\src\a.ts`, windowsRoot), matches: [] })
+})
+
 it("closes a late stream after replacement and ignores its results", async () => {
   let finish!: (value: unknown) => void
   vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))

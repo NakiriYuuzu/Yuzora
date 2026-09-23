@@ -31,10 +31,21 @@ function hostPathSegments(value: string): string[] {
 
 /** Compare host-owned paths without applying this computer's path conventions. */
 export function relativeRemoteHostPath(root: string, path: string): string | null {
-  const base = hostPathSegments(root).join("/").replace(/\/$/, "")
-  const target = hostPathSegments(path).join("/")
-  if (target === base) return ""
-  return target.startsWith(`${base}/`) ? target.slice(base.length + 1) : null
+  // Windows drive and share paths are case-insensitive; POSIX hosts are not.
+  const same = windowsHostPath(root)
+    ? (left: string, right: string) => left.toLowerCase() === right.toLowerCase()
+    : (left: string, right: string) => left === right
+  const base = hostPathSegments(root)
+  if (base.length > 1 && base.at(-1) === "") base.pop()
+  const target = hostPathSegments(path)
+  if (target.length < base.length || !base.every((segment, index) => same(segment, target[index]))) return null
+  return target.slice(base.length).join("/")
+}
+
+/** Append a host-relative child without applying this computer's path conventions. */
+export function joinRemoteHostPath(directory: string, child: string): string {
+  // Windows drive and share roots end in a separator; POSIX names may contain `\`.
+  return `${directory.replace(windowsHostPath(directory) ? /[\\/]+$/ : /\/$/, "")}/${child.replace(/^\/+/, "")}`
 }
 
 /** Stable document key; remote paths must never be passed to native I/O. */

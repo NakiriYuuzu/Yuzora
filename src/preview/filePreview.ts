@@ -1,7 +1,7 @@
 import { previewResourceClose, previewResourceOpen } from "@/lib/ipc"
 import type { PreviewResourceLease, PreviewResourceSource } from "@/lib/previewTypes"
 import { isSameOrDescendantPath, relativePathWithin } from "@/lib/paths"
-import { parseRemoteFilePath, remoteFilePath } from "@/lib/runtimeIdentity"
+import { joinRemoteHostPath, parseRemoteFilePath, remoteFilePath } from "@/lib/runtimeIdentity"
 import { retainRemoteWorkspace, remotePreviewSource } from "@/lib/remoteFiles"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { usePreviewStore } from "@/state/previewStore"
@@ -44,7 +44,7 @@ export function browserTarget(value: string): BrowserTarget {
     if (!source) return { kind: "url", url: value }
     let relative: string
     try { relative = decodeURIComponent(url.pathname.slice(1)) } catch { return { kind: "url", url: value } }
-    const path = `${source.root.replace(/\/$/, "")}/${relative}`
+    const path = source.hostId ? joinRemoteHostPath(source.root, relative) : `${source.root.replace(/\/$/, "")}/${relative}`
     return { kind: "file", workspacePath: source.workspacePath, path: source.hostId ? remoteFilePath(source.hostId, path, source.root) : path }
 }
 
