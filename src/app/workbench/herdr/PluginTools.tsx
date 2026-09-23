@@ -38,7 +38,11 @@ export function PluginTools({ sessionName, workspaceId, paneId, operation, can }
     {error && <p role="alert" className="text-destructive">{error}</p>}
     {!available && <p>{t("unavailable")}</p>}
     {items.map(plugin => <Card key={plugin.plugin_id} size="sm"><CardHeader><CardTitle>{plugin.name} · {plugin.version}</CardTitle><CardDescription>{plugin.description}</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">
-      {plugin.actions?.map(action => <Button key={action.id} variant="outline" disabled={operation.busy || !plugin.enabled || !workspaceId || !can("plugin.action.invoke")} onClick={() => useHerdrNativeStore.getState().open({ sessionName, paneId: paneId || undefined, request: { method: "plugin.action.invoke", params: { plugin_id: plugin.plugin_id, action_id: action.id, context: { workspace_id: workspaceId, focused_pane_id: paneId || undefined } } } })}>{action.title}</Button>)}
+      {plugin.actions?.map(action => <Button key={action.id} variant="outline" disabled={operation.busy || !plugin.enabled || !can("plugin.action.invoke")} onClick={() => useHerdrNativeStore.getState().open({ sessionName, paneId: paneId || undefined, request: { method: "plugin.action.invoke", params: {
+        plugin_id: plugin.plugin_id, action_id: action.id,
+        // Context is optional; without a Space HERDR fills it from the active workspace, tab and pane.
+        ...(workspaceId ? { context: { workspace_id: workspaceId, focused_pane_id: paneId || undefined } } : {})
+      } } })}>{action.title}</Button>)}
       {plugin.panes?.map(pane => {
         const placement = pane.placement ?? "overlay"
         // Popup/overlay use the active client pane and need no workspace; other placements have distinct targets.

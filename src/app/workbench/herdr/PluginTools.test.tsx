@@ -72,3 +72,32 @@ describe("plugin pane placement targets", () => {
     expect(screen.getByRole("button", { name: "tab pane" })).toBeDisabled()
   })
 })
+
+describe("plugin action context", () => {
+  it("invokes actions without a Space by omitting the optional context", async () => {
+    vi.mocked(herdrFeature).mockResolvedValue({ plugins: [{
+      plugin_id: "fixture.demo", name: "Fixture plugin", version: "1.0.0", enabled: true,
+      actions: [{ id: "sync", title: "Sync plugin state" }]
+    } satisfies HerdrPlugin] })
+    const operation: HerdrOperation = { busy: false, error: null, refreshError: null, result: null, run: vi.fn() }
+    const view = render(<PluginTools sessionName="test-session" workspaceId="" paneId="" operation={operation} can={() => true} />)
+
+    const action = await screen.findByRole("button", { name: "Sync plugin state" })
+    expect(action).toBeEnabled()
+    fireEvent.click(action)
+    expect(useHerdrNativeStore.getState().selection).toStrictEqual({
+      sessionName: "test-session", paneId: undefined,
+      request: { method: "plugin.action.invoke", params: { plugin_id: "fixture.demo", action_id: "sync" } }
+    })
+
+    view.rerender(<PluginTools sessionName="test-session" workspaceId="workspace-1" paneId="pane-1" operation={operation} can={() => true} />)
+    fireEvent.click(screen.getByRole("button", { name: "Sync plugin state" }))
+    expect(useHerdrNativeStore.getState().selection).toStrictEqual({
+      sessionName: "test-session", paneId: "pane-1",
+      request: { method: "plugin.action.invoke", params: {
+        plugin_id: "fixture.demo", action_id: "sync", context: { workspace_id: "workspace-1", focused_pane_id: "pane-1" }
+      } }
+    })
+    expect(operation.run).not.toHaveBeenCalled()
+  })
+})
