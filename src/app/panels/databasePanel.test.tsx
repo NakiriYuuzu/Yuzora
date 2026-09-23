@@ -241,7 +241,7 @@ it("edits a table cell only after explicit save, then reloads the exact table", 
   mockRunResultOnce({ ...threeCol, rows: [[threeCol.rows[0][0], { kind: "text", value: "O'Brien" }, threeCol.rows[0][2]]] })
   fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
   await screen.findByText("O'Brien")
-  expect(mockQueryRun.mock.calls[before][0]).toMatchObject({ connectionId: "db-1", statements: [{ sql: `UPDATE "main"."people" SET "name" = 'O''Brien' WHERE "id" = 1 AND "name" = 'alice'` }] })
+  expect(mockQueryRun.mock.calls[before][0]).toMatchObject({ connectionId: "db-1", statements: [{ sql: `UPDATE "main"."people" SET "name" = 'O''Brien' WHERE "id" = 1 AND "name" = 'alice' COLLATE BINARY` }] })
   expect(mockQueryRun.mock.calls[before + 1][0].statements[0].sql).toBe('SELECT * FROM "main"."people" LIMIT 100')
 })
 

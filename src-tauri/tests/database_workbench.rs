@@ -116,9 +116,19 @@ async fn catalog_discovery_and_table_editing() {
             "main"
         };
         let qualified = format!("{schema}.{table}");
+        // Case-insensitive labels, so only the exact original-value guard built by
+        // src/lib/databaseEditing.ts rejects a stale edit.
+        let label_collation = match engine {
+            "mssql" => "COLLATE Latin1_General_CI_AS",
+            "postgres" => {
+                execute(&connection, "CREATE COLLATION IF NOT EXISTS yuzora_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)".into()).await;
+                "COLLATE yuzora_ci"
+            }
+            _ => "COLLATE NOCASE",
+        };
         execute(
             &connection,
-            format!("CREATE TABLE {qualified} (id BIGINT PRIMARY KEY, label VARCHAR(100) NULL)"),
+            format!("CREATE TABLE {qualified} (id BIGINT PRIMARY KEY, label VARCHAR(100) {label_collation} NULL)"),
         )
         .await;
         execute(
@@ -139,12 +149,31 @@ async fn catalog_discovery_and_table_editing() {
             .unwrap()
             .iter()
             .any(|column| column.name == "id" && column.pk));
-        let update = format!("UPDATE {qualified} SET label = 'updated' WHERE id = 9007199254740993 AND label = 'O''Brien'");
+        let update = |original: &str| {
+            let guard = match engine {
+                "mssql" => format!("CAST(CAST(label AS nvarchar(max)) AS varbinary(max)) = CAST(N'{original}' AS varbinary(max))"),
+                "postgres" => format!("label = E'{original}' COLLATE \"C\""),
+                _ => format!("label = '{original}' COLLATE BINARY"),
+            };
+            format!(
+                "UPDATE {qualified} SET label = 'updated' WHERE id = 9007199254740993 AND {guard}"
+            )
+        };
+        // A concurrent case-only or trailing-space change must not satisfy the guard.
+        for stale in ["o''brien", "O''Brien "] {
+            assert_eq!(
+                execute(&connection, update(stale)).await.as_deref(),
+                Some("0")
+            );
+        }
         assert_eq!(
-            execute(&connection, update.clone()).await.as_deref(),
+            execute(&connection, update("O''Brien")).await.as_deref(),
             Some("1")
         );
-        assert_eq!(execute(&connection, update).await.as_deref(), Some("0"));
+        assert_eq!(
+            execute(&connection, update("O''Brien")).await.as_deref(),
+            Some("0")
+        );
         execute(
             &connection,
             format!("ALTER TABLE {qualified} ADD description VARCHAR(100) NULL"),

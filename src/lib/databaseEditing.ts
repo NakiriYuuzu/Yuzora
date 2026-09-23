@@ -67,6 +67,20 @@ function predicateLiteral(kind: DbKind, column: DbColumn, value: DbValue): strin
     return kind === "postgres" && value.kind === "decimal" && /^(real|float4)$/i.test(column.type.trim()) ? `CAST(${literal} AS real)` : literal
 }
 
+// Case-insensitive or pad-space collations (common on MSSQL, opt-in on SQLite and
+// PostgreSQL) would let a concurrent change such as `Alice` -> `alice` still match
+// the loaded value, so the optimistic guard compares character data exactly.
+function originalValuePredicate(kind: DbKind, column: DbColumn, identifier: string, original: DbValue): string {
+    const literal = predicateLiteral(kind, column, original)
+    if (original.kind !== "text") return `${identifier} = ${literal}`
+    const type = column.type.trim().toLowerCase()
+    if (kind === "sqlite") return `${identifier} = ${literal} COLLATE BINARY`
+    if (kind === "postgres" && /^(?:text|character(?: varying)?)$/.test(type)) return `${identifier} = ${literal} COLLATE "C"`
+    // MSSQL `=` ignores trailing spaces even under binary collations, so compare UTF-16 bytes.
+    if (kind === "mssql" && /^n?(?:var)?char$|^n?text$/.test(type)) return `CAST(CAST(${identifier} AS nvarchar(max)) AS varbinary(max)) = CAST(${literal} AS varbinary(max))`
+    return `${identifier} = ${literal}`
+}
+
 /** Only table previews with a complete, non-null primary key can be edited.
  * Include the original cell as an optimistic concurrency check. */
 export function buildCellUpdate(kind: DbKind, table: DbTable, metadata: DbColumn[], columns: string[], row: DbValue[], columnName: string, value: DbValue): string {
@@ -83,7 +97,7 @@ export function buildCellUpdate(kind: DbKind, table: DbTable, metadata: DbColumn
     const original = row[index]
     if (!original || original.kind === "binary" || original.kind === "json") throw new Error("readOnlyCell")
     const identifier = quoteDbIdentifier(kind, columnName)
-    predicates.push(original.kind === "null" ? `${identifier} IS NULL` : `${identifier} = ${predicateLiteral(kind, column, original)}`)
+    predicates.push(original.kind === "null" ? `${identifier} IS NULL` : originalValuePredicate(kind, column, identifier, original))
     return `UPDATE ${qualifiedDbTable(kind, table)} SET ${identifier} = ${dbValueLiteral(kind, value)} WHERE ${predicates.join(" AND ")}`
 }
 

@@ -7,7 +7,18 @@ const metadata: DbColumn[] = [{ name: "id", type: "INTEGER", pk: true, notnull: 
 const row: DbValue[] = [{ kind: "integer", value: "9223372036854775807" }, { kind: "text", value: "O'Brien" }]
 describe("database editing", () => {
     it("quotes identifiers and values, preserves large keys and guards the original cell", () => {
-        expect(buildCellUpdate("sqlite", table, metadata, ["id", "name"], row, "name", { kind: "text", value: "'; DROP TABLE users; --" })).toBe(`UPDATE "main"."odd""table" SET "name" = '''; DROP TABLE users; --' WHERE "id" = 9223372036854775807 AND "name" = 'O''Brien'`)
+        expect(buildCellUpdate("sqlite", table, metadata, ["id", "name"], row, "name", { kind: "text", value: "'; DROP TABLE users; --" })).toBe(`UPDATE "main"."odd""table" SET "name" = '''; DROP TABLE users; --' WHERE "id" = 9223372036854775807 AND "name" = 'O''Brien' COLLATE BINARY`)
+    })
+    it("guards original character data exactly so collation-equal concurrent changes conflict", () => {
+        const update = (kind: "postgres" | "mssql", type: string, original: DbValue) =>
+            buildCellUpdate(kind, table, [metadata[0], { name: "name", type, pk: false, notnull: false }], ["id", "name"], [row[0], original], "name", { kind: "text", value: "x" })
+        expect(update("mssql", "nvarchar", row[1])).toContain(`AND CAST(CAST([name] AS nvarchar(max)) AS varbinary(max)) = CAST(N'O''Brien' AS varbinary(max))`)
+        expect(update("mssql", "ntext", row[1])).toContain(`AND CAST(CAST([name] AS nvarchar(max)) AS varbinary(max)) = CAST(N'O''Brien' AS varbinary(max))`)
+        expect(update("postgres", "character varying", row[1])).toContain(`AND "name" = E'O''Brien' COLLATE "C"`)
+        // Non-character text values keep typed equality; collations do not apply to them.
+        const guid = { kind: "text", value: "0f8fad5b-d9cb-469f-a165-70867728950e" } as const
+        expect(update("mssql", "uniqueidentifier", guid)).toMatch(/AND \[name\] = N'0f8fad5b-d9cb-469f-a165-70867728950e'$/)
+        expect(update("postgres", "uuid", guid)).toMatch(/AND "name" = E'0f8fad5b-d9cb-469f-a165-70867728950e'$/)
     })
     it("compares PostgreSQL real cells in real precision so their displayed value matches", () => {
         const realColumns: DbColumn[] = [metadata[0], { name: "ratio", type: "real", pk: false, notnull: false }]
