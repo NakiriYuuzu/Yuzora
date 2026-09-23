@@ -1,4 +1,4 @@
-import { parseRemoteFilePath, remoteFilePath } from "./runtimeIdentity"
+import { parseRemoteFilePath, remoteFilePath, relativeRemoteHostPath } from "./runtimeIdentity"
 
 // cwd 必須是絕對路徑才可用來 spawn agent：posix 以 "/" 開頭、Windows 磁碟機開頭
 // （C:\ 或 C:/），或 Windows 的 UNC／verbatim 前綴（\\server\share、\\?\C:\…）。
@@ -185,9 +185,7 @@ function relativeSuffix(root: string, path: string): string | null {
   const remotePath = parseRemoteFilePath(path)
   if (remoteRoot || remotePath) {
     if (!remoteRoot || !remotePath || remoteRoot.hostId !== remotePath.hostId || remoteRoot.workspaceRoot !== remotePath.workspaceRoot) return null
-    if (remoteRoot.path === remotePath.path) return ""
-    const prefix = remoteRoot.path.endsWith("/") ? remoteRoot.path : remoteRoot.path + "/"
-    return remotePath.path.startsWith(prefix) ? remotePath.path.slice(prefix.length) : null
+    return relativeRemoteHostPath(remoteRoot.path, remotePath.path)
   }
   const windows = isWindowsPath(root) || isWindowsPath(path)
   const rootParts = segmentedPath(root, windows)

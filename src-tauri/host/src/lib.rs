@@ -3,7 +3,6 @@ pub mod cancellation;
 pub mod clipboard_image;
 pub mod content;
 pub mod file_content;
-#[cfg(unix)]
 pub mod files;
 pub mod git_command;
 pub mod git_log;
@@ -25,11 +24,9 @@ pub mod login_env;
 pub mod path_capability;
 pub mod process_kill;
 pub mod protocol;
-#[cfg(unix)]
 pub mod server;
 pub mod shell;
 pub mod stream_protocol;
-#[cfg(unix)]
 pub mod streams;
 pub mod trust_command;
 pub mod tunnel;
@@ -38,7 +35,6 @@ pub mod wire;
 pub mod workspace_trust;
 
 pub mod search;
-#[cfg(unix)]
 mod search_stream;
 
 pub mod log_event;
@@ -53,5 +49,4 @@ pub mod db_query_worker;
 pub mod db_remote;
 pub mod db_result_session;
 pub mod db_service;
-#[cfg(unix)]
 pub mod sqlite_lane;

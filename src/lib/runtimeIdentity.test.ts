@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest"
-import { runtimeKey, sameConnection, remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
+import { runtimeKey, sameConnection, remoteFilePath, parseRemoteFilePath, relativeRemoteHostPath } from "./runtimeIdentity"
 import { nativePathJoin, relativePathWithin, samePathIdentity } from "./paths"
 
 describe("runtime authority", () => {
+  it("round-trips Windows host paths and keeps child documents within their workspace", () => {
+    for (const root of [String.raw`C:\Work\中文 project`, String.raw`\\?\C:\Work\中文 project`, String.raw`\\server\share\Work`]) {
+      const file = `${root}\\src\\file.ts`
+      const uri = remoteFilePath("windows-host", file, root)
+      expect(parseRemoteFilePath(uri)).toEqual({ hostId: "windows-host", path: file, workspaceRoot: root })
+      expect(relativeRemoteHostPath(root, file)).toBe("src/file.ts")
+      expect(relativePathWithin(remoteFilePath("windows-host", root), uri)).toBe("src/file.ts")
+      expect(nativePathJoin(nativePathJoin(remoteFilePath("windows-host", root), "src"), "file.ts")).toBe(uri)
+      expect(relativeRemoteHostPath(root, `${root}-other\\file.ts`)).toBeNull()
+      expect(() => remoteFilePath("windows-host", `${root}\\..\\secret`, root)).toThrow()
+    }
+  })
   it("isolates a shared file in overlapping workspaces and preserves encoded authorities", () => {
     const outer = remoteFilePath("主機@a", "/repo/sub/shared.ts", "/repo")
     const inner = remoteFilePath("主機@a", "/repo/sub/shared.ts", "/repo/sub")

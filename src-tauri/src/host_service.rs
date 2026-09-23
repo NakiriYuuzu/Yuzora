@@ -1,4 +1,4 @@
-//! App-owned connections to Unix hosts. A connection never owns HERDR servers.
+//! App-owned host connections. A connection never owns HERDR servers.
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -190,6 +190,7 @@ pub(crate) struct HostConnection {
     pub(crate) owner: ConnectionOwner,
     pub(crate) target: HostTarget,
     pub(crate) helper: String,
+    pub(crate) platform: std::sync::OnceLock<String>,
     pub(crate) cancelled: tokio::sync::watch::Sender<bool>,
     pub(crate) streams: Arc<Mutex<HashMap<String, Arc<crate::host_streams::HostStreamSession>>>>,
     pub(crate) runtimes: Mutex<HashMap<String, Arc<yuzora_host::herdr_service::HerdrManager>>>,
@@ -218,6 +219,7 @@ impl HostConnection {
             owner,
             target,
             helper,
+            platform: std::sync::OnceLock::new(),
             cancelled: tokio::sync::watch::channel(false).0,
             streams: Arc::default(),
             runtimes: Mutex::default(),
@@ -258,6 +260,42 @@ impl HostConnection {
     pub(crate) async fn request(&self, operation: Operation) -> Result<serde_json::Value, String> {
         self.request_with_timeout(operation, Duration::from_secs(30))
             .await
+    }
+
+    /// Agent waits and plugin builds must not occupy the shared file/control
+    /// lane for up to two minutes. The temporary lane shares cancellation and
+    /// owner identity, but sends each feature mutation exactly once.
+    async fn feature_request(
+        &self,
+        ssh: &crate::ssh_service::SshManager,
+        binary: String,
+        call: yuzora_host::herdr_command::HerdrCommand,
+    ) -> Result<serde_json::Value, String> {
+        let _permits = self.acquire_call().await?;
+        let mut cancelled = self.cancelled.subscribe();
+        if *cancelled.borrow() {
+            return Err("host-disconnected".into());
+        }
+        let operation = async {
+            let stream = open_stream(&self.target, &self.helper, HostLane::Control, ssh).await?;
+            let mut lane = HostConnection::new(
+                self.owner.clone(),
+                self.target.clone(),
+                self.helper.clone(),
+                stream,
+            );
+            lane.cancelled = self.cancelled.clone();
+            lane.request(Operation::Hello).await?;
+            lane.request_with_timeout(
+                Operation::HerdrCall { binary, call },
+                Duration::from_secs(150),
+            )
+            .await
+        };
+        tokio::select! {
+            _ = cancelled.changed() => Err("host-disconnected".into()),
+            result = operation => result,
+        }
     }
     async fn acquire_request(
         &self,
@@ -400,9 +438,12 @@ impl HostManager {
         let connection = Arc::new(HostConnection::new(owner.clone(), target, helper, stream));
         let hello: Hello = serde_json::from_value(connection.request(Operation::Hello).await?)
             .map_err(|e| e.to_string())?;
-        if hello.protocol != PROTOCOL_VERSION || !matches!(hello.os.as_str(), "linux" | "macos") {
+        if hello.protocol != PROTOCOL_VERSION
+            || !matches!(hello.os.as_str(), "linux" | "macos" | "windows")
+        {
             return Err("unsupported-host-platform-or-protocol".into());
         }
+        let _ = connection.platform.set(hello.os.clone());
         let mut connections = self.connections.lock().unwrap();
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("host-manager-shutting-down".into());
@@ -531,7 +572,17 @@ pub async fn host_request(
     }
     if let Operation::HerdrCall { binary, call } = operation {
         let connection = state.0.connection(&owner)?;
-        if matches!(connection.target, HostTarget::Ssh { .. }) {
+        if matches!(
+            call,
+            yuzora_host::herdr_command::HerdrCommand::Feature { .. }
+        ) {
+            let result = connection.feature_request(&ssh.0, binary, call).await;
+            state.0.connection(&owner)?;
+            return result;
+        }
+        if matches!(connection.target, HostTarget::Ssh { .. })
+            && connection.platform.get().is_none_or(|os| os != "windows")
+        {
             let _permits = connection.acquire_call().await?;
             state.0.connection(&owner)?;
             let runtime = connection.ssh_runtime(&binary, ssh.0.clone())?;

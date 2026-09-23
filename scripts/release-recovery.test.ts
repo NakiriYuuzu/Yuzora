@@ -16,6 +16,8 @@ const args=process.argv.slice(2),path=args[1]||"",mode=process.env.FIXTURE_MODE;
 const sha="a".repeat(40),digest="sha256:"+"c".repeat(64);
 const names=["Main CI / release channel","host-artifacts / build (ubuntu-24.04, linux-x86_64)","host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)","host-artifacts / build (macos-14, macos-aarch64)","host-artifacts / build (macos-15-intel, macos-x86_64)","Build macOS Apple Silicon installers","Build Windows x86-64 installers","Assemble draft release from build artifacts"];
 const assets=["Yuzora_0.0.9_aarch64.dmg","Yuzora_0.0.9_aarch64.app.tar.gz","Yuzora_0.0.9_aarch64.app.tar.gz.sig","Yuzora_0.0.9_x64-setup.exe","Yuzora_0.0.9_x64-setup.exe.sig","Yuzora_0.0.9_x64_en-US.msi","Yuzora_0.0.9_x64_en-US.msi.sig","Yuzora-macos-aarch64.dmg","Yuzora-windows-x64-setup.exe","Yuzora-windows-x64.msi"].map((name,id)=>({id,name,size:100,digest}));
+const windowsHost=["windows_host","failed_windows_helper","missing_windows_helper"].includes(mode);
+if(windowsHost&&mode!=="missing_windows_helper")names.push("host-artifacts / build (windows-latest, windows-x86_64)");
 if(mode==="changed_asset")assets[0].digest="sha256:"+"d".repeat(64);
 const draft={id:456,tag_name:"v0.0.9",draft:mode!=="published",prerelease:false,body:mode==="changed_notes"?"Different notes":"Stable notes",assets:mode==="missing_asset"?assets.slice(1):assets};
 const emit=x=>console.log(JSON.stringify(x));
@@ -23,12 +25,14 @@ if(args[0]==="release"){
  if(args[1]!=="download")throw new Error("Unexpected mutation: "+args.join(" "));
  for(const asset of assets.filter(x=>x.name.endsWith(".sig")))writeFileSync(args[args.indexOf("--dir")+1]+"/"+asset.name,"signature");
 }else if(args.includes("--slurp")&&args.some(x=>x.includes("/jobs?"))){
- emit([{jobs:names.map(name=>({name,conclusion:mode==="failed_build"&&name==="Build Windows x86-64 installers"?"failure":"success"}))}]);
+ emit([{jobs:names.map(name=>({name,conclusion:(mode==="failed_build"&&name==="Build Windows x86-64 installers")||(mode==="failed_windows_helper"&&name.includes("windows-x86_64"))?"failure":"success"}))}]);
 }else if(args.includes("--slurp")&&args.some(x=>x.includes("/releases?"))){emit([[draft]]);
 }else if(path.includes("/actions/workflows/ci.yml/runs?")){
  emit({workflow_runs:mode==="missing_ci"?[]:[{head_sha:sha,event:"push",head_branch:"main",conclusion:"success"}]});
 }else if(path.includes("/actions/runs/")){
  emit({path:".github/workflows/release.yml",event:mode==="wrong_event"?"pull_request":"workflow_run",head_branch:"main",head_sha:sha,conclusion:"failure"});
+}else if(path.includes("/contents/.github/workflows/host.yml")){
+ console.log(Buffer.from("jobs:\\n  build:\\n    strategy:\\n      matrix:\\n        include:\\n          - target: macos-x86_64\\n"+(windowsHost?"          - target: windows-x86_64\\n":"")).toString("base64"));
 }else if(path.includes("/contents/package.json")){
  console.log(Buffer.from(JSON.stringify({version:mode==="beta"?"0.0.9-beta.1":"0.0.9"})).toString("base64"));
 }else if(path.includes("/git/ref/tags/")){emit({object:{type:"tag",sha:"b".repeat(40)}});
@@ -60,7 +64,11 @@ describe("stable release recovery", () => {
     expect(readFileSync(result.output, "utf8")).toContain("tag_name=v0.0.9")
   })
 
-  it.each(["wrong_event", "missing_ci", "failed_build", "wrong_tag", "published", "missing_asset", "beta"])("stops recovery for %s", (mode) => {
+  it("requires the Windows host build when the source host matrix includes it", () => {
+    expect(runGuard("windows_host").status).toBe(0)
+  })
+
+  it.each(["wrong_event", "missing_ci", "failed_build", "failed_windows_helper", "missing_windows_helper", "wrong_tag", "published", "missing_asset", "beta"])("stops recovery for %s", (mode) => {
     expect(runGuard(mode).status).not.toBe(0)
   })
 

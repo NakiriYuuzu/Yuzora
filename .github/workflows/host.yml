@@ -35,6 +35,9 @@ jobs:
             target: macos-aarch64
           - runner: macos-15-intel
             target: macos-x86_64
+          - runner: windows-latest
+            target: windows-x86_64
+            executable-suffix: .exe
     timeout-minutes: 45
     runs-on: ${{ matrix.runner }}
     steps:
@@ -53,7 +56,7 @@ jobs:
       - run: bun scripts/prepare-host-resources.ts ${{ matrix.target }}
       - name: Verify isolated HERDR runtime contract
         timeout-minutes: 3
-        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/${{ matrix.target }}/herdr
+        run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/${{ matrix.target }}/herdr${{ matrix.executable-suffix }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: host-${{ matrix.target }}

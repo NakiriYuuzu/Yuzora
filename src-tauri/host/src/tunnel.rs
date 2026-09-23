@@ -1,12 +1,9 @@
 //! A dedicated raw byte lane after one versioned, owned stdio handshake.
 //! Used by WSL, which does not need an SSH daemon or a TCP control service.
 use crate::protocol::ConnectionOwner;
-#[cfg(unix)]
 use crate::protocol::{Outcome, Response, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
 use std::time::Duration;
-#[cfg(unix)]
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +37,6 @@ pub struct TunnelRequest {
     pub endpoint: Endpoint,
 }
 
-#[cfg(unix)]
 pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     input: R,
     mut output: W,
@@ -107,7 +103,6 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     #[tokio::test]
     async fn handshake_preserves_binary_payload_and_half_close() {
         use tokio::io::AsyncReadExt;

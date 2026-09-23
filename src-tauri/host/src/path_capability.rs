@@ -268,6 +268,11 @@ pub struct OpenedFile {
     pub leaf: String,
 }
 
+/// Stable identity from the opened handle, including Windows volume/file IDs.
+pub(crate) fn opened_file_identity(file: &File) -> Result<String, String> {
+    file_id(file).map(|id| id.as_key()).map_err(String::from)
+}
+
 mod tree;
 
 pub struct PinnedDir {
@@ -1480,7 +1485,7 @@ mod win_at {
             return Err(PathCapabilityError::UnsafeLeaf);
         }
         let mut utf16: Vec<u16> = name.encode_utf16().collect();
-        if utf16.iter().any(|&unit| unit == 0) {
+        if utf16.contains(&0) {
             return Err(PathCapabilityError::UnsafeLeaf);
         }
         let byte_len = utf16.len().saturating_mul(2);

@@ -1,9 +1,6 @@
-#[cfg(unix)]
 use crate::files::WorkspaceFiles;
-#[cfg(unix)]
 use crate::workspace_trust::WorkspaceTrustState;
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
 use serde_json::Value;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -14,7 +11,6 @@ pub enum TrustCommand {
     Grant { challenge: String },
     Revoke { path: String },
 }
-#[cfg(unix)]
 impl TrustCommand {
     pub fn execute(
         self,
@@ -36,7 +32,6 @@ impl TrustCommand {
     }
 }
 
-#[cfg(unix)]
 pub fn host_trust(host_id: &str) -> Result<WorkspaceTrustState, String> {
     use sha2::Digest;
     let namespace = sha2::Sha256::digest(host_id.as_bytes())
