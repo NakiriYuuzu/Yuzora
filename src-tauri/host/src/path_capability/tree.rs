@@ -114,7 +114,8 @@ impl PinnedDir {
             return Err("delete-limit-reached-partial".into());
         }
         *budget -= 1;
-        if self.existing_kind(name)? == Some(NodeKind::Directory) {
+        let kind = self.existing_kind(name)?;
+        if kind == Some(NodeKind::Directory) {
             let child = self.open_subdir(name.as_str())?;
             for (entry, _) in child.list_entries(*budget)? {
                 child.remove_tree_depth(
@@ -128,9 +129,20 @@ impl PinnedDir {
                 return Err("directory-changed-during-delete".into());
             }
             self.remove_empty_dir(name)
+        } else if kind == Some(NodeKind::Symlink) {
+            // FILE_OPEN_REPARSE_POINT opens the link or junction itself, so the
+            // delete removes that entry and never reaches its target.
+            let link = win_at::open_relative(
+                &self.handle,
+                name.as_str(),
+                win_at::RelativeKind::Any,
+                win_at::RelativeMode::OpenDelete,
+            )?;
+            if !is_reparse(&link.metadata().map_err(|_| PathCapabilityError::Io)?) {
+                return Err("entry-changed-during-delete".into());
+            }
+            win_at::delete_on_close(&link).map_err(String::from)
         } else {
-            // unlink opens the child with FILE_OPEN_REPARSE_POINT and refuses
-            // reparse handles; a junction can never lead traversal outside root.
             self.unlink(name).map_err(String::from)
         }
     }
@@ -233,6 +245,48 @@ mod tests {
         root.remove_tree(&SafeLeafName::parse("tree").unwrap(), &mut 10, deadline)
             .unwrap();
         assert!(!tmp.path().join("tree").exists());
+    }
+    #[test]
+    fn tree_delete_removes_links_without_touching_their_targets() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target_dir = outside.path().join("dir");
+        let target_file = outside.path().join("file.txt");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::write(target_dir.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(&target_file, b"keep").unwrap();
+        let tree = workspace.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        #[cfg(unix)]
+        for (target, link) in [(&target_dir, "dir-link"), (&target_file, "file-link")] {
+            std::os::unix::fs::symlink(target, tree.join(link)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // A junction needs no symlink privilege, so unelevated users create them.
+            let junction = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(tree.join("dir-link"))
+                .arg(&target_dir)
+                .output()
+                .unwrap();
+            assert!(junction.status.success(), "{junction:?}");
+            std::os::windows::fs::symlink_file(&target_file, tree.join("file-link")).unwrap();
+        }
+        let root = PinnedDir::open_dir(workspace.path()).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        root.open_subdir("tree")
+            .unwrap()
+            .remove_tree(&SafeLeafName::parse("dir-link").unwrap(), &mut 10, deadline)
+            .unwrap();
+        assert!(std::fs::symlink_metadata(tree.join("dir-link")).is_err());
+        root.remove_tree(&SafeLeafName::parse("tree").unwrap(), &mut 10, deadline)
+            .unwrap();
+        assert!(!tree.exists());
+        assert_eq!(std::fs::read(target_dir.join("keep.txt")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&target_file).unwrap(), b"keep");
     }
     #[test]
     fn tree_operations_are_bounded_and_never_replace_a_destination() {
