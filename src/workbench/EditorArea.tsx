@@ -1,9 +1,13 @@
 import { useUiStore } from "../state/uiStore"
 import { memo } from "react"
-import { FileCode2 } from "lucide-react"
+import { FileCode2, Globe, Search, SquareTerminal } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { Kbd } from "@/components/ui/kbd"
+import { bindingLabel, effectiveBinding, useKeyboardSettingsStore } from "@/state/keyboardSettingsStore"
+import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { HerdrTerminalPage } from "@/app/panels/HerdrTerminalPage"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
@@ -23,7 +27,7 @@ import { SvgSplitView, isSvgPath } from "./SvgSplitView"
 const StableHerdrTerminalPage = memo(HerdrTerminalPage)
 
 const ACTION_BUTTON_CLASS =
-    "flex size-[28px] items-center justify-center rounded-[9px] transition-all duration-150"
+    "flex size-[28px] items-center justify-center rounded-[9px] transition-colors duration-150"
 const ACTION_IDLE_CLASS = "text-(--ink-3) hover:bg-(--paper-3) hover:text-(--ink-1)"
 const ACTION_ACTIVE_CLASS = "bg-(--yz-accent)/16 text-(--yz-accent-ink)"
 
@@ -146,11 +150,7 @@ export function EditorArea() {
                                         if (!group.activePath) {
                                             return (
                                                 <div className="empty-editor flex min-h-0 min-w-0 flex-1 items-center justify-center">
-                                                    <EmptyState
-                                                        icon={FileCode2}
-                                                        title={t("editorArea.emptyTitle")}
-                                                        description={t("editorArea.emptyDescription")}
-                                                    />
+                                                    <EmptyEditorState groupIndex={i} />
                                                 </div>
                                             )
                                         }
@@ -189,5 +189,55 @@ export function EditorArea() {
                 )
             })}
         </div>
+    )
+}
+
+// The app root font is 13px, so rem-based shadcn sizes render too small for a primary empty-state action.
+const EMPTY_ACTION_CLASS = "h-[30px] px-[11px] text-[12.5px]"
+
+function ShortcutHint({ binding }: { binding: string }) {
+    return (
+        <Kbd className="ml-[2px] h-auto rounded-[4px] bg-(--yz-active) px-[5px] py-px font-mono text-[10.5px] text-(--ink-3)">
+            {bindingLabel(binding)}
+        </Kbd>
+    )
+}
+
+/**
+ * Empty group: explain the state (no project vs. no open tab) and offer the
+ * common next steps instead of a dead end.
+ */
+function EmptyEditorState({ groupIndex }: { groupIndex: number }) {
+    const { t } = useTranslation("menus")
+    const hasWorkspace = useWorkspaceStore((s) => Boolean(s.workspacePath))
+    const paletteBinding = useKeyboardSettingsStore((s) => effectiveBinding("commandPalette", s.overrides))
+    const terminalBinding = useKeyboardSettingsStore((s) => effectiveBinding("newTerminal", s.overrides))
+    const browserBinding = useKeyboardSettingsStore((s) => effectiveBinding("toggleBrowser", s.overrides))
+    const openPreviewTab = useWorkspaceStore((s) => s.openPreviewTab)
+    return (
+        <EmptyState
+            icon={FileCode2}
+            title={t(hasWorkspace ? "editorArea.noTabsTitle" : "editorArea.emptyTitle")}
+            description={t(hasWorkspace ? "editorArea.noTabsDescription" : "editorArea.emptyDescription")}
+            actions={
+                <>
+                    <Button variant="outline" className={EMPTY_ACTION_CLASS} onClick={() => useUiStore.getState().requestOpenPalette()}>
+                        <Search data-icon="inline-start" aria-hidden="true" />
+                        {t("editorArea.actionSearch")}
+                        <ShortcutHint binding={paletteBinding} />
+                    </Button>
+                    <Button variant="outline" className={EMPTY_ACTION_CLASS} onClick={() => void openNewTerminalTab(groupIndex)}>
+                        <SquareTerminal data-icon="inline-start" aria-hidden="true" />
+                        {t("editorArea.actionNewTerminal")}
+                        <ShortcutHint binding={terminalBinding} />
+                    </Button>
+                    <Button variant="outline" className={EMPTY_ACTION_CLASS} onClick={() => openPreviewTab(groupIndex)}>
+                        <Globe data-icon="inline-start" aria-hidden="true" />
+                        {t("editorArea.actionBrowser")}
+                        <ShortcutHint binding={browserBinding} />
+                    </Button>
+                </>
+            }
+        />
     )
 }

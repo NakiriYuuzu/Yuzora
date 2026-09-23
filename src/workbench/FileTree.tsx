@@ -51,9 +51,15 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
         if (node.isDir) {
             void useFileTreeStore.getState().toggleDir(root, node.path)
         } else {
-            openTab(node.path)
+            // Single click previews the file in the group's reusable preview-mode tab.
+            openTab(node.path, undefined, { transient: true })
             void logUserAction("open_file", `open ${node.path}`)
         }
+    }
+
+    function onDoubleClick() {
+        // Double click keeps the file open as a regular tab.
+        if (!node.isDir) openTab(node.path)
     }
 
     return (
@@ -62,6 +68,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                 <button
                     type="button"
                     onClick={onClick}
+                    onDoubleClick={onDoubleClick}
                     onContextMenu={workspacePath ? contextMenuHandler({
                         kind: "file",
                         workspacePath,
@@ -123,7 +130,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                             const file = files.find((entry) => entry.path === rel && !entry.staged) ?? files.find((entry) => entry.path === rel)
                             if (file) useDiffModalStore.getState().openWorktree(git.environment.root, files, { path: rel, staged: file.staged })
                         }}
-                        className="absolute top-1/2 right-[6px] flex size-[20px] -translate-y-1/2 items-center justify-center rounded-[6px] text-(--ink-3) opacity-0 transition-all duration-[130ms] group-hover:opacity-100 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
+                        className="absolute top-1/2 right-[6px] flex size-[20px] -translate-y-1/2 items-center justify-center rounded-[6px] text-(--ink-3) opacity-0 transition-[opacity,background-color,color] duration-[130ms] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:bg-(--yz-hover) hover:text-(--yz-accent-ink)"
                     >
                         <GitCompareArrows className="size-[13px]" aria-hidden="true" />
                     </button>

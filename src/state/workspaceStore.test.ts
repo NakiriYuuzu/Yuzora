@@ -39,6 +39,62 @@ describe("workspaceStore", () => {
         })
     })
 
+    describe("preview-mode (transient) file tabs", () => {
+        const tabs = () => useWorkspaceStore.getState().groups[0].tabs
+            .map((tab) => [tab.path, Boolean(tab.transient)])
+
+        it("transient open 取代同 group 的預覽分頁，保留原位置", () => {
+            const ws = useWorkspaceStore.getState()
+            ws.openTab("/w/kept.ts")
+            ws.openTab("/w/a.ts", undefined, { transient: true })
+            ws.openTab("/w/b.ts", undefined, { transient: true })
+
+            expect(tabs()).toEqual([["/w/kept.ts", false], ["/w/b.ts", true]])
+            expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
+        })
+
+        it("已開啟的檔案只切換焦點；一般 open 會保留預覽分頁", () => {
+            const ws = useWorkspaceStore.getState()
+            ws.openTab("/w/a.ts", undefined, { transient: true })
+            ws.openTab("/w/b.ts")
+            ws.openTab("/w/a.ts", undefined, { transient: true })
+            expect(tabs()).toEqual([["/w/a.ts", true], ["/w/b.ts", false]])
+            expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/a.ts")
+
+            ws.openTab("/w/a.ts")
+            expect(tabs()).toEqual([["/w/a.ts", false], ["/w/b.ts", false]])
+        })
+
+        it("編輯、釘選或 keepTab 後不再被取代", () => {
+            const ws = useWorkspaceStore.getState()
+            ws.openTab("/w/a.ts", undefined, { transient: true })
+            ws.markDirty("/w/a.ts", true)
+            ws.openTab("/w/b.ts", undefined, { transient: true })
+            ws.toggleTabPinned(0, "/w/b.ts")
+            ws.openTab("/w/c.ts", undefined, { transient: true })
+            ws.keepTab("/w/c.ts")
+            ws.openTab("/w/d.ts", undefined, { transient: true })
+
+            expect(tabs()).toEqual([
+                ["/w/b.ts", false],
+                ["/w/a.ts", false],
+                ["/w/c.ts", false],
+                ["/w/d.ts", true]
+            ])
+        })
+
+        it("取代預覽分頁時一併關閉其 Markdown 預覽", () => {
+            const ws = useWorkspaceStore.getState()
+            ws.openTab("/w/a.md", undefined, { transient: true })
+            ws.openMarkdownPreviewInAdjacentGroup("/w/a.md", 0)
+            ws.openTab("/w/b.ts", 0, { transient: true })
+
+            const state = useWorkspaceStore.getState()
+            expect(state.groups.flatMap((group) => group.tabs.map((tab) => tab.path))).toEqual(["/w/b.ts"])
+            expect(state.groups[state.activeGroupIndex].activePath).toBe("/w/b.ts")
+        })
+    })
+
     describe("path presentation", () => {
         it("keeps an extended Windows path as tab identity but stores only its basename", () => {
             const rawPath = String.raw`\\?\C:\Work\中文 workspace\a.ts`

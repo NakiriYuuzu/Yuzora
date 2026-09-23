@@ -1,6 +1,7 @@
 import { openFileSnapshot } from "../lib/ipc"
 import type { OpenFileResult } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { renameEditorViewState } from "./editorViewState"
 
 export interface RegistryEntry {
     result: OpenFileResult
@@ -48,6 +49,7 @@ export function dropDocument(path: string, workspace = useWorkspaceStore.getStat
 // survive the remount. Move the generation with the cached entry so metadata
 // hydration can distinguish an ordinary rename remount from a later disk reload.
 export function renameDocument(oldPath: string, newPath: string, liveContent?: string) {
+    renameEditorViewState(useWorkspaceStore.getState().workspacePath, oldPath, newPath)
     oldPath = documentKey(oldPath)
     newPath = documentKey(newPath)
     const entry = registry.get(oldPath)

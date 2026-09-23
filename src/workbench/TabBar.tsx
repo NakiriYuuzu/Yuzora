@@ -350,6 +350,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                     (runtimeTab) =>
                         runtimeTab.id === (tab.herdrTabId ?? herdrTarget?.tabId)
                 )
+                const displayName = tab.kind === "preview" ? t("tabBar.browserTabName") : tab.name
                 const tabContextMenu =
                     tab.kind === "herdr-terminal"
                         ? contextMenuHandler({
@@ -374,8 +375,17 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         data-pinned={tab.pinned || undefined}
                         onDragOver={onTabDragOver}
                         onDrop={(event) => void onTabDrop(event, index)}
+                        onMouseDown={(event) => {
+                            // Middle button: suppress the platform autoscroll cursor.
+                            if (event.button === 1) event.preventDefault()
+                        }}
+                        onAuxClick={(event) => {
+                            if (event.button !== 1) return
+                            event.preventDefault()
+                            void onClose(tab, herdrSessionName, tab.herdrTabId ?? herdrRuntimeTab?.id ?? herdrTarget?.tabId)
+                        }}
                         className={
-                            "tab flex h-[30px] shrink-0 items-center gap-[8px] rounded-[9px] pr-[8px] pl-[12px] transition-all duration-150 ease-(--ease-out) " +
+                            "tab flex h-[30px] shrink-0 items-center gap-[8px] rounded-[9px] pr-[8px] pl-[12px] transition-[background-color,color,box-shadow] duration-150 ease-(--ease-out) " +
                             (active
                                 ? "active bg-(--yz-active) text-(--ink-0) shadow-(--shadow-xs)"
                                 : "text-(--ink-3) hover:bg-(--yz-hover)")
@@ -394,7 +404,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 (active ? "font-semibold" : "font-medium")
                             }
                             aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+P"
-                            aria-label={tab.name}
+                            aria-label={isFileTab(tab) && tab.dirty ? t("tabBar.unsavedTabLabel", { name: tab.name }) : displayName}
                             onDragStart={(event) => onTabDragStart(event, tab)}
                             onDragEnd={() => {
                                 draggedTabPathRef.current = null
@@ -406,6 +416,9 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 event.currentTarget.focus({ preventScroll: true })
                             }}
                             onClick={() => onActivate(tab, herdrRuntimeTab)}
+                            onDoubleClick={() => {
+                                if (tab.transient) useWorkspaceStore.getState().keepTab(tab.path)
+                            }}
                         >
                             {tab.kind === "preview" ? (
                                 <Globe className="size-[15px] shrink-0" aria-hidden="true" />
@@ -417,23 +430,22 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 <FileIcon fileName={tab.name} className="size-[15px] shrink-0" />
                             )}
                             {tab.pinned && <Pin className="size-[12px] shrink-0" aria-hidden="true" />}
-                            <span className="max-w-[140px] truncate">{tab.name}</span>
+                            <span className={"max-w-[140px] truncate" + (tab.transient ? " italic" : "")}>{displayName}</span>
                             <WorkspaceHostBadge path={tab.kind === "preview" ? workspacePath ?? undefined : previewTabSourcePath(tab) ?? tab.path} hostId={tab.kind === "herdr-terminal" ? parseRuntimeScope(herdrSessionName).hostId : undefined} />
                         </button>
                         {isFileTab(tab) && tab.externallyModified && (
-                            <span
-                                role="button"
-                                tabIndex={0}
+                            <button
+                                type="button"
                                 aria-label={t("tabBar.resolveExternalChanges", { name: tab.name })}
-                                className="ext-dot shrink-0 cursor-pointer text-[12px] font-semibold text-[#c8521f]"
+                                className="ext-dot flex size-[18px] shrink-0 cursor-pointer items-center justify-center rounded-[6px] text-[12px] font-semibold text-[#c8521f] transition-colors hover:bg-(--paper-3) focus-visible:ring-2 focus-visible:ring-(--yz-accent) focus-visible:outline-none"
                                 title={t("tabBar.externallyModifiedTitle")}
                                 onClick={(e) => {
                                     e.stopPropagation()
                                     useUiStore.getState().openResolver(tab.path)
                                 }}
                             >
-                                ↻
-                            </span>
+                                <span aria-hidden="true">↻</span>
+                            </button>
                         )}
                         {isFileTab(tab) && tab.dirty && (
                             <span
@@ -485,7 +497,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         <button
                             type="button"
                             className="tab-close flex size-[18px] shrink-0 items-center justify-center rounded-[6px] text-(--ink-3) transition-colors hover:bg-(--paper-3) hover:text-(--ink-0)"
-                            aria-label={t("tabBar.close", { name: tab.name })}
+                            aria-label={t("tabBar.close", { name: displayName })}
                             onClick={() => void onClose(tab, herdrSessionName, tab.herdrTabId ?? herdrRuntimeTab?.id ?? herdrTarget?.tabId)}
                         >
                             <svg

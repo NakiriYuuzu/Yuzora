@@ -242,11 +242,11 @@ test("Markdown opens in its own document tab without an extra preview button", (
 test("Alt+P pins a tab first without changing its active identity", () => {
     seedTabs()
     render(<TabBar groupIndex={0} />)
-    fireEvent.keyDown(screen.getByRole("button", { name: "b.ts" }), { key: "p", altKey: true })
+    fireEvent.keyDown(screen.getByRole("button", { name: "b.ts (unsaved)" }), { key: "p", altKey: true })
     const group = useWorkspaceStore.getState().groups[0]
     expect(group.tabs[0]).toMatchObject({ path: "/w/b.ts", pinned: true, dirty: true })
     expect(group.activePath).toBe("/w/a.ts")
-    fireEvent.keyDown(screen.getByRole("button", { name: "b.ts" }), { key: "p", altKey: true })
+    fireEvent.keyDown(screen.getByRole("button", { name: "b.ts (unsaved)" }), { key: "p", altKey: true })
     expect(useWorkspaceStore.getState().groups[0].tabs.find((tab) => tab.path === "/w/b.ts")?.pinned).toBe(false)
 })
 
@@ -350,7 +350,7 @@ function seedPreviewTab() {
 test("preview 分頁渲染標籤、無 dirty 點、無 markdown preview toggle", () => {
     seedPreviewTab()
     render(<TabBar groupIndex={0} />)
-    const previewTab = screen.getByText("Preview").closest(".tab")
+    const previewTab = screen.getByText("Browser").closest(".tab")
     expect(previewTab).toBeTruthy()
     expect(previewTab?.querySelector(".dirty-dot")).toBeNull()
     expect(screen.queryByLabelText("Toggle preview Preview")).toBeNull()
@@ -360,7 +360,7 @@ test("關閉 preview 分頁走 closePreviewTab（無 confirm、singleton 移除�
     mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
     seedPreviewTab()
     render(<TabBar groupIndex={0} />)
-    fireEvent.click(screen.getByLabelText("Close Preview"))
+    fireEvent.click(screen.getByLabelText("Close Browser"))
     await waitFor(() =>
         expect(
             useWorkspaceStore.getState().groups[0].tabs.some((t) => t.path === PREVIEW_TAB_PATH)
@@ -1020,7 +1020,7 @@ test("ordinary drag permutes projected slots without displacing a hidden-Space p
 
     render(<TabBar groupIndex={0} />)
     expect(screen.queryByText("Hidden Space")).not.toBeInTheDocument()
-    const source = screen.getByRole("button", { name: "a.ts" })
+    const source = screen.getByRole("button", { name: "a.ts (unsaved)" })
     const target = screen.getByText("b.ts").closest(".tab")
     const dataTransfer = {
         effectAllowed: "none",
@@ -1414,7 +1414,7 @@ test("reveals an externally activated clipped tab without scrolling on focus or 
     Object.defineProperty(viewport, "scrollWidth", { configurable: true, value: 902 })
     vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue({ left: 312, right: 962, top: 0, bottom: 44, width: 650, height: 44 } as DOMRect)
     const first = screen.getByRole("button", { name: "a.ts" })
-    const second = screen.getByRole("button", { name: "b.ts" })
+    const second = screen.getByRole("button", { name: "b.ts (unsaved)" })
     vi.spyOn(first.closest(".tab")!, "getBoundingClientRect").mockImplementation(() => ({ left: 312 - viewport.scrollLeft, right: 512 - viewport.scrollLeft, width: 200 } as DOMRect))
     vi.spyOn(second.closest(".tab")!, "getBoundingClientRect").mockImplementation(() => ({ left: 1027 - viewport.scrollLeft, right: 1149 - viewport.scrollLeft, width: 122 } as DOMRect))
     fireEvent.focus(second)
@@ -1449,4 +1449,14 @@ test("opening a new offscreen tab reveals it in the strip while preserving ances
         expect(viewport.scrollLeft).toBe(400)
         expect(outer.scrollTop).toBe(73)
     } finally { rect.mockRestore() }
+})
+
+test("middle-click closes a clean tab and marks unsaved tabs in the accessible name", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    expect(screen.getByRole("button", { name: "b.ts (unsaved)" })).toBeInTheDocument()
+    const clean = screen.getByRole("button", { name: "a.ts" }).closest(".tab")!
+    fireEvent(clean, new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }))
+    expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual(["/w/b.ts"])
 })

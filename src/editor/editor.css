@@ -98,6 +98,7 @@
 .diff-view .cm-editor.cm-merge-b .cm-changedLine::before { content: "+" }
 .editor-pane .cm-editor .cm-scroller { line-height: calc(var(--yz-editor-font-size, 13px) + 8px) }
 .editor-pane .cm-editor.cm-focused { outline: none }
+.yz-search-status { display: inline-block; margin: 4px 8px; color: var(--muted-foreground); font-size: 12px }
 
 /* The minimap owns a separate rail beside the CodeMirror scroller. Margin
    (not padding) keeps the native scrollbar out from under its hit surface. */

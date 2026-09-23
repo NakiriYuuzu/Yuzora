@@ -57,7 +57,44 @@ test("載入根目錄並在點擊檔案時開 tab", async () => {
     render(<FileTree />)
     await waitFor(() => expect(screen.getByText("readme.md")).toBeTruthy())
     fireEvent.click(screen.getByText("readme.md"))
-    expect(useWorkspaceStore.getState().groups[0].tabs[0].path).toBe("/w/readme.md")
+    expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({ path: "/w/readme.md", transient: true })
+})
+
+test("單擊以預覽分頁切換檔案，雙擊保留為一般分頁", async () => {
+    mockIPC((cmd, args) => {
+        if (cmd === "list_dir") {
+            const path = (args as { path: string }).path
+            if (path === "/w") {
+                return [
+                    { name: "a.txt", path: "/w/a.txt", isDir: false },
+                    { name: "b.txt", path: "/w/b.txt", isDir: false }
+                ]
+            }
+            return []
+        }
+        if (cmd === "log_event") return null
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        groups: [{ tabs: [], activePath: null }],
+        activeGroupIndex: 0
+    })
+    render(<FileTree />)
+    await waitFor(() => expect(screen.getByText("a.txt")).toBeTruthy())
+
+    fireEvent.click(screen.getByText("a.txt"))
+    fireEvent.click(screen.getByText("b.txt"))
+    expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual(["/w/b.txt"])
+
+    fireEvent.click(screen.getByText("b.txt"))
+    fireEvent.doubleClick(screen.getByText("b.txt"))
+    fireEvent.click(screen.getByText("a.txt"))
+    const tabs = useWorkspaceStore.getState().groups[0].tabs
+    expect(tabs.map((tab) => [tab.path, Boolean(tab.transient)])).toEqual([
+        ["/w/b.txt", false],
+        ["/w/a.txt", true]
+    ])
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/a.txt")
 })
 
 test("右鍵檔案列開啟 file 選單並帶 path payload", async () => {

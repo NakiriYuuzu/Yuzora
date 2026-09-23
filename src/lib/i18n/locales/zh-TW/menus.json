@@ -126,6 +126,8 @@
     "resolveExternalChanges": "解決外部變更 {{name}}",
     "externallyModifiedTitle": "外部已變更（點擊開啟解決器）",
     "unsavedChangesTitle": "未儲存的變更",
+    "unsavedTabLabel": "{{name}}（未儲存）",
+    "browserTabName": "瀏覽器",
     "togglePreview": "切換預覽 {{name}}",
     "toggleMarkdownPreviewTitle": "切換 Markdown 預覽",
     "toggleSvgPreviewTitle": "切換 SVG 預覽",
@@ -174,8 +176,13 @@
     "closeSplitAriaLabel": "關閉分割",
     "splitTitle": "分割編輯器",
     "closeSplitTitle": "關閉分割",
-    "emptyTitle": "開啟專案以開始編輯",
-    "emptyDescription": "開啟專案後，檔案與分頁會顯示在這裡。"
+    "actionBrowser": "開啟瀏覽器",
+    "actionNewTerminal": "新增終端機",
+    "actionSearch": "搜尋與命令",
+    "noTabsDescription": "從右側「檔案」工具開啟檔案，或從以下操作開始。",
+    "noTabsTitle": "目前沒有開啟的分頁",
+    "emptyTitle": "開啟 Space 以開始工作",
+    "emptyDescription": "請在左側導覽建立或選擇 Space；你也可以直接搜尋、開啟終端機或瀏覽網頁。"
   },
   "branchPopover": {
     "title": "Git 分支",
