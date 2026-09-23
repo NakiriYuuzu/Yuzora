@@ -40,8 +40,13 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
   const [requestedWorkspace, setRequestedWorkspace] = useState(selection.workspaceId ?? "")
   const runtime = useHerdrStore(s => s.runtimesBySession[scope])
   const snapshot = runtime?.snapshot ?? null
-  const workspaceId = snapshot?.spaces.find(space => space.id === requestedWorkspace)?.id ?? snapshot?.focusedWorkspaceId ?? snapshot?.spaces[0]?.id ?? ""
-  const paneId = (scope === selection.sessionName ? selection.paneId : null) ?? snapshot?.focusedPaneId ?? snapshot?.terminals.find(pane => pane.workspaceId === workspaceId)?.paneId ?? ""
+  // Pane targets always belong to the selected Space; a launcher pane only picks the default Space.
+  const preferredPane = scope === selection.sessionName ? selection.paneId : undefined
+  const preferredSpace = preferredPane ? snapshot?.terminals.find(pane => pane.paneId === preferredPane)?.workspaceId : undefined
+  const workspaceId = [requestedWorkspace, preferredSpace].find(id => id && snapshot?.spaces.some(space => space.id === id)) ?? snapshot?.focusedWorkspaceId ?? snapshot?.spaces[0]?.id ?? ""
+  const spacePanes = snapshot?.terminals.filter(pane => pane.paneId && pane.workspaceId === workspaceId) ?? []
+  const paneId = !snapshot ? preferredPane ?? ""
+    : [preferredPane, snapshot.focusedPaneId].find(id => id && spacePanes.some(pane => pane.paneId === id)) ?? spacePanes[0]?.paneId ?? ""
   const operation = useHerdrOperation(scope)
   const can = (method: string) => runtime?.connectionState === "ready" && Boolean(runtime.capabilities?.server.running) && hasHerdrMethod(runtime?.capabilities, method)
   const messages = operation.result?.messages ?? (operation.result?.details as { messages?: string[] } | undefined)?.messages
