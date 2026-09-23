@@ -68,6 +68,15 @@ describe("stable release recovery", () => {
     expect(runGuard("windows_host").status).toBe(0)
   })
 
+  it("matches every host matrix job name that the recovery guard requires", () => {
+    const host = JSON.parse(execFileSync("bun", ["-e", 'console.log(JSON.stringify(Bun.YAML.parse(await Bun.file(".github/workflows/host.yml").text())))'], { encoding: "utf8" })) as { jobs: { build: { name: string; strategy: { matrix: { include: Record<string, string>[] } } } } }
+    const guard = workflow.jobs.guard.steps.find((step) => step.name === "Validate original build and capture draft inputs")?.run ?? ""
+    for (const entry of host.jobs.build.strategy.matrix.include) {
+      const name = host.jobs.build.name.replace(/\$\{\{ matrix\.([\w-]+) \}\}/g, (_, key: string) => entry[key])
+      expect(guard).toContain(`'host-artifacts / ${name}'`)
+    }
+  })
+
   it.each(["wrong_event", "missing_ci", "failed_build", "failed_windows_helper", "missing_windows_helper", "wrong_tag", "published", "missing_asset", "beta"])("stops recovery for %s", (mode) => {
     expect(runGuard(mode).status).not.toBe(0)
   })

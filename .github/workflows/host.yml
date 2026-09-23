@@ -23,6 +23,8 @@ permissions:
 
 jobs:
   build:
+    # Stable release recovery matches these exact names; extra matrix values must not change them.
+    name: build (${{ matrix.runner }}, ${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
