@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-host"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "base64 0.23.1",
  "chrono",
