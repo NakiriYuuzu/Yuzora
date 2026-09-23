@@ -1,7 +1,7 @@
 import { useContextMenuStore } from "@/state/contextMenuStore";
 
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SpaceAgentTree } from "./SpaceAgentTree";
 import { ContextMenu } from "./ContextMenu";
 import i18n from "@/lib/i18n";
@@ -18,7 +18,7 @@ vi.mock("@/lib/herdrIpc", async () => ({
   herdrWorkspaceMove: vi.fn(),
   herdrWorkspaceMoveBlock: vi.fn(),
 }));
-vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: () => null }));
+vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: ({ viewSwitcher }: { viewSwitcher: import("react").ReactNode }) => viewSwitcher }));
 vi.mock("./HerdrAgentInspector", () => ({
   HerdrAgentInspector: ({
     open,
@@ -99,6 +99,24 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+it("preserves agent order in Spaces and Agents while statuses change", () => {
+  const runtime = useHerdrStore.getState().runtimesBySession[scopes[0]];
+  const agents = [
+    { ...runtime.snapshot!.agents[0], id: "first", name: "First", paneId: "first", status: "idle" as const },
+    { ...runtime.snapshot!.agents[0], id: "second", name: "Second", paneId: "second", status: "blocked" as const },
+  ];
+  const update = (next: typeof agents) => useHerdrStore.setState({
+    runtimesBySession: { [scopes[0]]: { ...runtime, snapshot: { ...runtime.snapshot!, agents: next } } },
+  });
+  update(agents);
+  render(<SpaceAgentTree />);
+  const order = () => screen.getAllByRole("treeitem").filter(row => /First|Second/.test(row.getAttribute("aria-label") ?? "")).map(row => row.getAttribute("aria-label")!.split(" · ")[0]);
+  expect(order()).toEqual(["First", "Second"]);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
+  expect(order()).toEqual(["First", "Second"]);
+  act(() => update([{ ...agents[0], status: "blocked" }, { ...agents[1], status: "idle" }]));
+  expect(order()).toEqual(["First", "Second"]);
+});
 it("saves first-seen Bot combinations and reuses them after the tree remounts", () => {
   const firstMount = render(<SpaceAgentTree />);
   const saved = loadRecentWorkspacePresentations();

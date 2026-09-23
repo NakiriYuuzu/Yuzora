@@ -4,6 +4,37 @@ use yuzora_host::herdr_limits::bounded_ipc;
 pub use yuzora_host::herdr_service::*;
 
 #[tauri::command]
+pub async fn herdr_client_open(
+    state: tauri::State<'_, HerdrState>,
+    session_name: String,
+    size: HerdrClientSize,
+    on_event: tauri::ipc::Channel<HerdrTerminalEvent>,
+) -> Result<HerdrTerminalOpenResult, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.open_native_client(
+            &session_name,
+            size,
+            Arc::new(move |event| on_event.send(event).map_err(|e| e.to_string())),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_feature(
+    state: tauri::State<'_, HerdrState>,
+    session_name: String,
+    request: HerdrFeatureRequest,
+) -> Result<serde_json::Value, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.feature(&session_name, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn herdr_sessions(
     state: tauri::State<'_, HerdrState>,
 ) -> Result<Vec<HerdrNamedSession>, String> {

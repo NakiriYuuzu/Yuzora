@@ -42,6 +42,7 @@ import type {
   HerdrTerminalRole
 } from "@/lib/herdrTypes"
 import { useHerdrStore } from "@/state/herdrStore"
+import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -223,8 +224,9 @@ export function HerdrTerminalPage({
       targetCapabilities.terminal.release
   )
   const [hasConnectedSession, setHasConnectedSession] = useState(sessionCanConnect)
+  const nativeClientOpen = useHerdrNativeStore(s => s.selection?.sessionName === targetSessionName)
   const canOpenTerminalConnector = Boolean(
-    !sessionIsStopped &&
+    !nativeClientOpen && !sessionIsStopped &&
       (sessionCanConnect || hasConnectedSession) &&
       terminalConnectorCapabilitiesAllowControl
   )

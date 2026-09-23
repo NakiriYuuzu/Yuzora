@@ -11,6 +11,11 @@ use std::sync::Arc;
     deny_unknown_fields
 )]
 pub enum HerdrCommand {
+    #[serde(rename = "herdr_feature")]
+    Feature {
+        session_name: String,
+        request: HerdrFeatureRequest,
+    },
     #[serde(rename = "herdr_sessions")]
     Sessions,
     #[serde(rename = "herdr_capabilities")]
@@ -178,6 +183,10 @@ pub enum HerdrCommand {
 impl HerdrCommand {
     pub fn execute(self, manager: &Arc<HerdrManager>) -> Result<serde_json::Value, String> {
         match self {
+            Self::Feature {
+                session_name,
+                request,
+            } => manager.feature(&session_name, request),
             Self::Sessions => {
                 serde_json::to_value(manager.list_sessions()?).map_err(|e| e.to_string())
             }

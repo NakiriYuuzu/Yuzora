@@ -56,24 +56,31 @@ async fn command_json(binary: &str, args: &[&str]) -> Result<Value, String> {
 }
 
 pub async fn socket_request(socket: &str, request: Value) -> Result<Value, String> {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let mut stream = tokio::net::UnixStream::connect(socket)
-            .await
-            .map_err(|e| e.to_string())?;
+    let socket = socket.to_owned();
+    tokio::task::spawn_blocking(move || {
+        use crate::herdr_transport::{
+            connect_local_stream, read_local_ndjson_line, write_local_all_until,
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut stream = connect_local_stream(&socket, deadline).map_err(|e| e.to_string())?;
         let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         if bytes.len() >= MAX_FRAME_BYTES {
             return Err("frame-too-large".into());
         }
         bytes.push(b'\n');
-        stream.write_all(&bytes).await.map_err(|e| e.to_string())?;
-        let mut reader = BufReader::new(stream);
-        let frame = read_frame(&mut reader)
-            .await?
-            .ok_or("herdr-socket-closed")?;
-        serde_json::from_slice(&frame).map_err(|e| e.to_string())
+        write_local_all_until(&mut stream, &bytes, deadline).map_err(|e| e.to_string())?;
+        let frame = read_local_ndjson_line(
+            &mut stream,
+            &mut Vec::new(),
+            Some(deadline),
+            crate::herdr_limits::MAX_NDJSON_LINE_BYTES,
+        )
+        .map_err(|e| e.to_string())?
+        .ok_or("herdr-socket-closed")?;
+        serde_json::from_str(&frame).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|_| "herdr-timeout".to_string())?
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Default)]
@@ -188,7 +195,9 @@ impl HostServer {
                 version: env!("CARGO_PKG_VERSION").into(),
                 os: std::env::consts::OS.into(),
                 arch: std::env::consts::ARCH.into(),
-                home: std::env::var("HOME").map_err(|_| "home-unavailable")?,
+                home: dirs::home_dir()
+                    .and_then(|path| path.to_str().map(str::to_owned))
+                    .ok_or("home-unavailable")?,
                 methods: methods(),
             })
             .map_err(|e| e.to_string()),

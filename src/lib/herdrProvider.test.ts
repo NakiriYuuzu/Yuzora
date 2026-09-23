@@ -19,6 +19,22 @@ afterEach(() => {
 })
 
 describe("host runtime routing", () => {
+  it("routes the full native client through the owning host and releases only its stream", async () => {
+    const calls: { command: string; args: Record<string, unknown> }[] = []
+    mockIPC((command, args) => {
+      calls.push({ command, args: args as Record<string, unknown> })
+      if (command === "host_stream_open") return { streamId: "native", value: { sessionId: "herdr-client-1", target: "same" } }
+      return null
+    })
+    const size = { cols: 120, rows: 30, cellWidth: 8, cellHeight: 16 }
+    const opened = await invokeHerdr<{ sessionId: string }>("herdr_client_open", { sessionName: runtimeKey({ hostId: "b", sessionName: "same" }), size, onEvent: () => undefined })
+    expect(calls[0]).toMatchObject({ command: "host_stream_open", args: { owner: { hostId: "b", generation: 1 }, config: { kind: "client", binary: "/herdr", sessionName: "same", size } } })
+    await invokeHerdr("herdr_terminal_input", { sessionId: opened.sessionId, text: "x" })
+    expect(calls[1]).toMatchObject({ command: "host_stream_command", args: { owner: { hostId: "b", generation: 1 }, streamId: "native", operation: { command: "input", text: "x" } } })
+    await invokeHerdr("herdr_terminal_release", { sessionId: opened.sessionId })
+    expect(calls[2]).toMatchObject({ command: "host_stream_close", args: { owner: { hostId: "b", generation: 1 }, streamId: "native" } })
+    await expect(invokeHerdr("herdr_terminal_input", { sessionId: opened.sessionId, text: "x" })).rejects.toThrow("closed")
+  })
   it("resolves same-name remote Sessions and keeps legacy live pages local", () => {
     const scope = runtimeKey({ hostId: "a", sessionName: "same" })
     const remote = { ...session, hostId: "a", runtimeId: scope }

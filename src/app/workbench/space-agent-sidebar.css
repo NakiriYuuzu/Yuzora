@@ -1,6 +1,6 @@
 .space-tree-panel { display:flex; flex:1; flex-direction:column; min-height:0; }
-.space-tree-view-tabs { flex-shrink:0; gap:8px; padding:8px; }
-.space-tree-view-switcher { width:100%; }
+.space-tree-view-tabs { flex:1; min-width:0; gap:0; }
+.space-tree-view-switcher { width:100%; height:28px; }
 .space-tree-view-switcher > button { flex:1; min-width:0; font-size:12px; }
 .space-tree-toolbar { display:flex; align-items:center; justify-content:space-between; padding:0 3px 4px; margin-bottom:4px; border-bottom:1px solid var(--line-1); }
 .space-tree-toolbar button { height:28px; gap:6px; font-size:12px; color:var(--ink-2); }
@@ -13,24 +13,33 @@
 .space-agent-tree .space-tree-row[aria-selected="true"] { background:var(--yz-active); color:var(--ink-1); box-shadow:inset 2px 0 var(--yz-accent); }
 .space-agent-tree .space-tree-row:focus-visible { outline:2px solid var(--ink-2); outline-offset:-2px; box-shadow:none; }
 .space-agent-tree .tree-project { height:44px; min-height:44px; margin:0; padding-right:4px; color:var(--ink-1); gap:10px; }
-.space-agent-tree .tree-agent { height:36px; min-height:36px; }
+.space-agent-tree .tree-agent { height:30px; min-height:30px; gap:8px; }
 .tree-node-label { display:flex; flex:1; flex-direction:column; min-width:0; line-height:18px; }
 .tree-node-label > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tree-project .tree-node-label > span { font:600 14px/20px var(--font-sans); }
 .tree-project .tree-node-label small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tree-worktree .tree-node-label > span { font:400 12px/20px var(--font-mono); }
 .tree-node-label small { color:var(--ink-2); font-size:12px; line-height:16px; }
-.tree-node-label .tree-agent-meta { display:flex; align-items:center; gap:8px; min-width:0; line-height:16px; }
-.tree-agent-meta small { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.tree-agent .tree-node-label { flex-direction:row; align-items:baseline; gap:6px; }
+.tree-agent .tree-node-label small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
 .tree-node-count { flex-shrink:0; font-size:12px; color:var(--ink-2); }
 .tree-node-count[data-pending="true"] { border-radius:5px; padding:0 5px; background:var(--yz-hover); }
-.tree-agent-status { display:flex; align-items:center; gap:4px; flex-shrink:0; font-size:12px; color:var(--ink-2); }
+.tree-agent-status { flex-shrink:0; padding:0 6px; border-radius:999px; font-size:11px; line-height:18px; color:var(--ink-2); background:var(--yz-hover); }
+.tree-agent-status[data-status="working"] { color:var(--yz-run); background:color-mix(in srgb,var(--yz-run) 12%,transparent); }
+.tree-agent-status[data-status="blocked"] { color:var(--destructive); background:color-mix(in srgb,var(--destructive) 12%,transparent); }
+.tree-agent-status[data-status="done"] { color:var(--term-ok); background:color-mix(in srgb,var(--term-ok) 12%,transparent); }
+.tree-agent-avatar { position:relative; display:flex; flex-shrink:0; width:20px; height:20px; margin-left:2px; }
+.agent-logo { display:flex; flex:none; align-items:center; justify-content:center; width:20px; height:20px; border-radius:6px; border:1px solid var(--line-2); background:var(--paper-1); color:var(--ink-1); font:600 10px var(--font-mono); overflow:hidden; }
+.tree-agent-avatar .agent-logo { width:100%; height:100%; }
+.agent-logo > svg { width:13px; height:13px; }
+.agent-logo[data-agent-kind="codex"] > svg,.agent-logo[data-agent-kind="claude"] > svg { width:14px; height:14px; }
+.tree-agent-avatar .tree-status-dot { position:absolute; right:-3px; bottom:-3px; margin:0; box-shadow:0 0 0 2px var(--paper-1); }
 .tree-status-dot { width:8px; height:8px; margin:0 4px; flex-shrink:0; border-radius:50%; background:var(--ink-3); }
-.tree-status-dot[data-status="working"] { background:var(--yz-run); box-shadow:0 0 0 3px color-mix(in srgb,var(--yz-run) 12%,transparent); }
+.tree-status-dot[data-status="working"] { background:var(--yz-run); }
 .tree-status-dot[data-status="blocked"] { background:var(--destructive); }
 .tree-status-dot[data-status="done"] { background:var(--term-ok); }
-.tree-status-dot[data-status="idle"] { background:transparent; border:2px solid var(--ink-3); }
-.tree-status-dot[data-status="unknown"] { background:transparent; border:1px dashed var(--ink-2); }
+.tree-status-dot[data-status="idle"] { background:var(--paper-1); border:2px solid var(--ink-3); }
+.tree-status-dot[data-status="unknown"] { background:var(--paper-1); border:1px dashed var(--ink-2); }
 .space-tree-empty,.space-tree-notice { margin:0; color:var(--ink-2); font-size:12px; line-height:18px; }
 .space-tree-launch { display:flex; align-items:center; gap:6px; }
 .space-tree-launch button { height:28px; padding-inline:4px; font-size:13px; flex-shrink:0; }
@@ -79,12 +88,15 @@
 .tree-open-field label { font-size:13px; font-weight:500; }
 .tree-open-field [data-slot="select-trigger"] { width:100%; min-height:34px; color:var(--ink-1); font-size:13px; }
 .tree-open-demo { margin:0; }
-/* The card keeps the current Session scope and its add actions together. */
-.herdr-launcher-card { flex-shrink:0; min-width:0; margin:12px 4px 10px; gap:8px; }
-.herdr-launcher-card [data-slot="card-title"] { min-width:0; }
-.herdr-launcher-card .herdr-scope-button { width:100%; min-width:0; height:34px; justify-content:flex-start; padding:0 8px; gap:8px; }
+/* One compact header: view switch, tools and add actions, then the Session scope. */
+.herdr-launcher { display:flex; flex-direction:column; flex-shrink:0; min-width:0; gap:2px; padding:8px 8px 6px; border-bottom:1px solid var(--line-1); margin-bottom:6px; }
+.herdr-launcher-row { display:flex; align-items:center; gap:2px; min-width:0; }
+.herdr-launcher-row > .space-tree-view-tabs { margin-right:4px; }
+.herdr-launcher-row > button { color:var(--ink-2); }
+.herdr-launcher .herdr-scope-button { width:100%; min-width:0; height:26px; justify-content:flex-start; padding:0 6px; gap:6px; color:var(--ink-2); }
 .herdr-scope-button > span { display:flex; flex:1; min-width:0; align-items:center; gap:8px; }
-.herdr-scope-button strong { min-width:0; overflow:hidden; text-overflow:ellipsis; font:500 12px/18px var(--font-mono); color:var(--ink-1); }
+.herdr-scope-button strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:500 12px/18px var(--font-mono); color:var(--ink-1); }
+.herdr-scope-button > svg { width:13px; height:13px; }
 .herdr-scope-button > svg:last-child { width:12px; }
 .herdr-launcher-notice { margin:6px 4px 0; font-size:12px; line-height:18px; color:var(--ink-2); }
 .agent-launch-dialog { display:flex; flex-direction:column; gap:20px; width:min(700px,calc(100vw - 32px)); max-width:700px; max-height:calc(100dvh - 32px); padding:24px; color:var(--ink-1); background:var(--paper-1); border:1px solid var(--line-2); border-radius:20px; box-shadow:var(--shadow-xl); }
@@ -124,7 +136,7 @@
 .agent-launch-dialog .agent-launch-footer { margin:20px -24px -24px; padding:16px 24px; gap:8px; align-items:center; flex-direction:row; flex-shrink:0; border-color:var(--line-2); background:var(--yz-sunk); }
 .agent-launch-footer p { margin:0; flex:1; font-size:12px; line-height:18px; color:var(--ink-2); }
 .agent-launch-footer button { flex-shrink:0; font-size:13px; }
-.agent-launch-dialog :is(button,input,summary):focus-visible,.herdr-launcher-card button:focus-visible,.tree-session-heading button:focus-visible { outline:2px solid var(--ink-2); outline-offset:2px; }
+.agent-launch-dialog :is(button,input,summary):focus-visible,.herdr-launcher button:focus-visible,.tree-session-heading button:focus-visible { outline:2px solid var(--ink-2); outline-offset:2px; }
 @media(max-width:650px) { .agent-launch-body { grid-template-columns:1fr; gap:20px; }.agent-launch-destination [data-slot="field-group"] { display:grid; grid-template-columns:1fr 1fr; gap:12px; }.agent-launch-destination [data-slot="field"]:last-child { grid-column:1/-1; }.agent-launch-identity { margin-bottom:16px; }.agent-launch-dialog .agent-launch-footer { flex-wrap:wrap; }.agent-launch-footer p { flex-basis:100%; }.agent-launch-catalog { display:grid; grid-template-columns:1fr 1fr; } }
 @media(prefers-reduced-motion:reduce) { .agent-launch-dialog { animation:none!important; transition:none!important; } }
 .space-appearance-dialog { width:min(440px,calc(100vw - 32px)); }

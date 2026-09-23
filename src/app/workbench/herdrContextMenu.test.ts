@@ -29,6 +29,7 @@ import {
   herdrTabClose,
   herdrTabCreate,
   herdrTabRename,
+  herdrWorkspaceClose,
   herdrWorkspaceRename
 } from "@/lib/herdrIpc"
 import { useAppDialogStore } from "@/state/appDialogStore"
@@ -114,6 +115,7 @@ beforeEach(() => {
   seedHerdr()
   useAppDialogStore.setState({ pending: null })
   vi.mocked(herdrWorkspaceRename).mockReset()
+  vi.mocked(herdrWorkspaceClose).mockReset()
   vi.mocked(herdrPaneRename).mockReset()
   vi.mocked(herdrPaneSplit).mockReset()
   vi.mocked(herdrPaneClose).mockReset()
@@ -124,6 +126,56 @@ beforeEach(() => {
 })
 
 describe("Herdr context menu registry", () => {
+  it.each(["success", "cancel", "failure"] as const)("Space close %s releases only its terminal pages after confirmation and successful IPC", async (outcome) => {
+    const page = (session: string, space: string, id: string) => ({
+      path: `yuzora://herdr/${session}/${id}`,
+      name: id,
+      dirty: false,
+      externallyModified: false,
+      kind: "herdr-terminal" as const,
+      herdrSessionId: session,
+      herdrWorkspaceId: space,
+      herdrTabId: id,
+      terminalId: id
+    })
+    const first = page("default", "ws-1", "first")
+    const second = page("live", "ws-1", "second")
+    const legacy = { ...page("default", "ws-1", "legacy"), herdrWorkspaceId: null }
+    const otherSpace = page("default", "ws-other", "other-space")
+    const otherSession = page("work", "ws-1", "other-session")
+    const file = { path: "/w/unsaved.ts", name: "unsaved.ts", dirty: true, externallyModified: false }
+    const groups = [
+      { activePath: first.path, tabs: [file, first, legacy, otherSpace] },
+      { activePath: second.path, tabs: [second, otherSession] }
+    ]
+    useWorkspaceStore.setState({ groups, activeGroupIndex: 0, dismissedHerdrPages: {} })
+    useHerdrStore.setState({ snapshot: {
+      herdrSessionId: "default", protocol: 19, version: "0.8.0",
+      spaces: [], agents: [], terminals: [], raw: {},
+      tabs: [{ id: "legacy", workspaceId: "ws-1", label: "Legacy", order: 0,
+        paneCount: 1, status: "idle", active: false, focused: false }]
+    } })
+    if (outcome === "failure") vi.mocked(herdrWorkspaceClose).mockRejectedValue(new Error("close failed"))
+    const request = { kind: "herdrSpace" as const, sessionName: "default", workspaceId: "ws-1" }
+    const action = commandFor(request, "cmHerdrCloseSpace")?.executor(request)
+    await vi.waitFor(() => expect(useAppDialogStore.getState().pending?.type).toBe("confirm"))
+    useAppDialogStore.getState().respond(outcome !== "cancel")
+    if (outcome === "failure") {
+      await expect(action).rejects.toThrow("close failed")
+    } else {
+      await expect(action).resolves.toBe(outcome === "cancel" ? "cancelled" : "completed")
+    }
+    if (outcome === "success") {
+      expect(useWorkspaceStore.getState().groups).toEqual([
+        { activePath: otherSpace.path, tabs: [file, otherSpace] },
+        { activePath: otherSession.path, tabs: [otherSession] }
+      ])
+    } else {
+      expect(useWorkspaceStore.getState().groups).toEqual(groups)
+    }
+    expect(herdrWorkspaceClose).toHaveBeenCalledTimes(outcome === "cancel" ? 0 : 1)
+  })
+
   it("exposes Space/Tab/Pane entries and gates unavailable methods", () => {
     const space = resolveContextMenuEntries({
       kind: "herdrSpace",
@@ -132,6 +184,7 @@ describe("Herdr context menu registry", () => {
       label: "Yuzora"
     })
     expect(space.map((e) => (e.type === "command" ? e.command.id : "|"))).toEqual([
+      "cmHerdrWorktreeTools",
       "cmHerdrMoveSpaceUp",
       "cmHerdrMoveSpaceDown",
       "|",

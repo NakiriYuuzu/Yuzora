@@ -83,13 +83,14 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         )
         .await;
     }
+    let native_client = matches!(&config, StreamConfig::Client { .. });
     let (events_tx, events_rx) = mpsc::channel(STREAM_QUEUE_CAPACITY);
     let (overflow_tx, mut overflow_rx) = watch::channel(false);
     let emit = move |event| {
         // HERDR replays its retained topology events at subscription start.
         // The subscription reader is a dedicated blocking thread: apply bounded
         // backpressure there instead of failing every reconnect on a short burst.
-        if matches!(event, StreamPayload::Subscription { .. }) {
+        if native_client || matches!(event, StreamPayload::Subscription { .. }) {
             return events_tx
                 .blocking_send(event)
                 .map_err(|_| "stream-closed".to_string());
@@ -156,7 +157,9 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             ));
         }
         let binary = match &config {
-            StreamConfig::Terminal { binary, .. } | StreamConfig::Events { binary, .. } => binary,
+            StreamConfig::Client { binary, .. }
+            | StreamConfig::Terminal { binary, .. }
+            | StreamConfig::Events { binary, .. } => binary,
             StreamConfig::Files { .. } | StreamConfig::Search { .. } | StreamConfig::Git { .. } => {
                 unreachable!()
             }
@@ -167,6 +170,20 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             HerdrManager::with_binary(binary.into())
         }));
         let (id, value, terminal) = match config {
+            StreamConfig::Client {
+                session_name, size, ..
+            } => {
+                let opened = runtime.0.open_native_client(
+                    &session_name,
+                    size,
+                    Arc::new(move |event| emit(StreamPayload::Terminal { event })),
+                )?;
+                (
+                    opened.session_id.clone(),
+                    serde_json::to_value(opened).map_err(|e| e.to_string())?,
+                    true,
+                )
+            }
             StreamConfig::Files { .. } | StreamConfig::Search { .. } | StreamConfig::Git { .. } => {
                 unreachable!()
             }

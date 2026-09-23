@@ -27,9 +27,9 @@ import { HerdrAgentInspector } from "@/app/workbench/HerdrAgentInspector";
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation";
 import { useHerdrStore } from "@/state/herdrStore";
 import { useUiStore } from "@/state/uiStore";
+import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
 
-import { sortHerdrAgentsByUrgency } from "@/lib/herdrAgents";
 import type { HerdrAgentInfo, HerdrSpaceInfo } from "@/lib/herdrTypes";
 import { parseRuntimeScope, runtimeOwner, sessionScope } from "@/lib/herdrProvider";
 import { spacePresentationKey, runtimeSessionLabel } from "./spaceTreeIdentity";
@@ -40,6 +40,8 @@ import { canMoveHerdrWorkspace, moveHerdrWorkspace } from "@/lib/herdrWorkspaceA
 import { HerdrLauncher } from "./HerdrLauncher";
 import { SpaceAppearanceDialog } from "./SpaceAppearanceDialog";
 import { SpaceCharacter } from "./SpaceCharacter";
+import { AgentLogo } from "./AgentLogo";
+import { resolveAgentKind } from "./agentLogos";
 import type { SpaceCharacterConfig } from "./space-character";
 
 interface TreeNode {
@@ -104,6 +106,7 @@ export function SpaceAgentTree() {
   // All is a view filter, never a runtime Session name or process context.
   const [requestedScope, setScopeSession] = useState<string | null>(null);
   const scopeSession = sessions.some((item) => item.name === requestedScope) ? requestedScope : null;
+  const toolsSession = scopeSession ?? (session || null);
   const [editingSpace, setEditingSpace] = useState<TreeNode | null>(null);
   const editTrigger = useRef<HTMLButtonElement | null>(null);
   const refs = useRef(new Map<string, HTMLButtonElement>());
@@ -345,9 +348,20 @@ export function SpaceAgentTree() {
         .flatMap(({ name: sessionName }) => {
           const snapshot = runtimes[sessionName]?.snapshot;
           const groups = new Map<string, HerdrSpaceInfo[]>();
+          const agentsBySpace = new Map<string, HerdrAgentInfo[]>();
+          const unseenDonePanes = new Set(
+            [...attention.values()].filter(item => item.sessionName === sessionName && item.kind === "done" && !item.seen).map(item => item.paneId),
+          );
+          for (const agent of snapshot?.agents ?? []) {
+            const bucket = agentsBySpace.get(agent.workspaceId);
+            if (bucket) bucket.push(agent);
+            else agentsBySpace.set(agent.workspaceId, [agent]);
+          }
           for (const space of snapshot?.spaces ?? []) {
             const key = space.worktreeGroupKey ?? space.repoKey ?? space.id;
-            groups.set(key, [...(groups.get(key) ?? []), space]);
+            const bucket = groups.get(key);
+            if (bucket) bucket.push(space);
+            else groups.set(key, [space]);
           }
           return [...groups.entries()].map(
             ([group, spaces], index): TreeNode => {
@@ -366,21 +380,9 @@ export function SpaceAgentTree() {
                   space.id,
                 ]);
                 const unseenDone = (agent: HerdrAgentInfo) =>
-                  agent.status === "done" &&
-                  [...attention.values()].some(
-                    (item) =>
-                      item.sessionName === sessionName &&
-                      item.paneId === agent.paneId &&
-                      item.kind === "done" &&
-                      !item.seen,
-                  );
-                const priority = (agent: HerdrAgentInfo) =>
-                  agent.status === "blocked" ? 0 : unseenDone(agent) ? 1 : 2;
-                const agents = sortHerdrAgentsByUrgency(
-                  (snapshot?.agents ?? []).filter(
-                    (agent) => agent.workspaceId === space.id,
-                  ),
-                ).sort((a, b) => priority(a) - priority(b));
+                  agent.status === "done" && agent.paneId != null &&
+                  unseenDonePanes.has(agent.paneId);
+                const agents = agentsBySpace.get(space.id) ?? [];
                 return {
                   key: branchKey,
                   sessionName,
@@ -612,17 +614,20 @@ export function SpaceAgentTree() {
 
   return (
     <div ref={treeContainer} className="space-tree-panel" aria-busy={movingSpaceKey !== null}>
-      <Tabs value={viewMode} className="space-tree-view-tabs" onValueChange={(value) => {
-          if (value !== "spaces" && value !== "agents") return;
-          setViewMode(value);
-          try { localStorage.setItem("yuzora.sidebar.view", value); } catch { /* In-memory preference remains usable. */ }
-        }}>
-        <TabsList aria-label={t("viewMode", { ns: "spaceNavigation" })} className="space-tree-view-switcher">
-          <TabsTrigger value="spaces">Spaces</TabsTrigger>
-          <TabsTrigger value="agents">Agents</TabsTrigger>
-        </TabsList>
-      </Tabs>
       <HerdrLauncher
+        viewSwitcher={
+          <Tabs value={viewMode} className="space-tree-view-tabs" onValueChange={(value) => {
+              if (value !== "spaces" && value !== "agents") return;
+              setViewMode(value);
+              try { localStorage.setItem("yuzora.sidebar.view", value); } catch { /* In-memory preference remains usable. */ }
+            }}>
+            <TabsList aria-label={t("viewMode", { ns: "spaceNavigation" })} className="space-tree-view-switcher">
+              <TabsTrigger value="spaces">Spaces</TabsTrigger>
+              <TabsTrigger value="agents">Agents</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        }
+        onOpenTools={toolsSession ? () => useHerdrToolsStore.getState().open({ tool: "worktrees", sessionName: toolsSession, workspaceId: selectedSpace ?? undefined }) : undefined}
         scope={scopeSession}
         onCreateSpace={createSpace}
         creatingSpace={creatingSpace || creatingTerminal !== null}
@@ -858,14 +863,19 @@ export function SpaceAgentTree() {
                         ) : node.kind === "worktree" ? (
                           <GitBranch aria-hidden="true" />
                         ) : (
-                          <span
-                            className="tree-status-dot"
-                            data-status={node.agent?.status}
-                            aria-hidden="true"
-                          />
+                          <span className="tree-agent-avatar" aria-hidden="true">
+                            <AgentLogo
+                              kind={resolveAgentKind(node.agent?.displayAgent, node.agent?.name, node.label)}
+                              label={node.agent?.name ?? node.label}
+                            />
+                            <span className="tree-status-dot" data-status={node.agent?.status} />
+                          </span>
                         )}
                         <span className="tree-node-label">
                           <span>{node.label}</span>
+                          {node.kind === "agent" && viewMode === "agents" && (
+                            <small>{node.space.branch ?? node.space.label}</small>
+                          )}
                           {node.kind === "project" && (
                             <small>
                               {t("spaceSummary", {
@@ -874,15 +884,12 @@ export function SpaceAgentTree() {
                               })}
                             </small>
                           )}
-                          {node.kind === "agent" && (
-                            <span className="tree-agent-meta">
-                              <small>{node.agent?.name}</small>
-                              <span className="tree-agent-status">
-                                {t(`status.${node.agent?.status}`)}
-                              </span>
-                            </span>
-                          )}
                         </span>
+                        {node.kind === "agent" && (
+                          <span className="tree-agent-status" data-status={node.agent?.status}>
+                            {t(`status.${node.agent?.status}`)}
+                          </span>
+                        )}
                         {node.kind === "worktree" && (
                           <span
                             className="tree-node-count"

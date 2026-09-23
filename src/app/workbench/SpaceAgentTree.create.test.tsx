@@ -107,10 +107,11 @@ it("offers one combined folder and Space action without a global terminal action
   expect(createTerminal).not.toHaveBeenCalled();
 });
 
-it("keeps the title and current scope in one card, with scope selection separate from add actions", () => {
+it("keeps view, tools, add actions and scope in one compact header, with scope separate from add actions", () => {
   render(<SpaceAgentTree />);
-  const title = screen.getByText("Spaces 與 Agents");
-  const card = title.closest('[data-slot="card"]') as HTMLElement;
+  const card = screen.getByRole("group", { name: "Spaces 與 Agents" });
+  expect(within(card).getByRole("tab", { name: "Spaces" })).toBeInTheDocument();
+  expect(within(card).getByRole("button", { name: "HERDR 工具" })).toBeEnabled();
   expect(within(card).getByRole("button", { name: "Herdr Session：All" })).toHaveTextContent("全部 Herdr Sessions");
   expect(within(card).getByRole("button", { name: "新增 Space 或加入 Herdr Session" })).toBeEnabled();
   fireEvent.keyDown(within(card).getByRole("button", { name: "Herdr Session：All" }), { key: "Enter" });

@@ -37,7 +37,7 @@ const BINARY_SOURCE_CONFIG_FILE: &str = "herdr-config-v1.json";
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -733,6 +733,7 @@ pub struct HerdrState(pub Arc<HerdrManager>);
 pub struct HerdrManager {
     remote: Option<Arc<dyn HerdrRemoteBackend>>,
     sessions: Mutex<HashMap<String, Arc<ConnectorSession>>>,
+    native_clients: Mutex<HashMap<String, Arc<native_client::NativeHerdrClient>>>,
     event_subscriptions: Mutex<HashMap<String, Arc<EventSubscription>>>,
     /// Optional override for tests / explicit binary selection.
     binary_override: Mutex<Option<PathBuf>>,
@@ -799,6 +800,7 @@ impl HerdrManager {
         Self {
             remote: None,
             sessions: Mutex::new(HashMap::new()),
+            native_clients: Mutex::new(HashMap::new()),
             event_subscriptions: Mutex::new(HashMap::new()),
             binary_override: Mutex::new(None),
             managed_binary_override: Mutex::new(None),
@@ -2581,11 +2583,17 @@ impl HerdrManager {
         text: Option<String>,
         bytes_base64: Option<String>,
     ) -> Result<(), String> {
+        if session_id.starts_with("herdr-client-") {
+            return self.native_client_input(session_id, text, bytes_base64);
+        }
         let cmd = TerminalControlCommand::input(text, bytes_base64)?;
         self.send_control(session_id, &cmd)
     }
 
     pub fn terminal_resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        if session_id.starts_with("herdr-client-") {
+            return self.native_client_resize(session_id, cols, rows);
+        }
         let cmd = TerminalControlCommand::resize(cols, rows)?;
         self.send_control(session_id, &cmd)?;
         if let Some(session) = self.sessions.lock().unwrap().get(session_id) {
@@ -2607,6 +2615,9 @@ impl HerdrManager {
 
     /// Release only the Yuzora-owned connector child for this session.
     pub fn terminal_release(&self, session_id: &str) -> Result<(), String> {
+        if session_id.starts_with("herdr-client-") {
+            return self.release_native_client(session_id);
+        }
         let session = {
             let mut map = self.sessions.lock().unwrap();
             map.remove(session_id)
@@ -2617,6 +2628,16 @@ impl HerdrManager {
 
     /// Shutdown path: drop every Yuzora connector child. Never stops Herdr server/panes.
     pub fn release_all_connectors(&self) {
+        let clients: Vec<_> = self
+            .native_clients
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for id in clients {
+            let _ = self.release_native_client(&id);
+        }
         let sessions: Vec<Arc<ConnectorSession>> = {
             let mut map = self.sessions.lock().unwrap();
             map.drain().map(|(_, s)| s).collect()
@@ -3507,7 +3528,9 @@ fn run_herdr_json_with_session_timeout(
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     process_kill::configure_background_process(&mut cmd);
     if let Some(name) = session_name.filter(|s| !s.trim().is_empty()) {
-        cmd.env("HERDR_SESSION", name);
+        cmd.env("HERDR_SESSION", name)
+            .env_remove("HERDR_SOCKET_PATH")
+            .env_remove("HERDR_ENV");
     }
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let mut process_tree = process_kill::attach_process_tree(&mut child)
@@ -3975,7 +3998,7 @@ fn apply_schema_method_flags(
     api.worktree_list = has("worktree.list");
 
     let mut methods = Vec::new();
-    for name in IMPLEMENTED_API_METHODS {
+    for name in IMPLEMENTED_API_METHODS.iter().chain(FEATURE_API_METHODS) {
         let available = match *name {
             "ping" => api.ping,
             "session.snapshot" => api.snapshot,
@@ -4035,18 +4058,11 @@ fn looks_like_api_method(name: &str) -> bool {
     if name == "ping" {
         return true;
     }
-    let mut parts = name.split('.');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(ns), Some(method), None) => {
-            !ns.is_empty()
-                && !method.is_empty()
-                && ns.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && method
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
-        _ => false,
-    }
+    // Nested public methods include plugin.pane.open and plugin.action.invoke.
+    name.contains('.')
+        && name.split('.').all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 fn collect_method_consts(value: &serde_json::Value, out: &mut HashSet<String>) {
@@ -4179,7 +4195,16 @@ fn api_request(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let deadline = Instant::now() + LOCAL_IO_TIMEOUT;
+    api_request_with_timeout(socket_path, method, params, LOCAL_IO_TIMEOUT)
+}
+
+fn api_request_with_timeout(
+    socket_path: &str,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let deadline = Instant::now() + timeout;
     let mut stream = connect_local_stream(socket_path, deadline)
         .map_err(|e| format!("connect {socket_path} failed: {e}"))?;
     let id = format!(
@@ -5346,7 +5371,7 @@ mod tests {
             let schema: serde_json::Value = serde_json::from_str(fixture).unwrap();
             assert_eq!(schema["protocol"], 22);
             let methods = collect_schema_methods(&schema);
-            for method in IMPLEMENTED_API_METHODS {
+            for method in IMPLEMENTED_API_METHODS.iter().chain(FEATURE_API_METHODS) {
                 assert!(methods.contains(*method), "official schema lacks {method}");
             }
         }
@@ -5575,12 +5600,13 @@ mod tests {
         let schema = serde_json::json!({
             "protocol": 19,
             "schema_version": 1,
-            "methods": ["session.snapshot", "tab.create", "session.ping"],
+            "methods": ["session.snapshot", "tab.create", "session.ping", "plugin.pane.open"],
             "schemas": {
                 "request": {
                     "oneOf": [
                         { "properties": { "method": { "const": "session.snapshot" } } },
-                        { "properties": { "method": { "const": "tab.create" } } }
+                        { "properties": { "method": { "const": "tab.create" } } },
+                        { "properties": { "method": { "const": "plugin.action.invoke" } } }
                     ]
                 }
             }
@@ -5589,6 +5615,39 @@ mod tests {
         assert!(methods.contains("session.snapshot"));
         assert!(methods.contains("tab.create"));
         assert!(methods.contains("session.ping"));
+        assert!(methods.contains("plugin.pane.open"));
+        assert!(methods.contains("plugin.action.invoke"));
+    }
+
+    #[test]
+    fn nested_plugin_methods_reach_feature_capabilities() {
+        let manager = HerdrManager::new();
+        *manager.binary_override.lock().unwrap() =
+            Some(PathBuf::from("/nonexistent/herdr-plugin-fixture"));
+        let mut api = manager.capabilities().api;
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/herdr-0.9.1-methods.json"))
+                .unwrap();
+        apply_schema_method_flags(&mut api, &collect_schema_methods(&schema), true);
+        for method in [
+            "plugin.pane.open",
+            "plugin.action.invoke",
+            "plugin.log.list",
+        ] {
+            assert!(api.methods.iter().any(|available| available == method));
+        }
+        for invalid in [
+            "plugin",
+            "plugin..open",
+            ".pane.open",
+            "pane.open.",
+            "pane.open now",
+        ] {
+            assert!(
+                !looks_like_api_method(invalid),
+                "accepted invalid method {invalid}"
+            );
+        }
     }
 
     #[test]
@@ -7638,6 +7697,7 @@ sys.stderr.buffer.write(b"\xff\xfe")
         );
     }
 
+    #[cfg(unix)]
     fn unix_pid_exists(pid: u32) -> bool {
         #[cfg(unix)]
         {
@@ -7654,3 +7714,11 @@ sys.stderr.buffer.write(b"\xff\xfe")
         }
     }
 }
+
+#[path = "herdr_features.rs"]
+mod features;
+pub use features::*;
+
+#[path = "herdr_native_client.rs"]
+mod native_client;
+pub use native_client::HerdrClientSize;
