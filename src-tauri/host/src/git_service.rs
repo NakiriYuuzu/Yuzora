@@ -490,9 +490,18 @@ pub fn stage(root: &Path, paths: &[String]) -> Result<(), String> {
 }
 
 pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
-    let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
+    let before = status_of(root, None)?;
+    // An unborn branch has no HEAD for `restore --staged`. Remove only the
+    // index entries; --cached preserves working files, including later edits.
+    let mut args: Vec<&str> = if before.parsed.head_oid == "(initial)" {
+        vec!["rm", "--cached", "-f", "--"]
+    } else {
+        vec!["restore", "--staged", "--"]
+    };
     args.extend(paths.iter().map(String::as_str));
-    mutate_then_assert_literal_scope(root, "restore", paths, &args)
+    run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
+    let after = status_of(root, None)?;
+    ensure_literal_path_scope("unstage", paths, &before.parsed, &after.parsed)
 }
 
 /// tracked → restore --；untracked → clean -f --（前端已確認過 confirm）。

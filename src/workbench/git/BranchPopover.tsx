@@ -1,5 +1,4 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from "react"
-import { writeText } from "@tauri-apps/plugin-clipboard-manager"
 import { GitBranch, Globe, Plus, RefreshCw, Tag } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -26,6 +25,7 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 import type { BranchInfo, TagInfo } from "@/lib/types"
 import { gitCheckout, gitCheckoutDetached, gitCreateBranch, gitFetch, gitPull, gitPush } from "@/lib/ipc"
 import { requestAppConfirmation } from "@/state/appDialogStore"
+import { copyTextWithFeedback } from "@/lib/clipboardFeedback"
 import { requestTextInputDialog } from "@/state/textInputDialogStore"
 
 interface BranchPopoverProps {
@@ -136,11 +136,11 @@ function RefScrollList({
     )
 }
 
-function InlineNotice({ children }: { children: ReactNode }) {
+function InlineNotice({ children, error = false }: { children: ReactNode; error?: boolean }) {
     return (
         <div
             className="mx-[9px] mb-[7px] rounded-[8px] border border-(--line-1) px-[9px] py-[7px] text-[9px] leading-[1.4]"
-            style={{ background: "var(--danger-soft)", color: "var(--status-d)" }}
+            style={{ background: error ? "var(--danger-soft)" : "var(--muted)", color: error ? "var(--status-d)" : "var(--foreground)" }}
         >
             {children}
         </div>
@@ -388,7 +388,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
 
     async function copyRef(fullName: string) {
         try {
-            await writeText(fullName)
+            await copyTextWithFeedback(fullName)
         } catch {
             setNotice(t("branchPopover.copyFailed", { ns: "menus" }))
         }
@@ -592,7 +592,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                         <InlineNotice>{t("branchPopover.remoteCheckPaused", { ns: "menus" })}</InlineNotice>
                     )}
                     {lastError && (
-                        <InlineNotice>
+                        <InlineNotice error>
                             <p role="alert">{gitErrorIsSnapshot() ? t("branchPopover.snapshotFailed", { ns: "menus", message: lastError }) : lastError}</p>
                             <Button variant="outline" size="sm" disabled={busy != null} onClick={() => void retrySnapshot()}>
                                 {t("retry", { ns: "gitWorkflow" })}
@@ -737,7 +737,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                             onBlur={() => {
                                 if (!newName.trim()) setCreating(false)
                             }}
-                            className="h-[30px] w-full rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[11px] font-mono text-[12px] text-(--ink-1) outline-none"
+                            className="h-[30px] w-full rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[11px] font-mono text-[12px] text-(--ink-1) outline-none focus:border-(--yz-accent) focus-visible:ring-2 focus-visible:ring-(--yz-accent)/30"
                         />
                     ) : (
                         <Button

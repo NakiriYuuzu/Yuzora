@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useTranslation } from "react-i18next"
 
@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import type { LogCommit, LogRef } from "@/lib/types"
 import { computeGraphLayout } from "@/workbench/git/graphLayout"
 import type { GraphRow } from "@/workbench/git/graphLayout"
-import { relativeTime } from "@/lib/relativeTime"
+import { fullDate, fullDateTime } from "@/lib/relativeTime"
 import { authorColor, LANE_COLORS } from "@/workbench/git/logColors"
 
 // §2 L762-815 geometry.
@@ -199,38 +199,31 @@ const CommitRow = memo(function CommitRow({
                     onSelect(commit.hash)
                 }
             }}
-            className="absolute left-0 grid h-[32px] w-full cursor-pointer items-stretch outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--yz-accent)"
+            className="group absolute left-0 grid h-[32px] w-full cursor-pointer items-stretch outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--yz-accent)"
             style={{ top, gridTemplateColumns: columns }}
         >
             <span aria-hidden="true" />
-            <span
-                className={
-                    "col-span-3 grid h-[32px] grid-cols-subgrid items-center " +
-                    (selected
-                        ? "bg-(--yz-active) shadow-[inset_2px_0_0_#3b6fe0]"
-                        : "hover:bg-(--yz-panel)")
-                }
-            >
-                <span className="flex items-center gap-[6px] whitespace-nowrap px-[12px]">
+                <span className={`flex min-w-0 items-center gap-[6px] overflow-hidden px-[12px] ${selected ? "bg-(--yz-active) shadow-[inset_2px_0_0_#3b6fe0]" : "group-hover:bg-(--yz-panel)"}`}>
+                    <span className="flex max-w-[45%] shrink-0 items-center gap-[6px] overflow-hidden" title={chips.map(chip => chip.label).join(", ")}>
                     {chips.map((chip, i) => (
                         <RefChip key={i} chip={chip} />
                     ))}
-                    <span className="whitespace-nowrap text-[12.5px] text-(--ink-1)">
+                    </span>
+                    <span className="min-w-0 truncate text-[12.5px] text-(--ink-1)" title={commit.subject}>
                         {commit.subject}
                     </span>
                 </span>
-                <span className="flex items-center gap-[6px] whitespace-nowrap px-[8px] text-[11.5px] text-(--ink-2)">
+                <span className={`sticky right-[96px] z-[1] flex min-w-0 items-center gap-[6px] px-[8px] text-[11.5px] text-(--ink-2) ${selected ? "bg-(--yz-active)" : "bg-(--paper-0) group-hover:bg-(--yz-panel)"}`} title={commit.authorName}>
                     <span
                         aria-hidden="true"
                         className="size-[7px] shrink-0 rounded-full"
                         style={{ background: authorColor(commit.authorName) }}
                     />
-                    <span>{commit.authorName}</span>
+                    <span className="truncate">{commit.authorName}</span>
                 </span>
-                <span className="whitespace-nowrap px-[12px] text-right font-mono text-[10.5px] text-(--ink-3)">
-                    {relativeTime(commit.timestamp)}
+                <span className={`sticky right-0 z-[1] flex items-center justify-end whitespace-nowrap px-[12px] font-mono text-[10.5px] text-(--ink-3) ${selected ? "bg-(--yz-active)" : "bg-(--paper-0) group-hover:bg-(--yz-panel)"}`} title={fullDateTime(commit.timestamp)}>
+                    {fullDate(commit.timestamp)}
                 </span>
-            </span>
         </div>
     )
 })
@@ -297,40 +290,10 @@ export function LogGraph({
     )
 
     const graphWidth = Math.max(MIN_GRAPH_WIDTH, laneX(Math.max(0, layout.laneCount - 1)) + 12)
-    const [textWidths, setTextWidths] = useState({ subject: 320, author: 100, date: 70 })
-    useLayoutEffect(() => {
-        let active = true
-        const measure = () => {
-            if (!active) return
-            // jsdom and restricted renderers may not provide a canvas context.
-            let context: CanvasRenderingContext2D | null = null
-            try {
-                if (typeof CanvasRenderingContext2D !== "undefined") context = document.createElement("canvas").getContext("2d")
-            } catch { /* Use conservative full-width glyph estimates below. */ }
-            const styles = getComputedStyle(scrollRef.current!)
-            const sans = styles.getPropertyValue("--font-sans").trim() || "sans-serif"
-            const mono = styles.getPropertyValue("--font-mono").trim() || "monospace"
-            const width = (text: string, font: string) => {
-                if (!context) return [...text].length * 14
-                context.font = font
-                return context.measureText(text).width
-            }
-            let subject = 320, author = 100, date = 70
-            for (const commit of commits) {
-                const chips = refsToChips(commit.refs)
-                const chipWidth = chips.reduce((sum, chip) => sum + width(chip.label, `600 9.5px ${mono}`) + 18, 0)
-                subject = Math.max(subject, width(commit.subject, `12.5px ${sans}`) + chipWidth + 32)
-                author = Math.max(author, width(commit.authorName, `11.5px ${sans}`) + 32)
-                date = Math.max(date, width(relativeTime(commit.timestamp), `10.5px ${mono}`) + 28)
-            }
-            setTextWidths({ subject: Math.ceil(subject), author: Math.ceil(author), date: Math.ceil(date) })
-        }
-        measure()
-        void document.fonts?.ready.then(measure)
-        return () => { active = false }
-    }, [commits])
-    const columns = `${graphWidth}px minmax(${textWidths.subject}px, 1fr) ${textWidths.author}px ${textWidths.date}px`
-    const tableWidth = graphWidth + textWidths.subject + textWidths.author + textWidths.date
+    // Reserve metadata first; long subjects must not push it outside the panel.
+    // Only exceptionally wide lane graphs need horizontal scrolling.
+    const columns = `${graphWidth}px minmax(100px, 1fr) clamp(80px, 16%, 144px) 96px`
+    const tableWidth = graphWidth + 100 + 80 + 96
 
     const total = commits.length
     const totalHeight = total * ROW_HEIGHT
@@ -429,8 +392,8 @@ export function LogGraph({
                     <div data-testid="log-header" className="sticky top-0 z-10 grid h-[28px] items-center border-b border-(--line-1) bg-(--paper-1) font-sans text-[9.5px] font-bold uppercase tracking-[0.07em] text-(--ink-3)" style={{ gridTemplateColumns: columns }}>
                         <span className="px-[12px]">{t("logGraph.branchColumn")}</span>
                         <span className="px-[12px]">{t("logGraph.commitColumn")}</span>
-                        <span className="px-[8px]">{t("logGraph.authorColumn")}</span>
-                        <span className="px-[12px] text-right">{t("logGraph.dateColumn")}</span>
+                        <span className="sticky right-[96px] h-full bg-(--paper-1) px-[8px] leading-[28px]">{t("logGraph.authorColumn")}</span>
+                        <span className="sticky right-0 h-full bg-(--paper-1) px-[12px] text-right leading-[28px]">{t("logGraph.dateColumn")}</span>
                     </div>
                 <div className="relative" style={{ height: totalHeight, minHeight: totalHeight }}>
                     <GraphSvg

@@ -8,9 +8,9 @@ import i18n from "../src/lib/i18n"
 import "../src/styles.css"
 import "../src/theme/system-tone.css"
 
-const BRANCHES = 32
+const BRANCHES = new URLSearchParams(location.search).get("lanes") === "3" ? 3 : 32
 const commit = (hash: string, parents: string[], subject: string, refs: LogCommit["refs"] = []): LogCommit => ({ hash, shortHash: hash.slice(0, 7), parents, subject, refs, authorName: "Graph QA", authorEmail: "graph@example.invalid", timestamp: 1_784_000_000 })
-const history: LogCommit[] = [commit("merge-all", Array.from({ length: BRANCHES }, (_, i) => `branch-${i}-0`), "Merge 32 independent branches — graph topology acceptance", [{ kind: "local", name: "main" }])]
+const history: LogCommit[] = [commit("merge-all", Array.from({ length: BRANCHES }, (_, i) => `branch-${i}-0`), "Merge independent branches — " + "Long subject should preserve author and date. ".repeat(30), [{ kind: "local", name: "main" }])]
 for (let row = 0; row < 12; row++) {
   for (let branch = 0; branch < BRANCHES; branch++) history.push(commit(
     `branch-${branch}-${row}`,
@@ -27,7 +27,7 @@ function Acceptance() {
   const [width, setWidth] = useState(680)
   const [loads, setLoads] = useState(0)
   return <main style={{ padding: 20, height: "100vh", display: "flex", flexDirection: "column", gap: 12, background: "var(--paper-0)", color: "var(--ink-1)" }}>
-    <div style={{ display: "flex", gap: 12, alignItems: "center" }}><strong>32 branches · octopus merge · 386 commits</strong><Button variant="outline" onClick={() => setWidth(width === 680 ? 460 : 680)}>Toggle narrow</Button><span role="status">Selected: {selected ?? "none"} · Loads: {loads}</span></div>
+    <div style={{ display: "flex", gap: 12, alignItems: "center" }}><strong>{BRANCHES} branches · {history.length} commits</strong><Button variant="outline" onClick={() => setWidth(width === 680 ? 460 : 680)}>Toggle narrow</Button><span role="status">Selected: {selected ?? "none"} · Loads: {loads}</span></div>
     <section style={{ width, maxWidth: "100%", flex: 1, minHeight: 0, display: "flex", border: "1px solid var(--line-1)" }}>
       <LogGraph commits={history.slice(0, count)} selectedHash={selected} onSelect={setSelected} hasMore={count < history.length} loadingMore={false} onLoadMore={() => { setLoads(value => value + 1); setCount(history.length) }} />
     </section>

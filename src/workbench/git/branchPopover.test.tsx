@@ -76,6 +76,16 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe("BranchPopover", () => {
+    it("shows neutral progress information during a normal operation", () => {
+        useGitStore.setState({ busy: "fetch" })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        const notice = screen.getByText(i18n.t("branchPopover.browseOnly", { ns: "menus" }))
+        expect(notice.style.background).toBe("var(--muted)")
+        expect(notice.style.color).toBe("var(--foreground)")
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+        expect(screen.getByRole("button", { name: /fetch remote/i })).toBeDisabled()
+    })
+
     it("renders local branches with current marker and checkout on others", () => {
         useGitStore.setState({
             branches: branches({
