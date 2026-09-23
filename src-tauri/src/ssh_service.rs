@@ -21,6 +21,87 @@ use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelati
 // russh's connect() has no built-in dial timeout; wrap it so a black-holed host
 // fails fast instead of hanging the connect command indefinitely.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+
+// PAM-backed servers often expose password login only as keyboard-interactive.
+// Answer one concealed password prompt, never reuse it as an OTP/MFA response.
+async fn authenticate_password(
+    session: &mut Handle<Client>,
+    user: &str,
+    password: String,
+) -> Result<bool, String> {
+    use russh::client::KeyboardInteractiveAuthResponse as Reply;
+    // Zeroizes Yuzora's copy. russh's password and keyboard-interactive APIs
+    // take owned Strings, so the copies handed to the library are outside our
+    // control; keep them to the single request that needs each one.
+    let password = zeroize::Zeroizing::new(password);
+    let result = session
+        .authenticate_password(user, password.as_str())
+        .await
+        .map_err(|error| format!("SSH 認證發生錯誤：{error}"))?;
+    match result {
+        client::AuthResult::Success => return Ok(true),
+        client::AuthResult::Failure {
+            remaining_methods,
+            partial_success,
+        } => {
+            if partial_success
+                || !remaining_methods.contains(&russh::MethodKind::KeyboardInteractive)
+            {
+                return Ok(false);
+            }
+        }
+    }
+    let mut reply = session
+        .authenticate_keyboard_interactive_start(user, None::<String>)
+        .await
+        .map_err(|error| format!("SSH 密碼驗證發生錯誤：{error}"))?;
+    let mut answered = false;
+    for _ in 0..3 {
+        match reply {
+            Reply::Success => return Ok(true),
+            Reply::Failure { .. } => return Ok(false),
+            Reply::InfoRequest { prompts, .. } => {
+                let responses = if prompts.is_empty() {
+                    Vec::new()
+                } else if !answered && prompts.len() == 1 && is_password_prompt(&prompts[0]) {
+                    answered = true;
+                    vec![password.to_string()]
+                } else {
+                    return Err("SSH 主機要求額外互動驗證；目前密碼連線只支援單一密碼提示".into());
+                };
+                reply = session
+                    .authenticate_keyboard_interactive_respond(responses)
+                    .await
+                    .map_err(|error| format!("SSH 密碼驗證發生錯誤：{error}"))?;
+            }
+        }
+    }
+    Err("SSH 主機重複要求驗證，連線已中止".into())
+}
+
+fn is_password_prompt(prompt: &client::Prompt) -> bool {
+    let text = prompt.prompt.trim().to_lowercase();
+    let additional = [
+        "otp",
+        "one-time",
+        "one time",
+        "new password",
+        "verification",
+        "token",
+    ]
+    .iter()
+    .any(|word| text.contains(word));
+    !prompt.echo
+        && !additional
+        && (text.ends_with("password:")
+            || text == "password"
+            || (text.starts_with("password for ") && text.ends_with(':'))
+            || text == "密碼："
+            || text == "密碼:"
+            || text == "密码："
+            || text == "密码:")
+}
 
 type LogFn = Box<dyn Fn(logging::LogEvent) + Send + Sync>;
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -1205,48 +1286,40 @@ impl SshManager {
         };
 
         self.note_auth("authenticate");
-        let authenticated = match auth {
-            SshAuth::Password { password } => session
-                .authenticate_password(user.clone(), password)
-                .await
-                .map_err(|e| {
-                    let msg = format!("SSH 認證發生錯誤：{e}");
-                    self.log_connect_failure(&host, port, &user, &msg);
-                    msg
-                })?
-                .success(),
-            SshAuth::Key {
-                key_path,
-                passphrase,
-            } => {
-                let key = load_secret_key(&key_path, passphrase.as_deref()).map_err(|e| {
-                    let msg = format!("無法讀取私鑰 {key_path}：{e}");
-                    self.log_connect_failure(&host, port, &user, &msg);
-                    msg
-                })?;
-                let hash = session
-                    .best_supported_rsa_hash()
-                    .await
-                    .map_err(|e| {
-                        let msg = format!("SSH 認證發生錯誤：{e}");
-                        self.log_connect_failure(&host, port, &user, &msg);
-                        msg
-                    })?
-                    .flatten();
-                session
-                    .authenticate_publickey(
-                        user.clone(),
-                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                    )
-                    .await
-                    .map_err(|e| {
-                        let msg = format!("SSH 認證發生錯誤：{e}");
-                        self.log_connect_failure(&host, port, &user, &msg);
-                        msg
-                    })?
-                    .success()
-            }
+        let authentication = async {
+            let authenticated = match auth {
+                SshAuth::Password { password } => {
+                    authenticate_password(&mut session, &user, password).await?
+                }
+                SshAuth::Key {
+                    key_path,
+                    passphrase,
+                } => {
+                    // Failures are logged once by the timeout wrapper below.
+                    let key = load_secret_key(&key_path, passphrase.as_deref())
+                        .map_err(|e| format!("無法讀取私鑰 {key_path}：{e}"))?;
+                    let hash = session
+                        .best_supported_rsa_hash()
+                        .await
+                        .map_err(|e| format!("SSH 認證發生錯誤：{e}"))?
+                        .flatten();
+                    session
+                        .authenticate_publickey(
+                            user.clone(),
+                            PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                        )
+                        .await
+                        .map_err(|e| format!("SSH 認證發生錯誤：{e}"))?
+                        .success()
+                }
+            };
+            Ok::<bool, String>(authenticated)
         };
+        let authenticated = tokio::time::timeout(AUTH_TIMEOUT, authentication)
+            .await
+            .map_err(|_| "SSH 認證逾時，請檢查主機的驗證設定後重試".to_string())
+            .and_then(|result| result)
+            .inspect_err(|message| self.log_connect_failure(&host, port, &user, message))?;
 
         if !authenticated {
             let msg = "SSH 認證失敗：帳號、密碼或金鑰不正確".to_string();
@@ -1727,7 +1800,11 @@ impl SshManager {
             .await
             .map_err(|e| e.to_string())?;
         let mode = mode.argument();
-        let command = format!("exec {} {mode}", crate::host_service::shell_quote(helper)?);
+        let command = if crate::host_windows::is_windows_path(helper) {
+            crate::host_windows::helper_command(helper, mode)?
+        } else {
+            format!("exec {} {mode}", crate::host_service::shell_quote(helper)?)
+        };
         channel
             .exec(true, command.as_bytes())
             .await
@@ -2660,19 +2737,30 @@ mod tests {
         host_key: russh::keys::PrivateKey,
         auth_calls: Arc<Mutex<Vec<String>>>,
     ) -> u16 {
+        spawn_test_ssh_server_with_auth(host_key, auth_calls, false).await
+    }
+
+    async fn spawn_test_ssh_server_with_auth(
+        host_key: russh::keys::PrivateKey,
+        auth_calls: Arc<Mutex<Vec<String>>>,
+        keyboard_only: bool,
+    ) -> u16 {
         use russh::server::{self, Auth, Server as _};
 
         struct TestServer {
             auth_calls: Arc<Mutex<Vec<String>>>,
+            keyboard_only: bool,
         }
         struct TestHandler {
             auth_calls: Arc<Mutex<Vec<String>>>,
+            keyboard_only: bool,
         }
         impl server::Server for TestServer {
             type Handler = TestHandler;
             fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
                 TestHandler {
                     auth_calls: self.auth_calls.clone(),
+                    keyboard_only: self.keyboard_only,
                 }
             }
         }
@@ -2687,7 +2775,41 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(format!("password:{user}"));
-                Ok(Auth::Accept)
+                if self.keyboard_only {
+                    Ok(Auth::Reject {
+                        proceed_with_methods: Some(
+                            [russh::MethodKind::KeyboardInteractive].as_slice().into(),
+                        ),
+                        partial_success: false,
+                    })
+                } else {
+                    Ok(Auth::Accept)
+                }
+            }
+            async fn auth_keyboard_interactive<'a>(
+                &'a mut self,
+                user: &str,
+                _submethods: &str,
+                response: Option<server::Response<'a>>,
+            ) -> Result<Auth, Self::Error> {
+                if let Some(mut response) = response {
+                    self.auth_calls
+                        .lock()
+                        .unwrap()
+                        .push(format!("keyboard:{user}"));
+                    return Ok(
+                        if response.next().as_deref() == Some(b"secret".as_slice()) {
+                            Auth::Accept
+                        } else {
+                            Auth::reject()
+                        },
+                    );
+                }
+                Ok(Auth::Partial {
+                    name: "PAM".into(),
+                    instructions: "".into(),
+                    prompts: vec![("Password: ".into(), false)].into(),
+                })
             }
             async fn auth_publickey(
                 &mut self,
@@ -2711,11 +2833,125 @@ mod tests {
             inactivity_timeout: Some(Duration::from_secs(5)),
             ..Default::default()
         };
-        let mut server = TestServer { auth_calls };
+        let mut server = TestServer {
+            auth_calls,
+            keyboard_only,
+        };
         tokio::spawn(async move {
             let _ = server.run_on_socket(Arc::new(config), &listener).await;
         });
         port
+    }
+
+    #[tokio::test]
+    async fn password_connect_supports_keyboard_interactive_password_servers() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        let port = spawn_test_ssh_server_with_auth(key, calls.clone(), true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (manager, prompts) = test_manager(
+            tmp.path().join("known_hosts.json"),
+            Duration::from_secs(5),
+            Arc::new(StdHostKeyIo),
+        );
+        let manager = Arc::new(manager);
+        let connection = spawn_connect(manager.clone(), "127.0.0.1", port, "alice");
+        let SshHostKeyPrompt::New {
+            challenge_id,
+            endpoint,
+            fingerprint,
+            ..
+        } = wait_for_new_prompt(&prompts).await
+        else {
+            panic!("expected host-key prompt");
+        };
+        assert!(calls.lock().unwrap().is_empty());
+        manager
+            .respond_host_key(&challenge_id, true, &endpoint, &fingerprint)
+            .unwrap();
+        let result = connection
+            .await
+            .unwrap()
+            .expect("password login must support PAM keyboard-interactive");
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            ["password:alice", "keyboard:alice"]
+        );
+        manager.disconnect(&result.session_id).await.unwrap();
+    }
+
+    #[test]
+    fn password_fallback_never_answers_echoed_or_additional_factor_prompts() {
+        for text in [
+            "Password:",
+            "alice's password:",
+            "Password for alice:",
+            "密碼：",
+        ] {
+            assert!(is_password_prompt(&client::Prompt {
+                prompt: text.into(),
+                echo: false
+            }));
+            assert!(!is_password_prompt(&client::Prompt {
+                prompt: text.into(),
+                echo: true
+            }));
+        }
+        for text in [
+            "OTP:",
+            "One-time password:",
+            "New password:",
+            "Verification code:",
+            "Token password:",
+        ] {
+            assert!(!is_password_prompt(&client::Prompt {
+                prompt: text.into(),
+                echo: false
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_rejects_an_incorrect_password() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        let port = spawn_test_ssh_server_with_auth(key, calls.clone(), true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (manager, prompts) = test_manager(
+            tmp.path().join("known_hosts.json"),
+            Duration::from_secs(5),
+            Arc::new(StdHostKeyIo),
+        );
+        let manager = Arc::new(manager);
+        let connecting = manager.clone();
+        let connection = tokio::spawn(async move {
+            connecting
+                .connect(
+                    "127.0.0.1".into(),
+                    port,
+                    "alice".into(),
+                    SshAuth::Password {
+                        password: "incorrect".into(),
+                    },
+                )
+                .await
+        });
+        let SshHostKeyPrompt::New {
+            challenge_id,
+            endpoint,
+            fingerprint,
+            ..
+        } = wait_for_new_prompt(&prompts).await
+        else {
+            panic!("expected host-key prompt")
+        };
+        manager
+            .respond_host_key(&challenge_id, true, &endpoint, &fingerprint)
+            .unwrap();
+        let error = connection.await.unwrap().unwrap_err();
+        assert!(error.contains("認證失敗"));
+        assert!(!error.contains("incorrect"));
+        assert!(manager.sessions.lock().unwrap().is_empty());
     }
 
     pub(super) const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
