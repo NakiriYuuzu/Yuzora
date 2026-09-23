@@ -1023,9 +1023,16 @@ mod tests {
     }
 
     async fn hanging_child() -> (NetworkQueryWorker, u32) {
-        let mut command = Command::new(if cfg!(windows) { "ping" } else { "sleep" });
+        // Stdout must stay silent: any bytes are parsed as a frame header, and
+        // Windows `ping` prints before it waits.
+        let mut command = Command::new(if cfg!(windows) { "powershell" } else { "sleep" });
         if cfg!(windows) {
-            command.args(["-n", "30", "127.0.0.1"]);
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ]);
         } else {
             command.arg("30");
         }

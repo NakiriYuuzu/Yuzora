@@ -2363,6 +2363,8 @@ mod tests {
         assert!(decode_cursor(&token, "root", "").is_err());
     }
 
+    // Windows filenames cannot contain `:`, `*` or `?`.
+    #[cfg(unix)]
     #[test]
     fn file_at_rev_literal_special_filenames() {
         let tmp = tempfile::tempdir().unwrap();
