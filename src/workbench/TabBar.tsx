@@ -27,6 +27,7 @@ import {
     DropdownMenuLabel,
     DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu"
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { herdrTabMove } from "@/lib/herdrIpc"
@@ -434,10 +435,12 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             <WorkspaceHostBadge path={tab.kind === "preview" ? workspacePath ?? undefined : previewTabSourcePath(tab) ?? tab.path} hostId={tab.kind === "herdr-terminal" ? parseRuntimeScope(herdrSessionName).hostId : undefined} />
                         </button>
                         {isFileTab(tab) && tab.externallyModified && (
-                            <button
+                            <Button
                                 type="button"
+                                variant="ghost"
+                                size="icon-xs"
                                 aria-label={t("tabBar.resolveExternalChanges", { name: tab.name })}
-                                className="ext-dot flex size-[18px] shrink-0 cursor-pointer items-center justify-center rounded-[6px] text-[12px] font-semibold text-[#c8521f] transition-colors hover:bg-(--paper-3) focus-visible:ring-2 focus-visible:ring-(--yz-accent) focus-visible:outline-none"
+                                className="ext-dot size-[18px] cursor-pointer rounded-[6px] text-[12px] font-semibold text-[#c8521f] hover:bg-(--paper-3) hover:text-[#c8521f]"
                                 title={t("tabBar.externallyModifiedTitle")}
                                 onClick={(e) => {
                                     e.stopPropagation()
@@ -445,7 +448,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 }}
                             >
                                 <span aria-hidden="true">↻</span>
-                            </button>
+                            </Button>
                         )}
                         {isFileTab(tab) && tab.dirty && (
                             <span
