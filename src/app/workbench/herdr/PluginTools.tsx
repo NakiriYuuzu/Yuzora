@@ -39,13 +39,15 @@ export function PluginTools({ sessionName, workspaceId, paneId, operation, can }
     {!available && <p>{t("unavailable")}</p>}
     {items.map(plugin => <Card key={plugin.plugin_id} size="sm"><CardHeader><CardTitle>{plugin.name} · {plugin.version}</CardTitle><CardDescription>{plugin.description}</CardDescription></CardHeader><CardContent className="flex flex-wrap gap-2">
       {plugin.actions?.map(action => <Button key={action.id} variant="outline" disabled={operation.busy || !plugin.enabled || !workspaceId || !can("plugin.action.invoke")} onClick={() => useHerdrNativeStore.getState().open({ sessionName, paneId: paneId || undefined, request: { method: "plugin.action.invoke", params: { plugin_id: plugin.plugin_id, action_id: action.id, context: { workspace_id: workspaceId, focused_pane_id: paneId || undefined } } } })}>{action.title}</Button>)}
-      {plugin.panes?.map(pane => <Button key={pane.id} variant="outline" disabled={operation.busy || !plugin.enabled || !workspaceId || !can("plugin.pane.open")} onClick={() => {
+      {plugin.panes?.map(pane => {
         const placement = pane.placement ?? "overlay"
-        // Popup/overlay use the active client pane; other placements have distinct targets.
+        // Popup/overlay use the active client pane and need no workspace; other placements have distinct targets.
         const target = placement === "tab" ? { workspace_id: workspaceId }
-          : placement === "split" || placement === "zoomed" ? { target_pane_id: paneId || undefined } : {}
-        useHerdrNativeStore.getState().open({ sessionName, paneId: paneId || undefined, request: { method: "plugin.pane.open", params: { plugin_id: plugin.plugin_id, entrypoint: pane.id, placement, ...target, focus: true } } })
-      }}>{pane.title}</Button>)}
+          : placement === "split" || placement === "zoomed" ? { target_pane_id: paneId } : {}
+        return <Button key={pane.id} variant="outline" disabled={operation.busy || !plugin.enabled || Object.values(target).includes("") || !can("plugin.pane.open")} onClick={() => {
+          useHerdrNativeStore.getState().open({ sessionName, paneId: paneId || undefined, request: { method: "plugin.pane.open", params: { plugin_id: plugin.plugin_id, entrypoint: pane.id, placement, ...target, focus: true } } })
+        }}>{pane.title}</Button>
+      })}
     </CardContent><CardFooter className="flex flex-wrap gap-2">
       <Button variant="outline" disabled={operation.busy || !can(plugin.enabled ? "plugin.disable" : "plugin.enable")} onClick={async () => { if (await operation.run({ method: plugin.enabled ? "plugin.disable" : "plugin.enable", params: { plugin_id: plugin.plugin_id } })) setRefresh(value => value + 1) }}>{t(plugin.enabled ? "disable" : "enable")}</Button>
       <Button variant="outline" disabled={operation.busy || !can("plugin.log.list")} onClick={() => void operation.run({ method: "plugin.log.list", params: { plugin_id: plugin.plugin_id } })}>{t("logs")}</Button>

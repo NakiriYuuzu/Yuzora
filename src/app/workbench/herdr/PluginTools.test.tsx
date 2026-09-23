@@ -49,4 +49,26 @@ describe("plugin pane placement targets", () => {
     expect(herdrFeature).toHaveBeenCalledExactlyOnceWith("test-session", { method: "plugin.list", params: {} })
     expect(operation.run).not.toHaveBeenCalled()
   })
+
+  it("requires a workspace only for tab panes and a target pane only for split or zoomed panes", async () => {
+    const placements = ["popup", "overlay", "split", "zoomed", "tab"] as const
+    vi.mocked(herdrFeature).mockResolvedValue({ plugins: [{
+      plugin_id: "fixture.demo", name: "Fixture plugin", version: "1.0.0", enabled: true,
+      panes: placements.map(placement => ({ id: placement, title: `${placement} pane`, placement }))
+    } satisfies HerdrPlugin] })
+    const operation: HerdrOperation = { busy: false, error: null, refreshError: null, result: null, run: vi.fn() }
+    const view = render(<PluginTools sessionName="test-session" workspaceId="" paneId="" operation={operation} can={() => true} />)
+    for (const placement of ["popup", "overlay"]) expect(await screen.findByRole("button", { name: `${placement} pane` })).toBeEnabled()
+    for (const placement of ["split", "zoomed", "tab"]) expect(screen.getByRole("button", { name: `${placement} pane` })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole("button", { name: "popup pane" }))
+    expect(useHerdrNativeStore.getState().selection).toStrictEqual({
+      sessionName: "test-session", paneId: undefined,
+      request: { method: "plugin.pane.open", params: { plugin_id: "fixture.demo", entrypoint: "popup", placement: "popup", focus: true } }
+    })
+
+    view.rerender(<PluginTools sessionName="test-session" workspaceId="" paneId="pane-1" operation={operation} can={() => true} />)
+    for (const placement of ["split", "zoomed"]) expect(screen.getByRole("button", { name: `${placement} pane` })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "tab pane" })).toBeDisabled()
+  })
 })
