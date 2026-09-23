@@ -368,7 +368,7 @@ export function DatabaseNavContent() {
   )
 }
 
-const rowActionClass = "flex size-6 items-center justify-center rounded-[5px] text-(--ink-3) transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:outline-2 focus-visible:outline-(--ring)"
+const rowActionClass = "rounded-[5px] text-(--ink-3) hover:bg-(--db-hover) hover:text-(--ink-1)"
 
 function SavedConnectionsRegion({
   onOpenEdit,
@@ -468,8 +468,10 @@ function SavedConnectionsRegion({
                     </button>
                     {confirmDeleteId === entry.id ? (
                       <div className="absolute right-1.5 flex items-center gap-0.5 rounded-(--r-xs) border border-(--line-1) bg-(--paper-0) p-0.5 shadow-xs">
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon-xs"
                           aria-label={t("database.confirmRemove", { name: entry.name })}
                           onClick={() => {
                             setConfirmDeleteId(null)
@@ -480,21 +482,25 @@ function SavedConnectionsRegion({
                           className={cn(rowActionClass, "text-(--destructive) hover:bg-(--danger-soft) hover:text-(--destructive)")}
                         >
                           <Check className="size-3.5" aria-hidden="true" />
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon-xs"
                           aria-label={t("database.cancelRemove")}
                           onClick={() => setConfirmDeleteId(null)}
                           className={rowActionClass}
                         >
                           <X className="size-3.5" aria-hidden="true" />
-                        </button>
+                        </Button>
                       </div>
                     ) : (
                       <div className="absolute right-1.5 flex items-center gap-0.5 rounded-(--r-xs) border border-(--line-1) bg-(--paper-0) p-0.5 opacity-0 shadow-xs transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 motion-reduce:transition-none">
                         {entry.kind !== "sqlite" && entry.credentialState === "stored" && (
-                          <button
+                          <Button
                             type="button"
+                            variant="ghost"
+                            size="icon-xs"
                             aria-label={t("database.removeCredential", { name: entry.name })}
                             title={t("database.removeCredential", { name: entry.name })}
                             onClick={() => void removeCredential(entry.id).catch((error) => {
@@ -503,26 +509,30 @@ function SavedConnectionsRegion({
                             className={rowActionClass}
                           >
                             <KeyRound className="size-3.5" aria-hidden="true" />
-                          </button>
+                          </Button>
                         )}
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon-xs"
                           aria-label={t("database.editConnection", { name: entry.name })}
                           title={t("database.editConnection", { name: entry.name })}
                           onClick={() => onOpenEdit(entry)}
                           className={rowActionClass}
                         >
                           <Pencil className="size-3.5" aria-hidden="true" />
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="icon-xs"
                           aria-label={t("database.forgetConnection", { name: entry.name })}
                           title={t("database.forgetConnection", { name: entry.name })}
                           onClick={() => setConfirmDeleteId(entry.id)}
                           className={rowActionClass}
                         >
                           <Trash2 className="size-3.5" aria-hidden="true" />
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </div>
