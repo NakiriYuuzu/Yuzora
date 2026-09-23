@@ -1130,6 +1130,8 @@ describe("DatabasePanel result table", () => {
     render(<DatabasePanel />)
     const idHeader = () => screen.getByRole("button", { name: "Sort by id" }).closest("th")!
     expect(idHeader()).toHaveAttribute("aria-sort", "none")
+    // Sortable headers compose the shared Button so they keep its focus behavior.
+    expect(screen.getByRole("button", { name: "Sort by id" })).toHaveAttribute("data-slot", "button")
 
     fireEvent.click(screen.getByRole("button", { name: "Sort by id" }))
     await waitFor(() => expect(idHeader()).toHaveAttribute("aria-sort", "ascending"))

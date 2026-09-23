@@ -1066,8 +1066,9 @@ const ResultTable = memo(function ResultTable({
                       dragPos === pos && "bg-(--yz-hover)"
                     )}
                   >
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
                       draggable
                       onClick={() => onSort(origIdx)}
                       onDragStart={() => setDragPos(pos)}
@@ -1082,8 +1083,8 @@ const ResultTable = memo(function ResultTable({
                       onDragEnd={() => setDragPos(null)}
                       aria-label={t("databasePanel.sortColumn", { column: columns[origIdx] })}
                       className={cn(
-                        "flex h-8 w-full cursor-pointer items-center gap-1 px-3 font-medium whitespace-nowrap outline-none select-none hover:text-(--ink-1) focus-visible:bg-(--yz-hover) focus-visible:text-(--ink-1)",
-                        numericColumns[origIdx] ? "justify-end text-right" : "text-left",
+                        "w-full gap-1 rounded-none px-3 text-[12px] hover:text-(--ink-1)",
+                        numericColumns[origIdx] ? "justify-end text-right" : "justify-start text-left",
                         active && "text-(--ink-1)"
                       )}
                     >
@@ -1094,7 +1095,7 @@ const ResultTable = memo(function ResultTable({
                         ) : (
                           <ChevronDown className="size-3 shrink-0" aria-hidden="true" />
                         ))}
-                    </button>
+                    </Button>
                   </TableHead>
                 )
               })}
