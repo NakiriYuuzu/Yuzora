@@ -245,6 +245,21 @@ it("edits a table cell only after explicit save, then reloads the exact table", 
   expect(mockQueryRun.mock.calls[before + 1][0].statements[0].sql).toBe('SELECT * FROM "main"."people" LIMIT 100')
 })
 
+it("locks the editor/results split while the table data view hides the query editor", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  const handle = screen.getByRole("separator", { name: "Resize editor and results" })
+  expect(handle).toHaveAttribute("aria-disabled", "true")
+  expect(handle).not.toHaveAttribute("tabindex")
+
+  fireEvent.click(screen.getByRole("radio", { name: "SQL query" }))
+
+  await waitFor(() => expect(handle).not.toHaveAttribute("aria-disabled"))
+  expect(handle).toHaveAttribute("tabindex", "0")
+})
+
 it("keeps arbitrary query results read-only even when their columns resemble a table", async () => {
   await openWithResult()
   render(<DatabasePanel />)
@@ -584,7 +599,7 @@ describe("DatabasePanel execution controls", () => {
       to: sqlText.indexOf(limitedSql) + limitedSql.length,
     }))
 
-    fireEvent.click(screen.getByRole("tab", { name: "Statement 2: Executed" }))
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Executed" }), { button: 0, ctrlKey: false })
     expect(screen.getByText("1 row affected")).toBeInTheDocument()
     expect(screen.getByText("Committed")).toBeInTheDocument()
     const executedSql = "UPDATE counters SET value = 1;"
@@ -593,13 +608,13 @@ describe("DatabasePanel execution controls", () => {
       to: sqlText.indexOf(executedSql) + executedSql.length,
     }))
 
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Statement 2: Executed" }), {
-      key: "ArrowRight",
-    })
-    expect(screen.getByRole("tab", { name: "Statement 3: Result limit reached" })).toHaveAttribute(
+    const executedTab = screen.getByRole("tab", { name: "Statement 2: Executed" })
+    executedTab.focus()
+    fireEvent.keyDown(executedTab, { key: "ArrowRight" })
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Statement 3: Result limit reached" })).toHaveAttribute(
       "aria-selected",
       "true",
-    )
+    ))
   })
 
   it("reports error and cancelled statement tabs without presenting either as success", async () => {
@@ -657,13 +672,13 @@ describe("DatabasePanel execution controls", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("syntax error")
     expect(screen.getByText("Rolled back")).toBeInTheDocument()
 
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Statement 1: Error" }), {
-      key: "ArrowRight",
-    })
-    expect(screen.getByRole("tab", { name: "Statement 2: Cancelled" })).toHaveAttribute(
+    const errorTab = screen.getByRole("tab", { name: "Statement 1: Error" })
+    errorTab.focus()
+    fireEvent.keyDown(errorTab, { key: "ArrowRight" })
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Statement 2: Cancelled" })).toHaveAttribute(
       "aria-selected",
       "true",
-    )
+    ))
     expect(screen.getByRole("alert")).toHaveTextContent("query cancelled")
     expect(screen.queryByText(/rows? affected/i)).not.toBeInTheDocument()
   })
@@ -782,7 +797,7 @@ describe("DatabasePanel execution controls", () => {
     expect(screen.getByRole("button", { name: "Cancel running query" })).toBeDisabled()
     expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "false")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Statement 2: Skipped" }))
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Skipped" }), { button: 0, ctrlKey: false })
     expect(screen.getByRole("tab", { name: "Statement 2: Skipped" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -945,7 +960,7 @@ describe("DatabasePanel result table", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sort by value" }))
     await waitFor(() => expect(bodyCellTexts()).toEqual(["1", "2"]))
 
-    fireEvent.click(screen.getByRole("tab", { name: "Statement 2: Rows" }))
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Rows" }), { button: 0, ctrlKey: false })
     expect(screen.getByRole("button", { name: "Sort by value" }).closest("th")).toHaveAttribute(
       "aria-sort",
       "none",

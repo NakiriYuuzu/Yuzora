@@ -44,6 +44,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable"
 import type { PanelImperativeHandle } from "react-resizable-panels"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { dbObjectRefKey } from "@/lib/databaseSql"
 import { DatabaseCatalogPicker } from "./DatabaseCatalogPicker"
 import { DatabaseCellEditing } from "./DatabaseCellEditing"
@@ -490,7 +491,11 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
         </div>
       </section>
       </ResizablePanel>
-      <ResizableHandle aria-label={t("databasePanel.resizeResults")} className="database-split-handle" />
+      <ResizableHandle
+        aria-label={t("databasePanel.resizeResults")}
+        disabled={mode === "data"}
+        className="database-split-handle aria-disabled:pointer-events-none"
+      />
       <ResizablePanel id="database-results" defaultSize="62%" minSize="25%">
       <section aria-label={t("databasePanel.resultCard")} className="flex h-full min-h-0 flex-col">
         <QueryRunView
@@ -619,70 +624,43 @@ const QueryRunView = memo(function QueryRunView({
   ) ?? run.statements[0]
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <Tabs
+      value={active.statementExecutionId}
+      onValueChange={(value) => onSelectStatement(value as DbStatementExecution["statementExecutionId"])}
+      className="h-full min-h-0 gap-0"
+    >
       <ResultHeader meta={meta}>
         <ScrollArea
           className="min-w-0 flex-1"
           orientation="horizontal"
           viewportClassName="[&>div]:h-full"
         >
-          <div
-            role="tablist"
+          <TabsList
+            variant="line"
             aria-label={t("databasePanel.statementTabsAriaLabel")}
-            className="flex h-9 items-stretch pl-2"
+            className="justify-start gap-0 p-0 pl-2 group-data-horizontal/tabs:h-9"
           >
-            {run.statements.map((statement, statementPosition) => {
+            {run.statements.map((statement) => {
               const statusKey = statementStatusKey(statement)
               const status = t(`databasePanel.statementStatus.${statusKey}`)
-              const selected = statement.statementExecutionId === active.statementExecutionId
               const failed = statusKey === "error" || statusKey === "cancelled"
               return (
-                <button
+                <TabsTrigger
                   key={statement.statementExecutionId}
-                  id={`db-statement-tab-${statement.statementExecutionId}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  tabIndex={selected ? 0 : -1}
-                  aria-controls={`db-statement-panel-${statement.statementExecutionId}`}
+                  value={statement.statementExecutionId}
                   aria-label={t("databasePanel.statementTabAriaLabel", {
                     index: statement.statementIndex + 1,
                     status,
                   })}
                   title={statement.sql}
-                  onClick={() => onSelectStatement(statement.statementExecutionId)}
-                  onKeyDown={(event) => {
-                    let nextPosition: number | null = null
-                    if (event.key === "ArrowRight") {
-                      nextPosition = (statementPosition + 1) % run.statements.length
-                    } else if (event.key === "ArrowLeft") {
-                      nextPosition = (statementPosition - 1 + run.statements.length) % run.statements.length
-                    } else if (event.key === "Home") {
-                      nextPosition = 0
-                    } else if (event.key === "End") {
-                      nextPosition = run.statements.length - 1
-                    }
-                    if (nextPosition === null) return
-                    event.preventDefault()
-                    const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
-                      '[role="tab"]'
-                    )
-                    tabs?.[nextPosition]?.focus()
-                    onSelectStatement(run.statements[nextPosition].statementExecutionId)
-                  }}
-                  className={cn(
-                    "flex shrink-0 items-center gap-1.5 px-2.5 text-[12px] whitespace-nowrap outline-none transition-colors focus-visible:bg-(--yz-hover)",
-                    selected
-                      ? "text-(--ink-1) shadow-[inset_0_-2px_0_var(--ink-1)]"
-                      : "text-(--ink-3) hover:text-(--ink-1)"
-                  )}
+                  className="flex-none self-start rounded-none px-2.5 text-[12px] font-normal text-(--ink-3) hover:text-(--ink-1) data-active:text-(--ink-1) group-data-horizontal/tabs:after:bottom-0"
                 >
                   <span className="font-mono text-(--ink-4)">{statement.statementIndex + 1}</span>
                   <span className={cn(failed && "text-(--destructive)")}>{status}</span>
-                </button>
+                </TabsTrigger>
               )
             })}
-          </div>
+          </TabsList>
         </ScrollArea>
       </ResultHeader>
       {run.transactionMayBeOpen && (
@@ -695,12 +673,7 @@ const QueryRunView = memo(function QueryRunView({
           {t("databasePanel.connectionTerminated")}
         </div>
       )}
-      <div
-        id={`db-statement-panel-${active.statementExecutionId}`}
-        role="tabpanel"
-        aria-labelledby={`db-statement-tab-${active.statementExecutionId}`}
-        className="min-h-0 flex-1"
-      >
+      <TabsContent value={active.statementExecutionId} className="min-h-0 text-[length:inherit]">
         <StatementResult
           key={active.statementExecutionId}
           statement={active}
@@ -710,8 +683,8 @@ const QueryRunView = memo(function QueryRunView({
           onNextPage={onNextPage}
           onReleaseResult={onReleaseResult}
         />
-      </div>
-    </div>
+      </TabsContent>
+    </Tabs>
   )
 })
 
