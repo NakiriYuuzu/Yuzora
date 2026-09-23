@@ -1,0 +1,34 @@
+ spaces                  │   1        2      +                                                                  
+                         │YUZORA_PLUGIN_PANE_VISIBLE                                                            
+ · Native E2E            │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+ new                 menu│                                                                                      
+─────────────────────────│                                                                                      
+ agents           grouped│                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                         │                                                                                      
+                        «│                                                                                      

@@ -1,0 +1,30 @@
+ spaces                  │   1      +                                                               
+                         │sh-3.2$ printf 'YUZORA_%s\n' 'NATIVE_INPUT_OK'                            
+ · Native E2E            │YUZORA_NATIVE_INPUT_OK                                                    
+                         │sh-3.2$                                                                   
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+ new                 menu│                                                                          
+─────────────────────────│                                                                          
+ agents           grouped│                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                         │                                                                          
+                        «│                                                                          

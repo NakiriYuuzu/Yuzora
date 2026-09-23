@@ -3,7 +3,7 @@
 > 本手冊的 Shell snippets 使用 **Bash／Git Bash／WSL**。Windows PowerShell 必須展開多行命令，並將 `VAR=value cmd` 改寫為 `$env:VAR = "value"`。
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
-> Runtime／payload 與產品驗收範圍更新：2026-09-12（v0.0.13 修正 WSL Windows 磁碟路徑的 Explorer 開啟，候選另行驗收）；Release／Pages 流程最後查證：2026-09-12；Pages SEO 建置流程更新：2026-09-20。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Runtime／payload 與產品驗收範圍更新：2026-09-23（v0.0.16 新增 Windows x86_64 SSH host 與五平台 host payload，候選另行驗收）；Host 與 Stable 恢復 workflow 最後查證：2026-09-23；Release／Pages 流程最後查證：2026-09-12；Pages SEO 建置流程更新：2026-09-20。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -66,9 +66,9 @@ Required CI checks：
 
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生／Unix host installer payload gate |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
-| Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 四平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
+| Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -80,7 +80,7 @@ Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflo
 - Host helper workflow 的 Bun 尚未固定版本；Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
-- Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture。
+- Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture，並執行 `database_integration` 與 `database_workbench` 的 ignored 測試。
 - PostgreSQL 暫停第一頁的記憶體回歸測試先暖機並固定 helper PIDs，再限制查詢造成的 RSS 增量小於 64 MiB；不以跨平台差異很大的程序總 RSS 判斷是否保留未讀資料。128 MiB 結果的舊無界讀取負向驗證必須仍超限。
 - Frontend job 在測試前執行 `site:companions`、`site:seo` 與 `demo:build`，讓官網 artifact 測試在乾淨 checkout 也能驗證 `demo/` 連結，並在 merge 前驗證 Pages 建置；Demo Vite 設定也納入 typecheck。此 build check 不代表瀏覽器互動驗收。
 - `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
@@ -165,7 +165,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - `src-tauri/tauri.conf.json` version。
 - `src-tauri/Cargo.toml` version。
 - 更新後的 `src-tauri/Cargo.lock`。
-- `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新 helper 的 `Cargo.lock` 及桌面 lockfile 內的 path dependency entry；四平台 payload 建置會拒絕 helper／desktop 版本不一致。
+- `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新 helper 的 `Cargo.lock` 及桌面 lockfile 內的 path dependency entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
 - `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。
 - 必要的 release／updater contract 修改與測試。
 
@@ -254,11 +254,14 @@ cd src-tauri
 YUZORA_P8_DATABASE_PASSWORD='Yuzora-P8-Only-2026!' \
   YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql \
   cargo test --locked --test database_integration -- --ignored
+YUZORA_P8_DATABASE_PASSWORD='Yuzora-P8-Only-2026!' \
+  YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql \
+  cargo test --locked --test database_workbench -- --ignored
 cd ..
 docker compose -f tests/database/docker-compose.yml --profile mssql down -v
 ```
 
-上述密碼只屬 repository fixture，不是 production secret。
+上述密碼只屬 repository fixture，不是 production secret。`database_integration` 的 MSSQL 情境只在 Linux x86-64 執行；其他本機平台改用 `YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres`，MSSQL 以 CI 的 database job 為準。`database_workbench` 不受此限制，本機可執行三個引擎。
 
 ### PR 候選安裝檔與使用者驗證 gate
 
@@ -294,7 +297,7 @@ beta.3 的產品範圍依已接受的 ADR-0004：Terminal 統一使用 HERDR，A
 - 沒有 Space 或 HERDR 不相容時，共用新增資料夾入口仍可使用；未連線的近期資料夾導回原主機登入與原根目錄。
 - 取消資料夾選擇後，背景 snapshot 不得再次彈窗或擅自開啟工作區；主動點選沒有 Files 根目錄的外部 Space／Agent，仍可開啟其 Terminal Sessions 並保留原 Files 工作區。
 - 使用主機 discovery 的 socket；跨主機同名 Session、terminal、路徑、信任與事件不互相污染。Agent cwd 不得覆寫 Files 根目錄。
-- MSI／NSIS 包含四平台 Unix runtime、manifest 及受控清理工具；另含固定版本 Windows HERDR、ConPTY 與授權檔，逐檔核對 lockfile 雜湊；不得含 WSL Agent Plugin 或散落在核准原生目錄之外的舊 HERDR／ConPTY。從 installer 解包驗證，不以 source inventory 代替。
+- MSI／NSIS 包含四平台 Unix 與 Windows x86_64 遠端 runtime、manifest 及受控清理工具；另含固定版本原生 Windows HERDR、ConPTY 與授權檔，逐檔核對 lockfile 雜湊；不得含 WSL Agent Plugin 或散落在核准原生／host 目錄之外的舊 HERDR／ConPTY。從 installer 解包驗證，不以 source inventory 代替。
 - 在 HERDR Terminal 手動啟動 Pi／Claude／Codex，驗證 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。停止的 Sessions 不再出現在側欄／Session 選單，但保留 runtime 資料。
 - 遠端編輯／安全儲存、Git diff／worktree、Browser 導覽／歷史／WebSocket forwarding、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
 - 新版雙側欄、Space／Agent 切換、Inspector、窄視窗資料夾選擇器、Git 並排 diff、Markdown 文件／原始碼切換與安全回退、檔案釘選重啟恢復、設定搜尋／主題與資源用量。HERDR／Browser 釘選只驗證本次應用程式工作階段。
@@ -578,7 +581,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 恢復流程只處理 Stable 草稿，並依序驗證：
 
 - 原 run 必須來自 `release.yml` 的 `workflow_run`／`main`，且原始 source SHA 與恢復 workflow SHA 都有成功的 exact main push CI。
-- 原 run 的 release guard、四平台 Host、兩平台 installer builds 與 draft assembly 均成功；annotated tag 必須仍指向原 installer source SHA。
+- 原 run 的 release guard、Host builds、兩平台 installer builds 與 draft assembly 均成功；Host jobs 依原 installer source SHA 的 `host.yml` 決定（四個 Unix target，matrix 含 `windows-x86_64` 時另加 Windows），數量必須完全一致。annotated tag 必須仍指向原 installer source SHA。
 - 草稿仍未公開、不是 Beta，十個 installer／signature／alias 資產完整、digest 有效，且固定別名與版本檔 digest 相同。
 - 無 checkout 的草稿存取 job 傳出 inventory 與公開 signatures；唯讀 job checkout 原 installer SHA，以原版 Changelog 與 generator 產生 metadata，並比對草稿 notes。
 - 寫入 metadata 前再核對 tag SHA、draft 狀態、notes、資產 IDs／名稱／大小／digests 未變；上傳後下載比對 metadata，再執行正常 Stable 的 exact asset allowlist、Apple Silicon／MSI-only updater 與 Publish gates。
@@ -671,10 +674,12 @@ ADE/HERDR runtime、remote database 與 terminal/git poster stills 必須使用�
 .github/workflows/ci.yml
 .github/workflows/release.yml
 .github/workflows/deploy-pages.yml
+.github/workflows/host.yml
+.github/workflows/recover-stable-release.yml
 scripts/verify-version-consistency.ts
 scripts/release-notes.ts
 scripts/verify-updater-release-contract.ts
-scripts/verify-windows-bundled-wsl-plugin.ps1
+scripts/verify-windows-runtime-payload.ps1
 scripts/finalize-updater-metadata.ts
 package.json
 src-tauri/Cargo.toml
@@ -706,9 +711,19 @@ site/downloads.js
 - 0.9.0 的 `server.compatible` 仍代表 private protocol 相容；`endpoint_compatible` 與 endpoint generation 是另一套契約，不可用來放寬現有 terminal connector gate。`restart_needed` 不是必須停止 server 的命令；client 比 server 舊時，先更新 client，保留正在執行的 Sessions。
 - 0.9.0 新事件訂閱只接收 live events；Yuzora 在 subscription acknowledgement 後補讀快照，涵蓋 bootstrap snapshot 與訂閱之間的變更。
 - HERDR 升級候選需在原本受影響的 WSL／SSH host 驗證：client／server versions、protocols、socket、舊 managed 設定更新、既有程序存續、snapshot／events／terminal observe／control／input／resize。另見 `docs/research/herdr-runtime-upgrade-prevention-2026-09-09.md` 的長期方案與驗證矩陣。
-- Windows 本機使用 HERDR 官方 named pipe，macOS／Linux 本機使用 Unix socket；SSH 使用 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
+- Windows 本機與 Windows x86_64 SSH host 使用 HERDR 官方 named pipe；後者由 owning-host helper 處理 API、事件與 terminal streams，PowerShell 僅以 .NET BaseStream 轉送位元組。macOS／Linux SSH 保留 direct-streamlocal；WSL 由 `wsl.exe --distribution … --exec` 啟動 helper，不需 sshd。Named Session socket 從來源主機 discovery 取得，不拼接猜測。
 - 版本不相容時先記錄 hostId、session、實際 binary／socket、版本及錯誤。不要自動停止既有 server；需重啟時由使用者先保存該主機上的工作。
 - SSH／WSL 身分變更必須重新驗證；顯示名稱變更不改 hostId。保留 dirty buffer，重連確認外部 revision 後才能儲存。
+
+### HERDR 工具與完整 Session
+
+HERDR 工具提供 Worktree 建立／開啟／移除、pane 跨 tab／Space 搬移、Agent start／prompt／wait／rename／send-keys、Integration 安裝／更新／移除、Session 建立／啟動／停止／刪除，以及 Plugin 安裝／啟停／action／pane。成功的操作不因後續刷新失敗而重送。停止 Session、刪除 Worktree／Session、安裝與移除外掛都由操作 UI 說明影響並確認。Worktree 不自動授予 repository hook 信任；需要信任時先在官方完整 Session 介面處理。
+
+側欄 HERDR 工具與 pane 右鍵選單可開啟完整 Session；Plugin action／pane 亦在此畫面啟動，涵蓋無 pane ID 的 native popup。使用官方 `herdr --session … client`，只連接已執行且相容的 Session。預設 Ctrl+B、[ 開啟 Copy mode，/ 或 ? 搜尋、n/N 導覽、v 選取、y 複製；自訂鍵盤設定由 HERDR 決定。關閉畫面不停止 server，並恢復同 Session 的一般 connectors。GUI 驗收須確認回復連線、輸入順序、搜尋結果與剪貼簿。
+
+Kitty renderer 處理官方 client 的 inline RGB／RGBA／PNG、分段上傳、zlib、裁切、placement 與刪除；不支援任意檔案或 shared-memory transport。client 使用一般 xterm identity，避免上游啟用本機檔案最佳化。解碼圖像合計上限 64 MiB、128 張、512 個 placements；輸出佇列上限 8 MiB，超限時關閉 UI client 並要求重新開啟，不重送使用者輸入。完整 Session 的圖片與 popup 必須在真實 xterm／Tauri 視窗驗收，單元測試不代表視覺驗收。
+
+Agent 通知預設僅 toast；系統通知與聲音分別選配。首次快照、重連歷史、已讀項目與正在觀看的 pane 不重播通知；系統權限回覆若延遲到狀態已消失，不再送出舊通知。
 
 ### CI 編譯與測試隔離
 
@@ -718,19 +733,19 @@ Helper 程序測試使用隔離的 shell／npm fixture，避免 CI runner 的 lo
 
 HERDR runtime verifier 停止自身隔離 Session 後，先等待程序正常退出，再終止逾時的自身子程序。Windows 檔案鎖可能晚於退出事件釋放，暫存目錄刪除使用有上限的重試；持續無法清理仍使驗證失敗，不略過 gate 或操作使用者的 Sessions。
 
-Host helper workflow 在上傳四平台 payload 前執行 `bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/<target>/herdr`。測試使用暫存 XDG roots 與獨立 named Session，驗證實際 bundled binary 的版本／protocol／method schema、subscription ack 後讀取 snapshot、live workspace event、官方 terminal observer／controller、輸入與 resize，最後只停止自身建立的 Session。Windows candidate／Release 也以原生 HERDR 執行相同契約測試，額外隔離 APPDATA／LOCALAPPDATA，驗證 named pipe 與 PowerShell 終端；不修改 HOME。此 gate 不代表 Yuzora UI、既有 host 路徑遷移、混合版本 server 或原 Windows／WSL 工作存續已驗收；本機執行 E2E 仍須遵循當次使用者授權。
+Host helper workflow 在上傳五平台 payload 前執行 `bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/<target>/herdr`（Windows 加 `.exe`）。測試使用暫存 XDG roots 與獨立 named Session，驗證實際 bundled binary 的版本／protocol／method schema、subscription ack 後讀取 snapshot、live workspace event、官方 terminal observer／controller、輸入與 resize，最後只停止自身建立的 Session。Windows candidate／Release 也以原生 HERDR 執行相同契約測試，額外隔離 APPDATA／LOCALAPPDATA，驗證 named pipe 與 PowerShell 終端；不修改 HOME。此 gate 不代表 Yuzora UI、既有 host 路徑遷移、混合版本 server 或原 Windows／WSL 工作存續已驗收；本機執行 E2E 仍須遵循當次使用者授權。
 
 DB helper 若因資源上限退出，request broken pipe 與 response EOF 使用相同的既有 `valueTooLarge` 分類；不可因兩個 pipe 的關閉順序不同而變成一般 `helperIo`。程序停止測試必須確認實際 exit status，stdout 的完成訊息不代表程序已退出。
 
 ### Payload 建置與驗證
 
-四個 target：`linux-x86_64`、`linux-aarch64`、`macos-x86_64`、`macos-aarch64`。在對應架構 runner 執行，例如 Linux x86-64：
+五個 target：`linux-x86_64`、`linux-aarch64`、`macos-x86_64`、`macos-aarch64`、`windows-x86_64`（MSVC）。在對應架構 runner 執行，例如 Linux x86-64：
 
 ```bash
 bun run host:prepare linux-x86_64
 ```
 
-CI 的 `host-artifacts` reusable job 產出四個 `host-<target>` artifacts；candidate／Release 合併下載至 `src-tauri/resources/host/`，再執行：
+CI 的 `host-artifacts` reusable job 產出五個 `host-<target>` artifacts；candidate／Release 合併下載至 `src-tauri/resources/host/`，再執行：
 
 ```bash
 bun run runtime:verify
@@ -739,7 +754,7 @@ cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml --
 cargo test --locked --manifest-path src-tauri/host/Cargo.toml
 ```
 
-每個 target 包含 `yuzora-host`、官方 `herdr` 與 `<target>.json` manifest，另含 HERDR license。Release reusable build 明確使用 guard 的 `source_sha`；不可混用其他 source tree 的 helper。
+每個 target 包含 `yuzora-host`、官方 `herdr` 與 `<target>.json` manifest，另含 HERDR license；Windows 使用 `.exe`，並完整包含 pinned ConPTY、OpenConsole 與授權檔。Release reusable build 明確使用 guard 的 `source_sha`；不可混用其他 source tree 的 helper。Stable metadata 恢復依原 installer source SHA 的 `host.yml` 要求 host jobs：四個 Unix target，matrix 含 `windows-x86_64` 時另加 Windows；job 數量須完全一致且全部成功。
 
 Windows 安裝包建置後，在具備 verifier 所需解包工具的 Windows 環境驗證：
 
@@ -772,4 +787,4 @@ sh cleanup-wsl-adapter.sh --apply "$HOME/.pi/agent"
 
 ### 發布前證據
 
-記錄 source commit／tree、平台、installer SHA256、四平台 manifest、測試命令與結果、GUI acceptance及未完成項目。工作樹未提交時只能記錄本機 checkpoint，遠端舊 PR 的綠燈與 candidate 不涵蓋新修改。完整矩陣未通過前，不設定 accepted-tree attestation、不 merge、不發布；沿用第 5 節的使用者候選驗證與明確 merge 核准流程。
+記錄 source commit／tree、平台、installer SHA256、五平台 manifest、測試命令與結果、GUI acceptance及未完成項目。工作樹未提交時只能記錄本機 checkpoint，遠端舊 PR 的綠燈與 candidate 不涵蓋新修改。完整矩陣未通過前，不設定 accepted-tree attestation、不 merge、不發布；沿用第 5 節的使用者候選驗證與明確 merge 核准流程。

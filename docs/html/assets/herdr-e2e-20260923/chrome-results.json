@@ -1,0 +1,83 @@
+{
+  "date": "2026-09-23",
+  "source": "root agent Chrome/computer-use observations; production UI with controlled IPC fixture",
+  "authorization": "User authorized local E2E, then specified Chrome/computer use and prohibited further agent-browser use.",
+  "checks": [
+    {
+      "surface": "Worktrees",
+      "observed": "建立表單參數正確傳至 controlled IPC。",
+      "status": "passed"
+    },
+    {
+      "surface": "Agents",
+      "observed": "名稱規則、啟動、多行提示與 send-keys。launch_pending 文案為本轮程式修正，未單列為Chrome互動斷言。",
+      "status": "passed"
+    },
+    {
+      "surface": "Pane move",
+      "observed": "新 Space 目的地與請求參數。",
+      "status": "passed"
+    },
+    {
+      "surface": "Sessions",
+      "observed": "名稱規則、建立後選取新 Session、刪除確認。",
+      "status": "passed"
+    },
+    {
+      "surface": "Integrations",
+      "observed": "更新操作有確認並傳送正確 target。",
+      "status": "passed"
+    },
+    {
+      "surface": "Plugins",
+      "observed": "啟用／停用、action 可用性與 popup 只傳合法 placement 參數。",
+      "status": "passed"
+    },
+    {
+      "surface": "Notifications",
+      "observed": "模擬 OS permission denied 時開關維持 off；sound 操作成功。",
+      "status": "passed"
+    },
+    {
+      "surface": "Native dialog",
+      "observed": "Escape 保留給 HERDR；關閉釋放 client；字型就緒後 screen 寬 1742 / container 寬 1748。 Font-ready resize reported 242 columns, replacing initial 156 columns.",
+      "status": "passed"
+    },
+    {
+      "surface": "Worktree creation failure",
+      "status": "passed",
+      "observed": "Operation failed / Fixture operation failure; exactly one worktree.create call for the attempted mutation."
+    },
+    {
+      "surface": "Mutation success / refresh failure",
+      "status": "passed",
+      "observed": "Operation completed retained; separate Session unavailable / Fixture refresh failure; no mutation retry; unavailable controls disabled."
+    },
+    {
+      "surface": "Negative Kitty graphics",
+      "status": "passed",
+      "observed": "Text visibly above image; .xterm-rows computed position relative and z-index 1."
+    },
+    {
+      "surface": "Dark theme / reopen",
+      "status": "passed",
+      "observed": "Dark screenshot correct; host width 2508, screen width 2506; after reopen exactly two canvas layers."
+    },
+    {
+      "surface": "Browser diagnostics",
+      "status": "passed",
+      "observed": "Chrome dev.logs error/warn arrays empty."
+    },
+    {
+      "surface": "Plugin install / uninstall confirmations",
+      "status": "passed",
+      "observed": "Controlled IPC only: install confirmation produced exactly one request with source fixture/demo and revision test-revision; uninstall confirmation used plugin_id fixture.demo. No external download/build ran."
+    },
+    {
+      "surface": "Busy state / slow create",
+      "status": "passed",
+      "observed": "Host, Session, tabs, Space and mutation controls disabled; close hidden; Working text explains requests are not retried. Controls return after completion."
+    }
+  ],
+  "screenshots": "Chrome screenshots remain in this conversation; interaction results are recorded in this JSON."
+}

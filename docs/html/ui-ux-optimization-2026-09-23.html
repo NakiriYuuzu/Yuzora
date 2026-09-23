@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recap: Yuzora UI/UX 深度分析與操作改善</title>
+<style>
+:root{--font-sans:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans TC','PingFang TC',sans-serif;--font-mono:'JetBrains Mono',ui-monospace,monospace;--bg:#faf9f7;--surface:#fff;--text:#1a1a1a;--muted:#6b7280;--border:#e5e5e5;--accent:#c45d3e;--accent-light:#f5ebe7;--ok:#16a34a;--warn:#d97706;--code:#f5f5f4}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-sans);background:var(--bg);color:var(--text);line-height:1.65;padding:2rem}
+.container{max-width:920px;margin:0 auto}
+header{margin-bottom:2rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border)}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;color:var(--accent);font-weight:700}
+h1{font-size:2rem;margin:.35rem 0;line-height:1.25}
+.meta{color:var(--muted);font-size:.875rem}
+.tldr{background:var(--accent-light);border-left:4px solid var(--accent);border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:1.5rem}
+section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.25rem 1.5rem;margin-bottom:1.25rem}
+h2{font-size:1.2rem;margin-bottom:.75rem}
+ul{padding-left:1.25rem}
+li{margin-bottom:.35rem}
+code{background:var(--code);padding:.1rem .35rem;border-radius:6px;font-family:var(--font-mono);font-size:.82rem}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid var(--border);vertical-align:top}
+.ok{color:var(--ok);font-weight:700}.warn{color:var(--warn);font-weight:700}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<div class="label">Recap · UI/UX</div>
+<h1>Yuzora UI/UX 深度分析與操作改善</h1>
+<p class="meta">2026-09-23 · 範圍：<code>src/</code> 前端 · 未進行 Git 寫入</p>
+</header>
+
+<div class="tldr">
+<p><strong>重點：</strong>修正了幾個高頻痛點：版面設定不會保留、空編輯區沒有下一步、Command Palette 能執行的操作太少、複製時沒有回饋，以及鍵盤焦點看不到。自動化檢查全部通過（lint 沒有新增 warning），並已在真實 Chrome 中完成驗收。驗收時另外修正了兩個問題：空狀態按鈕太小、瀏覽器分頁名稱沒有翻譯。</p>
+</div>
+
+<section>
+<h2>已完成的改善</h2>
+<table>
+<tr><th>問題</th><th>改善</th></tr>
+<tr><td>重啟後 Sidebar／工具面板的寬度與收合狀態會重置</td><td><code>AppShell</code> 將版面存到 <code>localStorage</code>（<code>yuzora:workbench-layout</code>），讀取時會把數值限制在合法範圍。只記住使用者手動切換的狀態，窄視窗自動收合不會被存下。雙擊拖曳把手可還原預設寬度。</td></tr>
+<tr><td>空編輯區只有說明文字，沒有可點的操作</td><td>新增 <code>EmptyEditorState</code>，依「尚未開啟工作區」或「沒有分頁」顯示不同文案，並提供搜尋／指令、新 Terminal、瀏覽器三個按鈕，每個按鈕都標示快捷鍵。</td></tr>
+<tr><td>Command Palette 標籤沒有翻譯、看不到快捷鍵、部分功能找不到</td><td>模式項目改用翻譯後的標籤並顯示快捷鍵 <code>kbd</code>；新增切換 Sidebar、切換右側工具、SSH/SFTP 等項目。另新增 <code>toggleTools</code> 快捷鍵（<code>Mod+Alt+B</code>）。</td></tr>
+<tr><td>複製路徑、hash、分支、位址時沒有任何回饋</td><td>新增 <code>lib/clipboardFeedback.ts</code>：複製成功顯示 toast，失敗顯示錯誤。</td></tr>
+<tr><td>TabBar 不支援中鍵關閉；螢幕閱讀器不會唸出「未儲存」；外部變更標記無法用鍵盤操作</td><td>支援中鍵關閉；未儲存的分頁名稱會帶上「(unsaved)」／「（未儲存）」；外部變更標記改用真正的 <code>&lt;button&gt;</code>，並有 focus ring。</td></tr>
+<tr><td>只在 hover 時出現的操作，用鍵盤聚焦時看不到</td><td>FileTree、SFTP、HostList 的列操作按鈕在 <code>focus-within</code>／<code>focus-visible</code> 時也會顯示。</td></tr>
+<tr><td>多個輸入框使用 <code>outline-none</code>，焦點只剩細微的框線變色</td><td>GitSection、ProjectEditorPopover、GitNavContent、BranchPopover、LogsSection（2 處）、LogTab 補上 <code>focus-visible</code>／<code>focus-within</code> ring。</td></tr>
+<tr><td>GUI 驗收發現：空狀態按鈕只有 22.75px 高、字級 10.4px（root font 為 13px，rem 尺寸會被縮小）</td><td>改為 30px 高、12.5px 字級。</td></tr>
+<tr><td>GUI 驗收發現：中文介面下，瀏覽器分頁仍顯示英文「Preview」</td><td>TabBar 只在顯示時翻譯為「瀏覽器／Browser」（<code>menus.tabBar.browserTabName</code>），不改 store 用來比對分頁的名稱。</td></tr>
+<tr><td>computer-use 實機發現：macOS 上 <code>⌘⌥B</code> 沒有反應。Option 會把按鍵字元變成 <code>∫</code>，原本的比對只 fallback 數字鍵（<code>Digit*</code>）</td><td><code>dispatchAppShortcut</code> 在 Alt 或 Shift 組合鍵時，也會 fallback 到字母鍵的實體按鍵 <code>Key*</code>，並新增回歸測試（套用舊邏輯時會失敗）。Playwright 模擬的按鍵事件不會產生 <code>∫</code>，所以瀏覽器驗收時沒有抓到。</td></tr>
+<tr><td>多處使用 <code>transition-all</code></td><td>全部改為明確列出的屬性（<code>components/ui</code> 之外已無殘留）。</td></tr>
+</table>
+<p style="margin-top:.75rem">新增的文案都已同時補齊 <code>en</code> 與 <code>zh-TW</code>。</p>
+</section>
+
+<section>
+<h2>設定頁重新設計</h2>
+<ul>
+<li><code>SettingCard</code> 改為 shadcn <code>Card</code> 卡片；新增 <code>SettingsRowGroup</code>，將相關的開關列放進同一張卡片，列與列之間以細線分隔。外觀、編輯器、終端機、安全性、關於各頁都改用這兩種元件。</li>
+<li>頂列較精簡；搜尋框在尚未輸入時顯示 <code>⌘F</code>／<code>Ctrl F</code> 提示，聚焦時顯示 accent 外框。</li>
+<li>側欄：分組標題改成小型大寫樣式；目前頁面左側有 accent 指示條，圖示也改用 accent 色；底部不再重複顯示「Yuzora Yuzora」，改為版本點加版本字串。</li>
+<li>頁首加上分區圖示；切換分頁時有淡入動畫（啟用 <code>prefers-reduced-motion</code> 時停用）；原本固定在底部的提示改放到內容末端。</li>
+<li>快捷鍵頁：每一列改成左側名稱加 <code>Kbd</code>、右側輸入框加套用按鈕；搜尋框加上圖示；「恢復預設」移到工具列。</li>
+<li>關於頁：版本旁顯示品牌圖示；更新狀態加上狀態點（未檢查／檢查中／可更新／錯誤），並新增「尚未檢查更新」文案（<code>en</code>／<code>zh-TW</code>）。</li>
+<li>主題卡 hover 時會微微上浮，選中時外框改為 accent 色；搜尋結果改成卡片清單。</li>
+</ul>
+</section>
+
+<section>
+<h2>驗證</h2>
+<ul>
+<li><span class="ok">PASS</span> <code>bun run typecheck</code></li>
+<li><span class="ok">PASS</span> <code>bun run lint</code>：0 errors、49 warnings，與改動前的基準相同</li>
+<li><span class="ok">PASS</span> <code>bun run test</code>：252 files／2,970 tests</li>
+<li><span class="ok">PASS</span> <code>bun run build</code>、<code>git diff --check</code></li>
+<li><span class="ok">PASS</span> 真實 Chrome 驗收（Playwright + demo 入口，套用正式的 AppShell）：Command Palette 標籤與快捷鍵、右側工具切換（Palette 與 <code>⌘⌥B</code>）、拖曳寬度後重新載入仍保留、雙擊恢復預設、未儲存分頁的無障礙名稱、中鍵關閉、空狀態三個動作、複製 toast、FileTree 鍵盤焦點、Git 輸入框焦點外框，以及 1024px 寬度搭配英文與深色主題的版面。截圖存於 <code>output/playwright/uiux/</code>。</li>
+<li><span class="ok">PASS</span> computer-use 在真實 Tauri App 中驗收（debug bundle <code>dev.yuuzu.yuzora.uiux</code>，內嵌正式前端，WKWebView）：空狀態文案與三個動作、Palette 標籤與快捷鍵、從 Palette 收起右側工具、重新啟動後仍保留收起狀態、修正後的 <code>⌘⌥B</code>、原生右鍵選單複製後出現 toast 且剪貼簿內容正確、FileTree 在 hover 時顯示差異按鈕、中鍵關閉檔案分頁。</li>
+<li><span class="warn">限制</span> demo 頁面沒有掛載正式 App 的 <code>Toaster</code>，驗證 toast 時是在頁面上臨時掛載的。未儲存標記的朗讀名稱只在瀏覽器驗收，因為在 Tauri 中測試需要編輯 repo 內的檔案。</li>
+</ul>
+</section>
+
+<section>
+<h2>Git Graph 日期欄</h2>
+<p>日期欄原本顯示相對時間（<code>5m</code>、<code>3h</code>、<code>2d</code>、<code>May 24</code>），現在統一顯示年月日 <code>YYYY-MM-DD</code>（本機時區）。滑鼠移到日期上會顯示含時分的完整時間。新增的 <code>fullDate()</code> 放在 <code>src/lib/relativeTime.ts</code>，<code>fullDateTime()</code> 也改為沿用它；資料庫查詢紀錄仍使用相對時間。</p>
+</section>
+
+<section>
+<h2>後續建議的處理結果</h2>
+<table>
+<tr><th>項目</th><th>結果</th></tr>
+<tr><td>原生 checkbox</td><td class="ok">已處理</td></tr>
+<tr><td colspan="2">LogsSection（詳細記錄、去識別化）、GitRollbackDialog（同時刪除未追蹤檔案）、DatabaseNavContent（信任伺服器憑證）改用 shadcn <code>Checkbox</code>，<code>src</code> 內已無原生 checkbox。</td></tr>
+<tr><td><code>ExternalChangeResolver</code> 的 <code>overflow-auto</code></td><td>保留</td></tr>
+<tr><td colspan="2">這個容器是 <code>@codemirror/merge</code> <code>unifiedMergeView</code> 的 parent，屬於 AGENTS.md 允許的 CodeMirror merge host 例外。</td></tr>
+<tr><td>日期格式</td><td class="ok">已處理</td></tr>
+<tr><td colspan="2">HerdrSettingsSection 的「最後驗證」時間改用目前 App 語系格式化，不再依系統語系。</td></tr>
+<tr><td>數字格式</td><td>保留</td></tr>
+<tr><td colspan="2">檔案大小、CPU／記憶體等 <code>toFixed</code> 在 en 與 zh-TW 的輸出相同，改動沒有實際效益。</td></tr>
+<tr><td>阻斷式訊息</td><td class="ok">部分處理</td></tr>
+<tr><td colspan="2">「目前無法新增終端機」原本是 info 等級的 modal，改為非阻斷 toast。檔案建立、改名、刪除失敗與動作錯誤仍使用 modal，因為這些錯誤需要使用者明確知道。</td></tr>
+<tr><td>Quick open（以檔名開啟檔案）</td><td class="warn">未處理</td></tr>
+<tr><td colspan="2">需要新增 Rust 端遞迴檔案列舉（本機與遠端 Host 都要支援），屬於功能開發，建議另開 issue。</td></tr>
+</table>
+</section>
+</div>
+</body>
+</html>

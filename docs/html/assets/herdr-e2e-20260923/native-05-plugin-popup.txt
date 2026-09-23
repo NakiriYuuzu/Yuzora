@@ -1,0 +1,34 @@
+ spaces                  │   1      +                                                                           
+                         │HISTORY_167                                                                          ▕
+ · Native E2E            │HISTORY_168                                                                          ▕
+                         │HISTORY_169                                                                          ▕
+                         │HISTORY_170                                                                          ▕
+                         │HISTORY_171                                                                          ▕
+                         │HISTORY_172                                                                          ▕
+                         │HISTORY_173                                                                          ▕
+                         │HISTORY_174                                                                          ▕
+                         │HISTORY_175          ┌E2E popup────────────────────────────────┐                     ▕
+                         │HISTORY_176          │YUZORA_POPUP_VISIBLE                     │                     ▕
+                         │HISTORY_177          │                                         │                     ▕
+                         │HISTORY_178          │                                         │                     ▕
+                         │HISTORY_179          │                                         │                     ▕
+                         │HISTORY_180          │                                         │                     ▕
+                         │sh-3.2$ printf '\033_│                                         │/8AAP//AAD//wAA//8AAP▕
+ new                 menu│//AAD//wAA//8AAP//AAD│                                         │//AAD//wAA//8AAP//AAD▕
+─────────────────────────│//wAA//8AAP//AAD//wAA│                                         │//wAA//8AAP//AAD//wAA▕
+ agents           grouped│//8AAP//AAD//wAA//8AA│                                         │//8AAP//AAD//wAA//8AA▕
+                         │P//AAD//wAA//8AAP//AA│                                         │P//AAD//wAA//8AAP//AA▕
+                         │D//wAA//8AAP//AAD//wA│                                         │D//wAA//8AAP//AAD//wA▕
+                         │A//8AAP//AAD//wAA//8A│                                         │A//8AAP//AAD//wAA//8A▕
+                         │AP//AAD//wAA//8AAP//A│                                         │AP//AAD//wAA//8AAP//A▕
+                         │AD//wAA//8AAP//AAD//w│                                         │AD//wAA//8AAP//AAD//w▕
+                         │AA//8AAP//AAD//wAA//8└─────────────────────────────────────────┘AA//8AAP//AAD//wAA//8▕
+                         │AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//▕
+                         │AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//▕
+                         │wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//▕
+                         │8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP/▕
+                         │/AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD/▐
+                         │/wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA/▐
+                         │/8AAP//AAD//wAA//8AAP//AAD//wAA┌─────────────────────┐/AAD//wAA/w==\033\\'           ▐
+                         │                               │● copied to clipboard│                               ▐
+                        «│    sh-3.2$                    └─────────────────────┘                               ▐
