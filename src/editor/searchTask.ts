@@ -29,20 +29,29 @@ export function runSearchTask(doc: Text, task: SearchTask): SearchTaskResult {
     type Match = { from: number; to: number; precise: boolean; match?: RegExpExecArray }
     const cursor = (from: number, to = doc.length) => query.getCursor(state, from, to) as Iterator<Match> & { nextOverlapping?: () => IteratorResult<Match> }
     const queryLength = (query.literal ? query.search : query.search.replace(/\\([nrt\\])/g, "_")).length
-    const next = (from: number, wrap: number) => {
-        let found = cursor(from).next()
-        if (found.done) found = cursor(0, query.regexp ? wrap : Math.min(doc.length, wrap + queryLength)).next()
+    // A fresh cursor at a zero-width match returns that match again, so the
+    // selection would never move.
+    const isCurrent = (match: { from: number; to: number }, current: { from: number; to: number }) =>
+        current.from === current.to && match.from === current.from && match.to === current.to
+    const next = (from: number, wrap: number, current?: { from: number; to: number }) => {
+        const first = (iter: Iterator<Match>) => {
+            let found = iter.next()
+            if (!found.done && current && isCurrent(found.value, current)) found = iter.next()
+            return found
+        }
+        let found = first(cursor(from))
+        if (found.done) found = first(cursor(0, query.regexp ? wrap : Math.min(doc.length, wrap + queryLength)))
         return found.done ? null : found.value
     }
     if (task.action === "next" || task.action === "replace") {
-        const match = next(task.action === "replace" ? task.from : task.to, task.to)
+        const match = task.action === "replace" ? next(task.from, task.to) : next(task.to, task.to, task)
         if (match) {
             if (task.action === "replace" && match.precise && match.from === task.from && match.to === task.to) {
                 result.changes = [{ from: match.from, to: match.to, insert: replacement(query, match) }]
-                const following = next(match.to, match.from)
+                const following = next(match.to, match.from, match)
                 if (following) result.ranges = [{ from: following.from, to: following.to }]
             } else if (task.action === "replace" && !match.precise) {
-                const following = next(match.to, match.from)
+                const following = next(match.to, match.from, match)
                 if (following) result.ranges = [{ from: following.from, to: following.to }]
             } else result.ranges = [{ from: match.from, to: match.to }]
         }
@@ -53,7 +62,9 @@ export function runSearchTask(doc: Text, task: SearchTask): SearchTaskResult {
             let match: { from: number; to: number } | null = null
             const iter = cursor(from, to)
             const advance = () => iter.nextOverlapping ? iter.nextOverlapping() : iter.next()
-            for (let found = advance(); !found.done; found = advance()) match = { from: found.value.from, to: found.value.to }
+            for (let found = advance(); !found.done; found = advance()) {
+                if (!isCurrent(found.value, task)) match = { from: found.value.from, to: found.value.to }
+            }
             return match
         }
         const match = last(0, task.from) ?? last(query.regexp ? task.to : Math.max(0, task.from - queryLength), doc.length)

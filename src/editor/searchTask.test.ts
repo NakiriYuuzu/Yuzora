@@ -44,6 +44,17 @@ describe("background document search", () => {
         expect(runSearchTask(Text.of(["needle ".repeat(1001)]), task({ action: "select" }))).toMatchObject({ error: "tooMany", ranges: [] })
     })
 
+    it("moves past the current zero-width regex match in both directions", () => {
+        const input = task({ from: 4, to: 4 })
+        input.query = { ...input.query, search: "^", replace: "> ", regexp: true }
+        const doc = Text.of(["abc", "def", "ghi"])
+        expect(runSearchTask(doc, input).ranges).toEqual([{ from: 8, to: 8 }])
+        expect(runSearchTask(doc, { ...input, from: 8, to: 8 }).ranges).toEqual([{ from: 0, to: 0 }])
+        expect(runSearchTask(doc, { ...input, action: "prev" }).ranges).toEqual([{ from: 0, to: 0 }])
+        expect(runSearchTask(doc, { ...input, action: "prev", from: 0, to: 0 }).ranges).toEqual([{ from: 8, to: 8 }])
+        expect(runSearchTask(doc, { ...input, action: "replace" })).toMatchObject({ changes: [{ from: 4, to: 4, insert: "> " }], ranges: [{ from: 8, to: 8 }] })
+    })
+
     it("replaces only the selected current match, then finds the next", () => {
         expect(runSearchTask(Text.of(["needle needle"]), task({ action: "replace", to: 6 }))).toMatchObject({ changes: [{ from: 0, to: 6, insert: "changed" }], ranges: [{ from: 7, to: 13 }] })
         expect(runSearchTask(Text.of(["needle needle"]), task({ action: "replace" })).changes).toBeUndefined()
