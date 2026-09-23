@@ -25,16 +25,18 @@ function Assert-Payload([string]$Root) {
     }
     $license = Join-Path (Split-Path -Parent $nativeRoot) 'LICENSE-HERDR.txt'
     if ((Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash -ne $runtimeLock.licenseSha256) { throw 'Native HERDR license mismatch' }
+    $manifests = @($files | Where-Object { $_.FullName -match '[\\/]host[\\/]linux-x86_64.json$' })
+    if ($manifests.Count -ne 1) { throw 'Expected exactly one host deployment payload' }
+    $root = Split-Path -Parent $manifests[0].FullName
+    # Only the Windows host payload under the verified root is covered by the exact inventory below.
+    $windowsHostRoot = Join-Path $root 'windows-x86_64'
     foreach ($file in $files) {
         $approvedNative = $file.FullName.StartsWith($nativeRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
-        $approvedWindowsHost = $file.FullName -match '[\\/]host[\\/]windows-x86_64[\\/]'
+        $approvedWindowsHost = $file.FullName.StartsWith($windowsHostRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
         if ($file.Name -in @('herdr-plugin.toml', 'yuzora-herdr-wsl.ts') -or (!$approvedNative -and !$approvedWindowsHost -and $file.Name -in @('herdr.exe', 'OpenConsole.exe', 'conpty.dll'))) {
             throw "Legacy runtime must not be bundled: $($file.FullName)"
         }
     }
-    $manifests = @($files | Where-Object { $_.FullName -match '[\\/]host[\\/]linux-x86_64.json$' })
-    if ($manifests.Count -ne 1) { throw 'Expected exactly one host deployment payload' }
-    $root = Split-Path -Parent $manifests[0].FullName
     $expected = @('LICENSE-HERDR.txt')
     foreach ($target in $targets) {
         $expected += "$target.json"
