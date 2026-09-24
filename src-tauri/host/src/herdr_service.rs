@@ -803,7 +803,8 @@ impl HerdrManager {
         *self.binary_fingerprint_cache.lock().unwrap() = None;
     }
 
-    #[cfg(test)]
+    // Only the Unix fake-socket validation tests shorten the window.
+    #[cfg(all(test, unix))]
     pub(crate) fn set_validation_ttl_for_test(&self, ttl: Duration) {
         *self.validation_ttl.lock().unwrap() = ttl;
     }
