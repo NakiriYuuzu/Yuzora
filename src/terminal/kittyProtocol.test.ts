@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { KittyGraphics, KittyStreamParser, type KittyToken } from "./kittyProtocol"
+import { KittyGraphics, KittyStreamParser, MAX_KITTY_BYTES, type KittyToken } from "./kittyProtocol"
 
 function target() {
   const reply = vi.fn(), dispose = vi.fn(), changed = vi.fn()
@@ -85,6 +85,15 @@ describe("HERDR inline graphics", () => {
     await graphics.accept(command({ a: "t", i: "4", s: "1", v: "1", f: "32" }, pixel))
     await graphics.accept(command({ a: "p", i: "4", x: "100" }))
     expect(graphics.placements.size).toBe(0)
+  })
+  it("accepts base64 padding for an upload at exactly the byte limit", async () => {
+    // 64 MiB leaves remainder 1 mod 3, so its padded base64 is 2 chars past ceil(n * 4 / 3).
+    const padded = 4 * Math.ceil(MAX_KITTY_BYTES / 3)
+    const { graphics, reply } = target()
+    await graphics.accept(command({ a: "t", i: "5", m: "1" }, "A".repeat(padded)))
+    expect(reply).not.toHaveBeenCalled()
+    await graphics.accept(command({ m: "1" }, "AAAA"))
+    expect(reply.mock.lastCall?.[0]).toContain("EFBIG")
   })
   it("disposes decoded images arriving after the view has closed", async () => {
     const dispose = vi.fn()

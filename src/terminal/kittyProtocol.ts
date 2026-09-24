@@ -100,7 +100,8 @@ export class KittyGraphics<T> {
         const upload = this.upload
         control = upload.control
         upload.size += token.payload.length
-        if (upload.size > Math.ceil(MAX_KITTY_BYTES * 4 / 3)) throw new Error("EFBIG: Image exceeds memory limit")
+        // Padded base64 length of the byte limit; decoded size is checked again below.
+        if (upload.size > 4 * Math.ceil(MAX_KITTY_BYTES / 3)) throw new Error("EFBIG: Image exceeds memory limit")
         if (!/^[A-Za-z0-9+/]*={0,2}$/.test(token.payload)) throw new Error("EINVAL: Invalid image encoding")
         upload.parts.push(token.payload)
         if (token.control.m === "1") return

@@ -1332,6 +1332,17 @@ describe("DatabasePanel result session controls", () => {
     expect(await screen.findByText("Page 2")).toBeInTheDocument()
   })
 
+  it("opens the next result page at its first row instead of the previous scroll offset", async () => {
+    const owner = await openWithCachedLifecycle("complete")
+    mockResultPageNext.mockResolvedValueOnce(panelWirePage(owner, { pageIndex: 1, hasPrevious: true, lifecycle: "complete" }))
+    render(<DatabasePanel />)
+    const viewport = screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+    fireEvent.scroll(viewport, { target: { scrollTop: 400 } })
+    fireEvent.click(screen.getByRole("button", { name: "Load next result page" }))
+    expect(await screen.findByText("Page 2")).toBeInTheDocument()
+    expect((screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]') as HTMLElement).scrollTop).toBe(0)
+  })
+
   it.each(["released", "cancelled", "error"] as const)(
     "disables Next for a %s lifecycle even when hasNext",
     async (lifecycle) => {

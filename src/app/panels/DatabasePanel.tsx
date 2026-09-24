@@ -882,6 +882,7 @@ function ResultSessionPage({
           sortBy={sortBy}
           onSort={onSort}
           footer={footer}
+          resetKey={page.pageIndex}
         />
       </div>
     </div>
@@ -985,7 +986,8 @@ const ResultTable = memo(function ResultTable({
   truncated,
   sortBy,
   onSort,
-  footer
+  footer,
+  resetKey
 }: {
   columns: string[]
   rows: DbValue[][]
@@ -993,6 +995,8 @@ const ResultTable = memo(function ResultTable({
   sortBy: DbSort | null
   onSort: (columnIndex: number) => void
   footer?: ReactNode
+  /** Changing it (e.g. a new result page) scrolls back to the first row. */
+  resetKey?: number
 }) {
   const { t } = useTranslation("panels")
   const { t: workbench } = useTranslation("databaseWorkbench")
@@ -1009,6 +1013,14 @@ const ResultTable = memo(function ResultTable({
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
+  const [previousResetKey, setPreviousResetKey] = useState(resetKey)
+  if (previousResetKey !== resetKey) {
+    setPreviousResetKey(resetKey)
+    setWindow(current => ({ ...current, top: 0 }))
+  }
+  useEffect(() => {
+    if (viewport.current) viewport.current.scrollTop = 0
+  }, [resetKey])
   const rowHeight = 29
   const start = Math.min(Math.max(0, rows.length - 1), Math.max(0, Math.floor((window.top - 32) / rowHeight) - 8))
   const end = Math.min(rows.length, start + Math.ceil(window.height / rowHeight) + 16)

@@ -58,18 +58,20 @@ export function runSearchTask(doc: Text, task: SearchTask): SearchTaskResult {
     } else if (task.action === "prev") {
         // Chunking belongs to CodeMirror's cursor. Running in a worker also keeps
         // multiline regexes and scans with no matches away from the event loop.
-        const last = (from: number, to: number) => {
+        const last = (from: number, to: number, skipCurrent: boolean) => {
             let match: { from: number; to: number } | null = null
             const iter = cursor(from, to)
             const advance = () => iter.nextOverlapping ? iter.nextOverlapping() : iter.next()
             for (let found = advance(); !found.done; found = advance()) {
-                if (!isCurrent(found.value, task)) match = { from: found.value.from, to: found.value.to }
+                if (!skipCurrent || !isCurrent(found.value, task)) match = { from: found.value.from, to: found.value.to }
             }
             return match
         }
         // CodeMirror's findPrevious wraps a regex search from the selection start,
-        // so a sole current match is found again instead of reported missing.
-        const match = last(0, task.from) ?? last(query.regexp ? task.from : Math.max(0, task.from - queryLength), doc.length)
+        // so a sole current match (even a zero-width one) is found again instead
+        // of reported missing: skip it only while looking for another match.
+        const wrapFrom = query.regexp ? task.from : Math.max(0, task.from - queryLength)
+        const match = last(0, task.from, true) ?? last(wrapFrom, doc.length, true) ?? last(wrapFrom, doc.length, false)
         if (match) result.ranges = [match]
     } else {
         const limit = task.action === "select" ? 1000 : 100000
