@@ -1056,6 +1056,19 @@ fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Upload targets a directory: the POSIX root and a lone Windows drive root
+/// (`C:`, `C:/`, `/C:/`) are valid; anything deeper is validated segment by segment.
+fn validate_upload_dir(dir: &str) -> Result<(), String> {
+    let root = dir.strip_prefix('/').unwrap_or(dir);
+    let root = root.strip_suffix('/').unwrap_or(root);
+    let is_drive_root =
+        root.len() == 2 && root.as_bytes()[0].is_ascii_alphabetic() && root.as_bytes()[1] == b':';
+    if dir == "/" || is_drive_root {
+        return Ok(());
+    }
+    reject_unsafe_remote_leaf(dir)
+}
+
 fn remote_join(dir: &str, name: &str) -> String {
     if dir.is_empty() || dir == "/" {
         format!("/{name}")
@@ -1494,9 +1507,7 @@ impl SshManager {
         if !path_capability::is_safe_transfer_id(transfer_id) {
             return Err(PathCapabilityError::UnsafeLeaf.into());
         }
-        if remote_dir != "/" {
-            reject_unsafe_remote_leaf(remote_dir)?;
-        }
+        validate_upload_dir(remote_dir)?;
         let leaf = match &source {
             SftpUploadSource::Workspace { relative_path, .. } => {
                 SafeRelativePath::parse(relative_path)?
@@ -3460,6 +3471,18 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
                 PathCapabilityError::UnsafeLeaf.as_code(),
                 "{path}"
             );
+        }
+    }
+
+    #[test]
+    fn upload_directory_accepts_posix_and_windows_drive_roots() {
+        // A lone drive root is a directory, never a leaf target.
+        for dir in ["/", "C:", "C:/", "/C:/", "/d:"] {
+            assert!(validate_upload_dir(dir).is_ok(), "{dir}");
+        }
+        assert!(validate_upload_dir("/C:/Users/me").is_ok());
+        for dir in ["/C:/../x", "C:/Users/D:", "/home/u/", "/C://"] {
+            assert!(validate_upload_dir(dir).is_err(), "{dir}");
         }
     }
 

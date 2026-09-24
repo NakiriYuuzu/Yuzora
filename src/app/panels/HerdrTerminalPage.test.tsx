@@ -1104,6 +1104,22 @@ describe("HerdrTerminalPage clipboard", () => {
     await waitFor(() => expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument())
   })
 
+  it("keeps Reconnect available when the reconnect attempt fails", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    await act(async () => {
+      herdrIpcMock.emit({ type: "closed", sessionId: "sess-1", reason: "terminal attach taken over" })
+    })
+    herdrIpcMock.herdrTerminalOpen.mockRejectedValueOnce(new Error("connector busy"))
+    fireEvent.click(await screen.findByTestId("herdr-reconnect"))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    // Still detached after the failure: the user must be able to retry.
+    expect(await screen.findByTestId("herdr-reconnect")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("herdr-reconnect"))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument())
+  })
+
   it("keeps the stream-closed behaviour for other connector closes", async () => {
     render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())

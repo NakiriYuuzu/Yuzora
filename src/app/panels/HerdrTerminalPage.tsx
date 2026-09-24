@@ -826,7 +826,7 @@ function HerdrTerminalLeaf({
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const clipboardRef = useRef<TerminalClipboardController | null>(null)
   const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
-  const recoverOutputRef = useRef<(() => void) | null>(null)
+  const recoverOutputRef = useRef<((onFailed?: () => void) => void) | null>(null)
   const repaintAfterWriteRef = useRef(false)
   const lastOutputSeqRef = useRef<number | null>(null)
   const disposedRef = useRef(false)
@@ -1156,7 +1156,7 @@ function HerdrTerminalLeaf({
     fitViewportRef.current = scheduleFit
 
     let recovering = false
-    const recoverOutput = () => {
+    const recoverOutput = (onFailed?: () => void) => {
       if (recovering || transport.isDisposed?.()) return
       recovering = true
       repaintAfterWriteRef.current = true
@@ -1172,7 +1172,9 @@ function HerdrTerminalLeaf({
         scrollbarRefreshRef.current?.()
         clipboardRef.current?.flushPendingPaste()
       }).catch((error) => {
-        if (!transport.isDisposed?.()) setStatusMessage(String(error))
+        if (transport.isDisposed?.()) return
+        setStatusMessage(String(error))
+        onFailed?.()
       }).finally(() => { recovering = false })
     }
     recoverOutputRef.current = recoverOutput
@@ -1433,8 +1435,9 @@ function HerdrTerminalLeaf({
     if (!recoverOutputRef.current || transportRef.current?.isDisposed?.()) return
     setTakenOver(false)
     setStatusMessage(null)
-    // Reopens this attachment as control + takeover, taking it back.
-    recoverOutputRef.current()
+    // Reopens this attachment as control + takeover, taking it back. The
+    // session stays detached if that fails, so keep Reconnect available.
+    recoverOutputRef.current(() => setTakenOver(true))
   }, [])
 
   const leafContextMenu = contextMenuHandler({
