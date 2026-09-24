@@ -318,6 +318,16 @@ export function AppShell() {
     setNavCollapsed(!navCollapsed)
   }, [sidebarToggleRequest, navCollapsed])
 
+  // Spaces/Agents view shortcut: reveal a collapsed sidebar; never collapse it.
+  const navCollapsedRef = useRef(navCollapsed)
+  useEffect(() => { navCollapsedRef.current = navCollapsed }, [navCollapsed])
+  useEffect(() => useUiStore.subscribe((state, previous) => {
+    if (state.sidebarViewToggleRequest === previous.sidebarViewToggleRequest || !navCollapsedRef.current) return
+    navAutoCollapsedRef.current = false
+    saveWorkbenchLayout({ navCollapsed: false })
+    setNavCollapsed(false)
+  }), [])
+
   // Keyboard shortcut / command palette → same effect as the right edge toggle.
   useEffect(() => {
     if (toolsToggleRequest === toolsToggleHandledRef.current) return

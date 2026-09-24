@@ -1259,8 +1259,6 @@ test("legacy Herdr tab without stored Space identity reorders from runtime owner
                 paneClose: true,
                 layoutExport: true,
                 layoutSetSplitRatio: true,
-                agentGet: true,
-                agentRead: true,
                 eventsSubscribe: true,
                 worktreeList: true,
                 methods: ["tab.move"]

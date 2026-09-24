@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.0.16 審查接續與本機驗證</title>
+<style>
+body{max-width:980px;margin:40px auto;padding:0 24px;color:#202a38;background:#faf9f6;font:16px/1.75 system-ui,sans-serif}h1,h2{line-height:1.35}h2{margin-top:36px}a{color:#245a91}table{width:100%;border-collapse:collapse;background:white}th,td{padding:12px;border:1px solid #d9dfe5;text-align:left;vertical-align:top}code{font-size:.9em;overflow-wrap:anywhere}.status{padding:16px 20px;border-left:4px solid #aa7724;background:#fff3dd}.meta{color:#576273;font-size:14px}@media print{body{margin:0;max-width:none}tr{break-inside:avoid}}
+</style>
+<h1>v0.0.16 審查接續與本機驗證</h1>
+<p class="meta">2026-09-24 · branch <code>release/v0.0.16</code> · base HEAD <code>8b8fb6a4461c85a994ca1f3d89f163bc7d9598c9</code> · 未提交的本機修正</p>
+<p class="status">本機修正與檢查完成；尚未到候選待驗收。使用者本輪指定「先完成本機檢查，不重跑 CI」。本輪未 staging、commit、push、重跑 CI、操作瀏覽器、merge 或發布。</p>
+<p>接續四份先前以 <code>b2e55a1</code> 為基準的審查，並核對 <a href="https://github.com/NakiriYuuzu/Yuzora/pull/110">PR #110</a>、<a href="https://github.com/NakiriYuuzu/Yuzora/issues/109">Issue #109</a> 與 <a href="../operations.md">operations.md</a> 的現行發布門檻。</p>
+<h2>本輪修正</h2>
+<table>
+<tr><th>問題</th><th>修正與證據</th></tr>
+<tr><td>完整 Session 開啟期間的輸入可能亂序</td><td><code>HerdrNativeDialog.tsx</code> 將開啟前緩存與後續鍵入都送入同一 Promise 佇列。延遲第一個 IPC 的測試在修正前觀察到三次並行呼叫；修正後依序傳送，沒有重送。</td></tr>
+<tr><td>事件斷線後，ready 狀態的恢復快照重播通知</td><td><code>HerdrNotificationBridge.tsx</code> 識別與 attention 同步替換的 baseSnapshot，保留側欄 attention、抑制 toast／系統／聲音通知。測試使用真正的 store applySnapshot 與 subscription event：恢復快照不通知，後續 working → done 仍通知。</td></tr>
+<tr><td>MSSQL trigger 筆數干擾儲存格衝突判定</td><td><code>dbStore.ts</code> 只在 MSSQL 儲存格編輯的同一批次附加 <code>SELECT ROWCOUNT_BIG()</code>，讀取外層 UPDATE 的筆數，驗證完整單列回應並釋放 cursor。保留一般 SQL 的 aggregate counts。原 HEAD 的兩個差異測試分別重現「成功誤報 editConflict」與「零筆誤報成功」；修正後均通過。真實 MSSQL 測試涵蓋有 trigger、零／一筆更新與 NOCOUNT ON／OFF。</td></tr>
+</table>
+<h2>舊審查項目的目前狀態</h2>
+<ul>
+<li>已在後續 commits 處理：分支／fingerprint 複製回饋、Windows 保留資料夾 modal、新增快捷鍵使用 Kbd、PostgreSQL real 原值比對、明確 Session、不重送同一次 Plugin request、Plugin capability gate、Kitty 自動 ID、probe 保留原錯誤、SSH 避免重複記錄及 native client 插入鎖內重查上限。</li>
+<li>文件已釐清：搜尋門檻為 256K UTF-16 code units；Terminal 搜尋／Copy mode／Kitty 由完整 Session 視窗提供；preview tabs 已列入 Issue #109；兩卡片 Database 規格標記由單一 card 取代；README、ADR 與 operations 已涵蓋 Windows SSH／五平台 Host。</li>
+<li>SSH 的 Yuzora 密碼副本使用 Zeroizing；russh API 接收的 owned String 由套件持有，不能宣稱所有套件內部副本都已 zeroize。</li>
+<li>重複程式碼等 judgement calls 未作額外重構；本輪集中於可重現的功能錯誤。</li>
+</ul>
+<h2>本機檢查</h2>
+<table>
+<tr><th>檢查</th><th>結果</th></tr>
+<tr><td>Frontend lint、typecheck、build</td><td>通過；lint 0 errors，49 個既有 warnings。最後新增的測試亦重新通過 typecheck。</td></tr>
+<tr><td>Frontend 全量測試</td><td>256 files／3,028 tests 通過。其後補強 MSSQL 差異測試與不完整結果測試，最終三個受影響測試檔 153 tests 通過。</td></tr>
+<tr><td>Rust desktop</td><td><code>cargo check --locked --all-targets</code>、fmt、exact Clippy baseline 通過（90 diagnostics）。<code>cargo test --locked</code>：lib 386 passed／3 ignored；database_integration 非 ignored 1 passed；git_workbench 1 passed。</td></tr>
+<tr><td>真實 database_workbench</td><td>SQLite、PostgreSQL、MSSQL 全部通過，包含本輪新增 trigger／NOCOUNT 測試。使用既有 loopback Docker fixtures；未停止或清除原有容器。</td></tr>
+<tr><td>Release preflight</td><td><code>check:version</code>、<code>release-notes.ts v0.0.16</code>、<code>check:updater-release</code> 通過。查詢時遠端 v0.0.16 tag 與 Release 均不存在。</td></tr>
+<tr><td>Git diff</td><td><code>git diff --check</code> 通過；既有未追蹤報告與 specs 保留。</td></tr>
+</table>
+<p>Rust 編譯／測試使用 <code>TAURI_CONFIG={"bundle":{"resources":[]}}</code>，僅用於程式檢查，不能作為 installer payload 證據。未執行本輪 GUI／Windows 實機 E2E。</p>
+<h2>遠端發布阻塞與下一步</h2>
+<p><a href="https://github.com/NakiriYuuzu/Yuzora/actions/runs/35915021424">CI run 35915021424</a> 對應舊 head <code>8b8fb6a</code>，未包含本輪修正。Required CI、五平台 Host 與 macOS candidate 成功。Windows candidate 第一次嘗試已產出 yuzora.exe，但下載 WiX 時因 <code>UnknownIssuer</code> 失敗，未完成安裝包；第二次嘗試則在 checkout 發生 <code>SEC_E_UNTRUSTED_ROOT</code>。需在後續獲准的 Windows runner 建置重新確認憑證信任及完整 payload gates。</p>
+<p>GitGuardian incident <code>34769869</code> 指向 CI 內已有明確註解的 database fixture credential，與 loopback Docker fixtures 共用，非 production credential。外部檢查仍是 failure；需由 maintainer 在 GitGuardian 依測試用途處理，本輪未改動掃描規則或標記 incident 狀態。</p>
+<ol>
+<li>取得 Git staging／commit／push 的明確授權後，提交這批修正。</li>
+<li>後續依使用者授權產生包含最終 head 的新 CI 與兩平台候選，處理 Windows 憑證問題及 GitGuardian 狀態，記錄 installer hashes、candidate head／tree 與 run IDs。</li>
+<li>使用者驗收完整 Session 的 Kitty／popup／剪貼簿、Windows SSH 與 Issue #109 其餘受影響功能；驗收後另行明確授權 merge。</li>
+</ol>
+<details><summary>接續來源任務 IDs</summary><ul>
+<li><code>01a0cda2-8af7-7b51-a68b-de7c3dbdb8fd</code>：非 HERDR Spec</li>
+<li><code>01a0cda2-55b2-7741-855c-9dd6e63eb637</code>：HERDR Spec</li>
+<li><code>01a0cda2-30b1-7560-bbb5-273975ed3544</code>：Rust／CI Standards</li>
+<li><code>01a0cda2-00a7-7600-8677-cc99cb5df5ae</code>：Frontend Standards</li>
+</ul></details>
+</html>

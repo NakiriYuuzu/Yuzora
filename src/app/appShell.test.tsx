@@ -133,6 +133,18 @@ describe("AppShell", () => {
     expect(controls?.closest("[inert]")).toBeNull()
   })
 
+  it("Spaces/Agents 快捷鍵只展開已收合的側邊欄，不會把它收合", () => {
+    mockIPC(() => {})
+    render(<AppShell />)
+    const sidebar = document.getElementById("workbench-spaces")!
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!)
+    expect(sidebar).toHaveAttribute("data-collapsed", "true")
+    act(() => useUiStore.getState().requestSidebarViewToggle())
+    expect(sidebar).toHaveAttribute("data-collapsed", "false")
+    act(() => useUiStore.getState().requestSidebarViewToggle())
+    expect(sidebar).toHaveAttribute("data-collapsed", "false")
+  })
+
   it("窄視窗自動收合 nav、放寬後自動展開，且手動操作優先", () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     mockWindows("main")

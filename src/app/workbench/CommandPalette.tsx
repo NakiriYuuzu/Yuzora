@@ -307,8 +307,10 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
       dispatchAppShortcut(event, "modeGit", () => onSelectMode("git"))
       dispatchAppShortcut(event, "modeDatabase", () => onSelectMode("database"))
     }
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
+    // Capture phase: xterm stops propagation of keys it handles, so a bubble
+    // listener never sees terminal-safe shortcuts typed inside a terminal.
+    window.addEventListener("keydown", handler, true)
+    return () => window.removeEventListener("keydown", handler, true)
   }, [open, setPaletteOpen, onOpenSettings, onSelectMode, togglePreviewTab])
 
   return (

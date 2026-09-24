@@ -14,7 +14,6 @@ vi.mock("@/lib/herdrTabActions", () => ({ openCreatedHerdrTabAndRequestName: moc
 vi.mock("@/lib/platform", async (original) => ({
   ...await original<typeof import("@/lib/platform")>(), isWindowsPlatform: () => true,
 }));
-vi.mock("./HerdrAgentInspector", () => ({ HerdrAgentInspector: () => null }));
 
 const remote = '["wsl:fixture","default"]';
 const originalActions = {
@@ -124,7 +123,7 @@ async function openSessionPicker() {
   fireEvent.keyDown(screen.getByRole("button", { name: "新增 Space 或加入 Herdr Session" }), { key: "Enter" });
   fireEvent.click(screen.getByRole("menuitem", { name: "加入 Herdr Session" }));
   const dialog = await screen.findByRole("dialog", { name: "加入 Herdr Session" });
-  await waitFor(() => expect(within(dialog).getByRole("combobox")).toBeEnabled());
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "重新整理 Sessions" })).toBeEnabled());
   return dialog;
 }
 
@@ -140,8 +139,7 @@ it("refreshes and loads an existing Session from the add menu, then shows its id
   render(<SpaceAgentTree />);
   const dialog = await openSessionPicker();
   expect(refreshSessions).toHaveBeenCalledOnce();
-  fireEvent.keyDown(within(dialog).getByRole("combobox"), { key: "ArrowDown" });
-  fireEvent.click(await screen.findByRole("option", { name: "Ubuntu · default" }));
+  fireEvent.click(await within(dialog).findByRole("option", { name: "Ubuntu · default" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "載入 Session" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   expect(selectSession).toHaveBeenCalledWith(remote);
@@ -173,8 +171,7 @@ it("does not allow a stopped Session to be loaded", async () => {
   useHerdrStore.setState({ sessions: useHerdrStore.getState().sessions.map(session => ({ ...session, running: !session.hostId })) });
   render(<SpaceAgentTree />);
   const dialog = await openSessionPicker();
-  fireEvent.keyDown(within(dialog).getByRole("combobox"), { key: "ArrowDown" });
-  expect(await screen.findByRole("option", { name: "Ubuntu · default · 尚未執行" })).toHaveAttribute("aria-disabled", "true");
+  expect(await within(dialog).findByRole("option", { name: "Ubuntu · default · 尚未執行" })).toHaveAttribute("aria-disabled", "true");
   expect(selectSession).not.toHaveBeenCalled();
 });
 
@@ -222,7 +219,7 @@ it.each([
   });
   render(<SpaceAgentTree />);
   const add = screen.getByRole("button", { name: `在 feature 新增 terminal · ${label}` });
-  const row = within(add.parentElement!).getByRole("treeitem");
+  const row = within(add.closest(".tree-row-shell") as HTMLElement).getByRole("treeitem");
   fireEvent.focus(row);
   expect(add).toHaveAttribute("tabindex", "0");
   fireEvent.click(add);

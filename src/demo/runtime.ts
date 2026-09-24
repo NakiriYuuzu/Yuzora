@@ -173,8 +173,6 @@ const methods = [
   "paneClose",
   "layoutExport",
   "layoutSetSplitRatio",
-  "agentGet",
-  "agentRead",
   "eventsSubscribe",
   "worktreeList",
 ];

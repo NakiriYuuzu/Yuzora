@@ -52,6 +52,8 @@ import {
   type TerminalClipboardController
 } from "@/terminal/terminalClipboard"
 import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
+import { observeHerdrTerminalKeys, recordHerdrTerminalMetric } from "@/terminal/herdrTerminalDiagnostics"
+import { useAgentMruStore } from "@/state/agentMruStore"
 import {
   TerminalOutputQueue,
   registerTerminalOutputQueue,
@@ -86,6 +88,8 @@ const defaultRows = 24
 const RATIO_EPSILON = 0.01
 const RATIO_DEBOUNCE_MS = 120
 const LAYOUT_RETRY_DELAYS = [400, 1000]
+/** Herdr's `terminal.closed` reason when another controller attached with --takeover. */
+const HERDR_TAKEN_OVER_REASON = "terminal attach taken over"
 
 function currentMode(): TerminalMode {
   return document.documentElement.classList.contains("dark") ? "dark" : "light"
@@ -469,10 +473,17 @@ export function HerdrTerminalPage({
           setLayout((current) =>
             current ? { ...current, focusedPaneId: nextPaneId } : current
           )
+          // Clicking into an Agent's pane counts as using that Agent (Alt+Tab order).
+          const state = useHerdrStore.getState()
+          const scope = resolveSessionName(state.sessions, herdrSessionId)
+          const agent = scope
+            ? state.runtimesBySession[scope]?.snapshot?.agents.find((item) => item.paneId === nextPaneId)
+            : undefined
+          if (scope && agent) useAgentMruStore.getState().touch(scope, agent.id)
         })
         .catch(() => undefined)
     },
-    [canFocusPane, focusedPaneId, sessionNameArg]
+    [canFocusPane, focusedPaneId, herdrSessionId, sessionNameArg]
   )
   const tabMenuSession = targetSessionName ?? herdrSessionId
 
@@ -838,6 +849,9 @@ function HerdrTerminalLeaf({
   )
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [takingControl, setTakingControl] = useState(false)
+  // Another client attached with --takeover: the pane is alive, only this
+  // connector was closed. Offer an explicit reconnect instead of a dead page.
+  const [takenOver, setTakenOver] = useState(false)
 
   const displayMode: HerdrTerminalMode = connectorEnabled ? controlMode : "observe"
   const displayRole: HerdrTerminalRole = connectorEnabled ? role : "observer"
@@ -950,7 +964,9 @@ function HerdrTerminalLeaf({
         onProcessed()
         return
       }
+      const writeStartedAt = performance.now()
       term.write(data, () => {
+        recordHerdrTerminalMetric({ kind: "write", ms: performance.now() - writeStartedAt, bytes: data.length })
         if (!disposedRef.current && visibleRef.current && repaintAfterWriteRef.current) {
           repaintAfterWriteRef.current = false
           term.refresh(0, term.rows - 1)
@@ -1161,9 +1177,11 @@ function HerdrTerminalLeaf({
     }
     recoverOutputRef.current = recoverOutput
 
+    const keyDiagnostics = observeHerdrTerminalKeys(container)
     dataDisposableRef.current = installTerminalImeHandling(
       term,
       (data) => {
+        keyDiagnostics.noteData(data)
         if (disposedRef.current || terminalModalOpen()) return
         if (!transport.canWrite()) return
         void transport.write(data).catch(() => undefined)
@@ -1174,6 +1192,7 @@ function HerdrTerminalLeaf({
     const handleEvent = (event: TerminalTransportEvent) => {
       if (disposedRef.current) return
       if (event.type === "output") {
+        recordHerdrTerminalMetric({ kind: "frame", full: event.full === true, bytes: event.data.length })
         const previousSeq = lastOutputSeqRef.current
         lastOutputSeqRef.current = event.seq
         const missedEvents = previousSeq === null ? 0 : event.seq - previousSeq - 1
@@ -1217,6 +1236,11 @@ function HerdrTerminalLeaf({
         return
       }
       if (event.type === "exit") {
+        if (event.reason === HERDR_TAKEN_OVER_REASON) {
+          setTakenOver(true)
+          setStatusMessage(t("herdrTerminal.takenOver"))
+          return
+        }
         outputQueueRef.current?.push("\r\n[Herdr stream closed]\r\n")
         setStatusMessage(t("herdrTerminal.streamClosed"))
         // `exit` removes the pane from Herdr's runtime topology. Refresh both
@@ -1303,6 +1327,7 @@ function HerdrTerminalLeaf({
       observerRef.current?.disconnect()
       themeObserverRef.current?.disconnect()
       dataDisposableRef.current?.dispose()
+      keyDiagnostics.dispose()
       clipboardRef.current?.dispose()
       clipboardRef.current = null
       parsedDisposable?.dispose()
@@ -1404,6 +1429,14 @@ function HerdrTerminalLeaf({
     updateAttachmentMode
   ])
 
+  const onReconnect = useCallback(() => {
+    if (!recoverOutputRef.current || transportRef.current?.isDisposed?.()) return
+    setTakenOver(false)
+    setStatusMessage(null)
+    // Reopens this attachment as control + takeover, taking it back.
+    recoverOutputRef.current()
+  }, [])
+
   const leafContextMenu = contextMenuHandler({
     kind: "herdrPane",
     sessionName: contextSessionName,
@@ -1430,6 +1463,17 @@ function HerdrTerminalLeaf({
       {t("herdrTerminal.takeControl")}
     </Button>
   ) : null
+  const controlButton = takenOver && sessionCanConnect ? (
+    <Button
+      type="button"
+      variant="outline"
+      size="xs"
+      data-testid="herdr-reconnect"
+      onClick={onReconnect}
+    >
+      {t("herdrTerminal.reconnect")}
+    </Button>
+  ) : takeControlButton
 
   return (
     <div
@@ -1470,12 +1514,12 @@ function HerdrTerminalLeaf({
             <span className="min-w-0 truncate" title={paneTitle}>{paneTitle}</span>
             {paneActive && <Badge variant="secondary" className="ml-auto">{t("herdrTerminal.focused")}</Badge>}
           </Button>
-          {takeControlButton}
+          {controlButton}
         </div>
       )}
-      {!showFocusHeader && takeControlButton && (
+      {!showFocusHeader && controlButton && (
         <div className="absolute right-2 top-2 z-10">
-          {takeControlButton}
+          {controlButton}
         </div>
       )}
       <div className="flex min-h-0 flex-1">

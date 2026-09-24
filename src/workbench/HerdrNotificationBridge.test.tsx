@@ -39,6 +39,29 @@ it("delivers one notification per new background state and respects switches", a
   await emit({ ...attention, kind: "blocked" })
   expect(mocks.toast).toHaveBeenCalledTimes(1)
 })
+it("silently reconciles a recovery snapshot while ready, then notifies on the next live transition", async () => {
+  render(<HerdrNotificationBridge />)
+  await act(async () => {
+    useHerdrStore.getState().setEventsHealth("default", false)
+    useHerdrStore.getState().applySnapshot("default", {
+      herdrSessionId: "default", protocol: 22, version: "0.9.1", raw: {},
+      spaces: [], tabs: [], terminals: [], focusedPaneId: "p1",
+      agents: [{ id: "a1", name: "Agent", paneId: "p1", tabId: "t1", workspaceId: "w1", status: "done" }]
+    })
+  })
+  expect([...useHerdrStore.getState().attentionByKey.values()]).toMatchObject([{ paneId: "p1", kind: "done", seen: false }])
+  expect(mocks.toast).not.toHaveBeenCalled()
+  expect(mocks.permission).not.toHaveBeenCalled()
+  await act(async () => {
+    useHerdrStore.getState().setEventsHealth("default", true, "new-subscription")
+    for (const agentStatus of ["working", "done"] as const) {
+      useHerdrStore.getState().applySubscriptionEvent("default", {
+        type: "agent_status_changed", subscriptionId: "new-subscription", paneId: "p1", workspaceId: "w1", agentStatus, stateLabels: {}
+      })
+    }
+  })
+  expect(mocks.toast).toHaveBeenCalledTimes(1)
+})
 it("suppresses the visible pane in the native Session view", async () => {
   vi.mocked(document.hasFocus).mockReturnValue(true)
   useHerdrNativeStore.setState({ selection: { sessionName: "default" } })

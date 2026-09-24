@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HERDR 0.9.1 與 Terminal 渲染驗證 · 2026-09-18</title>
+<style>
+body{font:16px/1.75 system-ui,sans-serif;color:#222;background:#faf9f6;max-width:980px;margin:48px auto;padding:0 24px}h1{font-size:28px;line-height:1.35}h2{font-size:21px;margin-top:32px}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:10px 12px;text-align:left;border:1px solid #d6d4cf;vertical-align:top}th{background:#eeede8}.pending{padding:16px 20px;border-left:4px solid #b97a22;background:#fff3dd}small{color:#666}
+</style>
+<main>
+<h1>HERDR 0.9.1 與 Terminal 渲染驗證</h1>
+<p><small>2026-09-18 · macOS Apple Silicon · 工作區實作及驗收紀錄</small></p>
+<p>內建 HERDR 基準已由 0.9.0 升級為 0.9.1，保留 protocol 22 相容性檢查。Terminal 已修正 ANSI frame 與 xterm grid 不同步、字型變更未傳送尺寸、初始 pane 尚不可量測及暫態 resize 造成的錯位／閃縮路徑。實作仍未 stage、commit 或 push。</p>
+<p class="pending">本輪自動檢查與下列 macOS 驗證通過。後續已依使用者指定以 gpt-5.6-sol xhigh 完成 review；P1／P2 修正與 lease finding 的更正，見 <a href="review-fixes-2026-09-18.html">review 修正紀錄</a>。先前六項需求不能宣稱全平台完整驗收；其餘未完成項目列於本文末尾。</p>
+<h2>相容性</h2>
+<table><thead><tr><th>Client</th><th>Server</th><th>macOS 隔離 Session 實測</th></tr></thead><tbody>
+<tr><td>0.9.0</td><td>0.9.0</td><td>通過</td></tr>
+<tr><td>0.9.1</td><td>0.9.1</td><td>通過</td></tr>
+<tr><td>0.9.1</td><td>0.9.0</td><td>通過</td></tr>
+<tr><td>0.9.0</td><td>0.9.1</td><td>通過</td></tr>
+</tbody></table>
+<p>驗證 snapshot、live events、observer／controller、輸入、resize、workspace 排序與 pane 捲動身分。CI 已加入舊版與混合版本矩陣；本機執行結果不等於遠端三平台 CI 已通過。升級內建 client 不主動停止既有 HERDR server。</p>
+<h2>渲染修正</h2>
+<ul>
+<li>Transport 保留 frame 寬高，在 output queue 寫入對應完整 ANSI frame 前才調整 xterm grid。字型或容器 fit 只發布 server 尺寸，不先重排舊畫面。</li>
+<li>等待有效容器尺寸與字型量測才建立 controller；初始量測未就緒時重試。連線建立不再依賴可能被 WKWebView 暫停的 animation frame。</li>
+<li>以 80ms debounce 合併 sidebar／分割 pane 的暫態尺寸，避免把中間狀態傳入 PTY。</li>
+<li>沿用 HERDR synchronized full frame 原子重繪，避免每次完整畫面前清空 xterm。</li>
+</ul>
+<h2>Browser 與原生驗證</h2>
+<p>使用者已在本次對話明確授權 GUI／Browser／E2E。依後續要求，補驗只使用 Codex App Browser 與內建 computer-use。computer-use skill 指定的 <code>orca</code> CLI 在環境中不存在，沒有改呼叫其他 Orca binary。</p>
+<table><thead><tr><th>案例</th><th>結果</th></tr></thead><tbody>
+<tr><td>Codex Browser 0.9.0、0.9.1 真實 frame replay</td><td>兩版連續重播均 pass=true；各 9 frames；最終 100×30、cursorY=29、viewportY=0、baseY=0；SCROLL_ROW_372～400 順序正確，prompt 保留末行。每次 xterm resize 都緊接相同尺寸的 authoritative frame。</td></tr>
+<tr><td>原生 Terminal</td><td>400 行輸出末行位置、字級切換、分割 pane、新建／重新命名後焦點、Browser Cmd+3 切回 Terminal、切回 App 後輸入焦點，皆有隔離驗證應用的操作或截圖證據。</td></tr>
+<tr><td>原生 HTML Browser</td><td>中文與空白路徑、root CSS、相對 JS module、同源 iframe、open shadow DOM、元素 selector／HTML／樣式／尺寸複製與提示、Esc 取消，已驗證。</td></tr>
+</tbody></table>
+<p>補驗時，先前已開啟的頁面曾回報「Font change did not publish resize」。重新載入目前程式後，0.9.1 與接續的 0.9.0 均通過，未在新頁面重現；因此不把該次舊頁 timeout 宣稱為已確認的產品根因。回歸 fixture 改為等待實際 font resize 事件（最多 3 秒），取代固定 120ms 判定，並保留失敗的尺寸事件輸出。修改後再次按 0.9.0 → 0.9.1 連續重播通過。</p>
+<h2>最新檢查</h2>
+<table><thead><tr><th>檢查</th><th>結果</th></tr></thead><tbody>
+<tr><td>Frontend tests</td><td>236 files、2,834 tests 通過；Terminal 單檔 46 tests 通過，包含初始 font metrics retry。</td></tr>
+<tr><td>Lint／typecheck／build</td><td>通過；lint 0 errors、52 warnings；build 保留既有大 bundle 提示。最後 fixture 調整後另重跑 lint 與 typecheck。</td></tr>
+<tr><td>Rust App</td><td>381 passed、3 ignored；DB integration binary 另 1 passed、1 ignored。cargo check --locked --all-targets 通過。</td></tr>
+<tr><td>Host</td><td>核心 378 passed、1 ignored；其他 integration suites 全部通過。</td></tr>
+<tr><td>格式／Clippy</td><td>App 與 Host package 的 cargo fmt --check 通過；clippy exact baseline 相符 90 diagnostics。未修改 baseline。cargo fmt --all 會觸及 vendored tiberius 未附的測試檔，故依專案慣例使用 package scope。</td></tr>
+<tr><td>Runtime resources／diff</td><td>四組 Unix runtime payload 驗證通過；git diff --check 通過；未留 DEBUG-H091 診斷碼。</td></tr>
+</tbody></table>
+<h2>前一輪狀態與限制</h2>
+<p>前置合併已在本地 main 完成：<code>557d5cb</code> 包含部署文件提交 <code>2be8eee</code>。原有未追蹤 HTML 保留。六項需求的實作與原始證據見 <a href="workbench-browser-operation-fixes-2026-09-16.html">前一輪紀錄</a>。</p>
+<ul>
+<li>Git popup 已有真實 StatusBar／Popover 元件入口回歸測試，但 IPC 使用替身。使用者原始 Git 故障的原生跨平台重現與 repository 真值驗收尚未完成，不能把錯誤分類改善當作已確認根因。</li>
+<li>WSL /mnt/c、/mnt/d 的 Host 檔案模組已有修正前失敗／修正後通過的 DrvFS 對照；完整修改版桌面的 watcher、dirty 與提示時序仍未驗證。</li>
+<li>Windows WebView2、SSH／WSL 原生 Browser 與完整斷線重連矩陣尚未在 GUI 驗收。本次原生證據限 macOS 隔離驗證 App。</li>
+<li>獨立 review 後續已用 gpt-5.6-sol xhigh 完成；結果與修正狀態見上方 review 修正紀錄。</li>
+</ul>
+<h2>證據位置</h2>
+<p>本機暫存目錄：<code>/tmp/yuzora-herdr091/</code>。相容性紀錄：<code>compat-090.log</code>、<code>compat-091.log</code>、<code>compat-new-client-old-server.log</code>、<code>compat-old-client-new-server.log</code>。最新自動檢查為 <code>*-resumed.log</code>；最後 fixture 的 <code>lint-fixture.log</code>、<code>typecheck-fixture.log</code>。新的 Browser 觀察摘要：<code>codex-browser-resumed-results.json</code>。</p>
+<p>原生證據：<code>native-split-green.png</code>、<code>native-focus-green.png</code>、<code>native-html-green.png</code>、<code>native-element-copy.txt</code>、<code>native-shadow-copy.txt</code>。暫存證據不是版本庫交付檔，清除 /tmp 後不保證仍存在。</p>
+</main></html>

@@ -470,8 +470,6 @@ pub fn run() {
             herdr_service::herdr_binary_source_get,
             herdr_service::herdr_binary_source_set,
             herdr_service::herdr_binary_source_check,
-            herdr_service::herdr_agent_get,
-            herdr_service::herdr_agent_read,
             herdr_service::herdr_events_subscribe,
             herdr_service::herdr_events_release
         ]))
@@ -651,8 +649,6 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
-            "herdr_service::herdr_agent_get",
-            "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",
             "herdr_service::herdr_events_release",
         ] {

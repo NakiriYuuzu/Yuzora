@@ -37,7 +37,6 @@ export const DIALOG_SIZE_IDS = [
   "external-change",
   "git-rollback",
   "git-diff",
-  "herdr-agent-inspector",
 ] as const
 
 export type DialogSizeId = (typeof DIALOG_SIZE_IDS)[number]

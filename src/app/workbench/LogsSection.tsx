@@ -8,6 +8,7 @@ import { Copy, Download, FolderOpen } from "lucide-react"
 
 import { getLogEnabled, getLogLevel, logExport, logQuery, logSanitizeLines, logSources, setLogEnabled, setLogLevel, type LogQueryFilters } from "@/features/logs/logQuery"
 import { groupRowsByRun, shortRunId, UNKNOWN_RUN } from "@/features/logs/runGroups"
+import { setHerdrTerminalDiagnosticsEnabled } from "@/terminal/herdrTerminalDiagnostics"
 import type { LogRecord, SanitizeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { SettingCard, SettingsRowGroup, SettingsTextInput, ToggleRow } from "./settingsPrimitives"
@@ -284,6 +285,7 @@ export function LogsSection({
     setError(null)
     try {
       await setLogLevel(next ? "debug" : "info")
+      setHerdrTerminalDiagnosticsEnabled(next)
       setNotice(next ? t("settings.logs.verboseEnabled") : t("settings.logs.verboseDisabled"))
     } catch (e) {
       setVerbose(!next) // 失敗回滾 UI

@@ -213,7 +213,55 @@ async fn catalog_discovery_and_table_editing() {
                 DbValue::Null
             ]]
         );
-        execute(&connection, format!("DROP TABLE {qualified}")).await;
+        if engine == "mssql" {
+            let audit = format!("dbo.{table}_audit");
+            execute(&connection, format!("CREATE TABLE {audit} (marker INT)")).await;
+            // Emit a trigger DONE count even for an UPDATE matching no rows.
+            // Generic query counts include this work; cell edits must use only
+            // the outer statement's ROWCOUNT_BIG() in the same request.
+            execute(&connection, format!("CREATE TRIGGER dbo.{table}_trigger ON {qualified} AFTER UPDATE AS BEGIN SET NOCOUNT OFF; INSERT INTO {audit} VALUES (1); END")).await;
+            for nocount in ["OFF", "ON"] {
+                execute(&connection, format!("SET NOCOUNT {nocount}")).await;
+                for expected in ["1", "0"] {
+                    let matches = if expected == "1" {
+                        "9007199254740993"
+                    } else {
+                        "-1"
+                    };
+                    let sql = format!("UPDATE {qualified} SET title = 'with-trigger' WHERE id = {matches}; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]");
+                    let run = connection
+                        .run_primary(uuid::Uuid::new_v4().to_string(), sql)
+                        .await
+                        .unwrap();
+                    let StatementExecutionResult::Rows {
+                        result_session: Some(result),
+                        affected_rows,
+                    } = &run.statements[0].result
+                    else {
+                        panic!(
+                            "expected the outer UPDATE count: {:?}",
+                            run.statements[0].result
+                        )
+                    };
+                    assert_eq!(result.columns, vec!["__yuzora_affected_rows"]);
+                    assert_eq!(
+                        result.initial_page.rows,
+                        vec![vec![DbValue::Integer {
+                            value: expected.into()
+                        }]]
+                    );
+                    assert!(!result.initial_page.has_next);
+                    assert!(!run.transaction_may_be_open);
+                    if nocount == "OFF" {
+                        assert_ne!(affected_rows.as_deref(), Some(expected));
+                    }
+                }
+            }
+            execute(&connection, format!("DROP TABLE {qualified}")).await;
+            execute(&connection, format!("DROP TABLE {audit}")).await;
+        } else {
+            execute(&connection, format!("DROP TABLE {qualified}")).await;
+        }
         connection.close().unwrap();
         eprintln!("{engine}: database discovery, metadata, cell update, stale edit and schema editing passed");
     }

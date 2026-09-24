@@ -29,14 +29,6 @@ export interface RuntimeBinaryCheck {
   canApply: boolean
 }
 
-export type HerdrReadSource =
-  | "visible"
-  | "recent"
-  | "recent-unwrapped"
-  | "detection"
-
-export type HerdrReadFormat = "text" | "ansi"
-
 /** Connector open mode (backend wire). */
 export type HerdrTerminalMode = "observe" | "control"
 
@@ -107,8 +99,6 @@ export interface HerdrApiCapability {
   paneClose: boolean
   layoutExport: boolean
   layoutSetSplitRatio: boolean
-  agentGet: boolean
-  agentRead: boolean
   eventsSubscribe: boolean
   /** Schema-gated read-only `worktree.list` (protocol 19). */
   worktreeList: boolean
@@ -172,38 +162,6 @@ export interface HerdrCapabilities {
   api: HerdrApiCapability
   terminal: HerdrTerminalCapability
   events: HerdrEventsCapability
-}
-
-export interface HerdrAgentDetails {
-  terminalId: string
-  agentStatus: string
-  workspaceId: string
-  tabId: string
-  paneId: string
-  focused: boolean
-  revision: number
-  agent?: string | null
-  displayAgent?: string | null
-  name?: string | null
-  title?: string | null
-  cwd?: string | null
-  foregroundCwd?: string | null
-  interactiveReady?: boolean | null
-  launchPending?: boolean | null
-  stateLabels: Record<string, string>
-}
-
-export interface HerdrAgentReadResult {
-  paneId: string
-  workspaceId: string
-  tabId: string
-  source: HerdrReadSource
-  format: HerdrReadFormat
-  text: string
-  revision: number
-  truncated: boolean
-  /** True when Yuzora refused to deliver the full agent text (over 512 KiB). */
-  tooLarge?: boolean
 }
 
 export type HerdrSubscriptionEvent =

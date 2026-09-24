@@ -6,7 +6,7 @@ import HerdrNativeDialog from "./HerdrNativeDialog"
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(), feature: vi.fn(), release: vi.fn(), resize: vi.fn(), input: vi.fn(), paneFocus: vi.fn(),
-  bootstrap: vi.fn(), terminalOpen: vi.fn(), terminalDispose: vi.fn(), graphicsDispose: vi.fn(), fit: vi.fn()
+  bootstrap: vi.fn(), terminalOpen: vi.fn(), terminalDispose: vi.fn(), graphicsDispose: vi.fn(), fit: vi.fn(), onData: vi.fn()
 }))
 
 vi.mock("@/lib/herdrProvider", () => ({ invokeHerdr: mocks.invoke }))
@@ -37,7 +37,7 @@ vi.mock("@xterm/xterm", () => ({
       mocks.terminalOpen(element)
     }
     loadAddon() {}
-    onData() { return { dispose: vi.fn() } }
+    onData(listener: (text: string) => void) { mocks.onData(listener); return { dispose: vi.fn() } }
     focus() {}
     dispose = mocks.terminalDispose
   }
@@ -68,6 +68,26 @@ afterEach(() => {
 })
 
 describe("HERDR native client dialog lifecycle", () => {
+  it("serializes pre-open input before input typed while that first write is pending", async () => {
+    let open!: (value: { sessionId: string }) => void
+    let finishInput!: () => void
+    mocks.invoke.mockReturnValueOnce(new Promise(resolve => { open = resolve }))
+    mocks.input.mockReturnValueOnce(new Promise<void>(resolve => { finishInput = resolve }))
+    render(<HerdrNativeDialog selection={{ sessionName: "e2e-session" }} />)
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1))
+    const type = mocks.onData.mock.calls[0][0] as (text: string) => void
+    act(() => { type("first"); type(" input") })
+    await act(async () => { open({ sessionId: "native-client-1" }) })
+    expect(mocks.input).toHaveBeenCalledExactlyOnceWith("native-client-1", "first input")
+
+    await act(async () => { type(" second"); type("\r") })
+    expect(mocks.input).toHaveBeenCalledTimes(1)
+    await act(async () => { finishInput() })
+    expect(mocks.input.mock.calls).toEqual([
+      ["native-client-1", "first input"], ["native-client-1", " second"], ["native-client-1", "\r"]
+    ])
+  })
+
   it("opens after the real portal mounts and releases the client when its close button is used", async () => {
     useHerdrNativeStore.getState().open({ sessionName: "e2e-session", paneId: "pane-1" })
     const { container } = render(<NativeDialogHost />)

@@ -18,9 +18,13 @@ export function HerdrNotificationBridge() {
       const settings = useHerdrNotificationStore.getState()
       for (const item of newHerdrAttention(previous.attentionByKey, state.attentionByKey)) {
         // Initial snapshots and reconnects populate history; they are not new work.
-        if (previous.runtimesBySession[item.sessionName]?.connectionState !== "ready" || state.runtimesBySession[item.sessionName]?.connectionState !== "ready") continue
-        if ((item.kind === "done" && !settings.done) || (item.kind === "blocked" && !settings.blocked)) continue
+        const previousRuntime = previous.runtimesBySession[item.sessionName]
         const runtime = state.runtimesBySession[item.sessionName]
+        if (previousRuntime?.connectionState !== "ready" || runtime?.connectionState !== "ready") continue
+        // applySnapshot updates baseSnapshot and attention atomically even when
+        // a dropped subscription leaves the runtime's connection state ready.
+        if (previousRuntime.baseSnapshot !== runtime.baseSnapshot) continue
+        if ((item.kind === "done" && !settings.done) || (item.kind === "blocked" && !settings.blocked)) continue
         const agent = runtime?.snapshot?.agents.find(agent => agent.paneId === item.paneId)
         const workspace = useWorkspaceStore.getState()
         const activeGroup = workspace.groups[workspace.activeGroupIndex]

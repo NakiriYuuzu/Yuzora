@@ -19,15 +19,6 @@ vi.mock("@/lib/herdrIpc", async () => ({
   herdrWorkspaceMoveBlock: vi.fn(),
 }));
 vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: ({ viewSwitcher }: { viewSwitcher: import("react").ReactNode }) => viewSwitcher }));
-vi.mock("./HerdrAgentInspector", () => ({
-  HerdrAgentInspector: ({
-    open,
-    agent,
-  }: {
-    open: boolean;
-    agent: { sessionName: string } | null;
-  }) => (open ? <div data-testid="inspector">{agent?.sessionName}</div> : null),
-}));
 const scopes = [
   '["host-a","same"]',
   '["host-b","same"]',
@@ -140,13 +131,24 @@ it("saves first-seen Bot combinations and reuses them after the tree remounts", 
   expect(loadRecentWorkspacePresentations()).toEqual(saved);
 });
 it("keeps same path and agent IDs separate across hosts and sessions", () => {
+  const activateAgent = vi.fn().mockResolvedValue({ ok: false, cancelled: true });
+  const runtimes = useHerdrStore.getState().runtimesBySession;
+  useHerdrStore.setState({
+    activateAgent,
+    runtimesBySession: Object.fromEntries(Object.entries(runtimes).map(([scope, runtime]) => [scope, {
+      ...runtime,
+      capabilities: { server: { running: true }, api: { workspaceFocus: true, tabFocus: true } } as HerdrSessionRuntime["capabilities"],
+      snapshot: { ...runtime.snapshot!, agents: runtime.snapshot!.agents.map((agent) => ({ ...agent, terminalId: "terminal" })) },
+    }])),
+  });
   render(<SpaceAgentTree />);
   const leaves = screen
     .getAllByRole("treeitem")
     .filter((x) => x.getAttribute("aria-level") === "3");
   expect(leaves).toHaveLength(3);
   fireEvent.click(leaves[1]);
-  expect(screen.getByTestId("inspector")).toHaveTextContent(scopes[1]);
+  expect(activateAgent).toHaveBeenCalledTimes(1);
+  expect(activateAgent.mock.calls[0][0]).toMatchObject({ id: "agent", sessionName: scopes[1] });
   expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
 });
 
@@ -217,8 +219,8 @@ it("F2 opens host-scoped appearance editor without activating a runtime", () => 
   expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
 });
 
-it("offers ready agents an independent Inspector action without activation", () => {
-  const activateAgent = vi.fn();
+it("activates ready agents from their row without an Inspector action", () => {
+  const activateAgent = vi.fn().mockResolvedValue({ ok: true });
   const runtime = useHerdrStore.getState().runtimesBySession[scopes[1]];
   useHerdrStore.setState({
     activateAgent,
@@ -242,17 +244,24 @@ it("offers ready agents an independent Inspector action without activation", () 
     },
   });
   render(<SpaceAgentTree />);
+  expect(screen.queryByRole("button", { name: /Inspect/ })).not.toBeInTheDocument();
   const leaf = screen
     .getAllByRole("treeitem")
     .filter((item) => item.getAttribute("aria-level") === "3")[1];
-  fireEvent.focus(leaf);
-  const inspect = screen.getAllByRole("button", {
-    name: "Inspect Agent: Codex",
-  })[1];
-  expect(inspect).toHaveAttribute("tabindex", "0");
-  fireEvent.click(inspect);
-  expect(screen.getByTestId("inspector")).toHaveTextContent(scopes[1]);
+  fireEvent.click(leaf);
+  expect(activateAgent).toHaveBeenCalledWith(expect.objectContaining({ id: "agent", sessionName: scopes[1] }));
+});
+
+it("reports an actionable error when an Agent pane cannot be opened", () => {
+  const activateAgent = vi.fn();
+  useHerdrStore.setState({ activateAgent });
+  render(<SpaceAgentTree />);
+  const leaf = screen
+    .getAllByRole("treeitem")
+    .filter((item) => item.getAttribute("aria-level") === "3")[0];
+  fireEvent.click(leaf);
   expect(activateAgent).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("This Agent's pane cannot be opened right now.");
 });
 
 it("dispatches worktree and agent menus with their exact host namespace", () => {

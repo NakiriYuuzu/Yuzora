@@ -41,8 +41,6 @@ function capabilities(methods: string[], overrides: Partial<HerdrCapabilities["t
       paneClose: true,
       layoutExport: true,
       layoutSetSplitRatio: true,
-      agentGet: true,
-      agentRead: true,
       eventsSubscribe: true,
       worktreeList: true,
       methods
@@ -130,11 +128,13 @@ describe("HERDR capability adapter", () => {
     expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("pane")
   })
 
-  it("prefers the low-latency connector scroll on native protocol-22 runtimes", () => {
+  it("scrolls native protocol-22 runtimes through the pane API like WSL", () => {
+    // macOS A/B (2026-09-24): the pane path felt smoother than the paced
+    // connector command; its frames were ~4x smaller while scrolling.
     const caps = capabilities(["session.snapshot", "pane.get", "pane.scroll"])
 
-    expect(herdrScrollStrategyForRuntime(caps, "local")).toBe("terminal")
-    expect(herdrScrollStrategyForRuntime(caps, "windows-native")).toBe("terminal")
+    expect(herdrScrollStrategyForRuntime(caps, "local")).toBe("pane")
+    expect(herdrScrollStrategyForRuntime(caps, "windows-native")).toBe("pane")
   })
 
   it("still probes protocol-22 when the method list is incomplete", () => {

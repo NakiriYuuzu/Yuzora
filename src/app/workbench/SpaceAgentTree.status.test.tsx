@@ -11,7 +11,6 @@ vi.mock("./HerdrLauncher", () => ({
   HerdrLauncher: ({ onScopeChange }: { onScopeChange: (name: string) => void }) =>
     <button onClick={() => onScopeChange('["wsl:{test-distro}:1000","default"]')}>select session</button>,
 }));
-vi.mock("./HerdrAgentInspector", () => ({ HerdrAgentInspector: () => null }));
 beforeEach(async () => {
   await i18n.changeLanguage("zh-TW");
   useHerdrStore.setState({ ...herdrInitialState, sessions: [{ name: "default", runtimeId: scope, hostId: "wsl:{test-distro}:1000", hostLabel: "Ubuntu-24.04", running: true, default: true, sessionDir: "/fixture", socketPath: "/fixture/socket" }], selectedSessionName: scope });

@@ -3521,6 +3521,39 @@ describe("SQLite source workspace identity", () => {
 })
 
 describe("database workbench writes", () => {
+    it.each(["1", "0"])("uses the outer MSSQL update count %s even when trigger counts differ", async (count) => {
+        await useDbStore.getState().openConfig({ kind: "mssql", host: "h", port: 1433, database: "d", user: "u", password: "fixture", trustCert: true })
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const sql = "UPDATE users SET id = 2 WHERE id = 1"
+        mockQueryRun.mockImplementationOnce(async request => queryRunFromResult(request,
+            request.statements[0].sql.endsWith("; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]")
+                ? { kind: "select", columns: ["__yuzora_affected_rows"], rows: [[{ kind: "integer", value: count }]], affectedRows: "3", truncated: false, effectOutcome: "unknown" }
+                : { kind: "execute", affectedRows: count === "1" ? "2" : "1", effectOutcome: "unknown" }
+        ))
+        const edit = useDbStore.getState().executeTableStatement(identity, sql, "1")
+        if (count === "1") await expect(edit).resolves.toBeUndefined()
+        else await expect(edit).rejects.toThrow("editConflict")
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(mockQueryRun.mock.calls[0][0].statements).toEqual([{
+            sql: `${sql}; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]`, transactionBoundary: "none"
+        }])
+        expect(mockResultSessionRelease).toHaveBeenCalledTimes(1)
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("does not trust an incomplete MSSQL count result or retry the write", async () => {
+        await useDbStore.getState().openConfig({ kind: "mssql", host: "h", port: 1433, database: "d", user: "u", password: "fixture", trustCert: true })
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({
+            kind: "select", columns: ["__yuzora_affected_rows"], rows: [[{ kind: "integer", value: "1" }]],
+            affectedRows: "1", truncated: true, effectOutcome: "unknown"
+        })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("editUncertain")
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(mockResultSessionRelease).toHaveBeenCalledTimes(1)
+    })
+
     it("refreshes acknowledged network writes without retrying when commit evidence is unavailable", async () => {
         await useDbStore.getState().openConnection("/workbench.db")
         const identity = identityOf(useDbStore.getState().connections[0])!

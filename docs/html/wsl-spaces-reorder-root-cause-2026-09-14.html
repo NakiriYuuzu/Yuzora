@@ -1,0 +1,33 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WSL Spaces 排序根因診斷 · 2026-09-14</title><style>body{font:16px/1.75 system-ui,sans-serif;color:#202529;background:#fafaf8;max-width:1080px;margin:48px auto;padding:0 24px}h1{line-height:1.3}h2{margin-top:2em}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;padding:10px;border:1px solid #ccd1d4}th{background:#e8edec}pre,code{font-size:13px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0ef;padding:15px}a{color:#215ba0}.lead{border-left:4px solid #4a7562;padding:14px 20px;background:#eaf0ec}li{margin:8px 0}small{color:#5e6669}</style><main>
+<h1>WSL Spaces 排序：舊 helper 被新 App 繼續使用</h1><p><small>2026-09-14 · Windows App 原生畫面、Ubuntu-26.04 唯讀 runtime 探測、同一資料回放。分析基準 release/v0.0.14，03d6778058d274f9bc719d4a6040df09ce69e549。</small></p>
+<p class="lead"><strong>已證實根因：</strong>桌面 App 已更新到 v0.0.14，但 WSL 仍執行 v0.0.13 的 <code>yuzora-host</code>。舊 helper 不認識新排序能力欄位；前端將缺失值判為不可用，因而同時停用拖曳及上移／下移。HERDR client、server 均為 0.9.0／protocol 22，並非 HERDR 版本過舊或 WSL 不支援排序。</p>
+<h2>實機證據與控制變因</h2><p>Windows 主機 DESKTOP-NMLUN4F（RDP 192.168.213.129）；App 設定顯示 v0.0.14。Ubuntu-26.04 的已保存 helper 路徑與 <code>/proc/*/exe</code> 實際執行路徑一致，皆屬於 v0.0.13 目錄。兩輪獨立唯讀探測均回傳 helper 0.0.13、缺失 workspaceMove／workspaceMoveBlock。</p>
+<table><thead><tr><th>Helper</th><th>Host protocol</th><th>HERDR</th><th>Server compatible</th><th>workspaceMove</th><th>workspaceMoveBlock</th><th>排序條件回放</th></tr></thead><tbody><tr><td>0.0.13</td><td>1</td><td>0.9.0</td><td>True</td><td>欄位缺失</td><td>欄位缺失</td><td>FAIL</td></tr><tr><td>0.0.14</td><td>1</td><td>0.9.0</td><td>True</td><td>True</td><td>True</td><td>PASS（前端回放）</td></tr></tbody></table>
+<p>對照只更換診斷子行程的 helper：舊 saved helper 與 <code>C:\Program Files\Yuzora\host\linux-x86_64\yuzora-host</code>。兩者使用相同的舊目錄 HERDR binary、同一 default Session／socket。新 helper 直接從現有安裝包讀取；沒有更換使用者設定或停止 HERDR server。</p>
+<p>實際 <code>herdr api schema --json</code> 包含 workspace.move 與 workspace.move_block。舊 helper 的 API methods 卻只回報 workspace.close／create／focus／rename；新 helper 追加 move／move_block 並回傳兩個 true。舊欄位是<strong>不存在</strong>，不是 HERDR 明確回報 false。</p>
+<h3>Helper 0.0.13</h3><pre>/home/yuuzu/.local/share/yuzora/runtimes/0.0.13-linux-x86_64-9b1a2ced36ae121a1262cff84b289f5fff8dcdd43f88101e48fa7fb653f25347/yuzora-host
+SHA-256: 090d1fe48ef145ed635476e6147be4922f4871afb09d6e269fdcf99ac68cccaf</pre><h3>Helper 0.0.14</h3><pre>/mnt/c/Program Files/Yuzora/host/linux-x86_64/yuzora-host
+SHA-256: f82c36e8326a7a7fa647f8753a73717f72ffdd5a74a528478f2d57daecd453cf</pre>
+<h2>故障鏈與程式位置</h2><ol>
+<li><code>src/state/hostStore.ts:18</code> 讀取持久化 binary／helper 完整路徑；selectionForHost 只辨識來源政策，沒有換成新 artifact 路徑。</li>
+<li><code>src/state/hostStore.ts:172</code> 已連線時只執行 hello 健康檢查；<code>src/state/hostStore.ts:184</code> 重連仍使用 config.helper，接著使用 config.binary。此路徑未比較當前安裝包的 artifactIdentity 或呼叫 prepareHost。</li>
+<li><code>src-tauri/src/host_service.rs:401</code> 握手檢查 host protocol 與作業系統。兩代 helper 都回報 protocol 1，因此舊 helper 可正常連線；此檢查不代表新 HERDR 子命令與欄位已完整實作。</li>
+<li><code>src-tauri/host/src/herdr_service.rs:244</code> v0.0.14 新增排序欄位，並由 <code>src-tauri/host/src/herdr_service.rs:3956</code> schema 判定；v0.0.13 tag 的 helper 不含這些欄位和 workspace move 指令。Windows native 使用目前 App 編譯進去的 facade，WSL 使用獨立保存的 helper，因而出現平台差異。</li>
+<li><code>src/lib/herdrTypes.ts:92</code> 允許排序欄位缺失；<code>src/lib/herdrWorkspaceActions.ts:9</code> 將 undefined 轉成 false。</li>
+<li><code>src/app/workbench/SpaceAgentTree.tsx:204</code> pointerdown 在建立 gesture 前直接 return；<code>src/app/workbench/contextMenuDefs.ts:253</code> 同時回傳 herdrMethodUnavailable。這解釋為何修 pointer capture 無法解除本次問題。</li>
+<li><code>src/app/workbench/HerdrSettingsSection.tsx:152</code> 必須先進設定執行檢查，才取得 desired artifact；<code>src/app/workbench/HerdrSettingsSection.tsx:186</code> 才顯示工具可更新。安裝新版 App 本身沒有完成這一步。</li></ol>
+<h2>已排除與尚未驗證</h2><table><tr><th>檢查</th><th>結果</th><th>依據</th></tr>
+<tr><td>HERDR client／server 不相容</td><td>已排除</td><td>皆 0.9.0、protocol 22、compatible=true、restart_needed=false。</td></tr>
+<tr><td>HERDR schema 缺少排序</td><td>已排除</td><td>同一 binary 的實際 schema 與新 helper 能力皆存在。</td></tr>
+<tr><td>兩個 root 的 worktree metadata 不完整</td><td>已排除</td><td>w8／w9 inventories 均成功；實際資料通過 herdrReorderMembers 與 expectedOrder 驗證。</td></tr>
+<tr><td>當前 UI 拖曳／選單排序</td><td>FAIL</td><td>原生已見停用，順序維持 Yuzora → couple-expense；實機回放產生同一 disabled reason。</td></tr>
+<tr><td>新 helper 配原資料的前端排序條件</td><td>PASS</td><td>相同真實 snapshot／inventory，僅更換真實 capabilities 回應。</td></tr>
+<tr><td>套用 helper 更新後的原生拖曳、API mutation 與 Session 延續</td><td>NOT RUN</td><td>本次為診斷，未套用設定或發送排序 mutation；回放 PASS 不等於原生修復驗收。</td></tr></table>
+<h2>可重複驗證</h2><p>診斷套件位於 <code>output/wsl-reorder-diagnosis/</code>（刻意排除於正式 CI）。probe.py 採集 topology、inventory、capabilities；compare.py 比較兩代 helper。沒有記錄 terminal 內容。</p>
+<pre>DIAG_HELPER=saved bun run test --config output/wsl-reorder-diagnosis/vitest.config.ts
+# FAIL：WSL root drag must be available: expected false to be true
+DIAG_HELPER=installed bun run test --config output/wsl-reorder-diagnosis/vitest.config.ts
+# PASS：1 test</pre>
+<p>現有前端排序 11 tests、Rust workspace.move／move_block schema gate 與 protocol 22 fixture 測試皆通過；它們沒有覆蓋「新 App 搭配仍保存的舊 helper」。現有前端 fixture 直接將排序 flags 設為 true，無法捕捉此升級缺口。</p>
+<h2>對應修復方向</h2><ol><li>更新此 WSL 主機的 Yuzora helper，保持 HERDR 來源政策，部署到新的不可變 artifact 目錄；重驗既有 Session 相容後才切換。不必升降 HERDR 或停止原 server。</li><li>App 升級／重連時比較實際 helper artifact identity，對過期 helper 提供更新或相容路由；不能因 host protocol 1 相同就假設新命令存在。HERDR binary 與 helper 應分別驗證。</li><li>區分「helper 未實作」「HERDR 不支援」「未知」「不相容」，讓選單指出真正原因；不能只強制 capability 為 true，舊 helper 同樣缺少 mutation 指令。</li><li>加入跨版本 helper 契約與既有 host config 升級回歸。切換後對所有受影響 Session 重新取得 capabilities，驗證原生上下移／拖曳、權威 workspace order，以及原 Session／pane／process 存續。</li></ol>
+<p>本次完成根因定位與診斷報告，未修改產品原始碼、未套用主機更新、未建立 commit 或發布；現有排序故障仍需修復與原生驗收。</p></main></html>

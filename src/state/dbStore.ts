@@ -2906,7 +2906,12 @@ export const useDbStore = create<DbState>()((set, get) => {
     executeTableStatement: async (identity, sql, expectedRows) => {
         const descriptorId = identity.descriptorId
         const initial = get()
-        if (!exactConnection(initial, identity)) throw new Error("staleConnection")
+        const connection = exactConnection(initial, identity)
+        if (!connection) throw new Error("staleConnection")
+        // MSSQL DONE counts include trigger work. Read the outer UPDATE count
+        // in the same batch, without another request or changing NOCOUNT state.
+        const mssqlCellEdit = connection.kind === "mssql" && expectedRows !== undefined
+        const statementSql = mssqlCellEdit ? `${sql}; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]` : sql
         const current = queryFor(initial, descriptorId)
         if (current.running || current.runGroup?.run?.transactionMayBeOpen) throw new Error("connectionBusy")
         const configGeneration = savedConfigGeneration(initial.saved.find(profile => profile.id === descriptorId))
@@ -2950,15 +2955,27 @@ export const useDbStore = create<DbState>()((set, get) => {
             if (!isCurrent()) throw new Error("staleConnection")
             if (edit.cancelRequested) throw new Error("editCancelled")
             edit.sent = true
-            run = await dbQueryRun({ ...owner, mode: "primary", statements: [{ sql, transactionBoundary: "none" }] })
+            run = await dbQueryRun({ ...owner, mode: "primary", statements: [{ sql: statementSql, transactionBoundary: "none" }] })
             if (!queryRunMatchesOwner(run, owner) || !isCurrent()) throw new Error("staleConnection")
             if (run.connectionTerminated) edit.connectionTerminated = true
             if (edit.connectionTerminated) throw new Error("editUncertain")
             const statement = run.statements[0]
             if (statement.result.kind === "cancelled") throw new Error(edit.cancelRequested ? "editCancelled" : "editFailed")
             if (statement.result.kind === "error") throw new Error("editFailed")
-            if (statement.result.kind !== "execute" || run.transactionMayBeOpen || statement.effectOutcome === "transactionPending" || statement.effectOutcome === "rolledBack") throw new Error("editUncertain")
-            if (expectedRows !== undefined && statement.result.affectedRows !== expectedRows) throw new Error("editConflict")
+            if (run.transactionMayBeOpen || statement.effectOutcome === "transactionPending" || statement.effectOutcome === "rolledBack") throw new Error("editUncertain")
+            let affectedRows: string | null
+            if (mssqlCellEdit) {
+                const page = statement.result.kind === "rows" ? statement.result.resultSession?.initialPage : null
+                const count = page?.rows[0]?.[0]
+                if (!page || page.lifecycle !== "complete" || page.hasNext || page.resultLimitReached
+                    || page.columns.length !== 1 || page.columns[0] !== "__yuzora_affected_rows"
+                    || page.rows.length !== 1 || page.rows[0].length !== 1 || count?.kind !== "integer" || !/^\d+$/.test(count.value)) throw new Error("editUncertain")
+                affectedRows = count.value
+            } else {
+                if (statement.result.kind !== "execute") throw new Error("editUncertain")
+                affectedRows = statement.result.affectedRows
+            }
+            if (expectedRows !== undefined && affectedRows !== expectedRows) throw new Error("editConflict")
             // Network drivers can acknowledge Execute + row count without an
             // authoritative commit outcome. Refresh once and show that distinction;
             // never present a completed write as retryable or resend it.

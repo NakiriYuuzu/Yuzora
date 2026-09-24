@@ -253,8 +253,6 @@ const terminalControlCapabilities = {
     paneClose: true,
     layoutExport: false,
     layoutSetSplitRatio: false,
-    agentGet: false,
-    agentRead: false,
     eventsSubscribe: false,
     worktreeList: false,
     methods: [],
@@ -1083,6 +1081,37 @@ describe("HerdrTerminalPage clipboard", () => {
 
     expect(term.paste).not.toHaveBeenCalled()
     expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+  })
+
+  it("offers Reconnect instead of a dead stream when another client takes over", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const revision = useHerdrStore.getState().topologyRevision
+
+    // Herdr closes the previous controller when a second one attaches with --takeover.
+    await act(async () => {
+      herdrIpcMock.emit({ type: "closed", sessionId: "sess-1", reason: "terminal attach taken over" })
+    })
+
+    expect(await screen.findByText("Another window took control of this terminal")).toBeInTheDocument()
+    expect(screen.queryByText("Stream closed")).not.toBeInTheDocument()
+    // The pane still exists: do not treat the takeover as a topology change.
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision)
+
+    fireEvent.click(screen.getByTestId("herdr-reconnect"))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "control", takeover: true }))
+    await waitFor(() => expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument())
+  })
+
+  it("keeps the stream-closed behaviour for other connector closes", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    await act(async () => {
+      herdrIpcMock.emit({ type: "closed", sessionId: "sess-1", reason: "detached" })
+    })
+    expect(await screen.findByText("Stream closed")).toBeInTheDocument()
+    expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument()
   })
 
   it("sends Shift+Enter as one bracketed newline rather than a submit byte", async () => {

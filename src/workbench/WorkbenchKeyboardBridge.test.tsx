@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render } from "@testing-library/react"
 import { WorkbenchKeyboardBridge } from "./WorkbenchKeyboardBridge"
 import { navigateWorkbenchTabs } from "@/lib/workbenchTabNavigation"
 import { useKeyboardSettingsStore } from "@/state/keyboardSettingsStore"
+import { uiInitialState, useUiStore } from "@/state/uiStore"
 
 vi.mock("@/lib/workbenchTabNavigation", () => ({ navigateWorkbenchTabs: vi.fn(async () => {}) }))
 vi.mock("@/terminal/openNewTerminalTab", () => ({ openNewTerminalTab: vi.fn(async () => {}) }))
@@ -32,4 +33,14 @@ it("preserves dialog and IME input while honoring reassigned shortcuts", () => {
     expect(navigateWorkbenchTabs).not.toHaveBeenCalled()
     fireEvent.keyDown(editor, { key: "j", ctrlKey: true })
     expect(navigateWorkbenchTabs).toHaveBeenCalledExactlyOnceWith({ direction: 1 })
+})
+
+it("switches the Spaces/Agents view with Ctrl+Shift+E even inside a Windows terminal", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    useUiStore.setState(uiInitialState)
+    const childKeyDown = vi.fn()
+    const view = render(<><WorkbenchKeyboardBridge /><div className="xterm"><textarea onKeyDown={childKeyDown} /></div></>)
+    fireEvent.keyDown(view.getByRole("textbox"), { key: "E", code: "KeyE", ctrlKey: true, shiftKey: true })
+    expect(useUiStore.getState().sidebarViewToggleRequest).toBe(1)
+    expect(childKeyDown).not.toHaveBeenCalled()
 })

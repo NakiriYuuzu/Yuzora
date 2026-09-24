@@ -94,7 +94,11 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
       }).then(async opened => {
         id = opened.sessionId
         if (disposed || failed) { await herdrTerminalRelease(id); return }
-        if (pendingInput.length) await herdrTerminalInput(id, pendingInput.splice(0).join(""))
+        // The first buffered write must own the same queue as later onData input.
+        // Otherwise typing while this write awaits IPC can overtake it.
+        if (pendingInput.length) send(pendingInput.splice(0).join(""))
+        await inputQueue
+        if (disposed || failed) return
         await herdrTerminalResize(id, term.cols, term.rows)
         if (selection.paneId) await herdrPaneFocus({ sessionName: selection.sessionName, paneId: selection.paneId })
         if (disposed) return

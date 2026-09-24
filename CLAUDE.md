@@ -60,7 +60,7 @@ Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact 
 
 - vitest + jsdom（`src/test/setup.ts`、globals on）；測試檔與原始碼同目錄、`.test.ts(x)` 後綴。
 - root `tests/`＝DB docker-compose 與 integration fixtures；root `fixtures/`＝非單元測試所需的可執行／資料 fixtures。
-- jsdom 測不到的（watcher、tab 拖曳、dialog、HERDR terminal／Agent Inspector 視覺）→ 用 `gui-acceptance` 或已授權的 computer-use 實機驗收。
+- jsdom 測不到的（watcher、tab 拖曳、dialog、HERDR terminal 視覺）→ 用 `gui-acceptance` 或已授權的 computer-use 實機驗收。
 - Rust 單元測試 inline；`lib.rs` 的 `command_inventory_tests` 會解析自身原始碼守護 shutdown 順序——改 `run()` 結構前先看它。
 
 ## CI 守門（`ci.yml`）

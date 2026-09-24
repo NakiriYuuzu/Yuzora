@@ -537,6 +537,55 @@ describe("createHerdrTerminalTransport", () => {
     expect(herdrTerminalScroll).toHaveBeenLastCalledWith("sess-burst", "up", 3)
   })
 
+  it("paces connector scrolls by rendered frames instead of IPC acknowledgements", async () => {
+    // macOS debug log: 274 wheel events in 5 s became 270 terminal.scroll
+    // commands (IPC ack p50 1 ms) but only 141 frames, so the viewport kept
+    // replaying a backlog after the wheel stopped.
+    let emit!: (event: HerdrTerminalEvent) => void
+    vi.mocked(herdrTerminalOpen).mockImplementation(async (args) => {
+      emit = args.onEvent
+      return { sessionId: "sess-paced", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true }
+    })
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    const frame = (seq: number) => emit({
+      type: "frame", sessionId: "sess-paced", seq, full: seq === 1, encoding: "ansi", width: 80, height: 24, bytesBase64: ""
+    })
+    frame(1)
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 5))
+
+    const drains = [transport.scroll?.(-1)]
+    for (let i = 0; i < 4; i++) {
+      await settle()
+      drains.push(transport.scroll?.(-1))
+    }
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(1)
+
+    frame(2)
+    await settle()
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(2)
+    expect(herdrTerminalScroll).toHaveBeenLastCalledWith("sess-paced", "up", 4)
+    frame(3)
+    await Promise.all(drains)
+  })
+
+  it("does not stall a connector scroll when its frame never arrives", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-edge", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true })
+    vi.mocked(herdrTerminalScroll).mockResolvedValue(undefined)
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+
+    // Already at the top: Herdr has nothing to redraw, so no frame follows.
+    const first = transport.scroll?.(-1)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = transport.scroll?.(-2)
+    await Promise.all([first, second])
+
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(2)
+    expect(herdrTerminalScroll).toHaveBeenLastCalledWith("sess-edge", "up", 2)
+  })
+
   it("does not write a delayed pane scroll after the session is detached", async () => {
     vi.mocked(herdrTerminalOpen).mockResolvedValue({
       sessionId: "sess-delayed",

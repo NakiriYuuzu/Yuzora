@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { RotateCcw, Search } from "lucide-react"
-import { APP_COMMANDS, bindingError, bindingLabel, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore"
+import { APP_COMMANDS, bindingError, bindingLabel, defaultBindingFor, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Field, FieldContent, FieldLabel, FieldDescription, FieldGroup } from "@/components/ui/field"
@@ -43,7 +43,7 @@ export function KeyboardSettings() {
             <Button variant="outline" size="sm" onClick={reset}><RotateCcw aria-hidden="true" />{t("reset")}</Button>
         </div>
         {commands.length > 0 && <SettingsRowGroup>
-            {commands.map(c => <BindingField key={`${c.id}-${overrides[c.id] ?? c.defaultBinding}`} id={c.id} binding={overrides[c.id] ?? c.defaultBinding} />)}
+            {commands.map(c => <BindingField key={`${c.id}-${overrides[c.id] ?? defaultBindingFor(c.id)}`} id={c.id} binding={overrides[c.id] ?? defaultBindingFor(c.id)} />)}
         </SettingsRowGroup>}
     </FieldGroup>
 }

@@ -239,6 +239,7 @@ impl HerdrManager {
                     Duration::from_secs(20),
                 );
                 self.capability_cache.lock().unwrap().clear();
+                self.invalidate_runtime_caches();
                 return result;
             }
             HerdrFeatureRequest::PluginInstall { source, revision } => {
@@ -384,6 +385,7 @@ impl HerdrManager {
                         return Err("herdr-session-incompatible".into());
                     }
                     self.capability_cache.lock().unwrap().clear();
+                    self.invalidate_runtime_caches();
                     #[cfg(windows)]
                     process_kill::terminate_direct_child_and_reap(&mut child)
                         .map_err(|error| error.to_string())?;

@@ -84,9 +84,9 @@ See the [Changelog](CHANGELOG.md) for the complete release notes and limitations
 
 ### From Space to agent terminal
 
-The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and Agents. Selecting an agent focuses its owning Session and Space, then opens the corresponding HERDR terminal page. Each Yuzora page maps to one HERDR tab and recursively renders its BSP panes. Mutating actions are capability-gated, and Agent Inspector is read-only.
+The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and Agents. Selecting an agent focuses its owning Session and Space, then opens the corresponding HERDR terminal page. Each Yuzora page maps to one HERDR tab and recursively renders its BSP panes. Mutating actions are capability-gated.
 
-<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code> <code>read-only Inspector</code>
+<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code>
 
 </td>
 <td valign="middle" width="62%">

@@ -1,8 +1,6 @@
 import { invokeHerdr as invoke } from "./herdrProvider"
 
 import type {
-  HerdrAgentDetails,
-  HerdrAgentReadResult,
   HerdrBinarySource,
   HerdrBinarySourceInfo,
   HerdrBinarySourceSetResult,
@@ -20,8 +18,6 @@ import type {
   HerdrPaneSplitRequest,
   HerdrPaneSwapRequest,
   HerdrPaneZoomRequest,
-  HerdrReadFormat,
-  HerdrReadSource,
   HerdrScrollDirection,
   HerdrSnapshotResult,
   HerdrSubscriptionEvent,
@@ -335,34 +331,6 @@ export function herdrBinarySourceSet(
 
 export function herdrBinarySourceCheck(source: HerdrBinarySource, customPath?: string): Promise<import("./herdrTypes").RuntimeBinaryCheck> {
   return invoke("herdr_binary_source_check", { source, customPath: customPath ?? null })
-}
-
-export function herdrAgentGet(args: {
-  sessionName?: string | null
-  target: string
-}): Promise<HerdrAgentDetails> {
-  return invoke("herdr_agent_get", {
-    sessionName: args.sessionName ?? null,
-    target: args.target
-  })
-}
-
-export function herdrAgentRead(args: {
-  sessionName?: string | null
-  target: string
-  source: HerdrReadSource
-  format?: HerdrReadFormat | null
-  lines?: number | null
-  stripAnsi?: boolean | null
-}): Promise<HerdrAgentReadResult> {
-  return invoke("herdr_agent_read", {
-    sessionName: args.sessionName ?? null,
-    target: args.target,
-    source: args.source,
-    format: args.format ?? null,
-    lines: args.lines ?? null,
-    stripAnsi: args.stripAnsi ?? null
-  })
 }
 
 export function herdrEventsSubscribe(args: {

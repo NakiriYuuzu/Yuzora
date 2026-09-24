@@ -78,6 +78,10 @@ interface UiState {
     // （同 settingsNonce 的作法）。
     sidebarToggleRequest: number
     requestSidebarToggle: () => void
+    // Spaces/Agents view switch (shortcut). SpaceAgentTree flips its view;
+    // AppShell reveals a collapsed sidebar so the switch is visible.
+    sidebarViewToggleRequest: number
+    requestSidebarViewToggle: () => void
     toolsToggleRequest: number
     requestToolsToggle: () => void
     paletteOpenRequest: number
@@ -105,6 +109,7 @@ export const uiInitialState = {
     projectEditorPath: null,
     recentWorkspaceRemovedNotice: null as { name: string } | null,
     sidebarToggleRequest: 0,
+    sidebarViewToggleRequest: 0,
     toolsToggleRequest: 0,
     paletteOpenRequest: 0
 }
@@ -347,6 +352,7 @@ export const useUiStore = create<UiState>()((set) => ({
         set({ recentWorkspaceRemovedNotice: { name } }),
     clearRecentWorkspaceRemovedNotice: () => set({ recentWorkspaceRemovedNotice: null }),
     requestSidebarToggle: () => set((s) => ({ sidebarToggleRequest: s.sidebarToggleRequest + 1 })),
+    requestSidebarViewToggle: () => set((s) => ({ sidebarViewToggleRequest: s.sidebarViewToggleRequest + 1 })),
     requestToolsToggle: () => set((s) => ({ toolsToggleRequest: s.toolsToggleRequest + 1 })),
     requestOpenPalette: () => set((s) => ({ paletteOpenRequest: s.paletteOpenRequest + 1 }))
 }))

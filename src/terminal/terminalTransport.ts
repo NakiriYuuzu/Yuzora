@@ -8,6 +8,7 @@ import {
   herdrTerminalScroll
 } from "@/lib/herdrIpc"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
+import { recordHerdrTerminalMetric, timeHerdrTerminalIpc } from "./herdrTerminalDiagnostics"
 import type { PaneScrollController, PaneScrollInfo } from "./herdrScrollController"
 import type {
   HerdrTerminalEvent,
@@ -28,7 +29,8 @@ export type TerminalTransportOutputEvent = {
 
 export type TerminalTransportEvent =
   | TerminalTransportOutputEvent
-  | { type: "exit"; code: number | null }
+  /** `reason` is Herdr's `terminal.closed` reason, e.g. `terminal attach taken over`. */
+  | { type: "exit"; code: number | null; reason?: string | null }
   | { type: "error"; message: string }
   | { type: "resync"; message: string }
   | { type: "control"; mode: HerdrTerminalMode; role: HerdrTerminalRole }
@@ -52,6 +54,14 @@ export function normalizeTerminalWheelRows(
 // snapshot for standalone callers. Mounted terminal pages share their pane
 // controller with the scrollbar, so wheel/drag never use separate cached positions.
 const PANE_SCROLL_CACHE_MS = 160
+/**
+ * A connector `terminal.scroll` is acknowledged as soon as the command is
+ * queued (p50 1 ms); the viewport only moves when Herdr sends the redrawn
+ * frame. Waiting for that frame (bounded, for edges where nothing redraws)
+ * lets wheel bursts coalesce instead of queuing a backlog that keeps
+ * replaying after the wheel stops.
+ */
+const SCROLL_FRAME_WAIT_MS = 100
 
 export interface TerminalTransportOpenArgs {
   cols: number
@@ -185,8 +195,21 @@ export function createHerdrTerminalTransport(
   // for this attachment and let a reconnect renegotiate capabilities.
   let terminalScrollUnavailable = false
   let paneScrollCache: { state: PaneScrollInfo; at: number } | null = null
+  let frameWaiter: ((framed?: boolean) => void) | null = null
+  /** Resolves true on the next frame, false after SCROLL_FRAME_WAIT_MS. Arm before sending. */
+  const nextFrame = () => new Promise<boolean>((resolve) => {
+    const done = (framed = false) => {
+      clearTimeout(timer)
+      if (frameWaiter === done) frameWaiter = null
+      resolve(framed)
+    }
+    const timer = setTimeout(done, SCROLL_FRAME_WAIT_MS)
+    frameWaiter?.()
+    frameWaiter = done
+  })
   const clearPaneScrollCache = () => { paneScrollCache = null }
   const discardScroll = () => {
+    frameWaiter?.()
     pendingScrollDelta = 0
     scrollDrainGeneration += 1
     clearPaneScrollCache()
@@ -214,6 +237,7 @@ export function createHerdrTerminalTransport(
       // Backend already enforces first-full + contiguous; still ignore exact dups.
       if (lastSeq !== null && event.seq <= lastSeq) return
       lastSeq = event.seq
+      frameWaiter?.(true)
       paneScrollController?.()?.frame()
       onEvent({
         type: "output",
@@ -228,7 +252,7 @@ export function createHerdrTerminalTransport(
       return
     }
     if (event.type === "closed") {
-      onEvent({ type: "exit", code: null })
+      onEvent({ type: "exit", code: null, reason: event.reason ?? null })
       return
     }
     if (event.type === "resync") {
@@ -373,9 +397,11 @@ export function createHerdrTerminalTransport(
       if (!Number.isFinite(amount) || amount === 0) return
       const shared = paneScrollController?.()
       if (shared && paneScrollEnabled?.() && (terminalScrollEnabled?.() !== true || terminalScrollUnavailable)) {
+        recordHerdrTerminalMetric({ kind: "wheel", strategy: "pane", rows: Math.abs(amount) })
         shared.scroll(amount)
         return
       }
+      recordHerdrTerminalMetric({ kind: "wheel", strategy: "terminal", rows: Math.abs(amount) })
       pendingScrollDelta += amount
       const generation = scrollDrainGeneration
       const activeSessionId = sessionId
@@ -434,9 +460,14 @@ export function createHerdrTerminalTransport(
             if (terminalScrollEnabled?.() === false || terminalScrollUnavailable) {
               throw new Error("pane-scroll-state-unavailable")
             }
+            const rendered = nextFrame()
+            const sentAt = performance.now()
             try {
-              await herdrTerminalScroll(activeSessionId, direction, lines)
+              await timeHerdrTerminalIpc("terminal.scroll", () => herdrTerminalScroll(activeSessionId, direction, lines))
+              const framed = await rendered
+              recordHerdrTerminalMetric({ kind: "ipc", command: "terminal.scroll.frame", ms: performance.now() - sentAt, ok: framed })
             } catch (error) {
+              frameWaiter?.()
               terminalScrollUnavailable = true
               // Older connectors may reject terminal.scroll while still
               // supporting the pane API. Preserve the fallback for callers
