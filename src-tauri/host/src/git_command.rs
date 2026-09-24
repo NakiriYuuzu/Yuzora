@@ -100,7 +100,6 @@ impl GitCommand {
     }
 }
 
-#[cfg(unix)]
 mod host {
     use super::*;
     use crate::{
@@ -249,5 +248,4 @@ mod host {
         }
     }
 }
-#[cfg(unix)]
 pub use host::HostGit;

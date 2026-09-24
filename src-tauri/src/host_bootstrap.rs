@@ -49,6 +49,8 @@ struct Manifest {
     target: String,
     helper: ArtifactFile,
     herdr: HerdrArtifact,
+    #[serde(default)]
+    files: Vec<ArtifactFile>,
 }
 
 #[derive(Serialize)]
@@ -129,7 +131,30 @@ async fn execute_with_output_limit(
 }
 
 async fn probe(target: &HostTarget, ssh: &SshManager) -> Result<HostProbe, String> {
-    let bytes = execute(target,Some(ssh),r#"printf '%s\000' "$(uname -s)" "$(uname -m)" "$(cd "$HOME" && pwd -P)" "$(command -v herdr || true)""#,&[]).await?;
+    let unix = execute(target,Some(ssh),r#"printf '%s\000' "$(uname -s)" "$(uname -m)" "$(cd "$HOME" && pwd -P)" "$(command -v herdr || true)""#,&[]).await;
+    let bytes = match unix {
+        Ok(bytes) if bytes.starts_with(b"Linux\0") || bytes.starts_with(b"Darwin\0") => bytes,
+        // A timed-out POSIX probe is not evidence of a Windows shell.
+        Err(error) if error == "host-setup-timeout" => return Err(error),
+        _ if matches!(target, HostTarget::Ssh { .. }) => {
+            let windows = crate::host_windows::execute(
+                target,
+                Some(ssh),
+                crate::host_windows::PROBE,
+                &[],
+                MAX_PROBE_OUTPUT_BYTES,
+            )
+            .await;
+            match (windows, unix) {
+                (Ok(bytes), _) => bytes,
+                // Keep the POSIX transport error unless that probe merely ran
+                // on a non-POSIX shell; then the Windows error is the useful one.
+                (Err(_), Err(error)) if error != "host-setup-command-failed" => return Err(error),
+                (Err(error), _) => return Err(error),
+            }
+        }
+        other => other?,
+    };
     let value = String::from_utf8(bytes).map_err(|_| "host-probe-not-utf8")?;
     let fields: Vec<_> = value.split('\0').collect();
     if fields.len() != 5 || !fields[4].is_empty() {
@@ -138,6 +163,7 @@ async fn probe(target: &HostTarget, ssh: &SshManager) -> Result<HostProbe, Strin
     let os = match fields[0] {
         "Linux" => "linux",
         "Darwin" => "macos",
+        "Windows" => "windows",
         _ => return Err("unsupported-runtime-os".into()),
     };
     let arch = match fields[1] {
@@ -145,7 +171,11 @@ async fn probe(target: &HostTarget, ssh: &SshManager) -> Result<HostProbe, Strin
         "x86_64" => "x86_64",
         _ => return Err("unsupported-runtime-architecture".into()),
     };
-    if !fields[2].starts_with('/') {
+    if if os == "windows" {
+        !crate::host_windows::is_windows_path(fields[2])
+    } else {
+        !fields[2].starts_with('/')
+    } {
         return Err("host-home-unavailable".into());
     }
     Ok(HostProbe {
@@ -170,8 +200,13 @@ fn validate_manifest(manifest: &Manifest, target: &str) -> Result<(), String> {
     {
         return Err("host-artifact-version-mismatch".into());
     }
-    if manifest.helper.path != format!("{target}/yuzora-host")
-        || manifest.herdr.path != format!("{target}/herdr")
+    let suffix = if target == "windows-x86_64" {
+        ".exe"
+    } else {
+        ""
+    };
+    if manifest.helper.path != format!("{target}/yuzora-host{suffix}")
+        || manifest.herdr.path != format!("{target}/herdr{suffix}")
     {
         return Err("invalid-host-artifact-path".into());
     }
@@ -181,6 +216,31 @@ fn validate_manifest(manifest: &Manifest, target: &str) -> Result<(), String> {
         || release["protocol"].as_u64() != Some(u64::from(manifest.herdr.protocol))
     {
         return Err("herdr-artifact-version-mismatch".into());
+    }
+    let official = release["targets"][target]["files"]
+        .as_array()
+        .ok_or("unsupported-host-artifact")?;
+    let binary_name = format!("herdr{suffix}");
+    let extra: Vec<_> = official
+        .iter()
+        .filter(|entry| entry["path"].as_str() != Some(binary_name.as_str()))
+        .collect();
+    if manifest.files.len() != extra.len()
+        || manifest.files.iter().any(|file| {
+            !extra.iter().any(|entry| {
+                file.path == format!("{target}/{}", entry["path"].as_str().unwrap_or_default())
+                    && entry["sha256"].as_str() == Some(file.sha256.as_str())
+            })
+        })
+        || manifest
+            .files
+            .iter()
+            .map(|file| &file.path)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != manifest.files.len()
+    {
+        return Err("invalid-host-runtime-auxiliary-files".into());
     }
     for hash in [&manifest.helper.sha256, &manifest.herdr.sha256] {
         if hash.len() != 64
@@ -225,6 +285,12 @@ async fn deploy_file(
     bytes: &[u8],
     digest: &str,
 ) -> Result<String, String> {
+    if crate::host_windows::is_windows_path(home) {
+        let (destination, script) =
+            crate::host_windows::deploy_script(home, version_dir, name, digest)?;
+        crate::host_windows::execute(target, ssh, &script, bytes, MAX_PROBE_OUTPUT_BYTES).await?;
+        return Ok(destination);
+    }
     let root = format!("{home}/.local/share/yuzora/runtimes");
     let directory = format!("{root}/{version_dir}");
     let destination = format!("{directory}/{name}");
@@ -322,8 +388,9 @@ fn select_host_binary(
 ) -> Result<String, String> {
     let binary = match source {
         HerdrBinarySource::Default => format!(
-            "{}/.local/share/yuzora/runtimes/{directory}/herdr",
-            info.home
+            "{}/.local/share/yuzora/runtimes/{directory}/herdr{}",
+            info.home,
+            if info.os == "windows" { ".exe" } else { "" }
         ),
         HerdrBinarySource::Global => info
             .installed_herdr
@@ -331,7 +398,12 @@ fn select_host_binary(
             .ok_or("herdr-not-found-on-selected-host")?,
         HerdrBinarySource::Custom => custom_path.ok_or("herdr-custom-path-required")?.to_string(),
     };
-    if !binary.starts_with('/') || binary.contains('\0') {
+    if (if info.os == "windows" {
+        !crate::host_windows::is_windows_path(&binary)
+    } else {
+        !binary.starts_with('/')
+    }) || binary.contains('\0')
+    {
         return Err("herdr-host-path-must-be-absolute".into());
     }
     Ok(binary)
@@ -344,6 +416,19 @@ async fn runtime_metadata(
     session: &str,
     command: &str,
 ) -> Result<serde_json::Value, String> {
+    if crate::host_windows::is_windows_path(binary) {
+        let script = crate::host_windows::metadata_script(binary, session, command)?;
+        let bytes = crate::host_windows::execute(
+            target,
+            ssh,
+            &script,
+            &[],
+            MAX_NDJSON_LINE_BYTES + SUCCESS.len(),
+        )
+        .await?;
+        return serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid-runtime-json: {error}"));
+    }
     let script = format!(
         "HERDR_SESSION={} {} {command}",
         shell_quote(session)?,
@@ -404,17 +489,21 @@ pub async fn host_runtime_check(
     let artifact_identity = hash(&bytes);
     let directory = format!("{}-{platform}-{artifact_identity}", manifest.version);
     let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
-    let exists = execute(
-        &target,
-        Some(&ssh.0),
-        &format!(
-            "if test -x {}; then printf yes; else printf no; fi",
-            shell_quote(&binary)?
-        ),
-        &[],
-    )
-    .await?
-        == b"yes";
+    let exists = if info.os == "windows" {
+        crate::host_windows::execute(&target, Some(&ssh.0), &format!("if (Test-Path -LiteralPath {} -PathType Leaf) {{ [Console]::Write('yes') }} else {{ [Console]::Write('no') }}", crate::host_windows::quote(&binary)?), &[], MAX_PROBE_OUTPUT_BYTES).await? == b"yes"
+    } else {
+        execute(
+            &target,
+            Some(&ssh.0),
+            &format!(
+                "if test -x {}; then printf yes; else printf no; fi",
+                shell_quote(&binary)?
+            ),
+            &[],
+        )
+        .await?
+            == b"yes"
+    };
     if !exists && source != HerdrBinarySource::Default {
         return Err(format!("herdr-not-executable-on-selected-host: {binary}"));
     }
@@ -471,7 +560,11 @@ pub async fn host_prepare(
         Some(&ssh.0),
         &info.home,
         &directory,
-        "yuzora-host",
+        if info.os == "windows" {
+            "yuzora-host.exe"
+        } else {
+            "yuzora-host"
+        },
         &helper_bytes,
         &manifest.helper.sha256,
     )
@@ -483,11 +576,32 @@ pub async fn host_prepare(
             Some(&ssh.0),
             &info.home,
             &directory,
-            "herdr",
+            if info.os == "windows" {
+                "herdr.exe"
+            } else {
+                "herdr"
+            },
             &herdr_bytes,
             &manifest.herdr.sha256,
         )
         .await?;
+        for file in &manifest.files {
+            let bytes = verified_file(&root, &file.path, &file.sha256).await?;
+            let name = file
+                .path
+                .strip_prefix(&format!("{platform}/"))
+                .ok_or("invalid-runtime-file")?;
+            deploy_file(
+                &target,
+                Some(&ssh.0),
+                &info.home,
+                &directory,
+                name,
+                &bytes,
+                &file.sha256,
+            )
+            .await?;
+        }
     }
     // Recheck the actual chosen binary and every running Session before replacing
     // the helper connection or allowing the frontend to persist new paths.

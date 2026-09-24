@@ -80,8 +80,6 @@ const caps = {
         paneClose: true,
         layoutExport: true,
         layoutSetSplitRatio: true,
-        agentGet: true,
-        agentRead: true,
         eventsSubscribe: true,
         worktreeList: true,
         methods: [
@@ -459,6 +457,44 @@ describe("herdrStore", () => {
     expect(state.canCreateTerminal()).toBe(false)
     expect(herdrSnapshot).not.toHaveBeenCalled()
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+  })
+
+  it("re-bootstrap settles a ready runtime after its Session stops or is deleted", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("work")
+    expect(useHerdrStore.getState().runtimesBySession.work?.connectionState).toBe("ready")
+
+    vi.mocked(herdrSessions).mockResolvedValue(sessions.map(session => session.name === "work" ? { ...session, running: false } : session))
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("work")
+    expect(useHerdrStore.getState().runtimesBySession.work).toMatchObject({ connectionState: "stopped", capabilities: null })
+
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrSessions).mockResolvedValue(sessions.filter(session => session.name !== "default"))
+    vi.mocked(herdrCapabilities).mockResolvedValue({
+      ...caps,
+      server: { ...caps.server, running: false, socketPath: null },
+      api: { ...caps.api, snapshot: false, reason: "herdr named session 'default' not found" }
+    })
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const deleted = useHerdrStore.getState().runtimesBySession.default
+    expect(deleted?.connectionState).toBe("stopped")
+    expect(deleted?.capabilities?.server.running).toBe(false)
+    expect(deleted?.capabilities?.api.snapshot).toBe(false)
+  })
+
+  it("bootstraps a stopped Session again once it is running", async () => {
+    vi.mocked(herdrSessions).mockResolvedValue(sessions.map(session => session.name === "work" ? { ...session, running: false } : session))
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("work")
+    expect(useHerdrStore.getState().runtimesBySession.work?.connectionState).toBe("stopped")
+
+    vi.mocked(herdrSessions).mockResolvedValue(sessions)
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("work")
+    expect(herdrCapabilities).toHaveBeenCalledWith("work")
+    expect(useHerdrStore.getState().runtimesBySession.work?.connectionState).toBe("ready")
   })
 
   it("releaseAttachment drops map entry and calls herdr_terminal_release only", async () => {

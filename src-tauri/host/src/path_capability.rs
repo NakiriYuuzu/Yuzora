@@ -123,17 +123,17 @@ pub fn is_safe_leaf_name(name: &str) -> bool {
     true
 }
 
-fn windows_ordinary_leaf(name: &str) -> bool {
+/// Windows filename rules (no `:`/ADS, no trailing dot or space, no reserved
+/// device names), for names bound to a Windows host regardless of the local OS.
+pub fn windows_ordinary_leaf(name: &str) -> bool {
     if name.contains(':') {
         return false;
     }
     if name.ends_with(' ') || name.ends_with('.') {
         return false;
     }
+    // Dotfiles such as `.gitignore` have an empty stem and are ordinary names.
     let stem = name.split_once('.').map(|(head, _)| head).unwrap_or(name);
-    if stem.is_empty() {
-        return false;
-    }
     let stem = stem.to_ascii_uppercase();
     !matches!(
         stem.as_str(),
@@ -266,6 +266,11 @@ pub struct OpenedFile {
     pub file: File,
     pub len: u64,
     pub leaf: String,
+}
+
+/// Stable identity from the opened handle, including Windows volume/file IDs.
+pub(crate) fn opened_file_identity(file: &File) -> Result<String, String> {
+    file_id(file).map(|id| id.as_key()).map_err(String::from)
 }
 
 mod tree;
@@ -1480,7 +1485,7 @@ mod win_at {
             return Err(PathCapabilityError::UnsafeLeaf);
         }
         let mut utf16: Vec<u16> = name.encode_utf16().collect();
-        if utf16.iter().any(|&unit| unit == 0) {
+        if utf16.contains(&0) {
             return Err(PathCapabilityError::UnsafeLeaf);
         }
         let byte_len = utf16.len().saturating_mul(2);
@@ -1530,11 +1535,18 @@ mod win_at {
                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
                 FILE_ATTRIBUTE_NORMAL,
             ),
-            (RelativeKind::File, RelativeMode::OpenDelete)
-            | (RelativeKind::Any, RelativeMode::OpenDelete) => (
+            (RelativeKind::File, RelativeMode::OpenDelete) => (
                 DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 FILE_OPEN,
                 FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                0,
+            ),
+            // Rename accepts files and directories. Links are still opened
+            // themselves, so callers reject them by handle.
+            (RelativeKind::Any, RelativeMode::OpenDelete) => (
+                DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_OPEN,
+                FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
                 0,
             ),
             (RelativeKind::Any, RelativeMode::OpenAttrs) => (
@@ -1756,6 +1768,8 @@ mod tests {
         }
         assert!(windows_ordinary_leaf("report.txt"));
         assert!(windows_ordinary_leaf("中文.txt"));
+        assert!(windows_ordinary_leaf(".gitignore"));
+        assert!(windows_ordinary_leaf(".yuzora-save-0123"));
     }
 
     #[cfg(windows)]

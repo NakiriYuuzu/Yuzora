@@ -4,6 +4,37 @@ use yuzora_host::herdr_limits::bounded_ipc;
 pub use yuzora_host::herdr_service::*;
 
 #[tauri::command]
+pub async fn herdr_client_open(
+    state: tauri::State<'_, HerdrState>,
+    session_name: String,
+    size: HerdrClientSize,
+    on_event: tauri::ipc::Channel<HerdrTerminalEvent>,
+) -> Result<HerdrTerminalOpenResult, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.open_native_client(
+            &session_name,
+            size,
+            Arc::new(move |event| on_event.send(event).map_err(|e| e.to_string())),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn herdr_feature(
+    state: tauri::State<'_, HerdrState>,
+    session_name: String,
+    request: HerdrFeatureRequest,
+) -> Result<serde_json::Value, String> {
+    let manager = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || manager.feature(&session_name, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn herdr_sessions(
     state: tauri::State<'_, HerdrState>,
 ) -> Result<Vec<HerdrNamedSession>, String> {
@@ -494,43 +525,6 @@ pub async fn herdr_binary_source_check(
 }
 
 #[tauri::command]
-pub async fn herdr_agent_get(
-    state: tauri::State<'_, HerdrState>,
-    session_name: Option<String>,
-    target: String,
-) -> Result<HerdrAgentDetails, String> {
-    let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || manager.agent_get(session_name.as_deref(), target))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn herdr_agent_read(
-    state: tauri::State<'_, HerdrState>,
-    session_name: Option<String>,
-    target: String,
-    source: HerdrReadSource,
-    format: Option<HerdrReadFormat>,
-    lines: Option<u32>,
-    strip_ansi: Option<bool>,
-) -> Result<HerdrAgentReadResult, String> {
-    let manager = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.agent_read(
-            session_name.as_deref(),
-            target,
-            source,
-            format,
-            lines,
-            strip_ansi,
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
 pub async fn herdr_events_subscribe(
     state: tauri::State<'_, HerdrState>,
     session_name: Option<String>,
@@ -614,8 +608,6 @@ mod tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
-            "herdr_service::herdr_agent_get",
-            "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",
             "herdr_service::herdr_events_release",
         ] {

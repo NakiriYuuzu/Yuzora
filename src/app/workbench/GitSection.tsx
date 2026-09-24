@@ -133,7 +133,7 @@ export function GitSection() {
               value={intervalText}
               onChange={(e) => setIntervalText(e.target.value)}
               onBlur={commitInterval}
-              className="h-[28px] w-[76px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-right font-mono text-[11.5px] text-(--ink-1) tabular-nums outline-none focus:border-(--yz-accent)"
+              className="h-[28px] w-[76px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-right font-mono text-[11.5px] text-(--ink-1) tabular-nums outline-none focus:border-(--yz-accent) focus-visible:ring-2 focus-visible:ring-(--yz-accent)/30"
             />
             <span className="text-[11px] text-(--ink-3)">{t("gitSettings.seconds")}</span>
           </span>

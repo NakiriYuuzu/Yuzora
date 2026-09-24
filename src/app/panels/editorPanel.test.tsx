@@ -40,7 +40,18 @@ describe("Files mode entry states", () => {
   it("shows the editor surface empty state", () => {
     render(<AppShell />)
 
-    expect(screen.getByText("Open a project to start editing")).toBeInTheDocument()
+    expect(screen.getByText("Open a Space to start working")).toBeInTheDocument()
+  })
+
+  it("offers next steps from the empty editor and adapts copy once a workspace is open", () => {
+    render(<AppShell />)
+    fireEvent.click(screen.getByRole("button", { name: /Open Browser/ }))
+    expect(screen.getByText(i18n.t("emptyTitle", { ns: "preview" }))).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Close Browser" }))
+    act(() => useWorkspaceStore.setState({ workspacePath: "/w" }))
+    expect(screen.getByText("No open tabs", { selector: "p" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /Search & Commands/ }))
+    expect(screen.getByRole("dialog")).toBeInTheDocument()
   })
 
   it("opens Browser from the tab add menu and closes it from its tab", async () => {
@@ -56,7 +67,7 @@ describe("Files mode entry states", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Browser" }))
     expect(screen.getByText(i18n.t("emptyTitle", { ns: "preview" }))).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: "Close Preview" }))
+    fireEvent.click(screen.getByRole("button", { name: "Close Browser" }))
     expect(screen.queryByText(i18n.t("emptyTitle", { ns: "preview" }))).not.toBeInTheDocument()
   })
 
@@ -64,7 +75,7 @@ describe("Files mode entry states", () => {
     render(<AppShell />)
 
     const mainSurface = screen.getByTestId("main-surface")
-    const editorState = screen.getByText("Open a project to start editing")
+    const editorState = screen.getByText("Open a Space to start working")
     const projectNav = document.getElementById("workbench-tools")!
     expect(mainSurface.style.minHeight).toBe("44px")
 
@@ -74,13 +85,13 @@ describe("Files mode entry states", () => {
       expect(mainSurface.style.minHeight).toBe("44px")
     }
 
-    expect(screen.getByText("Open a project to start editing")).toBe(editorState)
+    expect(screen.getByText("Open a Space to start working")).toBe(editorState)
     expect(within(projectNav).queryByRole("tab", { name: "SSH" })).not.toBeInTheDocument()
   })
 
   it("右鍵編輯區開啟 editor 選單", () => {
     render(<EditorPanel />)
-    fireEvent.contextMenu(screen.getByText("Open a project to start editing"))
+    fireEvent.contextMenu(screen.getByText("Open a Space to start working"))
     expect(useContextMenuStore.getState().request).toBeNull()
   })
 })

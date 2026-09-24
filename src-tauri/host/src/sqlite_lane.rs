@@ -7,7 +7,6 @@ use crate::path_capability::PinnedDir;
 use crate::protocol::PROTOCOL_VERSION;
 use crate::wire::read_frame;
 use std::future::Future;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +17,7 @@ struct Database {
     sessions: ResultSessionState,
     config: SqliteOpen,
     root: PinnedDir,
-    file_id: (u64, u64),
+    file_id: String,
 }
 impl Drop for Database {
     fn drop(&mut self) {
@@ -61,13 +60,13 @@ impl Database {
             return Err(invalid());
         }
         let root = PinnedDir::open_dir(Path::new(&config.workspace_path)).map_err(|_| invalid())?;
-        let metadata = std::fs::metadata(&canonical).map_err(|_| invalid())?;
+        let file = std::fs::File::open(&canonical).map_err(|_| invalid())?;
         let mut database = Self {
             state: DbState::default(),
             sessions: ResultSessionState::default(),
             config,
             root,
-            file_id: (metadata.dev(), metadata.ino()),
+            file_id: crate::path_capability::opened_file_identity(&file).map_err(|_| invalid())?,
         };
         database.config.database_path = canonical.to_str().ok_or_else(invalid)?.into();
         let handle = open_unregistered(DbOpenConfig::Sqlite {
@@ -91,8 +90,10 @@ impl Database {
             crate::trust_command::host_trust(&self.config.owner.host_id)?
                 .require_trusted(&self.config.workspace_path)?;
             let root = PinnedDir::open_dir(Path::new(&self.config.workspace_path))?;
-            let file = std::fs::metadata(&self.config.database_path).map_err(|e| e.to_string())?;
-            Ok(root.id_key() == self.root.id_key() && (file.dev(), file.ino()) == self.file_id)
+            let file =
+                std::fs::File::open(&self.config.database_path).map_err(|e| e.to_string())?;
+            Ok(root.id_key() == self.root.id_key()
+                && crate::path_capability::opened_file_identity(&file)? == self.file_id)
         };
         if unchanged().unwrap_or(false) {
             Ok(())

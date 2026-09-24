@@ -13,6 +13,7 @@
     "opener:default",
     { "identifier": "opener:allow-open-path", "allow": [{ "path": "$HOME/.yuzora/**" }] },
     "dialog:default",
+    "notification:default",
     "updater:allow-check",
     "updater:allow-download",
     "updater:allow-install",

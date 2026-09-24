@@ -149,8 +149,6 @@ function layoutCapabilities(layoutSetSplitRatio: boolean) {
       paneClose: true,
       layoutExport: true,
       layoutSetSplitRatio,
-      agentGet: false,
-      agentRead: false,
       eventsSubscribe: false,
       worktreeList: false,
       methods: ["layout.export"],

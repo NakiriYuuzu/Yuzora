@@ -3,8 +3,9 @@ import { afterEach, expect, it } from "vitest"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 import { WorkspaceResourcesBridge } from "./WorkspaceResourcesBridge"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { useSvgPreviewStore } from "@/state/svgPreviewStore"
 import { clearAll, getDocument, updateBuffer, documentGeneration } from "@/editor/documentRegistry"
-afterEach(() => { cleanup(); clearAll(); clearMocks(); useWorkspaceStore.setState({ workspacePath: null, groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 }) })
+afterEach(() => { cleanup(); clearAll(); clearMocks(); useWorkspaceStore.setState({ workspacePath: null, groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 }); useSvgPreviewStore.getState().reset() })
 it("drops all closed split documents but preserves a moved or inactive open file", async () => {
   let reads = 0
   mockIPC(command => { if (command === "open_file") { reads++; return { kind: "full", content: "disk", size: 4, lineEnding: "lf" } } })
@@ -24,6 +25,25 @@ it("drops all closed split documents but preserves a moved or inactive open file
   expect((await getDocument("/repo/kept.ts")).result).toMatchObject({ content: "unsaved" })
   act(() => { useWorkspaceStore.getState().splitRight(); useWorkspaceStore.getState().openTabInGroup("/repo/kept.ts", 1) })
   expect((await getDocument("/repo/kept.ts")).result).toMatchObject({ content: "unsaved" })
+})
+
+it("retires the document and SVG preview state replaced by a preview-mode tab", async () => {
+  let reads = 0
+  mockIPC(command => { if (command === "open_file") { reads++; return { kind: "full", content: "<svg/>", size: 6, lineEnding: "lf" } } })
+  useWorkspaceStore.getState().setWorkspace("/repo")
+  render(<WorkspaceResourcesBridge />)
+  act(() => useWorkspaceStore.getState().openTab("/repo/a.svg", undefined, { transient: true }))
+  await getDocument("/repo/a.svg")
+  act(() => useSvgPreviewStore.getState().toggle("/repo/a.svg"))
+  expect(useSvgPreviewStore.getState().isOpen("/repo/a.svg")).toBe(false)
+
+  act(() => useWorkspaceStore.getState().openTab("/repo/b.ts", undefined, { transient: true }))
+
+  expect(useWorkspaceStore.getState().groups[0].tabs.map(tab => tab.path)).toEqual(["/repo/b.ts"])
+  expect(useSvgPreviewStore.getState().closedPaths).toEqual({})
+  const before = reads
+  await getDocument("/repo/a.svg")
+  expect(reads - before).toBe(1)
 })
 
 it("reclaims old remote capabilities across more than the host limit of workspace switches", async () => {

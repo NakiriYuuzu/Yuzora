@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: Herdr Windows 終端修正與側邊欄導覽重整</title>
+<style>
+:root{
+  --paper:#fbfaf6; --paper-0:#ffffff; --sunk:#f3f1ea;
+  --ink:#2e2c28; --ink-2:#57534b; --ink-3:#8a857a;
+  --line:rgba(27,26,23,.12); --line-2:rgba(27,26,23,.2);
+  --accent:#86b81f; --accent-ink:#4c6d0c; --accent-soft:rgba(134,184,31,.13);
+  --warn:#f5820a; --warn-ink:#9a4d00; --warn-soft:rgba(245,130,10,.12);
+  --danger:#e23b54; --ok:#1f8a5b;
+  --font-sans:"Hanken Grotesk","Segoe UI",-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --font-serif:"Newsreader",Georgia,"Songti TC","Noto Serif TC",serif;
+  --radius:14px;
+  --shadow:0 1px 0 rgba(255,255,255,.7) inset,0 10px 30px rgba(46,44,40,.06);
+}
+*{box-sizing:border-box}
+html{background:var(--paper);color:var(--ink)}
+body{margin:0;font:15px/1.7 var(--font-sans);background:radial-gradient(120% 80% at 0% 0%,#eef5d9 0%,transparent 42%),radial-gradient(90% 70% at 100% 0%,#e3f1e6 0%,transparent 45%),var(--paper)}
+main{max-width:1080px;margin:0 auto;padding:48px 28px 96px}
+h1{font:500 40px/1.15 var(--font-serif);letter-spacing:-.01em;margin:0 0 12px}
+h2{font:600 22px/1.3 var(--font-sans);margin:0 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font:600 18px/1.35 var(--font-sans);margin:0 0 10px}
+h4{font:600 15px/1.4 var(--font-sans);margin:22px 0 8px}
+p{margin:0 0 12px}
+a{color:var(--accent-ink);text-underline-offset:3px}
+code{font:12.5px/1.5 var(--font-mono);background:var(--sunk);border:1px solid var(--line);border-radius:6px;padding:1px 5px;word-break:break-word}
+pre{font:12.5px/1.6 var(--font-mono);background:#2e2c28;color:#f3f1ea;border-radius:12px;padding:14px 16px;overflow:auto;margin:10px 0 16px}
+pre code{background:none;border:0;padding:0;color:inherit}
+section{background:rgba(255,255,255,.72);border:1px solid var(--line);border-radius:var(--radius);padding:24px 26px;margin:22px 0;box-shadow:var(--shadow)}
+.lede{color:var(--ink-2);font-size:16px}
+details.meta{margin-top:10px;background:rgba(255,255,255,.7);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+details summary{cursor:pointer;font-weight:600}
+details.meta dl{display:grid;grid-template-columns:140px 1fr;gap:6px 14px;margin:12px 0 4px;font-size:13.5px}
+details.meta dt{color:var(--ink-3);font-family:var(--font-mono);font-size:12.5px}
+details.meta dd{margin:0}
+figure{margin:18px 0 8px;text-align:center}
+figure img{display:block;margin:0 auto;width:100%;max-width:880px;border-radius:14px;border:1px solid var(--line);background:var(--paper)}
+figcaption{margin-top:8px;color:var(--ink-2);font-size:13px}
+table{width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:13.5px}
+th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--ink-2);background:var(--sunk)}
+ul,ol{margin:6px 0 14px;padding-left:22px}
+li{margin:4px 0}
+.files ul{list-style:none;padding-left:0}
+.files li{padding:6px 0;border-bottom:1px dashed var(--line)}
+.tag{display:inline-block;font:600 11px/1 var(--font-mono);padding:4px 7px;border-radius:999px;margin-right:6px;vertical-align:1px}
+.tag.existing{background:var(--sunk);color:var(--ink-2);border:1px solid var(--line-2)}
+.tag.new{background:var(--accent-soft);color:var(--accent-ink);border:1px solid rgba(134,184,31,.45)}
+.phase{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:18px 20px;margin:18px 0;background:var(--paper-0)}
+.checklist{list-style:none;padding-left:0}
+code.status{background:var(--accent-soft);border-color:rgba(134,184,31,.4);color:var(--accent-ink);font-weight:700;margin-right:6px}
+.loop{margin-top:14px;padding:10px 14px;border-radius:10px;background:var(--accent-soft);border:1px solid rgba(134,184,31,.35);font-size:13.5px}
+.gate{margin:12px 0;padding:10px 14px;border-radius:10px;background:var(--warn-soft);border:1px solid rgba(245,130,10,.35);font-size:13.5px}
+.gate strong{color:var(--warn-ink)}
+.note{margin:12px 0;padding:10px 14px;border-radius:10px;background:var(--sunk);border:1px solid var(--line);font-size:13.5px}
+.pill{display:inline-block;font:600 11.5px/1 var(--font-sans);padding:4px 8px;border-radius:999px;background:var(--sunk);border:1px solid var(--line-2);color:var(--ink-2)}
+.pill.win{background:var(--warn-soft);border-color:rgba(245,130,10,.4);color:var(--warn-ink)}
+.pill.ok{background:var(--accent-soft);border-color:rgba(134,184,31,.45);color:var(--accent-ink)}
+@media(max-width:760px){main{padding:28px 14px 64px}details.meta dl{grid-template-columns:1fr}h1{font-size:30px}}
+@media print{body{background:#fff}section{box-shadow:none}}
+</style>
+</head>
+<body>
+<main>
+
+  <!-- ===== HEADER + UPDATABLE METADATA ===== -->
+  <header>
+    <h1>Plan: Herdr Windows 終端修正與側邊欄導覽重整</h1>
+    <p class="lede">六項工作：Windows Herdr terminal 的捲動卡頓與 Alt 組合鍵、App 快捷鍵在 Windows/Linux 終端內失效、側邊欄列內動作與 Space 導覽、Spaces／Agents 快捷鍵與 Agent 輪替、移除 Agent 檢查器、重新設計「加入 Herdr Session」對話框。</p>
+    <details class="meta">
+      <summary>Metadata</summary>
+      <dl>
+        <dt>created</dt>      <dd>2026-09-24T08:26:41+08:00</dd>
+        <dt>modified</dt>     <dd>2026-09-24T08:26:41+08:00</dd>
+        <dt>commits</dt>      <dd><code>bdd036e4c7c52e0e2211b620f6ffbed7db12de3a</code>（<code>release/v0.0.16</code>，規劃基準）</dd>
+        <dt>agent name</dt>   <dd>pi · claude-opus-5-5（yuuzu-router）</dd>
+        <dt>session id</dt>   <dd><code>01a0cf12-7331-71e7-8b8b-e72e558b1667</code></dd>
+        <dt>back refs</dt>    <dd><a href="../.yuuzu/adr/0004-herdr-terminals-browser-only.html">ADR-0004</a>, <a href="../.yuuzu/adr/0005-native-windows-opt-in-wsl.html">ADR-0005</a>, <a href="../.yuuzu/CONTEXT.html">CONTEXT</a>, <a href="resizable-modal-window-sizing-plan.html">resizable-modal-window-sizing-plan</a>, <a href="../docs/html/herdr-091-render-verification-2026-09-18.html">herdr-091-render-verification-2026-09-18</a>, <a href="../docs/testing/windows-v0.0.15.md">windows-v0.0.15 驗收清單</a></dd>
+        <dt>forward refs</dt> <dd>—（尚無）</dd>
+      </dl>
+    </details>
+  </header>
+
+  <figure>
+    <img src="herdr-windows-terminal-and-sidebar-navigation-plan/hero.png" alt="六個工作項目的圖示（側邊欄、按鍵、對話框、移除的檢查器、捲輪、Alt 鍵）匯聚到一份計畫文件">
+    <figcaption>六項工作收斂成一份計畫：兩項 Windows 修正以量測為前提，其餘四項不需要 Windows，可先做。</figcaption>
+  </figure>
+
+  <!-- ===== PURPOSE / PROBLEM / SOLUTION ===== -->
+  <section id="purpose">
+    <h2>Purpose</h2>
+    <p>依使用者 2026-09-24 確認的需求，規劃六項 Yuzora ADE 改善，讓另一位開發者或 agent 能照本計畫實作與驗證。兩項 Windows-only 問題（#1 捲動、#6b Alt 組合鍵）<strong>先量測、再依證據修</strong>，不憑推測改動 Herdr 輸入協定；其餘四項不依賴 Windows 實機，可以先完成。</p>
+    <table>
+      <thead><tr><th>#</th><th>需求</th><th>已確認決策</th><th>Phase</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Windows 上 Herdr terminal 捲動卡頓（macOS、WSL 正常）</td><td>Herdr 0.9.1；指 Herdr terminal 分頁，不是完整 Session 畫面；先量測再修；WebGL 暫不做</td><td>1 → 7</td></tr>
+        <tr><td>2</td><td>側邊欄 icon 收進 row、hover 才顯示；點 Space 開 branch</td><td>點「已包含目前選取 branch」的 Space 時不動作；上次開啟的 branch 跨重啟記住；Session 標題列按鈕不變；Space row 加一個 hover 才出現的收合箭頭（因為點擊不再收合）</td><td>4</td></tr>
+        <tr><td>3</td><td>側邊欄切換 Spaces｜Agents、Agents 快捷鍵</td><td><code>Mod+Shift+E</code> 切換檢視；<code>Alt+1..9</code> 跳到第 N 個 Agent；輪替：macOS <code>⌥Tab</code>／<code>⌥⇧Tab</code>，Windows／Linux <code>Alt+`</code>／<code>Alt+Shift+`</code>；按住修飾鍵選、放開切換</td><td>3 → 5</td></tr>
+        <tr><td>4</td><td>移除 Agent 檢查器</td><td>全部刪除：UI、前端 IPC、Rust 指令、host helper、capability、測試、i18n、demo</td><td>2</td></tr>
+        <tr><td>5</td><td>重整「加入 Herdr Session」對話框</td><td>先用 <code>$get-design</code> 找參考、<code>$claude-design</code> 做 2–3 個 HTML 原型；使用者選定後實作</td><td>6</td></tr>
+        <tr><td>6</td><td>Windows 上 Ctrl+K 無效；Alt+Q、Alt+T 等在 Herdr terminal 內無效</td><td>(a) 修 App 快捷鍵分派；(b) Alt+Q／Alt+T 是 pane 內 Agent 的快捷鍵，要讓它們送達 Agent</td><td>3；1 → 8</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="problem">
+    <h2>Problem</h2>
+    <p>六項問題可分成三類：Windows-only 的 runtime 行為（#1、#6b）、跨平台的快捷鍵分派缺陷（#6a、#3），以及 UI 結構（#2、#4、#5）。以下證據取自目前程式碼（HEAD <code>bdd036e</code>）與 Herdr 0.9.1 原始碼。<strong>Windows 上的實際瓶頸與按鍵流向還沒有量測。</strong></p>
+    <table>
+      <thead><tr><th>#</th><th>目前行為與證據</th><th>影響</th></tr></thead>
+      <tbody>
+        <tr><td>1 <span class="pill win">Windows</span></td><td>
+          <ul>
+            <li>原生 runtime 的捲動走 connector <code>terminal.scroll</code>（<code>src/lib/herdrCapabilities.ts:63-84</code> 回傳 <code>"terminal"</code>）。每個 wheel 事件立刻送出，只有在上一次 IPC 還沒返回時才會合併（<code>src/terminal/terminalTransport.ts:354-470</code>）。WSL 走 pane API，由 <code>createPaneScrollController</code> 以 33ms latest-only 節流。</li>
+            <li>每次 API 呼叫（<code>pane.get</code>、<code>pane.scroll</code>、snapshot）在 <code>call_checked_api</code> 內會啟動兩次 <code>herdr session list --json</code> 子程序，並做一次 <code>ping</code>（<code>src-tauri/host/src/herdr_service.rs:1305-1330, 1601-1660, 2411-2430</code>）。</li>
+            <li>Windows named pipe 讀取時，資料還沒到就固定睡最多 100ms（<code>src-tauri/host/src/herdr_transport.rs:337-390</code>）；Unix 用 <code>poll()</code>，資料一到就醒。</li>
+            <li>每個可見 pane 的 <code>HerdrScrollbar</code> 每秒呼叫一次 <code>pane.get</code>（<code>src/terminal/HerdrScrollbar.tsx:64</code>）。</li>
+            <li>每張 full frame 都立刻寫入 xterm（<code>src/app/panels/HerdrTerminalPage.tsx:1189-1210</code>）。</li>
+          </ul>
+        </td><td>在 Windows 上，每張 frame、每次 API 呼叫的固定成本都比較高。未節流的 frame 速率加上背景子程序，可能造成可見的卡頓。需要量測確認。</td></tr>
+        <tr><td>6b <span class="pill win">Windows</span></td><td>
+          <ul>
+            <li>xterm 對 Alt+Q 輸出傳統的 <code>ESC q</code>。Yuzora 透過 connector <code>terminal.input</code> 傳原始位元組，Herdr server 直接寫進 pane PTY（Herdr <code>src/server/pane_input.rs:187-201</code>）。connector 只支援 input、resize、scroll、release 四種指令（<code>src/client/terminal_sessions.rs:159-224</code>）。</li>
+            <li>Herdr 自己的 Windows 輸入路徑，在 pane 沒有啟用 Kitty keyboard／modifyOtherKeys 時，會把按鍵編碼成 ConPTY 的 win32-input-mode 記錄，並特別處理單獨 Esc 與 Shift+Enter（<code>src/platform/windows.rs:613-645</code>、<code>src/pane/terminal.rs:1979-1998</code>）。這表示原始 ESC 前綴在 ConPTY 上有歧義。</li>
+            <li><code>pane.send_keys</code> API 雖然走 server 的編碼器，但 API 按鍵沒有 Windows key record，對傳統 pane 仍會送出 <code>ESC q</code>（<code>src/app/api/panes.rs:1917-1940</code>、<code>src/app/api_helpers.rs:34-46</code>）。</li>
+          </ul>
+        </td><td>macOS、WSL 的 pane 是 Unix PTY，直接收到 <code>ESC q</code>，所以正常。Windows ConPTY 可能把它拆成 Esc＋q，或整個忽略。也不能排除 WebView2 在更上游就攔截了按鍵。</td></tr>
+        <tr><td>6a</td><td><code>dispatchAppShortcut</code> 在 <code>.xterm</code> 或輸入框內只放行 <code>metaKey</code>（<code>src/state/keyboardSettingsStore.ts:136</code>）。Windows／Linux 的 Mod 是 Ctrl，所以 Ctrl+K、Ctrl+,、Ctrl+Shift+B 等全部被擋。另外，CommandPalette 的監聽器掛在 bubble 階段（<code>src/app/workbench/CommandPalette.tsx:310</code>），而 xterm 處理按鍵時會 <code>stopPropagation</code>，所以就算放寬判斷也收不到事件。</td><td>焦點在 terminal 或輸入框時，Windows／Linux 的 App 快捷鍵全部失效。</td></tr>
+        <tr><td>2</td><td>動作按鈕（branch 的 <code>+</code>、Space 的 <code>⋮</code>、Agent 的 <code>ⓘ</code>）是 row 按鈕外面的兄弟元素（<code>src/app/workbench/SpaceAgentTree.tsx:757-960</code>）。點 Space 只會切換收合（<code>:529-533</code>）。</td><td>icon 一直露在 row 外；點 Space 不會開啟任何工作。</td></tr>
+        <tr><td>3</td><td>Spaces／Agents 檢視狀態只存在 <code>SpaceAgentTree</code> 的 local state（<code>:73</code>），外部無法切換。沒有 Agent 跳轉或輪替。</td><td>只能用滑鼠切換檢視與 Agent。</td></tr>
+        <tr><td>4</td><td>檢查器橫跨 UI、IPC、Rust 與 host helper：<code>HerdrAgentInspector.tsx</code>、<code>src/lib/herdrIpc.ts:340-365</code>、<code>src-tauri/src/herdr_service.rs:528-560</code>、<code>src-tauri/host/src/herdr_command.rs:167-172, 419-434</code>、<code>src-tauri/host/src/herdr_service.rs:2110-2180, 3330-3430</code>。Agent 無法聚焦時，後備行為是開啟檢查器（<code>SpaceAgentTree.tsx:553-557</code>）。</td><td>使用者要求整個移除。</td></tr>
+        <tr><td>5</td><td><code>src/app/workbench/HerdrSessionPicker.tsx</code>：用下拉選單選 Session，看不到每個 Session 的狀態；「已連線」分頁只有一段說明文字；SSH／WSL 的「主機 → runtime → Session」沒有步驟感；主要按鈕停用時不說明原因。</td><td>不直觀，失敗時不知道下一步。</td></tr>
+      </tbody>
+    </table>
+    <figure>
+      <img src="herdr-windows-terminal-and-sidebar-navigation-plan/problem.png" alt="左側 macOS/WSL 的捲動路徑順暢；右側 Windows 的路徑斷斷續續，且 Alt 鍵被擋">
+      <figcaption>同一個 Yuzora，只有 Windows 原生 runtime 同時出現捲動卡頓與 Alt 組合鍵失效。</figcaption>
+    </figure>
+  </section>
+
+  <section id="solution">
+    <h2>Solution</h2>
+    <p>分三層處理：</p>
+    <ol>
+      <li><strong>證據先行（Phase 1）</strong>：加入不記錄內容的 terminal 診斷紀錄，以及在暫存 Herdr session 執行的 I/O 探針。Windows 量測與後續 UI 工作平行進行。</li>
+      <li><strong>不需要 Windows 的工作（Phase 2–6）</strong>：移除檢查器 → 修 App 快捷鍵分派 → 側邊欄列內動作與 Space 導覽 → 側邊欄快捷鍵與 Agent 輪替 → Session 對話框原型與實作。</li>
+      <li><strong>依證據修 Windows（Phase 7–8）</strong>：先做程式碼已證實的低風險修正（session 清單快取、named pipe 等待），其餘修正依量測決定。證據不符合任何預設情境時，停下來問使用者。</li>
+    </ol>
+    <table>
+      <thead><tr><th>#</th><th>解法摘要</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Rust：session 清單加 1 秒 TTL 快取；每次 API 只解析一次 socket；同一 socket 1 秒內不重複 ping；Windows pipe 改成自適應等待（互動請求上限 8ms，事件通道維持 100ms）。前端（視量測結果）：wheel 依 frame 到達節流、手勢結束後同步 scrollbar、full frame 依繪製合併。</td></tr>
+        <tr><td>6b</td><td>依探針的送達矩陣決定。若 ConPTY 誤解析原始 ESC 前綴、而 win32-input-mode 記錄正確，就讓 Windows ConPTY runtime 的修飾鍵改送 win32-input-mode 記錄，沿用同一條有序的 connector 輸入佇列。其他情境停下來提案。</td></tr>
+        <tr><td>6a</td><td><code>APP_COMMANDS</code> 增加 <code>terminalSafe</code> 標記與平台預設鍵。terminal-safe 指令在 capture 階段分派，terminal 與輸入框內也生效，並阻止 xterm 送出控制字元。</td></tr>
+        <tr><td>2</td><td>row 外框變成可 hover 的列面，動作群組放在列內右側，hover 或鍵盤聚焦時才展開。點 Space 開啟上次的 branch，沒有記憶就開第一個。記憶依 Session 範圍存在 localStorage（LRU 200）。</td></tr>
+        <tr><td>3</td><td>新指令 <code>toggleSidebarView</code>、<code>agent1..9</code>、<code>agentCycleNext</code>／<code>agentCyclePrevious</code>，全部 terminal-safe、可在 Keyboard Settings 改鍵。按住 Alt 時顯示數字標示；輪替浮層依最近使用順序（MRU）排列。</td></tr>
+        <tr><td>4</td><td>刪除 UI、前端 IPC、Rust、host、capability、測試、i18n、demo；ADR-0004 追加補充說明。</td></tr>
+        <tr><td>5</td><td>參考 Linear、Raycast、Vercel 的清單密度與鍵盤優先互動，用 Yuzora 自己的 token 做 3 個原型 → 使用者選定 → 以 shadcn 元件實作，保留所有既有行為契約。</td></tr>
+      </tbody>
+    </table>
+    <h3>原則</h3>
+    <ul>
+      <li><strong>Herdr 是權威</strong>：socket 路徑只來自 <code>session list</code>；不偽造 Agent／Session 資料；按鍵編碼只用 ConPTY 官方格式。</li>
+      <li><strong>shadcn 優先</strong>：自訂 UI（Agent 輪替浮層）要寫明原因。</li>
+      <li><strong>身分依 Session 隔離</strong>：host＋session＋workspace／agent id。</li>
+      <li><strong>診斷不記錄內容</strong>：不記 terminal 輸出，也不記一般輸入文字。</li>
+      <li><strong>Windows 實機驗收由使用者執行</strong>，除非建置時另行授權代理透過 SSH <code>yuzora-windows</code> 執行隔離探針；不得操作 RDP 視窗。</li>
+      <li>不執行 <code>git add</code>／<code>commit</code>／<code>push</code>；瀏覽器自動化或截圖驗收要先取得同意。</li>
+    </ul>
+    <figure>
+      <img src="herdr-windows-terminal-and-sidebar-navigation-plan/solution.png" alt="量測、決策、修正三步驟，下方是側邊欄、按鍵、對話框三個介面層">
+      <figcaption>Measure → Decide → Fix：Windows 修正先有證據；UI 與鍵盤層的工作不必等待。</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== RELEVANT FILES ===== -->
+  <section id="files" class="files">
+    <h2>Relevant Files</h2>
+
+    <h3>Existing Files</h3>
+    <ul>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/SpaceAgentTree.tsx</code> — 側邊欄 tree：row 結構、<code>activate()</code>、檢視切換、檢查器掛載點。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/space-agent-sidebar.css</code> — row 樣式（hover／selected／列內動作）。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/HerdrLauncher.tsx</code> — 側邊欄標頭，開啟 Session 對話框。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/HerdrSessionPicker.tsx</code>、<code>HerdrSessionPicker.test.tsx</code> — 要重整的對話框與其行為契約。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/SpaceAgentTree.test.tsx</code>、<code>SpaceAgentTree.create.test.tsx</code>、<code>SpaceAgentTree.status.test.tsx</code>、<code>SpaceAgentSidebar.test.tsx</code> — 側邊欄測試。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/HerdrAgentInspector.tsx</code>、<code>HerdrAgentInspector.test.tsx</code>、<code>AnsiText.tsx</code>、<code>ansiSegments.ts</code>（含測試）— 移除；後兩者只有檢查器使用。</li>
+      <li><span class="tag existing">existing</span> <code>src/lib/herdrIpc.ts</code>、<code>src/lib/herdrTypes.ts</code>、<code>src/state/herdrStore.ts</code>、<code>src/lib/dialogSize.ts</code>、<code>src/demo/runtime.ts</code> — 檢查器的型別、IPC、capability、demo。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/src/herdr_service.rs</code>、<code>src-tauri/src/lib.rs</code>、<code>src-tauri/host/src/herdr_command.rs</code> — Tauri／host 指令註冊與 inventory 測試。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/herdr_service.rs</code> — <code>agent_get</code>／<code>agent_read</code>、<code>call_checked_api</code>、session 解析、capability 快取。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/herdr_transport.rs</code> — Windows named pipe 的讀寫等待。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/herdr_scroll.rs</code> — <code>pane.get</code>／<code>pane.scroll</code>（經 <code>call_checked_api</code>）。</li>
+      <li><span class="tag existing">existing</span> <code>src/state/keyboardSettingsStore.ts</code>、<code>keyboardSettingsStore.test.ts</code> — <code>APP_COMMANDS</code>、<code>dispatchAppShortcut</code>。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/CommandPalette.tsx</code>、<code>commandPalette.test.tsx</code> — 全域快捷鍵監聽器（改成 capture）。</li>
+      <li><span class="tag existing">existing</span> <code>src/workbench/WorkbenchKeyboardBridge.tsx</code> — 已在 capture 階段的全域快捷鍵。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/KeyboardSettings.tsx</code> — 顯示與重設平台預設鍵。</li>
+      <li><span class="tag existing">existing</span> <code>src/state/uiStore.ts</code>、<code>src/app/AppShell.tsx</code> — 檢視切換 nonce；側邊欄收合時展開。</li>
+      <li><span class="tag existing">existing</span> <code>src/terminal/terminalTransport.ts</code> — terminal 策略的 wheel 分派。</li>
+      <li><span class="tag existing">existing</span> <code>src/terminal/HerdrScrollbar.tsx</code>、<code>herdrScrollController.ts</code>、<code>herdrScrollTelemetry.ts</code> — scrollbar 輪詢、controller、既有遙測。</li>
+      <li><span class="tag existing">existing</span> <code>src/terminal/terminalOutputQueue.ts</code> — full frame 的 <code>replace</code>／<code>flushNow</code>。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/panels/HerdrTerminalPage.tsx</code> — wheel handler、frame 處理、pane 聚焦、按鍵攔截的接線點。</li>
+      <li><span class="tag existing">existing</span> <code>src/terminal/terminalClipboard.ts</code> — 目前唯一使用 <code>attachCustomKeyEventHandler</code> 的地方（Alt+V、Shift+Enter）。</li>
+      <li><span class="tag existing">existing</span> <code>src/lib/herdrCapabilities.ts</code> — 捲動策略選擇。</li>
+      <li><span class="tag existing">existing</span> <code>src/features/logs/logQuery.ts</code>、<code>src/app/workbench/LogsSection.tsx</code> — 除錯紀錄開關與匯出。</li>
+      <li><span class="tag existing">existing</span> <code>scripts/verify-herdr-runtime.ts</code>、<code>scripts/runtime-fixture-cleanup.ts</code> — 既有的隔離 Herdr runtime 做法，探針沿用。</li>
+      <li><span class="tag existing">existing</span> <code>.github/clippy-baseline.json</code> — 精確 clippy 基準；目前只含 <code>db_profiles</code>、<code>fs_service</code>、<code>ssh_service</code>、<code>askpass</code>，但新增 warning 仍會失敗。host crate 在 CI 是 <code>-D warnings</code>。</li>
+      <li><span class="tag existing">existing</span> <code>.yuuzu/adr/0004-herdr-terminals-browser-only.html</code> — 追加「移除檢查器」補充。</li>
+      <li><span class="tag existing">existing</span> <code>README.md</code>、<code>README.zh-TW.md</code>、<code>CLAUDE.md</code> — 移除 Agent Inspector 描述。</li>
+      <li><span class="tag existing">existing</span> <code>src/lib/i18n/locales/{en,zh-TW}/{spaceTree,workbench,editorPreferences}.json</code> — 文案（兩語系都要填）。</li>
+    </ul>
+
+    <h3>New Files</h3>
+    <ul>
+      <li><span class="tag new">new</span> <code>scripts/probe-herdr-terminal-io.ts</code> — 隔離 Herdr I/O 探針：IPC 延遲與按鍵送達矩陣。以 Windows 為主，macOS 用來驗證 harness。</li>
+      <li><span class="tag new">new</span> <code>src/terminal/herdrTerminalDiagnostics.ts</code>（＋ test）— 除錯模式下的捲動／frame／按鍵彙總紀錄，不含內容。</li>
+      <li><span class="tag new">new</span> <code>docs/testing/windows-herdr-terminal-input-scroll.md</code> — Windows 量測與驗收步驟、要回傳的項目、結果紀錄。</li>
+      <li><span class="tag new">new</span> <code>src/lib/spaceBranchMemory.ts</code>（＋ test）— 每個 Space 上次開啟的 branch（localStorage、LRU）。</li>
+      <li><span class="tag new">new</span> <code>src/state/agentMruStore.ts</code>（＋ test）— Agent 最近使用順序，只存記憶體。</li>
+      <li><span class="tag new">new</span> <code>src/app/workbench/useAgentHotkeys.ts</code>（＋ test）— <code>Alt+1..9</code>、按住 Alt 的數字標示、輪替狀態機。</li>
+      <li><span class="tag new">new</span> <code>src/app/workbench/AgentSwitcher.tsx</code>（＋ test）— 輪替浮層；不是 modal，焦點留在原位。</li>
+      <li><span class="tag new">new</span> <code>src/lib/herdrRuntimePlatform.ts</code>（＋ test）— 判斷 runtime 是否為 Windows ConPTY：本機 Windows，或 <code>hello.os === "windows"</code> 的 SSH 主機；WSL 永遠不是。</li>
+      <li><span class="tag new">new</span> <code>src/terminal/windowsConptyKeys.ts</code>（＋ test）— win32-input-mode 按鍵編碼；只有 Phase 8 證據支持時才建立。</li>
+      <li><span class="tag new">new</span> <code>specs/herdr-windows-terminal-and-sidebar-navigation-plan/design/*.md</code> — <code>$get-design</code> 的參考設計系統。</li>
+      <li><span class="tag new">new</span> <code>specs/herdr-windows-terminal-and-sidebar-navigation-plan/prototypes/session-picker-{a,b,c}.html</code> — 對話框原型。</li>
+      <li><span class="tag new">new</span> <code>docs/html/herdr-windows-terminal-sidebar-&lt;YYYY-MM-DD&gt;.html</code> — 結案報告（依 CLAUDE.md 慣例）。</li>
+    </ul>
+  </section>
+
+  <!-- ===== IMPLEMENTATION PHASES ===== -->
+  <section id="phases">
+    <h2>Implementation Phases</h2>
+    <p><strong>IMPORTANT:</strong> Execute every phase and task step by step, in order, top to bottom.</p>
+    <p>Status markers: <code>[]</code> idle · <code>[wip]</code> in progress · <code>[x]</code> complete · <code>[f]</code> failed. All start as <code>[]</code>; the Build Plan workflow updates them as it works.</p>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 0: 基線與護欄</h3>
+      <p>記錄開工前的狀態，讓之後的失敗能分辨是不是本次修改造成的。</p>
+
+      <h4>0.1 工作樹與領域文件</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>git status --short</code> 只有既有的未追蹤 <code>docs/html/*.html</code>；<code>git diff --cached --name-only</code> 為空。記下 HEAD。</li>
+        <li><code class="status">[x]</code> 讀 <code>.yuuzu/CONTEXT.html</code>、ADR-0004、ADR-0005，確認用語：Terminal Session 不等於 Agent Session；Herdr 是權威。</li>
+        <li><code class="status">[x]</code> 跑一次 0.2 的基線指令。既有失敗記在 Amendments，不修無關問題。</li>
+      </ul>
+
+      <h4>0.2 Testing Strategy</h4>
+      <p>以既有 CI 指令建立基線。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> — 型別基線。</li>
+        <li><code class="status">[x]</code> <code>bun run test</code> — Vitest 基線。</li>
+        <li><code class="status">[x]</code> <code>bun run lint</code> — ESLint 基線。</li>
+        <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo check --locked --all-targets &amp;&amp; cargo test --locked</code> — Rust 基線。</li>
+        <li><code class="status">[x]</code> <code>cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings</code> — host crate 沒有 warning。</li>
+        <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json</code> — 精確基準吻合。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 1: Windows 診斷工具（先量測）</h3>
+      <p>建立兩種證據來源並交給 Windows 端執行。本 Phase 結束後不必等結果，直接進入 Phase 2；Phase 7、8 開始前必須取得結果。</p>
+
+      <h4>1.1 App 內的診斷紀錄（<code>src/terminal/herdrTerminalDiagnostics.ts</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 新增彙總器 <code>recordHerdrTerminalMetric(metric)</code>，每 5 秒寫一筆 <code>log_event</code>（<code>level:"debug"</code>、<code>kind:"debug"</code>、<code>source:"herdr-terminal"</code>、<code>event:"herdr.terminal.diagnostics"</code>）。未啟用時完全不呼叫 IPC。</li>
+        <li><code class="status">[x]</code> 啟用條件：app 紀錄層級為 <code>debug</code>。啟動時用 <code>getLogLevel()</code> 讀一次；<code>LogsSection</code> 切換除錯紀錄成功後同步。既有 <code>VITE_YUZORA_SCROLL_DIAGNOSTICS</code> 仍可使用。不新增設定 UI。</li>
+        <li><code class="status">[x]</code> 捲動指標：wheel 事件數／秒、每次列數、策略（terminal／pane）；<code>herdrTerminalScroll</code>、<code>herdr_pane_scroll_state</code>、<code>herdr_pane_scroll_to</code> 的 invoke 耗時（p50／p95／max，包含 Rust 端子程序與 pipe 等待）。</li>
+        <li><code class="status">[x]</code> Frame 指標：frames／秒、full 與 delta 數、位元組 p50／p95／max、frame 間隔、<code>term.write</code> 回呼耗時 p50／p95。</li>
+        <li><code class="status">[x]</code> 按鍵指標（只記帶 Alt／Ctrl／Meta 或 Escape 的 keydown）：<code>combo</code>（例 <code>alt+q</code>）、<code>code</code>、<code>AltGraph</code>、<code>defaultPrevented</code>、xterm 是否送出資料，以及送出內容的描述。只記 ESC／控制字元開頭且 ≤ 8 bytes 的序列（例 <code>ESC 71</code>），一般文字一律只記 <code>text</code>。</li>
+        <li><code class="status">[x]</code> 在 terminal 容器加 capture keydown 觀察者，不替換 xterm 唯一的 <code>attachCustomKeyEventHandler</code>（目前由 <code>terminalClipboard.ts</code> 持有）。</li>
+        <li><code class="status">[x]</code> 在 <code>HerdrTerminalPage.tsx</code> 接線：wheel handler（<code>:911-931</code>）、transport 的 frame 事件、output queue 的寫入回呼、IME onData 路徑。接線不改變既有行為。</li>
+      </ul>
+<pre><code>// 彙總輸出（每 5 秒一筆，只有數字與按鍵名稱）
+{ windowMs: 5000, strategy: "terminal",
+  wheel: { events: 212, rowsP50: 6 },
+  ipc: { "terminal.scroll": { n: 180, p50: 2.1, p95: 9.8 }, "pane.get": { n: 5, p50: 212, p95: 340 } },
+  frames: { n: 176, full: 176, bytesP95: 31844, writeMsP95: 6.2, gapMsP50: 7 },
+  keys: [{ combo: "alt+q", code: "KeyQ", altGraph: false, prevented: false, emitted: "ESC 71" }] }</code></pre>
+
+      <h4>1.2 隔離探針（<code>scripts/probe-herdr-terminal-io.ts</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 沿用 <code>verify-herdr-runtime.ts</code> 的隔離做法：暫存 XDG／APPDATA／LOCALAPPDATA、獨立 session 名稱 <code>yz-probe-&lt;timestamp&gt;</code>、清除 <code>HERDR_*</code> 環境變數、拒絕暫存根目錄以外的 socket。結束時 <code>session stop</code> 並 <code>removeRuntimeFixture</code>。不碰使用者現有的 server。</li>
+        <li><code class="status">[x]</code> A 部分（延遲）：<code>herdr session list --json</code> 子程序 ×20、socket <code>ping</code> ×50、<code>pane.get</code> ×50、<code>pane.scroll</code> ×50（交替 offset）、connector <code>terminal.scroll</code> 到下一張 frame ×30（同時記 frame bytes 與 full／delta）。輸出 p50／p95／max。</li>
+        <li><code class="status">[x]</code> B 部分（按鍵送達矩陣）：程式 P1–P3 × 送出方式 D1–D3 × 按鍵 <code>alt+q</code>、<code>alt+t</code>、<code>alt+enter</code>、<code>esc</code>（見下表）。用 <code>pane.read</code>（recent，80 行）讀回，每次送出後等 400ms，比較新增的行。每個程式先印 <code>READY</code> 再開始送鍵，結束時送 <code>\x03</code>。</li>
+        <li><code class="status">[x]</code> 判讀：每格標記 <code>alt+X</code>（正確）、<code>esc,X</code>（被拆開）、<code>none</code>、<code>other</code>，並附上原始行供人工核對。</li>
+        <li><code class="status">[x]</code> 輸出 <code>--out &lt;file&gt;.json</code> 與終端摘要表。只有 harness 本身出錯才回傳非 0；矩陣裡的失敗是結果，不是錯誤。</li>
+        <li><code class="status">[x]</code> 可選：<code>bun build --compile --target=bun-windows-x64 scripts/probe-herdr-terminal-io.ts --outfile output/probe-herdr-terminal-io.exe</code>，讓 Windows 不必安裝 bun（<code>output/</code> 已在 <code>.gitignore</code>）。</li>
+        <li><code class="status">[x]</code> 先在 macOS 用本機 <code>herdr</code> 0.9.1 跑一次（隔離 session，POSIX 版本只有 P2、P3），確認 harness 正確。</li>
+      </ul>
+      <table>
+        <thead><tr><th>代號</th><th>pane 內的程式／送出方式</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td>P1</td><td>PowerShell <code>[Console]::ReadKey($true)</code> 迴圈，印 <code>KEY vk=… mods=… ch=…</code>（有 <code>pwsh.exe</code> 用它，否則 <code>powershell.exe</code>）</td><td>傳統 console API 看到的按鍵語意</td></tr>
+          <tr><td>P2</td><td>node（沒有就用 bun）的 raw-mode 讀取器，印 <code>RAW &lt;hex&gt;</code></td><td>像 pi 這類 Node Agent 實際收到的 VT 位元組</td></tr>
+          <tr><td>P3</td><td>同 P2，啟動時先輸出 <code>CSI &gt;1u</code>（Kitty keyboard）</td><td>啟用 Kitty 協定的 Agent</td></tr>
+          <tr><td>D1</td><td>connector <code>terminal.input</code> text <code>"\u001bq"</code></td><td>Yuzora 目前的路徑</td></tr>
+          <tr><td>D2</td><td>connector <code>terminal.input</code> bytes：win32-input-mode 按下＋放開，例 <code>\x1b[81;16;113;1;2;1_\x1b[81;16;113;0;2;1_</code></td><td>候選修法 H-B</td></tr>
+          <tr><td>D3</td><td>API <code>pane.send_keys ["alt+q"]</code></td><td>server 端編碼器（候選 H-C）</td></tr>
+        </tbody>
+      </table>
+
+      <h4>1.3 Windows 驗收文件（<code>docs/testing/windows-herdr-terminal-input-scroll.md</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 使用者步驟：(1) 用 Yuzora 內附的 <code>resources\herdr\windows-x86_64\herdr.exe</code> 或 PATH 上的 0.9.1 執行探針並保存 JSON；(2) 設定 → Logs 開啟除錯紀錄；(3) 在 Herdr terminal 的 pi pane 用滑鼠滾輪、觸控板各捲動 30 秒；(4) 在 pi 中按 Alt+Q、Alt+T、Alt+Enter、Esc；(5) 匯出已清理的紀錄；(6) 回傳 JSON、紀錄檔，以及 Windows 版本、鍵盤配置、輸入法、滑鼠／觸控板種類。</li>
+        <li><code class="status">[x]</code> 列出預期輸出與判讀方式，以及 Phase 7／8 修正後要重跑的同一組步驟。</li>
+      </ul>
+
+      <h4>1.4 Gate G1：Windows 執行方式</h4>
+      <div class="gate"><strong>Gate G1：</strong>Phase 1 完成後問使用者一次：代理能否透過 SSH alias <code>yuzora-windows</code> 執行隔離探針（只用暫存 session、不碰既有 Session、不操作 RDP 視窗），還是由使用者依文件自行執行。取得授權前，代理不得連線 Windows。App 內的除錯紀錄一定由使用者在 GUI 操作。結果放在 <code>output/windows-probe/</code>（不入版控）。不必等結果，接著做 Phase 2。</div>
+
+      <h4>1.5 Testing Strategy</h4>
+      <p>彙總器用 Vitest；探針用本機隔離 session 實跑。邊界：未啟用時零 IPC、空視窗不寫紀錄、一般文字不外洩、探針中途失敗仍清理暫存根目錄。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>bun run test src/terminal/herdrTerminalDiagnostics.test.ts</code> — 百分位、每 5 秒彙總、未啟用時不呼叫 invoke、按鍵描述不含一般文字。</li>
+        <li><code class="status">[x]</code> <code>bun run test src/app/panels/HerdrTerminalPage.test.tsx</code> — 接線不改變既有 wheel／frame／輸入行為。</li>
+        <li><code class="status">[x]</code> <code>bun scripts/probe-herdr-terminal-io.ts "$(command -v herdr)" --out /tmp/yz-probe-macos.json</code> — macOS 隔離執行成功；結束後暫存根目錄已刪除，<code>pgrep -fl yz-probe</code> 沒有殘留程序。</li>
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> 與 <code>bunx eslint &lt;觸及檔案&gt;</code> — 零錯誤、零警告。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 2: 移除 Agent 檢查器（#4）</h3>
+      <p>完整移除唯讀檢查器與 <code>agent.get</code>／<code>agent.read</code> 讀取路徑。選取 Agent 只會開啟它所屬的 pane，開不了時顯示可修復的錯誤。HERDR 工具裡的 Agent 功能（start／prompt／wait／rename／send-keys／explain，來自 <code>FEATURE_API_METHODS</code>）不受影響。</p>
+
+      <h4>2.1 前端 UI</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 刪除 <code>HerdrAgentInspector.tsx</code> 與其測試。</li>
+        <li><code class="status">[x]</code> <code>SpaceAgentTree.tsx</code>：移除 import、<code>inspected</code>、<code>inspectorTrigger</code>、Agent row 的 <code>ⓘ</code> 按鈕（<code>:922-936</code>）與 <code>&lt;HerdrAgentInspector&gt;</code>（<code>:994-1001</code>）。</li>
+        <li><code class="status">[x]</code> <code>activate()</code> 的 Agent 分支（<code>:537-558</code>）：前置條件不足時改成 <code>setError(sessionNotice(node.sessionName) ?? t("agentUnavailable"))</code>。</li>
+        <li><code class="status">[x]</code> Agent row 的 <code>title</code>／<code>aria-description</code> 從 <code>inspectHint</code> 改為新文案 <code>agentHint</code>（「開啟 Agent 所屬的 pane」）。</li>
+      </ul>
+
+      <h4>2.2 前端清理</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 刪除 <code>AnsiText.tsx</code>、<code>ansiSegments.ts</code> 與兩者的測試（已確認只有檢查器使用）。</li>
+        <li><code class="status">[x]</code> <code>herdrIpc.ts</code>：移除 <code>herdrAgentGet</code>、<code>herdrAgentRead</code>。<code>herdrTypes.ts</code>：移除 <code>HerdrAgentDetails</code>、<code>HerdrAgentReadResult</code>，以及 capability 的 <code>agentGet</code>／<code>agentRead</code>。</li>
+        <li><code class="status">[x]</code> <code>herdrStore.ts</code>：移除 <code>canInspectAgent</code>（介面與實作）。</li>
+        <li><code class="status">[x]</code> <code>dialogSize.ts</code>：移除 <code>"herdr-agent-inspector"</code>。舊的偏好值會被 <code>isDialogSizeId</code> 略過，不需要遷移。</li>
+        <li><code class="status">[x]</code> <code>src/demo/runtime.ts</code>：移除 <code>agentGet</code>／<code>agentRead</code> capability 名稱。</li>
+        <li><code class="status">[x]</code> i18n（兩語系）：移除 <code>workbench.herdrInspector.*</code>、<code>workbench.ansiText.*</code>、<code>workbench.herdrNav.inspectAgent</code>、<code>spaceTree.inspectAgent</code>、<code>spaceTree.inspectHint</code>；新增 <code>spaceTree.agentHint</code>、<code>spaceTree.agentUnavailable</code>。</li>
+      </ul>
+
+      <h4>2.3 Rust／host</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>src-tauri/src/herdr_service.rs</code>：刪除 <code>herdr_agent_get</code>、<code>herdr_agent_read</code>（<code>:528-560</code>）與 inventory 測試項（<code>:648-649</code>）。</li>
+        <li><code class="status">[x]</code> <code>src-tauri/src/lib.rs</code>：從 <code>generate_handler!</code>（<code>:473-474</code>）與 inventory 清單（<code>:654-655</code>）移除。</li>
+        <li><code class="status">[x]</code> <code>src-tauri/host/src/herdr_command.rs</code>：移除兩個 enum variant（<code>:167-172</code>）與分派（<code>:419-434</code>）。</li>
+        <li><code class="status">[x]</code> <code>src-tauri/host/src/herdr_service.rs</code>：移除 <code>HerdrAgentDetails</code>、<code>HerdrAgentReadResult</code>、<code>agent_get</code>／<code>agent_read</code> 方法、<code>parse_agent_get_response</code>／<code>parse_agent_read_response</code>、capability 欄位與旗標設定、<code>IMPLEMENTED_API_METHODS</code> 的 <code>"agent.get"</code>／<code>"agent.read"</code>，以及相關測試。</li>
+        <li><code class="status">[x]</code> 用 <code>rg</code> 確認沒有其他地方依賴 <code>api.methods</code> 內的 <code>agent.get</code>／<code>agent.read</code>。</li>
+      </ul>
+
+      <h4>2.4 測試與 fixture</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 依 <code>bun run typecheck</code> 修正所有含 <code>agentGet</code>／<code>agentRead</code> 的 capability fixture（herdrStore*、HerdrBridge*、TabBar、HerdrTerminalPage*、herdrCapabilities、herdrIpc、herdrContextMenu 等）。不放寬型別。</li>
+        <li><code class="status">[x]</code> <code>SpaceAgentTree.test.tsx</code>：移除 Inspector mock；把「offers ready agents an independent Inspector action…」改寫成兩個測試：Agent row 沒有檢查按鈕；無法聚焦時顯示帶 Session 狀態的 alert。</li>
+      </ul>
+
+      <h4>2.5 文件</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>README.md</code>／<code>README.zh-TW.md</code> 移除「Agent Inspector 維持唯讀」；<code>CLAUDE.md</code> 測試慣例移除「Agent Inspector 視覺」。</li>
+        <li><code class="status">[x]</code> ADR-0004 追加「2026-09-24 補充」：依使用者要求移除 Agent Inspector 與 <code>agent.get</code>／<code>agent.read</code>；Agent 選取只開啟所屬 pane。這段取代 2026-09-09 補充裡「既有 Agent 狀態與 Inspector 繼續呈現」的 Inspector 部分。</li>
+      </ul>
+
+      <h4>2.6 Testing Strategy</h4>
+      <p>先用 grep 確認沒有殘留引用，再跑前端相關測試與兩個 Rust crate。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>rg -n "HerdrAgentInspector|herdrAgentGet|herdrAgentRead|canInspectAgent|herdr-agent-inspector|herdrInspector|agent_get|agent_read|AnsiText|ansiSegments" src src-tauri/src src-tauri/host/src</code> — 沒有結果。</li>
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> — fixture 全部更新。</li>
+        <li><code class="status">[x]</code> <code>bun run test src/app/workbench src/lib src/state src/workbench src/app/panels</code> — 相關測試通過。</li>
+        <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check &amp;&amp; cargo check --locked --all-targets &amp;&amp; cargo test --locked</code> — inventory 測試通過。</li>
+        <li><code class="status">[x]</code> <code>cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check &amp;&amp; cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings &amp;&amp; cargo test --locked --manifest-path src-tauri/host/Cargo.toml</code> — host crate 沒有未使用程式碼警告。</li>
+        <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json</code> — 基準吻合。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 3: App 快捷鍵在 terminal 與輸入框內生效（#6a）</h3>
+      <p>讓 Mod 類的 App 指令（Windows／Linux 的 Mod 是 Ctrl）在 terminal 與一般輸入框內也能觸發，並建立 Phase 5 需要的平台預設鍵。macOS 行為不變。</p>
+
+      <h4>3.1 指令中繼資料</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>APP_COMMANDS</code> 每筆可設 <code>terminalSafe: true</code> 與 <code>macDefaultBinding?: string</code>。</li>
+        <li><code class="status">[x]</code> 新增 <code>defaultBindingFor(command, mac = isMacPlatform())</code>。<code>effectiveBinding</code>、<code>tabShortcutBindings</code>、<code>loadKeyboardOverrides</code>、<code>bindingError</code> 的衝突比對、<code>dispatchAppShortcut</code>、<code>KeyboardSettings</code> 全部改用平台預設。</li>
+        <li><code class="status">[x]</code> terminal-safe：<code>commandPalette</code>、<code>settings</code>、<code>toggleSidebar</code>、<code>toggleTools</code>、<code>toggleBrowser</code>、<code>modeAde</code>、<code>modeFiles</code>、<code>modeGit</code>、<code>modeDatabase</code>（Phase 5 再加入新指令）。<code>newTerminal</code> 與分頁指令維持現狀。</li>
+      </ul>
+
+      <h4>3.2 分派邏輯</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>dispatchAppShortcut</code>：terminal-safe 指令略過 <code>.xterm</code> 與 input／textarea／contenteditable 的阻擋；保留 IME、repeat、AltGraph、dialog／modal 的阻擋。</li>
+        <li><code class="status">[x]</code> terminal-safe 指令分派成功後 <code>preventDefault()</code> 並 <code>stopPropagation()</code>，避免 xterm 送出 <code>\x0b</code> 等控制字元。</li>
+        <li><code class="status">[x]</code> <code>CommandPalette.tsx:310</code> 的監聽器改成 capture（<code>addEventListener("keydown", handler, true)</code>，移除時同樣帶 <code>true</code>）。</li>
+      </ul>
+<pre><code>// keyboardSettingsStore.ts（示意）
+const command = APP_COMMANDS.find(c =&gt; c.id === id)!
+const terminalSafe = "terminalSafe" in command &amp;&amp; command.terminalSafe
+if (!terminalSafe) {
+  if (target?.closest(".xterm") &amp;&amp; !event.metaKey &amp;&amp; !tabNavigation) return false
+  if (target?.closest("input, textarea, [contenteditable=\"true\"]") &amp;&amp; !target.closest(".cm-editor")
+      &amp;&amp; !event.metaKey &amp;&amp; !tabNavigation) return false
+}
+event.preventDefault()
+if (tabNavigation || terminalSafe) event.stopPropagation()
+run()</code></pre>
+
+      <h4>3.3 按鍵比對與保留鍵</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>physicalKeyCode</code> 補上 <code>`</code>→<code>Backquote</code>、<code>,</code>→<code>Comma</code>、<code>.</code>→<code>Period</code>、<code>;</code>→<code>Semicolon</code>、<code>/</code>→<code>Slash</code>、<code>[</code>／<code>]</code>→<code>BracketLeft</code>／<code>BracketRight</code>、<code>\</code>→<code>Backslash</code>、<code>-</code>→<code>Minus</code>、<code>Tab</code>→<code>Tab</code>。只用於含 Alt／Shift 的組合，處理 dead key 與符號字元。</li>
+        <li><code class="status">[x]</code> <code>bindingValueError</code>：非 macOS 把 <code>Alt+Tab</code>、<code>Alt+Shift+Tab</code> 視為 reserved（由作業系統持有）。</li>
+      </ul>
+
+      <h4>3.4 文案</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>editorPreferences.keyboardScope</code>（兩語系）：說明 App 快捷鍵在 terminal 與輸入框內同樣生效；Windows／Linux terminal 內的 Ctrl+K 會開啟命令面板，可在此改鍵把它還給 terminal。</li>
+      </ul>
+
+      <h4>3.5 Testing Strategy</h4>
+      <p>jsdom 單元測試模擬 Windows／macOS UA、事件階段與焦點位置。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>keyboardSettingsStore.test.ts</code>：更新「terminal Ctrl input alone」為新語意（Windows UA 下 <code>.xterm</code> 內 Ctrl+K 會分派；<code>newTerminal</code> 仍被阻擋）。新增：textarea 內 Ctrl+K 分派、dialog 內不分派、capture 階段分派後目標監聽器收不到事件、macOS ⌘K 不變、Windows 下 <code>Alt+Tab</code> 為 reserved、dead key 改用 <code>event.code</code> 比對。</li>
+        <li><code class="status">[x]</code> <code>commandPalette.test.tsx</code>：焦點在 <code>.xterm</code> textarea 時 Ctrl+K 開啟命令面板。</li>
+        <li><code class="status">[x]</code> <code>bun run test src/state/keyboardSettingsStore.test.ts src/app/workbench/commandPalette.test.tsx</code></li>
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> 與觸及檔案的 ESLint — 零錯誤、零警告。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 4: 側邊欄列內動作與 Space 導覽（#2）</h3>
+      <p>動作按鈕搬進 row 內、只在 hover 或鍵盤聚焦時顯示。點 Space 會開啟上次的 branch，沒有記憶就開排序第一個。</p>
+      <figure>
+        <img src="herdr-windows-terminal-and-sidebar-navigation-plan/phase-sidebar-row.png" alt="三個側邊欄 row，滑鼠停在中間那列時，加號與更多按鈕出現在同一個列面的右側">
+        <figcaption>動作按鈕在同一個列面內右側，只有 hover 或鍵盤聚焦時展開；其他列保持安靜。</figcaption>
+      </figure>
+
+      <h4>4.1 Row 結構與樣式</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>.tree-row-shell</code> 成為列面：hover 與選取底色從 <code>.space-tree-row</code> 移到外框（<code>.tree-row-shell:hover</code>、<code>.tree-row-shell:has(&gt; .space-tree-row[aria-selected="true"])</code>）。focus ring 留在 treeitem 按鈕上。</li>
+        <li><code class="status">[x]</code> 動作按鈕包進 <code>&lt;div className="tree-row-actions"&gt;</code>，放在外框內右側。預設 <code>width:0; opacity:0; pointer-events:none</code>；<code>.tree-row-shell:is(:hover,:focus-within)</code> 時展開。不用 <code>display:none</code>／<code>visibility:hidden</code>，按鈕仍可用鍵盤到達。</li>
+        <li><code class="status">[x]</code> <code>@media (hover: none)</code> 時動作永遠顯示；<code>prefers-reduced-motion: reduce</code> 時取消過渡動畫。</li>
+        <li><code class="status">[x]</code> 深色主題、拖曳指示線、<code>data-current</code> 底色維持原樣。</li>
+      </ul>
+<pre><code>.tree-row-shell{border-radius:6px}
+.tree-row-shell:hover{background:var(--yz-hover)}
+.tree-row-shell:has(&gt; .space-tree-row[aria-selected="true"]){background:var(--yz-active)}
+.tree-row-actions{display:flex;flex-shrink:0;width:0;overflow:hidden;opacity:0;pointer-events:none}
+.tree-row-shell:is(:hover,:focus-within) .tree-row-actions{width:auto;opacity:1;pointer-events:auto}
+@media (hover:none){.tree-row-actions{width:auto;opacity:1;pointer-events:auto}}
+@media (prefers-reduced-motion:no-preference){.tree-row-actions{transition:opacity 120ms ease-out}}</code></pre>
+
+      <h4>4.2 動作內容</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> Branch row：既有的 <code>+</code>（新增 terminal）搬進動作群組，行為與停用條件不變。</li>
+        <li><code class="status">[x]</code> Space row：新增收合箭頭（<code>ChevronRight</code>，展開時旋轉；<code>aria-expanded</code>；標籤「展開／收合〈Space 名稱〉」），加上既有的 <code>⋮</code>。兩者都沿用 <code>suppressClickRef</code>，避免拖曳後誤觸。</li>
+        <li><code class="status">[x]</code> Session 標題列的按鈕不變。</li>
+      </ul>
+
+      <h4>4.3 點擊 Space</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 抽出 <code>activateBranch(branchNode, { toggleCollapse })</code>。Branch row 點擊維持現有行為（啟用並切換收合）。</li>
+        <li><code class="status">[x]</code> <code>activate(project)</code>：如果這個 Space 已包含目前選取的 branch（<code>containsSelection</code>），只聚焦該列，不做其他事。否則目標 = 記住的 branch（仍在 <code>node.children</code> 中），沒有就用 <code>node.children[0]</code>。先 <code>expand(node.key, true)</code>，再 <code>activateBranch(target, { toggleCollapse: false })</code>。</li>
+        <li><code class="status">[x]</code> 錯誤沿用 <code>setError</code>；使用者在未存檔確認中取消時不顯示錯誤。</li>
+      </ul>
+<pre><code>function activateSpace(node: TreeNode) {
+  focus(node.key)
+  const current = node.sessionName === session &amp;&amp; node.children.some(c =&gt; c.space.id === selectedSpace)
+  if (current) return                       // 維持不動
+  const remembered = rememberedSpaceBranch(node.key)
+  const target = node.children.find(c =&gt; c.space.id === remembered) ?? node.children[0]
+  expand(node.key, true)
+  if (target) activateBranch(target, { toggleCollapse: false })
+}</code></pre>
+
+      <h4>4.4 Branch 記憶（<code>src/lib/spaceBranchMemory.ts</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> API：<code>rememberSpaceBranch(projectKey, workspaceId)</code>、<code>rememberedSpaceBranch(projectKey)</code>。localStorage key <code>yuzora.sidebar.lastBranch.v1</code>；LRU 上限 200；只用 <code>getItem</code>／<code>setItem</code>，失敗時保留記憶體內的狀態。</li>
+        <li><code class="status">[x]</code> <code>projectKey</code> 直接用既有的 <code>node.key</code>（<code>JSON.stringify([sessionName, "project", group])</code>），所以不同主機、不同 Session 不會互相覆蓋。</li>
+        <li><code class="status">[x]</code> 在既有的 <code>[session, selectedSpace]</code> effect（<code>SpaceAgentTree.tsx:486-520</code>）裡記錄；側邊欄、Command Palette、還原等所有啟用來源都會更新。</li>
+        <li><code class="status">[x]</code> Herdr server 重啟後 workspace id 改變時，找不到就回到第一個 branch。</li>
+      </ul>
+
+      <h4>4.5 文案（兩語系）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>folderHint</code> 改成新的 Space 行為說明（「點選開啟上次的 branch；方向鍵展開／收合」）；新增收合箭頭的標籤。</li>
+      </ul>
+
+      <h4>4.6 Testing Strategy</h4>
+      <p>行為用 Testing Library 測；視覺要實際看。邊界：記憶的 branch 消失、跨 Session 同名 group、拖曳門檻、storage 例外。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>SpaceAgentTree.test.tsx</code> 新測試：沒有記憶時開第一個 branch 並展開；選過 branch B 後重新掛載，點 Space 開 B；B 從 snapshot 消失時回到第一個；點已含目前選取的 Space 不呼叫 <code>activateSpace</code>、不收合；箭頭只切換收合、不啟用；不同 Session 的同名 group 記憶互不影響；動作按鈕在 <code>.tree-row-actions</code> 內且 Tab 可到達；拖曳門檻內的點擊仍會啟用（改寫既有測試）。</li>
+        <li><code class="status">[x]</code> <code>spaceBranchMemory.test.ts</code>：LRU、損壞的 JSON、storage 丟例外。</li>
+        <li><code class="status">[x]</code> <code>bun run test src/app/workbench/SpaceAgentTree.test.tsx src/app/workbench/SpaceAgentTree.create.test.tsx src/app/workbench/SpaceAgentTree.status.test.tsx src/lib/spaceBranchMemory.test.ts</code></li>
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> 與觸及檔案的 ESLint。</li>
+        <li><code class="status">[x]</code> 視覺檢查（hover、選取、拖曳、深色主題、窄側邊欄）：使用瀏覽器自動化前要先取得同意；沒有同意就列為待使用者確認。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 5: 側邊欄快捷鍵：切換檢視、Alt+1..9、Agent 輪替（#3）</h3>
+      <p>加入檢視切換、前 9 個 Agent 的直接跳轉，以及類似 Alt+Tab 的輪替。全部使用 Phase 3 的 terminal-safe 與平台預設鍵。</p>
+      <figure>
+        <img src="herdr-windows-terminal-and-sidebar-navigation-plan/phase-agent-switcher.png" alt="浮動卡片列出四個 Agent，其中一個被框選；下方是按住的 Alt 與重複按下的 Tab">
+        <figcaption>按住修飾鍵、連按輪替鍵移動選取，放開才切換。浮層不是 modal，焦點留在原本的 terminal。</figcaption>
+      </figure>
+
+      <h4>5.1 新指令（全部 terminal-safe、可改鍵）</h4>
+      <table>
+        <thead><tr><th>id</th><th>Windows／Linux 預設</th><th>macOS 預設</th><th>動作</th></tr></thead>
+        <tbody>
+          <tr><td><code>toggleSidebarView</code></td><td><code>Ctrl+Shift+E</code></td><td><code>⌘⇧E</code></td><td>切換 Spaces／Agents；側邊欄收合時同時展開</td></tr>
+          <tr><td><code>agent1</code>…<code>agent9</code></td><td><code>Alt+1</code>…<code>Alt+9</code></td><td><code>⌥1</code>…<code>⌥9</code></td><td>跳到 Agents 清單第 N 個</td></tr>
+          <tr><td><code>agentCycleNext</code></td><td><code>Alt+`</code></td><td><code>⌥Tab</code></td><td>開啟／前進輪替</td></tr>
+          <tr><td><code>agentCyclePrevious</code></td><td><code>Alt+Shift+`</code></td><td><code>⌥⇧Tab</code></td><td>反向輪替</td></tr>
+        </tbody>
+      </table>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 加入上表指令與 <code>editorPreferences.commands.*</code> 文案（兩語系）；衝突與 reserved 檢查使用平台預設。</li>
+      </ul>
+
+      <h4>5.2 切換檢視</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>uiStore</code>：新增 <code>sidebarViewToggleRequest</code> nonce 與 <code>requestSidebarViewToggle()</code>（沿用既有 nonce 模式）。</li>
+        <li><code class="status">[x]</code> <code>SpaceAgentTree</code>：effect 收到 nonce 後切換 <code>viewMode</code>，寫入原本的 <code>yuzora.sidebar.view</code>。</li>
+        <li><code class="status">[x]</code> <code>AppShell</code>：同一個 nonce 會在側邊欄收合時展開它（已展開就不動）。</li>
+        <li><code class="status">[x]</code> <code>WorkbenchKeyboardBridge</code> 在 capture 階段分派 <code>toggleSidebarView</code>。</li>
+      </ul>
+
+      <h4>5.3 Alt+1..9 與數字標示</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>useAgentHotkeys({ agents, activate })</code>：<code>agents</code> 是 Agents 檢視的順序（<code>all.filter(kind === "agent")</code>，受目前 Session 範圍影響）；在 Spaces 檢視也使用同一個順序。</li>
+        <li><code class="status">[x]</code> 快捷鍵啟用 Agent 時不把 DOM 焦點移到側邊欄：<code>activateAgentNode(node, { focusRow: false })</code>；Agent 的 terminal 分頁會自己取得焦點。</li>
+        <li><code class="status">[x]</code> 按住 Alt（macOS ⌥）時，Agents 檢視前 9 列在列內顯示 <code>&lt;Kbd&gt;</code> 數字；放開、視窗失焦或按下其他鍵時隱藏。前 9 列一律加上 <code>aria-keyshortcuts</code>。</li>
+        <li><code class="status">[x]</code> 清單不到 N 個時不做事。</li>
+      </ul>
+
+      <h4>5.4 最近使用順序（<code>src/state/agentMruStore.ts</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 只存在記憶體；key = <code>JSON.stringify([sessionName, agentId])</code>；上限 50。</li>
+        <li><code class="status">[x]</code> 更新時機：<code>herdrStore.activateAgent</code> 成功後；使用者點擊聚焦 pane 時（<code>HerdrTerminalPage.onActivatePane</code> 成功後，用 snapshot 的 <code>paneId</code> 對應 Agent）。</li>
+        <li><code class="status">[x]</code> 輪替順序：仍存在的 MRU 項目在前，其餘 Agent 依清單順序接在後面。</li>
+      </ul>
+
+      <h4>5.5 輪替浮層（<code>AgentSwitcher.tsx</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 狀態機（見下方示意）：第一次按下打開浮層並選取第 2 個（上一個 Agent）；之後每按一次移動一格（反向指令往回，頭尾相接）；指令的非 Shift 修飾鍵全部放開時提交；Esc 或視窗失焦取消；點項目即提交；滑鼠移到項目上會改變選取。</li>
+        <li><code class="status">[x]</code> 0–1 個 Agent 時不開啟。</li>
+        <li><code class="status">[x]</code> 不是 modal：焦點留在原處（通常是 terminal）；浮層用 portal 顯示，<code>aria-live="polite"</code> 讀出目前選取。</li>
+        <li><code class="status">[x]</code> 內容：AgentLogo、名稱、狀態、Space／branch；最多顯示 9 列，其餘用 ScrollArea 捲動。</li>
+        <li><code class="status">[x]</code> 用 shadcn 的 <code>Card</code>、<code>Item</code>、<code>Kbd</code>、<code>ScrollArea</code> 組成。shadcn 沒有 Alt+Tab 式的切換器，所以屬於允許的領域自訂 UI（在變更說明寫明原因）。</li>
+        <li><code class="status">[x]</code> 有 dialog 開啟時不觸發（<code>dispatchAppShortcut</code> 既有規則）。</li>
+      </ul>
+<pre><code>idle --cycle(dir)--&gt; open{ order = mruOrder(agents), index = wrap(dir &gt; 0 ? 1 : -1) }
+open --cycle(dir)--&gt; open{ index = wrap(index + dir) }
+open --keyup(非 Shift 修飾鍵全部放開)--&gt; commit(order[index]) --&gt; idle
+open --Escape | window.blur--&gt; idle   // 不啟用
+open --click(item)--&gt; commit(item) --&gt; idle</code></pre>
+
+      <h4>5.6 Testing Strategy</h4>
+      <p>jsdom 模擬不同平台的按鍵事件序列（keydown／keyup／blur）。邊界：清單太短、Agent 消失、dialog 開啟、macOS 符號字元。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>useAgentHotkeys.test.ts</code>：Windows UA 下焦點在 <code>.xterm</code> 按 Alt+1 啟用第 1 個 Agent；macOS <code>key:"¡", code:"Digit1"</code> 也能比對；N 超過清單長度不做事；啟用時不聚焦側邊欄列。</li>
+        <li><code class="status">[x]</code> <code>AgentSwitcher.test.tsx</code>：Alt+` 一次後放開 → 上一個 Agent；兩次 → MRU 第三個；Shift 反向；Esc／blur 取消且不啟用；點項目提交；0–1 個 Agent 不開啟；dialog 開啟時不觸發；macOS 預設 ⌥Tab。</li>
+        <li><code class="status">[x]</code> <code>agentMruStore.test.ts</code>：去重、上限、已消失的 Agent 被略過。</li>
+        <li><code class="status">[x]</code> <code>SpaceAgentTree.test.tsx</code>：Mod+Shift+E 切換並持久化；按住 Alt 顯示數字；<code>aria-keyshortcuts</code>。</li>
+        <li><code class="status">[x]</code> <code>bun run test src/app/workbench/useAgentHotkeys.test.ts src/app/workbench/AgentSwitcher.test.tsx src/state/agentMruStore.test.ts src/app/workbench/SpaceAgentTree.test.tsx src/state/keyboardSettingsStore.test.ts</code></li>
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> 與觸及檔案的 ESLint。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[x]</code> Phase 6: 「加入 Herdr Session」對話框（#5）</h3>
+      <p>先找參考、做原型，使用者選定後才實作。原型與實作都使用 Yuzora 自己的 token（<code>src/styles.css</code> 的 paper／ink／lime 與 Hanken Grotesk／JetBrains Mono／Newsreader），參考品牌只提供資訊密度與互動模式。</p>
+
+      <h4>6.1 設計參考（<code>$get-design</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>bunx getdesign@latest add linear.app --out specs/herdr-windows-terminal-and-sidebar-navigation-plan/design/linear.md</code>；<code>raycast</code>、<code>vercel</code> 同樣輸出到 <code>design/</code>。</li>
+        <li><code class="status">[x]</code> 整理要借用的模式：Linear 的精準清單列與狀態標記、Raycast 的鍵盤優先列表與底部操作提示、Vercel 的步驟與空狀態。顏色、字體與元件仍以 Yuzora token 與 shadcn <code>radix-nova</code> 為準。</li>
+      </ul>
+
+      <h4>6.2 原型（<code>$claude-design</code>）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 3 個獨立 HTML（自帶 CSS／JS、不載入外部資源），放在 <code>specs/herdr-windows-terminal-and-sidebar-navigation-plan/prototypes/</code>：
+          <ul>
+            <li><strong>A　來源欄＋Session 清單</strong>：左側列出已連線／SSH／WSL 與各自數量，右側是 Session 列（名稱、主機、狀態、是否已載入）。</li>
+            <li><strong>B　指令面板式</strong>：一個可搜尋清單涵蓋所有來源，依主機分組；主機需要設定時在列內展開。</li>
+            <li><strong>C　步驟式</strong>：來源 → 主機／runtime → Session，適合第一次設定 SSH／WSL。</li>
+          </ul>
+        </li>
+        <li><code class="status">[x]</code> 每個原型都要涵蓋這些狀態：載入中、沒有執行中的 Session、主機未連線、runtime 設定、相容性錯誤、已停止（停用並說明）、已載入標記、載入進行中、成功關閉；淡色與深色。</li>
+        <li><code class="status">[x]</code> 只做本機靜態檢查（HTML 結構、沒有外部資源）。需要截圖或瀏覽器自動化時要先取得同意。</li>
+      </ul>
+
+      <h4>6.3 Gate G2：選定設計</h4>
+      <div class="gate"><strong>Gate G2：</strong>停下來，把三個原型的路徑交給使用者選擇（可混搭）。把決定寫進 Amendments 後才開始 6.4。</div>
+
+      <h4>6.4 實作</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> 依選定的設計重寫 <code>HerdrSessionPicker.tsx</code>。元件使用已在 <code>src/components/ui/</code> 的 <code>Dialog</code>、<code>ToggleGroup</code> 或 <code>Tabs</code>、<code>Item</code>、<code>Badge</code>、<code>Empty</code>、<code>Field</code>、<code>Select</code>、<code>Button</code>、<code>ScrollArea</code>、<code>Kbd</code>、<code>Tooltip</code>。需要的元件若不在清單內，先用 <code>bunx --bun shadcn@latest search</code> 確認。</li>
+        <li><code class="status">[x]</code> Session 清單：狀態 Badge（執行中／已停止／已載入）與主機標籤；↑↓ 移動、Enter 載入、雙擊載入；已停止者停用，並說明要到「HERDR 工具 → Sessions」啟動。</li>
+        <li><code class="status">[x]</code> Footer 顯示主要按鈕停用的原因；保留重新整理。</li>
+        <li><code class="status">[x]</code> 空狀態與錯誤附上可直接操作的按鈕（管理主機、開啟 HERDR 工具的 Sessions 分頁、重新整理）。</li>
+        <li><code class="status">[x]</code> 文案兩語系；對話框尺寸依 <code>resizable-modal-window-sizing-plan</code> 的慣例決定是否加入 <code>dialogSize</code> id。</li>
+        <li><code class="status">[x]</code> 保留 6.5 列出的所有既有行為契約。</li>
+      </ul>
+
+      <h4>6.5 Testing Strategy</h4>
+      <p>既有契約全部保留，只更新查詢方式；新增鍵盤與停用原因的測試。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>HerdrSessionPicker.test.tsx</code> 保留：SSH 主機簿與密碼流程；在對話框內新增 SSH 主機；設定主機、重新整理並載入精確的 namespace；已連線的 runtime 不重新部署；不相容錯誤持續顯示，且不載入該主機的快取 Session；不使用前一個 SSH transport 的 runtime；WSL 依既有設定啟用；WSL2 探索、連線並載入；非 Windows 不顯示 WSL；關閉後不套用延遲的選擇。</li>
+        <li><code class="status">[x]</code> 新增：↑↓＋Enter 載入；停用原因文字；已停止的 Session 無法載入；已載入標記。</li>
+        <li><code class="status">[x]</code> <code>SpaceAgentTree.create.test.tsx</code> 裡開啟對話框的流程依新 UI 更新。</li>
+        <li><code class="status">[x]</code> <code>bun run test src/app/workbench/HerdrSessionPicker.test.tsx src/app/workbench/SpaceAgentTree.create.test.tsx src/app/workbench/SpaceAgentSidebar.test.tsx</code></li>
+        <li><code class="status">[x]</code> <code>bun run typecheck</code> 與觸及檔案的 ESLint。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[wip]</code> Phase 7: Windows terminal 捲動效能（#1，依證據）</h3>
+      <p>F1、F2 是程式碼已證實的成本，無條件實施。F3–F5 依 Windows 量測決定。</p>
+      <div class="gate"><strong>前置條件：</strong>已取得 Phase 1 的 Windows 探針 JSON 與除錯紀錄。沒有就停下來等待，不要猜。</div>
+      <figure>
+        <img src="herdr-windows-terminal-and-sidebar-navigation-plan/phase-scroll-pacing.png" alt="滾輪產生很多刻度，經過節拍器式的閘門後每拍只放行一個脈衝，流向 server 與 terminal">
+        <figcaption>每拍只送一次：等下一張 frame 到達才送下一次捲動，等待期間的捲動量合併。</figcaption>
+      </figure>
+
+      <h4>7.1 分析證據</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 在 <code>docs/testing/windows-herdr-terminal-input-scroll.md</code> 填入前後對照表（欄位見 Notes）。</li>
+        <li><code class="status">[]</code> 依表格決定 F3–F5 是否實施，理由寫進 Amendments。</li>
+      </ul>
+
+      <h4>7.2 F1：Session 清單與 ping 快取（無條件）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>HerdrManager</code> 新增 session inventory 快取：TTL 1000ms，binary fingerprint 改變就失效。<code>list_sessions()</code>（UI 明確重新整理）一律重新讀取並更新快取；<code>resolve_named_session</code> 使用快取。</li>
+        <li><code class="status">[x]</code> <code>call_checked_api</code> 只解析一次 <code>(session, socket)</code>，傳進 capability 驗證；移除第二次 <code>require_running_session_socket</code>。</li>
+        <li><code class="status">[x]</code> 同一個 socket 與 fingerprint 在 1000ms 內驗證過 <code>ping</code> 就不重複 ping。</li>
+        <li><code class="status">[x]</code> 任何 API 請求錯誤、身分不符、session start／stop／delete 執行後，清除兩種快取。</li>
+        <li><code class="status">[x]</code> 不變的契約：socket 路徑只來自 session list；已停止的 session 仍會被拒絕（最多延遲一個 TTL，出錯時立刻失效）。remote backend（WSL／SSH）也共用同一套快取，順便減少 helper 來回。</li>
+        <li><code class="status">[x]</code> Rust 測試（Unix fake binary 加計數檔，搭配 fake socket server）：TTL 內連續 5 次 <code>pane_scroll_state</code> 最多 1 次 <code>session list</code>；socket 錯誤後下一次重新 list；TTL 過後已停止的 session 被拒絕；<code>list_sessions()</code> 一律重新讀取。</li>
+      </ul>
+<pre><code>// host/src/herdr_service.rs（示意）
+const SESSION_INVENTORY_TTL: Duration = Duration::from_millis(1000);
+
+pub(crate) fn call_checked_api(&amp;self, session: Option&lt;&amp;str&gt;, is_available: impl Fn(&amp;HerdrApiCapability) -&gt; bool,
+                               method: &amp;str, params: Value, unavailable: &amp;str) -&gt; Result&lt;Value, String&gt; {
+    let (named, socket) = self.require_running_session_socket(session)?;      // 快取的 inventory，只解析一次
+    let caps = self.cached_capabilities_for_resolved(session, &amp;named, &amp;socket); // ping 1s 有效窗
+    if !is_available(&amp;caps.api) { return Err(caps.api.reason.unwrap_or_else(|| unavailable.into())); }
+    self.request_api(&amp;socket, method, params).inspect_err(|_| self.invalidate_runtime_caches(&amp;socket))
+}</code></pre>
+
+      <h4>7.3 F2：Windows named pipe 等待（無條件）</h4>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>wait_local_ready</code> 的 Windows 分支改成自適應等待：互動請求 1、1、2、4、8ms…上限 8ms；事件通道（<code>events_subscribe</code> 讀取迴圈）維持上限 100ms。用 <code>LocalWaitProfile::{Interactive, Idle}</code> 參數傳入：<code>read_local_ndjson_line</code> 預設 Interactive，事件迴圈指定 Idle。</li>
+        <li><code class="status">[x]</code> 所有 deadline 行為不變；Unix 的 <code>poll()</code> 路徑不變。</li>
+        <li><code class="status">[x]</code> 單元測試：等待序列（純函式、結果可決定）；既有 Windows CI（<code>cargo test --locked --lib herdr_</code>）的功能測試全部通過。</li>
+      </ul>
+
+      <h4>7.4 F3：wheel 依 frame 節流（條件：frames／秒高於畫面更新率，或 IPC 積壓）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>terminalTransport.scroll</code> 的 terminal 分支：送出一次 <code>terminal.scroll</code> 後，等下一張 frame 或 50ms 逾時再送下一次；等待期間累積的 delta 合併。第一次捲動不延遲。</li>
+        <li><code class="status">[]</code> 測試：frame 到達前連續 10 次 scroll 最多產生 2 次 IPC，總列數不變；沒有 frame 時 50ms 後釋放；connector 關閉時清空。</li>
+      </ul>
+
+      <h4>7.5 F4：scrollbar 同步（條件：證據或使用者回報 thumb 落後）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> terminal 策略下，最後一次 wheel 後 150ms（debounce）呼叫 <code>HerdrScrollbar</code> 的 refresh，不必等 1 秒輪詢。</li>
+      </ul>
+
+      <h4>7.6 F5：full frame 依繪製合併（條件：<code>term.write</code> p95 &gt; 8ms 且 frames／秒 &gt; 60）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> full frame 改在下一個 animation frame 寫入，期間新的 full frame 取代舊的；delta 仍接在最後接受的 full frame 之後。不在 full frame 前呼叫 <code>term.reset()</code>（會造成一幀抖動）。</li>
+      </ul>
+
+      <h4>7.7 不在範圍</h4>
+      <div class="gate"><strong>Gate G4：</strong>只有證據顯示繪製是瓶頸時，才提議加入 <code>@xterm/addon-webgl</code>（新依賴），且要先取得使用者同意。</div>
+
+      <h4>7.8 Windows 重新量測</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 使用者（或已取得 G1 授權的 SSH 隔離探針）用同樣步驟重測。目標：wheel 到下一張 frame p95 ≤ 50ms、<code>pane.get</code> p50 ≤ 20ms、使用者確認不再卡頓；macOS／WSL 沒有退化。</li>
+      </ul>
+
+      <h4>7.9 Testing Strategy</h4>
+      <p>Rust 用 fake binary＋fake socket 驗證快取與失效；前端用 fake transport 驗證節流；實際效果用同一個探針在 macOS 與 Windows 對照。</p>
+      <ul class="checklist">
+        <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check &amp;&amp; cargo check --locked --all-targets &amp;&amp; cargo test --locked</code></li>
+        <li><code class="status">[x]</code> <code>cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check &amp;&amp; cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings &amp;&amp; cargo test --locked --manifest-path src-tauri/host/Cargo.toml</code></li>
+        <li><code class="status">[x]</code> <code>cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json</code></li>
+        <li><code class="status">[x]</code> <code>bun run test src/terminal src/app/panels/HerdrTerminalPage.test.tsx</code></li>
+        <li><code class="status">[x]</code> <code>bun scripts/benchmark-herdr-scroll.ts</code> — pane controller 行為沒有退化。</li>
+        <li><code class="status">[x]</code> <code>bun scripts/probe-herdr-terminal-io.ts "$(command -v herdr)" --out /tmp/yz-probe-macos-after.json</code> — macOS 沒有退化。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 8: Windows terminal 的 Alt 組合鍵送達 Agent（#6b，依證據）</h3>
+      <p>依 Phase 1 的送達矩陣與 App 內按鍵紀錄選擇修法。預期是 H-B：Windows ConPTY runtime 的修飾鍵改送 win32-input-mode 記錄，與 Herdr 自己的 Windows 輸入路徑一致。</p>
+      <div class="gate"><strong>前置條件：</strong>已取得 Windows 的按鍵矩陣與 App 內按鍵紀錄。沒有就停下來等待。</div>
+      <figure>
+        <img src="herdr-windows-terminal-and-sidebar-navigation-plan/phase-alt-key-delivery.png" alt="Alt+Q 從 terminal 送往 ConPTY 的兩條路徑：上方原始 ESC 位元組在途中散開，下方結構化按鍵記錄完整送達">
+        <figcaption>同一個 Alt+Q：原始 ESC 前綴可能被 ConPTY 拆開；win32-input-mode 記錄以一個完整按鍵送達（示意，以探針結果為準）。</figcaption>
+      </figure>
+
+      <h4>8.1 判讀</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 依 Notes 的決策矩陣選出 H-A／H-B／H-C／H-D，寫進 Amendments。證據不符合任何一列就停下來回報。</li>
+      </ul>
+
+      <h4>8.2 H-A：keydown 或 xterm 輸出缺失</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 停下來：問題在 WebView2／Tauri 的加速鍵處理（例如 wry 的 <code>AcceleratorKeyPressed</code>）或 Yuzora 前端攔截，需要另外提出修法；不改 terminal 編碼。</li>
+      </ul>
+
+      <h4>8.3 H-B：原始 ESC 前綴被 ConPTY 拆開或忽略，win32-input-mode 正確 → 實作</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>src/lib/herdrRuntimePlatform.ts</code>：<code>isWindowsConptyRuntime(sessionName)</code>。<code>parseRuntimeScope(sessionName).hostId === LOCAL_HOST_ID</code> 時回傳 <code>isWindowsPlatform()</code>；host config 是 WSL 時回傳 false；SSH 主機依 <code>useHostStore</code> 的 <code>connection.hello.os === "windows"</code>。</li>
+        <li><code class="status">[]</code> <code>src/terminal/windowsConptyKeys.ts</code>：<code>encodeWin32InputModeKey(event)</code> 輸出按下＋放開兩筆 <code>CSI Vk;Sc;Uc;Kd;Cs;Rc _</code>。範圍只含矩陣中失敗的按鍵（預期：Alt＋字母／數字／標點、Alt+Enter、Alt+Backspace、單獨 Esc）。VK 用 Windows Chromium 的 <code>event.keyCode</code>；scan code 由 <code>event.code</code> 查 set-1 表；control state：LEFT_ALT 0x2、LEFT_CTRL 0x8、SHIFT 0x10。</li>
+        <li><code class="status">[]</code> 不編碼：AltGraph、Ctrl+Alt（字元組合）、IME 組字（<code>isComposing</code> 或 <code>keyCode 229</code>）、沒有修飾鍵的一般文字。App 快捷鍵已在 capture 階段被取用，不會到這裡。</li>
+        <li><code class="status">[]</code> 接線：<code>installTerminalClipboardHandling</code> 增加 <code>keyInterceptor</code> 選項，放在既有 Alt+V／Shift+Enter 之前（xterm 只能有一個 <code>attachCustomKeyEventHandler</code>）。命中時 <code>preventDefault()</code>，經 <code>transport.write(sequence)</code> 走同一條有序輸入佇列，回傳 false。</li>
+        <li><code class="status">[]</code> 只有 <code>HerdrTerminalPage</code> 傳入 interceptor。完整 Session 畫面（<code>HerdrNativeDialog</code>）不在本次範圍，列為後續觀察項目。</li>
+      </ul>
+<pre><code>// windowsConptyKeys.ts（示意）— 格式與 Herdr 0.9.1 encode_windows_conpty_fallback 相同
+const record = (vk: number, sc: number, uc: number, down: 0 | 1, cs: number) =&gt;
+  `\x1b[${vk};${sc};${uc};${down};${cs};1_`
+export function encodeWin32InputModeKey(e: KeyboardEventLike): string | null {
+  if (e.isComposing || e.keyCode === 229 || e.altGraph || (e.ctrlKey &amp;&amp; e.altKey)) return null
+  if (!e.altKey &amp;&amp; e.key !== "Escape") return null
+  const sc = SCAN_CODES[e.code]; if (sc === undefined) return null
+  const uc = e.key === "Escape" ? 27 : e.key === "Enter" ? 13 : e.key.length === 1 ? e.key.codePointAt(0)! : 0
+  const cs = (e.altKey ? 0x2 : 0) | (e.shiftKey ? 0x10 : 0)
+  return record(e.keyCode, sc, uc, 1, cs) + record(e.keyCode, sc, uc, 0, cs)
+}
+// Alt+Q  → \x1b[81;16;113;1;2;1_\x1b[81;16;113;0;2;1_
+// Escape → \x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_   （與 Herdr 測試一致）</code></pre>
+
+      <h4>8.4 H-C：只有 server 編碼（<code>pane.send_keys</code>）對啟用 Kitty 的 Agent 正確</h4>
+      <div class="gate"><strong>Gate G3：</strong>停下來提案。混合送出要處理 connector 與 API 兩條通道的順序問題，必須先取得使用者同意再設計。</div>
+
+      <h4>8.5 H-D：Windows 上原始 <code>ESC q</code> 在所有程式都正確</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 不改編碼；回到 App 內按鍵紀錄找差異（例如特定 Agent 的按鍵設定），回報使用者。</li>
+      </ul>
+
+      <h4>8.6 Windows 驗收</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 使用者在 Herdr terminal 的 pi pane 驗證 Alt+Q、Alt+T、Alt+Enter、Esc、Ctrl+K（命令面板）、一般輸入與中文輸入法；macOS／WSL 回歸沒有變化。</li>
+      </ul>
+
+      <h4>8.7 Testing Strategy</h4>
+      <p>編碼器用固定 fixture（與 Herdr 原始碼測試對齊）；接線用 fake transport 確認順序與平台判斷。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>windowsConptyKeys.test.ts</code>：Alt+Q → <code>\x1b[81;16;113;1;2;1_\x1b[81;16;113;0;2;1_</code>；Esc → <code>\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_</code>；AltGraph／IME／一般文字回傳 null。</li>
+        <li><code class="status">[]</code> <code>herdrRuntimePlatform.test.ts</code>：本機 Windows 為 true；WSL 為 false；<code>hello.os</code> 為 windows 的 SSH 為 true；Linux SSH 為 false；macOS 本機為 false。</li>
+        <li><code class="status">[]</code> <code>HerdrTerminalPage.test.tsx</code>／<code>terminalClipboard</code> 測試：interceptor 命中時走同一個輸入佇列且順序不變；WSL runtime 仍送 <code>ESC q</code>。</li>
+        <li><code class="status">[]</code> <code>bun run test src/terminal src/lib/herdrRuntimePlatform.test.ts src/app/panels</code></li>
+        <li><code class="status">[]</code> <code>bun run typecheck</code> 與觸及檔案的 ESLint。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 9: 文件、ADR 與總驗證</h3>
+      <p>整理證據與文件，跑完整驗證，寫結案報告。</p>
+
+      <h4>9.1 文件</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 更新 <code>docs/testing/windows-herdr-terminal-input-scroll.md</code> 的結果與證據：探針 JSON 摘要、紀錄摘要、使用者確認。</li>
+        <li><code class="status">[]</code> 確認 ADR-0004 補充與 README／<code>CLAUDE.md</code> 的描述一致。</li>
+        <li><code class="status">[]</code> 結案報告 <code>docs/html/herdr-windows-terminal-sidebar-&lt;YYYY-MM-DD&gt;.html</code>：各 Phase 狀態、證據、未完成項目（標 <code>[f]</code>）與使用者要處理的事項。</li>
+        <li><code class="status">[]</code> 依 Build Plan 流程追加本計畫 metadata（modified、agent、session、commits）。</li>
+        <li><code class="status">[]</code> 不執行 <code>git add</code>／<code>commit</code>／<code>push</code>。</li>
+      </ul>
+
+      <h4>9.2 Testing Strategy</h4>
+      <p>執行下方 Validation Commands 的完整清單。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>bun run build</code> — typecheck＋Vite production build。</li>
+        <li><code class="status">[]</code> <code>git diff --check</code> — 沒有空白錯誤。</li>
+        <li><code class="status">[]</code> <code>git diff --cached --name-only</code> — 輸出為空。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== GLOBAL VALIDATION ===== -->
+  <section id="validation">
+    <h2>Validation Commands</h2>
+    <p>Execute these commands to validate the entire plan is complete:</p>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>bun run typecheck</code> — 兩份 tsconfig 型別檢查通過。</li>
+      <li><code class="status">[]</code> <code>bun run test</code> — 完整 Vitest 通過。</li>
+      <li><code class="status">[]</code> <code>bun run lint</code> — ESLint 零錯誤。</li>
+      <li><code class="status">[]</code> <code>bun run build</code> — production build 成功。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check</code> — 格式正確。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo check --locked --all-targets</code> — 編譯通過。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; cargo test --locked</code> — app crate 測試（含指令 inventory）通過。</li>
+      <li><code class="status">[]</code> <code>cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check</code> — host crate 格式正確。</li>
+      <li><code class="status">[]</code> <code>cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings</code> — host crate 沒有 warning（與 <code>host.yml</code> 一致）。</li>
+      <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/host/Cargo.toml</code> — host crate 測試通過。</li>
+      <li><code class="status">[]</code> <code>cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json</code> — 精確 clippy 基準吻合。</li>
+      <li><code class="status">[]</code> <code>rg -n "HerdrAgentInspector|herdrAgentGet|herdrAgentRead|canInspectAgent|herdr-agent-inspector|agent_get|agent_read|Agent Inspector" src src-tauri/src src-tauri/host/src README.md README.zh-TW.md CLAUDE.md</code> — 沒有殘留。</li>
+      <li><code class="status">[]</code> <code>bun scripts/probe-herdr-terminal-io.ts "$(command -v herdr)" --out /tmp/yz-probe-final.json</code> — macOS 隔離探針通過且沒有殘留。</li>
+      <li><code class="status">[]</code> <code>git diff --check</code> — 沒有空白錯誤。</li>
+      <li><code class="status">[]</code> <code>git diff --cached --name-only</code> — 輸出為空（沒有 staged 檔案）。</li>
+      <li><code class="status">[]</code> Windows 驗收（使用者執行）：<code>docs/testing/windows-herdr-terminal-input-scroll.md</code> 的全部項目通過；無法執行時標 <code>[f]</code> 並說明。</li>
+    </ul>
+    <div class="loop">
+      🔁 <strong>The plan is not complete until every box is checked and every command passes. If for some reason a step is not possible to complete, mark it with [f] and move on if possible.</strong>
+    </div>
+  </section>
+
+  <!-- ===== NOTES ===== -->
+  <section id="notes">
+    <h2>Notes</h2>
+
+    <h3>決策紀錄</h3>
+    <table>
+      <thead><tr><th>決策</th><th>內容</th><th>來源</th></tr></thead>
+      <tbody>
+        <tr><td>Herdr 版本</td><td>0.9.1（protocol 22）</td><td>使用者</td></tr>
+        <tr><td>「herdr session」的範圍</td><td>Herdr terminal 分頁，不是完整 Session 畫面（<code>HerdrNativeDialog</code>）</td><td>使用者</td></tr>
+        <tr><td>點已含目前選取的 Space</td><td>不動作</td><td>使用者</td></tr>
+        <tr><td>上次 branch</td><td>跨重啟保留</td><td>使用者</td></tr>
+        <tr><td>Session 標題列／Space 收合</td><td>標題列按鈕不變；Space row 加 hover 收合箭頭</td><td>使用者同意建議</td></tr>
+        <tr><td>快捷鍵</td><td><code>Mod+Shift+E</code>、<code>Alt+1..9</code></td><td>使用者</td></tr>
+        <tr><td>輪替鍵</td><td>macOS <code>⌥Tab</code>／<code>⌥⇧Tab</code>；Windows／Linux <code>Alt+`</code>／<code>Alt+Shift+`</code>；按住選、放開切換</td><td>使用者（依照建議）</td></tr>
+        <tr><td>檢查器</td><td>全部刪除，包含 Rust／host 指令</td><td>使用者</td></tr>
+        <tr><td>Session 對話框</td><td>先原型，選定後實作</td><td>使用者</td></tr>
+        <tr><td>#6b 的對象</td><td>Alt+Q／Alt+T 等是 pane 內 Agent 的快捷鍵</td><td>使用者確認</td></tr>
+        <tr><td>WebGL</td><td>暫不做（Gate G4）</td><td>助手提議，使用者未反對</td></tr>
+      </tbody>
+    </table>
+
+    <h3>建置時需要使用者決定的 Gate</h3>
+    <ul>
+      <li><strong>G1</strong>（Phase 1 結束）：Windows 探針由代理經 SSH 執行，還是使用者自行執行。</li>
+      <li><strong>G2</strong>（Phase 6）：選擇 Session 對話框原型。</li>
+      <li><strong>G3</strong>（Phase 8）：證據指向 H-C 時，是否設計混合送出。</li>
+      <li><strong>G4</strong>（Phase 7）：繪製是瓶頸時，是否加入 WebGL 新依賴。</li>
+    </ul>
+
+    <h3>預設假設（隨時可改）</h3>
+    <ul>
+      <li><strong>A1</strong>　輪替順序採最近使用（MRU），符合 Alt+Tab 的習慣：按一下就回到上一個 Agent。沒使用過的 Agent 依清單順序接在後面。若要改成清單順序，只需替換 <code>agentMruStore</code> 的排序函式。</li>
+      <li><strong>A2</strong>　Branch row 的點擊維持現狀（啟用＋切換收合），只有 Space row 改變。</li>
+      <li><strong>A3</strong>　<code>Alt+1..9</code> 與 Windows 的 <code>Alt+`</code> 會從 terminal 輸入中被 App 取用。pi 在 Windows 使用的 Alt 鍵（b／f／d／y／v／p／q／z）不受影響。</li>
+      <li><strong>A4</strong>　Windows／Linux terminal 內的 Ctrl+K（readline／pi 的刪到行尾）改由 App 使用；可在 Keyboard Settings 改鍵釋出。</li>
+      <li><strong>A5</strong>　<code>newTerminal</code>（Ctrl+`）不列為 terminal-safe，維持現狀。</li>
+      <li><strong>A6</strong>　數字標示只在 Agents 檢視顯示；在 Spaces 檢視時，快捷鍵仍依 Agents 清單順序作用。</li>
+      <li><strong>A7</strong>　診斷只在 debug 紀錄層級啟用，不新增設定 UI。</li>
+    </ul>
+
+    <h3>#1 捲動路徑比較（假設，待量測確認）</h3>
+    <table>
+      <thead><tr><th></th><th>macOS 原生</th><th>Windows 原生</th><th>WSL（在 Windows 上）</th></tr></thead>
+      <tbody>
+        <tr><td>捲動策略</td><td>terminal（connector）</td><td>terminal（connector）</td><td>pane（API＋controller）</td></tr>
+        <tr><td>節流</td><td>只在 IPC 未返回時合併</td><td>只在 IPC 未返回時合併</td><td>33ms latest-only</td></tr>
+        <tr><td>API 傳輸</td><td>Unix socket＋<code>poll()</code></td><td>named pipe＋最多 100ms 睡眠</td><td>host helper（Linux，<code>poll()</code>）</td></tr>
+        <tr><td>每次 API 的子程序</td><td>2 個（便宜）</td><td>2 個（Windows 建立程序成本高）</td><td>在 helper 端（Linux）</td></tr>
+        <tr><td>WebView</td><td>WKWebView</td><td>WebView2</td><td>WebView2</td></tr>
+      </tbody>
+    </table>
+    <p>Windows 原生是唯一同時有「未節流＋WebView2＋昂貴的程序建立＋pipe 固定等待」的組合，與「只有 Windows 卡頓」相符，但仍是假設。Phase 7.1 的對照表欄位：spawn p50、ping p50、<code>pane.get</code>（探針）與 Yuzora invoke p50、wheel 事件／秒、<code>terminal.scroll</code> IPC／秒、frames／秒、frame bytes p95、<code>term.write</code> p95、wheel 到下一張 frame p95。</p>
+
+    <h3>#6b 決策矩陣</h3>
+    <table>
+      <thead><tr><th>情境</th><th>App 內紀錄</th><th>D1 原始 ESC</th><th>D2 win32-input-mode</th><th>D3 <code>pane.send_keys</code></th><th>結論與行動</th></tr></thead>
+      <tbody>
+        <tr><td>H-A</td><td>keydown 或 xterm 輸出缺失</td><td>—</td><td>—</td><td>—</td><td>上游攔截；停下來另提修法</td></tr>
+        <tr><td>H-B</td><td>有送出 <code>ESC 71</code></td><td>失敗（<code>esc,q</code>／<code>none</code>）</td><td>P1–P3 全部正確</td><td>任意</td><td>實作 win32-input-mode 編碼（Phase 8.3）</td></tr>
+        <tr><td>H-C</td><td>有送出</td><td>失敗</td><td>P3（Kitty）失敗</td><td>P3 正確</td><td>Gate G3：混合送出要另行設計</td></tr>
+        <tr><td>H-D</td><td>有送出</td><td>全部正確</td><td>—</td><td>—</td><td>不改編碼；回報並依紀錄追查</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Herdr 0.9.1 原始碼證據</h3>
+    <p>來源：本機已索引的 Herdr 0.9.1 原始碼（<code>Cargo.toml</code> version 0.9.1）。</p>
+    <ul>
+      <li><code>src/server/pane_input.rs:187-201</code> — <code>apply_terminal_attach_input</code> 把 connector 輸入原樣寫進 pane runtime（被識別為完整 bracketed paste 的除外）。</li>
+      <li><code>src/client/terminal_sessions.rs:159-224</code> — connector 指令只有 <code>terminal.input</code>、<code>terminal.resize</code>、<code>terminal.scroll</code>、<code>terminal.release</code>；沒有按鍵語意。</li>
+      <li><code>src/platform/windows.rs:613-645</code> — <code>encode_windows_conpty_fallback</code>：有 Windows key record 時輸出 <code>CSI vk;sc;uc;kd;cs;rc _</code>；特別處理單獨 Esc 與 Shift+Enter。</li>
+      <li><code>src/pane/terminal.rs:1979-1998</code> — 只有在 Kitty flags = 0 且 modifyOtherKeys 關閉時才走上述 fallback。</li>
+      <li><code>src/app/api/panes.rs:1917-1940</code>、<code>src/app/api_helpers.rs:34-46</code> — <code>pane.send_keys</code> 用 <code>encode_terminal_key</code>，但 API 按鍵沒有 Windows key record。</li>
+      <li><code>docs/preview/website/src/content/docs/windows-beta.mdx</code> — 「Modified keys still depend on the outer terminal reporting a distinct key event」，以及保留單獨 Escape、Shift+Enter 的說明。</li>
+    </ul>
+
+    <h3>風險與緩解</h3>
+    <table>
+      <thead><tr><th>風險</th><th>緩解</th></tr></thead>
+      <tbody>
+        <tr><td>按鍵順序錯亂</td><td>win32-input-mode 記錄走同一條 connector 輸入佇列，與一般文字順序一致；除非通過 G3，不混用 API 通道。</td></tr>
+        <tr><td>AltGr／國際鍵盤配置</td><td>AltGraph 與 Ctrl+Alt 不攔截，保留字元輸入。</td></tr>
+        <tr><td>中文／日文輸入法</td><td>組字中（<code>isComposing</code>、<code>keyCode 229</code>）不攔截。</td></tr>
+        <tr><td>Session 快取過期</td><td>TTL 1 秒；任何錯誤立刻失效；UI 重新整理一律重新讀取；socket 仍只來自 session list。</td></tr>
+        <tr><td>Windows pipe 忙等占用 CPU</td><td>互動請求上限 8ms、事件通道 100ms；deadline 不變。</td></tr>
+        <tr><td>觸控裝置看不到 hover</td><td><code>hover: none</code> 時動作永遠顯示；右鍵選單仍提供相同動作。</td></tr>
+        <tr><td>移除 capability 欄位造成大量 fixture 變動</td><td>依 typecheck 逐一修正，不放寬型別。</td></tr>
+        <tr><td>host crate <code>-D warnings</code> 與精確 clippy 基準</td><td>每個有 Rust 變動的 Phase 都跑兩者。</td></tr>
+        <tr><td>Ctrl+K 被 App 取用</td><td>已告知使用者；可在 Keyboard Settings 改鍵。</td></tr>
+      </tbody>
+    </table>
+
+    <h3>不採用的做法</h3>
+    <ul>
+      <li>在 Windows 安裝全域鍵盤 hook 攔截 Alt+Tab：會影響整台電腦，容易被防毒擋。</li>
+      <li>猜測 socket 路徑，或把 session 快取延長到數秒：違反「session list 是權威」。</li>
+      <li>所有輸入改走 API（<code>pane.send_input</code>）：延遲高，而且改動整條輸入路徑；只在 G3 情境評估。</li>
+      <li>立刻加入 WebGL：新依賴，且尚未證實繪製是瓶頸。</li>
+      <li>用 <code>display:none</code> 隱藏列內動作：鍵盤會無法到達。</li>
+    </ul>
+
+    <h3>與 ADR／領域模型對齊</h3>
+    <ul>
+      <li>ADR-0004 的 2026-09-09 補充提到 Inspector 繼續呈現。本計畫依使用者明確要求移除，在 Phase 2 追加補充說明。</li>
+      <li>ADR-0005：Windows 原生 named pipe 與 WSL 選配的決策不變；探針與按鍵修正只針對 Windows ConPTY runtime。</li>
+      <li>用語：Terminal Session 是 Herdr 持有的終端生命週期，不等於 Agent Session。Agent 快捷鍵只作用於 Herdr 回報的 Agent projection，不從終端文字推測。</li>
+    </ul>
+
+    <h3>建置時的操作限制</h3>
+    <ul>
+      <li>不執行 <code>git add</code>／<code>commit</code>／<code>push</code>，除非使用者在當次對話明確允許。</li>
+      <li>瀏覽器自動化／E2E（agent-browser、Playwright 等）要先取得同意。</li>
+      <li>Windows：取得 G1 授權後才可經 SSH alias <code>yuzora-windows</code> 執行隔離探針；不得操作 macOS 上的 Microsoft Windows App（RDP）；不得停止或修改使用者既有的 Session。</li>
+      <li>不對使用者的 live Herdr socket 送出 mutation；探針只用暫存 session。</li>
+    </ul>
+  </section>
+
+  <!-- ===== AMENDMENTS ===== -->
+  <section id="amendments">
+    <h2>Amendments</h2>
+    <details>
+      <summary>2026-09-24T09:55+08:00 — Build 開始：基線與工作樹狀態</summary>
+      <p>HEAD 已由規劃時的 <code>bdd036e</code> 前進到 <code>8b8fb6a</code>（10 個 database／herdr tools／editor 修正 commit）。工作樹另有非本計畫的未提交修改：<code>src-tauri/tests/database_workbench.rs</code>、<code>src/state/dbStore.ts</code>（＋test）、<code>src/app/workbench/herdr/HerdrNativeDialog.tsx</code>（＋test）、<code>src/workbench/HerdrNotificationBridge.tsx</code>（＋test），以及未追蹤的 <code>docs/html/v0.0.16-review-followup-2026-09-24.html</code>。本計畫不修改、不還原這些檔案。在含這些修改的工作樹上，Phase 0 基線全部通過：typecheck、Vitest、lint、cargo check／test、host clippy <code>-D warnings</code>、clippy baseline。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T10:00+08:00 — Phase 1 完成：診斷工具與 macOS 參考量測</summary>
+      <p>新增 <code>src/terminal/herdrTerminalDiagnostics.ts</code>（只在 debug 紀錄層級啟用；啟動時由 <code>src/main.tsx</code> 讀取層級，Logs 設定切換時同步）、<code>scripts/probe-herdr-terminal-io.ts</code>、<code>docs/testing/windows-herdr-terminal-input-scroll.md</code>，以及 Windows 單檔探針 <code>output/probe-herdr-terminal-io.exe</code>（不入版控）。macOS 隔離執行結果：<code>session list</code> 子程序 p50 4.6ms；ping p50 7.9ms、p95 116ms；<code>pane.get</code>／<code>pane.scroll</code> p50 約 108ms（是 Herdr server 本身的延遲，不是 Yuzora 的傳輸）；connector <code>terminal.scroll</code> 到下一張 frame p50 2.4ms，全部是約 351 bytes 的 delta frame。按鍵矩陣：P2、P3 的 D1 與 D3 全部 ok，D2 為 raw-w32（Unix PTY 的預期結果）。<code>LogsSection.tsx</code> 的 4 個 ESLint warning 在 HEAD 就已存在，本次未修改。Gate G1 與 Phase 6 的 Gate G2 一起詢問使用者。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T10:45+08:00 — Phase 2–4 完成</summary>
+      <p>Phase 2：檢查器相關的前端、Tauri、host 程式與測試全部移除；另移除只為檢查器存在的 <code>HerdrReadSource</code>／<code>HerdrReadFormat</code>、<code>bound_agent_text</code>／<code>truncate_utf8</code>／<code>MAX_AGENT_TEXT_BYTES</code>。原本用檢查器驗證「跨 Session 的 Agent 身分分離」的測試，改為驗證 <code>activateAgent</code> 收到的 sessionName。README、CLAUDE.md、ADR-0004 已更新。Phase 3：<code>APP_COMMANDS</code> 新增 <code>terminalSafe</code>／<code>macDefaultBinding</code>，<code>defaultBindingFor</code>，CommandPalette 改在 capture 階段監聽，非 macOS 把 Alt+Tab 設為 reserved。Phase 4：Space 的點擊改為開啟記住的 branch（沒有就開第一個），已包含目前選取時不動作；row 內動作群組與 hover 收合箭頭；Space row 的提示文字改用新的 <code>spaceHint</code>，branch row 沿用 <code>folderHint</code>。視覺檢查需要使用瀏覽器自動化，要先取得使用者同意，所以該項標為 <code>[f]</code>，待 Gate 時一起詢問。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T11:20+08:00 — Phase 5 完成：側邊欄快捷鍵與 Agent 輪替</summary>
+      <p>新增 <code>toggleSidebarView</code>、<code>agent1..9</code>、<code>agentCycleNext</code>／<code>agentCyclePrevious</code>（macOS 預設 <code>Alt+Tab</code>，其他平台 <code>Alt+`</code>）；<code>useAgentHotkeys</code>、<code>AgentSwitcher</code>、<code>agentMruStore</code>。檢視切換用 uiStore nonce，SpaceAgentTree 與 AppShell 以 store subscription 處理，避免在 effect 內同步 setState。MRU 在 <code>herdrStore.activateAgent</code> 成功後、以及點擊聚焦 Agent 的 pane 後更新。實作後 Phase 3 的一個測試改為預期「衝突」：<code>Alt+Tab</code>（macOS）與 <code>Alt+`</code>（Windows）已成為 Agent 輪替的預設鍵。完整 Vitest：260 檔、3054 項通過；typecheck 0 錯；lint warning 與基線相同（49 個，全部既有）。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T11:45+08:00 — Phase 6：參考與原型完成，停在 Gate G2</summary>
+      <p>用 <code>$get-design</code> 取得 linear.app、raycast、vercel 三份參考，放在 <code>design/</code>。原型定位為 Command／Inspect（主要）與 Configure（次要）。三個原型放在 <code>prototypes/</code>：A 來源欄＋清單（保守）、B 可搜尋的單一清單（建議）、C 三步驟精靈（探索）。原型只使用 Yuzora 自身的 token（淺色與深色）；Tweaks 可切換 8 種狀態、平台與主題，並支援鍵盤 ↑↓／Enter／Esc。驗證：沒有外部資源；腳本可以編譯；用 jsdom 在 Node 下跑完 3 個原型 × 8 種狀態 × 2 個平台 × 2 種主題，共 96 種組合，渲染與互動都沒有錯誤。沒有做瀏覽器截圖（需要同意）。Gate G2：等使用者選定後才做 6.4 的實作。同時詢問 G1（Windows 探針由誰執行）以及是否同意用瀏覽器做視覺檢查。</p>
+    </details>
+      <details>
+      <summary>2026-09-24 — 使用者決定：G2＝A、G1＝之後再測、允許瀏覽器視覺檢查</summary>
+      <p>G2：採用原型 A（左側來源欄＋右側 Session 清單），接著做 6.4 實作。G1：Windows 探針與 App 內紀錄由使用者之後再測；Phase 7 的 F3–F5 與 Phase 8 的按鍵修法等 Windows 證據。F1（session 清單與 ping 快取）與 F2（Windows pipe 自適應等待）是程式碼已證實的成本、不依賴量測結果，因此先實施，Windows 重測留到使用者測試時。使用者允許瀏覽器自動化做視覺檢查（Phase 4 側邊欄、Phase 6 對話框）。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T12:15+08:00 — Phase 6 完成：Session 對話框改為設計 A，並完成視覺檢查</summary>
+      <p><code>HerdrSessionPicker</code> 改為設計 A：左側來源欄（shadcn 垂直 <code>Tabs</code>，顯示數量）；右側 Session 清單（shadcn <code>Command</code>：↑↓ 移動、Enter 或雙擊載入、單擊只選取；已停止的 Session 停用並說明；目前使用中的 Session 標上「目前使用中」；有 snapshot 時顯示 Space／Agent 數）。WSL 發行版改用 <code>RadioGroup</code>（WSL1 停用）。空狀態使用 <code>Empty</code>，並提供「開啟 HERDR 工具」。Footer 一律說明主要按鈕將載入哪個 Session，或為何停用。SSH 主機簿、runtime 設定、錯誤與 transport 世代等既有行為契約全部保留；舊測試改用 option／radio 查詢，另新增鍵盤載入、雙擊載入、空狀態三個測試。視覺檢查（已獲同意，使用 agent-browser 連 <code>demo:dev</code>）：側邊欄 branch row hover 時 <code>+</code> 顯示在列內；Space row hover 時收合箭頭與 <code>⋮</code> 顯示在列內；Agents 檢視按住 ⌥ 時數字標示顯示在列內；輪替浮層與提示正常；對話框在淺色、深色與 SSH 空主機簿狀態下都正常。原型與截圖證據位於 <code>/tmp/yz-visual</code>（不入版控）。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T11:10+08:00 — Phase 7：F1、F2 完成；F3–F5 與 Phase 8 等 Windows 證據</summary>
+      <p>F1：HerdrManager 新增 1 秒 TTL 的 session inventory、ping identity、binary fingerprint 驗證快取；<code>call_checked_api</code> 每次請求只解析一次 socket；請求失敗、<code>list_sessions()</code>（明確重新整理）、Session start／stop／delete、<code>configure_paths</code> 都會讓快取失效。<code>snapshot()</code> 改走 <code>call_checked_api</code>。新增 3 個 fake socket 測試：TTL 內連續 5 次 <code>pane.get</code> 沒有 <code>session list</code> spawn 也沒有額外 ping（原本每次 2 spawn＋1 ping）；失敗後重新探索；TTL 過期後拒絕已停止的 Session。既有 cache 測試改為預期只 ping 一次。F2：<code>LocalWaitProfile</code>，Windows 互動請求改為 1／1／2／4／8ms 退避，事件通道維持 100ms（新增退避序列測試）。本機無 Windows C 工具鏈，Windows 分支的編譯由 Windows CI（<code>cargo test --lib herdr_</code>）驗證。驗證：host fmt／clippy <code>-D warnings</code>／test、app fmt／check／test、clippy baseline 全部通過（786 tests）；前端 3056 tests 通過、build 成功、lint 0 error。F3–F5、7.8 Windows 重測與 Phase 8 依使用者決定等之後的 Windows 測試。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T15:45+08:00 — macOS 捲動延遲：證據、A/B 與決定（原生改走 pane 捲動）</summary>
+      <p>使用者回報 macOS 的 Herdr terminal 也會「捲動時跟不上」（WSL 很順）。已用 debug 診斷 log 在使用者的真實 Session 上量測（只記次數與耗時，不記內容）：</p>
+<ul>
+<li><strong>原始行為（原生走 connector <code>terminal.scroll</code>）</strong>：5 秒內有 274 個滾輪事件，送出 270 次 <code>terminal.scroll</code>（IPC ack 中位數 1ms），但只回來 141 個 frame（約 6KB／個，xterm 寫入中位數 10ms）。ack 在指令排入佇列時就回來，所以指令排隊，停手後畫面還在追。</li>
+<li><strong>A：connector 加上 frame pacing</strong>（送出後等下一個 frame，最多 100ms）：指令數降到大約滾輪事件的 1/5；scroll→frame 中位數 17～73ms。</li>
+<li><strong>B：原生改走 WSL 的 pane API</strong>（<code>pane.scroll</code>，絕對 offset、最新值優先、每 33ms 送一次）：235 個滾輪事件送出 59 次 <code>pane.scroll</code>（中位數 2ms），frame 中位數約 2.4KB，比 A 小約 4 倍。</li>
+</ul>
+<p><strong>決定</strong>：使用者實測 B 最順。<code>herdrScrollStrategyForRuntime</code> 在原生 macOS／Windows 上，只要 pane API 可用就改走 <code>pane</code>；不可用時退回 connector，並保留 A 的 frame pacing（<code>terminalTransport.ts</code> 的 <code>SCROLL_FRAME_WAIT_MS</code>）。新增 <code>terminal.scroll.frame</code> 診斷指標。這取代 F3 原本的設計；F4／F5 是否需要，等 Windows 實測再決定。Windows 使用相同程式，仍需使用者在實機確認。</p>
+<p><strong>順帶發現（未修，列為後續）</strong>：terminal connector 子程序沒有移除繼承的 <code>HERDR_SOCKET_PATH</code>。從 Herdr pane 裡啟動 Yuzora 時，會連到錯的 server，顯示「串流已關閉」。一般從 Dock 啟動不受影響。</p>
+<p>驗證：前端 260 個檔案、3058 個測試全數通過；typecheck 0 error；lint 仍為 49 個既有 warning。實驗用的 build-time 開關已移除；debug log 等級已還原為 info；Debug App 已關閉，B 的 bundle 與它的 App data 已刪除。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T16:30+08:00 — 被其他視窗接管控制權後可重新連線</summary>
+      <p>使用者要求測試「開第二個 App 搶控制權」。已在隔離的 <code>yziso</code> 上用兩個 Debug App 驗證。</p>
+<p><strong>Herdr 的行為</strong>：當第二個 controller 用 <code>--takeover</code> 連上同一個 terminal，Herdr 會送給前一個連線 <code>terminal.closed</code>，reason 是 <code>"terminal attach taken over"</code>，並結束它。重新帶 <code>--takeover</code> 連上就能拿回控制權。</p>
+<p><strong>修正前</strong>：Yuzora 把關閉原因丟掉，當成 pane 已經消失：顯示「串流已關閉」並重新整理拓撲。頁面仍標示「控制者」，也沒有任何重新連線的入口。</p>
+<p><strong>修正</strong>：<code>terminalTransport</code> 在 <code>exit</code> 事件帶上 <code>reason</code>。<code>HerdrTerminalPage</code> 收到接管原因時，顯示「已由其他視窗取得控制」和「重新連線」按鈕，不寫入 <code>[Herdr stream closed]</code>，也不重新整理拓撲。按鈕會重新以 control＋takeover 連回。其他原因關閉時，行為維持不變。新增 i18n key <code>takenOver</code>、<code>reconnect</code>（zh-TW／en）。新增兩個頁面測試：修改前，接管情境的測試會失敗。</p>
+<p><strong>實機驗證（macOS，Debug App ×2）</strong>：B 接管後，A 顯示「已由其他視窗取得控制」和「重新連線」。按下 A 的重新連線後，B 改顯示同樣的提示；A 輸入 <code>echo FROM_A_AFTER_RECONNECT</code>，pane 裡有出現。前端 260 個檔案、3060 個測試全數通過，typecheck 0 error，lint 仍是 49 個既有 warning，build 成功。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T19:40+08:00 — Windows 候選版（f7e64d6）實機驗證與 G1 probe</summary>
+      <p>環境：Windows 10.0.26200，主機 DESKTOP-NMLUN4F（yuzora-windows）。已透過 SSH 以 <code>/S</code> 安裝 NSIS 候選版（setup sha256 <code>82dbfe06…cc186d9</code>，yuzora.exe <code>e40bb047…</code>）。UI 經 RDP 操作。</p>
+<ul>
+<li><strong>捲動</strong>：原生 Windows 走 <code>pane</code> 策略。<code>pane.scroll</code> p50 2.8–10ms、p95 ≤43ms；frame 間隔 p50 34–59ms；xterm 寫入 p50 約 2ms。停手後畫面不再移動，向下捲可回到底部。</li>
+<li><strong>接管後重新連線</strong>：第二個 controller 以 <code>--takeover</code> 連上後，Yuzora 顯示「已由其他視窗取得控制」與「重新連線」；按下後輸入 <code>echo reconnectok</code>，已送達並執行。</li>
+<li><strong>加入 Herdr Session（設計 A）</strong>：Windows 顯示 已連線／SSH／WSL 三個來源，WSL 發行版以 radio 呈現。側邊欄在列內顯示 hover 動作，Agents 檢視正常。</li>
+<li><strong>G1 isolated probe</strong>（<code>output/windows-probe/probe-windows-2026-09-24.json</code>）：
+<ul>
+<li>session list spawn p50 7.4ms；ping p50 16ms／p95 113ms。</li>
+<li><code>pane.get</code> p50 16ms；<code>pane.scroll</code> p50 16ms／p95 35ms。</li>
+<li>connector <code>terminal.scroll</code>→frame p50 15.5ms。</li>
+<li>Alt+Q／Alt+T／Alt+Enter：D1（raw ESC）、D2（W32IM）、D3（send_keys）在 P1 PowerShell ReadKey、P2 node raw、P3 kitty 全部 ok。</li>
+<li>單獨 ESC 以 D1 送出時為 none（400ms 內未送達；D2／D3 ok）。</li>
+</ul>
+依決策矩陣屬於 <strong>H-A</strong>：Herdr 端能正確送出 Alt，問題不在 connector 編碼，Phase 8 的 W32IM 改寫不需要。後續要看 Yuzora 前端或 WebView2 在實體鍵盤上的 Alt 事件，需要實體鍵盤的 key 診斷紀錄。</li>
+<li><strong>無法經 RDP 驗證</strong>：<code>Ctrl+K</code>（RDP 沒有送出 Ctrl+K，側欄焦點時也沒有反應）、Alt 組合鍵（RDP 送出的是 macOS Option 字元 œ／†）。這兩項需在實體鍵盤確認。</li>
+</ul>
+<p>清理：刪除 <code>yz-probe</code> 與測試用 <code>logging.json</code>（測試前不存在）；Windows 輸入法已還原為「中」。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T19:50+08:00 — 使用者以 Windows 實體鍵盤確認 Ctrl+K 與 Alt+Q</summary>
+      <p>使用者在 f7e64d6 候選版上用 Windows 實體鍵盤確認兩項：terminal 聚焦時按 <code>Ctrl+K</code> 能開啟命令面板，pi 內按 <code>Alt+Q</code> 有作用。加上前一筆 probe 證明 Herdr 端 Alt 傳遞正常（H-A），原始需求 6a／6b 在候選版都已解決，Phase 8 的 W32IM 改寫不需要。CHANGELOG 0.0.16 的「已知限制（Alt 組合鍵）」已不成立，待使用者決定是否更新。</p>
+    </details>
+  </section>
+
+
+</main>
+</body>
+</html>

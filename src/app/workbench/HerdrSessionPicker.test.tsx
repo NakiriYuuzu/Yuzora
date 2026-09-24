@@ -110,11 +110,11 @@ it("sets up the selected SSH host, refreshes Sessions, and loads its exact names
   await waitFor(() => expect(screen.getByRole("button", { name: "載入 Session" })).toBeEnabled());
   expect(mocks.setup).toHaveBeenCalledWith("alpha", "Alpha", { kind: "ssh", sessionId: "transport-alpha" }, { source: "default" });
   expect(mocks.refresh).toHaveBeenCalledTimes(2);
-  const picker = screen.getByRole("combobox", { name: "所屬 Herdr Session" });
-  expect(picker).toHaveTextContent("Alpha · default");
-  fireEvent.keyDown(picker, { key: "ArrowDown" });
+  const option = screen.getByRole("option", { name: "Alpha · default" });
+  expect(option).toHaveAttribute("aria-selected", "true");
   expect(screen.queryByRole("option", { name: "Other host · default" })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("option", { name: "Alpha · default" }));
+  expect(screen.getByText("將載入 Alpha · default")).toBeInTheDocument();
+  fireEvent.click(option);
   fireEvent.click(screen.getByRole("button", { name: "載入 Session" }));
   await waitFor(() => expect(onSelect).toHaveBeenCalledWith('["alpha","default"]'));
   expect(mocks.select).toHaveBeenCalledWith('["alpha","default"]');
@@ -167,10 +167,11 @@ it("discovers WSL2, connects the selected distribution and loads its Session", a
   useRuntimePreferencesStore.setState({ wslEnabled: true });
   mocks.distros.mockResolvedValue([{ hostId: "wsl:legacy", name: "Legacy", version: 1 }, { hostId: "wsl:ubuntu", name: "Ubuntu", version: 2 }]);
   await show("WSL");
-  await waitFor(() => expect(screen.getByRole("combobox", { name: "WSL 發行版" })).toHaveTextContent("Ubuntu · WSL2"));
-  fireEvent.keyDown(screen.getByRole("combobox", { name: "WSL 發行版" }), { key: "ArrowDown" });
-  expect(screen.getByRole("option", { name: "Legacy · WSL1" })).toHaveAttribute("aria-disabled", "true");
-  fireEvent.click(screen.getByRole("option", { name: "Ubuntu · WSL2" }));
+  const ubuntu = await screen.findByRole("radio", { name: "Ubuntu · WSL2" });
+  expect(ubuntu).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("radio", { name: "Legacy · WSL1" })).toBeDisabled();
+  expect(screen.getByRole("radiogroup", { name: "WSL 發行版" })).toBeInTheDocument();
+  fireEvent.click(ubuntu);
   fireEvent.click(screen.getByRole("button", { name: "設定此主機" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "載入 Session" })).toBeEnabled());
   expect(mocks.setup).toHaveBeenCalledWith("wsl:ubuntu", "Ubuntu", { kind: "wsl", distro: "Ubuntu" }, { source: "default" });
@@ -196,4 +197,43 @@ it("does not apply a delayed selection after the picker closes", async () => {
   view.unmount();
   await act(async () => resolve());
   expect(onSelect).not.toHaveBeenCalled();
+});
+
+it("lists every host's Sessions as a keyboard listbox and loads with Enter or a double-click", async () => {
+  addSession("alpha", "Alpha");
+  addSession("beta", "Beta");
+  render(<HerdrSessionPicker initialSession={null} onSelect={onSelect} onClose={onClose} returnFocusRef={{ current: null }} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "載入 Session" })).toBeEnabled());
+  const alphaOption = screen.getByRole("option", { name: "Alpha · default" });
+  const betaOption = screen.getByRole("option", { name: "Beta · default" });
+  expect(alphaOption).toHaveAttribute("aria-selected", "true");
+  const list = alphaOption.closest("[cmdk-root]") as HTMLElement;
+  fireEvent.keyDown(list, { key: "ArrowDown" });
+  expect(betaOption).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(list, { key: "Enter" });
+  await waitFor(() => expect(onSelect).toHaveBeenCalledWith('["beta","default"]'));
+  onSelect.mockClear();
+  fireEvent.doubleClick(alphaOption);
+  await waitFor(() => expect(onSelect).toHaveBeenCalledWith('["alpha","default"]'));
+});
+
+it("explains why nothing can be loaded and offers the Session tools", async () => {
+  addSession("alpha", "Alpha");
+  useHerdrStore.setState(state => ({ sessions: state.sessions.map(session => ({ ...session, running: false })) }));
+  render(<HerdrSessionPicker initialSession={null} onSelect={onSelect} onClose={onClose} returnFocusRef={{ current: null }} />);
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("目前沒有執行中的 Session。"));
+  expect(screen.getByText("沒有可載入的 Session。")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "載入 Session" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "開啟 HERDR 工具" }));
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("does not open Session tools for another host when the selected host has no Sessions", async () => {
+  connectSsh();
+  registerHost("alpha", { kind: "ssh", sessionId: "transport-alpha" });
+  addSession("other", "Other host");
+  await show();
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("目前沒有執行中的 Session。"));
+  // The only Session belongs to a different host; tools would target the wrong machine.
+  expect(screen.queryByRole("button", { name: "開啟 HERDR 工具" })).not.toBeInTheDocument();
 });

@@ -38,7 +38,7 @@ describe("app shortcut bindings", () => {
         expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "J", ctrlKey: true, shiftKey: true }), "commandPalette", run)).toBe(true)
         expect(run).toHaveBeenCalledOnce()
     })
-    it("leaves composition, repeat, extra modifiers and terminal Ctrl input alone", () => {
+    it("leaves composition, repeat, extra modifiers and non-terminal-safe Ctrl input alone", () => {
         const run = vi.fn()
         for (const extra of [{ isComposing: true }, { repeat: true }, { altKey: true }]) {
             expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, ...extra }), "commandPalette", run)).toBe(false)
@@ -46,9 +46,50 @@ describe("app shortcut bindings", () => {
         const terminal = document.createElement("div")
         terminal.className = "xterm"
         const input = terminal.appendChild(document.createElement("textarea"))
-        input.addEventListener("keydown", event => dispatchAppShortcut(event, "commandPalette", run))
-        input.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }))
+        input.addEventListener("keydown", event => dispatchAppShortcut(event, "newTerminal", run))
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "`", ctrlKey: true }))
         expect(run).not.toHaveBeenCalled()
+    })
+    it("dispatches terminal-safe Ctrl shortcuts inside terminals and inputs before they receive the key", () => {
+        const run = vi.fn()
+        const target = vi.fn()
+        const capture = (event: KeyboardEvent) => { dispatchAppShortcut(event, "commandPalette", run) }
+        window.addEventListener("keydown", capture, true)
+        try {
+            const terminal = document.body.appendChild(document.createElement("div"))
+            terminal.className = "xterm"
+            const xtermInput = terminal.appendChild(document.createElement("textarea"))
+            xtermInput.addEventListener("keydown", target)
+            const inTerminal = new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true, cancelable: true })
+            xtermInput.dispatchEvent(inTerminal)
+            expect(run).toHaveBeenCalledOnce()
+            expect(inTerminal.defaultPrevented).toBe(true)
+            expect(target).not.toHaveBeenCalled()
+            const field = document.body.appendChild(document.createElement("input"))
+            field.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true, cancelable: true }))
+            expect(run).toHaveBeenCalledTimes(2)
+            const dialog = document.body.appendChild(document.createElement("div"))
+            dialog.setAttribute("role", "dialog")
+            const dialogField = dialog.appendChild(document.createElement("input"))
+            dialogField.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true, cancelable: true }))
+            expect(run).toHaveBeenCalledTimes(2)
+            terminal.remove(); field.remove(); dialog.remove()
+        } finally {
+            window.removeEventListener("keydown", capture, true)
+        }
+    })
+    it("reserves Alt+Tab on Windows/Linux only and matches dead-key punctuation by physical key", () => {
+        expect(bindingError("commandPalette", "Alt+Tab", {})).toBe("reserved")
+        expect(bindingError("commandPalette", "Alt+Shift+Tab", {})).toBe("reserved")
+        vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+        expect(bindingError("agentCycleNext", "Alt+Tab", {})).toBeNull()
+        expect(bindingError("commandPalette", "Alt+Tab", {})).toBe("conflict")
+        vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+        expect(bindingError("commandPalette", "Alt+`", {})).toBe("conflict")
+        useKeyboardSettingsStore.getState().setBinding("commandPalette", "Alt+;")
+        const run = vi.fn()
+        expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "Dead", code: "Semicolon", altKey: true }), "commandPalette", run)).toBe(true)
+        expect(run).toHaveBeenCalledOnce()
     })
     it("persists overrides and clears them when restoring defaults", () => {
         useKeyboardSettingsStore.getState().setBinding("commandPalette", "Mod+Shift+J")
@@ -76,4 +117,12 @@ it("matches macOS Option-digit mode shortcuts even when event.key is a symbol", 
     const run = vi.fn()
     expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "¡", code: "Digit1", metaKey: true, altKey: true }), "modeAde", run)).toBe(true)
     expect(run).toHaveBeenCalledOnce()
+})
+
+it("matches macOS Option-letter shortcuts even when event.key is a symbol", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    const run = vi.fn()
+    expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "∫", code: "KeyB", metaKey: true, altKey: true }), "toggleTools", run)).toBe(true)
+    expect(run).toHaveBeenCalledOnce()
+    expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "∫", code: "KeyB", metaKey: true }), "toggleTools", run)).toBe(false)
 })

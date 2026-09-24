@@ -24,6 +24,7 @@ function setUserAgent(userAgent: string) {
 
 vi.mock("@/lib/ipc", () => ({
   dbListTables: vi.fn(),
+  dbTableColumns: vi.fn(),
   dbQueryRun: vi.fn(),
   dbQueryCancel: vi.fn(),
   dbResultPagePrevious: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("@/lib/ipc", () => ({
 
 import {
   dbListTables,
+  dbTableColumns,
   dbProfileCreate,
   dbQueryCancel,
   dbQueryRun,
@@ -184,6 +186,11 @@ beforeEach(() => {
   useDbStore.getState().reset()
   vi.clearAllMocks()
   mockList.mockResolvedValue([])
+  vi.mocked(dbTableColumns).mockResolvedValue([
+    { name: "id", type: "INTEGER", pk: true, notnull: true },
+    { name: "name", type: "TEXT", pk: false, notnull: false },
+    { name: "age", type: "INTEGER", pk: false, notnull: false },
+  ])
   mockQueryRun.mockImplementation(async (request) => panelRunFromResult(request, threeCol))
   mockQueryCancel.mockResolvedValue({ outcome: "cancelled" })
   mockResultPagePrevious.mockImplementation(async (owner) => panelWirePage(owner))
@@ -219,6 +226,133 @@ async function openWithResult(): Promise<void> {
   useDbStore.getState().setSql("SELECT * FROM t")
   await useDbStore.getState().runQuery()
 }
+
+it("edits a table cell only after explicit save, then reloads the exact table", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  const input = await screen.findByRole("textbox", { name: "Value" })
+  const before = mockQueryRun.mock.calls.length
+  fireEvent.change(input, { target: { value: "O'Brien" } })
+  expect(mockQueryRun.mock.calls).toHaveLength(before)
+  mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "committed" })
+  mockRunResultOnce({ ...threeCol, rows: [[threeCol.rows[0][0], { kind: "text", value: "O'Brien" }, threeCol.rows[0][2]]] })
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await screen.findByText("O'Brien")
+  expect(mockQueryRun.mock.calls[before][0]).toMatchObject({ connectionId: "db-1", statements: [{ sql: `UPDATE "main"."people" SET "name" = 'O''Brien' WHERE "id" = 1 AND "name" = 'alice' COLLATE BINARY` }] })
+  expect(mockQueryRun.mock.calls[before + 1][0].statements[0].sql).toBe('SELECT * FROM "main"."people" LIMIT 100')
+})
+
+it("cancels a saving cell edit through its exact edit owner and keeps the dialog open to report it", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  fireEvent.change(await screen.findByRole("textbox", { name: "Value" }), { target: { value: "carol" } })
+  let request: DbQueryRunRequest | undefined
+  let settleRun!: (run: DbQueryRun) => void
+  mockQueryRun.mockImplementationOnce((nextRequest) => {
+    request = nextRequest
+    return new Promise((resolve) => {
+      settleRun = resolve
+    })
+  })
+
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await waitFor(() => expect(request).toBeDefined())
+  const sent = request!
+  expect(sent.queryRunId).toContain(":edit:")
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+
+  await waitFor(() => expect(mockQueryCancel).toHaveBeenCalledWith({
+    descriptorId: sent.descriptorId,
+    connectionId: sent.connectionId,
+    connectionGeneration: sent.connectionGeneration,
+    queryRunId: sent.queryRunId,
+  }))
+  expect(screen.getByRole("dialog")).toBeVisible()
+  await act(async () => {
+    settleRun({
+      ...panelRunFromResult(sent, threeCol),
+      statements: [{
+        statementExecutionId: `${sent.queryRunId}:statement:0` as never,
+        statementIndex: 0,
+        sql: sent.statements[0].sql,
+        effectOutcome: "unknown" as const,
+        result: {
+          kind: "cancelled" as const,
+          error: {
+            engine: "yuzora" as const,
+            message: "query cancelled",
+            code: "cancelled",
+            position: null,
+            detail: null,
+            hint: null,
+            retryability: "notRetryable" as const,
+          },
+        },
+      }],
+    })
+  })
+
+  expect(await screen.findByText("Save was cancelled. Refresh the table to confirm the current data.")).toBeVisible()
+  expect(screen.getByRole("dialog")).toBeVisible()
+})
+
+it("keeps NULL cells in binary columns read-only", async () => {
+  vi.mocked(dbTableColumns).mockResolvedValue([
+    { name: "id", type: "INTEGER", pk: true, notnull: true },
+    { name: "name", type: "TEXT", pk: false, notnull: false },
+    { name: "payload", type: "BLOB", pk: false, notnull: false },
+  ])
+  await useDbStore.getState().openConnection("/a.db")
+  mockRunResultOnce({ ...threeCol, columns: ["id", "name", "payload"], rows: [[threeCol.rows[0][0], threeCol.rows[0][1], { kind: "null" }]] })
+  await useDbStore.getState().openTableQuery({ catalog: "main", schema: "main", name: "people", kind: "table" })
+  render(<DatabasePanel />)
+  // The text cell proves editing metadata has loaded before checking the binary cell.
+  await waitFor(() => expect(screen.getByText("alice").closest("td")).toHaveAttribute("tabindex", "0"))
+  expect(screen.getByText("NULL").closest("td")).not.toHaveAttribute("tabindex")
+  fireEvent.doubleClick(screen.getByText("NULL"))
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+it("locks the editor/results split while the table data view hides the query editor", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  const handle = screen.getByRole("separator", { name: "Resize editor and results" })
+  expect(handle).toHaveAttribute("aria-disabled", "true")
+  expect(handle).not.toHaveAttribute("tabindex")
+
+  fireEvent.click(screen.getByRole("radio", { name: "SQL query" }))
+
+  await waitFor(() => expect(handle).not.toHaveAttribute("aria-disabled"))
+  expect(handle).toHaveAttribute("tabindex", "0")
+})
+
+it("keeps arbitrary query results read-only even when their columns resemble a table", async () => {
+  await openWithResult()
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+})
+
+it("bounds rendered database rows and reveals later rows when scrolling", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  mockRunResultOnce({ ...threeCol, rows: Array.from({ length: 1000 }, (_, i) => [{ kind: "integer", value: String(i) }, { kind: "text", value: `record-${i}` }, { kind: "integer", value: "30" }]) })
+  useDbStore.getState().setSql("SELECT * FROM large_table")
+  await useDbStore.getState().runQuery()
+  render(<DatabasePanel />)
+  expect(screen.getAllByRole("row").length).toBeLessThan(60)
+  expect(screen.queryByText("record-700")).not.toBeInTheDocument()
+  const viewport = screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]')!
+  fireEvent.scroll(viewport, { target: { scrollTop: 700 * 29 } })
+  expect(await screen.findByText("record-700")).toBeInTheDocument()
+})
 
 async function openWithStreamingResult(): Promise<DbResultSessionOwner> {
   await useDbStore.getState().openConnection("/a.db")
@@ -539,7 +673,7 @@ describe("DatabasePanel execution controls", () => {
       to: sqlText.indexOf(limitedSql) + limitedSql.length,
     }))
 
-    fireEvent.click(screen.getByRole("tab", { name: "Statement 2: Executed" }))
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Executed" }), { button: 0, ctrlKey: false })
     expect(screen.getByText("1 row affected")).toBeInTheDocument()
     expect(screen.getByText("Committed")).toBeInTheDocument()
     const executedSql = "UPDATE counters SET value = 1;"
@@ -548,13 +682,13 @@ describe("DatabasePanel execution controls", () => {
       to: sqlText.indexOf(executedSql) + executedSql.length,
     }))
 
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Statement 2: Executed" }), {
-      key: "ArrowRight",
-    })
-    expect(screen.getByRole("tab", { name: "Statement 3: Result limit reached" })).toHaveAttribute(
+    const executedTab = screen.getByRole("tab", { name: "Statement 2: Executed" })
+    executedTab.focus()
+    fireEvent.keyDown(executedTab, { key: "ArrowRight" })
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Statement 3: Result limit reached" })).toHaveAttribute(
       "aria-selected",
       "true",
-    )
+    ))
   })
 
   it("reports error and cancelled statement tabs without presenting either as success", async () => {
@@ -612,13 +746,13 @@ describe("DatabasePanel execution controls", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("syntax error")
     expect(screen.getByText("Rolled back")).toBeInTheDocument()
 
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Statement 1: Error" }), {
-      key: "ArrowRight",
-    })
-    expect(screen.getByRole("tab", { name: "Statement 2: Cancelled" })).toHaveAttribute(
+    const errorTab = screen.getByRole("tab", { name: "Statement 1: Error" })
+    errorTab.focus()
+    fireEvent.keyDown(errorTab, { key: "ArrowRight" })
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Statement 2: Cancelled" })).toHaveAttribute(
       "aria-selected",
       "true",
-    )
+    ))
     expect(screen.getByRole("alert")).toHaveTextContent("query cancelled")
     expect(screen.queryByText(/rows? affected/i)).not.toBeInTheDocument()
   })
@@ -737,7 +871,7 @@ describe("DatabasePanel execution controls", () => {
     expect(screen.getByRole("button", { name: "Cancel running query" })).toBeDisabled()
     expect(screen.getByRole("textbox")).toHaveAttribute("contenteditable", "false")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Statement 2: Skipped" }))
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Skipped" }), { button: 0, ctrlKey: false })
     expect(screen.getByRole("tab", { name: "Statement 2: Skipped" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -810,7 +944,7 @@ describe("DatabasePanel active profile header", () => {
     const header = screen.getByRole("group", {
       name: "Active database profile: Analytics reader",
     })
-    expect(header).toHaveTextContent("Active profile")
+    expect(header).toHaveTextContent("SQL query")
     expect(header).toHaveTextContent("Analytics reader")
     expect(header).toHaveTextContent("PostgreSQL")
     expect(header).toHaveTextContent("analyst@analytics.internal:5432/warehouse")
@@ -900,7 +1034,7 @@ describe("DatabasePanel result table", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sort by value" }))
     await waitFor(() => expect(bodyCellTexts()).toEqual(["1", "2"]))
 
-    fireEvent.click(screen.getByRole("tab", { name: "Statement 2: Rows" }))
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Rows" }), { button: 0, ctrlKey: false })
     expect(screen.getByRole("button", { name: "Sort by value" }).closest("th")).toHaveAttribute(
       "aria-sort",
       "none",
@@ -1013,6 +1147,8 @@ describe("DatabasePanel result table", () => {
     render(<DatabasePanel />)
     const idHeader = () => screen.getByRole("button", { name: "Sort by id" }).closest("th")!
     expect(idHeader()).toHaveAttribute("aria-sort", "none")
+    // Sortable headers compose the shared Button so they keep its focus behavior.
+    expect(screen.getByRole("button", { name: "Sort by id" })).toHaveAttribute("data-slot", "button")
 
     fireEvent.click(screen.getByRole("button", { name: "Sort by id" }))
     await waitFor(() => expect(idHeader()).toHaveAttribute("aria-sort", "ascending"))
@@ -1194,6 +1330,17 @@ describe("DatabasePanel result session controls", () => {
 
     await waitFor(() => expect(mockResultPageNext).toHaveBeenCalledWith(owner))
     expect(await screen.findByText("Page 2")).toBeInTheDocument()
+  })
+
+  it("opens the next result page at its first row instead of the previous scroll offset", async () => {
+    const owner = await openWithCachedLifecycle("complete")
+    mockResultPageNext.mockResolvedValueOnce(panelWirePage(owner, { pageIndex: 1, hasPrevious: true, lifecycle: "complete" }))
+    render(<DatabasePanel />)
+    const viewport = screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+    fireEvent.scroll(viewport, { target: { scrollTop: 400 } })
+    fireEvent.click(screen.getByRole("button", { name: "Load next result page" }))
+    expect(await screen.findByText("Page 2")).toBeInTheDocument()
+    expect((screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]') as HTMLElement).scrollTop).toBe(0)
   })
 
   it.each(["released", "cancelled", "error"] as const)(

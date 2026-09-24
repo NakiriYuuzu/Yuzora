@@ -8,8 +8,9 @@ import type { SshAuthInput, SshAuthKind } from "@/lib/types"
 export const SSH_HOSTS_STORAGE_KEY = "yuzora.hosts.ssh.v2"
 const LEGACY_SSH_HOSTS_STORAGE_KEY = "yuzora.ssh.hosts.v1"
 const connectionAttempts = new Map<string, number>()
+let attemptToken = 0
 function nextAttempt(id: string): number {
-    const generation = (connectionAttempts.get(id) ?? 0) + 1
+    const generation = ++attemptToken
     connectionAttempts.set(id, generation)
     return generation
 }
@@ -152,7 +153,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
         const credentialsChanged = previous.authKind !== input.authKind || previous.keyPath !== input.keyPath
         const nextId = identityChanged ? newHostId() : id
         if (identityChanged || credentialsChanged) {
-            nextAttempt(id)
+            connectionAttempts.delete(id)
             const sessionId = get().sessions[id]?.sessionId
             if (sessionId) void sshDisconnect(sessionId).catch(() => undefined)
         }
@@ -167,7 +168,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     },
 
     removeHost: (id) => {
-        nextAttempt(id)
+        connectionAttempts.delete(id)
         const session = get().sessions[id]
         if (session?.sessionId) void sshDisconnect(session.sessionId).catch(() => undefined)
         set((s) => {
@@ -260,13 +261,15 @@ export const useSshStore = create<SshStore>()((set, get) => ({
                     }
                 }
             }))
+        } finally {
+            if (connectionAttempts.get(id) === attempt) connectionAttempts.delete(id)
         }
     },
 
     cancelPendingAuth: () => set({ pendingAuthHostId: null }),
 
     disconnect: async (id) => {
-        nextAttempt(id)
+        connectionAttempts.delete(id)
         const session = get().sessions[id]
         if (session?.sessionId) {
             await sshDisconnect(session.sessionId)
@@ -289,6 +292,8 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     },
 
 
-    reset: () =>
+    reset: () => {
+        connectionAttempts.clear()
         set({ hosts: loadSshHosts(), sessions: {}, activeHostId: null, pendingAuthHostId: null })
+    }
 }))

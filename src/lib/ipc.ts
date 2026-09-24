@@ -364,6 +364,10 @@ export function dbListTables(identity: DbConnectionIdentity): Promise<DbTable[]>
     return invoke("db_list_tables", { identity })
 }
 
+export function dbListDatabases(identity: DbConnectionIdentity): Promise<string[]> {
+    return invoke("db_list_databases", { identity })
+}
+
 export function dbTableColumns(
     identity: DbConnectionIdentity,
     table: DbTable

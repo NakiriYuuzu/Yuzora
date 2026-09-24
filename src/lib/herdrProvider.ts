@@ -23,6 +23,11 @@ export function sessionScope(session: HerdrNamedSession | null | undefined): str
   return session ? session.runtimeId ?? session.name : null
 }
 
+/** Scope of the local default Session, which also owns legacy unscoped pages. */
+export function localDefaultScope(sessions: HerdrNamedSession[]): string | null {
+  return sessionScope(sessions.find((session) => session.default && !session.hostId))
+}
+
 /** Legacy `live` pages belong to the local runtime; never guess a remote host. */
 export function findRuntimeSession(sessions: HerdrNamedSession[], scope: string): HerdrNamedSession | null {
   if (scope !== "live") return sessions.find((session) => sessionScope(session) === scope) ?? null
@@ -113,7 +118,8 @@ type StreamEvent =
 
 async function openStream<T>(host: RuntimeHost, sessionName: string, command: string, args: Record<string, unknown>): Promise<T> {
   ensureCurrent(host)
-  const terminal = command === "herdr_terminal_open"
+  const client = command === "herdr_client_open"
+  const terminal = client || command === "herdr_terminal_open"
   const output = args.onEvent as (event: HerdrTerminalEvent | HerdrSubscriptionEvent) => void
   const channel = new Channel<StreamEvent>()
   let closed = false
@@ -138,7 +144,7 @@ async function openStream<T>(host: RuntimeHost, sessionName: string, command: st
   }
   const opened = await nativeInvoke<{ streamId: string; value: Record<string, unknown> | string }>("host_stream_open", {
     owner: host.owner,
-    config: terminal
+    config: client ? { kind: "client", binary: host.binary, sessionName, size: args.size } : terminal
       ? { kind: "terminal", binary: host.binary, sessionName, target: args.target, mode: args.mode ?? "observe", takeover: args.takeover ?? false, cols: args.cols, rows: args.rows }
       : { kind: "events", binary: host.binary, sessionName, paneIds: args.paneIds ?? [] },
     onEvent: channel
@@ -196,7 +202,7 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
   const scope = typeof args.sessionName === "string" ? parseRuntimeScope(args.sessionName) : null
   if (!scope || scope.hostId === LOCAL_HOST_ID) {
     const routed: Record<string, unknown> = { ...args, ...(scope ? { sessionName: scope.sessionName } : {}) }
-    if (command === "herdr_terminal_open" || command === "herdr_events_subscribe") {
+    if (command === "herdr_terminal_open" || command === "herdr_client_open" || command === "herdr_events_subscribe") {
       routed.onEvent = new Channel(args.onEvent as (event: HerdrTerminalEvent | HerdrSubscriptionEvent) => void)
     }
     return nativeInvoke<T>(command, routed)
@@ -209,7 +215,7 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
     if (remote && remote.hostId !== scope.hostId) throw new Error("Workspace belongs to a different runtime host")
     if (remote) Object.assign(routed, { cwd: remote.path })
   }
-  if (command === "herdr_terminal_open" || command === "herdr_events_subscribe") return openStream<T>(host, scope.sessionName, command, routed)
+  if (command === "herdr_terminal_open" || command === "herdr_client_open" || command === "herdr_events_subscribe") return openStream<T>(host, scope.sessionName, command, routed)
   if (command === "herdr_pane_scroll_to" || command === "herdr_pane_scroll_state") {
     let scheduler = scrollSchedulers.get(host)
     if (!scheduler) { scheduler = createHerdrScrollScheduler(); scrollSchedulers.set(host, scheduler) }

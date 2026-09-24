@@ -65,6 +65,16 @@ it("binds remote resources to the source connection and rejects files outside th
     await expect(openHtmlPreview("/project", "/outside/index.html", 0)).rejects.toThrow("outside")
 })
 
+it("maps a Windows drive-root preview back to its canonical file identity", async () => {
+    const root = remoteFilePath("win-host", "C:\\")
+    const path = remoteFilePath("win-host", "C:\\sub\\index.html", "C:\\")
+    useWorkspaceStore.setState({ workspacePath: root })
+    vi.mocked(remotePreviewSource).mockReturnValue({ source: { kind: "runtime", owner: { hostId: "win-host", generation: 1 }, workspace: "remote-cap" }, assertCurrent: vi.fn() })
+    await openHtmlPreview(root, path, 0)
+    expect(previewResourceOpen).toHaveBeenCalledWith({ kind: "runtime", owner: { hostId: "win-host", generation: 1 }, workspace: "remote-cap" }, "sub/index.html")
+    expect(browserTarget(usePreviewStore.getState().navForWorkspace(root).url!)).toEqual({ kind: "file", workspacePath: root, path })
+})
+
 it("rebinds saved navigation to a fresh capability after closing or switching workspaces", async () => {
     await openHtmlPreview("/project", "/project/index.html", 0)
     const sourceUrl = usePreviewStore.getState().navForWorkspace("/project").url!

@@ -1,12 +1,13 @@
 import { Lock } from "lucide-react"
 import { useId } from "react"
 
+import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Field,FieldContent,FieldDescription,FieldError,FieldLabel,FieldLegend,FieldSet } from "@/components/ui/field"
 import { ToggleGroup,ToggleGroupItem } from "@/components/ui/toggle-group"
 
-/** A labelled, flat settings section; the public helper name is retained. */
+/** A labelled settings section rendered as one card. */
 export function SettingCard({
   label,
   sub,
@@ -17,12 +18,19 @@ export function SettingCard({
   children: React.ReactNode
 }) {
   return (
-    <FieldSet className="settings-section-block" data-settings-label={label}>
-      <FieldLegend>{label}</FieldLegend>
-      {sub && <FieldDescription>{sub}</FieldDescription>}
-      <div className="settings-section-controls">{children}</div>
-    </FieldSet>
+    <Card className="settings-card">
+      <FieldSet className="settings-section-block" data-settings-label={label}>
+        <FieldLegend>{label}</FieldLegend>
+        {sub && <FieldDescription>{sub}</FieldDescription>}
+        <div className="settings-section-controls">{children}</div>
+      </FieldSet>
+    </Card>
   )
+}
+
+/** Groups related toggle rows into one card separated by hairlines. */
+export function SettingsRowGroup({ children }: { children: React.ReactNode }) {
+  return <Card className="settings-card settings-row-group">{children}</Card>
 }
 
 /** Design reference segmented control: sunken --paper-2 track, --yz-solid thumb. */

@@ -1,0 +1,451 @@
+   Compiling yuzora-host v0.0.16 (<repo>/src-tauri/host)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.53s
+     Running unittests src/lib.rs (target/debug/deps/yuzora_host-6d46c95fc6e60f9e)
+
+running 387 tests
+test db_connection_actor::tests::canonical_owner_and_single_lease_gate_are_enforced ... ok
+test db_connection_actor::tests::ambiguous_completion_atomically_closes_only_when_cancel_won_the_lease_race ... ok
+test db_connection_actor::tests::cancel_dispatch_and_query_settlement_both_finish_before_run_b ... ok
+test db_connection_actor::tests::failed_cancel_dispatch_rolls_back_pending_state_and_allows_retry ... ok
+test db_connection_actor::tests::mssql_cancel_requires_connection_close_and_stays_busy_until_settlement ... ok
+test db_connection_actor::tests::mssql_lifecycle_request_marks_termination_and_never_reuses_the_actor ... ok
+test clipboard_image::tests::stages_png_bytes_once_without_interpreting_them_as_terminal_input ... ok
+test db_connection_actor::tests::postgres_and_mssql_real_driver_shapes_compile ... ok
+test clipboard_image::tests::refuses_non_images_and_oversized_clipboard_payloads ... ok
+test db_connection_actor::tests::query_settlement_still_blocks_run_b_when_cancel_dispatch_finishes_first ... ok
+test db_connection_actor::tests::release_and_late_settlement_require_the_exact_lease ... ok
+test db_connection_actor::tests::lifecycle_teardown_closes_the_result_continuation_channel ... ok
+test db_connection_actor::tests::lifecycle_teardown_requests_exact_cancel_release_before_retry_close ... ok
+test db_connection_actor::tests::metadata_fails_fast_while_result_lease_is_owned_and_another_actor_succeeds ... ok
+test db_connection_actor::tests::result_continuation_rejects_every_wrong_owner_component ... ok
+test db_connection_actor::tests::mssql_lifecycle_wakes_the_exact_worker_before_result_continuation_install ... ok
+test db_connection_actor::tests::closed_worker_channel_is_cleared_and_can_be_reinstalled ... ok
+test db_connection_actor::tests::stale_cancel_never_exposes_a_driver_action ... ok
+test db_connection_actor::tests::settlement_channel_close_and_late_generation_clear_continuation ... ok
+test db_query_worker::tests::cancel_and_reap_terminates_the_child ... ok
+test db_query_worker::tests::connect_request_debug_redacts_the_password ... ok
+test db_query_worker::tests::helper_command_does_not_place_credentials_in_argv_or_env ... ok
+test db_connection_actor::tests::sqlite_lexical_cursor_and_interrupt_use_real_locked_types ... ok
+test db_query_worker::tests::closed_request_pipe_has_the_same_classification_as_response_eof ... ok
+test db_connection_actor::tests::result_release_waits_for_worker_settlement_before_lease_becomes_idle ... ok
+test db_query_worker::tests::declared_oversize_frame_is_rejected_without_reading_the_body ... ok
+test db_connection_actor::tests::mssql_exact_owner_channel_waits_for_close_mark_and_settlement ... ok
+test db_connection_actor::tests::exact_result_continuation_dispatches_next_and_keeps_metadata_busy ... ok
+test db_connection_actor::tests::concurrent_duplicate_cancel_waiters_observe_one_settlement_without_hanging ... ok
+test db_connection_actor::tests::lifecycle_teardown_wakes_stream_worker_and_waits_for_exact_settlement ... ok
+test db_query_worker::tests::unix_memory_watchdog_installs_and_trips_only_above_the_limit ... ok
+test db_query_worker::tests::malformed_helper_frame_is_a_typed_protocol_error ... ok
+test db_query_worker::tests::helper_fails_closed_when_memory_limit_cannot_be_installed ... ok
+test db_query_worker::tests::write_request_zeroizes_the_password_after_encoding ... ok
+test db_query_worker::tests::helper_frame_roundtrip_stays_within_the_declared_ceiling ... ok
+test db_query_worker::tests::helper_process_exit_is_typed_value_too_large ... ok
+test db_result_session::tests::column_metadata_is_budgeted_before_a_session_is_inserted ... ok
+test db_result_session::tests::null_heavy_rows_charge_their_observable_vec_capacity ... ok
+test db_result_session::tests::columns_pages_and_session_owner_charge_fixed_and_capacity_allocations ... ok
+test db_result_session::tests::cumulative_row_ceiling_rejects_before_the_next_column_is_retained ... ok
+test db_result_session::tests::one_value_over_the_field_ceiling_is_rejected_before_retention ... ok
+test db_result_session::tests::process_budget_rejection_keeps_other_session_pages_readable_and_in_bounds ... ok
+test db_result_session::tests::session_and_process_budgets_reject_the_next_row_without_losing_cached_pages ... ok
+test db_result_session::tests::spare_capacity_limit_rolls_back_allocation_and_preserves_cached_rows ... ok
+test db_result_session::tests::unfinished_internal_release_drops_partial_cache_for_p6_abort_compatibility ... ok
+test db_result_session::tests::session_operations_reject_wrong_connection_and_generation_for_the_active_run ... ok
+test db_result_session::tests::session_and_process_reservation_is_atomic_across_concurrent_pushers ... ok
+test db_result_session::tests::user_release_preserves_cache_and_effect_but_disables_next_until_drop ... ok
+test db_service::tests::classify_pg_type_maps_common_types ... ok
+test db_service::tests::cancel_dispatch_failure_is_success_only_after_atomic_connection_termination ... ok
+test db_service::tests::cancelled_transaction_boundaries_do_not_change_the_open_transaction_warning ... ok
+test db_service::tests::database_password_inputs_deserialize_into_redacted_zeroizing_secret_types ... ok
+test db_service::tests::busy_actor_metadata_fails_typed_without_blocking_another_descriptor ... ok
+test db_service::tests::engine_completion_mapper_never_infers_past_its_input_evidence ... ok
+test db_service::tests::execute_reports_affected_rows ... ok
+test db_service::tests::generation_one_work_cannot_affect_generation_two_reconnect ... ok
+test db_result_session::tests::exact_owner_sessions_are_paged_and_a_new_descriptor_run_releases_the_old_run ... ok
+test db_connection_actor::tests::production_lifecycle_request_interrupts_sqlite_and_settles_before_exact_close ... ok
+test db_service::tests::mssql_done_counts_are_checked_and_preserve_zero ... ok
+test db_service::tests::mssql_date_conversion_error_is_structured_and_never_null ... ok
+test db_service::tests::mssql_drain_rejects_multiple_or_incoherent_result_shapes ... ok
+test db_connection_actor::tests::sqlite_interrupt_stops_a_live_query_on_the_connection_worker ... ok
+test db_service::tests::mssql_helper_terminal_response_distinguishes_execute_from_row_stream ... ok
+test db_service::tests::mssql_output_shaped_result_keeps_rows_and_done_count ... ok
+test db_service::tests::mssql_value_error_is_deferred_until_after_drain_items_are_observed ... ok
+test db_service::tests::mssql_value_to_db_value_maps_guid_to_string ... ok
+test db_service::tests::mssql_value_to_db_value_maps_nulls ... ok
+test db_service::tests::mssql_value_to_db_value_maps_scalars ... ok
+test db_service::tests::network_column_queries_filter_full_identity_and_include_primary_keys ... ok
+test db_service::tests::network_primary_cancel_error_preserves_connection_termination_semantics ... ok
+test db_service::tests::mssql_typed_classifier_closes_transport_failures_but_not_sql_or_conversion_errors ... ok
+test db_service::tests::list_tables_reports_tables_and_views_with_kind ... ok
+test db_service::tests::p6_contracts_serialize_frozen_run_units_statuses_and_cancel_outcomes ... ok
+test db_service::tests::open_close_registry_roundtrip ... ok
+test db_service::tests::p6_cancel_keeps_completed_tab_marks_current_cancelled_and_skips_later_units ... ok
+test db_service::tests::p6_sqlite_cancel_command_interrupts_exact_owner_and_waits_for_settlement ... ok
+test db_service::tests::p6_sqlite_runner_marks_limit_and_preserves_explicit_transaction_warning ... ok
+test db_service::tests::p7_result_page_wire_flags_are_explicit_and_primary_rejects_multiple_units ... ok
+test db_connection_actor::tests::lifecycle_settlement_wait_includes_metadata_and_is_notified_on_settle ... ok
+test db_service::tests::p6_runner_settles_lease_on_registry_failure_and_aborts_partial_session_on_decode_error ... ok
+test db_service::tests::deterministic_fixture_has_many_objects_and_cross_catalog_name_collision ... ok
+test db_service::tests::network_primary_workers_decode_only_inside_the_helper ... ok
+test db_service::tests::deterministic_fixture_preserves_precision_null_blob_and_side_effect_counter ... ok
+test db_service::tests::pg_tls_builds_with_and_without_trust_cert ... ok
+test db_service::tests::pg_open_refused_port_surfaces_os_cause ... ok
+test db_service::tests::deterministic_fixture_covers_all_row_boundaries ... ok
+test db_service::tests::pg_tls_verify_full_does_not_send_password_to_plaintext_server ... ok
+test db_service::tests::postgres_auth_sqlstate_survives_connect_failure_without_secret ... ok
+test db_service::tests::postgres_classified_decode_error_is_structured_and_never_null ... ok
+test db_service::tests::postgres_connection_diagnostic_redacts_password_and_url_userinfo ... ok
+test db_service::tests::postgres_json_wire_decoder_preserves_large_numbers_exactly ... ok
+test db_service::tests::postgres_numeric_decoder_preserves_unbounded_precision_and_scale ... ok
+test db_service::tests::postgres_transport_diagnostics_have_stable_windows_categories ... ok
+test db_service::tests::postgres_tunnel_preserves_source_policy_and_routes_cancel_to_same_endpoint ... ok
+test db_service::tests::query_run_and_request_reject_empty_statements_at_runtime_and_serde_boundary ... ok
+test db_service::tests::query_run_cardinality_binds_optional_result_session_to_exact_statement_owner ... ok
+test db_service::tests::quote_ident_escapes_embedded_quotes ... ok
+test db_service::tests::select_exactly_at_cap_is_not_truncated ... ok
+test db_result_session::tests::lookahead_proves_next_and_navigation_never_jumps_an_unread_page ... ok
+test db_service::tests::p7_sqlite_release_preserves_page_and_effect_while_settling_lease ... ok
+test db_service::tests::select_truncates_at_max_rows ... ok
+test db_service::tests::select_serialises_native_and_blob_and_null_types ... ok
+test db_service::tests::sqlite_completion_hooks_are_query_scoped_and_driver_evidenced ... ok
+test db_service::tests::shutdown_signals_stream_worker_then_closes_and_exact_removes_every_actor ... ok
+test db_service::tests::sqlite_ddl_refresh_preserves_existing_qualified_references ... ok
+test db_service::tests::sqlite_directory_and_memory_targets_are_rejected_before_driver_open ... ok
+test db_service::tests::sqlite_completion_probe_clears_callbacks_on_drop_and_unwind ... ok
+test db_service::tests::sqlite_invalid_text_is_a_structured_decode_failure ... ok
+test db_service::tests::sqlite_field_ceiling_rejects_before_clone_and_next_query_recovers ... ok
+test db_service::tests::sqlite_missing_path_is_typed_and_never_created ... ok
+test db_service::tests::sqlite_qualified_columns_keep_duplicate_names_and_composite_primary_keys_distinct ... ok
+test db_service::tests::sqlite_sql_error_preserves_code_message_and_utf8_byte_offset ... ok
+test db_service::tests::sqlite_production_open_accepts_an_existing_readable_regular_file ... ok
+test db_service::tests::sqlite_unreadable_file_is_rejected_with_a_safe_typed_error ... ok
+test db_service::tests::typed_contracts_serialize_with_ts_field_names_and_conservative_defaults ... ok
+test db_service::tests::worker_request_pump_preserves_fragmented_control_frames ... ok
+test file_content::tests::empty_is_text ... ok
+test db_service::tests::table_columns_handles_quoted_name_and_blocks_injection ... ok
+test file_content::tests::known_magic_bytes_are_binary ... ok
+test file_content::tests::mostly_non_text_bytes_are_binary ... ok
+test file_content::tests::nul_bytes_without_bom_are_binary ... ok
+test file_content::tests::utf16_bom_detected ... ok
+test file_content::tests::utf8_text_is_text ... ok
+test files::tests::binary_reads_are_bounded_and_root_replacements_are_rejected ... ok
+test db_service::tests::shutdown_reports_stuck_actor_timeout_without_hanging_or_claiming_success ... ok
+test db_service::tests::p6_sqlite_runner_orders_units_drains_rows_and_stops_with_skipped_tabs ... ok
+test db_service::tests::pg_tls_rejects_unacked_plaintext_before_network ... ok
+test db_service::tests::pg_tls_rejects_unacked_trust_server_cert_before_network ... ok
+test files::tests::save_detects_external_change_and_preserves_bytes ... ok
+test db_service::tests::pg_open_timeout_is_bounded_structured_and_secret_free ... ok
+test files::tests::safe_save_and_symlink_rejection ... ok
+test files::tests::mutations_are_owned_and_never_replace_existing_targets_or_follow_links ... ok
+test db_service::tests::p7_sqlite_previous_is_cached_and_row_producing_dml_executes_once ... ok
+test db_result_session::tests::materialized_boundaries_never_exceed_500_rows_or_create_a_blank_terminal_page ... ok
+test git_log::tests::dedup_authors_orders_by_count_then_first_seen ... ok
+test db_service::tests::p7_sqlite_primary_boundaries_page_once_without_blank_terminal_pages ... ok
+test db_query_worker::tests::helper_timeout_reaps_the_child ... ok
+test db_remote::tests::request_identity_replay_and_serialized_byte_limits_are_enforced ... ok
+test files::tests::new_file_save_returns_the_revision_used_by_the_next_save ... ok
+test git_log::tests::commit_detail_rejects_output_option_before_spawn ... ok
+test git_log::tests::file_at_rev_binary_protection ... ok
+test git_log::tests::file_at_rev_ignores_worktree_symlink_for_historical_path ... ok
+test git_log::tests::commit_detail_root_commit_shows_added_files ... ok
+test git_log::tests::commit_detail_body_with_field_separator_does_not_shift_fields ... ok
+test git_log::tests::commit_detail_binary_file ... ok
+test git_log::tests::commit_detail_modify_additions_deletions ... ok
+test git_log::tests::commit_detail_rename ... ok
+test git_log::tests::file_at_rev_path_not_treated_as_option ... ok
+test git_log::tests::file_at_rev_missing_when_not_present ... ok
+test git_log::tests::log_authors_empty_repo ... ok
+test git_log::tests::file_at_rev_rev_option_injection_blocked ... ok
+test git_log::tests::file_at_rev_literal_special_filenames ... ok
+test git_log::tests::file_at_rev_utf16_bom_decodes_to_text ... ok
+test git_log::tests::log_page_empty_repo_returns_empty ... ok
+test git_log::tests::commit_detail_merge_uses_first_parent ... ok
+test git_log::tests::file_at_rev_returns_old_content ... ok
+test git_log::tests::log_authors_dedups_across_commits ... ok
+test git_log::tests::log_page_excludes_notes_commits ... ok
+test git_log::tests::log_page_author_exact_filter ... ok
+test git_log::tests::log_page_excludes_stash_commits ... ok
+test git_log::tests::log_page_orders_children_before_parents_on_timestamp_tie ... ok
+test git_log::tests::log_page_limit_clamped ... ok
+test git_log::tests::log_page_rejects_limit_zero ... ok
+test git_log::tests::log_page_rejects_offset_above_i32_max ... ok
+test git_log::tests::log_page_rejects_malformed_and_oversized_cursors ... ok
+test git_log::tests::log_page_paginates_with_has_more ... ok
+test git_log::tests::merge_file_changes_aligns_status_and_numstat ... ok
+test git_log::tests::parse_commit_object_keeps_control_characters_in_subject ... ok
+test git_log::tests::parse_decoration_detached_head_and_empty ... ok
+test git_log::tests::parse_decoration_head_local_remote_tag ... ok
+test git_log::tests::parse_log_records_handles_special_chars ... ok
+test git_log::tests::parse_numstat_line_text_and_binary ... ok
+test git_oid::tests::option_like_revision_is_detected_before_spawn ... ok
+test git_oid::tests::parse_accepts_sha1_and_sha256_hex ... ok
+test git_oid::tests::parse_rejects_prefix_ref_and_option ... ok
+test git_oid::tests::resolve_commit_oid_rejects_option_like_before_git_spawn ... ok
+test git_log::tests::log_page_cursor_ignores_ref_moves_between_pages ... ok
+test git_registry::tests::close_and_late_detect_cannot_replace_a_new_generation ... ok
+test git_log::tests::log_page_refs_parsing_on_real_repo ... ok
+test git_registry::tests::independent_workspaces_never_hold_each_others_operation_lock ... ok
+test git_status::tests::bare_untracked_record_is_error_not_panic ... ok
+test git_status::tests::detached_head_sets_flag_and_no_branch ... ok
+test git_status::tests::malformed_record_is_error_not_panic ... ok
+test git_status::tests::ordinary_entry_splits_staged_and_unstaged ... ok
+test git_status::tests::parses_branch_header_and_ab ... ok
+test git_status::tests::rename_entry_carries_orig_path_with_space_names ... ok
+test git_status::tests::unmerged_and_untracked_and_ignored ... ok
+test git_status::tests::untracked_record_with_empty_path_is_error ... ok
+test herdr_limits::tests::agent_text_just_below_and_above_512_kib ... ok
+test herdr_limits::tests::bounded_byte_reader_stops_past_the_cap ... ok
+test herdr_limits::tests::cli_stdout_invalid_utf8_is_rejected ... ok
+test herdr_limits::tests::cli_stdout_normal_json_is_parsed ... ok
+test herdr_limits::tests::cli_stdout_oversized_is_too_large ... ok
+test herdr_limits::tests::empty_eof_is_zero_not_a_line ... ok
+test herdr_limits::tests::invalid_utf8_is_rejected_before_parse ... ok
+test git_log::tests::log_page_query_preserves_child_before_parent_with_skewed_timestamps ... ok
+test herdr_limits::tests::json_depth_and_array_limits_reject_hostile_payloads ... ok
+test git_log::tests::log_page_includes_unmerged_branch_commits ... ok
+test herdr_limits::tests::line_at_byte_cap_is_accepted ... ok
+test herdr_limits::tests::oversized_unterminated_line_is_rejected_before_parse ... ok
+test herdr_limits::tests::oversized_terminated_line_is_rejected_before_parse ... ok
+test herdr_runtime::tests::accepts_matching_client_and_server_without_changing_the_socket ... ok
+test herdr_runtime::tests::checks_every_running_session_and_does_not_substitute_endpoint_compatibility ... ok
+test herdr_runtime::tests::rejects_unknown_compatibility_and_schema_drift ... ok
+test herdr_runtime::tests::reports_the_actual_old_selected_client_even_when_server_is_new ... ok
+test herdr_scroll::tests::accepts_installed_protocol22_snake_case_scroll_metadata ... ok
+test herdr_scroll::tests::protocol22_probe_is_allowed_when_pane_methods_are_omitted ... ok
+test herdr_scroll::tests::reads_only_official_ranges_and_exact_pane_identity ... ok
+test herdr_scroll::tests::rejects_invalid_ranges_and_serializes_the_typed_boundary ... ok
+test herdr_limits::tests::ipc_size_just_below_and_above_limit ... ok
+test herdr_service::features::tests::native_move_payload_preserves_destination_and_opaque_ids ... ok
+test herdr_service::features::tests::operations_are_closed_and_cannot_smuggle_unsupported_parameters ... ok
+test herdr_service::features::tests::rejects_unbounded_waits_empty_targets_and_nul_values_before_io ... ok
+test herdr_service::features::tests::plugin_pane_targets_follow_official_placement_contract ... ok
+test herdr_service::native_client::tests::native_client_geometry_is_bounded_and_carries_pixel_cells ... ok
+test herdr_service::tests::agent_read_rejects_out_of_range_line_count_before_ipc ... ok
+test herdr_service::tests::agent_response_parsers_reject_missing_identity_and_unknown_enums ... ok
+test herdr_limits::tests::snapshot_count_ceiling_is_exclusive_of_the_limit_plus_one ... ok
+test herdr_service::tests::api_request_rejects_empty_response_and_excessive_depth ... ok
+test git_log::tests::log_page_ignores_replace_refs_between_pages ... ok
+test herdr_service::tests::api_request_roundtrip_uses_local_stream_transport ... ok
+test herdr_service::tests::apply_status_json_gates_server_fields ... ok
+test git_log::tests::log_page_normalizes_empty_and_whitespace_filters_for_cursor ... ok
+test herdr_service::tests::api_request_rejects_oversized_unterminated_and_invalid_utf8 ... ok
+test herdr_service::native_client::tests::native_client_termination_reaps_a_pty_child_that_ignores_hangup ... ok
+test git_log::tests::log_page_rejects_forged_and_cross_root_cursors ... ok
+test herdr_service::tests::collect_schema_methods_empty_schemas_reports_no_methods ... ok
+test herdr_service::tests::collect_schema_methods_reads_methods_array_and_request_union ... ok
+test herdr_service::tests::connector_reader_rejects_oversized_line_and_does_not_emit_frame ... ok
+test herdr_service::tests::control_command_json_matches_herdr_wire ... ok
+test herdr_service::tests::control_command_rejects_invalid_combos ... ok
+test herdr_service::tests::corrupt_binary_source_preference_is_reported ... ok
+test herdr_service::tests::custom_source_requires_an_absolute_executable_path ... ok
+test git_log::tests::log_page_subject_with_field_and_record_separators_is_not_forged ... ok
+test herdr_service::tests::capabilities_claim_methods_present_in_schema_when_compatible ... ok
+test herdr_service::tests::capabilities_do_not_claim_api_when_server_incompatible ... ok
+test herdr_service::tests::capabilities_do_not_claim_methods_missing_from_schema ... ok
+test herdr_service::tests::events_capability_is_available_for_compatible_running_schema ... ok
+test herdr_service::tests::events_capability_is_unavailable_when_binary_missing ... ok
+test git_log::tests::log_page_special_chars_and_merge_parents ... ok
+test herdr_service::tests::capabilities_downgrade_when_live_socket_probe_fails ... ok
+test herdr_service::tests::api_request_accepts_line_at_byte_cap_and_rejects_one_byte_over ... ok
+test herdr_service::tests::frame_tracker_accepts_contiguous_and_ignores_duplicates ... ok
+test herdr_service::tests::frame_tracker_gap_becomes_resync ... ok
+test herdr_service::tests::frame_tracker_requires_first_full_frame ... ok
+test git_log::tests::log_page_query_or_semantics ... ok
+test herdr_service::tests::herdr_cli_invalid_utf8_is_protocol_error ... ok
+test herdr_service::tests::herdr_cli_normal_json_is_parsed ... ok
+test git_log::tests::log_page_hash_query_only_hex_prefix_and_exact_commit ... ok
+test git_process::tests::output_is_bounded_and_cancellation_does_not_affect_other_jobs ... ok
+test herdr_service::tests::herdr_cli_oversized_stdout_is_killed_and_too_large ... ok
+test herdr_service::tests::herdr_workspace_order_preserves_authoritative_ids_and_rejects_malformed_results ... ok
+test herdr_service::tests::implemented_methods_exist_in_official_protocol22_schema ... ok
+test herdr_service::tests::herdr_cli_success_with_invalid_utf8_stderr_is_protocol_error ... ok
+test herdr_service::tests::herdr_cli_long_child_is_reaped_within_timeout ... ok
+test herdr_service::tests::herdr_cli_timeout_kills_and_reaps_child ... ok
+test herdr_service::tests::event_subscription_delivers_duplicate_events_then_disconnects ... ok
+test herdr_service::tests::managed_binary_override_resolves_only_the_default_source ... ok
+test herdr_service::tests::fake_binary_capabilities_use_discovered_protocol ... ok
+test herdr_service::tests::fake_connector_control_resize_and_release ... ok
+test herdr_service::tests::nested_plugin_methods_reach_feature_capabilities ... ok
+test herdr_service::tests::pane_membership_events_trigger_snapshot_refresh ... ok
+test herdr_service::tests::parse_agent_get_and_read_response_shapes ... ok
+test herdr_service::tests::parse_agent_read_caps_text_and_sets_too_large ... ok
+test herdr_service::tests::parse_layout_export_reads_recursive_root_and_boolean_path_semantics ... ok
+test herdr_service::tests::parse_layout_export_rejects_excessive_recursion ... ok
+test herdr_service::tests::parse_pane_info_response_reads_split_identity ... ok
+test herdr_service::tests::parse_session_list_json_reads_exact_dto_fields ... ok
+test herdr_service::tests::parse_session_list_json_rejects_excessive_sessions ... ok
+test herdr_service::tests::parse_snapshot_accepts_pane_count_at_limit ... ok
+test herdr_service::tests::parse_snapshot_rejects_excessive_pane_array ... ok
+test herdr_service::tests::parse_snapshot_response_reads_protocol_from_payload ... ok
+test herdr_service::tests::parse_subscription_event_accepts_dotted_worktree_selector_envelopes ... ok
+test herdr_service::tests::parse_subscription_event_line_reads_agent_status_changed ... ok
+test herdr_service::tests::parse_subscription_event_line_reads_pane_exited ... ok
+test herdr_service::tests::parse_subscription_event_line_reads_tab_topology ... ok
+test herdr_service::tests::parse_subscription_event_line_reads_workspace_topology ... ok
+test herdr_service::tests::parse_subscription_event_worktree_dirty_signals ... ok
+test herdr_service::tests::parse_tab_created_response_reads_root_pane_identity ... ok
+test herdr_service::tests::parse_tab_created_response_rejects_cross_tab_or_workspace_identity ... ok
+test herdr_service::tests::parse_worktree_list_rejects_wrong_type ... ok
+test herdr_service::tests::parse_worktree_list_response_accepts_protocol19_fields ... ok
+test herdr_service::tests::protocol19_request_payloads_match_installed_schema ... ok
+test herdr_service::tests::event_subscription_release_interrupts_idle_socket_reader ... ok
+test herdr_service::tests::scroll_capability_reaches_frontend_when_official_schema_supports_it ... ok
+test herdr_service::tests::list_sessions_uses_session_list_json_only ... ok
+test herdr_service::tests::shared_ndjson_helper_rejects_hostile_frames_before_parse ... ok
+test herdr_service::tests::release_all_connectors_is_idempotent ... ok
+test herdr_service::tests::live_alias_resolves_to_default_named_session ... ok
+test herdr_service::tests::mutation_capability_cache_avoids_reprobing_status_and_schema ... ok
+test herdr_service::tests::event_subscription_oversized_line_is_terminal ... ok
+test herdr_service::tests::incompatible_source_does_not_overwrite_a_valid_saved_choice ... ok
+test herdr_service::tests::startup_keeps_an_existing_herdr_server ... ok
+test herdr_service::tests::subscription_event_serializes_agent_status_changed_with_camel_case_fields ... ok
+test herdr_service::tests::subscriptions_match_official_protocol22_required_fields ... ok
+test herdr_service::tests::startup_failure_is_retained_in_capability_diagnostics ... ok
+test herdr_service::tests::unavailable_managed_source_cannot_be_saved ... ok
+test herdr_service::tests::session_specific_socket_routes_api_and_sets_herdr_session_env ... ok
+test herdr_service::tests::startup_launches_resolved_headless_server_and_waits_until_ready ... ok
+test herdr_service::tests::windows_pathext_parser_keeps_safe_unique_extensions ... ok
+test herdr_service::tests::startup_rejects_an_existing_incompatible_server_without_stopping_it ... ok
+test herdr_service::tests::verified_custom_source_persists_without_hot_swapping_the_active_client ... ok
+test herdr_service::tests::snapshot_and_mutations_reject_stopped_session_without_starting_server ... ok
+test herdr_service::tests::unknown_named_session_never_inherits_default_capabilities ... ok
+test herdr_transport::tests::connect_rejects_elapsed_deadline_without_waiting ... ok
+test herdr_transport::tests::empty_peer_close_is_none_not_a_line ... ok
+test herdr_service::tests::malformed_event_is_terminal_and_releasable ... ok
+test herdr_transport::tests::local_readiness_latency_probe ... ignored, same-machine transport latency benchmark
+test herdr_transport::tests::ping_roundtrip_preserves_authoritative_path_string ... ok
+test herdr_service::tests::workspace_move_block_capability_is_schema_gated ... ok
+test herdr_transport::tests::reader_keeps_partial_bytes_across_short_deadlines ... ok
+test herdr_transport::tests::reader_preserves_following_line_from_one_chunk ... ok
+test herdr_service::tests::worktree_list_capability_is_schema_gated ... ok
+test herdr_service::tests::workspace_move_capability_is_schema_gated ... ok
+test herdr_service::tests::startup_timeout_bounds_probe_and_reaps_spawned_server ... ok
+test login_env::tests::captures_nul_values_without_rpc_noise_or_losing_equals_and_unicode ... ok
+test login_env::tests::rejects_missing_markers_and_preserves_account_and_runtime_identity ... ok
+test path_capability::tests::dest_scratch_discard_removes_temp ... ok
+test path_capability::tests::dest_scratch_promotes_atomically_and_overwrites_regular_file ... ok
+test path_capability::tests::dest_scratch_rejects_hostile_leaf_before_any_io ... ok
+test path_capability::tests::download_destination_capability_is_pinned_and_single_use ... ok
+test path_capability::tests::native_selection_grant_uses_backend_path_not_renderer_authority ... ok
+test path_capability::tests::parent_and_final_symlink_swap_cannot_escape ... ok
+test path_capability::tests::safe_leaf_name_rejects_hostile_forms ... ok
+test path_capability::tests::safe_relative_path_rejects_escape_and_separators ... ok
+test path_capability::tests::selected_path_final_symlink_is_rejected ... ok
+test path_capability::tests::selected_path_is_single_use_and_expires ... ok
+test path_capability::tests::transfer_dest_set_rejects_same_destination ... ok
+test path_capability::tests::unix_safe_leaf_name_still_allows_colon_in_ordinary_names ... ok
+test path_capability::tests::windows_capability_backend_is_handle_relative_or_absent ... ok
+test path_capability::tests::windows_ordinary_leaf_rejects_ads_trailing_and_reserved_names ... ok
+test path_capability::tests::workspace_capability_rejects_forged_and_stale_ids ... ok
+test path_capability::tests::workspace_symlink_to_outside_secret_is_rejected ... ok
+test path_capability::tree::tests::files_can_be_renamed_and_nested_trees_deleted_with_a_budget ... ok
+test path_capability::tree::tests::tree_operations_are_bounded_and_never_replace_a_destination ... ok
+test process_kill::tests::attachment_cleanup_failure_is_not_silenced ... ok
+test process_kill::tests::attachment_failure_runs_terminate_and_reap_seam ... ok
+test process_kill::tests::bounded_poll_returns_the_observed_value ... ok
+test process_kill::tests::bounded_wait_finishes_without_an_unbounded_child_wait ... ok
+test herdr_service::tests::worktree_list_refuses_stopped_named_session ... ok
+test process_kill::tests::bounded_wait_reports_timeout ... ok
+test login_env::tests::bounds_hanging_and_flooding_account_shells ... ok
+test process_kill::tests::taskkill_status_requires_a_successful_exit ... ok
+test process_kill::tests::windows_background_flags ... ok
+test process_kill::tests::windows_hidden_process_flags ... ok
+test process_kill::tests::windows_job_plan_requires_kill_on_close_and_retained_lifetime ... ok
+test herdr_service::tests::event_subscription_ack_is_bounded ... ok
+test search::tests::caps_matches_per_file ... ok
+test search::tests::find_col_handles_variable_length_lowercase ... ok
+test search::tests::finds_matches_with_line_and_col ... ok
+test search::tests::respects_gitignore_and_skips_binary ... ok
+test search::tests::case_insensitive_by_flag ... ok
+test search::tests::stale_generation_stops_without_done ... ok
+test process_kill::tests::kill_tree_reaps_direct_child_and_kills_grandchild ... ok
+test search::tests::wire_contract_serializes_with_type_tag_and_camel_case ... ok
+test server::tests::handshake_and_owner_are_enforced ... ok
+test search::tests::truncates_at_total_match_cap ... ok
+test shell::cwd_tests::unix_shell_cwd_is_not_reinterpreted_as_a_windows_path ... ok
+test shell::cwd_tests::windows_shell_cwd_uses_drive_or_unc_syntax_instead_of_a_device_namespace ... ok
+test stream_protocol::tests::stream_commands_cannot_cross_generation_or_protocol ... ok
+test streams::tests::rejects_control_before_opening_a_resource ... ok
+test tunnel::tests::endpoints_accept_dns_ipv4_ipv6_and_reject_non_host_input ... ok
+test tunnel::tests::handshake_preserves_binary_payload_and_half_close ... ok
+test workspace_trust::tests::background_status_and_git_checks_preserve_the_displayed_grant_challenge ... ok
+test herdr_transport::tests::reader_retains_partial_bytes_across_pending_polls ... ok
+test server::tests::rejects_oversized_and_partial_frames ... ok
+test workspace_trust::tests::default_store_path_lives_under_yuzora_home ... ok
+test workspace_trust::tests::completed_revoke_cannot_be_resurrected_by_stale_grant ... ok
+test workspace_trust::tests::concurrent_independent_grants_are_preserved ... ok
+test workspace_trust::tests::missing_path_is_unsupported ... ok
+test workspace_trust::tests::directory_replacement_invalidates_grant ... ok
+test workspace_trust::tests::grant_survives_store_reload ... ok
+test workspace_trust::tests::project_repo_presence_uses_filesystem_only ... ok
+test workspace_trust::tests::persist_uses_owner_only_mode ... ok
+test workspace_trust::tests::stale_and_expired_challenges_fail_closed ... ok
+test herdr_service::tests::tab_move_capability_is_schema_gated ... ok
+test workspace_trust::tests::unknown_store_version_is_fail_closed ... ok
+test workspace_trust::tests::session_git_root_is_allowed_only_while_workspace_remains_trusted ... ok
+test workspace_trust::tests::revoke_drops_grant_and_lists_nothing ... ok
+test git_watch::tests::linked_worktree_private_index_shared_refs_and_operation_state ... ok
+test search::tests::truncates_at_file_cap ... ok
+test herdr_transport::tests::idle_reader_honors_deadline_without_timeout_setters ... ok
+test herdr_transport::tests::reader_accepts_exact_cap_and_rejects_hostile_lines ... ok
+test process_kill::tests::kill_tree_escalates_to_sigkill_after_grace ... ok
+test herdr_service::tests::native_interaction_methods_gate_on_schema_and_stopped_session ... ok
+test herdr_service::tests::fake_connector_observe_emits_first_full_frame_and_release_kills_only_child ... ok
+test herdr_transport::tests::write_honors_deadline_when_peer_does_not_read ... ok
+
+test result: ok. 386 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.24s
+
+     Running unittests src/main.rs (target/debug/deps/yuzora_host-452ff5ed4962eada)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/git_read_efficiency.rs (target/debug/deps/git_read_efficiency-40f1a3df6651b9e4)
+
+running 1 test
+test git_read_paths_avoid_redundant_processes_without_changing_content ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/git_stdio.rs (target/debug/deps/git_stdio-963ddbce5e851200)
+
+running 3 tests
+test search_stream_delivers_owned_results_then_releases_the_helper ... ok
+test eof_cancels_an_inflight_git_hook_and_does_not_replay_the_commit ... ok
+test git_authority_is_bound_to_workspace_host_and_repository_identity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+
+     Running tests/remote_facade.rs (target/debug/deps/remote_facade-1d16ca82473f7878)
+
+running 1 test
+test remote_facade_uses_host_metadata_and_discovered_socket_without_local_binary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sqlite_stdio.rs (target/debug/deps/sqlite_stdio-ee306e968f1bbdf1)
+
+running 5 tests
+test sqlite_cancel_overtakes_running_query_and_stale_owner_cannot_touch_next_run ... ok
+sqlite-request-replayed-or-out-of-order
+test sqlite_rejects_untrusted_missing_external_files_and_replayed_writes ... ok
+test sqlite_source_pages_previous_release_and_returning_write_execute_once ... ok
+test sqlite_eof_interrupts_query_and_releases_database_even_when_output_is_unread ... ok
+sqlite-output-closed
+test sqlite_oversized_reply_closes_lane_and_releases_source_cursor_without_replay ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+     Running tests/stdio.rs (target/debug/deps/stdio-ba6ae8b00013c95e)
+
+running 2 tests
+test built_helper_roundtrip_conflict_and_connection_identity ... ok
+test built_files_stream_delivers_owned_events_and_exits_on_eof ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+   Doc-tests yuzora_host
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

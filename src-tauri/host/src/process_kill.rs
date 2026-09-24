@@ -29,7 +29,7 @@ const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(any(windows, test))]
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WindowsJobLifecycleStep {
     Create,
@@ -41,7 +41,7 @@ enum WindowsJobLifecycleStep {
     ReapDirectChild,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 const WINDOWS_JOB_LIFECYCLE_PLAN: [WindowsJobLifecycleStep; 7] = [
     WindowsJobLifecycleStep::Create,
     WindowsJobLifecycleStep::ConfigureKillOnClose,

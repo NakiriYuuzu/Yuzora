@@ -263,7 +263,7 @@ export function LogTab({
         <div className="flex min-h-0 flex-1 flex-col">
             {/* §2 L744-759 filter toolbar */}
             <div className="flex h-[40px] shrink-0 items-center gap-[8px] border-b border-(--line-1) bg-(--yz-sunk) px-[12px]">
-                <div className="flex h-[28px] shrink grow-0 basis-[300px] items-center gap-[8px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[11px] shadow-(--shadow-xs)">
+                <div className="flex h-[28px] shrink grow-0 basis-[300px] items-center gap-[8px] rounded-[9px] border border-(--line-1) bg-(--yz-solid) px-[11px] shadow-(--shadow-xs) focus-within:border-(--yz-accent) focus-within:ring-2 focus-within:ring-(--yz-accent)/30">
                     <svg
                         width="13"
                         height="13"

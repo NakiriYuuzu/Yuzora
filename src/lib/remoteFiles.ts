@@ -1,7 +1,7 @@
 import { invoke, sftpListDir } from "./ipc"
 import { requestHost } from "./hostIpc"
 import type { ConnectionOwner } from "./runtimeIdentity"
-import { parseRemoteFilePath, remoteFilePath, sameConnection } from "./runtimeIdentity"
+import { joinRemoteHostPath, parseRemoteFilePath, remoteFilePath, sameConnection, relativeRemoteHostPath } from "./runtimeIdentity"
 import type { FileNode, OpenFileResult, WorkspaceOpenResult } from "./types"
 import { useSshStore } from "@/state/sshStore"
 import { Channel } from "@tauri-apps/api/core"
@@ -107,7 +107,7 @@ export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> 
     if (message.type === "closed") { closed = true; retry(); return }
     const payload = message.frame.payload
     if (message.frame.version !== 1 || payload.type !== "files" || payload.workspaceRoot !== workspace.root || !payload.paths) return
-    const paths = payload.paths.filter((path) => path === workspace.root || path.startsWith(workspace.root.replace(/\/$/, "") + "/"))
+    const paths = payload.paths.filter((path) => relativeRemoteHostPath(workspace.root, path) !== null)
     void notifyChanges(workspace, paths).catch((error) => console.warn("remote file notification failed", error))
   }
   let opened: { streamId: string }
@@ -139,7 +139,8 @@ export async function reconnectRemoteWorkspaces(owner: ConnectionOwner, isCurren
     const workspace = previous
     for (const [path, original] of [...revisions]) {
       if (original.backend !== before) continue
-      const relative = parseRemoteFilePath(path)!.path.slice(previous.root.length).replace(/^\//, "")
+      const relative = relativeRemoteHostPath(previous.root, parseRemoteFilePath(path)!.path)
+      if (relative === null) continue
       const read = await requestHost<ReadResult>(owner, { method: "filesRead", params: { workspace: opened.capabilityId, path: relative } }).catch(() => null)
       if (!isCurrent() || workspaces.get(uri) !== workspace) return
       if (revisions.get(path) === original && read?.revision === original.revision) revisions.set(path, { backend, revision: original.revision })
@@ -233,11 +234,12 @@ function resolve(uri: string): { workspace: RemoteWorkspace; path: string; relat
   const workspace = workspaces.get(remoteFilePath(resource.hostId, resource.workspaceRoot))
   if (!workspace) throw new Error("Reconnect the remote workspace before opening its files")
   if (workspace.backend.kind === "runtime" && !workspace.backend.isCurrent()) throw new Error("Remote workspace connection changed; response discarded")
-  if (resource.path !== workspace.root && !resource.path.startsWith(workspace.root.replace(/\/$/, "") + "/")) throw new Error("Remote file is outside its workspace")
+  const relative = relativeRemoteHostPath(workspace.root, resource.path)
+  if (relative === null) throw new Error("Remote file is outside its workspace")
   if (workspace.backend.kind === "sftp" && useSshStore.getState().sessions[workspace.hostId]?.sessionId !== workspace.backend.sessionId) {
     throw new Error("Remote workspace connection changed; reopen the folder")
   }
-  return { workspace, path: resource.path, relative: resource.path.slice(workspace.root.length).replace(/^\//, "") }
+  return { workspace, path: resource.path, relative }
 }
 
 function assertBackend(uri: string, backend: Backend): void {
@@ -364,7 +366,7 @@ export async function listRemoteDir(uri: string): Promise<FileNode[]> {
     }
     const entries = await requestHost<FileNode[]>(backend.owner, { method: "filesList", params: { workspace: backend.capabilityId, path: relative } })
     assertBackend(uri, backend)
-    return entries.map((entry) => ({ ...entry, path: remoteFilePath(workspace.hostId, `${workspace.root.replace(/\/$/, "")}/${entry.path}`, workspace.root) }))
+    return entries.map((entry) => ({ ...entry, path: remoteFilePath(workspace.hostId, joinRemoteHostPath(workspace.root, entry.path), workspace.root) }))
   } finally { await release() }
 }
 

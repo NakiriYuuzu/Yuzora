@@ -15,6 +15,11 @@ pub const STREAM_QUEUE_CAPACITY: usize = 8;
     deny_unknown_fields
 )]
 pub enum StreamConfig {
+    Client {
+        binary: String,
+        session_name: String,
+        size: crate::herdr_service::HerdrClientSize,
+    },
     Git {
         path: String,
         repository_root: String,

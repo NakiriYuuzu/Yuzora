@@ -1,5 +1,5 @@
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { copyTextInBackground } from "@/lib/clipboardFeedback"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
@@ -175,8 +175,8 @@ export function CommitDetails({
                         type="button"
                         aria-label={t("commitDetails.copyHashAriaLabel")}
                         title={t("commitDetails.copyHashAriaLabel")}
-                        onClick={() => void writeText(selectedCommit.hash)}
-                        className="flex size-[26px] items-center justify-center rounded-[7px] text-(--ink-3) transition-all duration-150 hover:bg-(--paper-2) hover:text-(--ink-1)"
+                        onClick={() => copyTextInBackground(selectedCommit.hash)}
+                        className="flex size-[26px] items-center justify-center rounded-[7px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1)"
                     >
                         <svg
                             width="13"

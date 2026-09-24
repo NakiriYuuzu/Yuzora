@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
@@ -18,21 +19,20 @@ pub struct WorkspaceFiles {
     roots: HashMap<String, Workspace>,
 }
 
-fn digest(bytes: &[u8], metadata: &std::fs::Metadata) -> String {
+fn digest(bytes: &[u8], metadata: &std::fs::Metadata, identity: &str) -> String {
     let hash = Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!(
-        "{}:{}:{}:{}:{hash}",
-        metadata.dev(),
-        metadata.ino(),
-        metadata.mtime(),
-        metadata.mtime_nsec()
+        "{identity}:{}:{:?}:{hash}",
+        metadata.len(),
+        metadata.modified().ok()
     )
 }
 
-fn read_bounded(mut file: std::fs::File) -> Result<(Vec<u8>, std::fs::Metadata), String> {
+fn read_bounded(mut file: std::fs::File) -> Result<(Vec<u8>, std::fs::Metadata, String), String> {
+    let identity = crate::path_capability::opened_file_identity(&file)?;
     let before = file.metadata().map_err(|e| e.to_string())?;
     if before.len() > MAX_FILE_BYTES {
         return Err("file-too-large".into());
@@ -47,12 +47,12 @@ fn read_bounded(mut file: std::fs::File) -> Result<(Vec<u8>, std::fs::Metadata),
     }
     let after = file.metadata().map_err(|e| e.to_string())?;
     if before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
+        || before.modified().map_err(|e| e.to_string())?
+            != after.modified().map_err(|e| e.to_string())?
     {
         return Err("file-changed-during-read".into());
     }
-    Ok((bytes, after))
+    Ok((bytes, after, identity))
 }
 
 impl WorkspaceFiles {
@@ -128,7 +128,7 @@ impl WorkspaceFiles {
         if file.len > max_bytes.min(MAX_FILE_BYTES) {
             return Err("file-too-large".into());
         }
-        let (bytes, _) = read_bounded(file.file)?;
+        let (bytes, _, _) = read_bounded(file.file)?;
         if bytes.len() as u64 > max_bytes {
             return Err("file-too-large".into());
         }
@@ -150,8 +150,13 @@ impl WorkspaceFiles {
         let workspace = self.get(id)?;
         let dir = workspace.root.open_subdir(path)?;
         let mut entries = Vec::new();
-        for entry in dir.entries()? {
-            let (name, kind) = entry?;
+        for (name, kind) in dir.list_entries(50_000).map_err(|error| {
+            if error == "sftp-tree-entry-limit" {
+                "directory-too-large".into()
+            } else {
+                error
+            }
+        })? {
             let relative = if path.is_empty() {
                 name.clone()
             } else {
@@ -185,8 +190,8 @@ impl WorkspaceFiles {
         if opened.len > MAX_FILE_BYTES {
             return Ok(json!({"file":{"kind":"tooLarge","size":opened.len},"revision":null}));
         }
-        let (bytes, metadata) = read_bounded(opened.file)?;
-        Ok(json!({"file":classify_bytes(&bytes),"revision":digest(&bytes,&metadata)}))
+        let (bytes, metadata, identity) = read_bounded(opened.file)?;
+        Ok(json!({"file":classify_bytes(&bytes),"revision":digest(&bytes,&metadata,&identity)}))
     }
 
     pub fn write(
@@ -204,15 +209,19 @@ impl WorkspaceFiles {
         let (parent, _) = path.rsplit_once('/').unwrap_or(("", path));
         let dir = workspace.root.open_subdir(parent)?;
         let opened = dir.open_file(&SafeRelativePath::parse(relative.leaf().as_str())?)?;
-        let (bytes, metadata) = read_bounded(opened.file)?;
-        if digest(&bytes, &metadata) != revision {
+        let (bytes, metadata, identity) = read_bounded(opened.file)?;
+        if digest(&bytes, &metadata, &identity) != revision {
             return Err("file-conflict".into());
         }
         let scratch =
             SafeLeafName::parse(&format!(".yuzora-save-{:032x}", rand::random::<u128>()))?;
         let result = (|| -> Result<Value, String> {
             let mut file = dir.create_exclusive(&scratch)?;
+            #[cfg(unix)]
             file.set_permissions(std::fs::Permissions::from_mode(metadata.mode() & 0o777))
+                .map_err(|e| e.to_string())?;
+            #[cfg(windows)]
+            file.set_permissions(metadata.permissions())
                 .map_err(|e| e.to_string())?;
             file.write_all(content.as_bytes())
                 .map_err(|e| e.to_string())?;
@@ -222,8 +231,8 @@ impl WorkspaceFiles {
             // replacement so the response can read back the committed revision.
             drop(file);
             let current = dir.open_file(&SafeRelativePath::parse(relative.leaf().as_str())?)?;
-            let (current_bytes, current_meta) = read_bounded(current.file)?;
-            if digest(&current_bytes, &current_meta) != revision {
+            let (current_bytes, current_meta, current_identity) = read_bounded(current.file)?;
+            if digest(&current_bytes, &current_meta, &current_identity) != revision {
                 return Err("file-conflict".into());
             }
             // Serialize helper writes; independent external writers are checked
@@ -277,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mutations_are_owned_and_never_replace_existing_targets_or_follow_links() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -351,6 +361,7 @@ mod tests {
         );
     }
     #[test]
+    #[cfg(unix)]
     fn safe_save_and_symlink_rejection() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();

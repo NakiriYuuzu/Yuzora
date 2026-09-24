@@ -80,6 +80,7 @@ pub enum WorkerRequest {
         trust_cert: bool,
     },
     Probe,
+    ListDatabases,
     ListTables,
     TableColumns {
         catalog: String,
@@ -102,6 +103,7 @@ impl WorkerRequest {
                 password.zeroize();
             }
             Self::Probe
+            | Self::ListDatabases
             | Self::ListTables
             | Self::TableColumns { .. }
             | Self::Query { .. }
@@ -156,6 +158,7 @@ impl fmt::Debug for WorkerRequest {
                 .finish(),
             Self::Probe => formatter.write_str("Probe"),
             Self::ListTables => formatter.write_str("ListTables"),
+            Self::ListDatabases => formatter.write_str("ListDatabases"),
             Self::TableColumns {
                 catalog,
                 schema,
@@ -185,6 +188,7 @@ impl fmt::Debug for WorkerRequest {
 pub enum WorkerResponse {
     Ready { engine: String },
     Version { value: Option<String> },
+    Databases { databases: Vec<String> },
     Tables { tables: Vec<TableInfo> },
     Columns { columns: Vec<ColumnInfo> },
     Execute { affected_rows: Option<String> },
@@ -347,13 +351,13 @@ fn windows_job_memory_limit(bytes: u64) -> Result<(), String> {
 
     extern "system" {
         fn CreateJobObjectW(
-            attributes: *mut core::ffi::c_void,
+            attributes: *const core::ffi::c_void,
             name: *const u16,
         ) -> *mut core::ffi::c_void;
         fn SetInformationJobObject(
             job: *mut core::ffi::c_void,
             class: i32,
-            info: *mut core::ffi::c_void,
+            info: *const core::ffi::c_void,
             length: u32,
         ) -> i32;
         fn AssignProcessToJobObject(
@@ -386,7 +390,8 @@ fn windows_job_memory_limit(bytes: u64) -> Result<(), String> {
             CloseHandle(job);
             return Err("AssignProcessToJobObject failed".to_string());
         }
-        std::mem::forget(job);
+        // Keep the raw job handle open until this worker exits so its memory
+        // limit remains enforced. A raw handle has no Rust Drop implementation.
         Ok(())
     }
 }
@@ -738,6 +743,17 @@ impl NetworkQueryWorker {
         }
     }
 
+    pub async fn list_databases(&self) -> Result<Vec<String>, DatabaseError> {
+        match self.roundtrip(WorkerRequest::ListDatabases).await? {
+            WorkerResponse::Databases { databases } => Ok(databases),
+            WorkerResponse::Error { error } => Err(error),
+            _ => Err(worker_error(
+                "helperProtocol",
+                "unexpected databases response",
+            )),
+        }
+    }
+
     pub async fn list_tables(&self) -> Result<Vec<TableInfo>, DatabaseError> {
         match self.roundtrip(WorkerRequest::ListTables).await? {
             WorkerResponse::Tables { tables } => Ok(tables),
@@ -1007,9 +1023,16 @@ mod tests {
     }
 
     async fn hanging_child() -> (NetworkQueryWorker, u32) {
-        let mut command = Command::new(if cfg!(windows) { "ping" } else { "sleep" });
+        // Stdout must stay silent: any bytes are parsed as a frame header, and
+        // Windows `ping` prints before it waits.
+        let mut command = Command::new(if cfg!(windows) { "powershell" } else { "sleep" });
         if cfg!(windows) {
-            command.args(["-n", "30", "127.0.0.1"]);
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ]);
         } else {
             command.arg("30");
         }

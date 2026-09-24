@@ -42,6 +42,7 @@ import {
 import i18n from "@/lib/i18n"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
+import { useAgentMruStore } from "./agentMruStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { canonicalPathKey, workspacePathBasename } from "@/lib/paths"
@@ -166,7 +167,6 @@ interface HerdrState {
   refreshWorktreeInventory: (sessionName?: string | null) => Promise<void>
   markAttentionSeen: (sessionName: string, paneId: string) => void
   attentionItems: (sessionName?: string | null) => HerdrAttentionItem[]
-  canInspectAgent: (sessionName?: string | null) => boolean
 }
 
 function emptyRuntime(): HerdrSessionRuntime {
@@ -524,10 +524,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
             errorMessage: message
           })
         )
-      } finally {
-        bootstrapInFlight.delete(key)
       }
-    })()
+    })().finally(() => {
+      // A stopped Session settles synchronously; clearing only after the task
+      // is registered keeps a settled bootstrap from blocking later ones.
+      if (bootstrapInFlight.get(key) === task) bootstrapInFlight.delete(key)
+    })
     bootstrapInFlight.set(key, task)
     return task
   },
@@ -1481,12 +1483,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       const runtimeTabs = get().runtimesBySession[sessionName]?.snapshot?.tabs ?? []
       const owningTab = runtimeTabs.find((tab) => tab.id === agent.tabId)
       if (owningTab) {
-        return get().activateTab({
+        const result = await get().activateTab({
           ...owningTab,
           paneId: agent.paneId ?? owningTab.paneId,
           terminalId: agent.terminalId,
           sessionName
         })
+        if (result.ok) useAgentMruStore.getState().touch(sessionName, agent.id)
+        return result
       }
     }
 
@@ -1516,6 +1520,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     useWorkspaceStore.getState().rememberSpaceNavigation(sessionName, agent.workspaceId)
     if (agent.paneId) get().markAttentionSeen(sessionName, agent.paneId)
     useUiStore.getState().setMode("ade")
+    useAgentMruStore.getState().touch(sessionName, agent.id)
     return { ok: true }
   },
 
@@ -1742,16 +1747,4 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     items.sort((a, b) => b.updatedAt - a.updatedAt)
     return items
   },
-
-  canInspectAgent(sessionName) {
-    const state = get()
-    const resolved = sessionName ?? state.selectedSessionName
-    if (!resolved) return false
-    const session = state.sessions.find((item) => sessionScope(item) === resolved)
-    const caps =
-      state.runtimesBySession[resolved]?.capabilities ??
-      (resolved === state.selectedSessionName ? state.capabilities : null)
-    if (!session?.running || !caps?.server.running) return false
-    return Boolean(caps.api.agentGet && caps.api.agentRead)
-  }
 }))

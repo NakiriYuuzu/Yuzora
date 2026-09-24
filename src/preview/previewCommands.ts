@@ -1,7 +1,7 @@
 import { assertFilePreviewCurrent, browserTarget } from "./filePreview"
 import { remotePreviewDisplayUrl } from "./remotePreviewUrl"
 import { workspacePathForDisplay } from "@/lib/paths"
-import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { copyTextWithFeedback } from "@/lib/clipboardFeedback"
 import { openUrl } from "@tauri-apps/plugin-opener"
 
 import type { ContextMenuCommandOutcome } from "@/app/workbench/contextMenuModel"
@@ -228,7 +228,7 @@ export async function copyPreviewUrl(
 ): Promise<ContextMenuCommandOutcome> {
   if (!previewTargetHasUrl(target) || !target.url) return cancelled()
   const source = browserTarget(target.url)
-  await writeText(source.kind === "file" ? workspacePathForDisplay(source.path) : target.url)
+  await copyTextWithFeedback(source.kind === "file" ? workspacePathForDisplay(source.path) : target.url)
   return completed()
 }
 

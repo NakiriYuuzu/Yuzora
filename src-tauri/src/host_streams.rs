@@ -178,8 +178,12 @@ pub async fn host_stream_open(
             session_name,
             pane_ids,
         },
-    ) = (&connection.target, &config)
-    {
+        true,
+    ) = (
+        &connection.target,
+        &config,
+        connection.platform.get().is_none_or(|os| os != "windows"),
+    ) {
         return open_ssh_events(
             &connection,
             ssh.0.clone(),

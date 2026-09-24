@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-23",
+  "source": "Final check results reported by root agent; available process logs copied alongside this summary.",
+  "host_unit": {
+    "passed": 386,
+    "ignored": 1
+  },
+  "host_integration": {
+    "passed": 12
+  },
+  "desktop_all_targets_check": "passed",
+  "host_fmt": "passed",
+  "desktop_fmt": "passed",
+  "desktop_clippy_baseline": {
+    "status": "passed",
+    "diagnostics": 90,
+    "updated_in_this_e2e_turn": false
+  },
+  "host_native_clippy": "passed",
+  "host_windows_gnu_clippy": "passed",
+  "windows_msvc": "not verified; Windows SDK unavailable locally",
+  "windows_ssh_runtime": "not verified",
+  "new_five_platform_payload": "not complete"
+}

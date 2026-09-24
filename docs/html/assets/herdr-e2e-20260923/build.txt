@@ -1,0 +1,42 @@
+$ bun run typecheck && vite build
+$ bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.json && bun ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.node.json
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 2652 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                       2.55 kB │ gzip:     1.22 kB
+dist/assets/jetbrains-mono-vietnamese-wght-normal-Bt-aOZkq.woff2      7.50 kB
+dist/assets/jetbrains-mono-greek-wght-normal-Bw9x6K1M.woff2           9.00 kB
+dist/assets/hanken-grotesk-vietnamese-wght-normal-CHiFlh_0.woff2      9.32 kB
+dist/assets/newsreader-vietnamese-wght-normal-Czsa-EzN.woff2         11.93 kB
+dist/assets/jetbrains-mono-cyrillic-wght-normal-D73BlboJ.woff2       12.10 kB
+dist/assets/jetbrains-mono-latin-ext-wght-normal-DBQx-q_a.woff2      15.19 kB
+dist/assets/hanken-grotesk-latin-ext-wght-normal-Dg-wlmqe.woff2      19.58 kB
+dist/assets/hanken-grotesk-latin-wght-normal-CaVRRdDk.woff2          34.70 kB
+dist/assets/newsreader-latin-ext-wght-normal-C-3rgBeH.woff2          36.24 kB
+dist/assets/jetbrains-mono-latin-wght-normal-B9CIFXIH.woff2          40.40 kB
+dist/assets/newsreader-latin-wght-normal-CCVVNp6i.woff2              58.08 kB
+dist/assets/search.worker-B1I8VKsM.js                                58.65 kB
+dist/assets/markdownDocument.worker-Dg30bA2h.js                     113.15 kB
+dist/assets/terminalCopy.worker-DAGJ6xTH.js                         113.59 kB
+dist/assets/index-Bmun876-.css                                      197.48 kB │ gzip:    39.01 kB
+dist/assets/herdrFeatures-yI62MPsQ.js                                 0.17 kB │ gzip:     0.16 kB
+dist/assets/remoteSearch-iYw5DQ6J.js                                  1.41 kB │ gzip:     0.67 kB
+dist/assets/terminalClipboardImage-BNgtFc3U.js                        1.52 kB │ gzip:     0.82 kB
+dist/assets/remoteGit-_cw-M1vO.js                                     1.56 kB │ gzip:     0.80 kB
+dist/assets/runtimeIdentity-C6TNiViy.js                               2.21 kB │ gzip:     1.10 kB
+dist/assets/hostIpc-NmH_vB0i.js                                       4.35 kB │ gzip:     1.57 kB
+dist/assets/HerdrNativeDialog-Cf2983LI.js                            11.03 kB │ gzip:     4.77 kB
+dist/assets/remoteFiles-ewKd3qfM.js                                  13.78 kB │ gzip:     4.67 kB
+dist/assets/HerdrToolsDialog-BzTx08UC.js                             21.74 kB │ gzip:     6.04 kB
+dist/assets/ipc-L318LCPZ.js                                          22.48 kB │ gzip:     7.50 kB
+dist/assets/workspaceStore-hf3BmgHe.js                               26.09 kB │ gzip:     7.34 kB
+dist/assets/index-B_YPEiz4.js                                     3,817.82 kB │ gzip: 1,210.37 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 3.10s

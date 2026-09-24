@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.15-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.16-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -35,6 +35,14 @@
 <br />
 
 ## 功能
+
+### v0.0.16 更新
+
+- HERDR 工具：Worktrees、pane 搬移、Agents、Integrations、Sessions 與 Plugins，並提供選配的 Agent 通知及「開啟 Herdr 視窗」。
+- 支援 Windows x86_64 SSH 主機：獨立 helper、named pipe 與原生路徑。
+- 重整資料庫工作台，支援連線後選庫、雙擊編輯欄位與右鍵編輯資料表結構。
+- 大型文件背景搜尋、資料列虛擬化、Spaces／Agents 穩定排序與資源釋放。
+- 修正 SSH 密碼驗證與新 repo 取消暫存；改善 Git 分支提示及 Graph 作者／日期顯示。
 
 ### v0.0.15 更新
 
@@ -70,9 +78,9 @@
 
 ### 從 Space 到 agent 終端
 
-Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放，Agent Inspector 維持唯讀。
+Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放。
 
-<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code> <code>唯讀 Inspector</code>
+<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code>
 
 </td>
 <td valign="middle" width="62%">
@@ -154,7 +162,11 @@ macOS 安裝檔**未經 Apple Developer ID 簽章或公證**，首次開啟可�
 
 Yuzora 隨附 HERDR 0.9.1，透過 private protocol 22 與 schema 檢查保留 0.9.0 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
 
-Agent 由使用者在 HERDR 終端機手動啟動。舊 WSL Pi Plugin、獨立本機／SSH 終端機與 LSP 設定已移除；Browser 可開啟網站及自行在終端機啟動的服務。
+側欄的「HERDR 工具」可管理 Worktrees、搬移 panes、啟動與控制 Agents、安裝／更新 Integrations、管理執行中或已停止的 Sessions，以及安裝、啟停與移除 Plugins。背景 Agent 完成或需要輸入時，可顯示 toast、系統通知與聲音；系統通知需在工具中啟用並取得作業系統權限。
+
+「開啟 Herdr 視窗」內嵌官方 HERDR 介面，提供歷史搜尋、鍵盤 Copy mode、Kitty 圖片與外掛彈窗。預設按 Ctrl+B 後按 [ 進入 Copy mode，再用 / 搜尋、v 選取、y 複製；自訂快捷鍵以 HERDR 設定為準。一般 pane connectors 在 Herdr 視窗開啟期間暫停；關閉畫面後恢復連線，執行中的工作持續保留。Windows x86_64 SSH 主機使用獨立 helper 與 named pipe，可保留原生路徑。部署與驗收限制見 [操作文件](docs/operations.md)。
+
+Agent 也可在 HERDR 終端機手動啟動。舊 WSL Pi Plugin、獨立本機／SSH shell 與 LSP 設定已移除；Browser 可開啟網站及自行在終端機啟動的服務。
 
 ### 網頁互動 Demo
 

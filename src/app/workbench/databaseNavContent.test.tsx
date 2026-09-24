@@ -227,7 +227,7 @@ async function fillNewPostgresForm(password: string): Promise<void> {
   fireEvent.click(screen.getByText("New connection…"))
   fireEvent.click(screen.getByText("PostgreSQL"))
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "db.example" } })
-  fireEvent.change(screen.getByLabelText("Database"), { target: { value: "app" } })
+  fireEvent.change(screen.getByLabelText("Database (optional)"), { target: { value: "app" } })
   fireEvent.change(screen.getByLabelText("User"), { target: { value: "alice" } })
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: password } })
 }
@@ -443,7 +443,7 @@ describe("DatabaseNavContent P5 bounded regions", () => {
 
     expect(screen.getByTestId("db-nav-root")).toHaveClass("overflow-hidden")
     expect(screen.getByTestId("db-region-grid")).toHaveClass(
-      "grid-rows-[minmax(40px,0.8fr)_minmax(40px,1.4fr)_minmax(24px,0.7fr)]"
+      "grid-rows-[fit-content(40%)_minmax(96px,1fr)_auto]"
     )
 
     const savedRoot = screen.getByTestId("db-saved-scroll")
@@ -474,9 +474,9 @@ describe("DatabaseNavContent P5 bounded regions", () => {
     const historyViewport = historyRoot.querySelector(
       '[data-slot="scroll-area-viewport"]'
     ) as HTMLElement
-    expect(screen.getByTestId("db-history-region")).toHaveClass("max-h-[168px]", "overflow-hidden")
+    expect(screen.getByTestId("db-history-region")).toHaveClass("max-h-[200px]", "overflow-hidden")
     expect(historyRoot).toHaveAttribute("data-slot", "scroll-area")
-    expect(historyRoot).toHaveClass("max-h-[144px]")
+    expect(historyRoot).toHaveClass("max-h-[164px]")
     expect(historyViewport).toBeTruthy()
     const historyRow = screen.getByTestId("db-history-row")
     expect(historyViewport.contains(historyRow)).toBe(true)
@@ -491,6 +491,42 @@ describe("DatabaseNavContent P5 bounded regions", () => {
     expect(screen.queryByTestId("db-history-scroll")).not.toBeInTheDocument()
     expect(screen.getByTestId("db-saved-scroll")).toBeInTheDocument()
     expect(screen.getByTestId("db-object-scroll")).toBeInTheDocument()
+  })
+
+  it("filters the object tree by name, reports no matches, and clears on Escape", () => {
+    seed({})
+    useDbStore.setState({
+      tableBuckets: {
+        "/tmp/app.sqlite": [
+          { catalog: "main", schema: "main", name: "users", kind: "table" as const },
+          { catalog: "main", schema: "main", name: "orders", kind: "table" as const },
+          { catalog: "main", schema: "main", name: "order_totals", kind: "view" as const }
+        ]
+      }
+    })
+    render(<DatabaseNavContent />)
+
+    const filter = screen.getByRole("searchbox", { name: "Filter database objects" })
+    expect(screen.getAllByTestId("db-object-row")).toHaveLength(3)
+
+    // Collapsed groups reopen while filtering so a match is never hidden.
+    fireEvent.click(screen.getAllByRole("button", { name: "Tables" })[0])
+    fireEvent.change(filter, { target: { value: "ORDER" } })
+    expect(screen.getAllByTestId("db-object-row").map((row) => row.textContent)).toEqual([
+      "orders",
+      "order_totals"
+    ])
+
+    fireEvent.change(filter, { target: { value: "missing" } })
+    expect(screen.queryByTestId("db-object-row")).not.toBeInTheDocument()
+    expect(screen.getByRole("status")).toHaveTextContent("No objects match missing")
+
+    // Clearing restores the user's own collapse state: Tables stays collapsed.
+    fireEvent.keyDown(filter, { key: "Escape" })
+    expect(filter).toHaveValue("")
+    expect(screen.getAllByTestId("db-object-row").map((row) => row.textContent)).toEqual([
+      "order_totals"
+    ])
   })
 
   it("projects an explicit semantic state on every row and exposes the active row accessibly", () => {
@@ -966,7 +1002,7 @@ describe("DatabaseNavContent saved connections", () => {
 
     fireEvent.click(screen.getByText("PostgreSQL"))
     expect(screen.getByText("Host")).toBeInTheDocument()
-    expect(screen.getByText("Database")).toBeInTheDocument()
+    expect(screen.getByText("Database (optional)")).toBeInTheDocument()
     expect(screen.getByText("Password")).toBeInTheDocument()
     expect(screen.getByText("Verify certificate and hostname")).toBeInTheDocument()
   })
@@ -1008,6 +1044,22 @@ describe("DatabaseNavContent saved connections", () => {
     await waitFor(() => expect(mockProfileCreate).toHaveBeenCalledWith(expect.objectContaining({ target, credential: null })))
     await waitFor(() => expect(useDbStore.getState().saved[0]?.workspace).toEqual(target.workspace))
     expect(mockOpenFileDialog).not.toHaveBeenCalled()
+  })
+
+  it("accepts Windows host paths for a remote SQLite workspace", async () => {
+    useDbStore.setState({ connections: [], saved: [], activeConnId: null })
+    useHostStore.setState({ configs: { "host-w": { hostId: "host-w", label: "Windows build host", kind: "ssh", helper: "C:\\yuzora\\yuzora-host.exe", binary: "C:\\yuzora\\herdr.exe" } } })
+    render(<DatabaseNavContent />)
+    fireEvent.click(screen.getByText("New connection…"))
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Database file location" }), { key: "ArrowDown" })
+    fireEvent.keyDown(await screen.findByRole("option", { name: "Windows build host" }), { key: "Enter" })
+    fireEvent.change(screen.getByLabelText("Source workspace folder"), { target: { value: String.raw`C:\repo` } })
+    fireEvent.change(screen.getByLabelText("File"), { target: { value: String.raw`C:\repo\data.db` } })
+    expect(screen.getByText("Browse…")).toBeEnabled()
+    const target = { kind: "sqlite", path: String.raw`C:\repo\data.db`, workspace: { hostId: "host-w", canonicalPath: String.raw`C:\repo` } }
+    fireEvent.click(screen.getByText("Test connection"))
+    await waitFor(() => expect(mockTestConnection).toHaveBeenCalledWith(expect.objectContaining({ target, credential: null })))
+    await waitFor(() => expect(screen.getByText("Save and Connect")).toBeEnabled())
   })
 
   it("treats a cancelled SQLite picker as a no-op but surfaces a rejected picker safely", async () => {

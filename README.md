@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.15-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.16-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -35,6 +35,14 @@
 <br />
 
 ## Features
+
+### What's new in v0.0.16
+
+- HERDR tools for Worktrees, pane moves, Agents, Integrations, Sessions and Plugins, plus opt-in Agent notifications and the Open Herdr Window view.
+- Windows x86_64 SSH hosts with their own helper, named pipes and native paths.
+- Redesigned database workbench with database selection after connecting, explicit cell editing and a table structure editor.
+- Background search for large documents, virtualized database rows, stable Spaces/Agents ordering and resource cleanup.
+- SSH password compatibility, Git unstage fixes for new repositories, clearer branch notices and responsive graph metadata.
 
 ### What's new in v0.0.15
 
@@ -76,9 +84,9 @@ See the [Changelog](CHANGELOG.md) for the complete release notes and limitations
 
 ### From Space to agent terminal
 
-The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and Agents. Selecting an agent focuses its owning Session and Space, then opens the corresponding HERDR terminal page. Each Yuzora page maps to one HERDR tab and recursively renders its BSP panes. Mutating actions are capability-gated, and Agent Inspector is read-only.
+The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and Agents. Selecting an agent focuses its owning Session and Space, then opens the corresponding HERDR terminal page. Each Yuzora page maps to one HERDR tab and recursively renders its BSP panes. Mutating actions are capability-gated.
 
-<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code> <code>read-only Inspector</code>
+<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code>
 
 </td>
 <td valign="middle" width="62%">
@@ -170,7 +178,11 @@ Older betas, including **v0.0.9-beta.3**, shipped with automatic updates disable
 
 Yuzora bundles HERDR 0.9.1 and retains compatibility with 0.9.0 through private protocol 22 and schema checks. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
 
-Agents are started manually in HERDR terminals. The old WSL Pi plugin, separate local/SSH terminals and LSP settings have been removed. The browser opens websites and services you start in a terminal.
+The sidebar's **HERDR tools** manage Worktrees, pane moves, Agent start/prompt/wait/rename/keys, Integrations, running and stopped Sessions, and Plugin installation, enablement and removal. Background agents can notify through in-app toasts, system notifications and sound when they finish or need input. System notifications are opt-in and require OS permission.
+
+**Open Herdr Window** embeds the official HERDR interface for history search, keyboard Copy mode, Kitty images and plugin popups. With default bindings, press Ctrl+B then [ to enter Copy mode, / to search, v to select and y to copy. Custom HERDR bindings still apply. Normal pane connectors pause while this view is open and reconnect when it closes; Session processes keep running. Windows x86_64 SSH hosts use their own helper and named pipes while preserving native paths. See [operations](docs/operations.md) for deployment and acceptance requirements.
+
+Agents can also be started manually in HERDR terminals. The old WSL Pi plugin, separate local/SSH shells and LSP settings have been removed. The browser opens websites and services you start in a terminal.
 
 ### Interactive web demo
 

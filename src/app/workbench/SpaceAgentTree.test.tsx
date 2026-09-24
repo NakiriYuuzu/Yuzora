@@ -1,7 +1,7 @@
 import { useContextMenuStore } from "@/state/contextMenuStore";
 
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SpaceAgentTree } from "./SpaceAgentTree";
 import { ContextMenu } from "./ContextMenu";
 import i18n from "@/lib/i18n";
@@ -18,16 +18,7 @@ vi.mock("@/lib/herdrIpc", async () => ({
   herdrWorkspaceMove: vi.fn(),
   herdrWorkspaceMoveBlock: vi.fn(),
 }));
-vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: () => null }));
-vi.mock("./HerdrAgentInspector", () => ({
-  HerdrAgentInspector: ({
-    open,
-    agent,
-  }: {
-    open: boolean;
-    agent: { sessionName: string } | null;
-  }) => (open ? <div data-testid="inspector">{agent?.sessionName}</div> : null),
-}));
+vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: ({ viewSwitcher }: { viewSwitcher: import("react").ReactNode }) => viewSwitcher }));
 const scopes = [
   '["host-a","same"]',
   '["host-b","same"]',
@@ -99,6 +90,24 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
+it("preserves agent order in Spaces and Agents while statuses change", () => {
+  const runtime = useHerdrStore.getState().runtimesBySession[scopes[0]];
+  const agents = [
+    { ...runtime.snapshot!.agents[0], id: "first", name: "First", paneId: "first", status: "idle" as const },
+    { ...runtime.snapshot!.agents[0], id: "second", name: "Second", paneId: "second", status: "blocked" as const },
+  ];
+  const update = (next: typeof agents) => useHerdrStore.setState({
+    runtimesBySession: { [scopes[0]]: { ...runtime, snapshot: { ...runtime.snapshot!, agents: next } } },
+  });
+  update(agents);
+  render(<SpaceAgentTree />);
+  const order = () => screen.getAllByRole("treeitem").filter(row => /First|Second/.test(row.getAttribute("aria-label") ?? "")).map(row => row.getAttribute("aria-label")!.split(" · ")[0]);
+  expect(order()).toEqual(["First", "Second"]);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
+  expect(order()).toEqual(["First", "Second"]);
+  act(() => update([{ ...agents[0], status: "blocked" }, { ...agents[1], status: "idle" }]));
+  expect(order()).toEqual(["First", "Second"]);
+});
 it("saves first-seen Bot combinations and reuses them after the tree remounts", () => {
   const firstMount = render(<SpaceAgentTree />);
   const saved = loadRecentWorkspacePresentations();
@@ -122,13 +131,24 @@ it("saves first-seen Bot combinations and reuses them after the tree remounts", 
   expect(loadRecentWorkspacePresentations()).toEqual(saved);
 });
 it("keeps same path and agent IDs separate across hosts and sessions", () => {
+  const activateAgent = vi.fn().mockResolvedValue({ ok: false, cancelled: true });
+  const runtimes = useHerdrStore.getState().runtimesBySession;
+  useHerdrStore.setState({
+    activateAgent,
+    runtimesBySession: Object.fromEntries(Object.entries(runtimes).map(([scope, runtime]) => [scope, {
+      ...runtime,
+      capabilities: { server: { running: true }, api: { workspaceFocus: true, tabFocus: true } } as HerdrSessionRuntime["capabilities"],
+      snapshot: { ...runtime.snapshot!, agents: runtime.snapshot!.agents.map((agent) => ({ ...agent, terminalId: "terminal" })) },
+    }])),
+  });
   render(<SpaceAgentTree />);
   const leaves = screen
     .getAllByRole("treeitem")
     .filter((x) => x.getAttribute("aria-level") === "3");
   expect(leaves).toHaveLength(3);
   fireEvent.click(leaves[1]);
-  expect(screen.getByTestId("inspector")).toHaveTextContent(scopes[1]);
+  expect(activateAgent).toHaveBeenCalledTimes(1);
+  expect(activateAgent.mock.calls[0][0]).toMatchObject({ id: "agent", sessionName: scopes[1] });
   expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
 });
 
@@ -199,8 +219,8 @@ it("F2 opens host-scoped appearance editor without activating a runtime", () => 
   expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
 });
 
-it("offers ready agents an independent Inspector action without activation", () => {
-  const activateAgent = vi.fn();
+it("activates ready agents from their row without an Inspector action", () => {
+  const activateAgent = vi.fn().mockResolvedValue({ ok: true });
   const runtime = useHerdrStore.getState().runtimesBySession[scopes[1]];
   useHerdrStore.setState({
     activateAgent,
@@ -224,17 +244,24 @@ it("offers ready agents an independent Inspector action without activation", () 
     },
   });
   render(<SpaceAgentTree />);
+  expect(screen.queryByRole("button", { name: /Inspect/ })).not.toBeInTheDocument();
   const leaf = screen
     .getAllByRole("treeitem")
     .filter((item) => item.getAttribute("aria-level") === "3")[1];
-  fireEvent.focus(leaf);
-  const inspect = screen.getAllByRole("button", {
-    name: "Inspect Agent: Codex",
-  })[1];
-  expect(inspect).toHaveAttribute("tabindex", "0");
-  fireEvent.click(inspect);
-  expect(screen.getByTestId("inspector")).toHaveTextContent(scopes[1]);
+  fireEvent.click(leaf);
+  expect(activateAgent).toHaveBeenCalledWith(expect.objectContaining({ id: "agent", sessionName: scopes[1] }));
+});
+
+it("reports an actionable error when an Agent pane cannot be opened", () => {
+  const activateAgent = vi.fn();
+  useHerdrStore.setState({ activateAgent });
+  render(<SpaceAgentTree />);
+  const leaf = screen
+    .getAllByRole("treeitem")
+    .filter((item) => item.getAttribute("aria-level") === "3")[0];
+  fireEvent.click(leaf);
   expect(activateAgent).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("This Agent's pane cannot be opened right now.");
 });
 
 it("dispatches worktree and agent menus with their exact host namespace", () => {

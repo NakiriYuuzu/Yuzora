@@ -60,7 +60,7 @@ impl PinnedDir {
         let file = win_at::open_relative(
             &self.handle,
             from.as_str(),
-            win_at::RelativeKind::Directory,
+            win_at::RelativeKind::Any,
             win_at::RelativeMode::OpenDelete,
         )?;
         reject_reparse_handle(&file)?;
@@ -89,6 +89,61 @@ impl PinnedDir {
             )?;
             reject_reparse_handle(&file)?;
             win_at::delete_on_close(&file).map_err(String::from)
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn remove_tree(
+        &self,
+        name: &SafeLeafName,
+        budget: &mut usize,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        self.remove_tree_depth(name, budget, deadline, 0)
+    }
+
+    #[cfg(windows)]
+    fn remove_tree_depth(
+        &self,
+        name: &SafeLeafName,
+        budget: &mut usize,
+        deadline: Instant,
+        depth: usize,
+    ) -> Result<(), String> {
+        if *budget == 0 || depth >= 128 || Instant::now() >= deadline {
+            return Err("delete-limit-reached-partial".into());
+        }
+        *budget -= 1;
+        let kind = self.existing_kind(name)?;
+        if kind == Some(NodeKind::Directory) {
+            let child = self.open_subdir(name.as_str())?;
+            for (entry, _) in child.list_entries(*budget)? {
+                child.remove_tree_depth(
+                    &SafeLeafName::parse(&entry)?,
+                    budget,
+                    deadline,
+                    depth + 1,
+                )?;
+            }
+            if self.open_subdir(name.as_str())?.id_key() != child.id_key() {
+                return Err("directory-changed-during-delete".into());
+            }
+            self.remove_empty_dir(name)
+        } else if kind == Some(NodeKind::Symlink) {
+            // FILE_OPEN_REPARSE_POINT opens the link or junction itself, so the
+            // delete removes that entry and never reaches its target.
+            let link = win_at::open_relative(
+                &self.handle,
+                name.as_str(),
+                win_at::RelativeKind::Any,
+                win_at::RelativeMode::OpenDelete,
+            )?;
+            if !is_reparse(&link.metadata().map_err(|_| PathCapabilityError::Io)?) {
+                return Err("entry-changed-during-delete".into());
+            }
+            win_at::delete_on_close(&link).map_err(String::from)
+        } else {
+            self.unlink(name).map_err(String::from)
         }
     }
 
@@ -131,7 +186,7 @@ impl PinnedDir {
                     unsafe { std::ptr::read_unaligned(pointer.cast::<FILE_ID_BOTH_DIR_INFO>()) };
                 let start = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
                 let len = info.FileNameLength as usize;
-                if len % 2 != 0 || offset + start + len > bytes {
+                if !len.is_multiple_of(2) || offset + start + len > bytes {
                     return Err("directory-record-invalid".into());
                 }
                 let units = unsafe {
@@ -151,7 +206,7 @@ impl PinnedDir {
                 if next == 0 {
                     break;
                 }
-                if next < start + len || next % 8 != 0 {
+                if next < start + len || !next.is_multiple_of(8) {
                     return Err("directory-record-invalid".into());
                 }
                 offset = offset.checked_add(next).ok_or("directory-record-invalid")?;
@@ -164,6 +219,75 @@ impl PinnedDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn files_can_be_renamed_and_nested_trees_deleted_with_a_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("tree/sub")).unwrap();
+        std::fs::write(tmp.path().join("tree/sub/file.txt"), b"content").unwrap();
+        let root = PinnedDir::open_dir(tmp.path()).unwrap();
+        let sub = root.open_subdir("tree/sub").unwrap();
+        sub.rename_new(
+            &SafeLeafName::parse("file.txt").unwrap(),
+            &sub,
+            &SafeLeafName::parse("renamed.txt").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            sub.list_entries(10).unwrap(),
+            vec![("renamed.txt".into(), NodeKind::File)]
+        );
+        drop(sub);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        assert!(root
+            .remove_tree(&SafeLeafName::parse("tree").unwrap(), &mut 0, deadline)
+            .is_err());
+        assert!(tmp.path().join("tree/sub/renamed.txt").exists());
+        root.remove_tree(&SafeLeafName::parse("tree").unwrap(), &mut 10, deadline)
+            .unwrap();
+        assert!(!tmp.path().join("tree").exists());
+    }
+    #[test]
+    fn tree_delete_removes_links_without_touching_their_targets() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target_dir = outside.path().join("dir");
+        let target_file = outside.path().join("file.txt");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::write(target_dir.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(&target_file, b"keep").unwrap();
+        let tree = workspace.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        #[cfg(unix)]
+        for (target, link) in [(&target_dir, "dir-link"), (&target_file, "file-link")] {
+            std::os::unix::fs::symlink(target, tree.join(link)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // A junction needs no symlink privilege, so unelevated users create them.
+            let junction = std::process::Command::new("cmd")
+                .arg("/C")
+                .arg("mklink")
+                .arg("/J")
+                .arg(tree.join("dir-link"))
+                .arg(&target_dir)
+                .output()
+                .unwrap();
+            assert!(junction.status.success(), "{junction:?}");
+            std::os::windows::fs::symlink_file(&target_file, tree.join("file-link")).unwrap();
+        }
+        let root = PinnedDir::open_dir(workspace.path()).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        root.open_subdir("tree")
+            .unwrap()
+            .remove_tree(&SafeLeafName::parse("dir-link").unwrap(), &mut 10, deadline)
+            .unwrap();
+        assert!(std::fs::symlink_metadata(tree.join("dir-link")).is_err());
+        root.remove_tree(&SafeLeafName::parse("tree").unwrap(), &mut 10, deadline)
+            .unwrap();
+        assert!(!tree.exists());
+        assert_eq!(std::fs::read(target_dir.join("keep.txt")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&target_file).unwrap(), b"keep");
+    }
     #[test]
     fn tree_operations_are_bounded_and_never_replace_a_destination() {
         let tmp = tempfile::tempdir().unwrap();

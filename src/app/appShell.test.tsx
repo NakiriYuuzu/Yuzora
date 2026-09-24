@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 
-import { AppShell } from "@/app/AppShell"
+import { AppShell, WORKBENCH_LAYOUT_STORAGE_KEY } from "@/app/AppShell"
 import { APPEARANCE_SETTINGS_STORAGE_KEY } from "@/app/workbench/settingsStorage"
 import type { SaveDirtyTabOutcome } from "@/editor/saveDocument"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
@@ -131,6 +131,18 @@ describe("AppShell", () => {
     const controls = container.querySelector(".workbench-collapsed-native-controls")
     expect(controls).toBeInTheDocument()
     expect(controls?.closest("[inert]")).toBeNull()
+  })
+
+  it("Spaces/Agents 快捷鍵只展開已收合的側邊欄，不會把它收合", () => {
+    mockIPC(() => {})
+    render(<AppShell />)
+    const sidebar = document.getElementById("workbench-spaces")!
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!)
+    expect(sidebar).toHaveAttribute("data-collapsed", "true")
+    act(() => useUiStore.getState().requestSidebarViewToggle())
+    expect(sidebar).toHaveAttribute("data-collapsed", "false")
+    act(() => useUiStore.getState().requestSidebarViewToggle())
+    expect(sidebar).toHaveAttribute("data-collapsed", "false")
   })
 
   it("窄視窗自動收合 nav、放寬後自動展開，且手動操作優先", () => {
@@ -506,6 +518,43 @@ describe("AppShell", () => {
     fireEvent.pointerUp(handle, { clientX: -400, pointerId: 1 })
   })
 
+  it("remembers sidebar widths and manual collapse across restarts, and resets width on double-click", () => {
+    const first = render(<AppShell />)
+    const handle = () => document.querySelector('[role="separator"][aria-label="Resize Spaces and Agents sidebar"]') as HTMLElement
+    fireEvent.keyDown(handle(), { key: "End" })
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!)
+    first.unmount()
+
+    expect(JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_STORAGE_KEY)!)).toMatchObject({ navWidth: 420, navCollapsed: true })
+    render(<AppShell />)
+    expect(document.getElementById("workbench-spaces")).toHaveAttribute("data-collapsed", "true")
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-spaces"]')!)
+    expect(screen.getByLabelText("Sidebar navigation")).toHaveStyle({ width: "420px" })
+
+    fireEvent.doubleClick(handle())
+    expect(screen.getByLabelText("Sidebar navigation")).toHaveStyle({ width: "288px" })
+    expect(JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_STORAGE_KEY)!)).toMatchObject({ navWidth: 288, navCollapsed: false })
+  })
+
+  it("toggles the workspace tools from the command palette shortcut request", () => {
+    render(<AppShell />)
+    const tools = document.getElementById("workbench-tools")!
+    const before = tools.getAttribute("data-collapsed")
+    act(() => useUiStore.getState().requestToolsToggle())
+    expect(tools.getAttribute("data-collapsed")).not.toBe(before)
+  })
+
+  it("lists localized mode commands with their shortcuts and layout commands in the palette", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    render(<AppShell />)
+    fireEvent.keyDown(window, { key: "k", metaKey: true })
+    const dialog = await screen.findByRole("dialog")
+    const gitItem = within(dialog).getByText("Switch to Git").closest("[cmdk-item]")!
+    expect(within(gitItem as HTMLElement).getByText("⌘+⌥+3")).toBeInTheDocument()
+    expect(within(dialog).getByText("Toggle workspace tools")).toBeInTheDocument()
+    expect(within(dialog).getByText("SSH / SFTP remote tools")).toBeInTheDocument()
+  })
+
   it("opens the settings dialog from the rail avatar", async () => {
     render(<AppShell />)
 
@@ -522,7 +571,7 @@ describe("AppShell", () => {
     fireEvent.keyDown(window, { key: "k", metaKey: true })
 
     const dialog = await screen.findByRole("dialog")
-    fireEvent.click(within(dialog).getByText("Git"))
+    fireEvent.click(within(dialog).getByText("Switch to Git"))
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     expect(useUiStore.getState().mode).toBe("git")
@@ -531,7 +580,7 @@ describe("AppShell", () => {
   it("keeps the EditorPanel container mounted (CSS-hidden) when switching away from Files mode and back", () => {
     render(<AppShell />)
 
-    const editorEmptyState = () => screen.getByText("Open a project to start editing")
+    const editorEmptyState = () => screen.getByText("Open a Space to start working")
     expect(editorEmptyState().closest("[hidden]")).toBeNull()
 
     act(()=>useUiStore.getState().setMode("git"))

@@ -5,5 +5,9 @@
   "dialog": {
     "resize": "Resize dialog",
     "resetSize": "Reset dialog size to 80% of the app window"
+  },
+  "clipboard": {
+    "copied": "Copied to clipboard",
+    "copyFailed": "Couldn't copy to the clipboard. Try again."
   }
 }

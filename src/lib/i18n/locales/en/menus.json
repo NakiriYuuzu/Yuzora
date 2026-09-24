@@ -126,6 +126,8 @@
     "resolveExternalChanges": "Resolve external changes {{name}}",
     "externallyModifiedTitle": "Externally modified (click to open resolver)",
     "unsavedChangesTitle": "Unsaved changes",
+    "unsavedTabLabel": "{{name}} (unsaved)",
+    "browserTabName": "Browser",
     "togglePreview": "Toggle preview {{name}}",
     "toggleMarkdownPreviewTitle": "Toggle Markdown preview",
     "toggleSvgPreviewTitle": "Toggle SVG preview",
@@ -174,8 +176,13 @@
     "closeSplitAriaLabel": "Close split",
     "splitTitle": "Split editor",
     "closeSplitTitle": "Close split",
-    "emptyTitle": "Open a project to start editing",
-    "emptyDescription": "Files and tabs will appear here once a project is open."
+    "actionBrowser": "Open Browser",
+    "actionNewTerminal": "New Terminal",
+    "actionSearch": "Search & Commands",
+    "noTabsDescription": "Open a file from the Files tool on the right, or start with one of these.",
+    "noTabsTitle": "No open tabs",
+    "emptyTitle": "Open a Space to start working",
+    "emptyDescription": "Create or pick a Space in the left sidebar. You can still search, open a terminal, or browse the web."
   },
   "branchPopover": {
     "title": "Git Branches",

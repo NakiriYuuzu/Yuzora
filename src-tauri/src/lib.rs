@@ -25,6 +25,7 @@ pub mod host_service;
 mod host_sqlite;
 pub mod host_streams;
 pub mod host_tunnels;
+mod host_windows;
 pub mod host_wsl;
 pub mod logging;
 pub mod path_capability;
@@ -190,6 +191,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         // Remember window size/position/maximized across launches. VISIBLE is
         // excluded on purpose: the window starts hidden (anti-FOUC) and the
         // frontend shows it on the first themed frame — restoring a persisted
@@ -357,6 +359,7 @@ pub fn run() {
             watcher::stop_watch,
             search_service::search_workspace,
             db_service::db_list_tables,
+            db_service::db_list_databases,
             db_service::db_table_columns,
             db_service::db_query_run,
             db_service::db_query_cancel,
@@ -431,9 +434,11 @@ pub fn run() {
             sftp_tree::sftp_pick_tree,
             sftp_tree::sftp_transfer_tree,
             herdr_service::herdr_sessions,
+            herdr_service::herdr_feature,
             herdr_service::herdr_capabilities,
             herdr_service::herdr_snapshot,
             herdr_service::herdr_terminal_open,
+            herdr_service::herdr_client_open,
             herdr_service::herdr_terminal_input,
             herdr_service::terminal_clipboard_image,
             herdr_service::herdr_terminal_resize,
@@ -465,8 +470,6 @@ pub fn run() {
             herdr_service::herdr_binary_source_get,
             herdr_service::herdr_binary_source_set,
             herdr_service::herdr_binary_source_check,
-            herdr_service::herdr_agent_get,
-            herdr_service::herdr_agent_read,
             herdr_service::herdr_events_subscribe,
             herdr_service::herdr_events_release
         ]))
@@ -646,8 +649,6 @@ mod command_inventory_tests {
             "herdr_service::herdr_layout_set_split_ratio",
             "herdr_service::herdr_binary_source_get",
             "herdr_service::herdr_binary_source_set",
-            "herdr_service::herdr_agent_get",
-            "herdr_service::herdr_agent_read",
             "herdr_service::herdr_events_subscribe",
             "herdr_service::herdr_events_release",
         ] {

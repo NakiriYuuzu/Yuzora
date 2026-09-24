@@ -122,10 +122,14 @@ export const appTheme = [syntaxPreference, EditorView.theme({
         color: "var(--ink-1)"
     },
     ".cm-panel.cm-search button": {
-        backgroundColor: "var(--yz-solid)",
+        // Reset CodeMirror's light-theme gradient as well as its base color.
+        background: "var(--yz-solid)",
         border: "1px solid var(--line-2)",
         borderRadius: "var(--r-xs)",
-        color: "var(--ink-1)"
+        color: "var(--ink-1)",
+        "&:active": {
+            background: "var(--yz-hover)"
+        }
     },
     ".cm-foldPlaceholder": {
         backgroundColor: "var(--yz-sunk)",

@@ -128,7 +128,7 @@ function FileRow({
                         if (!disabled) onStageToggle()
                     }
                 }}
-                className="flex size-[22px] shrink-0 items-center justify-center rounded-[6px] text-(--ink-3) transition-all duration-[130ms] hover:bg-(--yz-hover) hover:text-(--yz-accent-ink) focus-visible:bg-(--yz-hover) focus-visible:text-(--yz-accent-ink) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--yz-accent)"
+                className="flex size-[22px] shrink-0 items-center justify-center rounded-[6px] text-(--ink-3) transition-[background-color,color,box-shadow] duration-[130ms] hover:bg-(--yz-hover) hover:text-(--yz-accent-ink) focus-visible:bg-(--yz-hover) focus-visible:text-(--yz-accent-ink) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--yz-accent)"
             >
                 <svg
                     width="14"
@@ -507,7 +507,7 @@ export function LocalChangesTab() {
                                 key={m}
                                 value={m}
                                 aria-label={m === "unified" ? t("localChangesTab.unified") : t("localChangesTab.split")}
-                                className="h-[26px] rounded-[7px] px-[12px] text-[11px] font-semibold transition-all duration-[140ms] data-[state=on]:bg-(--yz-solid) data-[state=on]:text-(--ink-0) data-[state=on]:shadow-(--shadow-xs) data-[state=off]:text-(--ink-3)"
+                                className="h-[26px] rounded-[7px] px-[12px] text-[11px] font-semibold transition-[background-color,color,box-shadow] duration-[140ms] data-[state=on]:bg-(--yz-solid) data-[state=on]:text-(--ink-0) data-[state=on]:shadow-(--shadow-xs) data-[state=off]:text-(--ink-3)"
                             >
                                 {m === "unified" ? t("localChangesTab.unified") : t("localChangesTab.split")}
                             </ToggleGroupItem>

@@ -46,14 +46,14 @@ it("connects outgoing edges from node centres, incoming edges to centres, and ca
     for (const path of paths[3]) expect(path?.endsWith("18 112")).toBe(true)
 })
 
-it("uses the longest offscreen subject and ref chips to size shared columns without truncation", async () => {
+it("keeps author and date columns within a bounded layout even with long offscreen subjects and refs", async () => {
     const commits = Array.from({ length: 100 }, (_, i) => commit(`commit-${i}`))
     commits[99].subject = "完整主旨 🚀 ".repeat(100) + "END-OF-SUBJECT"
     commits[99].refs = [{ name: "feature/" + "long-branch-".repeat(30), kind: "local" }]
     render(<LogGraph {...props} commits={commits} />)
     const table = screen.getByTestId("log-table")
     const width = table.style.minWidth
-    expect(parseInt(width)).toBeGreaterThan(10000)
+    expect(parseInt(width)).toBeLessThanOrEqual(600)
     const header = screen.getByTestId("log-header")
     const first = screen.getByRole("button", { name: /Subject commit-0/ })
     expect(first.style.gridTemplateColumns).toBe(header.style.gridTemplateColumns)
@@ -62,8 +62,8 @@ it("uses the longest offscreen subject and ref chips to size shared columns with
     scroll.scrollTop = 99 * 32
     fireEvent.scroll(scroll)
     const subject = await screen.findByText(commits[99].subject)
-    expect(subject.className).not.toContain("truncate")
-    expect(subject.parentElement!.className).not.toContain("overflow-hidden")
+    expect(subject.className).toContain("truncate")
+    expect(subject).toHaveAttribute("title", commits[99].subject)
     expect(table.style.minWidth).toBe(width)
 })
 

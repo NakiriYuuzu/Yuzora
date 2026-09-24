@@ -68,6 +68,14 @@ pub(crate) fn finalize_terminated_connection(
 }
 
 #[tauri::command]
+pub async fn db_list_databases(
+    state: tauri::State<'_, DbState>,
+    identity: ConnectionIdentity,
+) -> Result<Vec<String>, DatabaseOperationalError> {
+    list_databases_in_state(&state, identity).await
+}
+
+#[tauri::command]
 pub async fn db_list_tables(
     state: tauri::State<'_, DbState>,
     identity: ConnectionIdentity,

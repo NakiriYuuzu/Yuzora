@@ -75,11 +75,12 @@ export function herdrScrollStrategyForRuntime(
     // is safe to use for that bridge.
     return supportsHerdrPaneScrollCandidate(capabilities) ? "pane" : "unavailable"
   }
-  // Native desktop HERDR has a low-latency connector scroll command. Prefer it
-  // even when pane metrics are available; the pane API remains the scrollbar
-  // authority and is used as a fallback when the connector rejects the call.
-  if (supportsHerdrTerminalScroll(capabilities)) return "terminal"
+  // Native desktop HERDR uses the same pane API as WSL when it is available:
+  // absolute "latest offset wins" writes at a steady cadence felt smoother on
+  // macOS than the relative connector command, which remains the fallback for
+  // runtimes without the pane API (frame-paced in the transport).
   if (supportsHerdrPaneScrollCandidate(capabilities)) return "pane"
+  if (supportsHerdrTerminalScroll(capabilities)) return "terminal"
   return herdrScrollStrategy(capabilities)
 }
 

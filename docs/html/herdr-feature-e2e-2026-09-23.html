@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recap: HERDR 功能補齊：本機 E2E 驗收</title>
+<style>
+:root {
+    --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', 'PingFang TC', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+    --color-bg: #faf9f7;
+    --color-surface: #ffffff;
+    --color-text: #1a1a1a;
+    --color-text-secondary: #6b7280;
+    --color-border: #e5e5e5;
+    --color-accent: #c45d3e;
+    --color-accent-light: #f5ebe7;
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --color-error: #ef4444;
+    --color-code-bg: #f5f5f4;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--color-bg); color: var(--color-text); line-height: 1.65; padding: 2rem; }
+.container { max-width: 920px; margin: 0 auto; }
+header { margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--color-border); }
+header .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-accent); font-weight: 700; }
+header h1 { font-size: 2rem; margin: 0.35rem 0; line-height: 1.25; word-wrap: break-word; }
+header .meta { color: var(--color-text-secondary); font-size: 0.875rem; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center; }
+header .meta code { background: var(--color-code-bg); padding: 0.1rem 0.4rem; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.8rem; }
+
+.tldr { background: var(--color-accent-light); border-left: 4px solid var(--color-accent); border-radius: var(--radius-md); padding: 1.1rem 1.25rem; margin-bottom: 1.5rem; }
+.tldr h3 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-accent); margin-bottom: 0.4rem; font-weight: 700; }
+.tldr p { margin-bottom: 0.5rem; }
+.tldr p:last-child { margin-bottom: 0; }
+.tldr ul, .tldr ol { padding-left: 1.25rem; margin-bottom: 0.5rem; }
+.tldr ul:last-child, .tldr ol:last-child { margin-bottom: 0; }
+
+nav.toc { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 0.95rem 1.25rem; margin-bottom: 1.5rem; }
+nav.toc h3 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-text-secondary); margin-bottom: 0.55rem; font-weight: 700; }
+nav.toc ol { padding-left: 1.25rem; margin: 0; }
+nav.toc li { margin-bottom: 0.25rem; font-size: 0.9rem; }
+nav.toc a { color: var(--color-accent); text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+
+main { display: flex; flex-direction: column; gap: 0.85rem; }
+details { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+details > summary { cursor: pointer; padding: 0.85rem 1.1rem; font-weight: 600; font-size: 1.05rem; list-style: none; display: flex; align-items: center; gap: 0.55rem; user-select: none; }
+details > summary::before { content: '▸'; color: var(--color-accent); font-size: 0.85rem; transition: transform 0.18s ease; }
+details[open] > summary::before { transform: rotate(90deg); }
+details > summary::-webkit-details-marker { display: none; }
+.details-body { padding: 0 1.1rem 1.1rem; }
+.details-body > *:first-child { margin-top: 0; }
+.details-body p, .details-body ul, .details-body ol, .details-body pre, .details-body blockquote, .details-body table, .details-body h3, .details-body h4 { margin-bottom: 0.75rem; }
+.details-body p:last-child, .details-body ul:last-child, .details-body ol:last-child, .details-body pre:last-child, .details-body blockquote:last-child, .details-body table:last-child { margin-bottom: 0; }
+.details-body ul, .details-body ol { padding-left: 1.5rem; }
+.details-body li { margin-bottom: 0.25rem; }
+.details-body code { background: var(--color-code-bg); padding: 0.1rem 0.35rem; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.85em; }
+.details-body pre { background: var(--color-code-bg); padding: 0.85rem 1rem; border-radius: var(--radius-md); overflow-x: auto; font-size: 0.85em; line-height: 1.55; }
+.details-body pre code { background: none; padding: 0; font-size: 1em; }
+.details-body blockquote { border-left: 3px solid var(--color-border); padding-left: 0.85rem; color: var(--color-text-secondary); }
+.details-body table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.details-body th, .details-body td { padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
+.details-body th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-secondary); font-weight: 700; }
+.details-body a { color: var(--color-accent); }
+.details-body h3, .details-body h4 { margin-top: 1rem; font-size: 1rem; line-height: 1.4; }
+
+.actions { display: flex; gap: 0.65rem; margin-top: 2rem; flex-wrap: wrap; }
+.btn { padding: 0.55rem 1.1rem; border-radius: var(--radius-md); border: 1px solid var(--color-border); background: var(--color-surface); cursor: pointer; font-size: 0.875rem; font-weight: 600; color: var(--color-text); transition: all 0.15s ease; }
+.btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+
+footer { margin-top: 2.5rem; padding-top: 1.1rem; border-top: 1px solid var(--color-border); font-size: 0.8rem; color: var(--color-text-secondary); }
+footer code { background: var(--color-code-bg); padding: 0.1rem 0.35rem; border-radius: var(--radius-sm); font-family: var(--font-mono); }
+
+@media print {
+    body { background: white; padding: 0; }
+    .actions, nav.toc { display: none; }
+    details { break-inside: avoid; border: none; border-bottom: 1px solid var(--color-border); border-radius: 0; }
+    details > summary::before { display: none; }
+    details > summary { padding-left: 0; padding-right: 0; }
+    details:not([open]) .details-body { display: block !important; }
+    .details-body { padding-left: 0; padding-right: 0; }
+}
+@media (max-width: 640px) {
+    body { padding: 1.1rem; }
+    header h1 { font-size: 1.5rem; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div class="label">Recap</div>
+        <h1>HERDR 功能補齊：本機 E2E 驗收</h1>
+        <p class="meta">
+            <span>📅 2026-09-23 02:05:02</span>
+            <span>🗂 <code>docs/html/herdr-feature-e2e-2026-09-23.html</code></span>
+        </p>
+    </header>
+    <div class="tldr"><h3>TL;DR</h3><p>2026-09-23 已完成本機 Chrome 管理介面驗收與隔離的 production host → HERDR 0.9.1 runtime 測試。Chrome 使用真實產品元件與 controlled IPC fixture；runtime 測試使用實際 host binary、官方 HERDR 與獨立測試 Session，兩者分開記錄。管理 runtime 11 組檢查通過；原生 client 10 項檢查連續三次通過。前端 251 個測試檔、2,962 項測試通過。</p>
+<p>本輪結果不代表所有平台完成：Windows MSVC、Windows SSH 實機與新的五平台 payload 仍待完成；完整 Tauri webview、OS 通知實際彈出及真實 AI provider 未在本輪 GUI 驗收。</p></div>
+    <nav class="toc"><h3>Contents</h3>
+        <ol>
+            <li><a href="#授權-測試環境與證據界線">授權、測試環境與證據界線</a></li>
+            <li><a href="#chrome-七個管理分頁與原生畫面">Chrome：七個管理分頁與原生畫面</a></li>
+            <li><a href="#真實管理-runtime-11-組檢查">真實管理 runtime：11 組檢查</a></li>
+            <li><a href="#真實原生-client-10-項檢查">真實原生 client：10 項檢查</a></li>
+            <li><a href="#e2e-發現並修正的問題">E2E 發現並修正的問題</a></li>
+            <li><a href="#回歸-編譯與格式檢查">回歸、編譯與格式檢查</a></li>
+            <li><a href="#尚未完成與適用限制">尚未完成與適用限制</a></li>
+            <li><a href="#附錄-早期-kitty-圖證與後續狀態">附錄：早期 Kitty 圖證與後續狀態</a></li>
+        </ol>
+    </nav>
+    <main>
+        <details id="授權-測試環境與證據界線" open>
+            <summary>授權、測試環境與證據界線</summary>
+            <div class="details-body"><p>使用者於 2026-09-23 明確授權「接下來開始進行 e2e 本機自動測試」，之後指定使用 Chrome 與電腦操作，禁止繼續使用 agent-browser。後續瀏覽器操作均依該限制進行。附錄六張 Kitty 截圖出自較早的測試階段，不能標記為 Chrome 截圖；Chrome 截圖保留於本對話，互動結果另存 JSON。</p>
+<table>
+<thead>
+<tr>
+<th>層級</th>
+<th>執行方式</th>
+<th>能證明的範圍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Chrome GUI</td>
+<td><code>fixtures/herdr-parity.html</code>，production React dialogs、xterm、Kitty renderer，controlled IPC</td>
+<td>表單、確認、選取、鍵盤、繪圖、錯誤提示、呼叫次數與參數；不證明主機 mutation 已執行</td>
+</tr>
+<tr>
+<td>管理 runtime</td>
+<td><code>scripts/verify-herdr-features-e2e.ts</code> → <code>yuzora-host --stdio</code> → shared typed facade → bundled HERDR</td>
+<td>真實 Session、Git worktree、pane 移動、整合配置與 Agent 操作邊界</td>
+</tr>
+<tr>
+<td>原生 client runtime</td>
+<td><code>scripts/verify-herdr-native-e2e.ts</code> → production native stream → 官方 <code>herdr … client</code></td>
+<td>真實鍵盤、Copy/search、OSC 52、Kitty bytes、local plugin popup/pane、釋放及重新連線</td>
+</tr>
+<tr>
+<td>靜態與自動回歸</td>
+<td>Vitest、build/typecheck、ESLint、Rust tests/check/fmt/Clippy</td>
+<td>合約與編譯回歸；不能替代 Windows 實機及 OS GUI 行為</td>
+</tr>
+</tbody>
+</table>
+<p>每組 runtime 使用獨立暫存 HOME、XDG/config、runtime socket 與命名 Session，沒有列讀或控制既有使用者 Session。Git init／fixture commit 僅發生在測試腳本建立的暫存 repository；產品 repo 沒有 staging、commit 或 push。</p></div>
+        </details>
+        <details id="chrome-七個管理分頁與原生畫面" open>
+            <summary>Chrome：七個管理分頁與原生畫面</summary>
+            <div class="details-body"><p><a href="assets/herdr-e2e-20260923/chrome-results.json">Chrome 互動與觀察記錄</a> 記錄本輪工具觀察。此表全屬 controlled IPC GUI 驗收。</p>
+<table>
+<thead>
+<tr>
+<th>表面</th>
+<th>已確認結果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Worktrees</td>
+<td>建立表單以正確 workspace、branch/base/path/focus 參數送出；forced failure 顯示 <code>Operation failed</code> 與 <code>Fixture operation failure</code>，當次僅一筆 <code>worktree.create</code></td>
+</tr>
+<tr>
+<td>Agents</td>
+<td>名稱格式防呆、啟動、多行 prompt 與 send-keys 操作正常；啟動 pending 的提示另已修正為準備中</td>
+</tr>
+<tr>
+<td>Pane move</td>
+<td>新 Space 目的地與請求參數正確；其餘兩種目的地另由真實 runtime 覆蓋</td>
+</tr>
+<tr>
+<td>Sessions</td>
+<td>名稱格式防呆、建立後切換選取、刪除前確認</td>
+</tr>
+<tr>
+<td>Integrations</td>
+<td>更新確認與 target 參數正確</td>
+</tr>
+<tr>
+<td>Plugins</td>
+<td>啟用／停用、action 可用性及 popup 操作正常；popup 只送出該 placement 合法的參數。安裝確認後以 source <code>fixture/demo</code>、revision <code>test-revision</code> 送出一次 request；卸載確認後使用 plugin_id <code>fixture.demo</code>。安裝／卸載皆為 controlled IPC，未執行外部下載或建置</td>
+</tr>
+<tr>
+<td>Notifications</td>
+<td>模擬 permission denied 後 system 開關保持 off；sound 開關設為 true 成功。未驗證 OS notification 或真實 Tauri toast 彈出</td>
+</tr>
+<tr>
+<td>原生 Session dialog</td>
+<td>Escape 保留給 HERDR，不關閉 dialog；關閉呼叫 release；字型載入後重新 fit，screen 寬 1742、container 寬 1748，重新送出 242 cols，避免初始舊值 156 cols</td>
+</tr>
+<tr>
+<td>忙碌期間</td>
+<td>slow-create 執行時 Host、Session、tabs、Space 與 mutation 控制項 disabled，隱藏 close，working 文字註明不重試；完成後恢復可操作</td>
+</tr>
+<tr>
+<td>失敗後刷新</td>
+<td>mutation 成功但 refresh 失敗時保留 <code>Operation completed</code>，並獨立顯示 <code>Session unavailable</code>／<code>Fixture refresh failure</code>；沒有重送 mutation，不可用控制項維持 disabled</td>
+</tr>
+<tr>
+<td>Kitty 與深色主題</td>
+<td>negative-z 圖片上方仍可見文字；<code>.xterm-rows</code> 為 <code>position: relative</code>、<code>z-index: 1</code>。深色畫面正常，host 寬 2508、screen 寬 2506；關閉重開只有兩個 canvas layer</td>
+</tr>
+<tr>
+<td>瀏覽器診斷</td>
+<td>驗收期間 Chrome dev logs 的 error／warn 清單皆為空</td>
+</tr>
+</tbody>
+</table></div>
+        </details>
+        <details id="真實管理-runtime-11-組檢查" open>
+            <summary>真實管理 runtime：11 組檢查</summary>
+            <div class="details-body"><p><a href="assets/herdr-e2e-20260923/management-evidence.json">完整管理 evidence.json</a> 保留實際 request／response、通過清單、Session 隔離與 cleanup 結果。這些不是 fixture 預設回覆。</p>
+<ol>
+<li>獨立 HOME／XDG，初始沒有執行中或已儲存的使用者 Session；預設的 stopped placeholder 位於測試 root。</li>
+<li>建立／啟動 named Session、重複啟動回報未再次啟動；實際 HERDR 0.9.1、protocol 22、compatible socket 位於測試 root。</li>
+<li>Production capability gate 提供管理操作。</li>
+<li>真實臨時 Git worktree 建立、關閉／重開、移除；dirty checkout 拒絕普通移除，明確 force 後移除。</li>
+<li>Pane 搬至新 Space、既有 tab、新 tab；跨 Space 依新 ID 操作，同 Space 保持 pane identity，snapshot 與回傳一致。</li>
+<li>Claude／Codex 配置安裝、故意變舊後偵測 outdated、更新回 current、解除安裝；原有自訂配置保留。</li>
+<li>本機 mock pi process 的 start、中文 prompt、wait、rename、explain、send-keys 通過；Ctrl+C 確實終止 Agent 並釋放名稱，既有 Pane 保留。沒有呼叫 AI provider。</li>
+<li>無效 wait timeout 與不存在的 Agent target 維持 error，沒有被當作成功。</li>
+<li>Session stop 保留 state，重新 start／load 還原工作區。</li>
+<li>Session stop／delete 後從儲存清單移除。</li>
+<li>Cleanup 確認只有腳本自己的測試 Session server 停止；證據與必要暫存 fixture 留存供診斷。</li>
+</ol>
+<p><code>agent.start</code> 的 public API 成功表示啟動已接受，可能仍有 <code>launch_pending: true</code>。<code>timeout_ms</code> 控制 server 的啟動期限；官方 CLI 另外等待 readiness。測試讀取 ready 狀態後才傳送 prompt；Yuzora 提示文字已反映此語意，沒有重做 host polling 或自動重送。</p></div>
+        </details>
+        <details id="真實原生-client-10-項檢查" open>
+            <summary>真實原生 client：10 項檢查</summary>
+            <div class="details-body"><p><a href="assets/herdr-e2e-20260923/native-result.json">最終 result.json</a> 與 <a href="assets/herdr-e2e-20260923/native-transcripts.json">完整 frame transcripts</a> 為實際 native stream 證據。最終版本連續三次通過；攜帶的是最後一次完整記錄。</p>
+<ol>
+<li>隔離的 HERDR 0.9.1／protocol 22 server。</li>
+<li>Production native client 開啟、ANSI frame 與鍵盤輸入。</li>
+<li>Resize 被採用，shell 保持可互動。</li>
+<li>用鍵盤 Copy mode 搜尋螢幕外歷史，輸出與預期文字完全一致的 OSC 52；此項驗證協定內容，不宣稱 OS clipboard 已被實際讀寫驗收。</li>
+<li>官方 client 轉送 inline Kitty graphics payload。</li>
+<li>Production feature 開啟 trusted local plugin popup；鍵盤有效，ordinary pane topology 不變。</li>
+<li>Production feature 開啟並繪製 trusted local plugin pane。</li>
+<li>關閉 client 回收所屬 helper，server 與 pane identity 持續存在。</li>
+<li>Native client 關閉後，一般 pane connector 重新連接並接收輸入。</li>
+<li>同一執行中 Session 可再開啟 native client。</li>
+</ol>
+<p>Cleanup 停止且僅停止該測試 Session，刪除其暫存 runtime root。可讀畫面記錄：<a href="assets/herdr-e2e-20260923/native-01-native-input.txt">input</a>、<a href="assets/herdr-e2e-20260923/native-02-resized.txt">resize</a>、<a href="assets/herdr-e2e-20260923/native-03-copy-search.txt">Copy/search</a>、<a href="assets/herdr-e2e-20260923/native-04-kitty.txt">Kitty</a>、<a href="assets/herdr-e2e-20260923/native-05-plugin-popup.txt">popup</a>、<a href="assets/herdr-e2e-20260923/native-06-plugin-pane.txt">plugin pane</a>、<a href="assets/herdr-e2e-20260923/native-07-reopened.txt">reopen</a>。</p></div>
+        </details>
+        <details id="e2e-發現並修正的問題" open>
+            <summary>E2E 發現並修正的問題</summary>
+            <div class="details-body"><table>
+<thead>
+<tr>
+<th>問題</th>
+<th>完成的修正與驗證</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dialog portal 尚未掛載時 terminal 初始化失效</td>
+<td>配合實際 mount 啟動 native renderer；Chrome 可開啟、關閉並重新開啟</td>
+</tr>
+<tr>
+<td>字型載入與首次尺寸估算不同，terminal 未填滿</td>
+<td>字型就緒後再次 fit／resize；Chrome 寬度與 cols 證據見上表</td>
+</tr>
+<tr>
+<td>Negative-z Kitty 覆蓋原應在上方的文字</td>
+<td><code>.xterm-rows</code> 明確定位，卸載時還原；Chrome 與早期 Kitty 圖證確認</td>
+</tr>
+<tr>
+<td>Capability parser 只接受兩段 method 名稱</td>
+<td>支援合法多段名稱，保留 plugin.pane.open、plugin.action.invoke、plugin.log.list；真實 popup/pane 通過</td>
+</tr>
+<tr>
+<td>Plugin placement 混入互斥參數、tab focus 不符預期</td>
+<td>依 placement 建立合法 payload 並處理 tab focus；Chrome 與 production runtime 驗證</td>
+</tr>
+<tr>
+<td>回收 owned client 時主執行緒停在 <code>Child::wait</code>／<code>__wait4</code></td>
+<td>先終止 owned client，再使用有界 <code>try_wait</code> 收尾；Rust 回歸與原生 client release／重連通過</td>
+</tr>
+<tr>
+<td>Agent 啟動尚未 ready 就顯示完成</td>
+<td>僅 pending start 顯示「已送出 Agent 啟動請求」與就緒提示；保留 server gate 與手動按鍵</td>
+</tr>
+</tbody>
+</table></div>
+        </details>
+        <details id="回歸-編譯與格式檢查" open>
+            <summary>回歸、編譯與格式檢查</summary>
+            <div class="details-body"><table>
+<thead>
+<tr>
+<th>檢查</th>
+<th>最終結果</th>
+<th>證據</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前端完整 Vitest</td>
+<td>251 files、2,962 tests 通過</td>
+<td><a href="assets/herdr-e2e-20260923/frontend-tests.txt">frontend-tests.txt</a></td>
+</tr>
+<tr>
+<td><code>bun run build</code></td>
+<td>通過，包含兩份 TS7 typecheck；保留既有大型 chunk 提醒</td>
+<td><a href="assets/herdr-e2e-20260923/build.txt">build.txt</a></td>
+</tr>
+<tr>
+<td><code>bun run lint</code></td>
+<td>0 errors、49 個既有 warnings</td>
+<td><a href="assets/herdr-e2e-20260923/lint.txt">lint.txt</a></td>
+</tr>
+<tr>
+<td>Host Rust 完整測試</td>
+<td>386 unit ＋ 12 integration 通過；1 ignored</td>
+<td><a href="assets/herdr-e2e-20260923/host-full-tests.txt">host-full-tests.txt</a></td>
+</tr>
+<tr>
+<td>Desktop all-target check</td>
+<td>通過</td>
+<td><a href="assets/herdr-e2e-20260923/desktop-check.txt">desktop-check.txt</a></td>
+</tr>
+<tr>
+<td>Host／Desktop fmt</td>
+<td>通過</td>
+<td><a href="assets/herdr-e2e-20260923/host-fmt.txt">host</a>／<a href="assets/herdr-e2e-20260923/desktop-fmt.txt">desktop</a></td>
+</tr>
+<tr>
+<td>Desktop exact Clippy baseline</td>
+<td>90 diagnostics 吻合，本輪未更新 baseline</td>
+<td><a href="assets/herdr-e2e-20260923/desktop-clippy-baseline.txt">desktop-clippy-baseline.txt</a></td>
+</tr>
+<tr>
+<td>Native／Windows GNU Clippy</td>
+<td>通過；GNU 條件編譯不等於 MSVC 或 Windows SSH 實機驗收</td>
+<td><a href="assets/herdr-e2e-20260923/rust-check-summary.json">最終 Rust 檢查摘要</a></td>
+</tr>
+</tbody>
+</table>
+<p>Vitest 的 jsdom canvas 未實作訊息沒有造成失敗；canvas 視覺另由 Chrome 驗收。沒有重建或發布 installer，也沒有執行產品 repository Git 寫入。</p></div>
+        </details>
+        <details id="尚未完成與適用限制" open>
+            <summary>尚未完成與適用限制</summary>
+            <div class="details-body"><ul role="list" aria-label="尚未完成與適用限制">
+<li><p>Windows MSVC build：本機缺少 Windows SDK，之前 C dependency 缺 <code>assert.h</code>；需要適當 runner。</p></li>
+<li><p>真實 Windows SSH：PowerShell byte forwarding、named pipe、ConPTY、非 ASCII 路徑與斷線重連尚未在 Windows 主機上驗收。</p></li>
+<li><p>五平台 runtime payload：目前本機仍缺 Windows target 與完整新 manifest 集合，<code>runtime:verify</code> 尚不通過；不能將既有 artifacts 或先前 CI 結果當成本次 source 的打包結果。</p></li>
+<li><p>完整 Tauri webview：本輪 browser UI 與 host runtime 分別驗證，尚未完成包裝後的 Tauri 原生 webview 端到端 GUI 驗收。</p></li>
+<li><p>OS 通知與 clipboard：只驗證通知 fixture 狀態與 OSC 52 協定；沒有驗證 OS notification／真實 Tauri toast 彈出或系統 clipboard 完整流程。</p></li>
+<li><p>AI 與外部整合：Agent 使用 mock pi；Claude／Codex 測的是實際配置檔安裝與更新，沒有登入或呼叫供應商。其他 integration 只做 inventory；第三方 GitHub plugin 安裝與網路建置沒有在此本機測試中執行，popup／pane 使用 trusted local fixture。</p></li>
+</ul></div>
+        </details>
+        <details id="附錄-早期-kitty-圖證與後續狀態" open>
+            <summary>附錄：早期 Kitty 圖證與後續狀態</summary>
+            <div class="details-body"><p>以下六張 PNG 出自使用者指定 Chrome 之前的階段，來源與時間見 <a href="assets/herdr-e2e-20260923/kitty-results.md">原始 Kitty 記錄</a>。該舊記錄的「Remaining visual checks」是當時狀態；Chrome 的深色、negative-z、reopen、font fit 已在本輪後段完成，請以上方 Chrome 表格為準。</p>
+<table>
+<thead>
+<tr>
+<th>圖片</th>
+<th>當時觀察</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="assets/herdr-e2e-20260923/kitty-initial.png">初始畫面</a></td>
+<td>初期 terminal 尺寸問題留證</td>
+</tr>
+<tr>
+<td><a href="assets/herdr-e2e-20260923/kitty-negative-after.png">negative-z 修正後</a></td>
+<td>文字出現在圖片上方</td>
+</tr>
+<tr>
+<td><a href="assets/herdr-e2e-20260923/kitty-negative-background-after.png">negative-z ＋文字背景</a></td>
+<td>ANSI 背景與文字出現在圖片上方</td>
+</tr>
+<tr>
+<td><a href="assets/herdr-e2e-20260923/kitty-zero-background-after.png">z=0 ＋文字背景</a></td>
+<td>前景圖片覆蓋文字背景</td>
+</tr>
+<tr>
+<td><a href="assets/herdr-e2e-20260923/kitty-resize-after.png">Resize</a></td>
+<td>Canvas 與 terminal 同步調整</td>
+</tr>
+<tr>
+<td><a href="assets/herdr-e2e-20260923/kitty-delete-after.png">Delete</a></td>
+<td>Placement 刪除後兩層 canvas 無非透明像素</td>
+</tr>
+</tbody>
+</table>
+<p><a href="herdr-feature-parity-2026-09-22.html">前一日 checkpoint</a> 保留當時範圍與編譯結果；<a href="../../.yuuzu/specs/herdr-parity-2026-09-22.md">實作追蹤計畫</a> 記錄完成與剩餘驗收。所有本報告連結的測試證據已存於同 repo 的 <code>docs/html/assets/herdr-e2e-20260923/</code>，不依賴 <code>/tmp</code> 才能閱讀。</p></div>
+        </details>
+    </main>
+
+    <div class="actions">
+        <button class="btn" onclick="window.print()">🖨 Print / PDF</button>
+        <button class="btn" id="copy-btn" onclick="copyMarkdown()">📋 Copy as Markdown</button>
+        <button class="btn" onclick="toggleAll(true)">⬇ Expand All</button>
+        <button class="btn" onclick="toggleAll(false)">⬆ Collapse All</button>
+    </div>
+
+    <footer>
+        Generated by <code>recap-plan-docs</code> · 2026-09-23 02:05:02
+    </footer>
+</div>
+<script id="raw-markdown" type="text/plain"># HERDR 功能補齊：本機 E2E 驗收
+
+## 摘要
+
+2026-09-23 已完成本機 Chrome 管理介面驗收與隔離的 production host → HERDR 0.9.1 runtime 測試。Chrome 使用真實產品元件與 controlled IPC fixture；runtime 測試使用實際 host binary、官方 HERDR 與獨立測試 Session，兩者分開記錄。管理 runtime 11 組檢查通過；原生 client 10 項檢查連續三次通過。前端 251 個測試檔、2,962 項測試通過。
+
+本輪結果不代表所有平台完成：Windows MSVC、Windows SSH 實機與新的五平台 payload 仍待完成；完整 Tauri webview、OS 通知實際彈出及真實 AI provider 未在本輪 GUI 驗收。
+
+## 授權、測試環境與證據界線
+
+使用者於 2026-09-23 明確授權「接下來開始進行 e2e 本機自動測試」，之後指定使用 Chrome 與電腦操作，禁止繼續使用 agent-browser。後續瀏覽器操作均依該限制進行。附錄六張 Kitty 截圖出自較早的測試階段，不能標記為 Chrome 截圖；Chrome 截圖保留於本對話，互動結果另存 JSON。
+
+| 層級 | 執行方式 | 能證明的範圍 |
+| --- | --- | --- |
+| Chrome GUI | `fixtures/herdr-parity.html`，production React dialogs、xterm、Kitty renderer，controlled IPC | 表單、確認、選取、鍵盤、繪圖、錯誤提示、呼叫次數與參數；不證明主機 mutation 已執行 |
+| 管理 runtime | `scripts/verify-herdr-features-e2e.ts` → `yuzora-host --stdio` → shared typed facade → bundled HERDR | 真實 Session、Git worktree、pane 移動、整合配置與 Agent 操作邊界 |
+| 原生 client runtime | `scripts/verify-herdr-native-e2e.ts` → production native stream → 官方 `herdr … client` | 真實鍵盤、Copy/search、OSC 52、Kitty bytes、local plugin popup/pane、釋放及重新連線 |
+| 靜態與自動回歸 | Vitest、build/typecheck、ESLint、Rust tests/check/fmt/Clippy | 合約與編譯回歸；不能替代 Windows 實機及 OS GUI 行為 |
+
+每組 runtime 使用獨立暫存 HOME、XDG/config、runtime socket 與命名 Session，沒有列讀或控制既有使用者 Session。Git init／fixture commit 僅發生在測試腳本建立的暫存 repository；產品 repo 沒有 staging、commit 或 push。
+
+## Chrome：七個管理分頁與原生畫面
+
+[Chrome 互動與觀察記錄](assets/herdr-e2e-20260923/chrome-results.json) 記錄本輪工具觀察。此表全屬 controlled IPC GUI 驗收。
+
+| 表面 | 已確認結果 |
+| --- | --- |
+| Worktrees | 建立表單以正確 workspace、branch/base/path/focus 參數送出；forced failure 顯示 `Operation failed` 與 `Fixture operation failure`，當次僅一筆 `worktree.create` |
+| Agents | 名稱格式防呆、啟動、多行 prompt 與 send-keys 操作正常；啟動 pending 的提示另已修正為準備中 |
+| Pane move | 新 Space 目的地與請求參數正確；其餘兩種目的地另由真實 runtime 覆蓋 |
+| Sessions | 名稱格式防呆、建立後切換選取、刪除前確認 |
+| Integrations | 更新確認與 target 參數正確 |
+| Plugins | 啟用／停用、action 可用性及 popup 操作正常；popup 只送出該 placement 合法的參數。安裝確認後以 source `fixture/demo`、revision `test-revision` 送出一次 request；卸載確認後使用 plugin_id `fixture.demo`。安裝／卸載皆為 controlled IPC，未執行外部下載或建置 |
+| Notifications | 模擬 permission denied 後 system 開關保持 off；sound 開關設為 true 成功。未驗證 OS notification 或真實 Tauri toast 彈出 |
+| 原生 Session dialog | Escape 保留給 HERDR，不關閉 dialog；關閉呼叫 release；字型載入後重新 fit，screen 寬 1742、container 寬 1748，重新送出 242 cols，避免初始舊值 156 cols |
+| 忙碌期間 | slow-create 執行時 Host、Session、tabs、Space 與 mutation 控制項 disabled，隱藏 close，working 文字註明不重試；完成後恢復可操作 |
+| 失敗後刷新 | mutation 成功但 refresh 失敗時保留 `Operation completed`，並獨立顯示 `Session unavailable`／`Fixture refresh failure`；沒有重送 mutation，不可用控制項維持 disabled |
+| Kitty 與深色主題 | negative-z 圖片上方仍可見文字；`.xterm-rows` 為 `position: relative`、`z-index: 1`。深色畫面正常，host 寬 2508、screen 寬 2506；關閉重開只有兩個 canvas layer |
+| 瀏覽器診斷 | 驗收期間 Chrome dev logs 的 error／warn 清單皆為空 |
+
+## 真實管理 runtime：11 組檢查
+
+[完整管理 evidence.json](assets/herdr-e2e-20260923/management-evidence.json) 保留實際 request／response、通過清單、Session 隔離與 cleanup 結果。這些不是 fixture 預設回覆。
+
+1. 獨立 HOME／XDG，初始沒有執行中或已儲存的使用者 Session；預設的 stopped placeholder 位於測試 root。
+2. 建立／啟動 named Session、重複啟動回報未再次啟動；實際 HERDR 0.9.1、protocol 22、compatible socket 位於測試 root。
+3. Production capability gate 提供管理操作。
+4. 真實臨時 Git worktree 建立、關閉／重開、移除；dirty checkout 拒絕普通移除，明確 force 後移除。
+5. Pane 搬至新 Space、既有 tab、新 tab；跨 Space 依新 ID 操作，同 Space 保持 pane identity，snapshot 與回傳一致。
+6. Claude／Codex 配置安裝、故意變舊後偵測 outdated、更新回 current、解除安裝；原有自訂配置保留。
+7. 本機 mock pi process 的 start、中文 prompt、wait、rename、explain、send-keys 通過；Ctrl+C 確實終止 Agent 並釋放名稱，既有 Pane 保留。沒有呼叫 AI provider。
+8. 無效 wait timeout 與不存在的 Agent target 維持 error，沒有被當作成功。
+9. Session stop 保留 state，重新 start／load 還原工作區。
+10. Session stop／delete 後從儲存清單移除。
+11. Cleanup 確認只有腳本自己的測試 Session server 停止；證據與必要暫存 fixture 留存供診斷。
+
+`agent.start` 的 public API 成功表示啟動已接受，可能仍有 `launch_pending: true`。`timeout_ms` 控制 server 的啟動期限；官方 CLI 另外等待 readiness。測試讀取 ready 狀態後才傳送 prompt；Yuzora 提示文字已反映此語意，沒有重做 host polling 或自動重送。
+
+## 真實原生 client：10 項檢查
+
+[最終 result.json](assets/herdr-e2e-20260923/native-result.json) 與 [完整 frame transcripts](assets/herdr-e2e-20260923/native-transcripts.json) 為實際 native stream 證據。最終版本連續三次通過；攜帶的是最後一次完整記錄。
+
+1. 隔離的 HERDR 0.9.1／protocol 22 server。
+2. Production native client 開啟、ANSI frame 與鍵盤輸入。
+3. Resize 被採用，shell 保持可互動。
+4. 用鍵盤 Copy mode 搜尋螢幕外歷史，輸出與預期文字完全一致的 OSC 52；此項驗證協定內容，不宣稱 OS clipboard 已被實際讀寫驗收。
+5. 官方 client 轉送 inline Kitty graphics payload。
+6. Production feature 開啟 trusted local plugin popup；鍵盤有效，ordinary pane topology 不變。
+7. Production feature 開啟並繪製 trusted local plugin pane。
+8. 關閉 client 回收所屬 helper，server 與 pane identity 持續存在。
+9. Native client 關閉後，一般 pane connector 重新連接並接收輸入。
+10. 同一執行中 Session 可再開啟 native client。
+
+Cleanup 停止且僅停止該測試 Session，刪除其暫存 runtime root。可讀畫面記錄：[input](assets/herdr-e2e-20260923/native-01-native-input.txt)、[resize](assets/herdr-e2e-20260923/native-02-resized.txt)、[Copy/search](assets/herdr-e2e-20260923/native-03-copy-search.txt)、[Kitty](assets/herdr-e2e-20260923/native-04-kitty.txt)、[popup](assets/herdr-e2e-20260923/native-05-plugin-popup.txt)、[plugin pane](assets/herdr-e2e-20260923/native-06-plugin-pane.txt)、[reopen](assets/herdr-e2e-20260923/native-07-reopened.txt)。
+
+## E2E 發現並修正的問題
+
+| 問題 | 完成的修正與驗證 |
+| --- | --- |
+| Dialog portal 尚未掛載時 terminal 初始化失效 | 配合實際 mount 啟動 native renderer；Chrome 可開啟、關閉並重新開啟 |
+| 字型載入與首次尺寸估算不同，terminal 未填滿 | 字型就緒後再次 fit／resize；Chrome 寬度與 cols 證據見上表 |
+| Negative-z Kitty 覆蓋原應在上方的文字 | `.xterm-rows` 明確定位，卸載時還原；Chrome 與早期 Kitty 圖證確認 |
+| Capability parser 只接受兩段 method 名稱 | 支援合法多段名稱，保留 plugin.pane.open、plugin.action.invoke、plugin.log.list；真實 popup/pane 通過 |
+| Plugin placement 混入互斥參數、tab focus 不符預期 | 依 placement 建立合法 payload 並處理 tab focus；Chrome 與 production runtime 驗證 |
+| 回收 owned client 時主執行緒停在 `Child::wait`／`__wait4` | 先終止 owned client，再使用有界 `try_wait` 收尾；Rust 回歸與原生 client release／重連通過 |
+| Agent 啟動尚未 ready 就顯示完成 | 僅 pending start 顯示「已送出 Agent 啟動請求」與就緒提示；保留 server gate 與手動按鍵 |
+
+## 回歸、編譯與格式檢查
+
+| 檢查 | 最終結果 | 證據 |
+| --- | --- | --- |
+| 前端完整 Vitest | 251 files、2,962 tests 通過 | [frontend-tests.txt](assets/herdr-e2e-20260923/frontend-tests.txt) |
+| `bun run build` | 通過，包含兩份 TS7 typecheck；保留既有大型 chunk 提醒 | [build.txt](assets/herdr-e2e-20260923/build.txt) |
+| `bun run lint` | 0 errors、49 個既有 warnings | [lint.txt](assets/herdr-e2e-20260923/lint.txt) |
+| Host Rust 完整測試 | 386 unit ＋ 12 integration 通過；1 ignored | [host-full-tests.txt](assets/herdr-e2e-20260923/host-full-tests.txt) |
+| Desktop all-target check | 通過 | [desktop-check.txt](assets/herdr-e2e-20260923/desktop-check.txt) |
+| Host／Desktop fmt | 通過 | [host](assets/herdr-e2e-20260923/host-fmt.txt)／[desktop](assets/herdr-e2e-20260923/desktop-fmt.txt) |
+| Desktop exact Clippy baseline | 90 diagnostics 吻合，本輪未更新 baseline | [desktop-clippy-baseline.txt](assets/herdr-e2e-20260923/desktop-clippy-baseline.txt) |
+| Native／Windows GNU Clippy | 通過；GNU 條件編譯不等於 MSVC 或 Windows SSH 實機驗收 | [最終 Rust 檢查摘要](assets/herdr-e2e-20260923/rust-check-summary.json) |
+
+Vitest 的 jsdom canvas 未實作訊息沒有造成失敗；canvas 視覺另由 Chrome 驗收。沒有重建或發布 installer，也沒有執行產品 repository Git 寫入。
+
+## 尚未完成與適用限制
+
+- Windows MSVC build：本機缺少 Windows SDK，之前 C dependency 缺 `assert.h`；需要適當 runner。
+- 真實 Windows SSH：PowerShell byte forwarding、named pipe、ConPTY、非 ASCII 路徑與斷線重連尚未在 Windows 主機上驗收。
+- 五平台 runtime payload：目前本機仍缺 Windows target 與完整新 manifest 集合，`runtime:verify` 尚不通過；不能將既有 artifacts 或先前 CI 結果當成本次 source 的打包結果。
+- 完整 Tauri webview：本輪 browser UI 與 host runtime 分別驗證，尚未完成包裝後的 Tauri 原生 webview 端到端 GUI 驗收。
+- OS 通知與 clipboard：只驗證通知 fixture 狀態與 OSC 52 協定；沒有驗證 OS notification／真實 Tauri toast 彈出或系統 clipboard 完整流程。
+- AI 與外部整合：Agent 使用 mock pi；Claude／Codex 測的是實際配置檔安裝與更新，沒有登入或呼叫供應商。其他 integration 只做 inventory；第三方 GitHub plugin 安裝與網路建置沒有在此本機測試中執行，popup／pane 使用 trusted local fixture。
+
+## 附錄：早期 Kitty 圖證與後續狀態
+
+以下六張 PNG 出自使用者指定 Chrome 之前的階段，來源與時間見 [原始 Kitty 記錄](assets/herdr-e2e-20260923/kitty-results.md)。該舊記錄的「Remaining visual checks」是當時狀態；Chrome 的深色、negative-z、reopen、font fit 已在本輪後段完成，請以上方 Chrome 表格為準。
+
+| 圖片 | 當時觀察 |
+| --- | --- |
+| [初始畫面](assets/herdr-e2e-20260923/kitty-initial.png) | 初期 terminal 尺寸問題留證 |
+| [negative-z 修正後](assets/herdr-e2e-20260923/kitty-negative-after.png) | 文字出現在圖片上方 |
+| [negative-z ＋文字背景](assets/herdr-e2e-20260923/kitty-negative-background-after.png) | ANSI 背景與文字出現在圖片上方 |
+| [z=0 ＋文字背景](assets/herdr-e2e-20260923/kitty-zero-background-after.png) | 前景圖片覆蓋文字背景 |
+| [Resize](assets/herdr-e2e-20260923/kitty-resize-after.png) | Canvas 與 terminal 同步調整 |
+| [Delete](assets/herdr-e2e-20260923/kitty-delete-after.png) | Placement 刪除後兩層 canvas 無非透明像素 |
+
+[前一日 checkpoint](herdr-feature-parity-2026-09-22.html) 保留當時範圍與編譯結果；[實作追蹤計畫](../../.yuuzu/specs/herdr-parity-2026-09-22.md) 記錄完成與剩餘驗收。所有本報告連結的測試證據已存於同 repo 的 `docs/html/assets/herdr-e2e-20260923/`，不依賴 `/tmp` 才能閱讀。
+</script>
+<script>
+function copyMarkdown() {
+    const btn = document.getElementById('copy-btn');
+    const md = document.getElementById('raw-markdown').textContent;
+    navigator.clipboard.writeText(md).then(() => {
+        const original = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => btn.textContent = original, 1500);
+    });
+}
+function toggleAll(open) {
+    document.querySelectorAll('details').forEach(d => { d.open = open; });
+}
+</script>
+</body>
+</html>

@@ -27,6 +27,31 @@ pub(crate) type LocalListener = interprocess::local_socket::Listener;
 
 #[cfg(any(windows, test))]
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How a nonblocking reader waits for data where readiness cannot be awaited
+/// (Windows named pipes are polled with `PeekNamedPipe`). Unix sockets always
+/// sleep in `poll()`, so the profile only changes the Windows back-off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalWaitProfile {
+    /// Request/response: the reply is usually milliseconds away, so poll
+    /// 1, 1, 2, 4, then every 8 ms instead of sleeping a fixed 100 ms.
+    Interactive,
+    /// Long-lived idle lanes (event subscriptions) keep the 100 ms cadence.
+    Idle,
+}
+
+#[cfg(any(windows, test))]
+fn poll_backoff(profile: LocalWaitProfile, attempt: u32) -> Duration {
+    match profile {
+        LocalWaitProfile::Interactive => Duration::from_millis(match attempt {
+            0 | 1 => 1,
+            2 => 2,
+            3 => 4,
+            _ => 8,
+        }),
+        LocalWaitProfile::Idle => POLL_INTERVAL,
+    }
+}
 const READ_CHUNK_BYTES: usize = 8 * 1024;
 
 pub(crate) enum LocalStreamRead {
@@ -234,7 +259,24 @@ pub(crate) fn read_local_ndjson_line(
     deadline: Option<Instant>,
     max_bytes: usize,
 ) -> Result<Option<String>, BoundedNdjsonReadError> {
+    read_local_ndjson_line_with(
+        stream,
+        pending,
+        deadline,
+        max_bytes,
+        LocalWaitProfile::Interactive,
+    )
+}
+
+pub(crate) fn read_local_ndjson_line_with(
+    stream: &mut LocalStream,
+    pending: &mut Vec<u8>,
+    deadline: Option<Instant>,
+    max_bytes: usize,
+    profile: LocalWaitProfile,
+) -> Result<Option<String>, BoundedNdjsonReadError> {
     let mut buffer = [0u8; READ_CHUNK_BYTES];
+    let mut attempt = 0u32;
     loop {
         if let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
             let remainder = pending.split_off(newline + 1);
@@ -257,7 +299,9 @@ pub(crate) fn read_local_ndjson_line(
         match poll_local_stream_read(stream, &mut buffer) {
             Ok(LocalStreamRead::Data(read)) => pending.extend_from_slice(&buffer[..read]),
             Ok(LocalStreamRead::Pending) => {
-                wait_local_ready(stream, false, deadline).map_err(BoundedNdjsonReadError::Io)?;
+                wait_local_ready(stream, false, deadline, profile, attempt)
+                    .map_err(BoundedNdjsonReadError::Io)?;
+                attempt = attempt.saturating_add(1);
             }
             Ok(LocalStreamRead::Closed) => {
                 if pending.is_empty() {
@@ -297,13 +341,23 @@ pub(crate) fn write_local_all_until(
 ) -> io::Result<()> {
     prepare_local_stream(stream)?;
     let mut offset = 0usize;
+    let mut attempt = 0u32;
     while offset < bytes.len() {
         remaining_timeout(deadline)?;
         match stream.write(&bytes[offset..]) {
             // A nonblocking Windows named pipe reports a full output buffer as
             // a successful zero-byte write. Treat that as backpressure and let
             // the same deadline used for WouldBlock terminate the request.
-            Ok(0) if cfg!(windows) => wait_local_ready(stream, true, Some(deadline))?,
+            Ok(0) if cfg!(windows) => {
+                wait_local_ready(
+                    stream,
+                    true,
+                    Some(deadline),
+                    LocalWaitProfile::Interactive,
+                    attempt,
+                )?;
+                attempt = attempt.saturating_add(1);
+            }
             Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
@@ -319,7 +373,14 @@ pub(crate) fn write_local_all_until(
                         | io::ErrorKind::Interrupted
                 ) =>
             {
-                wait_local_ready(stream, true, Some(deadline))?;
+                wait_local_ready(
+                    stream,
+                    true,
+                    Some(deadline),
+                    LocalWaitProfile::Interactive,
+                    attempt,
+                )?;
+                attempt = attempt.saturating_add(1);
             }
             Err(error) => return Err(error),
         }
@@ -338,9 +399,12 @@ fn wait_local_ready(
     stream: &LocalStream,
     writable: bool,
     deadline: Option<Instant>,
+    profile: LocalWaitProfile,
+    attempt: u32,
 ) -> io::Result<()> {
     #[cfg(unix)]
     {
+        let _ = (profile, attempt);
         use std::os::fd::{AsFd, AsRawFd};
         let LocalStream::UdSocket(socket) = stream;
         let remaining = deadline.map(|value| value.saturating_duration_since(Instant::now()));
@@ -373,20 +437,20 @@ fn wait_local_ready(
     #[cfg(windows)]
     {
         let _ = (stream, writable);
-        sleep_until(deadline);
+        sleep_until(deadline, poll_backoff(profile, attempt));
         Ok(())
     }
 }
 
 #[cfg(any(windows, test))]
-fn sleep_until(deadline: Option<Instant>) {
+fn sleep_until(deadline: Option<Instant>, max: Duration) {
     let remaining = deadline
         .map(|value| value.saturating_duration_since(Instant::now()))
-        .unwrap_or(POLL_INTERVAL);
+        .unwrap_or(max);
     if remaining.is_zero() {
         return;
     }
-    thread::sleep(remaining.min(POLL_INTERVAL));
+    thread::sleep(remaining.min(max));
 }
 
 #[cfg(test)]
@@ -524,6 +588,16 @@ mod tests {
     }
 
     #[test]
+    fn interactive_named_pipe_polls_back_off_quickly_and_idle_lanes_keep_100ms() {
+        let steps: Vec<u128> = (0..6)
+            .map(|attempt| poll_backoff(LocalWaitProfile::Interactive, attempt).as_millis())
+            .collect();
+        assert_eq!(steps, vec![1, 1, 2, 4, 8, 8]);
+        assert_eq!(poll_backoff(LocalWaitProfile::Idle, 0), POLL_INTERVAL);
+        assert_eq!(poll_backoff(LocalWaitProfile::Idle, 9), POLL_INTERVAL);
+    }
+
+    #[test]
     fn reader_retains_partial_bytes_across_pending_polls() {
         let (listener, path) = local_pair("fragment");
         let advertised = path.to_string_lossy().into_owned();
@@ -614,7 +688,7 @@ mod tests {
             );
             match poll_local_stream_read(&mut client, &mut buffer).expect("poll prefix") {
                 LocalStreamRead::Data(read) => pending.extend_from_slice(&buffer[..read]),
-                LocalStreamRead::Pending => sleep_until(Some(prefix_deadline)),
+                LocalStreamRead::Pending => sleep_until(Some(prefix_deadline), POLL_INTERVAL),
                 LocalStreamRead::Closed => panic!("stream closed before prefix"),
             }
         }

@@ -6,6 +6,7 @@ import { systemRevealPath } from "@/lib/revealPath"
 import { isFileTab } from "@/lib/markdownPreviewTab"
 import { gitWorkingFilePath, openGitWorkingFile } from "@/workbench/git/gitWorkingFile"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
+import { closeHerdrTerminalPages } from "@/lib/herdrFeatureNavigation"
 import { getViewEntry } from "@/editor/viewRegistry"
 import {
   herdrPaneClose,
@@ -26,6 +27,9 @@ import { dbProfileUiErrorCode, useDbStore } from "@/state/dbStore"
 import { useGitStore } from "@/state/gitStore"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
 import { useHerdrStore } from "@/state/herdrStore"
+import { useHerdrToolsStore } from "@/state/herdrToolsStore"
+import { useHerdrNativeStore } from "@/state/herdrNativeStore"
+import { hasHerdrMethod } from "@/lib/herdrCapabilities"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
@@ -799,6 +803,12 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   herdrSpace: [
+    item<"herdrSpace">("cmHerdrWorktreeTools", {
+      label: () => i18n.t("herdrTools:tools.worktrees"),
+      availability: () => available(),
+      danger: false,
+      executor: request => { useHerdrToolsStore.getState().open({ tool: "worktrees", sessionName: request.sessionName, workspaceId: request.workspaceId }); return CONTEXT_MENU_COMPLETED },
+    }),
     spaceMoveCommand("up"),
     spaceMoveCommand("down"),
     "separator",
@@ -859,10 +869,21 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
           destructive: true
         })
         if (!ok) return CONTEXT_MENU_CANCELLED
+        const herdr = useHerdrStore.getState()
+        const snapshot = herdr.runtimesBySession[request.sessionName]?.snapshot ??
+          (herdr.selectedSessionName === request.sessionName ? herdr.snapshot : null)
+        const closedTabIds = new Set(snapshot?.tabs
+          .filter((tab) => tab.workspaceId === request.workspaceId)
+          .map((tab) => tab.id))
         await herdrWorkspaceClose({
           sessionName: request.sessionName,
           workspaceId: request.workspaceId
         })
+        // Unmount closed terminal trees so their streams and layout retries are
+        // released. Capture legacy tab ownership before the snapshot loses it.
+        closeHerdrTerminalPages(request.sessionName, (tab) =>
+          tab.herdrWorkspaceId === request.workspaceId ||
+          Boolean(!tab.herdrWorkspaceId && tab.herdrTabId && closedTabIds.has(tab.herdrTabId)))
         await afterHerdrMutation(request.sessionName)
         return CONTEXT_MENU_COMPLETED
       },
@@ -948,6 +969,28 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     }),
   ],
   herdrPane: [
+    item<"herdrPane">("cmHerdrNativeSession", {
+      label: () => i18n.t("herdrTools:openNative"),
+      availability: request => {
+        const runtime = herdrSessionRuntime(request.sessionName)
+        return runtime.session?.running && runtime.capabilities?.api.snapshot && runtime.capabilities.server.compatible === true ? available() : disabled(DISABLED_HERDR_UNAVAILABLE)
+      },
+      danger: false,
+      executor: request => { useHerdrNativeStore.getState().open({ sessionName: request.sessionName, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
+    }),
+    item<"herdrPane">("cmHerdrMovePane", {
+      label: () => i18n.t("herdrTools:move"),
+      availability: request => request.paneId && hasHerdrMethod(herdrSessionRuntime(request.sessionName).capabilities, "pane.move") ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: request => { useHerdrToolsStore.getState().open({ tool: "panes", sessionName: request.sessionName, workspaceId: request.workspaceId ?? undefined, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
+    }),
+    item<"herdrPane">("cmHerdrAgentTools", {
+      label: () => i18n.t("herdrTools:tools.agents"),
+      availability: () => available(),
+      danger: false,
+      executor: request => { useHerdrToolsStore.getState().open({ tool: "agents", sessionName: request.sessionName, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
+    }),
+    "separator",
     item<"herdrPane">("cmHerdrRenamePane", {
       availability: (request) =>
         request.paneId

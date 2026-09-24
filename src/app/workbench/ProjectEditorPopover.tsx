@@ -72,7 +72,7 @@ className="fixed left-[82px] top-[60px] z-[66] flex w-[250px] flex-col overflow-
             maxLength={80}
             onChange={(event) => updatePresentation(path, { name: event.currentTarget.value })}
             placeholder={t("projectEditor.namePlaceholder")}
-            className="h-[32px] w-full rounded-[9px] border border-(--line-2) bg-(--yz-field) px-[11px] text-[13px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
+            className="h-[32px] w-full rounded-[9px] border border-(--line-2) bg-(--yz-field) px-[11px] text-[13px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent) focus-visible:ring-2 focus-visible:ring-(--yz-accent)/30"
           />
         </label>
 
@@ -91,7 +91,7 @@ className="fixed left-[82px] top-[60px] z-[66] flex w-[250px] flex-col overflow-
                   aria-pressed={selected}
                   onClick={() => updatePresentation(path, { glyph })}
                   className={cn(
-                    "flex size-[34px] items-center justify-center rounded-[9px] border text-[17px] font-semibold transition-all duration-150",
+                    "flex size-[34px] items-center justify-center rounded-[9px] border text-[17px] font-semibold transition-[background-color,border-color,color,box-shadow] duration-150",
                     selected
                       ? "border-(--yz-accent) bg-(--yz-active) text-(--ink-1) shadow-[inset_0_0_0_0.5px_var(--yz-accent)]"
                       : "border-(--line-1) bg-(--yz-field) text-(--ink-2) hover:bg-(--yz-hover)"

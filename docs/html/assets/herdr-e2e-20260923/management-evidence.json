@@ -1,0 +1,6403 @@
+{
+  "root": "/private/tmp/yz-fe-9onT8g",
+  "session": "feature-e2e",
+  "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+  "helper": "<repo>/src-tauri/host/target/debug/yuzora-host",
+  "passes": [
+    "isolated HOME/XDG and no running or saved user Sessions",
+    "Session create/start and repeated start; compatible protocol 22 socket stays isolated",
+    "host capability gate advertises management operations",
+    "real Git worktree create, close/open, remove, dirty refusal and explicit force through host boundary",
+    "pane moves to new workspace, existing tab and new tab preserve authoritative destination identities",
+    "Claude/Codex integration install, stale detection, update and uninstall preserves custom config (no AI provider)",
+    "agent start/prompt/wait/rename/explain/send-keys via local mock pi process (no AI provider)",
+    "agent invalid timeout and unknown target remain errors across production host boundary",
+    "Session stop retains saved state and start/load restores workspaces",
+    "Session stop/delete removes saved inventory",
+    "cleanup confirms only fixture Session server is stopped"
+  ],
+  "transcript": [
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-1",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "hello"
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-1",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "arch": "aarch64",
+          "home": "/private/tmp/yz-fe-9onT8g/home",
+          "methods": [
+            "hello",
+            "clipboardImage",
+            "tcpTunnel",
+            "sqlite",
+            "trust",
+            "git",
+            "workspaceAuthorize",
+            "workspaceOpen",
+            "workspaceClose",
+            "filesList",
+            "filesRead",
+            "filesWrite",
+            "filesCreate",
+            "filesRename",
+            "filesDelete",
+            "filesReadBase64",
+            "herdrDiscover",
+            "herdrRequest",
+            "herdrCall",
+            "herdrMetadata",
+            "herdrStart"
+          ],
+          "os": "macos",
+          "protocol": 1,
+          "version": "0.0.16"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-2",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_sessions"
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-2",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": [
+          {
+            "default": true,
+            "name": "default",
+            "running": false,
+            "sessionDir": "/private/tmp/yz-fe-9onT8g/cfg/herdr",
+            "socketPath": "/private/tmp/yz-fe-9onT8g/cfg/herdr/herdr.sock"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-3",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "session.start",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-3",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "name": "feature-e2e",
+          "started": true
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-4",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "session.start",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-4",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "name": "feature-e2e",
+          "started": false
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-5",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_workspace_create",
+              "args": {
+                "sessionName": "feature-e2e",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "label": "Management E2E",
+                "focus": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-5",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "label": "Management E2E",
+          "paneId": "w1:p1",
+          "path": null,
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "createdWorkspace": {
+        "label": "Management E2E",
+        "paneId": "w1:p1",
+        "path": null,
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-6",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_capabilities",
+              "args": {
+                "sessionName": "feature-e2e"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-6",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "api": {
+            "agentGet": true,
+            "agentRead": true,
+            "eventsSubscribe": true,
+            "layoutExport": true,
+            "layoutSetSplitRatio": true,
+            "methods": [
+              "agent.explain",
+              "agent.get",
+              "agent.prompt",
+              "agent.read",
+              "agent.rename",
+              "agent.send_keys",
+              "agent.start",
+              "agent.wait",
+              "events.subscribe",
+              "integration.install",
+              "integration.list",
+              "integration.uninstall",
+              "layout.export",
+              "layout.set_split_ratio",
+              "pane.close",
+              "pane.focus",
+              "pane.get",
+              "pane.move",
+              "pane.process_info",
+              "pane.rename",
+              "pane.scroll",
+              "pane.split",
+              "pane.swap",
+              "pane.zoom",
+              "ping",
+              "plugin.action.invoke",
+              "plugin.disable",
+              "plugin.enable",
+              "plugin.list",
+              "plugin.log.list",
+              "plugin.pane.open",
+              "session.snapshot",
+              "tab.close",
+              "tab.create",
+              "tab.focus",
+              "tab.move",
+              "tab.rename",
+              "workspace.close",
+              "workspace.create",
+              "workspace.focus",
+              "workspace.move",
+              "workspace.move_block",
+              "workspace.rename",
+              "worktree.create",
+              "worktree.list",
+              "worktree.open",
+              "worktree.remove"
+            ],
+            "paneClose": true,
+            "paneFocus": true,
+            "paneRename": true,
+            "paneSplit": true,
+            "paneSwap": true,
+            "paneZoom": true,
+            "ping": true,
+            "reason": null,
+            "schemaProtocol": 22,
+            "schemaVersion": 1,
+            "snapshot": true,
+            "tabClose": true,
+            "tabCreate": true,
+            "tabFocus": true,
+            "tabMove": true,
+            "tabRename": true,
+            "workspaceClose": true,
+            "workspaceCreate": true,
+            "workspaceFocus": true,
+            "workspaceMove": true,
+            "workspaceMoveBlock": true,
+            "workspaceRename": true,
+            "worktreeList": true
+          },
+          "binaryPath": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+          "binaryProtocol": 22,
+          "binarySource": {
+            "active": "default",
+            "available": true,
+            "configurationError": null,
+            "configured": "default",
+            "configuredAvailable": true,
+            "configuredPath": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "configuredProtocol": 22,
+            "configuredReason": null,
+            "configuredVersion": "0.9.1",
+            "customPath": null,
+            "path": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "protocol": 22,
+            "reason": null,
+            "resolved": "default",
+            "restartRequired": false,
+            "version": "0.9.1"
+          },
+          "binaryVersion": "0.9.1",
+          "channel": "stable",
+          "events": {
+            "reason": null,
+            "status": "available"
+          },
+          "server": {
+            "capabilities": {
+              "detached_server_daemon": true,
+              "endpoint_protocol_generation": 1,
+              "health_check": true,
+              "live_handoff": true,
+              "surface_interest": true
+            },
+            "compatible": true,
+            "protocol": 22,
+            "running": true,
+            "socketPath": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e/herdr.sock",
+            "version": "0.9.1"
+          },
+          "terminal": {
+            "control": true,
+            "create": true,
+            "input": true,
+            "observe": true,
+            "reason": null,
+            "release": true,
+            "resize": true,
+            "scroll": true,
+            "takeover": true
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-7",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "worktree.create",
+                  "params": {
+                    "workspace_id": "w1",
+                    "branch": "e2e-branch",
+                    "base": "HEAD",
+                    "path": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+                    "label": "E2E worktree",
+                    "focus": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-7",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "root_pane": {
+            "agent_status": "unknown",
+            "cwd": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+            "focused": false,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+            "pane_id": "w2:p1",
+            "revision": 0,
+            "scroll": {
+              "max_offset_from_bottom": 0,
+              "offset_from_bottom": 0,
+              "viewport_rows": 40
+            },
+            "tab_id": "w2:t1",
+            "terminal_id": "term_65c15b6108e912",
+            "workspace_id": "w2"
+          },
+          "tab": {
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "1",
+            "number": 1,
+            "pane_count": 1,
+            "tab_id": "w2:t1",
+            "workspace_id": "w2"
+          },
+          "type": "worktree_created",
+          "workspace": {
+            "active_tab_id": "w2:t1",
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "E2E worktree",
+            "number": 2,
+            "pane_count": 1,
+            "tab_count": 1,
+            "workspace_id": "w2",
+            "worktree": {
+              "checkout_path": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+              "is_linked_worktree": true,
+              "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+              "repo_name": "repo",
+              "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+            }
+          },
+          "worktree": {
+            "branch": "e2e-branch",
+            "is_bare": false,
+            "is_detached": false,
+            "is_linked_worktree": true,
+            "is_prunable": false,
+            "label": "repo",
+            "open_workspace_id": "w2",
+            "path": "/private/tmp/yz-fe-9onT8g/feature-worktree"
+          }
+        }
+      }
+    },
+    {
+      "createdWorktree": {
+        "root_pane": {
+          "agent_status": "unknown",
+          "cwd": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+          "focused": false,
+          "foreground_cwd": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+          "pane_id": "w2:p1",
+          "revision": 0,
+          "scroll": {
+            "max_offset_from_bottom": 0,
+            "offset_from_bottom": 0,
+            "viewport_rows": 40
+          },
+          "tab_id": "w2:t1",
+          "terminal_id": "term_65c15b6108e912",
+          "workspace_id": "w2"
+        },
+        "tab": {
+          "agent_status": "unknown",
+          "focused": false,
+          "label": "1",
+          "number": 1,
+          "pane_count": 1,
+          "tab_id": "w2:t1",
+          "workspace_id": "w2"
+        },
+        "type": "worktree_created",
+        "workspace": {
+          "active_tab_id": "w2:t1",
+          "agent_status": "unknown",
+          "focused": false,
+          "label": "E2E worktree",
+          "number": 2,
+          "pane_count": 1,
+          "tab_count": 1,
+          "workspace_id": "w2",
+          "worktree": {
+            "checkout_path": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+            "is_linked_worktree": true,
+            "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+            "repo_name": "repo",
+            "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+          }
+        },
+        "worktree": {
+          "branch": "e2e-branch",
+          "is_bare": false,
+          "is_detached": false,
+          "is_linked_worktree": true,
+          "is_prunable": false,
+          "label": "repo",
+          "open_workspace_id": "w2",
+          "path": "/private/tmp/yz-fe-9onT8g/feature-worktree"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-8",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_workspace_close",
+              "args": {
+                "sessionName": "feature-e2e",
+                "workspaceId": "w2"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-8",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": null
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-9",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "worktree.open",
+                  "params": {
+                    "workspace_id": "w1",
+                    "path": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+                    "focus": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-9",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "already_open": false,
+          "root_pane": {
+            "agent_status": "unknown",
+            "cwd": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+            "focused": false,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+            "pane_id": "w3:p1",
+            "revision": 0,
+            "scroll": {
+              "max_offset_from_bottom": 0,
+              "offset_from_bottom": 0,
+              "viewport_rows": 40
+            },
+            "tab_id": "w3:t1",
+            "terminal_id": "term_65c15b61212193",
+            "workspace_id": "w3"
+          },
+          "tab": {
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "1",
+            "number": 1,
+            "pane_count": 1,
+            "tab_id": "w3:t1",
+            "workspace_id": "w3"
+          },
+          "type": "worktree_opened",
+          "workspace": {
+            "active_tab_id": "w3:t1",
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "feature-worktree",
+            "number": 2,
+            "pane_count": 1,
+            "tab_count": 1,
+            "workspace_id": "w3",
+            "worktree": {
+              "checkout_path": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+              "is_linked_worktree": true,
+              "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+              "repo_name": "repo",
+              "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+            }
+          },
+          "worktree": {
+            "branch": "e2e-branch",
+            "is_bare": false,
+            "is_detached": false,
+            "is_linked_worktree": true,
+            "is_prunable": false,
+            "label": "repo",
+            "open_workspace_id": "w3",
+            "path": "/private/tmp/yz-fe-9onT8g/feature-worktree"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-10",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "worktree.remove",
+                  "params": {
+                    "workspace_id": "w3",
+                    "force": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-10",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "forced": false,
+          "path": "/private/tmp/yz-fe-9onT8g/feature-worktree",
+          "type": "worktree_removed",
+          "workspace_id": "w3"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-11",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "worktree.create",
+                  "params": {
+                    "workspace_id": "w1",
+                    "branch": "e2e-dirty",
+                    "path": "/private/tmp/yz-fe-9onT8g/dirty-worktree",
+                    "focus": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-11",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "root_pane": {
+            "agent_status": "unknown",
+            "cwd": "/private/tmp/yz-fe-9onT8g/dirty-worktree",
+            "focused": false,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/dirty-worktree",
+            "pane_id": "w4:p1",
+            "revision": 0,
+            "scroll": {
+              "max_offset_from_bottom": 0,
+              "offset_from_bottom": 0,
+              "viewport_rows": 40
+            },
+            "tab_id": "w4:t1",
+            "terminal_id": "term_65c15b61443244",
+            "workspace_id": "w4"
+          },
+          "tab": {
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "1",
+            "number": 1,
+            "pane_count": 1,
+            "tab_id": "w4:t1",
+            "workspace_id": "w4"
+          },
+          "type": "worktree_created",
+          "workspace": {
+            "active_tab_id": "w4:t1",
+            "agent_status": "unknown",
+            "focused": false,
+            "label": "dirty-worktree",
+            "number": 2,
+            "pane_count": 1,
+            "tab_count": 1,
+            "workspace_id": "w4",
+            "worktree": {
+              "checkout_path": "/private/tmp/yz-fe-9onT8g/dirty-worktree",
+              "is_linked_worktree": true,
+              "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+              "repo_name": "repo",
+              "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+            }
+          },
+          "worktree": {
+            "branch": "e2e-dirty",
+            "is_bare": false,
+            "is_detached": false,
+            "is_linked_worktree": true,
+            "is_prunable": false,
+            "label": "repo",
+            "open_workspace_id": "w4",
+            "path": "/private/tmp/yz-fe-9onT8g/dirty-worktree"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-12",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "worktree.remove",
+                  "params": {
+                    "workspace_id": "w4",
+                    "force": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-12",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "error",
+        "code": "dirty_worktree_requires_force",
+        "message": "dirty_worktree_requires_force: fatal: '/private/tmp/yz-fe-9onT8g/dirty-worktree' contains modified or untracked files, use --force to delete it"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-13",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "worktree.remove",
+                  "params": {
+                    "workspace_id": "w4",
+                    "force": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-13",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "forced": true,
+          "path": "/private/tmp/yz-fe-9onT8g/dirty-worktree",
+          "type": "worktree_removed",
+          "workspace_id": "w4"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-14",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_pane_split",
+              "args": {
+                "sessionName": "feature-e2e",
+                "direction": "right",
+                "targetPaneId": "w1:p1",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focus": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-14",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "paneId": "w1:p2",
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b616872e5",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-15",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "pane.move",
+                  "params": {
+                    "pane_id": "w1:p2",
+                    "destination": {
+                      "type": "new_workspace",
+                      "label": "Moved E2E",
+                      "tab_label": "Destination"
+                    },
+                    "focus": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-15",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "move_result": {
+            "changed": true,
+            "created_tab": {
+              "agent_status": "unknown",
+              "focused": false,
+              "label": "Destination",
+              "number": 1,
+              "pane_count": 1,
+              "tab_id": "w5:t1",
+              "workspace_id": "w5"
+            },
+            "created_workspace": {
+              "active_tab_id": "w5:t1",
+              "agent_status": "unknown",
+              "focused": false,
+              "label": "Moved E2E",
+              "number": 2,
+              "pane_count": 1,
+              "tab_count": 1,
+              "workspace_id": "w5"
+            },
+            "focused_pane_id": "w5:p1",
+            "pane": {
+              "agent_status": "unknown",
+              "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+              "focused": false,
+              "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+              "pane_id": "w5:p1",
+              "revision": 0,
+              "scroll": {
+                "max_offset_from_bottom": 0,
+                "offset_from_bottom": 0,
+                "viewport_rows": 40
+              },
+              "tab_id": "w5:t1",
+              "terminal_id": "term_65c15b616872e5",
+              "workspace_id": "w5"
+            },
+            "previous_pane_id": "w1:p2",
+            "previous_tab_id": "w1:t1",
+            "previous_workspace_id": "w1",
+            "source_layout": {
+              "area": {
+                "height": 40,
+                "width": 120,
+                "x": 0,
+                "y": 0
+              },
+              "focused_pane_id": "w1:p1",
+              "panes": [
+                {
+                  "focused": true,
+                  "pane_id": "w1:p1",
+                  "rect": {
+                    "height": 40,
+                    "width": 120,
+                    "x": 0,
+                    "y": 0
+                  }
+                }
+              ],
+              "splits": [],
+              "tab_id": "w1:t1",
+              "workspace_id": "w1",
+              "zoomed": false
+            },
+            "target_layout": {
+              "area": {
+                "height": 40,
+                "width": 120,
+                "x": 0,
+                "y": 0
+              },
+              "focused_pane_id": "w5:p1",
+              "panes": [
+                {
+                  "focused": true,
+                  "pane_id": "w5:p1",
+                  "rect": {
+                    "height": 40,
+                    "width": 120,
+                    "x": 0,
+                    "y": 0
+                  }
+                }
+              ],
+              "splits": [],
+              "tab_id": "w5:t1",
+              "workspace_id": "w5",
+              "zoomed": false
+            }
+          },
+          "type": "pane_move"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-16",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_snapshot",
+              "args": {
+                "sessionName": "feature-e2e"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-16",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "protocol": 22,
+          "snapshot": {
+            "agents": [],
+            "focused_pane_id": "w1:p1",
+            "focused_tab_id": "w1:t1",
+            "focused_workspace_id": "w1",
+            "layouts": [
+              {
+                "area": {
+                  "height": 40,
+                  "width": 120,
+                  "x": 0,
+                  "y": 0
+                },
+                "focused_pane_id": "w1:p1",
+                "panes": [
+                  {
+                    "focused": true,
+                    "pane_id": "w1:p1",
+                    "rect": {
+                      "height": 40,
+                      "width": 120,
+                      "x": 0,
+                      "y": 0
+                    }
+                  }
+                ],
+                "splits": [],
+                "tab_id": "w1:t1",
+                "workspace_id": "w1",
+                "zoomed": false
+              },
+              {
+                "area": {
+                  "height": 40,
+                  "width": 120,
+                  "x": 0,
+                  "y": 0
+                },
+                "focused_pane_id": "w5:p1",
+                "panes": [
+                  {
+                    "focused": true,
+                    "pane_id": "w5:p1",
+                    "rect": {
+                      "height": 40,
+                      "width": 120,
+                      "x": 0,
+                      "y": 0
+                    }
+                  }
+                ],
+                "splits": [],
+                "tab_id": "w5:t1",
+                "workspace_id": "w5",
+                "zoomed": false
+              }
+            ],
+            "panes": [
+              {
+                "agent_status": "unknown",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focused": true,
+                "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "pane_id": "w1:p1",
+                "revision": 0,
+                "scroll": {
+                  "max_offset_from_bottom": 0,
+                  "offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "tab_id": "w1:t1",
+                "terminal_id": "term_65c15b60c70bd1",
+                "workspace_id": "w1"
+              },
+              {
+                "agent_status": "unknown",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focused": false,
+                "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "pane_id": "w5:p1",
+                "revision": 0,
+                "scroll": {
+                  "max_offset_from_bottom": 0,
+                  "offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "tab_id": "w5:t1",
+                "terminal_id": "term_65c15b616872e5",
+                "workspace_id": "w5"
+              }
+            ],
+            "protocol": 22,
+            "tabs": [
+              {
+                "agent_status": "unknown",
+                "focused": true,
+                "label": "1",
+                "number": 1,
+                "pane_count": 1,
+                "tab_id": "w1:t1",
+                "workspace_id": "w1"
+              },
+              {
+                "agent_status": "unknown",
+                "focused": false,
+                "label": "Destination",
+                "number": 1,
+                "pane_count": 1,
+                "tab_id": "w5:t1",
+                "workspace_id": "w5"
+              }
+            ],
+            "version": "0.9.1",
+            "workspaces": [
+              {
+                "active_tab_id": "w1:t1",
+                "agent_status": "unknown",
+                "focused": true,
+                "label": "Management E2E",
+                "number": 1,
+                "pane_count": 1,
+                "tab_count": 1,
+                "workspace_id": "w1",
+                "worktree": {
+                  "checkout_path": "/private/tmp/yz-fe-9onT8g/repo",
+                  "is_linked_worktree": false,
+                  "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+                  "repo_name": "repo",
+                  "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+                }
+              },
+              {
+                "active_tab_id": "w5:t1",
+                "agent_status": "unknown",
+                "focused": false,
+                "label": "Moved E2E",
+                "number": 2,
+                "pane_count": 1,
+                "tab_count": 1,
+                "workspace_id": "w5"
+              }
+            ]
+          },
+          "version": "0.9.1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-17",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "pane.move",
+                  "params": {
+                    "pane_id": "w5:p1",
+                    "destination": {
+                      "type": "tab",
+                      "tab_id": "w1:t1",
+                      "target_pane_id": "w1:p1",
+                      "split": "right"
+                    },
+                    "focus": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-17",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "move_result": {
+            "changed": true,
+            "closed_tab_id": "w5:t1",
+            "closed_workspace_id": "w5",
+            "focused_pane_id": "w1:p1",
+            "pane": {
+              "agent_status": "unknown",
+              "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+              "focused": false,
+              "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+              "pane_id": "w1:p3",
+              "revision": 0,
+              "scroll": {
+                "max_offset_from_bottom": 0,
+                "offset_from_bottom": 0,
+                "viewport_rows": 40
+              },
+              "tab_id": "w1:t1",
+              "terminal_id": "term_65c15b616872e5",
+              "workspace_id": "w1"
+            },
+            "previous_pane_id": "w5:p1",
+            "previous_tab_id": "w5:t1",
+            "previous_workspace_id": "w5",
+            "target_layout": {
+              "area": {
+                "height": 40,
+                "width": 120,
+                "x": 0,
+                "y": 0
+              },
+              "focused_pane_id": "w1:p1",
+              "panes": [
+                {
+                  "focused": true,
+                  "pane_id": "w1:p1",
+                  "rect": {
+                    "height": 40,
+                    "width": 60,
+                    "x": 0,
+                    "y": 0
+                  }
+                },
+                {
+                  "focused": false,
+                  "pane_id": "w1:p3",
+                  "rect": {
+                    "height": 40,
+                    "width": 60,
+                    "x": 60,
+                    "y": 0
+                  }
+                }
+              ],
+              "splits": [
+                {
+                  "direction": "right",
+                  "id": "split_0_root",
+                  "ratio": 0.5,
+                  "rect": {
+                    "height": 40,
+                    "width": 120,
+                    "x": 0,
+                    "y": 0
+                  }
+                }
+              ],
+              "tab_id": "w1:t1",
+              "workspace_id": "w1",
+              "zoomed": false
+            }
+          },
+          "type": "pane_move"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-18",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "pane.move",
+                  "params": {
+                    "pane_id": "w1:p3",
+                    "destination": {
+                      "type": "new_tab",
+                      "workspace_id": "w1",
+                      "label": "Moved new tab"
+                    },
+                    "focus": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-18",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "move_result": {
+            "changed": true,
+            "created_tab": {
+              "agent_status": "unknown",
+              "focused": false,
+              "label": "Moved new tab",
+              "number": 2,
+              "pane_count": 1,
+              "tab_id": "w1:t2",
+              "workspace_id": "w1"
+            },
+            "focused_pane_id": "w1:p3",
+            "pane": {
+              "agent_status": "unknown",
+              "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+              "focused": false,
+              "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+              "pane_id": "w1:p3",
+              "revision": 0,
+              "scroll": {
+                "max_offset_from_bottom": 0,
+                "offset_from_bottom": 0,
+                "viewport_rows": 40
+              },
+              "tab_id": "w1:t2",
+              "terminal_id": "term_65c15b616872e5",
+              "workspace_id": "w1"
+            },
+            "previous_pane_id": "w1:p3",
+            "previous_tab_id": "w1:t1",
+            "previous_workspace_id": "w1",
+            "source_layout": {
+              "area": {
+                "height": 40,
+                "width": 120,
+                "x": 0,
+                "y": 0
+              },
+              "focused_pane_id": "w1:p1",
+              "panes": [
+                {
+                  "focused": true,
+                  "pane_id": "w1:p1",
+                  "rect": {
+                    "height": 40,
+                    "width": 120,
+                    "x": 0,
+                    "y": 0
+                  }
+                }
+              ],
+              "splits": [],
+              "tab_id": "w1:t1",
+              "workspace_id": "w1",
+              "zoomed": false
+            },
+            "target_layout": {
+              "area": {
+                "height": 40,
+                "width": 120,
+                "x": 0,
+                "y": 0
+              },
+              "focused_pane_id": "w1:p3",
+              "panes": [
+                {
+                  "focused": true,
+                  "pane_id": "w1:p3",
+                  "rect": {
+                    "height": 40,
+                    "width": 120,
+                    "x": 0,
+                    "y": 0
+                  }
+                }
+              ],
+              "splits": [],
+              "tab_id": "w1:t2",
+              "workspace_id": "w1",
+              "zoomed": false
+            }
+          },
+          "type": "pane_move"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-19",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-19",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": false,
+              "command": "claude",
+              "label": "claude",
+              "state": "not_installed",
+              "target": "claude"
+            },
+            {
+              "available": false,
+              "command": "codex",
+              "label": "codex",
+              "state": "not_installed",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "integrations": {
+        "integrations": [
+          {
+            "available": true,
+            "command": "pi",
+            "label": "pi",
+            "state": "not_installed",
+            "target": "pi"
+          },
+          {
+            "available": false,
+            "command": "omp",
+            "label": "omp",
+            "state": "not_installed",
+            "target": "omp"
+          },
+          {
+            "available": false,
+            "command": "claude",
+            "label": "claude",
+            "state": "not_installed",
+            "target": "claude"
+          },
+          {
+            "available": false,
+            "command": "codex",
+            "label": "codex",
+            "state": "not_installed",
+            "target": "codex"
+          },
+          {
+            "available": false,
+            "command": "copilot",
+            "label": "copilot",
+            "state": "not_installed",
+            "target": "copilot"
+          },
+          {
+            "available": false,
+            "command": "devin",
+            "label": "devin",
+            "state": "not_installed",
+            "target": "devin"
+          },
+          {
+            "available": false,
+            "command": "droid",
+            "label": "droid",
+            "state": "not_installed",
+            "target": "droid"
+          },
+          {
+            "available": false,
+            "command": "kimi",
+            "label": "kimi",
+            "state": "not_installed",
+            "target": "kimi"
+          },
+          {
+            "available": false,
+            "command": "opencode",
+            "label": "opencode",
+            "state": "not_installed",
+            "target": "opencode"
+          },
+          {
+            "available": false,
+            "command": "kilo",
+            "label": "kilo",
+            "state": "not_installed",
+            "target": "kilo"
+          },
+          {
+            "available": false,
+            "command": "hermes",
+            "label": "hermes",
+            "state": "not_installed",
+            "target": "hermes"
+          },
+          {
+            "available": false,
+            "command": "qodercli",
+            "label": "qodercli",
+            "state": "not_installed",
+            "target": "qodercli"
+          },
+          {
+            "available": false,
+            "command": "qwen",
+            "label": "qwen",
+            "state": "not_installed",
+            "target": "qwen"
+          },
+          {
+            "available": false,
+            "command": "cursor-agent",
+            "label": "cursor",
+            "state": "not_installed",
+            "target": "cursor"
+          },
+          {
+            "available": false,
+            "command": "mastracode",
+            "label": "mastracode",
+            "state": "not_installed",
+            "target": "mastracode"
+          },
+          {
+            "available": false,
+            "command": "agy",
+            "label": "antigravity-cli",
+            "state": "not_installed",
+            "target": "antigravity_cli"
+          },
+          {
+            "available": false,
+            "command": "grok",
+            "label": "grok",
+            "state": "not_installed",
+            "target": "grok"
+          }
+        ],
+        "type": "integration_list"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-20",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.install",
+                  "params": {
+                    "target": "claude"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-20",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "details": {
+            "messages": [
+              "installed claude integration hook to /private/tmp/yz-fe-9onT8g/home/.claude/hooks/herdr-agent-state.sh",
+              "ensured claude settings at /private/tmp/yz-fe-9onT8g/home/.claude/settings.json"
+            ]
+          },
+          "target": "claude",
+          "type": "integration_install"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-21",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-21",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": true,
+              "command": "claude",
+              "label": "claude",
+              "state": "current",
+              "target": "claude"
+            },
+            {
+              "available": false,
+              "command": "codex",
+              "label": "codex",
+              "state": "not_installed",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-22",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-22",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": true,
+              "command": "claude",
+              "label": "claude",
+              "state": "outdated",
+              "target": "claude"
+            },
+            {
+              "available": false,
+              "command": "codex",
+              "label": "codex",
+              "state": "not_installed",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-23",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.install",
+                  "params": {
+                    "target": "claude"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-23",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "details": {
+            "messages": [
+              "installed claude integration hook to /private/tmp/yz-fe-9onT8g/home/.claude/hooks/herdr-agent-state.sh",
+              "ensured claude settings at /private/tmp/yz-fe-9onT8g/home/.claude/settings.json"
+            ]
+          },
+          "target": "claude",
+          "type": "integration_install"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-24",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-24",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": true,
+              "command": "claude",
+              "label": "claude",
+              "state": "current",
+              "target": "claude"
+            },
+            {
+              "available": false,
+              "command": "codex",
+              "label": "codex",
+              "state": "not_installed",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-25",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.uninstall",
+                  "params": {
+                    "target": "claude"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-25",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "details": {
+            "messages": [
+              "removed claude hook at /private/tmp/yz-fe-9onT8g/home/.claude/hooks/herdr-agent-state.sh",
+              "removed herdr claude hook entries from /private/tmp/yz-fe-9onT8g/home/.claude/settings.json"
+            ]
+          },
+          "target": "claude",
+          "type": "integration_uninstall"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-26",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-26",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": false,
+              "command": "claude",
+              "label": "claude",
+              "state": "not_installed",
+              "target": "claude"
+            },
+            {
+              "available": false,
+              "command": "codex",
+              "label": "codex",
+              "state": "not_installed",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-27",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.install",
+                  "params": {
+                    "target": "codex"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-27",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "details": {
+            "messages": [
+              "installed codex integration hook to /private/tmp/yz-fe-9onT8g/home/.codex/herdr-agent-state.sh",
+              "ensured codex hooks at /private/tmp/yz-fe-9onT8g/home/.codex/hooks.json",
+              "ensured codex config at /private/tmp/yz-fe-9onT8g/home/.codex/config.toml"
+            ]
+          },
+          "target": "codex",
+          "type": "integration_install"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-28",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-28",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": false,
+              "command": "claude",
+              "label": "claude",
+              "state": "not_installed",
+              "target": "claude"
+            },
+            {
+              "available": true,
+              "command": "codex",
+              "label": "codex",
+              "state": "current",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-29",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-29",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": false,
+              "command": "claude",
+              "label": "claude",
+              "state": "not_installed",
+              "target": "claude"
+            },
+            {
+              "available": true,
+              "command": "codex",
+              "label": "codex",
+              "state": "outdated",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-30",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.install",
+                  "params": {
+                    "target": "codex"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-30",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "details": {
+            "messages": [
+              "installed codex integration hook to /private/tmp/yz-fe-9onT8g/home/.codex/herdr-agent-state.sh",
+              "ensured codex hooks at /private/tmp/yz-fe-9onT8g/home/.codex/hooks.json",
+              "ensured codex config at /private/tmp/yz-fe-9onT8g/home/.codex/config.toml"
+            ]
+          },
+          "target": "codex",
+          "type": "integration_install"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-31",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-31",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": false,
+              "command": "claude",
+              "label": "claude",
+              "state": "not_installed",
+              "target": "claude"
+            },
+            {
+              "available": true,
+              "command": "codex",
+              "label": "codex",
+              "state": "current",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-32",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.uninstall",
+                  "params": {
+                    "target": "codex"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-32",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "details": {
+            "messages": [
+              "removed codex hook at /private/tmp/yz-fe-9onT8g/home/.codex/herdr-agent-state.sh",
+              "removed herdr codex hook entries from /private/tmp/yz-fe-9onT8g/home/.codex/hooks.json",
+              "left codex config unchanged at /private/tmp/yz-fe-9onT8g/home/.codex/config.toml"
+            ]
+          },
+          "target": "codex",
+          "type": "integration_uninstall"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-33",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "integration.list",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-33",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "integrations": [
+            {
+              "available": true,
+              "command": "pi",
+              "label": "pi",
+              "state": "not_installed",
+              "target": "pi"
+            },
+            {
+              "available": false,
+              "command": "omp",
+              "label": "omp",
+              "state": "not_installed",
+              "target": "omp"
+            },
+            {
+              "available": false,
+              "command": "claude",
+              "label": "claude",
+              "state": "not_installed",
+              "target": "claude"
+            },
+            {
+              "available": false,
+              "command": "codex",
+              "label": "codex",
+              "state": "not_installed",
+              "target": "codex"
+            },
+            {
+              "available": false,
+              "command": "copilot",
+              "label": "copilot",
+              "state": "not_installed",
+              "target": "copilot"
+            },
+            {
+              "available": false,
+              "command": "devin",
+              "label": "devin",
+              "state": "not_installed",
+              "target": "devin"
+            },
+            {
+              "available": false,
+              "command": "droid",
+              "label": "droid",
+              "state": "not_installed",
+              "target": "droid"
+            },
+            {
+              "available": false,
+              "command": "kimi",
+              "label": "kimi",
+              "state": "not_installed",
+              "target": "kimi"
+            },
+            {
+              "available": false,
+              "command": "opencode",
+              "label": "opencode",
+              "state": "not_installed",
+              "target": "opencode"
+            },
+            {
+              "available": false,
+              "command": "kilo",
+              "label": "kilo",
+              "state": "not_installed",
+              "target": "kilo"
+            },
+            {
+              "available": false,
+              "command": "hermes",
+              "label": "hermes",
+              "state": "not_installed",
+              "target": "hermes"
+            },
+            {
+              "available": false,
+              "command": "qodercli",
+              "label": "qodercli",
+              "state": "not_installed",
+              "target": "qodercli"
+            },
+            {
+              "available": false,
+              "command": "qwen",
+              "label": "qwen",
+              "state": "not_installed",
+              "target": "qwen"
+            },
+            {
+              "available": false,
+              "command": "cursor-agent",
+              "label": "cursor",
+              "state": "not_installed",
+              "target": "cursor"
+            },
+            {
+              "available": false,
+              "command": "mastracode",
+              "label": "mastracode",
+              "state": "not_installed",
+              "target": "mastracode"
+            },
+            {
+              "available": false,
+              "command": "agy",
+              "label": "antigravity-cli",
+              "state": "not_installed",
+              "target": "antigravity_cli"
+            },
+            {
+              "available": false,
+              "command": "grok",
+              "label": "grok",
+              "state": "not_installed",
+              "target": "grok"
+            }
+          ],
+          "type": "integration_list"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-34",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.start",
+                  "params": {
+                    "pane_id": "w1:p1",
+                    "name": "e2e-agent",
+                    "kind": "pi",
+                    "args": [],
+                    "timeout_ms": 8000
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-34",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": {
+            "agent_status": "unknown",
+            "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "focused": true,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "launch_pending": true,
+            "name": "e2e-agent",
+            "pane_id": "w1:p1",
+            "revision": 0,
+            "state_change_seq": 0,
+            "tab_id": "w1:t1",
+            "terminal_id": "term_65c15b60c70bd1",
+            "workspace_id": "w1"
+          },
+          "argv": [
+            "pi"
+          ],
+          "type": "agent_started"
+        }
+      }
+    },
+    {
+      "startedAgent": {
+        "agent": {
+          "agent_status": "unknown",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "focused": true,
+          "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "launch_pending": true,
+          "name": "e2e-agent",
+          "pane_id": "w1:p1",
+          "revision": 0,
+          "state_change_seq": 0,
+          "tab_id": "w1:t1",
+          "terminal_id": "term_65c15b60c70bd1",
+          "workspace_id": "w1"
+        },
+        "argv": [
+          "pi"
+        ],
+        "type": "agent_started"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-35",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-35",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": null,
+          "agentStatus": "unknown",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": null,
+        "agentStatus": "unknown",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-36",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-36",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": null,
+          "agentStatus": "unknown",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": null,
+        "agentStatus": "unknown",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-37",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-37",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": null,
+          "agentStatus": "unknown",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": null,
+        "agentStatus": "unknown",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-38",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-38",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-39",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-39",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-40",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-40",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-41",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-41",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-42",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-42",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-43",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-43",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-44",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-44",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-45",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-45",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-46",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-46",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-47",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-47",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-48",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-48",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-49",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-49",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-50",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-50",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-51",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-51",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-52",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-52",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-53",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-53",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-54",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-54",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-55",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-55",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-56",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-56",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": null,
+          "launchPending": true,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": null,
+        "launchPending": true,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-57",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-57",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": true,
+          "launchPending": null,
+          "name": "e2e-agent",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "readiness": {
+        "agent": "pi",
+        "agentStatus": "idle",
+        "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "displayAgent": null,
+        "focused": true,
+        "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+        "interactiveReady": true,
+        "launchPending": null,
+        "name": "e2e-agent",
+        "paneId": "w1:p1",
+        "revision": 0,
+        "stateLabels": {},
+        "tabId": "w1:t1",
+        "terminalId": "term_65c15b60c70bd1",
+        "title": null,
+        "workspaceId": "w1"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-58",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.wait",
+                  "params": {
+                    "target": "e2e-agent",
+                    "until": [
+                      "idle",
+                      "done"
+                    ],
+                    "timeout_ms": 8000
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-58",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": {
+            "agent": "pi",
+            "agent_status": "idle",
+            "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "focused": true,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "interactive_ready": true,
+            "name": "e2e-agent",
+            "pane_id": "w1:p1",
+            "revision": 0,
+            "state_change_seq": 1,
+            "tab_id": "w1:t1",
+            "terminal_id": "term_65c15b60c70bd1",
+            "workspace_id": "w1"
+          },
+          "type": "agent_info"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-59",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.prompt",
+                  "params": {
+                    "target": "e2e-agent",
+                    "text": "E2E prompt with 中文",
+                    "wait": {
+                      "until": [
+                        "idle",
+                        "done"
+                      ],
+                      "timeout_ms": 8000
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-59",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": {
+            "agent": "pi",
+            "agent_status": "idle",
+            "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "focused": true,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "interactive_ready": true,
+            "name": "e2e-agent",
+            "pane_id": "w1:p1",
+            "revision": 0,
+            "state_change_seq": 3,
+            "tab_id": "w1:t1",
+            "terminal_id": "term_65c15b60c70bd1",
+            "workspace_id": "w1"
+          },
+          "type": "agent_prompted"
+        }
+      }
+    },
+    {
+      "prompted": {
+        "agent": {
+          "agent": "pi",
+          "agent_status": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "focused": true,
+          "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactive_ready": true,
+          "name": "e2e-agent",
+          "pane_id": "w1:p1",
+          "revision": 0,
+          "state_change_seq": 3,
+          "tab_id": "w1:t1",
+          "terminal_id": "term_65c15b60c70bd1",
+          "workspace_id": "w1"
+        },
+        "type": "agent_prompted"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-60",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.rename",
+                  "params": {
+                    "target": "e2e-agent",
+                    "name": "e2e-renamed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-60",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": {
+            "agent": "pi",
+            "agent_status": "idle",
+            "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "focused": true,
+            "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+            "interactive_ready": true,
+            "name": "e2e-renamed",
+            "pane_id": "w1:p1",
+            "revision": 0,
+            "state_change_seq": 3,
+            "tab_id": "w1:t1",
+            "terminal_id": "term_65c15b60c70bd1",
+            "workspace_id": "w1"
+          },
+          "type": "agent_info"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-61",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.explain",
+                  "params": {
+                    "target": "e2e-renamed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-61",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "explain": {
+            "agent": "pi",
+            "cached_remote_version": null,
+            "evaluated_rules": [
+              {
+                "evidence": {
+                  "all_count": 0,
+                  "any_count": 0,
+                  "contains": [
+                    "Working..."
+                  ],
+                  "line_regex": [],
+                  "not_count": 0,
+                  "regex": [],
+                  "region_bytes": 34,
+                  "region_preview": "sh-3.2$ pi\nE2E prompt with 中文\n"
+                },
+                "id": "working_literal",
+                "matched": false,
+                "priority": 100,
+                "region": "whole_recent",
+                "state": "working"
+              },
+              {
+                "evidence": {
+                  "all_count": 0,
+                  "any_count": 0,
+                  "contains": [],
+                  "line_regex": [
+                    "^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$"
+                  ],
+                  "not_count": 0,
+                  "regex": [],
+                  "region_bytes": 34,
+                  "region_preview": "sh-3.2$ pi\nE2E prompt with 中文\n"
+                },
+                "id": "working_border",
+                "matched": false,
+                "priority": 100,
+                "region": "bottom_non_empty_lines(12)",
+                "state": "working"
+              }
+            ],
+            "fallback_reason": "default_known_agent_idle_fallback",
+            "local_override_shadowing_remote": false,
+            "manifest_source": "bundled",
+            "manifest_version": "2026.09.14.1",
+            "matched_rule": null,
+            "remote_update_error": null,
+            "remote_update_status": null,
+            "screen_detection_skipped": false,
+            "skip_state_update": false,
+            "skipped_update_reason": null,
+            "state": "idle",
+            "visible_blocker": false,
+            "visible_idle": false,
+            "visible_working": false,
+            "warning": null
+          },
+          "type": "agent_explain"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-62",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.send_keys",
+                  "params": {
+                    "target": "e2e-renamed",
+                    "keys": [
+                      "ctrl+c"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-62",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "type": "ok"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-63",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-63",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": true,
+          "launchPending": null,
+          "name": "e2e-renamed",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-64",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-64",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": "pi",
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": true,
+          "launchPending": null,
+          "name": "e2e-renamed",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-65",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-65",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "agent": null,
+          "agentStatus": "idle",
+          "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "displayAgent": null,
+          "focused": true,
+          "foregroundCwd": "/private/tmp/yz-fe-9onT8g/repo",
+          "interactiveReady": true,
+          "launchPending": null,
+          "name": "e2e-renamed",
+          "paneId": "w1:p1",
+          "revision": 0,
+          "stateLabels": {},
+          "tabId": "w1:t1",
+          "terminalId": "term_65c15b60c70bd1",
+          "title": null,
+          "workspaceId": "w1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-66",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_agent_get",
+              "args": {
+                "sessionName": "feature-e2e",
+                "target": "w1:p1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-66",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "error",
+        "code": "agent_not_found",
+        "message": "agent_not_found: agent target w1:p1 not found"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-67",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_snapshot",
+              "args": {
+                "sessionName": "feature-e2e"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-67",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "protocol": 22,
+          "snapshot": {
+            "agents": [],
+            "focused_pane_id": "w1:p1",
+            "focused_tab_id": "w1:t1",
+            "focused_workspace_id": "w1",
+            "layouts": [
+              {
+                "area": {
+                  "height": 40,
+                  "width": 120,
+                  "x": 0,
+                  "y": 0
+                },
+                "focused_pane_id": "w1:p1",
+                "panes": [
+                  {
+                    "focused": true,
+                    "pane_id": "w1:p1",
+                    "rect": {
+                      "height": 40,
+                      "width": 120,
+                      "x": 0,
+                      "y": 0
+                    }
+                  }
+                ],
+                "splits": [],
+                "tab_id": "w1:t1",
+                "workspace_id": "w1",
+                "zoomed": false
+              },
+              {
+                "area": {
+                  "height": 40,
+                  "width": 120,
+                  "x": 0,
+                  "y": 0
+                },
+                "focused_pane_id": "w1:p3",
+                "panes": [
+                  {
+                    "focused": true,
+                    "pane_id": "w1:p3",
+                    "rect": {
+                      "height": 40,
+                      "width": 120,
+                      "x": 0,
+                      "y": 0
+                    }
+                  }
+                ],
+                "splits": [],
+                "tab_id": "w1:t2",
+                "workspace_id": "w1",
+                "zoomed": false
+              }
+            ],
+            "panes": [
+              {
+                "agent_status": "unknown",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focused": true,
+                "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "pane_id": "w1:p1",
+                "revision": 0,
+                "scroll": {
+                  "max_offset_from_bottom": 0,
+                  "offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "tab_id": "w1:t1",
+                "terminal_id": "term_65c15b60c70bd1",
+                "workspace_id": "w1"
+              },
+              {
+                "agent_status": "unknown",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focused": false,
+                "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "pane_id": "w1:p3",
+                "revision": 0,
+                "scroll": {
+                  "max_offset_from_bottom": 0,
+                  "offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "tab_id": "w1:t2",
+                "terminal_id": "term_65c15b616872e5",
+                "workspace_id": "w1"
+              }
+            ],
+            "protocol": 22,
+            "tabs": [
+              {
+                "agent_status": "unknown",
+                "focused": true,
+                "label": "1",
+                "number": 1,
+                "pane_count": 1,
+                "tab_id": "w1:t1",
+                "workspace_id": "w1"
+              },
+              {
+                "agent_status": "unknown",
+                "focused": false,
+                "label": "Moved new tab",
+                "number": 2,
+                "pane_count": 1,
+                "tab_id": "w1:t2",
+                "workspace_id": "w1"
+              }
+            ],
+            "version": "0.9.1",
+            "workspaces": [
+              {
+                "active_tab_id": "w1:t1",
+                "agent_status": "unknown",
+                "focused": true,
+                "label": "Management E2E",
+                "number": 1,
+                "pane_count": 2,
+                "tab_count": 2,
+                "workspace_id": "w1",
+                "worktree": {
+                  "checkout_path": "/private/tmp/yz-fe-9onT8g/repo",
+                  "is_linked_worktree": false,
+                  "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+                  "repo_name": "repo",
+                  "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+                }
+              }
+            ]
+          },
+          "version": "0.9.1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-68",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.wait",
+                  "params": {
+                    "target": "absent-agent",
+                    "until": [],
+                    "timeout_ms": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-68",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "error",
+        "code": "agent-wait-timeout-out-of-range",
+        "message": "agent-wait-timeout-out-of-range"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-69",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "agent.explain",
+                  "params": {
+                    "target": "absent-agent"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-69",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "error",
+        "code": "agent_not_found",
+        "message": "agent_not_found: agent target absent-agent not found"
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-70",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "session.stop",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-70",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "session": {
+            "default": false,
+            "name": "feature-e2e",
+            "running": false,
+            "session_dir": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e",
+            "socket_path": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e/herdr.sock"
+          },
+          "stopped": true
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-71",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_sessions"
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-71",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": [
+          {
+            "default": true,
+            "name": "default",
+            "running": false,
+            "sessionDir": "/private/tmp/yz-fe-9onT8g/cfg/herdr",
+            "socketPath": "/private/tmp/yz-fe-9onT8g/cfg/herdr/herdr.sock"
+          },
+          {
+            "default": false,
+            "name": "feature-e2e",
+            "running": false,
+            "sessionDir": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e",
+            "socketPath": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e/herdr.sock"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-72",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "session.start",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-72",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "name": "feature-e2e",
+          "started": true
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-73",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_snapshot",
+              "args": {
+                "sessionName": "feature-e2e"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-73",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "protocol": 22,
+          "snapshot": {
+            "agents": [],
+            "focused_pane_id": "w1:p1",
+            "focused_tab_id": "w1:t1",
+            "focused_workspace_id": "w1",
+            "layouts": [
+              {
+                "area": {
+                  "height": 40,
+                  "width": 120,
+                  "x": 0,
+                  "y": 0
+                },
+                "focused_pane_id": "w1:p1",
+                "panes": [
+                  {
+                    "focused": true,
+                    "pane_id": "w1:p1",
+                    "rect": {
+                      "height": 40,
+                      "width": 120,
+                      "x": 0,
+                      "y": 0
+                    }
+                  }
+                ],
+                "splits": [],
+                "tab_id": "w1:t1",
+                "workspace_id": "w1",
+                "zoomed": false
+              },
+              {
+                "area": {
+                  "height": 40,
+                  "width": 120,
+                  "x": 0,
+                  "y": 0
+                },
+                "focused_pane_id": "w1:p3",
+                "panes": [
+                  {
+                    "focused": true,
+                    "pane_id": "w1:p3",
+                    "rect": {
+                      "height": 40,
+                      "width": 120,
+                      "x": 0,
+                      "y": 0
+                    }
+                  }
+                ],
+                "splits": [],
+                "tab_id": "w1:t2",
+                "workspace_id": "w1",
+                "zoomed": false
+              }
+            ],
+            "panes": [
+              {
+                "agent_status": "unknown",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focused": true,
+                "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "pane_id": "w1:p1",
+                "revision": 0,
+                "scroll": {
+                  "max_offset_from_bottom": 0,
+                  "offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "tab_id": "w1:t1",
+                "terminal_id": "term_65c15b6702aa21",
+                "workspace_id": "w1"
+              },
+              {
+                "agent_status": "unknown",
+                "cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "focused": false,
+                "foreground_cwd": "/private/tmp/yz-fe-9onT8g/repo",
+                "pane_id": "w1:p3",
+                "revision": 0,
+                "scroll": {
+                  "max_offset_from_bottom": 0,
+                  "offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "tab_id": "w1:t2",
+                "terminal_id": "term_65c15b670332a2",
+                "workspace_id": "w1"
+              }
+            ],
+            "protocol": 22,
+            "tabs": [
+              {
+                "agent_status": "unknown",
+                "focused": true,
+                "label": "1",
+                "number": 1,
+                "pane_count": 1,
+                "tab_id": "w1:t1",
+                "workspace_id": "w1"
+              },
+              {
+                "agent_status": "unknown",
+                "focused": false,
+                "label": "Moved new tab",
+                "number": 2,
+                "pane_count": 1,
+                "tab_id": "w1:t2",
+                "workspace_id": "w1"
+              }
+            ],
+            "version": "0.9.1",
+            "workspaces": [
+              {
+                "active_tab_id": "w1:t1",
+                "agent_status": "unknown",
+                "focused": true,
+                "label": "Management E2E",
+                "number": 1,
+                "pane_count": 2,
+                "tab_count": 2,
+                "workspace_id": "w1",
+                "worktree": {
+                  "checkout_path": "/private/tmp/yz-fe-9onT8g/repo",
+                  "is_linked_worktree": false,
+                  "repo_key": "/private/tmp/yz-fe-9onT8g/repo/.git",
+                  "repo_name": "repo",
+                  "repo_root": "/private/tmp/yz-fe-9onT8g/repo"
+                }
+              }
+            ]
+          },
+          "version": "0.9.1"
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-74",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "session.stop",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-74",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "session": {
+            "default": false,
+            "name": "feature-e2e",
+            "running": false,
+            "session_dir": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e",
+            "socket_path": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e/herdr.sock"
+          },
+          "stopped": true
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-75",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_feature",
+              "args": {
+                "sessionName": "feature-e2e",
+                "request": {
+                  "method": "session.delete",
+                  "params": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-75",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": {
+          "deleted": true,
+          "session": {
+            "default": false,
+            "name": "feature-e2e",
+            "running": false,
+            "session_dir": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e",
+            "socket_path": "/private/tmp/yz-fe-9onT8g/cfg/herdr/sessions/feature-e2e/herdr.sock"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "version": 1,
+        "id": "feature-76",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "operation": {
+          "method": "herdrCall",
+          "params": {
+            "binary": "<repo>/src-tauri/resources/herdr/macos-aarch64/herdr",
+            "call": {
+              "command": "herdr_sessions"
+            }
+          }
+        }
+      }
+    },
+    {
+      "response": {
+        "version": 1,
+        "id": "feature-76",
+        "owner": {
+          "hostId": "herdr-feature-e2e",
+          "generation": 1
+        },
+        "status": "ok",
+        "value": [
+          {
+            "default": true,
+            "name": "default",
+            "running": false,
+            "sessionDir": "/private/tmp/yz-fe-9onT8g/cfg/herdr",
+            "socketPath": "/private/tmp/yz-fe-9onT8g/cfg/herdr/herdr.sock"
+          }
+        ]
+      }
+    },
+    {
+      "cleanup": {
+        "session": "feature-e2e",
+        "running": false
+      }
+    }
+  ],
+  "hostError": ""
+}

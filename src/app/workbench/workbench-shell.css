@@ -58,16 +58,24 @@
 .workbench-main-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .workbench-mode-surface { display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
 .workbench-mode-surface[hidden],.workbench-tool-body[hidden],.workbench-database-surface[hidden] { display:none; }
-.workbench-database-surface { display:flex; flex:1; min-width:0; min-height:0; }
-.workbench-database-nav { display:flex; flex-direction:column; width:100%; height:100%; min-height:0; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--yz-glass); padding:12px; overflow:hidden; }
+/* Database mode is one continuous surface: explorer and console share a single
+   card, separated by a hairline resize handle instead of two floating cards. */
+.workbench-database-surface { --db-hover:color-mix(in oklab, var(--ink-0) 5%, transparent); --db-selected:color-mix(in oklab, var(--ink-0) 8.5%, transparent); display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--line-1); border-radius:var(--r-lg); background:var(--paper-0); box-shadow:var(--shadow-sm); }
+.workbench-database-nav { display:flex; flex-direction:column; width:100%; height:100%; min-height:0; overflow:hidden; background:var(--paper-1); }
 .workbench-database-main { display:flex; height:100%; min-width:0; min-height:0; flex-direction:column; }
-.workbench-database-resize { width:10px; flex-shrink:0; background:transparent; }
-.workbench-database-resize > div { width:3px; height:34px; background:var(--line-2); }
-.workbench-database-resize:hover > div,.workbench-database-resize:focus-visible > div { background:var(--ring); }
-/* Keep the database panels aligned with the workspace top without covering controls. */
+.workbench-database-resize { width:1px; flex-shrink:0; background:var(--line-1); transition:background-color var(--dur-fast); }
+.workbench-database-resize::after { width:9px; }
+.workbench-database-resize > div { opacity:0; width:3px; height:28px; border-radius:3px; background:var(--ink-4); transition:opacity var(--dur-fast); }
+.workbench-database-resize:hover,.workbench-database-resize:focus-visible,.workbench-database-resize[data-separator="active"] { background:var(--ring); }
+.workbench-database-resize:hover > div,.workbench-database-resize:focus-visible > div { opacity:1; }
+/* The explorer and console share one 44px top band; edge toggles float inside it. */
+.workbench-database-nav .database-nav-header { padding-left:calc(14px + var(--workbench-reveal-start)); transition:padding-left var(--workbench-sidebar-duration) var(--workbench-sidebar-ease); }
 .workbench-database-main .database-profile-header { height:44px; padding-right:calc(10px + var(--workbench-reveal-end)); }
-.workbench-body[data-left-collapsed="true"] .workbench-database-nav { padding-top:48px; }
-.workbench-body[data-native-lights="true"][data-left-collapsed="true"] .workbench-database-nav { padding-top:56px; }
+.workbench-database-main .database-split-handle { height:1px; background:var(--line-1); }
+.workbench-database-main .database-split-handle:hover,.workbench-database-main .database-split-handle:focus-visible,.workbench-database-main .database-split-handle[data-separator="active"] { background:var(--ring); }
+.workbench-database-main .database-editor .cm-editor { background:var(--paper-0); }
+.workbench-database-main .database-editor .cm-gutters { background:var(--paper-0); border-right:1px solid var(--line-1); }
+@media (prefers-reduced-motion: reduce) { .workbench-database-resize,.workbench-database-resize > div,.workbench-database-nav .database-nav-header { transition:none; } }
 .workbench-resize-handle { display:flex; flex-shrink:0; align-items:center; justify-content:center; width:10px; min-width:0; overflow:hidden; touch-action:none; cursor:col-resize; transition:width var(--workbench-sidebar-duration) var(--workbench-sidebar-ease); }
 .workbench-resize-handle[data-collapsed="true"] { width:0; pointer-events:none; }
 .workbench-resize-handle > span { width:3px; height:34px; border-radius:3px; background:var(--line-2); }

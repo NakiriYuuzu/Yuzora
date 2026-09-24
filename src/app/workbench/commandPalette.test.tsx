@@ -436,3 +436,21 @@ it("workspace search sanitizes an extended Windows child path but reveals the ra
     expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: rawPath, line: 3 })
     vi.useRealTimers()
 })
+
+it("opens from Ctrl+K while a Windows terminal has focus", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    function ClosedHarness() {
+        const [open, setOpen] = useState(false)
+        return <CommandPalette open={open} onOpenChange={setOpen} onSelectMode={() => {}} onOpenSettings={() => {}} />
+    }
+    render(<ClosedHarness />)
+    const terminal = document.body.appendChild(document.createElement("div"))
+    terminal.className = "xterm"
+    const input = terminal.appendChild(document.createElement("textarea"))
+    const terminalKey = vi.fn()
+    input.addEventListener("keydown", terminalKey)
+    act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true, cancelable: true })) })
+    expect(await screen.findByRole("dialog")).toBeInTheDocument()
+    expect(terminalKey).not.toHaveBeenCalled()
+    terminal.remove()
+})

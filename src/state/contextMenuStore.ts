@@ -1,5 +1,6 @@
 import { revealPathInSystem } from "@/lib/revealPath"
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { copyTextWithFeedback } from "@/lib/clipboardFeedback"
 import type { EditorView } from "@codemirror/view"
 import type { MouseEvent as ReactMouseEvent } from "react"
 import { create } from "zustand"
@@ -485,12 +486,12 @@ export async function executeLegacyContextMenuAction(
     }
 
     if ((request.kind === "tab" || request.kind === "file") && actionId === "cmCopyRel") {
-        await writeText(relativeToWorkspace(request.path, request.workspacePath))
+        await copyTextWithFeedback(relativeToWorkspace(request.path, request.workspacePath))
         return CONTEXT_MENU_COMPLETED
     }
 
     if ((request.kind === "tab" || request.kind === "file" || request.kind === "editor") && actionId === "cmCopyFullPath") {
-        await writeText(workspacePathForDisplay(request.path))
+        await copyTextWithFeedback(workspacePathForDisplay(request.path))
         return CONTEXT_MENU_COMPLETED
     }
 
@@ -519,7 +520,7 @@ export async function executeLegacyContextMenuAction(
 
     if (request.kind === "explorer" && request.workspacePath) {
         if (actionId === "cmCopyPath") {
-            await writeText(workspacePathForDisplay(request.workspacePath))
+            await copyTextWithFeedback(workspacePathForDisplay(request.workspacePath))
             return CONTEXT_MENU_COMPLETED
         }
         if (actionId === "cmNewFile") return createEntry("file", request.workspacePath)
@@ -576,7 +577,7 @@ export async function executeLegacyContextMenuAction(
     ) {
         const branch = useGitStore.getState().status?.branch
         if (!branch) return CONTEXT_MENU_CANCELLED
-        await writeText(branch)
+        await copyTextWithFeedback(branch)
         return CONTEXT_MENU_COMPLETED
     }
     if (
@@ -586,14 +587,14 @@ export async function executeLegacyContextMenuAction(
     ) {
         const headOid = useGitStore.getState().status?.headOid
         if (!headOid) return CONTEXT_MENU_CANCELLED
-        await writeText(headOid)
+        await copyTextWithFeedback(headOid)
         return CONTEXT_MENU_COMPLETED
     }
 
     if (request.kind === "sshhost" && actionId === "cmCopyAddr") {
         const host = useSshStore.getState().hosts.find((candidate) => candidate.id === request.hostId)
         if (!host) return CONTEXT_MENU_CANCELLED
-        await writeText(`${host.user}@${host.host}:${host.port}`)
+        await copyTextWithFeedback(`${host.user}@${host.host}:${host.port}`)
         return CONTEXT_MENU_COMPLETED
     }
     if (request.kind === "sshhost" && actionId === "cmDisconnect") {
@@ -622,7 +623,7 @@ export async function executeLegacyContextMenuAction(
             (candidate) => candidate.id === request.descriptorId
         )
         if (!descriptor) return CONTEXT_MENU_CANCELLED
-        await writeText(savedConnectionAddress(descriptor))
+        await copyTextWithFeedback(savedConnectionAddress(descriptor))
         return CONTEXT_MENU_COMPLETED
     }
     if (request.kind === "dbconn" && actionId === "cmDisconnect") {

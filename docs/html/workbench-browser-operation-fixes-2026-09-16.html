@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora：頁籤、Browser 與操作修復｜2026-09-16</title>
+<style>body{font:16px/1.75 system-ui,sans-serif;color:#222;background:#faf9f6;max-width:980px;margin:48px auto;padding:0 24px}h1{font-size:28px;line-height:1.35}h2{font-size:21px;margin-top:32px}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:10px 12px;text-align:left;border:1px solid #d6d4cf;vertical-align:top}th{background:#eeede8}.pending{padding:16px 20px;border-left:4px solid #b97a22;background:#fff3dd}small{color:#666}</style>
+<main><h1>頁籤快捷鍵、Browser 升級與操作修復</h1><p><small>實作與驗證紀錄 · 2026-09-16</small></p>
+<p class="pending">這是 9 月 16 日的階段紀錄。使用者後續已授權原生 GUI／Browser／E2E，macOS HERDR、Terminal 與 HTML Browser 的驗證結果及最新檢查，請見 <a href="herdr-091-render-verification-2026-09-18.html">9 月 18 日驗證紀錄</a>。下方未驗收清單保留原始狀態；Git 原始症狀的桌面 StatusBar 重現與完整 WSL GUI watcher 驗證仍未完成。</p>
+<h2>Git 基準</h2><p>已依使用者授權，將 <code>release/v0.0.14</code> 合入本地 <code>main</code>，merge commit 為 <code>557d5cb</code>。包含剩餘部署文件提交 <code>2be8eee</code>，基於 <code>eaa716e</code>。本次功能實作未 stage、commit 或 push。原有未追蹤檔案 <code>docs/html/wsl-spaces-reorder-root-cause-2026-09-14.html</code> 保留。</p>
+<h2>實作內容</h2><table><thead><tr><th>項目</th><th>行為與邊界</th></tr></thead><tbody>
+<tr><td>頁籤快捷鍵</td><td>提供可設定的第 1～9 個頁籤與前後頁籤命令。macOS 預設 Cmd+1～9，Windows／Linux Ctrl+1～9；Ctrl+Tab／Ctrl+Shift+Tab 循環。依作用中分割區、目前 Session／Space、釘選優先的可見順序。第 9 鍵選第 9 個，缺少時無動作。HERDR 點選與快捷鍵共用啟用與失敗回復流程。</td></tr>
+<tr><td>Terminal 焦點</td><td>按目前頁籤及 active pane 的註冊身分取得 xterm。切回視窗與新建 Terminal 命名結束後恢复焦點；等待輸入面就緒，切頁、對話框及其他輸入欄位保留焦點。</td></tr>
+<tr><td>HTML 預覽</td><td>HTML／HTM 的檔案樹、檔案頁籤與編輯器右鍵提供「在此預覽」。沿用 Browser，預覽已存檔內容；同工作區成功存檔後 debounce 重載，保留手動重載。來源路徑與實際 capability URL 分離，工作區／Host 重連時重新取得資源權限。</td></tr>
+<tr><td>資源與桌面 Browser</td><td>原生 child webview 支援本機 capability、Host Runtime（WSL／SSH）及既有 SFTP backend。相對資源依 HTML 位置、根路徑依工作區解析。只讀 GET／HEAD，每檔上限 8 MiB；既有安全路徑邊界拒絕越界。遠端 localhost 仍由 Host tunnel 轉送。Browser 頁面無 App commands／plugin 權限。WebView2 明確轉換自訂協定載入位址。</td></tr>
+<tr><td>元素上下文</td><td>工具列可啟用選取外框，點選複製來源、selector、文字、HTML、尺寸及關鍵樣式；Esc 取消。支援同源 iframe、open shadow DOM；跨來源 iframe 以 iframe 本身選取。移除表單值與可編輯內容，輸出上限 32 KiB。本轮僅複製文字，不自動送 AI。</td></tr>
+<tr><td>Git 操作回報</td><td>僅針對忙碌型狀態讀取錯誤作有界重試；不重送提取、切分支、建立分支等寫入。操作成功與快照刷新失敗分開呈現，保留讀取重試與過期工作區請求防護。已透過真實 StatusBar／Popover 元件入口驗證，IPC 為測試替身；原始跨平台 GUI 故障尚未確認根因。</td></tr>
+<tr><td>WSL 存檔</td><td>確認 DrvFS 在 rename 時寫入 handle 尚未關閉，會讓後續 openat 暫時得到 ENOENT；磁碟實際已更新，但 Host 回傳 path-io-failed。修正為 sync 後先關閉寫入 handle，再檢查 revision、替換及重讀。另將同檔案並行遠端存檔序列化，保留更新的 dirty 狀態。</td></tr>
+</tbody></table>
+<h2>WSL 實機命令列證據</h2><p>在既有 Windows 主機的 Ubuntu-26.04 執行 v0.0.14 Host <code>--stdio</code>，新建中文與空白檔名後，/mnt/c 與 /mnt/d 第一筆 FilesWrite 回報 <code>path-io-failed</code>，直接讀磁碟確認內容已寫入；/home 對照組成功。獨立系統呼叫驗證顯示，關閉 scratch writer 前 openat 為 ENOENT，關閉後立即可讀。</p>
+<p>再由本次實際 Host <code>files.rs</code>、<code>path_capability.rs</code>、內容分類模組及新增回歸測試建立隔離的 Linux Rust 測試執行檔。前後版本只差 writer 的 <code>drop(file)</code>。每次測試均包含新建檔案、30 次存檔、磁碟位元組與回傳 revision 一致性、下一次存檔，以及外部修改衝突保護。</p>
+<table><thead><tr><th>位置</th><th>修正前</th><th>修正後</th></tr></thead><tbody><tr><td>/mnt/c</td><td>失敗，path-io-failed</td><td>通過</td></tr><tr><td>/mnt/d</td><td>失敗，path-io-failed</td><td>通過</td></tr><tr><td>/home</td><td>通過</td><td>通過</td></tr></tbody></table>
+<p>這是 Host 檔案模組於真實 DrvFS 的前後對照；尚未部署修改後的完整桌面程式，也未驗證 GUI watcher／提示時序。</p>
+<h2>自動檢查</h2><ul><li>Frontend 全套：236 個測試檔、2,826 項通過；後續小幅調整另跑受影響測試。</li><li>ESLint：0 errors、52 項既有 warnings；typecheck 通過；Vite build 通過（既有大 bundle 提示）。</li><li>Rust app 全套：381 通過、3 ignored；DB integration binary：1 通過、1 ignored。另新增資源 URL 測試通過。</li><li>Host full suite 通過（核心 378 項及其他測試套件均通過）；WSL 檔案模組另有上述實機矩陣。</li><li>cargo check --locked --all-targets、Rust 格式、git diff --check 通過。</li><li>clippy exact baseline：90 diagnostics 相符，未改 baseline。</li></ul>
+<h2>待授權的原生驗收</h2><ul><li>macOS／Windows 的 Browser 內快捷鍵及 Terminal 視窗切換、新建命名／取消、分割 pane 焦點。</li><li>WKWebView／WebView2 的 HTML 相對資源、根路徑、JS modules、字型、儲存更新、Host 斷線重連及越界拒絕。</li><li>元素外框、同源與跨來源 iframe、open shadow DOM、重新導覽和剪貼簿回饋。</li><li>從原生 StatusBar 重現使用者的提取／切分支／建立分支錯誤，核對 repository 真值及連續操作。</li><li>完整修改版桌面的 WSL 建檔、watcher 事件、dirty 與錯誤提示時序。</li></ul>
+<h2>文件</h2><p>已更新 <code>CLAUDE.md</code>、<code>.yuuzu/CONTEXT.html</code> 與 <code>.yuuzu/adr/0004-herdr-terminals-browser-only.html</code> 的 Browser 範圍。<code>.yuuzu/</code> 原本即被 Git 忽略，本次保留既有政策。專案 Dev Server 仍由使用者管理。</p></main></html>

@@ -732,11 +732,16 @@ impl WorkspaceTrustStore {
         temporary
             .persist(&self.path)
             .map_err(|error| TrustError::PersistFailed(error.error.to_string()))?;
-        let dir =
-            File::open(parent).map_err(|error| TrustError::PersistFailed(error.to_string()))?;
-        dir.sync_all().map_err(|error| {
-            TrustError::PersistFailed(format!("parent directory sync failed: {error}"))
-        })?;
+        // Windows cannot open a directory through `File::open`, and std has no
+        // portable directory fsync there; the file is synced before the replace.
+        #[cfg(unix)]
+        {
+            let dir =
+                File::open(parent).map_err(|error| TrustError::PersistFailed(error.to_string()))?;
+            dir.sync_all().map_err(|error| {
+                TrustError::PersistFailed(format!("parent directory sync failed: {error}"))
+            })?;
+        }
         Ok(())
     }
 }

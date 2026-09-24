@@ -203,6 +203,9 @@ it("migrates old managed paths while preserving explicitly installed and custom 
   const { selectionForHost } = await import("./hostStore")
   const directory = `/home/test/.local/share/yuzora/runtimes/0.0.9-beta.3-linux-x86_64-${"a".repeat(64)}`
   expect(selectionForHost({ ...config, binary: `${directory}/herdr`, helper: `${directory}/yuzora-host` })).toEqual({ source: "default" })
+  const windows = `C:/Users/中文/.local/share/yuzora/runtimes/0.0.16-windows-x86_64-${"a".repeat(64)}`
+  expect(selectionForHost({ ...config, binary: `${windows}/herdr.exe`, helper: `${windows}/yuzora-host.exe` })).toEqual({ source: "default" })
+  expect(selectionForHost({ ...config, binary: `${windows}/herdr.exe`.replaceAll("/", "\\"), helper: `${windows}/yuzora-host.exe`.replaceAll("/", "\\") })).toEqual({ source: "default" })
   expect(selectionForHost({ ...config, binary: "/usr/bin/herdr" })).toEqual({ source: "custom", customPath: "/usr/bin/herdr" })
   expect(selectionForHost({ ...config, selection: { source: "global" } })).toEqual({ source: "global" })
 })

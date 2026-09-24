@@ -1,6 +1,6 @@
 [package]
 name = "yuzora-host"
-version = "0.0.15"
+version = "0.0.16"
 edition = "2021"
 publish = false
 
@@ -34,6 +34,7 @@ webpki-roots = "1.0.8"
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+portable-pty = "0.9.0"
 
 [dev-dependencies]
 

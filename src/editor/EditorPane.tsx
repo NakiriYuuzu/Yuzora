@@ -8,6 +8,7 @@ import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
 import { getDocument, updateBuffer, documentGeneration } from "./documentRegistry"
 import { getView, registerView, unregisterView } from "./viewRegistry"
+import { editorViewStateTracker, restoreEditorViewState } from "./editorViewState"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
 import { saveFile } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
@@ -126,14 +127,21 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
             // change landing while the doc load awaited is honoured; the reactive
             // effects below then carry any later change into this live view.
             const editorSettings = useEditorSettingsStore.getState()
-            const state = EditorState.create({
+            const reveal = useWorkspaceStore.getState().pendingReveal
+            const revealPending = reveal?.path === path
+            let state = EditorState.create({
                 doc: content,
                 extensions: [
                     ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
-                    conflictMarkers()
+                    conflictMarkers(),
+                    editorViewStateTracker(workspacePath, path)
                 ]
             })
-            const view = new EditorView({ state, parent: containerRef.current! })
+            // Return to where this document was last left (tab, Space or
+            // workspace switch) unless a navigation asks for a specific line.
+            const restored = revealPending ? {} : restoreEditorViewState(workspacePath, path, state.doc)
+            if (restored.selection) state = state.update({ selection: restored.selection }).state
+            const view = new EditorView({ state, parent: containerRef.current!, scrollTo: restored.scrollTo })
             view.dom.style.setProperty("--yz-editor-font-size", `${editorSettings.fontSize}px`)
             viewRef.current = view
             registerView(path, view, {
@@ -141,8 +149,7 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
                 readonly: flags.readonly
             })
             onReady?.(view, save, (r.kind === "full" || r.kind === "limited") && r.lineEnding !== "mixed")
-            const reveal = useWorkspaceStore.getState().pendingReveal
-            if (reveal && reveal.path === path) {
+            if (reveal && revealPending) {
                 revealLine(view, reveal.line, reveal.focus ?? true)
                 useWorkspaceStore.getState().consumeReveal()
             }

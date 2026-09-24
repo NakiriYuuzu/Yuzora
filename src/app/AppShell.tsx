@@ -1,5 +1,5 @@
 import { bindingLabel, useKeyboardSettingsStore } from "@/state/keyboardSettingsStore"
-import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -39,6 +39,44 @@ import "./workbench/workbench-shell.css"
 const DEFAULT_NAV_WIDTH = 288
 const MIN_NAV_WIDTH = 256
 const MAX_NAV_WIDTH = 420
+const DEFAULT_TOOLS_WIDTH = 264
+const MIN_TOOLS_WIDTH = 224
+const MAX_TOOLS_WIDTH = 420
+
+// Sidebar widths and the user's explicit open/closed choices survive restarts.
+// Automatic narrow-window collapses are never written, so they can't stick.
+export const WORKBENCH_LAYOUT_STORAGE_KEY = "yuzora:workbench-layout"
+
+interface WorkbenchLayout {
+  navWidth: number
+  toolsWidth: number
+  navCollapsed: boolean
+  toolsOpen: boolean
+}
+
+function clampWidth(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : fallback
+}
+
+function loadWorkbenchLayout(): WorkbenchLayout {
+  let raw: Partial<Record<keyof WorkbenchLayout, unknown>> = {}
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_STORAGE_KEY) ?? "{}")
+    if (parsed && typeof parsed === "object") raw = parsed
+  } catch { /* Fall back to defaults. */ }
+  return {
+    navWidth: clampWidth(raw.navWidth, MIN_NAV_WIDTH, MAX_NAV_WIDTH, DEFAULT_NAV_WIDTH),
+    toolsWidth: clampWidth(raw.toolsWidth, MIN_TOOLS_WIDTH, MAX_TOOLS_WIDTH, DEFAULT_TOOLS_WIDTH),
+    navCollapsed: raw.navCollapsed === true,
+    toolsOpen: raw.toolsOpen !== false,
+  }
+}
+
+function saveWorkbenchLayout(patch: Partial<WorkbenchLayout>) {
+  try {
+    localStorage.setItem(WORKBENCH_LAYOUT_STORAGE_KEY, JSON.stringify({ ...loadWorkbenchLayout(), ...patch }))
+  } catch { /* Keep the session layout. */ }
+}
 
 // Below this window width the nav panel auto-collapses so the editor keeps a
 // usable width (VS Code-style progressive disclosure). Density never changes —
@@ -87,10 +125,12 @@ export function AppShell() {
   // bumps these nonces instead; the effects further down translate a change
   // into the same local-state update the rail button / ⌘K listener already do.
   const sidebarToggleRequest = useUiStore((s) => s.sidebarToggleRequest)
+  const toolsToggleRequest = useUiStore((s) => s.toolsToggleRequest)
   const paletteOpenRequest = useUiStore((s) => s.paletteOpenRequest)
-  const [navCollapsed, setNavCollapsed] = useState(false)
-  const [toolsOpen, setToolsOpen] = useState(() => window.innerWidth >= 1200)
-  const [toolsWidth, setToolsWidth] = useState(264)
+  const [initialLayout] = useState(loadWorkbenchLayout)
+  const [navCollapsed, setNavCollapsed] = useState(initialLayout.navCollapsed)
+  const [toolsOpen, setToolsOpen] = useState(() => initialLayout.toolsOpen && window.innerWidth >= 1200)
+  const [toolsWidth, setToolsWidth] = useState(initialLayout.toolsWidth)
   const [resizingSidebar, setResizingSidebar] = useState<"spaces" | "tools" | null>(null)
   const [checkoutTool, setCheckoutTool] = useState<WorkspaceTool>("files")
   const [databaseVisited, setDatabaseVisited] = useState(mode === "database")
@@ -100,11 +140,11 @@ export function AppShell() {
   const lastWorkMode = useRef<Mode>("ade")
   const toolsDragRef = useRef<{ x: number; width: number } | null>(null)
   const previousDualWidth = useRef(window.innerWidth >= 1200)
-  const toolsAutoCollapsed = useRef(window.innerWidth < 1200)
+  const toolsAutoCollapsed = useRef(initialLayout.toolsOpen && window.innerWidth < 1200)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appearance, setAppearance] = useState(loadAppearanceSettings)
   const { theme, accent, leftSidebarBackground, rightSidebarBackground, botAnimations } = appearance
-  const [navWidth, setNavWidth] = useState(DEFAULT_NAV_WIDTH)
+  const [navWidth, setNavWidth] = useState(initialLayout.navWidth)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   // Whether the current collapse was applied automatically (narrow window) vs.
   // by the user, and the last-seen narrow/wide side, so auto-collapse only fires
@@ -115,6 +155,7 @@ export function AppShell() {
   // current value so mount doesn't fire a spurious toggle/open (settingsNonce
   // pattern above uses the same idea via SettingsDialog's own sync effect).
   const sidebarToggleHandledRef = useRef(sidebarToggleRequest)
+  const toolsToggleHandledRef = useRef(toolsToggleRequest)
   const paletteOpenHandledRef = useRef(paletteOpenRequest)
   // The window starts hidden (tauri.conf `visible: false`) so the native
   // chrome never paints the OS theme before the persisted preference applies.
@@ -130,22 +171,26 @@ export function AppShell() {
   const toggleLeft = () => {
     navAutoCollapsedRef.current = false
     if (navCollapsed && window.innerWidth < 1200) setToolsOpen(false)
-    setNavCollapsed(value => !value)
+    saveWorkbenchLayout({ navCollapsed: !navCollapsed })
+    setNavCollapsed(!navCollapsed)
     leftToggleRef.current?.focus()
   }
   const toggleTools = () => {
     toolsAutoCollapsed.current = false
     if (mode === "database") {
       setMode("files")
+      saveWorkbenchLayout({ toolsOpen: true })
       setToolsOpen(true)
       if (window.innerWidth < 1200) setNavCollapsed(true)
       rightToggleRef.current?.focus()
       return
     }
     if (!toolsOpen && window.innerWidth < 1200) setNavCollapsed(true)
-    setToolsOpen(value => !value)
+    saveWorkbenchLayout({ toolsOpen: !toolsOpen })
+    setToolsOpen(!toolsOpen)
     rightToggleRef.current?.focus()
   }
+  const onToolsToggleRequest = useEffectEvent(toggleTools)
 
   useEffect(() => {
     const resize = () => {
@@ -267,8 +312,34 @@ export function AppShell() {
     sidebarToggleHandledRef.current = sidebarToggleRequest
     navAutoCollapsedRef.current = false
     leftToggleRef.current?.focus()
-    setNavCollapsed((collapsed) => !collapsed)
-  }, [sidebarToggleRequest])
+    // Persist outside the state updater so it stays pure; the handled-request
+    // guard keeps navCollapsed changes from re-running the toggle.
+    saveWorkbenchLayout({ navCollapsed: !navCollapsed })
+    setNavCollapsed(!navCollapsed)
+  }, [sidebarToggleRequest, navCollapsed])
+
+  // Spaces/Agents view shortcut: reveal a collapsed sidebar; never collapse it.
+  const navCollapsedRef = useRef(navCollapsed)
+  useEffect(() => { navCollapsedRef.current = navCollapsed }, [navCollapsed])
+  useEffect(() => useUiStore.subscribe((state, previous) => {
+    if (state.sidebarViewToggleRequest === previous.sidebarViewToggleRequest || !navCollapsedRef.current) return
+    navAutoCollapsedRef.current = false
+    saveWorkbenchLayout({ navCollapsed: false })
+    setNavCollapsed(false)
+  }), [])
+
+  // Keyboard shortcut / command palette → same effect as the right edge toggle.
+  useEffect(() => {
+    if (toolsToggleRequest === toolsToggleHandledRef.current) return
+    toolsToggleHandledRef.current = toolsToggleRequest
+    onToolsToggleRequest()
+  }, [toolsToggleRequest])
+
+  // Persist chosen widths once a drag settles (keyboard resizing saves at once).
+  useEffect(() => {
+    if (resizingSidebar) return
+    saveWorkbenchLayout({ navWidth, toolsWidth })
+  }, [navWidth, toolsWidth, resizingSidebar])
 
   // cmCmdPalette (context menu) → open the command palette, same as ⌘K.
   useEffect(() => {
@@ -415,7 +486,7 @@ export function AppShell() {
               <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("database")} aria-pressed={mode === "database"} onClick={() => handleModeChange(mode === "database" ? lastWorkMode.current : "database")}>
                 <Database data-icon="inline-start" /><span>{t("database")}</span>
               </Button>
-              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("remoteTools")} onClick={() => useSftpStore.getState().setPanelOpen(true)}>
+              <Button variant="ghost" className="workbench-sidebar-link" aria-label={t("remoteTools")} aria-haspopup="dialog" onClick={() => useSftpStore.getState().setPanelOpen(true)}>
                 <Server data-icon="inline-start" /><span>{t("remoteTools")}</span>
               </Button>
             </nav>
@@ -428,7 +499,7 @@ export function AppShell() {
             </div>
           </div>
         </aside>
-        <div role="separator" tabIndex={navCollapsed ? -1 : 0} aria-hidden={navCollapsed} inert={navCollapsed} data-collapsed={navCollapsed} aria-label={t("resizeSpaces")} aria-orientation="vertical" aria-valuenow={navWidth} aria-valuemin={MIN_NAV_WIDTH} aria-valuemax={MAX_NAV_WIDTH} className="workbench-resize-handle" onPointerDown={onNavResizePointerDown} onPointerMove={onNavResizePointerMove} onPointerUp={onNavResizePointerUp} onPointerCancel={onNavResizePointerUp} onLostPointerCapture={() => {navDragRef.current=null;setResizingSidebar(null)}} onKeyDown={event => {
+        <div role="separator" tabIndex={navCollapsed ? -1 : 0} aria-hidden={navCollapsed} inert={navCollapsed} data-collapsed={navCollapsed} aria-label={t("resizeSpaces")} aria-orientation="vertical" aria-valuenow={navWidth} aria-valuemin={MIN_NAV_WIDTH} aria-valuemax={MAX_NAV_WIDTH} className="workbench-resize-handle" onPointerDown={onNavResizePointerDown} onPointerMove={onNavResizePointerMove} onPointerUp={onNavResizePointerUp} onPointerCancel={onNavResizePointerUp} onLostPointerCapture={() => {navDragRef.current=null;setResizingSidebar(null)}} onDoubleClick={() => setNavWidth(DEFAULT_NAV_WIDTH)} title={t("resetWidthHint")} onKeyDown={event => {
           const next = event.key === "Home" ? MIN_NAV_WIDTH : event.key === "End" ? MAX_NAV_WIDTH : event.key === "ArrowLeft" ? navWidth-16 : event.key === "ArrowRight" ? navWidth+16 : null
           if(next!==null){event.preventDefault();setNavWidth(Math.min(MAX_NAV_WIDTH,Math.max(MIN_NAV_WIDTH,next)))}
         }}><span /></div>
@@ -449,9 +520,9 @@ export function AppShell() {
             </div>}
           </div>
         </div>
-        <div role="separator" tabIndex={toolsVisible ? 0 : -1} aria-hidden={!toolsVisible} inert={!toolsVisible} data-collapsed={!toolsVisible} aria-label={t("resizeTools")} aria-orientation="vertical" aria-valuenow={toolsWidth} aria-valuemin={224} aria-valuemax={420} className="workbench-resize-handle" onPointerDown={event => {event.currentTarget.setPointerCapture(event.pointerId);setResizingSidebar("tools");toolsDragRef.current={x:event.clientX,width:toolsWidth}}} onPointerMove={event => {const drag=toolsDragRef.current;if(drag)setToolsWidth(Math.min(420,Math.max(224,drag.width+drag.x-event.clientX)))}} onPointerUp={event => {toolsDragRef.current=null;setResizingSidebar(null);if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId)}} onPointerCancel={() => {toolsDragRef.current=null;setResizingSidebar(null)}} onLostPointerCapture={() => {toolsDragRef.current=null;setResizingSidebar(null)}} onKeyDown={event => {
-          const next=event.key === "Home" ? 224 : event.key === "End" ? 420 : event.key === "ArrowLeft" ? toolsWidth+16 : event.key === "ArrowRight" ? toolsWidth-16 : null
-          if(next!==null){event.preventDefault();setToolsWidth(Math.min(420,Math.max(224,next)))}
+        <div role="separator" tabIndex={toolsVisible ? 0 : -1} aria-hidden={!toolsVisible} inert={!toolsVisible} data-collapsed={!toolsVisible} aria-label={t("resizeTools")} aria-orientation="vertical" aria-valuenow={toolsWidth} aria-valuemin={MIN_TOOLS_WIDTH} aria-valuemax={MAX_TOOLS_WIDTH} className="workbench-resize-handle" onPointerDown={event => {event.currentTarget.setPointerCapture(event.pointerId);setResizingSidebar("tools");toolsDragRef.current={x:event.clientX,width:toolsWidth}}} onPointerMove={event => {const drag=toolsDragRef.current;if(drag)setToolsWidth(Math.min(MAX_TOOLS_WIDTH,Math.max(MIN_TOOLS_WIDTH,drag.width+drag.x-event.clientX)))}} onPointerUp={event => {toolsDragRef.current=null;setResizingSidebar(null);if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId)}} onPointerCancel={() => {toolsDragRef.current=null;setResizingSidebar(null)}} onLostPointerCapture={() => {toolsDragRef.current=null;setResizingSidebar(null)}} onDoubleClick={() => setToolsWidth(DEFAULT_TOOLS_WIDTH)} title={t("resetWidthHint")} onKeyDown={event => {
+          const next=event.key === "Home" ? MIN_TOOLS_WIDTH : event.key === "End" ? MAX_TOOLS_WIDTH : event.key === "ArrowLeft" ? toolsWidth+16 : event.key === "ArrowRight" ? toolsWidth-16 : null
+          if(next!==null){event.preventDefault();setToolsWidth(Math.min(MAX_TOOLS_WIDTH,Math.max(MIN_TOOLS_WIDTH,next)))}
         }}><span /></div>
         <aside id="workbench-tools" aria-label={t("tools")} aria-hidden={!toolsVisible} inert={!toolsVisible} data-collapsed={!toolsVisible} data-background={rightSidebarBackground} className="workbench-tools" style={{width:toolsVisible ? toolsWidth : 0}}>
           <div className="workbench-tools-surface" style={{width:toolsWidth}}>

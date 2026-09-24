@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.0.16] - 2026-09-22
+
+### 新增與改善
+
+- 新增 HERDR 工具：Worktree 建立／開啟／移除、pane 跨分頁與 Space 搬移、Agent 啟動／提示／等待／重新命名／按鍵，以及 Integration 與 Session 生命週期管理；另可查看 Agent 狀態說明與 Plugin 記錄。
+- 新增 Plugin 安裝、啟停、action 與 pane 管理；「開啟 Herdr 視窗」以完整官方 Session 畫面承接原生彈窗、歷史搜尋、鍵盤 Copy mode 與 Kitty 圖片，關閉畫面保留執行中的工作。
+- Agent 完成或需要輸入時提供 toast，以及選配的系統通知與聲音；抑制歷史狀態、已讀項目與前景 pane 的重複通知。
+- 新增 Windows x86_64 SSH host helper、named-pipe 路由、原生路徑與 ConPTY payload；Host artifacts 擴充為五個 target。實際 Windows SSH 與完整 Session 視覺驗收仍需在對應環境完成。
+- 重整資料庫工作台：連線後選擇 PostgreSQL／MSSQL 資料庫，分離資料瀏覽與可調整高度的 SQL 工作區；保留 SQLite、PostgreSQL 與 MSSQL 引擎。
+- 資料表預覽支援雙擊或鍵盤編輯純量欄位。以完整主鍵和原始欄位值比對後儲存，保留 64-bit 整數／decimal 精度；沒有主鍵的結果、任意 SQL 查詢、binary 與既有 JSON 值維持唯讀。
+- 資料表右鍵可開啟結構編輯器，預覽並套用資料表改名、欄位改名與新增允許 NULL 的欄位。
+- 資料列採虛擬化顯示，獨立結果 cursor 平行釋放；減少 Agent 清單的重複掃描，連線完成或移除時清除過期狀態。
+- 檔案樹單擊以預覽分頁開啟檔案（名稱斜體），下次單擊會取代它；雙擊檔案或分頁、編輯內容或釘選後轉為一般分頁。
+- 側邊欄 Space 與分支列的操作按鈕改為滑鼠移入時才出現在列內；點 Space 會開啟上次使用的分支，沒有紀錄時開啟第一個分支。
+- 新增快捷鍵：`⌘⇧E`（Windows／Linux 為 `Ctrl+Shift+E`）切換 Spaces／Agents 檢視；`Alt+1`…`9` 跳到對應 Agent；macOS `⌥Tab`／`⌥⇧Tab`（Windows／Linux 為 ``Alt+` ``／``Alt+Shift+` ``）依最近使用順序切換 Agent，放開 Alt 確定。可在「設定 → 鍵盤」修改。
+- 重新設計「加入 Herdr Session」對話框：左側選擇來源，右側依主機列出 Session，可用方向鍵選擇、Enter 或雙擊載入，並標示目前使用中與已停止的 Session。
+- 移除 Agent Inspector；點選 Agent 直接開啟它的終端機。
+- Herdr 操作在短時間內重用 Session 清單與連線驗證，減少每次操作額外啟動的程序；Windows 本機連線等待回應的間隔也縮短。
+
+### 修正
+
+- SSH 密碼驗證支援伺服器的 keyboard-interactive 密碼提示，保留 OTP／換密碼保護與認證逾時。
+- 修正新 Git repo 尚無第一筆 commit 時無法取消暫存的問題，保留工作檔與暫存後的修改。
+- Git 分支選單的忙碌與操作提示使用中性色，真正錯誤才顯示紅色。
+- Git Graph 主旨與 refs 自適應可用空間；作者／日期在窄視窗及多分支水平捲動時保持可見。
+- 大型文件搜尋移至可取消的背景 Worker；關閉搜尋、變更文件或卸載編輯器時清除 Worker、計時器與文件快取。
+- 搜尋按鈕完整套用目前主題，避免淺色漸層遮住深色模式的按鈕文字。
+- 關閉 Space 成功後同步卸載所屬終端頁面，釋放串流及版面重試；取消或關閉失敗時保留頁面。
+- Spaces／Agents 保留來源順序，不再因狀態變更而重新排序。
+- 修正 macOS 與 Windows 的 Herdr 終端機捲動跟不上、停手後畫面仍繼續捲動的問題；改用與 WSL 相同的捲動方式。
+- Windows／Linux 的 `Ctrl+K` 等 App 快捷鍵在終端機聚焦時也能使用。
+- 終端機被其他視窗取得控制後，改為顯示提示與「重新連線」按鈕，不再停在「串流已關閉」。
+
+### 安裝說明
+
+- macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。
+- Windows Authenticode 尚未啟用，安裝或首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.15] - 2026-09-18
 
 ### 新增

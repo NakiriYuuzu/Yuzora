@@ -1,9 +1,13 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
-import { APP_COMMANDS, bindingError, bindingLabel, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore"
+import { RotateCcw, Search } from "lucide-react"
+import { APP_COMMANDS, bindingError, bindingLabel, defaultBindingFor, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Field, FieldLabel, FieldDescription, FieldGroup } from "@/components/ui/field"
+import { Field, FieldContent, FieldLabel, FieldDescription, FieldGroup } from "@/components/ui/field"
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
+import { Kbd } from "@/components/ui/kbd"
+import { SettingsRowGroup } from "./settingsPrimitives"
 
 function BindingField({ id, binding }: { id: AppCommandId; binding: string }) {
     const { t } = useTranslation("editorPreferences")
@@ -11,13 +15,15 @@ function BindingField({ id, binding }: { id: AppCommandId; binding: string }) {
     const overrides = useKeyboardSettingsStore(s => s.overrides)
     const setBinding = useKeyboardSettingsStore(s => s.setBinding)
     const error = bindingError(id, draft, overrides)
-    return <Field data-invalid={!!error}>
-        <FieldLabel htmlFor={`binding-${id}`}>{t(`commands.${id}`)}</FieldLabel>
-        <div className="flex gap-2">
-            <Input id={`binding-${id}`} value={draft} data-shortcut-capture aria-invalid={!!error} onChange={e => setDraft(e.target.value)} />
-            <Button variant="outline" disabled={!!error || draft === binding} onClick={() => setBinding(id, draft)}>{t("apply")}</Button>
+    return <Field orientation="horizontal" data-invalid={!!error} className="settings-shortcut-row">
+        <FieldContent>
+            <FieldLabel htmlFor={`binding-${id}`}>{t(`commands.${id}`)}</FieldLabel>
+            <FieldDescription>{error ? t(`errors.${error}`) : <Kbd className="settings-shortcut-kbd">{bindingLabel(binding)}</Kbd>}</FieldDescription>
+        </FieldContent>
+        <div className="settings-shortcut-edit">
+            <Input id={`binding-${id}`} value={draft} data-shortcut-capture aria-invalid={!!error} onChange={e => setDraft(e.target.value)} className="font-mono" />
+            <Button variant="outline" size="sm" disabled={!!error || draft === binding} onClick={() => setBinding(id, draft)}>{t("apply")}</Button>
         </div>
-        <FieldDescription>{error ? t(`errors.${error}`) : bindingLabel(binding)}</FieldDescription>
     </Field>
 }
 
@@ -26,10 +32,18 @@ export function KeyboardSettings() {
     const [search, setSearch] = useState("")
     const overrides = useKeyboardSettingsStore(s => s.overrides)
     const reset = useKeyboardSettingsStore(s => s.reset)
-    return <FieldGroup>
-        <p className="text-sm text-muted-foreground">{t("keyboardScope")}</p>
-        <Field><FieldLabel htmlFor="shortcut-search">{t("search")}</FieldLabel><Input id="shortcut-search" value={search} onChange={e => setSearch(e.target.value)} /></Field>
-        {APP_COMMANDS.filter(c => `${t(`commands.${c.id}`)} ${c.id}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())).map(c => <BindingField key={`${c.id}-${overrides[c.id] ?? c.defaultBinding}`} id={c.id} binding={overrides[c.id] ?? c.defaultBinding} />)}
-        <Button variant="outline" onClick={reset}>{t("reset")}</Button>
+    const commands = APP_COMMANDS.filter(c => `${t(`commands.${c.id}`)} ${c.id}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+    return <FieldGroup className="settings-fields">
+        <p className="settings-inline-hint settings-keyboard-scope">{t("keyboardScope")}</p>
+        <div className="settings-keyboard-toolbar">
+            <InputGroup className="settings-keyboard-search">
+                <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>
+                <InputGroupInput id="shortcut-search" aria-label={t("search")} placeholder={t("search")} value={search} onChange={e => setSearch(e.target.value)} />
+            </InputGroup>
+            <Button variant="outline" size="sm" onClick={reset}><RotateCcw aria-hidden="true" />{t("reset")}</Button>
+        </div>
+        {commands.length > 0 && <SettingsRowGroup>
+            {commands.map(c => <BindingField key={`${c.id}-${overrides[c.id] ?? defaultBindingFor(c.id)}`} id={c.id} binding={overrides[c.id] ?? defaultBindingFor(c.id)} />)}
+        </SettingsRowGroup>}
     </FieldGroup>
 }

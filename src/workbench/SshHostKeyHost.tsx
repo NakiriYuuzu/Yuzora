@@ -13,6 +13,7 @@ import {
     AlertDialogTitle
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { copyTextInBackground } from "@/lib/clipboardFeedback"
 import { sshHostKeyRespond } from "@/lib/ipc"
 import type { SshHostKeyPrompt } from "@/lib/types"
 import { useOverlayPresence } from "@/state/overlayStore"
@@ -68,7 +69,7 @@ export function SshHostKeyHost() {
 
     function copyFingerprint() {
         if (!current) return
-        void navigator.clipboard.writeText(current.fingerprint)
+        copyTextInBackground(current.fingerprint)
     }
 
     if (!current) return null

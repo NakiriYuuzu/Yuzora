@@ -35,6 +35,11 @@ export interface TabInfo {
     dirty: boolean
     externallyModified: boolean
     pinned?: boolean
+    /**
+     * VS Code-style preview mode: a single-click open that the next single-click
+     * open in the same group replaces. Cleared by double-click, edits or pinning.
+     */
+    transient?: boolean
     lineEnding?: DocumentLineEnding
     lineEndingGeneration?: number
     // Absent ⇒ a normal file tab. "preview" marks the singleton preview tab so
@@ -95,7 +100,10 @@ interface WorkspaceState {
     sessionRestoreReady: boolean
     markSessionRestoreReady: () => void
     setWorkspace: (path: string, capabilityId?: string | null) => void
-    openTab: (path: string, groupIndex?: number) => void
+    /** `transient` opens (or reuses) the group's preview-mode tab instead of adding a tab. */
+    openTab: (path: string, groupIndex?: number, options?: { transient?: boolean }) => void
+    /** Turn a preview-mode tab into a regular tab. */
+    keepTab: (path: string) => void
     /** Open or move a file tab into one exact Editor Group. */
     openTabInGroup: (path: string, groupIndex: number) => void
     openInRightSplit: (path: string, sourceGroupIndex: number) => void
@@ -473,16 +481,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
         }),
     refreshTree: () => set((s) => ({ treeRevision: s.treeRevision + 1 })),
-    openTab: (path, groupIndex) =>
+    openTab: (path, groupIndex, options) =>
         set((s) => {
+            const transient = options?.transient === true
             const existingGroupIndex = s.groups.findIndex((group) =>
                 group.tabs.some((tab) => tab.path === path)
             )
             if (existingGroupIndex !== -1) {
                 return {
-                    groups: s.groups.map((group, index) =>
-                        index === existingGroupIndex ? { ...group, activePath: path } : group
-                    ),
+                    groups: s.groups.map((group, index) => {
+                        if (index !== existingGroupIndex) return group
+                        // A regular open keeps a preview-mode tab; a preview
+                        // open only focuses whatever is already there.
+                        const tabs = transient ? group.tabs : group.tabs.map((tab) =>
+                            tab.path === path && tab.transient ? { ...tab, transient: false } : tab)
+                        return { ...group, tabs, activePath: path }
+                    }),
                     activeGroupIndex: existingGroupIndex
                 }
             }
@@ -490,16 +504,34 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             if (!s.groups[targetGroupIndex]) return s
             const groups = s.groups.map((g) => ({ ...g, tabs: [...g.tabs] }))
             const g = groups[targetGroupIndex]
-            if (!g.tabs.some((t) => t.path === path)) {
-                g.tabs.push({
-                    path,
-                    name: workspacePathBasename(path),
-                    dirty: false,
-                    externallyModified: false
-                })
+            const tab: TabInfo = {
+                path,
+                name: workspacePathBasename(path),
+                dirty: false,
+                externallyModified: false,
+                ...(transient ? { transient: true } : {})
             }
+            const replaceIndex = transient
+                ? g.tabs.findIndex((candidate) => candidate.transient && !candidate.dirty && !candidate.pinned)
+                : -1
             g.activePath = path
-            return { groups, activeGroupIndex: targetGroupIndex }
+            if (replaceIndex === -1) {
+                g.tabs.push(tab)
+                return { groups, activeGroupIndex: targetGroupIndex }
+            }
+            const replaced = g.tabs[replaceIndex]
+            g.tabs[replaceIndex] = tab
+            return closeMarkdownPreviewsInGroups(groups, replaced.path, targetGroupIndex)
+        }),
+    keepTab: (path) =>
+        set((s) => {
+            if (!s.groups.some((group) => group.tabs.some((tab) => tab.path === path && tab.transient))) return s
+            return {
+                groups: s.groups.map((group) => ({
+                    ...group,
+                    tabs: group.tabs.map((tab) => tab.path === path && tab.transient ? { ...tab, transient: false } : tab)
+                }))
+            }
         }),
     openTabInGroup: (path, groupIndex) =>
         set((s) => {
@@ -616,7 +648,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     toggleTabPinned: (groupIndex, path) => set((s) => ({
         groups: s.groups.map((group, index) => index !== groupIndex ? group : {
             ...group,
-            tabs: group.tabs.map((tab) => tab.path === path ? { ...tab, pinned: !tab.pinned } : tab)
+            tabs: group.tabs.map((tab) => tab.path === path ? { ...tab, pinned: !tab.pinned, ...(tab.transient ? { transient: false } : {}) } : tab)
                 .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
         })
     })),
@@ -1156,7 +1188,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         set((s) => ({
             groups: s.groups.map((g) => ({
                 ...g,
-                tabs: g.tabs.map((t) => (t.path === path ? { ...t, dirty } : t))
+                // Editing a preview-mode tab keeps it, as in VS Code.
+                tabs: g.tabs.map((t) => (t.path === path ? { ...t, dirty, ...(dirty && t.transient ? { transient: false } : {}) } : t))
             }))
         })),
     hydrateLineEnding: (path, lineEnding, generation) =>
@@ -1177,7 +1210,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                 ...g,
                 tabs: g.tabs.map((t) =>
                     t.path === path && t.lineEnding !== lineEnding
-                        ? { ...t, lineEnding, dirty: true }
+                        ? { ...t, lineEnding, dirty: true, ...(t.transient ? { transient: false } : {}) }
                         : t
                 )
             }))

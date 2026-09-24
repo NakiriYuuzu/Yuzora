@@ -138,7 +138,7 @@ function NativeRuntimeSettings() {
 }
 
 function RemoteRuntimeSettings({ hostId, label, target }: { hostId: string; label: string; target: HostTarget }) {
-  const { t } = useTranslation("runtimeSettings")
+  const { t, i18n } = useTranslation("runtimeSettings")
   const config = useHostStore(s => s.configs[hostId])
   const hostError = useHostStore(s => s.hosts[hostId]?.error)
   const [selection, setSelection] = useState(() => selectionForHost(config))
@@ -176,7 +176,7 @@ function RemoteRuntimeSettings({ hostId, label, target }: { hostId: string; labe
     <Card size="sm"><CardHeader><CardTitle>{t("current")}</CardTitle><CardDescription>{label} · {t("savedPathHint")}</CardDescription></CardHeader><CardContent className="flex flex-col gap-3">
       <p className="break-all text-sm"><code>{config?.binary ?? t("notConfigured")}</code></p>
       {config?.helper && <p className="break-all text-sm">{t("helper")}: <code>{config.helper}</code></p>}
-      {config?.verifiedAt && <p className="text-sm text-muted-foreground">{t("lastVerified")}: {new Date(config.verifiedAt).toLocaleString()}</p>}
+      {config?.verifiedAt && <p className="text-sm text-muted-foreground">{t("lastVerified")}: {new Date(config.verifiedAt).toLocaleString(i18n.language)}</p>}
       {current?.check && <RuntimeCheckView check={current.check} />}
       {currentError && <RuntimeError error={currentError} />}
       {hostError && <RuntimeError error={hostError} />}

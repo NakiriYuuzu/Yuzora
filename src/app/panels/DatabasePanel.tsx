@@ -1,17 +1,18 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { EditorState } from "@codemirror/state"
 import { EditorView, keymap, lineNumbers } from "@codemirror/view"
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands"
 import { syntaxHighlighting } from "@codemirror/language"
 import { sql } from "@codemirror/lang-sql"
-import { ChevronDown, ChevronUp, ListStart, Play, Square, Table2 } from "lucide-react"
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleStop, Lock, PencilLine, Play, RefreshCw, Table2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { appHighlightStyle, appTheme } from "@/editor/cmTheme"
 import { databaseErrorSelection, databaseErrorSelectionForEditor } from "@/lib/databaseSql"
 import {
+  identityOf,
   queryFor,
   queryRunGroupIsCancellable,
   resultPageStateForStatement,
@@ -27,6 +28,7 @@ import type {
 import { shortcutLabel } from "@/lib/platform"
 import { formatDbValue } from "@/lib/types"
 import type {
+  DbColumn,
   DbEffectOutcome,
   DbError,
   DbQueryResult,
@@ -35,6 +37,20 @@ import type {
   DbValue,
 } from "@/lib/types"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { Kbd } from "@/components/ui/kbd"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable"
+import type { PanelImperativeHandle } from "react-resizable-panels"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { dbObjectRefKey } from "@/lib/databaseSql"
+import { DatabaseCatalogPicker } from "./DatabaseCatalogPicker"
+import { DatabaseCellEditing } from "./DatabaseCellEditing"
+import { useDatabaseCellEditing } from "./databaseCellEditingContext"
+
+const EMPTY_COLUMNS: DbColumn[] = []
 
 /** Move the column at display position `from` to display position `to`. `order`
  *  maps display positions to original column indices; the returned array is a new
@@ -108,7 +124,7 @@ export function DatabasePanel() {
   )
 
   return (
-    <div className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden rounded-(--r-lg) border border-(--line-1) bg-(--paper-0) shadow-(--shadow-lg)">
+    <div className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden bg-(--paper-0)">
       {descriptorId ? (
         <DatabaseConsole
           key={`${descriptorId}:${connected ? "connected" : "offline"}`}
@@ -130,6 +146,17 @@ export function DatabasePanel() {
 
 function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; connected: boolean }) {
   const { t } = useTranslation("panels")
+  const { t: workbench } = useTranslation("databaseWorkbench")
+  const editorPanel = useRef<PanelImperativeHandle | null>(null)
+  const table = useDbStore(state => queryFor(state, descriptorId).table ?? null)
+  const editUnconfirmed = useDbStore(state => queryFor(state, descriptorId).editUnconfirmed)
+  const [modeChoice, setModeChoice] = useState({ table, mode: table ? "data" : "query" })
+  const mode = modeChoice.table === table ? modeChoice.mode : table ? "data" : "query"
+  const metadata = useDbStore(state => table ? state.columnBuckets[descriptorId]?.[dbObjectRefKey(table)] ?? EMPTY_COLUMNS : EMPTY_COLUMNS)
+  useEffect(() => {
+    if (mode === "data") editorPanel.current?.collapse()
+    else editorPanel.current?.expand()
+  }, [mode])
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const activeProfile = useDbStore((state) =>
@@ -138,6 +165,8 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   const activeConnection = useDbStore((state) =>
     state.connections.find((connection) => connection.descriptorId === descriptorId) ?? null
   )
+  const identity = useMemo(() => identityOf(activeConnection ?? undefined), [activeConnection])
+  const needsDatabase = activeProfile?.kind !== "sqlite" && activeProfile?.database === ""
   const sqlText = useDbStore((state) => queryFor(state, descriptorId).sql)
   const running = useDbStore((state) => queryFor(state, descriptorId).running)
   const result = useDbStore((state) => queryFor(state, descriptorId).result)
@@ -298,7 +327,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
       : 0
     : null
 
-  const canRun = connected && sqlText.trim().length > 0 && !running
+  const canRun = connected && !needsDatabase && sqlText.trim().length > 0 && !running
   const canCancel = connected && queryRunGroupIsCancellable(runGroup)
   const runPrimary = () => {
     const view = viewRef.current
@@ -319,75 +348,156 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
     ? t(`databasePanel.engine.${activeProfileKind}`)
     : null
 
+  const elapsedLabel = runningElapsedMs ?? elapsedMs
+  const statementCount = runGroup?.run?.statements.length ?? 0
+
+  const editable = !!table && table.kind === "table" && metadata.some((column) => column.pk)
+  const resultMeta = (
+    <>
+      {(table || runGroup?.run) && (
+        <span
+          title={editable ? workbench("editHint") : workbench("readOnlyHint")}
+          className="inline-flex shrink-0 items-center gap-1"
+        >
+          {editable
+            ? <PencilLine className="size-3" aria-hidden="true" />
+            : <Lock className="size-3" aria-hidden="true" />}
+          {workbench(editable ? "editableShort" : "readOnlyShort")}
+        </span>
+      )}
+      {statementCount > 1 && (
+        <span className="shrink-0">{t("databasePanel.statementCount", { count: statementCount })}</span>
+      )}
+      {elapsedLabel != null && (
+        <span className="shrink-0 font-mono tabular-nums">{t("databasePanel.elapsed", { ms: elapsedLabel })}</span>
+      )}
+    </>
+  )
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-col">
-        {activeProfileName && activeProfileAddress && activeProfileEngine && (
-          <div
-            role="group"
-            aria-label={t("databasePanel.activeProfileAriaLabel", { name: activeProfileName })}
-            className="database-profile-header flex h-[32px] shrink-0 items-center gap-[8px] border-b border-(--line-1) px-[10px]"
-          >
-            <span className="shrink-0 text-[10px] font-semibold tracking-[0.06em] text-(--ink-4) uppercase">
-              {t("databasePanel.activeProfile")}
-            </span>
-            <span className="min-w-0 truncate text-[12px] font-medium text-(--ink-1)">
-              {activeProfileName}
-            </span>
+    <DatabaseCellEditing identity={identity} kind={activeConnection?.kind ?? "sqlite"} table={table} metadata={metadata} disabled={running || !!runGroup?.run?.transactionMayBeOpen}>
+    <div className="database-console flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="database-profile-header flex shrink-0 items-center gap-2 border-b border-(--line-1) pl-4">
+        <div
+          role="group"
+          aria-label={t("databasePanel.activeProfileAriaLabel", { name: activeProfileName })}
+          className="flex min-w-0 flex-1 flex-col justify-center"
+        >
+          <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5">
             <span
-              className="ml-auto min-w-0 truncate font-mono text-[10.5px] text-(--ink-3)"
-              title={`${activeProfileEngine} · ${activeProfileAddress}`}
-            >
-              {activeProfileEngine} · {activeProfileAddress}
+              aria-hidden="true"
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                connected ? "bg-(--term-ok)" : "border border-(--ink-4)"
+              )}
+            />
+            <span className="min-w-[3ch] shrink-[4] truncate font-medium text-(--ink-1)">{activeProfileName}</span>
+            {connected
+              ? <span className="sr-only">{t("databasePanel.connected")}</span>
+              : <span className="shrink-0 text-[12px] text-(--ink-3)">{t("databasePanel.offline")}</span>}
+            <span aria-hidden="true" className="shrink-0 text-(--ink-4)">/</span>
+            <span className={cn("min-w-[6ch] truncate", table ? "font-mono text-[12.5px] text-(--ink-1)" : "text-(--ink-2)")}>
+              {table?.name ?? workbench("query")}
             </span>
           </div>
+          <p
+            className="flex min-w-0 gap-2 font-mono text-[11px] leading-4 text-(--ink-3)"
+            title={`${activeProfileEngine ?? ""} ${activeProfileAddress ?? ""}`}
+          >
+            <span className="shrink-0">{activeProfileEngine}</span>
+            <span className="min-w-0 truncate">{activeProfileAddress}</span>
+          </p>
+        </div>
+        <DatabaseCatalogPicker key={activeConnection?.connId ?? "offline"} descriptorId={descriptorId} />
+        {table && (
+          <ToggleGroup
+            type="single"
+            value={mode}
+            onValueChange={(value) => { if (value) setModeChoice({ table, mode: value }) }}
+            aria-label={workbench("viewMode")}
+            className="shrink-0 gap-0.5 rounded-(--r-xs) bg-(--paper-2) p-0.5"
+          >
+            <ToggleGroupItem value="data" className="h-6 px-2.5 text-[12px] text-(--ink-3) hover:text-(--ink-1) data-[state=on]:bg-(--paper-0) data-[state=on]:text-(--ink-1) data-[state=on]:shadow-xs">
+              {workbench("data")}
+            </ToggleGroupItem>
+            <ToggleGroupItem value="query" className="h-6 px-2.5 text-[12px] text-(--ink-3) hover:text-(--ink-1) data-[state=on]:bg-(--paper-0) data-[state=on]:text-(--ink-1) data-[state=on]:shadow-xs">
+              {workbench("query")}
+            </ToggleGroupItem>
+          </ToggleGroup>
         )}
-        <div ref={containerRef} className="h-[160px] overflow-hidden" />
-        <div className="flex h-[40px] shrink-0 items-center gap-[8px] border-t border-b border-(--line-1) px-[10px]">
-          <button
-            type="button"
-            onClick={runPrimary}
-            disabled={!canRun}
-            aria-label={t("databasePanel.runAriaLabel")}
-            className="flex h-[26px] items-center gap-[6px] rounded-[8px] bg-(--yz-accent) px-[10px] text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        {table && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={running}
+            aria-label={workbench("refresh")}
+            title={workbench("refresh")}
+            onClick={() => void useDbStore.getState().openTableQuery(table)}
           >
-            <Play className="size-[13px]" aria-hidden="true" />
-            {t("databasePanel.run")}
-            <kbd className="rounded-[5px] bg-white/20 px-[5px] py-[1px] font-mono text-[10px]">{shortcutLabel("mod-enter")}</kbd>
-          </button>
-          <button
-            type="button"
-            onClick={() => void runQuery({ kind: "all" })}
-            disabled={!canRun}
-            aria-label={t("databasePanel.runAllAriaLabel")}
-            className="flex h-[26px] items-center gap-[6px] rounded-[8px] border border-(--line-1) px-[10px] text-[12px] font-medium text-(--ink-2) transition-colors hover:bg-(--yz-hover) disabled:opacity-50"
-          >
-            <ListStart className="size-[13px]" aria-hidden="true" />
-            {t("databasePanel.runAll")}
-            <kbd className="rounded-[5px] bg-(--paper-2) px-[5px] py-[1px] font-mono text-[10px]">{shortcutLabel("mod-shift-enter")}</kbd>
-          </button>
-          <button
+            <RefreshCw />
+          </Button>
+        )}
+      </div>
+      {needsDatabase && <p role="status" className="shrink-0 border-b border-(--line-1) bg-(--amber-soft) px-4 py-2 text-[12px] text-(--ink-2)">{workbench("chooseDatabaseFirst")}</p>}
+      {editUnconfirmed && <p role="status" className="shrink-0 border-b border-(--line-1) bg-(--amber-soft) px-4 py-2 text-[12px] text-(--ink-2)">{workbench("editAcceptedUnconfirmed")}</p>}
+      <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
+      <ResizablePanel id="database-query" panelRef={editorPanel} defaultSize="38%" minSize="15%" collapsible collapsedSize="0%">
+      <section
+        aria-label={t("databasePanel.queryCard")}
+        className={cn("flex h-full min-h-0 flex-col", table && mode === "data" && "invisible")}
+      >
+        <div ref={containerRef} className="database-editor min-h-0 flex-1 overflow-hidden" />
+        <div className="flex h-10 shrink-0 items-center gap-1 border-t border-(--line-1) bg-(--paper-1) px-2">
+          <span className="min-w-0 flex-1 truncate pl-2 text-[11.5px] text-(--ink-3)">
+            {running
+              ? (runGroup?.status === "cancelling" ? t("databasePanel.cancelling") : t("databasePanel.running"))
+              : null}
+          </span>
+          <Button
             type="button"
             onClick={() => void cancelQuery()}
             disabled={!canCancel}
             aria-label={t("databasePanel.cancelAriaLabel")}
-            className="flex h-[26px] items-center gap-[6px] rounded-[8px] border border-(--destructive)/30 px-[10px] text-[12px] font-medium text-(--destructive) transition-colors hover:bg-(--danger-soft) disabled:opacity-40"
+            variant="ghost"
+            size="sm"
           >
-            <Square className="size-[12px]" aria-hidden="true" />
+            <CircleStop aria-hidden="true" />
             {runGroup?.status === "cancelling"
               ? t("databasePanel.cancelling")
               : t("databasePanel.cancel")}
-          </button>
-          <div className="flex-1" />
-          {(runningElapsedMs ?? elapsedMs) != null && (
-            <span className="font-mono text-[11px] text-(--ink-3)">
-              {runningElapsedMs ?? elapsedMs} ms
-            </span>
-          )}
+          </Button>
+          <Button
+            type="button"
+            onClick={() => void runQuery({ kind: "all" })}
+            disabled={!canRun}
+            aria-label={t("databasePanel.runAllAriaLabel")}
+            variant="ghost"
+            size="sm"
+          >
+            {t("databasePanel.runAll")}
+            <Kbd className="h-4 bg-(--paper-2) font-mono text-[10px] text-(--ink-3)">{shortcutLabel("mod-shift-enter")}</Kbd>
+          </Button>
+          <Button
+            type="button"
+            onClick={runPrimary}
+            disabled={!canRun}
+            aria-label={t("databasePanel.runAriaLabel")}
+            size="sm"
+          >
+            <Play aria-hidden="true" />
+            {t("databasePanel.run")}
+            <Kbd className="h-4 bg-white/20 font-mono text-[10px] text-current">{shortcutLabel("mod-enter")}</Kbd>
+          </Button>
         </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-hidden">
+      </section>
+      </ResizablePanel>
+      <ResizableHandle
+        aria-label={t("databasePanel.resizeResults")}
+        disabled={mode === "data"}
+        className="database-split-handle aria-disabled:pointer-events-none"
+      />
+      <ResizablePanel id="database-results" defaultSize="62%" minSize="25%">
+      <section aria-label={t("databasePanel.resultCard")} className="flex h-full min-h-0 flex-col">
         <QueryRunView
           running={running}
           group={runGroup}
@@ -395,14 +505,18 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
           result={result}
           error={error}
           sortBy={sortBy}
+          meta={resultMeta}
           onSort={sortResult}
           onSelectStatement={selectStatementTab}
           onPreviousPage={previousResultPage}
           onNextPage={nextResultPage}
           onReleaseResult={releaseResultSession}
         />
-      </div>
+      </section>
+      </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
+    </DatabaseCellEditing>
   )
 }
 
@@ -423,13 +537,39 @@ function statementStatusKey(statement: DbStatementExecution): string {
   }
 }
 
-function QueryRunView({
+function ResultHeader({ children, meta }: { children: ReactNode; meta: ReactNode }) {
+  return (
+    <div className="flex h-9 shrink-0 items-stretch border-b border-(--line-1)">
+      <div className="flex min-w-0 flex-1 items-stretch">{children}</div>
+      <div className="flex shrink-0 items-center gap-3 pr-3 pl-2 text-[11.5px] text-(--ink-3)">{meta}</div>
+    </div>
+  )
+}
+
+function ResultStrip({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-(--line-1) bg-(--paper-1) px-3 py-1 text-[11.5px] text-(--ink-3)">
+      {children}
+    </div>
+  )
+}
+
+function ResultPlaceholder({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-full min-h-[96px] items-center justify-center px-6 text-center text-[12.5px] text-(--ink-3)">
+      {children}
+    </div>
+  )
+}
+
+const QueryRunView = memo(function QueryRunView({
   running,
   group,
   parseError,
   result,
   error,
   sortBy,
+  meta,
   onSort,
   onSelectStatement,
   onPreviousPage,
@@ -442,6 +582,7 @@ function QueryRunView({
   result: DbQueryResult | null
   error: DbQueryErrorState | null
   sortBy: DbSort | null
+  meta: ReactNode
   onSort: (columnIndex: number, owner?: DbResultSessionOwner) => void
   onSelectStatement: (statementExecutionId: DbStatementExecution["statementExecutionId"]) => void
   onPreviousPage: (owner: DbResultSessionOwner) => Promise<void>
@@ -449,22 +590,31 @@ function QueryRunView({
   onReleaseResult: (owner: DbResultSessionOwner) => Promise<void>
 }) {
   const { t } = useTranslation("panels")
+  const resultLabel = (
+    <span className="flex items-center pl-4 text-[12px] font-medium text-(--ink-2)">{t("databasePanel.resultCard")}</span>
+  )
   if (parseError) {
     return (
-      <div role="alert" className="m-[10px] rounded-[8px] border border-(--destructive)/40 bg-(--danger-soft) px-[10px] py-[8px] text-[12px] text-(--destructive)">
-        {t(`databasePanel.parseError.${parseError.code}`)}
+      <div className="flex h-full min-h-0 flex-col">
+        <ResultHeader meta={meta}>{resultLabel}</ResultHeader>
+        <ErrorBlock>{t(`databasePanel.parseError.${parseError.code}`)}</ErrorBlock>
       </div>
     )
   }
   if (!group?.run) {
     return (
-      <ResultView
-        running={running}
-        result={result}
-        error={error}
-        sortBy={sortBy}
-        onSort={onSort}
-      />
+      <div className="flex h-full min-h-0 flex-col">
+        <ResultHeader meta={meta}>{resultLabel}</ResultHeader>
+        <div className="min-h-0 flex-1">
+          <ResultView
+            running={running}
+            result={result}
+            error={error}
+            sortBy={sortBy}
+            onSort={onSort}
+          />
+        </div>
+      </div>
     )
   }
 
@@ -474,83 +624,56 @@ function QueryRunView({
   ) ?? run.statements[0]
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <Tabs
+      value={active.statementExecutionId}
+      onValueChange={(value) => onSelectStatement(value as DbStatementExecution["statementExecutionId"])}
+      className="h-full min-h-0 gap-0"
+    >
+      <ResultHeader meta={meta}>
+        <ScrollArea
+          className="min-w-0 flex-1"
+          orientation="horizontal"
+          viewportClassName="[&>div]:h-full"
+        >
+          <TabsList
+            variant="line"
+            aria-label={t("databasePanel.statementTabsAriaLabel")}
+            className="justify-start gap-0 p-0 pl-2 group-data-horizontal/tabs:h-9"
+          >
+            {run.statements.map((statement) => {
+              const statusKey = statementStatusKey(statement)
+              const status = t(`databasePanel.statementStatus.${statusKey}`)
+              const failed = statusKey === "error" || statusKey === "cancelled"
+              return (
+                <TabsTrigger
+                  key={statement.statementExecutionId}
+                  value={statement.statementExecutionId}
+                  aria-label={t("databasePanel.statementTabAriaLabel", {
+                    index: statement.statementIndex + 1,
+                    status,
+                  })}
+                  title={statement.sql}
+                  className="flex-none self-start rounded-none px-2.5 text-[12px] font-normal text-(--ink-3) hover:text-(--ink-1) data-active:text-(--ink-1) group-data-horizontal/tabs:after:bottom-0"
+                >
+                  <span className="font-mono text-(--ink-4)">{statement.statementIndex + 1}</span>
+                  <span className={cn(failed && "text-(--destructive)")}>{status}</span>
+                </TabsTrigger>
+              )
+            })}
+          </TabsList>
+        </ScrollArea>
+      </ResultHeader>
       {run.transactionMayBeOpen && (
-        <div role="status" className="border-b border-(--amber)/30 bg-(--amber-soft) px-[10px] py-[6px] text-[11px] text-(--ink-2)">
+        <div role="status" className="shrink-0 border-b border-(--line-1) bg-(--amber-soft) px-4 py-1.5 text-[12px] text-(--ink-2)">
           {t("databasePanel.transactionMayBeOpen")}
         </div>
       )}
       {(run.connectionTerminated || group.cancelOutcome === "cancelledConnectionTerminated") && (
-        <div role="status" className="border-b border-(--destructive)/30 bg-(--danger-soft) px-[10px] py-[6px] text-[11px] text-(--destructive)">
+        <div role="status" className="shrink-0 border-b border-(--line-1) bg-(--danger-soft) px-4 py-1.5 text-[12px] text-(--destructive)">
           {t("databasePanel.connectionTerminated")}
         </div>
       )}
-      <ScrollArea
-        className="shrink-0 border-b border-(--line-1) bg-(--paper-1)"
-        orientation="horizontal"
-        viewportClassName="px-[6px] pt-[5px]"
-      >
-      <div
-        role="tablist"
-        aria-label={t("databasePanel.statementTabsAriaLabel")}
-        className="flex gap-[2px]"
-      >
-        {run.statements.map((statement, statementPosition) => {
-          const status = t(`databasePanel.statementStatus.${statementStatusKey(statement)}`)
-          const selected = statement.statementExecutionId === active.statementExecutionId
-          return (
-            <button
-              key={statement.statementExecutionId}
-              id={`db-statement-tab-${statement.statementExecutionId}`}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              tabIndex={selected ? 0 : -1}
-              aria-controls={`db-statement-panel-${statement.statementExecutionId}`}
-              aria-label={t("databasePanel.statementTabAriaLabel", {
-                index: statement.statementIndex + 1,
-                status,
-              })}
-              title={statement.sql}
-              onClick={() => onSelectStatement(statement.statementExecutionId)}
-              onKeyDown={(event) => {
-                let nextPosition: number | null = null
-                if (event.key === "ArrowRight") {
-                  nextPosition = (statementPosition + 1) % run.statements.length
-                } else if (event.key === "ArrowLeft") {
-                  nextPosition = (statementPosition - 1 + run.statements.length) % run.statements.length
-                } else if (event.key === "Home") {
-                  nextPosition = 0
-                } else if (event.key === "End") {
-                  nextPosition = run.statements.length - 1
-                }
-                if (nextPosition === null) return
-                event.preventDefault()
-                const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
-                  '[role="tab"]'
-                )
-                tabs?.[nextPosition]?.focus()
-                onSelectStatement(run.statements[nextPosition].statementExecutionId)
-              }}
-              className={`rounded-t-[7px] border border-b-0 px-[9px] py-[5px] text-[11px] ${
-                selected
-                  ? "border-(--line-1) bg-(--paper-0) text-(--ink-1)"
-                  : "border-transparent text-(--ink-3) hover:text-(--ink-1)"
-              }`}
-            >
-              <span className="font-mono">{statement.statementIndex + 1}</span>
-              <span className="ml-[5px]">{status}</span>
-            </button>
-          )
-        })}
-      </div>
-      </ScrollArea>
-      <div
-        id={`db-statement-panel-${active.statementExecutionId}`}
-        role="tabpanel"
-        aria-labelledby={`db-statement-tab-${active.statementExecutionId}`}
-        className="min-h-0 flex-1"
-      >
+      <TabsContent value={active.statementExecutionId} className="min-h-0 text-[length:inherit]">
         <StatementResult
           key={active.statementExecutionId}
           statement={active}
@@ -560,28 +683,28 @@ function QueryRunView({
           onNextPage={onNextPage}
           onReleaseResult={onReleaseResult}
         />
-      </div>
-    </div>
+      </TabsContent>
+    </Tabs>
   )
-}
+})
 
 function EffectOutcome({ outcome }: { outcome: DbEffectOutcome }) {
   const { t } = useTranslation("panels")
-  return (
-    <div
-      className={`shrink-0 border-b border-(--line-1) px-[10px] py-[5px] text-[11px] ${
-        outcome === "unknown" ? "bg-(--amber-soft) font-semibold text-(--ink-1)" : "text-(--ink-3)"
-      }`}
-    >
-      {t(`databasePanel.effectOutcome.${outcome}`)}
-    </div>
-  )
+  if (outcome === "unknown") {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-(--r-xs) bg-(--amber-soft) px-1.5 py-px font-medium text-(--ink-1)">
+        <AlertTriangle className="size-3" aria-hidden="true" />
+        {t(`databasePanel.effectOutcome.${outcome}`)}
+      </span>
+    )
+  }
+  return <span className="shrink-0">{t(`databasePanel.effectOutcome.${outcome}`)}</span>
 }
 
 function AffectedRows({ affectedRows }: { affectedRows: string | null }) {
   const { t } = useTranslation("panels")
   return (
-    <div className="p-[12px] font-mono text-[12px] text-(--ink-2)">
+    <div className="flex h-full min-h-[96px] items-center justify-center px-6 font-mono text-[13px] text-(--ink-1) tabular-nums">
       {affectedRows === null
         ? t("databasePanel.rowsAffectedUnavailable")
         : t(
@@ -616,36 +739,35 @@ function StatementResult({
     : result.kind === "resultLimitReached"
       ? result.resultSession
       : null
-  let content: ReactNode
-  if (result.kind === "rows" || result.kind === "resultLimitReached") {
-    content = resultSession && pageState ? (
+  const outcome = pageState?.page.effectOutcome ?? statement.effectOutcome
+  if ((result.kind === "rows" || result.kind === "resultLimitReached") && resultSession && pageState) {
+    return (
       <ResultSessionPage
         owner={resultSession.owner}
         state={pageState}
+        outcome={outcome}
         sortBy={pageState.sort}
         onSort={(columnIndex) => onSort(columnIndex, resultSession.owner)}
         onPreviousPage={onPreviousPage}
         onNextPage={onNextPage}
         onReleaseResult={onReleaseResult}
       />
-    ) : (
-      <div className="p-[12px] text-[12px] text-(--ink-3)">{t("databasePanel.noResultSession")}</div>
     )
+  }
+  let content: ReactNode
+  if (result.kind === "rows" || result.kind === "resultLimitReached") {
+    content = <ResultPlaceholder>{t("databasePanel.noResultSession")}</ResultPlaceholder>
   } else if (result.kind === "execute") {
     content = <AffectedRows affectedRows={result.affectedRows} />
   } else if (result.kind === "error" || result.kind === "cancelled") {
     content = <DatabaseErrorDetails error={result.error} />
   } else {
-    content = (
-      <div className="p-[12px] text-[12px] text-(--ink-3)">
-        {t(`databasePanel.statementStatus.${result.kind}`)}
-      </div>
-    )
+    content = <ResultPlaceholder>{t(`databasePanel.statementStatus.${result.kind}`)}</ResultPlaceholder>
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <EffectOutcome outcome={pageState?.page.effectOutcome ?? statement.effectOutcome} />
-      <div className="min-h-0 flex-1">{content}</div>
+      <ScrollArea className="min-h-0 flex-1">{content}</ScrollArea>
+      <ResultStrip><EffectOutcome outcome={outcome} /></ResultStrip>
     </div>
   )
 }
@@ -653,6 +775,7 @@ function StatementResult({
 function ResultSessionPage({
   owner,
   state,
+  outcome,
   sortBy,
   onSort,
   onPreviousPage,
@@ -661,6 +784,7 @@ function ResultSessionPage({
 }: {
   owner: DbResultSessionOwner
   state: DbStatementResultPageState
+  outcome: DbEffectOutcome
   sortBy: DbSort | null
   onSort: (columnIndex: number) => void
   onPreviousPage: (owner: DbResultSessionOwner) => Promise<void>
@@ -675,23 +799,57 @@ function ResultSessionPage({
     page.lifecycle !== "cancelled" &&
     page.lifecycle !== "error"
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-[6px] border-b border-(--line-1) px-[10px] py-[6px] text-[11px] text-(--ink-3)">
-        <span className="mr-[2px] font-mono font-semibold text-(--ink-2)">
-          {t("databasePanel.pageLabel", { page: page.pageIndex + 1 })}
+  const footer = (
+    <>
+      <EffectOutcome outcome={outcome} />
+      {state.loading && <span role="status">{t("databasePanel.loadingResultPage")}</span>}
+      {showEnd && <span role="status">{t("databasePanel.resultEnd")}</span>}
+      {page.resultLimitReached && (
+        <span role="status" className="text-(--amber)">
+          {t("databasePanel.resultLimitReached")}
         </span>
-        <button
+      )}
+      {page.lifecycle === "released" && (
+        <span role="status">{t("databasePanel.resultReleased")}</span>
+      )}
+      {page.lifecycle === "cancelled" && (
+        <span role="status">{t("databasePanel.resultCancelled")}</span>
+      )}
+      {page.lifecycle === "error" && (
+        <span role="status" className="text-(--destructive)">
+          {t("databasePanel.resultLifecycleError")}
+        </span>
+      )}
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <Button
           type="button"
+          variant="ghost"
+          size="xs"
+          disabled={page.lifecycle !== "streaming" || state.loading}
+          aria-label={t("databasePanel.releaseResultAriaLabel")}
+          onClick={() => void onReleaseResult(owner)}
+          className="mr-1 text-[11.5px] text-(--ink-2)"
+        >
+          {t("databasePanel.releaseResult")}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
           disabled={!page.hasPrevious || state.loading}
           aria-label={t("databasePanel.previousPageAriaLabel")}
+          title={t("databasePanel.previousPage")}
           onClick={() => void onPreviousPage(owner)}
-          className="rounded-[6px] border border-(--line-1) px-[7px] py-[3px] text-(--ink-2) hover:bg-(--yz-hover) disabled:opacity-40"
         >
-          {t("databasePanel.previousPage")}
-        </button>
-        <button
+          <ChevronLeft aria-hidden="true" />
+        </Button>
+        <span className="min-w-12 text-center font-mono text-(--ink-2) tabular-nums">
+          {t("databasePanel.pageLabel", { page: page.pageIndex + 1 })}
+        </span>
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           disabled={
             !page.hasNext ||
             page.lifecycle === "released" ||
@@ -700,43 +858,19 @@ function ResultSessionPage({
             state.loading
           }
           aria-label={t("databasePanel.nextPageAriaLabel")}
+          title={t("databasePanel.nextPage")}
           onClick={() => void onNextPage(owner)}
-          className="rounded-[6px] border border-(--line-1) px-[7px] py-[3px] text-(--ink-2) hover:bg-(--yz-hover) disabled:opacity-40"
         >
-          {t("databasePanel.nextPage")}
-        </button>
-        <button
-          type="button"
-          disabled={page.lifecycle !== "streaming" || state.loading}
-          aria-label={t("databasePanel.releaseResultAriaLabel")}
-          onClick={() => void onReleaseResult(owner)}
-          className="rounded-[6px] border border-(--line-1) px-[7px] py-[3px] text-(--ink-2) hover:bg-(--yz-hover) disabled:opacity-40"
-        >
-          {t("databasePanel.releaseResult")}
-        </button>
-        <div className="ml-auto flex flex-wrap items-center gap-[6px]">
-          {state.loading && <span role="status">{t("databasePanel.loadingResultPage")}</span>}
-          {showEnd && <span role="status">{t("databasePanel.resultEnd")}</span>}
-          {page.resultLimitReached && (
-            <span role="status" className="text-(--amber)">
-              {t("databasePanel.resultLimitReached")}
-            </span>
-          )}
-          {page.lifecycle === "released" && (
-            <span role="status">{t("databasePanel.resultReleased")}</span>
-          )}
-          {page.lifecycle === "cancelled" && (
-            <span role="status">{t("databasePanel.resultCancelled")}</span>
-          )}
-          {page.lifecycle === "error" && (
-            <span role="status" className="text-(--destructive)">
-              {t("databasePanel.resultLifecycleError")}
-            </span>
-          )}
-        </div>
+          <ChevronRight aria-hidden="true" />
+        </Button>
       </div>
+    </>
+  )
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
       {state.pageError && (
-        <div role="alert" className="border-b border-(--destructive)/30 bg-(--danger-soft) px-[10px] py-[6px] text-[11px] text-(--destructive)">
+        <div role="alert" className="shrink-0 border-b border-(--line-1) bg-(--danger-soft) px-4 py-1.5 text-[12px] text-(--destructive)">
           {state.pageError.databaseError?.message ?? t("databasePanel.resultPageError")}
         </div>
       )}
@@ -747,19 +881,35 @@ function ResultSessionPage({
           truncated={page.resultLimitReached}
           sortBy={sortBy}
           onSort={onSort}
+          footer={footer}
+          resetKey={page.pageIndex}
         />
       </div>
     </div>
   )
 }
 
+function ErrorBlock({ children, mono = false }: { children: ReactNode; mono?: boolean }) {
+  return (
+    <div
+      role="alert"
+      className={cn(
+        "m-3 rounded-(--r-xs) border border-(--destructive)/30 bg-(--danger-soft) px-3 py-2 text-[12px] whitespace-pre-wrap text-(--destructive)",
+        mono && "font-mono"
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
 function DatabaseErrorDetails({ error }: { error: DbError }) {
   return (
-    <div role="alert" className="m-[10px] rounded-[8px] border border-(--destructive)/40 bg-(--danger-soft) px-[10px] py-[8px] font-mono text-[12px] whitespace-pre-wrap text-(--destructive)">
+    <ErrorBlock mono>
       <div>{error.message}</div>
-      {error.detail && <div>{error.detail}</div>}
-      {error.hint && <div>{error.hint}</div>}
-    </div>
+      {error.detail && <div className="mt-1 text-(--ink-2)">{error.detail}</div>}
+      {error.hint && <div className="mt-1 text-(--ink-2)">{error.hint}</div>}
+    </ErrorBlock>
   )
 }
 
@@ -780,17 +930,17 @@ function ResultView({
   const { t: tWorkbench } = useTranslation("workbench")
   if (error) {
     return (
-      <div role="alert" className="m-[10px] rounded-[8px] border border-(--destructive)/40 bg-(--danger-soft) px-[10px] py-[8px] font-mono text-[12px] whitespace-pre-wrap text-(--destructive)">
+      <ErrorBlock mono>
         {error.databaseError ? (
           <>
             <div>{error.databaseError.message}</div>
-            {error.databaseError.detail && <div>{error.databaseError.detail}</div>}
-            {error.databaseError.hint && <div>{error.databaseError.hint}</div>}
+            {error.databaseError.detail && <div className="mt-1 text-(--ink-2)">{error.databaseError.detail}</div>}
+            {error.databaseError.hint && <div className="mt-1 text-(--ink-2)">{error.databaseError.hint}</div>}
           </>
         ) : (
           tWorkbench(`database.profileError.${error.code}`)
         )}
-      </div>
+      </ErrorBlock>
     )
   }
   // A running query with a prior result keeps the existing table mounted (rather
@@ -798,27 +948,22 @@ function ResultView({
   // unmount ResultTable and lose the user's dragged column order.
   if (!result) {
     if (running) {
-      return <div className="p-[12px] text-[12px] text-(--ink-3)">{t("databasePanel.running")}</div>
+      return <ResultPlaceholder><span role="status">{t("databasePanel.running")}</span></ResultPlaceholder>
     }
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-[12px] text-(--ink-4)">{t("databasePanel.runPrompt")}</p>
-      </div>
+      <ResultPlaceholder>
+        <span className="flex flex-col items-center gap-2">
+          <span>{t("databasePanel.runPrompt")}</span>
+          <span className="flex items-center gap-1.5 text-[11.5px] text-(--ink-4)">
+            <Kbd className="font-mono text-[10.5px]">{shortcutLabel("mod-enter")}</Kbd>
+            {t("databasePanel.runPromptShortcut")}
+          </span>
+        </span>
+      </ResultPlaceholder>
     )
   }
   if (result.kind === "execute") {
-    return (
-      <div className="p-[12px] font-mono text-[12px] text-(--ink-2)">
-        {result.affectedRows === null
-          ? t("databasePanel.rowsAffectedUnavailable")
-          : t(
-              result.affectedRows === "1"
-                ? "databasePanel.rowsAffected_one"
-                : "databasePanel.rowsAffected_other",
-              { value: result.affectedRows }
-            )}
-      </div>
-    )
+    return <AffectedRows affectedRows={result.affectedRows} />
   }
   return (
     <ResultTable
@@ -831,28 +976,62 @@ function ResultView({
   )
 }
 
-function ResultTable({
+function isNumericValue(value: DbValue | undefined): boolean {
+  return value?.kind === "integer" || value?.kind === "decimal"
+}
+
+const ResultTable = memo(function ResultTable({
   columns,
   rows,
   truncated,
   sortBy,
-  onSort
+  onSort,
+  footer,
+  resetKey
 }: {
   columns: string[]
   rows: DbValue[][]
   truncated: boolean
   sortBy: DbSort | null
   onSort: (columnIndex: number) => void
+  footer?: ReactNode
+  /** Changing it (e.g. a new result page) scrolls back to the first row. */
+  resetKey?: number
 }) {
   const { t } = useTranslation("panels")
+  const { t: workbench } = useTranslation("databaseWorkbench")
+  const editing = useDatabaseCellEditing()
+  const viewport = useRef<HTMLDivElement>(null)
+  const [window, setWindow] = useState({ top: 0, height: 600 })
+  useEffect(() => {
+    const element = viewport.current
+    if (!element) return
+    const observer = new ResizeObserver(() => setWindow(current => {
+      const height = element.clientHeight || 600
+      return current.height === height ? current : { ...current, height }
+    }))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+  const [previousResetKey, setPreviousResetKey] = useState(resetKey)
+  if (previousResetKey !== resetKey) {
+    setPreviousResetKey(resetKey)
+    setWindow(current => ({ ...current, top: 0 }))
+  }
+  useEffect(() => {
+    if (viewport.current) viewport.current.scrollTop = 0
+  }, [resetKey])
+  const rowHeight = 29
+  const start = Math.min(Math.max(0, rows.length - 1), Math.max(0, Math.floor((window.top - 32) / rowHeight) - 8))
+  const end = Math.min(rows.length, start + Math.ceil(window.height / rowHeight) + 16)
   // Display order → original column index. Resets when the column *values*
   // change (a genuinely different query) but not when a header sort re-runs and
   // returns a new array with the same names.
   const [order, setOrder] = useState<number[]>(() => columns.map((_, i) => i))
-  const prevColumnsRef = useRef(columns)
-  if (prevColumnsRef.current !== columns) {
-    const changed = !sameColumns(prevColumnsRef.current, columns)
-    prevColumnsRef.current = columns
+  const [previousColumns, setPreviousColumns] = useState(columns)
+  if (previousColumns !== columns) {
+    const changed = !sameColumns(previousColumns, columns)
+    setPreviousColumns(columns)
     if (changed) setOrder(columns.map((_, i) => i))
   }
   // A changed result can render once before React applies the order reset above.
@@ -861,25 +1040,47 @@ function ResultTable({
     ? order
     : columns.map((_, index) => index)
   const [dragPos, setDragPos] = useState<number | null>(null)
+  // Right-align a column when its first non-NULL sampled value is numeric.
+  const numericColumns = useMemo(() => columns.map((_, columnIndex) => {
+    for (let rowIndex = 0; rowIndex < Math.min(rows.length, 50); rowIndex += 1) {
+      const value = rows[rowIndex][columnIndex]
+      if (value && value.kind !== "null") return isNumericValue(value)
+    }
+    return false
+  }), [columns, rows])
+  const spanWithGutter = columns.length + 1
+  const gutterWidth = `${Math.max(2, String(rows.length).length) + 2}ch`
 
   return (
     <div className="flex h-full flex-col">
-      <ScrollArea className="min-h-0 flex-1" orientation="both">
-        <table className="w-full border-collapse font-mono text-[12px]">
-          <thead className="sticky top-0 bg-(--paper-1)">
-            <tr>
+      <ScrollArea className="min-h-0 flex-1" orientation="both" viewportRef={viewport} viewportProps={{ onScroll: event => {
+        const top = event.currentTarget.scrollTop
+        setWindow(current => Math.floor(current.top / rowHeight) === Math.floor(top / rowHeight) ? current : { ...current, top })
+      } }}>
+        <Table aria-rowcount={rows.length + 1} className="w-max min-w-full border-separate border-spacing-0 font-mono text-[12px]">
+          <TableHeader className="sticky top-0 z-10 bg-(--paper-0) [&_tr]:border-0">
+            <TableRow className="hover:bg-transparent">
+              <th
+                aria-hidden="true"
+                style={{ width: gutterWidth, minWidth: gutterWidth }}
+                className="sticky left-0 z-10 border-r border-b border-(--line-1) bg-(--paper-1)"
+              />
               {displayOrder.map((origIdx, pos) => {
                 const active = sortBy?.columnIndex === origIdx
                 return (
-                  <th
+                  <TableHead
                     key={origIdx}
                     aria-sort={
                       active ? (sortBy!.dir === "asc" ? "ascending" : "descending") : "none"
                     }
-                    className="border-b border-r border-(--line-1)/60 p-0 text-(--ink-2) last:border-r-0"
+                    className={cn(
+                      "h-8 border-r border-b border-(--line-1) p-0 text-(--ink-2) last:border-r-0",
+                      dragPos === pos && "bg-(--yz-hover)"
+                    )}
                   >
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
                       draggable
                       onClick={() => onSort(origIdx)}
                       onDragStart={() => setDragPos(pos)}
@@ -893,68 +1094,89 @@ function ResultTable({
                       }}
                       onDragEnd={() => setDragPos(null)}
                       aria-label={t("databasePanel.sortColumn", { column: columns[origIdx] })}
-                      className="flex w-full cursor-pointer items-center gap-[4px] px-[10px] py-[5px] text-left font-semibold whitespace-nowrap select-none hover:text-(--ink-1)"
+                      className={cn(
+                        "w-full gap-1 rounded-none px-3 text-[12px] hover:text-(--ink-1)",
+                        numericColumns[origIdx] ? "justify-end text-right" : "justify-start text-left",
+                        active && "text-(--ink-1)"
+                      )}
                     >
                       <span>{columns[origIdx]}</span>
                       {active &&
                         (sortBy!.dir === "asc" ? (
-                          <ChevronUp className="size-[12px] shrink-0" aria-hidden="true" />
+                          <ChevronUp className="size-3 shrink-0" aria-hidden="true" />
                         ) : (
-                          <ChevronDown className="size-[12px] shrink-0" aria-hidden="true" />
+                          <ChevronDown className="size-3 shrink-0" aria-hidden="true" />
                         ))}
-                    </button>
-                  </th>
+                    </Button>
+                  </TableHead>
                 )
               })}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, ri) => (
-              <tr key={ri} className="hover:bg-(--yz-hover)">
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {start > 0 && <TableRow aria-hidden="true" className="border-0 hover:bg-transparent"><TableCell colSpan={spanWithGutter} style={{ height: start * rowHeight, padding: 0 }} /></TableRow>}
+            {rows.slice(start, end).map((row, ri) => (
+              <TableRow key={start + ri} aria-rowindex={start + ri + 2} className="group/row border-0 hover:bg-(--yz-hover)" style={{ height: rowHeight }}>
+                <td
+                  aria-hidden="true"
+                  className="sticky left-0 border-r border-b border-(--line-1) bg-(--paper-1) px-2 text-right text-[11px] text-(--ink-4) tabular-nums group-hover/row:text-(--ink-2)"
+                >
+                  {start + ri + 1}
+                </td>
                 {displayOrder.map((origIdx) => {
                   const v = row[origIdx]
                   const display = formatDbValue(v)
+                  const cellEditable = editing?.editable(columns[origIdx], v) ?? false
                   return (
-                    <td
+                    <TableCell
                       key={origIdx}
-                      className="border-r border-b border-(--line-1)/60 px-[10px] py-[4px] whitespace-nowrap text-(--ink-1) last:border-r-0"
+                      tabIndex={cellEditable ? 0 : undefined}
+                      onDoubleClick={() => editing?.edit(columns, row, columns[origIdx])}
+                      onKeyDown={event => { if (editing && (event.key === "Enter" || event.key === "F2")) { event.preventDefault(); editing.edit(columns, row, columns[origIdx]) } }}
+                      title={cellEditable ? workbench("editHint") : workbench("readOnlyHint")}
+                      className={cn(
+                        "border-r border-b border-(--line-1)/70 px-3 py-0 whitespace-nowrap text-(--ink-1) outline-none last:border-r-0 focus-visible:bg-(--yz-active) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]",
+                        numericColumns[origIdx] && "text-right tabular-nums",
+                        cellEditable && "cursor-text"
+                      )}
                     >
+                      <span className={cn("block max-w-[360px] truncate", numericColumns[origIdx] && "ml-auto")} title={display ?? "NULL"}>
                       {display === null ? (
                         <span className="text-(--ink-4) italic">NULL</span>
                       ) : (
                         display
                       )}
-                    </td>
+                      </span>
+                    </TableCell>
                   )
                 })}
-              </tr>
+              </TableRow>
             ))}
+            {end < rows.length && <TableRow aria-hidden="true" className="border-0 hover:bg-transparent"><TableCell colSpan={spanWithGutter} style={{ height: (rows.length - end) * rowHeight, padding: 0 }} /></TableRow>}
             {rows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={Math.max(1, columns.length)}
-                  className="px-[10px] py-[8px] text-[12px] text-(--ink-4)"
+              <TableRow className="border-0 hover:bg-transparent">
+                <TableCell
+                  colSpan={spanWithGutter}
+                  className="px-4 py-6 text-center font-sans text-[12.5px] text-(--ink-3)"
                 >
                   {t("databasePanel.noRows")}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             )}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </ScrollArea>
-      <div className="flex shrink-0 items-center gap-[8px] border-t border-(--line-1) px-[10px] py-[5px] text-[11px] text-(--ink-3)">
-        <span className="font-mono">
+      <ResultStrip>
+        <span className="shrink-0 font-mono text-(--ink-2) tabular-nums">
           {t("databasePanel.rowCount", { count: rows.length })}
         </span>
         {truncated && (
-          <span
-            className="rounded-(--r-pill) bg-(--amber-soft) px-[6px] py-[1px] font-mono text-[10px]"
-            style={{ color: "#9a6512" }}
-          >
+          <span className="shrink-0 rounded-(--r-xs) bg-(--amber-soft) px-1.5 py-px text-(--ink-1)">
             {t("databasePanel.truncated", { count: rows.length })}
           </span>
         )}
-      </div>
+        {footer}
+      </ResultStrip>
     </div>
   )
-}
+})

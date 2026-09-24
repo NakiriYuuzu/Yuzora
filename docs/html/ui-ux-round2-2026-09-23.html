@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recap: Yuzora UI/UX 第二輪</title>
+<style>
+:root{--font-sans:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans TC','PingFang TC',sans-serif;--font-mono:'JetBrains Mono',ui-monospace,monospace;--bg:#faf9f7;--surface:#fff;--text:#1a1a1a;--muted:#6b7280;--border:#e5e5e5;--accent:#c45d3e;--accent-light:#f5ebe7;--ok:#16a34a;--warn:#d97706;--code:#f5f5f4}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-sans);background:var(--bg);color:var(--text);line-height:1.65;padding:2rem}
+.container{max-width:920px;margin:0 auto}
+header{margin-bottom:2rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border)}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;color:var(--accent);font-weight:700}
+h1{font-size:2rem;margin:.35rem 0;line-height:1.25}
+.meta{color:var(--muted);font-size:.875rem}
+.tldr{background:var(--accent-light);border-left:4px solid var(--accent);border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:1.5rem}
+section{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.25rem 1.5rem;margin-bottom:1.25rem}
+h2{font-size:1.2rem;margin-bottom:.75rem}
+ul{padding-left:1.25rem}
+li{margin-bottom:.35rem}
+code{background:var(--code);padding:.1rem .35rem;border-radius:6px;font-family:var(--font-mono);font-size:.82rem}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th,td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid var(--border);vertical-align:top}
+.ok{color:var(--ok);font-weight:700}.warn{color:var(--warn);font-weight:700}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<div class="label">Recap · UI/UX 第二輪</div>
+<h1>HERDR 工具、側欄與資料庫介面重新設計</h1>
+<p class="meta">2026-09-23 · 範圍：<code>src/</code> 前端 · 未進行 Git 寫入</p>
+</header>
+
+<div class="tldr">
+<p><strong>重點：</strong>這一輪完成了六項需求。HERDR 工具改成「範圍麵包屑＋左側工具導覽＋編號步驟」的呈現方式，不再疊放一堆下拉選單；側欄加上各 Agent 的 Logo；資料夾選擇會直接開啟系統對話框；資料庫介面改成類似 Surrealist 的卡片式版面。typecheck、lint、測試、build 都已通過，也在實際 App 中用 computer-use 確認過。</p>
+</div>
+
+<section>
+<h2>六項需求與處理方式</h2>
+<table>
+<tr><th>#</th><th>需求</th><th>處理方式</th></tr>
+<tr><td>1</td><td>Worktree modal 下拉選單太多</td><td><code>HerdrToolsDialog</code>：Header 改成「主機 › Session › Space」麵包屑，Space 只在需要時出現；右側放「開啟 Herdr 視窗」按鈕；工具改成左側直式導覽並加上圖示。<code>WorktreeTools</code> 拆成「1 建立 → 2 既有 Worktrees」兩個步驟，列表使用 shadcn <code>Item</code>，並以 badge 標示主 checkout／已開啟狀態。</td></tr>
+<tr><td>2</td><td>「開啟完整的…」改名</td><td>選單與 Dialog 的文字統一為「開啟 Herdr 視窗」（en：Open Herdr Window）。</td></tr>
+<tr><td>3</td><td>搬移 Pane 不直觀</td><td>改成三個步驟：選擇來源 Pane 卡片（顯示 Space · 分頁 · paneId，並標示目前焦點）→ 選擇目的地（三張附圖示的卡片）→ 放置位置（分頁卡片＋左右／上下分割圖示切換，或 Space 選項）。底部摘要列會顯示「來源 → 目的地」。</td></tr>
+<tr><td>4</td><td>Spaces | Agents 區塊精簡，並加上 Agent Logo</td><td>移除外層 Card，把切換、工具與新增按鈕併成一列；Agent 列改成單行，包含 Logo、狀態點與狀態標籤。共 19 個 Logo，來源為 <code>@lobehub/icons-static-svg</code>（MIT），其餘改以字母圖示代替。</td></tr>
+<tr><td>5</td><td>新增資料夾會多跳一個 modal</td><td>本機（非 Windows）直接呼叫系統的資料夾選擇器。Windows、遠端與 WSL 仍保留原本的 modal，因為這些情況需要先選擇原生或 WSL、或者選擇遠端路徑。</td></tr>
+<tr><td>6</td><td>Database 改用 Surrealist 風格的 GUI</td><td>頂部改成連線列（連線名稱 › 資料表，加上連線狀態標籤、引擎與位址）；查詢與結果改成兩張可調整大小的卡片，「執行」按鈕移到查詢卡的 header，結果卡的 header 顯示 statement 數與耗時；物件樹加上帶底色的圖示、群組數量，並標示目前開啟的資料表；也修正了區域之間多餘的空白。<br><strong>已取代：</strong>「兩張卡片」版面由較新的 <a href="database-redesign-2026-09-23.html">database-redesign-2026-09-23</a> 的單一 card surface 取代。</td></tr>
+</table>
+</section>
+
+<section>
+<h2>驗證</h2>
+<ul>
+<li><span class="ok">通過</span> <code>bun run typecheck</code></li>
+<li><span class="ok">通過</span> <code>bun run lint</code>：0 個 error，49 個 warning，與基準相同</li>
+<li><span class="ok">通過</span> <code>bun run test</code>：254 個檔案、2,977 個測試。新增 <code>PaneTools.test.tsx</code>，確認目的地卡片與分割方向會產生正確的 <code>pane.move</code> 參數</li>
+<li><span class="ok">通過</span> <code>bun run build</code>（包含在 tauri debug build 中）與 <code>git diff --check</code></li>
+<li><span class="ok">通過</span> Demo 截圖：<code>output/playwright/uiux2/</code>（after-herdr-*、after-db-*、after-sidebar-*）。截取 HERDR 工具時曾暫時掛載 Host，截圖後已還原</li>
+<li><span class="ok">通過</span> 在實際 App（debug build）中用 computer-use 確認：原生右鍵選單顯示「開啟 Herdr 視窗」；搬移 Pane 與 Worktrees dialog 能讀取真實 Session 資料；Space 麵包屑可切換；「開啟資料夾並建立 Space」會直接開啟 macOS 的資料夾選擇器</li>
+</ul>
+</section>
+
+<section>
+<h2>限制與後續</h2>
+<ul>
+<li>實際 App 中沒有已儲存的資料庫連線。為了不改動使用者設定，已連線狀態的卡片版面只在 Demo（SQLite 範例）中驗證。</li>
+<li>droid、letta、maki、muse、omp 目前沒有官方 Logo 可用，因此使用字母圖示。</li>
+<li>工作區原本就有未提交的變更，這一輪沒有執行 <code>git add</code>、<code>commit</code> 或 <code>push</code>。</li>
+</ul>
+</section>
+</div>
+</body>
+</html>

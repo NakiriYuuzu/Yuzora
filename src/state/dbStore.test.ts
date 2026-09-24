@@ -65,6 +65,7 @@ import {
     dbProfileNeedsTransportAcknowledgement,
     dbProfileUiErrorCode,
     loadSavedConnections,
+    identityOf,
     resultPageKey,
     useDbStore
 } from "./dbStore"
@@ -3516,5 +3517,196 @@ describe("SQLite source workspace identity", () => {
         expect(mockProfileCreate.mock.calls.every(([request]) => request.credential === null)).toBe(true)
         await useDbStore.getState().updateSaved(saved[0].id, { kind: "sqlite", path, workspace: workspaces[1] })
         expect(useDbStore.getState().saved.find((entry) => entry.id === saved[0].id)?.workspace).toEqual(workspaces[1])
+    })
+})
+
+describe("database workbench writes", () => {
+    it.each(["1", "0"])("uses the outer MSSQL update count %s even when trigger counts differ", async (count) => {
+        await useDbStore.getState().openConfig({ kind: "mssql", host: "h", port: 1433, database: "d", user: "u", password: "fixture", trustCert: true })
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const sql = "UPDATE users SET id = 2 WHERE id = 1"
+        mockQueryRun.mockImplementationOnce(async request => queryRunFromResult(request,
+            request.statements[0].sql.endsWith("; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]")
+                ? { kind: "select", columns: ["__yuzora_affected_rows"], rows: [[{ kind: "integer", value: count }]], affectedRows: "3", truncated: false, effectOutcome: "unknown" }
+                : { kind: "execute", affectedRows: count === "1" ? "2" : "1", effectOutcome: "unknown" }
+        ))
+        const edit = useDbStore.getState().executeTableStatement(identity, sql, "1")
+        if (count === "1") await expect(edit).resolves.toBeUndefined()
+        else await expect(edit).rejects.toThrow("editConflict")
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(mockQueryRun.mock.calls[0][0].statements).toEqual([{
+            sql: `${sql}; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]`, transactionBoundary: "none"
+        }])
+        expect(mockResultSessionRelease).toHaveBeenCalledTimes(1)
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("does not trust an incomplete MSSQL count result or retry the write", async () => {
+        await useDbStore.getState().openConfig({ kind: "mssql", host: "h", port: 1433, database: "d", user: "u", password: "fixture", trustCert: true })
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({
+            kind: "select", columns: ["__yuzora_affected_rows"], rows: [[{ kind: "integer", value: "1" }]],
+            affectedRows: "1", truncated: true, effectOutcome: "unknown"
+        })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("editUncertain")
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(mockResultSessionRelease).toHaveBeenCalledTimes(1)
+    })
+
+    it("refreshes acknowledged network writes without retrying when commit evidence is unavailable", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "unknown" })
+        await useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        expect(mockQueryRun).toHaveBeenCalledOnce()
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId]).toMatchObject({ running: false, editUnconfirmed: true })
+    })
+
+    it("waits for cursor release, preserves the SQL buffer and never retries a conflicting edit", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        useDbStore.getState().setSql("SELECT * FROM users")
+        await useDbStore.getState().runQuery()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const pendingRelease = deferred<DbResultPage>()
+        const owner = mockQueryRun.mock.calls[0][0]
+        mockResultSessionRelease.mockImplementationOnce(() => pendingRelease.promise)
+        mockRunResultOnce({ kind: "execute", affectedRows: "0", effectOutcome: "none" })
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editConflict")
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        const resultOwner: DbResultSessionOwner = { ...owner, statementExecutionId: `${owner.queryRunId}:0` as never, resultSessionId: `${owner.queryRunId}:0:result` as never }
+        pendingRelease.resolve(wirePage(resultOwner, { lifecycle: "released" }))
+        await outcome
+        expect(mockQueryRun).toHaveBeenCalledTimes(2)
+        const descriptor = identity.descriptorId
+        expect(useDbStore.getState().queryBuckets[descriptor].sql).toBe("SELECT * FROM users")
+        expect(useDbStore.getState().queryBuckets[descriptor].running).toBe(false)
+    })
+
+    const interruptedEdit = (request: DbQueryRunRequest): DbQueryRun => queryRunWithStatements(request, [{
+        statementExecutionId: `${request.queryRunId}:statement:0` as never,
+        statementIndex: 0,
+        sql: request.statements[0].sql,
+        effectOutcome: "none",
+        result: {
+            kind: "cancelled",
+            error: { engine: "sqlite", message: "interrupted", code: "SQLITE_INTERRUPT", position: null, detail: null, hint: null, retryability: "retryable" }
+        }
+    }])
+
+    function holdNextRun() {
+        const run = deferred<DbQueryRun>()
+        const sent: { request?: DbQueryRunRequest } = {}
+        mockQueryRun.mockImplementationOnce((request) => {
+            sent.request = request
+            return run.promise
+        })
+        return { run, sent }
+    }
+
+    it("cancels a sent edit through its exact edit owner and reports the cancellation", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const { run, sent } = holdNextRun()
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editCancelled")
+        await vi.waitFor(() => expect(sent.request).toBeDefined())
+
+        await useDbStore.getState().cancelTableStatement(identity)
+
+        const request = sent.request!
+        expect(request.queryRunId).toContain(":edit:")
+        expect(mockQueryCancel).toHaveBeenCalledWith({ ...identity, queryRunId: request.queryRunId })
+        run.resolve(interruptedEdit(request))
+        await outcome
+        expect(mockQueryRun).toHaveBeenCalledOnce()
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("never sends an edit cancelled while earlier cursors are still releasing", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        useDbStore.getState().setSql("SELECT * FROM users")
+        await useDbStore.getState().runQuery()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const pendingRelease = deferred<DbResultPage>()
+        const owner = mockQueryRun.mock.calls[0][0]
+        mockResultSessionRelease.mockImplementationOnce(() => pendingRelease.promise)
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editCancelled")
+
+        await useDbStore.getState().cancelTableStatement(identity)
+        const resultOwner: DbResultSessionOwner = { ...owner, statementExecutionId: `${owner.queryRunId}:0` as never, resultSessionId: `${owner.queryRunId}:0:result` as never }
+        pendingRelease.resolve(wirePage(resultOwner, { lifecycle: "released" }))
+        await outcome
+
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(mockQueryCancel).not.toHaveBeenCalled()
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("moves only the edited profile offline when the save loses its server", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        await useDbStore.getState().openConnection("/b.db")
+        const [a, b] = useDbStore.getState().saved.map((saved) => saved.id)
+        const identity = identityOf(useDbStore.getState().connections.find((connection) => connection.descriptorId === b))!
+        mockQueryRun.mockRejectedValueOnce({ code: "serverDisconnected", message: "socket closed" })
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("editUncertain")
+
+        expect(useDbStore.getState().connections.map((connection) => connection.descriptorId)).toEqual([a])
+        expect(useDbStore.getState().activeDescriptorId).toBe(a)
+        expect(useDbStore.getState().sessions[b]).toMatchObject({ status: "disconnected", connId: null, error: "serverDisconnected" })
+        expect(useDbStore.getState().queryBuckets[b].running).toBe(false)
+    })
+
+    it("moves the profile offline when cancelling a sent edit terminates its connection", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        const { run, sent } = holdNextRun()
+        mockQueryCancel.mockResolvedValueOnce({ outcome: "cancelledConnectionTerminated" })
+        const edit = useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        const outcome = expect(edit).rejects.toThrow("editUncertain")
+        await vi.waitFor(() => expect(sent.request).toBeDefined())
+
+        await useDbStore.getState().cancelTableStatement(identity)
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        run.resolve(queryRunWithStatements(sent.request!, [executeExecution(sent.request!, 0, "committed")]))
+        await outcome
+
+        expect(useDbStore.getState().connections).toHaveLength(0)
+        expect(useDbStore.getState().sessions[identity.descriptorId]).toMatchObject({ status: "disconnected", error: null })
+    })
+
+    it("moves the profile offline when the edit run reports a terminated connection", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockQueryRun.mockImplementationOnce(async (request) =>
+            queryRunWithStatements(request, [executeExecution(request, 0)], { connectionTerminated: true })
+        )
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("editUncertain")
+
+        expect(useDbStore.getState().connections).toHaveLength(0)
+        expect(useDbStore.getState().sessions[identity.descriptorId]).toMatchObject({ status: "disconnected", error: null })
+    })
+
+    it("rejects stale connection identities before sending a mutation", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        await expect(useDbStore.getState().executeTableStatement({ ...identity, connectionGeneration: "old" as never }, "UPDATE users SET id = 2")).rejects.toThrow("staleConnection")
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
+    it("connects without a selected database and blocks SQL until the user selects one", async () => {
+        await useDbStore.getState().openConfig({ kind: "postgres", host: "localhost", port: 5432, user: "reader", database: "", password: "test", transportMode: "verifyFull" })
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        expect(mockList).not.toHaveBeenCalled()
+        useDbStore.getState().setSql("SELECT 1")
+        await useDbStore.getState().runQuery()
+        expect(mockQueryRun).not.toHaveBeenCalled()
     })
 })

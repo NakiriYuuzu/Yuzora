@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import {
-  herdrAgentGet,
-  herdrAgentRead,
   herdrBinarySourceGet,
   herdrBinarySourceSet,
   herdrEventsRelease,
@@ -29,7 +27,7 @@ afterEach(() => {
 })
 
 describe("herdrIpc native interaction wrappers", () => {
-  it("invokes binary-source, read-only agent, and event-release commands exactly", async () => {
+  it("invokes binary-source and event-release commands exactly", async () => {
     const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
     mockIPC((cmd, args) => {
       calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
@@ -46,64 +44,16 @@ describe("herdrIpc native interaction wrappers", () => {
       if (cmd === "herdr_binary_source_set") {
         return { configured: "default", restartRequired: true }
       }
-      if (cmd === "herdr_agent_get") {
-        return {
-          terminalId: "term-1",
-          agentStatus: "blocked",
-          workspaceId: "w1",
-          tabId: "w1:t1",
-          paneId: "w1:p1",
-          focused: false,
-          revision: 1,
-          stateLabels: {}
-        }
-      }
-      if (cmd === "herdr_agent_read") {
-        return {
-          paneId: "w1:p1",
-          workspaceId: "w1",
-          tabId: "w1:t1",
-          source: "recent",
-          format: "text",
-          text: "output",
-          revision: 1,
-          truncated: false
-        }
-      }
       return null
     })
 
     await herdrBinarySourceGet()
     await herdrBinarySourceSet("default")
-    await herdrAgentGet({ sessionName: "work", target: "w1:p1" })
-    await herdrAgentRead({
-      sessionName: "work",
-      target: "w1:p1",
-      source: "recent",
-      format: "text",
-      lines: 120,
-      stripAnsi: true
-    })
     await herdrEventsRelease("sub-1")
 
     expect(calls).toEqual([
       { cmd: "herdr_binary_source_get", args: {} },
       { cmd: "herdr_binary_source_set", args: { source: "default", customPath: null } },
-      {
-        cmd: "herdr_agent_get",
-        args: { sessionName: "work", target: "w1:p1" }
-      },
-      {
-        cmd: "herdr_agent_read",
-        args: {
-          sessionName: "work",
-          target: "w1:p1",
-          source: "recent",
-          format: "text",
-          lines: 120,
-          stripAnsi: true
-        }
-      },
       { cmd: "herdr_events_release", args: { subscriptionId: "sub-1" } }
     ])
   })

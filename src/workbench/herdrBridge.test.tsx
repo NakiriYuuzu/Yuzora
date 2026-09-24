@@ -131,8 +131,6 @@ describe("HerdrBridge attachment reconciliation", () => {
               paneClose: true,
               layoutExport: true,
               layoutSetSplitRatio: true,
-        agentGet: true,
-        agentRead: true,
         eventsSubscribe: true,
         worktreeList: true,
               methods: [

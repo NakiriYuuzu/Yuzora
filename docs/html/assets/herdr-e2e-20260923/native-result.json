@@ -1,0 +1,23 @@
+{
+  "passed": true,
+  "assertions": [
+    "isolated HERDR 0.9.1 protocol 22 server",
+    "production native client open, ANSI frames and keyboard input",
+    "native client resize acknowledged and shell remains interactive",
+    "keyboard Copy mode searches offscreen history and emits exact OSC 52 text",
+    "official client forwards inline Kitty graphics payload",
+    "production feature opens native plugin popup; keyboard works and pane topology is unchanged",
+    "production feature opens and renders trusted local plugin pane",
+    "client close reaps owned helper and preserves server plus pane identity",
+    "ordinary pane connector reconnects and delivers input after native client closes",
+    "native client can reopen same running Session"
+  ],
+  "failure": null,
+  "nativeClientPids": [
+    38920,
+    38964
+  ],
+  "root": "/private/tmp/yz-native-wioiGS",
+  "session": "native-e2e",
+  "cleanup": "only created test Session stopped; temporary runtime root removed"
+}

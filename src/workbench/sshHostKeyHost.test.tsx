@@ -22,16 +22,14 @@ vi.mock("@/lib/ipc", () => ({
     sshHostKeyRespond: (...args: unknown[]) => ipcMocks.sshHostKeyRespond(...args)
 }))
 
-const writeText = vi.fn(async () => undefined)
+const writeText = vi.hoisted(() => vi.fn(async (_text: string) => undefined))
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText }))
 
 beforeEach(() => {
     captured = () => {}
     ipcMocks.sshHostKeyRespond.mockReset().mockResolvedValue(undefined)
     writeText.mockReset().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", {
-        configurable: true,
-        value: { writeText }
-    })
 })
 
 afterEach(() => {

@@ -1,0 +1,34 @@
+ spaces                  │   1      +                                                                           
+                         │HISTORY_042                                                                          ▕
+ · Native E2E            │HISTORY_043                                                                          ▕
+                         │HISTORY_044                                                                          ▕
+                         │HISTORY_045                                                                          ▕
+                         │HISTORY_046                                                                          ▕
+                         │HISTORY_047                                                                          ▕
+                         │HISTORY_048                                                                          ▕
+                         │HISTORY_049                                                                          ▕
+                         │HISTORY_050                                                                          ▐
+                         │HISTORY_051                                                                          ▐
+                         │HISTORY_052                                                                          ▐
+                         │HISTORY_053                                                                          ▐
+                         │HISTORY_054                                                                          ▐
+                         │HISTORY_055                                                                          ▐
+                         │HISTORY_056                                                                          ▕
+ new                 menu│HISTORY_057                                                                          ▕
+─────────────────────────│HISTORY_058                                                                          ▕
+ agents           grouped│HISTORY_059                                                                          ▕
+                         │HISTORY_060                                                                          ▕
+                         │HISTORY_061                                                                          ▕
+                         │HISTORY_062                                                                          ▕
+                         │HISTORY_063                                                                          ▕
+                         │HISTORY_064                                                                          ▕
+                         │HISTORY_065                                                                          ▕
+                         │HISTORY_066                                                                          ▕
+                         │HISTORY_067                                                                          ▕
+                         │HISTORY_068                                                                          ▕
+                         │HISTORY_069                                                                          ▕
+                         │HISTORY_070                                                                          ▕
+                         │HISTORY_071                                                                          ▕
+                         │HISTORY_072                                                                          ▕
+                         │HISTORY_073                                                                          ▕
+                        «│ COPY  h/j/k/l w/b/e { } move  / ? search  n/N repeat 1/1  v/space select  y/enter cop

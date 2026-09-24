@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import type { LucideIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -7,6 +8,8 @@ interface EmptyStateProps {
   title: string
   description: string
   tone?: "default" | "terminal"
+  /** Optional next steps, so an empty surface always offers a way forward. */
+  actions?: ReactNode
 }
 
 /**
@@ -15,7 +18,7 @@ interface EmptyStateProps {
  * 26–28px icon in --ink-3/4, 12.5–13px text. `tone="terminal"` swaps to the
  * --term-* palette for use inside the terminal drawer.
  */
-export function EmptyState({ icon: Icon, title, description, tone = "default" }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, title, description, tone = "default", actions }: EmptyStateProps) {
   const isTerminal = tone === "terminal"
 
   return (
@@ -32,6 +35,7 @@ export function EmptyState({ icon: Icon, title, description, tone = "default" }:
           {description}
         </p>
       </div>
+      {actions && <div className="mt-[6px] flex flex-wrap items-center justify-center gap-[8px]">{actions}</div>}
     </div>
   )
 }

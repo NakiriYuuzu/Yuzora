@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Browser review 修正 · 2026-09-18</title>
+<style>body{font:16px/1.75 system-ui,sans-serif;color:#222;background:#faf9f6;max-width:900px;margin:48px auto;padding:0 24px}h1{font-size:28px;line-height:1.35}h2{font-size:21px;margin-top:28px}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:10px 12px;text-align:left;border:1px solid #d6d4cf;vertical-align:top}th{background:#eeede8}</style>
+<main>
+<h1>Browser review 修正</h1>
+<p>依使用者要求處理 gpt-5.6-sol xhigh review 的 P1／P2 項目。修正 typed IPC 邊界與快捷鍵分層，拆出 Browser 互動及存檔重整；lease 重新開啟的 P1 經驗證為誤判，保留原有來源與載入位址分離的設計。</p>
+<table><thead><tr><th>Review 項目</th><th>處理結果</th></tr></thead><tbody>
+<tr><td>P1：typed IPC</td><td><code>src/lib/previewTypes.ts</code> 定義 resource source、lease、shortcut binding 與 interaction snapshot。<code>src/lib/ipc.ts</code> 集中提供四個新 Browser command wrappers，UI／preview modules 使用具名函式。頁面回傳的 selection 保持 unknown，複製前執行 runtime validation。</td></tr>
+<tr><td>P2：AppShell 分層</td><td>快捷鍵 listener 移至 <code>WorkbenchKeyboardBridge</code>，由 <code>src/App.tsx</code> 與其他 Bridge 並列掛載。保留 capture 階段、使用者重新設定、IME／dialog 防護及卸載清理。</td></tr>
+<tr><td>P2：PreviewPanel 職責</td><td><code>usePreviewInteractions</code> 管理 Browser owner 的導覽／互動 polling、元素選取、剪貼簿及取消；<code>useFilePreviewReload</code> 管理成功存檔後的合併重整。Panel 保留 native view 版面及 toolbar。</td></tr>
+<tr><td>P1：lease 重開失敗（撤回）</td><td>review 漏看 <code>useRemotePreviewUrl → resolveFilePreviewUrl → previewOpenUrl(renderedPreview.url)</code>。store 中的 source URL 是穩定來源，並不直接作為 native 載入位址。新增「關閉後重開」與「切換工作區後重開」測試，在修改產品程式前均通過；測試使用不同 lease IDs，確認 renderer 先回傳空位址等待，再提供新 lease URL，且來源路徑一致。</td></tr>
+</tbody></table>
+<h2>驗證</h2>
+<p>完整前端測試：238 files、2,841 tests 通過。新增驗證涵蓋 lease 重開、capture 事件先於 terminal/editor handler、listener 卸載、快捷鍵重設與 IME／dialog 防護、元素複製、隱藏時取消、工作區／Browser owner 切換後丟棄延遲選取結果。最後 visibility guard 調整另執行相關 hook／Panel tests。</p>
+<p>lint 通過（0 errors、52 warnings）；typecheck 與 build 通過（既有大 bundle 提示）。本輪修改限前端及文件，Rust／Host 未變動，因此沿用前一輪通過結果。未重跑原生 GUI；此輪回歸驗證使用 production resolver、Bridge 與 hook，IPC 為測試替身。</p>
+<p>記錄位於 <code>/tmp/yuzora-herdr091/review-lease-baseline.log</code>、<code>review-fixes-tests.log</code>、<code>review-final-hooks.log</code>、<code>review-final-lint.log</code> 及 <code>review-final-build.log</code>。</p>
+<h2>範圍與工作區</h2>
+<p>本輪未 stage、commit、push。既有 HTML、先前 HERDR 與 Browser 功能修改保留。原始 Git 故障的跨平台 GUI、完整 WSL watcher 及 Windows Browser 驗收缺口，仍參照 <a href="herdr-091-render-verification-2026-09-18.html">前一輪驗證紀錄</a>；它們不因本次分層修正而自動完成。</p>
+</main></html>

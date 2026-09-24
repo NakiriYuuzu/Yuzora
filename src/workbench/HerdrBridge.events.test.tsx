@@ -47,8 +47,6 @@ const capabilities: HerdrCapabilities = {
     paneClose: true,
     layoutExport: true,
     layoutSetSplitRatio: true,
-    agentGet: true,
-    agentRead: true,
     eventsSubscribe: true,
     worktreeList: true,
     methods: ["session.snapshot", "events.subscribe", "agent.get", "agent.read"]

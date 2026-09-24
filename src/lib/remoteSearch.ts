@@ -1,7 +1,7 @@
 import { Channel } from "@tauri-apps/api/core"
 import { invoke } from "./ipc"
 import { runtimeWorkspaceService } from "./remoteFiles"
-import { parseRemoteFilePath, remoteFilePath, sameConnection, type ConnectionOwner } from "./runtimeIdentity"
+import { parseRemoteFilePath, relativeRemoteHostPath, remoteFilePath, sameConnection, type ConnectionOwner } from "./runtimeIdentity"
 import type { SearchEvent } from "./types"
 
 interface Search { service: ReturnType<typeof runtimeWorkspaceService>; streamId?: string; done: boolean }
@@ -38,7 +38,7 @@ export async function searchRemoteWorkspace(root: string, query: string, caseSen
     const event = message.frame.payload.event
     if (message.frame.version !== 1 || message.frame.payload.type !== "search" || !event) return
     if (event.type === "match") {
-      if (event.path !== service.root && !event.path.startsWith(service.root.replace(/\/$/, "") + "/")) return
+      if (relativeRemoteHostPath(service.root, event.path) === null) return
       onEvent({ ...event, path: remoteFilePath(service.owner.hostId, event.path, service.root) })
     } else { search.done = true; onEvent(event) }
   }

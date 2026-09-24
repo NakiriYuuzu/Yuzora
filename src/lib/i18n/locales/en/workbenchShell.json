@@ -33,5 +33,6 @@
   "copyWorkspacePath": "Copy full folder path",
   "revealFinder": "Open in Finder",
   "revealExplorer": "Open in Explorer",
-  "revealFileManager": "Open in file manager"
+  "revealFileManager": "Open in file manager",
+  "resetWidthHint": "Drag to resize · double-click to reset"
 }

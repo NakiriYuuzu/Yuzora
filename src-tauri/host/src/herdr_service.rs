@@ -17,12 +17,15 @@ use std::time::{Duration, Instant};
 
 use crate::herdr_backend::{HerdrMetadata, HerdrRemoteBackend};
 use crate::herdr_limits::{
-    bound_agent_text, bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout,
-    read_bounded_bytes, read_bounded_ndjson_line, validate_json_complexity,
-    validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH,
-    MAX_NDJSON_LINE_BYTES, MAX_PANE_COUNT, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
+    bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout, read_bounded_bytes,
+    read_bounded_ndjson_line, validate_json_complexity, validate_snapshot_counts,
+    BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH, MAX_NDJSON_LINE_BYTES,
+    MAX_PANE_COUNT, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
 };
-use crate::herdr_transport::{connect_local_stream, read_local_ndjson_line, write_local_all_until};
+use crate::herdr_transport::{
+    connect_local_stream, read_local_ndjson_line, read_local_ndjson_line_with,
+    write_local_all_until, LocalWaitProfile,
+};
 use crate::process_kill;
 
 pub type OnTerminalEvent = Arc<dyn Fn(HerdrTerminalEvent) -> Result<(), String> + Send + Sync>;
@@ -37,12 +40,15 @@ const BINARY_SOURCE_CONFIG_FILE: &str = "herdr-config-v1.json";
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const EVENT_ACK_TIMEOUT: Duration = Duration::from_secs(1);
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
-const AGENT_READ_MIN_LINES: u32 = 20;
-const AGENT_READ_MAX_LINES: u32 = 500;
+/// Hot API paths (pane scroll, snapshot polls) reuse a `session list`, `ping`
+/// and binary-fingerprint result for this long instead of spawning the CLI and
+/// pinging on every request. Any request failure, explicit Session refresh, or
+/// lifecycle change drops them; socket paths still come only from the list.
+const RUNTIME_VALIDATION_TTL: Duration = Duration::from_millis(1000);
 #[cfg(not(test))]
 const HERDR_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
@@ -119,59 +125,6 @@ pub struct HerdrBinarySourceInfo {
 pub struct HerdrBinarySourceSetResult {
     pub configured: HerdrBinarySource,
     pub restart_required: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HerdrReadSource {
-    Visible,
-    Recent,
-    #[serde(rename = "recent-unwrapped")]
-    RecentUnwrapped,
-    Detection,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HerdrReadFormat {
-    Text,
-    Ansi,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HerdrAgentDetails {
-    pub terminal_id: String,
-    pub agent_status: String,
-    pub workspace_id: String,
-    pub tab_id: String,
-    pub pane_id: String,
-    pub focused: bool,
-    pub revision: u64,
-    pub agent: Option<String>,
-    pub display_agent: Option<String>,
-    pub name: Option<String>,
-    pub title: Option<String>,
-    pub cwd: Option<String>,
-    pub foreground_cwd: Option<String>,
-    pub interactive_ready: Option<bool>,
-    pub launch_pending: Option<bool>,
-    pub state_labels: HashMap<String, String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HerdrAgentReadResult {
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
-    pub source: HerdrReadSource,
-    pub format: HerdrReadFormat,
-    pub text: String,
-    pub revision: u64,
-    pub truncated: bool,
-    /// True when Yuzora refused to deliver the full agent text (over 512 KiB).
-    pub too_large: bool,
 }
 
 /// Events delivered over the Tauri Channel for `herdr_events_subscribe`.
@@ -269,10 +222,6 @@ pub struct HerdrApiCapability {
     pub pane_close: bool,
     pub layout_export: bool,
     pub layout_set_split_ratio: bool,
-    /// Read-only `agent.get` (explicit pane/name target).
-    pub agent_get: bool,
-    /// Read-only `agent.read` (explicit pane/name target).
-    pub agent_read: bool,
     /// Long-lived `events.subscribe` socket lane.
     pub events_subscribe: bool,
     /// Schema-gated read-only `worktree.list` (protocol 19).
@@ -733,6 +682,7 @@ pub struct HerdrState(pub Arc<HerdrManager>);
 pub struct HerdrManager {
     remote: Option<Arc<dyn HerdrRemoteBackend>>,
     sessions: Mutex<HashMap<String, Arc<ConnectorSession>>>,
+    native_clients: Mutex<HashMap<String, Arc<native_client::NativeHerdrClient>>>,
     event_subscriptions: Mutex<HashMap<String, Arc<EventSubscription>>>,
     /// Optional override for tests / explicit binary selection.
     binary_override: Mutex<Option<PathBuf>>,
@@ -761,7 +711,15 @@ pub struct HerdrManager {
     /// still match. Session list + `ping` remain authoritative on every call.
     capability_cache: Mutex<HashMap<String, CachedCapabilities>>,
     capability_probe_lock: Mutex<()>,
+    /// Short-lived validation state for hot paths; see `RUNTIME_VALIDATION_TTL`.
+    session_inventory: Mutex<Option<(Instant, Vec<HerdrNamedSession>)>>,
+    socket_identity: Mutex<HashMap<String, (Instant, ServerIdentity)>>,
+    binary_fingerprint_cache: Mutex<Option<(Instant, Option<String>)>>,
+    validation_ttl: Mutex<Duration>,
 }
+
+/// Live server `(version, protocol)` reported by `ping`.
+type ServerIdentity = (String, u32);
 
 #[derive(Clone)]
 struct CachedCapabilities {
@@ -799,6 +757,7 @@ impl HerdrManager {
         Self {
             remote: None,
             sessions: Mutex::new(HashMap::new()),
+            native_clients: Mutex::new(HashMap::new()),
             event_subscriptions: Mutex::new(HashMap::new()),
             binary_override: Mutex::new(None),
             managed_binary_override: Mutex::new(None),
@@ -814,6 +773,10 @@ impl HerdrManager {
             binary_source_write_lock: Mutex::new(()),
             capability_cache: Mutex::new(HashMap::new()),
             capability_probe_lock: Mutex::new(()),
+            session_inventory: Mutex::new(None),
+            socket_identity: Mutex::new(HashMap::new()),
+            binary_fingerprint_cache: Mutex::new(None),
+            validation_ttl: Mutex::new(RUNTIME_VALIDATION_TTL),
         }
     }
 
@@ -828,6 +791,61 @@ impl HerdrManager {
         *self.active_custom_path.lock().unwrap() = loaded.custom_path;
         *self.binary_source_config_error.lock().unwrap() = loaded.error;
         self.capability_cache.lock().unwrap().clear();
+        self.invalidate_runtime_caches();
+    }
+
+    /// Drop the short-lived Session/ping/fingerprint validation state so the
+    /// next request rediscovers it. Called after any request failure and any
+    /// Session lifecycle change.
+    pub(crate) fn invalidate_runtime_caches(&self) {
+        *self.session_inventory.lock().unwrap() = None;
+        self.socket_identity.lock().unwrap().clear();
+        *self.binary_fingerprint_cache.lock().unwrap() = None;
+    }
+
+    // Only the Unix fake-socket validation tests shorten the window.
+    #[cfg(all(test, unix))]
+    pub(crate) fn set_validation_ttl_for_test(&self, ttl: Duration) {
+        *self.validation_ttl.lock().unwrap() = ttl;
+    }
+
+    fn validation_fresh(&self, at: Instant) -> bool {
+        at.elapsed() < *self.validation_ttl.lock().unwrap()
+    }
+
+    /// Binary fingerprint reused within the validation window. Remote runtimes
+    /// answer this over the host helper, so avoid one round trip per request.
+    fn recent_binary_fingerprint(&self) -> Option<String> {
+        if let Some((at, fingerprint)) = self.binary_fingerprint_cache.lock().unwrap().clone() {
+            if self.validation_fresh(at) {
+                return fingerprint;
+            }
+        }
+        let fingerprint = self.active_binary_fingerprint();
+        *self.binary_fingerprint_cache.lock().unwrap() =
+            Some((Instant::now(), fingerprint.clone()));
+        fingerprint
+    }
+
+    /// Live server identity for a socket, pinged at most once per validation window.
+    fn recent_server_identity(&self, socket_path: &str) -> Option<(String, u32)> {
+        if let Some((at, identity)) = self
+            .socket_identity
+            .lock()
+            .unwrap()
+            .get(socket_path)
+            .cloned()
+        {
+            if self.validation_fresh(at) {
+                return Some(identity);
+            }
+        }
+        let identity = self.ping_server_identity(socket_path).ok()?;
+        self.socket_identity
+            .lock()
+            .unwrap()
+            .insert(socket_path.to_owned(), (Instant::now(), identity.clone()));
+        Some(identity)
     }
 
     /// Start the resolved local Herdr headless server before the frontend bootstraps.
@@ -1255,6 +1273,10 @@ impl HerdrManager {
                         if Some(live_identity.clone())
                             == caps.server.version.clone().zip(caps.server.protocol) =>
                     {
+                        self.socket_identity
+                            .lock()
+                            .unwrap()
+                            .insert(socket_path.clone(), (Instant::now(), live_identity));
                         Some(CachedCapabilities {
                             capabilities: caps.clone(),
                             named_session: session.name,
@@ -1302,6 +1324,16 @@ impl HerdrManager {
     /// replacement, or negative cache condition falls back to fresh discovery.
     fn cached_capabilities_for_session(&self, session_name: Option<&str>) -> HerdrCapabilities {
         let current_session = self.require_running_session_socket(session_name).ok();
+        self.cached_capabilities_with_session(session_name, current_session)
+    }
+
+    /// Same as `cached_capabilities_for_session`, for callers that already
+    /// resolved the running Session and its socket (one resolution per request).
+    fn cached_capabilities_with_session(
+        &self,
+        session_name: Option<&str>,
+        current_session: Option<(HerdrNamedSession, String)>,
+    ) -> HerdrCapabilities {
         let cache_key = Self::capability_cache_key(session_name);
         let cached = self
             .capability_cache
@@ -1312,8 +1344,8 @@ impl HerdrManager {
         if let (Some((session, socket_path)), Some(cached)) = (current_session, cached) {
             if cached.named_session == session.name
                 && cached.socket_path == socket_path
-                && cached.binary_fingerprint == self.active_binary_fingerprint()
-                && self.ping_server_identity(&socket_path).ok()
+                && cached.binary_fingerprint == self.recent_binary_fingerprint()
+                && self.recent_server_identity(&socket_path)
                     == cached
                         .capabilities
                         .server
@@ -1396,8 +1428,6 @@ impl HerdrManager {
                 pane_close: false,
                 layout_export: false,
                 layout_set_split_ratio: false,
-                agent_get: false,
-                agent_read: false,
                 events_subscribe: false,
                 worktree_list: false,
                 methods: Vec::new(),
@@ -1598,7 +1628,20 @@ impl HerdrManager {
     /// `herdr session list --json` — authoritative named-session inventory.
     pub fn list_sessions(&self) -> Result<Vec<HerdrNamedSession>, String> {
         let value = self.metadata(HerdrMetadata::Sessions, None)?;
-        bounded_ipc(parse_session_list_json(&value)?)
+        let sessions = bounded_ipc(parse_session_list_json(&value)?)?;
+        *self.session_inventory.lock().unwrap() = Some((Instant::now(), sessions.clone()));
+        Ok(sessions)
+    }
+
+    /// Session inventory for hot paths: the last authoritative list while it
+    /// is inside the validation window, otherwise a fresh `session list`.
+    fn session_inventory(&self) -> Result<Vec<HerdrNamedSession>, String> {
+        if let Some((at, sessions)) = self.session_inventory.lock().unwrap().clone() {
+            if self.validation_fresh(at) {
+                return Ok(sessions);
+            }
+        }
+        self.list_sessions()
     }
 
     /// Resolve a named session from `session list --json` only.
@@ -1607,7 +1650,7 @@ impl HerdrManager {
         &self,
         session_name: Option<&str>,
     ) -> Result<HerdrNamedSession, String> {
-        let sessions = self.list_sessions()?;
+        let sessions = self.session_inventory()?;
         if sessions.is_empty() {
             return Err("no herdr named sessions found".into());
         }
@@ -1657,15 +1700,13 @@ impl HerdrManager {
     }
 
     pub fn snapshot(&self, session_name: Option<&str>) -> Result<HerdrSnapshotResult, String> {
-        let caps = self.cached_capabilities_for_session(session_name);
-        if !caps.api.snapshot {
-            return Err(caps
-                .api
-                .reason
-                .unwrap_or_else(|| "herdr snapshot unavailable".into()));
-        }
-        let (_session, socket) = self.require_running_session_socket(session_name)?;
-        let response = self.request_api(&socket, "session.snapshot", serde_json::json!({}))?;
+        let response = self.call_checked_api(
+            session_name,
+            |api| api.snapshot,
+            "session.snapshot",
+            serde_json::json!({}),
+            "herdr snapshot unavailable",
+        )?;
         bounded_ipc(parse_snapshot_response(response)?)
     }
 
@@ -2104,82 +2145,6 @@ impl HerdrManager {
         bounded_ipc(parse_layout_set_split_ratio_response(response)?)
     }
 
-    /// Read-only `agent.get` against an explicit pane id.
-    pub fn agent_get(
-        &self,
-        session_name: Option<&str>,
-        target: String,
-    ) -> Result<HerdrAgentDetails, String> {
-        validate_explicit_pane_target(&target)?;
-        let response = self.call_checked_api(
-            session_name,
-            |api| api.agent_get,
-            "agent.get",
-            serde_json::json!({ "target": target.clone() }),
-            "herdr agent.get unavailable",
-        )?;
-        let parsed = parse_agent_get_response(response)?;
-        if parsed.pane_id != target {
-            return Err(format!(
-                "agent.get returned pane {} for requested target {target}",
-                parsed.pane_id
-            ));
-        }
-        bounded_ipc(parsed)
-    }
-
-    /// Read-only `agent.read` against an explicit pane id.
-    pub fn agent_read(
-        &self,
-        session_name: Option<&str>,
-        target: String,
-        source: HerdrReadSource,
-        format: Option<HerdrReadFormat>,
-        lines: Option<u32>,
-        strip_ansi: Option<bool>,
-    ) -> Result<HerdrAgentReadResult, String> {
-        validate_explicit_pane_target(&target)?;
-        if let Some(lines) = lines {
-            if !(AGENT_READ_MIN_LINES..=AGENT_READ_MAX_LINES).contains(&lines) {
-                return Err(format!(
-                    "agent.read lines must be between {AGENT_READ_MIN_LINES} and {AGENT_READ_MAX_LINES}"
-                ));
-            }
-        }
-        let format = format.unwrap_or(HerdrReadFormat::Text);
-        let mut params = serde_json::Map::new();
-        params.insert("target".into(), serde_json::Value::String(target.clone()));
-        params.insert(
-            "source".into(),
-            serde_json::to_value(source).map_err(|e| e.to_string())?,
-        );
-        params.insert(
-            "format".into(),
-            serde_json::to_value(format).map_err(|e| e.to_string())?,
-        );
-        if let Some(lines) = lines {
-            params.insert("lines".into(), serde_json::json!(lines));
-        }
-        if let Some(strip_ansi) = strip_ansi {
-            params.insert("strip_ansi".into(), serde_json::json!(strip_ansi));
-        }
-        let response = self.call_checked_api(
-            session_name,
-            |api| api.agent_read,
-            "agent.read",
-            serde_json::Value::Object(params),
-            "herdr agent.read unavailable",
-        )?;
-        let parsed = parse_agent_read_response(response)?;
-        if parsed.pane_id != target {
-            return Err(format!(
-                "agent.read returned pane {} for requested target {target}",
-                parsed.pane_id
-            ));
-        }
-        bounded_ipc(parsed)
-    }
-
     /// Long-lived `events.subscribe` for Agent status and pane lifecycle.
     pub fn events_subscribe(
         self: &Arc<Self>,
@@ -2277,11 +2242,12 @@ impl HerdrManager {
                 if closed_for_thread.load(Ordering::SeqCst) {
                     break;
                 }
-                match read_local_ndjson_line(
+                match read_local_ndjson_line_with(
                     &mut stream,
                     &mut pending,
                     Some(Instant::now() + EVENT_POLL_INTERVAL),
                     MAX_NDJSON_LINE_BYTES,
+                    LocalWaitProfile::Idle,
                 ) {
                     Ok(None) => {
                         let _ = emit_subscription_event(
@@ -2414,14 +2380,22 @@ impl HerdrManager {
         params: serde_json::Value,
         unavailable: &str,
     ) -> Result<serde_json::Value, String> {
-        let caps = self.cached_capabilities_for_session(session_name);
+        // Resolve the running Session and socket once per request.
+        let resolved = self.require_running_session_socket(session_name);
+        let caps = self.cached_capabilities_with_session(session_name, resolved.clone().ok());
         if !is_available(&caps.api) {
             return Err(caps.api.reason.unwrap_or_else(|| unavailable.into()));
         }
         // Incompatible / stopped sessions clear method flags above; still refuse
         // via the authoritative session-list socket path (never guess/start).
-        let (_session, socket) = self.require_running_session_socket(session_name)?;
-        self.request_api(&socket, method, params)
+        let (_session, socket) = resolved?;
+        let response = self.request_api(&socket, method, params);
+        if response.is_err() {
+            // A failed request may mean a restarted, replaced or stopped
+            // server: the next request rediscovers instead of trusting caches.
+            self.invalidate_runtime_caches();
+        }
+        response
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2581,11 +2555,17 @@ impl HerdrManager {
         text: Option<String>,
         bytes_base64: Option<String>,
     ) -> Result<(), String> {
+        if session_id.starts_with("herdr-client-") {
+            return self.native_client_input(session_id, text, bytes_base64);
+        }
         let cmd = TerminalControlCommand::input(text, bytes_base64)?;
         self.send_control(session_id, &cmd)
     }
 
     pub fn terminal_resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+        if session_id.starts_with("herdr-client-") {
+            return self.native_client_resize(session_id, cols, rows);
+        }
         let cmd = TerminalControlCommand::resize(cols, rows)?;
         self.send_control(session_id, &cmd)?;
         if let Some(session) = self.sessions.lock().unwrap().get(session_id) {
@@ -2607,6 +2587,9 @@ impl HerdrManager {
 
     /// Release only the Yuzora-owned connector child for this session.
     pub fn terminal_release(&self, session_id: &str) -> Result<(), String> {
+        if session_id.starts_with("herdr-client-") {
+            return self.release_native_client(session_id);
+        }
         let session = {
             let mut map = self.sessions.lock().unwrap();
             map.remove(session_id)
@@ -2617,6 +2600,16 @@ impl HerdrManager {
 
     /// Shutdown path: drop every Yuzora connector child. Never stops Herdr server/panes.
     pub fn release_all_connectors(&self) {
+        let clients: Vec<_> = self
+            .native_clients
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for id in clients {
+            let _ = self.release_native_client(&id);
+        }
         let sessions: Vec<Arc<ConnectorSession>> = {
             let mut map = self.sessions.lock().unwrap();
             map.drain().map(|(_, s)| s).collect()
@@ -3292,130 +3285,6 @@ pub fn parse_subscription_event_line(
     }))
 }
 
-fn validate_explicit_pane_target(target: &str) -> Result<(), String> {
-    let trimmed = target.trim();
-    let explicit = trimmed == target
-        && !trimmed.chars().any(char::is_control)
-        && trimmed
-            .split_once(":p")
-            .is_some_and(|(workspace, pane)| !workspace.is_empty() && !pane.is_empty());
-    if explicit {
-        Ok(())
-    } else {
-        Err("agent target must be an explicit Herdr pane id (for example w1:p1)".into())
-    }
-}
-
-fn parse_agent_get_response(response: serde_json::Value) -> Result<HerdrAgentDetails, String> {
-    #[derive(serde::Deserialize)]
-    struct Envelope {
-        result: ResultBody,
-    }
-    #[derive(serde::Deserialize)]
-    struct ResultBody {
-        #[serde(rename = "type")]
-        result_type: String,
-        agent: AgentBody,
-    }
-    #[derive(serde::Deserialize)]
-    struct AgentBody {
-        terminal_id: String,
-        agent_status: String,
-        workspace_id: String,
-        tab_id: String,
-        pane_id: String,
-        focused: bool,
-        revision: u64,
-        agent: Option<String>,
-        display_agent: Option<String>,
-        name: Option<String>,
-        title: Option<String>,
-        cwd: Option<String>,
-        foreground_cwd: Option<String>,
-        interactive_ready: Option<bool>,
-        launch_pending: Option<bool>,
-        #[serde(default)]
-        state_labels: HashMap<String, String>,
-    }
-
-    let envelope: Envelope = serde_json::from_value(response)
-        .map_err(|error| format!("invalid agent.get response: {error}"))?;
-    if envelope.result.result_type != "agent_info" {
-        return Err(format!(
-            "unexpected agent.get result type: {}",
-            envelope.result.result_type
-        ));
-    }
-    let agent = envelope.result.agent;
-    if agent.state_labels.len() > MAX_STATE_LABELS {
-        return Err(HerdrProtocolError::TooComplex("state_labels").into());
-    }
-    Ok(HerdrAgentDetails {
-        terminal_id: agent.terminal_id,
-        agent_status: agent.agent_status,
-        workspace_id: agent.workspace_id,
-        tab_id: agent.tab_id,
-        pane_id: agent.pane_id,
-        focused: agent.focused,
-        revision: agent.revision,
-        agent: agent.agent,
-        display_agent: agent.display_agent,
-        name: agent.name,
-        title: agent.title,
-        cwd: agent.cwd,
-        foreground_cwd: agent.foreground_cwd,
-        interactive_ready: agent.interactive_ready,
-        launch_pending: agent.launch_pending,
-        state_labels: agent.state_labels,
-    })
-}
-
-fn parse_agent_read_response(response: serde_json::Value) -> Result<HerdrAgentReadResult, String> {
-    #[derive(serde::Deserialize)]
-    struct Envelope {
-        result: ResultBody,
-    }
-    #[derive(serde::Deserialize)]
-    struct ResultBody {
-        #[serde(rename = "type")]
-        result_type: String,
-        read: ReadBody,
-    }
-    #[derive(serde::Deserialize)]
-    struct ReadBody {
-        pane_id: String,
-        workspace_id: String,
-        tab_id: String,
-        source: HerdrReadSource,
-        format: HerdrReadFormat,
-        text: String,
-        revision: u64,
-        truncated: bool,
-    }
-
-    let envelope: Envelope = serde_json::from_value(response)
-        .map_err(|error| format!("invalid agent.read response: {error}"))?;
-    if envelope.result.result_type != "pane_read" {
-        return Err(format!(
-            "unexpected agent.read result type: {}",
-            envelope.result.result_type
-        ));
-    }
-    let read = envelope.result.read;
-    let (text, too_large) = bound_agent_text(read.text);
-    Ok(HerdrAgentReadResult {
-        pane_id: read.pane_id,
-        workspace_id: read.workspace_id,
-        tab_id: read.tab_id,
-        source: read.source,
-        format: read.format,
-        text,
-        revision: read.revision,
-        truncated: read.truncated || too_large,
-        too_large,
-    })
-}
-
 #[cfg(any(windows, test))]
 fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
     let raw = raw
@@ -3507,7 +3376,9 @@ fn run_herdr_json_with_session_timeout(
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     process_kill::configure_background_process(&mut cmd);
     if let Some(name) = session_name.filter(|s| !s.trim().is_empty()) {
-        cmd.env("HERDR_SESSION", name);
+        cmd.env("HERDR_SESSION", name)
+            .env_remove("HERDR_SOCKET_PATH")
+            .env_remove("HERDR_ENV");
     }
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let mut process_tree = process_kill::attach_process_tree(&mut child)
@@ -3854,8 +3725,6 @@ const IMPLEMENTED_API_METHODS: &[&str] = &[
     "pane.process_info",
     "layout.export",
     "layout.set_split_ratio",
-    "agent.get",
-    "agent.read",
     "events.subscribe",
     "worktree.list",
 ];
@@ -3899,8 +3768,6 @@ fn clear_api_method_flags(api: &mut HerdrApiCapability) {
     api.pane_close = false;
     api.layout_export = false;
     api.layout_set_split_ratio = false;
-    api.agent_get = false;
-    api.agent_read = false;
     api.events_subscribe = false;
     api.worktree_list = false;
     api.methods.clear();
@@ -3969,13 +3836,11 @@ fn apply_schema_method_flags(
     api.pane_close = has("pane.close");
     api.layout_export = has("layout.export");
     api.layout_set_split_ratio = has("layout.set_split_ratio");
-    api.agent_get = has("agent.get");
-    api.agent_read = has("agent.read");
     api.events_subscribe = has("events.subscribe");
     api.worktree_list = has("worktree.list");
 
     let mut methods = Vec::new();
-    for name in IMPLEMENTED_API_METHODS {
+    for name in IMPLEMENTED_API_METHODS.iter().chain(FEATURE_API_METHODS) {
         let available = match *name {
             "ping" => api.ping,
             "session.snapshot" => api.snapshot,
@@ -4035,18 +3900,11 @@ fn looks_like_api_method(name: &str) -> bool {
     if name == "ping" {
         return true;
     }
-    let mut parts = name.split('.');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(ns), Some(method), None) => {
-            !ns.is_empty()
-                && !method.is_empty()
-                && ns.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && method
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
-        _ => false,
-    }
+    // Nested public methods include plugin.pane.open and plugin.action.invoke.
+    name.contains('.')
+        && name.split('.').all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 fn collect_method_consts(value: &serde_json::Value, out: &mut HashSet<String>) {
@@ -4179,7 +4037,16 @@ fn api_request(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let deadline = Instant::now() + LOCAL_IO_TIMEOUT;
+    api_request_with_timeout(socket_path, method, params, LOCAL_IO_TIMEOUT)
+}
+
+fn api_request_with_timeout(
+    socket_path: &str,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    let deadline = Instant::now() + timeout;
     let mut stream = connect_local_stream(socket_path, deadline)
         .map_err(|e| format!("connect {socket_path} failed: {e}"))?;
     let id = format!(
@@ -4841,8 +4708,6 @@ mod tests {
                 pane_close: false,
                 layout_export: false,
                 layout_set_split_ratio: false,
-                agent_get: false,
-                agent_read: false,
                 events_subscribe: false,
                 worktree_list: false,
                 methods: Vec::new(),
@@ -5086,55 +4951,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_agent_get_and_read_response_shapes() {
-        let get = parse_agent_get_response(serde_json::json!({
-            "result": {
-                "type": "agent_info",
-                "agent": {
-                    "terminal_id": "term-1",
-                    "agent_status": "blocked",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "pane_id": "w1:p1",
-                    "focused": true,
-                    "revision": 3,
-                    "cwd": "/tmp/proj",
-                    "interactive_ready": true,
-                    "state_labels": { "mode": "approval" }
-                }
-            }
-        }))
-        .unwrap();
-        assert_eq!(get.pane_id, "w1:p1");
-        assert_eq!(get.agent_status, "blocked");
-        assert_eq!(
-            get.state_labels.get("mode").map(String::as_str),
-            Some("approval")
-        );
-
-        let read = parse_agent_read_response(serde_json::json!({
-            "result": {
-                "type": "pane_read",
-                "read": {
-                    "pane_id": "w1:p1",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "source": "recent-unwrapped",
-                    "format": "text",
-                    "text": "hello",
-                    "revision": 9,
-                    "truncated": false
-                }
-            }
-        }))
-        .unwrap();
-        assert_eq!(read.text, "hello");
-        assert_eq!(read.source, HerdrReadSource::RecentUnwrapped);
-        assert!(!read.too_large);
-        assert!(!read.truncated);
-    }
-
-    #[test]
     fn windows_pathext_parser_keeps_safe_unique_extensions() {
         assert_eq!(
             windows_executable_extensions(Some(".EXE;.CMD;.exe;BAT;.;.PS1-evil")),
@@ -5172,52 +4988,6 @@ mod tests {
             Err(BoundedNdjsonReadError::Protocol(HerdrProtocolError::InvalidUtf8)) => {}
             other => panic!("expected invalid UTF-8, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn parse_agent_read_caps_text_and_sets_too_large() {
-        use crate::herdr_limits::MAX_AGENT_TEXT_BYTES;
-        let over = "a".repeat(MAX_AGENT_TEXT_BYTES + 1);
-        let read = parse_agent_read_response(serde_json::json!({
-            "result": {
-                "type": "pane_read",
-                "read": {
-                    "pane_id": "w1:p1",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "source": "recent",
-                    "format": "text",
-                    "text": over,
-                    "revision": 1,
-                    "truncated": false
-                }
-            }
-        }))
-        .unwrap();
-        assert_eq!(read.text.len(), MAX_AGENT_TEXT_BYTES);
-        assert!(read.too_large);
-        assert!(read.truncated);
-
-        let exact = "b".repeat(MAX_AGENT_TEXT_BYTES);
-        let read = parse_agent_read_response(serde_json::json!({
-            "result": {
-                "type": "pane_read",
-                "read": {
-                    "pane_id": "w1:p1",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "source": "recent",
-                    "format": "text",
-                    "text": exact,
-                    "revision": 1,
-                    "truncated": false
-                }
-            }
-        }))
-        .unwrap();
-        assert_eq!(read.text.len(), MAX_AGENT_TEXT_BYTES);
-        assert!(!read.too_large);
-        assert!(!read.truncated);
     }
 
     #[test]
@@ -5265,59 +5035,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_response_parsers_reject_missing_identity_and_unknown_enums() {
-        let missing_pane = parse_agent_get_response(serde_json::json!({
-            "result": {
-                "type": "agent_info",
-                "agent": {
-                    "terminal_id": "term-1",
-                    "agent_status": "blocked",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "focused": false,
-                    "revision": 1
-                }
-            }
-        }));
-        assert!(missing_pane.is_err());
-
-        let unknown_source = parse_agent_read_response(serde_json::json!({
-            "result": {
-                "type": "pane_read",
-                "read": {
-                    "pane_id": "w1:p1",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "source": "invented",
-                    "format": "text",
-                    "text": "hello",
-                    "revision": 1,
-                    "truncated": false
-                }
-            }
-        }));
-        assert!(unknown_source.is_err());
-        assert!(validate_explicit_pane_target("agent-name").is_err());
-        assert!(validate_explicit_pane_target("w1:p1").is_ok());
-    }
-
-    #[test]
-    fn agent_read_rejects_out_of_range_line_count_before_ipc() {
-        let mgr = HerdrManager::new();
-        let error = mgr
-            .agent_read(
-                None,
-                "w1:p1".into(),
-                HerdrReadSource::Recent,
-                Some(HerdrReadFormat::Text),
-                Some(501),
-                Some(true),
-            )
-            .unwrap_err();
-        assert!(error.contains("between 20 and 500"));
-    }
-
-    #[test]
     fn scroll_capability_reaches_frontend_when_official_schema_supports_it() {
         let manager = HerdrManager::new();
         *manager.binary_override.lock().unwrap() =
@@ -5346,7 +5063,7 @@ mod tests {
             let schema: serde_json::Value = serde_json::from_str(fixture).unwrap();
             assert_eq!(schema["protocol"], 22);
             let methods = collect_schema_methods(&schema);
-            for method in IMPLEMENTED_API_METHODS {
+            for method in IMPLEMENTED_API_METHODS.iter().chain(FEATURE_API_METHODS) {
                 assert!(methods.contains(*method), "official schema lacks {method}");
             }
         }
@@ -5575,12 +5292,13 @@ mod tests {
         let schema = serde_json::json!({
             "protocol": 19,
             "schema_version": 1,
-            "methods": ["session.snapshot", "tab.create", "session.ping"],
+            "methods": ["session.snapshot", "tab.create", "session.ping", "plugin.pane.open"],
             "schemas": {
                 "request": {
                     "oneOf": [
                         { "properties": { "method": { "const": "session.snapshot" } } },
-                        { "properties": { "method": { "const": "tab.create" } } }
+                        { "properties": { "method": { "const": "tab.create" } } },
+                        { "properties": { "method": { "const": "plugin.action.invoke" } } }
                     ]
                 }
             }
@@ -5589,6 +5307,39 @@ mod tests {
         assert!(methods.contains("session.snapshot"));
         assert!(methods.contains("tab.create"));
         assert!(methods.contains("session.ping"));
+        assert!(methods.contains("plugin.pane.open"));
+        assert!(methods.contains("plugin.action.invoke"));
+    }
+
+    #[test]
+    fn nested_plugin_methods_reach_feature_capabilities() {
+        let manager = HerdrManager::new();
+        *manager.binary_override.lock().unwrap() =
+            Some(PathBuf::from("/nonexistent/herdr-plugin-fixture"));
+        let mut api = manager.capabilities().api;
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/herdr-0.9.1-methods.json"))
+                .unwrap();
+        apply_schema_method_flags(&mut api, &collect_schema_methods(&schema), true);
+        for method in [
+            "plugin.pane.open",
+            "plugin.action.invoke",
+            "plugin.log.list",
+        ] {
+            assert!(api.methods.iter().any(|available| available == method));
+        }
+        for invalid in [
+            "plugin",
+            "plugin..open",
+            ".pane.open",
+            "pane.open.",
+            "pane.open now",
+        ] {
+            assert!(
+                !looks_like_api_method(invalid),
+                "accepted invalid method {invalid}"
+            );
+        }
     }
 
     #[test]
@@ -6327,16 +6078,16 @@ exit 2
         let socket = dir.path().join("cache-ping.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = String::new();
-                BufReader::new(stream.try_clone().unwrap())
-                    .read_line(&mut request)
-                    .unwrap();
-                stream
-                    .write_all(b"{\"id\":\"cache\",\"result\":{\"type\":\"pong\",\"version\":\"0.8.0\",\"protocol\":19}}\n")
-                    .unwrap();
-            }
+            // The discovery probe pings once; the cached call reuses that
+            // identity inside the validation window instead of pinging again.
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            stream
+                .write_all(b"{\"id\":\"cache\",\"result\":{\"type\":\"pong\",\"version\":\"0.8.0\",\"protocol\":19}}\n")
+                .unwrap();
         });
         let count_file = dir.path().join("probe-count.txt");
         let binary = dir.path().join("herdr");
@@ -6375,6 +6126,152 @@ printf '%s\n' '{{"protocol":19,"schema_version":1,"methods":["session.snapshot",
 
         assert_eq!(after_first, after_second);
         server.join().unwrap();
+    }
+
+    /// Fake runtime for validation-cache tests: counts `session list` spawns,
+    /// serves ping/pane.get on a Unix socket and can flip the Session to stopped.
+    #[cfg(unix)]
+    struct ValidationFixture {
+        _dir: tempfile::TempDir,
+        mgr: HerdrManager,
+        list_count: PathBuf,
+        stopped_flag: PathBuf,
+        pings: Arc<std::sync::atomic::AtomicUsize>,
+        fail_next: Arc<AtomicBool>,
+    }
+
+    #[cfg(unix)]
+    fn validation_fixture() -> ValidationFixture {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("validation.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let pings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fail_next = Arc::new(AtomicBool::new(false));
+        let (server_pings, server_fail) = (pings.clone(), fail_next.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut request = String::new();
+                if BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .is_err()
+                {
+                    continue;
+                }
+                let reply = if request.contains("\"ping\"") {
+                    server_pings.fetch_add(1, Ordering::SeqCst);
+                    "{\"id\":\"v\",\"result\":{\"type\":\"pong\",\"version\":\"0.9.1\",\"protocol\":22}}\n".to_string()
+                } else if server_fail.swap(false, Ordering::SeqCst) {
+                    "{\"id\":\"v\",\"error\":{\"code\":\"pane_not_found\",\"message\":\"gone\"}}\n"
+                        .to_string()
+                } else {
+                    "{\"id\":\"v\",\"result\":{\"type\":\"pane_info\",\"pane\":{\"pane_id\":\"w1:p1\",\"scroll\":{\"offset_from_bottom\":0,\"max_offset_from_bottom\":10,\"viewport_rows\":5}}}}\n".to_string()
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        let list_count = dir.path().join("list-count.txt");
+        let stopped_flag = dir.path().join("stopped");
+        let binary = dir.path().join("herdr");
+        let script = format!(
+            r#"#!/bin/sh
+set -e
+if [ "$1" = "session" ]; then
+  printf '%s\n' x >> '{count}'
+  running=true
+  if [ -f '{stopped}' ]; then running=false; fi
+  printf '%s\n' "{{\"sessions\":[{{\"name\":\"default\",\"default\":true,\"running\":$running,\"session_dir\":\"/tmp/default\",\"socket_path\":\"{socket}\"}}]}}"
+  exit 0
+fi
+if [ "$1" = "status" ]; then
+  printf '%s\n' '{{"client":{{"version":"0.9.1","protocol":22,"binary":"FAKE"}},"server":{{"status":"running","running":true,"version":"0.9.1","protocol":22,"compatible":true,"socket":"{socket}"}}}}'
+  exit 0
+fi
+printf '%s\n' '{{"protocol":22,"schema_version":1,"methods":["session.snapshot","tab.create","workspace.focus","pane.get","pane.scroll","ping"]}}'
+"#,
+            count = list_count.display(),
+            stopped = stopped_flag.display(),
+            socket = socket.display(),
+        );
+        write_executable_fixture(&binary, &script);
+        let mgr = HerdrManager::with_binary(binary);
+        assert!(mgr.capabilities_for_session(Some("default")).api.snapshot);
+        fs::write(&list_count, "").unwrap();
+        pings.store(0, Ordering::SeqCst);
+        ValidationFixture {
+            _dir: dir,
+            mgr,
+            list_count,
+            stopped_flag,
+            pings,
+            fail_next,
+        }
+    }
+
+    #[cfg(unix)]
+    fn spawn_count(path: &Path) -> usize {
+        fs::read_to_string(path).unwrap().lines().count()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hot_pane_requests_reuse_session_list_and_ping_within_the_validation_window() {
+        let fixture = validation_fixture();
+        for _ in 0..5 {
+            let scroll = fixture
+                .mgr
+                .pane_scroll_state(Some("default"), "w1:p1".into())
+                .unwrap();
+            assert_eq!(scroll.unwrap().max_offset_from_bottom, 10);
+        }
+        // Warm-up already listed and pinged; five requests add no process spawn
+        // and no extra ping (previously: two spawns and one ping per request).
+        assert_eq!(spawn_count(&fixture.list_count), 0);
+        assert_eq!(fixture.pings.load(Ordering::SeqCst), 0);
+        // An explicit refresh always reads the authoritative list.
+        fixture.mgr.list_sessions().unwrap();
+        assert_eq!(spawn_count(&fixture.list_count), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_request_drops_validation_state_and_the_next_request_rediscovers() {
+        let fixture = validation_fixture();
+        fixture.fail_next.store(true, Ordering::SeqCst);
+        assert!(fixture
+            .mgr
+            .pane_scroll_state(Some("default"), "w1:p1".into())
+            .is_err());
+        assert!(fixture
+            .mgr
+            .pane_scroll_state(Some("default"), "w1:p1".into())
+            .is_ok());
+        assert_eq!(spawn_count(&fixture.list_count), 1);
+        assert_eq!(fixture.pings.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_session_is_refused_once_the_validation_window_expires() {
+        let fixture = validation_fixture();
+        fixture
+            .mgr
+            .set_validation_ttl_for_test(Duration::from_millis(40));
+        assert!(fixture
+            .mgr
+            .pane_scroll_state(Some("default"), "w1:p1".into())
+            .is_ok());
+        fs::write(&fixture.stopped_flag, "").unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        let error = fixture
+            .mgr
+            .pane_scroll_state(Some("default"), "w1:p1".into())
+            .unwrap_err();
+        assert!(
+            error.contains("not running") || error.contains("unavailable"),
+            "unexpected error: {error}"
+        );
     }
 
     #[cfg(unix)]
@@ -7638,6 +7535,7 @@ sys.stderr.buffer.write(b"\xff\xfe")
         );
     }
 
+    #[cfg(unix)]
     fn unix_pid_exists(pid: u32) -> bool {
         #[cfg(unix)]
         {
@@ -7654,3 +7552,11 @@ sys.stderr.buffer.write(b"\xff\xfe")
         }
     }
 }
+
+#[path = "herdr_features.rs"]
+mod features;
+pub use features::*;
+
+#[path = "herdr_native_client.rs"]
+mod native_client;
+pub use native_client::HerdrClientSize;

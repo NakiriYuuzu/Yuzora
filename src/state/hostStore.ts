@@ -10,8 +10,8 @@ export interface HostConfig { hostId: string; label: string; kind: "ssh" | "wsl"
 export function selectionForHost(config?: HostConfig): HerdrRuntimeSelection {
   if (config?.selection) return config.selection
   if (!config) return { source: "default" }
-  const managed = config.binary.match(/^(.*\/\.local\/share\/yuzora\/runtimes\/[^/]+-(?:linux|macos)-(?:aarch64|x86_64)-[a-f0-9]{64})\/herdr$/)
-  return managed && config.helper === managed[1] + "/yuzora-host" ? { source: "default" } : { source: "custom", customPath: config.binary }
+  const managed = config.binary.replaceAll("\\", "/").match(/^(.*\/\.local\/share\/yuzora\/runtimes\/[^/]+-(?:linux|macos|windows)-(?:aarch64|x86_64)-[a-f0-9]{64})\/herdr(\.exe)?$/)
+  return managed && config.helper.replaceAll("\\", "/") === managed[1] + "/yuzora-host" + (managed[2] ?? "") ? { source: "default" } : { source: "custom", customPath: config.binary }
 }
 interface HostStatus { connection: ConnectedHost | null; connecting: boolean; error: string | null; target: HostTarget; attempt: number; retryAt: number }
 const STORAGE = "yuzora.runtime.hosts.v2"

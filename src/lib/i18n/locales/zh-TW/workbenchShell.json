@@ -33,5 +33,6 @@
   "copyWorkspacePath": "複製資料夾完整路徑",
   "revealFinder": "在 Finder 中開啟",
   "revealExplorer": "在檔案總管中開啟",
-  "revealFileManager": "在檔案管理員中開啟"
+  "revealFileManager": "在檔案管理員中開啟",
+  "resetWidthHint": "拖曳調整寬度 · 雙擊恢復預設"
 }

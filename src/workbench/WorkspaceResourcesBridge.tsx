@@ -1,10 +1,14 @@
 import { useEffect } from "react"
 import { dropDocument } from "@/editor/documentRegistry"
 import { isFileTab } from "@/lib/markdownPreviewTab"
+import { useSvgPreviewStore } from "@/state/svgPreviewStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { forgetRemoteFileRevision, releaseRemoteWorkspace } from "@/lib/remoteFiles"
 
-/** Retire documents when their last tab disappears, including an entire split. */
+/**
+ * Retire documents and their SVG preview state when their last tab disappears,
+ * including a replaced preview-mode tab or an entire split.
+ */
 export function WorkspaceResourcesBridge() {
     useEffect(() => useWorkspaceStore.subscribe((state, previous) => {
         if (state.groups === previous.groups && state.workspacePath === previous.workspacePath) return
@@ -13,6 +17,7 @@ export function WorkspaceResourcesBridge() {
             if (isFileTab(tab) && (state.workspacePath !== previous.workspacePath || !open.has(tab.path))) {
                 dropDocument(tab.path, previous.workspacePath)
                 forgetRemoteFileRevision(tab.path)
+                useSvgPreviewStore.getState().forget(tab.path)
             }
         }
         if (previous.workspacePath && previous.workspacePath !== state.workspacePath) {

@@ -48,8 +48,6 @@ describe("herdr attention model", () => {
           paneClose: true,
           layoutExport: true,
           layoutSetSplitRatio: true,
-          agentGet: true,
-          agentRead: true,
           eventsSubscribe: true,
           worktreeList: true,
           methods: ["agent.get", "agent.read", "events.subscribe"]
@@ -173,20 +171,5 @@ describe("herdr attention model", () => {
     const snapshot = useHerdrStore.getState().runtimesBySession.default!.snapshot!
     useHerdrStore.getState().applySnapshot("default", { ...snapshot, agents: [] })
     expect(useHerdrStore.getState().attentionItems("default")).toHaveLength(0)
-  })
-
-  it("exposes inspect capability from agent.get/read flags", () => {
-    expect(useHerdrStore.getState().canInspectAgent()).toBe(true)
-    useHerdrStore.setState({
-      capabilities: {
-        ...useHerdrStore.getState().capabilities!,
-        api: {
-          ...useHerdrStore.getState().capabilities!.api,
-          agentGet: false,
-          agentRead: false
-        }
-      }
-    })
-    expect(useHerdrStore.getState().canInspectAgent()).toBe(false)
   })
 })

@@ -11,6 +11,11 @@ use std::sync::Arc;
     deny_unknown_fields
 )]
 pub enum HerdrCommand {
+    #[serde(rename = "herdr_feature")]
+    Feature {
+        session_name: String,
+        request: HerdrFeatureRequest,
+    },
     #[serde(rename = "herdr_sessions")]
     Sessions,
     #[serde(rename = "herdr_capabilities")]
@@ -159,25 +164,15 @@ pub enum HerdrCommand {
         path: Vec<bool>,
         ratio: f64,
     },
-    #[serde(rename = "herdr_agent_get")]
-    AgentGet {
-        session_name: Option<String>,
-        target: String,
-    },
-    #[serde(rename = "herdr_agent_read")]
-    AgentRead {
-        session_name: Option<String>,
-        target: String,
-        source: HerdrReadSource,
-        format: Option<HerdrReadFormat>,
-        lines: Option<u32>,
-        strip_ansi: Option<bool>,
-    },
 }
 
 impl HerdrCommand {
     pub fn execute(self, manager: &Arc<HerdrManager>) -> Result<serde_json::Value, String> {
         match self {
+            Self::Feature {
+                session_name,
+                request,
+            } => manager.feature(&session_name, request),
             Self::Sessions => {
                 serde_json::to_value(manager.list_sessions()?).map_err(|e| e.to_string())
             }
@@ -402,27 +397,6 @@ impl HerdrCommand {
                 pane_id,
                 path,
                 ratio,
-            )?)
-            .map_err(|e| e.to_string()),
-            Self::AgentGet {
-                session_name,
-                target,
-            } => serde_json::to_value(manager.agent_get(session_name.as_deref(), target)?)
-                .map_err(|e| e.to_string()),
-            Self::AgentRead {
-                session_name,
-                target,
-                source,
-                format,
-                lines,
-                strip_ansi,
-            } => serde_json::to_value(manager.agent_read(
-                session_name.as_deref(),
-                target,
-                source,
-                format,
-                lines,
-                strip_ansi,
             )?)
             .map_err(|e| e.to_string()),
         }

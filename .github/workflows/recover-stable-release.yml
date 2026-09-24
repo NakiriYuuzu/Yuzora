@@ -54,12 +54,22 @@ jobs:
             jq -e --arg sha "$sha" '.workflow_runs | any(.head_sha == $sha and .event == "push" and .head_branch == "main" and .conclusion == "success")' ci-runs.json >/dev/null
           done
           gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$SOURCE_RUN_ID/jobs?filter=latest&per_page=100" > jobs.json
+          # Older releases have four host targets; releases whose host matrix
+          # includes Windows must also have that exact host build succeed.
+          gh api "repos/$GH_REPO/contents/.github/workflows/host.yml?ref=$SOURCE_SHA" --jq '.content' | base64 --decode > source-host.yml
+          HOST_JOBS=(
+            'host-artifacts / build (ubuntu-24.04, linux-x86_64)'
+            'host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)'
+            'host-artifacts / build (macos-14, macos-aarch64)'
+            'host-artifacts / build (macos-15-intel, macos-x86_64)'
+          )
+          if grep -Eq '^[[:space:]]+(-[[:space:]]+)?target: windows-x86_64[[:space:]]*$' source-host.yml; then
+            HOST_JOBS+=('host-artifacts / build (windows-latest, windows-x86_64)')
+          fi
+          jq -e --argjson count "${#HOST_JOBS[@]}" '[.[].jobs[] | select(.name | startswith("host-artifacts / build ("))] | length == $count' jobs.json >/dev/null
           for name in \
             'Main CI / release channel' \
-            'host-artifacts / build (ubuntu-24.04, linux-x86_64)' \
-            'host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)' \
-            'host-artifacts / build (macos-14, macos-aarch64)' \
-            'host-artifacts / build (macos-15-intel, macos-x86_64)' \
+            "${HOST_JOBS[@]}" \
             'Build macOS Apple Silicon installers' \
             'Build Windows x86-64 installers' \
             'Assemble draft release from build artifacts'; do
@@ -279,4 +289,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.guard.outputs.tag_name }}
         run: gh release view "$TAG_NAME" --json isDraft,isPrerelease,publishedAt --jq 'select(.isDraft == false and .isPrerelease == false and .publishedAt != null)'
-

@@ -1,0 +1,7 @@
+{
+  "searching": "Searching…",
+  "noMatch": "No matches",
+  "timeout": "Search took too long. Try a more specific query.",
+  "tooMany": "Too many matches. Narrow the search before selecting or replacing all.",
+  "failed": "Search could not finish. Try again."
+}

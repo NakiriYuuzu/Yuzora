@@ -8,10 +8,12 @@ import { Copy, Download, FolderOpen } from "lucide-react"
 
 import { getLogEnabled, getLogLevel, logExport, logQuery, logSanitizeLines, logSources, setLogEnabled, setLogLevel, type LogQueryFilters } from "@/features/logs/logQuery"
 import { groupRowsByRun, shortRunId, UNKNOWN_RUN } from "@/features/logs/runGroups"
+import { setHerdrTerminalDiagnosticsEnabled } from "@/terminal/herdrTerminalDiagnostics"
 import type { LogRecord, SanitizeSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { SettingCard, SettingsTextInput, ToggleRow } from "./settingsPrimitives"
+import { SettingCard, SettingsRowGroup, SettingsTextInput, ToggleRow } from "./settingsPrimitives"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 // 必須與 Rust 的 logging::VALID_KINDS 一致，否則新 kind 的 record 永遠篩不出來。
@@ -283,6 +285,7 @@ export function LogsSection({
     setError(null)
     try {
       await setLogLevel(next ? "debug" : "info")
+      setHerdrTerminalDiagnosticsEnabled(next)
       setNotice(next ? t("settings.logs.verboseEnabled") : t("settings.logs.verboseDisabled"))
     } catch (e) {
       setVerbose(!next) // 失敗回滾 UI
@@ -308,8 +311,8 @@ export function LogsSection({
   }
 
   return (
-    <div className="flex flex-col gap-[14px]">
-      <SettingCard label={t("settings.logs.recording")}>
+    <div className="settings-fields flex flex-col">
+      <SettingsRowGroup>
         <ToggleRow
           label={t("settings.logs.recording")}
           sub={t("settings.logs.recordingSub")}
@@ -317,8 +320,8 @@ export function LogsSection({
           disabled={recordingEnabled === null || savingRecording}
           onCheckedChange={(next) => void toggleRecording(next)}
         />
-        {recordingError && <p role="alert">{recordingError}</p>}
-      </SettingCard>
+        {recordingError && <p role="alert" className="settings-row-alert">{recordingError}</p>}
+      </SettingsRowGroup>
       <SettingCard label={t("settings.logs.filters")} sub={t("settings.logs.filtersSub")}>
         <div className="flex flex-col gap-[12px]">
           <div className="grid grid-cols-2 gap-[12px]">
@@ -380,7 +383,7 @@ export function LogsSection({
                 aria-label={t("settings.logs.sourceFilter")}
                 value={source}
                 onChange={(event) => setSource(event.currentTarget.value)}
-                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent)"
+                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent) focus-visible:ring-2 focus-visible:ring-(--yz-accent)/30"
               >
                 <option value="">{t("settings.logs.allSources")}</option>
                 {sources.map((item) => (
@@ -399,7 +402,7 @@ export function LogsSection({
                 value={text}
                 placeholder={t("settings.logs.textSearchPlaceholder")}
                 onChange={(event) => setText(event.currentTarget.value)}
-                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent)"
+                className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors placeholder:text-(--ink-4) focus:border-(--yz-accent) focus-visible:ring-2 focus-visible:ring-(--yz-accent)/30"
               />
             </label>
           </div>
@@ -453,24 +456,20 @@ export function LogsSection({
             {t("settings.logs.openLogsFolder")}
           </button>
           <label className="flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={verbose}
               disabled={recordingEnabled !== true || savingRecording}
-              onChange={(event) => void toggleVerbose(event.currentTarget.checked)}
-              className="size-[13px] accent-(--yz-accent)"
+              onCheckedChange={(checked) => void toggleVerbose(checked === true)}
             />
             {t("settings.logs.verboseLogging")}
           </label>
           <label className="ml-auto flex h-[28px] items-center gap-[7px] text-[11.5px] text-(--ink-2)">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={sanitize}
-              onChange={(event) => {
-                setSanitize(event.currentTarget.checked)
+              onCheckedChange={(checked) => {
+                setSanitize(checked === true)
                 setSanitizeSummary(null)
               }}
-              className="size-[13px] accent-(--yz-accent)"
             />
             {t("settings.logs.sanitize")}
           </label>

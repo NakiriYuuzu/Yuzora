@@ -42,6 +42,7 @@ import { csharp, kotlin, dart, scala } from "@codemirror/legacy-modes/mode/clike
 import { powerShell } from "@codemirror/legacy-modes/mode/powershell"
 import { appHighlightStyle, appTheme } from "./cmTheme"
 import { minimap, minimapCompartment } from "./minimap"
+import { largeFileSearch } from "./largeFileSearch"
 import { MAX_LINE_LEN_SYNTAX_OFF } from "../lib/types"
 
 // Add only context-specific roles that the bundled grammars leave generic.
@@ -206,6 +207,7 @@ export function buildExtensions(
         highlightSpecialChars(),
         highlightActiveLine(),
         highlightSelectionMatches(),
+        largeFileSearch(),
         syntaxHighlighting(appHighlightStyle),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         minimapCompartment.of(minimap(minimapEnabled)),

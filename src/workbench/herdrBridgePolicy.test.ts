@@ -35,8 +35,6 @@ const base = {
     paneClose: true,
     layoutExport: true,
     layoutSetSplitRatio: true,
-    agentGet: true,
-    agentRead: true,
     eventsSubscribe: true,
     worktreeList: true,
     methods: ["agent.get", "agent.read", "events.subscribe"]

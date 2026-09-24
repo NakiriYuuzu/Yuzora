@@ -10,7 +10,6 @@ use std::io::{BufRead, Read};
 use serde::Serialize;
 
 pub const MAX_NDJSON_LINE_BYTES: usize = 1024 * 1024;
-pub const MAX_AGENT_TEXT_BYTES: usize = 512 * 1024;
 pub const MAX_IPC_BYTES: usize = MAX_NDJSON_LINE_BYTES + 16 * 1024;
 pub const MAX_JSON_DEPTH: usize = 64;
 pub const MAX_JSON_ARRAY_LEN: usize = 8192;
@@ -262,26 +261,6 @@ pub fn validate_snapshot_counts(snapshot: &serde_json::Value) -> Result<(), Herd
     Ok(())
 }
 
-/// Cap agent text at 512 KiB. Oversized content is not delivered in full;
-/// the returned flag is the explicit `tooLarge` wire signal.
-pub fn bound_agent_text(text: String) -> (String, bool) {
-    if text.len() <= MAX_AGENT_TEXT_BYTES {
-        return (text, false);
-    }
-    (truncate_utf8(&text, MAX_AGENT_TEXT_BYTES), true)
-}
-
-pub fn truncate_utf8(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_string()
-}
-
 pub fn ensure_ipc_bound<T: Serialize>(value: &T) -> Result<(), HerdrProtocolError> {
     let bytes = serde_json::to_vec(value).map_err(|_| HerdrProtocolError::InvalidJson)?;
     if bytes.len() > MAX_IPC_BYTES {
@@ -392,20 +371,6 @@ mod tests {
         over.push(serde_json::json!({"pane_id": "overflow"}));
         let err = validate_snapshot_counts(&serde_json::json!({ "panes": over })).unwrap_err();
         assert_eq!(err, HerdrProtocolError::TooComplex("panes"));
-    }
-
-    #[test]
-    fn agent_text_just_below_and_above_512_kib() {
-        let exact = "a".repeat(MAX_AGENT_TEXT_BYTES);
-        let (kept, too_large) = bound_agent_text(exact.clone());
-        assert_eq!(kept, exact);
-        assert!(!too_large);
-
-        let over = "a".repeat(MAX_AGENT_TEXT_BYTES + 1);
-        let (capped, too_large) = bound_agent_text(over);
-        assert_eq!(capped.len(), MAX_AGENT_TEXT_BYTES);
-        assert!(too_large);
-        assert!(!capped.contains('\u{fffd}'));
     }
 
     #[test]
