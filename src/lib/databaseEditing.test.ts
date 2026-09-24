@@ -20,6 +20,15 @@ describe("database editing", () => {
         expect(update("mssql", "uniqueidentifier", guid)).toMatch(/AND \[name\] = N'0f8fad5b-d9cb-469f-a165-70867728950e'$/)
         expect(update("postgres", "uuid", guid)).toMatch(/AND "name" = E'0f8fad5b-d9cb-469f-a165-70867728950e'$/)
     })
+    it("guards textual primary keys exactly so a collation-equal key change conflicts", () => {
+        const keyed: DbColumn[] = [{ name: "code", type: "nvarchar", pk: true, notnull: true }, { name: "note", type: "nvarchar", pk: false, notnull: false }]
+        const values: DbValue[] = [{ kind: "text", value: "Alice" }, { kind: "text", value: "n" }]
+        expect(buildCellUpdate("mssql", table, keyed, ["code", "note"], values, "note", { kind: "text", value: "x" }))
+            .toContain(`WHERE CAST(CAST([code] AS nvarchar(max)) AS varbinary(max)) = CAST(N'Alice' AS varbinary(max)) AND`)
+        const sqliteKeyed: DbColumn[] = [{ name: "code", type: "TEXT", pk: true, notnull: true }, { name: "note", type: "TEXT", pk: false, notnull: false }]
+        expect(buildCellUpdate("sqlite", table, sqliteKeyed, ["code", "note"], values, "note", { kind: "text", value: "x" }))
+            .toContain(`WHERE "code" = 'Alice' COLLATE BINARY AND`)
+    })
     it("compares PostgreSQL real cells in real precision so their displayed value matches", () => {
         const realColumns: DbColumn[] = [metadata[0], { name: "ratio", type: "real", pk: false, notnull: false }]
         expect(buildCellUpdate("postgres", table, realColumns, ["id", "ratio"], [row[0], { kind: "decimal", value: "0.1" }], "ratio", { kind: "decimal", value: "0.2" }))

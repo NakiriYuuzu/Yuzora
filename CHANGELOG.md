@@ -33,10 +33,6 @@
 - Windows／Linux 的 `Ctrl+K` 等 App 快捷鍵在終端機聚焦時也能使用。
 - 終端機被其他視窗取得控制後，改為顯示提示與「重新連線」按鈕，不再停在「串流已關閉」。
 
-### 已知限制
-
-- Windows 原生 Herdr 終端機中，部分 Alt 組合鍵（例如 pi 的 `Alt+Q`）仍可能無法傳給 Agent，待後續版本修正。
-
 ### 安裝說明
 
 - macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。

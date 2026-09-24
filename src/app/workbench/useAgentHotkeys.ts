@@ -40,7 +40,8 @@ export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
 }) {
   const [altHeld, setAltHeld] = useState(false)
   const [switcher, setSwitcherState] = useState<AgentSwitcherState<T> | null>(null)
-  const latest = useRef({ agents, keyOf, activate, switcher })
+  // `hold`: modifiers of the binding that opened the switcher; releasing them commits.
+  const latest = useRef({ agents, keyOf, activate, switcher, hold: [] as Modifier[] })
   useLayoutEffect(() => {
     latest.current.agents = agents
     latest.current.keyOf = keyOf
@@ -64,7 +65,7 @@ export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
   const cancel = useCallback(() => setSwitcher(null), [setSwitcher])
 
   useEffect(() => {
-    const cycle = (direction: 1 | -1) => {
+    const cycle = (direction: 1 | -1, command: AppCommandId) => {
       const current = latest.current.switcher
       if (current) {
         const size = current.items.length
@@ -74,6 +75,7 @@ export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
       const { agents: list, keyOf: key } = latest.current
       const items = orderAgentsByRecency(list, key, useAgentMruStore.getState().keys)
       if (items.length < 2) return
+      latest.current.hold = cycleHoldModifiers(effectiveBinding(command, useKeyboardSettingsStore.getState().overrides))
       setSwitcher({ items, index: direction > 0 ? 1 : items.length - 1 })
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -89,14 +91,13 @@ export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
         const agent = latest.current.agents[index]
         if (agent) latest.current.activate(agent)
       }))
-      dispatchAppShortcut(event, "agentCycleNext", () => cycle(1))
-      dispatchAppShortcut(event, "agentCyclePrevious", () => cycle(-1))
+      dispatchAppShortcut(event, "agentCycleNext", () => cycle(1, "agentCycleNext"))
+      dispatchAppShortcut(event, "agentCyclePrevious", () => cycle(-1, "agentCyclePrevious"))
     }
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAltHeld(false)
       if (!latest.current.switcher) return
-      const hold = cycleHoldModifiers(effectiveBinding("agentCycleNext", useKeyboardSettingsStore.getState().overrides))
-      if (hold.every((modifier) => !event[modifier])) commit()
+      if (latest.current.hold.every((modifier) => !event[modifier])) commit()
     }
     const onBlur = () => {
       setAltHeld(false)

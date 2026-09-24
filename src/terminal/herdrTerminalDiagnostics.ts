@@ -33,7 +33,6 @@ interface Window {
 let enabled = import.meta.env.VITE_YUZORA_SCROLL_DIAGNOSTICS === "1"
 let current: Window | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
-let lastFrameAt: number | null = null
 
 function freshWindow(now: number): Window {
   return {
@@ -63,7 +62,6 @@ export function setHerdrTerminalDiagnosticsEnabled(next: boolean) {
     if (timer) clearTimeout(timer)
     timer = null
     current = null
-    lastFrameAt = null
   }
 }
 
@@ -94,8 +92,9 @@ export function recordHerdrTerminalMetric(metric: HerdrTerminalMetric, now = per
       if (metric.full) window.frames.full++
       else window.frames.delta++
       push(window.frames.bytes, metric.bytes)
-      if (lastFrameAt !== null) push(window.frames.gaps, now - lastFrameAt)
-      lastFrameAt = now
+      // Gaps are per window: an idle period between windows is not a frame gap.
+      if (window.frames.lastAt !== null) push(window.frames.gaps, now - window.frames.lastAt)
+      window.frames.lastAt = now
       break
     case "write":
       push(window.writes.ms, metric.ms)

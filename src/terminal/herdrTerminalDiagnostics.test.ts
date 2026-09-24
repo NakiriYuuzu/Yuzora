@@ -103,3 +103,15 @@ it("records modified keys with the bytes the terminal emitted, and ignores plain
   observer.dispose()
   container.remove()
 })
+
+it("measures frame gaps within one window, not across an idle period between windows", () => {
+  setHerdrTerminalDiagnosticsEnabled(true)
+  recordHerdrTerminalMetric({ kind: "frame", full: false, bytes: 10 }, 0)
+  recordHerdrTerminalMetric({ kind: "frame", full: false, bytes: 10 }, 20)
+  flushHerdrTerminalDiagnostics(5000)
+  // The terminal was idle for a minute before the next window starts.
+  recordHerdrTerminalMetric({ kind: "frame", full: false, bytes: 10 }, 65_000)
+  recordHerdrTerminalMetric({ kind: "frame", full: false, bytes: 10 }, 65_030)
+  const metadata = flushHerdrTerminalDiagnostics(70_000)
+  expect(metadata?.frames.gapMs).toMatchObject({ n: 1, max: 30 })
+})

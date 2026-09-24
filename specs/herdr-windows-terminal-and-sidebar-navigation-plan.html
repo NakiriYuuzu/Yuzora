@@ -1021,6 +1021,30 @@ export function encodeWin32InputModeKey(e: KeyboardEventLike): string | null {
 <p><strong>修正</strong>：<code>terminalTransport</code> 在 <code>exit</code> 事件帶上 <code>reason</code>。<code>HerdrTerminalPage</code> 收到接管原因時，顯示「已由其他視窗取得控制」和「重新連線」按鈕，不寫入 <code>[Herdr stream closed]</code>，也不重新整理拓撲。按鈕會重新以 control＋takeover 連回。其他原因關閉時，行為維持不變。新增 i18n key <code>takenOver</code>、<code>reconnect</code>（zh-TW／en）。新增兩個頁面測試：修改前，接管情境的測試會失敗。</p>
 <p><strong>實機驗證（macOS，Debug App ×2）</strong>：B 接管後，A 顯示「已由其他視窗取得控制」和「重新連線」。按下 A 的重新連線後，B 改顯示同樣的提示；A 輸入 <code>echo FROM_A_AFTER_RECONNECT</code>，pane 裡有出現。前端 260 個檔案、3060 個測試全數通過，typecheck 0 error，lint 仍是 49 個既有 warning，build 成功。</p>
     </details>
+      <details>
+      <summary>2026-09-24T19:40+08:00 — Windows 候選版（f7e64d6）實機驗證與 G1 probe</summary>
+      <p>環境：Windows 10.0.26200，主機 DESKTOP-NMLUN4F（yuzora-windows）。已透過 SSH 以 <code>/S</code> 安裝 NSIS 候選版（setup sha256 <code>82dbfe06…cc186d9</code>，yuzora.exe <code>e40bb047…</code>）。UI 經 RDP 操作。</p>
+<ul>
+<li><strong>捲動</strong>：原生 Windows 走 <code>pane</code> 策略。<code>pane.scroll</code> p50 2.8–10ms、p95 ≤43ms；frame 間隔 p50 34–59ms；xterm 寫入 p50 約 2ms。停手後畫面不再移動，向下捲可回到底部。</li>
+<li><strong>接管後重新連線</strong>：第二個 controller 以 <code>--takeover</code> 連上後，Yuzora 顯示「已由其他視窗取得控制」與「重新連線」；按下後輸入 <code>echo reconnectok</code>，已送達並執行。</li>
+<li><strong>加入 Herdr Session（設計 A）</strong>：Windows 顯示 已連線／SSH／WSL 三個來源，WSL 發行版以 radio 呈現。側邊欄在列內顯示 hover 動作，Agents 檢視正常。</li>
+<li><strong>G1 isolated probe</strong>（<code>output/windows-probe/probe-windows-2026-09-24.json</code>）：
+<ul>
+<li>session list spawn p50 7.4ms；ping p50 16ms／p95 113ms。</li>
+<li><code>pane.get</code> p50 16ms；<code>pane.scroll</code> p50 16ms／p95 35ms。</li>
+<li>connector <code>terminal.scroll</code>→frame p50 15.5ms。</li>
+<li>Alt+Q／Alt+T／Alt+Enter：D1（raw ESC）、D2（W32IM）、D3（send_keys）在 P1 PowerShell ReadKey、P2 node raw、P3 kitty 全部 ok。</li>
+<li>單獨 ESC 以 D1 送出時為 none（400ms 內未送達；D2／D3 ok）。</li>
+</ul>
+依決策矩陣屬於 <strong>H-A</strong>：Herdr 端能正確送出 Alt，問題不在 connector 編碼，Phase 8 的 W32IM 改寫不需要。後續要看 Yuzora 前端或 WebView2 在實體鍵盤上的 Alt 事件，需要實體鍵盤的 key 診斷紀錄。</li>
+<li><strong>無法經 RDP 驗證</strong>：<code>Ctrl+K</code>（RDP 沒有送出 Ctrl+K，側欄焦點時也沒有反應）、Alt 組合鍵（RDP 送出的是 macOS Option 字元 œ／†）。這兩項需在實體鍵盤確認。</li>
+</ul>
+<p>清理：刪除 <code>yz-probe</code> 與測試用 <code>logging.json</code>（測試前不存在）；Windows 輸入法已還原為「中」。</p>
+    </details>
+      <details>
+      <summary>2026-09-24T19:50+08:00 — 使用者以 Windows 實體鍵盤確認 Ctrl+K 與 Alt+Q</summary>
+      <p>使用者在 f7e64d6 候選版上用 Windows 實體鍵盤確認兩項：terminal 聚焦時按 <code>Ctrl+K</code> 能開啟命令面板，pi 內按 <code>Alt+Q</code> 有作用。加上前一筆 probe 證明 Herdr 端 Alt 傳遞正常（H-A），原始需求 6a／6b 在候選版都已解決，Phase 8 的 W32IM 改寫不需要。CHANGELOG 0.0.16 的「已知限制（Alt 組合鍵）」已不成立，待使用者決定是否更新。</p>
+    </details>
   </section>
 
 

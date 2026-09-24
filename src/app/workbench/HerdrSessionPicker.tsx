@@ -109,7 +109,8 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
     useUiStore.getState().openSettings("herdr", { hostId: hostId ?? undefined });
   }
   function openSessionTools() {
-    const scope = sessionScope(availableSessions[0] ?? sessions[0]);
+    // Only a Session of the selected host: tools must not target another machine.
+    const scope = sessionScope(availableSessions[0]);
     if (!scope) return;
     onClose();
     useHerdrToolsStore.getState().open({ tool: "sessions", sessionName: scope });
@@ -165,7 +166,7 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
           <EmptyDescription>{t("pickerEmptyHint")}</EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="flex-row justify-center">
-          {sessions.length > 0 && <Button variant="outline" size="sm" onClick={openSessionTools}>{t("openSessionTools")}</Button>}
+          {availableSessions.length > 0 && <Button variant="outline" size="sm" onClick={openSessionTools}>{t("openSessionTools")}</Button>}
         </EmptyContent>
       </Empty>
     )

@@ -227,3 +227,13 @@ it("explains why nothing can be loaded and offers the Session tools", async () =
   fireEvent.click(screen.getByRole("button", { name: "開啟 HERDR 工具" }));
   expect(onClose).toHaveBeenCalledOnce();
 });
+
+it("does not open Session tools for another host when the selected host has no Sessions", async () => {
+  connectSsh();
+  registerHost("alpha", { kind: "ssh", sessionId: "transport-alpha" });
+  addSession("other", "Other host");
+  await show();
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("目前沒有執行中的 Session。"));
+  // The only Session belongs to a different host; tools would target the wrong machine.
+  expect(screen.queryByRole("button", { name: "開啟 HERDR 工具" })).not.toBeInTheDocument();
+});

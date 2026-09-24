@@ -92,7 +92,8 @@ export function buildCellUpdate(kind: DbKind, table: DbTable, metadata: DbColumn
     const predicates = keys.map(key => {
         const original = row[columns.indexOf(key.name)]
         if (!original || original.kind === "null") throw new Error("readOnlyCell")
-        return `${quoteDbIdentifier(kind, key.name)} = ${predicateLiteral(kind, key, original)}`
+        // Textual keys need the same exact comparison as the edited cell.
+        return originalValuePredicate(kind, key, quoteDbIdentifier(kind, key.name), original)
     })
     const original = row[index]
     if (!original || original.kind === "binary" || original.kind === "json") throw new Error("readOnlyCell")

@@ -81,6 +81,20 @@ it("moves forward on repeated presses and backwards with Shift, wrapping around"
   expect(activate).toHaveBeenCalledWith("a")
 })
 
+it("keeps the switcher open while the modifier of the opening binding is held", () => {
+  // Reverse cycle rebound to a different modifier than forward cycle.
+  useKeyboardSettingsStore.setState({ overrides: { agentCycleNext: "Ctrl+J", agentCyclePrevious: "Alt+K" } })
+  useAgentMruStore.setState({ keys: ["b", "c"] })
+  const { activate, hook } = setup()
+  down({ key: "k", code: "KeyK", altKey: true })
+  up({ key: "k", code: "KeyK", altKey: true })
+  expect(activate).not.toHaveBeenCalled()
+  down({ key: "k", code: "KeyK", altKey: true })
+  expect(hook.result.current.switcher?.index).toBe(1)
+  up({ key: "Alt", code: "AltLeft" })
+  expect(activate).toHaveBeenCalledWith("c")
+})
+
 it("cancels on Escape or window blur without switching", () => {
   const { activate, hook } = setup()
   down({ key: "`", code: "Backquote", altKey: true })
