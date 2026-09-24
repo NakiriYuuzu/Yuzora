@@ -1034,6 +1034,7 @@ fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
     // Windows OpenSSH reports canonical SFTP paths as `C:/...` or `/C:/...`;
     // only that first segment may be a drive root.
     let mut drive_allowed = true;
+    let mut windows_host = false;
     for (index, name) in path.split('/').enumerate() {
         if name.is_empty() {
             if index == 0 {
@@ -1045,9 +1046,14 @@ fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
             && name.as_bytes()[0].is_ascii_alphabetic()
             && name.as_bytes()[1] == b':';
         if std::mem::take(&mut drive_allowed) && is_drive {
+            windows_host = true;
             continue;
         }
         SafeLeafName::parse(name)?;
+        // The local OS may not be Windows, but a drive-rooted path lives on one.
+        if windows_host && !path_capability::windows_ordinary_leaf(name) {
+            return Err(PathCapabilityError::UnsafeLeaf.into());
+        }
         saw_name = true;
     }
     if !saw_name {
@@ -3465,7 +3471,18 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
             assert!(reject_unsafe_remote_leaf(path).is_ok(), "{path}");
         }
         // Only the first segment may be a drive; descendants stay validated.
-        for path in ["C:", "/C:/", "C:/Users/D:", "/C:/Users/../x", "/home/C:/x"] {
+        // Below a drive root, Windows filename rules apply on every desktop OS.
+        for path in [
+            "C:",
+            "/C:/",
+            "C:/Users/D:",
+            "/C:/Users/../x",
+            "/home/C:/x",
+            "C:/Users/me/CON",
+            "/C:/Users/name.",
+            "C:/Users/file.txt:stream",
+            "/C:/Users/trailing ",
+        ] {
             assert_eq!(
                 reject_unsafe_remote_leaf(path).unwrap_err(),
                 PathCapabilityError::UnsafeLeaf.as_code(),

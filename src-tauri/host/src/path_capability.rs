@@ -123,7 +123,9 @@ pub fn is_safe_leaf_name(name: &str) -> bool {
     true
 }
 
-fn windows_ordinary_leaf(name: &str) -> bool {
+/// Windows filename rules (no `:`/ADS, no trailing dot or space, no reserved
+/// device names), for names bound to a Windows host regardless of the local OS.
+pub fn windows_ordinary_leaf(name: &str) -> bool {
     if name.contains(':') {
         return false;
     }
