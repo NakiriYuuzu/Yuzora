@@ -1,5 +1,6 @@
 import { invoke } from "@/lib/ipc"
 import { getLogLevel } from "@/features/logs/logQuery"
+import { utf8Length } from "./terminalOutputQueue"
 
 /**
  * Opt-in, content-free Herdr terminal diagnostics. Enabled only while the app
@@ -106,6 +107,21 @@ export function recordHerdrTerminalMetric(metric: HerdrTerminalMetric, now = per
       break
     }
   }
+}
+
+/**
+ * Records a terminal frame or xterm write sized in UTF-8 bytes. The text is the
+ * decoded string, so `.length` would count UTF-16 code units; measure it only
+ * while diagnostics are enabled.
+ */
+export function recordHerdrTerminalOutput(kind: "frame", text: string, detail: { full: boolean }, now?: number): void
+export function recordHerdrTerminalOutput(kind: "write", text: string, detail: { ms: number }, now?: number): void
+export function recordHerdrTerminalOutput(kind: "frame" | "write", text: string, detail: { full?: boolean; ms?: number }, now = performance.now()) {
+  if (!enabled) return
+  const bytes = utf8Length(text)
+  recordHerdrTerminalMetric(kind === "frame"
+    ? { kind, full: detail.full === true, bytes }
+    : { kind, ms: detail.ms ?? 0, bytes }, now)
 }
 
 /** Writes one summary record for the current window. Returns it for tests. */

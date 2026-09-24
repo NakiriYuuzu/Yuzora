@@ -1029,28 +1029,45 @@ const SFTP_PROGRESS_STEP: u64 = 256 * 1024;
 
 /// POSIX-join a remote directory with a leaf name (SFTP is always `/`-separated,
 /// regardless of the local platform). Pure, so the path math is unit-tested.
+fn is_drive_segment(name: &str) -> bool {
+    name.len() == 2 && name.as_bytes()[0].is_ascii_alphabetic() && name.as_bytes()[1] == b':'
+}
+
+/// Windows OpenSSH reports canonical SFTP paths as `C:/...`, `/C:/...` or a UNC
+/// share `//server/share/...`. Returns the length of that root prefix (without
+/// its trailing `/`), or `None` for POSIX paths.
+fn windows_remote_root(path: &str) -> Option<usize> {
+    if let Some(rest) = path.strip_prefix("//") {
+        let mut parts = rest.splitn(3, '/');
+        let server = parts.next().unwrap_or_default();
+        let share = parts.next().unwrap_or_default();
+        let safe = |name: &str| {
+            SafeLeafName::parse(name).is_ok() && path_capability::windows_ordinary_leaf(name)
+        };
+        return (safe(server) && safe(share)).then(|| 2 + server.len() + 1 + share.len());
+    }
+    let offset = usize::from(path.starts_with('/'));
+    let drive = path[offset..].split('/').next().unwrap_or_default();
+    is_drive_segment(drive).then(|| offset + 2)
+}
+
+/// Validate every name below the host root. A Windows root (drive or UNC share)
+/// means the names live on Windows, so its filename rules apply on every desktop OS.
 fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
+    let (rest, windows_host) = match windows_remote_root(path) {
+        Some(root) => (&path[root..], true),
+        None if path.starts_with("//") => return Err(PathCapabilityError::UnsafeLeaf.into()),
+        None => (path, false),
+    };
     let mut saw_name = false;
-    // Windows OpenSSH reports canonical SFTP paths as `C:/...` or `/C:/...`;
-    // only that first segment may be a drive root.
-    let mut drive_allowed = true;
-    let mut windows_host = false;
-    for (index, name) in path.split('/').enumerate() {
+    for (index, name) in rest.split('/').enumerate() {
         if name.is_empty() {
             if index == 0 {
                 continue;
             }
             return Err(PathCapabilityError::UnsafeLeaf.into());
         }
-        let is_drive = name.len() == 2
-            && name.as_bytes()[0].is_ascii_alphabetic()
-            && name.as_bytes()[1] == b':';
-        if std::mem::take(&mut drive_allowed) && is_drive {
-            windows_host = true;
-            continue;
-        }
         SafeLeafName::parse(name)?;
-        // The local OS may not be Windows, but a drive-rooted path lives on one.
         if windows_host && !path_capability::windows_ordinary_leaf(name) {
             return Err(PathCapabilityError::UnsafeLeaf.into());
         }
@@ -1062,17 +1079,30 @@ fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Upload targets a directory: the POSIX root and a lone Windows drive root
-/// (`C:`, `C:/`, `/C:/`) are valid; anything deeper is validated segment by segment.
+/// Upload targets a directory: the POSIX root and a lone Windows root (`C:`,
+/// `C:/`, `/C:/`, `//server/share`) are valid; deeper paths are validated.
 fn validate_upload_dir(dir: &str) -> Result<(), String> {
-    let root = dir.strip_prefix('/').unwrap_or(dir);
-    let root = root.strip_suffix('/').unwrap_or(root);
-    let is_drive_root =
-        root.len() == 2 && root.as_bytes()[0].is_ascii_alphabetic() && root.as_bytes()[1] == b':';
-    if dir == "/" || is_drive_root {
+    if dir == "/" {
         return Ok(());
     }
+    if let Some(root) = windows_remote_root(dir) {
+        if dir[root..].is_empty() || &dir[root..] == "/" {
+            return Ok(());
+        }
+    }
     reject_unsafe_remote_leaf(dir)
+}
+
+/// The uploaded name is appended to the directory, so it must follow the
+/// destination host's filename rules rather than the desktop's.
+fn validate_upload_target(dir: &str, leaf: &str) -> Result<String, String> {
+    validate_upload_dir(dir)?;
+    let leaf = SafeLeafName::parse(leaf)?;
+    if windows_remote_root(dir).is_some() && !path_capability::windows_ordinary_leaf(leaf.as_str())
+    {
+        return Err(PathCapabilityError::UnsafeLeaf.into());
+    }
+    Ok(remote_join(dir, leaf.as_str()))
 }
 
 fn remote_join(dir: &str, name: &str) -> String {
@@ -1523,8 +1553,7 @@ impl SshManager {
             }
             SftpUploadSource::Selected { capability_id } => selected.peek_leaf(capability_id)?,
         };
-        let leaf = SafeLeafName::parse(&leaf)?;
-        let remote_path = remote_join(remote_dir, leaf.as_str());
+        let remote_path = validate_upload_target(remote_dir, &leaf)?;
         let _slot = self
             .transfer_dests
             .acquire(path_capability::remote_dest_key(session_id, &remote_path))?;
@@ -3501,6 +3530,45 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
         for dir in ["/C:/../x", "C:/Users/D:", "/home/u/", "/C://"] {
             assert!(validate_upload_dir(dir).is_err(), "{dir}");
         }
+    }
+
+    #[test]
+    fn remote_leaf_accepts_unc_shares_with_windows_rules() {
+        for path in ["//server/share/dir/file.txt", "//server/share/a"] {
+            assert!(reject_unsafe_remote_leaf(path).is_ok(), "{path}");
+        }
+        for path in [
+            "//server/share",
+            "//server/share/",
+            "//server//x",
+            "///x",
+            "//server/share/CON",
+            "//server/share/file.txt:stream",
+            "//server/share/../x",
+        ] {
+            assert!(reject_unsafe_remote_leaf(path).is_err(), "{path}");
+        }
+        assert!(validate_upload_dir("//server/share").is_ok());
+        assert!(validate_upload_dir("//server/share/").is_ok());
+    }
+
+    #[test]
+    fn upload_target_applies_windows_rules_to_the_uploaded_leaf() {
+        for (dir, leaf) in [
+            ("C:/", "CON"),
+            ("/C:/Users", "name."),
+            ("//server/share", "a.txt:stream"),
+        ] {
+            assert!(validate_upload_target(dir, leaf).is_err(), "{dir} {leaf}");
+        }
+        assert_eq!(
+            validate_upload_target("C:/", "report.txt").unwrap(),
+            "C:/report.txt"
+        );
+        assert_eq!(
+            validate_upload_target("/home/u", "CON").unwrap(),
+            "/home/u/CON"
+        );
     }
 
     #[test]

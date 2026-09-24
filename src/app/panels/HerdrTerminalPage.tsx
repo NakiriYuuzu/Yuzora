@@ -52,7 +52,7 @@ import {
   type TerminalClipboardController
 } from "@/terminal/terminalClipboard"
 import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
-import { observeHerdrTerminalKeys, recordHerdrTerminalMetric } from "@/terminal/herdrTerminalDiagnostics"
+import { observeHerdrTerminalKeys, recordHerdrTerminalOutput } from "@/terminal/herdrTerminalDiagnostics"
 import { useAgentMruStore } from "@/state/agentMruStore"
 import {
   TerminalOutputQueue,
@@ -966,7 +966,7 @@ function HerdrTerminalLeaf({
       }
       const writeStartedAt = performance.now()
       term.write(data, () => {
-        recordHerdrTerminalMetric({ kind: "write", ms: performance.now() - writeStartedAt, bytes: data.length })
+        recordHerdrTerminalOutput("write", data, { ms: performance.now() - writeStartedAt })
         if (!disposedRef.current && visibleRef.current && repaintAfterWriteRef.current) {
           repaintAfterWriteRef.current = false
           term.refresh(0, term.rows - 1)
@@ -1194,7 +1194,7 @@ function HerdrTerminalLeaf({
     const handleEvent = (event: TerminalTransportEvent) => {
       if (disposedRef.current) return
       if (event.type === "output") {
-        recordHerdrTerminalMetric({ kind: "frame", full: event.full === true, bytes: event.data.length })
+        recordHerdrTerminalOutput("frame", event.data, { full: event.full === true })
         const previousSeq = lastOutputSeqRef.current
         lastOutputSeqRef.current = event.seq
         const missedEvents = previousSeq === null ? 0 : event.seq - previousSeq - 1

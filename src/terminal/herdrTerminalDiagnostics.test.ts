@@ -8,6 +8,7 @@ import {
   keyCombo,
   observeHerdrTerminalKeys,
   recordHerdrTerminalMetric,
+  recordHerdrTerminalOutput,
   setHerdrTerminalDiagnosticsEnabled,
   summarize,
   timeHerdrTerminalIpc,
@@ -114,4 +115,14 @@ it("measures frame gaps within one window, not across an idle period between win
   recordHerdrTerminalMetric({ kind: "frame", full: false, bytes: 10 }, 65_030)
   const metadata = flushHerdrTerminalDiagnostics(70_000)
   expect(metadata?.frames.gapMs).toMatchObject({ n: 1, max: 30 })
+})
+
+it("records terminal output sizes as UTF-8 bytes, not UTF-16 code units", () => {
+  setHerdrTerminalDiagnosticsEnabled(true)
+  recordHerdrTerminalOutput("frame", "中文🙂", { full: false }, 0)
+  recordHerdrTerminalOutput("write", "中文🙂", { ms: 1 }, 1)
+  const metadata = flushHerdrTerminalDiagnostics(5)
+  // 2 CJK chars × 3 bytes + 1 emoji × 4 bytes; `.length` would report 4.
+  expect(metadata?.frames.bytes).toMatchObject({ n: 1, max: 10 })
+  expect(metadata?.writes.bytes).toMatchObject({ n: 1, max: 10 })
 })
