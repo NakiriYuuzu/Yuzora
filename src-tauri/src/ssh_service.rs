@@ -1031,12 +1031,21 @@ const SFTP_PROGRESS_STEP: u64 = 256 * 1024;
 /// regardless of the local platform). Pure, so the path math is unit-tested.
 fn reject_unsafe_remote_leaf(path: &str) -> Result<(), String> {
     let mut saw_name = false;
+    // Windows OpenSSH reports canonical SFTP paths as `C:/...` or `/C:/...`;
+    // only that first segment may be a drive root.
+    let mut drive_allowed = true;
     for (index, name) in path.split('/').enumerate() {
         if name.is_empty() {
             if index == 0 {
                 continue;
             }
             return Err(PathCapabilityError::UnsafeLeaf.into());
+        }
+        let is_drive = name.len() == 2
+            && name.as_bytes()[0].is_ascii_alphabetic()
+            && name.as_bytes()[1] == b':';
+        if std::mem::take(&mut drive_allowed) && is_drive {
+            continue;
         }
         SafeLeafName::parse(name)?;
         saw_name = true;
@@ -3432,6 +3441,26 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
             );
         }
         assert!(reject_unsafe_remote_leaf("/home/u/report.pdf").is_ok());
+    }
+
+    #[test]
+    fn remote_leaf_accepts_one_leading_windows_drive_root() {
+        // Windows OpenSSH SFTP reports canonical paths as `C:/...` or `/C:/...`.
+        for path in [
+            "C:/Users/me/report.pdf",
+            "/C:/Users/me/report.pdf",
+            "/d:/work",
+        ] {
+            assert!(reject_unsafe_remote_leaf(path).is_ok(), "{path}");
+        }
+        // Only the first segment may be a drive; descendants stay validated.
+        for path in ["C:", "/C:/", "C:/Users/D:", "/C:/Users/../x", "/home/C:/x"] {
+            assert_eq!(
+                reject_unsafe_remote_leaf(path).unwrap_err(),
+                PathCapabilityError::UnsafeLeaf.as_code(),
+                "{path}"
+            );
+        }
     }
 
     #[test]

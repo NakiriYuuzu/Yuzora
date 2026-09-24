@@ -24,6 +24,8 @@ export function dbValueLiteral(kind: DbKind, value: DbValue): string {
             if (!/^[+-]?\d+$/.test(value.value)) throw new Error("invalidValue")
             return value.value
         case "decimal":
+            // PostgreSQL numeric decodes NaN/±Infinity; they are only valid as typed literals.
+            if (kind === "postgres" && /^(?:NaN|[+-]?Infinity)$/.test(value.value)) return `'${value.value}'::numeric`
             if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.value)) throw new Error("invalidValue")
             return value.value
         case "binary": throw new Error("readOnlyCell")

@@ -36,6 +36,13 @@ describe("database editing", () => {
         const sql = buildCellUpdate("postgres", table, keyed, ["email", "note"], values, "note", { kind: "text", value: "x" })
         expect(sql).toContain(`WHERE CAST("email" AS text) COLLATE "C" = E'Alice@x' AND CAST("note" AS text) COLLATE "C" = E'n'`)
     })
+    it("keeps PostgreSQL special numeric values editable as typed literals", () => {
+        const keyed: DbColumn[] = [{ name: "id", type: "numeric", pk: true, notnull: true }, { name: "v", type: "numeric", pk: false, notnull: false }]
+        const values: DbValue[] = [{ kind: "decimal", value: "NaN" }, { kind: "decimal", value: "-Infinity" }]
+        expect(buildCellUpdate("postgres", table, keyed, ["id", "v"], values, "v", { kind: "decimal", value: "1.5" }))
+            .toBe(`UPDATE "main"."odd""table" SET "v" = 1.5 WHERE "id" = 'NaN'::numeric AND "v" = '-Infinity'::numeric`)
+        expect(() => dbValueLiteral("mssql", { kind: "decimal", value: "NaN" })).toThrow("invalidValue")
+    })
     it("compares PostgreSQL real cells in real precision so their displayed value matches", () => {
         const realColumns: DbColumn[] = [metadata[0], { name: "ratio", type: "real", pk: false, notnull: false }]
         expect(buildCellUpdate("postgres", table, realColumns, ["id", "ratio"], [row[0], { kind: "decimal", value: "0.1" }], "ratio", { kind: "decimal", value: "0.2" }))

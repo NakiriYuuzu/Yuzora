@@ -36,9 +36,20 @@ it("does not reconnect a profile the user switched away from while its update wa
     fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" })
     fireEvent.click(await screen.findByRole("option", { name: "analytics" }))
     await waitFor(() => expect(finishUpdate).toBeTypeOf("function"))
-    act(() => useDbStore.setState({ activeDescriptorId: "other" }))
+    // A newer user choice (e.g. activating another profile) supersedes this reconnect.
+    act(() => useDbStore.setState(state => ({ activeDescriptorId: "other", latestUserIntentToken: state.latestUserIntentToken + 1 })))
     await act(async () => { finishUpdate() })
     expect(open).not.toHaveBeenCalled()
+})
+
+it("reconnects the chosen database after its own update disconnects the profile", async () => {
+    // The real updateSaved invalidates the live connection and moves the active profile away.
+    vi.spyOn(useDbStore.getState(), "updateSaved").mockImplementation(async () => { useDbStore.setState({ connections: [], activeDescriptorId: null }) })
+    const open = vi.spyOn(useDbStore.getState(), "openOrReconnectSavedConnection").mockResolvedValue({ outcome: "connected", descriptorId: "profile", connectionId: "conn" } as never)
+    render(<DatabaseCatalogPicker descriptorId="profile" />)
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" })
+    fireEvent.click(await screen.findByRole("option", { name: "analytics" }))
+    await waitFor(() => expect(open).toHaveBeenCalledWith("profile"))
 })
 
 it("opens the table designer by context menu and applies exactly the SQL shown", async () => {

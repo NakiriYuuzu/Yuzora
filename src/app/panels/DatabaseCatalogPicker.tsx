@@ -64,9 +64,12 @@ export function DatabaseCatalogPicker({ descriptorId }: { descriptorId: string }
                 config = { ...target, database, password: "", insecureException: target.transportMode === "insecurePlaintext" ? { host: target.host, port: target.port, user: target.user, database } : null }
             }
             if (!stillCurrent()) return
-            await useDbStore.getState().updateSaved(descriptorId, config, { transportChallengeId })
-            // The user may have switched profiles while saving; never pull them back.
-            if (!mounted.current || useDbStore.getState().activeDescriptorId !== descriptorId) return
+            // updateSaved records its own user intent synchronously and may disconnect
+            // this profile (and unmount the picker); only a newer user choice cancels.
+            const saving = useDbStore.getState().updateSaved(descriptorId, config, { transportChallengeId })
+            const intent = useDbStore.getState().latestUserIntentToken
+            await saving
+            if (useDbStore.getState().latestUserIntentToken !== intent) return
             const outcome = await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
             if (outcome.outcome === "error") throw outcome.error
         } catch {
