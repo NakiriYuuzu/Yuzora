@@ -29,6 +29,13 @@ describe("database editing", () => {
         expect(buildCellUpdate("sqlite", table, sqliteKeyed, ["code", "note"], values, "note", { kind: "text", value: "x" }))
             .toContain(`WHERE "code" = 'Alice' COLLATE BINARY AND`)
     })
+    it("compares PostgreSQL user-defined text types such as citext exactly", () => {
+        // information_schema reports citext, domains and enums as USER-DEFINED.
+        const keyed: DbColumn[] = [{ name: "email", type: "USER-DEFINED", pk: true, notnull: true }, { name: "note", type: "USER-DEFINED", pk: false, notnull: false }]
+        const values: DbValue[] = [{ kind: "text", value: "Alice@x" }, { kind: "text", value: "n" }]
+        const sql = buildCellUpdate("postgres", table, keyed, ["email", "note"], values, "note", { kind: "text", value: "x" })
+        expect(sql).toContain(`WHERE CAST("email" AS text) COLLATE "C" = E'Alice@x' AND CAST("note" AS text) COLLATE "C" = E'n'`)
+    })
     it("compares PostgreSQL real cells in real precision so their displayed value matches", () => {
         const realColumns: DbColumn[] = [metadata[0], { name: "ratio", type: "real", pk: false, notnull: false }]
         expect(buildCellUpdate("postgres", table, realColumns, ["id", "ratio"], [row[0], { kind: "decimal", value: "0.1" }], "ratio", { kind: "decimal", value: "0.2" }))

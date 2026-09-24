@@ -65,6 +65,8 @@ export function DatabaseCatalogPicker({ descriptorId }: { descriptorId: string }
             }
             if (!stillCurrent()) return
             await useDbStore.getState().updateSaved(descriptorId, config, { transportChallengeId })
+            // The user may have switched profiles while saving; never pull them back.
+            if (!mounted.current || useDbStore.getState().activeDescriptorId !== descriptorId) return
             const outcome = await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
             if (outcome.outcome === "error") throw outcome.error
         } catch {

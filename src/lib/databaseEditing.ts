@@ -76,6 +76,8 @@ function originalValuePredicate(kind: DbKind, column: DbColumn, identifier: stri
     const type = column.type.trim().toLowerCase()
     if (kind === "sqlite") return `${identifier} = ${literal} COLLATE BINARY`
     if (kind === "postgres" && /^(?:text|character(?: varying)?)$/.test(type)) return `${identifier} = ${literal} COLLATE "C"`
+    // citext, domains and enums report USER-DEFINED; their own `=` may ignore case.
+    if (kind === "postgres" && type === "user-defined") return `CAST(${identifier} AS text) COLLATE "C" = ${literal}`
     // MSSQL `=` ignores trailing spaces even under binary collations, so compare UTF-16 bytes.
     if (kind === "mssql" && /^n?(?:var)?char$|^n?text$/.test(type)) return `CAST(CAST(${identifier} AS nvarchar(max)) AS varbinary(max)) = CAST(${literal} AS varbinary(max))`
     return `${identifier} = ${literal}`

@@ -28,6 +28,19 @@ it("discovers databases after connecting, then reconnects with the chosen databa
     expect(dbListDatabases).toHaveBeenCalledWith({ descriptorId: "profile", connectionId: "conn", connectionGeneration: "1" })
 })
 
+it("does not reconnect a profile the user switched away from while its update was saving", async () => {
+    let finishUpdate!: () => void
+    vi.spyOn(useDbStore.getState(), "updateSaved").mockImplementation(() => new Promise<void>(resolve => { finishUpdate = resolve }))
+    const open = vi.spyOn(useDbStore.getState(), "openOrReconnectSavedConnection").mockResolvedValue({ outcome: "connected", descriptorId: "profile", connectionId: "conn" } as never)
+    render(<DatabaseCatalogPicker descriptorId="profile" />)
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" })
+    fireEvent.click(await screen.findByRole("option", { name: "analytics" }))
+    await waitFor(() => expect(finishUpdate).toBeTypeOf("function"))
+    act(() => useDbStore.setState({ activeDescriptorId: "other" }))
+    await act(async () => { finishUpdate() })
+    expect(open).not.toHaveBeenCalled()
+})
+
 it("opens the table designer by context menu and applies exactly the SQL shown", async () => {
     const loadColumns = vi.spyOn(useDbStore.getState(), "loadColumns").mockResolvedValue()
     const loadTables = vi.spyOn(useDbStore.getState(), "loadTables").mockResolvedValue()

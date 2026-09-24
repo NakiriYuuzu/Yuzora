@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { mkdtemp, mkdir, writeFile, realpath, readFile, access, chmod } from "node:fs/promises"
 import { join, relative, isAbsolute } from "node:path"
 import { createInterface } from "node:readline"
-import type { HerdrAgentDetails, HerdrCapabilities, HerdrPaneIdentity, HerdrNamedSession, HerdrWorkspaceCreateResult } from "../src/lib/herdrTypes"
+import type { HerdrCapabilities, HerdrPaneIdentity, HerdrNamedSession, HerdrWorkspaceCreateResult } from "../src/lib/herdrTypes"
 
 type Response = { status: "ok"; value: unknown } | { status: "error"; message: string }
 type FeatureWorktree = { workspace: { workspace_id: string } }
@@ -49,6 +49,12 @@ async function run(executable: string, args: string[], cwd = root) {
   } finally { clearTimeout(timer) }
 }
 async function cli(args: string[]) { return JSON.parse(await run(binary, ["--session", session, ...args])) }
+// The Agent Inspector IPC is gone; read agent state through Herdr's public CLI instead.
+type AgentInfo = { result?: { agent?: { interactive_ready?: boolean; launch_pending?: boolean } } }
+async function agentGet(target: string): Promise<{ agent: AgentInfo | null; error: string | null }> {
+  try { return { agent: await cli(["agent", "get", target]) as AgentInfo, error: null } }
+  catch (cause) { return { agent: null, error: String(cause) } }
+}
 async function request(operation: Record<string, unknown>) {
   check(host, "helper not running")
   const requestId = `feature-${++id}`
@@ -192,9 +198,10 @@ done
   const readyDeadline = Date.now() + 10_000
   let agentReady = false
   while (Date.now() < readyDeadline) {
-    const state = await call<HerdrAgentDetails>("herdr_agent_get", { sessionName: session, target: paneId })
+    const { agent: state } = await agentGet(paneId)
     transcript.push({ readiness: state })
-    if (state.interactiveReady === true && state.launchPending !== true) { agentReady = true; break }
+    const info = state?.result?.agent
+    if (info?.interactive_ready === true && info.launch_pending !== true) { agentReady = true; break }
     await sleep(100)
   }
   check(agentReady, "mock pi must finish launch")
@@ -210,8 +217,8 @@ done
   const stoppedDeadline = Date.now() + 5000
   let agentStopped = false
   while (Date.now() < stoppedDeadline) {
-    const state = await request({ method: "herdrCall", params: { binary, call: { command: "herdr_agent_get", args: { sessionName: session, target: paneId } } } })
-    if (state.status === "error" && state.message.startsWith("agent_not_found:")) { agentStopped = true; break }
+    const { error } = await agentGet(paneId)
+    if (error?.includes("agent_not_found")) { agentStopped = true; break }
     await sleep(100)
   }
   check(agentStopped, "Ctrl+C must actually stop the mock agent and release its name")
