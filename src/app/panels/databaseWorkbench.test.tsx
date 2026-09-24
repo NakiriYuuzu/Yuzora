@@ -4,10 +4,12 @@ import { DatabaseCatalogPicker } from "./DatabaseCatalogPicker"
 import { DatabaseTableActions } from "./DatabaseTableActions"
 import { useDbStore } from "@/state/dbStore"
 import { dbObjectRefKey } from "@/lib/databaseSql"
-import { dbListDatabases } from "@/lib/ipc"
+import { dbListDatabases, dbPostgresTransportChallenge } from "@/lib/ipc"
 import type { DbTable } from "@/lib/types"
 
 vi.mock("@/lib/ipc", () => ({ dbListDatabases: vi.fn(), dbPostgresTransportChallenge: vi.fn() }))
+const confirmation = vi.hoisted(() => ({ request: vi.fn() }))
+vi.mock("@/state/appDialogStore", async (actual) => ({ ...(await actual<object>()), requestAppConfirmation: confirmation.request }))
 const initial = useDbStore.getState()
 const table: DbTable = { catalog: "app", schema: "public", name: "users", kind: "table" }
 beforeEach(() => {
@@ -50,6 +52,24 @@ it("reconnects the chosen database after its own update disconnects the profile"
     fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" })
     fireEvent.click(await screen.findByRole("option", { name: "analytics" }))
     await waitFor(() => expect(open).toHaveBeenCalledWith("profile"))
+})
+
+it("abandons a database change when the user moves on during the transport confirmation", async () => {
+    useDbStore.setState(state => ({ saved: state.saved.map(item => ({ ...item, transportMode: "insecurePlaintext" as never })) }))
+    let answer!: (accepted: boolean) => void
+    confirmation.request.mockImplementation(() => new Promise<boolean>(resolve => { answer = resolve }))
+    vi.mocked(dbPostgresTransportChallenge).mockResolvedValue({ challengeId: "challenge" } as never)
+    const update = vi.spyOn(useDbStore.getState(), "updateSaved").mockResolvedValue()
+    const open = vi.spyOn(useDbStore.getState(), "openOrReconnectSavedConnection").mockResolvedValue({ outcome: "connected", descriptorId: "profile", connectionId: "conn" } as never)
+    render(<DatabaseCatalogPicker descriptorId="profile" />)
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "ArrowDown" })
+    fireEvent.click(await screen.findByRole("option", { name: "analytics" }))
+    await waitFor(() => expect(confirmation.request).toHaveBeenCalledOnce())
+    // The old connection stays live, but the user chose another profile meanwhile.
+    act(() => useDbStore.setState(state => ({ activeDescriptorId: "other", latestUserIntentToken: state.latestUserIntentToken + 1 })))
+    await act(async () => { answer(true) })
+    expect(update).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
 })
 
 it("opens the table designer by context menu and applies exactly the SQL shown", async () => {

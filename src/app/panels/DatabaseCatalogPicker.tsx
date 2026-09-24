@@ -49,7 +49,12 @@ export function DatabaseCatalogPicker({ descriptorId }: { descriptorId: string }
         const target = profile && profileFromSaved(profile)?.target
         if (!target || target.kind === "sqlite" || target.database === database || inFlight.current || running) return
         const capturedConnection = connection?.connId
-        const stillCurrent = () => useDbStore.getState().connections.some(item => item.descriptorId === descriptorId && item.connId === capturedConnection)
+        // Captured before any await: a newer user choice (e.g. another profile)
+        // or unmounting abandons this change, even while the old connection lives.
+        const startIntent = useDbStore.getState().latestUserIntentToken
+        const stillCurrent = () => mounted.current
+            && useDbStore.getState().latestUserIntentToken === startIntent
+            && useDbStore.getState().connections.some(item => item.descriptorId === descriptorId && item.connId === capturedConnection)
         let config: DbOpenConfig = { ...target, database, password: "" }
         let transportChallengeId: string | undefined
         inFlight.current = true
