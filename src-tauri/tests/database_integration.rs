@@ -809,6 +809,28 @@ async fn run_postgres() {
         .await
         .expect("open trusted PostgreSQL connection");
 
+    scenario(Engine::Postgres, "maintenance-database-fallback");
+    let discovery = runtime
+        .open_postgres(
+            "postgres-discovery",
+            HOST,
+            PORT,
+            "",
+            READONLY_USER,
+            password.clone(),
+            true,
+            true,
+        )
+        .await
+        .expect("fall back from denied postgres to the role database");
+    let databases = discovery
+        .list_databases()
+        .await
+        .expect("list accessible databases");
+    assert!(databases.iter().any(|database| database == DATABASE));
+    assert!(!databases.iter().any(|database| database == "postgres"));
+    discovery.close().expect("close discovery connection");
+
     scenario(Engine::Postgres, "qualified-objects-columns");
     let objects = connection
         .list_tables()

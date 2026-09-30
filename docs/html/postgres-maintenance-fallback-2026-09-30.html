@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PostgreSQL 維護資料庫備援驗證 · 2026-09-30</title>
+<style>
+body{margin:0;background:#fbfaf8;color:#1d1c1a;font:16px/1.7 system-ui,sans-serif}main{max-width:880px;margin:auto;padding:40px 24px}h2{font-size:21px;border-bottom:1px solid #ddd;padding-bottom:8px}code{overflow-wrap:anywhere;font-size:.9em}li{margin:8px 0}a{color:#2459a6}
+</style>
+</head>
+<body><main>
+<h1>PostgreSQL 維護資料庫備援</h1>
+<p>2026-09-30 · <a href="https://github.com/NakiriYuuzu/Yuzora/issues/113">Issue #113</a> · 基準 <code>9f4592ecd6f4c2bd3ff2cf544664b6c31225454c</code></p>
+<h2>問題與修正</h2>
+<p>資料庫欄位留空時，原實作只嘗試 <code>postgres</code>。若該資料庫不存在或角色沒有 CONNECT 權限，即使其他資料庫可連，也無法開始探索。</p>
+<ul>
+<li>留空時依序嘗試 <code>postgres → 與使用者同名的資料庫 → template1</code>，跳過空白與重複候選。</li>
+<li>只有 startup SQLSTATE <code>3D000</code> 與 <code>42501</code> 會換下一個候選；認證、TLS、網路錯誤立即停止。明確指定的資料庫不做備援。</li>
+<li>先依原始 profile 驗證 transport 授權，再附加密碼；未放寬明確資料庫綁定的 insecure exception。</li>
+<li>所有候選共用原本 15 秒 connection deadline。失敗時保留最後一個 structured code／retryability，並提供各次嘗試的去密診斷；候選用盡時提示指定可連資料庫或申請 CONNECT。</li>
+<li>只修改 Rust backend、測試與 fixture；未修改 React <code>src/</code>。</li>
+</ul>
+<h2>實際驗證</h2>
+<ul>
+<li>Rust 1.96.0；原實作執行最初四個新 regression tests：三個失敗、一個通過。失敗證據為只嘗試 postgres，未進入預期備援。</li>
+<li>最終 <code>cargo test --manifest-path src-tauri/host/Cargo.toml --locked db_service::tests --lib</code>：77 通過、0 失敗。共新增六個測試，涵蓋順序、去重、去密錯誤、停止條件、混合失敗與共用 timeout。</li>
+<li>最終全 host unit suite：372 通過、22 失敗、1 忽略。22 個失敗名稱與基準完全相同：21 個受此環境的 Unix socket EPERM 限制，1 個為暫存目錄 Git ancestor 假設。不可視為全測試通過。</li>
+<li>最終 host integration suites（git_read_efficiency、git_stdio、remote_facade、sqlite_stdio、stdio）：12 通過、0 失敗。</li>
+<li><code>cargo clippy --manifest-path src-tauri/host/Cargo.toml --locked --all-targets</code>：通過、零 warning；line-sensitive baseline 沒有 db_service fingerprint，未修改 baseline。</li>
+<li>Host cargo fmt check、database_integration.rs rustfmt check 與 git diff --check：通過。</li>
+</ul>
+<h2>剩餘驗證與限制</h2>
+<p>Loopback protocol fixture 透過真實 tokio-postgres driver 驗證 startup 行為，但不替代真實 PostgreSQL session 驗證。已在既有 Docker integration suite 加入非 superuser 的探索測試：撤銷 PUBLIC 對 postgres 的 CONNECT、同名資料庫不存在、備援 template1 後列出可存取資料庫，並確認 postgres 不在清單。</p>
+<p>本環境沒有 Docker／PostgreSQL，也缺少完整 Tauri 所需 GTK／WebKit 系統套件。因此真實 PostgreSQL 與桌面整合驗證待 exact-commit CI；尚未 merge 或 deploy。</p>
+<h2>2026-10-08 整合修訂（v0.0.18）</h2>
+<ul>
+<li>移除 <code>template1</code> 候選：留空時只嘗試 <code>postgres → 與使用者同名的資料庫</code>。這條連線會留作工作連線，停在 <code>template1</code> 會讓伺服器上的 <code>CREATE DATABASE</code> 失敗，在其中執行的 DDL 也會被之後新建的資料庫繼承。上文提到的 template1 備援已不適用。</li>
+<li>解決與 v0.0.17 的衝突時保留 <code>cfg.ssl_mode</code>（明文為 Disable，其餘為 Require），並新增 <code>postgres_tls_modes_never_fall_back_to_plaintext</code>：伺服器拒絕 TLS 時，TLS 模式必須失敗，不可改用明文；已用拿掉 <code>ssl_mode</code> 的 mutation 確認會失敗。</li>
+<li>測試移至 <code>db_service/tests.rs</code>；Docker integration 改為撤銷 PUBLIC 對 postgres 的 CONNECT，並建立與角色同名的資料庫作為備援目標。</li>
+</ul>
+</main></body></html>

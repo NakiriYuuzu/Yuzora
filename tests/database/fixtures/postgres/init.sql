@@ -131,3 +131,8 @@ REVOKE ALL ON ALL TABLES IN SCHEMA audit FROM yuzora_readonly;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE yuzora_full IN SCHEMA alpha
 GRANT SELECT ON TABLES TO yuzora_readonly;
+
+-- The non-superuser must discover databases through its same-name database
+-- when postgres denies CONNECT. Discovery never falls back to template1.
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+CREATE DATABASE yuzora_readonly;

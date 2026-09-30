@@ -2798,6 +2798,257 @@ fn database_password_inputs_deserialize_into_redacted_zeroizing_secret_types() {
     assert!(!format!("{:?}", credential.password).contains(SENTINEL));
 }
 
+// A minimal startup-only PostgreSQL peer exercises the real driver and open
+// path without a database server or any production credentials.
+async fn pg_maintenance_fixture(
+    database: &str,
+    user: &str,
+    failures: &[&str],
+) -> (Result<LivePg, PgConnectFailure>, Vec<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const SECRET: &str = "MAINTENANCE_FIXTURE_SECRET";
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let failures: Vec<String> = failures.iter().map(|code| code.to_string()).collect();
+    let (finished, mut done) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        let mut attempts = Vec::new();
+        loop {
+            let (mut socket, _) = tokio::select! {
+                accepted = listener.accept() => accepted.unwrap(),
+                _ = &mut done => break,
+            };
+            let length = socket.read_u32().await.unwrap();
+            let mut startup = vec![0; length as usize - 4];
+            socket.read_exact(&mut startup).await.unwrap();
+            let fields: Vec<_> = startup[4..].split(|byte| *byte == 0).collect();
+            let database = fields
+                .chunks(2)
+                .find(|pair| pair[0] == b"database")
+                .map(|pair| String::from_utf8(pair[1].to_vec()).unwrap())
+                .unwrap();
+            let failure = failures.get(attempts.len());
+            attempts.push(database);
+            if let Some(code) = failure {
+                let fields = format!("SFATAL\0C{code}\0Mfixture {code} {SECRET}\0Ddetail {SECRET}\0Hhint {SECRET}\0\0");
+                socket.write_all(b"E").await.unwrap();
+                socket
+                    .write_all(&((fields.len() + 4) as u32).to_be_bytes())
+                    .await
+                    .unwrap();
+                socket.write_all(fields.as_bytes()).await.unwrap();
+            } else {
+                socket
+                    .write_all(b"R\0\0\0\x08\0\0\0\0K\0\0\0\x0c\0\0\0\x2a\0\0\0\x54Z\0\0\0\x05I")
+                    .await
+                    .unwrap();
+                break;
+            }
+        }
+        attempts
+    });
+    let result = pg_open_with_timeout(
+        DriverEndpoint::direct(address.ip().to_string(), address.port()),
+        database.into(),
+        user.into(),
+        SECRET.to_string().into(),
+        PostgresTransportMode::InsecurePlaintext,
+        Some(PostgresInsecureException::new(
+            address.ip().to_string(),
+            address.port(),
+            user,
+            database,
+        )),
+        false,
+        Duration::from_secs(2),
+    )
+    .await;
+    let _ = finished.send(());
+    (result, server.await.unwrap())
+}
+
+#[tokio::test]
+async fn postgres_maintenance_falls_back_in_order() {
+    for (failures, expected) in [
+        (vec![], vec!["postgres"]),
+        (vec!["42501"], vec!["postgres", "alice"]),
+        (vec!["3D000"], vec!["postgres", "alice"]),
+    ] {
+        let (result, attempts) = pg_maintenance_fixture("  ", "alice", &failures).await;
+        assert!(result.is_ok(), "{:?}", result.err());
+        assert_eq!(attempts, expected);
+    }
+}
+
+#[tokio::test]
+async fn postgres_maintenance_never_falls_back_to_template1() {
+    for user in ["postgres", "template1", "", "  "] {
+        let (result, attempts) = pg_maintenance_fixture("", user, &["3D000"]).await;
+        assert_eq!(
+            result
+                .err()
+                .expect("no other candidate")
+                .error
+                .code
+                .as_deref(),
+            Some("3D000")
+        );
+        assert_eq!(attempts, vec!["postgres"]);
+    }
+}
+
+#[tokio::test]
+async fn postgres_maintenance_reports_all_failures_without_secrets() {
+    let (result, attempts) = pg_maintenance_fixture("", "alice", &["42501", "3D000"]).await;
+    assert_eq!(attempts, vec!["postgres", "alice"]);
+    let error = result.err().expect("all candidates failed").error;
+    assert_eq!(error.code.as_deref(), Some("3D000"));
+    let detail = error.detail.as_deref().unwrap();
+    for candidate in ["postgres", "alice"] {
+        assert!(detail.contains(candidate));
+    }
+    assert!(detail.contains("42501"));
+    assert!(error.hint.as_deref().unwrap().contains("database"));
+    assert!(!serde_json::to_string(&error)
+        .unwrap()
+        .contains("MAINTENANCE_FIXTURE_SECRET"));
+}
+
+#[tokio::test]
+async fn postgres_maintenance_shares_connection_deadline() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let length = socket.read_u32().await.unwrap();
+        let mut startup = vec![0; length as usize - 4];
+        socket.read_exact(&mut startup).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let fields = b"SFATAL\0C42501\0MCONNECT denied\0\0";
+        socket.write_all(b"E").await.unwrap();
+        socket
+            .write_all(&((fields.len() + 4) as u32).to_be_bytes())
+            .await
+            .unwrap();
+        socket.write_all(fields).await.unwrap();
+        // Keep the second startup pending beyond the shared deadline.
+        let (_socket, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let result = tokio::time::timeout(
+        Duration::from_millis(1500),
+        pg_open_with_timeout(
+            DriverEndpoint::direct(address.ip().to_string(), address.port()),
+            "".into(),
+            "alice".into(),
+            "fixture".to_string().into(),
+            PostgresTransportMode::InsecurePlaintext,
+            Some(PostgresInsecureException::new(
+                address.ip().to_string(),
+                address.port(),
+                "alice",
+                "",
+            )),
+            false,
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    server.abort();
+    let error = result
+        .expect("fallback must share the one-second budget, not start another")
+        .err()
+        .expect("stalled fallback must time out")
+        .error;
+    assert_eq!(error.code.as_deref(), Some("connectionTimedOut"));
+    let detail = error.detail.as_deref().unwrap();
+    assert!(detail.contains("42501") && detail.contains("connectionTimedOut"));
+}
+
+#[tokio::test]
+async fn postgres_maintenance_stops_on_auth_after_database_failure() {
+    let (result, attempts) = pg_maintenance_fixture("", "alice", &["3D000", "28P01"]).await;
+    assert_eq!(attempts, vec!["postgres", "alice"]);
+    let error = result
+        .err()
+        .expect("authentication must stop discovery")
+        .error;
+    assert_eq!(error.code.as_deref(), Some("28P01"));
+    assert_eq!(error.retryability, Retryability::NotRetryable);
+    let detail = error.detail.as_deref().unwrap();
+    assert!(detail.contains("3D000") && detail.contains("28P01"));
+    assert!(!error.hint.as_deref().unwrap().contains("grant CONNECT"));
+}
+
+#[tokio::test]
+async fn postgres_maintenance_does_not_retry_auth_or_explicit_database_failures() {
+    for (database, code) in [
+        ("", "28P01"),
+        ("", "28000"),
+        ("", "08006"),
+        ("app", "42501"),
+        ("app", "3D000"),
+    ] {
+        let (result, attempts) = pg_maintenance_fixture(database, "alice", &[code]).await;
+        assert_eq!(
+            result.err().expect("must fail").error.code.as_deref(),
+            Some(code)
+        );
+        assert_eq!(
+            attempts,
+            vec![if database.is_empty() {
+                "postgres"
+            } else {
+                database
+            }]
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_tls_modes_never_fall_back_to_plaintext() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for mode in [
+        PostgresTransportMode::VerifyFull,
+        PostgresTransportMode::EncryptedTrustServerCert,
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let length = socket.read_u32().await.unwrap();
+            let code = socket.read_u32().await.unwrap();
+            assert_eq!(
+                (length, code),
+                (8, 80_877_103),
+                "TLS modes must request TLS first"
+            );
+            // Decline TLS. A client in sslmode=prefer would continue with a
+            // plaintext StartupMessage on the same socket.
+            socket.write_all(b"N").await.unwrap();
+            let mut next = [0; 1];
+            matches!(socket.read(&mut next).await, Ok(0) | Err(_))
+        });
+        let result = pg_open_with_timeout(
+            DriverEndpoint::direct(address.ip().to_string(), address.port()),
+            "app".into(),
+            "alice".into(),
+            "fixture".to_string().into(),
+            mode,
+            None,
+            true,
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(result.is_err(), "{mode:?} must not connect without TLS");
+        assert!(
+            server.await.unwrap(),
+            "{mode:?} sent a plaintext startup after TLS was declined"
+        );
+    }
+}
+
 #[tokio::test]
 async fn postgres_tunnel_preserves_source_policy_and_routes_cancel_to_same_endpoint() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -2135,6 +2135,16 @@ async fn pg_open_with_timeout(
         return Err(pg_transport_policy_failure());
     }
 
+    // Authorize the original profile above, not each internal maintenance
+    // candidate: insecure exceptions are bound to the user's database choice.
+    let discover = database.trim().is_empty();
+    // Never fall back to template1: this connection stays open as the working
+    // session, which blocks CREATE DATABASE server-wide and lets DDL leak into
+    // every database created afterwards.
+    let mut candidates = vec![if discover { "postgres" } else { &database }];
+    if discover && !["", "postgres", "template1"].contains(&user.trim()) {
+        candidates.push(&user);
+    }
     let mut cfg = endpoint.postgres_config();
     cfg.ssl_mode(
         if matches!(transport_mode, PostgresTransportMode::InsecurePlaintext) {
@@ -2143,51 +2153,100 @@ async fn pg_open_with_timeout(
             tokio_postgres::config::SslMode::Require
         },
     );
-    cfg.dbname(if database.trim().is_empty() {
-        "postgres"
-    } else {
-        &database
-    })
-    .user(&user)
-    .password(password.expose_secret());
-
-    // Password is attached only after the transport policy is accepted. The
-    // Connection future's concrete type differs per TLS choice, but it is
-    // consumed (spawned) inside each branch so both yield the same (Client, task).
-    let use_tls = !matches!(transport_mode, PostgresTransportMode::InsecurePlaintext);
-    let trust_cert = matches!(
-        transport_mode,
-        PostgresTransportMode::EncryptedTrustServerCert
-    );
-    let connected = if use_tls {
-        let tls = pg_tls(trust_cert)
-            .map_err(|error| pg_tls_configuration_failure(error, password.expose_secret()))?;
-        let (client, connection) = tokio::time::timeout(connect_timeout, cfg.connect(tls.clone()))
-            .await
-            .map_err(|_| pg_timeout_failure())?
-            .map_err(|error| pg_driver_connect_failure(error, password.expose_secret()))?;
-        let cancel = PostgresCancelResource::rustls(&client, tls);
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("postgres connection error: {e}");
+    cfg.user(&user).password(password.expose_secret());
+    // Discovery shares the original connection budget across all candidates.
+    let deadline = tokio::time::Instant::now() + connect_timeout;
+    let mut attempts = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        cfg.dbname(*candidate);
+        let connected = async {
+            // Password is attached only after the transport policy is accepted. The
+            // Connection future's concrete type differs per TLS choice, but it is
+            // consumed (spawned) inside each branch so both yield the same (Client, task).
+            let use_tls = !matches!(transport_mode, PostgresTransportMode::InsecurePlaintext);
+            let trust_cert = matches!(
+                transport_mode,
+                PostgresTransportMode::EncryptedTrustServerCert
+            );
+            let connected = if use_tls {
+                let tls = pg_tls(trust_cert).map_err(|error| {
+                    pg_tls_configuration_failure(error, password.expose_secret())
+                })?;
+                let (client, connection) =
+                    tokio::time::timeout_at(deadline, cfg.connect(tls.clone()))
+                        .await
+                        .map_err(|_| pg_timeout_failure())?
+                        .map_err(|error| {
+                            pg_driver_connect_failure(error, password.expose_secret())
+                        })?;
+                let cancel = PostgresCancelResource::rustls(&client, tls);
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("postgres connection error: {e}");
+                    }
+                });
+                LivePg { client, cancel }
+            } else {
+                let (client, connection) =
+                    tokio::time::timeout_at(deadline, cfg.connect(tokio_postgres::NoTls))
+                        .await
+                        .map_err(|_| pg_timeout_failure())?
+                        .map_err(|error| {
+                            pg_driver_connect_failure(error, password.expose_secret())
+                        })?;
+                let cancel = PostgresCancelResource::no_tls(&client);
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        eprintln!("postgres connection error: {e}");
+                    }
+                });
+                LivePg { client, cancel }
+            };
+            Ok::<_, PgConnectFailure>(connected)
+        }
+        .await;
+        match connected {
+            Ok(live) => return Ok(live),
+            Err(mut failure) => {
+                if !discover {
+                    return Err(failure);
+                }
+                let error = &failure.error;
+                let candidate =
+                    redact_pg_connection_diagnostic(candidate, password.expose_secret());
+                let mut diagnostic = format!(
+                    "Database {candidate:?}: {} ({})",
+                    error.message,
+                    error.code.as_deref().unwrap_or("unknown"),
+                );
+                if let Some(detail) = &error.detail {
+                    diagnostic.push_str(&format!("; {detail}"));
+                }
+                if let Some(hint) = &error.hint {
+                    diagnostic.push_str(&format!("; {hint}"));
+                }
+                attempts.push(diagnostic);
+                // Only changing the database can remedy missing databases or
+                // denied CONNECT. Never retry auth, TLS, policy or network errors.
+                let database_unavailable = matches!(error.code.as_deref(), Some("3D000" | "42501"));
+                let try_next = database_unavailable && index + 1 < candidates.len();
+                if !try_next {
+                    failure.error.detail = Some(attempts.join("\n"));
+                    if database_unavailable {
+                        let guidance = "Specify an accessible database in the connection settings, or ask the administrator to grant CONNECT on a maintenance database";
+                        failure.error.hint = Some(match failure.error.hint {
+                            Some(hint) => format!("{hint}. {guidance}"),
+                            None => guidance.to_string(),
+                        });
+                    }
+                    failure.error =
+                        redact_postgres_database_error(failure.error, password.expose_secret());
+                    return Err(failure);
+                }
             }
-        });
-        LivePg { client, cancel }
-    } else {
-        let (client, connection) =
-            tokio::time::timeout(connect_timeout, cfg.connect(tokio_postgres::NoTls))
-                .await
-                .map_err(|_| pg_timeout_failure())?
-                .map_err(|error| pg_driver_connect_failure(error, password.expose_secret()))?;
-        let cancel = PostgresCancelResource::no_tls(&client);
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("postgres connection error: {e}");
-            }
-        });
-        LivePg { client, cancel }
-    };
-    Ok(connected)
+        }
+    }
+    unreachable!("there is always at least one PostgreSQL database candidate")
 }
 
 async fn pg_open(
