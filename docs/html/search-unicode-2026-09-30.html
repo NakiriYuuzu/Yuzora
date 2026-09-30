@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><title>Workspace Search Unicode 修正 — 2026-09-30</title>
+<body><h1>Workspace Search Unicode 修正</h1>
+<p>Issue：<a href="https://github.com/NakiriYuuzu/Yuzora/issues/117">#117</a>。基準：main 9f4592ecd6f4c2bd3ff2cf544664b6c31225454c。</p>
+<h2>問題與修正</h2>
+<p>grep-regex 已接受的 Unicode 不分大小寫結果，再經 lowercase/find 重新比對時會遺失。例如檔案含 ς，查詢 Σ，舊版回傳 file_count: 0。現改為重用同一個 compiled matcher，並依原始行計算零起算 Unicode scalar column；İİx 中的 x 為 column 2。</p>
+<p>僅修改共用 Rust search collector；React、Host wire schema、固定字串語意、上限與取消機制維持既有行為。grep-matcher 原已為 transitive dependency，本次新增直接 dependency，兩份 lockfile 不更動套件版本。</p>
+<h2>驗證</h2><ul>
+<li>修正前：unicode_case_insensitive_matches_are_not_discarded 重現失敗（ς / Σ）。</li>
+<li>修正後：11 個 search unit tests 全數通過，涵蓋 final sigma、long s、case-sensitive、原文 scalar column、emoji/CJK、空 query、literal metacharacters、gitignore/binary、結果上限及 stale generation。</li>
+<li>built helper 的 search_stream_delivers_owned_results_then_releases_the_helper 通過。</li>
+<li>host cargo check --locked --all-targets、cargo clippy --locked --all-targets、cargo fmt --check 及 git diff --check 通過；host clippy 無 warning。</li>
+<li>host 全部 unit tests：368 passed、22 failed、1 ignored。22 個失敗名稱與基準完全相同：21 個受環境禁止 socket bind（EPERM）影響；另 1 個因 sandbox 注入 /tmp/.git 而不符合 fixture 假設。這不是完整綠燈。</li>
+<li>未執行完整 Tauri desktop suite 或 Windows/macOS 實機 UI 驗證。</li>
+</ul>
+<h2>範圍與風險</h2><p>低風險、read-only search 行為修正。對合法 Unicode 不分大小寫匹配恢復結果；不新增正規表示式搜尋功能，也不擴大 workspace 檔案存取權限。回退此 patch 即恢復舊行為。</p>
+</body></html>

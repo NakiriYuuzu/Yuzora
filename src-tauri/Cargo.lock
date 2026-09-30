@@ -8127,6 +8127,7 @@ dependencies = [
  "dirs 7.0.0",
  "encoding_rs",
  "futures-util",
+ "grep-matcher",
  "grep-regex",
  "grep-searcher",
  "ignore",
