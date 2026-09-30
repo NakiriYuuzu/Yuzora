@@ -2335,6 +2335,7 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "futures-util",
+ "grep-matcher",
  "grep-regex",
  "grep-searcher",
  "ignore",
