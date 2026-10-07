@@ -27,9 +27,32 @@ export function usePreviewInteractions({ workspace, url, nativeSessionId, extern
   const { t } = useTranslation("preview")
   const [selecting, setSelecting] = useState(false)
   const selectingRef = useRef(false)
+  const grantRef = useRef<{ generation: number; navigation: number; url: string } | null>(null)
+  const selectionEpoch = useRef(0)
   const [selectionFeedback, setSelectionFeedback] = useState<string | null>(null)
   const previewVisibleRef = useRef(previewVisible)
   useEffect(() => { previewVisibleRef.current = previewVisible }, [previewVisible])
+
+  useEffect(() => {
+    const revokeStale = () => {
+      const state = usePreviewStore.getState()
+      const grant = grantRef.current
+      if (state.nativeSession?.sessionId !== nativeSessionId
+        || useWorkspaceStore.getState().workspacePath !== workspace
+        || (grant && (state.nativeRequestToken !== grant.generation
+          || state.nativeNavigationSyncToken !== grant.navigation
+          || state.nativeSession?.currentUrl !== grant.url
+          || (workspace && state.nav[workspace]?.url !== grant.url)))) {
+        selectionEpoch.current++
+        grantRef.current = null
+        selectingRef.current = false
+        setSelecting(false)
+      }
+    }
+    const preview = usePreviewStore.subscribe(revokeStale)
+    const workspaces = useWorkspaceStore.subscribe(revokeStale)
+    return () => { preview(); workspaces(); selectionEpoch.current++; grantRef.current = null; selectingRef.current = false }
+  }, [nativeSessionId, workspace])
 
   useEffect(() => {
     if (!isTauri() || !external || !previewVisible || !workspace || !nativeSessionId) return
@@ -46,6 +69,10 @@ export function usePreviewInteractions({ workspace, url, nativeSessionId, extern
           snapshot.url = canonicalFilePreviewUrl(remotePreviewSourceUrl(workspace, snapshot.url))
           assertFilePreviewCurrent(snapshot.url)
           const latest = usePreviewStore.getState()
+          // A close/replacement queued during navigation must not wait for
+          // another page evaluation whose result already has no current owner.
+          if (latest.nativeRequest?.kind === "close" || latest.nativeSession?.sessionId !== nativeSessionId
+            || useWorkspaceStore.getState().workspacePath !== workspace) return
           if (!disposed && latest.nativeRequestToken === generation) latest.receiveNativeNavigation(snapshot)
           const interaction = await previewInteractions(nativeSessionId, tabShortcutBindings())
           if (disposed || usePreviewStore.getState().nativeSession?.sessionId !== nativeSessionId
@@ -56,9 +83,17 @@ export function usePreviewInteractions({ workspace, url, nativeSessionId, extern
             if (command === "nextTab" || command === "previousTab") void navigateWorkbenchTabs({ direction: command === "nextTab" ? 1 : -1 })
             else if (/^tab[1-9]$/.test(command)) void navigateWorkbenchTabs({ index: Number(command.slice(3)) - 1 })
           }
-          if (selectingRef.current && isElementContext(interaction.selection)) {
+          const grant = grantRef.current
+          if (selectingRef.current && previewVisibleRef.current && grant
+            && grant.generation === generation && grant.url === snapshot.url
+            && grant.navigation === usePreviewStore.getState().nativeNavigationSyncToken
+            && isElementContext(interaction.selection)) {
             const selectedUrl = canonicalFilePreviewUrl(remotePreviewSourceUrl(workspace, interaction.selection.url))
             if (selectedUrl === snapshot.url) {
+              // One trusted toolbar action authorizes at most one write, including
+              // failed writes. Page-world selecting state can never create a grant.
+              grantRef.current = null
+              selectingRef.current = false
               const source = browserTarget(selectedUrl)
               try {
                 await writeText(formatElementContext(interaction.selection, source.kind === "file" ? workspacePathForDisplay(source.path) : selectedUrl))
@@ -68,7 +103,10 @@ export function usePreviewInteractions({ workspace, url, nativeSessionId, extern
               }
             }
           }
-          selectingRef.current = interaction.selecting === true
+          if (interaction.selecting !== true) {
+            grantRef.current = null
+            selectingRef.current = false
+          }
           setSelecting(selectingRef.current)
         })
       } catch {
@@ -82,23 +120,48 @@ export function usePreviewInteractions({ workspace, url, nativeSessionId, extern
   }, [external, nativeSessionId, previewVisible, workspace, t])
 
   useEffect(() => {
+    selectionEpoch.current++
+    grantRef.current = null
     selectingRef.current = false
     const timer = setTimeout(() => { setSelecting(false); setSelectionFeedback(null) }, 0)
     return () => clearTimeout(timer)
-  }, [url, nativeSessionId])
+  }, [url, nativeSessionId, workspace])
 
   const setElementSelection = useCallback(async (active: boolean) => {
     if (!nativeSessionId) return
+    const epoch = ++selectionEpoch.current
+    if (!active) {
+      grantRef.current = null
+      selectingRef.current = false
+      setSelecting(false)
+    }
     try {
       await enqueueNativePreviewOperation(async () => {
-        if (usePreviewStore.getState().nativeSession?.sessionId !== nativeSessionId || !previewVisibleRef.current) return
+        const state = usePreviewStore.getState()
+        if (epoch !== selectionEpoch.current || state.nativeSession?.sessionId !== nativeSessionId
+          || !previewVisibleRef.current || useWorkspaceStore.getState().workspacePath !== workspace) return
+        const generation = state.nativeRequestToken
+        const navigation = state.nativeNavigationSyncToken
+        const currentUrl = state.nativeSession.currentUrl
+        if (active) grantRef.current = { generation, navigation, url: currentUrl }
         await previewSelectElement(nativeSessionId, active)
+        const latest = usePreviewStore.getState()
+        if (epoch !== selectionEpoch.current || !previewVisibleRef.current
+          || latest.nativeSession?.sessionId !== nativeSessionId
+          || latest.nativeRequestToken !== generation || latest.nativeNavigationSyncToken !== navigation
+          || latest.nativeSession.currentUrl !== currentUrl
+          || (workspace && latest.nav[workspace]?.url !== currentUrl)
+          || useWorkspaceStore.getState().workspacePath !== workspace) return
+        grantRef.current = active ? { generation, navigation, url: currentUrl } : null
         selectingRef.current = active
         setSelecting(active)
         setSelectionFeedback(null)
       })
-    } catch (error) { await showActionError(t("selectElement"), error) }
-  }, [nativeSessionId, t])
+    } catch (error) {
+      if (epoch === selectionEpoch.current) { grantRef.current = null; selectingRef.current = false; setSelecting(false) }
+      await showActionError(t("selectElement"), error)
+    }
+  }, [nativeSessionId, workspace, t])
 
   useEffect(() => {
     const cancel = (event: KeyboardEvent) => {
@@ -116,8 +179,11 @@ export function usePreviewInteractions({ workspace, url, nativeSessionId, extern
   // This queues before the panel hides the child webview on an overlay/mode change.
   useEffect(() => {
     if (!isTauri() || !external || previewVisible || !workspace || !url || !nativeSessionId) return
+    selectionEpoch.current++
+    grantRef.current = null
+    selectingRef.current = false
     void enqueueNativePreviewOperation(async () => {
-      if (previewVisibleRef.current || !selectingRef.current
+      if (previewVisibleRef.current
         || usePreviewStore.getState().nativeSession?.sessionId !== nativeSessionId) return
       await previewSelectElement(nativeSessionId, false)
       selectingRef.current = false

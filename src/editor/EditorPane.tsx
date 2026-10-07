@@ -6,11 +6,10 @@ import { useTranslation } from "react-i18next"
 import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
-import { getDocument, updateBuffer, documentGeneration } from "./documentRegistry"
+import { getDocument, updateBuffer, documentGeneration, saveDocumentContent } from "./documentRegistry"
 import { getView, registerView, unregisterView } from "./viewRegistry"
 import { editorViewStateTracker, restoreEditorViewState } from "./editorViewState"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
-import { saveFile } from "../lib/ipc"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -105,7 +104,7 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
                         }
                         const savedDocument = view.state.doc
                         recentlySaved.mark(path)
-                        void saveFile(path, serialized.content)
+                        void saveDocumentContent(path, serialized.content)
                             .then(() => {
                                 const current = useWorkspaceStore.getState()
                                 if (current.workspacePath === workspacePath

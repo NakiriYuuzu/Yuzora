@@ -3710,3 +3710,230 @@ describe("database workbench writes", () => {
         expect(mockQueryRun).not.toHaveBeenCalled()
     })
 })
+
+describe("result page completion notifications", () => {
+    async function startPagedQuery() {
+        await useDbStore.getState().openConnection("/owned-page-notifications.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        useDbStore.getState().setSql("SELECT owned_page();")
+        mockRunResultOnce({ ...selectResult, truncated: true })
+        await useDbStore.getState().runQuery()
+        const statement = useDbStore.getState().queryBuckets[descriptorId].runGroup!.run!.statements[0]
+        return { descriptorId, owner: resultOwnerOf(statement) }
+    }
+
+    it.each(["next", "previous", "release", "error", "wrongOwner"] as const)(
+        "does not publish an unchanged state after %s settles", async (operation) => {
+            const { descriptorId, owner } = await startPagedQuery()
+            if (operation === "previous") {
+                mockResultPageNext.mockResolvedValueOnce(wirePage(owner, {
+                    pageIndex: 1, hasPrevious: true, hasNext: true, lifecycle: "streaming"
+                }))
+                await useDbStore.getState().nextResultPage(owner)
+            } else if (operation === "error") {
+                mockResultPageNext.mockRejectedValueOnce({ code: "queryFailed", message: "owned failure" })
+            } else if (operation === "wrongOwner") {
+                mockResultPageNext.mockResolvedValueOnce(wirePage({ ...owner, resultSessionId: "wrong" as never }))
+            }
+            const changes: string[][] = []
+            const unsubscribe = useDbStore.subscribe((snapshot, previous) => {
+                changes.push(Object.keys(snapshot).filter(key =>
+                    snapshot[key as keyof typeof snapshot] !== previous[key as keyof typeof previous]))
+            })
+            try {
+                if (operation === "previous") await useDbStore.getState().previousResultPage(owner)
+                else if (operation === "release") await useDbStore.getState().releaseResultSession(owner)
+                else await useDbStore.getState().nextResultPage(owner)
+            } finally { unsubscribe() }
+            expect(changes).toHaveLength(2)
+            expect(changes.every(keys => keys.includes("queryBuckets") && keys.includes("queries"))).toBe(true)
+            expect(storedResultPage(descriptorId, owner).loading).toBe(false)
+            if (operation === "error" || operation === "wrongOwner") {
+                expect(storedResultPage(descriptorId, owner).pageError).not.toBeNull()
+            }
+        }
+    )
+
+    it("still clears loading when an epoch change discards the response", async () => {
+        const { descriptorId, owner } = await startPagedQuery()
+        const response = deferred<DbResultPage>()
+        mockResultPageNext.mockReturnValueOnce(response.promise)
+        const request = useDbStore.getState().nextResultPage(owner)
+        expect(storedResultPage(descriptorId, owner).loading).toBe(true)
+        useDbStore.setState(snapshot => ({
+            operations: {
+                ...snapshot.operations,
+                [descriptorId]: { ...snapshot.operations[descriptorId], page: snapshot.operations[descriptorId].page + 1 }
+            }
+        }))
+        response.resolve(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+        await request
+        expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, page: { pageIndex: 0 } })
+        mockResultPageNext.mockResolvedValueOnce(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+        await useDbStore.getState().nextResultPage(owner)
+        expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, page: { pageIndex: 1 } })
+    })
+})
+
+it("releases paging request records across repeated next/previous lifecycles", async () => {
+    await useDbStore.getState().openConnection("/owned-page-lifetimes.db")
+    const descriptorId = useDbStore.getState().activeDescriptorId!
+    useDbStore.getState().setSql("SELECT owned_lifetime();")
+    mockRunResultOnce({ ...selectResult, truncated: true })
+    await useDbStore.getState().runQuery()
+    const owner = resultOwnerOf(useDbStore.getState().queryBuckets[descriptorId].runGroup!.run!.statements[0])
+    const originalSet = Map.prototype.set
+    let pendingSize: (() => number) | undefined
+    const spy = vi.spyOn(Map.prototype, "set").mockImplementation(function (this: Map<unknown, unknown>, key, value) {
+        if (key === resultPageKey(owner) && typeof value === "number") pendingSize = () => this.size
+        return originalSet.call(this, key, value)
+    })
+    mockResultPageNext.mockImplementation(async value => wirePage(value, { pageIndex: 1, hasPrevious: true }))
+    mockResultPagePrevious.mockImplementation(async value => wirePage(value, { pageIndex: 0, hasNext: true, lifecycle: "streaming" }))
+    try {
+        for (let i = 0; i < 200; i++) {
+            await useDbStore.getState().nextResultPage(owner)
+            expect(pendingSize?.()).toBe(0)
+            await useDbStore.getState().previousResultPage(owner)
+            expect(pendingSize?.()).toBe(0)
+        }
+        await useDbStore.getState().releaseResultSession(owner)
+        expect(pendingSize?.()).toBe(0)
+    } finally { spy.mockRestore() }
+})
+
+describe("unchanged query history notifications", () => {
+    it.each([
+        ["short", "SELECT same();", "SELECT same();"],
+        ["exact limit", "x".repeat(DB_HISTORY_SQL_MAX), "x".repeat(DB_HISTORY_SQL_MAX)],
+        ["same truncated prefix", "x".repeat(DB_HISTORY_SQL_MAX) + " first", "x".repeat(DB_HISTORY_SQL_MAX) + " second"]
+    ])("preserves state and the first entry for %s duplicate SQL", (_name, originalSql, duplicateSql) => {
+        useDbStore.getState().recordHistory("owned-history", {
+            sql: originalSql, ranAt: 1, ok: true, elapsedMs: 3
+        })
+        const before = useDbStore.getState()
+        const history = before.historyBuckets["owned-history"]
+        const listener = vi.fn()
+        const unsubscribe = useDbStore.subscribe(listener)
+        try {
+            useDbStore.getState().recordHistory("owned-history", {
+                sql: duplicateSql, ranAt: 999, ok: false, error: "ignored duplicate", elapsedMs: 999
+            })
+        } finally { unsubscribe() }
+        expect(listener).not.toHaveBeenCalled()
+        expect(useDbStore.getState()).toBe(before)
+        expect(useDbStore.getState().historyBuckets["owned-history"]).toBe(history)
+        expect(history[0]).toMatchObject({ sql: originalSql.slice(0, DB_HISTORY_SQL_MAX), ranAt: 1, ok: true, elapsedMs: 3 })
+        expect(history[0].error).toBeUndefined()
+    })
+
+    it("publishes different SQL and the first matching SQL in another descriptor", () => {
+        const entry = { sql: "SELECT same();", ranAt: 1, ok: true, elapsedMs: 1 }
+        useDbStore.getState().recordHistory("owned-first", entry)
+        const first = useDbStore.getState().historyBuckets["owned-first"]
+        const listener = vi.fn()
+        const unsubscribe = useDbStore.subscribe(listener)
+        try {
+            useDbStore.getState().recordHistory("owned-second", entry)
+            expect(useDbStore.getState().historyBuckets["owned-first"]).toBe(first)
+            useDbStore.getState().recordHistory("owned-first", { ...entry, sql: "SELECT different();" })
+        } finally { unsubscribe() }
+        expect(listener).toHaveBeenCalledTimes(2)
+        expect(useDbStore.getState().historyBuckets["owned-first"].map(row => row.sql)).toEqual([
+            "SELECT different();", "SELECT same();"
+        ])
+        expect(useDbStore.getState().historyBuckets["owned-second"]).toEqual([entry])
+    })
+})
+
+describe("stale result page response notifications", () => {
+    async function startStreamingQuery() {
+        await useDbStore.getState().openConnection("/owned-late-response.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        useDbStore.getState().setSql("SELECT owned_late_response();")
+        mockRunResultOnce({ ...selectResult, truncated: true })
+        await useDbStore.getState().runQuery()
+        const statement = useDbStore.getState().queryBuckets[descriptorId].runGroup!.run!.statements[0]
+        return { descriptorId, owner: resultOwnerOf(statement) }
+    }
+
+    it.each([
+        ["cancel", "success"], ["cancel", "error"],
+        ["replace", "success"], ["replace", "error"],
+        ["terminate", "success"], ["terminate", "error"]
+    ] as const)("does not notify or replace current state after %s and a late %s", async (transition, outcome) => {
+        const { descriptorId, owner } = await startStreamingQuery()
+        const response = deferred<DbResultPage>()
+        mockResultPageNext.mockReturnValueOnce(response.promise)
+        const request = useDbStore.getState().nextResultPage(owner)
+        expect(storedResultPage(descriptorId, owner).loading).toBe(true)
+        if (transition === "replace") {
+            mockRunResultOnce({ ...selectResult, truncated: true })
+            await useDbStore.getState().runQuery()
+            expect(useDbStore.getState().queryBuckets[descriptorId].runGroup!.owner.queryRunId).not.toBe(owner.queryRunId)
+        } else {
+            if (transition === "terminate") mockQueryCancel.mockResolvedValueOnce({ outcome: "cancelledConnectionTerminated" })
+            await useDbStore.getState().cancelQuery()
+            if (transition === "terminate") expect(useDbStore.getState().connections).toHaveLength(0)
+            else expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, page: { lifecycle: "cancelled" } })
+        }
+        const settled = useDbStore.getState()
+        const listener = vi.fn()
+        const unsubscribe = useDbStore.subscribe(listener)
+        try {
+            if (outcome === "success") response.resolve(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+            else response.reject({ code: "queryFailed", message: "obsolete page error" })
+            await request
+        } finally { unsubscribe() }
+        expect(listener).not.toHaveBeenCalled()
+        expect(useDbStore.getState()).toBe(settled)
+        expect(mockResultPageNext).toHaveBeenCalledTimes(1)
+    })
+
+    it.each(["success", "error"] as const)("keeps required loading cleanup after an epoch change and late %s", async outcome => {
+        const { descriptorId, owner } = await startStreamingQuery()
+        const response = deferred<DbResultPage>()
+        mockResultPageNext.mockReturnValueOnce(response.promise)
+        const request = useDbStore.getState().nextResultPage(owner)
+        useDbStore.setState(snapshot => ({
+            operations: {
+                ...snapshot.operations,
+                [descriptorId]: { ...snapshot.operations[descriptorId], page: snapshot.operations[descriptorId].page + 1 }
+            }
+        }))
+        const changed: string[][] = []
+        const unsubscribe = useDbStore.subscribe((snapshot, previous) => {
+            changed.push(Object.keys(snapshot).filter(key => snapshot[key as keyof typeof snapshot] !== previous[key as keyof typeof previous]))
+        })
+        try {
+            if (outcome === "success") response.resolve(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+            else response.reject({ code: "queryFailed", message: "obsolete epoch error" })
+            await request
+        } finally { unsubscribe() }
+        expect(changed).toEqual([["queryBuckets"]])
+        expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, pageError: null, page: { pageIndex: 0 } })
+        mockResultPageNext.mockResolvedValueOnce(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+        await useDbStore.getState().nextResultPage(owner)
+        expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, page: { pageIndex: 1 } })
+    })
+
+    it("publishes a valid page after cancellation fails", async () => {
+        const { descriptorId, owner } = await startStreamingQuery()
+        const response = deferred<DbResultPage>()
+        mockResultPageNext.mockReturnValueOnce(response.promise)
+        mockQueryCancel.mockRejectedValueOnce({ code: "queryFailed", message: "cancel rejected" })
+        const request = useDbStore.getState().nextResultPage(owner)
+        await useDbStore.getState().cancelQuery()
+        expect(useDbStore.getState().queryBuckets[descriptorId].error).toMatchObject({ code: "queryFailed" })
+        expect(storedResultPage(descriptorId, owner).loading).toBe(true)
+        const listener = vi.fn()
+        const unsubscribe = useDbStore.subscribe(listener)
+        try {
+            response.resolve(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+            await request
+        } finally { unsubscribe() }
+        expect(listener).toHaveBeenCalledTimes(1)
+        expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, pageError: null, page: { pageIndex: 1 } })
+        expect(useDbStore.getState().queryBuckets[descriptorId].error).toBeNull()
+    })
+})

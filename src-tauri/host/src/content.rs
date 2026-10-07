@@ -3,6 +3,24 @@ use crate::file_content::{
 };
 use serde_json::{json, Value};
 
+fn detect_line_ending(content: &str) -> &'static str {
+    let bytes = content.as_bytes();
+    let mut previous = 0;
+    for (index, _) in content.match_indices('\r') {
+        if bytes.get(index + 1) != Some(&b'\n') || content[previous..index].contains('\n') {
+            return "mixed";
+        }
+        previous = index + 2;
+    }
+    if previous == 0 {
+        "lf"
+    } else if content[previous..].contains('\n') {
+        "mixed"
+    } else {
+        "crlf"
+    }
+}
+
 pub fn classify_bytes(bytes: &[u8]) -> Value {
     let size = bytes.len();
     match analyze_byte_content(&bytes[..size.min(FILE_ANALYSIS_BYTES)]) {
@@ -22,17 +40,13 @@ pub fn classify_bytes(bytes: &[u8]) -> Value {
                 json!({"kind":"nonUtf8Readonly", "size":size, "content":String::from_utf8_lossy(bytes), "encoding":"unknown"})
             }
             Ok(content) => {
-                let crlf = content.contains("\r\n");
-                let stripped = content.replace("\r\n", "");
-                let line_ending = if stripped.contains('\r') || (crlf && stripped.contains('\n')) {
-                    "mixed"
-                } else if crlf {
-                    "crlf"
-                } else {
-                    "lf"
-                };
+                let line_ending = detect_line_ending(content);
                 json!({"kind": if size as u64 > FULL_FEATURE_MAX_BYTES { "limited" } else { "full" }, "content":content, "size":size, "lineEnding":line_ending})
             }
         },
     }
 }
+
+#[cfg(test)]
+#[path = "content/tests.rs"]
+mod tests;

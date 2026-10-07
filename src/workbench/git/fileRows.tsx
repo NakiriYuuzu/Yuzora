@@ -28,8 +28,8 @@ export function badgeChar(status: string): string {
 }
 
 // §5 gitBadge — 18×18 r6 mono 10px 700 (dc.html L3210).
-export function GitBadge({ badge }: { badge: string }) {
-    const { fg, bg } = BADGE_COLORS[badge] ?? BADGE_COLORS.U
+export function GitBadge({ badge, colors }: { badge: string; colors?: { fg: string; bg: string } }) {
+    const { fg, bg } = colors ?? BADGE_COLORS[badge] ?? BADGE_COLORS.U
     return (
         <span
             aria-hidden="true"

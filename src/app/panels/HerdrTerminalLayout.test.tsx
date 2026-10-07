@@ -282,6 +282,33 @@ describe("HerdrTerminalPage BSP layout surface", () => {
     expect(screen.queryByText("Focused")).not.toBeInTheDocument()
   })
 
+  it("selects the pane an Agent activation targets without reloading the mounted split", async () => {
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))
+    const paneA = screen.getByRole("button", { name: "Focus terminal: A" })
+    const paneC = screen.getByRole("button", { name: "Focus terminal: C" })
+    const exports = layoutMock.export.mock.calls.length
+
+    // Other sessions and panes outside this tab never move the selection.
+    act(() => useHerdrStore.setState({ paneFocusRequest: { sessionName: "work", paneId: "p3", seq: 1 } }))
+    act(() => useHerdrStore.setState({ paneFocusRequest: { sessionName: "default", paneId: "elsewhere", seq: 2 } }))
+    expect(paneA).toHaveAttribute("aria-pressed", "true")
+
+    act(() => useHerdrStore.setState({ paneFocusRequest: { sessionName: "default", paneId: "p3", seq: 3 } }))
+    expect(paneC).toHaveAttribute("aria-pressed", "true")
+    expect(paneA).toHaveAttribute("aria-pressed", "false")
+
+    // After a local click elsewhere, re-selecting the same Agent applies again.
+    fireEvent.click(paneA)
+    await waitFor(() => expect(paneA).toHaveAttribute("aria-pressed", "true"))
+    act(() => useHerdrStore.setState({ paneFocusRequest: { sessionName: "default", paneId: "p3", seq: 4 } }))
+    expect(paneC).toHaveAttribute("aria-pressed", "true")
+
+    expect(layoutMock.export).toHaveBeenCalledTimes(exports)
+    expect(herdrTerminalOpen).toHaveBeenCalledTimes(3)
+    expect(herdrTerminalRelease).not.toHaveBeenCalled()
+  })
+
   it("zooms only the focused pane without releasing connectors and restores the split", async () => {
     render(<HerdrTerminalPage herdrSessionId="default" terminalId="t1" herdrTabId="tab-1" active visible />)
     await waitFor(() => expect(herdrTerminalOpen).toHaveBeenCalledTimes(3))

@@ -4,7 +4,7 @@ import { parseRemoteFilePath, remoteFilePath, sameConnection } from "./runtimeId
 import type { GitEnvironment, GitBootstrapResult } from "./types"
 
 const repositories = new Map<string, ReturnType<typeof runtimeWorkspaceService>>()
-const reads = new Set(["git_status_cmd", "git_branches", "git_diff_content", "git_log_page", "git_commit_detail", "git_log_authors", "git_file_at_rev", "git_remote_probe"])
+const reads = new Set(["git_status_cmd", "git_branches", "git_diff_content", "git_log_page", "git_commit_detail", "git_log_authors", "git_file_at_rev", "git_remote_probe", "git_conflict_sides", "git_stash_list"])
 
 function environment(value: GitEnvironment, service: ReturnType<typeof runtimeWorkspaceService>): GitEnvironment {
   if (value.status !== "ready") {
@@ -18,7 +18,7 @@ function environment(value: GitEnvironment, service: ReturnType<typeof runtimeWo
 }
 
 export async function invokeRemoteGit<T>(command: string, args: Record<string, unknown>): Promise<T> {
-  const discovering = command === "git_detect" || command === "git_bootstrap"
+  const discovering = command === "git_detect" || command === "git_bootstrap" || command === "git_discover"
   const uri = String(discovering ? args.path : args.repositoryRoot)
   const remembered = repositories.get(uri)
   const service = runtimeWorkspaceService(remembered?.uri ?? uri)
@@ -33,11 +33,15 @@ export async function invokeRemoteGit<T>(command: string, args: Record<string, u
   }
   const routed = { ...args }
   delete routed.repositoryRoot
+  // A nested repository of a multi-repository workspace travels as the
+  // detection target (relative to the workspace), not as a command argument.
+  const nestedRepository = typeof routed.repositoryPath === "string" && routed.repositoryPath ? routed.repositoryPath : null
+  delete routed.repositoryPath
   if (discovering) delete routed.path
   delete routed.background // Remote credentials are owned by that host.
   service.assertCurrent()
   const value = await requestWorkspace<unknown>(service, { method: "git", params: {
-    workspace: service.capabilityId, repository_root: discovering ? null : root.path,
+    workspace: service.capabilityId, repository_root: discovering ? nestedRepository : root.path,
     call: { command, ...(Object.keys(routed).length ? { args: routed } : {}) }
   } })
   service.assertCurrent()

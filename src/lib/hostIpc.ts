@@ -44,6 +44,7 @@ export type HostOperation =
   | { method: "filesWrite"; params: { workspace: string; path: string; content: string; revision: string } }
   | { method: "filesCreate"; params: { workspace: string; path: string; directory: boolean } }
   | { method: "filesRename"; params: { workspace: string; from: string; to: string } }
+  | { method: "filesCopy" | "filesMove"; params: { workspace: string; sources: string[]; target_dir: string } }
   | { method: "filesDelete"; params: { workspace: string; path: string } }
   | { method: "filesReadBase64"; params: { workspace: string; path: string; max_bytes: number } }
   | { method: "herdrStart"; params: { binary: string } }

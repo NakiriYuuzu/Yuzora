@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { SftpPanel } from "@/app/panels/SftpPanel"
+import { lazy, Suspense } from "react"
 import { PasswordPromptDialog } from "@/app/workbench/HostList"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -7,6 +7,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { useSftpStore } from "@/state/sftpStore"
 import { useSshStore } from "@/state/sshStore"
 import { pickRemoteWorkspace } from "@/lib/workspaceActions"
+
+const SftpPanel = lazy(() => import("@/app/panels/SftpPanel").then(m => ({ default: m.SftpPanel })))
 
 export function SftpHost() {
   const { t } = useTranslation("hosts")
@@ -23,7 +25,7 @@ export function SftpHost() {
         </Select>
         <Button variant="outline" onClick={() => { useSftpStore.getState().setPanelOpen(false); void pickRemoteWorkspace() }}>{t("manageHosts")}</Button>
       </div>
-      <SftpPanel />
+      <Suspense fallback={<div className="min-h-0 flex-1" aria-busy="true" />}><SftpPanel /></Suspense>
     </DialogContent>
   </Dialog>
 }

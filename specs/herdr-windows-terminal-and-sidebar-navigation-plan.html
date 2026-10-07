@@ -1045,6 +1045,17 @@ export function encodeWin32InputModeKey(e: KeyboardEventLike): string | null {
       <summary>2026-09-24T19:50+08:00 — 使用者以 Windows 實體鍵盤確認 Ctrl+K 與 Alt+Q</summary>
       <p>使用者在 f7e64d6 候選版上用 Windows 實體鍵盤確認兩項：terminal 聚焦時按 <code>Ctrl+K</code> 能開啟命令面板，pi 內按 <code>Alt+Q</code> 有作用。加上前一筆 probe 證明 Herdr 端 Alt 傳遞正常（H-A），原始需求 6a／6b 在候選版都已解決，Phase 8 的 W32IM 改寫不需要。CHANGELOG 0.0.16 的「已知限制（Alt 組合鍵）」已不成立，待使用者決定是否更新。</p>
     </details>
+      <details>
+      <summary>2026-09-25T04:15+08:00 — v0.0.16 發布</summary>
+      <p>PR #110 已由使用者授權，以 merge commit 合併：<code>9f4592e</code>，head <code>14fa1e4</code>，tree <code>0e3448b</code>，並關閉 #109。main CI（run 36049538493）與 Release workflow（run 36050125623）全部成功。<code>v0.0.16</code> tag 指向 <code>9f4592e</code>，Stable Release 已發布並設為 Latest（2026-09-24T20:13Z）。</p>
+<p>發布後驗證（operations §9）：</p>
+<ul>
+<li><code>latest.json</code> 的版本為 0.0.16，含 <code>darwin-aarch64</code>、<code>windows-x86_64</code> 兩個平台，皆有簽章，URL 皆指向 v0.0.16。</li>
+<li>三個固定下載別名皆回應 200。</li>
+<li>Release notes 含 Gatekeeper 與 SmartScreen 說明。</li>
+</ul>
+<p>PR 過程中共處理 Codex review 八輪：可修正者皆修正並附先失敗、再通過的測試；影響有限的 P2 轉為 #111–#114。Phase 7（F1、F2、捲動改走 pane）已完成；Phase 8 的 W32IM 改寫依 probe 結果（H-A）與實體鍵盤驗證判定不需要。</p>
+    </details>
   </section>
 
 

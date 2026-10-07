@@ -145,6 +145,8 @@ describe("sftpStore remote browsing", () => {
     })
 
     it("listRemote records an error when the host has no live session", async () => {
+        connectHost("")
+        useSshStore.setState({ sessions: {} })
         await useSftpStore.getState().listRemote(HOST, "")
         expect(mockList).not.toHaveBeenCalled()
         expect(useSftpStore.getState().remote[HOST].error).toBe("尚未連線")

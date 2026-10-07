@@ -1,4 +1,4 @@
-import { gitFileNameStyle } from "./fileRows"
+import { GitBadge, gitFileNameStyle } from "./fileRows"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
@@ -51,19 +51,6 @@ const BADGE_COLORS: Record<string, { fg: string; bg: string }> = {
 function badgeChar(status: string): string {
     const c = status.charAt(0).toUpperCase()
     return c in BADGE_COLORS ? c : "M"
-}
-
-function FileBadge({ badge }: { badge: string }) {
-    const { fg, bg } = BADGE_COLORS[badge] ?? BADGE_COLORS.U
-    return (
-        <span
-            aria-hidden="true"
-            className="flex size-[18px] shrink-0 items-center justify-center rounded-[6px] font-mono text-[10px] font-bold"
-            style={{ background: bg, color: fg }}
-        >
-            {badge}
-        </span>
-    )
 }
 
 // The header title/sub differ by source: worktree → "Working tree" + file count;
@@ -166,7 +153,7 @@ function DiffFileOption({
                 (selected ? "bg-(--yz-active) shadow-(--shadow-xs)" : "hover:bg-(--yz-panel)")
             }
         >
-            <FileBadge badge={row.badge} />
+            <GitBadge badge={row.badge} colors={BADGE_COLORS[row.badge]} />
             <span className="min-w-0 flex-1 truncate">
                 <span style={gitFileNameStyle(row.badge, row.side === "staged")} className={"text-[12px] " + (selected ? "font-semibold text-(--ink-0)" : "font-medium text-(--ink-1)")}>
                     {name}
@@ -258,7 +245,11 @@ export function DiffModal() {
         error: string | null
     } | null>(null)
     const [retryToken, setRetryToken] = useState(0)
-    const [fileFilter, setFileFilter] = useState("")
+    // The filter belongs to one opened source; a new open* derives an empty filter
+    // so a hidden leftover query cannot blank a smaller file list.
+    const [filterState, setFilterState] = useState({ sourceGeneration: -1, value: "" })
+    const fileFilter = filterState.sourceGeneration === sourceGeneration ? filterState.value : ""
+    const setFileFilter = (value: string) => setFilterState({ sourceGeneration, value })
     // Collapse chrome is bound to sourceGeneration so a leftover collapsed=true
     // from the previous heldSource session derives to expanded on the next open*.
     // Mount-time onCollapse (0px first resize) must not stamp this generation.
@@ -362,7 +353,8 @@ export function DiffModal() {
     const visibleRows = filterRowsByPath(indexedRows.map(({ row, index }) => ({ ...row, index })), fileFilter)
     const focusRow = visibleRows.find((row) => row.index === activeIndex) ?? visibleRows[0] ?? null
     const focusIndex = focusRow?.index ?? null
-    const showFilter = rows.length > FILE_FILTER_MIN_COUNT
+    // Keep a non-empty filter editable even when the list shrinks below the threshold.
+    const showFilter = rows.length > FILE_FILTER_MIN_COUNT || fileFilter !== ""
     const worktreeGroups = source.type === "worktree"
         ? {
             staged: visibleRows.filter((row) => row.side === "staged"),
@@ -667,6 +659,12 @@ export function DiffModal() {
                                             >
                                                 {t("diffModal.retry")}
                                             </Button>
+                                        </div>
+                                    ) : rows.length === 0 ? (
+                                        // Nothing to load (e.g. an empty commit): never show a spinner
+                                        // that no request can resolve.
+                                        <div className="flex h-full items-center justify-center text-[12.5px] text-(--ink-3)">
+                                            {t("diffModal.noFiles")}
                                         </div>
                                     ) : (
                                         <div className="flex h-full items-center justify-center text-[12.5px] text-(--ink-3)">

@@ -1,0 +1,6 @@
+.markdown-preview-body pre, .rich-markdown-prose pre { position:relative; }
+.markdown-code-copy { position:absolute; top:6px; right:6px; display:flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; border:1px solid var(--line-1); border-radius:6px; background:var(--paper-1); color:var(--ink-3); opacity:0; cursor:pointer; transition:opacity .12s, color .12s, background-color .12s; }
+pre:hover > .markdown-code-copy, .markdown-code-copy:focus-visible { opacity:1; }
+.markdown-code-copy:hover { background:var(--paper-3); color:var(--ink-0); }
+.markdown-code-copy:focus-visible { outline:2px solid var(--yz-accent); outline-offset:1px; }
+.markdown-code-copy svg { width:14px; height:14px; pointer-events:none; }

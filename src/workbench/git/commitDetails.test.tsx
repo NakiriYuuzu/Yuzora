@@ -67,3 +67,37 @@ describe("CommitDetails Cherry-pick action", () => {
         expect(screen.getByRole("button", { name: "Cherry-pick" })).toBeDisabled()
     })
 })
+
+describe("CommitDetails Compare action", () => {
+    it("opens the diff viewer for a commit with file changes", () => {
+        const onCompare = vi.fn()
+        render(
+            <CommitDetails
+                selectedCommit={commit}
+                detail={detail}
+                detailLoading={false}
+                onCheckout={vi.fn()}
+                onCompare={onCompare}
+            />
+        )
+        fireEvent.click(screen.getByRole("button", { name: "Compare" }))
+        expect(onCompare).toHaveBeenCalledWith(commit.hash)
+    })
+
+    it("disables Compare for a commit without file changes", () => {
+        const onCompare = vi.fn()
+        render(
+            <CommitDetails
+                selectedCommit={commit}
+                detail={{ ...detail, files: [], totalAdditions: 0, totalDeletions: 0 }}
+                detailLoading={false}
+                onCheckout={vi.fn()}
+                onCompare={onCompare}
+            />
+        )
+        const compare = screen.getByRole("button", { name: "Compare" })
+        expect(compare).toBeDisabled()
+        fireEvent.click(compare)
+        expect(onCompare).not.toHaveBeenCalled()
+    })
+})

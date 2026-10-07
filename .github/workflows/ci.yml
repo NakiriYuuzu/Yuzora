@@ -14,15 +14,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Keep the required-check context stable for branch protection and releases.
   frontend:
     name: Frontend (lint · typecheck · test · build)
+    if: ${{ always() }}
+    needs: [frontend-checks, frontend-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all frontend jobs to succeed
+        env:
+          CHECKS_RESULT: ${{ needs.frontend-checks.result }}
+          TESTS_RESULT: ${{ needs.frontend-tests.result }}
+        run: test "$CHECKS_RESULT" = success && test "$TESTS_RESULT" = success
+
+  frontend-checks:
+    name: Frontend checks (lint · typecheck · build)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Lint
@@ -34,10 +52,36 @@ jobs:
           bun run site:companions
           bun run site:seo
           bun run demo:build
-      - name: Test
-        run: bun run test
       - name: Build
         run: bun run build
+
+  frontend-tests:
+    name: Frontend tests (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # Site artifact tests need these outputs even on a tests-only runner.
+      - name: Build localized Pages and demo
+        run: |
+          bun run site:companions
+          bun run site:seo
+          bun run demo:build
+      - name: Test shard
+        run: bun run test --shard=${{ matrix.shard }}/3
 
   # Compile assurance only: interactive Keychain, Credential Manager, and
   # Secret Service smoke tests still require user-session runners on each OS.
@@ -47,6 +91,9 @@ jobs:
     # verify the real resources downloaded from host-artifacts.
     env:
       TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+      # Line tables keep test backtraces readable while cutting compile, link
+      # and cache time against full debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     strategy:
       fail-fast: false
       matrix:
@@ -63,16 +110,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: sudo bash .github/scripts/install-linux-system-dependencies.sh
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
-          toolchain: 1.96.0
+          toolchain: 1.98.1
           rustflags: ""
+          build-warnings: "" # The exact Clippy baseline owns warning policy.
           cache: false
 
       - name: Install macOS quality components
@@ -83,8 +131,12 @@ jobs:
         with:
           workspaces: src-tauri
           key: ci-${{ matrix.cache-key }}
+          cache-on-failure: true
 
+      # On macOS the Clippy baseline below compiles the same locked targets
+      # and fails on any compiler error, so a separate check would repeat it.
       - name: Compile all targets with locked dependencies
+        if: runner.os != 'macOS'
         working-directory: src-tauri
         run: cargo check --locked --all-targets
 
@@ -126,6 +178,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/host.yml
+    with:
+      caller: ci
 
   release-candidate:
     needs: host-artifacts
@@ -152,31 +206,43 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.21.0
+          package-manager-cache: false
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          toolchain: 1.96.0
+          toolchain: 1.98.1
           targets: ${{ matrix.rust-targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
           key: release-candidate-${{ runner.os }}
+          cache-on-failure: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Download Unix host runtimes
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: host-*
           merge-multiple: true
           path: src-tauri/resources/host/
+
+      # upload-artifact stores every file as 0644; the macOS app runs its
+      # bundled HERDR from host/macos-aarch64, so restore the execute bits.
+      - name: Restore Unix host runtime execute bits
+        if: runner.os != 'Windows'
+        shell: bash
+        run: find src-tauri/resources/host -mindepth 2 -type f \( -name herdr -o -name yuzora-host \) -exec chmod 0755 {} +
 
       - name: Verify Unix host runtime payloads
         run: bun run runtime:verify
@@ -226,7 +292,7 @@ jobs:
         run: ./scripts/verify-windows-runtime-payload.ps1 -BundleDir "src-tauri/target/release/bundle"
 
       - name: Upload release candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-path }}
@@ -237,10 +303,11 @@ jobs:
     name: Real database integration (Linux x86-64)
     env:
       TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Verify x86-64 runner
         shell: bash
@@ -249,16 +316,18 @@ jobs:
       - name: Install Linux system dependencies
         run: sudo bash .github/scripts/install-linux-system-dependencies.sh
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
-          toolchain: 1.96.0
+          toolchain: 1.98.1
           rustflags: ""
+          build-warnings: ""
           cache: false
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
           key: database-integration-linux-x86-64
+          cache-on-failure: true
 
       - name: Start PostgreSQL and MSSQL fixtures
         run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait

@@ -49,8 +49,43 @@ import { dbObjectRefKey } from "@/lib/databaseSql"
 import { DatabaseCatalogPicker } from "./DatabaseCatalogPicker"
 import { DatabaseCellEditing } from "./DatabaseCellEditing"
 import { useDatabaseCellEditing } from "./databaseCellEditingContext"
+import type { EditingContext } from "./databaseCellEditingContext"
 
 const EMPTY_COLUMNS: DbColumn[] = []
+
+// Only this text leaf re-renders on the 100ms running-query clock.
+function QueryElapsed({ running, runningQueryRunId, runningStartedAt, runGroupStatus, elapsedMs }: {
+  running: boolean
+  runningQueryRunId: string | null
+  runningStartedAt: number | null
+  runGroupStatus: DbQueryRunGroup["status"] | null
+  elapsedMs: number | null
+}) {
+  const { t } = useTranslation("panels")
+  const [elapsedSample, setElapsedSample] = useState<{ queryRunId: string; value: number } | null>(null)
+  useEffect(() => {
+    if (!running || !runningQueryRunId || runningStartedAt === null || runGroupStatus === "settled") {
+      return
+    }
+    const timer = window.setInterval(() => {
+      setElapsedSample({
+        queryRunId: runningQueryRunId,
+        value: Math.max(0, Math.round(performance.now() - runningStartedAt))
+      })
+    }, 100)
+    return () => window.clearInterval(timer)
+  }, [runGroupStatus, running, runningQueryRunId, runningStartedAt])
+  const runningElapsedMs = running && runningQueryRunId
+    ? elapsedSample?.queryRunId === runningQueryRunId
+      ? elapsedSample.value
+      : 0
+    : null
+
+  const elapsedLabel = runningElapsedMs ?? elapsedMs
+  return elapsedLabel != null
+    ? <span className="shrink-0 font-mono tabular-nums">{t("databasePanel.elapsed", { ms: elapsedLabel })}</span>
+    : null
+}
 
 /** Move the column at display position `from` to display position `to`. `order`
  *  maps display positions to original column indices; the returned array is a new
@@ -305,28 +340,6 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
     })
   }, [error, parseError, runGroup])
 
-  const [elapsedSample, setElapsedSample] = useState<{ queryRunId: string; value: number } | null>(null)
-  const runningQueryRunId = runGroup?.owner.queryRunId ?? null
-  const runningStartedAt = runGroup?.startedAt ?? null
-  const runGroupStatus = runGroup?.status ?? null
-  useEffect(() => {
-    if (!running || !runningQueryRunId || runningStartedAt === null || runGroupStatus === "settled") {
-      return
-    }
-    const timer = window.setInterval(() => {
-      setElapsedSample({
-        queryRunId: runningQueryRunId,
-        value: Math.max(0, Math.round(performance.now() - runningStartedAt))
-      })
-    }, 100)
-    return () => window.clearInterval(timer)
-  }, [runGroupStatus, running, runningQueryRunId, runningStartedAt])
-  const runningElapsedMs = running && runningQueryRunId
-    ? elapsedSample?.queryRunId === runningQueryRunId
-      ? elapsedSample.value
-      : 0
-    : null
-
   const canRun = connected && !needsDatabase && sqlText.trim().length > 0 && !running
   const canCancel = connected && queryRunGroupIsCancellable(runGroup)
   const runPrimary = () => {
@@ -348,7 +361,6 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
     ? t(`databasePanel.engine.${activeProfileKind}`)
     : null
 
-  const elapsedLabel = runningElapsedMs ?? elapsedMs
   const statementCount = runGroup?.run?.statements.length ?? 0
 
   const editable = !!table && table.kind === "table" && metadata.some((column) => column.pk)
@@ -368,9 +380,13 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
       {statementCount > 1 && (
         <span className="shrink-0">{t("databasePanel.statementCount", { count: statementCount })}</span>
       )}
-      {elapsedLabel != null && (
-        <span className="shrink-0 font-mono tabular-nums">{t("databasePanel.elapsed", { ms: elapsedLabel })}</span>
-      )}
+      <QueryElapsed
+        running={running}
+        runningQueryRunId={runGroup?.owner.queryRunId ?? null}
+        runningStartedAt={runGroup?.startedAt ?? null}
+        runGroupStatus={runGroup?.status ?? null}
+        elapsedMs={elapsedMs}
+      />
     </>
   )
 
@@ -980,6 +996,59 @@ function isNumericValue(value: DbValue | undefined): boolean {
   return value?.kind === "integer" || value?.kind === "decimal"
 }
 
+// Stable visible rows keep their DOM and skip rebuilding cells on scroll/footer updates.
+const ResultRow = memo(function ResultRow({
+  row, rowIndex, rowHeight, columns, order, numericColumns, editing, editHint, readOnlyHint,
+}: {
+  row: DbValue[]
+  rowIndex: number
+  rowHeight: number
+  columns: string[]
+  order: number[]
+  numericColumns: boolean[]
+  editing: EditingContext | null
+  editHint: string
+  readOnlyHint: string
+}) {
+  return (
+    <TableRow aria-rowindex={rowIndex + 2} className="group/row border-0 hover:bg-(--yz-hover)" style={{ height: rowHeight }}>
+      <td
+        aria-hidden="true"
+        className="sticky left-0 border-r border-b border-(--line-1) bg-(--paper-1) px-2 text-right text-[11px] text-(--ink-4) tabular-nums group-hover/row:text-(--ink-2)"
+      >
+        {rowIndex + 1}
+      </td>
+      {order.map((origIdx) => {
+        const v = row[origIdx]
+        const display = formatDbValue(v)
+        const cellEditable = editing?.editable(columns[origIdx], v) ?? false
+        return (
+          <TableCell
+            key={origIdx}
+            tabIndex={cellEditable ? 0 : undefined}
+            onDoubleClick={() => editing?.edit(columns, row, columns[origIdx])}
+            onKeyDown={event => { if (editing && (event.key === "Enter" || event.key === "F2")) { event.preventDefault(); editing.edit(columns, row, columns[origIdx]) } }}
+            title={cellEditable ? editHint : readOnlyHint}
+            className={cn(
+              "border-r border-b border-(--line-1)/70 px-3 py-0 whitespace-nowrap text-(--ink-1) outline-none last:border-r-0 focus-visible:bg-(--yz-active) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]",
+              numericColumns[origIdx] && "text-right tabular-nums",
+              cellEditable && "cursor-text"
+            )}
+          >
+            <span className={cn("block max-w-[360px] truncate", numericColumns[origIdx] && "ml-auto")} title={display ?? "NULL"}>
+            {display === null ? (
+              <span className="text-(--ink-4) italic">NULL</span>
+            ) : (
+              display
+            )}
+            </span>
+          </TableCell>
+        )
+      })}
+    </TableRow>
+  )
+})
+
 const ResultTable = memo(function ResultTable({
   columns,
   rows,
@@ -1001,6 +1070,10 @@ const ResultTable = memo(function ResultTable({
   const { t } = useTranslation("panels")
   const { t: workbench } = useTranslation("databaseWorkbench")
   const editing = useDatabaseCellEditing()
+  const { editHint, readOnlyHint } = useMemo(() => ({
+    editHint: workbench("editHint"),
+    readOnlyHint: workbench("readOnlyHint"),
+  }), [workbench])
   const viewport = useRef<HTMLDivElement>(null)
   const [window, setWindow] = useState({ top: 0, height: 600 })
   useEffect(() => {
@@ -1116,41 +1189,18 @@ const ResultTable = memo(function ResultTable({
           <TableBody>
             {start > 0 && <TableRow aria-hidden="true" className="border-0 hover:bg-transparent"><TableCell colSpan={spanWithGutter} style={{ height: start * rowHeight, padding: 0 }} /></TableRow>}
             {rows.slice(start, end).map((row, ri) => (
-              <TableRow key={start + ri} aria-rowindex={start + ri + 2} className="group/row border-0 hover:bg-(--yz-hover)" style={{ height: rowHeight }}>
-                <td
-                  aria-hidden="true"
-                  className="sticky left-0 border-r border-b border-(--line-1) bg-(--paper-1) px-2 text-right text-[11px] text-(--ink-4) tabular-nums group-hover/row:text-(--ink-2)"
-                >
-                  {start + ri + 1}
-                </td>
-                {displayOrder.map((origIdx) => {
-                  const v = row[origIdx]
-                  const display = formatDbValue(v)
-                  const cellEditable = editing?.editable(columns[origIdx], v) ?? false
-                  return (
-                    <TableCell
-                      key={origIdx}
-                      tabIndex={cellEditable ? 0 : undefined}
-                      onDoubleClick={() => editing?.edit(columns, row, columns[origIdx])}
-                      onKeyDown={event => { if (editing && (event.key === "Enter" || event.key === "F2")) { event.preventDefault(); editing.edit(columns, row, columns[origIdx]) } }}
-                      title={cellEditable ? workbench("editHint") : workbench("readOnlyHint")}
-                      className={cn(
-                        "border-r border-b border-(--line-1)/70 px-3 py-0 whitespace-nowrap text-(--ink-1) outline-none last:border-r-0 focus-visible:bg-(--yz-active) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]",
-                        numericColumns[origIdx] && "text-right tabular-nums",
-                        cellEditable && "cursor-text"
-                      )}
-                    >
-                      <span className={cn("block max-w-[360px] truncate", numericColumns[origIdx] && "ml-auto")} title={display ?? "NULL"}>
-                      {display === null ? (
-                        <span className="text-(--ink-4) italic">NULL</span>
-                      ) : (
-                        display
-                      )}
-                      </span>
-                    </TableCell>
-                  )
-                })}
-              </TableRow>
+              <ResultRow
+                key={start + ri}
+                row={row}
+                rowIndex={start + ri}
+                rowHeight={rowHeight}
+                columns={columns}
+                order={displayOrder}
+                numericColumns={numericColumns}
+                editing={editing}
+                editHint={editHint}
+                readOnlyHint={readOnlyHint}
+              />
             ))}
             {end < rows.length && <TableRow aria-hidden="true" className="border-0 hover:bg-transparent"><TableCell colSpan={spanWithGutter} style={{ height: (rows.length - end) * rowHeight, padding: 0 }} /></TableRow>}
             {rows.length === 0 && (

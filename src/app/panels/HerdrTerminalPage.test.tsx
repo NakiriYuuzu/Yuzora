@@ -359,6 +359,33 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
   })
 
+  it.each(["live", "default"])("does not render the page or leaf for equal session inventory (%s)", async (herdrSessionId) => {
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId={herdrSessionId} terminalId="term-1" active visible /></Profiler>)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    await act(async () => {})
+    expect(screen.getByTestId("herdr-terminal-leaf-term-1")).toBeInTheDocument()
+    renderCommit.mockClear()
+
+    act(() => useHerdrStore.setState({
+      sessions: useHerdrStore.getState().sessions.map((session) => ({ ...session }))
+    }))
+    // The Profiler includes leaf-only commits, not just parent renders.
+    expect(renderCommit).not.toHaveBeenCalled()
+    act(() => useHerdrStore.setState({
+      sessions: [...useHerdrStore.getState().sessions, {
+        name: "other", default: false, running: true,
+        sessionDir: "/tmp/other", socketPath: "/tmp/other.sock"
+      }]
+    }))
+    expect(renderCommit).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+
+    act(() => replaceSessionInventory([{ name: "default", default: true, running: false }]))
+    expect(renderCommit).toHaveBeenCalled()
+    expect(screen.getByTestId("herdr-terminal-stopped")).toBeInTheDocument()
+  })
+
   it("does not redraw a terminal when only runtime focus changes", async () => {
     const snapshot = normalizeHerdrSnapshot({ protocol: 22, version: "0.9.0", snapshot: {
       tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "term-1", pane_id: "pane-1" }],
@@ -1120,6 +1147,113 @@ describe("HerdrTerminalPage clipboard", () => {
     await waitFor(() => expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument())
   })
 
+  it.each(["host-stream-open-limit", "host-stream-open-wait-timeout"])("reopens after %s instead of leaving a dead leaf", async (message) => {
+    herdrIpcMock.herdrTerminalOpen.mockRejectedValueOnce(new Error(message))
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    expect(await screen.findByText(`Reconnecting… (${message})`)).toBeInTheDocument()
+
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    await act(async () => Promise.resolve())
+    expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument()
+    expect(xtermMock.state.terminals[0].write).not.toHaveBeenCalledWith(expect.stringContaining("Failed to open Herdr terminal"), expect.anything())
+    await act(async () => { herdrIpcMock.emit(frame(1, "recovered", true)) })
+    expect(screen.queryByText(`Reconnecting… (${message})`)).not.toBeInTheDocument()
+    const imeCalls = vi.mocked(installTerminalImeHandling).mock.calls
+    await act(async () => { imeCalls[imeCalls.length - 1][1]("pwd\r") })
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledWith("sess-1", "pwd\r", null))
+  })
+
+  it("offers Reconnect when the runtime refuses the connector", async () => {
+    herdrIpcMock.herdrTerminalOpen.mockRejectedValueOnce(new Error("permission denied"))
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    fireEvent.click(await screen.findByTestId("herdr-reconnect"))
+
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument())
+  })
+
+  it("offers Reconnect once automatic reopen attempts run out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      herdrIpcMock.herdrTerminalOpen.mockRejectedValue(new Error("too-many-host-streams"))
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      for (let step = 0; step < 8 && !screen.queryByTestId("herdr-reconnect"); step++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
+      }
+      expect(screen.getByTestId("herdr-reconnect")).toBeInTheDocument()
+      // The initial open plus five automatic attempts, then no timer-driven takeover.
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(6)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(6)
+    } finally {
+      herdrIpcMock.herdrTerminalOpen.mockReset()
+      vi.useRealTimers()
+    }
+  })
+
+  it("reconnects a leaf whose remote connector stream died", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const revision = useHerdrStore.getState().topologyRevision
+
+    await act(async () => {
+      herdrIpcMock.emit({ type: "error", sessionId: "sess-1", code: "host-stream-closed", message: "stream-request-timeout" })
+    })
+
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText("Stream closed")).not.toBeInTheDocument()
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision)
+  })
+
+  it("stops reopening a remote stream that dies before its first frame", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      for (let step = 0; step < 8 && herdrIpcMock.herdrTerminalOpen.mock.calls.length === 0; step++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      }
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce()
+      for (let step = 0; step < 10 && !screen.queryByTestId("herdr-reconnect"); step++) {
+        const opened = herdrIpcMock.herdrTerminalOpen.mock.calls.length
+        await act(async () => {
+          herdrIpcMock.emit({ type: "error", sessionId: "sess-1", code: "host-stream-closed", message: "host-stream-ended" })
+        })
+        for (let wait = 0; wait < 8 && herdrIpcMock.herdrTerminalOpen.mock.calls.length === opened && !screen.queryByTestId("herdr-reconnect"); wait++) {
+          await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
+        }
+      }
+      expect(screen.getByTestId("herdr-reconnect")).toBeInTheDocument()
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops reopening a remote stream that dies right after its first frame", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      for (let step = 0; step < 8 && herdrIpcMock.herdrTerminalOpen.mock.calls.length === 0; step++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      }
+      for (let step = 0; step < 10 && !screen.queryByTestId("herdr-reconnect"); step++) {
+        const opened = herdrIpcMock.herdrTerminalOpen.mock.calls.length
+        await act(async () => {
+          herdrIpcMock.emit(frame(step * 10 + 1, "ready", true))
+          herdrIpcMock.emit({ type: "error", sessionId: "sess-1", code: "host-stream-closed", message: "host-stream-ended" })
+        })
+        for (let wait = 0; wait < 8 && herdrIpcMock.herdrTerminalOpen.mock.calls.length === opened && !screen.queryByTestId("herdr-reconnect"); wait++) {
+          await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
+        }
+      }
+      expect(screen.getByTestId("herdr-reconnect")).toBeInTheDocument()
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps the stream-closed behaviour for other connector closes", async () => {
     render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
@@ -1255,6 +1389,34 @@ describe("HerdrTerminalPage stopped session gate", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it.each(["ready", "failed"] as const)("keeps pending default page and leaf disconnected until startup is %s", async (state) => {
+    seedSessions([{ name: "default", default: true, running: false }])
+    useHerdrStore.setState({ herdrStartup: { state: "starting", error: null } })
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+
+    expect(screen.getByTestId("herdr-terminal-page-term-1")).toHaveAttribute("data-session-stopped", "false")
+    expect(screen.getByTestId("herdr-terminal-leaf-term-1")).toBeInTheDocument()
+    expect(screen.queryByTestId("herdr-terminal-stopped")).toBeNull()
+    expect(screen.queryByText(/Session "default" is not running/)).toBeNull()
+    expect(screen.getByText("Connecting to Herdr…")).toBeInTheDocument()
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+    expect(useHerdrStore.getState().sessions[0].running).toBe(false)
+
+    act(() => useHerdrStore.setState({ herdrStartup: { state, error: state === "failed" ? "startup failed" : null } }))
+    await waitFor(() => expect(screen.getByTestId("herdr-terminal-stopped")).toBeInTheDocument())
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+  })
+
+  it("does not connect a pending default even when inventory says running; connects after ready", async () => {
+    seedSessions([{ name: "default", default: true, running: true }])
+    useHerdrStore.setState({ herdrStartup: { state: "starting", error: null } })
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+    expect(screen.queryByTestId("herdr-terminal-stopped")).toBeNull()
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+    act(() => useHerdrStore.setState({ herdrStartup: { state: "ready", error: null } }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
   })
 
   it("does not open connector when existing page session is stopped at mount", async () => {

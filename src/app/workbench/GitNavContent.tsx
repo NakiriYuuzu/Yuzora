@@ -21,10 +21,11 @@ import { isMacPlatform } from "@/lib/platform"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
-import { useGitStore } from "@/state/gitStore"
+import { isWorkspaceTrustError, useGitStore } from "@/state/gitStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { BranchPopover } from "@/workbench/git/BranchPopover"
+import { GitRepositoryList, GitRepositorySelect } from "@/workbench/git/GitRepositorySelect"
 import { splitPath } from "@/workbench/git/diffLoad"
 import { GitBadge, gitFileNameStyle, worktreeFilesFrom } from "@/workbench/git/fileRows"
 import { openGitChangeContextMenu } from "@/workbench/git/gitChangeContextMenu"
@@ -103,21 +104,28 @@ export function GitNavContent({ filterQuery = "" }: { filterQuery?: string }) {
     const status = useGitStore((s) => s.status)
     const lastError = useGitStore((s) => s.lastError)
     const detect = useGitStore((s) => s.detect)
+    const trustWorkspace = useGitStore((s) => s.trustWorkspace)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     if (environment?.status === "missing") return <GitGuidedSetup reason={environment.reason} kind={environment.kind} minimumVersion={environment.minimumVersion} />
     if (environment?.status === "ready" && status) return <GitNavReady filterQuery={filterQuery} />
     const notARepo = environment?.status === "notARepo"
     const readyWithoutStatus = environment?.status === "ready"
-    const title = readyWithoutStatus
+    const trustNeeded = isWorkspaceTrustError(lastError)
+    const title = trustNeeded
+        ? t("gitNav.trustTitle")
+        : readyWithoutStatus
         ? t(lastError ? "gitNav.statusErrorTitle" : "gitNav.statusLoadingTitle")
         : t(notARepo ? "gitNav.notARepoTitle" : "gitNav.noRepoTitle")
-    const description = readyWithoutStatus
+    const description = trustNeeded
+        ? t("gitNav.trustDescription")
+        : readyWithoutStatus
         ? t(lastError ? "gitNav.statusErrorDescription" : "gitNav.statusLoadingDescription", { message: lastError })
         : t(notARepo ? "gitNav.notARepoDescription" : "gitNav.noRepoDescription")
     return <div className="flex h-full flex-col items-center justify-center gap-[10px] p-[12px] text-center">
         <EmptyState icon={FolderGit2} title={title} description={description} />
-        {lastError && <p role="alert" className="max-w-full break-words text-[11px] text-(--danger)">{t("gitNav.error", { message: lastError })}</p>}
-        {lastError && workspacePath && <Button type="button" size="xs" onClick={() => void detect(workspacePath)}>{t("gitNav.retry")}</Button>}
+        {notARepo && <GitRepositoryList />}
+        {lastError && !trustNeeded && <p role="alert" className="max-w-full break-words text-[11px] text-(--danger)">{t("gitNav.error", { message: lastError })}</p>}
+        {lastError && workspacePath && <Button type="button" size="xs" onClick={() => void (trustNeeded ? trustWorkspace() : detect(workspacePath))}>{t(trustNeeded ? "gitNav.trust" : "gitNav.retry")}</Button>}
     </div>
 }
 
@@ -362,6 +370,7 @@ function GitNavReady({ filterQuery }: { filterQuery: string }) {
 
     return <div data-testid="git-nav-layout" onContextMenu={contextMenuHandler({ kind: "git", repositoryRoot })} className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
         <header data-testid="git-nav-summary" className="shrink-0 border-b border-(--line-1) p-[8px]">
+            <GitRepositorySelect className="mb-[6px] w-full max-w-none" />
             <div className="w-full min-w-0"><BranchPopover open={branchOpen} onOpenChange={setBranchOpen} trigger={branchTrigger} /></div>
             <div className="mt-[7px] flex min-w-0 flex-wrap gap-[4px]"><CountBadge label={t("gitNav.countConflicts", { count: conflicts.length })} danger hidden={!conflicts.length} /><CountBadge label={t("gitNav.countStaged", { count: staged.length })} hidden={!staged.length} /><CountBadge label={t("gitNav.countUnstaged", { count: unstaged.length })} hidden={!unstaged.length} /><CountBadge label={t("gitNav.countUntracked", { count: untracked.length })} hidden={!untracked.length} />{busy && <span className="truncate text-[10px] text-(--ink-3)">{t("gitNav.refreshing")}</span>}{!busy && snapshotStale && <span className="truncate text-[10px] text-(--ink-3)">{t("gitNav.stale")}</span>}</div>
             {lastError && <div className="mt-[6px] flex min-w-0 items-center gap-[6px]"><p role="alert" className="min-w-0 flex-1 truncate text-[10px] text-(--danger)" title={lastError}>{t("gitNav.error", { message: lastError })}</p><Button type="button" variant="ghost" size="xs" onClick={() => void refresh()} className="shrink-0 text-[10px] font-semibold text-(--yz-accent-ink)">{t("gitNav.retry")}</Button></div>}

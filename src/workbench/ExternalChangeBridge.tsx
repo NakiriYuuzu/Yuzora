@@ -5,7 +5,7 @@ import { useFileTreeStore } from "../state/fileTreeStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { handleExternalChange } from "../lib/externalChange"
 import { recentlySaved } from "../lib/saveSuppress"
-import { reloadDocument } from "../editor/documentRegistry"
+import { documentChangedOnDisk, reloadDocument } from "../editor/documentRegistry"
 
 export function ExternalChangeBridge() {
     useEffect(() => {
@@ -23,7 +23,20 @@ export function ExternalChangeBridge() {
                 .invalidatePaths(e.payload.workspaceRoot, e.payload.paths)
             const allTabs = s.groups.flatMap((g) => g.tabs)
             const plan = handleExternalChange(e.payload.paths, allTabs, recentlySaved.snapshot())
-            for (const path of plan.markModified) s.markExternallyModified(path, true)
+            for (const path of plan.markModified) {
+                const settle = (changed: boolean, currentPath = path) => {
+                    const live = useWorkspaceStore.getState()
+                    // The registry validates lifecycle/baseline, not mutable tab objects.
+                    // On a stale comparison or read failure, conservatively flag any
+                    // still-open document. Typing must never discard a conflict.
+                    if (changed && live.workspacePath === s.workspacePath
+                        && live.groups.some((group) => group.tabs.some((tab) => tab.path === currentPath))) {
+                        live.markExternallyModified(currentPath, true)
+                    }
+                }
+                void documentChangedOnDisk(path, renamedPath => settle(true, renamedPath))
+                    .then(settle).catch(() => settle(true))
+            }
             for (const path of plan.reload) {
                 const originalTabs = allTabs.filter((tab) => tab.path === path)
                 const liveTabs = () => {
@@ -39,7 +52,7 @@ export function ExternalChangeBridge() {
                     return tabs.length > 0 && tabs.length === originalTabs.length
                         && tabs.every((tab) => !tab.dirty && originalTabs.includes(tab))
                 }
-                void reloadDocument(path, canApply)
+                void reloadDocument(path, canApply, "reconcile")
                     .then(() => { if (liveTabs().length) s.markExternallyModified(path, false) })
                     .catch(() => {
                         const tabs = liveTabs()

@@ -108,6 +108,39 @@ it("clears the interval on unmount", async () => {
     expect(perfSnapshot).toHaveBeenCalledTimes(1)
 })
 
+it.each([1, 2, 3, 4, 5])("bounds slow diagnostic reads and ignores results after unmount (run %i)", async (run) => {
+    const pending: ((snapshot: typeof SNAPSHOT) => void)[] = []
+    perfSnapshot.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
+    const { unmount } = render(<PerfBridge />)
+    await vi.advanceTimersByTimeAsync(20_000)
+    const inFlight = pending.length
+    unmount()
+    for (const resolve of pending) resolve(SNAPSHOT)
+    await vi.advanceTimersByTimeAsync(0)
+    const lateSamples = usePerfStore.getState().samplingHealth().attempts
+    if (import.meta.env.YUZORA_PERF_MEASURE) {
+        console.info(JSON.stringify({ experiment: "diagnostic-overlap", run, simulatedMs: 20_000, inFlight, lateSamples }))
+    }
+    expect(inFlight).toBe(1)
+    expect(lateSamples).toBe(0)
+    expect(usePerfStore.getState().snapshot).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+})
+
+it("resumes the ordinary polling cadence after a slow sample fails", async () => {
+    let reject!: (reason: Error) => void
+    perfSnapshot.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    render(<PerfBridge />)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(perfSnapshot).toHaveBeenCalledOnce()
+    reject(new Error("slow sample failed"))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(usePerfStore.getState().samplingHealth().failures).toBe(1)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(perfSnapshot).toHaveBeenCalledTimes(2)
+    expect(usePerfStore.getState().snapshot).toEqual(SNAPSHOT)
+})
+
 // --- issue #40 §3.5：採樣失敗不可被靜默吞掉 ---------------------------------
 
 it("採樣失敗會記進 bounded diagnostic state，而不是被 catch 吞掉", async () => {
@@ -399,4 +432,60 @@ it("session 關閉後 terminal_dropped_bytes 仍含它的貢獻（單調遞增�
     expect(lastReport().terminal_dropped_bytes).toBe(8000)
     expect(lastReport().terminal_flush_count).toBe(14)
     expect(lastReport().terminal_sessions).toBe(1)
+})
+
+it("does not double count live samples and counts a replacement queue after its old identity closes", () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    const metrics = { pendingBytes: 0, hiddenBytes: 0, lastFlushLatencyMs: 0, droppedBytes: 7, flushCount: 5 }
+    terminalOutputMetricsSnapshot.mockReturnValue({ "reused-page": metrics })
+    render(<PerfBridge />)
+    vi.advanceTimersByTime(REPORT_WINDOW_MS * 2)
+    expect(lastReport().terminal_dropped_bytes).toBe(7)
+    expect(lastReport().terminal_flush_count).toBe(5)
+
+    terminalOutputMetricsSnapshot.mockReturnValue({})
+    vi.advanceTimersByTime(REPORT_WINDOW_MS)
+    terminalOutputMetricsSnapshot.mockReturnValue({ "reused-page": { ...metrics, droppedBytes: 2, flushCount: 3 } })
+    vi.advanceTimersByTime(REPORT_WINDOW_MS)
+    expect(lastReport().terminal_dropped_bytes).toBe(9)
+    expect(lastReport().terminal_flush_count).toBe(8)
+})
+
+it.each([1, 2, 3, 4, 5])("releases closed terminal diagnostic identities after 100 lifecycles (run %i)", (run) => {
+    vi.mocked(document.hasFocus).mockReturnValue(false)
+    const originalSet = Map.prototype.set
+    let retainedSize = () => 0
+    vi.spyOn(Map.prototype, "set").mockImplementation(function (this: Map<unknown, unknown>, key, value) {
+        if (typeof key === "string" && key.startsWith("lifecycle-terminal-")
+            && value && typeof value === "object" && "dropped" in value && "flushes" in value) {
+            retainedSize = () => this.size
+        }
+        return originalSet.call(this, key, value)
+    })
+    const { unmount } = render(<PerfBridge />)
+    const report = () => vi.advanceTimersByTime(REPORT_WINDOW_MS)
+    const cycle = (index: number) => {
+        const key = `lifecycle-terminal-${index}`
+        const metrics = { pendingBytes: 0, hiddenBytes: 0, lastFlushLatencyMs: 0, droppedBytes: 7, flushCount: 3 }
+        terminalOutputMetricsSnapshot.mockReturnValue({ [key]: metrics })
+        report()
+        terminalOutputMetricsSnapshot.mockReturnValue({ [key]: { ...metrics, droppedBytes: 11, flushCount: 13 } })
+        report()
+        terminalOutputMetricsSnapshot.mockReturnValue({})
+        report()
+        expect(lastReport().terminal_sessions).toBe(0)
+        expect(lastReport().terminal_dropped_bytes).toBe((index + 1) * 11)
+        expect(lastReport().terminal_flush_count).toBe((index + 1) * 13)
+    }
+    for (let index = 0; index < 10; index++) cycle(index)
+    const afterWarmup = retainedSize()
+    for (let index = 10; index < 110; index++) cycle(index)
+    const afterCycles = retainedSize()
+    if (import.meta.env.YUZORA_PERF_MEASURE) {
+        console.info(JSON.stringify({ experiment: "diagnostic-retention", run, cycles: 100, afterWarmup, afterCycles,
+            retainedPerCycle: (afterCycles - afterWarmup) / 100 }))
+    }
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(afterCycles).toBe(0)
 })

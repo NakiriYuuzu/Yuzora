@@ -7,6 +7,7 @@ import { EmptyState } from "@/app/workbench/EmptyState"
 import { SplitRatioIndicator } from "@/app/workbench/SplitRatioIndicator"
 import { getDocument } from "@/editor/documentRegistry"
 import { getView } from "@/editor/viewRegistry"
+import { subscribePreviewView } from "./subscribePreviewView"
 import { EditorPane } from "@/editor/EditorPane"
 import { workspacePathBasename } from "@/lib/paths"
 import { useSvgPreviewStore } from "@/state/svgPreviewStore"
@@ -40,9 +41,8 @@ function bufferSvgContent(path: string, fallback: string): string {
 /**
  * Companion SVG preview pane. Renders the live buffer through a blob URL fed
  * to an <img> — static-image mode, scripts never execute (constraint C8).
- * Live updates poll the CM6 doc identity every 400ms, the same mechanism and
- * rationale as MarkdownPreview (R4-3: identity check skips full toString when
- * nothing changed; an update-listener extension is not injectable from here).
+ * Live updates subscribe to the registry; doc identity skips full toString
+ * when nothing changed and typing bursts retain the old 400ms render budget.
  */
 function SvgPreview({ path, style }: { path: string; style?: React.CSSProperties }) {
     const { t } = useTranslation("panels")
@@ -56,36 +56,41 @@ function SvgPreview({ path, style }: { path: string; style?: React.CSSProperties
         setLoadError(false)
         setRenderError(false)
         setContent(null)
-        void getDocument(path)
-            .then((entry) => {
-                if (disposed) return
-                const fallback =
-                    entry.result.kind === "full" ||
-                    entry.result.kind === "limited" ||
-                    entry.result.kind === "nonUtf8Readonly"
-                        ? entry.result.content
-                        : ""
-                lastDocRef.current = getView(path)?.state.doc ?? null
-                setContent(bufferSvgContent(path, fallback))
-            })
-            .catch(() => {
-                if (!disposed) setLoadError(true)
-            })
+        let revision = 0
+        let lastResult: unknown
+        lastDocRef.current = null
+        function refresh(initial = false) {
+            const request = ++revision
+            void getDocument(path)
+                .then((entry) => {
+                    if (disposed || request !== revision) return
+                    const doc = getView(path)?.state.doc
+                    const unchanged = doc
+                        ? doc === lastDocRef.current
+                        : entry.result === lastResult
+                    lastResult = entry.result
+                    if (unchanged) return
+                    const fallback =
+                        entry.result.kind === "full" ||
+                        entry.result.kind === "limited" ||
+                        entry.result.kind === "nonUtf8Readonly"
+                            ? entry.result.content
+                            : ""
+                    lastDocRef.current = doc ?? null
+                    setLoadError(false)
+                    setRenderError(false)
+                    setContent(bufferSvgContent(path, fallback))
+                })
+                .catch(() => {
+                    if (!disposed && request === revision && initial) setLoadError(true)
+                })
+        }
+        const unsubscribe = subscribePreviewView(path, () => refresh())
+        refresh(true)
         return () => {
             disposed = true
+            unsubscribe()
         }
-    }, [path])
-
-    useEffect(() => {
-        const id = setInterval(() => {
-            const doc = getView(path)?.state.doc
-            if (doc === undefined || doc === lastDocRef.current) return
-            lastDocRef.current = doc
-            const live = doc.toString()
-            setRenderError(false)
-            setContent((current) => (current === live ? current : live))
-        }, 400)
-        return () => clearInterval(id)
     }, [path])
 
     // Blob URL creation is a side effect with a paired revoke, so it lives in

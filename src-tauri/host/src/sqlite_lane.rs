@@ -18,6 +18,7 @@ struct Database {
     config: SqliteOpen,
     root: PinnedDir,
     file_id: String,
+    local: bool,
 }
 impl Drop for Database {
     fn drop(&mut self) {
@@ -31,6 +32,33 @@ impl Drop for Database {
 }
 impl Database {
     async fn open(config: SqliteOpen) -> Result<Self, DatabaseOperationalError> {
+        Self::open_config(config, None).await
+    }
+
+    async fn open_local(config: LocalSqliteOpen) -> Result<Self, DatabaseOperationalError> {
+        let canonical = validate_existing_sqlite_path(&config.database_path)?;
+        let parent = canonical
+            .parent()
+            .and_then(Path::to_str)
+            .ok_or_else(disconnected)?
+            .to_owned();
+        Self::open_config(
+            SqliteOpen {
+                version: config.version,
+                owner: config.owner,
+                workspace_path: parent,
+                database_path: config.database_path,
+                identity: config.identity,
+            },
+            Some(config.file_identity),
+        )
+        .await
+    }
+
+    async fn open_config(
+        config: SqliteOpen,
+        local_identity: Option<String>,
+    ) -> Result<Self, DatabaseOperationalError> {
         let invalid = || {
             DatabaseOperationalError::new(
                 DatabaseOperationalErrorCode::SqlitePathInvalid,
@@ -45,13 +73,15 @@ impl Database {
         {
             return Err(invalid());
         }
-        let trust =
-            crate::trust_command::host_trust(&config.owner.host_id).map_err(|_| invalid())?;
-        let identity = trust
-            .require_trusted(&config.workspace_path)
-            .map_err(|_| invalid())?;
-        if identity.canonical_path != config.workspace_path {
-            return Err(invalid());
+        if local_identity.is_none() {
+            let trust =
+                crate::trust_command::host_trust(&config.owner.host_id).map_err(|_| invalid())?;
+            let identity = trust
+                .require_trusted(&config.workspace_path)
+                .map_err(|_| invalid())?;
+            if identity.canonical_path != config.workspace_path {
+                return Err(invalid());
+            }
         }
         let canonical = validate_existing_sqlite_path(&config.database_path)?;
         if !canonical.starts_with(&config.workspace_path)
@@ -60,13 +90,23 @@ impl Database {
             return Err(invalid());
         }
         let root = PinnedDir::open_dir(Path::new(&config.workspace_path)).map_err(|_| invalid())?;
-        let file = std::fs::File::open(&canonical).map_err(|_| invalid())?;
+        let file = crate::path_capability::open_absolute_file_nofollow(&canonical)
+            .map_err(|_| invalid())?
+            .file;
+        let file_id = crate::path_capability::opened_file_identity(&file).map_err(|_| invalid())?;
+        if local_identity
+            .as_ref()
+            .is_some_and(|expected| expected != &file_id)
+        {
+            return Err(invalid());
+        }
         let mut database = Self {
             state: DbState::default(),
             sessions: ResultSessionState::default(),
             config,
             root,
-            file_id: crate::path_capability::opened_file_identity(&file).map_err(|_| invalid())?,
+            file_id,
+            local: local_identity.is_some(),
         };
         database.config.database_path = canonical.to_str().ok_or_else(invalid)?.into();
         let handle = open_unregistered(DbOpenConfig::Sqlite {
@@ -87,11 +127,15 @@ impl Database {
 
     fn check_source(&self) -> Result<(), DatabaseOperationalError> {
         let unchanged = || -> Result<bool, String> {
-            crate::trust_command::host_trust(&self.config.owner.host_id)?
-                .require_trusted(&self.config.workspace_path)?;
+            if !self.local {
+                crate::trust_command::host_trust(&self.config.owner.host_id)?
+                    .require_trusted(&self.config.workspace_path)?;
+            }
             let root = PinnedDir::open_dir(Path::new(&self.config.workspace_path))?;
-            let file =
-                std::fs::File::open(&self.config.database_path).map_err(|e| e.to_string())?;
+            let file = crate::path_capability::open_absolute_file_nofollow(Path::new(
+                &self.config.database_path,
+            ))?
+            .file;
             Ok(root.id_key() == self.root.id_key()
                 && crate::path_capability::opened_file_identity(&file)? == self.file_id)
         };
@@ -148,16 +192,67 @@ pub async fn serve<
     W: AsyncWrite + Unpin + Send + 'static,
 >(
     input: R,
+    output: W,
+) -> Result<(), String> {
+    serve_impl(input, output, false).await
+}
+
+pub async fn serve_local<
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+>(
+    input: R,
+    output: W,
+) -> Result<(), String> {
+    serve_impl(input, output, true).await
+}
+
+/// Fixed process entrypoint; local policy is never selectable on remote wire input.
+pub fn run_local() -> i32 {
+    if crate::db_query_worker::apply_process_memory_limit(
+        crate::db_query_worker::HELPER_MEMORY_BYTES,
+    )
+    .is_err()
+    {
+        return 3;
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    else {
+        return 2;
+    };
+    let result = runtime.block_on(serve_local(tokio::io::stdin(), tokio::io::stdout()));
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    if result.is_ok() {
+        0
+    } else {
+        1
+    }
+}
+
+async fn serve_impl<
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+>(
+    input: R,
     mut output: W,
+    local: bool,
 ) -> Result<(), String> {
     let mut input = BufReader::new(input);
     let first = tokio::time::timeout(Duration::from_secs(15), read_frame(&mut input))
         .await
         .map_err(|_| "sqlite-open-timeout")??
         .ok_or("sqlite-open-required")?;
-    let config: SqliteOpen = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
-    let owner = config.owner.clone();
-    let database = match Database::open(config).await {
+    let (owner, opened) = if local {
+        let config: LocalSqliteOpen = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
+        (config.owner.clone(), Database::open_local(config).await)
+    } else {
+        let config: SqliteOpen = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
+        (config.owner.clone(), Database::open(config).await)
+    };
+    let database = match opened {
         Ok(database) => Arc::new(database),
         Err(error) => {
             let bytes = encode(&SqliteReply {

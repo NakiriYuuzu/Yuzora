@@ -35,6 +35,27 @@ describe("host runtime routing", () => {
     expect(calls[2]).toMatchObject({ command: "host_stream_close", args: { owner: { hostId: "b", generation: 1 }, streamId: "native" } })
     await expect(invokeHerdr("herdr_terminal_input", { sessionId: opened.sessionId, text: "x" })).rejects.toThrow("closed")
   })
+  it("sends the wheel pointer cell only to helpers that advertise it", async () => {
+    // A saved older helper rejects unknown scroll fields and ends the stream.
+    const upgraded = { ...host("b"), hello: { ...host("b").hello, methods: ["herdrScrollCell"] } }
+    const operations: unknown[] = []
+    mockIPC((command, args) => {
+      if (command === "host_stream_open") return { streamId: "term", value: { sessionId: "herdr-term-1", target: "same" } }
+      if (command === "host_stream_command") operations.push((args as { operation: unknown }).operation)
+      return null
+    })
+    const scroll = async () => {
+      const opened = await invokeHerdr<{ sessionId: string }>("herdr_terminal_open", { target: "same", cols: 80, rows: 24, sessionName: runtimeKey({ hostId: "b", sessionName: "same" }), onEvent: () => undefined })
+      await invokeHerdr("herdr_terminal_scroll", { sessionId: opened.sessionId, direction: "up", lines: 3, column: 10, row: 5 })
+    }
+    await scroll()
+    registerRuntimeHost(upgraded, "/herdr", "B")
+    await scroll()
+    expect(operations).toEqual([
+      { command: "scroll", direction: "up", lines: 3 },
+      { command: "scroll", direction: "up", lines: 3, column: 10, row: 5 }
+    ])
+  })
   it("resolves same-name remote Sessions and keeps legacy live pages local", () => {
     const scope = runtimeKey({ hostId: "a", sessionName: "same" })
     const remote = { ...session, hostId: "a", runtimeId: scope }

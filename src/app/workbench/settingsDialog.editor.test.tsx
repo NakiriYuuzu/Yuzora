@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 
 import { SettingsDialog } from "@/app/workbench/SettingsDialog"
 import { loadEditorSettings, useEditorSettingsStore } from "@/state/editorSettingsStore"
@@ -87,4 +87,16 @@ describe("Settings · Editor pane", () => {
     expect(screen.getByRole("radio", { name: "15" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByRole("switch", { name: "Show minimap" })).toHaveAttribute("aria-checked", "true")
   })
+})
+
+it("Markdown default view reflects the store and writes the choice through", () => {
+  useEditorSettingsStore.setState({ markdownDefaultMode: "document" })
+  renderDialog()
+  const group = screen.getByRole("radiogroup", { name: "Markdown default view" })
+  expect(within(group).getByRole("radio", { name: "Document preview" })).toHaveAttribute("aria-checked", "true")
+
+  fireEvent.click(within(group).getByRole("radio", { name: "Source" }))
+
+  expect(useEditorSettingsStore.getState().markdownDefaultMode).toBe("source")
+  expect(loadEditorSettings().markdownDefaultMode).toBe("source")
 })

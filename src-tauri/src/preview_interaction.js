@@ -16,11 +16,24 @@
   }
   if (window.__yuzoraBrowser) return;
   const state = { bindings: [], commands: [], selection: null, selecting: false };
-  const frames = new Set();
+  const frames = [];
+  const pruneFrames = () => {
+    let kept = 0;
+    for (let index = 0; index < frames.length; index++) {
+      const frame = frames[index];
+      try { if (!frame.closed) { if (kept !== index) frames[kept] = frame; kept++; } } catch {}
+    }
+    if (kept !== frames.length) frames.length = kept;
+  };
   window.addEventListener('message', event => {
     if (!event.source || event.source === window) return;
-    if (event.data?.type === 'yuzora-tab-ready' && frames.size < 64) frames.add(event.source);
-    if (event.data?.type === 'yuzora-tab-command' && frames.has(event.source) && state.bindings.some(binding => binding.id === event.data.id) && state.commands.length < 8) state.commands.push(event.data.id);
+    if (event.data?.type === 'yuzora-tab-ready') {
+      if (frames.includes(event.source)) return;
+      // A ready message can arrive before the next poll has reclaimed closed slots.
+      if (frames.length >= 64) pruneFrames();
+      if (frames.length < 64) { try { if (!event.source.closed) frames.push(event.source); } catch {} }
+    }
+    if (event.data?.type === 'yuzora-tab-command' && frames.includes(event.source) && state.bindings.some(binding => binding.id === event.data.id) && state.commands.length < 8) state.commands.push(event.data.id);
   });
   const cleanups = [];
   const overlays = [];
@@ -125,7 +138,12 @@
   state.poll = bindings => {
     state.bindings = bindings;
     installKeys(document);
-    frames.forEach(frame => { try { frame.postMessage({ type: 'yuzora-tab-bindings', bindings }, '*'); } catch { frames.delete(frame); } });
+    let kept = 0;
+    for (let index = 0; index < frames.length; index++) {
+      const frame = frames[index];
+      try { if (!frame.closed) { frame.postMessage({ type: 'yuzora-tab-bindings', bindings }, '*'); if (kept !== index) frames[kept] = frame; kept++; } } catch {}
+    }
+    if (kept !== frames.length) frames.length = kept;
     const result = { commands: state.commands.splice(0), selection: state.selection, selecting: state.selecting };
     state.selection = null;
     return result;

@@ -89,6 +89,7 @@
       "deleteFile": "Delete \"{{name}}\"?",
       "deleteFolder": "Delete \"{{name}}\" and all of its contents?",
       "deleteTitle": "Delete",
+      "deleteConfirm": "Delete",
       "closeHerdrSpace": "Close Space \"{{name}}\"? Running processes in this Space will end.",
       "closeHerdrSpaceTitle": "Close Space",
       "closeHerdrTab": "Close tab \"{{name}}\"? Running processes in this tab will end.",
@@ -119,7 +120,8 @@
     "cmHerdrZoomPane": "Zoom pane",
     "cmHerdrSwapPane": "Swap with focused pane",
     "cmHerdrClosePane": "Close pane",
-    "cmPreviewHtml": "Preview here"
+    "cmPreviewHtml": "Preview here",
+    "cmDuplicate": "Duplicate"
   },
   "tabBar": {
     "noOpenTabs": "No open tabs",
@@ -253,7 +255,13 @@
     "abortConfirm": "Abort the in-progress {{op}}? All {{op}} changes will be discarded.",
     "continueConfirm": "Continue the {{op}}? Resolve all conflicts first.",
     "abort": "Abort",
-    "continue": "Continue"
+    "continue": "Continue",
+    "resolve_one": "Resolve {{count}} conflict…",
+    "resolve_other": "Resolve {{count}} conflicts…",
+    "unmerged_one": "{{count}} file has unresolved conflicts",
+    "unmerged_other": "{{count}} files have unresolved conflicts",
+    "skip": "Skip",
+    "skipConfirm": "Skip the commit {{op}} is applying? Its changes will not be applied."
   },
   "consoleTab": {
     "empty": "No git commands run yet"
@@ -273,9 +281,14 @@
     "cherryPick": "Cherry-pick",
     "cherryPickThisCommitTitle": "Cherry-pick this commit",
     "resetMainToHere": "Reset main to here…",
-    "resetHoldTitle": "Hold to reset — rewrites branch history",
+    "resetHoldTitle": "Move the current branch to this commit — rewrites branch history",
     "loadFailed": "Failed to load commit details: {{message}}",
-    "retry": "Retry"
+    "retry": "Retry",
+    "revert": "Revert",
+    "revertTitle": "Create a commit that undoes this one",
+    "undoCommit": "Undo commit",
+    "undoCommitTitle": "Remove this commit and keep its changes staged",
+    "resetToHere": "Reset current branch to here…"
   },
   "diffModal": {
     "workingTree": "Working tree",
@@ -287,6 +300,7 @@
     "split": "Split",
     "close": "Close",
     "loadingEllipsis": "Loading diff…",
+    "noFiles": "No file changes to compare",
     "loadFailed": "Failed to load diff: {{message}}",
     "retry": "Retry",
     "filesLabel": "Changed files",
@@ -316,6 +330,8 @@
     "stageFileAriaLabel": "Stage {{path}}",
     "unstageFileAriaLabel": "Unstage {{path}}",
     "stageFileTitle": "Stage file",
+    "markResolvedAriaLabel": "Mark {{path}} as resolved",
+    "markResolvedTitle": "Mark as resolved (stage); conflict markers must be removed first",
     "unstageFileTitle": "Unstage file",
     "unified": "Unified",
     "split": "Split",
@@ -394,7 +410,10 @@
     "detectingDescription": "Checking the workspace for a Git repository.",
     "errorTitle": "Git status unavailable",
     "errorDescription": "{{message}}",
-    "retry": "Retry"
+    "retry": "Retry",
+    "trustTitle": "Trust this workspace to use Git",
+    "trustDescription": "Git runs only in trusted workspaces. Trust this folder to see history, changes, and the console.",
+    "trust": "Trust workspace…"
   },
   "gitNav": {
     "branchesAriaLabel": "Branches",
@@ -422,6 +441,9 @@
     "stale": "Status may be out of date",
     "error": "Git error: {{message}}",
     "retry": "Retry",
+    "trustTitle": "Trust this workspace to use Git",
+    "trustDescription": "Git runs only in trusted workspaces.",
+    "trust": "Trust workspace…",
     "aheadBehind": "↑{{ahead}} ↓{{behind}}",
     "countStaged": "S {{count}}",
     "countUnstaged": "U {{count}}",
@@ -449,5 +471,168 @@
     "cleanDescription": "No staged, unstaged, untracked, or conflicted files.",
     "detachedHead": "Detached HEAD"
   },
-  "dragToResize": "Drag to resize"
+  "dragToResize": "Drag to resize",
+  "gitRepository": {
+    "selectAriaLabel": "Git repository",
+    "placeholder": "Choose a repository",
+    "linked": "submodule / worktree",
+    "found_one": "This folder contains {{count}} Git repository:",
+    "found_other": "This folder contains {{count}} Git repositories:",
+    "listAriaLabel": "Git repositories in this folder",
+    "truncated": "The search stopped early; very deep or large folders may hold more repositories."
+  },
+  "gitConflicts": {
+    "title": "Conflicts",
+    "description_one": "{{count}} file has conflicts. Accept one side or merge the changes.",
+    "description_other": "{{count}} files have conflicts. Accept one side or merge the changes.",
+    "descriptionOp_one": "{{op}} stopped on {{count}} conflicted file.",
+    "descriptionOp_other": "{{op}} stopped on {{count}} conflicted files.",
+    "columnName": "Name",
+    "columnYours": "Yours",
+    "columnTheirs": "Theirs",
+    "side": {
+      "modified": "Modified",
+      "added": "Added",
+      "deleted": "Deleted"
+    },
+    "selectFile": "Select {{path}}",
+    "acceptYours": "Accept Yours",
+    "acceptTheirs": "Accept Theirs",
+    "merge": "Merge…",
+    "hint": "Select files, or double-click a file to merge it.",
+    "close": "Close"
+  },
+  "gitMerge": {
+    "title": "Merge {{path}}",
+    "description": "Left: your version. Right: the incoming version. The result starts as the common base.",
+    "loading": "Loading the conflicting versions…",
+    "binary": "This file is binary or too large to merge here; accept one side instead.",
+    "deletedSide": "One side deleted this file; accept one side instead.",
+    "acceptYours": "« Yours",
+    "acceptTheirs": "Theirs »",
+    "acceptBoth": "Both",
+    "ignore": "Ignore",
+    "previous": "Previous change",
+    "next": "Next change",
+    "remaining": "{{changes}} changes, {{conflicts}} conflicts left",
+    "applyLeft": "Apply non-conflicting from left",
+    "applyNonConflicting": "Apply all non-conflicting",
+    "applyRight": "Apply non-conflicting from right",
+    "resolveSimple": "Resolve simple conflicts",
+    "pane": {
+      "yours": "Yours (current branch)",
+      "result": "Result",
+      "theirs": "Theirs (incoming)"
+    },
+    "cancel": "Cancel",
+    "apply": "Apply",
+    "applyTitle": "Apply the merge?",
+    "applyUnresolved": "{{count}} changes are still unprocessed and will keep the base version. Apply anyway?",
+    "replaceUnsaved": "This file has unsaved changes in the editor. Applying the merge result replaces them. Apply anyway?",
+    "replaceManual": "This file already has manual resolutions or edits in the working tree. Applying the merge result replaces them. Apply anyway?"
+  },
+  "gitActions": {
+    "branchMenu": "Actions for {{branch}}",
+    "mergeInto": "Merge '{{branch}}' into '{{current}}'",
+    "rebaseOnto": "Rebase '{{current}}' onto '{{branch}}'",
+    "renameItem": "Rename…",
+    "deleteItem": "Delete",
+    "noActions": "No actions while an operation is in progress",
+    "mergeTitle": "Merge branch",
+    "mergeConfirm": "Merge '{{branch}}' into '{{current}}'? Conflicts, if any, open the Conflicts dialog.",
+    "merge": "Merge",
+    "rebaseTitle": "Rebase branch",
+    "rebaseConfirm": "Rebase '{{current}}' onto '{{branch}}'? This rewrites the commits of '{{current}}'.",
+    "rebase": "Rebase",
+    "renameTitle": "Rename branch {{branch}}",
+    "newName": "New name",
+    "rename": "Rename",
+    "deleteTitle": "Delete branch",
+    "deleteConfirm": "Delete the local branch '{{branch}}'?",
+    "delete": "Delete",
+    "forceDeleteTitle": "Branch is not fully merged",
+    "forceDeleteConfirm": "'{{branch}}' has commits that are not merged anywhere. Delete it anyway? Those commits may be lost.",
+    "forceDelete": "Delete anyway",
+    "revertTitle": "Revert commit",
+    "revertConfirm": "Create a new commit that undoes {{hash}} \"{{subject}}\"?",
+    "revert": "Revert",
+    "undoTitle": "Undo commit",
+    "undoConfirm": "Undo the last commit \"{{subject}}\"? Its changes stay staged.",
+    "undo": "Undo commit",
+    "pullRebase": "Pull (rebase)",
+    "pushTags": "Push with tags",
+    "forcePushItem": "Force push (with lease)…",
+    "forcePushTitle": "Force push",
+    "forcePushConfirm": "Overwrite the remote '{{branch}}' with your local history? --force-with-lease refuses if someone else pushed meanwhile.",
+    "forcePush": "Force push",
+    "stashItem": "Stash / unstash…",
+    "checkoutProblemTitle": "Git Checkout Problem",
+    "checkoutProblem": "Checking out '{{target}}' would overwrite your local changes.\n\nSmart Checkout stashes them, switches, and restores them afterwards. If restoring them conflicts, the Conflicts dialog opens and the changes stay in the stash.",
+    "smartCheckout": "Smart Checkout",
+    "dontCheckout": "Don't Checkout"
+  },
+  "gitReset": {
+    "title": "Reset {{branch}} to here",
+    "description": "Move the current branch to {{hash}} \"{{subject}}\".",
+    "mode": {
+      "soft": "Soft",
+      "mixed": "Mixed",
+      "hard": "Hard",
+      "keep": "Keep"
+    },
+    "modeHint": {
+      "soft": "Keep all changes; the undone commits become staged changes.",
+      "mixed": "Keep all changes as unstaged changes.",
+      "hard": "Discard all changes in the working tree and index. Cannot be undone.",
+      "keep": "Like hard, but refuses if local changes would be lost."
+    },
+    "reset": "Reset",
+    "cancel": "Cancel"
+  },
+  "gitStash": {
+    "title": "Stash",
+    "description": "Set local changes aside and bring them back later.",
+    "message": "Message",
+    "messagePlaceholder": "Optional description",
+    "includeUntracked": "Include untracked files",
+    "keepIndex": "Keep staged changes",
+    "stash": "Stash changes",
+    "listLabel": "Stashes",
+    "empty": "No stashes yet.",
+    "apply": "Apply",
+    "pop": "Pop",
+    "drop": "Drop",
+    "applyAria": "Apply {{ref}}",
+    "popAria": "Pop {{ref}}",
+    "dropAria": "Drop {{ref}}",
+    "dropTitle": "Drop stash",
+    "dropConfirm": "Delete the stash \"{{message}}\"? It cannot be recovered.",
+    "close": "Close"
+  },
+  "fileClipboard": {
+    "errorTitle": "Could not paste",
+    "error": {
+      "copy-into-itself": "A folder cannot be copied into itself.",
+      "move-into-itself": "A folder cannot be moved into itself.",
+      "copy-too-large": "Too many files or too much data to copy at once (limit: 20,000 items or 2 GB).",
+      "copy-symlink-unsupported": "Symbolic links are not copied.",
+      "copy-unsupported-sftp": "Copying inside an SFTP workspace is not supported; connect through the Yuzora runtime host instead.",
+      "move-unsupported-sftp": "Moving files inside an SFTP workspace is not supported here.",
+      "clipboard-files-unsupported": "This system's clipboard does not support file lists.",
+      "clipboard-import-remote-unsupported": "Pasting files from Finder or Explorer into a remote workspace is not supported yet."
+    }
+  },
+  "deleteProgress": {
+    "title": "Deleting “{{name}}”",
+    "counting": "Counting items… {{count}} found",
+    "deleting": "Deleted {{removed}} of {{total}} items",
+    "remote": "Deleting remote items…",
+    "label": "Delete progress",
+    "cancel": "Cancel",
+    "cancelling": "Cancelling…",
+    "cancelledTitle": "Delete cancelled",
+    "cancelledPartial": "Cancelled. Items deleted before the cancel cannot be restored.",
+    "limitPartial": "The delete stopped at its per-run limit after removing some items. Delete again to finish.",
+    "tooMany": "This folder has more than 2 million items and cannot be deleted at once."
+  }
 }

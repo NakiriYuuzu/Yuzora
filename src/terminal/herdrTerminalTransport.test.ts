@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalOpen: vi.fn(),
@@ -22,8 +22,11 @@ import {
 import type { HerdrTerminalEvent } from "@/lib/herdrTypes"
 import {
   createHerdrTerminalTransport,
-  normalizeTerminalWheelRows
+  normalizeTerminalWheelRows,
+  terminalWheelCell,
+  type TerminalTransportEvent
 } from "./terminalTransport"
+import { createPaneScrollController } from "./herdrScrollController"
 import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 
 function b64(text: string): string {
@@ -38,6 +41,76 @@ describe("normalizeTerminalWheelRows", () => {
     expect(normalizeTerminalWheelRows(5, 1, 24)).toBe(5)
     expect(normalizeTerminalWheelRows(2, 2, 24)).toBe(24)
     expect(normalizeTerminalWheelRows(Number.NaN, 0, 24)).toBe(0)
+  })
+})
+
+describe("Herdr frame decoding", () => {
+  it.each([0, -1, 1001, 2 ** 32, Number.NaN, 1.5])("rejects geometry %s before rendering and releases the connector", async width => {
+    vi.mocked(herdrTerminalRelease).mockResolvedValue(undefined)
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "geometry-session", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const event = vi.fn()
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: event })
+    const { onEvent } = vi.mocked(herdrTerminalOpen).mock.calls.at(-1)![0]
+    onEvent({ type: "frame", sessionId: "geometry-session", seq: 1, full: true, encoding: "ansi", width, height: 24, bytesBase64: "" })
+    expect(event).toHaveBeenCalledWith(expect.objectContaining({ type: "error", code: "invalid-terminal-geometry" }))
+    expect(event.mock.calls.some(([value]) => value.type === "output")).toBe(false)
+    expect(herdrTerminalRelease).toHaveBeenCalledWith("geometry-session")
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.resetModules()
+  })
+
+  async function decodeFrames(payloads: string[], createTransport = createHerdrTerminalTransport) {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "decode-session", target: "t1", mode: "control", role: "controller",
+      takeover: true, cols: 80, rows: 24
+    })
+    const output: string[] = []
+    const transport = createTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: (event) => {
+      if (event.type === "output") output.push(event.data)
+    } })
+    const { onEvent } = vi.mocked(herdrTerminalOpen).mock.calls.at(-1)![0]
+    payloads.forEach((bytesBase64, index) => onEvent({
+      type: "frame", sessionId: "decode-session", seq: index + 1, full: true,
+      encoding: "ansi", width: 80, height: 24, bytesBase64
+    }))
+    return output
+  }
+
+  it.each(["native", "atob"])("decodes ASCII, UTF-8, invalid sequences and empty frames via %s", async (path) => {
+    const fromBase64 = vi.fn((value: string) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0)))
+    class FrameBytes extends Uint8Array {}
+    Object.defineProperty(FrameBytes, "fromBase64", { value: path === "native" ? fromBase64 : undefined })
+    vi.stubGlobal("Uint8Array", FrameBytes)
+    const utf8 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)))
+    const payloads = [b64("hello\x1b[0m"), utf8("中文 😀"), b64("\xe4\xb8"), b64("\x80"), ""]
+    expect(await decodeFrames(payloads)).toEqual(["hello\x1b[0m", "中文 😀", "�", "�", ""])
+    expect(fromBase64).toHaveBeenCalledTimes(path === "native" ? payloads.length : 0)
+  })
+
+  it("uses native base64 decoding without atob", async () => {
+    class FrameBytes extends Uint8Array {
+      static fromBase64 = vi.fn(() => new Uint8Array([0xe4, 0xb8, 0xad]))
+    }
+    vi.stubGlobal("Uint8Array", FrameBytes)
+    vi.stubGlobal("atob", undefined)
+    expect(await decodeFrames(["5Lit"])).toEqual(["中"])
+    expect(FrameBytes.fromBase64).toHaveBeenCalledWith("5Lit")
+  })
+
+  it("keeps the byte-string fallback when TextDecoder is unavailable", async () => {
+    vi.stubGlobal("TextDecoder", undefined)
+    vi.resetModules()
+    const { createHerdrTerminalTransport: createTransport } = await import("./terminalTransport")
+    expect(await decodeFrames([b64("ASCII"), b64("\xe4\xb8\xad"), ""], createTransport))
+      .toEqual(["ASCII", "\xe4\xb8\xad", ""])
+  })
+
+  it("returns the original payload when base64 decoding fails", async () => {
+    expect(await decodeFrames(["!invalid-base64!"])).toEqual(["!invalid-base64!"])
   })
 })
 
@@ -262,6 +335,47 @@ describe("createHerdrTerminalTransport", () => {
     await transport.scroll?.(-5)
     expect(herdrTerminalInput).not.toHaveBeenCalled()
     expect(herdrTerminalScroll).not.toHaveBeenCalled()
+  })
+
+  it("retires a dead remote stream as a connector loss, not a pane exit", async () => {
+    let handleEvent: ((event: HerdrTerminalEvent) => void) | undefined
+    vi.mocked(herdrTerminalOpen).mockImplementation(async (args) => {
+      handleEvent = args.onEvent
+      return { sessionId: "sess-remote", target: args.target, mode: "control", role: "controller", cols: args.cols, rows: args.rows, takeover: true }
+    })
+    const events: TerminalTransportEvent[] = []
+    const transport = createHerdrTerminalTransport({ terminalId: "t-remote" })
+    await transport.open({ cols: 80, rows: 24, onEvent: (event) => events.push(event) })
+
+    handleEvent?.({ type: "error", sessionId: "sess-remote", code: "host-stream-closed", message: "stream-request-timeout" })
+
+    expect(events).toContainEqual({ type: "error", message: "stream-request-timeout", code: "host-stream-closed" })
+    expect(events.some((event) => event.type === "exit")).toBe(false)
+    expect(transport.getSessionId?.()).toBeNull()
+    expect(transport.canWrite()).toBe(false)
+  })
+
+  it("keeps routing wheels to HERDR when a remote stream is momentarily busy", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "sess-busy", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    let reject!: (error: Error) => void
+    vi.mocked(herdrTerminalScroll)
+      .mockReturnValueOnce(new Promise<void>((_, fail) => { reject = fail }))
+      .mockResolvedValue(undefined)
+    const transport = createHerdrTerminalTransport({ terminalId: "t1", applicationWheelEnabled: () => true })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+
+    const first = transport.scroll?.(-1, { column: 1, row: 1 })
+    await vi.waitFor(() => expect(herdrTerminalScroll).toHaveBeenCalledOnce())
+    // Wheels queued behind the busy request are dropped with it.
+    for (let notch = 0; notch < 3; notch++) void transport.scroll?.(-1, { column: 1, row: 1 })
+    reject(new Error("stream-closed-or-busy"))
+    await expect(first).resolves.toBeUndefined()
+
+    await transport.scroll?.(-1, { column: 7, row: 2 })
+    expect(herdrTerminalScroll).toHaveBeenCalledTimes(2)
+    expect(herdrTerminalScroll).toHaveBeenLastCalledWith("sess-busy", "up", 1, { column: 7, row: 2 })
   })
 
   it("release calls herdr_terminal_release and is idempotent", async () => {
@@ -826,6 +940,64 @@ describe("bounded Herdr input delivery", () => {
     expect(vi.mocked(herdrTerminalInput).mock.calls.map((args) => args[1]).join("")).toBe("node " + text)
   })
 
+  it("counts ASCII keystrokes without encoding and encodes larger or Unicode inputs once", async () => {
+    const { transport } = await open()
+    const encode = vi.spyOn(TextEncoder.prototype, "encode")
+    try {
+      await Promise.all([transport.write("中"), transport.write("😀"), transport.paste("文"), transport.write("a"), transport.write("end")])
+      expect(encode.mock.calls.map(([text]) => text)).toEqual(["中", "😀", "\x1b[200~文\x1b[201~", "end"])
+      expect(vi.mocked(herdrTerminalInput).mock.calls.map(([, text]) => text))
+        .toEqual(["中😀", "\x1b[200~文\x1b[201~", "aend"])
+    } finally {
+      encode.mockRestore()
+    }
+  })
+
+  it("reclaims all merged UTF-8 bytes on dequeue while excluding the in-flight frame", async () => {
+    const first = delayed()
+    const second = delayed()
+    vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const { transport, onEvent } = await open()
+    const head = transport.write("pending")
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledOnce())
+    const cjk = "中".repeat(87_380) // 262140 bytes; emoji fills the 256 KiB queue.
+    const tail = [transport.write(cjk), transport.write("😀")]
+    first.resolve()
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledTimes(2))
+    const next = transport.write("a".repeat(256 * 1024))
+    second.resolve()
+    await Promise.all([head, ...tail, next])
+    expect(herdrTerminalInput).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(herdrTerminalInput).mock.calls[1][1]).toBe(cjk + "😀")
+    expect(onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }))
+  })
+
+  it.each([false, true])("counts paste brackets at the exact byte limit (overflow=%s)", async (overflow) => {
+    const { transport, onEvent } = await open()
+    const payload = "a".repeat(256 * 1024 - 12 + Number(overflow))
+    if (overflow) {
+      await expect(transport.paste(payload)).rejects.toThrow("terminal-input-limit")
+      expect(herdrTerminalInput).not.toHaveBeenCalled()
+      expect(onEvent).toHaveBeenCalledWith({ type: "error", message: "terminal-input-limit" })
+    } else {
+      await transport.paste(payload)
+      expect(herdrTerminalInput).toHaveBeenCalledWith("input-session", "\x1b[200~" + payload + "\x1b[201~", null)
+    }
+  })
+
+  it("rejects one byte beyond a merged UTF-8 queue limit", async () => {
+    const first = delayed()
+    vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise)
+    const { transport } = await open()
+    const head = transport.write("pending")
+    await vi.waitFor(() => expect(herdrTerminalInput).toHaveBeenCalledOnce())
+    const tail = [transport.write("中".repeat(87_380)), transport.write("😀")]
+    await expect(transport.write("x")).rejects.toThrow("terminal-input-limit")
+    first.resolve()
+    await Promise.all([head, ...tail])
+    expect(herdrTerminalInput).toHaveBeenCalledOnce()
+  })
+
   it("surfaces an uncertain delivery and never sends the queued Enter", async () => {
     const first = delayed()
     vi.mocked(herdrTerminalInput).mockReturnValueOnce(first.promise)
@@ -887,5 +1059,231 @@ describe("bounded Herdr input delivery", () => {
     await transport.dispose?.()
     await pending
     expect(herdrTerminalInput).not.toHaveBeenCalled()
+  })
+})
+
+describe("terminalWheelCell", () => {
+  it("maps the pointer to a zero-based cell and clamps to the grid", () => {
+    const screen = { left: 10, top: 20, width: 800, height: 480 }
+    expect(terminalWheelCell(screen, 100, 30, 10, 20)).toEqual({ column: 0, row: 0 })
+    expect(terminalWheelCell(screen, 100, 30, 10 + 8 * 10.5, 20 + 16 * 5.5)).toEqual({ column: 10, row: 5 })
+    expect(terminalWheelCell(screen, 100, 30, 5000, 5000)).toEqual({ column: 99, row: 29 })
+    expect(terminalWheelCell(screen, 100, 30, -5, -5)).toEqual({ column: 0, row: 0 })
+    expect(terminalWheelCell({ left: 0, top: 0, width: 0, height: 0 }, 100, 30, 1, 1)).toBeUndefined()
+    expect(terminalWheelCell(screen, 100, 30, Number.NaN, 1)).toBeUndefined()
+  })
+})
+
+// Claude Code fullscreen (and vim/less) runs on the alternate screen, where
+// HERDR reports no host scrollback. `pane.scroll` cannot move it; only the
+// connector command lets HERDR route the wheel to the application.
+describe("alternate-screen wheel routing", () => {
+  const altScreen = { offsetFromBottom: 0, maxOffsetFromBottom: 0, viewportRows: 30 }
+  const history = { offsetFromBottom: 0, maxOffsetFromBottom: 172, viewportRows: 30 }
+  const cell = { column: 10, row: 5 }
+
+  beforeEach(() => {
+    vi.mocked(herdrTerminalOpen).mockReset().mockResolvedValue({
+      sessionId: "sess-alt", target: "t1", mode: "control", role: "controller", cols: 100, rows: 30, takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockReset().mockResolvedValue(undefined)
+    vi.mocked(readPaneScroll).mockReset()
+    vi.mocked(setPaneScroll).mockReset()
+  })
+
+  async function openWithController(state: typeof altScreen, options: {
+    terminalScrollEnabled: () => boolean
+    applicationWheelEnabled: () => boolean
+  }) {
+    const write = vi.fn(async (offset: number) => ({ ...state, offsetFromBottom: offset }))
+    const shared = createPaneScrollController({ read: async () => state, write, allowed: () => true, change: () => undefined })
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1",
+      paneId: "pane-1",
+      sessionName: "default",
+      paneScrollEnabled: () => true,
+      paneScrollController: () => shared,
+      ...options
+    })
+    await transport.open({ cols: 100, rows: 30, onEvent: () => undefined })
+    // Opening resets the shared controller; the first frame's refresh restores it.
+    await shared.refresh()
+    return { shared, transport, write }
+  }
+
+  it("sends a native fullscreen wheel to the application with its pointer cell", async () => {
+    const { transport, write } = await openWithController(altScreen, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    await transport.scroll?.(-3, cell)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-alt", "up", 3, cell)
+    expect(write).not.toHaveBeenCalled()
+    expect(readPaneScroll).not.toHaveBeenCalled()
+    expect(setPaneScroll).not.toHaveBeenCalled()
+  })
+
+  it("lets HERDR route a wheel over host scrollback to a mouse-reporting application", async () => {
+    // A normal-buffer TUI can enable mouse reporting while the pane still has
+    // host history. Only HERDR knows the child modes; pane.scroll would move
+    // the host viewport and the application would never see the wheel.
+    const { shared, transport, write } = await openWithController(history, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    await transport.scroll?.(-3, cell)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-alt", "up", 3, cell)
+    expect(write).not.toHaveBeenCalled()
+    expect(setPaneScroll).not.toHaveBeenCalled()
+    shared.dispose()
+  })
+
+  it("asks the scrollbar to follow frames produced by a connector wheel", async () => {
+    const { shared, transport } = await openWithController(history, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    const follow = vi.spyOn(shared, "follow")
+    await transport.scroll?.(-3, cell)
+
+    expect(follow).toHaveBeenCalledOnce()
+    shared.dispose()
+  })
+
+  it("keeps host scrollback on the pane path where the runtime forbids the connector command", async () => {
+    const { shared, transport, write } = await openWithController(history, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => false
+    })
+    const follow = vi.spyOn(shared, "follow")
+    await transport.scroll?.(-3, cell)
+
+    await vi.waitFor(() => expect(write).toHaveBeenCalledWith(3, expect.anything()))
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    // The pane path already publishes an optimistic position.
+    expect(follow).not.toHaveBeenCalled()
+    shared.dispose()
+  })
+
+  it("moves host scrollback through the pane path after the connector rejects", async () => {
+    vi.mocked(herdrTerminalScroll).mockRejectedValueOnce(new Error("connector rejected"))
+    vi.mocked(readPaneScroll).mockResolvedValue(history)
+    vi.mocked(setPaneScroll).mockResolvedValue({ ...history, offsetFromBottom: 3 })
+    const { shared, transport, write } = await openWithController(history, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    await transport.scroll?.(-3, cell)
+    await transport.scroll?.(-3, cell)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(write).toHaveBeenCalled())
+    shared.dispose()
+  })
+
+  it("routes a protocol-22 WSL fullscreen wheel through the connector", async () => {
+    // WSL prefers the pane API for the scrollbar; protocol 22 wheels go to HERDR.
+    const { transport } = await openWithController(altScreen, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    await transport.scroll?.(2, cell)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-alt", "down", 2, cell)
+  })
+
+  it("never sends the connector command where the runtime forbids it", async () => {
+    const { transport } = await openWithController(altScreen, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => false
+    })
+    await transport.scroll?.(-3, cell)
+
+    expect(herdrTerminalScroll).not.toHaveBeenCalled()
+  })
+
+  it("stops routing to the connector after it rejects on this attachment", async () => {
+    vi.mocked(herdrTerminalScroll).mockRejectedValueOnce(new Error("connector closed"))
+    vi.mocked(readPaneScroll).mockResolvedValue(altScreen)
+    vi.mocked(setPaneScroll).mockResolvedValue(altScreen)
+    const { transport } = await openWithController(altScreen, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    await transport.scroll?.(-3, cell)
+    await transport.scroll?.(-3, cell)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledOnce()
+  })
+
+  it("routes a standalone wheel to HERDR without probing the pane range first", async () => {
+    vi.mocked(readPaneScroll).mockResolvedValue(history)
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1", paneId: "pane-1", sessionName: "default",
+      paneScrollEnabled: () => true,
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    await transport.open({ cols: 100, rows: 30, onEvent: () => undefined })
+    await transport.scroll?.(-3, cell)
+
+    expect(readPaneScroll).not.toHaveBeenCalled()
+    expect(setPaneScroll).not.toHaveBeenCalled()
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-alt", "up", 3, cell)
+  })
+
+  it("routes the first wheel after attach before pane metadata arrives", async () => {
+    // transport.open() resets the shared controller; its first read is still pending.
+    const write = vi.fn()
+    const shared = createPaneScrollController({ read: () => new Promise(() => undefined), write, allowed: () => true, change: () => undefined })
+    const transport = createHerdrTerminalTransport({
+      terminalId: "t1", paneId: "pane-1", sessionName: "default",
+      paneScrollEnabled: () => true, paneScrollController: () => shared,
+      terminalScrollEnabled: () => false, applicationWheelEnabled: () => true
+    })
+    await transport.open({ cols: 100, rows: 30, onEvent: () => undefined })
+    await transport.scroll?.(-3, cell)
+
+    expect(herdrTerminalScroll).toHaveBeenCalledWith("sess-alt", "up", 3, cell)
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it("sends one application report per wheel event queued behind an in-flight one", async () => {
+    // HERDR ignores `lines` for mouse reports, so coalescing would drop notches.
+    let release!: () => void
+    vi.mocked(herdrTerminalScroll).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const { transport } = await openWithController(altScreen, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    const first = transport.scroll?.(-1, cell)
+    await vi.waitFor(() => expect(herdrTerminalScroll).toHaveBeenCalledOnce())
+    for (let notch = 0; notch < 4; notch++) void transport.scroll?.(-1, cell)
+    release()
+    await first
+
+    const calls = vi.mocked(herdrTerminalScroll).mock.calls
+    expect(calls).toHaveLength(5)
+    expect(calls.every(([, direction, lines]) => direction === "up" && lines === 1)).toBe(true)
+  })
+
+  it("bounds application reports per frame window and keeps the scrolled rows", async () => {
+    let release!: () => void
+    vi.mocked(herdrTerminalScroll).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const { transport } = await openWithController(altScreen, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    const first = transport.scroll?.(-1, cell)
+    await vi.waitFor(() => expect(herdrTerminalScroll).toHaveBeenCalledOnce())
+    for (let notch = 0; notch < 8; notch++) void transport.scroll?.(-1, cell)
+    release()
+    await first
+
+    const burst = vi.mocked(herdrTerminalScroll).mock.calls.slice(1)
+    expect(burst).toHaveLength(6)
+    expect(burst.reduce((rows, [, , lines]) => rows + lines, 0)).toBe(8)
   })
 })

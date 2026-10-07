@@ -152,6 +152,24 @@ it("keeps same path and agent IDs separate across hosts and sessions", () => {
   expect(useHerdrStore.getState().selectedSessionName).toBe(scopes[0]);
 });
 
+it.each(["ready", "failed"] as const)("retains only the pending local default until startup becomes %s", (state) => {
+  const local = { name: "default", default: true, running: false, sessionDir: "/", socketPath: "/sock" };
+  useHerdrStore.setState({
+    herdrStartup: { state: "starting", error: null },
+    sessions: [local, { ...local, name: "named", default: false }, { ...local, hostId: "remote", runtimeId: '["remote","default"]' }],
+    selectedSessionName: "default",
+    runtimesBySession: { default: { connectionState: "stopped", capabilities: null, snapshot: null, errorMessage: null, worktreeInventory: null } },
+  });
+  const { container } = render(<SpaceAgentTree />);
+  expect(container.querySelectorAll(".tree-session-heading")).toHaveLength(1);
+  expect(container.querySelector(".tree-session-heading")).toHaveAttribute("data-session-scope", "default");
+  expect(screen.getByText(i18n.t("spaceTree:loading"))).toBeInTheDocument();
+  expect(screen.queryByText(i18n.t("spaceTree:stopped"))).not.toBeInTheDocument();
+  expect(useHerdrStore.getState().sessions[0].running).toBe(false);
+  act(() => useHerdrStore.setState({ herdrStartup: { state, error: state === "failed" ? "startup failed" : null } }));
+  expect(container.querySelectorAll(".tree-session-heading")).toHaveLength(0);
+});
+
 it("removes stopped sessions and their cached projects from the sidebar", () => {
   useHerdrStore.setState({ sessions: useHerdrStore.getState().sessions.map((session, i) => ({ ...session, running: i !== 1 })) });
   render(<SpaceAgentTree />);

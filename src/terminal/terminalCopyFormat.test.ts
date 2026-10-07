@@ -31,6 +31,21 @@ describe('HERDR copy formatting', () => {
       expect(formatTerminalSelection(text, 'lf')).toBe(text)
     }
   })
+  it('requires two column lines within the same paragraph to preserve indentation', () => {
+    expect(formatTerminalSelection('  one  pair\n  ordinary\n\n  another  pair\n  ordinary', 'lf'))
+      .toBe('one  pair\nordinary\n\nanother  pair\nordinary')
+    const columns = '  first  pair\n  ordinary\n  second  pair\n  trailing'
+    expect(formatTerminalSelection(columns, 'lf')).toBe(columns)
+  })
+  it('preserves the entire paragraph when a diagram appears near either end', () => {
+    for (const text of ['  ├── first\n  ordinary\n  trailing', '  ordinary\n  one  pair\n  └── last']) {
+      expect(formatTerminalSelection(text, 'lf')).toBe(text)
+    }
+  })
+  it('still detects layout when protected code and plain text share a paragraph', () => {
+    const text = '```ts\n  code()  \n```\n  root\n    └── branch'
+    expect(formatTerminalSelection(text, 'lf')).toBe(text)
+  })
   it('does not invent missing markdown or a trailing newline, and is idempotent', () => {
     for (const text of ['  Rendered heading\n\n  • item', '  a\n\n\n b', '```\n  a\n```']) {
       const result = formatTerminalSelection(text, 'crlf')

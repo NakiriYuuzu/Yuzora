@@ -43,12 +43,94 @@ describe("database editing", () => {
             .toBe(`UPDATE "main"."odd""table" SET "v" = 1.5 WHERE "id" = 'NaN'::numeric AND "v" = '-Infinity'::numeric`)
         expect(() => dbValueLiteral("mssql", { kind: "decimal", value: "NaN" })).toThrow("invalidValue")
     })
+    it.each([
+        ["real", "real"], ["float4", "real"],
+        ["double precision", "float8"], ["float8", "float8"],
+        ["numeric", "numeric"],
+    ])("formats PostgreSQL %s specials in SET, original guards and primary keys", (type, sqlType) => {
+        const keyed: DbColumn[] = [{ name: "id", type, pk: true, notnull: true }, { name: "v", type, pk: false, notnull: false }]
+        for (const [raw, normalized] of [["inf", "Infinity"], ["-inf", "-Infinity"], ["Infinity", "Infinity"], ["-Infinity", "-Infinity"], ["+Infinity", "Infinity"], ["NaN", "NaN"]]) {
+            const special: DbValue = { kind: "decimal", value: raw }
+            const literal = `'${normalized}'::${sqlType}`
+            expect(buildCellUpdate("postgres", table, keyed, ["id", "v"], [special, special], "v", special))
+                .toBe(`UPDATE "main"."odd""table" SET "v" = ${literal} WHERE "id" = ${literal} AND "v" = ${literal}`)
+            const finite = parseEditedDbValue("postgres", special, "1.5", false, keyed[1])
+            expect(buildCellUpdate("postgres", table, keyed, ["id", "v"], [special, special], "v", finite))
+                .toBe(`UPDATE "main"."odd""table" SET "v" = 1.5 WHERE "id" = ${literal} AND "v" = ${literal}`)
+            // A special primary key must also allow editing an ordinary text column.
+            expect(buildCellUpdate("postgres", table, [keyed[0], metadata[1]], ["id", "name"], [special, row[1]], "name", { kind: "text", value: "x" }))
+                .toBe(`UPDATE "main"."odd""table" SET "name" = E'x' WHERE "id" = ${literal} AND "name" = E'O''Brien' COLLATE "C"`)
+        }
+    })
+    it("uses each PostgreSQL column's own special type, including an edited primary key", () => {
+        const keyed: DbColumn[] = [{ name: "id", type: "real", pk: true, notnull: true }, { name: "v", type: "double precision", pk: false, notnull: false }]
+        const values: DbValue[] = [{ kind: "decimal", value: "inf" }, { kind: "decimal", value: "-inf" }]
+        const value = parseEditedDbValue("postgres", values[1], "NaN", false, keyed[1])
+        expect(buildCellUpdate("postgres", table, keyed, ["id", "v"], values, "v", value))
+            .toBe(`UPDATE "main"."odd""table" SET "v" = 'NaN'::float8 WHERE "id" = 'Infinity'::real AND "v" = '-Infinity'::float8`)
+        expect(buildCellUpdate("postgres", table, keyed, ["id", "v"], values, "id", value))
+            .toBe(`UPDATE "main"."odd""table" SET "id" = 'NaN'::real WHERE "id" = 'Infinity'::real AND "id" = 'Infinity'::real`)
+    })
+    it.each([
+        ["real", "real"], ["float4", "real"],
+        ["double precision", "float8"], ["float8", "float8"],
+        ["numeric", "numeric"],
+    ])("parses manual PostgreSQL %s specials, including original NULL cells", (type, sqlType) => {
+        const column: DbColumn = { name: "v", type, pk: false, notnull: false }
+        for (const [text, normalized] of [["inf", "Infinity"], ["-inf", "-Infinity"], ["Infinity", "Infinity"], ["-Infinity", "-Infinity"], ["NaN", "NaN"], ["+inf", "Infinity"], ["nan", "NaN"], ["infinity", "Infinity"]]) {
+            for (const original of [{ kind: "decimal", value: "1.5" }, { kind: "null" }] as DbValue[]) {
+                const value = parseEditedDbValue("postgres", original, ` ${text} `, false, column)
+                expect(value).toEqual({ kind: "decimal", value: text })
+                const guard = original.kind === "null" ? '"v" IS NULL' : `"v" = ${sqlType === "real" ? "CAST(1.5 AS real)" : "1.5"}`
+                expect(buildCellUpdate("postgres", table, [metadata[0], column], ["id", "v"], [row[0], original], "v", value))
+                    .toBe(`UPDATE "main"."odd""table" SET "v" = '${normalized}'::${sqlType} WHERE "id" = 9223372036854775807 AND ${guard}`)
+            }
+        }
+    })
     it("compares PostgreSQL real cells in real precision so their displayed value matches", () => {
         const realColumns: DbColumn[] = [metadata[0], { name: "ratio", type: "real", pk: false, notnull: false }]
         expect(buildCellUpdate("postgres", table, realColumns, ["id", "ratio"], [row[0], { kind: "decimal", value: "0.1" }], "ratio", { kind: "decimal", value: "0.2" }))
             .toContain(`"ratio" = 0.2 WHERE "id" = 9223372036854775807 AND "ratio" = CAST(0.1 AS real)`)
         expect(buildCellUpdate("mssql", table, realColumns, ["id", "ratio"], [row[0], { kind: "decimal", value: "0.1" }], "ratio", { kind: "decimal", value: "0.2" }))
             .toContain(`AND [ratio] = 0.1`)
+    })
+    it.each(["real", "float4"])("keeps finite PostgreSQL %s primary keys in their own precision", type => {
+        const keyed: DbColumn[] = [{ ...metadata[0], type }, metadata[1]]
+        expect(buildCellUpdate("postgres", table, keyed, ["id", "name"], [{ kind: "decimal", value: "0.1" }, row[1]], "name", { kind: "text", value: "x" }))
+            .toContain('WHERE "id" = CAST(0.1 AS real) AND')
+    })
+    it.each(["sqlite", "mssql"] as const)("rejects special numeric inputs and original values on %s", engine => {
+        for (const type of ["real", "float8", "numeric"]) {
+            const columns: DbColumn[] = [{ ...metadata[0], type }, { name: "v", type, pk: false, notnull: false }]
+            const finite: DbValue = { kind: "decimal", value: "1.5" }
+            for (const text of ["inf", "-inf", "+inf", "Infinity", "-Infinity", "+Infinity", "NaN"]) {
+                const special: DbValue = { kind: "decimal", value: text }
+                expect(() => parseEditedDbValue(engine, finite, text, false, columns[1])).toThrow("invalidValue")
+                expect(() => parseEditedDbValue(engine, { kind: "null" }, text, false, columns[1])).toThrow("invalidValue")
+                expect(() => buildCellUpdate(engine, table, columns, ["id", "v"], [finite, finite], "v", special)).toThrow("invalidValue")
+                expect(() => buildCellUpdate(engine, table, columns, ["id", "v"], [finite, special], "v", finite)).toThrow("invalidValue")
+                expect(() => buildCellUpdate(engine, table, columns, ["id", "v"], [special, finite], "v", finite)).toThrow("invalidValue")
+            }
+        }
+    })
+    it.each(["postgres", "sqlite", "mssql"] as const)("rejects malformed numeric literals on %s without changing exact finite values", engine => {
+        const column: DbColumn = { name: "v", type: "numeric", pk: false, notnull: false }
+        const original: DbValue = { kind: "decimal", value: "0.1" }
+        for (const text of ["inf; DROP TABLE x", "Infinity'::real; --", "-NaN", "NaN()", "1 OR 1=1", "1.2.3", "1e", "Infinityx", ""]) {
+            expect(() => parseEditedDbValue(engine, original, text, false, column)).toThrow("invalidValue")
+            expect(() => buildCellUpdate(engine, table, [metadata[0], column], ["id", "v"], [row[0], original], "v", { kind: "decimal", value: text })).toThrow("invalidValue")
+        }
+        for (const text of ["9223372036854775807.1234567890123456789", "-1.234567890123456789e+100", "+.5", "1."]) {
+            const parsed = parseEditedDbValue(engine, original, ` ${text} `, false, column)
+            expect(parsed).toEqual({ kind: "decimal", value: text })
+            expect(buildCellUpdate(engine, table, [metadata[0], column], ["id", "v"], [row[0], original], "v", parsed)).toContain(`= ${text} WHERE`)
+        }
+        expect(parseEditedDbValue(engine, row[0], "9223372036854775806", false, metadata[0])).toEqual({ kind: "integer", value: "9223372036854775806" })
+        expect(() => parseEditedDbValue(engine, row[0], "Infinity", false, metadata[0])).toThrow("invalidValue")
+        expect(() => parseEditedDbValue(engine, original, "", true, { ...column, pk: true })).toThrow("notNullable")
+        expect(() => parseEditedDbValue(engine, original, "", true, { ...column, notnull: true })).toThrow("notNullable")
+        expect(parseEditedDbValue(engine, original, "", true, column)).toEqual({ kind: "null" })
+        expect(() => parseEditedDbValue(engine, { kind: "binary", hex: "00" }, "Infinity", false, column)).toThrow("readOnlyCell")
     })
     it("refuses rows without complete unique keys and ambiguous query columns", () => {
         expect(() => buildCellUpdate("sqlite", table, [], ["id", "name"], row, "name", row[1])).toThrow("readOnlyCell")
@@ -67,20 +149,20 @@ describe("database editing", () => {
         }
     })
     it("validates numeric, boolean and nullable values without JS numeric conversion", () => {
-        expect(parseEditedDbValue(row[0], "9223372036854775806", false, metadata[0])).toEqual({ kind: "integer", value: "9223372036854775806" })
-        expect(() => parseEditedDbValue(row[0], "1; DELETE", false, metadata[0])).toThrow("invalidValue")
-        expect(() => parseEditedDbValue(row[0], "", true, metadata[0])).toThrow("notNullable")
-        expect(() => parseEditedDbValue({ kind: "boolean", value: true }, "yes", false, metadata[0])).toThrow("invalidValue")
+        expect(parseEditedDbValue("sqlite", row[0], "9223372036854775806", false, metadata[0])).toEqual({ kind: "integer", value: "9223372036854775806" })
+        expect(() => parseEditedDbValue("sqlite", row[0], "1; DELETE", false, metadata[0])).toThrow("invalidValue")
+        expect(() => parseEditedDbValue("sqlite", row[0], "", true, metadata[0])).toThrow("notNullable")
+        expect(() => parseEditedDbValue("sqlite", { kind: "boolean", value: true }, "yes", false, metadata[0])).toThrow("invalidValue")
     })
     it("infers a null cell's value kind from integer type names rather than substrings", () => {
         const nullable = (type: string): DbColumn => ({ name: "value", type, pk: false, notnull: false })
-        expect(parseEditedDbValue({ kind: "null" }, "1 day", false, nullable("interval"))).toEqual({ kind: "text", value: "1 day" })
-        expect(parseEditedDbValue({ kind: "null" }, "(1,2)", false, nullable("point"))).toEqual({ kind: "text", value: "(1,2)" })
-        expect(parseEditedDbValue({ kind: "null" }, "[1,5)", false, nullable("int4range"))).toEqual({ kind: "text", value: "[1,5)" })
+        expect(parseEditedDbValue("sqlite", { kind: "null" }, "1 day", false, nullable("interval"))).toEqual({ kind: "text", value: "1 day" })
+        expect(parseEditedDbValue("sqlite", { kind: "null" }, "(1,2)", false, nullable("point"))).toEqual({ kind: "text", value: "(1,2)" })
+        expect(parseEditedDbValue("sqlite", { kind: "null" }, "[1,5)", false, nullable("int4range"))).toEqual({ kind: "text", value: "[1,5)" })
         for (const type of ["int", "INTEGER", "int4", "bigint", "SMALLINT", "unsigned big int"]) {
-            expect(parseEditedDbValue({ kind: "null" }, " 42 ", false, nullable(type))).toEqual({ kind: "integer", value: "42" })
+            expect(parseEditedDbValue("sqlite", { kind: "null" }, " 42 ", false, nullable(type))).toEqual({ kind: "integer", value: "42" })
         }
-        expect(() => parseEditedDbValue({ kind: "null" }, "1 day", false, nullable("bigint"))).toThrow("invalidValue")
+        expect(() => parseEditedDbValue("sqlite", { kind: "null" }, "1 day", false, nullable("bigint"))).toThrow("invalidValue")
     })
     it("builds dialect-specific schema operations and restricts new-column types", () => {
         expect(buildTableEdit("mssql", table, { kind: "renameColumn", column: "old]name", name: "new'column" })).toBe(`EXEC [db].sys.sp_rename N'[main].[odd"table].[old]]name]', N'new''column', N'COLUMN'`)

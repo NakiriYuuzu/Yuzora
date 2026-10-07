@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { herdrFeature, type HerdrPlugin } from "@/lib/herdrFeatures"
 import type { HerdrCapabilities, HerdrSnapshot } from "@/lib/herdrTypes"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import HerdrToolsDialog from "./HerdrToolsDialog"
+import i18n from "@/lib/i18n"
 
 vi.mock("@/lib/herdrFeatures", () => ({ herdrFeature: vi.fn() }))
 
@@ -50,6 +51,24 @@ async function openSplitPane() {
 }
 
 describe("HERDR tools pane target", () => {
+  it.each(["ready", "failed"] as const)("shows a connecting Session suffix until startup is %s without enabling tools", async (state) => {
+    useHerdrStore.setState({
+      herdrStartup: { state: "starting", error: null },
+      sessions: [{ name: "default", default: true, running: false, sessionDir: "/", socketPath: "/sock" }],
+      runtimesBySession: {},
+    })
+    render(<HerdrToolsDialog selection={{ tool: "plugins", sessionName: "default" }} />)
+    expect(screen.getByRole("button", { name: i18n.t("herdrTools:openNative") })).toBeDisabled()
+    fireEvent.pointerDown(screen.getByRole("button", { name: i18n.t("herdrTools:session") }), { button: 0, ctrlKey: false })
+    const option = await screen.findByRole("menuitemradio", { name: /Connecting to Herdr/ })
+    expect(option).not.toHaveTextContent(i18n.t("herdrTools:stopped"))
+    expect(herdrFeature).not.toHaveBeenCalled()
+    expect(useHerdrNativeStore.getState().selection).toBeNull()
+    act(() => useHerdrStore.setState({ herdrStartup: { state, error: state === "failed" ? "startup failed" : null } }))
+    expect(screen.getByRole("menuitemradio", { name: /Stopped/ })).toBeInTheDocument()
+    expect(herdrFeature).not.toHaveBeenCalled()
+  })
+
   it("targets a pane inside the newly selected Space instead of the launcher Space", async () => {
     render(<HerdrToolsDialog selection={{ tool: "plugins", sessionName: "work", paneId: "p1" }} />)
     fireEvent.pointerDown(screen.getByRole("button", { name: "Space" }), { button: 0, ctrlKey: false })

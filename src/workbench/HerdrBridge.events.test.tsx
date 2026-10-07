@@ -2,21 +2,34 @@ import { act, cleanup, render, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { HerdrCapabilities, HerdrSubscriptionEvent } from "@/lib/herdrTypes"
+import type { ConnectedHost } from "@/lib/hostIpc"
+import { registerRuntimeHost, unregisterRuntimeHost } from "@/lib/herdrProvider"
+import { useHostStore } from "@/state/hostStore"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const eventIpc = vi.hoisted(() => ({
   subscribe: vi.fn(),
-  release: vi.fn()
+  release: vi.fn(),
+  sessions: vi.fn(),
+  snapshot: vi.fn(),
+  capabilities: vi.fn()
 }))
 
 vi.mock("@/lib/herdrIpc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/herdrIpc")>()),
   herdrEventsSubscribe: eventIpc.subscribe,
-  herdrEventsRelease: eventIpc.release
+  herdrEventsRelease: eventIpc.release,
+  herdrSessions: eventIpc.sessions,
+  herdrSnapshot: eventIpc.snapshot,
+  herdrCapabilities: eventIpc.capabilities
 }))
 
 import { HerdrBridge } from "./HerdrBridge"
+
+const initialHerdrState = useHerdrStore.getState()
+const initialHostState = useHostStore.getState()
+const initialWorkspaceState = useWorkspaceStore.getState()
 
 const capabilities: HerdrCapabilities = {
   binarySource: {
@@ -319,5 +332,218 @@ describe("HerdrBridge event ownership", () => {
     cleanup()
     expect(eventIpc.release).toHaveBeenCalledWith("sub-default")
     expect(eventIpc.release).toHaveBeenCalledWith("sub-work")
+  })
+})
+
+describe("HerdrBridge polling while Host discovery is pending", () => {
+  const connected: ConnectedHost = {
+    owner: { hostId: "ssh:polling", generation: 1 },
+    hello: { protocol: 1, version: "0.0.16", os: "linux", arch: "x86_64", home: "/home/test", methods: ["herdrCall"] }
+  }
+  const remote = { ...sessions[0], hostId: connected.owner.hostId, runtimeId: JSON.stringify([connected.owner.hostId, "default"]) }
+  const snapshot = { protocol: 22, version: "0.9.1", workspaces: [], tabs: [], panes: [] }
+  const pending: Array<() => void> = []
+  const deferred = <T,>(value: T) => {
+    let resolve!: () => void
+    const promise = new Promise<T>(done => { resolve = () => done(value) })
+    pending.push(resolve)
+    return { promise, resolve }
+  }
+  const tick = async (ms = 0) => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+  }
+  const seed = (isRemote: boolean, events = false) => {
+    const session = isRemote ? remote : sessions[0]
+    const scope = isRemote ? remote.runtimeId : session.name
+    const caps = { ...capabilities, binaryPath: "/bin/herdr", api: { ...capabilities.api, eventsSubscribe: events, worktreeList: false } }
+    if (isRemote) registerRuntimeHost(connected, "/bin/herdr", "Polling Host")
+    eventIpc.capabilities.mockResolvedValue(caps)
+    useHerdrStore.setState({
+      sessions: [session], selectedSessionName: scope,
+      runtimesBySession: { [scope]: { capabilities: caps, snapshot: null, worktreeInventory: null, connectionState: "ready", errorMessage: null } }
+    })
+    return scope
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-26T12:00:00Z"))
+    useHerdrStore.setState({ ...initialHerdrState, ...herdrInitialState }, true)
+    eventIpc.sessions.mockReset()
+    eventIpc.snapshot.mockReset().mockResolvedValue(snapshot)
+    eventIpc.capabilities.mockReset()
+  })
+
+  afterEach(async () => {
+    cleanup()
+    await act(async () => { pending.splice(0).forEach(resolve => resolve()) })
+    unregisterRuntimeHost(connected.owner)
+    unregisterRuntimeHost({ ...connected.owner, generation: 2 })
+    useHerdrStore.setState(initialHerdrState, true)
+    useHostStore.setState(initialHostState, true)
+    useWorkspaceStore.setState(initialWorkspaceState, true)
+    vi.useRealTimers()
+  })
+
+  it.each([false, true])("keeps four-second snapshots single-flight through 20s discovery (remote: %s)", async (isRemote) => {
+    const scope = seed(isRemote)
+    const discovery = deferred(useHerdrStore.getState().sessions)
+    eventIpc.sessions.mockReturnValue(discovery.promise)
+    render(<HerdrBridge />)
+    await tick()
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(1)
+    for (let count = 2; count <= 6; count++) {
+      await tick(4000)
+      expect(eventIpc.snapshot).toHaveBeenCalledTimes(count)
+      expect(eventIpc.snapshot).toHaveBeenLastCalledWith(scope)
+    }
+    expect(eventIpc.sessions).toHaveBeenCalledTimes(1)
+
+    const heldSnapshot = deferred(snapshot)
+    eventIpc.snapshot.mockReturnValueOnce(heldSnapshot.promise)
+    // Observe the store boundary too: store coalescing must not hide overlapping Bridge refreshes.
+    const refresh = vi.spyOn(useHerdrStore.getState(), "refreshSnapshot")
+    await tick(4000)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(7)
+    await tick(8000)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(7)
+    await act(async () => { heldSnapshot.resolve() })
+    await tick(4000)
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(8)
+    expect(eventIpc.sessions).toHaveBeenCalledTimes(1)
+    await act(async () => { discovery.resolve() })
+  })
+
+  it.each([false, true])("does not poll existing runtimes again when discovery settles after a tick (remote: %s)", async (isRemote) => {
+    const scope = seed(isRemote)
+    const discovered = useHerdrStore.getState().sessions
+    eventIpc.sessions.mockImplementation(() => new Promise(resolve => {
+      setTimeout(() => resolve(discovered), 100)
+    }))
+    render(<HerdrBridge />)
+    await tick()
+    expect(eventIpc.snapshot).toHaveBeenCalledExactlyOnceWith(scope)
+    await tick(100)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(1)
+    for (let count = 2; count <= 4; count++) {
+      await tick(3900)
+      expect(eventIpc.snapshot).toHaveBeenCalledTimes(count)
+      await tick(100)
+      expect(eventIpc.snapshot).toHaveBeenCalledTimes(count)
+      expect(eventIpc.sessions).toHaveBeenCalledTimes(count)
+    }
+  })
+
+  it("starts newly discovered runtimes without repeating existing snapshots", async () => {
+    seed(false)
+    const discovery = deferred(sessions)
+    eventIpc.sessions.mockReturnValueOnce(discovery.promise).mockResolvedValue(sessions)
+    render(<HerdrBridge />)
+    await tick()
+    expect(eventIpc.snapshot).toHaveBeenCalledExactlyOnceWith("default")
+    await act(async () => { discovery.resolve() })
+    await tick()
+    expect(eventIpc.snapshot.mock.calls.map(([scope]) => scope)).toEqual(["default", "work"])
+    expect(eventIpc.capabilities).toHaveBeenCalledExactlyOnceWith("work")
+    await tick(4000)
+    expect(eventIpc.snapshot.mock.calls.map(([scope]) => scope)).toEqual(["default", "work", "default", "work"])
+  })
+
+  it("keeps healthy-event fallback at 12s and releases a stopped Session as soon as discovery settles", async () => {
+    seed(false, true)
+    const discovery = deferred([{ ...sessions[0], running: false }])
+    eventIpc.sessions.mockReturnValue(discovery.promise)
+    let callback!: (event: HerdrSubscriptionEvent) => void
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: { onEvent: typeof callback }) => {
+      callback = onEvent
+      return "sub-healthy"
+    })
+    render(<HerdrBridge />)
+    await tick()
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(1)
+    expect(eventIpc.subscribe).toHaveBeenCalledTimes(1)
+    for (let seconds = 4; seconds <= 24; seconds += 4) {
+      await tick(4000)
+      expect(eventIpc.snapshot).toHaveBeenCalledTimes(1 + Math.floor(seconds / 12))
+    }
+    expect(eventIpc.sessions).toHaveBeenCalledTimes(1)
+    await act(async () => { discovery.resolve() })
+    expect(eventIpc.release).toHaveBeenCalledExactlyOnceWith("sub-healthy")
+    const revision = useHerdrStore.getState().topologyRevision
+    act(() => callback({ type: "pane_exited", subscriptionId: "sub-healthy", workspaceId: "w1", paneId: "p1" }))
+    await tick(4000)
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(3)
+    expect(eventIpc.subscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it("ignores late discovery and subscription callbacks after unmount", async () => {
+    seed(false, true)
+    const discovery = deferred(sessions)
+    const subscription = deferred("sub-late")
+    eventIpc.sessions.mockReturnValue(discovery.promise)
+    let callback!: (event: HerdrSubscriptionEvent) => void
+    eventIpc.subscribe.mockImplementation(({ onEvent }: { onEvent: typeof callback }) => {
+      callback = onEvent
+      return subscription.promise
+    })
+    const view = render(<HerdrBridge />)
+    await tick()
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(1)
+    expect(eventIpc.subscribe).toHaveBeenCalledTimes(1)
+    view.unmount()
+    const revision = useHerdrStore.getState().topologyRevision
+    await act(async () => {
+      discovery.resolve()
+      subscription.resolve()
+      callback({ type: "subscribed", subscriptionId: "sub-late" })
+      callback({ type: "pane_exited", subscriptionId: "sub-late", workspaceId: "w1", paneId: "p1" })
+    })
+    await tick(20000)
+    expect(eventIpc.release).toHaveBeenCalledExactlyOnceWith("sub-late")
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(1)
+    expect(eventIpc.sessions).toHaveBeenCalledTimes(1)
+    expect(eventIpc.subscribe).toHaveBeenCalledTimes(1)
+  })
+
+  it("rebootstraps a replacement owner and ignores its predecessor's callback during discovery", async () => {
+    const scope = seed(true, true)
+    const discovery = deferred([remote])
+    eventIpc.sessions.mockReturnValue(discovery.promise)
+    const callbacks: Array<(event: HerdrSubscriptionEvent) => void> = []
+    eventIpc.subscribe.mockImplementation(async ({ onEvent }: { onEvent: (event: HerdrSubscriptionEvent) => void }) => {
+      callbacks.push(onEvent)
+      return `sub-owner-${callbacks.length}`
+    })
+    render(<HerdrBridge />)
+    await tick()
+    expect(callbacks).toHaveLength(1)
+    expect(eventIpc.capabilities).toHaveBeenCalledExactlyOnceWith(scope)
+    const replacement = { ...connected, owner: { ...connected.owner, generation: 2 } }
+    await act(async () => {
+      registerRuntimeHost(replacement, "/bin/herdr", "Replacement Host")
+      useHostStore.setState({ hosts: { [connected.owner.hostId]: {
+        connection: replacement, connecting: false, error: null,
+        target: { kind: "ssh", sessionId: "ssh-connection" }, attempt: 0, retryAt: 0
+      } } })
+    })
+    expect(eventIpc.release).toHaveBeenCalledExactlyOnceWith("sub-owner-1")
+    expect(eventIpc.capabilities).toHaveBeenCalledTimes(2)
+    expect(eventIpc.capabilities).toHaveBeenLastCalledWith(scope)
+    expect(callbacks).toHaveLength(2)
+    const revision = useHerdrStore.getState().topologyRevision
+    act(() => callbacks[0]({ type: "pane_exited", subscriptionId: "sub-owner-1", workspaceId: "w1", paneId: "p1" }))
+    await tick(250)
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(2)
+    expect(eventIpc.sessions).toHaveBeenCalledTimes(1)
+    act(() => callbacks[1]({ type: "pane_exited", subscriptionId: "sub-owner-2", workspaceId: "w1", paneId: "p1" }))
+    await tick(250)
+    expect(useHerdrStore.getState().topologyRevision).toBe(revision + 1)
+    expect(eventIpc.snapshot).toHaveBeenCalledTimes(3)
   })
 })

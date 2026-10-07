@@ -110,6 +110,13 @@ pub enum HerdrCommand {
         pane_id: String,
         offset_from_bottom: u64,
     },
+    #[serde(rename = "herdr_pane_selection_read")]
+    PaneSelectionRead {
+        session_name: Option<String>,
+        pane_id: String,
+        anchor: crate::herdr_scroll::HerdrPaneTextPoint,
+        cursor: crate::herdr_scroll::HerdrPaneTextPoint,
+    },
     #[serde(rename = "herdr_pane_focus")]
     PaneFocus {
         session_name: Option<String>,
@@ -315,6 +322,18 @@ impl HerdrCommand {
                 session_name.as_deref(),
                 pane_id,
                 offset_from_bottom,
+            )?)
+            .map_err(|e| e.to_string()),
+            Self::PaneSelectionRead {
+                session_name,
+                pane_id,
+                anchor,
+                cursor,
+            } => serde_json::to_value(manager.pane_selection_read(
+                session_name.as_deref(),
+                pane_id,
+                anchor,
+                cursor,
             )?)
             .map_err(|e| e.to_string()),
             Self::PaneFocus {

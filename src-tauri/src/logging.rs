@@ -549,8 +549,21 @@ pub fn query_dir(dir: &Path, filters: &LogQueryFilters) -> Vec<LogRecord> {
         };
         let remaining = limit - records.len();
         let mut newest: VecDeque<LogRecord> = VecDeque::new();
-        for line in BufReader::new(file).lines() {
-            let Ok(line) = line else { break };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            // Release oversized allocations before reading the next line.
+            if line.capacity() > reader.capacity() {
+                line = String::new();
+            } else {
+                line.clear();
+            }
+            let Ok(bytes_read) = reader.read_line(&mut line) else {
+                break;
+            };
+            if bytes_read == 0 {
+                break;
+            }
             let Ok(record) = serde_json::from_str::<LogRecord>(&line) else {
                 continue;
             };
@@ -561,6 +574,8 @@ pub fn query_dir(dir: &Path, filters: &LogQueryFilters) -> Vec<LogRecord> {
                 newest.push_back(record);
             }
         }
+        drop(line);
+        drop(reader);
         records.extend(newest.into_iter().rev());
         if records.len() >= limit {
             return records;
@@ -2035,6 +2050,57 @@ mod tests {
         let sink = LogSink::new(tmp.path().to_path_buf());
         sink.cleanup();
         assert!(!old.exists());
+    }
+
+    #[test]
+    fn query_handles_crlf_malformed_lines_and_unicode_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let metadata = serde_json::json!({ "value": "λ".repeat(5000) + "\n\"\\\t" });
+        let record = |message: &str, metadata: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "timestamp": "2026-01-02T03:04:05Z", "level": "info", "kind": "debug",
+                "source": "test", "workspace_path": null, "event": "query",
+                "message": message, "metadata": metadata
+            }))
+            .unwrap()
+        };
+        let mut contents = record("first", metadata.clone());
+        contents.extend_from_slice(b"\r\n\r\n{bad-json}\n{\"message\":\"missing-fields\"}\n");
+        contents.extend(record("tail", serde_json::json!({})));
+        contents.extend_from_slice(b" \t\r");
+        std::fs::write(tmp.path().join("yuzora-2026-01-02.jsonl"), contents).unwrap();
+
+        let got = query_dir(tmp.path(), &LogQueryFilters::default());
+        assert_eq!(
+            got.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(),
+            ["tail", "first"]
+        );
+        assert_eq!(got[1].metadata, metadata);
+        assert!(got.iter().all(|r| r.run_id.is_none()));
+    }
+
+    #[test]
+    fn query_stops_invalid_utf8_file_and_continues_older_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = |message: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "timestamp": "2026-01-02T03:04:05Z", "level": "info", "kind": "debug",
+                "source": "test", "workspace_path": null, "event": "query",
+                "message": message, "metadata": null
+            }))
+            .unwrap()
+        };
+        let mut contents = record("before-error");
+        contents.extend_from_slice(b"\n\xff\n");
+        contents.extend(record("after-error"));
+        std::fs::write(tmp.path().join("yuzora-2026-01-02.jsonl"), contents).unwrap();
+        std::fs::write(tmp.path().join("yuzora-2026-01-01.jsonl"), record("older")).unwrap();
+
+        let got = query_dir(tmp.path(), &LogQueryFilters::default());
+        assert_eq!(
+            got.iter().map(|r| r.message.as_str()).collect::<Vec<_>>(),
+            ["before-error", "older"]
+        );
     }
 
     #[test]

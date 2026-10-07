@@ -103,3 +103,31 @@ it("closes a late resource registration instead of navigating a different worksp
     expect(previewResourceClose).toHaveBeenCalledWith("late")
     expect(usePreviewStore.getState().navForWorkspace("/other").url).toBeNull()
 })
+
+it("serializes concurrent opens and reuses the registered capability without losing navigation results", async () => {
+    let finish!: (lease: { id: string; url: string }) => void
+    vi.mocked(previewResourceOpen).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const first = openHtmlPreview("/project", "/project/first.html", 0)
+    const second = openHtmlPreview("/project", "/project/second.html", 0)
+    const opened = Promise.all([first, second])
+    await waitFor(() => expect(previewResourceOpen).toHaveBeenCalledTimes(1))
+    finish({ id: "11111111111111111111111111111111", url: "yuzora-preview://11111111111111111111111111111111/first.html" })
+    await opened
+    expect(previewResourceOpen).toHaveBeenCalledTimes(1)
+    expect(browserTarget(usePreviewStore.getState().navForWorkspace("/project").url!)).toMatchObject({ path: "/project/second.html" })
+})
+
+it("preserves a failed caller's rejection while allowing an already queued open to succeed", async () => {
+    let fail!: (error: Error) => void
+    vi.mocked(previewResourceOpen).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject }))
+    const first = openHtmlPreview("/project", "/project/failed.html", 0)
+    const second = openHtmlPreview("/project", "/project/recovered.html", 0)
+    const settled = Promise.allSettled([first, second])
+    await waitFor(() => expect(previewResourceOpen).toHaveBeenCalledTimes(1))
+    fail(new Error("owned registration failure"))
+    const outcomes = await settled
+    expect(outcomes[0]).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: "owned registration failure" }) })
+    expect(outcomes[1]).toEqual({ status: "fulfilled", value: undefined })
+    expect(previewResourceOpen).toHaveBeenCalledTimes(2)
+    expect(browserTarget(usePreviewStore.getState().navForWorkspace("/project").url!)).toMatchObject({ path: "/project/recovered.html" })
+})

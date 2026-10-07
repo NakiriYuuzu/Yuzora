@@ -74,3 +74,21 @@ it("fs:external-change refreshes only when the event matches the live workspace 
     })
     expect(refresh).toHaveBeenCalledTimes(1)
 })
+
+it("fs:external-change refreshes coalesced directories even with a legacy ignored hint", async () => {
+    const { refresh } = await mountBridge()
+
+    listeners.get("fs:external-change")!({
+        payload: { workspaceRoot: "/w", paths: ["/w/target"], gitRelevant: false }
+    })
+    expect(refresh).toHaveBeenCalledExactlyOnceWith()
+})
+
+it.each(["/w/a.ts", "/w/generated"])("fs:external-change refreshes file or coalesced directory %s", async (path) => {
+    const { refresh } = await mountBridge()
+
+    listeners.get("fs:external-change")!({
+        payload: { workspaceRoot: "/w", paths: [path] }
+    })
+    expect(refresh).toHaveBeenCalledExactlyOnceWith()
+})

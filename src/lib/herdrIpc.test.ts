@@ -12,6 +12,7 @@ import {
   herdrPaneSplit,
   herdrPaneSwap,
   herdrPaneZoom,
+  herdrStartupStatus,
   herdrTabClose,
   herdrTabCreate,
   herdrTabMove,
@@ -27,6 +28,22 @@ afterEach(() => {
 })
 
 describe("herdrIpc native interaction wrappers", () => {
+  it.each(["starting", "ready", "failed"] as const)("reads the local startup state: %s", async state => {
+    const payload = { state, error: state === "failed" ? "startup failed" : null }
+    mockIPC(command => {
+      expect(command).toBe("herdr_startup_status")
+      return payload
+    })
+    expect(await herdrStartupStatus()).toEqual(payload)
+  })
+
+  it("retains ready behavior when the startup command is unavailable", async () => {
+    mockIPC(() => { throw new Error("Command herdr_startup_status not found") })
+    expect(await herdrStartupStatus()).toEqual({ state: "ready", error: null })
+    clearMocks()
+    expect(await herdrStartupStatus()).toEqual({ state: "ready", error: null })
+  })
+
   it("invokes binary-source and event-release commands exactly", async () => {
     const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
     mockIPC((cmd, args) => {

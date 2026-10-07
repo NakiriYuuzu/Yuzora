@@ -182,7 +182,11 @@ function buildDecorations(doc: Text): DecorationSet {
 // Check both sides: removing a malformed nested marker can also make an outer
 // conflict valid. Ordinary edits only inspect their touched lines, without
 // flattening the document's persistent text tree.
-function changesConflictMarker(tr: Transaction): boolean {
+function needsConflictScan(tr: Transaction, hasDecorations: boolean): boolean {
+    const markerPrefix = (doc: Text, from: number, to: number) => {
+        const prefix = doc.sliceString(from, Math.min(to, from + 7))
+        return /^(<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|)$/.test(prefix) ? prefix : null
+    }
     const hasMarker = (doc: Text, from: number, to: number) => {
         const first = doc.lineAt(from).number
         const last = doc.lineAt(to).number
@@ -191,27 +195,35 @@ function changesConflictMarker(tr: Transaction): boolean {
         if (last - first > 1000) return true
         for (let number = first; number <= last; number++) {
             const line = doc.line(number)
-            const prefix = doc.sliceString(line.from, Math.min(line.to, line.from + 7))
-            if (/^(<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|)$/.test(prefix)) return true
+            if (markerPrefix(doc, line.from, line.to)) return true
         }
         return false
     }
     let found = false
     tr.changes.iterChangedRanges((fromA, toA, from, to) => {
         if (found) return
-        found = hasMarker(tr.startState.doc, fromA, toA) || hasMarker(tr.newDoc, from, to)
+        if (hasDecorations) {
+            const before = tr.startState.doc.lineAt(fromA)
+            const after = tr.newDoc.lineAt(from)
+            found = toA > before.to || to > after.to ||
+                markerPrefix(tr.startState.doc, before.from, before.to) !==
+                markerPrefix(tr.newDoc, after.from, after.to)
+        } else {
+            found = hasMarker(tr.startState.doc, fromA, toA) || hasMarker(tr.newDoc, from, to)
+        }
     })
     return found
 }
 
-// A StateField is required for the block-level action widget. Existing conflict
-// edits are fully re-evaluated so ranges and resolution actions remain exact.
+// A StateField is required for the block-level action widget. Ordinary same-line
+// edits map its ranges; marker-prefix or line-structure changes rebuild them.
 const conflictField = StateField.define<DecorationSet>({
     create(state) {
         return buildDecorations(state.doc)
     },
     update(deco, tr) {
-        if (!tr.docChanged || (deco.size === 0 && !changesConflictMarker(tr))) return deco
+        if (!tr.docChanged) return deco
+        if (!needsConflictScan(tr, deco.size > 0)) return deco.size > 0 ? deco.map(tr.changes) : deco
         return buildDecorations(tr.newDoc)
     },
     provide: (f) => EditorView.decorations.from(f)

@@ -10,6 +10,7 @@ import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { usePreviewStore } from "@/state/previewStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { openHtmlPreview } from "@/preview/filePreview"
+import { enqueueNativePreviewOperation } from "@/preview/nativePreviewQueue"
 
 // This file focuses on coverage panels.test.tsx's "PreviewPanel dev server flow"
 // describe block doesn't already have: the no-candidates branch, an IPC-rejection
@@ -105,6 +106,39 @@ function deferred<T>() {
     reject = rejectPromise
   })
   return { promise, resolve, reject }
+}
+
+function trackPreviewObservers() {
+  const original = globalThis.ResizeObserver
+  const live = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+  const resizeListeners = new Set<unknown>()
+  globalThis.ResizeObserver = class {
+    targets = new Set<Element>()
+    constructor(readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) { this.targets.add(target); live.add(this) }
+    unobserve(target: Element) { this.targets.delete(target); if (!this.targets.size) live.delete(this) }
+    disconnect() { this.targets.clear(); live.delete(this) }
+  }
+  const originalAdd = window.addEventListener.bind(window)
+  const originalRemove = window.removeEventListener.bind(window)
+  const add = vi.spyOn(window, "addEventListener").mockImplementation((type, fn, options) => {
+    if (type === "resize") resizeListeners.add(fn)
+    originalAdd(type, fn, options)
+  })
+  const remove = vi.spyOn(window, "removeEventListener").mockImplementation((type, fn, options) => {
+    if (type === "resize") resizeListeners.delete(fn)
+    originalRemove(type, fn, options)
+  })
+  return {
+    live,
+    resizeListeners,
+    restore() { globalThis.ResizeObserver = original; add.mockRestore(); remove.mockRestore() },
+    notify() {
+      for (const observer of live) {
+        if ([...observer.targets].some(target => target.isConnected)) observer.callback([], {} as ResizeObserver)
+      }
+    },
+  }
 }
 
 beforeEach(() => {
@@ -244,6 +278,222 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
 
     unmount()
     await waitFor(() => expect(ipcMocks.previewClose).toHaveBeenCalled())
+  })
+
+  it("coalesces waiting resize notifications and reads the latest bounds", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const opening = deferred<void>()
+    let width = 500
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(() => new DOMRect(10, 20, width, 300))
+    ipcMocks.previewOpenUrl.mockImplementationOnce(() => opening.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    const panel = render(<PreviewPanel />)
+    try {
+      await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalledOnce())
+      act(() => {
+        for (let i = 0; i < 100; i++) {
+          width = 600 + i
+          window.dispatchEvent(new Event("resize"))
+        }
+      })
+      expect(ipcMocks.previewSetBounds).not.toHaveBeenCalled()
+      await act(async () => {
+        opening.resolve()
+        await enqueueNativePreviewOperation(async () => undefined)
+      })
+      // The visibility gate also sets bounds before showing the native child.
+      expect(ipcMocks.previewSetBounds).toHaveBeenCalledTimes(2)
+      expect(ipcMocks.previewSetBounds.mock.calls).toEqual([
+        [10, 20, 699, 300],
+        [10, 20, 699, 300],
+      ])
+      expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true)
+    } finally {
+      opening.resolve()
+      panel.unmount()
+      await enqueueNativePreviewOperation(async () => undefined)
+      rect.mockRestore()
+    }
+  })
+
+  it.each([false, true])("keeps a latest-bounds follow-up during an in-flight write (reject=%s)", async (reject) => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    let width = 500
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(() => new DOMRect(10, 20, width, 300))
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    const panel = render(<PreviewPanel />)
+    const writing = deferred<void>()
+    try {
+      await act(async () => { await enqueueNativePreviewOperation(async () => undefined) })
+      ipcMocks.previewSetBounds.mockClear()
+      ipcMocks.previewSetBounds.mockImplementationOnce(() => writing.promise)
+      act(() => window.dispatchEvent(new Event("resize")))
+      await waitFor(() => expect(ipcMocks.previewSetBounds).toHaveBeenCalledOnce())
+      act(() => {
+        for (let i = 0; i < 100; i++) {
+          width = 700 + i
+          window.dispatchEvent(new Event("resize"))
+        }
+      })
+      await act(async () => {
+        if (reject) writing.reject(new Error("owned bounds failure"))
+        else writing.resolve()
+        await enqueueNativePreviewOperation(async () => undefined)
+      })
+      expect(ipcMocks.previewSetBounds.mock.calls).toEqual([
+        [10, 20, 500, 300],
+        [10, 20, 799, 300],
+      ])
+      await act(async () => {
+        width = 900
+        window.dispatchEvent(new Event("resize"))
+        await enqueueNativePreviewOperation(async () => undefined)
+      })
+      expect(ipcMocks.previewSetBounds).toHaveBeenLastCalledWith(10, 20, 900, 300)
+      expect(ipcMocks.previewSetBounds).toHaveBeenCalledTimes(3)
+    } finally {
+      writing.resolve()
+      panel.unmount()
+      await enqueueNativePreviewOperation(async () => undefined)
+      rect.mockRestore()
+    }
+  })
+
+  it("discards waiting bounds updates when their panel unmounts", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const opening = deferred<void>()
+    ipcMocks.previewOpenUrl.mockImplementationOnce(() => opening.promise)
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    const panel = render(<PreviewPanel />)
+    await waitFor(() => expect(ipcMocks.previewOpenUrl).toHaveBeenCalledOnce())
+    act(() => {
+      for (let i = 0; i < 100; i++) window.dispatchEvent(new Event("resize"))
+      panel.unmount()
+    })
+    await act(async () => {
+      opening.resolve()
+      await enqueueNativePreviewOperation(async () => undefined)
+    })
+    expect(ipcMocks.previewSetBounds).not.toHaveBeenCalled()
+    expect(ipcMocks.previewClose).toHaveBeenCalledOnce()
+  })
+
+  it.each([false, true])("owns only the current viewport through error and recovery (initialError=%s)", async (initialError) => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const tracker = trackPreviewObservers()
+    let width = 500
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(() => new DOMRect(10, 20, width, 300))
+    const url = "https://example.test/recovery"
+    usePreviewStore.getState().navigate("/workspace", url)
+    ipcMocks.renderedPreview = initialError ? { url: null, error: "first error" } : { url, error: null }
+    const panel = render(<PreviewPanel />)
+    try {
+      await act(async () => { await enqueueNativePreviewOperation(async () => undefined) })
+      expect(tracker.live.size).toBe(initialError ? 0 : 1)
+      const previous = screen.queryByTestId("preview-webview-host")
+      for (const error of ["first error", "changed error"]) {
+        await act(async () => {
+          ipcMocks.renderedPreview = { url: null, error }
+          panel.rerender(<PreviewPanel />)
+        })
+        await act(async () => { await enqueueNativePreviewOperation(async () => undefined) })
+        expect(screen.getByRole("alert")).toHaveTextContent(error)
+        expect(tracker.live.size).toBe(0)
+        expect(tracker.resizeListeners.size).toBe(0)
+      }
+      await act(async () => {
+        ipcMocks.renderedPreview = { url, error: null }
+        panel.rerender(<PreviewPanel />)
+      })
+      await act(async () => { await enqueueNativePreviewOperation(async () => undefined) })
+      const current = screen.getByTestId("preview-webview-host")
+      expect(current).not.toBe(previous)
+      expect(tracker.live.size).toBe(1)
+      expect([...tracker.live][0].targets.has(current)).toBe(true)
+      expect(tracker.resizeListeners.size).toBe(1)
+      ipcMocks.previewSetBounds.mockClear()
+      await act(async () => {
+        width = 750
+        tracker.notify()
+        await enqueueNativePreviewOperation(async () => undefined)
+      })
+      expect(ipcMocks.previewSetBounds).toHaveBeenCalledExactlyOnceWith(10, 20, 750, 300)
+    } finally {
+      panel.unmount()
+      await enqueueNativePreviewOperation(async () => undefined)
+      expect(tracker.live.size).toBe(0)
+      expect(tracker.resizeListeners.size).toBe(0)
+      rect.mockRestore(); tracker.restore()
+    }
+  })
+
+  it("keeps observing the viewport while resolution is pending without visible error text", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const tracker = trackPreviewObservers()
+    usePreviewStore.getState().navigate("/workspace", "https://example.test/loading")
+    ipcMocks.renderedPreview = { url: null, error: null }
+    const panel = render(<PreviewPanel />)
+    try {
+      await act(async () => { await enqueueNativePreviewOperation(async () => undefined) })
+      const current = screen.getByTestId("preview-webview-host")
+      const observer = [...tracker.live][0]
+      expect(observer.targets.has(current)).toBe(true)
+      await act(async () => {
+        ipcMocks.renderedPreview = { url: null, error: "" }
+        panel.rerender(<PreviewPanel />)
+      })
+      expect([...tracker.live][0]).toBe(observer)
+      expect(tracker.resizeListeners.size).toBe(1)
+    } finally {
+      panel.unmount()
+      await enqueueNativePreviewOperation(async () => undefined)
+      tracker.restore()
+    }
+  })
+
+  it("preserves queued bounds ordering when an error recovers during a pending write", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    const tracker = trackPreviewObservers()
+    let width = 500
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(() => new DOMRect(10, 20, width, 300))
+    const url = "https://example.test/pending"
+    usePreviewStore.getState().navigate("/workspace", url)
+    const panel = render(<PreviewPanel />)
+    const writing = deferred<void>()
+    try {
+      await act(async () => { await enqueueNativePreviewOperation(async () => undefined) })
+      ipcMocks.previewSetBounds.mockClear()
+      ipcMocks.previewSetBounds.mockImplementationOnce(() => writing.promise)
+      act(() => tracker.notify())
+      await waitFor(() => expect(ipcMocks.previewSetBounds).toHaveBeenCalledOnce())
+      await act(async () => {
+        ipcMocks.renderedPreview = { url: null, error: "retry" }
+        panel.rerender(<PreviewPanel />)
+      })
+      expect(tracker.live.size).toBe(0)
+      await act(async () => {
+        ipcMocks.renderedPreview = { url, error: null }
+        panel.rerender(<PreviewPanel />)
+      })
+      expect(tracker.live.size).toBe(1)
+      await act(async () => {
+        width = 850
+        tracker.notify()
+        writing.resolve()
+        await enqueueNativePreviewOperation(async () => undefined)
+      })
+      expect(ipcMocks.previewSetBounds).toHaveBeenLastCalledWith(10, 20, 850, 300)
+      expect(usePreviewStore.getState().nativeSession?.currentUrl).toBe(url)
+    } finally {
+      writing.resolve()
+      panel.unmount()
+      await enqueueNativePreviewOperation(async () => undefined)
+      rect.mockRestore(); tracker.restore()
+    }
   })
 
   it.each(["http://127.0.0.1:34329", "https://example.com"])("QA26-006 reads actual native URL and history for %s", async (origin) => {

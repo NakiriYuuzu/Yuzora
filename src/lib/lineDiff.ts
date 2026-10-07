@@ -62,6 +62,28 @@ export function lineDiffCounts(original: string, modified: string): DiffCounts |
     if (exceedsCellLimit(countA, countB)) return null
     const a = toLines(original)
     const b = toLines(modified)
-    const common = lcsLength(a, b)
-    return { added: b.length - common, deleted: a.length - common }
+    let start = 0
+    let endA = a.length
+    let endB = b.length
+    while (start < endA && start < endB && a[start] === b[start]) start++
+    while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+        endA--
+        endB--
+    }
+    // Equal boundaries belong to an LCS; only the middle needs the DP rows.
+    let common = start + a.length - endA
+    if (endA > start && endB > start) {
+        if (common > 0) {
+            // These arrays belong to this call. Reuse them without allocating
+            // slices, and keep the DP loop's indices relative to its inputs.
+            if (start > 0) {
+                a.copyWithin(0, start, endA)
+                b.copyWithin(0, start, endB)
+            }
+            a.length = endA - start
+            b.length = endB - start
+        }
+        common += lcsLength(a, b)
+    }
+    return { added: countB - common, deleted: countA - common }
 }

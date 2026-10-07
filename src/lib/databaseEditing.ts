@@ -16,7 +16,7 @@ function textLiteral(kind: DbKind, value: string): string {
     return `${kind === "mssql" ? "N" : ""}'${value.replace(/'/g, "''")}'`
 }
 
-export function dbValueLiteral(kind: DbKind, value: DbValue): string {
+export function dbValueLiteral(kind: DbKind, value: DbValue, column?: DbColumn): string {
     switch (value.kind) {
         case "null": return "NULL"
         case "boolean": return kind === "postgres" ? (value.value ? "TRUE" : "FALSE") : (value.value ? "1" : "0")
@@ -24,8 +24,14 @@ export function dbValueLiteral(kind: DbKind, value: DbValue): string {
             if (!/^[+-]?\d+$/.test(value.value)) throw new Error("invalidValue")
             return value.value
         case "decimal":
-            // PostgreSQL numeric decodes NaN/±Infinity; they are only valid as typed literals.
-            if (kind === "postgres" && /^(?:NaN|[+-]?Infinity)$/.test(value.value)) return `'${value.value}'::numeric`
+            // Rust floats use inf/-inf. Cast directly to the column's float type:
+            // older PostgreSQL versions cannot route float Infinity through numeric.
+            if (kind === "postgres" && /^(?:NaN|[+-]?Inf(?:inity)?)$/i.test(value.value)) {
+                const special = /^nan$/i.test(value.value) ? "NaN" : value.value.startsWith("-") ? "-Infinity" : "Infinity"
+                const type = column?.type.trim().toLowerCase()
+                const cast = type === "real" || type === "float4" ? "real" : type === "double precision" || type === "float8" ? "float8" : "numeric"
+                return `'${special}'::${cast}`
+            }
             if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.value)) throw new Error("invalidValue")
             return value.value
         case "binary": throw new Error("readOnlyCell")
@@ -33,7 +39,7 @@ export function dbValueLiteral(kind: DbKind, value: DbValue): string {
     }
 }
 
-export function parseEditedDbValue(original: DbValue, text: string, isNull: boolean, column: DbColumn): DbValue {
+export function parseEditedDbValue(engine: DbKind, original: DbValue, text: string, isNull: boolean, column: DbColumn): DbValue {
     if (isNull) {
         if (column.notnull || column.pk) throw new Error("notNullable")
         return { kind: "null" }
@@ -52,7 +58,7 @@ export function parseEditedDbValue(original: DbValue, text: string, isNull: bool
         try { JSON.parse(text) } catch { throw new Error("invalidValue") }
     }
     const value = { kind, value: kind === "integer" || kind === "decimal" ? text.trim() : text } as DbValue
-    dbValueLiteral("sqlite", value)
+    dbValueLiteral(engine, value, column)
     return value
 }
 
@@ -65,8 +71,9 @@ export function isBinaryDbColumn(column: DbColumn): boolean {
 // PostgreSQL resolves `real = numeric` as float8 equality, so a real cell would never
 // match its own displayed value; compare in the column's own precision instead.
 function predicateLiteral(kind: DbKind, column: DbColumn, value: DbValue): string {
-    const literal = dbValueLiteral(kind, value)
-    return kind === "postgres" && value.kind === "decimal" && /^(real|float4)$/i.test(column.type.trim()) ? `CAST(${literal} AS real)` : literal
+    const literal = dbValueLiteral(kind, value, column)
+    // Quoted special values already carry the column's type.
+    return kind === "postgres" && value.kind === "decimal" && /^(real|float4)$/i.test(column.type.trim()) && !literal.startsWith("'") ? `CAST(${literal} AS real)` : literal
 }
 
 // Case-insensitive or pad-space collations (common on MSSQL, opt-in on SQLite and
@@ -103,7 +110,7 @@ export function buildCellUpdate(kind: DbKind, table: DbTable, metadata: DbColumn
     if (!original || original.kind === "binary" || original.kind === "json") throw new Error("readOnlyCell")
     const identifier = quoteDbIdentifier(kind, columnName)
     predicates.push(original.kind === "null" ? `${identifier} IS NULL` : originalValuePredicate(kind, column, identifier, original))
-    return `UPDATE ${qualifiedDbTable(kind, table)} SET ${identifier} = ${dbValueLiteral(kind, value)} WHERE ${predicates.join(" AND ")}`
+    return `UPDATE ${qualifiedDbTable(kind, table)} SET ${identifier} = ${dbValueLiteral(kind, value, column)} WHERE ${predicates.join(" AND ")}`
 }
 
 export type TableEdit =

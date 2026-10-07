@@ -118,7 +118,7 @@ done
   const createdSession = await feature<{ started: boolean }>("session.start")
   check(createdSession.started === true, "new Session must start")
   const status = await cli(["status", "--json"])
-  check(status.client.version === "0.9.1" && status.server.compatible === true, "running bundled v0.9.1 required")
+  check(status.client.version === "0.9.3" && status.server.compatible === true, "running bundled v0.9.3 required")
   check(contained(status.server.socket), "runtime socket escaped temporary root")
   const repeat = await feature<{ started: boolean }>("session.start")
   check(repeat.started === false, "start must be idempotent")

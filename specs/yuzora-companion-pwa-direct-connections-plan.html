@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: Yuzora Companion PWA — Direct · Tailscale 與 Direct · LAN</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #071018;
+    --panel: #0d1722;
+    --panel-2: #111e2b;
+    --line: #223549;
+    --line-strong: #35526d;
+    --text: #e9f2fb;
+    --muted: #9db0c2;
+    --cyan: #60d8ff;      /* Direct · Tailscale */
+    --amber: #f7c76d;     /* Direct · LAN */
+    --green: #75e0a7;     /* verified / passkey */
+    --red: #ff8c96;       /* danger / write scope */
+    --violet: #bda6ff;    /* Herdr */
+    --radius: 16px;
+    --shadow: 0 18px 45px rgba(0, 0, 0, .28);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at 10% 0%, rgba(96, 216, 255, .14), transparent 32rem),
+      radial-gradient(circle at 95% 8%, rgba(247, 199, 109, .08), transparent 26rem),
+      var(--bg);
+    color: var(--text);
+    font: 15px/1.7 var(--sans);
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 96px; }
+  a { color: var(--cyan); text-underline-offset: 3px; }
+  code, pre { font-family: var(--mono); }
+  code {
+    padding: .1rem .34rem; border: 1px solid rgba(96, 216, 255, .16); border-radius: 6px;
+    background: rgba(96, 216, 255, .07); color: #ccefff; font-size: .9em;
+  }
+  pre {
+    margin: 12px 0; padding: 16px; overflow: auto; border: 1px solid var(--line); border-radius: 12px;
+    background: #06101a; color: #d8e8f5; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  }
+  pre code { padding: 0; border: 0; background: none; }
+  h1, h2, h3, h4 { line-height: 1.25; letter-spacing: -.01em; }
+  h1 { margin: 0 0 12px; font-size: clamp(2rem, 4.6vw, 3.3rem); }
+  h2 { margin: 0 0 14px; font-size: clamp(1.4rem, 2.6vw, 2rem); }
+  h3 { margin: 22px 0 10px; font-size: 1.18rem; }
+  h4 { margin: 18px 0 8px; font-size: 1rem; color: #d5e6f4; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 8px 0 12px; padding-left: 1.3rem; }
+  li + li { margin-top: 4px; }
+  header { padding: 28px; border: 1px solid var(--line-strong); border-radius: 22px;
+    background: linear-gradient(145deg, rgba(17, 30, 43, .97), rgba(7, 16, 24, .95)); box-shadow: var(--shadow); }
+  header .lede { color: #c1d2df; max-width: 80ch; }
+  section { margin-top: 28px; padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(13, 23, 34, .86); }
+  figure { margin: 18px auto; text-align: center; }
+  figure img { display: block; max-width: 100%; margin: 0 auto; border: 1px solid var(--line); border-radius: 14px; }
+  figcaption { margin-top: 8px; color: var(--muted); font-size: .88rem; }
+  details { margin: 10px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+  details > summary { cursor: pointer; font-weight: 600; }
+  .meta dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 12px 0 0; font-size: .88rem; }
+  .meta dt { color: var(--muted); font-family: var(--mono); }
+  .meta dd { margin: 0; word-break: break-word; }
+  .pill { display: inline-block; padding: .08rem .55rem; border-radius: 999px; font: 600 .76rem/1.6 var(--mono); border: 1px solid; }
+  .pill.ts { color: var(--cyan); border-color: rgba(96, 216, 255, .45); }
+  .pill.lan { color: var(--amber); border-color: rgba(247, 199, 109, .45); }
+  .pill.ok { color: var(--green); border-color: rgba(117, 224, 167, .45); }
+  .pill.danger { color: var(--red); border-color: rgba(255, 140, 150, .45); }
+  .callout { margin: 14px 0; padding: 14px 16px; border-left: 4px solid var(--cyan); border-radius: 10px; background: rgba(96, 216, 255, .06); }
+  .callout.warn { border-left-color: var(--amber); background: rgba(247, 199, 109, .06); }
+  .callout.danger { border-left-color: var(--red); background: rgba(255, 140, 150, .07); }
+  table { width: 100%; margin: 12px 0; border-collapse: collapse; font-size: .9rem; }
+  th, td { padding: 8px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); color: #d5e6f4; }
+  .files ul { list-style: none; padding-left: 0; }
+  .files li { padding: 6px 0; border-bottom: 1px dashed rgba(34, 53, 73, .8); }
+  .tag { display: inline-block; min-width: 64px; margin-right: 6px; padding: .02rem .4rem; border-radius: 6px; font: 600 .72rem/1.6 var(--mono); text-align: center; }
+  .tag.existing { color: var(--muted); border: 1px solid var(--line-strong); }
+  .tag.new { color: var(--green); border: 1px solid rgba(117, 224, 167, .45); }
+  .phase { margin: 18px 0; padding: 20px; border: 1px solid var(--line-strong); border-radius: 14px; background: rgba(7, 16, 24, .72); }
+  .phase > h3 { margin-top: 0; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding: 3px 0 3px 4px; }
+  .status { color: var(--amber); border-color: rgba(247, 199, 109, .3); background: rgba(247, 199, 109, .06); }
+  .loop { margin-top: 14px; padding: 12px 14px; border: 1px dashed rgba(117, 224, 167, .45); border-radius: 10px; background: rgba(117, 224, 167, .05); }
+  .qa-answer { color: #c7d7e4; }
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- ===== HEADER + UPDATABLE METADATA ===== -->
+  <header>
+    <h1>Plan: Yuzora Companion PWA — Direct · Tailscale 與 Direct · LAN</h1>
+    <p class="lede">手機不裝原生 App，直接以 PWA 連進使用者自己的 Yuzora 桌面，透過 Herdr 官方 bridge 觀看與（經授權後）操作 Agent。兩條直連路徑：<span class="pill ts">Direct · Tailscale</span>（主要，可穿越公司防火牆）與 <span class="pill lan">Direct · LAN</span>（同網段）。不建雲端 Relay、不走明文 HTTP、不開放公網。</p>
+    <div class="callout danger"><strong>安全前提：</strong>能遠端指揮 AI Agent，就等於能控制這台電腦的大部分操作。任何「寫入」能力（<code>agent.prompt</code>、<code>send_keys</code>、pane control、完整 Herdr）一律視為等同使用者帳號 shell 權限；整體防護不得弱於「SSH＋硬體金鑰」。</div>
+    <details class="meta">
+      <summary>Metadata</summary>
+      <dl>
+        <dt>created</dt>      <dd>2026-09-27T04:12:39Z</dd>
+        <dt>modified</dt>     <dd>2026-09-27T04:12:39Z</dd>
+        <dt>commits</dt>      <dd>9f4592e (plan authored against main after PR #110 / v0.0.16)</dd>
+        <dt>agent name</dt>        <dd>pi · yuuzu-router/claude-opus-5-5 (planner), worker · yuuzu-router/gpt-6-astra (writer)</dd>
+        <dt>session id</dt>      <dd>01a0debc-f4da-74bd-a330-2b913db2e0a6</dd>
+        <dt>back refs</dt>    <dd>.yuuzu/CONTEXT.html, .yuuzu/adr/0004-herdr-terminals-browser-only.html, .yuuzu/adr/0005-native-windows-opt-in-wsl.html, Orca analysis (stablyai/orca @ da6d483, subagent artifacts 4e838150 / 92da80dc), Herdr v0.9.1 source @ 065ef9d, https://herdr.dev/docs/persistence-remote/, https://tailscale.com/kb/1312/serve</dd>
+        <dt>forward refs</dt> <dd>.yuuzu/adr/0006-companion-pwa-direct-connections.html (to be created in Phase 0)</dd>
+      </dl>
+    </details>
+  </header>
+
+  <!-- Hero image — synced to the :root visual identity. Replace with <img> once generated. -->
+  <figure>
+    <img src="yuzora-companion-pwa-direct-connections-plan/hero.png" alt="手機 PWA 經兩條直連路徑與 passkey 驗證連接桌面" loading="lazy">
+    <figcaption>手機 PWA 經 Tailscale 或區網直連桌面 Companion gateway；passkey 是每次連線的必要門檻。</figcaption>
+  </figure>
+
+  <!-- ===== PURPOSE / PROBLEM / SOLUTION ===== -->
+  <section id="purpose">
+    <h2>Purpose</h2>
+    <p>讓使用者在離開桌面時（包含位於會擋 tunnel 的公司網路內），用手機瀏覽器或加到主畫面的 PWA 查看 Herdr Agent 狀態、觀看 pane 輸出，並在明確授權下回覆 Agent 或控制 pane；做法參考 Orca 的 Direct · Tailscale／Direct · LAN 路徑，但補上 Orca 缺少的安全控制，且不建立原生 App 與雲端 Relay。</p>
+  </section>
+
+  <section id="problem">
+    <h2>Problem</h2>
+    <p>Yuzora 目前沒有任何對外控制面：產品程式碼中沒有 HTTP／WebSocket RPC、配對、passkey、推播或 QR；唯一 TCP listener 是綁在 <code>127.0.0.1:0</code> 的 host tunnel（<code>src-tauri/src/host_tunnels.rs:134</code>）。Herdr 雖支援遠端控制，但只透過 SSH stdio bridge（<code>herdr remote-client-bridge</code>／<code>remote-api-bridge</code>），本身沒有網路 listener 或驗證，手機瀏覽器無法直接使用。</p>
+    <p>Orca 的做法可行但偏寬鬆：Direct 路徑以明文 <code>ws://</code>＋舊版 NaCl 加密、配對時綁 <code>0.0.0.0</code>（區網也暴露）、token 無期限、手機權限幾乎不設限。Yuzora 必須在「遠端控制 AI ≒ 控制電腦」的前提下提供同等可達性，同時做到：看得見、可撤銷、可稽核、每次連線皆需硬體綁定的憑證。</p>
+    <figure>
+      <img src="yuzora-companion-pwa-direct-connections-plan/problem.png" alt="手機連線受阻與桌面缺乏身分授權邊界" loading="lazy">
+      <figcaption>兩個問題：手機到不了桌面；到得了時又缺乏足夠的身分與授權邊界。</figcaption>
+    </figure>
+  </section>
+
+  <section id="solution">
+    <h2>Solution</h2>
+    <p>新增獨立程序 <strong>Companion gateway</strong>（新 crate <code>src-tauri/companion</code>，binary <code>yuzora-companion</code>），由 Yuzora 桌面以 Tauri sidecar 啟動並以 stdio NDJSON 管理。gateway 重用 <code>yuzora-host</code> library 的 <code>HerdrManager</code>，只把 Herdr 官方接口（API socket、<code>terminal session observe|control</code>、完整 client PTY）以方法白名單橋接給手機；它同時提供 PWA 靜態檔、配對、WebAuthn passkey 驗證與 session。</p>
+    <ul>
+      <li><span class="pill ts">Direct · Tailscale</span>：gateway 只 bind <code>127.0.0.1</code>，由 <code>tailscale serve --https=&lt;port&gt;</code> 轉入，取得 <code>*.ts.net</code> 有效憑證；額外核對 Serve 注入的 <code>Tailscale-User-Login</code>。Funnel 永不開啟。</li>
+      <li><span class="pill lan">Direct · LAN</span>：gateway 在使用者選定的私有網段介面提供 HTTPS，憑證由 Yuzora 本機 CA 簽發（name constraints 限定 <code>&lt;LocalHostName&gt;.local</code>）；CA 私鑰只存在桌面 OS keychain；手機以 <code>https://&lt;name&gt;.local:&lt;port&gt;</code> 連線。不提供明文 HTTP 路徑。</li>
+      <li><span class="pill ok">身分與授權</span>：一次性 QR＋桌面端 SAS 確認配對 → 註冊 passkey；每次連線都要 passkey（UV required）；session 為 HttpOnly cookie；權限分 <em>view</em>（預設）／<em>control</em>（桌面授權＋passkey 提權＋限時）／<em>full session</em>（預設關閉）。所有寫入即時通知桌面並寫入 Logs，可隨時撤銷。</li>
+    </ul>
+    <figure>
+      <img src="yuzora-companion-pwa-direct-connections-plan/solution.png" alt="PWA 經 gateway 連接 Herdr，桌面管理授權" loading="lazy">
+      <figcaption>PWA ⇄（Tailscale Serve／LAN TLS）⇄ Companion gateway ⇄ Herdr；Yuzora 桌面經 stdio 管理 gateway 與授權。</figcaption>
+    </figure>
+<pre><code>Phone (Safari / Chrome, installed PWA)
+  │  https://&lt;mac&gt;.&lt;tailnet&gt;.ts.net:8443        https://&lt;LocalHostName&gt;.local:47443
+  │  (tailscaled terminates TLS, adds identity)   (gateway TLS, leaf signed by Yuzora local CA)
+  ▼                                               ▼
+yuzora-companion  ── loopback HTTP 127.0.0.1:47110 ── LAN HTTPS &lt;private-ip&gt;:47443
+  ├─ static PWA (allowlist, CSP)      ├─ pairing + WebAuthn + sessions
+  ├─ WS /ws  → method allowlist        └─ audit / control-state events ─┐
+  └─ HerdrManager (yuzora-host lib) ── Unix socket / named pipe ── Herdr server
+                                                                      │ stdio NDJSON (admin)
+Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve / revoke ◄─┘
+</code></pre>
+  </section>
+
+  <!-- ===== RELEVANT FILES ===== -->
+  <section id="files" class="files">
+    <h2>Relevant Files</h2>
+
+    <h3>Existing Files</h3>
+    <ul>
+      <li><span class="tag existing">existing</span> <code>.yuuzu/CONTEXT.html</code> — 權威術語（Host Runtime、Named Session、Full Session view、Host helper、Host tunnel）；需新增 Companion 相關術語。</li>
+      <li><span class="tag existing">existing</span> <code>.yuuzu/adr/0004-herdr-terminals-browser-only.html</code> — 目前產品範圍只含 Herdr terminal＋Browser；Companion 屬新範圍，須以 ADR-0006 記錄。</li>
+      <li><span class="tag existing">existing</span> <code>.yuuzu/adr/0005-native-windows-opt-in-wsl.html</code> — 最新 runtime／host 決策，Companion 不得改變「每個工作區一個主機 authority」。</li>
+      <li><span class="tag existing">existing</span> <code>AGENTS.md</code> — shadcn-first、ScrollArea 規則、macOS 僅 Apple Silicon 與發佈規則。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/src/lib.rs</code> — <code>main_webview_commands</code> 只允許 main window 呼叫指令（49-64）、指令註冊（約 312-502）、setup 與 exit 流程；新增 <code>companion_*</code> 指令並在退出時停止 gateway。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/src/herdr_service.rs</code> — Tauri adapter 範式；Herdr binary 來源設定需同步傳給 gateway。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/herdr_service.rs</code> — <code>HerdrManager</code>：<code>list_sessions</code>、<code>snapshot</code>、<code>capabilities_for_session</code>、<code>feature</code>、<code>open_terminal</code>、events；gateway 以 library 方式重用。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/herdr_native_client.rs</code> — <code>open_native_client</code> 以 portable-pty 執行 <code>herdr --session X client</code>；拒絕遠端（70-72），完整 Herdr 模式重用。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/herdr_transport.rs</code> — Unix socket／Windows named pipe；<code>#[cfg(test)]</code> listener 可做 fake Herdr server 測試。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/src/wire.rs</code>、<code>src-tauri/host/src/protocol.rs</code> — bounded NDJSON framing（16 MiB 上限）與 Hello/owner 驗證範式，用於 admin stdio 通道。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/host/Cargo.toml</code> — <code>yuzora-host</code> library；companion crate 以 path dependency 引用，避免把網路依賴塞進遠端 helper payload。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/src/host_tunnels.rs</code> — 現有 loopback listener 與上限（16 tunnels／32 clients）範式。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/src/host_bootstrap.rs</code> — resource_dir 解析（349-351），sidecar／PWA 資源路徑參考。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/src/db_credentials.rs</code> — keyring 使用範式（CA 私鑰、VAPID 私鑰、session 簽章密鑰）。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/Cargo.toml</code> — 既有 tokio／rustls 0.23＋ring／reqwest（rustls）／keyring／tauri-plugin-notification；新增 rcgen、qrcode 等。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/tauri.conf.json</code>、<code>src-tauri/tauri.macos.conf.json</code>、<code>src-tauri/tauri.windows.conf.json</code>、<code>src-tauri/tauri.linux.conf.json</code> — <code>beforeBuildCommand</code>、<code>bundle.resources</code>；新增 <code>externalBin</code>（sidecar）與 <code>companion-web</code> 資源。</li>
+      <li><span class="tag existing">existing</span> <code>src-tauri/capabilities/default.json</code> — ACL 只授 main window；Companion 不新增任何 webview 權限。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/SettingsDialog.tsx</code> — <code>SECTIONS</code>（138-146）與 section 內容切換；新增 <code>companion</code> section。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/settingsPrimitives.tsx</code>、<code>src/app/workbench/settings-search.ts</code> — 設定頁 primitives 與搜尋索引。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/workbench/StatusBar.tsx</code> — 新增「行動裝置：檢視中／控制中」指示與撤銷入口。</li>
+      <li><span class="tag existing">existing</span> <code>src/workbench/HerdrNotificationBridge.tsx</code> — 桌面通知範式（toast＋<code>@tauri-apps/plugin-notification</code>），用於「手機送出輸入」通知。</li>
+      <li><span class="tag existing">existing</span> <code>src/features/logs/userAction.ts</code> — <code>logUserAction</code>；Companion 稽核事件寫入 Logs。</li>
+      <li><span class="tag existing">existing</span> <code>src/app/panels/HerdrTerminalPage.tsx</code> — 被接管處理（92、1241-1243、1469）與 Full Session 時停用 connector（231-235）；確認手機接管時桌面行為正確。</li>
+      <li><span class="tag existing">existing</span> <code>src/lib/herdrTypes.ts</code>、<code>src/lib/herdrNormalize.ts</code>、<code>src/lib/herdrAgents.ts</code> — snapshot 正規化與 Agent 狀態／注意程度排序；PWA 直接重用。</li>
+      <li><span class="tag existing">existing</span> <code>src/terminal/xtermTheme.ts</code>、<code>src/terminal/terminalImeInput.ts</code> — xterm 主題與 IME 處理，PWA 終端機重用。</li>
+      <li><span class="tag existing">existing</span> <code>src/lib/i18n/index.ts</code>、<code>src/lib/i18n/locales/{zh-TW,en}/</code> — i18next；新增 <code>companion</code> namespace。</li>
+      <li><span class="tag existing">existing</span> <code>src/components/ui/</code> — shadcn（radix-nova）元件；桌面設定與 PWA 共用。</li>
+      <li><span class="tag existing">existing</span> <code>vite.config.ts</code>、<code>package.json</code>、<code>tsconfig.json</code>、<code>tsconfig.node.json</code>、<code>eslint.config.js</code> — 新增 PWA build entry、scripts 與 lint／typecheck 涵蓋。</li>
+      <li><span class="tag existing">existing</span> <code>scripts/verify-host-resources.ts</code>、<code>scripts/release-contract.ts</code> — 資源驗證與發佈契約；需涵蓋 sidecar 與 PWA bundle。</li>
+      <li><span class="tag existing">existing</span> <code>.github/workflows/ci.yml</code>、<code>.github/workflows/host.yml</code>、<code>.github/clippy-baseline.json</code>、<code>.github/scripts/verify-clippy-baseline.rb</code> — CI 閘門；新增 companion crate 的 fmt／clippy／test。</li>
+      <li><span class="tag existing">existing</span> <code>docs/operations.md</code>、<code>README.md</code>、<code>README.zh-TW.md</code>、<code>CHANGELOG.md</code> — 使用與維運文件、Experimental 標示與「等同授予遠端 shell 權限」警語。</li>
+    </ul>
+
+    <h3>New Files</h3>
+    <ul>
+      <li><span class="tag new">new</span> <code>.yuuzu/adr/0006-companion-pwa-direct-connections.html</code> — 範圍、威脅模型、兩條直連路徑與拒絕方案（Relay、明文 LAN、Funnel、原生 App）。</li>
+      <li><span class="tag new">new</span> <code>spikes/companion-direct/</code> — Phase 0 一次性驗證（WebAuthn／PWA／本機 CA／.local／Herdr 多 client 行為）；不進產品 bundle。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/Cargo.toml</code>、<code>src-tauri/companion/Cargo.lock</code> — 獨立 crate（與 host 相同的獨立 lock 慣例），path 依賴 <code>../host</code>。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/main.rs</code> — 進入點：讀 admin stdio 的 <code>init</code>、啟動 listeners、graceful shutdown。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/admin.rs</code> — 桌面 ⇄ gateway 的 NDJSON admin 協定（init、pairing、device、revoke、audit、control-state）。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/http.rs</code> — axum router、靜態檔 allowlist、安全標頭、body 上限。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/guard.rs</code> — Host／Origin 驗證、Tailscale 身分 header、私有來源位址檢查、速率限制。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/pairing.rs</code> — 一次性配對密鑰、TTL、SAS、桌面核准狀態機。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/webauthn.rs</code> — passkey 註冊／登入（UV required）、challenge 單次使用、signCount 檢查。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/session.rs</code> — cookie session、idle／absolute TTL、提權（control／full）與撤銷即斷線。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/bridge.rs</code> — WS RPC、Herdr 方法白名單、observe／control stream、背壓與上限。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/full_session.rs</code> — 完整 Herdr（PTY client）模式，預設關閉。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/src/tls.rs</code> — LAN listener 的 tokio-rustls 設定（僅使用桌面傳入的 leaf cert／key）。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/companion/tests/</code> — guard、pairing、webauthn、bridge allowlist、fake Herdr 整合測試。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/src/companion_service.rs</code> — sidecar 生命週期、admin 通道、Tauri 指令與事件。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/src/companion_tailscale.rs</code> — Tailscale CLI 偵測、<code>status/serve status --json</code> 解析、經確認後設定／移除 serve。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/src/companion_ca.rs</code> — rcgen 本機 CA（name constraints）與 leaf 簽發、keyring 保存、CA 匯出（.mobileconfig／.crt）。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/src/companion_devices.rs</code> — devices.json（只存公鑰、credential id、授權與時間戳）持久化。</li>
+      <li><span class="tag new">new</span> <code>src-tauri/src/companion_push.rs</code> — VAPID 金鑰（keyring）與 RFC 8291 Web Push 發送（Phase 7）。</li>
+      <li><span class="tag new">new</span> <code>src/lib/companionIpc.ts</code>、<code>src/state/companionStore.ts</code> — typed invoke 包裝與桌面狀態。</li>
+      <li><span class="tag new">new</span> <code>src/app/workbench/CompanionSettingsSection.tsx</code> — 設定頁：啟用期限、路徑卡片、裝置清單、授權與撤銷。</li>
+      <li><span class="tag new">new</span> <code>src/app/workbench/CompanionPairingDialog.tsx</code>、<code>src/app/workbench/CompanionApprovalDialog.tsx</code> — QR 配對與 SAS 核准（shadcn Dialog／AlertDialog）。</li>
+      <li><span class="tag new">new</span> <code>src/app/workbench/CompanionStatusIndicator.tsx</code>、<code>src/workbench/CompanionBridge.tsx</code> — 狀態列指示、稽核事件轉通知與 Logs。</li>
+      <li><span class="tag new">new</span> <code>src/lib/i18n/locales/zh-TW/companion.json</code>、<code>src/lib/i18n/locales/en/companion.json</code> — 桌面端字串。</li>
+      <li><span class="tag new">new</span> <code>companion/index.html</code>、<code>vite.companion.config.ts</code> — PWA 獨立 build entry，輸出至 <code>src-tauri/resources/companion-web/</code>（gitignore）。</li>
+      <li><span class="tag new">new</span> <code>src/companion/main.tsx</code>、<code>src/companion/app/</code> — PWA 畫面：Pair、Login、Home、Pane、Control、Full Session、Settings。</li>
+      <li><span class="tag new">new</span> <code>src/companion/rpc/client.ts</code>、<code>src/companion/auth/webauthn.ts</code> — WS RPC client（重連不重送輸入）與 WebAuthn 呼叫。</li>
+      <li><span class="tag new">new</span> <code>src/companion/terminal/TerminalView.tsx</code>、<code>src/companion/terminal/KeyAccessoryBar.tsx</code> — xterm.js 檢視（縮放／平移）與按鍵列。</li>
+      <li><span class="tag new">new</span> <code>src/companion/sw.ts</code>、<code>companion/public/manifest.webmanifest</code>、<code>companion/public/icons/</code> — Service Worker（只快取 app shell）、manifest 與圖示。</li>
+      <li><span class="tag new">new</span> <code>src/companion/i18n/{zh-TW,en}.json</code> — PWA 字串。</li>
+      <li><span class="tag new">new</span> <code>scripts/build-companion.ts</code>、<code>scripts/verify-companion-bundle.ts</code> — 建置 sidecar＋PWA、驗證無外部 URL／inline script、檔案清單與大小。</li>
+      <li><span class="tag new">new</span> <code>.github/workflows/companion.yml</code> — companion crate 的 fmt／clippy <code>-D warnings</code>／test（macOS、Windows、Linux）。</li>
+    </ul>
+  </section>
+
+  <!-- ===== IMPLEMENTATION PHASES ===== -->
+  <section id="phases">
+    <h2>Implementation Phases</h2>
+    <p><strong>IMPORTANT:</strong> Execute every phase and task step by step, in order, top to bottom.</p>
+    <p>Status markers: <code>[]</code> idle · <code>[wip]</code> in progress · <code>[x]</code> complete · <code>[f]</code> failed. All start as <code>[]</code>; the Build Plan workflow updates them as it works.</p>
+    <div class="callout warn"><strong>Yuzora 工作規則：</strong>所有檔案修改由 worker subagent 執行；未經使用者在當次對話明確同意，不得 <code>git add／commit／push</code>、不得啟動瀏覽器／E2E 自動化、不得對使用者日常 Herdr session 送出任何 mutation。Herdr 相關實驗一律使用獨立 named session（例如 <code>companion-spike</code>）。</div>
+
+    <!-- ===== Phase 0 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 0: 決策文件與可行性閘門（Spikes）</h3>
+      <p>在寫任何產品程式碼之前，先把範圍與威脅模型寫進 ADR，並以一次性 spike 在真實手機上驗證兩條路徑最關鍵的平台前提：secure context、PWA 安裝、WebAuthn RP ID、以及 Herdr 多 client 行為。Tailscale 路徑任一目標平台失敗即停止並回到規劃；LAN 路徑失敗只將該平台標為不支援，不提供較弱替代方案。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-0.png" alt="PWA 與 passkey、本機 CA、Herdr 多 client 三道驗證閘門" loading="lazy">
+        <figcaption>三道閘門：Tailscale PWA＋passkey、LAN 本機 CA＋.local、Herdr 多 client 語意。</figcaption>
+      </figure>
+
+      <h4>0.1. ADR-0006 與術語</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 建立 <code>.yuuzu/adr/0006-companion-pwa-direct-connections.html</code>（Proposed）：範圍（本機 owning host、兩條直連路徑）、安全前提（遠端控制 AI ≒ 帳號 shell 權限）、權限模型、拒絕方案、驗證方式；格式對齊 ADR-0005（zh-Hant、單頁 HTML）。</li>
+        <li><code class="status">[]</code> 在 <code>.yuuzu/CONTEXT.html</code> 新增術語：Companion device、Companion gateway、Direct path（Tailscale／LAN）、Pairing（含 SAS）、Control grant、Elevation、Full Session access；每個術語標註「避免」用語。</li>
+      </ul>
+
+      <h4>0.2. Spike A — Direct · Tailscale：PWA 與 passkey</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 在 <code>spikes/companion-direct/tailscale/</code> 建一次性靜態伺服器（bun，僅 bind <code>127.0.0.1:47110</code>），頁面含 manifest、最小 Service Worker、WebAuthn create／get 測試、Notification 權限按鈕，並回顯請求的 <code>Tailscale-User-Login</code>／<code>Tailscale-User-Name</code>。</li>
+        <li><code class="status">[]</code> 由使用者在測試機執行 <code>tailscale serve --bg --https=8443 http://127.0.0.1:47110</code>（需先在管理後台啟用 HTTPS 憑證）；確認 <code>tailscale funnel status</code> 未開放該 port。</li>
+        <li><code class="status">[]</code> 真機驗證 iPhone Safari（iOS 17+，加到主畫面）與 Android Chrome：secure context、PWA 安裝、SW 註冊、passkey 建立／登入（RP ID＝<code>&lt;device&gt;.&lt;tailnet&gt;.ts.net</code>，UV 提示）、Notification 權限、身分 header（含 RFC 2047 編碼）。</li>
+        <li><code class="status">[]</code> 驗證來自 tagged device 或 share 使用者的請求：前者無身分 header、後者 login 不同，均能被拒絕。</li>
+        <li><code class="status">[]</code> 收尾：<code>tailscale serve --https=8443 off</code>，記錄 <code>tailscale status --json</code> 與 <code>serve status --json</code> 實際欄位（Self.DNSName、User／LoginName、CertDomains、BackendState）作為 Phase 4 fixture。</li>
+      </ul>
+
+      <h4>0.3. Spike B — Direct · LAN：本機 CA 與 .local</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 產生 ECDSA P-256 CA：basicConstraints CA:true pathlen:0、critical nameConstraints 僅允許 DNS <code>&lt;LocalHostName&gt;.local</code>；簽一張該名稱的 leaf，另簽一張其他名稱的 leaf 作反例。</li>
+        <li><code class="status">[]</code> iOS：以 .mobileconfig 安裝並於「憑證信任設定」開啟完全信任；Android：安裝使用者 CA。雙平台以 AirDrop／Nearby Share／USB 傳檔，並比對 SHA-256 指紋。</li>
+        <li><code class="status">[]</code> 真機驗證：<code>.local</code> 名稱解析、TLS 信任、反例 leaf 被 name constraints 拒絕、secure context、SW、passkey 以 RP ID <code>&lt;name&gt;.local</code> 建立／登入。</li>
+        <li><code class="status">[]</code> 驗證 Windows（mDNS hostname 回應）與 Linux（avahi）是否能被手機以 <code>.local</code> 解析。</li>
+        <li><code class="status">[]</code> 產出「LAN 支援矩陣」（平台 × 項目 → 通過／失敗與原因），寫入本計畫 Amendments 與 ADR-0006。</li>
+      </ul>
+
+      <h4>0.4. Spike C — Herdr 多 client 語意（獨立 session）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 建立獨立 named session <code>companion-spike</code>；所有操作只針對它，完成後停止並刪除。</li>
+        <li><code class="status">[]</code> 桌面 Yuzora control 某 pane 時：另開 <code>herdr terminal session observe</code> → 確認可同時觀看且不影響尺寸。</li>
+        <li><code class="status">[]</code> 無 <code>--takeover</code> 的 control → 記錄錯誤字串（預期 <code>terminal attach failed: … already has an attached client; retry with --takeover</code>）；加 <code>--takeover</code> → 確認 Yuzora 顯示「已由其他視窗取得控制」且不會自動搶回。</li>
+        <li><code class="status">[]</code> control 以 pane 目前 cols／rows 連線 → 確認不觸發桌面重新排版；以較小尺寸連線 → 記錄 reflow 行為。</li>
+        <li><code class="status">[]</code> observe 以手機視窗尺寸（例如 44×30）連線 → 記錄收到的畫面是裁切、縮放或其他，決定 PWA 的 cols／rows 策略。</li>
+        <li><code class="status">[]</code> 在 PTY 執行 <code>herdr --session companion-spike client</code>（寬 44 欄）→ 確認手機單欄版面啟動；對某 tab 輸入後觀察 tab 幾何被搶（桌面 connector 的影響與 <code>direct_attach_resize_locks</code> 互動）。</li>
+        <li><code class="status">[]</code> session 停止時各接口的錯誤行為（不得自動啟動 server 或 session）。</li>
+      </ul>
+
+      <h4>0.5. 依賴選型閘門</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> WebAuthn RP 驗證套件：不得依賴 OpenSSL；可編譯於 <code>aarch64-apple-darwin</code>、<code>x86_64-pc-windows-msvc</code>、Linux x86_64／aarch64；授權相容；支援 ES256／EdDSA／RS256、UV 旗標、BE／BS 旗標。若無合格套件，停止並回報，不自行手刻完整 WebAuthn。</li>
+        <li><code class="status">[]</code> HTTP／WS：axum（ws）或 hyper＋tokio-tungstenite，與 tokio 1、rustls 0.23（ring provider）相容；TLS：tokio-rustls。</li>
+        <li><code class="status">[]</code> 憑證：rcgen（ring backend，可產生 critical nameConstraints）；QR：Rust <code>qrcode</code>（輸出 SVG）；Web Push：純 Rust 的 RFC 8291／8292 實作候選。</li>
+        <li><code class="status">[]</code> 將選型與理由寫入 ADR-0006；確認新 crate 的 <code>cargo tree -i openssl</code> 無任何相依。</li>
+      </ul>
+
+      <h4>0.6. Testing Strategy</h4>
+      <p>本階段以真機手動驗證為主（由使用者執行，代理提供步驟與預期結果，不得宣稱已完成實機驗證），並以文件存在性與依賴樹檢查作自動化佐證。任何 Tailscale 路徑的 passkey 或 secure context 失敗都是停止條件。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>manual: Spike A 結果表（iOS／Android × secure context／PWA／SW／passkey／identity header）全數通過</code> — Tailscale 路徑前提成立。</li>
+        <li><code class="status">[]</code> <code>manual: Spike B LAN 支援矩陣已記錄</code> — LAN 路徑在各平台的支援範圍已知。</li>
+        <li><code class="status">[]</code> <code>manual: Spike C 行為紀錄（observe／control／takeover／geometry／stopped session）</code> — bridge 策略有實證依據。</li>
+        <li><code class="status">[]</code> <code>rg -n "Proposed|Accepted" .yuuzu/adr/0006-companion-pwa-direct-connections.html</code> — ADR 已建立。</li>
+        <li><code class="status">[]</code> <code>rg -n "Companion gateway" .yuuzu/CONTEXT.html</code> — 術語已加入。</li>
+        <li><code class="status">[]</code> <code>herdr session list --json</code> — 確認 <code>companion-spike</code> 已刪除、日常 session 未被動到。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 1 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 1: Companion crate 骨架、admin 通道與 HTTP 安全外殼</h3>
+      <p>建立獨立 crate <code>src-tauri/companion</code>（binary <code>yuzora-companion</code>），以 path 依賴重用 <code>yuzora-host</code> library，而不把網路依賴加進會部署到遠端主機的 helper。本階段只完成程序生命週期、admin stdio 協定、loopback listener、靜態檔與所有請求層防護；尚不接 Herdr、不做驗證。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-1.png" alt="桌面經 stdio 管理 gateway 與請求防護" loading="lazy">
+        <figcaption>gateway 以 stdio 受桌面管理；對外 listener 先裝好 Host／Origin／身分 header 防護。</figcaption>
+      </figure>
+
+      <h4>1.1. Crate 與程序生命週期</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 新增 <code>src-tauri/companion/Cargo.toml</code>（獨立 <code>Cargo.lock</code>，與 host 相同慣例）、<code>#![forbid(unsafe_code)]</code>、edition 2021、版本與 app 一致。</li>
+        <li><code class="status">[]</code> stdout 專供 admin 協定，所有日誌寫 stderr；啟動後 5 秒內未收到 <code>init</code> 即以非零碼結束。</li>
+        <li><code class="status">[]</code> stdin EOF（桌面結束或崩潰）→ 立即關閉所有 listener 與 Herdr stream 後結束，保證不留孤兒 listener。</li>
+        <li><code class="status">[]</code> 收到 <code>shutdown</code> → 以 close code 1001 關閉 WS、2 秒內結束。</li>
+      </ul>
+
+      <h4>1.2. Admin stdio 協定（admin.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> NDJSON、每行 <code>{"v":1,"type":…}</code>；沿用 <code>yuzora_host::wire</code> 的上限與解析方式；未知 type 回 <code>error</code> 並保持連線。</li>
+        <li><code class="status">[]</code> <code>init</code> 欄位：<code>herdrBinary</code>、<code>sessionAllowlist</code>、<code>webRoot</code>、<code>listeners.loopback{port, publicHost, requiredTailscaleLogin}</code>、<code>listeners.lan{binds[], port, publicHost, certPem, keyPem}</code>（Phase 6 前為 null）、<code>devices[]</code>、<code>policy{enableUntil, viewIdleMin, viewAbsoluteHours, elevationMaxMin, fullSessionEnabled, maxDevices}</code>。</li>
+        <li><code class="status">[]</code> gateway→desktop 事件：<code>ready{ports}</code>、<code>error{code, message}</code>，並預留 <code>pairing.claimed</code>、<code>device.registered</code>、<code>session.opened|closed</code>、<code>audit</code>、<code>control.state</code>、<code>push.request</code>。</li>
+        <li><code class="status">[]</code> <code>certPem／keyPem</code> 只存於記憶體（<code>zeroize</code>），不得寫入磁碟或日誌。</li>
+      </ul>
+
+      <h4>1.3. Loopback listener 與請求防護（http.rs、guard.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 僅 bind <code>127.0.0.1:&lt;port&gt;</code>（預設 47110，可設定）；port 被占用時回報 <code>error{code:"port-in-use"}</code>，不自動換 port（Serve 設定指向固定 port）。</li>
+        <li><code class="status">[]</code> Host header 必須等於 <code>publicHost</code>（例如 <code>mac.tailnet.ts.net:8443</code>），否則 421；阻擋 DNS rebinding。</li>
+        <li><code class="status">[]</code> loopback 上每個請求都必須帶 <code>Tailscale-User-Login</code> 且（RFC 2047 解碼後）等於 <code>requiredTailscaleLogin</code>，否則 403；此 header 只作為額外訊號，不取代 passkey。</li>
+        <li><code class="status">[]</code> 非 GET 請求與 WS upgrade 必須帶 <code>Origin</code> 且等於 <code>https://&lt;publicHost&gt;</code>，否則 403（防 CSWSH）。</li>
+        <li><code class="status">[]</code> 上限：body 64 KiB、header 數量與大小、請求逾時 15 秒；token bucket 速率限制（每來源 login／IP）。</li>
+      </ul>
+
+      <h4>1.4. 靜態檔與安全標頭</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 只允許 <code>/</code>、<code>/index.html</code>、<code>/assets/*</code>、<code>/manifest.webmanifest</code>、<code>/sw.js</code>、<code>/icons/*</code>、<code>/pair</code>（回傳 index）；拒絕 <code>..</code>、<code>%2e</code> 變形、反斜線、NUL；canonicalize 後必須位於 <code>webRoot</code> 內（拒絕逃逸的 symlink）。</li>
+        <li><code class="status">[]</code> 快取：<code>/assets/*</code> immutable；<code>index.html</code>、<code>sw.js</code>、manifest 為 no-cache；<code>/api/*</code> 為 <code>no-store</code>。</li>
+        <li><code class="status">[]</code> 所有回應：<code>Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'</code>、<code>X-Content-Type-Options: nosniff</code>、<code>Referrer-Policy: no-referrer</code>、<code>Cross-Origin-Opener-Policy: same-origin</code>、<code>Cross-Origin-Resource-Policy: same-origin</code>、<code>Permissions-Policy: camera=(), microphone=(), geolocation=()</code>、<code>Strict-Transport-Security: max-age=31536000</code>。</li>
+      </ul>
+
+      <h4>1.5. Testing Strategy</h4>
+      <p>Rust 整合測試以 ephemeral port 起真實 listener，搭配表格化的惡意請求；另以子程序測試 init 逾時與 stdin EOF。邊界：大小寫與 RFC 2047 編碼的 login、IPv6 Host、重複 Host header、缺 Origin 的 WS。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>cargo fmt --manifest-path src-tauri/companion/Cargo.toml -- --check</code> — 格式一致。</li>
+        <li><code class="status">[]</code> <code>cargo clippy --locked --all-targets --manifest-path src-tauri/companion/Cargo.toml -- -D warnings</code> — 零警告。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml guard_</code> — Host／Origin／身分 header／速率限制測試通過。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml static_</code> — 路徑穿越、symlink 逃逸、快取與安全標頭測試通過。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml lifecycle_</code> — init 逾時、stdin EOF、shutdown 測試通過。</li>
+        <li><code class="status">[]</code> <code>cargo tree --manifest-path src-tauri/companion/Cargo.toml -i openssl</code> — 預期「did not match any packages」，確認無 OpenSSL。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 2 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 2: 配對、passkey 與 session</h3>
+      <p>實作一次性 QR 配對、雙端 SAS 比對與桌面核准，接著註冊 passkey；之後每次連線都必須通過 passkey（UV required）才取得 HttpOnly session cookie。寫入權限需桌面授權的 control grant，並在授權期限內以 passkey 提權。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-2.png" alt="QR 配對、SAS 比對、桌面核准與 passkey 註冊" loading="lazy">
+        <figcaption>QR → SAS 雙端比對 → 桌面核准 → passkey 註冊；之後每次連線都要 passkey。</figcaption>
+      </figure>
+
+      <h4>2.1. 配對建立與領取（pairing.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>pairing.create{path}</code>：pairingId（16 bytes）、secret（32 bytes）、TTL 5 分鐘、綁定該路徑的 origin；回傳 <code>https://&lt;publicHost&gt;/pair#p=&lt;pairingId&gt;.&lt;secret&gt;</code>（secret 只在 fragment，不送 server、不入日誌）。</li>
+        <li><code class="status">[]</code> <code>POST /api/pair/claim {pairingId, secret, deviceLabel, deviceNonce}</code>：常數時間比對；每個 pairing 只接受一次成功領取，失敗 5 次或第二次領取即作廢並通知桌面。</li>
+        <li><code class="status">[]</code> SAS＝HMAC-SHA256(secret, "yz-sas-v1" ‖ deviceNonce ‖ gatewayNonce) 取 6 位數；回傳手機顯示，並以 <code>pairing.claimed{pairingId, deviceLabel, sas, via, remoteAddr, tailscaleLogin, userAgent}</code> 送桌面。</li>
+        <li><code class="status">[]</code> 桌面 <code>pairing.approve|reject</code> 前，手機以 <code>GET /api/pair/status</code>（long-poll ≤ 25 秒）等待；逾時即作廢。</li>
+      </ul>
+
+      <h4>2.2. Passkey 註冊與登入（webauthn.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 註冊選項：rp.id＝publicHost 去掉 port；user.id 每裝置隨機 16 bytes；<code>residentKey: preferred</code>、<code>userVerification: required</code>、<code>attestation: none</code>；演算法 ES256／EdDSA／RS256；challenge 32 bytes、TTL 2 分鐘、單次使用。</li>
+        <li><code class="status">[]</code> 驗證通過後送 <code>device.registered{deviceId, label, credential{id, publicKeyCose, rpId, signCount, backupEligible, backupState, transports}, createdAt}</code>；預設權限只有 view。</li>
+        <li><code class="status">[]</code> 登入：<code>POST /api/auth/options</code>（allowCredentials 只含該 rpId 的 credential）→ <code>POST /api/auth/finish</code>；驗證 origin 完全相符、rpIdHash、UP＋UV 旗標、challenge 單次、signCount 非零時必須遞增（倒退 → 鎖定裝置並通知桌面）。</li>
+        <li><code class="status">[]</code> 連續 5 次驗證失敗 → 鎖定裝置，需桌面解鎖；auth 端點每裝置／來源每分鐘 10 次上限。</li>
+      </ul>
+
+      <h4>2.3. Session、提權與撤銷（session.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Cookie <code>__Host-yzc</code>：Secure、HttpOnly、SameSite=Strict、Path=/；值為 32 bytes 隨機 session id，對應記憶體中的 <code>{deviceId, rpId, createdAt, lastSeen, elevation}</code>；gateway 重啟即全部失效。</li>
+        <li><code class="status">[]</code> View session：idle 30 分鐘、absolute 12 小時，且不超過 <code>policy.enableUntil</code>。</li>
+        <li><code class="status">[]</code> <code>POST /api/auth/elevate/*</code>（scope＝control|full）：需裝置有對應 grant 且 grant 未過期，再做一次 passkey；control 提權最長 15 分鐘（可續），不超過 grant 期限；full 需 <code>policy.fullSessionEnabled</code> 且每次 <code>full.open</code> 前 2 分鐘內重新驗證。</li>
+        <li><code class="status">[]</code> <code>device.revoke</code>／<code>device.update</code> 降權 → 立即作廢相關 session 並以 close code 4401 關閉 WS；<code>POST /api/auth/logout</code> 清除 session。</li>
+      </ul>
+
+      <h4>2.4. Testing Strategy</h4>
+      <p>以測試用軟體 authenticator（測試內產生 P-256／Ed25519 金鑰並組出 attestation／assertion）驅動完整流程；時間相關邏輯注入可控時鐘。邊界：過期 pairing、重複領取、錯誤 SAS、challenge 重放、跨 origin、缺 UV、signCount 倒退、撤銷中的連線、grant 到期時的提權。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml pairing_</code> — TTL、單次領取、失敗作廢、SAS 決定性與常數時間比對。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml webauthn_</code> — 註冊／登入成功與各種拒絕情境。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml session_</code> — cookie 屬性、idle／absolute TTL、提權期限、撤銷即斷線。</li>
+        <li><code class="status">[]</code> <code>cargo clippy --locked --all-targets --manifest-path src-tauri/companion/Cargo.toml -- -D warnings</code> — 零警告。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 3 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 3: Herdr bridge（view → control → full session）</h3>
+      <p>以 WebSocket 把 Herdr 官方接口橋接給已驗證的 session：view 權限可列 session／Agent、訂閱事件、observe pane；control 權限可回覆 Agent、控制 pane；full 權限可開完整 Herdr client。只使用方法白名單，絕不原樣轉發 API socket。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-3.png" alt="白名單區分檢視、控制與完整連線權限" loading="lazy">
+        <figcaption>白名單閘門後分三條 lane：observe（view）、control 與 full（需提權）。</figcaption>
+      </figure>
+
+      <h4>3.1. 範圍與 WS 協定 v1（bridge.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 只暴露 <code>sessionAllowlist</code> 中且正在執行的本機 named session；session 停止時回 <code>session-stopped</code>，絕不自動啟動 server 或 session。</li>
+        <li><code class="status">[]</code> <code>GET /ws</code> 需有效 cookie 與 Origin；文字 frame 為 JSON RPC（<code>{id, method, params}</code>／<code>{id, result|error}</code>／<code>{event, data}</code>），二進位 frame 為 <code>streamId(u32 BE) ‖ ANSI bytes</code>。</li>
+        <li><code class="status">[]</code> view：<code>hello</code>（回傳能力、權限、VAPID 公鑰）、<code>sessions.list</code>、<code>snapshot.get{session}</code>、<code>events.subscribe{session}</code>、<code>terminal.observe{session, target, cols, rows}</code>、<code>stream.close{stream}</code>、<code>push.subscribe</code>（Phase 7）。</li>
+        <li><code class="status">[]</code> control：<code>terminal.control{session, target, takeover=false, cols, rows}</code>（cols／rows 預設取 pane 目前尺寸，避免桌面重排）、<code>terminal.input{stream, text|bytesB64}</code>（≤ 4 KiB）、<code>terminal.scroll</code>、<code>terminal.release</code>、<code>agent.prompt{session, target, text}</code>（≤ 16 KiB）、<code>pane.sendKeys{session, target, keys[]}</code>（僅 Enter、Escape、Tab、BackTab、方向鍵、Ctrl-C、Ctrl-D）。</li>
+        <li><code class="status">[]</code> full：<code>full.open{session, cols, rows}</code>（重用 <code>open_native_client</code>，每裝置同時 ≤ 1）、<code>full.input</code>、<code>full.resize</code>、<code>full.close</code>。</li>
+      </ul>
+
+      <h4>3.2. 白名單與拒絕清單</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 以 Herdr 0.9.1 bundled schema（<code>herdr api schema --json</code> 匯出為測試 fixture）列舉全部 129 個方法；只有上述對應方法可達，其餘一律拒絕並記錄。</li>
+        <li><code class="status">[]</code> 明確拒絕（防禦縱深）：<code>server.*</code>、<code>plugin.*</code>、<code>integration.*</code>、<code>command.invoke</code>、<code>worktree.remove</code>、<code>workspace.close</code>、<code>tab.close</code>、<code>pane.close</code>、<code>layout.apply</code>、<code>client_shell.*</code>、<code>client.window_title.*</code>、<code>notification.show</code>、<code>popup.*</code>、<code>pane.report_*</code>、<code>pane.clear_agent_authority</code>、<code>pane.release_agent</code>。</li>
+      </ul>
+
+      <h4>3.3. 接管、背壓與上限</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 無 takeover 的 control 遇到既有 owner → 回 <code>owned-elsewhere</code>；<code>takeover:true</code> 需 2 分鐘內的新鮮提權，並送 <code>control.state{deviceId, session, target, takeover:true}</code> 給桌面。</li>
+        <li><code class="status">[]</code> 被桌面取回控制時回報 <code>taken-over</code>，gateway 絕不自動搶回。</li>
+        <li><code class="status">[]</code> 每連線 outbound 上限 4 MiB、每 stream 256 frames；observe 溢位 → 以 <code>slow-consumer</code> 關閉該 stream（手機重開後 Herdr 會重送當前畫面）；control 輸入不得靜默丟棄，送出失敗即回錯誤；重連後不重送任何輸入。</li>
+        <li><code class="status">[]</code> 上限：配對裝置 ≤ 4（可設定）、每裝置 WS ≤ 2、每 WS stream ≤ 8、單則訊息 ≤ 64 KiB、每連線 50 msg/s。</li>
+      </ul>
+
+      <h4>3.4. 稽核事件</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 所有 control／full 動作送 <code>audit{deviceId, scope, action, session, target, summary, at}</code>。</li>
+        <li><code class="status">[]</code> 摘要規則：<code>agent.prompt</code> 記前 200 字＋長度；<code>terminal.input</code>／<code>full.input</code> 只記每 10 秒的位元組數（不記原始按鍵，可能含密碼）；takeover、full.open／close、release 逐筆記錄。</li>
+      </ul>
+
+      <h4>3.5. Testing Strategy</h4>
+      <p>以 <code>herdr_transport</code> 的測試 listener 或腳本化 fake <code>herdr</code> binary（輸出 NDJSON <code>terminal.frame</code>／<code>terminal.closed</code>）建立可重現環境；fixture 取自 Spike C 的實際錯誤字串。邊界：多 observer 扇出、owner 衝突、接管與被取回、慢速消費者、重連不重送、session 停止、白名單外的每一個 schema 方法。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml bridge_allowlist_</code> — 129 個 schema 方法中白名單外全數被拒。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml bridge_stream_</code> — observe 扇出、control 衝突、takeover、taken-over、slow-consumer、無重送。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml bridge_scope_</code> — view 無法呼叫 control／full；過期提權被拒；full 需新鮮驗證。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml audit_</code> — 稽核摘要不含原始按鍵。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/host/Cargo.toml</code> — host library 若有新增 pub 匯出，既有測試不受影響。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 4 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 4: 桌面整合（sidecar、Tailscale 設定、設定頁、狀態列、稽核）</h3>
+      <p>由 Yuzora 桌面以 Tauri sidecar 啟動並管理 gateway，提供設定頁（啟用期限、路徑、Session 範圍、裝置與授權）、配對與 SAS 核准對話框、狀態列指示與撤銷，並把稽核事件轉成桌面通知與 Logs。所有指令沿用 main-window-only 閘門，不新增任何 webview 權限。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-4.png" alt="桌面集中管理啟用、配對核准、授權與撤銷" loading="lazy">
+        <figcaption>桌面是唯一的授權中心：啟用、配對核准、授權與撤銷都在這裡。</figcaption>
+      </figure>
+
+      <h4>4.1. Sidecar 打包與啟動</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>scripts/build-companion.ts</code>：以目前 target 建置 companion crate，輸出 <code>src-tauri/binaries/yuzora-companion-&lt;target-triple&gt;[.exe]</code>（gitignore），並建置 PWA（Phase 5）。</li>
+        <li><code class="status">[]</code> <code>tauri.conf.json</code> 加入 <code>bundle.externalBin: ["binaries/yuzora-companion"]</code>；<code>beforeBuildCommand</code> 加入 <code>bun run companion:build</code>；各平台 conf 的 <code>resources</code> 加入 <code>resources/companion-web/</code>。macOS 只建 <code>aarch64-apple-darwin</code>（AGENTS.md）。</li>
+        <li><code class="status">[]</code> Rust 端由目前執行檔同目錄解析 sidecar 路徑，以 <code>tokio::process</code> 啟動（stdin／stdout piped、stderr 轉 Yuzora logs、<code>kill_on_drop</code>）；不引入 <code>tauri-plugin-shell</code>。</li>
+      </ul>
+
+      <h4>4.2. companion_service.rs</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 狀態機 Disabled → Starting → Running{paths} → Stopping；重啟 backoff 最多 3 次，之後回 Disabled 並顯示錯誤。</li>
+        <li><code class="status">[]</code> 啟用期限：1 小時／8 小時（預設）／直到 Yuzora 結束；到期自動停用；App exit hook（<code>lib.rs</code> 的退出流程）必定送 <code>shutdown</code> 並等待結束。</li>
+        <li><code class="status">[]</code> <code>init</code> 內容：Herdr binary（取自 HerdrManager 目前選定來源）、webRoot＝<code>resource_dir/companion-web</code>、listeners、devices、policy、sessionAllowlist。</li>
+        <li><code class="status">[]</code> Tauri 指令：<code>companion_status</code>、<code>companion_enable{window, paths}</code>、<code>companion_disable</code>、<code>companion_pairing_create{path}</code>（回 <code>{qrSvg, expiresAt}</code>，UI 不顯示明文 secret）、<code>companion_pairing_decide{pairingId, approve}</code>、<code>companion_devices</code>、<code>companion_device_update{deviceId, label, grants}</code>、<code>companion_device_unlock</code>、<code>companion_device_revoke</code>、<code>companion_sessions_set</code>、<code>companion_tailscale_probe</code>、<code>companion_tailscale_apply{confirm}</code>、<code>companion_tailscale_remove</code>；事件 <code>companion://event</code>。</li>
+        <li><code class="status">[]</code> QR 以 Rust <code>qrcode</code> 產生 SVG；pairing secret 不經前端 state 保存、不寫入 Logs。</li>
+      </ul>
+
+      <h4>4.3. companion_tailscale.rs</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> CLI 探測：macOS <code>/Applications/Tailscale.app/Contents/MacOS/Tailscale</code> 與 PATH <code>tailscale</code>；Windows <code>%ProgramFiles%\Tailscale\tailscale.exe</code>；Linux PATH。找不到時顯示安裝指引（不自動安裝）。</li>
+        <li><code class="status">[]</code> 唯讀探測：<code>tailscale status --json</code>（BackendState、Self.DNSName、登入者 LoginName、CertDomains 是否含本機名稱）、<code>tailscale serve status --json</code>（所選 HTTPS port 是否已被其他 handler 使用）、<code>tailscale funnel status --json</code>（該 port 是否公開）。欄位以 Phase 0 fixture 為準。</li>
+        <li><code class="status">[]</code> 套用：確認對話框顯示完整指令 <code>tailscale serve --bg --https=&lt;port&gt; http://127.0.0.1:&lt;gatewayPort&gt;</code>，使用者按下確認才執行；預設 HTTPS port 8443，避免覆蓋使用者既有的 443 設定；port 衝突或被 Funnel 公開時拒絕啟用 Tailscale 路徑。</li>
+        <li><code class="status">[]</code> 停用或移除時只執行 <code>tailscale serve --https=&lt;port&gt; off</code>，不動其他 serve 設定；啟用當下的 LoginName 寫入 <code>requiredTailscaleLogin</code>。</li>
+      </ul>
+
+      <h4>4.4. companion_devices.rs</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>&lt;app_data&gt;/companion/devices.json</code>：schema version、deviceId、label、credentials（依 rpId）、grants（<code>control: {until} | null</code>、<code>full: bool</code>）、locked、createdAt、lastSeen、push subscription（Phase 7）；不含任何 secret。</li>
+        <li><code class="status">[]</code> 原子寫入（tmp＋rename）、Unix 權限 0600；損毀時保留備份並停用 Companion，不自動重建。</li>
+      </ul>
+
+      <h4>4.5. 設定頁與對話框（shadcn）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>SettingsDialog.tsx</code> 新增 SectionId <code>companion</code>（lucide <code>Smartphone</code>，放在 <code>safety</code> 附近），僅在 Experimental 旗標開啟時顯示；<code>settings-search.ts</code> 加入索引。</li>
+        <li><code class="status">[]</code> <code>CompanionSettingsSection</code>：Experimental Badge；紅色警語「開啟後，已授權的手機可遠端操作 AI Agent，等同授予此電腦帳號的 shell 權限」；啟用 Switch＋期限 Select；Tailscale 卡片（狀態、DNS 名稱、登入者、HTTPS、Funnel、port、套用／移除）；LAN 卡片（Phase 6）；Session 範圍；裝置 Table（名稱、路徑、最後連線、control 期限 15 分／1 小時／8 小時、full 開關、解鎖、撤銷）。清單使用 <code>ScrollArea</code>。</li>
+        <li><code class="status">[]</code> <code>CompanionPairingDialog</code>：選擇路徑 → 顯示 QR SVG 與倒數，逾時自動作廢。</li>
+        <li><code class="status">[]</code> <code>CompanionApprovalDialog</code>（AlertDialog）：大字 SAS、裝置名稱、路徑、來源位址、Tailscale 登入者、User-Agent；核准／拒絕；視窗未聚焦時要求注意。</li>
+        <li><code class="status">[]</code> i18n：<code>companion.json</code>（zh-TW／en）。</li>
+      </ul>
+
+      <h4>4.6. 狀態列與稽核橋接</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>CompanionStatusIndicator</code>：停用時隱藏；啟用時顯示剩餘期限；有檢視中裝置顯示數量；有 control 提權時以紅色顯示「控制中」，Popover 列出裝置並提供「全部撤銷」。</li>
+        <li><code class="status">[]</code> <code>CompanionBridge</code>：<code>audit</code> → <code>logUserAction</code>（category <code>companion</code>）＋寫入類動作 toast（例如「iPhone 對 agent X 送出輸入」）；<code>control.state</code> takeover → 視窗未聚焦時送系統通知；<code>pairing.claimed</code> → 開啟核准對話框。</li>
+      </ul>
+
+      <h4>4.7. Testing Strategy</h4>
+      <p>Rust 單元測試涵蓋 Tailscale JSON 解析（fixture：HTTPS 未啟用、Funnel 開啟、port 衝突、未登入）、devices.json 原子寫入與損毀處理、sidecar 生命週期（stdin EOF、期限到期、exit hook）。前端以 vitest（jsdom）測設定頁各狀態、SAS 對話框、狀態列、事件 → Logs／toast 對應。邊界：Tailscale CLI 不存在、指令逾時、使用者取消確認。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; cargo test --locked companion_)</code> — companion_service／tailscale／ca／devices 測試通過。</li>
+        <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check)</code> — 格式一致。</li>
+        <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json)</code> — clippy baseline 完全吻合，新程式碼零警告。</li>
+        <li><code class="status">[]</code> <code>bun run test src/app/workbench/CompanionSettingsSection.test.tsx src/app/workbench/CompanionApprovalDialog.test.tsx src/app/workbench/CompanionStatusIndicator.test.tsx src/workbench/CompanionBridge.test.tsx</code> — 桌面 UI 行為通過。</li>
+        <li><code class="status">[]</code> <code>bun run lint &amp;&amp; bun run typecheck</code> — 前端靜態檢查通過。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 5 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 5: PWA 前端</h3>
+      <p>以獨立 Vite entry 建置手機優先的 PWA：配對、passkey 登入、Agent 清單、pane 檢視、提權後的控制與快速回覆、（可選）完整 Herdr。重用桌面的 Herdr 正規化、xterm 主題與 shadcn 元件，不引入外部 CDN。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-5.png" alt="Agent 清單、pane 檢視與 passkey 提權控制" loading="lazy">
+        <figcaption>Agent 清單 → pane 檢視 → passkey 提權後控制。</figcaption>
+      </figure>
+
+      <h4>5.1. Build 設定</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>companion/index.html</code>、<code>vite.companion.config.ts</code>：root <code>companion/</code>、alias <code>@</code> → <code>src</code>、outDir <code>src-tauri/resources/companion-web</code>（gitignore）、<code>base: '/'</code>；<code>sw.ts</code> 另建為 <code>/sw.js</code>。</li>
+        <li><code class="status">[]</code> <code>package.json</code> scripts：<code>companion:build</code>（<code>bun scripts/build-companion.ts</code>）、<code>companion:web</code>（只建 PWA）、<code>companion:dev</code>（vite dev＋proxy 到本機 gateway loopback port）；<code>tsconfig.json</code> 與 <code>eslint.config.js</code> 涵蓋 <code>src/companion</code>。</li>
+      </ul>
+
+      <h4>5.2. 狀態機與配對／登入</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 狀態：Unpaired → Claiming → AwaitingDesktop（顯示 SAS）→ RegisterPasskey → LoggedOut → Viewing → Elevated(control|full，倒數) 。</li>
+        <li><code class="status">[]</code> 讀取 <code>#p=</code> 後立刻 <code>history.replaceState</code> 清除；localStorage 只存非機密提示（deviceLabel、上次路徑），驗證完全依賴 HttpOnly cookie。</li>
+        <li><code class="status">[]</code> WebAuthn 呼叫封裝於 <code>src/companion/auth/webauthn.ts</code>；錯誤（取消、無 passkey、不支援）有明確 UI。</li>
+      </ul>
+
+      <h4>5.3. 畫面</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Home：Session → Space → Agent 清單，狀態徽章（idle／working／blocked／done／unknown）與注意程度排序，重用 <code>herdrNormalize.ts</code>／<code>herdrAgents.ts</code>；以 <code>events.subscribe</code> 即時更新；清單用 <code>ScrollArea</code>。</li>
+        <li><code class="status">[]</code> Pane：<code>TerminalView</code>（xterm.js，沿用已 patch 的 <code>@xterm/xterm</code>）以 pane 實際 cols／rows 渲染，縮放至螢幕寬並支援雙指縮放與平移；不載入剪貼簿 addon（不處理 OSC 52 寫入）；OSC 8 連結經 <code>linkHandler</code> 確認後才開啟。</li>
+        <li><code class="status">[]</code> Control：「取得控制」→ passkey 提權 → <code>terminal.control</code>；若 <code>owned-elsewhere</code>，顯示「桌面正在控制此 pane，接管後桌面會收到通知」並再做一次 passkey 才送 <code>takeover</code>；<code>KeyAccessoryBar</code>（Esc、Tab、⇧Tab、Ctrl-C、Ctrl-D、方向鍵、Enter）；輸入框可選「送給 Agent（agent.prompt）」或「直接輸入」。</li>
+        <li><code class="status">[]</code> 核准提示：Agent 處於 blocked 時，送出 <code>y</code>／Enter 前必須顯示 pane 內完整的待核准內容與工作目錄，並需再次點擊確認。</li>
+        <li><code class="status">[]</code> Full Herdr（僅在裝置有 full grant 且 policy 允許時出現）：警告頁（等同 shell、會改變桌面該 tab 的尺寸）→ 新鮮 passkey → 以手機寬度開啟（≤ 64 欄時 Herdr 自動切換手機版面）→ 提供 Ctrl-B prefix 按鈕 → App 進入背景時關閉。</li>
+      </ul>
+
+      <h4>5.4. 韌性與 PWA</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> WS 重連：退避 1 秒 → 30 秒加 jitter，<code>visibilitychange</code> 回前景時立即重試；待送輸入一律丟棄並提示，絕不重送；session 過期回登入。</li>
+        <li><code class="status">[]</code> <code>manifest.webmanifest</code>：name「Yuzora」、<code>display: standalone</code>、品牌色與既有品牌資產產出的圖示。</li>
+        <li><code class="status">[]</code> Service Worker：只 precache 帶 hash 的 app shell；不快取 <code>/api/*</code>、<code>/ws</code>；新版時提示重新載入。</li>
+        <li><code class="status">[]</code> i18n（zh-TW／en）、觸控目標 ≥ 44px、shadcn 元件優先。</li>
+      </ul>
+
+      <h4>5.5. Testing Strategy</h4>
+      <p>vitest（jsdom）測狀態機、fragment 清除、RPC client 重連不重送、按鍵列對應、以 snapshot fixture 驗證 Agent 投影、接管確認流程；bundle 驗證腳本檢查無外部 URL、無 inline script、SW 與 manifest 存在、大小預算。邊界：WebAuthn 取消、cookie 過期、多分頁同時開啟。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>bun run test src/companion</code> — PWA 單元測試通過。</li>
+        <li><code class="status">[]</code> <code>bun run companion:web</code> — PWA 建置成功並輸出至 <code>src-tauri/resources/companion-web</code>。</li>
+        <li><code class="status">[]</code> <code>bun scripts/verify-companion-bundle.ts</code> — 無外部資源、無 inline script、CSP 相容、SW／manifest 存在、gzip 後總大小 ≤ 2.5 MB。</li>
+        <li><code class="status">[]</code> <code>bun run lint &amp;&amp; bun run typecheck</code> — 靜態檢查通過。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 6 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 6: Direct · LAN（本機 CA、LAN listener、CA 匯出）</h3>
+      <p>依 Phase 0 的 LAN 支援矩陣，只在通過的平台開放。Yuzora 產生 name-constrained 本機 CA（私鑰只在 OS keychain），為 <code>&lt;LocalHostName&gt;.local</code> 簽發短效 leaf 交給 gateway；gateway 僅在私有網段介面提供 HTTPS。沒有明文 HTTP、沒有以 IP 登入的替代方式。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-6.png" alt="單一 .local 名稱的 CA 簽證與 leaf 自動輪替" loading="lazy">
+        <figcaption>CA 只能為單一 <code>.local</code> 名稱簽證；leaf 90 天自動輪替，私鑰不落地。</figcaption>
+      </figure>
+
+      <h4>6.1. companion_ca.rs</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> CA：ECDSA P-256、basicConstraints CA:true pathlen:0、keyUsage keyCertSign／cRLSign、critical nameConstraints 僅 permitted DNS <code>&lt;LocalHostName&gt;.local</code>、效期 2 年；私鑰 PKCS#8 存 keyring（service <code>yuzora.companion.ca</code>），憑證 PEM 存 app data。</li>
+        <li><code class="status">[]</code> Leaf：SAN DNS <code>&lt;LocalHostName&gt;.local</code>、EKU serverAuth、效期 90 天、剩 30 天自動重簽；leaf 私鑰每次重新產生，只經 admin <code>init</code> 傳入 gateway 記憶體。</li>
+        <li><code class="status">[]</code> 主機名稱：macOS <code>scutil --get LocalHostName</code>；Windows／Linux 依 Phase 0 結果；名稱變更 → 需重建 CA 並重新信任（UI 說明原因），不放寬 constraints。</li>
+      </ul>
+
+      <h4>6.2. CA 匯出與信任指引</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 匯出 iOS <code>.mobileconfig</code>（<code>com.apple.security.root</code>，顯示名稱「Yuzora Companion CA (&lt;host&gt;)」）與 Android DER <code>.crt</code>，經儲存對話框輸出；UI 顯示 SHA-256 指紋供手機端比對。</li>
+        <li><code class="status">[]</code> 不提供任何 HTTP 下載端點（避免 CA 被替換）；指引使用 AirDrop／Nearby Share／USB，並說明 iOS「完全信任」開關位置。</li>
+      </ul>
+
+      <h4>6.3. LAN listener</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 使用者在設定中選擇介面；只允許 RFC 1918、ULA、link-local 位址，拒絕公網位址；預設 port 47443。</li>
+        <li><code class="status">[]</code> tokio-rustls：TLS 1.2+、ALPN <code>http/1.1</code>、只用 init 傳入的 leaf；來源 IP 必須為私有位址；Host 必須為 <code>&lt;name&gt;.local:&lt;port&gt;</code>；Origin 規則同 Phase 1。</li>
+        <li><code class="status">[]</code> 作業系統防火牆：macOS 應用程式防火牆提示、Windows Defender 規則限定 Private profile，寫入操作文件。</li>
+        <li><code class="status">[]</code> LAN 配對：同 Phase 2 流程，RP ID＝<code>&lt;name&gt;.local</code>；同一裝置在不同路徑各有一組 credential（依 rpId），需各自配對。</li>
+        <li><code class="status">[]</code> 未通過矩陣的平台：LAN 卡片顯示「此平台不支援」與原因，不提供較弱替代。</li>
+      </ul>
+
+      <h4>6.4. Testing Strategy</h4>
+      <p>Rust 測試以 rustls／webpki 實際驗證憑證鏈；在暫存 app data 目錄中執行以確認私鑰不落地。邊界：name constraints 反例、主機名稱變更、leaf 輪替門檻、公網來源位址、錯誤 Host。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; cargo test --locked companion_ca_)</code> — CA 含 critical nameConstraints 且只有一個 permitted DNS；合法 leaf 驗證通過；其他名稱 leaf 被拒；私鑰未寫入磁碟；輪替門檻正確。</li>
+        <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml lan_</code> — TLS handshake（信任測試 CA 的 rustls client）成功；公網來源與錯誤 Host 被拒。</li>
+        <li><code class="status">[]</code> <code>manual: LAN 支援平台的真機配對、登入、observe 通過</code> — 使用者依步驟驗證。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 7 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 7: Web Push 通知</h3>
+      <p>在已安裝且位於 secure context 的 PWA 上，Agent 進入 blocked 或 done 時由桌面直接發送 Web Push（RFC 8291 加密、RFC 8292 VAPID），不需要 Yuzora 雲端。推播內容只含 Agent 名稱與狀態。僅在 Companion 啟用期間運作。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-7.png" alt="Agent 狀態變化觸發不含終端機輸出的加密推播" loading="lazy">
+        <figcaption>狀態變化 → 桌面加密推播 → 手機通知；內容不含終端機輸出。</figcaption>
+      </figure>
+
+      <h4>7.1. 訂閱</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> VAPID P-256 金鑰存 keyring；公鑰經 <code>hello</code> 提供給 PWA。</li>
+        <li><code class="status">[]</code> PWA 在使用者手勢下請求通知權限並 <code>pushManager.subscribe({userVisibleOnly: true, applicationServerKey})</code>，以 <code>push.subscribe</code> 送出；gateway 送 <code>push.registered</code>，桌面寫入 devices.json（0600）。</li>
+      </ul>
+
+      <h4>7.2. 觸發與發送（companion_push.rs）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> gateway 內部訂閱 allowlist session 的 <code>pane.agent_status_changed</code>；轉為 blocked／done 時送 <code>push.request{deviceIds, payload}</code>。</li>
+        <li><code class="status">[]</code> 桌面以 reqwest（rustls）發送：aes128gcm 內容加密、VAPID JWT（exp ≤ 12 小時）、TTL 1 小時、blocked 用 Urgency high；同一 Agent 60 秒冷卻；404／410 移除訂閱。</li>
+        <li><code class="status">[]</code> Payload：<code>{title: Agent 顯示名稱, body: "等待輸入" | "已完成", session, paneRef}</code>；Service Worker 顯示通知，點擊開啟對應 pane（仍需登入）。</li>
+      </ul>
+
+      <h4>7.3. Testing Strategy</h4>
+      <p>以 RFC 8291 Appendix A 測試向量驗證加密；VAPID JWT 以公鑰驗簽並檢查 claims；冷卻與 410 清理以可控時鐘與 mock HTTP 測試；確保 payload 不含 pane 輸出。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; cargo test --locked companion_push_)</code> — 測試向量、JWT、冷卻、410 清理、payload 內容限制通過。</li>
+        <li><code class="status">[]</code> <code>bun run test src/companion/push</code> — PWA 訂閱流程與通知點擊導向通過。</li>
+        <li><code class="status">[]</code> <code>manual: iPhone（主畫面 PWA）與 Android 收到 blocked／done 通知</code> — 使用者真機驗證。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+
+    <!-- ===== Phase 8 ===== -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 8: 強化、文件、發佈與實機驗收</h3>
+      <p>完成威脅模型測試掃描、一次獨立的跨模型家族安全審查、文件與發佈契約更新，並由使用者執行實機驗收矩陣。功能以 Experimental 旗標出貨，預設關閉。</p>
+      <figure>
+        <img src="yuzora-companion-pwa-direct-connections-plan/phase-8.png" alt="審查、文件、發佈契約與真機驗收閘門" loading="lazy">
+        <figcaption>審查、文件、發佈契約與真機驗收都通過後才移除 Experimental 以外的限制。</figcaption>
+      </figure>
+
+      <h4>8.1. 安全強化</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> 依 Notes 的威脅表逐項補齊測試；admin 與 WS 解析器以表格化惡意輸入測試（截斷 JSON、超長欄位、錯誤型別、未知方法）。</li>
+        <li><code class="status">[]</code> 一次 fresh-context、唯讀、與作者不同模型家族的安全審查（依 <code>~/.pi/agent/herdr-agents/README.md</code> 的跨家族規則選擇並確認模型）；修正所有 P0／P1 並附回歸測試。</li>
+      </ul>
+
+      <h4>8.2. 文件</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> ADR-0006 改為 Accepted，補上 Phase 0 矩陣與最終選型；CONTEXT 術語定稿。</li>
+        <li><code class="status">[]</code> <code>docs/operations.md</code>：Tailscale HTTPS 啟用、serve port、ACL／Grants 只放行手機的範例、Funnel 必須關閉、LAN CA 安裝與指紋比對、撤銷與疑難排解。</li>
+        <li><code class="status">[]</code> <code>README.md</code>／<code>README.zh-TW.md</code>：Experimental 說明與「等同授予遠端 shell 權限」警語；<code>CHANGELOG.md</code> 新增條目。</li>
+      </ul>
+
+      <h4>8.3. 發佈與 CI</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>.github/workflows/companion.yml</code>：companion crate 的 fmt、clippy <code>-D warnings</code>、test（macOS、Windows、Linux）。</li>
+        <li><code class="status">[]</code> <code>scripts/verify-host-resources.ts</code>（或新增驗證）與 <code>scripts/release-contract.ts</code> 涵蓋 sidecar 與 <code>companion-web</code>；安裝包解包驗證包含兩者。</li>
+        <li><code class="status">[]</code> Experimental 旗標：預設關閉；關閉時不啟動 sidecar、不顯示設定頁以外的任何 UI。</li>
+      </ul>
+
+      <h4>8.4. 實機驗收矩陣（使用者執行）</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> iPhone Safari（主畫面 PWA）與 Android Chrome × Tailscale／LAN（依支援矩陣）：配對與 SAS、passkey 登入、Agent 清單、observe、提權後 agent.prompt、接管與桌面提示、撤銷中斷、啟用期限到期、Yuzora 結束後 gateway 消失。</li>
+        <li><code class="status">[]</code> 公司網路經 Tailscale 連線成功；Funnel 開啟時拒絕啟用；share／tagged device 的請求被拒。</li>
+      </ul>
+
+      <h4>8.5. Testing Strategy</h4>
+      <p>執行下方全域 Validation Commands；實機項目由使用者執行並記錄於 Amendments，代理不得宣稱已完成實機驗證。</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>manual: 驗收矩陣全部通過並記錄</code> — 真實環境行為符合設計。</li>
+        <li><code class="status">[]</code> <code>manual: 安全審查無未解決 P0／P1</code> — 獨立審查通過。</li>
+        <li><code class="status">[]</code> <code>git diff --cached --name-only</code> — 輸出為空（代理未 stage 任何檔案）。</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any command fails, fix the cause and re-run — loop until all pass.
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== GLOBAL VALIDATION ===== -->
+  <section id="validation">
+    <h2>Validation Commands</h2>
+    <p>Execute these commands to validate the entire plan is complete:</p>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>bun run lint</code> — ESLint 全專案（含 <code>src/companion</code>）通過。</li>
+      <li><code class="status">[]</code> <code>bun run typecheck</code> — 兩份 tsconfig 型別檢查通過。</li>
+      <li><code class="status">[]</code> <code>bun run test</code> — 全部 vitest 通過（桌面與 PWA）。</li>
+      <li><code class="status">[]</code> <code>bun run build</code> — 桌面前端建置通過。</li>
+      <li><code class="status">[]</code> <code>bun run companion:build</code> — sidecar 與 PWA 建置成功。</li>
+      <li><code class="status">[]</code> <code>bun scripts/verify-companion-bundle.ts</code> — PWA bundle 符合 CSP 與大小預算、無外部資源。</li>
+      <li><code class="status">[]</code> <code>bun run runtime:verify</code> — host／Herdr／companion 資源完整。</li>
+      <li><code class="status">[]</code> <code>bun run check:version</code> — 版本一致（含 companion crate）。</li>
+      <li><code class="status">[]</code> <code>cargo fmt --manifest-path src-tauri/companion/Cargo.toml -- --check</code> — companion 格式一致。</li>
+      <li><code class="status">[]</code> <code>cargo clippy --locked --all-targets --manifest-path src-tauri/companion/Cargo.toml -- -D warnings</code> — companion 零警告。</li>
+      <li><code class="status">[]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml</code> — companion 全部測試通過。</li>
+      <li><code class="status">[]</code> <code>cargo tree --manifest-path src-tauri/companion/Cargo.toml -i openssl</code> — 預期不匹配任何套件。</li>
+      <li><code class="status">[]</code> <code>cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check &amp;&amp; cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings &amp;&amp; cargo test --locked --manifest-path src-tauri/host/Cargo.toml</code> — host library 未受影響。</li>
+      <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; cargo fmt --package yuzora -- --check)</code> — 桌面 crate 格式一致。</li>
+      <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json)</code> — clippy baseline 完全吻合。</li>
+      <li><code class="status">[]</code> <code>(cd src-tauri &amp;&amp; cargo test --locked)</code> — 桌面 crate 全部測試通過。</li>
+      <li><code class="status">[]</code> <code>git diff --cached --name-only</code> — 輸出為空。</li>
+      <li><code class="status">[]</code> <code>manual: Phase 0 閘門、Phase 6／7 真機項目、Phase 8 驗收矩陣與安全審查全部完成</code> — 使用者確認。</li>
+    </ul>
+    <div class="loop">
+      🔁 <strong>The plan is not complete until every box is checked and every command passes. If for some reason a step is not possible to complete, mark it with [f] and move on if possible.</strong>
+    </div>
+  </section>
+
+  <!-- ===== NOTES ===== -->
+  <section id="notes">
+    <h2>Notes</h2>
+
+    <h3>決策紀錄</h3>
+    <table>
+      <thead><tr><th>#</th><th>決策</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr><td>D1</td><td>只做兩條直連：<span class="pill ts">Direct · Tailscale</span>（主要）與 <span class="pill lan">Direct · LAN</span></td><td>使用者已驗證 Tailscale 能穿越公司防火牆（WireGuard 打洞，失敗時走 DERP over 443）；不需自建 Orca 式雲端 Relay（director／cell／fence broker／push gateway）。</td></tr>
+        <tr><td>D2</td><td>gateway 為獨立 sidecar crate <code>src-tauri/companion</code></td><td>權限分離：拿不到 Yuzora 行程內的 DB 憑證、SSH 連線與 keychain 項目；網路依賴不進入會部署到遠端主機的 <code>yuzora-host</code> payload；崩潰隔離。</td></tr>
+        <tr><td>D3</td><td>gateway 生命週期由 Yuzora 持有（啟用期限、App 結束即停止、stdin EOF 即停止）</td><td>縮短暴露時間；避免無人看管的常駐 listener。常駐模式列為未來工作。</td></tr>
+        <tr><td>D4</td><td>不做應用層 E2EE，依賴 TLS</td><td>兩條路徑的 TLS 都在同一台桌面終止（tailscaled 或 gateway）；Orca 需要 E2EE 是因為經過雲端 Relay。少一層自製加密即少一類錯誤。</td></tr>
+        <tr><td>D5</td><td>每次連線都要 passkey（UV required），session 用 <code>__Host-</code> HttpOnly cookie</td><td>「遠端控制 AI ≒ 帳號 shell」→ 憑證需不可匯出且需本人驗證，對齊 SSH＋硬體金鑰；cookie 讓 XSS 偷不到 token。</td></tr>
+        <tr><td>D6</td><td>權限分 view／control／full；control 需桌面 grant＋passkey 提權＋時限；full 預設關閉</td><td>「看」與「動」風險等級不同；所有「動」都等同 shell，因此必須可見、限時、可撤銷、可稽核。</td></tr>
+        <tr><td>D7</td><td>LAN 只走 HTTPS＋name-constrained 本機 CA＋<code>.local</code>；不提供明文 HTTP，也不提供 IP 登入</td><td>明文下 JS 可被替換、無 secure context；WebAuthn RP ID 不能是 IP。CA 被 constraints 限定單一名稱，外洩時影響面最小。</td></tr>
+        <tr><td>D8</td><td>Tailscale 路徑額外核對 <code>Tailscale-User-Login</code>，但不取代 passkey</td><td>Serve 會移除偽造的同名 header；gateway 只 listen localhost，符合官方建議；本機惡意程式仍可偽造，因此只當輔助訊號。</td></tr>
+        <tr><td>D9</td><td>Herdr 只經官方接口橋接，方法白名單；control 預設用 pane 目前尺寸、不自動接管</td><td>Herdr 文件明示 <code>terminal session observe|control</code> 為第三方 bridge 路徑；避免手機改動桌面排版或與桌面互搶控制權。</td></tr>
+        <tr><td>D10</td><td>範圍限本機 owning host 的 named session</td><td><code>open_native_client</code> 已拒絕遠端；SSH／WSL runtime 需在其 owning host 另跑 gateway，列為未來工作。</td></tr>
+        <tr><td>D11</td><td>推播由桌面直接發 Web Push</td><td>不需雲端；payload 端對端加密到瀏覽器，且只含名稱與狀態（Orca 的推播內容是明文送自家 gateway）。</td></tr>
+      </tbody>
+    </table>
+
+    <h3>兩條路徑比較</h3>
+    <table>
+      <thead><tr><th>項目</th><th><span class="pill ts">Direct · Tailscale</span></th><th><span class="pill lan">Direct · LAN</span></th></tr></thead>
+      <tbody>
+        <tr><td>網址</td><td><code>https://&lt;device&gt;.&lt;tailnet&gt;.ts.net:8443</code></td><td><code>https://&lt;LocalHostName&gt;.local:47443</code></td></tr>
+        <tr><td>TLS 終止</td><td>本機 tailscaled（有效公開憑證）→ loopback HTTP 到 gateway</td><td>gateway（本機 CA 簽發的 leaf）</td></tr>
+        <tr><td>對外暴露</td><td>無區網 listener；只有 tailnet 內、ACL 允許的裝置</td><td>選定的私有網段介面；拒絕公網來源</td></tr>
+        <tr><td>網路身分</td><td>WireGuard 節點＋<code>Tailscale-User-Login</code></td><td>無（僅私有來源位址）</td></tr>
+        <tr><td>passkey RP ID</td><td><code>&lt;device&gt;.&lt;tailnet&gt;.ts.net</code></td><td><code>&lt;LocalHostName&gt;.local</code></td></tr>
+        <tr><td>穿越公司防火牆</td><td>可（取決於公司是否封鎖 Tailscale）</td><td>不適用（同網段）</td></tr>
+        <tr><td>使用者前置</td><td>兩端登入同一 Tailscale 帳號、啟用 HTTPS 憑證、確認 Funnel 關閉</td><td>手機安裝並信任 Yuzora CA、比對指紋、手機能解析 <code>.local</code></td></tr>
+        <tr><td>PWA／Web Push</td><td>完整支援</td><td>信任 CA 後支援（依 Phase 0 矩陣）</td></tr>
+      </tbody>
+    </table>
+    <figure>
+      <img src="yuzora-companion-pwa-direct-connections-plan/notes-paths.png" alt="兩條直連路徑共用 gateway 與 passkey 權限模型" loading="lazy">
+      <figcaption>兩條路徑最終都落在同一個 gateway 與同一套 passkey／權限模型。</figcaption>
+    </figure>
+
+    <h3>權限模型</h3>
+    <table>
+      <thead><tr><th>Scope</th><th>可做的事</th><th>如何取得</th><th>時限</th><th>稽核</th></tr></thead>
+      <tbody>
+        <tr><td><span class="pill ok">view</span></td><td>Session／Agent 清單、事件、observe pane</td><td>passkey 登入</td><td>idle 30 分、absolute 12 小時、不超過啟用期限</td><td>登入／登出</td></tr>
+        <tr><td><span class="pill danger">control</span></td><td><code>agent.prompt</code>、<code>pane.sendKeys</code>、pane control（takeover 需再驗證）</td><td>桌面授予 control grant（15 分／1 小時／8 小時）＋passkey 提權</td><td>提權 ≤ 15 分可續，不超過 grant</td><td>逐筆（輸入只記位元組數）＋桌面 toast</td></tr>
+        <tr><td><span class="pill danger">full</span></td><td>完整 Herdr client（等同 shell）</td><td>policy 啟用＋裝置 full grant＋每次開啟前新鮮 passkey</td><td>單次開啟，App 進背景即關閉</td><td>開啟／關閉＋位元組數＋桌面通知</td></tr>
+      </tbody>
+    </table>
+
+    <h3>威脅與對策</h3>
+    <table>
+      <thead><tr><th>威脅</th><th>對策</th></tr></thead>
+      <tbody>
+        <tr><td>手機遺失或未鎖時被拿走</td><td>每次連線 passkey＋生物辨識；session 短效；桌面撤銷單一裝置或全部；連續失敗鎖定。</td></tr>
+        <tr><td>配對 QR 被拍到或轉傳</td><td>一次性、5 分鐘；只接受一次領取；桌面比對 SAS 後才核准；配對當下綁定 passkey。</td></tr>
+        <tr><td>同網段／公網攻擊者</td><td>Tailscale 路徑無區網 listener；LAN 路徑只接私有來源＋TLS；Host／Origin 檢查；無明文 HTTP。</td></tr>
+        <tr><td>Tailscale 帳號被盜、他人加入 tailnet</td><td>passkey 仍是必要門檻；登入者比對；建議 ACL 只放行手機、可開 Tailnet Lock。</td></tr>
+        <tr><td>iCloud／Google 帳號被盜導致同步 passkey 外流</td><td>仍需網路可達（tailnet 或同網段）；裝置可隨時撤銷；文件說明風險。</td></tr>
+        <tr><td>本機其他程式偽造 Tailscale header</td><td>header 只作輔助訊號；passkey RP ID 綁定網域，本機惡意網頁無法完成驗證。</td></tr>
+        <tr><td>瀏覽器上 DNS rebinding／CSWSH</td><td>嚴格 Host 與 Origin 檢查；<code>SameSite=Strict</code> cookie。</td></tr>
+        <tr><td>PWA 遭 XSS</td><td>嚴格 CSP、無第三方 script、HttpOnly cookie；終端機輸出與 Markdown 一律視為不可信。</td></tr>
+        <tr><td>Agent 輸出夾帶 prompt injection 或惡意跳脫序列</td><td>不載入剪貼簿 addon；連結需確認；核准 Agent 權限前顯示完整內容並二次確認。</td></tr>
+        <tr><td>小螢幕盲目核准</td><td>blocked 狀態的核准畫面必須顯示完整待執行內容與工作目錄。</td></tr>
+        <tr><td>gateway 漏洞</td><td>獨立程序、<code>forbid(unsafe_code)</code>、方法白名單、訊息與 stream 上限、白名單外方法全數測試拒絕。</td></tr>
+        <tr><td>CA 私鑰外洩</td><td>私鑰只在 keychain；critical nameConstraints 限單一 <code>.local</code> 名稱；leaf 90 天輪替且不落地。</td></tr>
+        <tr><td>重連後重送輸入造成重複操作</td><td>client 丟棄待送輸入並提示；server 不緩存輸入。</td></tr>
+      </tbody>
+    </table>
+
+    <h3>協定草圖</h3>
+<pre><code># HTTP（兩個 listener 相同路由）
+GET  /  /index.html  /pair  /assets/*  /manifest.webmanifest  /sw.js  /icons/*
+POST /api/pair/claim              {pairingId, secret, deviceLabel, deviceNonce} → {gatewayNonce, sas}
+GET  /api/pair/status             long-poll → approved | rejected | expired
+POST /api/pair/webauthn/options   → PublicKeyCredentialCreationOptions
+POST /api/pair/webauthn/finish    → {deviceId}
+POST /api/auth/options            → PublicKeyCredentialRequestOptions
+POST /api/auth/finish             → Set-Cookie: __Host-yzc=…; Secure; HttpOnly; SameSite=Strict; Path=/
+POST /api/auth/elevate/options    {scope: "control" | "full"}
+POST /api/auth/elevate/finish     → {scope, until}
+POST /api/auth/logout
+GET  /ws                          WebSocket（cookie + Origin）
+
+# WS 文字 frame（JSON RPC）
+→ {"id":1,"method":"terminal.observe","params":{"session":"work","target":"w1:p2","cols":132,"rows":40}}
+← {"id":1,"result":{"stream":7}}
+← {"event":"agent.status","data":{"session":"work","pane":"w1:p2","status":"blocked"}}
+# WS 二進位 frame
+[u32 BE streamId][ANSI bytes]
+
+# admin stdio（NDJSON，desktop ⇄ gateway）
+→ {"v":1,"type":"init", ...}         ← {"v":1,"type":"ready","ports":{"loopback":47110,"lan":47443}}
+→ {"v":1,"type":"pairing.create","path":"tailscale"}   ← {"v":1,"type":"pairing.created","pairingId":"…","url":"…"}
+← {"v":1,"type":"pairing.claimed","pairingId":"…","sas":"482913","deviceLabel":"iPhone"}
+→ {"v":1,"type":"pairing.approve","pairingId":"…"}
+← {"v":1,"type":"device.registered", ...}
+← {"v":1,"type":"audit","deviceId":"…","scope":"control","action":"agent.prompt","summary":"…"}
+→ {"v":1,"type":"device.revoke","deviceId":"…"}        → {"v":1,"type":"shutdown"}
+</code></pre>
+
+    <h3>Herdr 多 client 語意（v0.9.1 原始碼）</h3>
+    <ul>
+      <li><strong>observe</strong>：可多人同時看，不能輸入、改尺寸或接管（<code>src/server/headless.rs:1365-1387</code>）。</li>
+      <li><strong>control</strong>：每個 terminal 只有一個 owner；<code>--takeover</code> 會讓原 owner 收到 <code>terminal attach taken over</code> 並斷開，並把 pane PTY 改為控制者尺寸、加上 <code>direct_attach_resize_locks</code>（<code>headless.rs:1849-1905</code>）。</li>
+      <li><strong>完整 client</strong>：對某 tab 輸入或取得焦點的 client 會取得該 tab 的幾何控制，tab 內 pane 依其尺寸重排（<code>headless.rs:1273</code>、<code>server/headless/client_views.rs:689-708</code>）；寬度 ≤ <code>ui.mobile_width_threshold</code>（預設 64）時使用手機單欄版面（<code>src/config.rs:78</code>、<code>src/client/shell/mobile.rs</code>）。</li>
+      <li><strong>遠端</strong>：Herdr 自身的遠端控制是 SSH stdio bridge（<code>src/remote/host.rs:6-36</code>、<code>src/remote.rs:13-37</code>），沒有網路 listener 或驗證。</li>
+      <li><strong>Yuzora 現況</strong>：被接管時顯示「已由其他視窗取得控制」並提供手動取回，不會自動搶回（<code>src/app/panels/HerdrTerminalPage.tsx:92,1241-1243,1469</code>）。</li>
+    </ul>
+
+    <h3>拒絕的方案</h3>
+    <ul>
+      <li><strong>Orca 式 LAN 明文 ws＋NaCl</strong>：JS 可被同網段攻擊者替換；無 secure context，不能用 passkey、SW、推播。</li>
+      <li><strong>自建雲端 Relay</strong>：需營運 director／cell／push gateway；Tailscale 已提供穿牆能力。</li>
+      <li><strong>Tailscale Funnel、Cloudflare Tunnel、公開反向代理</strong>：服務暴露於網際網路。</li>
+      <li><strong>gateway 放在 Tauri 主程序內</strong>：與 DB 憑證、SSH 連線、keychain 權限同處一個行程，影響範圍最大。</li>
+      <li><strong>gateway 做成 <code>yuzora-host</code> 的新 lane</strong>：網路與 WebAuthn 依賴會進入每一台遠端主機的 helper payload。</li>
+      <li><strong>以 Herdr plugin <code>startup</code> 承載 gateway</strong>：沒有停止機制與程序監管。</li>
+      <li><strong>原封不動轉發 Herdr API socket</strong>：會暴露 <code>server.stop</code>、<code>plugin.link</code>、<code>integration.install</code>、<code>command.invoke</code> 等高風險方法。</li>
+      <li><strong>把完整 Yuzora UI 投射成 web client（Orca 的 runtime scope）</strong>：權限過寬，且不適合手機。</li>
+    </ul>
+
+    <h3>風險與未來工作</h3>
+    <ul>
+      <li>公司日後可能封鎖 Tailscale 控制平面或 DERP；也請先確認公司政策是否允許。</li>
+      <li>iOS 將 PWA 移到背景時會暫停 WebSocket；通知依賴 Phase 7 的 Web Push。</li>
+      <li><code>.local</code> 解析與 <code>.local</code> RP ID 在部分 Android／Windows 環境可能不可用（Phase 0 矩陣決定）。</li>
+      <li>Tailscale CLI 的 JSON 欄位可能變動；以 fixture 測試並在探測失敗時停用 Tailscale 路徑。</li>
+      <li>新 Rust crate 的供應鏈風險；Phase 0 選型需檢視維護狀態與授權。</li>
+      <li>未來工作：SSH／WSL runtime（在各 owning host 執行 gateway）、Yuzora 關閉時仍能推播（Herdr plugin event hook <code>pane.agent_status_changed</code>）、可選的常駐 gateway、iPad 版面、多台桌面切換。</li>
+    </ul>
+
+    <h3>依賴（候選，Phase 0 定案）</h3>
+    <ul>
+      <li>companion crate：<code>yuzora-host</code>（path）、axum（ws）或 hyper＋tokio-tungstenite、tokio-rustls、rustls（ring）、WebAuthn RP 驗證套件（不得依賴 OpenSSL）、hmac、sha2、rand、base64、serde、zeroize。</li>
+      <li>desktop crate：rcgen（ring）、qrcode、純 Rust Web Push 加密／VAPID 實作；沿用既有 keyring、reqwest（rustls）。</li>
+      <li>前端：不新增套件；沿用已 patch 的 <code>@xterm/xterm</code>、<code>@xterm/addon-fit</code>、i18next、shadcn 元件、lucide-react。</li>
+    </ul>
+
+    <h3>參考</h3>
+    <ul>
+      <li>Orca：<code>mobile/src/transport/mobile-connection-path-label.ts</code>（Relay／Direct · Tailscale／Direct · LAN）、<code>src/shared/tailnet-address.ts</code>、<code>src/main/runtime/rpc/mobile-socket-wiring.ts:149</code>（只有 Relay 強制 v2 加密）、<code>src/main/runtime/rpc/static-web-client-handler.ts</code>、<code>cloud/README.md</code>。</li>
+      <li>Herdr：<a href="https://herdr.dev/docs/persistence-remote/">Persistence and remote access</a>（第三方 bridge 使用 observe／control）。</li>
+      <li>Tailscale：<a href="https://tailscale.com/kb/1312/serve">Tailscale Serve</a>（identity headers、Funnel 不帶 header、backend 只 listen localhost 的建議）。</li>
+      <li>WebAuthn Level 3（RP ID 不可為 IP、UV 旗標）、RFC 8291、RFC 8292。</li>
+    </ul>
+    <figure>
+      <img src="yuzora-companion-pwa-direct-connections-plan/notes-defense.png" alt="網路、TLS、passkey、權限時限與稽核撤銷的縱深防禦" loading="lazy">
+      <figcaption>防禦縱深：網路 → TLS → passkey → scope 與時限 → 稽核與撤銷。</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== AMENDMENTS ===== -->
+  <!-- Running history of changes made AFTER the plan was first executed. Append-only.
+       Populated by the Update Plan and Update References workflows — never edited during Create. -->
+  <section id="amendments">
+    <h2>Amendments</h2>
+    <p class="muted">尚無修訂。Phase 0 的真機結果、LAN 支援矩陣與依賴選型將以附加方式記錄於此。</p>
+  </section>
+
+</main>
+</body>
+</html>

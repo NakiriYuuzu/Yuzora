@@ -84,6 +84,41 @@ describe("workspacePathBasename", () => {
 })
 
 describe("canonicalPathKey", () => {
+  it("recognizes every extended UNC prefix casing and preserves relative Unicode spelling", () => {
+    for (let mask = 0; mask < 8; mask += 1) {
+      const unc = [..."unc"].map((letter, index) => mask & (1 << index) ? letter.toUpperCase() : letter).join("")
+      for (const separator of ["/", "\\"]) {
+        const prefix = `${separator}${separator}?${separator}${unc}${separator}`
+        const root = `${prefix}Server${separator}Share${separator}İ`
+        const path = `${root}${separator}專案Σ${separator}MİX.ts`
+        expect(canonicalPathKey(path)).toBe("//server/share/i\u0307/專案σ/mi\u0307x.ts")
+        expect(relativePathWithin(root, "\\\\server\\share\\i\u0307\\專案Σ\\MİX.ts")).toBe("專案Σ/MİX.ts")
+      }
+    }
+  })
+
+  it("keeps an incomplete UNC-looking root separate from an extended UNC child", () => {
+    expect(canonicalPathKey("//?/UNC")).toBe("//?/UNC")
+    expect(relativePathWithin("//?/UNC", "//?/UNC/MİX.ts")).toBeNull()
+  })
+
+  it.each(["//?/UNCX/Repo", "//?/ UNC/Repo", "//?/UNC\n/Repo", "//?/ÜNC/Repo", "//?/UℕC/Repo"])(
+    "keeps the non-UNC POSIX prefix %s case-sensitive",
+    (path) => {
+      expect(canonicalPathKey(path)).toBe(path)
+      expect(relativePathWithin(path, `${path}/MİX.ts`)).toBe("MİX.ts")
+      expect(relativePathWithin(path.toLowerCase(), `${path}/MİX.ts`)).toBeNull()
+    }
+  )
+
+  it("keeps long ordinary POSIX paths and relative Unicode suffixes case-sensitive", () => {
+    const root = `/Work/${"專案İΣAb".repeat(128)}`
+    const path = `${root}/MİX.ts`
+    expect(canonicalPathKey(path)).toBe(path)
+    expect(relativePathWithin(root, path)).toBe("MİX.ts")
+    expect(relativePathWithin(root.toLowerCase(), path)).toBeNull()
+  })
+
   it("treats extended and ordinary Windows drive aliases as the same identity", () => {
     expect(canonicalPathKey("\\\\?\\C:\\Work\\Repo\\")).toBe(
       canonicalPathKey("c:/work/repo")

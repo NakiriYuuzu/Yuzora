@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state"
 import { ensureSyntaxTree } from "@codemirror/language"
 import { highlightTree, tags } from "@lezer/highlight"
 import { syntaxSamples, syntaxCoverage, type RenderedRole } from "../../fixtures/syntax-highlight-corpus"
-import { languageExtensionFromPath } from "./cmExtensions"
+import { loadLanguageExtension } from "./cmExtensions"
 import { appHighlightStyle } from "./cmTheme"
 
 const roleTags = {
@@ -12,8 +12,8 @@ const roleTags = {
     tag: tags.tagName, heading: tags.heading, link: tags.link, variable: tags.variableName, meta: tags.meta, definition: tags.definition(tags.variableName),
 } satisfies Record<Exclude<RenderedRole, "plain">, unknown>
 
-function highlighted(code: string, path: string) {
-    const extension = languageExtensionFromPath(path)
+async function highlighted(code: string, path: string) {
+    const extension = await loadLanguageExtension(path)
     expect(extension, `${path} must resolve a language parser`).not.toBeNull()
     const state = EditorState.create({ doc: code, extensions: [extension!] })
     const tree = ensureSyntaxTree(state, code.length, 1000)
@@ -30,8 +30,8 @@ describe("production syntax highlight corpus", () => {
         expect(syntaxCoverage.every(sample => Object.values(sample.roles).every(role => role.status !== "supported" || role.probes.every(probe => probe.hit)))).toBe(true)
     })
     for (const sample of syntaxSamples) {
-        it.each(sample.files)(`${sample.name} %s gives applicable tokens their production style`, path => {
-            const { spans, tree } = highlighted(sample.code, path)
+        it.each(sample.files)(`${sample.name} %s gives applicable tokens their production style`, async path => {
+            const { spans, tree } = await highlighted(sample.code, path)
             const errors: string[] = []
             tree.iterate({ enter: node => { if (node.type.isError) errors.push(sample.code.slice(node.from, node.to)) } })
             expect(errors, `${path} syntax errors`).toEqual([])
@@ -52,9 +52,9 @@ describe("production syntax highlight corpus", () => {
         ['tsx', 'interface Props { count: number }; const node = <strong title="hello">{42}</strong>;', 'scss', '$gap: 12px; .card { padding: $gap; }'],
         ['jsx', 'const node = <strong title="hello">{42}</strong>;', 'less', '@gap: 12px; .card { padding: @gap; }'],
         ['typescript', 'interface Props { count: number }; const title: string = "hello";', 'sass', '.card\n  padding: 12px'],
-    ])("Vue embeds %s scripts and %s styles without treating them as plain HTML", (scriptLang, script, styleLang, style) => {
+    ])("Vue embeds %s scripts and %s styles without treating them as plain HTML", async (scriptLang, script, styleLang, style) => {
         const code = `<script lang="${scriptLang}">${script}</script><template><section>{{ 7 }}</section></template><style lang="${styleLang}">${style}</style>`
-        const { tree, spans } = highlighted(code, "App.vue")
+        const { tree, spans } = await highlighted(code, "App.vue")
         const errors: string[] = []
         tree.iterate({ enter: node => { if (node.type.isError) errors.push(code.slice(node.from, node.to)) } })
         expect(errors).toEqual([])
@@ -66,24 +66,24 @@ describe("production syntax highlight corpus", () => {
         if (scriptLang !== "jsx") expect(spans.some(span => span.text === "Props" && span.style === appHighlightStyle.style([tags.typeName]))).toBe(true)
     })
 
-    it("does not color ordinary fields, variables or CSS properties as functions", () => {
+    it("does not color ordinary fields, variables or CSS properties as functions", async () => {
         for (const [path, code, plain, callable] of [
             ["sample.cpp", "class Greeter { int field; int greet() { return field; } };", "field", "greet"],
             ["sample.css", ".card { width: calc(100px); }", "width", "calc"],
             ["sample.scss", "$width: 10px; .card { width: calc($width); }", "width", "calc"],
         ]) {
-            const { spans } = highlighted(code, path)
+            const { spans } = await highlighted(code, path)
             const functionStyle = appHighlightStyle.style([tags.function(tags.variableName)])
             expect(spans.filter(span => span.text === plain).every(span => span.style !== functionStyle)).toBe(true)
             expect(spans.some(span => span.text === callable && span.style === functionStyle)).toBe(true)
         }
     })
 
-    it("reports the Svelte SCSS limitation separately from successful TS and plain CSS tokens", () => {
+    it("reports the Svelte SCSS limitation separately from successful TS and plain CSS tokens", async () => {
         const coverage = syntaxCoverage.find(sample => sample.id === "svelte")!
         expect(coverage.status).toBe("partial")
         expect(coverage.limitations).toContainEqual(expect.objectContaining({ scope: "style-preprocessors", status: "partial" }))
-        const { tree } = highlighted('<style lang="scss">$accent: red; .card { color: $accent; }</style>', "App.svelte")
+        const { tree } = await highlighted('<style lang="scss">$accent: red; .card { color: $accent; }</style>', "App.svelte")
         const errors: number[] = []
         tree.iterate({ enter: node => { if (node.type.isError) errors.push(node.from) } })
         // This installed upstream grammar dispatches SCSS to CSS. Do not turn

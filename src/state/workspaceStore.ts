@@ -788,6 +788,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             }
             let changed = false
             const groups = s.groups.map((group) => {
+                let groupChanged = false
                 const next = [...group.tabs]
                 const indicesBySpace = new Map<string, number[]>()
                 next.forEach((tab, index) => {
@@ -834,11 +835,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                     const same = ordered.every((tab, offset) => tab === current[offset])
                     if (same) continue
                     changed = true
+                    groupChanged = true
                     indices.forEach((index, offset) => {
                         next[index] = ordered[offset]
                     })
                 }
-                return changed ? { ...group, tabs: next } : group
+                return groupChanged ? { ...group, tabs: next } : group
             })
             return changed ? { groups } : s
         }),
@@ -1185,13 +1187,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     setActiveGroup: (groupIndex) =>
         set((s) => (s.groups[groupIndex] ? { activeGroupIndex: groupIndex } : s)),
     markDirty: (path, dirty) =>
-        set((s) => ({
-            groups: s.groups.map((g) => ({
-                ...g,
-                // Editing a preview-mode tab keeps it, as in VS Code.
-                tabs: g.tabs.map((t) => (t.path === path ? { ...t, dirty, ...(dirty && t.transient ? { transient: false } : {}) } : t))
-            }))
-        })),
+        set((s) => {
+            let changed = false
+            const groups = s.groups.map((g) => {
+                if (!g.tabs.some((t) => t.path === path && (t.dirty !== dirty || (dirty && t.transient)))) return g
+                changed = true
+                return {
+                    ...g,
+                    // Editing a preview-mode tab keeps it, as in VS Code.
+                    tabs: g.tabs.map((t) => (t.path === path ? { ...t, dirty, ...(dirty && t.transient ? { transient: false } : {}) } : t))
+                }
+            })
+            return changed ? { groups } : s
+        }),
     hydrateLineEnding: (path, lineEnding, generation) =>
         set((s) => ({
             groups: s.groups.map((g) => ({

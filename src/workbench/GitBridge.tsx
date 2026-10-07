@@ -31,6 +31,8 @@ export function GitBridge() {
         useDiffModalStore.getState().close()
         if (!workspacePath) return
         void useGitStore.getState().detect(workspacePath)
+        // Lists nested repositories; a non-repository folder opens the first.
+        void useGitStore.getState().discover(workspacePath)
         return () => gitCloseWorkspace(workspacePath)
     }, [workspacePath])
 

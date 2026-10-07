@@ -7,6 +7,11 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
 const herdrRender = vi.hoisted(() => vi.fn())
+const richImport = vi.hoisted(() => vi.fn())
+vi.mock("../editor/RichMarkdownEditor", async importOriginal => {
+    richImport()
+    return importOriginal()
+})
 
 vi.mock("./TabBar", () => ({
     TabBar: ({ groupIndex }: { groupIndex: number }) => {
@@ -92,6 +97,21 @@ afterEach(() => {
     cleanup()
     useWorkspaceStore.setState(initialWorkspaceState, true)
     useHerdrStore.setState(initialHerdrState, true)
+})
+
+it("defers the rich Markdown editor until selected without remounting the terminal", async () => {
+    const path = "yuzora://herdr/default/term-lazy"
+    useWorkspaceStore.setState({ groups: [{ activePath: path, tabs: [
+        herdrTab(path, "term-lazy", "tab-lazy"),
+        { path: "/w/readme.md", name: "readme.md", dirty: false, externallyModified: false },
+    ] }], activeGroupIndex: 0 })
+    render(<EditorArea />)
+    const terminal = screen.getByTestId("mock-herdr-term-lazy")
+    expect(richImport).not.toHaveBeenCalled()
+    act(() => useWorkspaceStore.getState().setActiveTab(0, "/w/readme.md"))
+    expect(await screen.findByTestId("editor-pane")).toBeInTheDocument()
+    expect(richImport).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId("mock-herdr-term-lazy")).toBe(terminal)
 })
 
 describe("EditorArea persistent Herdr pages", () => {
@@ -188,7 +208,7 @@ describe("EditorArea persistent Herdr pages", () => {
 })
 
 describe("EditorArea markdown preview tabs", () => {
-    it("renders EditorPane for a markdown source and MarkdownPreview for the adjacent tab", () => {
+    it("renders EditorPane for a markdown source and MarkdownPreview for the adjacent tab", async () => {
         const previewPath = markdownPreviewPath("/w/readme.md")
         useWorkspaceStore.setState({
             groups: [
@@ -211,7 +231,7 @@ describe("EditorArea markdown preview tabs", () => {
             activeGroupIndex: 1
         })
         render(<EditorArea />)
-        expect(screen.getByTestId("editor-pane")).toBeInTheDocument()
+        expect(await screen.findByTestId("editor-pane")).toBeInTheDocument()
         expect(screen.getByTestId("markdown-preview")).toHaveAttribute("data-source", "/w/readme.md")
         expect(screen.queryByTestId("markdown-split")).toBeNull()
         expect(screen.queryByTestId("preview-panel")).toBeNull()

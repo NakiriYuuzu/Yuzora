@@ -5,12 +5,25 @@ use russh::server::{self, Auth, Server};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 
+#[path = "sftp_preflight_tests.rs"]
+mod preflight;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RelayStop {
+    Running,
+    Eof,
+    Closed,
+}
+
 struct FixtureServer {
     password: String,
     executable: String,
     helper: String,
     helper_home: PathBuf,
     channels: HashMap<russh::ChannelId, russh::Channel<server::Msg>>,
+    relays: HashMap<russh::ChannelId, tokio::sync::watch::Sender<RelayStop>>,
+    probe: Option<Arc<preflight::PacketProbe>>,
+    deny_stat: bool,
 }
 impl server::Server for FixtureServer {
     type Handler = Self;
@@ -21,11 +34,41 @@ impl server::Server for FixtureServer {
             helper: self.helper.clone(),
             helper_home: self.helper_home.clone(),
             channels: HashMap::new(),
+            relays: HashMap::new(),
+            probe: self.probe.clone(),
+            deny_stat: self.deny_stat,
         }
     }
 }
 impl server::Handler for FixtureServer {
     type Error = russh::Error;
+    async fn channel_close(
+        &mut self,
+        id: russh::ChannelId,
+        _: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(probe) = &self.probe {
+            probe.channel_closes.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(cancel) = self.relays.remove(&id) {
+            cancel.send_replace(RelayStop::Closed);
+        }
+        self.channels.remove(&id);
+        Ok(())
+    }
+    async fn channel_eof(
+        &mut self,
+        id: russh::ChannelId,
+        _: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(probe) = &self.probe {
+            probe.channel_eofs.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(cancel) = self.relays.get(&id) {
+            cancel.send_replace(RelayStop::Eof);
+        }
+        Ok(())
+    }
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         Ok(if user == "fixture" && password == self.password {
             Auth::Accept
@@ -39,6 +82,9 @@ impl server::Handler for FixtureServer {
         reply: server::ChannelOpenHandle,
         _: &mut server::Session,
     ) -> Result<(), Self::Error> {
+        if let Some(probe) = &self.probe {
+            probe.channels_opened.fetch_add(1, Ordering::Relaxed);
+        }
         self.channels.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())
@@ -53,11 +99,12 @@ impl server::Handler for FixtureServer {
             session.channel_failure(id)?;
             return Ok(());
         }
-        self.spawn_process(
-            id,
-            &mut tokio::process::Command::new(&self.executable),
-            session,
-        )
+        let mut command = tokio::process::Command::new(&self.executable);
+        if self.deny_stat {
+            command.args(["-P", "stat,fstat"]);
+        }
+        let probe = self.probe.clone();
+        self.spawn_process(id, &mut command, session, probe)
     }
     async fn exec_request(
         &mut self,
@@ -75,7 +122,7 @@ impl server::Handler for FixtureServer {
         };
         let mut command = tokio::process::Command::new(&self.helper);
         command.arg(mode).env("HOME", &self.helper_home);
-        self.spawn_process(id, &mut command, session)
+        self.spawn_process(id, &mut command, session, None)
     }
 }
 impl FixtureServer {
@@ -84,6 +131,7 @@ impl FixtureServer {
         id: russh::ChannelId,
         command: &mut tokio::process::Command,
         session: &mut server::Session,
+        probe: Option<Arc<preflight::PacketProbe>>,
     ) -> Result<(), russh::Error> {
         let Some(channel) = self.channels.remove(&id) else {
             session.channel_failure(id)?;
@@ -95,21 +143,64 @@ impl FixtureServer {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
+        let probe_child = probe
+            .as_ref()
+            .map(|probe| probe.track_child(child.id().expect("fixture child PID")));
         let mut input = child.stdin.take().unwrap();
         let mut output = child.stdout.take().unwrap();
+        let mut relay_cancelled = if probe.is_some() {
+            let (cancel, cancelled) = tokio::sync::watch::channel(RelayStop::Running);
+            self.relays.insert(id, cancel);
+            Some(cancelled)
+        } else {
+            None
+        };
         session.channel_success(id)?;
         tokio::spawn(async move {
+            let _probe_child = probe_child;
             let (mut read, mut write) = tokio::io::split(channel.into_stream());
-            let inbound = async {
-                tokio::io::copy(&mut read, &mut input).await?;
-                input.shutdown().await
-            };
-            let outbound = async {
-                tokio::io::copy(&mut output, &mut write).await?;
-                write.shutdown().await
-            };
-            let _ = tokio::try_join!(inbound, outbound);
-            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+            {
+                let inbound = async {
+                    if let Some(probe) = &probe {
+                        probe.forward(&mut read, &mut input).await?;
+                    } else {
+                        tokio::io::copy(&mut read, &mut input).await?;
+                    }
+                    input.shutdown().await
+                };
+                let outbound = async {
+                    tokio::io::copy(&mut output, &mut write).await?;
+                    write.shutdown().await
+                };
+                let relay = async { tokio::try_join!(inbound, outbound) };
+                if let Some(cancelled) = &mut relay_cancelled {
+                    tokio::select! {
+                        _ = cancelled.changed() => {},
+                        _ = relay => {},
+                    }
+                } else {
+                    let _ = relay.await;
+                }
+            }
+            drop(input);
+            drop(output);
+            if tokio::time::timeout(Duration::from_secs(2), child.wait())
+                .await
+                .is_err()
+            {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            if let Some(cancelled) = &mut relay_cancelled {
+                // Let peer CLOSE reach russh's established-channel cleanup.
+                // Proactively closing here removes that state before the peer
+                // reply and can leave the server's channel sender registered.
+                while *cancelled.borrow() == RelayStop::Eof {
+                    if cancelled.changed().await.is_err() {
+                        break; // The entire owned SSH handler disconnected.
+                    }
+                }
+            }
         });
         Ok(())
     }
@@ -148,6 +239,9 @@ async fn real_sftp_overwrite_conflict_cancel_download_and_disconnect() {
         helper: helper.clone(),
         helper_home: root.clone(),
         channels: HashMap::new(),
+        relays: HashMap::new(),
+        probe: None,
+        deny_stat: false,
     };
     let server = tokio::spawn(async move { fixture_server.run_on_socket(config, &listener).await });
     let manager = SshManager::with_parts(

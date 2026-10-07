@@ -135,9 +135,7 @@ pub(crate) async fn open(
         .await
         .map_err(|e| e.to_string())?;
     let local_port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let tunnel_id = uuid::Uuid::new_v4().to_string();
-    let (cancelled, receiver) = watch::channel(false);
-    {
+    let (tunnel_id, receiver) = {
         let mut tunnels = connection.tunnels.lock().unwrap();
         if *connection.cancelled.borrow() {
             return Err("host-disconnected".into());
@@ -145,6 +143,8 @@ pub(crate) async fn open(
         if tunnels.len() >= 16 {
             return Err("too-many-host-tunnels".into());
         }
+        let tunnel_id = uuid::Uuid::new_v4().to_string();
+        let (cancelled, receiver) = watch::channel(false);
         tunnels.insert(
             tunnel_id.clone(),
             Tunnel {
@@ -152,7 +152,8 @@ pub(crate) async fn open(
                 cancelled,
             },
         );
-    }
+        (tunnel_id, receiver)
+    };
     let resources = connection.tunnels.clone();
     let id = tunnel_id.clone();
     tokio::spawn(async move {

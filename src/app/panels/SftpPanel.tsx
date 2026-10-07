@@ -420,6 +420,14 @@ function canTransferRemoteEntry(entry: SftpEntry): boolean {
 }
 
 const SFTP_ERROR_KEYS: Record<string, string> = {
+  "sftp-size-unknown": "sshPanel.sftpErrorSizeUnknown",
+  "sftp-size-mismatch": "sshPanel.sftpErrorSizeMismatch",
+  "sftp-insufficient-space": "sshPanel.sftpErrorInsufficientSpace",
+  "sftp-space-unavailable": "sshPanel.sftpErrorSpaceUnavailable",
+  "sftp-directory-limit": "sshPanel.sftpErrorDirectoryLimit",
+  "sftp-directory-timeout": "sshPanel.sftpErrorReadTimeout",
+  "sftp-read-timeout": "sshPanel.sftpErrorReadTimeout",
+  "sftp-not-regular-file": "sshPanel.sftpErrorNotRegular",
   "unsafe-leaf-name": "sshPanel.sftpErrorUnsafeLeaf",
   "unsafe-relative-path": "sshPanel.sftpErrorUnsafeLeaf",
   "symlink-rejected": "sshPanel.sftpErrorSymlink",
@@ -674,6 +682,7 @@ function RemotePane({
     const accepted = await requestAppConfirmation({
       title: t("sshPanel.sftpDeleteTitle"),
       description: text,
+      confirmLabel: t("sshPanel.sftpDeleteAction"),
       kind: "warning",
       destructive: true
     })
@@ -743,7 +752,7 @@ function RemotePane({
         viewportClassName="px-[4px] py-[4px]"
       >
         {remote?.error ? (
-          <PaneNote text={remote.error} />
+          <PaneNote text={remote.error.startsWith("sftp-") ? localizedSftpError(t, remote.error) : remote.error} />
         ) : remote?.loading && remote.entries.length === 0 ? (
           <PaneNote text={t("sshPanel.sftpLoading")} />
         ) : remote && remote.entries.length === 0 ? (

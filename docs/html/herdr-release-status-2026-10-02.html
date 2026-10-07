@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HERDR 新版與 Yuzora 整合狀態｜2026-10-02</title>
+<style>
+body{max-width:960px;margin:48px auto;padding:0 24px;color:#202932;background:#faf9f6;font:16px/1.8 system-ui,sans-serif}h1,h2{line-height:1.3}h1{font-size:30px}h2{margin-top:36px;font-size:22px}a{color:#245a8d}code{font-size:.92em;background:#eaeef1;padding:2px 5px;border-radius:3px}table{width:100%;border-collapse:collapse}th,td{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #d6dde1}th{background:#edf1f4}.lead{border-left:4px solid #245a8d;padding:12px 20px;background:#edf2f6}.meta{color:#586675;font-size:14px}li{margin:8px 0}@media(max-width:600px){body{margin:24px auto;padding:0 16px}th,td{padding:8px}h1{font-size:25px}}@media print{body{max-width:none;margin:0;background:white}a{color:inherit}}
+</style>
+</head>
+<body>
+<p class="meta">查證日期：2026-10-02（Asia/Taipei）｜官方網頁、GitHub API 與目前工作目錄的靜態核對</p>
+<h1>HERDR 新版與 Yuzora 整合狀態</h1>
+<p class="lead"><strong>建議以 0.9.3 作為穩定版基準。</strong>0.9.2 帶來主要改進，0.9.3 修復鍵盤回歸；大量 agent 的 Linux 遠端負載仍有未解回報。Yuzora 工作目錄已設定 0.9.3，但不能據此判定所有執行中的 server 都已升級。</p>
+
+<h2>已發布內容</h2>
+<p>官方 latest 為 <a href="https://github.com/herdrdev/herdr/releases/tag/v0.9.3">v0.9.3</a>，發布時間為 2026-09-29 19:29:23 UTC，即台灣時間 09-30 03:29:23。查證時未見更晚的穩定 release。</p>
+<table>
+<thead><tr><th>版本／面向</th><th>主要變更</th></tr></thead>
+<tbody>
+<tr><td>0.9.3：快捷鍵修復</td><td>恢復 Escape 前綴按鍵；包含 macOS Option 逐字移動／刪除、部分 Claude Code Shift+Enter 換行，以及 Alt+[ 快速連續輸入。</td></tr>
+<tr><td>0.9.2：效能與遠端</td><td>改善多 pane CPU、Git 查詢造成的輸入停頓、SSH 傳輸與畫面差異更新；增加 machine status／reconnect。</td></tr>
+<tr><td>0.9.2：Session 與 agent</td><td>支援 agent 自報 resume command、錯開啟動還原；保留最多 48 份 layout snapshots，改善狀態判定與通知。</td></tr>
+<tr><td>0.9.2：終端與 Windows</td><td>改善 Kitty 圖片、重繪與輸入；Windows 優先使用 pwsh，修正多行貼上及 Shift+Enter。</td></tr>
+<tr><td>0.9.2：整合契約</td><td>移除 <code>pane.graphics.*</code>，改用標準 Kitty graphics；terminal control 支援 <code>terminal.mouse</code>；訂閱落後時明確回報 <code>events_lost</code>。</td></tr>
+</tbody>
+</table>
+<p class="meta">依據：<a href="https://github.com/herdrdev/herdr/releases/tag/v0.9.2">0.9.2 release notes</a>、<a href="https://github.com/herdrdev/herdr/releases/tag/v0.9.3">0.9.3 release notes</a>。以上是上游發布說明，不代表 Yuzora 各條 transport 或 UI 路徑已逐項驗收。</p>
+
+<h2>目前仍需注意的狀態</h2>
+<ol>
+<li><strong>多 agent 高負載尚不能視為解決。</strong><a href="https://github.com/herdrdev/herdr/issues/4506#issuecomment-5942198000">#4506 的最新回報</a>於台灣時間 10-02 指出，0.9.3 在 Linux 高核心數主機及大量活躍 pane 下仍出現高 CPU，且 remote client 反覆因健康檢查逾時而重連。這是特定環境的使用者回報，本次未重現，不能推廣成所有 Linux 主機都會發生。</li>
+<li><strong>遠端剪貼簿仍有未解案例。</strong><a href="https://github.com/herdrdev/herdr/issues/4833">#4833</a> 回報 0.9.3 的 macOS SSH 選取文字寫入遠端剪貼簿、本機未更新。這是官方 client 的路徑，尚未確認 Yuzora 是否受同一原因影響。</li>
+<li><strong>master 與 stable 必須分開。</strong><a href="https://github.com/herdrdev/herdr/pull/4803">Windows 原生可點擊通知 #4803</a> 於 09-30 合併，晚於 0.9.3 發布；不應把它列為 0.9.3 的已發布功能。<a href="https://github.com/herdrdev/herdr/compare/v0.9.3...master">分支比較</a>顯示 diverged；提交數不等於尚未發布修正數，可能含 release 同步或重複移植。</li>
+</ol>
+
+<h2>Yuzora 當前整合狀態</h2>
+<table>
+<thead><tr><th>層次</th><th>本次確認</th><th>意義</th></tr></thead>
+<tbody>
+<tr><td>目前工作目錄</td><td><a href="../../src-tauri/herdr-runtime.json"><code>herdr-runtime.json</code></a> 的 baseVersion 是 0.9.3，protocol 是 22，五個 host 平台資源均指向該版本。</td><td>整合設定已追上最新 stable。</td></tr>
+<tr><td>目前 HEAD</td><td>以 <code>git show HEAD:src-tauri/herdr-runtime.json</code> 確認 baseVersion 仍為 0.9.1。</td><td>0.9.3 升級存在於未提交工作目錄，不能當成已提交或已發行成果。</td></tr>
+<tr><td>相容性與訂閱</td><td><a href="../../src-tauri/host/src/herdr_runtime.rs">runtime gate</a>保留 client、schema 與 running Sessions 相容性檢查；<a href="../../src/workbench/HerdrBridge.tsx">HerdrBridge</a> 遇到 error／disconnected 會重新訂閱並刷新。</td><td>靜態程式有相容性與錯誤恢復防線；不構成本次端到端驗證。</td></tr>
+<tr><td>既有驗證紀錄</td><td><a href="herdr-scroll-limit-upgrade-review-2026-10-02.html">同日升級紀錄</a>記載 0.9.3 同版與 0.9.3 client／0.9.1 server 的隔離契約驗證通過。</td><td>引用既有紀錄；本次沒有重跑。該紀錄仍列出 GUI、Windows／WSL／Linux 實機驗收缺口。</td></tr>
+<tr><td>實際執行環境</td><td>本次未探查使用者的本機或遠端 running Sessions。</td><td>各主機 server 的有效版本未知。</td></tr>
+</tbody>
+</table>
+<p><a href="../operations.md">Yuzora 操作文件</a>明確區分隨附版本、選定 client 路徑與既有 server。升級 client 不會自動替換執行中的 server。官方也區分持續執行、停止後還原與 experimental live handoff；<a href="https://herdr.dev/docs/session-state/">Session state 文件</a>說明一般 server restart 不保留原程序。</p>
+
+<h2>評估與優先順序</h2>
+<p>0.9.3 是合理的 stable 整合基準，但目前證據不足以宣告大量 agent／SSH／跨平台部署已全面穩定。Yuzora 下一步的重點是確認各主機實際 client／server 版本，再驗收高 pane 數負載、滾動、快捷鍵、剪貼簿及重連；沒有足夠理由僅為追新而改用 preview。上游 CPU 改善與 SSH 優化，也不能替代 Yuzora 自身 helper／stream 路徑的驗證。</p>
+<p class="meta">範圍：網頁與 GitHub API 查證、靜態程式與設定核對。未執行 E2E／瀏覽器自動化、未重跑測試、未變更 runtime 或停止 server。本次僅新增本評估文件。</p>
+</body>
+</html>

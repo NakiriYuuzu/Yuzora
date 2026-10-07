@@ -1,0 +1,3 @@
+{"time": 1790916050.959722, "mode": "alt-arrow", "input": "b'\\x1b[A'", "hex": "1b5b41", "count": 1}
+{"time": 1790916051.006716, "mode": "alt-arrow", "input": "b'\\x1b[B'", "hex": "1b5b42", "count": 2}
+{"time": 1790916071.6139698, "mode": "alt-arrow", "input": "b'\\x1b[A'", "hex": "1b5b41", "count": 3}

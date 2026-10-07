@@ -1,15 +1,17 @@
 import { create } from "zustand"
+import { logUserAction } from "@/features/logs/userAction"
 import { retryBusyGitRead } from "@/lib/gitReadRetry"
 
 import {
     gitBootstrap,
     gitBranches,
     gitCommitDetail,
+    gitDiscover,
     gitFetch,
     gitRemoteProbe,
     gitStatus
 } from "../lib/ipc"
-import type { BranchList, GitEnvironment, GitStatus, RemoteProbe } from "../lib/types"
+import type { BranchList, DiscoveredRepository, GitEnvironment, GitStatus, RemoteProbe } from "../lib/types"
 
 export type RemoteCheckMode = "off" | "probe" | "autofetch"
 export interface RemoteCheckConfig {
@@ -43,7 +45,7 @@ export const CONSOLE_LOG_LIMIT = 200
 // names fall back to `git <name>`.
 const CONSOLE_CMD_LABELS: Record<string, string> = {
     fetch: "git fetch",
-    pull: "git pull --rebase",
+    pull: "git pull",
     push: "git push",
     stage: "git add",
     unstage: "git restore --staged",
@@ -55,7 +57,23 @@ const CONSOLE_CMD_LABELS: Record<string, string> = {
     "cherry-pick": "git cherry-pick",
     "create-branch": "git branch",
     "conflict-abort": "git merge --abort",
-    "conflict-continue": "git merge --continue"
+    "conflict-continue": "git merge --continue",
+    "conflict-skip": "git cherry-pick --skip",
+    "merge-branch": "git merge",
+    "rebase-onto": "git rebase",
+    "rename-branch": "git branch -m",
+    "delete-branch": "git branch -d",
+    "revert-commit": "git revert",
+    "reset-branch": "git reset",
+    "stash-push": "git stash push",
+    "stash-apply": "git stash apply",
+    "stash-pop": "git stash pop",
+    "stash-drop": "git stash drop",
+    "pull-rebase": "git pull --rebase",
+    "push-force": "git push --force-with-lease",
+    "conflict-accept-ours": "git checkout --ours",
+    "conflict-accept-theirs": "git checkout --theirs",
+    "conflict-merge": "git add (merge tool)"
 }
 
 function consoleCmdLabel(name: string, options?: RunOpOptions): string {
@@ -64,6 +82,9 @@ function consoleCmdLabel(name: string, options?: RunOpOptions): string {
     }
     if (options?.conflictOp && name === "conflict-continue") {
         return `git ${options.conflictOp} --continue`
+    }
+    if (options?.conflictOp && name === "conflict-skip") {
+        return `git ${options.conflictOp} --skip`
     }
     return CONSOLE_CMD_LABELS[name] ?? `git ${name}`
 }
@@ -115,6 +136,37 @@ interface GitSnapshot {
 export const GIT_SNAPSHOT_LRU_LIMIT = 8
 const snapshots = new Map<string, GitSnapshot>()
 
+// Multi-repository workspaces cache one snapshot per (workspace, repository).
+function snapshotKey(workspacePath: string, repositoryPath: string | null): string {
+    return repositoryPath ? `${workspacePath}\u0000${repositoryPath}` : workspacePath
+}
+
+// The nested repository last selected per workspace (null = the workspace's
+// own repository). Persisted so reopening a workspace keeps the selection.
+const ACTIVE_REPOSITORY_KEY = "yuzora.git.activeRepository"
+function readActiveRepositories(): Record<string, string> {
+    try {
+        const parsed: unknown = JSON.parse(localStorage.getItem(ACTIVE_REPOSITORY_KEY) ?? "{}")
+        return parsed && typeof parsed === "object" ? parsed as Record<string, string> : {}
+    } catch {
+        return {}
+    }
+}
+function rememberedRepository(workspacePath: string): string | null {
+    const value = readActiveRepositories()[workspacePath]
+    return typeof value === "string" && value ? value : null
+}
+function rememberRepository(workspacePath: string, repositoryPath: string | null): void {
+    try {
+        const all = readActiveRepositories()
+        if (repositoryPath) all[workspacePath] = repositoryPath
+        else delete all[workspacePath]
+        localStorage.setItem(ACTIVE_REPOSITORY_KEY, JSON.stringify(all))
+    } catch {
+        // Storage is best-effort; the selection still applies for this session.
+    }
+}
+
 // 目前面板內容所屬的快照 key——只在「store 的 environment 真正換血」時跟著換
 // （hydrate 或 bootstrap 落地），不在 detect 進場時搶先換：detect(B) 在飛期間
 // 舊 workspace A 的 guarded refresh 仍可能落地，那筆更新屬於 A 的快照。
@@ -161,11 +213,15 @@ export function clearGitSnapshots(): void {
     liveSnapshotKey = null
     detectInFlight = false
     requestedWorkspacePath = null
+    requestedRepositoryPath = null
+    discoverSeq = 0
     refreshAfterDetect = false
     statusEpoch = 0
     branchEpoch = 0
     branchRequestSeq = 0
     branchResponseSeq = 0
+    statusRequestSeq = 0
+    statusResponseSeq = 0
     statusRefreshError = null
     branchRefreshError = null
     foregroundError = null
@@ -212,7 +268,17 @@ interface GitState {
     cancelAmend: () => void
     setCommitMessage: (message: string) => void
     appendConsole: (entry: GitConsoleEntry) => void
-    detect: (workspacePath: string) => Promise<void>
+    /** Repositories found inside the workspace; null until discovery lands. */
+    repositories: DiscoveredRepository[] | null
+    repositoriesTruncated: boolean
+    /** Active nested repository relative to the workspace; null = the workspace's own. */
+    repositoryPath: string | null
+    /** `repositoryPath` undefined keeps the workspace's remembered selection. */
+    detect: (workspacePath: string, repositoryPath?: string | null) => Promise<void>
+    discover: (workspacePath: string) => Promise<void>
+    selectRepository: (repositoryPath: string | null) => Promise<void>
+    /** Asks to trust the workspace, then detects again once granted. */
+    trustWorkspace: () => Promise<void>
     refresh: (paths?: string[]) => Promise<void>
     refreshQuiet: (paths?: string[]) => Promise<void>
     retrySnapshot: () => Promise<void>
@@ -223,6 +289,9 @@ interface GitState {
 }
 
 export const initialGitState = {
+    repositories: null as DiscoveredRepository[] | null,
+    repositoriesTruncated: false,
+    repositoryPath: null as string | null,
     environment: null,
     status: null,
     branches: null,
@@ -294,6 +363,8 @@ function resetRefreshFlight(): void {
 // generation guard 保護 repo state 與 watcher，兩端各自守自己的 state）。
 let detectSeq = 0
 let requestedWorkspacePath: string | null = null
+let requestedRepositoryPath: string | null = null
+let discoverSeq = 0
 // #58 覆核修正：detect 在飛（bootstrap 尚未落地）期間，Rust 端 repo state 可能
 // 仍指向前一個 workspace（detect_commit_and_watch 要到 blocking task 執行才
 // commit RepoHandle/.git watcher）。此窗口內 git_status_cmd／git_branches 會以
@@ -313,6 +384,10 @@ let branchEpoch = 0
 // may publish while a newer read is pending, but cannot replace a newer result.
 let branchRequestSeq = 0
 let branchResponseSeq = 0
+// Same rule for status: loud refresh and refreshQuiet run independently within one
+// epoch, so an older read settling late must not replace a newer published status.
+let statusRequestSeq = 0
+let statusResponseSeq = 0
 // Status and refs refresh independently. A successful retry clears only its
 // own error; it must neither retain a recovered error nor erase the other
 // lane's current failure while runOp is waiting for the complete snapshot.
@@ -336,10 +411,12 @@ export function gitErrorIsSnapshot(): boolean {
 function statusRequestIsCurrent(
     env: GitEnvironment | null | undefined,
     rootAtFetch: string,
-    epochAtFetch: number
+    epochAtFetch: number,
+    seqAtFetch: number
 ): boolean {
     return !detectInFlight && !useGitStore.getState().snapshotStale
         && readyRoot(env) === rootAtFetch && epochAtFetch === statusEpoch
+        && seqAtFetch >= statusResponseSeq
 }
 
 function branchRequestIsCurrent(
@@ -407,11 +484,24 @@ export const useGitStore = create<GitState>()((set, get) => ({
         set((s) => ({ consoleLog: [entry, ...s.consoleLog].slice(0, CONSOLE_LOG_LIMIT) }))
     },
 
-    detect: async (workspacePath) => {
+    detect: async (workspacePath, requestedRepository) => {
+        const repositoryPath = requestedRepository === undefined
+            ? rememberedRepository(workspacePath)
+            : requestedRepository || null
         if (requestedWorkspacePath !== workspacePath) {
+            // Discovery belongs to the workspace; a new one starts empty.
+            set({ repositories: null, repositoriesTruncated: false })
+        }
+        if (requestedWorkspacePath !== workspacePath || requestedRepositoryPath !== repositoryPath) {
             get().cancelAmend()
+            // The draft belongs to the repository it was typed in; a snapshot hit
+            // below must not carry it into another workspace's commit box.
+            set({ commitMessage: "" })
         }
         requestedWorkspacePath = workspacePath
+        requestedRepositoryPath = repositoryPath
+        set({ repositoryPath })
+        const cacheKey = snapshotKey(workspacePath, repositoryPath)
         foregroundError = null
         const seq = ++detectSeq
         set({ busy: null, amendLoading: false })
@@ -421,7 +511,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         // #58 T4a：有快照先 hydrate——面板立即顯示上次離開時的內容（標記 stale），
         // 消除切回時的空白窗；背景 bootstrap 完成後以真值覆蓋。此時我們是最新的
         // detect（seq 剛取），同步 set 不會與更新的 detect 競態。
-        const snapshot = readSnapshot(workspacePath)
+        const snapshot = readSnapshot(cacheKey)
         if (snapshot) {
             set({
                 environment: snapshot.environment,
@@ -433,7 +523,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
             })
             // environment 已換血成快照的 → live key 跟著換：hydrate 期間 watcher/
             // focus refresh 落地的更新要寫進「這個」workspace 的快照。
-            liveSnapshotKey = workspacePath
+            liveSnapshotKey = cacheKey
         } else {
             // An uncached workspace must never keep repo A actionable while
             // repo B is still bootstrapping. Clear all repository-owned state
@@ -455,7 +545,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
             // #57 T3：首載一趟 bootstrap 回齊 environment＋status＋branches——
             // 消除 detect→status/branches 的兩趟 IPC waterfall，也不吃 refresh 的
             // 300ms debounce（那只留給 watcher/focus 觸發的後續刷新）。
-            const { environment, status, branches, snapshotError } = await gitBootstrap(workspacePath)
+            const { environment, status, branches, snapshotError } = await gitBootstrap(workspacePath, repositoryPath)
             // 過期 resolve（更新的 detect 已進場）→ 整段丟棄，不觸碰 store，
             // 抑制旗標歸更新的 detect 管。
             if (seq !== detectSeq) return
@@ -485,11 +575,12 @@ export const useGitStore = create<GitState>()((set, get) => ({
             // missing）則失效舊快照：這個 workspace 已不是 repo，下次切回不得
             // hydrate 舊 repo 殘影（沿用「非 repo 不殘留」語意）。
             if (environment.status === "ready") {
-                liveSnapshotKey = workspacePath
-                writeSnapshot(workspacePath, { environment, status, branches, at: Date.now() })
+                liveSnapshotKey = cacheKey
+                writeSnapshot(cacheKey, { environment, status, branches, at: Date.now() })
             } else {
                 liveSnapshotKey = null
-                snapshots.delete(workspacePath)
+                snapshots.delete(cacheKey)
+                autoSelectRepository(workspacePath)
             }
             // 抑制期內被擋下的 refresh 補跑一次：bootstrap 快照可能在該 fs 變更
             // 之前取樣，不補跑會漏掉窗口內落地的變更（debounce 照常吸震）。
@@ -507,23 +598,70 @@ export const useGitStore = create<GitState>()((set, get) => ({
         }
     },
 
+    discover: async (workspacePath) => {
+        const seq = ++discoverSeq
+        try {
+            const discovery = await gitDiscover(workspacePath)
+            if (seq !== discoverSeq || requestedWorkspacePath !== workspacePath) return
+            set({ repositories: discovery.repositories, repositoriesTruncated: discovery.truncated })
+            const selected = requestedRepositoryPath
+            if (
+                selected
+                && !discovery.truncated
+                && !discovery.repositories.some((repository) => repository.relativePath === selected)
+            ) {
+                // The remembered nested repository no longer exists.
+                rememberRepository(workspacePath, null)
+                await get().detect(workspacePath, null)
+                return
+            }
+            autoSelectRepository(workspacePath)
+        } catch {
+            if (seq !== discoverSeq || requestedWorkspacePath !== workspacePath) return
+            set({ repositories: [], repositoriesTruncated: false })
+        }
+    },
+
+    selectRepository: async (repositoryPath) => {
+        const workspacePath = requestedWorkspacePath
+        if (!workspacePath || get().busy) return
+        const target = repositoryPath || null
+        // A nested repository is opened under the workspace's trust; a plain
+        // folder never prompted for it, so ask now.
+        if (target && !(await ensureWorkspaceTrusted(workspacePath))) return
+        if (requestedWorkspacePath !== workspacePath) return
+        rememberRepository(workspacePath, target)
+        const { useUiStore } = await import("./uiStore")
+        useUiStore.getState().resetGitRepositoryUi()
+        await get().detect(workspacePath, target)
+    },
+
+    trustWorkspace: async () => {
+        const workspacePath = requestedWorkspacePath
+        if (!workspacePath || !(await ensureWorkspaceTrusted(workspacePath))) return
+        if (requestedWorkspacePath !== workspacePath) return
+        await get().detect(workspacePath, requestedRepositoryPath)
+    },
+
     retrySnapshot: async () => {
         if (get().busy || detectInFlight) return
-        if (requestedWorkspacePath) await get().detect(requestedWorkspacePath)
+        if (requestedWorkspacePath) await get().detect(requestedWorkspacePath, requestedRepositoryPath)
         else await Promise.all([get().refresh(), get().loadBranches()])
     },
 
     refresh: (paths) => {
-        // Non-ready environments (fs/focus-driven refreshes before detect, or a
-        // non-repo workspace) must not touch git or write lastError (background
-        // noise rule, m2).
-        if (get().environment?.status !== "ready") return Promise.resolve()
         // detect 在飛期間 Rust 端 repo state 歸屬不明（可能仍是前一個 repo）：
         // 不發起 fetch，記一筆待 bootstrap 落地後補跑（見 detectInFlight 註解）。
+        // Checked before readiness: an uncached detect clears the environment, and
+        // a change after bootstrap sampled status must still be rerun once ready.
         if (detectInFlight) {
             refreshAfterDetect = true
             return Promise.resolve()
         }
+        // Non-ready environments (fs/focus-driven refreshes before detect, or a
+        // non-repo workspace) must not touch git or write lastError (background
+        // noise rule, m2).
+        if (get().environment?.status !== "ready") return Promise.resolve()
         // A failed bootstrap has not established repository ownership. Only a
         // bootstrap retry can recover it; a status-only read cannot clear it.
         if (get().snapshotStale) return Promise.resolve()
@@ -573,9 +711,10 @@ export const useGitStore = create<GitState>()((set, get) => ({
                     const requestPaths = scheduledScope === null ? paths : scheduledScope
                     if (generation === refreshFlightGen) scheduledScope = null
                     const epochAtFetch = statusEpoch
+                    const seqAtFetch = ++statusRequestSeq
                     let completedCurrentFullRequest = false
                     try {
-                        const status = await retryBusyGitRead(() => gitStatus(rootAtFetch, requestPaths), () => statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch))
+                        const status = await retryBusyGitRead(() => gitStatus(rootAtFetch, requestPaths), () => statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch))
                         if (generation !== refreshFlightGen) return
                         // Re-check after the await: the environment can flip to
                         // non-ready while the fetch is in flight (detect() switching to
@@ -589,7 +728,8 @@ export const useGitStore = create<GitState>()((set, get) => ({
                         // statusEpoch: a successful mutation (or landed detect) sampled
                         // after this request started makes the result stale even on the
                         // same root.
-                        if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+                        if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
+                            statusResponseSeq = seqAtFetch
                             completedCurrentFullRequest = requestPaths === undefined
                             statusRefreshError = null
                             set((state) => ({ status, lastError: foregroundError ?? branchRefreshError, statusRevision: state.statusRevision + 1 }))
@@ -599,7 +739,8 @@ export const useGitStore = create<GitState>()((set, get) => ({
                         if (generation !== refreshFlightGen) return
                         // Same guard for a stale rejection — a failure from the old
                         // workspace or pre-mutation epoch must stay silent.
-                        if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+                        if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
+                            statusResponseSeq = seqAtFetch
                             completedCurrentFullRequest = requestPaths === undefined
                             statusRefreshError = String(e)
                             set({ lastError: foregroundError ?? statusRefreshError })
@@ -648,9 +789,11 @@ export const useGitStore = create<GitState>()((set, get) => ({
         const rootAtFetch = readyRoot(get().environment)
         if (!rootAtFetch || get().snapshotStale) return
         const epochAtFetch = statusEpoch
+        const seqAtFetch = ++statusRequestSeq
         try {
-            const status = await retryBusyGitRead(() => gitStatus(rootAtFetch, paths), () => statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch))
-            if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+            const status = await retryBusyGitRead(() => gitStatus(rootAtFetch, paths), () => statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch))
+            if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
+                statusResponseSeq = seqAtFetch
                 statusRefreshError = null
                 set((state) => ({ status, lastError: foregroundError ?? branchRefreshError, statusRevision: state.statusRevision + 1 }))
                 syncLiveSnapshot(get())
@@ -658,7 +801,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         } catch (e) {
             // Rethrow only while the request is still current so checkRemote can
             // pause. A pre-mutation or cross-root failure must not become last writer.
-            if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch)) {
+            if (statusRequestIsCurrent(get().environment, rootAtFetch, epochAtFetch, seqAtFetch)) {
                 throw e
             }
         }
@@ -744,6 +887,17 @@ export const useGitStore = create<GitState>()((set, get) => ({
             if (seqAtOp === detectSeq) {
                 foregroundError = String(e)
                 set({ lastError: foregroundError })
+            }
+            // Persist the failure so git problems can be diagnosed from the
+            // app log; remote URLs may embed credentials. Logging must never
+            // interrupt the failure bookkeeping below.
+            try {
+                void logUserAction("git_operation_failed", `${cmd} failed`, {
+                    op: name,
+                    error: String(e).replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1<redacted>@")
+                })
+            } catch {
+                // ignore
             }
             get().appendConsole({
                 id: ++consoleSeq,
@@ -832,4 +986,38 @@ export function changedPathSet(status: GitStatus | null): ReadonlySet<string> {
     for (const entry of status.conflicted) set.add(entry.path)
     changedPathsByStatus.set(status, set)
     return set
+}
+
+/** A Git request the backend refused because the workspace is not trusted. */
+export function isWorkspaceTrustError(error: string | null): boolean {
+    if (!error?.startsWith("{")) return false
+    try {
+        const code = (JSON.parse(error) as { error?: unknown }).error
+        return code === "untrustedWorkspace" || code === "identityMismatch"
+    } catch {
+        return false
+    }
+}
+
+async function ensureWorkspaceTrusted(workspacePath: string): Promise<boolean> {
+    const { useWorkspaceTrustStore } = await import("./workspaceTrustStore")
+    const trust = useWorkspaceTrustStore.getState()
+    const status = await trust.refreshStatus(workspacePath).catch(() => null)
+    if (!status) return false
+    if (status.state === "trusted") return true
+    return trust.requestWorkspaceGrant(status)
+}
+
+// A workspace that is not a repository itself opens its first nested
+// repository, once both detection and discovery have landed.
+function autoSelectRepository(workspacePath: string): void {
+    const state = useGitStore.getState()
+    if (
+        requestedWorkspacePath !== workspacePath
+        || requestedRepositoryPath !== null
+        || detectInFlight
+        || state.environment?.status !== "notARepo"
+    ) return
+    const first = state.repositories?.find((repository) => repository.relativePath !== "")
+    if (first) void state.selectRepository(first.relativePath)
 }

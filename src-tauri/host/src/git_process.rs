@@ -43,6 +43,7 @@ fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<(), String> {
 fn read_pipe(
     mut pipe: impl Read,
     limit: usize,
+    limit_error: &'static str,
     stop: &AtomicBool,
     deadline: Instant,
 ) -> Result<Vec<u8>, String> {
@@ -56,7 +57,7 @@ fn read_pipe(
             Ok(0) => return Ok(bytes),
             Ok(n) => {
                 if bytes.len() + n > limit {
-                    return Err("git-output-limit".into());
+                    return Err(limit_error.into());
                 }
                 bytes.extend_from_slice(&buffer[..n]);
             }
@@ -68,11 +69,24 @@ fn read_pipe(
 }
 
 pub(crate) fn execute(
+    cmd: Command,
+    args: &[&str],
+    timeout: Duration,
+    stdin: Option<&[u8]>,
+    on_spawn: Option<&dyn Fn(u32)>,
+) -> Result<GitOutput, String> {
+    execute_with_stdout_limit(cmd, args, timeout, stdin, on_spawn, STDOUT_LIMIT)
+}
+
+/// `execute` with a caller-chosen stdout bound, for reads whose own contract
+/// (e.g. blob grading up to the file hard cap) exceeds the default limit.
+pub(crate) fn execute_with_stdout_limit(
     mut cmd: Command,
     args: &[&str],
     timeout: Duration,
     stdin: Option<&[u8]>,
     on_spawn: Option<&dyn Fn(u32)>,
+    stdout_limit: usize,
 ) -> Result<GitOutput, String> {
     let cancelled = crate::cancellation::token();
     if cancelled.load(Ordering::Acquire) {
@@ -111,11 +125,18 @@ pub(crate) fn execute(
         let stop = stop.clone();
         let tx = tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send((which, read_pipe(pipe, limit, &stop, deadline)));
+            // Distinct stderr error: callers treat a stdout overflow as an oversized
+            // object, which must never absorb an unrelated stderr flood.
+            let limit_error = if which == 0 {
+                "git-output-limit"
+            } else {
+                "git-stderr-limit"
+            };
+            let _ = tx.send((which, read_pipe(pipe, limit, limit_error, &stop, deadline)));
         })
     };
     // Boxed Read gives both pipe types one bounded worker implementation.
-    let out_thread = output_worker(Box::new(stdout) as Box<dyn Read + Send>, STDOUT_LIMIT, 0);
+    let out_thread = output_worker(Box::new(stdout) as Box<dyn Read + Send>, stdout_limit, 0);
     let err_thread = output_worker(Box::new(stderr) as Box<dyn Read + Send>, STDERR_LIMIT, 1);
     let data = stdin.unwrap_or_default().to_vec();
     let tx_input = tx.clone();
@@ -146,6 +167,7 @@ pub(crate) fn execute(
     });
     drop(tx);
     let mut outputs = [None, None, None];
+    let mut pending_output = None;
     let result = (|| loop {
         if cancelled.load(Ordering::Acquire) {
             return Err("git-cancelled".into());
@@ -156,6 +178,9 @@ pub(crate) fn execute(
                 args.first().unwrap_or(&"")
             ));
         }
+        if let Some((which, result)) = pending_output.take() {
+            outputs[which] = Some(result?);
+        }
         while let Ok((which, result)) = rx.try_recv() {
             outputs[which] = Some(result?);
         }
@@ -164,7 +189,13 @@ pub(crate) fn execute(
                 return Ok(status.code().unwrap_or(-1));
             }
         }
-        std::thread::sleep(POLL);
+        // Wake on completion, but process it after the cancellation/deadline
+        // checks above so those keep their existing precedence.
+        match rx.recv_timeout(POLL) {
+            Ok(message) => pending_output = Some(message),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(POLL),
+        }
     })();
     if result.is_err() {
         stop.store(true, Ordering::Release);
@@ -199,6 +230,245 @@ pub(crate) fn execute(
 mod tests {
     use super::*;
     use crate::git_service::run_git;
+
+    #[cfg(unix)]
+    fn fixture_command(
+        root: &std::path::Path,
+        program: &str,
+        args: &[&str],
+        pipe_input: bool,
+    ) -> Command {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .env_clear()
+            .current_dir(root)
+            .process_group(0);
+        command.stdin(if pipe_input {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        });
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        command
+    }
+
+    #[test]
+    fn owned_empty_input_delivers_eof() {
+        let root = tempfile::tempdir().unwrap();
+        for input in [None, Some(&[][..])] {
+            let result = execute(
+                fixture_command(root.path(), "/bin/cat", &[], true),
+                &["owned-eof"],
+                Duration::from_secs(2),
+                input,
+                None,
+            )
+            .unwrap();
+            assert_eq!(result.code, 0);
+            assert!(result.stdout.is_empty());
+            assert!(result.stderr.is_empty());
+        }
+    }
+
+    #[test]
+    fn owned_input_and_stdout_limit_are_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let data = "中文😀\n".repeat(4096).into_bytes();
+        let result = execute(
+            fixture_command(root.path(), "/bin/cat", &[], true),
+            &["owned-payload"],
+            Duration::from_secs(2),
+            Some(&data),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.code, 0);
+        assert_eq!(result.stdout, data);
+        assert!(result.stderr.is_empty());
+        let error = execute_with_stdout_limit(
+            fixture_command(root.path(), "/bin/cat", &[], true),
+            &["owned-limit"],
+            Duration::from_secs(2),
+            Some(&data),
+            None,
+            4,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error, "git-output-limit");
+    }
+
+    #[test]
+    fn owned_cancel_retains_precedence_and_does_not_cancel_the_next_job() {
+        let root = tempfile::tempdir().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let hook = move |_pid| signal.store(true, Ordering::Release);
+        let started = Instant::now();
+        let error = with_cancellation(cancelled, || {
+            execute(
+                fixture_command(root.path(), "/bin/sh", &["-c", "exec /bin/sleep 30"], false),
+                &["owned-cancel"],
+                Duration::from_secs(5),
+                None,
+                Some(&hook),
+            )
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, "git-cancelled");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let next = execute(
+            fixture_command(root.path(), "/usr/bin/printf", &["ok"], false),
+            &["owned-next"],
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(next.code, 0);
+        assert_eq!(next.stdout, b"ok");
+    }
+
+    #[test]
+    fn owned_timeout_remains_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let error = execute(
+            fixture_command(root.path(), "/bin/sh", &["-c", "exec /bin/sleep 30"], true),
+            &["owned-timeout"],
+            Duration::from_millis(50),
+            Some(&[]),
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn closed_output_channels_still_wait_for_the_real_exit_status() {
+        let root = tempfile::tempdir().unwrap();
+        let result = execute(
+            fixture_command(
+                root.path(),
+                "/bin/sh",
+                &["-c", "exec 1>&- 2>&-; /bin/sleep 0.05; exit 23"],
+                false,
+            ),
+            &["owned-closed-pipes"],
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.code, 23);
+        assert!(result.stdout.is_empty());
+        assert!(result.stderr.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "This manual comparison requires release binaries"
+    )]
+    #[test]
+    #[ignore = "manual owned process runner performance measurement"]
+    fn performance_empty_stdin_worker() {
+        use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        assert!(!cfg!(debug_assertions), "Use --release");
+        fn cpu_ms(kind: libc::c_int) -> f64 {
+            let usage = unsafe {
+                let mut value = std::mem::MaybeUninit::<libc::rusage>::uninit();
+                assert_eq!(libc::getrusage(kind, value.as_mut_ptr()), 0);
+                value.assume_init()
+            };
+            (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) as f64 * 1000.0
+                + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1000.0
+        }
+        let root = tempfile::tempdir().unwrap();
+        let payload = "fixture 中文😀\n".repeat(4096).into_bytes();
+        let mut memory = System::new();
+        let pid = get_current_pid().unwrap();
+        for scenario in ["no-input", "empty-input", "unicode-input", "stderr-exit"] {
+            for pass in 0..8 {
+                let iterations = if pass == 0 { 100 } else { 40 };
+                let mut durations = Vec::with_capacity(iterations);
+                let before = cpu_ms(libc::RUSAGE_SELF);
+                let children_before = cpu_ms(libc::RUSAGE_CHILDREN);
+                for _ in 0..iterations {
+                    let (command, input) = match scenario {
+                        "no-input" => (
+                            fixture_command(root.path(), "/usr/bin/printf", &["fixture"], false),
+                            None,
+                        ),
+                        "empty-input" => (
+                            fixture_command(root.path(), "/bin/cat", &[], true),
+                            Some(&[][..]),
+                        ),
+                        "unicode-input" => (
+                            fixture_command(root.path(), "/bin/cat", &[], true),
+                            Some(payload.as_slice()),
+                        ),
+                        _ => (
+                            fixture_command(root.path(), "/usr/bin/printf", &["%"], false),
+                            None,
+                        ),
+                    };
+                    let started = Instant::now();
+                    let result = execute(
+                        command,
+                        &["owned-fixture"],
+                        Duration::from_secs(5),
+                        input,
+                        None,
+                    )
+                    .unwrap();
+                    durations.push(started.elapsed().as_secs_f64() * 1000.0);
+                    if scenario == "stderr-exit" {
+                        assert_ne!(result.code, 0);
+                        assert!(!result.stderr.is_empty());
+                    } else {
+                        assert_eq!(result.code, 0);
+                        assert!(result.stderr.is_empty());
+                        let expected = match scenario {
+                            "no-input" => b"fixture".as_slice(),
+                            "unicode-input" => payload.as_slice(),
+                            _ => &[],
+                        };
+                        assert_eq!(result.stdout, expected);
+                    }
+                }
+                let cpu = cpu_ms(libc::RUSAGE_SELF) - before;
+                let children = cpu_ms(libc::RUSAGE_CHILDREN) - children_before;
+                memory.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&[pid]),
+                    true,
+                    ProcessRefreshKind::nothing().with_memory(),
+                );
+                let fd_path = if cfg!(target_os = "linux") {
+                    "/proc/self/fd"
+                } else {
+                    "/dev/fd"
+                };
+                println!(
+                    "EMPTY_STDIN_MEASUREMENT {}",
+                    serde_json::json!({
+                        "scenario": scenario, "pass": pass, "warmup": pass == 0, "iterations": iterations,
+                        "parentCpuMs": cpu, "childCpuMs": children, "totalCpuMs": cpu + children,
+                        "durationsMs": durations, "descriptors": std::fs::read_dir(fd_path).unwrap().count(),
+                        "rssBytes": memory.process(pid).unwrap().memory(), "profile": "release"
+                    })
+                );
+            }
+        }
+    }
+
     #[test]
     fn output_is_bounded_and_cancellation_does_not_affect_other_jobs() {
         let root = tempfile::tempdir().unwrap();
@@ -211,6 +481,17 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(error, "git-output-limit");
+        // A stderr flood is reported separately so blob readers never mistake it
+        // for an oversized object.
+        let error = run_git(
+            root.path(),
+            &["-c", "alias.flood=!yes >&2", "flood"],
+            Duration::from_secs(5),
+            &[],
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error, "git-stderr-limit");
         let cancelled = Arc::new(AtomicBool::new(false));
         let signal = cancelled.clone();
         let started = Instant::now();

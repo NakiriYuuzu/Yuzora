@@ -75,7 +75,13 @@ async function notifyChanges(workspace: RemoteWorkspace, paths: string[]): Promi
   const root = remoteFilePath(workspace.hostId, workspace.root)
   const changed = new Set(paths.map((path) => remoteFilePath(workspace.hostId, path, workspace.root)))
   // Directory/coalesced notifications must also reach dirty documents.
-  for (const uri of revisions.keys()) if ([...changed].some((parent) => uri === parent || uri.startsWith(parent.replace(/\/$/, "") + "/"))) changed.add(uri)
+  if (changed.size && revisions.size) {
+    // Appended documents are already descendants of these original paths.
+    const parents = [...changed].map((parent) => parent.replace(/\/$/, "") + "/")
+    for (const uri of revisions.keys()) {
+      if (!changed.has(uri) && parents.some((parent) => uri.startsWith(parent))) changed.add(uri)
+    }
+  }
   await emit("fs:external-change", { workspaceRoot: root, paths: [...changed] })
 }
 
@@ -138,7 +144,8 @@ export async function reconnectRemoteWorkspaces(owner: ConnectionOwner, isCurren
     previous.backend = backend
     const workspace = previous
     for (const [path, original] of [...revisions]) {
-      if (original.backend !== before) continue
+      // A prior read may have awaited while this document closed or accepted a new snapshot.
+      if (original.backend !== before || revisions.get(path) !== original) continue
       const relative = relativeRemoteHostPath(previous.root, parseRemoteFilePath(path)!.path)
       if (relative === null) continue
       const read = await requestHost<ReadResult>(owner, { method: "filesRead", params: { workspace: opened.capabilityId, path: relative } }).catch(() => null)
@@ -167,7 +174,7 @@ export async function registerSftpWorkspace(hostId: string, path: string): Promi
   // and only rebind revisions whose source bytes are still unchanged.
   if (previous) {
     for (const [path, original] of [...revisions]) {
-      if (original.backend !== previous.backend) continue
+      if (original.backend !== previous.backend || revisions.get(path) !== original) continue
       const read = await invoke<ReadResult>("sftp_open_file", { sessionId, path: parseRemoteFilePath(path)!.path }).catch(() => null)
       if (useSshStore.getState().sessions[hostId]?.sessionId !== sessionId || workspaces.get(uri) !== workspace) throw new Error("Remote workspace connection changed; response discarded")
       if (revisions.get(path) === original && read?.revision === original.revision) revisions.set(path, { backend, revision: original.revision })
@@ -295,6 +302,59 @@ export async function createRemotePath(workspaceUri: string, uri: string, direct
     else await invoke(directory ? "sftp_mkdir" : "sftp_create_file", { sessionId: backend.sessionId, path })
     assertBackend(uri, backend)
   } finally { await release() }
+}
+
+function remoteTargetDir(workspaceUri: string, targetDir: string): { workspace: RemoteWorkspace; relative: string } {
+  if (targetDir === workspaceUri) return { workspace: resolveWorkspace(workspaceUri), relative: "" }
+  const { workspace, relative } = mutationPath(workspaceUri, targetDir)
+  return { workspace, relative }
+}
+
+function resolveWorkspace(workspaceUri: string): RemoteWorkspace {
+  const resource = parseRemoteFilePath(workspaceUri)
+  if (!resource) throw new Error("Not a remote resource")
+  const workspace = workspaces.get(remoteFilePath(resource.hostId, resource.workspaceRoot ?? resource.path))
+  if (!workspace) throw new Error("Reconnect the remote workspace before opening its files")
+  return workspace
+}
+
+async function transferRemotePaths(method: "filesCopy" | "filesMove", workspaceUri: string, sources: string[], targetDir: string): Promise<string[]> {
+  const release = retainRemoteWorkspace(workspaceUri)
+  try {
+    const target = remoteTargetDir(workspaceUri, targetDir)
+    const relatives = sources.map((source) => {
+      const resolved = mutationPath(workspaceUri, source)
+      if (resolved.workspace !== target.workspace) throw new Error("Operation must stay inside its workspace")
+      return resolved.relative
+    })
+    const backend = target.workspace.backend
+    // SFTP has no server-side copy; only runtime hosts copy and move in place.
+    if (backend.kind !== "runtime") throw new Error(method === "filesCopy" ? "copy-unsupported-sftp" : "move-unsupported-sftp")
+    const created = await requestHost<string[]>(backend.owner, { method, params: { workspace: backend.capabilityId, sources: relatives, target_dir: target.relative } })
+    assertBackend(workspaceUri, backend)
+    const paths = created.map((relative) => remoteFilePath(target.workspace.hostId, joinRemoteHostPath(target.workspace.root, relative), target.workspace.root))
+    // Moved documents keep their accepted revision, so the next save at the
+    // new path is not treated as an unknown remote file.
+    if (method === "filesMove") sources.forEach((from, index) => moveRevisions(from, paths[index], backend))
+    return paths
+  } finally { await release() }
+}
+
+function moveRevisions(from: string, to: string | undefined, backend: Backend): void {
+  if (!to || to === from) return
+  for (const [uri, opened] of [...revisions]) {
+    if (uri !== from && !uri.startsWith(from + "/")) continue
+    revisions.delete(uri)
+    if (opened.backend === backend) revisions.set(to + uri.slice(from.length), opened)
+  }
+}
+
+export function copyRemotePaths(workspaceUri: string, sources: string[], targetDir: string): Promise<string[]> {
+  return transferRemotePaths("filesCopy", workspaceUri, sources, targetDir)
+}
+
+export function moveRemotePaths(workspaceUri: string, sources: string[], targetDir: string): Promise<string[]> {
+  return transferRemotePaths("filesMove", workspaceUri, sources, targetDir)
 }
 
 export async function renameRemotePath(workspaceUri: string, from: string, to: string): Promise<void> {

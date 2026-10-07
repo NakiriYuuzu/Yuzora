@@ -324,8 +324,8 @@ export function installDemoRuntime() {
         }
         case "fs_create_file":
         case "fs_create_dir": {
-          if (args.workspace !== ROOT) throw new Error("Workspace does not match the demo workspace");
-          const relative = relativePath(path);
+          if (args.workspaceCapabilityId !== "demo-workspace") throw new Error("Workspace does not match the demo workspace");
+          const relative = relativePath(`${ROOT}/${path}`);
           if (directories.has(relative) || Object.hasOwn(files, relative)) throw new Error("Path already exists");
           ensureParents(relative);
           if (command === "fs_create_dir") directories.add(relative);
@@ -412,6 +412,8 @@ export function installDemoRuntime() {
           return { commits: [], hasMore: false, nextCursor: null };
         case "git_log_authors":
           return [];
+        case "herdr_startup_status":
+          return { state: "ready", error: null };
         case "herdr_sessions":
           return sessions;
         case "herdr_capabilities":

@@ -118,7 +118,10 @@ test("CodeMirror adapters use documentTop/line blocks and do not touch selection
     expect(scrollDOM.scrollTop).toBe(50)
 })
 
-function coordinatorHarness() {
+function coordinatorHarness(initialAnchors: SourceAnchor[] = [
+    { line: 1, previewOffset: 0 },
+    { line: 11, previewOffset: 1000 }
+]) {
     const editorListeners = new Set<() => void>()
     const previewListeners = new Set<() => void>()
     const frames = new Map<number, FrameRequestCallback>()
@@ -136,10 +139,7 @@ function coordinatorHarness() {
         return previewOffset
     })
     const cancelFrame = vi.fn((id: number) => void frames.delete(id))
-    const anchors = [
-        { line: 1, previewOffset: 0 },
-        { line: 11, previewOffset: 1000 }
-    ]
+    let anchors = initialAnchors
     const coordinator = createScrollSyncCoordinator({
         editor: {
             subscribeScroll: (listener) => {
@@ -175,6 +175,9 @@ function coordinatorHarness() {
         cancelFrame,
         editorListeners,
         previewListeners,
+        setAnchors(next: SourceAnchor[]) {
+            anchors = next
+        },
         setEditor(line: number, offset = line * 10) {
             editorLine = line
             editorOffset = offset
@@ -196,6 +199,9 @@ function coordinatorHarness() {
         },
         get frameCount() {
             return frames.size
+        },
+        get pendingCallback() {
+            return frames.values().next().value
         }
     }
 }
@@ -264,4 +270,126 @@ test("coordinator cleanup removes listeners, cancels RAF, and prevents ghost syn
     expect(harness.previewListeners.size).toBe(0)
     harness.flushFrame()
     expect(harness.previewWrites).not.toHaveBeenCalled()
+})
+
+// Independent oracle preserves the original first-upper-anchor linear search.
+function linearMapping(
+    value: number,
+    anchors: readonly SourceAnchor[],
+    from: keyof SourceAnchor,
+    to: keyof SourceAnchor
+): number | null {
+    if (!Number.isFinite(value) || anchors.length === 0) return null
+    if (value <= anchors[0][from]) return anchors[0][to]
+    const last = anchors[anchors.length - 1]
+    if (value >= last[from]) return last[to]
+    for (let index = 1; index < anchors.length; index++) {
+        const upper = anchors[index]
+        if (value > upper[from]) continue
+        const lower = anchors[index - 1]
+        const span = upper[from] - lower[from]
+        if (span <= 0) return upper[to]
+        const progress = (value - lower[from]) / span
+        return lower[to] + progress * (upper[to] - lower[to])
+    }
+    return last[to]
+}
+
+test("mapping matches the linear oracle across normalized plateaus, exact anchors and fractional positions", () => {
+    for (const count of [0, 1, 2, 3, 8, 17, 64, 257, 4096]) {
+        let seed = 0x595a0035 ^ count
+        const next = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed }
+        const raw: SourceAnchor[] = []
+        let line = 1, offset = 0
+        for (let index = 0; index < count; index++) {
+            line += next() % 3
+            offset += (next() % 3) * 7
+            raw.push({ line, previewOffset: offset })
+        }
+        const anchors = normalizeAnchors(raw.reverse(), line + 1, { endOffset: offset + 20 })
+        const lines = [Number.NaN, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, -1, 0, 1, line + 1, line + 2]
+        const offsets = [Number.NaN, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, -1, -0, 0, offset + 20, offset + 21]
+        for (let index = 0; index < anchors.length; index += Math.max(1, Math.floor(anchors.length / 32))) {
+            const anchor = anchors[index]
+            lines.push(anchor.line - .25, anchor.line, anchor.line + .25)
+            offsets.push(anchor.previewOffset - .25, anchor.previewOffset, anchor.previewOffset + .25)
+        }
+        for (let index = 0; index < 64; index++) {
+            lines.push((next() / 0x1_0000_0000) * (line + 3))
+            offsets.push((next() / 0x1_0000_0000) * (offset + 23))
+        }
+        for (const value of lines) expect(sourceLineToPreviewOffset(value, anchors)).toBe(linearMapping(value, anchors, "line", "previewOffset"))
+        for (const value of offsets) expect(previewOffsetToSourceLine(value, anchors)).toBe(linearMapping(value, anchors, "previewOffset", "line"))
+    }
+})
+
+test("mapping preserves first-upper choices for degenerate monotonic lists", () => {
+    const lists: SourceAnchor[][] = [
+        [],
+        [{ line: 1, previewOffset: -0 }],
+        [{ line: 1, previewOffset: 0 }, { line: 2, previewOffset: 0 }, { line: 5, previewOffset: 0 }],
+        [{ line: 1, previewOffset: 0 }, { line: 1, previewOffset: 10 }, { line: 2, previewOffset: 20 }],
+        [{ line: 1, previewOffset: -10 }, { line: 2, previewOffset: 0 }, { line: 3, previewOffset: 0 }, { line: 4, previewOffset: 10 }, { line: 8, previewOffset: 10 }]
+    ]
+    for (const anchors of lists) for (const value of [-20, -10, -0, 0, .25, 1, 1.5, 2, 2.5, 3, 4, 5, 8, 10, 11, 20]) {
+        expect(sourceLineToPreviewOffset(value, anchors)).toBe(linearMapping(value, anchors, "line", "previewOffset"))
+        expect(previewOffsetToSourceLine(value, anchors)).toBe(linearMapping(value, anchors, "previewOffset", "line"))
+    }
+})
+
+test("mapping keeps the linear result across early intervals and small-to-large list boundaries", () => {
+    for (const count of [7, 8, 9, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1024]) {
+        const anchors = Array.from({ length: count }, (_, index) => ({ line: 1 + index * 3, previewOffset: Math.floor(index / 4) * 20 }))
+        for (const index of [1, 6, 7, 8, 9, 15, 16, 31, 32, count - 2, count - 1]) {
+            if (index >= count) continue
+            for (const delta of [-.25, 0, .25]) {
+                const line = anchors[index].line + delta, offset = anchors[index].previewOffset + delta
+                expect(sourceLineToPreviewOffset(line, anchors)).toBe(linearMapping(line, anchors, "line", "previewOffset"))
+                expect(previewOffsetToSourceLine(offset, anchors)).toBe(linearMapping(offset, anchors, "previewOffset", "line"))
+            }
+        }
+    }
+})
+
+test("queued preview sync reads the latest viewport and rebuilt anchors before writing", () => {
+    const harness = coordinatorHarness([
+        { line: 1, previewOffset: 0 },
+        { line: 101, previewOffset: 1000 },
+        { line: 201, previewOffset: 2000 }
+    ])
+    try {
+        harness.setPreview(400)
+        harness.emitPreview()
+        harness.setAnchors(normalizeAnchors([
+            { line: 1, previewOffset: 0 },
+            { line: 51, previewOffset: 1000 },
+            { line: 101, previewOffset: 3000 },
+            { line: 201, previewOffset: 6000 }
+        ], 201, { endOffset: 6000 }))
+        harness.setPreview(1400)
+        expect(harness.frameCount).toBe(1)
+        harness.flushFrame()
+        expect(harness.editorWrites).toHaveBeenLastCalledWith(61)
+        expect(harness.previewWrites).not.toHaveBeenCalled()
+        harness.coordinator.resync(151)
+        expect(harness.previewWrites).toHaveBeenLastCalledWith(4500)
+        expect(harness.editorWrites).toHaveBeenLastCalledWith(151)
+    } finally { harness.coordinator.destroy() }
+})
+
+test("a captured frame stays inert after idempotent coordinator destruction", () => {
+    const harness = coordinatorHarness()
+    harness.setEditor(6)
+    harness.emitEditor()
+    const callback = harness.pendingCallback
+    if (!callback) throw new Error("Expected a pending frame")
+    harness.coordinator.destroy()
+    harness.coordinator.destroy()
+    callback(0)
+    expect(harness.editorWrites).not.toHaveBeenCalled()
+    expect(harness.previewWrites).not.toHaveBeenCalled()
+    expect(harness.cancelFrame).toHaveBeenCalledTimes(1)
+    expect(harness.editorListeners.size).toBe(0)
+    expect(harness.previewListeners.size).toBe(0)
+    expect(harness.frameCount).toBe(0)
 })

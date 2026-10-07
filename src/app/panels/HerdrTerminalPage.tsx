@@ -1,5 +1,7 @@
 import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
+import { installHerdrDragSelection, type HerdrDragSelection } from "@/terminal/herdrDragSelection"
+import { readPaneSelection } from "@/terminal/herdrScrollIpc"
 import { terminalFontStack } from "@/terminal/terminalFonts"
 import {
   useCallback,
@@ -26,7 +28,8 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
-import { herdrScrollStrategyForRuntime, supportsHerdrPaneScrollCandidate } from "@/lib/herdrCapabilities"
+import { isRetryableHerdrConnectError } from "@/lib/herdrErrors"
+import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
 import { useHostStore } from "@/state/hostStore"
 import {
@@ -41,7 +44,7 @@ import type {
   HerdrTerminalMode,
   HerdrTerminalRole
 } from "@/lib/herdrTypes"
-import { useHerdrStore } from "@/state/herdrStore"
+import { isHerdrStartupPending, useHerdrStore } from "@/state/herdrStore"
 import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
@@ -62,6 +65,7 @@ import {
 import {
   createHerdrTerminalTransport,
   normalizeTerminalWheelRows,
+  terminalWheelCell,
   type TerminalTransportEvent
 } from "@/terminal/terminalTransport"
 import { buildXtermTheme } from "@/terminal/xtermTheme"
@@ -90,6 +94,10 @@ const RATIO_DEBOUNCE_MS = 120
 const LAYOUT_RETRY_DELAYS = [400, 1000]
 /** Herdr's `terminal.closed` reason when another controller attached with --takeover. */
 const HERDR_TAKEN_OVER_REASON = "terminal attach taken over"
+/** Automatic connector reopen attempts (0.5s, 1s, 2s, 4s, 8s) before offering Reconnect. */
+const CONNECT_RETRY_DELAYS = [500, 1000, 2000, 4000, 8000]
+/** A connector that stayed up this long restores the automatic reopen budget. */
+const CONNECT_STABLE_MS = 10_000
 
 function currentMode(): TerminalMode {
   return document.documentElement.classList.contains("dark") ? "dark" : "light"
@@ -177,15 +185,11 @@ export function HerdrTerminalPage({
     () => pagePathProp ?? herdrPagePath(herdrSessionId, terminalId),
     [pagePathProp, herdrSessionId, terminalId]
   )
-  const sessions = useHerdrStore((s) => s.sessions)
   const topologyRevision = useHerdrStore((s) => s.topologyRevision)
   const pageAttachments = useHerdrStore(useShallow((s) =>
     Array.from(s.attachments.values()).filter((record) => record.pagePath === pagePath)
   ))
-  const targetSessionName = useMemo(
-    () => resolveSessionName(sessions, herdrSessionId),
-    [sessions, herdrSessionId]
-  )
+  const targetSessionName = useHerdrStore((s) => resolveSessionName(s.sessions, herdrSessionId))
   const { terminals, agents, resolvedTabId, focusedPaneId: snapshotFocusedPaneId, focusedTerminalId: snapshotFocusedTerminalId } = useHerdrStore(useShallow((s) => {
     const snapshot = (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
       ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null)
@@ -208,12 +212,10 @@ export function HerdrTerminalPage({
   const targetCapabilities = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.capabilities : null)
     ?? (targetSessionName === s.selectedSessionName ? s.capabilities : null))
 
-  const sessionRunning = useMemo(
-    () => resolveSessionRunning(sessions, herdrSessionId),
-    [sessions, herdrSessionId]
-  )
-  const sessionCanConnect = sessionRunning === true
-  const sessionIsStopped = sessionRunning === false
+  const sessionRunning = useHerdrStore((s) => resolveSessionRunning(s.sessions, herdrSessionId))
+  const startupPending = useHerdrStore((s) => isHerdrStartupPending(s, findRuntimeSession(s.sessions, herdrSessionId)))
+  const sessionCanConnect = !startupPending && sessionRunning === true
+  const sessionIsStopped = !startupPending && sessionRunning === false
   const canSetSplitRatio = Boolean(
     sessionCanConnect &&
       targetCapabilities?.server.running &&
@@ -230,7 +232,7 @@ export function HerdrTerminalPage({
   const [hasConnectedSession, setHasConnectedSession] = useState(sessionCanConnect)
   const nativeClientOpen = useHerdrNativeStore(s => s.selection?.sessionName === targetSessionName)
   const canOpenTerminalConnector = Boolean(
-    !nativeClientOpen && !sessionIsStopped &&
+    !startupPending && !nativeClientOpen && !sessionIsStopped &&
       (sessionCanConnect || hasConnectedSession) &&
       terminalConnectorCapabilitiesAllowControl
   )
@@ -438,7 +440,7 @@ export function HerdrTerminalPage({
     ? t("herdrTerminal.sessionStopped", {
         name: herdrSessionId === "live" ? "default" : herdrSessionId
       })
-    : sessionRunning === null
+    : startupPending || sessionRunning === null
       ? t("herdrNav.connecting")
       : sessionCanConnect && !canOpenTerminalConnector
         ? targetCapabilities?.terminal.reason ?? t("herdrTerminal.connectorUnavailable")
@@ -485,6 +487,17 @@ export function HerdrTerminalPage({
     },
     [canFocusPane, focusedPaneId, herdrSessionId, sessionNameArg]
   )
+  // Agent activation (Alt+1..9, sidebar) can target another leaf of this
+  // mounted tab without changing the page identity or reloading its layout.
+  useEffect(() => useHerdrStore.subscribe((state, previous) => {
+    const request = state.paneFocusRequest
+    if (!request || request === previous.paneFocusRequest) return
+    if (request.sessionName !== targetSessionName && request.sessionName !== herdrSessionId) return
+    setLayout((current) => current && current.focusedPaneId !== request.paneId
+      && collectPaneIds(current.root).includes(request.paneId)
+      ? { ...current, focusedPaneId: request.paneId }
+      : current)
+  }), [herdrSessionId, targetSessionName])
   const tabMenuSession = targetSessionName ?? herdrSessionId
 
   const headerContextMenu = contextMenuHandler({
@@ -757,28 +770,18 @@ function HerdrTerminalLeaf({
   const fontFamily = useTerminalSettingsStore((state) => state.fontFamily)
   const paneKey = paneId ?? terminalId
   const attachmentKey = herdrAttachmentKey(pagePath, paneKey)
-  const sessions = useHerdrStore((s) => s.sessions)
-  const inventorySessionRunning = useMemo(
-    () => resolveSessionRunning(sessions, herdrSessionId),
-    [sessions, herdrSessionId]
-  )
-  const targetSessionName = useMemo(
-    () => resolveSessionName(sessions, herdrSessionId),
-    [sessions, herdrSessionId]
-  )
-  const targetHostId = useMemo(
-    () => {
-      const session = sessions.find((candidate) => sessionScope(candidate) === targetSessionName)
-      if (session?.hostId) return session.hostId
-      if (!targetSessionName?.startsWith("[")) return null
-      try {
-        return parseRuntimeScope(targetSessionName).hostId
-      } catch {
-        return null
-      }
-    },
-    [sessions, targetSessionName]
-  )
+  const inventorySessionRunning = useHerdrStore((s) => resolveSessionRunning(s.sessions, herdrSessionId))
+  const targetSessionName = useHerdrStore((s) => resolveSessionName(s.sessions, herdrSessionId))
+  const targetHostId = useHerdrStore((s) => {
+    const session = s.sessions.find((candidate) => sessionScope(candidate) === targetSessionName)
+    if (session?.hostId) return session.hostId
+    if (!targetSessionName?.startsWith("[")) return null
+    try {
+      return parseRuntimeScope(targetSessionName).hostId
+    } catch {
+      return null
+    }
+  })
   const baseCwd = useHerdrStore((s) => resolveHerdrTerminalBaseCwd({
     snapshot: targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null,
     terminalId,
@@ -786,9 +789,10 @@ function HerdrTerminalLeaf({
     workspaceId
   }))
   const sessionRunning = sessionRunningOverride ?? inventorySessionRunning
-  const sessionCanConnect = !forceDisconnected && sessionRunning === true
-  const sessionIsStopped = forceDisconnected || sessionRunning === false
-  const connectorEnabled = connectorEnabledOverride ?? sessionCanConnect
+  const startupPending = useHerdrStore((s) => isHerdrStartupPending(s, findRuntimeSession(s.sessions, herdrSessionId)))
+  const sessionCanConnect = !startupPending && !forceDisconnected && sessionRunning === true
+  const sessionIsStopped = !startupPending && (forceDisconnected || sessionRunning === false)
+  const connectorEnabled = !startupPending && (connectorEnabledOverride ?? sessionCanConnect)
   const updatePaneId = useWorkspaceStore((s) => s.updateHerdrPagePaneId)
   const registerAttachment = useHerdrStore((s) => s.registerAttachment)
   const updateAttachmentPaneId = useHerdrStore((s) => s.updateAttachmentPaneId)
@@ -825,6 +829,7 @@ function HerdrTerminalLeaf({
   const themeObserverRef = useRef<MutationObserver | null>(null)
   const dataDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const clipboardRef = useRef<TerminalClipboardController | null>(null)
+  const dragSelectionRef = useRef<HerdrDragSelection | null>(null)
   const outputQueueRef = useRef<TerminalOutputQueue | null>(null)
   const recoverOutputRef = useRef<((onFailed?: () => void) => void) | null>(null)
   const repaintAfterWriteRef = useRef(false)
@@ -852,6 +857,9 @@ function HerdrTerminalLeaf({
   // Another client attached with --takeover: the pane is alive, only this
   // connector was closed. Offer an explicit reconnect instead of a dead page.
   const [takenOver, setTakenOver] = useState(false)
+  // Automatic reopen gave up (or a manual Reconnect failed): keep the pane
+  // reachable through an explicit Reconnect instead of a dead page.
+  const [connectFailed, setConnectFailed] = useState(false)
 
   const displayMode: HerdrTerminalMode = connectorEnabled ? controlMode : "observe"
   const displayRole: HerdrTerminalRole = connectorEnabled ? role : "observer"
@@ -920,7 +928,22 @@ function HerdrTerminalLeaf({
       },
       canPaste: () =>
         !disposedRef.current && visibleRef.current && activeRef.current
-        && openReadyRef.current && Boolean(transportRef.current?.canWrite())
+        && openReadyRef.current && Boolean(transportRef.current?.canWrite()),
+      extendedSelection: {
+        active: () => dragSelectionRef.current?.active() ?? false,
+        read: () => dragSelectionRef.current?.read() ?? Promise.resolve("")
+      }
+    })
+    // Drag-selecting past the frame scrolls HERDR's host scrollback and copies
+    // the whole range from HERDR; xterm itself only holds the visible frame.
+    dragSelectionRef.current = installHerdrDragSelection(term, {
+      scrollState: () => paneScrollControllerRef.current?.state() ?? null,
+      scroll: (rows) => paneScrollControllerRef.current?.scroll(rows),
+      enabled: () =>
+        !disposedRef.current && activeRef.current && visibleRef.current && Boolean(scrollPaneId)
+        && supportsScrollInfoRef.current && term.buffer.active.type === "normal"
+        && Boolean(paneScrollControllerRef.current),
+      readText: (anchor, cursor) => readPaneSelection(contextSessionName, scrollPaneId ?? "", anchor, cursor)
     })
     term.attachCustomWheelEventHandler((event) => {
       const transport = transportRef.current
@@ -931,11 +954,14 @@ function HerdrTerminalLeaf({
         || !transport?.canWrite()
         || !transport.scroll
       ) return true
-      const rows = normalizeTerminalWheelRows(event.deltaY, event.deltaMode, terminalSize(term).rows)
+      const size = terminalSize(term)
+      const rows = normalizeTerminalWheelRows(event.deltaY, event.deltaMode, size.rows)
       if (rows === 0) return true
       event.preventDefault()
       event.stopPropagation()
-      void transport.scroll(event.deltaY < 0 ? -rows : rows)
+      const screen = term.element?.querySelector(".xterm-screen")?.getBoundingClientRect()
+      const cell = screen ? terminalWheelCell(screen, size.cols, size.rows, event.clientX, event.clientY) : undefined
+      void transport.scroll(event.deltaY < 0 ? -rows : rows, cell)
         .catch((error) => {
           if (!disposedRef.current) {
             const message = error instanceof Error ? error.message : String(error)
@@ -954,7 +980,10 @@ function HerdrTerminalLeaf({
     targetOpenRef.current = installTerminalTargetOpen(term, {
       getCwd: () => cwdRef.current
     })
-    const parsedDisposable = term.onWriteParsed?.(() => targetOpenRef.current?.resetHover()) ?? null
+    const parsedDisposable = term.onWriteParsed?.(() => {
+      targetOpenRef.current?.resetHover()
+      dragSelectionRef.current?.frame()
+    }) ?? null
     const resetTargetHover = () => targetOpenRef.current?.resetHover()
     container.addEventListener("mouseleave", resetTargetHover)
     window.addEventListener("blur", resetTargetHover)
@@ -1004,6 +1033,8 @@ function HerdrTerminalLeaf({
         themeObserverRef.current?.disconnect()
         clipboardRef.current?.dispose()
         clipboardRef.current = null
+        dragSelectionRef.current?.dispose()
+        dragSelectionRef.current = null
         parsedDisposable?.dispose()
         container.removeEventListener("mouseleave", resetTargetHover)
         window.removeEventListener("blur", resetTargetHover)
@@ -1048,6 +1079,14 @@ function HerdrTerminalLeaf({
           : null)
           ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
         return herdrScrollStrategyForRuntime(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined) === "terminal"
+      },
+      applicationWheelEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return supportsHerdrApplicationWheel(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined)
       },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
@@ -1156,8 +1195,37 @@ function HerdrTerminalLeaf({
     fitViewportRef.current = scheduleFit
 
     let recovering = false
+    let retryTimer: number | null = null
+    let retryAttempts = 0
+    /** First full frame of the current connector; null until one arrives. */
+    let connectedAt: number | null = null
+    const clearRetry = () => {
+      if (retryTimer !== null) window.clearTimeout(retryTimer)
+      retryTimer = null
+    }
+    // Remote helpers bound concurrent connector openings and streams, so a
+    // burst of Sessions or panes, or a dropped stream, is transient. Automatic
+    // reopen paths retry with backoff. Only a connector that stayed up past
+    // CONNECT_STABLE_MS restores the budget, so one that dies right after
+    // opening (with or without a first frame) still ends at Reconnect.
+    const retryConnect = (error: unknown) => {
+      if (connectedAt !== null && performance.now() - connectedAt >= CONNECT_STABLE_MS) retryAttempts = 0
+      connectedAt = null
+      if (transport.isDisposed?.() || !isRetryableHerdrConnectError(error)
+        || retryAttempts >= CONNECT_RETRY_DELAYS.length) return false
+      const reason = error instanceof Error ? error.message : String(error)
+      setStatusMessage(t("herdrTerminal.reconnecting", { reason }))
+      clearRetry()
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null
+        recoverOutput()
+      }, CONNECT_RETRY_DELAYS[retryAttempts++])
+      return true
+    }
     const recoverOutput = (onFailed?: () => void) => {
       if (recovering || transport.isDisposed?.()) return
+      clearRetry()
+      connectedAt = null
       recovering = true
       repaintAfterWriteRef.current = true
       openReadyRef.current = false
@@ -1169,11 +1237,16 @@ function HerdrTerminalLeaf({
         await transport.open({ ...lastSizeRef.current, onEvent: handleEvent })
         if (transport.isDisposed?.()) return
         openReadyRef.current = true
+        setConnectFailed(false)
         scrollbarRefreshRef.current?.()
         clipboardRef.current?.flushPendingPaste()
       }).catch((error) => {
         if (transport.isDisposed?.()) return
+        // A manual Reconnect (possibly against another controller's
+        // takeover) is one attempt per click; never re-take control on a timer.
+        if (!onFailed && retryConnect(error)) return
         setStatusMessage(String(error))
+        setConnectFailed(true)
         onFailed?.()
       }).finally(() => { recovering = false })
     }
@@ -1213,6 +1286,7 @@ function HerdrTerminalLeaf({
           // previous xterm write is still finishing. Do not discard them.
           awaitingFull = false
           hasFrame = true
+          connectedAt ??= performance.now()
           lastOutputSeqRef.current = event.seq
           // Herdr full frames already bracket one authoritative screen update
           // with synchronized-output mode and redraw the viewport cells.
@@ -1258,6 +1332,22 @@ function HerdrTerminalLeaf({
         return
       }
       if (event.type === "error") {
+        if (event.code === "invalid-terminal-geometry") {
+          openReadyRef.current = false
+          setStatusMessage(t("herdrTerminal.invalidGeometry"))
+          setConnectFailed(true)
+          return
+        }
+        if (event.code === "host-stream-closed") {
+          // The remote connector stream died; the pane itself is alive. Spend
+          // the same backoff budget, so a stream that dies right after every
+          // open (no full frame) ends at Reconnect instead of a reopen loop.
+          openReadyRef.current = false
+          if (retryConnect(event.message)) return
+          setStatusMessage(event.message)
+          setConnectFailed(true)
+          return
+        }
         const message = event.message === "terminal-input-limit" || event.message === "terminal-input-failed"
           ? t("herdrTerminal.inputPaused") : event.message
         setStatusMessage(message)
@@ -1298,9 +1388,10 @@ function HerdrTerminalLeaf({
         void transport.resize(size.cols, size.rows).catch(() => undefined)
       })
       .catch((error) => {
-        if (disposedRef.current) return
+        if (disposedRef.current || retryConnect(error)) return
         const message = error instanceof Error ? error.message : String(error)
         setStatusMessage(message)
+        setConnectFailed(true)
         outputQueueRef.current?.push(`\r\n[Failed to open Herdr terminal: ${message}]\r\n`)
       })
     }
@@ -1332,6 +1423,8 @@ function HerdrTerminalLeaf({
       keyDiagnostics.dispose()
       clipboardRef.current?.dispose()
       clipboardRef.current = null
+      dragSelectionRef.current?.dispose()
+      dragSelectionRef.current = null
       parsedDisposable?.dispose()
       container.removeEventListener("mouseleave", resetTargetHover)
       window.removeEventListener("blur", resetTargetHover)
@@ -1339,6 +1432,7 @@ function HerdrTerminalLeaf({
       targetOpenRef.current = null
       outputQueueRef.current?.dispose()
       unregisterTerminalOutputQueue(attachmentKey)
+      clearRetry()
       transport.detach()
       recoverOutputRef.current = null
       transportRef.current = null
@@ -1434,6 +1528,7 @@ function HerdrTerminalLeaf({
   const onReconnect = useCallback(() => {
     if (!recoverOutputRef.current || transportRef.current?.isDisposed?.()) return
     setTakenOver(false)
+    setConnectFailed(false)
     setStatusMessage(null)
     // Reopens this attachment as control + takeover, taking it back. The
     // session stays detached if that fails, so keep Reconnect available.
@@ -1466,7 +1561,7 @@ function HerdrTerminalLeaf({
       {t("herdrTerminal.takeControl")}
     </Button>
   ) : null
-  const controlButton = takenOver && sessionCanConnect ? (
+  const controlButton = (takenOver || connectFailed) && sessionCanConnect ? (
     <Button
       type="button"
       variant="outline"

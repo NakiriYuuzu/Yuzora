@@ -366,3 +366,51 @@ describe("openWorkspaceAtPath per-workspace tab 還原 (A→B→A)", () => {
         expect(activePath()).toBe("/a/2.ts")
     })
 })
+
+describe("pinned session membership", () => {
+    it("preserves duplicate pin order, exact path identity and sanitized paths", () => {
+        const paths = Array.from({ length: 256 }, (_, i) => `/ws/${i}.ts`)
+        const expectedPins = [...paths.slice(0, 96).reverse(), paths[3], "/ws/中.ts", "/ws/A.ts", "/ws/a.ts"]
+        localStorage.setItem(WORKSPACE_SESSION_STORAGE_KEY, JSON.stringify({
+            version: 2,
+            lastWorkspacePath: "/ws",
+            workspaces: {
+                "/ws": {
+                    tabs: [...paths, paths[3], "/ws/中.ts", "/ws/A.ts", "/ws/a.ts", "yuzora://preview", ""],
+                    activePath: paths[3],
+                    pinnedPaths: ["/missing", ...expectedPins, "yuzora://preview", "", 3, null]
+                }
+            }
+        }))
+        const entry = loadWorkspaceSessionEntry("/ws")
+        expect(entry).toEqual({
+            tabs: [...paths, paths[3], "/ws/中.ts", "/ws/A.ts", "/ws/a.ts"],
+            activePath: paths[3],
+            pinnedPaths: expectedPins
+        })
+        saveWorkspaceSession({ workspacePath: "/ws", ...entry! })
+        expect(loadWorkspaceSessionEntry("/ws")).toEqual(entry)
+    })
+
+    it.each([undefined, null, "not-an-array", [], ["/missing"], [null, 42]])(
+        "omits invalid or empty pin collections (%j)",
+        (pinnedPaths) => {
+            localStorage.setItem(WORKSPACE_SESSION_STORAGE_KEY, JSON.stringify({
+                version: 2,
+                lastWorkspacePath: "/ws",
+                workspaces: { "/ws": { tabs: ["/ws/a.ts"], activePath: "/ws/a.ts", pinnedPaths } }
+            }))
+            expect(loadWorkspaceSessionEntry("/ws")).toEqual({ tabs: ["/ws/a.ts"], activePath: "/ws/a.ts" })
+        }
+    )
+})
+
+it("does not persist undefined pins beyond an empty tab list", () => {
+    saveWorkspaceSession({
+        workspacePath: "/empty",
+        tabs: [],
+        activePath: null,
+        pinnedPaths: [undefined, null, 42] as unknown as string[]
+    })
+    expect(loadWorkspaceSessionEntry("/empty")).toEqual({ tabs: [], activePath: null })
+})

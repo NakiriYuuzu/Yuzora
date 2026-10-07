@@ -1,5 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { EditorState } from "@codemirror/state"
+import { EditorView } from "@codemirror/view"
+import { registerView, unregisterView } from "../editor/viewRegistry"
 
 import { uiInitialState, useUiStore } from "../state/uiStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -13,18 +16,18 @@ vi.mock("../editor/documentRegistry", () => ({
         result: { kind: "full", content: "<svg xmlns='http://www.w3.org/2000/svg'/>", size: 42 }
     }))
 }))
-vi.mock("../editor/viewRegistry", () => ({ getView: vi.fn(() => undefined) }))
 vi.mock("@/app/panels/PreviewPanel", () => ({
     PreviewPanel: () => <div data-testid="preview-panel-mock" />
 }))
 
 import { SvgSplitView, isSvgPath, useSvgPreviewStore } from "./SvgSplitView"
 import { EditorArea } from "./EditorArea"
-import { getDocument } from "../editor/documentRegistry"
+import { documentGeneration, getDocument } from "../editor/documentRegistry"
 
 const createdUrls = vi.hoisted(() => ({ count: 0, revoked: [] as string[] }))
 
 beforeEach(() => {
+    vi.mocked(documentGeneration).mockReturnValue(0)
     vi.stubGlobal("URL", {
         ...URL,
         createObjectURL: vi.fn(() => `blob:mock-${++createdUrls.count}`),
@@ -153,4 +156,82 @@ describe("EditorArea 分支", () => {
         expect(screen.getByTestId("editor-pane-mock")).toBeInTheDocument()
         expect(screen.getByTestId("svg-preview")).toBeInTheDocument()
     })
+})
+
+it("updates SVG and clears render errors on subscribed edits without polling", async () => {
+    const interval = vi.spyOn(globalThis, "setInterval")
+    const view = new EditorView({ state: EditorState.create({ doc: "<svg/>" }) })
+    const path = "/ws/logo.svg"
+    try {
+        const rendered = render(<SvgSplitView path={path} groupIndex={0} />)
+        await screen.findByTestId("svg-preview-img")
+        await act(async () => registerView(path, view))
+        const firstUrl = screen.getByTestId("svg-preview-img").getAttribute("src")!
+        fireEvent.error(screen.getByTestId("svg-preview-img"))
+        expect(screen.getByText("Cannot render this SVG")).toBeInTheDocument()
+        await act(async () => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "<svg><rect/></svg>" } }))
+        expect(screen.queryByText("Cannot render this SVG")).not.toBeInTheDocument()
+        expect(screen.getByTestId("svg-preview-img")).not.toHaveAttribute("src", firstUrl)
+        expect(createdUrls.revoked).toContain(firstUrl)
+        const count = createdUrls.count
+        await act(async () => view.dispatch({ selection: { anchor: 0 } }))
+        expect(createdUrls.count).toBe(count)
+        expect(interval.mock.calls.some(([, delay]) => delay === 400)).toBe(false)
+        rendered.unmount()
+        expect(view.state.facet(EditorView.updateListener)).toHaveLength(0)
+    } finally {
+        unregisterView(path, view)
+        view.destroy()
+        interval.mockRestore()
+    }
+})
+
+it("external SVG view replacement refreshes the blob and path changes detach the old listener", async () => {
+    const path = "/ws/logo.svg"
+    const first = new EditorView({ state: EditorState.create({ doc: "<svg/>" }) })
+    const second = new EditorView({ state: EditorState.create({ doc: "<svg><circle/></svg>" }) })
+    registerView(path, first)
+    try {
+        const rendered = render(<SvgSplitView path={path} groupIndex={0} />)
+        const image = await screen.findByTestId("svg-preview-img")
+        const firstUrl = image.getAttribute("src")
+        await act(async () => {
+            unregisterView(path, first)
+            registerView(path, second)
+        })
+        expect(screen.getByTestId("svg-preview-img")).not.toHaveAttribute("src", firstUrl)
+        expect(first.state.facet(EditorView.updateListener)).toHaveLength(0)
+        rendered.rerender(<SvgSplitView path="/ws/other.svg" groupIndex={0} />)
+        await screen.findByTestId("svg-preview-img")
+        expect(second.state.facet(EditorView.updateListener)).toHaveLength(0)
+        const count = createdUrls.count
+        await act(async () => second.dispatch({ changes: { from: 0, insert: "stale" } }))
+        expect(createdUrls.count).toBe(count)
+    } finally {
+        unregisterView(path, second)
+        first.destroy()
+        second.destroy()
+    }
+})
+
+it("reloads an inactive SVG source only when its document generation changes", async () => {
+    const rendered = render(<SvgSplitView path="/ws/logo.svg" groupIndex={0} />)
+    const image = await screen.findByTestId("svg-preview-img")
+    const firstUrl = image.getAttribute("src")
+    const reads = vi.mocked(getDocument).mock.calls.length
+    await act(async () => useWorkspaceStore.setState({ pendingReveal: null }))
+    expect(getDocument).toHaveBeenCalledTimes(reads)
+    vi.mocked(getDocument).mockResolvedValueOnce({
+        result: { kind: "full", content: "<svg><rect/></svg>", size: 18, lineEnding: "lf" }
+    })
+    await act(async () => {
+        vi.mocked(documentGeneration).mockReturnValue(1)
+        useWorkspaceStore.setState({ pendingReveal: null })
+    })
+    expect(screen.getByTestId("svg-preview-img")).not.toHaveAttribute("src", firstUrl)
+    expect(getDocument).toHaveBeenCalledTimes(reads + 1)
+    rendered.unmount()
+    vi.mocked(documentGeneration).mockReturnValue(2)
+    useWorkspaceStore.setState({ pendingReveal: null })
+    expect(getDocument).toHaveBeenCalledTimes(reads + 1)
 })

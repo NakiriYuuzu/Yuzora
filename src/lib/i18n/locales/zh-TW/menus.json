@@ -89,6 +89,7 @@
       "deleteFile": "確定刪除「{{name}}」？",
       "deleteFolder": "確定刪除「{{name}}」及其所有內容？",
       "deleteTitle": "刪除",
+      "deleteConfirm": "刪除",
       "closeHerdrSpace": "關閉 Space「{{name}}」？此 Space 內的執行中程序將結束。",
       "closeHerdrSpaceTitle": "關閉 Space",
       "closeHerdrTab": "關閉分頁「{{name}}」？此分頁內的執行中程序將結束。",
@@ -119,7 +120,8 @@
     "cmHerdrZoomPane": "縮放窗格",
     "cmHerdrSwapPane": "與焦點窗格交換",
     "cmHerdrClosePane": "關閉窗格",
-    "cmPreviewHtml": "在此預覽"
+    "cmPreviewHtml": "在此預覽",
+    "cmDuplicate": "製作副本"
   },
   "tabBar": {
     "noOpenTabs": "沒有開啟的分頁",
@@ -253,7 +255,13 @@
     "abortConfirm": "確定中止進行中的 {{op}}？所有 {{op}} 的變更都會被捨棄。",
     "continueConfirm": "確定繼續 {{op}}？請先解決所有衝突。",
     "abort": "中止",
-    "continue": "繼續"
+    "continue": "繼續",
+    "resolve_one": "解決 {{count}} 個衝突…",
+    "resolve_other": "解決 {{count}} 個衝突…",
+    "unmerged_one": "有 {{count}} 個檔案存在未解決的衝突",
+    "unmerged_other": "有 {{count}} 個檔案存在未解決的衝突",
+    "skip": "略過",
+    "skipConfirm": "略過 {{op}} 目前套用的 commit？它的變更將不會被套用。"
   },
   "consoleTab": {
     "empty": "尚未執行任何 git 指令"
@@ -272,9 +280,14 @@
     "cherryPick": "揀選提交",
     "cherryPickThisCommitTitle": "揀選此提交",
     "resetMainToHere": "將 main 重設到這裡…",
-    "resetHoldTitle": "按住以重設 — 將改寫分支歷史",
+    "resetHoldTitle": "把目前分支移到這個 commit — 將改寫分支歷史",
     "loadFailed": "載入提交詳細資訊失敗：{{message}}",
-    "retry": "重試"
+    "retry": "重試",
+    "revert": "Revert",
+    "revertTitle": "建立一個還原此 commit 的新 commit",
+    "undoCommit": "復原 commit",
+    "undoCommitTitle": "移除這個 commit 並把變更保留在暫存區",
+    "resetToHere": "將目前分支重設到這裡…"
   },
   "diffModal": {
     "workingTree": "工作目錄",
@@ -285,6 +298,7 @@
     "split": "分割",
     "close": "關閉",
     "loadingEllipsis": "正在載入差異…",
+    "noFiles": "沒有可比較的檔案變更",
     "loadFailed": "載入差異失敗：{{message}}",
     "retry": "重試",
     "filesLabel": "變更檔案",
@@ -314,6 +328,8 @@
     "stageFileAriaLabel": "加入暫存 {{path}}",
     "unstageFileAriaLabel": "取消暫存 {{path}}",
     "stageFileTitle": "加入暫存檔案",
+    "markResolvedAriaLabel": "將 {{path}} 標記為已解決",
+    "markResolvedTitle": "標記為已解決（加入暫存）；須先移除衝突標記",
     "unstageFileTitle": "取消暫存檔案",
     "unified": "整合",
     "split": "分割",
@@ -392,7 +408,10 @@
     "detectingDescription": "正在檢查工作區是否為 Git 儲存庫。",
     "errorTitle": "無法取得 Git 狀態",
     "errorDescription": "{{message}}",
-    "retry": "重試"
+    "retry": "重試",
+    "trustTitle": "需要先信任這個 workspace",
+    "trustDescription": "Git 只會在信任的 workspace 中執行。信任後即可查看歷史、變更與主控台。",
+    "trust": "信任 workspace…"
   },
   "gitNav": {
     "branchesAriaLabel": "分支",
@@ -420,6 +439,9 @@
     "stale": "狀態可能已過期",
     "error": "Git 錯誤：{{message}}",
     "retry": "重試",
+    "trustTitle": "需要先信任這個 workspace",
+    "trustDescription": "Git 只會在信任的 workspace 中執行。",
+    "trust": "信任 workspace…",
     "aheadBehind": "↑{{ahead}} ↓{{behind}}",
     "countStaged": "暫 {{count}}",
     "countUnstaged": "改 {{count}}",
@@ -447,5 +469,168 @@
     "cleanDescription": "沒有已暫存、未暫存、未追蹤或衝突的檔案。",
     "detachedHead": "分離式 HEAD"
   },
-  "dragToResize": "拖曳調整大小"
+  "dragToResize": "拖曳調整大小",
+  "gitRepository": {
+    "selectAriaLabel": "Git repository",
+    "placeholder": "選擇 repository",
+    "linked": "子模組／worktree",
+    "found_one": "這個資料夾包含 {{count}} 個 Git repository：",
+    "found_other": "這個資料夾包含 {{count}} 個 Git repository：",
+    "listAriaLabel": "此資料夾中的 Git repository",
+    "truncated": "搜尋提早停止；過深或過大的資料夾可能還有其他 repository。"
+  },
+  "gitConflicts": {
+    "title": "衝突",
+    "description_one": "有 {{count}} 個檔案發生衝突。請接受其中一方，或合併兩邊的變更。",
+    "description_other": "有 {{count}} 個檔案發生衝突。請接受其中一方，或合併兩邊的變更。",
+    "descriptionOp_one": "{{op}} 因 {{count}} 個衝突檔案而暫停。",
+    "descriptionOp_other": "{{op}} 因 {{count}} 個衝突檔案而暫停。",
+    "columnName": "名稱",
+    "columnYours": "Yours",
+    "columnTheirs": "Theirs",
+    "side": {
+      "modified": "已修改",
+      "added": "已新增",
+      "deleted": "已刪除"
+    },
+    "selectFile": "選取 {{path}}",
+    "acceptYours": "接受 Yours",
+    "acceptTheirs": "接受 Theirs",
+    "merge": "合併…",
+    "hint": "勾選檔案，或在檔案上按兩下開啟合併工具。",
+    "close": "關閉"
+  },
+  "gitMerge": {
+    "title": "合併 {{path}}",
+    "description": "左側是你的版本，右側是傳入的版本；中間的結果一開始是共同基底。",
+    "loading": "正在載入衝突的各方版本…",
+    "binary": "這個檔案是二進位或太大，無法在此合併；請改為接受其中一方。",
+    "deletedSide": "其中一方刪除了這個檔案；請改為接受其中一方。",
+    "acceptYours": "« Yours",
+    "acceptTheirs": "Theirs »",
+    "acceptBoth": "兩者",
+    "ignore": "忽略",
+    "previous": "上一個變更",
+    "next": "下一個變更",
+    "remaining": "剩 {{changes}} 個變更，其中 {{conflicts}} 個衝突",
+    "applyLeft": "套用左側不衝突的變更",
+    "applyNonConflicting": "套用所有不衝突的變更",
+    "applyRight": "套用右側不衝突的變更",
+    "resolveSimple": "自動解決簡單衝突",
+    "pane": {
+      "yours": "Yours（目前分支）",
+      "result": "結果",
+      "theirs": "Theirs（傳入）"
+    },
+    "cancel": "取消",
+    "apply": "套用",
+    "applyTitle": "套用合併結果？",
+    "applyUnresolved": "還有 {{count}} 個變更未處理，將保留基底版本。仍要套用嗎？",
+    "replaceUnsaved": "這個檔案在編輯器中有未儲存的修改，套用合併結果會取代這些修改。仍要套用嗎？",
+    "replaceManual": "這個檔案在工作樹中已有手動解決或修改的內容，套用合併結果會取代這些內容。仍要套用嗎？"
+  },
+  "gitActions": {
+    "branchMenu": "{{branch}} 的操作",
+    "mergeInto": "將 '{{branch}}' 合併到 '{{current}}'",
+    "rebaseOnto": "將 '{{current}}' rebase 到 '{{branch}}'",
+    "renameItem": "重新命名…",
+    "deleteItem": "刪除",
+    "noActions": "操作進行中，暫無可用動作",
+    "mergeTitle": "合併分支",
+    "mergeConfirm": "要將 '{{branch}}' 合併到 '{{current}}' 嗎？如有衝突會開啟衝突對話框。",
+    "merge": "合併",
+    "rebaseTitle": "Rebase 分支",
+    "rebaseConfirm": "要將 '{{current}}' rebase 到 '{{branch}}' 嗎？這會改寫 '{{current}}' 的 commit。",
+    "rebase": "Rebase",
+    "renameTitle": "重新命名分支 {{branch}}",
+    "newName": "新名稱",
+    "rename": "重新命名",
+    "deleteTitle": "刪除分支",
+    "deleteConfirm": "要刪除本機分支 '{{branch}}' 嗎？",
+    "delete": "刪除",
+    "forceDeleteTitle": "分支尚未完全合併",
+    "forceDeleteConfirm": "'{{branch}}' 有尚未合併到任何地方的 commit。仍要刪除嗎？這些 commit 可能會遺失。",
+    "forceDelete": "仍要刪除",
+    "revertTitle": "Revert commit",
+    "revertConfirm": "要建立一個新 commit 來還原 {{hash}}「{{subject}}」嗎？",
+    "revert": "Revert",
+    "undoTitle": "復原 commit",
+    "undoConfirm": "要復原最後一個 commit「{{subject}}」嗎？它的變更會保留在暫存區。",
+    "undo": "復原 commit",
+    "pullRebase": "Pull（rebase）",
+    "pushTags": "Push（含 tags）",
+    "forcePushItem": "強制 Push（with lease）…",
+    "forcePushTitle": "強制 Push",
+    "forcePushConfirm": "要用本機歷史覆寫遠端的 '{{branch}}' 嗎？若期間有其他人 push，--force-with-lease 會拒絕。",
+    "forcePush": "強制 Push",
+    "stashItem": "Stash／取回 stash…",
+    "checkoutProblemTitle": "Git 簽出問題",
+    "checkoutProblem": "簽出「{{target}}」會覆寫目前的本機變更。\n\n智慧簽出會先把變更 stash 起來、切換後再自動還原；還原時若有衝突，會開啟衝突對話框，變更也會保留在 stash。",
+    "smartCheckout": "智慧簽出",
+    "dontCheckout": "不要簽出"
+  },
+  "gitReset": {
+    "title": "將 {{branch}} 重設到這裡",
+    "description": "把目前分支移到 {{hash}}「{{subject}}」。",
+    "mode": {
+      "soft": "Soft",
+      "mixed": "Mixed",
+      "hard": "Hard",
+      "keep": "Keep"
+    },
+    "modeHint": {
+      "soft": "保留所有變更；被撤銷的 commit 會變成已暫存的變更。",
+      "mixed": "保留所有變更，成為未暫存的變更。",
+      "hard": "捨棄工作目錄與暫存區的所有變更，無法復原。",
+      "keep": "類似 Hard，但若會遺失本機變更則拒絕執行。"
+    },
+    "reset": "重設",
+    "cancel": "取消"
+  },
+  "gitStash": {
+    "title": "Stash",
+    "description": "先把本機變更收起來，之後再取回。",
+    "message": "訊息",
+    "messagePlaceholder": "選填說明",
+    "includeUntracked": "包含未追蹤的檔案",
+    "keepIndex": "保留已暫存的變更",
+    "stash": "Stash 變更",
+    "listLabel": "Stash 清單",
+    "empty": "目前沒有 stash。",
+    "apply": "套用",
+    "pop": "取回",
+    "drop": "刪除",
+    "applyAria": "套用 {{ref}}",
+    "popAria": "取回 {{ref}}",
+    "dropAria": "刪除 {{ref}}",
+    "dropTitle": "刪除 stash",
+    "dropConfirm": "要刪除 stash「{{message}}」嗎？刪除後無法復原。",
+    "close": "關閉"
+  },
+  "fileClipboard": {
+    "errorTitle": "無法貼上",
+    "error": {
+      "copy-into-itself": "無法把資料夾複製到它自己裡面。",
+      "move-into-itself": "無法把資料夾移動到它自己裡面。",
+      "copy-too-large": "一次要複製的檔案太多或太大（上限 20,000 個項目或 2 GB）。",
+      "copy-symlink-unsupported": "不會複製符號連結。",
+      "copy-unsupported-sftp": "SFTP 工作區不支援在遠端內複製；請改用 Yuzora runtime host 連線。",
+      "move-unsupported-sftp": "SFTP 工作區不支援在此移動檔案。",
+      "clipboard-files-unsupported": "這個系統的剪貼簿不支援檔案清單。",
+      "clipboard-import-remote-unsupported": "尚不支援把 Finder 或檔案總管的檔案貼到遠端工作區。"
+    }
+  },
+  "deleteProgress": {
+    "title": "正在刪除「{{name}}」",
+    "counting": "正在計算項目數…已找到 {{count}} 個",
+    "deleting": "已刪除 {{removed}} / {{total}} 個項目",
+    "remote": "正在刪除遠端項目…",
+    "label": "刪除進度",
+    "cancel": "取消",
+    "cancelling": "正在取消…",
+    "cancelledTitle": "已取消刪除",
+    "cancelledPartial": "已取消。取消前已刪除的項目無法復原。",
+    "limitPartial": "刪除已達單次上限而停止，部分項目已刪除。請再刪除一次以完成。",
+    "tooMany": "這個資料夾的項目超過 200 萬個，無法一次刪除。"
+  }
 }

@@ -27,6 +27,8 @@ import { gitCheckout, gitCheckoutDetached, gitCreateBranch, gitFetch, gitPull, g
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { copyTextWithFeedback } from "@/lib/clipboardFeedback"
 import { requestTextInputDialog } from "@/state/textInputDialogStore"
+import { contextMenuHandler } from "@/state/contextMenuStore"
+import { switchBranch } from "./gitOperations"
 
 interface BranchPopoverProps {
     open: boolean
@@ -275,7 +277,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
         if (mutationsDisabled || dirtyBlocked()) return
         const capturedRoot = repositoryRoot
         if (!capturedRoot) return
-        const ok = await runOp("checkout", () => gitCheckout(capturedRoot, fullName))
+        const ok = await switchBranch(capturedRoot, "checkout", fullName, (smart) => gitCheckout(capturedRoot, fullName, smart))
         if (ok) onOpenChange(false)
     }
 
@@ -295,7 +297,8 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
         }
         if (owners.length === 1) {
             if (owners[0].isCurrent) return
-            const ok = await runOp("checkout", () => gitCheckout(capturedRoot, owners[0].name))
+            const owner = owners[0].name
+            const ok = await switchBranch(capturedRoot, "checkout", owner, (smart) => gitCheckout(capturedRoot, owner, smart))
             if (ok) onOpenChange(false)
             return
         }
@@ -331,7 +334,8 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
         }
         if (liveOwners.length === 1) {
             if (liveOwners[0].isCurrent) return
-            const ok = await runOp("checkout", () => gitCheckout(capturedRoot, liveOwners[0].name))
+            const owner = liveOwners[0].name
+            const ok = await switchBranch(capturedRoot, "checkout", owner, (smart) => gitCheckout(capturedRoot, owner, smart))
             if (ok) onOpenChange(false)
             return
         }
@@ -339,7 +343,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
             setNotice(t("branchPopover.localNameTaken", { ns: "menus", name: localName }))
             return
         }
-        const ok = await runOp("create-branch", () => gitCreateBranch(capturedRoot, localName, remoteRevision(fullName)))
+        const ok = await switchBranch(capturedRoot, "create-branch", fullName, (smart) => gitCreateBranch(capturedRoot, localName, remoteRevision(fullName), smart))
         if (ok) onOpenChange(false)
     }
 
@@ -359,7 +363,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
         if (!trimmed) return
         const liveRoot = readyRoot(useGitStore.getState().environment)
         if (liveRoot !== capturedRoot || gitMutationsBlocked() || dirtyBlocked("branchPopover.dirtyTabsBlockCreate")) return
-        const ok = await runOp("create-branch", () => gitCreateBranch(capturedRoot, trimmed, tagRevision(tag.name)))
+        const ok = await switchBranch(capturedRoot, "create-branch", tag.name, (smart) => gitCreateBranch(capturedRoot, trimmed, tagRevision(tag.name), smart))
         if (ok) onOpenChange(false)
     }
 
@@ -382,7 +386,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
         }
         const liveRoot = readyRoot(useGitStore.getState().environment)
         if (liveRoot !== capturedRoot || gitMutationsBlocked() || dirtyBlocked("branchPopover.dirtyTabsBlockTag")) return
-        const ok = await runOp("checkout", () => gitCheckoutDetached(capturedRoot, tagRevision(tag.name)))
+        const ok = await switchBranch(capturedRoot, "checkout", tag.name, (smart) => gitCheckoutDetached(capturedRoot, tagRevision(tag.name), smart))
         if (ok) onOpenChange(false)
     }
 
@@ -626,6 +630,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                                             query={queryTrimmed}
                                             searching={searching}
                                             onActivate={() => activateLocal(branch)}
+                                            repositoryRoot={repositoryRoot}
                                         />
                                     ))}
                                 </CommandGroup>
@@ -655,6 +660,7 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
                                             searching={searching}
                                             tracked={(remoteOwners.get(item.name)?.length ?? 0) > 0}
                                             onActivate={() => void activateRemote(item.name)}
+                                            repositoryRoot={repositoryRoot}
                                         />
                                     ))}
                                 </CommandGroup>
@@ -785,12 +791,14 @@ function LocalBranchItem({
     branch,
     query,
     searching,
-    onActivate
+    onActivate,
+    repositoryRoot
 }: {
     branch: BranchInfo
     query: string
     searching: boolean
     onActivate: () => void
+    repositoryRoot: string | null
 }) {
     const { t } = useTranslation("git")
     const primary = searching ? branch.name : leafName(branch.name)
@@ -803,6 +811,7 @@ function LocalBranchItem({
             title={branch.name}
             aria-label={branch.name}
             onSelect={onActivate}
+            onContextMenu={repositoryRoot ? contextMenuHandler({ kind: "gitBranch", repositoryRoot, name: branch.name, branchKind: "local", isCurrent: branch.isCurrent }) : undefined}
             data-has-action={branch.isCurrent ? undefined : "true"}
             className={branch.isCurrent ? ACTION_ITEM_CLASS : ACTIONABLE_ITEM_CLASS}
         >
@@ -859,13 +868,15 @@ function RemoteBranchItem({
     query,
     searching,
     tracked,
-    onActivate
+    onActivate,
+    repositoryRoot
 }: {
     name: string
     query: string
     searching: boolean
     tracked: boolean
     onActivate: () => void
+    repositoryRoot: string | null
 }) {
     const { t } = useTranslation("git")
     const primary = searching ? name : leafName(name)
@@ -879,6 +890,7 @@ function RemoteBranchItem({
             title={name}
             aria-label={name}
             onSelect={onActivate}
+            onContextMenu={repositoryRoot ? contextMenuHandler({ kind: "gitBranch", repositoryRoot, name, branchKind: "remote", isCurrent: false }) : undefined}
             data-has-action="true"
             className={ACTIONABLE_ITEM_CLASS}
         >

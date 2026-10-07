@@ -17,6 +17,7 @@ use crate::git_service::{git_err, run_git, run_git_with_stdin, validate_relative
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -624,7 +625,10 @@ pub fn log_page(
     let author_arg = author.map(|a| format!("--author=^{} <", regex_escape(a)));
     let since_arg = since.map(|s| format!("--since={s}"));
     let until_arg = until.map(|u| format!("--until={u}"));
-    let mut filters: Vec<&str> = Vec::new();
+    // Pin one regex dialect for every arm: regex_escape emits BRE literals for the
+    // exact-author anchor, and the free-text query must not change meaning when an
+    // author is selected or with the user's grep.patternType.
+    let mut filters: Vec<&str> = vec!["--basic-regexp"];
     if let Some(a) = &author_arg {
         filters.push(a.as_str());
     }
@@ -947,17 +951,18 @@ fn parse_commit_object(raw: &[u8]) -> Result<CommitMeta, String> {
     let (header, message) = text
         .split_once("\n\n")
         .ok_or_else(|| "git commit object missing header/message separator".to_string())?;
-    let mut headers: Vec<String> = Vec::new();
+    let mut headers: Vec<Cow<'_, str>> = Vec::new();
     for line in header.split('\n') {
         if let Some(rest) = line.strip_prefix(' ') {
             let last = headers
                 .last_mut()
-                .ok_or_else(|| "git commit object has a dangling continuation line".to_string())?;
+                .ok_or_else(|| "git commit object has a dangling continuation line".to_string())?
+                .to_mut();
             last.push('\n');
             last.push_str(rest);
             continue;
         }
-        headers.push(line.to_string());
+        headers.push(Cow::Borrowed(line));
     }
     let mut parents = Vec::new();
     let mut author_line = None;
@@ -969,11 +974,11 @@ fn parse_commit_object(raw: &[u8]) -> Result<CommitMeta, String> {
             }
             parents.push(parent.to_ascii_lowercase());
         } else if let Some(author) = header_line.strip_prefix("author ") {
-            author_line = Some(author.to_string());
+            author_line = Some(author);
         }
     }
     let author_line = author_line.ok_or_else(|| "git commit object missing author".to_string())?;
-    let (author_name, author_email, timestamp) = parse_ident_line(&author_line)?;
+    let (author_name, author_email, timestamp) = parse_ident_line(author_line)?;
     let message = message.trim_end_matches(['\n', '\r']);
     let (subject, body) = match message.split_once('\n') {
         None => (message.to_string(), String::new()),
@@ -1014,11 +1019,13 @@ fn parse_ident_line(line: &str) -> Result<(String, String, i64), String> {
     Ok((name, email, timestamp))
 }
 
-/// 轉義 regex 特殊字元（git --author 是 regex）供精確錨定 `^...$`。
+/// 轉義 POSIX BRE 特殊字元（git --author 是 regex，呼叫端固定 `--basic-regexp`）
+/// 供精確錨定 `^...`。BRE 中未跳脫的 `( ) + ? | { } ]` 本來就是字面值；若加上
+/// 反斜線，GNU BRE 反而會把 `\(`、`\+`、`\|` 當成群組／量詞／交替。
 fn regex_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if "\\^$.|?*+()[]{}".contains(c) {
+        if "\\^$.*[".contains(c) {
             out.push('\\');
         }
         out.push(c);
@@ -1059,7 +1066,9 @@ pub fn commit_detail(root: &Path, hash: &str) -> Result<CommitDetail, String> {
     let oid_s = oid.as_str();
 
     // name-status（拿 status＋rename old_path），first-parent。
-    let name_status = run_git(
+    // Same replace-object policy as the metadata read above, so one detail never
+    // mixes the original commit's header with a replacement's tree.
+    let name_status = run_git_no_replace(
         root,
         &[
             "show",
@@ -1071,15 +1080,13 @@ pub fn commit_detail(root: &Path, hash: &str) -> Result<CommitDetail, String> {
             "--end-of-options",
             oid_s,
         ],
-        DEFAULT_TIMEOUT,
-        &[],
     )?;
     if name_status.code != 0 {
         return Err(git_err("show", &name_status.stderr));
     }
 
     // numstat（拿 additions/deletions/binary），同條件。
-    let numstat = run_git(
+    let numstat = run_git_no_replace(
         root,
         &[
             "show",
@@ -1091,8 +1098,6 @@ pub fn commit_detail(root: &Path, hash: &str) -> Result<CommitDetail, String> {
             "--end-of-options",
             oid_s,
         ],
-        DEFAULT_TIMEOUT,
-        &[],
     )?;
     if numstat.code != 0 {
         return Err(git_err("show", &numstat.stderr));
@@ -1308,12 +1313,17 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
     let full = resolve_commit_oid(root, rev)?.into_string();
 
     let spec = format!("{full}:{path}");
-    let out = run_git(
+    let out = match crate::git_service::run_git_with_stdout_limit(
         root,
         &["show", "--end-of-options", &spec, "--"],
         DEFAULT_TIMEOUT,
-        &[],
-    )?;
+        &no_replace_env(),
+        crate::git_service::BLOB_READ_LIMIT,
+    ) {
+        // Larger than the hard cap: grading would report TooLarge anyway.
+        Err(error) if error == "git-output-limit" => return Ok(FileAtRevResult::TooLarge),
+        other => other?,
+    };
     if out.code != 0 {
         // Most history reads succeed. Only pay for an existence query after a
         // failed read, retaining the distinction between an absent path and a
@@ -1329,7 +1339,7 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
 /// Exact path existence at `commit` via NUL-delimited `ls-tree` + literal pathspec.
 /// Returns Ok(false) only when the path is verified absent; other failures are Err.
 fn path_exists_at_rev(root: &Path, commit: &str, path: &str) -> Result<bool, String> {
-    let out = run_git(
+    let out = run_git_no_replace(
         root,
         &[
             "ls-tree",
@@ -1340,8 +1350,6 @@ fn path_exists_at_rev(root: &Path, commit: &str, path: &str) -> Result<bool, Str
             "--",
             path,
         ],
-        DEFAULT_TIMEOUT,
-        &[],
     )?;
     if out.code != 0 {
         return Err(git_err("ls-tree", &out.stderr));
@@ -1806,6 +1814,81 @@ mod tests {
     }
 
     #[test]
+    fn log_page_author_exact_filter_treats_regex_characters_literally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1\n", "c1");
+        let names = ["Alice (Work)", "C++ Dev|Ops? {x} [y] a.b*", "AliceWork"];
+        for (index, name) in names.iter().enumerate() {
+            let file = format!("f{index}.txt");
+            std::fs::write(r.join(&file), "x\n").unwrap();
+            run_git(r, &["add", "--", &file], T, &iso()).unwrap();
+            let name_arg = format!("user.name={name}");
+            run_git(
+                r,
+                &[
+                    "-c",
+                    &name_arg,
+                    "-c",
+                    "user.email=p@x",
+                    "commit",
+                    "-m",
+                    "by",
+                ],
+                T,
+                &iso(),
+            )
+            .unwrap();
+        }
+        for name in names {
+            let page = log_page(r, None, 50, None, Some(name), None, None).unwrap();
+            assert_eq!(page.commits.len(), 1, "author filter {name}");
+            assert_eq!(page.commits[0].author_name, name);
+            // A user's preferred grep dialect must not change the exact filter.
+            let page = log_page(r, None, 50, Some("by"), Some(name), None, None).unwrap();
+            assert_eq!(page.commits.len(), 1, "author filter {name} with query");
+        }
+        run_git(r, &["config", "grep.patternType", "extended"], T, &iso()).unwrap();
+        let page = log_page(r, None, 50, None, Some("Alice (Work)"), None, None).unwrap();
+        assert_eq!(page.commits.len(), 1);
+    }
+
+    #[test]
+    fn log_page_query_dialect_is_fixed_regardless_of_author_filter_or_user_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "1\n", "c1");
+        std::fs::write(r.join("b.txt"), "2\n").unwrap();
+        run_git(r, &["add", "b.txt"], T, &iso()).unwrap();
+        run_git(
+            r,
+            &[
+                "-c",
+                "user.name=Alice",
+                "-c",
+                "user.email=alice@x",
+                "commit",
+                "-m",
+                "fix(ui): paren",
+            ],
+            T,
+            &iso(),
+        )
+        .unwrap();
+        // `fix(` is an invalid ERE but a literal in BRE; the result must not depend
+        // on grep.patternType or on whether an author filter is selected.
+        run_git(r, &["config", "grep.patternType", "extended"], T, &iso()).unwrap();
+        for author in [None, Some("Alice")] {
+            let page = log_page(r, None, 50, Some("fix("), author, None, None).unwrap();
+            assert_eq!(page.commits.len(), 1, "author {author:?}");
+            let page = log_page(r, None, 50, Some("fix|c1"), author, None, None).unwrap();
+            assert!(page.commits.is_empty(), "author {author:?}");
+        }
+    }
+
+    #[test]
     fn log_page_empty_repo_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
         test_repo::init(tmp.path()); // init 但無 commit
@@ -2031,6 +2114,38 @@ mod tests {
         assert_eq!(meta.parents.len(), 1);
     }
 
+    #[test]
+    fn parse_commit_object_preserves_continuations_and_last_author() {
+        let parent = "AB".repeat(20);
+        let raw = format!(
+            "parent {parent}\ngpgsig signature\n continued signature\nauthor First\n Second <first@x> 1 +0000\nx-extra ignored\n\nsubject\n\nbody\n"
+        );
+        let meta = parse_commit_object(raw.as_bytes()).unwrap();
+        assert_eq!(meta.author_name, "First\nSecond");
+        assert_eq!(meta.author_email, "first@x");
+        assert_eq!(meta.timestamp, 1);
+        assert_eq!(meta.parents, vec![parent.to_ascii_lowercase()]);
+        assert_eq!(meta.body, "body");
+
+        let raw = raw.replace(
+            "x-extra ignored",
+            "x-extra ignored\nauthor Last <last@x> -2 +0800",
+        );
+        let meta = parse_commit_object(raw.as_bytes()).unwrap();
+        assert_eq!(meta.author_name, "Last");
+        assert_eq!(meta.author_email, "last@x");
+        assert_eq!(meta.timestamp, -2);
+
+        assert_eq!(
+            parse_commit_object(b" dangling\nparent invalid\n\nsubject").err(),
+            Some("git commit object has a dangling continuation line".into())
+        );
+        assert_eq!(
+            parse_commit_object(b"parent invalid\n\nsubject").err(),
+            Some("git commit object has a malformed parent".into())
+        );
+    }
+
     // ── file_at_rev ─────────────────────────────────────────────────
 
     #[test]
@@ -2051,6 +2166,47 @@ mod tests {
             FileAtRevResult::Full { content } => assert_eq!(content, "version two\n"),
             other => panic!("expected Full, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn file_at_rev_grades_blobs_above_the_default_process_output_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        // 9 MiB: above the 8 MiB default stdout bound, still a Full-feature file.
+        let nine = "x".repeat(9 * 1024 * 1024);
+        test_repo::write_and_commit(r, "nine.txt", &nine, "nine");
+        let over = "y".repeat(crate::file_content::HARD_CAP_BYTES as usize + 4096);
+        test_repo::write_and_commit(r, "over.txt", &over, "over");
+        match file_at_rev(r, "HEAD", "nine.txt").unwrap() {
+            FileAtRevResult::Full { content } => assert_eq!(content.len(), nine.len()),
+            other => panic!("expected Full, got {other:?}"),
+        }
+        assert!(matches!(
+            file_at_rev(r, "HEAD", "over.txt").unwrap(),
+            FileAtRevResult::TooLarge
+        ));
+    }
+
+    #[test]
+    fn commit_detail_and_file_at_rev_ignore_replace_refs_like_the_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "a\n", "adds a");
+        let a = head_hash(r);
+        test_repo::write_and_commit(r, "b.txt", "b\n", "adds b");
+        let b = head_hash(r);
+        run_git(r, &["replace", &a, &b], T, &iso()).unwrap();
+
+        let detail = commit_detail(r, &a).unwrap();
+        assert_eq!(detail.subject, "adds a");
+        let paths: Vec<_> = detail.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["a.txt"]);
+        assert!(matches!(
+            file_at_rev(r, &a, "b.txt").unwrap(),
+            FileAtRevResult::Missing
+        ));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::Duration;
@@ -92,6 +92,14 @@ pub struct HostServer {
     trust: Option<crate::workspace_trust::WorkspaceTrustState>,
     git: Arc<Mutex<crate::git_command::HostGit>>,
     cancelled: Arc<AtomicBool>,
+}
+
+struct CancelSearchOnDrop(Arc<AtomicU64>);
+
+impl Drop for CancelSearchOnDrop {
+    fn drop(&mut self) {
+        self.0.store(1, Ordering::Relaxed);
+    }
 }
 
 impl Drop for HostServer {
@@ -215,6 +223,32 @@ impl HostServer {
                 self.files.close(&workspace);
                 Ok(Value::Null)
             }
+            Operation::FileNameSearch { workspace, query } => {
+                let root = self.files.file_name_search_root(&workspace)?;
+                let generation = CancelSearchOnDrop(Arc::new(AtomicU64::new(0)));
+                let source = generation.0.clone();
+                let task = tokio::task::spawn_blocking(move || {
+                    crate::file_name_search::run_pinned_file_name_search(
+                        &root,
+                        &query,
+                        0,
+                        &source,
+                        Duration::from_secs(1),
+                    )
+                });
+                // A slow filesystem syscall must not monopolize the serial transport.
+                let result = match tokio::time::timeout(Duration::from_secs(1), task).await {
+                    Ok(result) => result.map_err(|e| e.to_string())??,
+                    Err(_) => {
+                        generation.0.store(1, Ordering::Relaxed);
+                        crate::file_name_search::FileNameSearchResult {
+                            files: Vec::new(),
+                            incomplete: true,
+                        }
+                    }
+                };
+                serde_json::to_value(result).map_err(|e| e.to_string())
+            }
             Operation::FilesList { workspace, path } => self.files.list(&workspace, &path),
             Operation::FilesCreate {
                 workspace,
@@ -227,6 +261,25 @@ impl HostServer {
                 to,
             } => self.files.rename(&workspace, &from, &to),
             Operation::FilesDelete { workspace, path } => self.files.delete(&workspace, &path),
+            Operation::FilesCopy {
+                workspace,
+                sources,
+                target_dir,
+            } => {
+                // Up to 120 s of copying must not monopolize the serial transport.
+                let root = self.files.pinned_root(&workspace)?;
+                tokio::task::spawn_blocking(move || {
+                    crate::file_transfer::copy_into(&root, &sources, &target_dir)
+                        .map(|created| json!(created))
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            }
+            Operation::FilesMove {
+                workspace,
+                sources,
+                target_dir,
+            } => self.files.move_paths(&workspace, &sources, &target_dir),
             Operation::FilesReadBase64 {
                 workspace,
                 path,
@@ -341,6 +394,160 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "This manual probe requires comparable release binaries"
+    )]
+    #[test]
+    #[ignore = "manual abandoned-search CPU and resource measurement"]
+    fn performance_search_after_request_drop() {
+        use std::future::Future;
+        use std::task::Poll;
+        use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        assert!(!cfg!(debug_assertions), "Use --release");
+        fn cpu_ms() -> f64 {
+            let usage = unsafe {
+                let mut value = std::mem::MaybeUninit::<libc::rusage>::uninit();
+                assert_eq!(libc::getrusage(libc::RUSAGE_SELF, value.as_mut_ptr()), 0);
+                value.assume_init()
+            };
+            (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) as f64 * 1000.0
+                + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1000.0
+        }
+        let directory = tempfile::tempdir().unwrap();
+        for group in 0..16 {
+            let path = directory.path().join(format!("group-{group}"));
+            std::fs::create_dir(&path).unwrap();
+            for index in 0..150 {
+                std::fs::write(path.join(format!("entry-{index}.ts")), "").unwrap();
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // Exercise post-handshake request handling without loading user trust state.
+            let mut server = HostServer::default();
+            server.owner = Some(request(1, Operation::Hello).owner);
+            let opened = server
+                .handle(request(
+                    1,
+                    Operation::WorkspaceOpen {
+                        path: directory.path().to_str().unwrap().into(),
+                    },
+                ))
+                .await;
+            let Outcome::Ok { value } = opened.outcome else {
+                panic!("owned workspace open failed")
+            };
+            let workspace = value["capabilityId"].as_str().unwrap().to_owned();
+            let mut memory = System::new();
+            let pid = get_current_pid().unwrap();
+            let soak = std::env::var_os("YUZORA_PERF_SEARCH_SOAK").is_some();
+            for cancelled in [true, false] {
+                for sample in 0..if soak { 20 } else { 6 } {
+                    let mut cpu = 0.0;
+                    let mut wall = 0.0;
+                    let warmup = sample < if soak { 10 } else { 1 };
+                    let cycles = 100;
+                    for _ in 0..cycles {
+                        let (release, held) = std::sync::mpsc::channel();
+                        let (started, ready) = tokio::sync::oneshot::channel();
+                        let blocker = tokio::task::spawn_blocking(move || {
+                            started.send(()).unwrap();
+                            held.recv().unwrap();
+                        });
+                        ready.await.unwrap();
+                        let mut handling = Some(Box::pin(server.handle(request(
+                            1,
+                            Operation::FileNameSearch {
+                                workspace: workspace.clone(),
+                                query: "missing-term".into(),
+                            },
+                        ))));
+                        std::future::poll_fn(|cx| {
+                            assert!(handling.as_mut().unwrap().as_mut().poll(cx).is_pending());
+                            Poll::Ready(())
+                        })
+                        .await;
+                        if cancelled {
+                            drop(handling.take());
+                        }
+                        // The locked Tokio pool uses FIFO; with one worker this
+                        // marker completes only after the queued search settles.
+                        let drained = tokio::task::spawn_blocking(|| ());
+                        let before = cpu_ms();
+                        let clock = std::time::Instant::now();
+                        release.send(()).unwrap();
+                        if let Some(handling) = handling {
+                            let Outcome::Ok { value } = handling.await.outcome else {
+                                panic!("healthy search failed")
+                            };
+                            assert!(value["files"].as_array().unwrap().is_empty());
+                            assert_eq!(value["incomplete"], false);
+                        }
+                        drained.await.unwrap();
+                        blocker.await.unwrap();
+                        wall += clock.elapsed().as_secs_f64() * 1000.0;
+                        cpu += cpu_ms() - before;
+                    }
+                    memory.refresh_processes_specifics(
+                        ProcessesToUpdate::Some(&[pid]),
+                        true,
+                        ProcessRefreshKind::nothing().with_memory(),
+                    );
+                    let fd_path = if cfg!(target_os = "linux") {
+                        "/proc/self/fd"
+                    } else {
+                        "/dev/fd"
+                    };
+                    let descriptors = std::fs::read_dir(fd_path).unwrap().count();
+                    println!(
+                        "SEARCH_DROP_MEASUREMENT {}",
+                        serde_json::json!({
+                        "cancelled": cancelled, "sample": sample, "warmup": warmup,
+                        "cycles": cycles, "cpuMs": cpu, "wallMs": wall, "descriptors": descriptors,
+                            "rssBytes": memory.process(pid).unwrap().memory(), "profile": "release"
+                        })
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn dropping_a_search_generation_cancels_only_its_scan() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("target.ts"), "").unwrap();
+        let mut files = WorkspaceFiles::default();
+        let opened = files.open(directory.path().to_str().unwrap()).unwrap();
+        let root = files
+            .file_name_search_root(opened["capabilityId"].as_str().unwrap())
+            .unwrap();
+        let scan = |source: &AtomicU64| {
+            crate::file_name_search::run_pinned_file_name_search(
+                &root,
+                "target",
+                0,
+                source,
+                Duration::from_secs(1),
+            )
+        };
+        let independent = CancelSearchOnDrop(Arc::new(AtomicU64::new(0)));
+        let abandoned = {
+            let generation = CancelSearchOnDrop(Arc::new(AtomicU64::new(0)));
+            let worker_source = generation.0.clone();
+            assert_eq!(scan(&worker_source).unwrap().files.len(), 1);
+            worker_source
+        };
+        assert_eq!(scan(&abandoned).unwrap_err(), "file-name-search-cancelled");
+        assert_eq!(scan(&independent.0).unwrap().files.len(), 1);
+    }
+
     fn request(generation: u64, operation: Operation) -> Request {
         Request {
             version: PROTOCOL_VERSION,
@@ -371,6 +578,56 @@ mod tests {
             Outcome::Error { .. }
         ));
     }
+    #[tokio::test]
+    async fn file_name_search_is_advertised_and_requires_workspace_capability() {
+        let mut server = HostServer::default();
+        let hello = server.handle(request(1, Operation::Hello)).await;
+        let Outcome::Ok { value } = hello.outcome else {
+            panic!()
+        };
+        assert!(value["methods"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("fileNameSearch")));
+        let operation = |workspace| Operation::FileNameSearch {
+            workspace,
+            query: "TARGET".into(),
+        };
+        assert!(matches!(
+            server
+                .handle(request(1, operation("invalid".into())))
+                .await
+                .outcome,
+            Outcome::Error { .. }
+        ));
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("target.ts"), "").unwrap();
+        let opened = server
+            .handle(request(
+                1,
+                Operation::WorkspaceOpen {
+                    path: tmp.path().to_str().unwrap().into(),
+                },
+            ))
+            .await;
+        let Outcome::Ok { value } = opened.outcome else {
+            panic!()
+        };
+        let response = server
+            .handle(request(
+                1,
+                operation(value["capabilityId"].as_str().unwrap().into()),
+            ))
+            .await;
+        let Outcome::Ok { value } = response.outcome else {
+            panic!()
+        };
+        assert_eq!(value["files"][0]["name"], "target.ts");
+        assert_eq!(value["files"][0]["isDir"], false);
+        assert_eq!(value["files"][0]["kind"], "file");
+        assert_eq!(value["incomplete"], false);
+    }
+
     #[tokio::test]
     async fn rejects_oversized_and_partial_frames() {
         let bytes = vec![b'a'; MAX_FRAME_BYTES + 1];

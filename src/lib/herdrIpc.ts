@@ -20,6 +20,7 @@ import type {
   HerdrPaneZoomRequest,
   HerdrScrollDirection,
   HerdrSnapshotResult,
+  HerdrStartupStatus,
   HerdrSubscriptionEvent,
   HerdrTabCloseRequest,
   HerdrTabCreateRequest,
@@ -42,6 +43,15 @@ import type {
 /**
  * Herdr IPC wrappers — payload names match Rust `herdr_service` commands.
  */
+
+export async function herdrStartupStatus(): Promise<HerdrStartupStatus> {
+  try {
+    return await invoke<HerdrStartupStatus>("herdr_startup_status")
+  } catch {
+    // Older backends and non-Tauri previews retain the blocking-startup behavior.
+    return { state: "ready", error: null }
+  }
+}
 
 export function herdrSessions(): Promise<HerdrNamedSession[]> {
   return invoke("herdr_sessions")
@@ -295,12 +305,20 @@ export function herdrTerminalResize(
   return invoke("herdr_terminal_resize", { sessionId, cols, rows })
 }
 
+/** `cell` is the zero-based pointer cell HERDR uses when it routes the wheel to a mouse-reporting app. */
 export function herdrTerminalScroll(
   sessionId: string,
   direction: HerdrScrollDirection,
-  lines: number
+  lines: number,
+  cell?: { column: number; row: number }
 ): Promise<void> {
-  return invoke("herdr_terminal_scroll", { sessionId, direction, lines })
+  return invoke("herdr_terminal_scroll", {
+    sessionId,
+    direction,
+    lines,
+    column: cell?.column ?? null,
+    row: cell?.row ?? null
+  })
 }
 
 export function herdrTerminalRelease(sessionId: string): Promise<void> {

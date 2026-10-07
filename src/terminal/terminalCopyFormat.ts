@@ -36,10 +36,17 @@ export function formatTerminalSelection(selection: string, lineEnding: CopyLineE
   let paragraph = 0
   for (let i = 0; i <= lines.length; i++) {
     if (i < lines.length && lines[i].trim()) continue
-    const block = lines.slice(paragraph, i)
-    const diagram = block.some(line => /[\u2500-\u257f]|^[ \t]*[+|][+|\-= ]+[+|][ \t]*$/.test(line))
-    const columns = block.filter(line => /\S[ \t]{2,}\S/.test(line)).length >= 2
-    if (diagram || columns) protect(paragraph, i, 1)
+    let needsLayout = false
+    for (let row = paragraph; row < i; row++) {
+      if (!protectedLines[row]) { needsLayout = true; break }
+    }
+    // Layout protection cannot strengthen already-protected Markdown lines.
+    if (needsLayout) {
+      const block = lines.slice(paragraph, i)
+      const diagram = block.some(line => /[\u2500-\u257f]|^[ \t]*[+|][+|\-= ]+[+|][ \t]*$/.test(line))
+      const columns = block.filter(line => /\S[ \t]{2,}\S/.test(line)).length >= 2
+      if (diagram || columns) protect(paragraph, i, 1)
+    }
     paragraph = i + 1
   }
   let start = 0, end = lines.length

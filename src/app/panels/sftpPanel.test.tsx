@@ -288,6 +288,24 @@ describe("SftpPanel SFTP browser (F5)", () => {
         )
     })
 
+    it("asks to confirm a remote delete with a Delete button", async () => {
+        ipcMock.sftpListDir.mockResolvedValue({
+            cwd: "/home/u",
+            entries: [{ name: "remote.txt", path: "/home/u/remote.txt", isDir: false, isSymlink: false, size: 5 }]
+        })
+        await connectTwoHosts()
+        act(() => useSftpStore.getState().setPanelOpen(true))
+        render(<SftpPanel />)
+
+        fireEvent.click(await screen.findByRole("button", { name: "Delete remote.txt" }))
+        await vi.waitFor(() => expect(useAppDialogStore.getState().pending).toMatchObject({
+            type: "confirm",
+            confirmLabel: "Delete",
+            destructive: true
+        }))
+        act(() => useAppDialogStore.getState().respond(false))
+    })
+
     it("never lists a remote workspace in the local transfer pane", async () => {
         ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
         await connectTwoHosts()

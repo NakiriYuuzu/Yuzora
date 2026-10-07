@@ -52,7 +52,7 @@ export function useResizableDialogSize(options: {
   minSize?: DialogMinSize | null
 }): ResizableDialogSize {
   const { resizeId, minSize: requestedMinSize = null } = options
-  const minSize = useMemo(() => resizeId === "git-diff" ? { ...(requestedMinSize ?? { width: 280, height: 180 }), edgeMarginPx: 8 } : requestedMinSize, [resizeId, requestedMinSize])
+  const minSize = useMemo(() => resizeId === "git-diff" || resizeId === "git-merge" ? { ...(requestedMinSize ?? { width: 280, height: 180 }), edgeMarginPx: 8 } : requestedMinSize, [resizeId, requestedMinSize])
   const [viewport, setViewport] = useState(() => getViewportSize())
   const [preference, setPreference] = useState<DialogSizePreference>(() =>
     loadDialogSizePreference(resizeId),

@@ -45,6 +45,7 @@ class MinimapView implements PluginValue {
     private frame = 0
     private docDirty = true
     private geometryDirty = true
+    private labelsDirty = true
     private barPositions: Array<{ element: HTMLDivElement; from: number }> = []
     private drag: { pointerId: number; grabOffset: number } | null = null
 
@@ -72,7 +73,7 @@ class MinimapView implements PluginValue {
         this.panel.addEventListener("lostpointercapture", this.onPointerEnd)
         this.panel.addEventListener("keydown", this.onKeyDown)
         view.scrollDOM.addEventListener("scroll", this.schedule, { passive: true })
-        i18n.on("languageChanged", this.schedule)
+        i18n.on("languageChanged", this.onLanguageChanged)
         this.resizeObserver = new ResizeObserver(() => { this.geometryDirty = true; this.schedule() })
         this.resizeObserver.observe(view.scrollDOM)
         this.resizeObserver.observe(view.contentDOM)
@@ -95,6 +96,11 @@ class MinimapView implements PluginValue {
         })
     }
 
+    private onLanguageChanged = () => {
+        this.labelsDirty = true
+        this.schedule()
+    }
+
     private geometry() {
         const scroll = this.view.scrollDOM
         return minimapViewportGeometry(scroll.scrollTop, scroll.scrollHeight, scroll.clientHeight, this.panel.clientHeight)
@@ -106,8 +112,11 @@ class MinimapView implements PluginValue {
         this.panel.style.top = `${this.view.scrollDOM.offsetTop}px`
         this.panel.style.height = `${this.view.scrollDOM.offsetHeight}px`
         const geometry = this.geometry()
-        this.panel.setAttribute("aria-label", i18n.t("label", { ns: "editorMinimap" }))
-        this.panel.title = i18n.t("hint", { ns: "editorMinimap" })
+        if (this.labelsDirty) {
+            this.panel.setAttribute("aria-label", i18n.t("label", { ns: "editorMinimap" }))
+            this.panel.title = i18n.t("hint", { ns: "editorMinimap" })
+            this.labelsDirty = false
+        }
         this.viewport.style.top = `${geometry.top}px`
         this.viewport.style.height = `${geometry.height}px`
         this.panel.setAttribute("aria-valuemax", String(geometry.maxScrollTop))
@@ -214,7 +223,7 @@ class MinimapView implements PluginValue {
         if (this.frame) cancelAnimationFrame(this.frame)
         this.resizeObserver.disconnect()
         this.view.scrollDOM.removeEventListener("scroll", this.schedule)
-        i18n.off("languageChanged", this.schedule)
+        i18n.off("languageChanged", this.onLanguageChanged)
         if (this.drag && this.panel.hasPointerCapture(this.drag.pointerId)) this.panel.releasePointerCapture(this.drag.pointerId)
         this.drag = null
         this.panel.removeEventListener("pointerdown", this.onPointerDown)

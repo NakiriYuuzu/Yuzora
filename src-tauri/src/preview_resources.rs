@@ -248,6 +248,27 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
+// WebView2 forwards every frame through the same webview label. Only its exact
+// lease origin may read CORS responses; a missing Origin gets no CORS grant.
+fn response_origin(
+    headers: &tauri::http::HeaderMap,
+    id: &str,
+    windows: bool,
+) -> Result<Option<String>, String> {
+    if !windows {
+        return Ok(Some("*".into()));
+    }
+    let mut origins = headers.get_all("Origin").iter();
+    let Some(origin) = origins.next() else {
+        return Ok(None);
+    };
+    let expected = format!("http://yuzora-preview.{id}");
+    if origins.next().is_some() || origin.as_bytes() != expected.as_bytes() {
+        return Err("preview-resource-origin-forbidden".into());
+    }
+    Ok(Some(expected))
+}
+
 pub async fn respond(
     app: AppHandle,
     label: String,
@@ -259,6 +280,7 @@ pub async fn respond(
         }
         let url = Url::parse(&request.uri().to_string()).map_err(|e| e.to_string())?;
         let id = resource_id(&url).ok_or("preview-resource-missing")?;
+        let origin = response_origin(request.headers(), id, cfg!(windows))?;
         let state = app.state::<PreviewResourceState>();
         let source = {
             let registry = state.0.lock().map_err(|e| e.to_string())?;
@@ -276,22 +298,17 @@ pub async fn respond(
         if state.0.lock().map_err(|e| e.to_string())?.active.as_deref() != Some(id) {
             return Err("preview-resource-expired".into());
         }
-        Ok((path, bytes))
+        Ok((path, bytes, origin))
     }
     .await;
     match result {
-        Ok((path, bytes)) => tauri::http::Response::builder()
-            .header("Content-Type", content_type(&path))
-            .header("Cache-Control", "no-store")
-            .header("X-Content-Type-Options", "nosniff")
-            .header("Referrer-Policy", "no-referrer")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(if request.method() == "HEAD" {
-                Vec::new()
-            } else {
-                bytes
-            })
-            .unwrap(),
+        Ok((path, bytes, origin)) => resource_response(
+            &path,
+            bytes,
+            origin,
+            request.method() == "HEAD",
+            cfg!(windows),
+        ),
         Err(error) => tauri::http::Response::builder()
             .status(404)
             .header("Content-Type", "text/plain; charset=utf-8")
@@ -300,9 +317,86 @@ pub async fn respond(
     }
 }
 
+fn resource_response(
+    path: &str,
+    bytes: Vec<u8>,
+    origin: Option<String>,
+    head: bool,
+    windows: bool,
+) -> tauri::http::Response<Vec<u8>> {
+    let mut response = tauri::http::Response::builder()
+        .header("Content-Type", content_type(path))
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Referrer-Policy", "no-referrer")
+        .header("Vary", "Origin");
+    if windows {
+        // Classic scripts/images use no-cors requests and may omit Origin.
+        // CORS alone would still let an external frame execute workspace JS.
+        response = response.header("Cross-Origin-Resource-Policy", "same-origin");
+    }
+    if let Some(origin) = origin {
+        response = response.header("Access-Control-Allow-Origin", origin);
+    }
+    response
+        .body(if head { Vec::new() } else { bytes })
+        .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_no_cors_subresources_require_the_same_origin() {
+        let response = resource_response(
+            "settings.js",
+            b"window.secret='fixture'".to_vec(),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(
+            response.headers()["Cross-Origin-Resource-Policy"],
+            "same-origin"
+        );
+        assert!(!response
+            .headers()
+            .contains_key("Access-Control-Allow-Origin"));
+        assert_eq!(response.headers()["X-Content-Type-Options"], "nosniff");
+        let native = resource_response("settings.js", vec![], Some("*".into()), false, false);
+        assert!(!native
+            .headers()
+            .contains_key("Cross-Origin-Resource-Policy"));
+    }
+    #[test]
+    fn windows_cors_grants_only_the_exact_lease_origin() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let expected = format!("http://yuzora-preview.{id}");
+        let mut headers = tauri::http::HeaderMap::new();
+        assert_eq!(response_origin(&headers, id, true).unwrap(), None);
+        for origin in [
+            "null",
+            "https://attacker.test",
+            "http://yuzora-preview.other",
+            &format!("{expected}:80"),
+            &format!("{expected}.attacker.test"),
+            &format!("{expected}/"),
+        ] {
+            headers.insert("Origin", origin.parse().unwrap());
+            assert!(response_origin(&headers, id, true).is_err(), "{origin}");
+        }
+        headers.insert("Origin", expected.parse().unwrap());
+        assert_eq!(
+            response_origin(&headers, id, true).unwrap(),
+            Some(expected.clone())
+        );
+        headers.append("Origin", expected.parse().unwrap());
+        assert!(response_origin(&headers, id, true).is_err());
+        assert_eq!(
+            response_origin(&headers, id, false).unwrap(),
+            Some("*".into())
+        );
+    }
     #[test]
     fn webview2_navigation_keeps_resource_paths_and_query() {
         let source = Url::parse(

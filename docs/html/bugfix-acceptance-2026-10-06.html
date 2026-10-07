@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yuzora Acceptance Bugfix 驗收報告 — 2026-10-06</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111317;
+      --panel: #191c22;
+      --panel-2: #20242c;
+      --text: #edf0f5;
+      --muted: #a9b0bd;
+      --line: #353b47;
+      --pass: #69d08b;
+      --fail: #ff7272;
+      --blocked: #f0bd66;
+      --manual: #8fb8ff;
+      --accent: #b3d37a;
+      --code: #0c0e12;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Noto Sans TC", sans-serif;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 40px 24px 80px; }
+    h1, h2, h3 { line-height: 1.25; }
+    h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: -0.02em; }
+    h2 { margin-top: 38px; padding-bottom: 10px; border-bottom: 1px solid var(--line); font-size: 23px; }
+    h3 { margin-top: 26px; font-size: 18px; }
+    p { margin: 8px 0; }
+    a { color: #a8c9ff; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    code { background: var(--code); border: 1px solid #2c313b; border-radius: 5px; padding: 2px 6px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 14px; color: #dbe2ee; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 24px; background: var(--panel); }
+    th, td { padding: 11px 12px; border: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { background: var(--panel-2); color: #dce2ec; }
+    .meta, .summary, .note { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 22px 0; }
+    .metric { background: var(--panel-2); border-radius: 9px; padding: 13px; }
+    .metric strong { display: block; font-size: 24px; }
+    .status { display: inline-block; min-width: 78px; padding: 3px 9px; border-radius: 999px; font-weight: 700; text-align: center; font-size: 12px; letter-spacing: .04em; }
+    .pass { color: #07140c; background: var(--pass); }
+    .fail { color: #230808; background: var(--fail); }
+    .blocked { color: #221704; background: var(--blocked); }
+    .manual { color: #071224; background: var(--manual); }
+    .muted { color: var(--muted); }
+    .evidence { margin: 20px 0 28px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .evidence img { display: block; width: 100%; height: auto; background: #090a0d; }
+    .evidence figcaption { padding: 11px 14px; color: var(--muted); }
+    .expected-error { border-left: 4px solid var(--blocked); padding-left: 14px; }
+    .ok { color: var(--pass); font-weight: 700; }
+    .warn { color: var(--blocked); font-weight: 700; }
+    ul, ol { padding-left: 24px; }
+    details { margin: 10px 0; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; }
+    summary { cursor: pointer; font-weight: 700; }
+    @media (max-width: 760px) {
+      main { padding: 24px 12px 60px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      table { font-size: 13px; }
+      th, td { padding: 8px; }
+    }
+    @media print {
+      :root { color-scheme: light; --bg:#fff; --panel:#fff; --panel-2:#f2f4f7; --text:#111; --muted:#555; --line:#bbb; --code:#f5f5f5; }
+      main { max-width: none; padding: 0; }
+      .evidence { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Yuzora Acceptance Bugfix 驗收報告</h1>
+  <p class="muted">驗收日期：2026-10-06　核心操作時段：16:28–17:00（UTC+8）</p>
+
+  <section class="meta">
+    <strong>受測對象已核對：</strong>
+    <ul>
+      <li>App：<code>Yuzora Acceptance</code></li>
+      <li>Bundle ID：<code>dev.yuuzu.yuzora.acceptance</code></li>
+      <li>指定路徑：<code>/tmp/yz-acceptance/Yuzora Acceptance.app</code>（行程 canonical path 顯示為 <code>/private/tmp/yz-acceptance/…</code>）</li>
+      <li>受測 PID：<code>84606</code></li>
+      <li>CUA 綁定視窗回報：<code>Window: "Yuzora", App: Yuzora Acceptance</code></li>
+      <li><strong>未開啟、未操作、未關閉</strong>正式版 <code>/Applications/Yuzora.app</code>。</li>
+    </ul>
+  </section>
+
+  <div class="summary">
+    <div class="metric"><strong>2 / 2</strong><span>B 段自動回歸通過</span></div>
+    <div class="metric"><strong>13 / 13</strong><span>C 段步驟通過</span></div>
+    <div class="metric"><strong>0</strong><span>非預期 FAIL</span></div>
+    <div class="metric"><strong>3</strong><span>預期 git_operation_failed</span></div>
+  </div>
+
+  <h2>總表</h2>
+  <table>
+    <thead><tr><th>項目</th><th>結果</th><th>摘要</th></tr></thead>
+    <tbody>
+      <tr><td>A. 終端機 IME 標點</td><td><span class="status manual">MANUAL</span></td><td>依驗收指示不切換輸入法、不自動測試；標註「由使用者手動驗收」。本次未變更輸入來源，因此不需恢復。</td></tr>
+      <tr><td>B1. 畫面內拖曳選取並複製</td><td><span class="status pass">PASS</span></td><td>CUA 提供 <code>drag</code>。選取畫面中的 470–480 區段，<code>pbpaste</code> 得到 <code>70, 471…480</code>；首列從字元中段起拖，內容與可見選取一致。</td></tr>
+      <tr><td>B2. 捲動後拖曳選取並複製</td><td><span class="status pass">PASS</span></td><td>向上捲至約 386–443，選取 400–407 區段，<code>pbpaste</code> 得到 <code>00, 401…407</code>；無捲動後複製錯位。</td></tr>
+      <tr><td>C. Git 本機 workspace</td><td><span class="status pass">PASS</span></td><td>13 個指定步驟均完成；只有刻意觸發的 cherry-pick 衝突與 conflict marker 防呆錯誤。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>A. 終端機 IME 標點</h2>
+  <p><span class="status manual">MANUAL</span> <strong>由使用者手動驗收。</strong></p>
+  <p>依指示，本輪沒有切換 macOS 輸入法，也沒有嘗試以 CUA 製造 rollover 或 IME composition。</p>
+
+  <h2>B. 拖曳選取回歸</h2>
+  <ol>
+    <li>在 Yuzora Acceptance 的 HERDR 終端執行 <code>seq 1 500</code>。</li>
+    <li>使用 CUA <code>drag</code> 在畫面內選取數行並按 <code>⌘C</code>。</li>
+    <li>第一次 <code>pbpaste</code>：<code>'70\n471\n472\n473\n474\n475\n476\n477\n478\n479\n480'</code>。</li>
+    <li>向上捲動後再次選取並複製；第二次 <code>pbpaste</code>：<code>'00\n401\n402\n403\n404\n405\n406\n407'</code>。</li>
+  </ol>
+  <p class="note"><strong>判定：</strong>兩次複製內容均對應畫面中的數字範圍。首列只有後兩碼，是因拖曳起點落在數字第一個字元之後，不是捲動位移錯誤。</p>
+  <figure class="evidence">
+    <img src="bugfix-acceptance-2026-10-06-assets/05-terminal-b-scroll.jpg" alt="HERDR 終端捲動到 386 至 443 的證據">
+    <figcaption>B 段證據：<code>seq 1 500</code> 的終端捲動位置（可見 386–443）。該終端後續被其他視窗取得控制，但既有輸出仍可核對。</figcaption>
+  </figure>
+
+  <h2>C. Git 驗收逐項結果</h2>
+  <table>
+    <thead><tr><th>#</th><th>結果</th><th>實機結果與證據</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><span class="status pass">PASS</span></td><td>初始面板顯示：已暫存 1（<code>staged.txt</code>）、未暫存 1（<code>README.md</code>）、未追蹤 2（<code>untracked.txt</code>、<code>資料 夾/中文 檔案.txt</code>）。中文與空白路徑完整顯示。</td></tr>
+      <tr><td>2</td><td><span class="status pass">PASS</span></td><td>Stage <code>untracked.txt</code> 與中文檔；Unstage <code>staged.txt</code>；Discard <code>README.md</code> 並確認「回復所選變更」。</td></tr>
+      <tr><td>3</td><td><span class="status pass">PASS</span></td><td>提交訊息 <code>驗收：中文檔名提交</code>；啟用 Amend 後改為 <code>驗收：中文檔名提交（修訂）</code>。最終 commit <code>844ae5e</code>。</td></tr>
+      <tr><td>4</td><td><span class="status pass">PASS</span></td><td>Fetch 後分支顯示 <code>↑2 ↓1</code>。</td></tr>
+      <tr><td>5</td><td><span class="status pass">PASS</span></td><td>Pull 成功產生 merge commit <code>87e4c0f</code>，<code>remote.txt</code> 出現；Console 明確顯示 <code>$ git pull</code>，沒有 <code>--rebase</code>，也沒有 <code>divergent branches</code>。</td></tr>
+      <tr><td>6</td><td><span class="status pass">PASS</span></td><td>main Push 顯示 <code>Done</code>。</td></tr>
+      <tr><td>7</td><td><span class="status pass">PASS</span></td><td>切到 <code>feature/publish-me</code>（原本「沒有上游」）後 Push 成功；唯讀核對 <code>rev-parse --abbrev-ref @{u}</code> 為 <code>origin/feature/publish-me</code>。</td></tr>
+      <tr><td>8</td><td><span class="status pass">PASS</span></td><td>由 UI 建立 <code>feature/gui-created</code>，再切回 <code>main</code>。</td></tr>
+      <tr><td>9</td><td><span class="status pass">PASS</span></td><td>從 Log 揀選 <code>cherry: add cherry.txt</code> 成功，main 新增 commit <code>fb438ca</code>。</td></tr>
+      <tr><td>10</td><td><span class="status pass">PASS</span></td><td>第一次衝突後 Abort 成功；第二次先驗證 conflict marker 防呆，再用編輯器「Accept both」保留雙方內容與共同第二行，儲存、標記已解決、Continue 成功。main 新增 commit <code>ba1df28</code>。</td></tr>
+      <tr><td>11</td><td><span class="status pass">PASS</span></td><td>連續 Fetch、Stage、Unstage 並切換 Log／本地變更分頁。Console 在 16:56–16:58 顯示 <code>git fetch</code>、<code>git add</code>、<code>git restore --staged</code> 全部 <code>Done</code>；沒有 <code>git-jobs-busy</code>。</td></tr>
+      <tr><td>12</td><td><span class="status pass">PASS</span></td><td>先確認未追蹤 <code>staged.txt</code> Diff；再建立暫時 tracked <code>README.md</code> 修改並開啟 Diff，確認可顯示。截圖後已透過 Git UI 回復探針修改。</td></tr>
+      <tr><td>13</td><td><span class="status pass">PASS</span></td><td>最終 Push main 顯示 <code>Done</code>。唯讀核對 <code>HEAD == origin/main == ba1df287…</code>。</td></tr>
+    </tbody>
+  </table>
+
+  <figure class="evidence">
+    <img src="bugfix-acceptance-2026-10-06-assets/01-final-push-console.jpg" alt="Git Console 最終 Push 成功與壓力操作紀錄">
+    <figcaption>Git Console：最終 <code>git push</code> 為 Done；同畫面保留 Fetch／Stage／Unstage、Continue，以及預期錯誤紀錄。</figcaption>
+  </figure>
+  <figure class="evidence">
+    <img src="bugfix-acceptance-2026-10-06-assets/03-final-log.jpg" alt="最終 Git Log">
+    <figcaption>最終 Log：衝突解決 commit、cherry-pick commit、merge commit、中文 amend commit、建立的本機分支與遠端分支。</figcaption>
+  </figure>
+  <figure class="evidence">
+    <img src="bugfix-acceptance-2026-10-06-assets/04-readme-tracked-diff.jpg" alt="README tracked file diff">
+    <figcaption>tracked 檔案 Diff 實機證據。這是專為第 12 項建立的暫時修改，截圖後已由 Git UI 回復。</figcaption>
+  </figure>
+  <figure class="evidence">
+    <img src="bugfix-acceptance-2026-10-06-assets/02-staged-diff.jpg" alt="未追蹤 staged.txt diff">
+    <figcaption><code>staged.txt</code> 的新增檔 Diff，右側正確顯示 <code>+ staged</code>。</figcaption>
+  </figure>
+
+  <h2>預期錯誤原文</h2>
+  <p>以下錯誤是驗收步驟刻意觸發，判定為防呆／衝突流程正常，不列為 FAIL。</p>
+  <div class="expected-error">
+    <h3>Cherry-pick 衝突（出現兩次）</h3>
+    <pre>git cherry-pick: error: could not apply 410934a... conflict: edit shared line 1 on feature
+hint: After resolving the conflicts, mark them with
+hint: "git add/rm &lt;pathspec&gt;", then run
+hint: "git cherry-pick --continue".
+hint: You can instead skip this commit with "git cherry-pick --skip".
+hint: To abort and get back to the state before "git cherry-pick",
+hint: run "git cherry-pick --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"</pre>
+    <h3>衝突標記仍存在時拒絕標記已解決</h3>
+    <pre>git add: conflict markers remain in conflict.txt; resolve them before marking the file as resolved</pre>
+  </div>
+
+  <h2>git_operation_failed 日誌核對</h2>
+  <p>檔案：<code>~/.yuzora/logs/yuzora-2026-10-06.jsonl</code></p>
+  <p>範圍：<code>2026-10-06T08:28:24Z</code> 起（即 16:28:24 UTC+8）。本次 workspace 為 <code>/private/tmp/yz-git-gh/work</code>，run ID 為 <code>20261006T082650Z-83ae0343</code>。</p>
+  <p><strong>共 3 筆，全部對應預期驗收錯誤：</strong></p>
+  <ol>
+    <li><code>08:41:24.809854Z</code> — <code>op=cherry-pick</code> — 第一次衝突，後續 Abort。</li>
+    <li><code>08:42:14.813269Z</code> — <code>op=cherry-pick</code> — 第二次衝突，後續解決並 Continue。</li>
+    <li><code>08:48:25.962601Z</code> — <code>op=stage</code> — conflict marker 防呆拒絕。</li>
+  </ol>
+  <p class="ok">沒有 <code>git-jobs-busy</code> 事件，也沒有非預期 Git 失敗。</p>
+
+  <h2>最終 Git 狀態</h2>
+  <pre>## main...origin/main
+?? staged.txt
+
+HEAD:        ba1df287bdbc2f5a1f2ea5a36b348492574d8f0f
+origin/main: ba1df287bdbc2f5a1f2ea5a36b348492574d8f0f
+feature/publish-me upstream: origin/feature/publish-me
+CHERRY_PICK_HEAD: 不存在</pre>
+  <p><code>staged.txt</code> 保持未追蹤，符合第 2 項「Unstage staged.txt」後的預期；衝突流程已完全結束。</p>
+
+  <h2>FAIL 精確重現步驟</h2>
+  <p><span class="status pass">無 FAIL</span> 本輪沒有非預期產品錯誤，因此沒有 FAIL 重現步驟。</p>
+
+  <h2>codex_app／CUA 限制與替代方式</h2>
+  <ul>
+    <li>CUA 不支援按住滑鼠越界自動捲動；該項仍由使用者手動驗收。本輪只做畫面內拖曳。</li>
+    <li>CUA 無法可靠產生 macOS IME composition／rollover，因此 A 段遵照指示不測。</li>
+    <li>原生 <code>screencapture -l 9704</code> 回報 <code>could not create image from window</code>；<code>screencapture -R…</code> 回報 <code>could not create image from rect</code>。這是執行 shell 缺少 Screen Recording 能力；codex_app 的 native CUA 仍可正常擷取目標 App。</li>
+    <li>替代留證流程：由 CUA 取得只含 Yuzora Acceptance 的 JPEG buffer，透過 Acceptance 內的拋棄式終端分成 24,000 字元 base64 區塊寫入資產，再解碼成 JPEG。沒有擷取其他 App 內容。</li>
+    <li>一次貼入約 728k base64 會觸發 HERDR「輸入已暫停」；確認沒有產生檔案後，改用新終端分段傳送。這是驗收自動化／證據搬運限制，不是本次三個產品 bug 的 FAIL。</li>
+    <li>拖曳座標以 Retina 原始像素計算；第一次誤落在左側 Agents 分頁後立即依新截圖校正，未影響受測資料。</li>
+  </ul>
+
+  <h2>結論</h2>
+  <p><strong>C 段 Git 修正全部通過。</strong> Pull 使用 <code>git pull</code> 正常合併分岔、無 upstream Push 正確建立 upstream、衝突標記防呆與完整錯誤訊息正常、Fetch 壓力下的讀寫操作沒有 <code>git-jobs-busy</code>。B 段可自動化的畫面內拖曳與捲動後複製均通過。A 段保留給使用者手動驗收。</p>
+</main>
+</body>
+</html>

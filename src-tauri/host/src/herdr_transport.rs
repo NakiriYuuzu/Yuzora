@@ -172,7 +172,7 @@ fn windows_socket_marker() -> String {
 }
 
 pub(crate) fn poll_local_stream_read(
-    stream: &mut LocalStream,
+    mut stream: &LocalStream,
     buffer: &mut [u8],
 ) -> io::Result<LocalStreamRead> {
     #[cfg(unix)]
@@ -210,7 +210,7 @@ pub(crate) fn poll_local_stream_read(
 }
 
 #[cfg(windows)]
-fn windows_named_pipe_available(stream: &mut LocalStream) -> io::Result<Option<u32>> {
+fn windows_named_pipe_available(stream: &LocalStream) -> io::Result<Option<u32>> {
     use std::os::windows::io::{AsHandle, AsRawHandle};
 
     let LocalStream::NamedPipe(pipe) = stream;
@@ -269,7 +269,7 @@ pub(crate) fn read_local_ndjson_line(
 }
 
 pub(crate) fn read_local_ndjson_line_with(
-    stream: &mut LocalStream,
+    stream: &LocalStream,
     pending: &mut Vec<u8>,
     deadline: Option<Instant>,
     max_bytes: usize,
@@ -277,12 +277,17 @@ pub(crate) fn read_local_ndjson_line_with(
 ) -> Result<Option<String>, BoundedNdjsonReadError> {
     let mut buffer = [0u8; READ_CHUNK_BYTES];
     let mut attempt = 0u32;
+    let mut scanned = 0;
     loop {
-        if let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+        if let Some(offset) = pending[scanned..].iter().position(|byte| *byte == b'\n') {
+            let newline = scanned + offset;
             let remainder = pending.split_off(newline + 1);
             let line = std::mem::replace(pending, remainder);
             return decode_completed_line(&line, max_bytes).map(Some);
         }
+        // Only appended bytes can contain a new delimiter. Keep this cursor
+        // local so a new call still scans bytes retained across a deadline.
+        scanned = pending.len();
         // Allow one extra content byte so a terminated MAX+1 line is
         // LineTooLarge instead of UnterminatedOverLimit.
         if pending.len() > max_bytes.saturating_add(1) {
@@ -686,7 +691,7 @@ mod tests {
                 Instant::now() < prefix_deadline,
                 "prefix should become readable"
             );
-            match poll_local_stream_read(&mut client, &mut buffer).expect("poll prefix") {
+            match poll_local_stream_read(&client, &mut buffer).expect("poll prefix") {
                 LocalStreamRead::Data(read) => pending.extend_from_slice(&buffer[..read]),
                 LocalStreamRead::Pending => sleep_until(Some(prefix_deadline), POLL_INTERVAL),
                 LocalStreamRead::Closed => panic!("stream closed before prefix"),
@@ -925,15 +930,15 @@ mod tests {
         let advertised = path.to_string_lossy().into_owned();
         let client =
             connect_local_stream(&advertised, Instant::now() + Duration::from_secs(2)).unwrap();
-        let mut server = listener.accept().unwrap();
+        let server = listener.accept().unwrap();
         let mut buffer = [0u8; 1];
         assert!(matches!(
-            poll_local_stream_read(&mut server, &mut buffer).unwrap(),
+            poll_local_stream_read(&server, &mut buffer).unwrap(),
             LocalStreamRead::Pending
         ));
         drop(client);
         assert!(matches!(
-            poll_local_stream_read(&mut server, &mut buffer).unwrap(),
+            poll_local_stream_read(&server, &mut buffer).unwrap(),
             LocalStreamRead::Closed
         ));
         let _ = std::fs::remove_file(path);

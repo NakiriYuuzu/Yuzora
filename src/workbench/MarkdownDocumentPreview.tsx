@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { MarkdownPreviewProse, sanitizeMarkdownHtml } from "./MarkdownPreview"
+import { MarkdownHtml, MarkdownPreviewProse, sanitizeMarkdownHtml } from "./MarkdownPreview"
 import { renderMarkdownDocument, type MarkdownHtmlBatch } from "./markdownDocumentRender"
 
 const ReadingBatch = memo(function ReadingBatch({ batch, initialVisible }: { batch: MarkdownHtmlBatch; initialVisible: boolean }) {
@@ -35,7 +35,8 @@ const ReadingBatch = memo(function ReadingBatch({ batch, initialVisible }: { bat
     const html = useMemo(() => visible ? sanitizeMarkdownHtml(batch.html, false) : "", [batch.html, visible])
     return <div ref={ref} data-markdown-batch="" data-code-continuation={batch.code || undefined}
         style={visible ? { display: "flow-root" } : { height }}>
-        {visible && <div dangerouslySetInnerHTML={{ __html: html }} />}
+        {/* A chunk of an oversized block cannot copy the whole block. */}
+        {visible && <MarkdownHtml html={html} copyCode={!batch.code} />}
     </div>
 })
 

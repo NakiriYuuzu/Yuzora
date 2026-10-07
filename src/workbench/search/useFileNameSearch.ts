@@ -1,5 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
-import { listDir } from "@/lib/ipc"
+import { listDir, searchWorkspaceFileNames } from "@/lib/ipc"
+import { searchRemoteFileNames } from "@/lib/remoteFileNameSearch"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { canonicalPathKey, relativePathWithin } from "@/lib/paths"
 import type { FileNode } from "@/lib/types"
 
@@ -23,6 +25,8 @@ export function useFileNameSearch(root: string | null, query: string, revision: 
     const [completed, setCompleted] = useState<{ request: typeof request; result: FileNameSearchResult } | null>(null)
     // Retiring scans share the same four slots. listDir has no native abort API.
     const pending = useRef(new Set<Promise<unknown>>())
+    // The helper transport is serial: retain only the latest query while it is busy.
+    const pendingRemote = useRef<Promise<unknown> | null>(null)
 
     useLayoutEffect(() => {
         if (!request) return
@@ -43,6 +47,32 @@ export function useFileNameSearch(root: string | null, query: string, revision: 
             finally { pending.current.delete(listingRequest) }
         }
         const scan = async () => {
+            try {
+                let result
+                if (parseRemoteFilePath(root)) {
+                    while (pendingRemote.current) {
+                        await pendingRemote.current.catch(() => undefined)
+                        if (cancelled) return
+                    }
+                    const remote = searchRemoteFileNames(root, needle)
+                    pendingRemote.current = remote
+                    try { result = await remote }
+                    finally { pendingRemote.current = null }
+                } else {
+                    result = await searchWorkspaceFileNames(root, needle)
+                }
+                if (cancelled) return
+                if (result) {
+                    setCompleted({ request, result: { ...result, loading: false, error: null } })
+                    return
+                }
+            } catch (error) {
+                if (!cancelled) setCompleted({ request, result: {
+                    ...EMPTY, error: error instanceof Error ? error.message : String(error),
+                } })
+                return
+            }
+            // Only older remote helpers and SFTP retain the legacy traversal.
             const queue = [root]
             const visited = new Set([canonicalPathKey(root)])
             const found = new Map<string, FileNode>()

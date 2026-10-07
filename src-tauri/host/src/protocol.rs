@@ -56,6 +56,10 @@ pub enum Operation {
     WorkspaceClose {
         workspace: String,
     },
+    FileNameSearch {
+        workspace: String,
+        query: String,
+    },
     FilesList {
         workspace: String,
         path: String,
@@ -83,6 +87,16 @@ pub enum Operation {
     FilesDelete {
         workspace: String,
         path: String,
+    },
+    FilesCopy {
+        workspace: String,
+        sources: Vec<String>,
+        target_dir: String,
+    },
+    FilesMove {
+        workspace: String,
+        sources: Vec<String>,
+        target_dir: String,
     },
     FilesReadBase64 {
         workspace: String,
@@ -150,19 +164,74 @@ pub fn methods() -> Vec<String> {
         "workspaceOpen",
         "workspaceClose",
         "filesList",
+        "fileNameSearch",
         "filesRead",
         "filesWrite",
         "filesCreate",
         "filesRename",
         "filesDelete",
+        "filesCopy",
+        "filesMove",
         "filesReadBase64",
         "herdrDiscover",
         "herdrRequest",
         "herdrCall",
         "herdrMetadata",
         "herdrStart",
+        // Not an operation: terminal streams accept a pointer cell on
+        // `scroll`. A saved older helper rejects those fields and ends the
+        // stream, so clients send them only when this is advertised.
+        "herdrScrollCell",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn file_copy_and_move_use_the_documented_wire_shape() {
+        // Fields stay snake_case like filesReadBase64's `max_bytes`.
+        for (method, expected) in [("filesCopy", true), ("filesMove", false)] {
+            let wire = json!({
+                "method": method,
+                "params": {"workspace": "w", "sources": ["a", "b/c"], "target_dir": "d"}
+            });
+            let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+            match (&operation, expected) {
+                (
+                    Operation::FilesCopy {
+                        workspace,
+                        sources,
+                        target_dir,
+                    },
+                    true,
+                )
+                | (
+                    Operation::FilesMove {
+                        workspace,
+                        sources,
+                        target_dir,
+                    },
+                    false,
+                ) => {
+                    assert_eq!(workspace, "w");
+                    assert_eq!(sources, &["a", "b/c"]);
+                    assert_eq!(target_dir, "d");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+            assert_eq!(serde_json::to_value(&operation).unwrap(), wire);
+            assert!(methods().iter().any(|name| name == method));
+        }
+        assert!(serde_json::from_value::<Operation>(json!({
+            "method": "filesCopy",
+            "params": {"workspace": "w", "sources": [], "targetDir": "d"}
+        }))
+        .is_err());
+    }
 }

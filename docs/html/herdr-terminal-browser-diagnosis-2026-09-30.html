@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora：終端、Browser 狀態與 HERDR 整合診斷</title>
+<style>
+:root{color-scheme:light;--ink:#172b36;--muted:#536777;--line:#cdd9df;--paper:#f3f5f3;--panel:#fff;--accent:#176477;--good:#14634c;--warn:#8a5716}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.8 system-ui,-apple-system,"PingFang TC",sans-serif}main{max-width:1120px;margin:auto;padding:44px 30px 80px}header{padding-bottom:28px;border-bottom:3px solid var(--accent)}h1{font-size:36px;line-height:1.3;letter-spacing:-.04em;margin:10px 0 20px}h2{font-size:25px;line-height:1.4;margin:0 0 18px}h3{font-size:19px;margin:25px 0 10px}p{margin:12px 0}.meta,.note{color:var(--muted);font-size:14px}.lead{font-size:20px;max-width:920px}.block{background:var(--panel);border:1px solid var(--line);padding:26px;margin:24px 0;border-radius:12px}a{color:var(--accent);text-underline-offset:3px;overflow-wrap:anywhere}nav{display:flex;flex-wrap:wrap;gap:10px 22px;padding-top:20px}table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:12px 10px;vertical-align:top;text-align:left}th{background:#edf2f3}code{font-size:.9em;background:#edf2f3;border-radius:4px;padding:2px 5px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);background:#edf2f3;padding:18px;font:13px/1.7 ui-monospace,monospace}li{margin:8px 0}.badge{display:inline-block;padding:2px 8px;border-radius:5px;font-size:12px;font-weight:700;background:#e4f2ec;color:var(--good)}.hypothesis{background:#fff1d8;color:var(--warn)}.callout{border-left:4px solid var(--accent);padding:6px 20px;background:#edf5f7}.lanes{display:grid;gap:12px}.lane{padding:16px 20px;border:1px solid var(--line);border-radius:7px}.lane b{display:block;margin-bottom:6px}.arrow{color:var(--accent);font-weight:700}.small{font-size:14px}footer{border-top:1px solid var(--line);padding-top:20px;color:var(--muted)}@media(max-width:760px){main{padding:22px 14px}h1{font-size:29px}.block{padding:18px 14px}table{font-size:12px}th,td{padding:9px 5px}}@media print{body{background:#fff}main{padding:0}nav{display:none}.block{break-inside:auto;border-radius:0}h2,h3{break-after:avoid}a{color:inherit}th{background:#eee}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="meta">分析日期：2026-09-30（Asia/Taipei） · 3 條平行調查線 + 主線實際瀏覽器驗證</div>
+<h1>終端、Browser 狀態<br>與 HERDR 整合診斷</h1>
+<p class="lead">已確認 Browser 在一般分頁切換時被銷毀；已重現 HERDR 畫面投影在右下角複合字元下發生整屏上移。Fullscreen 捲動需要區分主機歷史與 TUI 內部輸入；Astra 動畫的確切觸發鏈仍需實際 frame capture。</p>
+<p class="meta">分析基準：目前工作樹，HEAD <code>9f4592e</code>，package version <code>0.0.16</code>，包含大量既有未提交修改。HERDR manifest 為 <code>0.9.1 / protocol 22</code>，installed xterm 為 <code>6.0.0</code>。這不是對使用者已安裝 binary 的版本確認。本輪僅新增本報告，未修改產品實作、未提交 Git。</p>
+<nav aria-label="章節"><a href="#verdict">結論與可信度</a><a href="#architecture">兩種終端路徑</a><a href="#scroll">Fullscreen 捲動</a><a href="#browser">Browser 狀態</a><a href="#render">幾何錯位</a><a href="#astra">Astra 閃爍</a><a href="#integration">整合方向</a><a href="#verification">驗證與限制</a></nav>
+</header>
+
+<section class="block" id="verdict"><h2>1. 結論與可信度</h2>
+<table><thead><tr><th>使用者現象</th><th>本次確認</th><th>證據等級</th></tr></thead><tbody>
+<tr><td>Claude Code／Codex fullscreen 無法捲動</td><td>一般 pane 是 screen projection，xterm 設為 scrollback:0；host scroll 與 app wheel 必須分流。目前工作樹已有未提交的零歷史 fallback，但仍用 host range 推測路由，與官方 child-mode 優先語意不同。</td><td><span class="badge">原始碼確認</span><br>未重現使用者 live TUI</td></tr>
+<tr><td>切換後 Browser 進度遺失</td><td>同 group 切走便 unmount → close；回來重建。Chrome 中表單、scroll、JS instance 確實重置，native IPC seam 也測到 open→close→open。</td><td><span class="badge">已重現</span></td></tr>
+<tr><td>末欄／末列內容出現在上方</td><td>缺少官方 renderer 所假設的 no-autowrap；HERDR 與 xterm grapheme 寬度不同。在 production leaf 重播右下角 family emoji，TOP 消失、整屏上移。</td><td><span class="badge">同類錯位已重現</span><br>尚未比對使用者原始 frame</td></tr>
+<tr><td>Astra 動畫造成輸入區反覆閃縮</td><td>優先查幾何／grapheme，再查 queue overflow 引發反覆 reconnect；同步輸出與 serialized write 目前已存在。</td><td><span class="badge hypothesis">有依據的待驗證假說</span></td></tr>
+<tr><td>更接近真正 HERDR</td><td>已有官方完整 client。先補 pane contract，再把完整 client 做成持久 Session 工作面，比重新實作官方 client 的風險低。</td><td><span class="badge">實作現況確認</span><br>後續為設計建議</td></tr>
+</tbody></table>
+</section>
+
+<section class="block" id="architecture"><h2>2. 目前其實有兩種終端路徑</h2>
+<div class="lanes">
+<div class="lane"><b>一般 pane</b>Claude／Codex <span class="arrow">→</span> HERDR server terminal state <span class="arrow">→</span> JSON ANSI full／delta frame <span class="arrow">→</span> Yuzora queue <span class="arrow">→</span> xterm 畫面投影</div>
+<div class="lane"><b>完整 Session</b>HERDR server <span class="arrow">↔</span> 官方 <code>herdr --session … client</code> <span class="arrow">↔</span> Yuzora PTY <span class="arrow">↔</span> xterm ＋ Kitty ＋ clipboard</div>
+</div>
+<p>一般 pane 收到的是 HERDR 已經渲染過的畫面，並非 child PTY 的原始輸出。它的 xterm normal／alternate 狀態不等於 Claude／Codex 內部的 buffer、mouse 或 keyboard modes。直接依外層 xterm 判斷 child 的捲動模式，沒有可靠的協定依據。</p>
+<p>完整 Session 已使用官方 client，包含官方布局、prefix、Copy mode、搜尋與 popup。開啟時同 Session 的一般 pane connectors 會暫停，避免搶 controller／尺寸；關閉僅釋放 client，server 程序仍存在。相關實作：<a href="../../src-tauri/host/src/herdr_service.rs">herdr_service.rs:2526</a>、<a href="../../src-tauri/host/src/herdr_native_client.rs">herdr_native_client.rs:91</a>、<a href="../../src/app/workbench/herdr/HerdrNativeDialog.tsx">HerdrNativeDialog.tsx:31、51、116</a>、<a href="../../src/app/panels/HerdrTerminalPage.tsx">HerdrTerminalPage.tsx:226</a>。</p>
+<p class="note">官方 v0.9.1 的舊暫存 source 已不存在；本次重新取得固定 tag 的官方 source，沒有把過期 graph 當成現行證據。</p>
+</section>
+
+<section class="block" id="scroll"><h2>3. Fullscreen 捲動：先確認誰擁有歷史</h2>
+<p>普通 shell 的歷史由 HERDR host scrollback 保存；fullscreen TUI 的對話歷史通常由應用程式自己管理。xterm 的 alternate buffer 也不會因為調高一般 scrollback 就保存完整 TUI 歷史。本次以真 xterm 6 寫入 30 行、8-row viewport：normal buffer 長度 30、baseY=22；alternate buffer 長度只有 8、baseY=0。<a href="https://xtermjs.org/docs/api/terminal/interfaces/ibuffernamespace/">xterm buffer API</a> 將 normal 與 alternate 明確分開。</p>
+<table><thead><tr><th>權威 child 狀態</th><th>官方 HERDR wheel 行為</th><th>Yuzora 應遵循的語意</th></tr></thead><tbody>
+<tr><td>Mouse tracking 開啟</td><td>向 child 發送 mouse wheel report</td><td>即使 host 有歷史，也應優先送給 TUI</td></tr>
+<tr><td>Alternate screen + alternate-scroll</td><td>依官方規則送方向鍵</td><td>由 HERDR 判斷與編碼，不從外層 xterm 猜</td></tr>
+<tr><td>其餘</td><td>捲 host viewport</td><td>由 HERDR scroll range 驅動 scrollbar</td></tr>
+</tbody></table>
+<p>官方依據：<a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/pane/terminal.rs#L1938-L1958">wheel routing</a>、<a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/server/pane_input.rs#L128-L184">server input dispatch</a>。</p>
+<h3>目前工作樹已經做了什麼</h3>
+<p><a href="../../src/terminal/terminalTransport.ts">terminalTransport.ts:459–472、519–556</a> 已有未提交補強：當 hostRange=0／null 且 capability 允許時改走 application wheel；保留 pointer cell，對連續 wheel 做節奏控制。這些修改不是本次分析新增的修正。使用者正在執行的 build 若未包含它們，舊的零 range host-scroll 路徑足以解釋失效。</p>
+<p>但 current router 在 hostRange&gt;0 時仍直接選 <code>pane.scroll</code>，這不能涵蓋「normal buffer、有歷史、同時開 mouse tracking」的 TUI。<a href="../../src/app/panels/HerdrTerminalPage.tsx">HerdrTerminalPage.tsx:916</a> 又以外層 alternate 狀態決定是否放行 xterm；由於 connector 沒保證映射 child modes，不能以這個分支作為 child fullscreen 的權威判斷。</p>
+<div class="callout"><p><b>修正方向：</b>將實體 wheel 的應用程式／host 路由交由 HERDR 的 child-mode-aware 操作決定；scrollbar 拖曳則保持明確的 host absolute scroll。若當前版本／能力不支援，應保留清楚的相容性 fallback。不要增加假的 scroll range，也不要把 xterm 的重繪垃圾當成會話歷史。</p></div>
+<p>驗收矩陣應涵蓋 Claude／Codex fullscreen、normal-buffer mouse TUI、有／無 host history、touchpad／wheel、macOS／Windows／WSL、observe 模式與 capability rejection。成功條件是 TUI 內容移動且不意外改動 shell host viewport；實際使用者的 CLI 版本及畫面模式仍待確認。</p>
+</section>
+
+<section class="block" id="browser"><h2>4. Browser：已確認是 browsing context 被銷毀</h2>
+<pre>同一 group：Browser → 其他 tab
+EditorArea 只 render active PreviewPanel
+  → PreviewPanel unmount
+  → requestNativePreviewClose(null)
+  → Rust webview.close()
+
+回 Browser
+  → 新 PreviewPanel / 新 session UUID
+  → 新 child webview / 重新載入網址</pre>
+<p>來源：<a href="../../src/workbench/EditorArea.tsx">EditorArea.tsx:104–140</a>、<a href="../../src/app/panels/PreviewPanel.tsx">PreviewPanel.tsx:61–78、160、224–244</a>、<a href="../../src-tauri/src/preview_webview.rs">preview_webview.rs:175–183</a>。相同檔案對 Herdr pages 採保持 mounted 的方式，Browser 的生命週期策略卻不同。</p>
+<table><thead><tr><th>Chrome 實際頁面資料</th><th>切走前</th><th>切回後</th></tr></thead><tbody>
+<tr><td>頁面 bootId</td><td>0b345052…</td><td>a89f8b21…（新實例）</td></tr>
+<tr><td>未送出的表單文字</td><td>UNSAVED-BROWSER-DRAFT</td><td>空字串</td></tr>
+<tr><td>scrollY</td><td>600</td><td>0</td></tr>
+<tr><td>JS 計數器</td><td>538</td><td>67（已重新開始）</td></tr>
+<tr><td>iframe identity</td><td>原節點</td><td>原節點 disconnected，新節點取代</td></tr>
+</tbody></table>
+<p class="note">本表使用實際 Yuzora EditorArea／PreviewPanel 的 Chrome iframe 路徑與本機合成測試頁。native Tauri webview 沒有本次實機畫面驗收，但實際元件＋stores 的 IPC seam test 已另外證明 exactly open→close→open 與新 nativeSession UUID。</p>
+<table><thead><tr><th>切換種類</th><th>目前行為與確認程度</th></tr></thead><tbody>
+<tr><td>同 group Browser → file／terminal → Browser</td><td>卸載並重新建立；已重現資料遺失。</td></tr>
+<tr><td>Files ↔ Git／Database</td><td>外層 hidden、native hide/show。Files↔Git 實測同 iframe、同 bootId，seam test 無新增 open／close。</td></tr>
+<tr><td>Workspace A → B → A</td><td>setWorkspace 只保留 herdr-terminal tabs；preview owner 被 close，file preview leases 亦清除。原始碼確認，尚未跑 native A→B→A。</td></tr>
+<tr><td>macOS／Windows OS 視窗失焦／恢復</td><td>不能由上述直接歸因；目前沒證據顯示 focus bridge 主動 close Browser，尚待原生重現。</td></tr>
+<tr><td>關閉／重開完整 HERDR Session dialog</td><td>官方 client 與 xterm 重建，server／agent 繼續存在；client 的 Copy/Search/overlay 狀態不等於 server session。</td></tr>
+</tbody></table>
+<h3>跨工作區需要處理資源 ownership</h3>
+<p><a href="../../src/state/previewStore.ts">previewStore.ts:9、407</a> 只保存 URL、URL history、frame 與 reloadNonce；保存 URL 無法保留 JS heap、表單與連線。<a href="../../src/state/workspaceStore.ts">workspaceStore.ts:458</a> 清除非 HERDR tabs，<a href="../../src/workbench/SessionRestoreBridge.tsx">SessionRestoreBridge.tsx:184</a> 排除 preview persistence。</p>
+<p>此外，<a href="../../src/preview/useRemotePreviewUrl.ts">useRemotePreviewUrl.ts:47</a> 在 unmount 釋放 tunnel；<a href="../../src/preview/filePreview.ts">filePreview.ts:141</a> 在 workspace switch 清 lease。Rust 目前只有固定 <code>preview-child</code>，新 session 會 close 舊 child；<a href="../../src-tauri/src/preview_resources.rs">preview_resources.rs:81</a> 只有一個 active resource。因此不能只在 React 多掛幾個 PreviewPanel 就宣稱跨 workspace 已保留。</p>
+<ol>
+<li><b>先修同工作區切 tab：</b>Browser tab 存在即保持其 runtime 與 tunnel；inactive 只 hide，不 close、不 navigate。真正 close tab 才銷毀。visible 必須綜合 active tab、mode、overlay，避免 native layer 覆蓋其他畫面。</li>
+<li><b>再修跨工作區：</b>穩定 owner 為 <code>{hostId, canonical workspace identity, browserTabId}</code>；group 是顯示位置，搬 group 不改 identity。Rust 按 Browser ID 管理 webview；bounds、visibility、close、poll 皆帶 owner。</li>
+<li><b>讓資源跟隨 Browser runtime：</b>tunnel／HTML capability lease 隨 session 保存，明確 close、disconnect 或 generation 失效才釋放；保留 stale-response 與 workspace 安全檢查。</li>
+</ol>
+<p>Browser session 的保留也需要有界資源政策，但不應以任意 tab deactivation 當作銷毀點；資源上限與回收提示可在跨工作區方案時明確決策。</p>
+</section>
+
+<section class="block" id="render"><h2>5. 末欄／末列錯位：renderer 契約已出現紅例</h2>
+<p>官方 <a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/client/terminal_setup.rs#L100">terminal_setup.rs:100</a> 關閉 host 自動換行；<a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/protocol/render_ansi.rs#L977-L988">render_ansi.rs:986–987</a> 明文假設 consumer 已關閉它，以避免 resize race 將字元灑到其他列。JSON frame 本身沒有替 consumer 做 <code>CSI ? 7 l</code>。</p>
+<p><a href="../../src/app/panels/HerdrTerminalPage.tsx">HerdrTerminalPage.tsx:873–885、1218–1227</a> 建立 xterm 與套用 full frame 時，尚未建立此 projector mode 契約。xterm 預設 wrap=true、Unicode provider=6；HERDR 則使用 grapheme-aware cell。官方 <a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/pane/terminal.rs#L5409-L5421">ZWJ family 測試</a> 要求整個 family 是單一 2-column Wide cell，<a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/protocol/render_ansi.rs#L728-L732">encoder</a> 也依完整 symbol 計算寬度。</p>
+<h3>Production leaf 的實際 Chrome 重播</h3>
+<p>使用既有 <a href="../../fixtures/herdr-render-e2e.tsx">fixtures/herdr-render-e2e.tsx</a>，真 xterm＋production HerdrTerminalPage，只有 IPC peer 是受控來源。Grid=10×3；先在第一、二行寫入 TOP、MIDDLE，再於第三行第九欄寫入 family emoji。</p>
+<table><thead><tr><th>組別</th><th>解析後 3 行</th><th>結果</th></tr></thead><tbody>
+<tr><td>預設 wrap / family emoji</td><td><code>MIDDLE</code><br><code>        👨‍👩‍</code><br><code>👧‍👦</code></td><td>TOP 遺失，畫面上移</td></tr>
+<tr><td>no-wrap / 同一 family emoji</td><td><code>TOP</code><br><code>MIDDLE</code><br><code>        👨‍👦</code></td><td>幾何保留，但字形仍錯</td></tr>
+<tr><td>預設 wrap / ASCII X</td><td>TOP、MIDDLE、右下 X</td><td>控制組正常</td></tr>
+<tr><td>預設 wrap / CJK 界</td><td>TOP、MIDDLE、右下 界</td><td>控制組正常</td></tr>
+</tbody></table>
+<p><b>結論範圍：</b>這已證明產品渲染路徑存在整屏上移的缺陷；尚未取得使用者「最後一欄」事件的 frame，因此不能斷言所有案例都是 ZWJ emoji，也不能直接把此紅例當成 Astra 動畫重現。</p>
+<div class="callout"><p><b>修正應同時處理：</b>no-autowrap 的初始化／重建契約，以及 grapheme／cell-width 的一致性。僅換字型、僅更新 Unicode 表、或只加 no-wrap，都不足以宣稱完整修正。</p></div>
+<p>必須保留現有 frame-grid resize 防護。現在已將 request size 與 render grid 分開、等待 full frame 才 resize、過濾過時 delta，並用 80ms fit debounce。也不要每個 full frame 都 <code>term.reset()</code>：目前避免 reset 是刻意防止 clear-before-paint 的空屏閃動。</p>
+</section>
+
+<section class="block" id="astra"><h2>6. Astra 動畫：目前可排出驗證順序，尚無唯一根因</h2>
+<table><thead><tr><th>排序／假說</th><th>支持它的目前證據</th><th>如何證實或否證</th></tr></thead><tbody>
+<tr><td>1. 動畫放大字寬／幾何錯位</td><td>右下 grapheme 已在 production leaf 引發整屏位移</td><td>同一實際 Astra trace，分別用 baseline、no-wrap、no-wrap+grapheme 重播。比較每格／prompt 邊框與影片；單純合成 emoji 不能代替實際 trace。</td></tr>
+<tr><td>2. 積壓觸發 drop→reopen→full redraw</td><td>incremental queue 上限 256KiB，溢出會丟 chunk；needsResync 會 detach/release/open</td><td>同步記錄 pendingBytes、droppedBytes、flush latency、connector generation、reopen count。若閃爍時完全沒有 drop/reopen，這條即可排除。</td></tr>
+<tr><td>3. resize／font／container 與 frame grid 競態</td><td>多個尺寸來源仍是複雜邊界，但目前已有防護</td><td>固定 grid 與字型，再回放同一 trace；記錄 requested size、frame size、xterm size 的時間線。</td></tr>
+<tr><td>4. IME candidate／cursor anchor 抖動</td><td>原生候選窗可能跟 cursor repaint 互動，但沒有新建多個 textarea 的證據</td><td>composition on/off 對照；記錄 textarea identity／数量與 candidate 位置，區分 ANSI prompt 重複與真正 DOM 輸入框增加。</td></tr>
+</tbody></table>
+<p>queue 路徑來源：<a href="../../src/terminal/terminalOutputQueue.ts">terminalOutputQueue.ts:11、205–209、379–400、447–455</a>；recover 路徑：<a href="../../src/app/panels/HerdrTerminalPage.tsx">HerdrTerminalPage.tsx:1155–1175、1233–1234</a>。本次未測到 Astra 觸發 queue overflow。</p>
+<h3>已有的正確機制，不能誤報成缺失</h3>
+<ul>
+<li>官方 full／delta 已包含 synchronized output <code>?2026h/l</code>；Yuzora writer 會等 xterm callback，再交下一批。</li>
+<li>full frame 目前沒有每次 reset xterm；直接加 reset 可能反而出現空屏閃動。</li>
+<li>一般 leaf 用 <code>anchorMode: "cursor"</code>；<a href="../../src/terminal/terminalImePositioning.ts">terminalImePositioning.ts:106</a> 只有 tui anchor 才建立 overlay，且不是每 frame 建一個。</li>
+</ul>
+<p>下一次實機診斷應捕捉短而完整的事件窗：frame seq/full/width/height、ANSI bytes、queue metrics、fit 與實際 grid、reopen generation、composition state。對 trace 中可能含有的對話文字做局部去識別化，但保留 ANSI 與 Unicode bytes；不能只拿截圖推回協定根因。</p>
+</section>
+
+<section class="block" id="integration"><h2>7. 讓 Yuzora 的操作更接近 HERDR</h2>
+<p>最快的路徑是先把既有一般 pane 做成可靠 projector，再讓已有的官方 client 成為可持續切換的工作面。完整自行重做 HERDR client，會同時承擔輸入模式、copy/search、layout、graphics、popup 與版本同步成本。</p>
+<table><thead><tr><th>能力</th><th>一般 pane 的限制</th><th>建議方向</th></tr></thead><tbody>
+<tr><td>Copy／history search</td><td>目前 copy 取 xterm 畫布，並非完整 host 歷史</td><td>漸進接入官方 pane.selection.read／copy_motion／copy_search；完整 Session 使用官方 Copy mode。</td></tr>
+<tr><td>Kitty 圖形</td><td>v0.9.1 JSON connector 直接忽略 ServerMessage::Graphics</td><td>保留完整官方 client 路徑；只掛 addon 在一般 pane 無法恢復未送達的資料。</td></tr>
+<tr><td>Popup／官方 prefix／布局</td><td>不是每種官方 UI 都有可供 pane connector 控制的 pane ID</td><td>由官方完整 client 承擔。</td></tr>
+<tr><td>Session 保留</td><td>目前完整 client 隨 dialog mount／cleanup 建立與釋放</td><td>穩定 host+named Session identity 的持久工作面，隱藏與 client release 分開。</td></tr>
+<tr><td>Controller 與 resize</td><td>同一 Session 兩種 view 若同時搶控制，尺寸與輸入會互相干擾</td><td>保留現有互斥與明確交接，observe 不得冒充 controller。</td></tr>
+</tbody></table>
+<p>官方圖形邊界見 <a href="https://github.com/herdrdev/herdr/blob/v0.9.1/src/client/terminal_sessions.rs#L122-L155">terminal_sessions.rs</a>。本地 full client 已掛 <a href="../../src/app/workbench/herdr/HerdrNativeDialog.tsx">Kitty／OSC52</a>，但 <a href="../../src/terminal/kittyProtocol.ts">kittyProtocol.ts:109、138</a> 只支援選定 inline transport／操作；不應宣稱完整 Kitty protocol parity。</p>
+<h3>建議執行順序與驗收</h3>
+<ol>
+<li><b>Renderer 與 wheel contract：</b>no-wrap＋grapheme parity；保留 synchronized frame 與尺寸防護；把 child-aware wheel 路由對齊官方。<br>驗收：右下 ASCII/CJK/combining/ZWJ/VS16 matrix、full→delta、resize、hidden→visible，以及實際兩款 TUI 的捲動。</li>
+<li><b>同 workspace Browser continuity：</b>tab inactive 只 hide、close tab 才 dispose；tunnel 跟 Browser 存活。<br>驗收：切 tab 前後 bootId、draft、scroll、JS／WebSocket session 不變；明確 close/reopen 才換實例。</li>
+<li><b>Astra trace 驅動修正：</b>先錄得現場 frame／metrics，再依上一節四組對照定位。<br>驗收：同 trace 能 red→green，動畫過程 prompt 不重複、不位移、不進入反覆 reopen。</li>
+<li><b>持久完整 HERDR 工作面＋跨 workspace Browser runtime：</b>按穩定 owner 保留資源，分別處理兩個子系統，不做一次性大重寫。<br>驗收：host/session/group/workspace 切換，controller 交接與 late-close race；隱藏資源有界且不丟 process identity。</li>
+</ol>
+<p>第 4 階段是設計擴充，需先確認跨工作區保留範圍與資源政策；前 1、2 階段已有足夠的具體失敗證據，可各自形成小而清楚的修正。</p>
+</section>
+
+<section class="block" id="verification"><h2>8. 本次驗證與仍未確認的範圍</h2>
+<table><thead><tr><th>驗證</th><th>結果</th><th>能證明什麼</th></tr></thead><tbody>
+<tr><td>Terminal 相關既有 Vitest，5 檔</td><td>141 / 141 通過</td><td>目前 mock／queue／routing assertions 通過</td></tr>
+<tr><td>Browser／EditorArea 既有 Vitest，4 檔</td><td>58 / 58 通過</td><td>目前既有 lifecycle 契約通過</td></tr>
+<tr><td>actual EditorArea＋PreviewPanel＋stores 診斷 harness</td><td>1 / 1 通過</td><td>確認同 group tab switch open→close→open；Files↔Git 保留 native session</td></tr>
+<tr><td>Chrome：實際 Yuzora Browser 路徑</td><td>重現 draft／scroll／JS instance 遺失</td><td>真瀏覽器 browsing context 被重建</td></tr>
+<tr><td>Chrome：production terminal leaf replay</td><td>family emoji 右下錯位重現；ASCII/CJK controls 正常</td><td>實際渲染路徑的 no-wrap／grapheme 缺口</td></tr>
+<tr><td>真 xterm normal／alternate buffer 對照</td><td>30 行 vs 8 行，baseY 22 vs 0</td><td>alternate buffer 並非一般 scrollback</td></tr>
+</tbody></table>
+<pre>bun run test src/terminal/herdrTerminalTransport.test.ts src/terminal/terminalOutputQueue.test.ts src/app/panels/HerdrTerminalPage.test.tsx src/terminal/herdrAsyncScroll.test.ts src/terminal/herdrScrollCadence.test.ts
+
+bun run test src/app/panels/previewPanel.test.tsx src/state/previewStore.test.ts src/workbench/EditorArea.test.tsx src/preview/useRemotePreviewUrl.test.tsx</pre>
+<p>既有測試的盲點：<a href="../../src/app/panels/HerdrTerminalPage.test.tsx">HerdrTerminalPage.test.tsx:64、127</a> 用只回 callback 的 xterm mock；既有 <a href="../../fixtures/herdr-render-e2e.tsx">render fixture:55、64</a> 主要用 ASCII，且每 frame 間隔 120ms。<a href="../../src/workbench/EditorArea.test.tsx">EditorArea.test.tsx:52</a> mock 掉 PreviewPanel；<a href="../../src/app/panels/previewPanel.test.tsx">previewPanel.test.tsx:569</a> 明確期待 unmount/remount 後 invalidate continuity，<a href="../../src/state/previewStore.test.ts">previewStore.test.ts:185</a> 期待 workspace switch 關閉。測試全過不表示使用者期望的狀態保留已成立。</p>
+<p>診斷 seam harness 暫存在 <code>/tmp/yuzora-browser-lifecycle.ew6V0f/browser-lifecycle.test.tsx</code>；為執行 Vitest，曾短暫複製到 repo-root 唯一測試檔，執行後已移除。未改既有測試或產品實作。</p>
+<p><b>尚未驗證：</b>使用者實際 Yuzora build／OS／一般 pane 或完整 Session；Claude Code／Codex fullscreen 的 live 操作；Astra 實際動畫 trace；native Tauri Browser 的真 webview 畫面；OS 視窗切換；跨 workspace native continuity。這些限制影響的是對「使用者每一個現場事件」的唯一歸因，不影響已重現的兩個缺口。</p>
+<p>本次沒有執行完整 build／全 repo test／Cargo suite，因為未改產品實作；完成的是與診斷直接相關的 targeted tests、官方 source 查證與獲授權的瀏覽器驗證。</p>
+</section>
+<footer>本報告的結論以目前 source 與上述實驗為準。歷史筆記只用來提醒 hidden terminal 的 bounded queue／identity 邊界，沒有把過去已關閉 issue 當作本次回歸的證據。</footer>
+</main></body></html>

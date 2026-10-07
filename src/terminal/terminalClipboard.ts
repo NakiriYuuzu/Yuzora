@@ -15,6 +15,8 @@ interface TerminalClipboardOptions {
   pasteImage?: (image?: Blob) => void
   copyOnSelect?: () => boolean
   onCopyError?: (error: unknown) => void
+  /** A selection that extends past xterm's frame (HERDR scrollback). */
+  extendedSelection?: { active: () => boolean; read: () => Promise<string> }
 }
 
 function browserClipboard(): Clipboard | null {
@@ -83,15 +85,27 @@ export function installTerminalClipboardHandling(
     else term.paste(text)
   }
 
+  const hasSelection = () => term.hasSelection() || Boolean(options.extendedSelection?.active())
+
   const copySelection = () => {
-    if (disposed || !term.hasSelection()) return
+    if (disposed || !hasSelection()) return
     if (selectionTimer) { clearTimeout(selectionTimer); selectionTimer = undefined }
-    copyQueue.copy({
+    const enqueue = (text: string) => copyQueue.copy({
       owner: copyOwner,
-      text: terminalSelectionSnapshot(term),
+      text,
       lineEnding: isWindowsPlatform() ? "crlf" : "lf",
       onError: (error) => options.onCopyError?.(error),
     })
+    const extended = options.extendedSelection
+    if (!extended?.active()) {
+      enqueue(terminalSelectionSnapshot(term))
+      return
+    }
+    // Fall back to the visible part when HERDR cannot read the range.
+    const visible = term.hasSelection() ? terminalSelectionSnapshot(term) : ""
+    void extended.read()
+      .then((text) => { if (!disposed) enqueue(text || visible) })
+      .catch(() => { if (!disposed) enqueue(visible) })
   }
 
   const pasteClipboard = () => {
@@ -133,7 +147,7 @@ export function installTerminalClipboardHandling(
 
     const key = event.key.toLowerCase()
     if (key === "c") {
-      if (!term.hasSelection()) return true
+      if (!hasSelection()) return true
       event.preventDefault()
       if (!event.repeat && !handledCopyKeys.has(event)) {
         handledCopyKeys.add(event)
@@ -161,7 +175,7 @@ export function installTerminalClipboardHandling(
     event.stopImmediatePropagation()
   }
   const handleCopy = (event: ClipboardEvent) => {
-    if (!term.hasSelection()) return
+    if (!hasSelection()) return
     event.preventDefault()
     event.stopImmediatePropagation()
     if (!shortcutCopyThisTurn) copySelection()

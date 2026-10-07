@@ -13,6 +13,11 @@ async function regularFile(path: string): Promise<Buffer> {
   return readFile(path)
 }
 
+/** upload-artifact stores files as 0644; a bundled Unix executable must keep its execute bits. */
+export function assertExecutableMode(path: string, mode: number, platform: string = process.platform): void {
+  if (platform !== "win32" && (mode & 0o111) === 0) throw new Error(`Runtime executable lost its execute permission: ${path}`)
+}
+
 async function filesIn(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true })
   const files: string[] = []
@@ -46,6 +51,7 @@ export async function verifyHostResources(root: string, version: string): Promis
       const magic = bytes.subarray(0, 4).toString("hex")
       if (entry !== artifact.helper && entry !== artifact.herdr) continue
       if (target.startsWith("windows-") ? !magic.startsWith("4d5a") : target.startsWith("linux-") ? magic !== "7f454c46" : !["cffaedfe", "feedfacf", "cafebabe", "bebafeca"].includes(magic)) throw new Error(`Wrong executable format: ${entry.path}`)
+      if (!target.startsWith("windows-")) assertExecutableMode(entry.path, (await lstat(resolve(root, entry.path))).mode)
     }
   }
 }

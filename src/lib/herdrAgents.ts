@@ -8,6 +8,8 @@ const STATUS_URGENCY: Record<HerdrAgentStatus, number> = {
   idle: 4
 }
 
+let agentLabelCollator: Intl.Collator | undefined
+
 /** herdrm-compatible urgency ordering with stable, deterministic tie-breaks. */
 export function compareHerdrAgentsByUrgency(
   left: HerdrAgentInfo,
@@ -18,10 +20,10 @@ export function compareHerdrAgentsByUrgency(
 
   const leftLabel = left.title ?? left.name
   const rightLabel = right.title ?? right.name
-  const label = leftLabel.localeCompare(rightLabel, undefined, {
+  const label = (agentLabelCollator ??= new Intl.Collator(undefined, {
     numeric: true,
     sensitivity: "base"
-  })
+  })).compare(leftLabel, rightLabel)
   if (label !== 0) return label
   return left.id.localeCompare(right.id)
 }

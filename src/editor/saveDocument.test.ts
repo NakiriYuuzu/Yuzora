@@ -7,7 +7,8 @@ const recentlySavedMark = vi.fn()
 const showActionError = vi.fn(async (_action: string, _error: unknown) => undefined)
 
 vi.mock("./documentRegistry", () => ({
-    getDocument: (path: string) => getDocument(path)
+    getDocument: (path: string) => getDocument(path),
+    saveDocumentContent: (path: string, content: string) => saveFile(path, content)
 }))
 vi.mock("./viewRegistry", () => ({
     getView: (path: string) => getView(path)

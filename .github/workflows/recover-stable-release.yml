@@ -60,9 +60,15 @@ jobs:
           HOST_JOBS=(
             'host-artifacts / build (ubuntu-24.04, linux-x86_64)'
             'host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)'
-            'host-artifacts / build (macos-14, macos-aarch64)'
             'host-artifacts / build (macos-15-intel, macos-x86_64)'
           )
+          # Match the original source, not this recovery workflow's current runner.
+          MACOS_ARM_RUNNER="$(awk '$1 == "-" && $2 == "runner:" { runner = $3 } $1 == "target:" && $2 == "macos-aarch64" { print runner }' source-host.yml)"
+          case "$MACOS_ARM_RUNNER" in
+            macos-14) HOST_JOBS+=('host-artifacts / build (macos-14, macos-aarch64)') ;;
+            macos-15) HOST_JOBS+=('host-artifacts / build (macos-15, macos-aarch64)') ;;
+            *) echo "::error::unsupported or ambiguous original macOS ARM host runner"; exit 1 ;;
+          esac
           if grep -Eq '^[[:space:]]+(-[[:space:]]+)?target: windows-x86_64[[:space:]]*$' source-host.yml; then
             HOST_JOBS+=('host-artifacts / build (windows-latest, windows-x86_64)')
           fi
@@ -106,7 +112,7 @@ jobs:
             echo "release_notes_b64=$(jq -r '.body' release-inputs/release.json | base64 -w0)"
           } >> "$GITHUB_OUTPUT"
       - name: Hand off public signatures and draft inventory
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: recovery-updater-inputs
           path: release-inputs/
@@ -120,14 +126,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.guard.outputs.source_sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
-          bun-version: 1.3.14
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: recovery-updater-inputs
           path: release-inputs
@@ -141,7 +147,7 @@ jobs:
           bun scripts/release-notes.ts "$TAG_NAME" release-notes.md
           [ "$(cat release-notes.md)" = "$(jq -r '.body' release-inputs/release.json)" ]
           bun scripts/prepare-updater-metadata.ts "$TAG_NAME" "$REPOSITORY" release-notes.md release-inputs/asset-names.txt release-inputs updater-release/latest.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: recovery-updater-metadata
           path: updater-release/latest.json
@@ -162,11 +168,11 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: recovery-updater-inputs
           path: release-inputs
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: recovery-updater-metadata
           path: updater-release

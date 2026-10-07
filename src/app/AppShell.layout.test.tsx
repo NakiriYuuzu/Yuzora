@@ -38,24 +38,24 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-it("applies and saves the global bot animation switch without remounting work surfaces", () => {
+it("applies and saves the global bot animation switch without remounting work surfaces", async () => {
   const app = render(<AppShell />)
   const editor = screen.getByRole("textbox", { name: "Editor buffer" })
   expect(document.documentElement.dataset.botAnimations).toBe("true")
   fireEvent.click(screen.getByRole("button", { name: "Settings" }))
-  fireEvent.click(screen.getByRole("button", { name: "Toggle bot animations" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Toggle bot animations" }))
   expect(document.documentElement.dataset.botAnimations).toBe("false")
   expect(saveAppearanceSettings).toHaveBeenLastCalledWith(expect.objectContaining({ botAnimations: false }))
   expect(screen.getByRole("textbox", { name: "Editor buffer" })).toBe(editor)
   expect(lifecycle.editorMount).toHaveBeenCalledTimes(1)
   expect(lifecycle.spacesMount).toHaveBeenCalledTimes(1)
-  fireEvent.click(screen.getByRole("button", { name: "Toggle bot animations" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Toggle bot animations" }))
   expect(document.documentElement.dataset.botAnimations).toBe("true")
   app.unmount()
   expect(document.documentElement.dataset.botAnimations).toBeUndefined()
 })
 
-it("does not rerender unrelated work surfaces when toggling or resizing sidebars", () => {
+it("does not rerender unrelated work surfaces when toggling or resizing sidebars", async () => {
   render(<AppShell />)
   const renders = [lifecycle.editorRender, lifecycle.spacesRender, lifecycle.toolsRender, lifecycle.settingsRender]
   renders.forEach(render => render.mockClear())
@@ -69,7 +69,7 @@ it("does not rerender unrelated work surfaces when toggling or resizing sidebars
   fireEvent.keyDown(screen.getByRole("separator", { name: "Resize workspace tools sidebar" }), { key: "ArrowLeft" })
   renders.forEach(render => expect(render).not.toHaveBeenCalled())
   fireEvent.click(screen.getByRole("button", { name: "Settings" }))
-  expect(screen.getByRole("dialog", { name: "Settings dialog" })).toBeVisible()
+  expect(await screen.findByRole("dialog", { name: "Settings dialog" })).toBeVisible()
 })
 
 it("keeps edge controls reachable while collapsed sidebars give back their full width", () => {
@@ -147,7 +147,7 @@ it("preserves editor buffers and Space navigation mounts across all work surface
   expect(lifecycle.spacesUnmount).not.toHaveBeenCalled()
 })
 
-it("keeps named shared Settings, SSH/SFTP, search and Database entries reachable", () => {
+it("keeps named shared Settings, SSH/SFTP, search and Database entries reachable", async () => {
   render(<AppShell />)
   const sidebar = within(screen.getByRole("complementary", { name: "Sidebar navigation" }))
   expect(screen.queryByRole("banner")).not.toBeInTheDocument()
@@ -155,14 +155,14 @@ it("keeps named shared Settings, SSH/SFTP, search and Database entries reachable
     expect(sidebar.getByRole("button", { name })).toBeVisible()
   }
   fireEvent.click(screen.getByRole("button", { name: "Settings" }))
-  expect(screen.getByRole("dialog", { name: "Settings dialog" })).toBeInTheDocument()
+  expect(await screen.findByRole("dialog", { name: "Settings dialog" })).toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "SSH / SFTP" }))
   expect(lifecycle.remote).toHaveBeenCalledWith(true)
   fireEvent.click(screen.getByRole("button", { name: "Search files and commands" }))
   expect(screen.getByRole("dialog", { name: "Command search" })).toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Database" }))
   expect(useUiStore.getState().mode).toBe("database")
-  expect(screen.getByText("Database query surface")).toBeVisible()
+  expect(await screen.findByText("Database query surface")).toBeVisible()
   expect(screen.getByRole("button", { name: "Database" })).toHaveAttribute("aria-pressed", "true")
   fireEvent.click(screen.getByRole("button", { name: "Back to workspace" }))
   expect(useUiStore.getState().mode).toBe("ade")
@@ -237,11 +237,11 @@ it("hides workspace tools in Database and restores the working surface from its 
   expect(screen.getByRole("button", { name: "Files tool" })).toBe(tool)
 })
 
-it("opens commit history from the graph entry after viewing local changes", () => {
+it("opens commit history from the graph entry after viewing local changes", async () => {
   useUiStore.setState({ mode: "files", gitPanelTab: "local" })
   render(<AppShell />)
   fireEvent.click(screen.getByRole("button", { name: "GIT tool" }))
   expect(useUiStore.getState().mode).toBe("git")
   expect(useUiStore.getState().gitPanelTab).toBe("log")
-  expect(screen.getByText("Git graph surface")).toBeVisible()
+  expect(await screen.findByText("Git graph surface")).toBeVisible()
 })

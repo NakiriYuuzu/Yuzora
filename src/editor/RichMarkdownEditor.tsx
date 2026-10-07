@@ -2,6 +2,7 @@ import { MarkdownDocumentPreview } from "@/workbench/MarkdownDocumentPreview"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
+import { CodeBlock, type CodeBlockOptions } from "@tiptap/extension-code-block"
 import { Markdown } from "@tiptap/markdown"
 import { TableKit } from "@tiptap/extension-table"
 import TaskList from "@tiptap/extension-task-list"
@@ -16,10 +17,44 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { EditorPane } from "./EditorPane"
 import { markdownRoundTripSafe, needsMarkdownSource } from "./markdownSafety"
+import { markdownViewState, type MarkdownViewState } from "./markdownViewState"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { createCodeCopyButton } from "@/workbench/markdownCodeCopy"
 import "./richMarkdown.css"
 
 const RICH_DOCUMENT_LIMIT = 128 * 1024
+
+// The stock pre > code markup, with a copy control outside the editable code.
+const CopyableCodeBlock = CodeBlock.extend<CodeBlockOptions & { copyLabel: string }>({
+    addOptions() {
+        return { ...this.parent!(), copyLabel: "Copy code" }
+    },
+    addNodeView() {
+        return ({ node: initial }) => {
+            let node = initial
+            const dom = document.createElement("pre")
+            const contentDOM = document.createElement("code")
+            const button = createCodeCopyButton(this.options.copyLabel, () => node.textContent)
+            const applyLanguage = () => {
+                const language = node.attrs.language as string | null
+                if (language) contentDOM.className = `${this.options.languageClassPrefix ?? ""}${language}`
+                else contentDOM.removeAttribute("class")
+            }
+            applyLanguage()
+            dom.append(contentDOM, button)
+            return {
+                dom, contentDOM,
+                update: next => {
+                    if (next.type !== node.type) return false
+                    node = next
+                    applyLanguage()
+                    return true
+                },
+                stopEvent: event => button.contains(event.target as Node),
+            }
+        }
+    },
+})
 
 // Preserve the document's leading/trailing newlines when Tiptap serializes edits.
 function preserveDocumentWhitespace(original: string, replacement: string): string {
@@ -32,7 +67,15 @@ interface DocumentOwner { view: EditorView; save: () => void; editable: boolean 
 /** CodeMirror remains the document/undo/save authority in both modes. */
 export function RichMarkdownEditor({ path, groupIndex }: { path: string; groupIndex: number }) {
     const { t } = useTranslation("richMarkdown")
-    const [mode, setMode] = useState<"document" | "source">(() => useWorkspaceStore.getState().pendingReveal?.path === path ? "source" : "document")
+    const workspace = useWorkspaceStore(state => state.workspacePath)
+    const navigation = useMemo(() => markdownViewState(workspace, path), [workspace, path])
+    const [modeState, setModeState] = useState(() => ({ navigation,
+        mode: useWorkspaceStore.getState().pendingReveal?.path === path ? "source" as const : navigation.get().mode }))
+    const mode = modeState.navigation === navigation ? modeState.mode : navigation.get().mode
+    const setMode = useCallback((mode: "document" | "source") => {
+        navigation.set({ mode })
+        setModeState({ navigation, mode })
+    }, [navigation])
     const [loadedOwner, setOwner] = useState<(DocumentOwner & { path: string; version: number }) | null>(null)
     const ownerVersion = useRef(0)
     const owner = loadedOwner?.path === path ? loadedOwner : null
@@ -41,7 +84,7 @@ export function RichMarkdownEditor({ path, groupIndex }: { path: string; groupIn
     }, [path])
     useEffect(() => useWorkspaceStore.subscribe((state) => {
         if (state.pendingReveal?.path === path) setMode("source")
-    }), [path])
+    }), [path, setMode])
     return <section className="rich-markdown">
         <div className="rich-markdown-modebar">
             <span>Markdown</span>
@@ -54,14 +97,14 @@ export function RichMarkdownEditor({ path, groupIndex }: { path: string; groupIn
             <EditorPane path={path} groupIndex={groupIndex} onReady={ready} />
         </div>
         {owner && <div className={mode === "document" ? "flex min-h-0 flex-1 flex-col" : "hidden"} inert={mode !== "document"}>
-            <MarkdownDocument key={owner.version} owner={owner} documentActive={mode === "document"} />
+            <MarkdownDocument key={owner.version} owner={owner} documentActive={mode === "document"} navigation={navigation} />
         </div>}
     </section>
 }
 
 interface DocumentModel { doc: Text; ready: boolean; revision: number; restoreFocus?: boolean }
 
-function MarkdownDocument({ owner, documentActive }: { owner: DocumentOwner; documentActive: boolean }) {
+function MarkdownDocument({ owner, documentActive, navigation }: { owner: DocumentOwner; documentActive: boolean; navigation: MarkdownViewState }) {
     const [model, setModel] = useState<DocumentModel>(() => ({ doc: owner.view.state.doc, ready: true, revision: 0 }))
     const modelRef = useRef(model)
     const internalEdit = useRef(false)
@@ -119,17 +162,19 @@ function MarkdownDocument({ owner, documentActive }: { owner: DocumentOwner; doc
     }
     if (!documentActive) return null
     return model.ready && richEligible
-        ? <MarkdownRichEditor key={model.revision} source={source} owner={owner} onChange={apply} restoreFocus={model.restoreFocus} />
+        ? <MarkdownRichEditor key={model.revision} source={source} owner={owner} onChange={apply} restoreFocus={model.restoreFocus} navigation={navigation} />
         : <MarkdownDocumentPreview content={source} />
 }
 
-function MarkdownRichEditor({ source, owner, onChange, restoreFocus }: {
-    source: string; owner: DocumentOwner; onChange: (text: string) => void; restoreFocus?: boolean
+function MarkdownRichEditor({ source, owner, onChange, restoreFocus, navigation }: {
+    source: string; owner: DocumentOwner; onChange: (text: string) => void; restoreFocus?: boolean; navigation: MarkdownViewState
 }) {
     const { t } = useTranslation("richMarkdown")
     const writeEnabled = useRef(false)
+    const scrollport = useRef<HTMLDivElement>(null)
     const editor = useEditor({
-        extensions: [StarterKit.configure({ undoRedo: false, link: { openOnClick: false, autolink: false } }), Markdown, TableKit, TaskList, TaskItem.configure({ nested: true, a11y: { checkboxLabel: (node) => t("taskCheckbox", { text: node.textContent }) } })],
+        extensions: [StarterKit.configure({ undoRedo: false, codeBlock: false, link: { openOnClick: false, autolink: false } }),
+            CopyableCodeBlock.configure({ copyLabel: t("copyCode", { ns: "markdownDocument" }) }), Markdown, TableKit, TaskList, TaskItem.configure({ nested: true, a11y: { checkboxLabel: (node) => t("taskCheckbox", { text: node.textContent }) } })],
         content: source,
         contentType: "markdown",
         autofocus: restoreFocus ? "start" : false,
@@ -142,10 +187,35 @@ function MarkdownRichEditor({ source, owner, onChange, restoreFocus }: {
                 return false
             }
         },
-        onUpdate: ({ editor: current }) => { if (writeEnabled.current) onChange(current.getMarkdown()) },
+        onUpdate: ({ editor: current }) => {
+            if (!writeEnabled.current) return
+            onChange(current.getMarkdown())
+            // SelectionUpdate precedes the source write. Record again against
+            // the accepted source so typing does not invalidate our own position.
+            const doc = owner.view.state.doc
+            const { anchor, head } = current.state.selection
+            const viewport = scrollport.current
+            navigation.set({ selection: { doc, anchor, head },
+                ...(viewport ? { scroll: { doc, top: viewport.scrollTop, left: viewport.scrollLeft } } : {}) })
+        },
+        onSelectionUpdate: ({ editor: current }) => {
+            const { anchor, head } = current.state.selection
+            navigation.set({ selection: { doc: owner.view.state.doc, anchor, head } })
+        },
     }, [owner])
     // A document whose parser round-trip changes its meaning stays in reading mode.
-    const safe = !!editor && markdownRoundTripSafe(source, editor.getMarkdown())
+    const safe = useMemo(() => !!editor && markdownRoundTripSafe(source, editor.getMarkdown()), [editor, source])
+    useLayoutEffect(() => {
+        if (!editor || !safe) return
+        const { selection, scroll } = navigation.get()
+        if (selection?.doc.eq(owner.view.state.doc)) {
+            editor.commands.setTextSelection({ from: selection.anchor, to: selection.head })
+        }
+        if (scrollport.current && scroll?.doc.eq(owner.view.state.doc)) {
+            scrollport.current.scrollTop = scroll.top
+            scrollport.current.scrollLeft = scroll.left
+        }
+    }, [editor, safe, owner, navigation])
     useLayoutEffect(() => {
         writeEnabled.current = safe
         return () => { writeEnabled.current = false }
@@ -173,6 +243,8 @@ function MarkdownRichEditor({ source, owner, onChange, restoreFocus }: {
             <Button variant="ghost" size="icon-sm" aria-label={t("undo")} disabled={!undoDepth(owner.view.state)} onClick={() => undo(owner.view)}><Undo2 aria-hidden="true" /></Button>
             <Button variant="ghost" size="icon-sm" aria-label={t("redo")} disabled={!redoDepth(owner.view.state)} onClick={() => redo(owner.view)}><Redo2 aria-hidden="true" /></Button>
         </div>
-        <ScrollArea className="rich-markdown-scroll"><EditorContent editor={editor} /></ScrollArea>
+        <ScrollArea className="rich-markdown-scroll" viewportRef={scrollport} viewportProps={{ onScroll: event => {
+            navigation.set({ scroll: { doc: owner.view.state.doc, top: event.currentTarget.scrollTop, left: event.currentTarget.scrollLeft } })
+        } }}><EditorContent editor={editor} /></ScrollArea>
     </>
 }

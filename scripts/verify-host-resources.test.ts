@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { expect, it } from "vitest"
 import { HOST_TARGETS, type HostArtifact } from "./prepare-host-resources"
 import { HERDR_RESOURCE_TARGETS } from "./prepare-herdr-resources"
-import { verifyHostResources } from "./verify-host-resources"
+import { assertExecutableMode, verifyHostResources } from "./verify-host-resources"
 
 it("blocks missing targets, version drift, changed helper bytes, and executables for the wrong platform", async () => {
   const root = await mkdtemp(join(tmpdir(), "yuzora-runtime-payload-"))
@@ -20,7 +20,7 @@ it("blocks missing targets, version drift, changed helper bytes, and executables
       const files = HERDR_RESOURCE_TARGETS[target].files
       await writeFile(join(root, target, `yuzora-host${suffix}`), helper)
       await writeFile(join(root, target, `herdr${suffix}`), "fixture")
-      const artifact: HostArtifact = { protocol: 1, version: "0.0.9-beta.3", target, helper: { path: `${target}/yuzora-host${suffix}`, sha256: createHash("sha256").update(helper).digest("hex") }, herdr: { path: `${target}/herdr${suffix}`, sha256: files.find(file => file.path === `herdr${suffix}`)!.sha256, version: "0.9.1", protocol: 22 }, files:files.filter(file => file.path !== `herdr${suffix}`).map(file => ({path:`${target}/${file.path}`,sha256:file.sha256})) }
+      const artifact: HostArtifact = { protocol: 1, version: "0.0.9-beta.3", target, helper: { path: `${target}/yuzora-host${suffix}`, sha256: createHash("sha256").update(helper).digest("hex") }, herdr: { path: `${target}/herdr${suffix}`, sha256: files.find(file => file.path === `herdr${suffix}`)!.sha256, version: "0.9.3", protocol: 22 }, files:files.filter(file => file.path !== `herdr${suffix}`).map(file => ({path:`${target}/${file.path}`,sha256:file.sha256})) }
       artifacts.push(artifact)
       await writeFile(join(root, `${target}.json`), JSON.stringify(artifact))
     }
@@ -32,4 +32,11 @@ it("blocks missing targets, version drift, changed helper bytes, and executables
     await writeFile(join(root, "herdr.exe"), "legacy")
     await expect(verifyHostResources(root, "0.0.9-beta.3")).rejects.toThrow("exactly five")
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it("rejects Unix runtime executables that lost their execute bits on the way through artifacts", () => {
+  expect(() => assertExecutableMode("macos-aarch64/herdr", 0o100644, "darwin")).toThrow("lost its execute permission")
+  expect(() => assertExecutableMode("macos-aarch64/herdr", 0o100755, "darwin")).not.toThrow()
+  // Windows runners cannot represent Unix modes; their installers carry the bits elsewhere.
+  expect(() => assertExecutableMode("macos-aarch64/herdr", 0o100666, "win32")).not.toThrow()
 })

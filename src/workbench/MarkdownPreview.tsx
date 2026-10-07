@@ -1,10 +1,12 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import MarkdownIt from "markdown-it"
 import DOMPurify from "dompurify"
 import { openUrl } from "@tauri-apps/plugin-opener"
+import { useTranslation } from "react-i18next"
 
 import { getDocument } from "../editor/documentRegistry"
-import { getView } from "../editor/viewRegistry"
+import { getView, subscribeView } from "../editor/viewRegistry"
+import { subscribePreviewView } from "./subscribePreviewView"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { fileGradeOf } from "../lib/types"
 import type { OpenFileResult } from "../lib/types"
@@ -15,6 +17,7 @@ import {
     writeEditorViewportTopLine
 } from "./markdownScrollSync"
 import type { ScrollSyncCoordinator, SourceAnchor } from "./markdownScrollSync"
+import { attachCodeCopyButtons } from "./markdownCodeCopy"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 // A4 裁決：渲染器＝markdown-it，sanitizer＝DOMPurify。html:true 讓原始 HTML
@@ -247,57 +250,56 @@ export const MarkdownPreview = memo(function MarkdownPreview({
 
     useEffect(() => {
         let disposed = false
+        let revision = 0
+        let lastResult: OpenFileResult | undefined
         setLoadError(false)
-        void getDocument(sourcePath)
-            .then((entry) => {
-                if (disposed) return
-                setResult(entry.result)
-                lastDocRef.current = getView(sourcePath)?.state.doc ?? null
-                setContent(bufferContent(sourcePath, entry.result))
-            })
-            // openFile reject（檔案被刪／權限）：改顯示錯誤態，避免永卡「載入中」
-            // 與 unhandled rejection（R3-7）。
-            .catch(() => {
-                if (!disposed) setLoadError(true)
-            })
+        setResult(null)
+        setContent("")
+        lastDocRef.current = null
+
+        function refresh(initial = false) {
+            const request = ++revision
+            void getDocument(sourcePath)
+                .then((entry) => {
+                    if (disposed || request !== revision) return
+                    // Re-check kind even when no live view exists: external reload
+                    // across 10MB unregisters the old view without creating another.
+                    setResult(entry.result)
+                    setLoadError(false)
+                    // Keep observing kind transitions, but never stringify a
+                    // downgraded (potentially tens-of-MB) document on edits.
+                    if (entry.result.kind !== "full") {
+                        lastDocRef.current = null
+                        setContent("")
+                        return
+                    }
+                    const doc = getView(sourcePath)?.state.doc
+                    const unchanged = doc
+                        ? doc === lastDocRef.current
+                        : entry.result === lastResult
+                    lastResult = entry.result
+                    if (unchanged) return
+                    lastDocRef.current = doc ?? null
+                    pendingSourceLineRef.current = coordinatorRef.current?.snapshotSourceLine() ?? null
+                    const live = bufferContent(sourcePath, entry.result)
+                    setContent((current) => current === live ? current : live)
+                })
+                // Initial read failures show the error surface. A later event can
+                // retry a failed external read without an idle polling loop.
+                .catch(() => {
+                    if (!disposed && request === revision && initial) setLoadError(true)
+                })
+        }
+
+        const unsubscribe = subscribePreviewView(sourcePath, () => refresh())
+        refresh(true)
         return () => {
             disposed = true
+            unsubscribe()
         }
     }, [sourcePath])
 
     const grade = useMemo(() => (result ? fileGradeOf(result, content) : null), [result, content])
-
-    // 即時更新（debounce by poll）：定時讀 live doc，內容變動才 setState。
-    // 條件看 kind-derived grade（result.kind），不看 content-derived grade：
-    // full 檔即持續輪詢——即使暫態貼入超長行讓 content-derived grade 變
-    // veryLongLine（渲染分支顯示降級），輪詢不停，長行刪除後自動恢復（R2-2、W4）。
-    useEffect(() => {
-        if (result?.kind !== "full") return
-        const id = setInterval(() => {
-            // R4-5：外部 reload 可能跨 10MB 邊界改 kind（full↔tooLarge）；每 tick
-            // 重讀快取比對 kind，變動即 setResult（full→tooLarge 時同步停用渲染守衛
-            // 並終止輪詢）。documentRegistry 無同步 peek／更新事件，故經 getDocument
-            // 讀快取引用。
-            void getDocument(sourcePath)
-                .then((entry) => {
-                    if (entry.result.kind !== result.kind) {
-                        setResult(entry.result)
-                        return
-                    }
-                    // R4-3：doc identity 未變則跳過 toString（CM6 doc immutable）。
-                    const doc = getView(sourcePath)?.state.doc
-                    if (doc === undefined || doc === lastDocRef.current) return
-                    lastDocRef.current = doc
-                    const live = doc.toString()
-                    pendingSourceLineRef.current = coordinatorRef.current?.snapshotSourceLine() ?? null
-                    setContent((current) => current === live ? current : live)
-                })
-                // 外部刪檔清快取後，tick 的 getDocument 走 openFile reject——tick 級
-                // 靜默即可（loadError 語意留給 init 路徑；下一 tick 自然重試）（R5-1）。
-                .catch(() => {})
-        }, 400)
-        return () => clearInterval(id)
-    }, [sourcePath, result?.kind])
 
     // preview 連結一律不得讓 webview 導航離開（會失去整個 editor 狀態）：攔截
     // anchor，http/https 改用系統瀏覽器外開，其他 scheme（含相對路徑）僅擋掉（W10）。
@@ -419,13 +421,14 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             }
         }
 
-        // EditorPane registers asynchronously. Re-check on the same 400ms cadence
-        // as live content polling; preview remains independently usable meanwhile.
+        // EditorPane may register after the preview mounts.
+        const unsubscribe = subscribeView(sourcePath, (change) => {
+            if (change === "view") attachCurrentView()
+        })
         attachCurrentView()
-        const attachInterval = setInterval(attachCurrentView, 400)
         return () => {
             disposed = true
-            clearInterval(attachInterval)
+            unsubscribe()
             detach()
             coordinatorRef.current = null
             rebuildAnchorsRef.current = null
@@ -476,7 +479,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
                     "data-testid": "markdown-preview-body",
                 }}
             >
-                <div dangerouslySetInnerHTML={{ __html: html ?? "" }} />
+                <MarkdownHtml html={html ?? ""} />
             </ScrollArea>
         )
     }
@@ -519,6 +522,17 @@ export const MarkdownPreview = memo(function MarkdownPreview({
     )
 })
 
+/** Sanitized markdown HTML plus trusted per-block copy controls. */
+export function MarkdownHtml({ html, copyCode = true }: { html: string; copyCode?: boolean }) {
+    const { t } = useTranslation("markdownDocument")
+    const ref = useRef<HTMLDivElement>(null)
+    useLayoutEffect(() => {
+        if (!copyCode || !ref.current) return
+        return attachCodeCopyButtons(ref.current, t("copyCode"))
+    }, [html, copyCode, t])
+    return <div ref={ref} dangerouslySetInnerHTML={{ __html: html }} />
+}
+
 // Rendered HTML comes from dangerouslySetInnerHTML, so Tailwind can't reach it.
 // A scoped style block gives the sanitized markdown legible prose styling
 // without adding a CSS file (out of this task's scope).
@@ -526,6 +540,8 @@ export const MarkdownPreview = memo(function MarkdownPreview({
 // 內任何 position:fixed 子元素只相對 preview 內容區定位，無法覆蓋 editor。這是對
 // CSS-overlay 逃逸的根因防禦（不依賴列舉 style/class 等個別屬性通道）（R11-1b）。
 // jsdom 測不到 layout 定位，實機效果歸 T15 gui-acceptance。
+// pre 與 rich editor 一樣換行：Radix viewport 的 display:table 包層會被最長一行
+// 撐寬，連帶整份文件出現 overflow-x。
 export function MarkdownPreviewProse() {
     return (
         <style>{`
@@ -541,7 +557,7 @@ export function MarkdownPreviewProse() {
 .markdown-preview-body li{margin:.2em 0}
 .markdown-preview-body a{color:var(--yz-accent-ink);text-decoration:underline}
 .markdown-preview-body code{font-family:var(--font-mono,monospace);font-size:.88em;background:var(--paper-3);border-radius:4px;padding:.1em .35em}
-.markdown-preview-body pre{background:var(--paper-3);border-radius:8px;padding:12px 14px;margin:.6em 0}
+.markdown-preview-body pre{background:var(--paper-3);border-radius:8px;padding:12px 14px;margin:.6em 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .markdown-preview-body pre code{background:none;padding:0}
 .markdown-preview-body blockquote{border-left:3px solid var(--line-1);margin:.6em 0;padding:.1em 0 .1em 14px;color:var(--ink-3)}
 .markdown-preview-body table{border-collapse:collapse;margin:.6em 0}

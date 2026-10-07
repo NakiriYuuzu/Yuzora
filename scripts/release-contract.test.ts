@@ -275,6 +275,21 @@ describe("release workflow contracts", () => {
     }
   })
 
+  it("requires macOS installers to restore runtime execute bits before verifying payloads", () => {
+    for (const [job, verifier] of [["release", "verifyStableReleaseContract(release)"], ["candidate", "verifyBetaReleaseContract(release, ci)"]]) {
+      const result = spawnSync("bun", ["-e", `
+        import { parseReleaseWorkflow, verifyBetaReleaseContract, verifyStableReleaseContract } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+        const steps = ${job === "release" ? "release.jobs.build.steps" : 'ci.jobs["release-candidate"].steps'};
+        steps.find((step) => step.name === "Restore Unix host runtime execute bits").run = "true";
+        ${verifier};
+      `], { encoding: "utf8" })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("restore runtime execute bits")
+    }
+  })
+
   it("requires stable publication to reject every asset outside its exact allowlist", () => {
     const result = spawnSync(
       "bun",

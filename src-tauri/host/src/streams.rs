@@ -22,11 +22,24 @@ pub(crate) async fn write_frame<W: AsyncWrite + Unpin>(
     owner: &ConnectionOwner,
     payload: StreamPayload,
 ) -> Result<(), String> {
-    let mut frame = serde_json::to_vec(&StreamFrame {
-        version: PROTOCOL_VERSION,
-        owner: owner.clone(),
-        payload,
-    })
+    let capacity = match &payload {
+        StreamPayload::Terminal {
+            event: HerdrTerminalEvent::Frame { bytes_base64, .. },
+        } if bytes_base64.len() >= 4096 => {
+            // Leave room for the envelope without doubling a large payload buffer.
+            bytes_base64.len().saturating_add(512).min(MAX_FRAME_BYTES)
+        }
+        _ => 128,
+    };
+    let mut frame = Vec::with_capacity(capacity);
+    serde_json::to_writer(
+        &mut frame,
+        &StreamFrame {
+            version: PROTOCOL_VERSION,
+            owner: owner.clone(),
+            payload,
+        },
+    )
     .map_err(|e| e.to_string())?;
     if frame.len() >= MAX_FRAME_BYTES {
         return Err("frame-too-large".into());
@@ -292,9 +305,14 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 .ok_or("terminal-unavailable")?
                 .terminal_resize(&id, cols, rows)
                 .map(|_| Value::Null),
-            StreamCommand::Scroll { direction, lines } if terminal => manager
+            StreamCommand::Scroll {
+                direction,
+                lines,
+                column,
+                row,
+            } if terminal => manager
                 .ok_or("terminal-unavailable")?
-                .terminal_scroll(&id, direction, lines)
+                .terminal_scroll(&id, direction, lines, column, row)
                 .map(|_| Value::Null),
             _ => Err("invalid-stream-command".into()),
         })
@@ -318,6 +336,122 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn terminal_frame(data: String, metadata: &str) -> StreamFrame {
+        StreamFrame {
+            version: PROTOCOL_VERSION,
+            owner: ConnectionOwner {
+                host_id: metadata.into(),
+                generation: u64::MAX,
+            },
+            payload: StreamPayload::Terminal {
+                event: HerdrTerminalEvent::Frame {
+                    session_id: metadata.into(),
+                    seq: u64::MAX,
+                    full: true,
+                    encoding: "base64".into(),
+                    width: u32::MAX,
+                    height: u32::MAX,
+                    bytes_base64: data,
+                },
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_capacity_hint_preserves_wire_bytes_and_size_limit() {
+        for size in [0, 1, 4095, 4096, 4097, 65536, 1024 * 1024] {
+            for (unit, metadata) in [("A", "host"), ("\0\n\"\\", "host"), ("終端", "主機")] {
+                let frame = terminal_frame(unit.repeat(size), metadata);
+                let mut expected = serde_json::to_vec(&frame).unwrap();
+                expected.push(b'\n');
+                let mut actual = Vec::new();
+                write_frame(&mut actual, &frame.owner, frame.payload)
+                    .await
+                    .unwrap();
+                assert_eq!(actual, expected);
+            }
+        }
+        let frame = terminal_frame("A".repeat(4096), &"large metadata".repeat(1024));
+        let mut expected = serde_json::to_vec(&frame).unwrap();
+        expected.push(b'\n');
+        let mut actual = Vec::new();
+        write_frame(&mut actual, &frame.owner, frame.payload)
+            .await
+            .unwrap();
+        assert_eq!(actual, expected);
+
+        let overhead = serde_json::to_vec(&terminal_frame(String::new(), "host"))
+            .unwrap()
+            .len();
+        for size in [MAX_FRAME_BYTES - 1, MAX_FRAME_BYTES, MAX_FRAME_BYTES + 1] {
+            let frame = terminal_frame("A".repeat(size - overhead), "host");
+            let mut actual = Vec::new();
+            let result = write_frame(&mut actual, &frame.owner, frame.payload).await;
+            if size < MAX_FRAME_BYTES {
+                result.unwrap();
+                assert_eq!(actual.len(), MAX_FRAME_BYTES);
+                assert_eq!(actual.last(), Some(&b'\n'));
+            } else {
+                assert_eq!(result.unwrap_err(), "frame-too-large");
+                assert!(actual.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_capacity_hint_preserves_write_and_flush_errors() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        struct FailOutput {
+            fail_write: bool,
+            bytes: usize,
+        }
+        impl AsyncWrite for FailOutput {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                bytes: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                if self.fail_write {
+                    Poll::Ready(Err(std::io::Error::other("owned-write-error")))
+                } else {
+                    self.bytes += bytes.len();
+                    Poll::Ready(Ok(bytes.len()))
+                }
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Err(std::io::Error::other("owned-flush-error")))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+        for fail_write in [true, false] {
+            let mut output = FailOutput {
+                fail_write,
+                bytes: 0,
+            };
+            let frame = terminal_frame("A".repeat(65536), "host");
+            let bytes = serde_json::to_vec(&frame).unwrap().len() + 1;
+            let error = write_frame(&mut output, &frame.owner, frame.payload)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error,
+                if fail_write {
+                    "owned-write-error"
+                } else {
+                    "owned-flush-error"
+                }
+            );
+            assert_eq!(output.bytes, if fail_write { 0 } else { bytes });
+        }
+    }
+
     #[tokio::test]
     async fn rejects_control_before_opening_a_resource() {
         let request = StreamRequest {

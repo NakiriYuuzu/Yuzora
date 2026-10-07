@@ -191,7 +191,7 @@ manifest_check = false
   await writeFile(join(root, "plugin", "herdr-plugin.toml"), `id = "yuzora.e2e"
 name = "Yuzora isolated E2E"
 version = "0.1.0"
-min_herdr_version = "0.9.1"
+min_herdr_version = "0.9.3"
 platforms = ["macos", "linux"]
 [[panes]]
 id = "popup"

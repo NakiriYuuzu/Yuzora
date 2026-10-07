@@ -109,9 +109,11 @@ async fn run(
     let mut read = BufReader::new(read);
     let mut pending: Option<(String, Reply, tokio::time::Instant)> = None;
     let mut next_id = 0_u64;
+    let stream_state = cancelled.clone();
+    let host_state = host_cancelled.clone();
     let operation = async {
         loop {
-            if *cancelled.borrow() || *host_cancelled.borrow() {
+            if *stream_state.borrow() || *host_state.borrow() {
                 return Err("host-stream-closed".into());
             }
             let next = yuzora_host::wire::read_frame(&mut read);
@@ -123,8 +125,6 @@ async fn run(
                     .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(30));
                 tokio::select! {
                     biased;
-                    _ = cancelled.changed() => return Err("host-stream-closed".into()),
-                    _ = host_cancelled.changed() => return Err("host-disconnected".into()),
                     _ = tokio::time::sleep_until(deadline), if pending.is_some() => return Err("stream-request-timeout".into()),
                     frame = &mut next => break frame?.ok_or("host-stream-ended")?,
                     request = requests.recv(), if pending.is_none() => {
@@ -151,7 +151,14 @@ async fn run(
             }
         }
     };
-    let result = operation.await;
+    // Watch the whole operation so a blocked write cannot defer cancellation.
+    // Cancelling drops the partially written request; it is never replayed.
+    let result = tokio::select! {
+        biased;
+        _ = cancelled.changed() => Err("host-stream-closed".into()),
+        _ = host_cancelled.changed() => Err("host-disconnected".into()),
+        result = operation => result,
+    };
     // Deliver EOF before closing the SSH channel/process so the helper can
     // reap its connector. HERDR server and panes are never owned by this task.
     let _ = tokio::time::timeout(Duration::from_secs(1), write.shutdown()).await;
@@ -167,10 +174,7 @@ pub async fn host_stream_open(
     on_event: tauri::ipc::Channel<HostStreamEvent>,
 ) -> Result<HostStreamOpened, String> {
     let connection = state.0.connection(&owner)?;
-    let _permit = connection
-        .stream_openings
-        .try_acquire()
-        .map_err(|_| "host-stream-open-limit")?;
+    let _permit = connection.acquire_stream_opening().await?;
     if let (
         crate::host_service::HostTarget::Ssh { session_id },
         StreamConfig::Events {
@@ -438,6 +442,391 @@ pub async fn host_stream_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "This manual performance probe must reject debug binaries before measuring"
+    )]
+    #[tokio::test]
+    #[ignore = "manual release-profile healthy stream throughput guard"]
+    async fn performance_healthy_stream_roundtrips() {
+        assert!(!cfg!(debug_assertions), "Use --release");
+        fn cpu_ms() -> f64 {
+            let usage = unsafe {
+                let mut value = std::mem::MaybeUninit::<libc::rusage>::uninit();
+                assert_eq!(libc::getrusage(libc::RUSAGE_SELF, value.as_mut_ptr()), 0);
+                value.assume_init()
+            };
+            (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) as f64 * 1000.0
+                + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1000.0
+        }
+        for (scenario, text, repetitions) in [
+            ("key", "x".to_string(), 10000),
+            ("command", "command argument\r".repeat(2), 10000),
+            ("unicode", "中文😀".repeat(64), 2000),
+            ("paste-64k", "x".repeat(65536), 128),
+        ] {
+            let owner = ConnectionOwner {
+                host_id: "owned-throughput".into(),
+                generation: 1,
+            };
+            let (client, peer) = tokio::io::duplex(8192);
+            let (requests, queued) = mpsc::channel(2);
+            let (cancel, cancelled) = watch::channel(false);
+            let (host, host_cancelled) = watch::channel(false);
+            let task = tokio::spawn(run(
+                Box::new(client),
+                owner.clone(),
+                queued,
+                cancelled,
+                host_cancelled,
+                |_| panic!("unexpected event"),
+            ));
+            let expected_text = text.clone();
+            let peer_task = tokio::spawn(async move {
+                let mut peer = BufReader::new(peer);
+                let mut count = 0usize;
+                while let Some(frame) = yuzora_host::wire::read_frame(&mut peer).await.unwrap() {
+                    let request: StreamRequest = serde_json::from_slice(&frame).unwrap();
+                    request.validate(&owner).unwrap();
+                    count += 1;
+                    assert_eq!(request.id, count.to_string());
+                    let StreamCommand::Input {
+                        text: Some(text),
+                        bytes_base64: None,
+                    } = request.operation
+                    else {
+                        panic!("expected input")
+                    };
+                    assert_eq!(text, expected_text);
+                    let mut reply = serde_json::to_vec(&StreamFrame {
+                        version: PROTOCOL_VERSION,
+                        owner: owner.clone(),
+                        payload: StreamPayload::Reply {
+                            id: request.id,
+                            outcome: Outcome::Ok { value: Value::Null },
+                        },
+                    })
+                    .unwrap();
+                    reply.push(b'\n');
+                    peer.get_mut().write_all(&reply).await.unwrap();
+                }
+                count
+            });
+            for pass in 0..8 {
+                let before = cpu_ms();
+                let started = std::time::Instant::now();
+                for _ in 0..repetitions {
+                    let (reply, response) = oneshot::channel();
+                    requests
+                        .send(Queued {
+                            operation: StreamCommand::Input {
+                                text: Some(text.clone()),
+                                bytes_base64: None,
+                            },
+                            reply,
+                        })
+                        .await
+                        .unwrap();
+                    assert_eq!(response.await.unwrap().unwrap(), Value::Null);
+                }
+                let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+                println!(
+                    "STREAM_THROUGHPUT_MEASUREMENT {}",
+                    serde_json::json!({
+                        "scenario": scenario, "pass": pass, "warmup": pass == 0,
+                        "requests": repetitions, "wallMs": wall_ms, "cpuMs": cpu_ms() - before, "profile": "release"
+                    })
+                );
+            }
+            drop(requests);
+            task.await.unwrap().unwrap();
+            assert_eq!(peer_task.await.unwrap(), repetitions * 8);
+            assert_eq!(cancel.receiver_count(), 0);
+            assert_eq!(host.receiver_count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_releases_blocked_writes_and_queued_replies_repeatedly() {
+        use tokio::io::AsyncReadExt;
+        for host_disconnect in [false, true] {
+            for _ in 0..110 {
+                let (client, mut peer) = tokio::io::duplex(64);
+                let (requests, queued) = mpsc::channel(2);
+                let (cancel, cancelled) = watch::channel(false);
+                let (host, host_cancelled) = watch::channel(false);
+                let mut task = tokio::spawn(run(
+                    Box::new(client),
+                    ConnectionOwner {
+                        host_id: "owned-lifecycle".into(),
+                        generation: 1,
+                    },
+                    queued,
+                    cancelled,
+                    host_cancelled,
+                    |_| panic!("owned peer sends no frames"),
+                ));
+                let (reply, response) = oneshot::channel();
+                requests
+                    .send(Queued {
+                        operation: StreamCommand::Input {
+                            text: Some("x".repeat(16384)),
+                            bytes_base64: None,
+                        },
+                        reply,
+                    })
+                    .await
+                    .unwrap();
+                let (tail_reply, tail_response) = oneshot::channel();
+                requests
+                    .send(Queued {
+                        operation: StreamCommand::Close,
+                        reply: tail_reply,
+                    })
+                    .await
+                    .unwrap();
+                let mut first = [0; 1];
+                tokio::time::timeout(Duration::from_secs(1), peer.read_exact(&mut first))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if host_disconnect {
+                    host.send_replace(true);
+                } else {
+                    cancel.send_replace(true);
+                }
+                let error = match tokio::time::timeout(Duration::from_millis(500), &mut task).await
+                {
+                    Ok(joined) => joined.unwrap().unwrap_err(),
+                    Err(_) => {
+                        task.abort();
+                        let _ = task.await;
+                        panic!("cancellation did not interrupt the owned blocked write");
+                    }
+                };
+                assert_eq!(
+                    error,
+                    if host_disconnect {
+                        "host-disconnected"
+                    } else {
+                        "host-stream-closed"
+                    }
+                );
+                assert!(response.await.is_err());
+                assert!(tail_response.await.is_err());
+                assert!(requests.is_closed());
+                assert_eq!(cancel.receiver_count(), 0);
+                assert_eq!(host.receiver_count(), 0);
+                let mut remainder = Vec::new();
+                tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut remainder))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(remainder.len() <= 64);
+                assert!(!remainder.contains(&b'\n'));
+            }
+            println!(
+                "STREAM_CANCEL_LIFECYCLE {}",
+                serde_json::json!({
+                    "hostDisconnect": host_disconnect, "warmupCycles": 10, "measuredCycles": 100,
+                    "pendingAndQueuedRepliesClosed": true, "requestReceiverClosed": true,
+                    "watchReceiversAfterClose": 0, "completedTailCommands": 0
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_requests_preserve_order_and_fragmented_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let owner = ConnectionOwner {
+            host_id: "owned-roundtrip".into(),
+            generation: 7,
+        };
+        let (client, peer) = tokio::io::duplex(64);
+        let (requests, queued) = mpsc::channel(2);
+        let (cancel, cancelled) = watch::channel(false);
+        let (host, host_cancelled) = watch::channel(false);
+        let events = Arc::new(AtomicUsize::new(0));
+        let observed = events.clone();
+        let task = tokio::spawn(run(
+            Box::new(client),
+            owner.clone(),
+            queued,
+            cancelled,
+            host_cancelled,
+            move |frame| {
+                assert!(matches!(frame.payload, StreamPayload::Files { .. }));
+                observed.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+        ));
+        let peer_task = tokio::spawn(async move {
+            let mut peer = BufReader::new(peer);
+            for index in 1..=2 {
+                let bytes = yuzora_host::wire::read_frame(&mut peer)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let request: StreamRequest = serde_json::from_slice(&bytes).unwrap();
+                request.validate(&owner).unwrap();
+                assert_eq!(request.id, index.to_string());
+                let StreamCommand::Input {
+                    text: Some(text),
+                    bytes_base64: None,
+                } = request.operation
+                else {
+                    panic!("expected input")
+                };
+                assert_eq!(text, format!("輸入-{index}-😀"));
+                for payload in [
+                    StreamPayload::Files {
+                        workspace_root: "owned".into(),
+                        paths: vec!["file.ts".into()],
+                    },
+                    StreamPayload::Reply {
+                        id: request.id,
+                        outcome: Outcome::Ok {
+                            value: serde_json::json!(index),
+                        },
+                    },
+                ] {
+                    let mut frame = serde_json::to_vec(&StreamFrame {
+                        version: PROTOCOL_VERSION,
+                        owner: owner.clone(),
+                        payload,
+                    })
+                    .unwrap();
+                    frame.push(b'\n');
+                    for part in frame.chunks(7) {
+                        peer.get_mut().write_all(part).await.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            assert!(yuzora_host::wire::read_frame(&mut peer)
+                .await
+                .unwrap()
+                .is_none());
+        });
+        let mut responses = Vec::new();
+        for index in 1..=2 {
+            let (reply, response) = oneshot::channel();
+            requests
+                .send(Queued {
+                    operation: StreamCommand::Input {
+                        text: Some(format!("輸入-{index}-😀")),
+                        bytes_base64: None,
+                    },
+                    reply,
+                })
+                .await
+                .unwrap();
+            responses.push(response);
+        }
+        for (index, response) in responses.into_iter().enumerate() {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), response)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                serde_json::json!(index + 1)
+            );
+        }
+        drop(requests);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        peer_task.await.unwrap();
+        assert_eq!(events.load(Ordering::Relaxed), 2);
+        assert_eq!(cancel.receiver_count(), 0);
+        assert_eq!(host.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "manual wall-clock backpressure cancellation measurement"]
+    async fn performance_cancel_during_backpressured_stream_write() {
+        use tokio::io::AsyncReadExt;
+        for host_disconnect in [false, true] {
+            for sample in 0..6 {
+                let (client, mut peer) = tokio::io::duplex(64);
+                let (requests, queued) = mpsc::channel(2);
+                let (cancel, cancelled) = watch::channel(false);
+                let (host, host_cancelled) = watch::channel(false);
+                let task = tokio::spawn(run(
+                    Box::new(client),
+                    ConnectionOwner {
+                        host_id: "owned-perf".into(),
+                        generation: 1,
+                    },
+                    queued,
+                    cancelled,
+                    host_cancelled,
+                    |_| panic!("owned peer sends no frames"),
+                ));
+                let (reply, response) = oneshot::channel();
+                requests
+                    .send(Queued {
+                        operation: StreamCommand::Input {
+                            text: Some("x".repeat(256 * 1024)),
+                            bytes_base64: None,
+                        },
+                        reply,
+                    })
+                    .await
+                    .unwrap();
+                let (tail_reply, tail_response) = oneshot::channel();
+                requests
+                    .send(Queued {
+                        operation: StreamCommand::Close,
+                        reply: tail_reply,
+                    })
+                    .await
+                    .unwrap();
+                let mut first = [0; 1];
+                tokio::time::timeout(Duration::from_secs(2), peer.read_exact(&mut first))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let started = std::time::Instant::now();
+                if host_disconnect {
+                    host.send_replace(true);
+                } else {
+                    cancel.send_replace(true);
+                }
+                let error = tokio::time::timeout(Duration::from_secs(12), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_err();
+                let cancel_ms = started.elapsed().as_secs_f64() * 1000.0;
+                assert!(response.await.is_err());
+                assert!(tail_response.await.is_err());
+                let mut remainder = Vec::new();
+                tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut remainder))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(remainder.len() <= 64);
+                assert!(!remainder.contains(&b'\n'));
+                println!(
+                    "STREAM_CANCEL_MEASUREMENT {}",
+                    serde_json::json!({
+                        "hostDisconnect": host_disconnect, "sample": sample, "warmup": sample == 0,
+                        "cancelMs": cancel_ms, "error": error, "partialBytes": remainder.len() + 1,
+                        "pendingReplyClosed": true, "queuedReplyClosed": true,
+                        "profile": if cfg!(debug_assertions) { "debug" } else { "release" }
+                    })
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn ssh_events_preserve_fragmented_frames_and_cancel_partial_read() {
         use yuzora_host::herdr_service::HerdrSubscriptionEvent;

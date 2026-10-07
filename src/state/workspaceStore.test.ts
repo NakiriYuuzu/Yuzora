@@ -19,6 +19,56 @@ describe("workspaceStore", () => {
         useWorkspaceStore.setState(initialState, true)
     })
 
+    describe("dirty updates", () => {
+        it("does not notify for an unchanged dirty value or an absent file", () => {
+            const store = useWorkspaceStore.getState()
+            store.setWorkspace("/dirty")
+            store.openTab("/dirty/a.ts")
+            store.markDirty("/dirty/a.ts", true)
+            const before = useWorkspaceStore.getState()
+            let notifications = 0
+            const stop = useWorkspaceStore.subscribe(() => { notifications += 1 })
+            try {
+                store.markDirty("/dirty/a.ts", true)
+                store.markDirty("/dirty/absent.ts", true)
+                expect(useWorkspaceStore.getState()).toBe(before)
+                expect(notifications).toBe(0)
+            } finally { stop() }
+        })
+
+        it("updates every matching split while preserving unrelated group and tab references", () => {
+            const other = { path: "/other.ts", name: "other.ts", dirty: false, externallyModified: false }
+            const shared = { path: "/shared.ts", name: "shared.ts", dirty: false, externallyModified: false }
+            const groups = [
+                { tabs: [other], activePath: other.path },
+                { tabs: [shared, other], activePath: shared.path },
+                { tabs: [{ ...shared }], activePath: shared.path }
+            ]
+            useWorkspaceStore.setState({ groups })
+            useWorkspaceStore.getState().markDirty(shared.path, true)
+            const after = useWorkspaceStore.getState().groups
+            expect(after[0]).toBe(groups[0])
+            expect(after[1].tabs[1]).toBe(other)
+            expect(after[1].tabs[0].dirty).toBe(true)
+            expect(after[2].tabs[0].dirty).toBe(true)
+            expect(shared.dirty).toBe(false)
+            useWorkspaceStore.getState().markDirty(shared.path, false)
+            expect(useWorkspaceStore.getState().groups[1].tabs[0].dirty).toBe(false)
+            expect(useWorkspaceStore.getState().groups[2].tabs[0].dirty).toBe(false)
+        })
+
+        it("still keeps an already-dirty transient tab before later calls become no-ops", () => {
+            const tab = { path: "/transient.ts", name: "transient.ts", dirty: true, externallyModified: false, transient: true }
+            useWorkspaceStore.setState({ groups: [{ tabs: [tab], activePath: tab.path }] })
+            useWorkspaceStore.getState().markDirty(tab.path, true)
+            const kept = useWorkspaceStore.getState()
+            expect(kept.groups[0].tabs[0]).toMatchObject({ dirty: true, transient: false })
+            expect(tab.transient).toBe(true)
+            kept.markDirty(tab.path, true)
+            expect(useWorkspaceStore.getState()).toBe(kept)
+        })
+    })
+
     describe("setActiveGroup", () => {
         it("splitRight 後 setActiveGroup(1) 讓 openTab 開進 groups[1]", () => {
             useWorkspaceStore.getState().splitRight()

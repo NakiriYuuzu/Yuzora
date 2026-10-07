@@ -163,6 +163,25 @@ export function normalizeHerdrSnapshot(
       space.activeTabId ? ([[space.id, space.activeTabId]] as const) : []
     )
   )
+  // Resolve each tab's representative and count once instead of scanning every
+  // terminal and agent again for each tab (including partial-snapshot fallbacks).
+  const terminalsByTab = new Map<string, { count: number; representative: HerdrTerminalInfo }>()
+  for (const terminal of terminals) {
+    if (!terminal.tabId) continue
+    const entry = terminalsByTab.get(terminal.tabId)
+    if (!entry) {
+      terminalsByTab.set(terminal.tabId, { count: 1, representative: terminal })
+    } else {
+      entry.count++
+      if (terminal.paneId === focusedPaneId && entry.representative.paneId !== focusedPaneId) {
+        entry.representative = terminal
+      }
+    }
+  }
+  const firstAgentByTab = new Map<string, HerdrAgentInfo>()
+  for (const agent of agents) {
+    if (agent.tabId && !firstAgentByTab.has(agent.tabId)) firstAgentByTab.set(agent.tabId, agent)
+  }
   const tabs: HerdrTabInfo[] = []
   const knownTabIds = new Set<string>()
 
@@ -177,12 +196,9 @@ export function normalizeHerdrSnapshot(
   ) => {
     if (knownTabIds.has(id)) return
     knownTabIds.add(id)
-    const terminalCandidates = terminals.filter((terminal) => terminal.tabId === id)
-    const agentCandidates = agents.filter((agent) => agent.tabId === id)
     const representativeTerminal =
-      terminalCandidates.find((terminal) => terminal.paneId === focusedPaneId) ??
-      terminalCandidates[0] ??
-      agentCandidates[0] ??
+      terminalsByTab.get(id)?.representative ??
+      firstAgentByTab.get(id) ??
       null
     tabs.push({
       id,
@@ -210,7 +226,7 @@ export function normalizeHerdrSnapshot(
       workspaceId,
       asString(tab.label) ?? id,
       asNumber(tab.number) ?? i,
-      asNumber(tab.pane_count) ?? terminals.filter((terminal) => terminal.tabId === id).length,
+      asNumber(tab.pane_count) ?? terminalsByTab.get(id)?.count ?? 0,
       asAgentStatus(tab.agent_status),
       asBool(tab.focused)
     )
@@ -226,7 +242,7 @@ export function normalizeHerdrSnapshot(
       workspaceId,
       source.title ?? id,
       tabs.length,
-      terminals.filter((terminal) => terminal.tabId === id).length || 1,
+      terminalsByTab.get(id)?.count || 1,
       source.status ?? "unknown",
       focusedTabId === id
     )

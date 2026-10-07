@@ -50,7 +50,7 @@ export function DatabaseCellEditing({ children, identity, kind, table, metadata,
         setError(null)
         try {
             const original = editing.row[editing.columns.indexOf(editing.column.name)]
-            const value = parseEditedDbValue(original, text, isNull, editing.column)
+            const value = parseEditedDbValue(editing.kind, original, text, isNull, editing.column)
             const statement = buildCellUpdate(editing.kind, editing.table, editing.metadata, editing.columns, editing.row, editing.column.name, value)
             await useDbStore.getState().executeTableStatement(editing.identity, statement, "1")
             setEditing(null)

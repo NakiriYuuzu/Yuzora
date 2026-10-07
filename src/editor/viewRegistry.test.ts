@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 
@@ -6,11 +6,19 @@ import {
     getView,
     getViewEntry,
     registerView,
+    subscribeView,
     unregisterView
 } from "./viewRegistry"
 
+const testViews: EditorView[] = []
+afterEach(() => {
+    for (const view of testViews.splice(0)) view.destroy()
+})
+
 function makeView(): EditorView {
-    return new EditorView({ state: EditorState.create({ doc: "" }) })
+    const view = new EditorView({ state: EditorState.create({ doc: "" }) })
+    testViews.push(view)
+    return view
 }
 
 describe("viewRegistry", () => {
@@ -131,4 +139,100 @@ describe("viewRegistry", () => {
             expect(getView(uncPath)).toBeUndefined()
         }
     )
+})
+
+describe("viewRegistry subscriptions", () => {
+    it("attaches to a late view, coalesces typing, and ignores selection-only updates", async () => {
+        const listener = vi.fn()
+        const stop = subscribeView("/w/late.md", listener)
+        const view = makeView()
+        registerView("/w/late.md", view)
+        expect(listener).not.toHaveBeenCalled()
+        await Promise.resolve()
+        expect(listener.mock.calls).toEqual([["view"]])
+        listener.mockClear()
+        view.dispatch({ changes: { from: 0, insert: "a" } })
+        view.dispatch({ changes: { from: 1, insert: "b" } })
+        await Promise.resolve()
+        expect(listener.mock.calls).toEqual([["document"]])
+        listener.mockClear()
+        view.dispatch({ selection: { anchor: 1 } })
+        await Promise.resolve()
+        expect(listener).not.toHaveBeenCalled()
+        unregisterView("/w/late.md", view)
+        await Promise.resolve()
+        expect(listener.mock.calls).toEqual([["view"]])
+        expect(view.state.facet(EditorView.updateListener)).toHaveLength(0)
+        stop()
+    })
+
+    it("shares one listener, removes it on last unsubscribe, and cancels queued notifications", async () => {
+        const view = makeView()
+        registerView("/w/shared.md", view)
+        const first = vi.fn()
+        const second = vi.fn()
+        const stopFirst = subscribeView("/w/shared.md", first)
+        const stopSecond = subscribeView("/w/shared.md", second)
+        expect(view.state.facet(EditorView.updateListener)).toHaveLength(1)
+        view.dispatch({ changes: { from: 0, insert: "a" } })
+        stopFirst()
+        stopFirst()
+        await Promise.resolve()
+        expect(first).not.toHaveBeenCalled()
+        expect(second).toHaveBeenCalledWith("document")
+        stopSecond()
+        expect(view.state.facet(EditorView.updateListener)).toHaveLength(0)
+        for (let i = 0; i < 10; i++) {
+            const stop = subscribeView("/w/shared.md", first)
+            expect(view.state.facet(EditorView.updateListener)).toHaveLength(1)
+            stop()
+            expect(view.state.facet(EditorView.updateListener)).toHaveLength(0)
+        }
+        unregisterView("/w/shared.md", view)
+        await Promise.resolve()
+        expect(first).not.toHaveBeenCalled()
+    })
+
+    it("follows replacements and ignores stale unregisters and old document changes", async () => {
+        const first = makeView()
+        const second = makeView()
+        registerView("/w/replace.md", first)
+        const listener = vi.fn()
+        const stop = subscribeView("/w/replace.md", listener)
+        registerView("/w/replace.md", second)
+        unregisterView("/w/replace.md", first)
+        await Promise.resolve()
+        expect(listener.mock.calls).toEqual([["view"]])
+        expect(first.state.facet(EditorView.updateListener)).toHaveLength(0)
+        listener.mockClear()
+        first.dispatch({ changes: { from: 0, insert: "old" } })
+        await Promise.resolve()
+        expect(listener).not.toHaveBeenCalled()
+        second.dispatch({ changes: { from: 0, insert: "new" } })
+        await Promise.resolve()
+        expect(listener).toHaveBeenCalledWith("document")
+        stop()
+        unregisterView("/w/replace.md", second)
+    })
+
+    it("uses exact POSIX precedence then falls back to the Windows UNC subscription", async () => {
+        const windows = makeView()
+        const posix = makeView()
+        const path = "//server/share/file.ts"
+        const unc = String.raw`\\Server\Share\File.ts`
+        const listener = vi.fn()
+        const stop = subscribeView(path, listener)
+        registerView(unc, windows)
+        await Promise.resolve()
+        registerView(path, posix)
+        await Promise.resolve()
+        expect(windows.state.facet(EditorView.updateListener)).toHaveLength(0)
+        expect(posix.state.facet(EditorView.updateListener)).toHaveLength(1)
+        unregisterView(path, posix)
+        await Promise.resolve()
+        expect(listener).toHaveBeenCalledTimes(3)
+        expect(windows.state.facet(EditorView.updateListener)).toHaveLength(1)
+        stop()
+        unregisterView(unc, windows)
+    })
 })

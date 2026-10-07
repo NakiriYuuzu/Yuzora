@@ -3,12 +3,13 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, Packet, StatusCode};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use yuzora_host::protocol::MAX_FILE_BYTES;
 
 /// Stream a revision for transfer conflict checks without loading large files.
 pub(crate) async fn remote_revision(
-    sftp: &SftpSession,
+    sftp: &Arc<SftpSession>,
     path: &str,
 ) -> Result<Option<String>, String> {
     validate_path(path)?;
@@ -24,7 +25,15 @@ pub(crate) async fn remote_revision(
     if !metadata.file_type().is_file() {
         return Err("sftp-not-regular-file".into());
     }
-    let mut file = sftp.open(path).await.map_err(|e| e.to_string())?;
+    // A cancelled revision must not abandon a successful late OPEN response.
+    // The task only acquires the handle; dropping its detached result closes it.
+    // Reading and hashing remain in the caller's cancellable future.
+    let opening = {
+        let sftp = Arc::clone(sftp);
+        let path = path.to_owned();
+        tokio::spawn(async move { sftp.open(path).await.map_err(|e| e.to_string()) })
+    };
+    let mut file = opening.await.map_err(|e| e.to_string())??;
     let mut hash = Sha256::new();
     let mut bytes = vec![0u8; 32 * 1024];
     loop {

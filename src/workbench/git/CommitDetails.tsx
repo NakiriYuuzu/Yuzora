@@ -1,3 +1,4 @@
+import { GitBadge } from "./fileRows"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { copyTextInBackground } from "@/lib/clipboardFeedback"
 import { useTranslation } from "react-i18next"
@@ -22,19 +23,6 @@ function badgeChar(status: string): string {
     return c in BADGE_COLORS ? c : "M"
 }
 
-function FileBadge({ badge }: { badge: string }) {
-    const { fg, bg } = BADGE_COLORS[badge] ?? BADGE_COLORS.M
-    return (
-        <span
-            aria-hidden="true"
-            className="flex size-[18px] shrink-0 items-center justify-center rounded-[6px] font-mono text-[10px] font-bold"
-            style={{ background: bg, color: fg }}
-        >
-            {badge}
-        </span>
-    )
-}
-
 function splitPath(path: string): { name: string; dir: string } {
     const idx = path.lastIndexOf("/")
     if (idx < 0) return { name: path, dir: "" }
@@ -53,7 +41,7 @@ function FileRow({ file, onOpen }: { file: CommitFileChange; onOpen?: (file: Com
             onClick={onOpen ? () => onOpen(file) : undefined}
             className="flex h-[30px] w-full items-center gap-[9px] rounded-[8px] px-[8px] my-[1px] text-left transition-[background] duration-[120ms] hover:bg-(--yz-panel)"
         >
-            <FileBadge badge={badge} />
+            <GitBadge badge={badge} colors={BADGE_COLORS[badge]} />
             <span className="min-w-0 flex-1 truncate">
                 <span className="text-[12px] font-medium text-(--ink-1)">{name}</span>
                 {dir && <span className="ml-[6px] text-[10px] text-(--ink-4)">{dir}</span>}
@@ -89,20 +77,21 @@ function FooterButton({
 }) {
     // §2 L857-864 footer buttons — h30, r9. Enabled: solid track + border.
     // The danger "Reset" is a disabled red-outline button in the design itself.
+    // Disabled buttons keep pointer events so their explanatory title still shows.
     return (
-        <button
+        <Button
             type="button"
             aria-label={label}
             title={title}
-            disabled={disabled || danger}
+            disabled={disabled || (danger && !onClick)}
             onClick={onClick}
             className={
-                "flex h-[30px] items-center gap-[5px] rounded-[9px] px-[12px] text-[11.5px] font-semibold transition-transform active:scale-[0.97] " +
+                "h-[30px] gap-[5px] rounded-[9px] px-[12px] text-[11.5px] font-semibold transition-transform active:scale-[0.97] disabled:pointer-events-auto " +
                 (danger
-                    ? "cursor-not-allowed opacity-[0.85]"
+                    ? "cursor-not-allowed bg-transparent hover:bg-transparent disabled:opacity-[0.85]"
                     : disabled
-                      ? "cursor-not-allowed border border-(--line-1) bg-(--yz-solid) text-(--ink-1) opacity-50"
-                      : "cursor-pointer border border-(--line-1) bg-(--yz-solid) text-(--ink-1) shadow-(--shadow-xs)")
+                      ? "cursor-not-allowed border-(--line-1) bg-(--yz-solid) text-(--ink-1) hover:bg-(--yz-solid) hover:text-(--ink-1)"
+                      : "cursor-pointer border-(--line-1) bg-(--yz-solid) text-(--ink-1) shadow-(--shadow-xs) hover:bg-(--yz-solid) hover:text-(--ink-1)")
             }
             style={
                 danger
@@ -112,7 +101,7 @@ function FooterButton({
         >
             {children}
             {label}
-        </button>
+        </Button>
     )
 }
 
@@ -134,7 +123,11 @@ export function CommitDetails({
     onOpenFile,
     onCompare,
     onCherryPick,
-    cherryPickDisabled
+    cherryPickDisabled,
+    onRevert,
+    onReset,
+    onUndo,
+    historyActionsDisabled
 }: {
     selectedCommit: LogCommit | null
     detail: CommitDetail | null
@@ -147,6 +140,11 @@ export function CommitDetails({
     onCompare?: (hash: string) => void
     onCherryPick?: (hash: string) => void
     cherryPickDisabled?: boolean
+    onRevert?: (commit: LogCommit) => void
+    onReset?: (commit: LogCommit) => void
+    /** Only for the HEAD commit: JetBrains "Undo Commit". */
+    onUndo?: (commit: LogCommit) => void
+    historyActionsDisabled?: boolean
 }) {
     const { t } = useTranslation("menus")
     if (!selectedCommit) {
@@ -171,12 +169,14 @@ export function CommitDetails({
                         {selectedCommit.shortHash}
                     </span>
                     <div className="flex-1" />
-                    <button
+                    <Button
                         type="button"
+                        variant="ghost"
+                        size="icon-sm"
                         aria-label={t("commitDetails.copyHashAriaLabel")}
                         title={t("commitDetails.copyHashAriaLabel")}
                         onClick={() => copyTextInBackground(selectedCommit.hash)}
-                        className="flex size-[26px] items-center justify-center rounded-[7px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1)"
+                        className="size-[26px] rounded-[7px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) dark:hover:bg-(--paper-2)"
                     >
                         <svg
                             width="13"
@@ -187,12 +187,13 @@ export function CommitDetails({
                             strokeWidth="1.8"
                             strokeLinecap="round"
                             strokeLinejoin="round"
+                            className="size-[13px]"
                             aria-hidden="true"
                         >
                             <rect x="9" y="9" width="11" height="11" rx="2" />
                             <path d="M5 15V5a2 2 0 0 1 2-2h10" />
                         </svg>
-                    </button>
+                    </Button>
                 </div>
 
                 <div className="font-serif text-[15.5px] font-medium leading-[1.35] text-(--ink-0)">
@@ -290,10 +291,10 @@ export function CommitDetails({
                 />
                 <FooterButton
                     label={t("commitDetails.compare")}
-                    disabled={!onCompare || !detail}
+                    disabled={!onCompare || !detail || detail.files.length === 0}
                     title={t("commitDetails.openInDiffViewerTitle")}
                     onClick={
-                        onCompare && detail
+                        onCompare && detail && detail.files.length > 0
                             ? () => onCompare(selectedCommit.hash)
                             : undefined
                     }
@@ -305,25 +306,26 @@ export function CommitDetails({
                     onClick={onCherryPick ? () => onCherryPick(selectedCommit.hash) : undefined}
                 />
                 <FooterButton
-                    label={t("commitDetails.resetMainToHere")}
+                    label={t("commitDetails.revert")}
+                    disabled={!onRevert || historyActionsDisabled}
+                    title={t("commitDetails.revertTitle")}
+                    onClick={onRevert && !historyActionsDisabled ? () => onRevert(selectedCommit) : undefined}
+                />
+                {onUndo && (
+                    <FooterButton
+                        label={t("commitDetails.undoCommit")}
+                        disabled={historyActionsDisabled}
+                        title={t("commitDetails.undoCommitTitle")}
+                        onClick={historyActionsDisabled ? undefined : () => onUndo(selectedCommit)}
+                    />
+                )}
+                <FooterButton
+                    label={t("commitDetails.resetToHere")}
                     danger
+                    disabled={!onReset || historyActionsDisabled}
                     title={t("commitDetails.resetHoldTitle")}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                    >
-                        <rect x="4" y="11" width="16" height="9" rx="2" />
-                        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
-                    </svg>
-                </FooterButton>
+                    onClick={onReset && !historyActionsDisabled ? () => onReset(selectedCommit) : undefined}
+                />
             </div>
         </div>
     )

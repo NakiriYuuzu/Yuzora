@@ -9,3 +9,9 @@ export function setPaneScroll(sessionName: string, paneId: string, offsetFromBot
   if (!Number.isSafeInteger(offsetFromBottom) || offsetFromBottom < 0) return Promise.reject(new Error("invalid pane scroll offset"))
   return timeHerdrTerminalIpc("pane.scroll", () => invokeHerdr("herdr_pane_scroll_to", { sessionName, paneId, offsetFromBottom }, signal))
 }
+
+/** Absolute HERDR text point: row 0 is the oldest host-scrollback row; col is inclusive. */
+export interface PaneTextPoint { row: number; col: number }
+export function readPaneSelection(sessionName: string, paneId: string, anchor: PaneTextPoint, cursor: PaneTextPoint): Promise<string> {
+  return invokeHerdr("herdr_pane_selection_read", { sessionName, paneId, anchor, cursor })
+}

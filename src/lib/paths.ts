@@ -41,7 +41,7 @@ export function isWindowsPath(path: string): boolean {
 
 function normalizedPath(path: string, windows: boolean): string {
   let normalized = path.replace(/\\/g, "/")
-  if (normalized.toLowerCase().startsWith("//?/unc/")) {
+  if (normalized.startsWith("//?/") && normalized.slice(4, 8).toLowerCase() === "unc/") {
     normalized = "//" + normalized.slice("//?/UNC/".length)
   } else if (/^\/\/\?\/[A-Za-z]:\//.test(normalized)) {
     normalized = normalized.slice("//?/".length)

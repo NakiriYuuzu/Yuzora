@@ -16,7 +16,8 @@ interface Lease { id: string; url: string; source: Source; sourceKey: string; as
 const sources = new Map<string, Source>()
 const leases = new Map<string, Lease>()
 let resourceEpoch = 0
-let opening: Promise<unknown> = Promise.resolve()
+const discardOpeningValue = () => undefined
+let opening: Promise<void> = Promise.resolve()
 
 export function isHtmlFile(path: string): boolean { return /\.html?$/i.test(path) }
 
@@ -100,7 +101,8 @@ async function acquireFilePreview(workspacePath: string, path: string, source?: 
         }
     }
     const result = opening.then(acquire)
-    opening = result.catch(() => undefined)
+    // Queue ordering needs settlement, not a lease holding an old workspace snapshot.
+    opening = result.then(discardOpeningValue, discardOpeningValue)
     return result
 }
 

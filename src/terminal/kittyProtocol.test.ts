@@ -104,4 +104,106 @@ describe("HERDR inline graphics", () => {
     expect(graphics.images.size).toBe(0)
     expect(dispose).toHaveBeenCalledWith("bitmap")
   })
+  it("preserves all byte values and optional base64 padding for RGB and RGBA images", async () => {
+    for (const format of [24, 32]) for (const pixels of [1, 2, 3, 21, 64, 85, 257]) {
+      const raw = Uint8Array.from({ length: pixels * format / 8 }, (_, index) => (index * 29 + 17) & 255)
+      const encoded = btoa(String.fromCharCode(...raw))
+      for (const payload of [encoded, encoded.replace(/=+$/, "")]) {
+        const { graphics, load } = target()
+        await graphics.accept(command({ a: "T", i: "7", f: String(format), s: "1", v: String(pixels), q: "2" }, payload))
+        expect(load).toHaveBeenCalledTimes(1)
+        expect(load).toHaveBeenCalledWith(raw, 1, pixels, format)
+        expect(graphics.images.get(7)?.image).toEqual(raw)
+        graphics.dispose()
+      }
+    }
+  })
+  it("assembles binary image bytes identically at every base64 character boundary", async () => {
+    const raw = new Uint8Array([0, 255, 128, 1, 2, 127, 254, 0, 3, 253, 129, 255, 4, 252, 130, 128])
+    const encoded = btoa(String.fromCharCode(...raw))
+    for (let split = 0; split <= encoded.length; split++) {
+      const { graphics, load } = target()
+      await graphics.accept(command({ a: "T", i: "7", f: "32", s: "2", v: "2", q: "2", m: "1" }, encoded.slice(0, split)))
+      expect(load).not.toHaveBeenCalled()
+      await graphics.accept(command({ m: "0" }, encoded.slice(split)))
+      expect(load).toHaveBeenCalledWith(raw, 2, 2, 32)
+      expect(graphics.placements.size).toBe(1)
+      graphics.dispose()
+    }
+  })
+  it("rejects malformed base64 without loading and accepts a subsequent valid upload", async () => {
+    for (const payload of ["A", "AA=A", "A===", "AA==AAAA", "☃"]) {
+      const { graphics, load, reply } = target()
+      await graphics.accept(command({ a: "T", i: "7", f: "32", s: "1", v: "1" }, payload))
+      expect(load).not.toHaveBeenCalled()
+      expect(reply).toHaveBeenCalledTimes(1)
+      expect(reply.mock.lastCall?.[0]).not.toContain(";OK")
+      await graphics.accept(command({ a: "T", i: "7", f: "32", s: "1", v: "1" }, pixel))
+      expect(load).toHaveBeenCalledWith(new Uint8Array([255, 12, 48, 255]), 1, 1, 32)
+      expect(graphics.images.size).toBe(1)
+      graphics.dispose()
+    }
+  })
+  it("does not retain empty continuations while preserving the initial upload controls", async () => {
+    const { graphics, load, reply } = target()
+    const first = { a: "T", i: "7", p: "4", f: "32", s: "1", v: "1", q: "2", m: "1" }
+    await graphics.accept(command(first))
+    for (let index = 0; index < 10_000; index++) {
+      await graphics.accept(command({ m: "1", i: "99", q: "0" }))
+    }
+    // Inspect storage because the byte limit alone cannot bound empty entries.
+    const pending = Object.getOwnPropertyDescriptor(graphics, "upload")?.value
+    expect(pending.size).toBe(0)
+    expect(pending.parts).toHaveLength(0)
+    expect(load).not.toHaveBeenCalled()
+    await graphics.accept(command({ m: "0", i: "99", q: "0" }, pixel))
+    expect(load).toHaveBeenCalledWith(new Uint8Array([255, 12, 48, 255]), 1, 1, 32)
+    expect(graphics.images.has(7)).toBe(true)
+    expect(graphics.images.has(99)).toBe(false)
+    expect(graphics.placements.has("7:4")).toBe(true)
+    expect(reply).not.toHaveBeenCalled()
+    graphics.dispose()
+  })
+  it("preserves nonempty chunk ordering and accepts an empty final chunk", async () => {
+    for (const image of [
+      { format: "32", compression: undefined, payload: pixel, bytes: [255, 12, 48, 255] },
+      { format: "32", compression: "z", payload: "eJz7z2PwHwAFgwI7", bytes: [255, 12, 48, 255] },
+      { format: "24", compression: "z", payload: "eJz7z2MAAANIATw=", bytes: [255, 12, 48] }
+    ]) {
+      const { graphics, load } = target()
+      const control: Record<string, string> = { a: "T", i: "7", p: "4", f: image.format, s: "1", v: "1", q: "2", m: "1" }
+      if (image.compression) control.o = image.compression
+      await graphics.accept(command(control, image.payload.slice(0, 4)))
+      for (let index = 0; index < 100; index++) await graphics.accept(command({ m: "1" }))
+      const pending = Object.getOwnPropertyDescriptor(graphics, "upload")?.value
+      expect(pending.size).toBe(4)
+      expect(pending.parts).toHaveLength(1)
+      await graphics.accept(command({ m: "1" }, image.payload.slice(4)))
+      expect(load).not.toHaveBeenCalled()
+      await graphics.accept(command({ m: "0" }))
+      expect(load).toHaveBeenCalledWith(new Uint8Array(image.bytes), 1, 1, Number(image.format))
+      expect(graphics.placements.size).toBe(1)
+      graphics.dispose()
+    }
+  })
+  it("clears empty uploads after errors, resets and repeated closes", async () => {
+    for (let cycle = 0; cycle < 100; cycle++) {
+      const { graphics, load, reply } = target()
+      await graphics.accept(command({ a: "T", i: "7", f: "32", s: "1", v: "1", m: "1" }))
+      for (let fragment = 0; fragment < 32; fragment++) await graphics.accept(command({ m: "1" }))
+      expect(Object.getOwnPropertyDescriptor(graphics, "upload")?.value.parts).toHaveLength(0)
+      if (cycle % 3 === 0) {
+        await graphics.accept(command({ m: "0" }, "!"))
+        expect(reply.mock.lastCall?.[0]).toContain("EINVAL")
+      } else if (cycle % 3 === 1) graphics.clear()
+      else graphics.dispose()
+      expect(Object.getOwnPropertyDescriptor(graphics, "upload")?.value).toBeNull()
+      expect(graphics.images.size).toBe(0)
+      await graphics.accept(command({ a: "T", i: "7", f: "32", s: "1", v: "1", q: "2" }, pixel))
+      expect(load).toHaveBeenCalledTimes(cycle % 3 === 2 ? 0 : 1)
+      graphics.dispose()
+      expect(graphics.images.size).toBe(0)
+      expect(graphics.placements.size).toBe(0)
+    }
+  })
 })

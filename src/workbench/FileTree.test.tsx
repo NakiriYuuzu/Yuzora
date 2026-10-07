@@ -387,3 +387,87 @@ test("FilesNavContent ScrollArea viewport owns FileTree scrollTop restore", asyn
     ) as HTMLElement | null
     await waitFor(() => expect(backViewport?.scrollTop).toBe(80))
 })
+
+test("Finder-style clipboard keys act on the focused tree row and fade cut rows", async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    mockIPC((cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === "list_dir") {
+            const path = (args as { path: string }).path
+            if (path === "/w") return [{ name: "src", path: "/w/src", isDir: true }, { name: "a.ts", path: "/w/a.ts", isDir: false }]
+            return []
+        }
+        if (cmd === "clipboard_read_file_list") return []
+        return null
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        workspaceCapabilityId: "ws-1",
+        groups: [{ tabs: [], activePath: null }],
+        activeGroupIndex: 0
+    })
+    const ctrl = !/Mac/.test(navigator.userAgent)
+    const chord = (key: string) => ({ key, ctrlKey: ctrl, metaKey: !ctrl })
+    render(<FileTree />)
+    const file = await screen.findByText("a.ts")
+    const row = file.closest("button")!
+    // WebKit does not focus a clicked button, so the row takes focus itself;
+    // otherwise the clipboard keys never reach the tree.
+    const folder = screen.getByText("src").closest("button")!
+    fireEvent.click(folder)
+    expect(document.activeElement).toBe(folder)
+
+    fireEvent.keyDown(row, chord("x"))
+    await waitFor(() => expect(row.className).toMatch(/opacity-55/))
+    expect(calls).toContainEqual({ cmd: "clipboard_write_workspace_files", args: { workspaceCapabilityId: "ws-1", paths: ["a.ts"] } })
+
+    fireEvent.keyDown(screen.getByText("src").closest("button")!, chord("v"))
+    await waitFor(() => expect(calls).toContainEqual({
+        cmd: "fs_move_paths",
+        args: { workspaceCapabilityId: "ws-1", sources: ["a.ts"], targetDir: "src" }
+    }))
+})
+
+test("handles the clipboard events macOS sends through the Edit menu for the focused row", async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    mockIPC((cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === "list_dir") {
+            const path = (args as { path: string }).path
+            if (path === "/w") return [{ name: "src", path: "/w/src", isDir: true }, { name: "a.ts", path: "/w/a.ts", isDir: false }]
+            return []
+        }
+        if (cmd === "clipboard_read_file_list") return []
+        return null
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        workspaceCapabilityId: "ws-1",
+        groups: [{ tabs: [], activePath: null }],
+        activeGroupIndex: 0
+    })
+    render(<FileTree />)
+    const file = (await screen.findByText("a.ts")).closest("button")!
+    const folder = screen.getByText("src").closest("button")!
+    const fire = (type: string) => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        document.body.dispatchEvent(event)
+        return event.defaultPrevented
+    }
+
+    // Nothing in the tree has focus: leave the menu to the page.
+    expect(fire("beforecopy")).toBe(false)
+
+    file.focus()
+    expect(fire("beforecopy")).toBe(true)
+    expect(fire("copy")).toBe(true)
+    await waitFor(() => expect(calls).toContainEqual({ cmd: "clipboard_write_workspace_files", args: { workspaceCapabilityId: "ws-1", paths: ["a.ts"] } }))
+
+    folder.focus()
+    expect(fire("beforepaste")).toBe(true)
+    expect(fire("paste")).toBe(true)
+    await waitFor(() => expect(calls).toContainEqual({
+        cmd: "fs_copy_paths",
+        args: { workspaceCapabilityId: "ws-1", sources: ["a.ts"], targetDir: "src" }
+    }))
+})

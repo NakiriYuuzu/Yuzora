@@ -99,7 +99,7 @@ export function ImageView({ path }: { path: string }) {
         })
         observer.observe(container)
         return () => observer.disconnect()
-    }, [])
+    }, [loadError])
 
     // Fit never upscales: small images sit at 1:1, large ones shrink to the
     // viewport (with a little padding).

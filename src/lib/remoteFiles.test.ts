@@ -5,7 +5,7 @@ vi.mock("@/lsp/lspManager", () => ({ restartWorkspace: vi.fn(async () => {}) }))
 vi.mock("@/state/sshStore", () => ({ useSshStore: { getState: vi.fn() } }))
 import { invoke, sftpListDir } from "./ipc"
 import { useSshStore } from "@/state/sshStore"
-import { createRemotePath, listRemoteDir, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, renameRemotePath, saveRemoteFile } from "./remoteFiles"
+import { createRemotePath, listRemoteDir, moveRemotePaths, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, renameRemotePath, saveRemoteFile } from "./remoteFiles"
 import { remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
 import { canonicalPathKey, nativePathJoin, nativePathParent, relativePathWithin } from "./paths"
 
@@ -138,6 +138,20 @@ describe("remote documents", () => {
     await saveRemoteFile(file, "mine")
     expect(invoke).toHaveBeenLastCalledWith("host_request", { owner: { ...owner, generation: 2 }, operation: { method: "filesWrite", params: { workspace: "after", path: "src/file.ts", content: "mine", revision: "original" } } })
   })
+  it("keeps an open document's revision when cut and pasted elsewhere", async () => {
+    const owner = { hostId: "move-host", generation: 1 }
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/project", capabilityId: "workspace" })
+    const root = await registerRuntimeWorkspace(owner, "/project", () => true)
+    const file = nativePathJoin(root, "a.ts")
+    await readRemoteFile(file)
+    vi.mocked(invoke).mockResolvedValueOnce(["sub/a.ts"])
+    const [moved] = await moveRemotePaths(root, [file], nativePathJoin(root, "sub"))
+    expect(moved).toBe(nativePathJoin(root, "sub/a.ts"))
+    vi.mocked(invoke).mockResolvedValueOnce({ revision: "saved" })
+    await saveRemoteFile(moved, "mine")
+    expect(invoke).toHaveBeenLastCalledWith("host_request", { owner, operation: { method: "filesWrite", params: { workspace: "workspace", path: "sub/a.ts", content: "mine", revision: "original" } } })
+  })
+
   it("lists a Windows drive-root workspace without doubling its separator", async () => {
     const owner = { hostId: "windows-drive-root", generation: 1 }
     const driveRoot = "\\\\?\\C:\\"

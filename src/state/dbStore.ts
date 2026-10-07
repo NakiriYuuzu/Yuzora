@@ -1490,7 +1490,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                     configGeneration,
                     pageEpoch,
                     requestToken
-                )) return {}
+                )) return snapshot
                 const current = queryFor(snapshot, owner.descriptorId)
                 const currentPage = exactResultPageState(current, owner)
                 if (!currentPage) return {}
@@ -1524,7 +1524,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                     configGeneration,
                     pageEpoch,
                     requestToken
-                )) return {}
+                )) return snapshot
                 const current = queryFor(snapshot, owner.descriptorId)
                 const currentPage = exactResultPageState(current, owner)
                 if (!currentPage) return {}
@@ -1541,17 +1541,17 @@ export const useDbStore = create<DbState>()((set, get) => {
             })
         } finally {
             set((snapshot) => {
-                if (currentResultPageRequests.get(resultPageKey(owner)) !== requestToken) return {}
+                if (currentResultPageRequests.get(resultPageKey(owner)) !== requestToken) return snapshot
                 const current = queryFor(snapshot, owner.descriptorId)
                 const currentPage = exactResultPageState(current, owner)
-                if (!currentPage?.state.loading) return {}
+                if (!currentPage?.state.loading) return snapshot
                 const next = queryWithResultPageState(current, owner, {
                     ...currentPage.state,
                     loading: false
                 })
                 return next
                     ? { queryBuckets: { ...snapshot.queryBuckets, [owner.descriptorId]: next } }
-                    : {}
+                    : snapshot
             })
             finishResultPageRequest(owner, requestToken)
         }
@@ -3049,7 +3049,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                 entry.sql.length > DB_HISTORY_SQL_MAX ? entry.sql.slice(0, DB_HISTORY_SQL_MAX) : entry.sql
             const existing = state.historyBuckets[descriptorId] ?? []
             // A consecutive re-run of the identical statement doesn't earn a new row.
-            if (existing[0]?.sql === sql) return {}
+            if (existing[0]?.sql === sql) return state
             const next = [{ ...entry, sql }, ...existing].slice(0, DB_HISTORY_LIMIT)
             const historyBuckets = { ...state.historyBuckets, [descriptorId]: next }
             return { historyBuckets }

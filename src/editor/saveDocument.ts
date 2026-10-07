@@ -1,6 +1,5 @@
-import { getDocument } from "./documentRegistry"
+import { getDocument, saveDocumentContent } from "./documentRegistry"
 import { getView } from "./viewRegistry"
-import { saveFile } from "../lib/ipc"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { serializeDocumentLineEndings } from "./lineEndings"
@@ -76,7 +75,7 @@ export async function saveDirtyTab(path: string): Promise<SaveDirtyTabOutcome> {
 
     recentlySaved.mark(path)
     try {
-        await saveFile(path, serialized.content)
+        await saveDocumentContent(path, serialized.content)
     } catch (error) {
         await showDocumentSaveError(error)
         return { kind: "failed" }
