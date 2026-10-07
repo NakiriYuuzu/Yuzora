@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.0.17-beta.1] - 2026-10-07
+## [0.0.17] - 2026-10-07
 
 ### 新增與改善
 
@@ -37,8 +37,11 @@
 - 遠端工作區無法從 Finder／檔案總管匯入檔案；純 SFTP 工作區不支援複製與搬移。SSH／SFTP 刪除不顯示進度、無法取消，單次仍有項目與時間上限。
 - 多資料夾 Git 只監看目前選取的 repo。
 - 唯讀 Markdown 預覽中超過約 32,000 字元的單一程式碼區塊會分段顯示，不提供複製按鈕。
-- macOS Beta 沒有 Developer ID 發行者身分、notarization 或 Gatekeeper 信任，首次開啟時可能被警告或阻擋；只應從 Yuzora 官方 GitHub Pre-release 下載。
-- Windows Authenticode 尚未啟用，首次開啟時仍可能出現 SmartScreen 提示。
+
+### 安裝說明
+
+- macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。
+- Windows Authenticode 尚未啟用，安裝或首次開啟時仍可能出現 SmartScreen 提示。
 
 ## [0.0.16] - 2026-09-22
 

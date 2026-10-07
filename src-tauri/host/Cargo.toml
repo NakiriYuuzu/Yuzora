@@ -1,6 +1,6 @@
 [package]
 name = "yuzora-host"
-version = "0.0.17-beta.1"
+version = "0.0.17"
 edition = "2021"
 publish = false
 
