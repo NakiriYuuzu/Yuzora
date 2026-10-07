@@ -20,6 +20,10 @@ export function proxyScrollTop(state: PaneScrollInfo, scrollRange: number) {
   return state.maxOffsetFromBottom ? scrollRange * (1 - state.offsetFromBottom / state.maxOffsetFromBottom) : 0
 }
 
+const FRAME_REFRESH_MS = 350
+const FOLLOW_REFRESH_MS = 32
+const FOLLOW_WINDOW_MS = 750
+
 export function createPaneScrollController(options: {
   read: (signal?: AbortSignal) => Promise<PaneScrollInfo | null>
   write: (offset: number, signal?: AbortSignal) => Promise<PaneScrollInfo | null>
@@ -48,6 +52,7 @@ export function createPaneScrollController(options: {
   let frameRefresh: ReturnType<typeof setTimeout> | undefined
   let lastFrameRefresh = -Infinity
   let frameDirty = false
+  let followUntil = -Infinity
   let abort = new AbortController()
   const metric = (phase: HerdrScrollMetric['phase'], extra = {}) => options.metric?.({ phase, serial, at: performance.now(), pending: Number(pending !== null), attempt: attempts, ...extra })
   const publish = (next: PaneScrollInfo | null) => { state = next; options.change(next) }
@@ -98,10 +103,11 @@ export function createPaneScrollController(options: {
     if (disposed || blocked || !options.allowed() || frameRefresh !== undefined) return
     // The pending flag survives an in-flight read/write; its completion schedules
     // the trailing read so the last output frame of a burst is never lost.
+    const interval = performance.now() < followUntil ? FOLLOW_REFRESH_MS : FRAME_REFRESH_MS
     frameRefresh = setTimeout(() => {
       frameRefresh = undefined
       void refresh()
-    }, Math.max(0, lastFrameRefresh + 350 - performance.now()))
+    }, Math.max(0, lastFrameRefresh + interval - performance.now()))
   }
   const scheduleReconcile = () => {
     clearTimeout(reconcile)
@@ -168,6 +174,15 @@ export function createPaneScrollController(options: {
       frameDirty = true
       scheduleFrameRefresh()
     },
+    /** A connector wheel moves the viewport without an optimistic offset, so
+     * read the frames it produces at gesture cadence for a short window. */
+    follow() {
+      if (disposed || blocked || !options.allowed()) return
+      followUntil = performance.now() + FOLLOW_WINDOW_MS
+      if (frameRefresh === undefined) return
+      clearTimeout(frameRefresh); frameRefresh = undefined
+      scheduleFrameRefresh()
+    },
     sync(next: PaneScrollInfo | null) {
       if (disposed || blocked || !options.allowed()) return
       if (writing || pending !== null) {
@@ -182,7 +197,7 @@ export function createPaneScrollController(options: {
     reset() {
       if (disposed) return
       generation++; revision++; pendingDelta = 0; pending = null; blocked = false; frameStart = null
-      attempts = 0; busySince = null; retryAt = 0; lastSent = -Infinity; lastFrameRefresh = -Infinity; frameDirty = false
+      attempts = 0; busySince = null; retryAt = 0; lastSent = -Infinity; lastFrameRefresh = -Infinity; frameDirty = false; followUntil = -Infinity
       clearTimers(); abort.abort(); abort = new AbortController(); publish(null)
     },
     dispose() { disposed = true; generation++; pending = null; pendingDelta = 0; clearTimers(); abort.abort() }

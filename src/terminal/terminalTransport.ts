@@ -490,6 +490,7 @@ export function createHerdrTerminalTransport(
         shared.scroll(amount)
         return
       }
+      shared?.follow()
       recordHerdrTerminalMetric({ kind: "wheel", strategy: "terminal", rows: Math.abs(amount) })
       pendingScrollDelta += amount
       pendingScrollEvents += 1

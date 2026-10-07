@@ -33,3 +33,44 @@ it.each(["reset", "dispose"] as const)("cancels scheduled frame work on %s", asy
   expect(read).toHaveBeenCalledOnce()
   controller.dispose()
 })
+
+it("follows connector-wheel frames at gesture cadence, then returns to the output throttle", async () => {
+  vi.useFakeTimers()
+  const read = vi.fn().mockResolvedValue(base)
+  const controller = createPaneScrollController({ read, write: vi.fn(), allowed: () => true, change: vi.fn() })
+  await controller.refresh()
+  // An output frame just before the wheel must not hold the gesture at 350ms.
+  controller.frame()
+  controller.follow()
+  for (let i = 0; i < 10; i++) {
+    controller.frame()
+    await vi.advanceTimersByTimeAsync(40)
+  }
+  expect(read.mock.calls.length).toBeGreaterThanOrEqual(10)
+  read.mockClear()
+  await vi.advanceTimersByTimeAsync(1000)
+  for (let i = 0; i < 10; i++) {
+    controller.frame()
+    await vi.advanceTimersByTimeAsync(100)
+  }
+  expect(read).toHaveBeenCalledTimes(3)
+  controller.dispose()
+})
+
+it("does not follow while the scrollbar is not allowed", async () => {
+  vi.useFakeTimers()
+  let allowed = true
+  const read = vi.fn().mockResolvedValue(base)
+  const controller = createPaneScrollController({ read, write: vi.fn(), allowed: () => allowed, change: vi.fn() })
+  await controller.refresh()
+  allowed = false
+  controller.follow()
+  allowed = true
+  read.mockClear()
+  for (let i = 0; i < 10; i++) {
+    controller.frame()
+    await vi.advanceTimersByTimeAsync(40)
+  }
+  expect(read).toHaveBeenCalledTimes(1)
+  controller.dispose()
+})

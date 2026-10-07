@@ -1140,15 +1140,30 @@ describe("alternate-screen wheel routing", () => {
     shared.dispose()
   })
 
+  it("asks the scrollbar to follow frames produced by a connector wheel", async () => {
+    const { shared, transport } = await openWithController(history, {
+      terminalScrollEnabled: () => false,
+      applicationWheelEnabled: () => true
+    })
+    const follow = vi.spyOn(shared, "follow")
+    await transport.scroll?.(-3, cell)
+
+    expect(follow).toHaveBeenCalledOnce()
+    shared.dispose()
+  })
+
   it("keeps host scrollback on the pane path where the runtime forbids the connector command", async () => {
     const { shared, transport, write } = await openWithController(history, {
       terminalScrollEnabled: () => false,
       applicationWheelEnabled: () => false
     })
+    const follow = vi.spyOn(shared, "follow")
     await transport.scroll?.(-3, cell)
 
     await vi.waitFor(() => expect(write).toHaveBeenCalledWith(3, expect.anything()))
     expect(herdrTerminalScroll).not.toHaveBeenCalled()
+    // The pane path already publishes an optimistic position.
+    expect(follow).not.toHaveBeenCalled()
     shared.dispose()
   })
 
