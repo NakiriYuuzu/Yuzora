@@ -184,8 +184,9 @@ mod tests {
         let result = search(root, "target");
         assert!(!result.incomplete);
         assert_eq!(result.files.len(), 2);
-        assert!(result.files[0].path.ends_with(".hidden/target.ts"));
-        assert!(result.files[1].path.ends_with("src/target.ts"));
+        // Component-wise, so Windows `\` separators match too.
+        assert!(Path::new(&result.files[0].path).ends_with(".hidden/target.ts"));
+        assert!(Path::new(&result.files[1].path).ends_with("src/target.ts"));
     }
 
     #[test]
