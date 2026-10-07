@@ -527,7 +527,9 @@
     "cancel": "Cancel",
     "apply": "Apply",
     "applyTitle": "Apply the merge?",
-    "applyUnresolved": "{{count}} changes are still unprocessed and will keep the base version. Apply anyway?"
+    "applyUnresolved": "{{count}} changes are still unprocessed and will keep the base version. Apply anyway?",
+    "replaceUnsaved": "This file has unsaved changes in the editor. Applying the merge result replaces them. Apply anyway?",
+    "replaceManual": "This file already has manual resolutions or edits in the working tree. Applying the merge result replaces them. Apply anyway?"
   },
   "gitActions": {
     "branchMenu": "Actions for {{branch}}",

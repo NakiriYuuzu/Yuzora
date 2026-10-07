@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
     Dialog,
     DialogContent,
@@ -76,38 +77,40 @@ export function GitConflictsDialog() {
                     </DialogDescription>
                 </DialogHeader>
                 <div className="flex min-h-0 flex-1 gap-[12px]">
-                    <div role="table" aria-label={t("gitConflicts.title")} className="min-h-0 flex-1 overflow-auto rounded-[8px] border border-(--line-1)">
-                        <div role="row" className="sticky top-0 grid grid-cols-[28px_1fr_96px_96px] gap-[8px] border-b border-(--line-1) bg-(--paper-1) px-[8px] py-[6px] text-[11px] font-semibold text-(--ink-3)">
-                            <span role="columnheader" />
-                            <span role="columnheader">{t("gitConflicts.columnName")}</span>
-                            <span role="columnheader">{t("gitConflicts.columnYours")}</span>
-                            <span role="columnheader">{t("gitConflicts.columnTheirs")}</span>
+                    <ScrollArea className="min-h-0 flex-1 rounded-[8px] border border-(--line-1)">
+                        <div role="table" aria-label={t("gitConflicts.title")}>
+                            <div role="row" className="sticky top-0 grid grid-cols-[28px_1fr_96px_96px] gap-[8px] border-b border-(--line-1) bg-(--paper-1) px-[8px] py-[6px] text-[11px] font-semibold text-(--ink-3)">
+                                <span role="columnheader" />
+                                <span role="columnheader">{t("gitConflicts.columnName")}</span>
+                                <span role="columnheader">{t("gitConflicts.columnYours")}</span>
+                                <span role="columnheader">{t("gitConflicts.columnTheirs")}</span>
+                            </div>
+                            {conflicted.map((entry) => {
+                                const changes = conflictSideChanges(entry.status)
+                                const isChecked = selected.includes(entry.path)
+                                return (
+                                    <div
+                                        key={entry.path}
+                                        role="row"
+                                        aria-selected={isChecked}
+                                        className="grid grid-cols-[28px_1fr_96px_96px] items-center gap-[8px] px-[8px] py-[5px] text-[12px] hover:bg-(--yz-hover)"
+                                        onDoubleClick={() => { if (!disabled && canMergeConflict(entry.status)) openMerge(entry.path) }}
+                                    >
+                                        <span role="cell">
+                                            <Checkbox
+                                                aria-label={t("gitConflicts.selectFile", { path: entry.path })}
+                                                checked={isChecked}
+                                                onCheckedChange={(value) => toggle(entry.path, value === true)}
+                                            />
+                                        </span>
+                                        <span role="cell" className="truncate font-mono" title={entry.path}>{entry.path}</span>
+                                        <span role="cell" className="text-(--ink-2)">{sideLabel(changes.ours)}</span>
+                                        <span role="cell" className="text-(--ink-2)">{sideLabel(changes.theirs)}</span>
+                                    </div>
+                                )
+                            })}
                         </div>
-                        {conflicted.map((entry) => {
-                            const changes = conflictSideChanges(entry.status)
-                            const isChecked = selected.includes(entry.path)
-                            return (
-                                <div
-                                    key={entry.path}
-                                    role="row"
-                                    aria-selected={isChecked}
-                                    className="grid grid-cols-[28px_1fr_96px_96px] items-center gap-[8px] px-[8px] py-[5px] text-[12px] hover:bg-(--yz-hover)"
-                                    onDoubleClick={() => { if (!disabled && canMergeConflict(entry.status)) openMerge(entry.path) }}
-                                >
-                                    <span role="cell">
-                                        <Checkbox
-                                            aria-label={t("gitConflicts.selectFile", { path: entry.path })}
-                                            checked={isChecked}
-                                            onCheckedChange={(value) => toggle(entry.path, value === true)}
-                                        />
-                                    </span>
-                                    <span role="cell" className="truncate font-mono" title={entry.path}>{entry.path}</span>
-                                    <span role="cell" className="text-(--ink-2)">{sideLabel(changes.ours)}</span>
-                                    <span role="cell" className="text-(--ink-2)">{sideLabel(changes.theirs)}</span>
-                                </div>
-                            )
-                        })}
-                    </div>
+                    </ScrollArea>
                     <div className="flex w-[150px] shrink-0 flex-col gap-[6px]">
                         <Button type="button" size="sm" variant="outline" disabled={disabled || !targets.length} onClick={() => void accept("ours")}>
                             {t("gitConflicts.acceptYours")}

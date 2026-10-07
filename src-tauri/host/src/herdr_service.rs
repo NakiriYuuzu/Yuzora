@@ -1207,6 +1207,15 @@ impl HerdrManager {
         self.resolve_binary_selection(active).0
     }
 
+    /// The Yuzora-managed binary whichever source is active: an app update
+    /// replaces it even while another HERDR is selected.
+    pub fn managed_binary(&self) -> Option<PathBuf> {
+        if self.remote.is_some() {
+            return None;
+        }
+        self.resolve_binary_for_source(HerdrBinarySource::Default).0
+    }
+
     /// Resolve exactly the chosen source. An installed selection never falls
     /// back to a managed binary when PATH changes.
     fn resolve_binary_selection(

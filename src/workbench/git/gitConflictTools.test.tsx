@@ -9,8 +9,11 @@ vi.mock("@/lib/ipc", async (importOriginal) => ({
     saveFile: vi.fn(async () => 0)
 }))
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn(async () => undefined) }))
+vi.mock("@/lib/unsavedGuard", () => ({ dirtyTabPaths: vi.fn(() => []) }))
 
 import * as ipc from "@/lib/ipc"
+import { dirtyTabPaths } from "@/lib/unsavedGuard"
+import { useAppDialogStore } from "@/state/appDialogStore"
 import type { GitStatus } from "@/lib/types"
 import { useGitConflictStore } from "@/state/gitConflictStore"
 import { initialGitState, useGitStore } from "@/state/gitStore"
@@ -126,6 +129,52 @@ describe("GitMergeTool", () => {
         await screen.findByText("0 changes, 0 conflicts left")
         fireEvent.click(screen.getByRole("button", { name: "Apply" }))
         await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith("/w/w.txt", "a\r\nB\r\n"))
+    })
+
+    async function resolveAndApply(worktree: string) {
+        vi.mocked(ipc.gitConflictSides).mockResolvedValue({
+            code: "UU",
+            base: { kind: "full", content: "1\n2\n" },
+            ours: { kind: "full", content: "1\nO\n" },
+            theirs: { kind: "full", content: "1\nT\n" },
+            worktree: { kind: "full", content: worktree }
+        })
+        useGitConflictStore.setState({ mergePath: "m.txt" })
+        render(<GitMergeTool />)
+        await screen.findByText("1 changes, 1 conflicts left")
+        const result = document.querySelector<HTMLElement>("[data-merge-pane='result']")!
+        fireEvent.click(within(result).getByRole("button", { name: "Theirs »" }))
+        await screen.findByText("0 changes, 0 conflicts left")
+        fireEvent.click(screen.getByRole("button", { name: "Apply" }))
+    }
+
+    it("asks before replacing conflicts already resolved by hand", async () => {
+        await resolveAndApply("1\nmine\n")
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.description).toMatch(/manual resolutions/))
+        act(() => useAppDialogStore.getState().respond(false))
+        await waitFor(() => expect(useAppDialogStore.getState().pending).toBeNull())
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+
+        fireEvent.click(screen.getByRole("button", { name: "Apply" }))
+        await waitFor(() => expect(useAppDialogStore.getState().pending).not.toBeNull())
+        act(() => useAppDialogStore.getState().respond(true))
+        await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith("/w/m.txt", "1\nT\n"))
+    })
+
+    it("asks before replacing unsaved editor changes to the file", async () => {
+        vi.mocked(dirtyTabPaths).mockReturnValue(["/w/m.txt"])
+        await resolveAndApply("1\n<<<<<<< ours\nO\n=======\nT\n>>>>>>> theirs\n")
+        await waitFor(() => expect(useAppDialogStore.getState().pending?.description).toMatch(/unsaved changes/))
+        act(() => useAppDialogStore.getState().respond(false))
+        await waitFor(() => expect(useAppDialogStore.getState().pending).toBeNull())
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+        vi.mocked(dirtyTabPaths).mockReturnValue([])
+    })
+
+    it("applies without asking while the file still holds Git's conflict markers", async () => {
+        await resolveAndApply("1\n<<<<<<< ours\nO\n=======\nT\n>>>>>>> theirs\n")
+        await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith("/w/m.txt", "1\nT\n"))
+        expect(useAppDialogStore.getState().pending).toBeNull()
     })
 
     it("explains why a deleted side cannot be merged", async () => {

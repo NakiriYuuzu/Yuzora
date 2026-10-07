@@ -1,8 +1,9 @@
 //! Windows installers cannot replace an executable that is still running. The
 //! update confirmation lists every process of the HERDR binary this app is
-//! currently using, and only after the user confirms losing that work are those
-//! process trees terminated so the installer can replace the files.
-use std::path::Path;
+//! currently using and of the bundled one the installer replaces, and only
+//! after the user confirms losing that work are those process trees terminated
+//! so the installer can replace the files.
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sysinfo::{get_current_pid, Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -134,6 +135,21 @@ fn stop_binary_processes(
     }
 }
 
+/// The HERDR in use plus the bundled one, which a server started before
+/// switching to another source can still hold open.
+fn update_binaries(active: Option<PathBuf>, managed: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut binaries: Vec<PathBuf> = Vec::new();
+    for binary in [active, managed].into_iter().flatten() {
+        if !binaries
+            .iter()
+            .any(|seen| comparable(seen) == comparable(&binary))
+        {
+            binaries.push(binary);
+        }
+    }
+    binaries
+}
+
 #[tauri::command]
 pub async fn update_herdr_processes(
     state: tauri::State<'_, HerdrState>,
@@ -141,15 +157,15 @@ pub async fn update_herdr_processes(
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let info = manager.binary_source_info();
-        let pids = manager
-            .resolve_binary()
-            .map(|binary| {
-                binary_processes(&mut System::new(), &binary)
-                    .into_iter()
-                    .map(|(pid, _)| pid)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut system = System::new();
+        let mut pids: Vec<u32> =
+            update_binaries(manager.resolve_binary(), manager.managed_binary())
+                .iter()
+                .flat_map(|binary| binary_processes(&mut system, binary))
+                .map(|(pid, _)| pid)
+                .collect();
+        pids.sort_unstable();
+        pids.dedup();
         UpdateHerdrProcesses {
             path: info.path,
             version: info.version,
@@ -164,11 +180,15 @@ pub async fn update_herdr_processes(
 pub async fn update_stop_herdr(state: tauri::State<'_, HerdrState>) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(binary) = manager.resolve_binary() else {
+        let binaries = update_binaries(manager.resolve_binary(), manager.managed_binary());
+        if binaries.is_empty() {
             return Ok(());
-        };
+        }
         manager.release_all_connectors();
-        stop_binary_processes(&binary, process_kill::kill_tree_pid, STOP_TIMEOUT)
+        for binary in &binaries {
+            stop_binary_processes(binary, process_kill::kill_tree_pid, STOP_TIMEOUT)?;
+        }
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -215,6 +235,28 @@ mod tests {
         } else {
             Err(std::io::Error::other("kill failed"))
         }
+    }
+
+    #[test]
+    fn update_covers_the_bundled_binary_beside_another_selected_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("custom-herdr");
+        let bundled = dir.path().join("bundled-herdr");
+        let alias = dir.path().join("bundled-alias");
+        std::fs::write(&custom, "").unwrap();
+        std::fs::write(&bundled, "").unwrap();
+        std::os::unix::fs::symlink(&bundled, &alias).unwrap();
+
+        assert_eq!(
+            update_binaries(Some(custom.clone()), Some(bundled.clone())),
+            vec![custom, bundled.clone()]
+        );
+        assert_eq!(
+            update_binaries(Some(alias.clone()), Some(bundled.clone())),
+            vec![alias]
+        );
+        assert_eq!(update_binaries(None, Some(bundled.clone())), vec![bundled]);
+        assert!(update_binaries(None, None).is_empty());
     }
 
     #[test]

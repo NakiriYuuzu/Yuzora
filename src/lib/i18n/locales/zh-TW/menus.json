@@ -525,7 +525,9 @@
     "cancel": "取消",
     "apply": "套用",
     "applyTitle": "套用合併結果？",
-    "applyUnresolved": "還有 {{count}} 個變更未處理，將保留基底版本。仍要套用嗎？"
+    "applyUnresolved": "還有 {{count}} 個變更未處理，將保留基底版本。仍要套用嗎？",
+    "replaceUnsaved": "這個檔案在編輯器中有未儲存的修改，套用合併結果會取代這些修改。仍要套用嗎？",
+    "replaceManual": "這個檔案在工作樹中已有手動解決或修改的內容，套用合併結果會取代這些內容。仍要套用嗎？"
   },
   "gitActions": {
     "branchMenu": "{{branch}} 的操作",

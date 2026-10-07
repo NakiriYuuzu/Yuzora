@@ -332,8 +332,21 @@ async function transferRemotePaths(method: "filesCopy" | "filesMove", workspaceU
     if (backend.kind !== "runtime") throw new Error(method === "filesCopy" ? "copy-unsupported-sftp" : "move-unsupported-sftp")
     const created = await requestHost<string[]>(backend.owner, { method, params: { workspace: backend.capabilityId, sources: relatives, target_dir: target.relative } })
     assertBackend(workspaceUri, backend)
-    return created.map((relative) => remoteFilePath(target.workspace.hostId, joinRemoteHostPath(target.workspace.root, relative), target.workspace.root))
+    const paths = created.map((relative) => remoteFilePath(target.workspace.hostId, joinRemoteHostPath(target.workspace.root, relative), target.workspace.root))
+    // Moved documents keep their accepted revision, so the next save at the
+    // new path is not treated as an unknown remote file.
+    if (method === "filesMove") sources.forEach((from, index) => moveRevisions(from, paths[index], backend))
+    return paths
   } finally { await release() }
+}
+
+function moveRevisions(from: string, to: string | undefined, backend: Backend): void {
+  if (!to || to === from) return
+  for (const [uri, opened] of [...revisions]) {
+    if (uri !== from && !uri.startsWith(from + "/")) continue
+    revisions.delete(uri)
+    if (opened.backend === backend) revisions.set(to + uri.slice(from.length), opened)
+  }
 }
 
 export function copyRemotePaths(workspaceUri: string, sources: string[], targetDir: string): Promise<string[]> {

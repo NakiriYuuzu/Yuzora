@@ -581,6 +581,11 @@ fn managed_binary_override_resolves_only_the_default_source() {
     let (resolved, reason) = mgr.resolve_binary_for_source(HerdrBinarySource::Default);
     assert_eq!(resolved.as_deref(), Some(binary.as_path()));
     assert!(reason.is_none());
+
+    // An update still finds the managed binary while another source is active.
+    *mgr.active_source.lock().unwrap() = HerdrBinarySource::Custom;
+    assert_eq!(mgr.resolve_binary(), None);
+    assert_eq!(mgr.managed_binary().as_deref(), Some(binary.as_path()));
 }
 
 #[test]

@@ -20,12 +20,13 @@ import { hasVeryLongLine, languageExtensions } from "@/editor/cmExtensions"
 import { logUserAction } from "@/features/logs/userAction"
 import { gitConflictSides, gitStage, saveFile } from "@/lib/ipc"
 import { isWindowsPath, nativePathJoin } from "@/lib/paths"
+import { dirtyTabPaths } from "@/lib/unsavedGuard"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { useGitConflictStore } from "@/state/gitConflictStore"
 import { useGitStore } from "@/state/gitStore"
 import { useOverlayPresence } from "@/state/overlayStore"
 import { mergeRegions, resolveSimpleConflict, splitLines, type MergeRegion, type MergeRegionKind } from "./mergeModel"
-import { mergeTexts, type MergeTexts } from "./mergeTexts"
+import { conflictMarkerCount, mergeTexts, readableText, type MergeTexts } from "./mergeTexts"
 
 type RegionAction = "ours" | "theirs" | "both" | "ignore"
 
@@ -377,6 +378,22 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
         if (texts.crlf) content = content.replace(/\r?\n/g, "\r\n")
         const root = repositoryRoot
         const absolute = nativePathJoin(root, isWindowsPath(root) ? path.replace(/\//g, "\\") : path)
+        // The result is built from the merge base, so it replaces any manual
+        // work on the file: unsaved editor edits, or conflicts resolved by hand.
+        const unsaved = dirtyTabPaths().includes(absolute)
+        const worktree = await gitConflictSides(root, path)
+            .then((sides) => readableText(sides.worktree))
+            .catch(() => texts.worktree)
+        const conflicts = model.regions.filter((region) => region.kind === "conflict").length
+        const edited = worktree !== texts.worktree || (worktree !== null && conflictMarkerCount(worktree) < conflicts)
+        if (unsaved || edited) {
+            const replace = await requestAppConfirmation({
+                title: t("gitMerge.applyTitle"),
+                description: t(unsaved ? "gitMerge.replaceUnsaved" : "gitMerge.replaceManual"),
+                kind: "warning"
+            })
+            if (!replace) return
+        }
         const ok = await runOp("conflict-merge", async () => {
             await saveFile(absolute, content)
             await gitStage(root, [path])

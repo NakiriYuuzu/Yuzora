@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { logUserAction } from "@/features/logs/userAction"
 import { gitStashApply, gitStashDrop, gitStashList, gitStashPush } from "@/lib/ipc"
 import type { GitStashEntry } from "@/lib/types"
@@ -129,17 +130,19 @@ export function GitStashDialog() {
                     {!entries.length ? (
                         <p className="text-[12px] text-(--ink-3)">{t("gitStash.empty")}</p>
                     ) : (
-                        <ul className="min-h-0 flex-1 overflow-auto rounded-[8px] border border-(--line-1)">
-                            {entries.map((entry) => (
-                                <li key={entry.index} className="flex items-center gap-[8px] border-b border-(--line-1) px-[10px] py-[6px] last:border-b-0">
-                                    <span className="font-mono text-[11px] text-(--ink-3)">{`stash@{${entry.index}}`}</span>
-                                    <span className="min-w-0 flex-1 truncate text-[12px]" title={entry.message}>{entry.message}</span>
-                                    <Button type="button" size="xs" variant="outline" disabled={disabled} aria-label={t("gitStash.applyAria", { ref: `stash@{${entry.index}}` })} onClick={() => void apply(entry, false)}>{t("gitStash.apply")}</Button>
-                                    <Button type="button" size="xs" variant="outline" disabled={disabled} aria-label={t("gitStash.popAria", { ref: `stash@{${entry.index}}` })} onClick={() => void apply(entry, true)}>{t("gitStash.pop")}</Button>
-                                    <Button type="button" size="xs" variant="ghost" disabled={disabled} aria-label={t("gitStash.dropAria", { ref: `stash@{${entry.index}}` })} onClick={() => void drop(entry)}>{t("gitStash.drop")}</Button>
-                                </li>
-                            ))}
-                        </ul>
+                        <ScrollArea className="min-h-0 flex-1 rounded-[8px] border border-(--line-1)">
+                            <ul>
+                                {entries.map((entry) => (
+                                    <li key={entry.index} className="flex items-center gap-[8px] border-b border-(--line-1) px-[10px] py-[6px] last:border-b-0">
+                                        <span className="font-mono text-[11px] text-(--ink-3)">{`stash@{${entry.index}}`}</span>
+                                        <span className="min-w-0 flex-1 truncate text-[12px]" title={entry.message}>{entry.message}</span>
+                                        <Button type="button" size="xs" variant="outline" disabled={disabled} aria-label={t("gitStash.applyAria", { ref: `stash@{${entry.index}}` })} onClick={() => void apply(entry, false)}>{t("gitStash.apply")}</Button>
+                                        <Button type="button" size="xs" variant="outline" disabled={disabled} aria-label={t("gitStash.popAria", { ref: `stash@{${entry.index}}` })} onClick={() => void apply(entry, true)}>{t("gitStash.pop")}</Button>
+                                        <Button type="button" size="xs" variant="ghost" disabled={disabled} aria-label={t("gitStash.dropAria", { ref: `stash@{${entry.index}}` })} onClick={() => void drop(entry)}>{t("gitStash.drop")}</Button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </ScrollArea>
                     )}
                 </section>
                 <DialogFooter>
