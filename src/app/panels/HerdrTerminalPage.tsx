@@ -487,6 +487,17 @@ export function HerdrTerminalPage({
     },
     [canFocusPane, focusedPaneId, herdrSessionId, sessionNameArg]
   )
+  // Agent activation (Alt+1..9, sidebar) can target another leaf of this
+  // mounted tab without changing the page identity or reloading its layout.
+  useEffect(() => useHerdrStore.subscribe((state, previous) => {
+    const request = state.paneFocusRequest
+    if (!request || request === previous.paneFocusRequest) return
+    if (request.sessionName !== targetSessionName && request.sessionName !== herdrSessionId) return
+    setLayout((current) => current && current.focusedPaneId !== request.paneId
+      && collectPaneIds(current.root).includes(request.paneId)
+      ? { ...current, focusedPaneId: request.paneId }
+      : current)
+  }), [herdrSessionId, targetSessionName])
   const tabMenuSession = targetSessionName ?? herdrSessionId
 
   const headerContextMenu = contextMenuHandler({

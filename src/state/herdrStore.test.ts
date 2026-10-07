@@ -11,6 +11,7 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrSessions: vi.fn(),
   herdrStartupStatus: vi.fn(),
   herdrCapabilities: vi.fn(),
+  herdrPaneFocus: vi.fn(),
   herdrSnapshot: vi.fn(),
   herdrTabFocus: vi.fn(),
   herdrTabRename: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock("@/lib/unsavedGuard", () => ({
 
 import {
   herdrCapabilities,
+  herdrPaneFocus,
   herdrSessions,
   herdrSnapshot,
   herdrStartupStatus,
@@ -305,6 +307,7 @@ describe("herdrStore", () => {
       worktrees: []
     })
     vi.mocked(herdrTabFocus).mockReset().mockResolvedValue(undefined)
+    vi.mocked(herdrPaneFocus).mockReset().mockResolvedValue(undefined)
     vi.mocked(herdrTabRename).mockReset().mockResolvedValue(undefined)
     vi.mocked(herdrTerminalCreate).mockReset()
     vi.mocked(herdrTerminalRelease).mockReset()
@@ -685,6 +688,43 @@ describe("herdrStore", () => {
     expect(paths).toContain("yuzora://herdr/default/term-1")
     expect(paths).toContain("yuzora://herdr/work/term-1")
     expect(new Set(paths).size).toBe(paths.length)
+  })
+
+  it("selects a split Agent's own pane after focusing its tab", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const pi = useHerdrStore.getState().agents().find((item) => item.paneId === "pane-1")!
+    // A second Agent in a split of tab-1: tab.focus alone restores pane-1.
+    const split = { ...pi, id: "agent-split", terminalId: "term-split", paneId: "pane-split" }
+
+    expect(await useHerdrStore.getState().activateAgent(split)).toEqual({ ok: true })
+
+    expect(herdrTabFocus).toHaveBeenCalledWith({ sessionName: "default", tabId: "tab-1" })
+    expect(herdrPaneFocus).toHaveBeenCalledWith({ sessionName: "default", paneId: "pane-split" })
+    expect(vi.mocked(herdrPaneFocus).mock.invocationCallOrder[0])
+      .toBeGreaterThan(vi.mocked(herdrTabFocus).mock.invocationCallOrder[0])
+    expect(useHerdrStore.getState().paneFocusRequest).toEqual({ sessionName: "default", paneId: "pane-split", seq: 1 })
+    expect(useHerdrStore.getState().runtimesBySession.default!.snapshot!.focusedPaneId).toBe("pane-split")
+
+    // Re-selecting the same pane is a new request, so a mounted page reapplies it.
+    await useHerdrStore.getState().activateAgent(split)
+    expect(useHerdrStore.getState().paneFocusRequest?.seq).toBe(2)
+  })
+
+  it("keeps the tab activation when HERDR refuses the pane focus, and leaves plain tab clicks alone", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const pi = useHerdrStore.getState().agents().find((item) => item.paneId === "pane-1")!
+    vi.mocked(herdrPaneFocus).mockRejectedValueOnce(new Error("pane gone"))
+
+    expect(await useHerdrStore.getState().activateAgent({ ...pi, paneId: "pane-split" })).toEqual({ ok: true })
+    expect(useHerdrStore.getState().paneFocusRequest?.paneId).toBe("pane-split")
+
+    vi.mocked(herdrPaneFocus).mockClear()
+    const tab = useHerdrStore.getState().tabs().find((item) => item.id === "tab-1")!
+    expect(await useHerdrStore.getState().activateTab(tab)).toEqual({ ok: true })
+    expect(herdrPaneFocus).not.toHaveBeenCalled()
+    expect(useHerdrStore.getState().paneFocusRequest?.seq).toBe(1)
   })
 
   it("remembers a Space's last selected HERDR tab before the next snapshot", async () => {

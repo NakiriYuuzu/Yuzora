@@ -5,6 +5,7 @@ import { create } from "zustand"
 
 import {
   herdrCapabilities,
+  herdrPaneFocus,
   herdrSessions,
   herdrSnapshot,
   herdrStartupStatus,
@@ -107,6 +108,8 @@ interface HerdrState {
   selectedSpaceId: string | null
   /** Bumped after topology mutations so tab surfaces reload layout. */
   topologyRevision: number
+  /** Latest Agent activation that targets one pane of a split tab. */
+  paneFocusRequest: { sessionName: string; paneId: string; seq: number } | null
   attachments: Map<string, HerdrAttachmentRecord>
   /** Attention items keyed by sessionName::paneId. */
   attentionByKey: Map<string, HerdrAttentionItem>
@@ -158,7 +161,8 @@ interface HerdrState {
     workspaceId: string
     path?: string | null
   }) => Promise<HerdrActivationResult>
-  activateTab: (tab: HerdrTabInfo) => Promise<HerdrActivationResult>
+  /** `focusPane` also focuses `tab.paneId`; tab.focus alone restores the tab's last pane. */
+  activateTab: (tab: HerdrTabInfo, options?: { focusPane?: boolean }) => Promise<HerdrActivationResult>
   activateAgent: (agent: HerdrAgentInfo) => Promise<HerdrActivationResult>
   /** Restore focused-Space Herdr pages from the snapshot without mutating Herdr. */
   restoreFocusedState: (sessionName: string) => Promise<HerdrActivationResult>
@@ -407,6 +411,7 @@ export const herdrInitialState = {
   errorMessage: null as string | null,
   selectedSpaceId: null as string | null,
   topologyRevision: 0,
+  paneFocusRequest: null as { sessionName: string; paneId: string; seq: number } | null,
   attachments: new Map<string, HerdrAttachmentRecord>(),
   attentionByKey: new Map<string, HerdrAttentionItem>(),
   eventsHealthy: false,
@@ -1461,7 +1466,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     }
   },
 
-  async activateTab(tab) {
+  async activateTab(tab, options) {
     const sessionName = tab.sessionName ?? get().selectedSessionName ?? HERDR_LIVE_SESSION_ID
     if (!tab.terminalId) {
       return { ok: false, error: "Herdr tab has no terminalId" }
@@ -1495,6 +1500,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
     const activationGeneration = ++sessionSelectionGeneration
     const isLatestActivation = () => sessionSelectionGeneration === activationGeneration
+    const focusPaneId = options?.focusPane ? tab.paneId ?? null : null
 
     // Unsaved preflight must complete before workspace.focus or tab.focus.
     if (needsWorkspaceSwitch) {
@@ -1549,6 +1555,11 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         if (!isLatestActivation()) return { ok: false, cancelled: true }
         await herdrTabFocus({ sessionName, tabId: tab.id })
         if (!isLatestActivation()) return { ok: false, cancelled: true }
+        if (focusPaneId && runtime.capabilities.api.paneFocus) {
+          // Best effort: the tab is already active, and the page still selects the pane.
+          try { await herdrPaneFocus({ sessionName, paneId: focusPaneId }) } catch { /* keep the tab */ }
+          if (!isLatestActivation()) return { ok: false, cancelled: true }
+        }
       } catch (error) {
         if (!isLatestActivation()) return { ok: false, cancelled: true }
         await rollbackFocus()
@@ -1588,6 +1599,10 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           selectedSpaceBySession,
           ...projectSelected({ ...state, selectedSpaceBySession }, sessionName),
           selectedSpaceId: tab.workspaceId,
+          // A mounted page keeps its layout; this tells it which leaf to select.
+          ...(focusPaneId
+            ? { paneFocusRequest: { sessionName, paneId: focusPaneId, seq: (state.paneFocusRequest?.seq ?? 0) + 1 } }
+            : {}),
           ...buildRuntimePatch(state, sessionName, {
             errorMessage: null,
             ...(snapshot ? { snapshot: withFocusedTab(snapshot, tab) } : {}),
@@ -1628,12 +1643,13 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       const runtimeTabs = get().runtimesBySession[sessionName]?.snapshot?.tabs ?? []
       const owningTab = runtimeTabs.find((tab) => tab.id === agent.tabId)
       if (owningTab) {
+        // A split tab holds several Agents; select this Agent's pane, not the tab's last one.
         const result = await get().activateTab({
           ...owningTab,
           paneId: agent.paneId ?? owningTab.paneId,
           terminalId: agent.terminalId,
           sessionName
-        })
+        }, { focusPane: Boolean(agent.paneId) })
         if (result.ok) useAgentMruStore.getState().touch(sessionName, agent.id)
         return result
       }
