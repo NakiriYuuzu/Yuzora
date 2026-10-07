@@ -717,6 +717,33 @@ describe("gitStore", () => {
             expect(localStorage.getItem("yuzora.git.activeRepository")).toBe("{}")
         })
 
+        it("asks for trust after the workspace refuses detection, then detects again", async () => {
+            const { useGitStore, isWorkspaceTrustError } = await import("./gitStore")
+            const ipc = await import("../lib/ipc")
+            vi.mocked(ipc.gitBootstrap).mockRejectedValueOnce(
+                JSON.stringify({ error: "untrustedWorkspace", canonicalPath: "/w", challengeId: "c1" })
+            )
+            await useGitStore.getState().detect("/w")
+            expect(isWorkspaceTrustError(useGitStore.getState().lastError)).toBe(true)
+
+            trustMock.refreshStatus.mockResolvedValueOnce({ state: "untrusted", challengeId: "c2", canonicalPath: "/w" } as never)
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/w"))
+            await useGitStore.getState().trustWorkspace()
+
+            expect(trustMock.requestWorkspaceGrant).toHaveBeenCalledTimes(1)
+            expect(useGitStore.getState().environment).toMatchObject({ status: "ready", root: "/w" })
+            expect(useGitStore.getState().lastError).toBeNull()
+        })
+
+        it("recognises only trust refusals as trust errors", async () => {
+            const { isWorkspaceTrustError } = await import("./gitStore")
+            expect(isWorkspaceTrustError(JSON.stringify({ error: "identityMismatch", challengeId: "c" }))).toBe(true)
+            expect(isWorkspaceTrustError(JSON.stringify({ error: "storeLocked" }))).toBe(false)
+            expect(isWorkspaceTrustError("fatal: not a git repository")).toBe(false)
+            expect(isWorkspaceTrustError("{not json")).toBe(false)
+            expect(isWorkspaceTrustError(null)).toBe(false)
+        })
+
         it("does not switch when the trust prompt is declined", async () => {
             const { useGitStore } = await import("./gitStore")
             const ipc = await import("../lib/ipc")

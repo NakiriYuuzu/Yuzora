@@ -187,6 +187,23 @@ mod host {
                 )?)
                 .map_err(|e| e.to_string());
             }
+            if matches!(call, GitCommand::Detect | GitCommand::Bootstrap)
+                && requested_root.is_none()
+                && Path::new(path).is_dir()
+                && !crate::workspace_trust::project_repo_presence(path)
+            {
+                // A non-repository has no Git operation to authorize. Answer
+                // like the local detector: no trust and no Git process.
+                self.roots.remove(workspace);
+                let environment = GitEnvironment::NotARepo;
+                return if matches!(call, GitCommand::Bootstrap) {
+                    Ok(
+                        json!({"environment":environment,"status":null,"branches":null,"snapshotError":null}),
+                    )
+                } else {
+                    serde_json::to_value(environment).map_err(|e| e.to_string())
+                };
+            }
             let identity = trust.require_trusted(path)?;
             if matches!(call, GitCommand::Detect | GitCommand::Bootstrap) {
                 self.roots.remove(workspace);
@@ -395,6 +412,18 @@ mod tests {
             .unwrap();
         assert_eq!(found["repositories"][0]["relativePath"], "services/api");
 
+        // The plain folder itself is not a repository: no trust needed.
+        let plain = git
+            .execute_root(path, &trust, "ws", None, GitCommand::Bootstrap)
+            .unwrap();
+        assert_eq!(plain["environment"]["status"], "notARepo");
+        assert!(plain["status"].is_null());
+        assert_eq!(
+            git.execute_root(path, &trust, "ws", None, GitCommand::Detect)
+                .unwrap()["status"],
+            "notARepo"
+        );
+
         assert!(git
             .execute_root(
                 path,
@@ -433,6 +462,24 @@ mod tests {
         assert!(git
             .execute_root(path, &trust, "ws", Some("../outside"), GitCommand::Detect)
             .is_err());
+    }
+
+    #[test]
+    fn untrusted_repository_still_refuses_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("nested")).unwrap();
+        test_repo::init(&repo);
+        let mut git = HostGit::default();
+        for path in [repo.clone(), repo.join("nested")] {
+            for call in [GitCommand::Detect, GitCommand::Bootstrap] {
+                assert!(git
+                    .execute_root(path.to_str().unwrap(), &trust, "ws", None, call)
+                    .unwrap_err()
+                    .contains("untrustedWorkspace"));
+            }
+        }
     }
 
     // Windows reports `C:/…` roots against a `\\?\C:\…` identity; an alias of

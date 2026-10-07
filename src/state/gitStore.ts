@@ -277,6 +277,8 @@ interface GitState {
     detect: (workspacePath: string, repositoryPath?: string | null) => Promise<void>
     discover: (workspacePath: string) => Promise<void>
     selectRepository: (repositoryPath: string | null) => Promise<void>
+    /** Asks to trust the workspace, then detects again once granted. */
+    trustWorkspace: () => Promise<void>
     refresh: (paths?: string[]) => Promise<void>
     refreshQuiet: (paths?: string[]) => Promise<void>
     retrySnapshot: () => Promise<void>
@@ -634,6 +636,13 @@ export const useGitStore = create<GitState>()((set, get) => ({
         await get().detect(workspacePath, target)
     },
 
+    trustWorkspace: async () => {
+        const workspacePath = requestedWorkspacePath
+        if (!workspacePath || !(await ensureWorkspaceTrusted(workspacePath))) return
+        if (requestedWorkspacePath !== workspacePath) return
+        await get().detect(workspacePath, requestedRepositoryPath)
+    },
+
     retrySnapshot: async () => {
         if (get().busy || detectInFlight) return
         if (requestedWorkspacePath) await get().detect(requestedWorkspacePath, requestedRepositoryPath)
@@ -977,6 +986,17 @@ export function changedPathSet(status: GitStatus | null): ReadonlySet<string> {
     for (const entry of status.conflicted) set.add(entry.path)
     changedPathsByStatus.set(status, set)
     return set
+}
+
+/** A Git request the backend refused because the workspace is not trusted. */
+export function isWorkspaceTrustError(error: string | null): boolean {
+    if (!error?.startsWith("{")) return false
+    try {
+        const code = (JSON.parse(error) as { error?: unknown }).error
+        return code === "untrustedWorkspace" || code === "identityMismatch"
+    } catch {
+        return false
+    }
 }
 
 async function ensureWorkspaceTrusted(workspacePath: string): Promise<boolean> {

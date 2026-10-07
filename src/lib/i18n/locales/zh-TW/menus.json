@@ -408,7 +408,10 @@
     "detectingDescription": "正在檢查工作區是否為 Git 儲存庫。",
     "errorTitle": "無法取得 Git 狀態",
     "errorDescription": "{{message}}",
-    "retry": "重試"
+    "retry": "重試",
+    "trustTitle": "需要先信任這個 workspace",
+    "trustDescription": "Git 只會在信任的 workspace 中執行。信任後即可查看歷史、變更與主控台。",
+    "trust": "信任 workspace…"
   },
   "gitNav": {
     "branchesAriaLabel": "分支",
@@ -436,6 +439,9 @@
     "stale": "狀態可能已過期",
     "error": "Git 錯誤：{{message}}",
     "retry": "重試",
+    "trustTitle": "需要先信任這個 workspace",
+    "trustDescription": "Git 只會在信任的 workspace 中執行。",
+    "trust": "信任 workspace…",
     "aheadBehind": "↑{{ahead}} ↓{{behind}}",
     "countStaged": "暫 {{count}}",
     "countUnstaged": "改 {{count}}",

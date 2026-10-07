@@ -21,7 +21,7 @@ import { isMacPlatform } from "@/lib/platform"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
-import { useGitStore } from "@/state/gitStore"
+import { isWorkspaceTrustError, useGitStore } from "@/state/gitStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { BranchPopover } from "@/workbench/git/BranchPopover"
@@ -104,22 +104,28 @@ export function GitNavContent({ filterQuery = "" }: { filterQuery?: string }) {
     const status = useGitStore((s) => s.status)
     const lastError = useGitStore((s) => s.lastError)
     const detect = useGitStore((s) => s.detect)
+    const trustWorkspace = useGitStore((s) => s.trustWorkspace)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     if (environment?.status === "missing") return <GitGuidedSetup reason={environment.reason} kind={environment.kind} minimumVersion={environment.minimumVersion} />
     if (environment?.status === "ready" && status) return <GitNavReady filterQuery={filterQuery} />
     const notARepo = environment?.status === "notARepo"
     const readyWithoutStatus = environment?.status === "ready"
-    const title = readyWithoutStatus
+    const trustNeeded = isWorkspaceTrustError(lastError)
+    const title = trustNeeded
+        ? t("gitNav.trustTitle")
+        : readyWithoutStatus
         ? t(lastError ? "gitNav.statusErrorTitle" : "gitNav.statusLoadingTitle")
         : t(notARepo ? "gitNav.notARepoTitle" : "gitNav.noRepoTitle")
-    const description = readyWithoutStatus
+    const description = trustNeeded
+        ? t("gitNav.trustDescription")
+        : readyWithoutStatus
         ? t(lastError ? "gitNav.statusErrorDescription" : "gitNav.statusLoadingDescription", { message: lastError })
         : t(notARepo ? "gitNav.notARepoDescription" : "gitNav.noRepoDescription")
     return <div className="flex h-full flex-col items-center justify-center gap-[10px] p-[12px] text-center">
         <EmptyState icon={FolderGit2} title={title} description={description} />
         {notARepo && <GitRepositoryList />}
-        {lastError && <p role="alert" className="max-w-full break-words text-[11px] text-(--danger)">{t("gitNav.error", { message: lastError })}</p>}
-        {lastError && workspacePath && <Button type="button" size="xs" onClick={() => void detect(workspacePath)}>{t("gitNav.retry")}</Button>}
+        {lastError && !trustNeeded && <p role="alert" className="max-w-full break-words text-[11px] text-(--danger)">{t("gitNav.error", { message: lastError })}</p>}
+        {lastError && workspacePath && <Button type="button" size="xs" onClick={() => void (trustNeeded ? trustWorkspace() : detect(workspacePath))}>{t(trustNeeded ? "gitNav.trust" : "gitNav.retry")}</Button>}
     </div>
 }
 

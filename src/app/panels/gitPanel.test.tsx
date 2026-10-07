@@ -143,6 +143,26 @@ describe("GitPanel tab strip", () => {
         expect(screen.getByText("Git status unavailable")).toBeInTheDocument()
     })
 
+    it("offers to trust the workspace instead of showing the raw trust refusal", async () => {
+        const { useWorkspaceStore } = await import("@/state/workspaceStore")
+        const trustWorkspace = vi.fn(async () => undefined)
+        const original = useGitStore.getState().trustWorkspace
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useGitStore.setState({
+            trustWorkspace,
+            lastError: JSON.stringify({ error: "untrustedWorkspace", canonicalPath: "/w", challengeId: "c1" })
+        })
+        try {
+            render(<GitPanel />)
+            expect(screen.getByText("Trust this workspace to use Git")).toBeInTheDocument()
+            expect(screen.queryByText(/untrustedWorkspace/)).not.toBeInTheDocument()
+            fireEvent.click(screen.getByRole("button", { name: "Trust workspace…" }))
+            expect(trustWorkspace).toHaveBeenCalledTimes(1)
+        } finally {
+            useGitStore.setState({ trustWorkspace: original })
+        }
+    })
+
     it("hides the action cluster when the repo is not ready", () => {
         useGitStore.setState({ environment: { status: "notARepo" } })
         render(<GitPanel />)

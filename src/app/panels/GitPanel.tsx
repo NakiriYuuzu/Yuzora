@@ -16,7 +16,7 @@ import { forcePushWithLease, pullWithRebase, pushWithTags } from "@/workbench/gi
 import { useGitActionDialogStore } from "@/state/gitActionDialogStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { commitLikeFrom, useDiffModalStore } from "@/state/diffModalStore"
-import { changedPathSet, useGitStore } from "@/state/gitStore"
+import { changedPathSet, isWorkspaceTrustError, useGitStore } from "@/state/gitStore"
 import { useGitLogStore } from "@/state/gitLogStore"
 import { useUiStore, type GitPanelTab } from "@/state/uiStore"
 import { gitFetch, gitPull, gitPush } from "@/lib/ipc"
@@ -39,7 +39,9 @@ export function GitPanel({ onReturnToWork = () => useUiStore.getState().setMode(
   const status = useGitStore((s) => s.status)
   const lastError = useGitStore((s) => s.lastError)
   const detect = useGitStore((s) => s.detect)
+  const trustWorkspace = useGitStore((s) => s.trustWorkspace)
   const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+  const trustNeeded = isWorkspaceTrustError(lastError)
 
   return (
     <div
@@ -76,9 +78,11 @@ export function GitPanel({ onReturnToWork = () => useUiStore.getState().setMode(
         <div className="flex h-full flex-col items-center justify-center gap-[10px] p-[16px] text-center">
           <EmptyState
             icon={FolderGit2}
-            title={lastError ? t("gitPanel.errorTitle") : t("gitPanel.detectingTitle")}
+            title={trustNeeded ? t("gitPanel.trustTitle") : lastError ? t("gitPanel.errorTitle") : t("gitPanel.detectingTitle")}
             description={
-              lastError
+              trustNeeded
+                ? t("gitPanel.trustDescription")
+                : lastError
                 ? t("gitPanel.errorDescription", { message: lastError })
                 : t("gitPanel.detectingDescription")
             }
@@ -86,10 +90,10 @@ export function GitPanel({ onReturnToWork = () => useUiStore.getState().setMode(
           {workspacePath && lastError && (
             <Button
               type="button"
-              onClick={() => void detect(workspacePath)}
+              onClick={() => void (trustNeeded ? trustWorkspace() : detect(workspacePath))}
               className="rounded-[8px] bg-(--yz-solid) px-[11px] py-[5px] text-[11.5px] font-semibold text-(--ink-0) shadow-(--shadow-xs) hover:bg-(--yz-hover)"
             >
-              {t("gitPanel.retry")}
+              {trustNeeded ? t("gitPanel.trust") : t("gitPanel.retry")}
             </Button>
           )}
         </div>

@@ -410,7 +410,10 @@
     "detectingDescription": "Checking the workspace for a Git repository.",
     "errorTitle": "Git status unavailable",
     "errorDescription": "{{message}}",
-    "retry": "Retry"
+    "retry": "Retry",
+    "trustTitle": "Trust this workspace to use Git",
+    "trustDescription": "Git runs only in trusted workspaces. Trust this folder to see history, changes, and the console.",
+    "trust": "Trust workspace…"
   },
   "gitNav": {
     "branchesAriaLabel": "Branches",
@@ -438,6 +441,9 @@
     "stale": "Status may be out of date",
     "error": "Git error: {{message}}",
     "retry": "Retry",
+    "trustTitle": "Trust this workspace to use Git",
+    "trustDescription": "Git runs only in trusted workspaces.",
+    "trust": "Trust workspace…",
     "aheadBehind": "↑{{ahead}} ↓{{behind}}",
     "countStaged": "S {{count}}",
     "countUnstaged": "U {{count}}",

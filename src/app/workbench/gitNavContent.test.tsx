@@ -950,3 +950,31 @@ describe("GitNavContent — accessible discard confirmation", () => {
         await waitFor(() => expect(ipc.gitDiscard).toHaveBeenCalledWith("/w", ["b.ts", "a.ts"], []))
     })
 })
+
+describe("GitNavContent — untrusted workspace", () => {
+    beforeEach(async () => {
+        await i18n.changeLanguage("en")
+        useGitStore.setState(initialGitState)
+    })
+    afterEach(() => cleanup())
+
+    it("offers to trust the workspace instead of showing the raw trust refusal", () => {
+        const trustWorkspace = vi.fn(async () => undefined)
+        const original = useGitStore.getState().trustWorkspace
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useGitStore.setState({
+            trustWorkspace,
+            lastError: JSON.stringify({ error: "untrustedWorkspace", canonicalPath: "/w", challengeId: "c1" })
+        })
+        try {
+            render(<GitNavContent />)
+            expect(screen.getByText("Trust this workspace to use Git")).toBeTruthy()
+            expect(screen.queryByText(/untrustedWorkspace/)).toBeNull()
+            expect(screen.queryByRole("alert")).toBeNull()
+            fireEvent.click(screen.getByRole("button", { name: "Trust workspace…" }))
+            expect(trustWorkspace).toHaveBeenCalledTimes(1)
+        } finally {
+            useGitStore.setState({ trustWorkspace: original })
+        }
+    })
+})
