@@ -75,7 +75,9 @@ fn usage() -> (Option<f64>, Option<i64>) {
 }
 
 fn main() {
-    assert!(!cfg!(debug_assertions), "Run with --release");
+    if cfg!(debug_assertions) {
+        panic!("Run with --release");
+    }
     println!(
         "{}",
         serde_json::json!({"kind":"environment","profile":"release","platform":std::env::consts::OS,"warmSamples":7,"note":"Actual result registry; output and memory accounting are checked. Timings include row construction, page clone and cleanup. No real database, UI or cold-cache claim."})

@@ -29,7 +29,9 @@ fn main() {
         (cpu_ms, value.ru_maxrss)
     }
 
-    assert!(!cfg!(debug_assertions), "Run with --release");
+    if cfg!(debug_assertions) {
+        panic!("Run with --release");
+    }
     let guards = std::env::args().any(|arg| arg == "--guards");
     let buffered = std::env::args().any(|arg| arg == "--buffered");
     println!(

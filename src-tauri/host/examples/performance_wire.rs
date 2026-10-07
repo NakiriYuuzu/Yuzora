@@ -142,7 +142,9 @@ async fn socket_lifecycle() {
 }
 
 fn main() {
-    assert!(!cfg!(debug_assertions), "Run with --release");
+    if cfg!(debug_assertions) {
+        panic!("Run with --release");
+    }
     let lifecycle = std::env::args().any(|arg| arg == "--lifecycle");
     println!(
         "{}",

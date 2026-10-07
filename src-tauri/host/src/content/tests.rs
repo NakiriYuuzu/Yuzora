@@ -185,7 +185,9 @@ mod probe {
     #[test]
     #[ignore = "manual release-profile owned content/read measurement"]
     fn content_read_probe() {
-        assert!(!cfg!(debug_assertions));
+        if cfg!(debug_assertions) {
+            panic!("use --release for this probe");
+        }
         let mode = std::env::var("YUZORA_CONTENT_MODE").unwrap();
         let size = std::env::var("YUZORA_CONTENT_SIZE")
             .unwrap()

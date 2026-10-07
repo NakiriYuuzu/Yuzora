@@ -44,7 +44,9 @@ fn populate(root: &Path) {
 }
 
 fn main() {
-    assert!(!cfg!(debug_assertions), "Run this benchmark with --release");
+    if cfg!(debug_assertions) {
+        panic!("Run this benchmark with --release");
+    }
     let fixture = tempfile::tempdir().unwrap();
     populate(fixture.path());
     let generation = AtomicU64::new(1);

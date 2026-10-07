@@ -691,7 +691,7 @@ mod tests {
                 Instant::now() < prefix_deadline,
                 "prefix should become readable"
             );
-            match poll_local_stream_read(&mut client, &mut buffer).expect("poll prefix") {
+            match poll_local_stream_read(&client, &mut buffer).expect("poll prefix") {
                 LocalStreamRead::Data(read) => pending.extend_from_slice(&buffer[..read]),
                 LocalStreamRead::Pending => sleep_until(Some(prefix_deadline), POLL_INTERVAL),
                 LocalStreamRead::Closed => panic!("stream closed before prefix"),

@@ -365,7 +365,9 @@ mod tests {
     fn performance_owned_watcher_lifecycle() {
         use std::sync::atomic::AtomicUsize;
 
-        assert!(!cfg!(debug_assertions), "Use --release");
+        if cfg!(debug_assertions) {
+            panic!("Use --release");
+        }
         fn usage() -> (f64, i64, u64, u64, u64) {
             let (cpu, task) = unsafe {
                 let mut cpu = std::mem::MaybeUninit::<libc::rusage>::uninit();

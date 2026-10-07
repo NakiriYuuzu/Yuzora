@@ -73,7 +73,7 @@ impl Fixture {
                 format!("{prefix}_{index:05}_entry.txt")
             };
             let entry = directory.join(name);
-            if flavor == "dirs" || flavor != "files" && index % 8 == 0 {
+            if flavor == "dirs" || flavor != "files" && index.is_multiple_of(8) {
                 std::fs::create_dir(entry).unwrap();
             } else if flavor != "files" && index % 16 == 7 {
                 std::os::unix::fs::symlink(&target, entry).unwrap();
@@ -225,7 +225,9 @@ fn listing_close_releases_owned_capability_and_rejects_reuse() {
 #[test]
 #[ignore = "manual release-profile owned native directory listing measurement"]
 fn directory_listing_probe() {
-    assert!(!cfg!(debug_assertions), "use --release for this probe");
+    if cfg!(debug_assertions) {
+        panic!("use --release for this probe");
+    }
     let mode = std::env::var("YUZORA_LIST_PROBE_MODE").unwrap_or_else(|_| "timing".into());
     let count = std::env::var("YUZORA_LIST_PROBE_COUNT")
         .unwrap_or_else(|_| "1024".into())
