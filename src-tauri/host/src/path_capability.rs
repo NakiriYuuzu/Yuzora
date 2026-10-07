@@ -1459,6 +1459,48 @@ mod win_at {
         ) -> i32;
     }
 
+    /// Opens `dir` itself through an empty name relative to it: a new file
+    /// object, so its directory enumeration cursor is independent.
+    pub fn reopen_directory(dir: &OwnedHandle) -> Result<File, PathCapabilityError> {
+        let mut unicode = UnicodeString {
+            length: 0,
+            maximum_length: 0,
+            buffer: std::ptr::null_mut(),
+        };
+        let mut attrs = ObjectAttributes {
+            length: std::mem::size_of::<ObjectAttributes>() as u32,
+            root_directory: dir.as_raw_handle(),
+            object_name: &mut unicode,
+            attributes: 0,
+            security_descriptor: std::ptr::null_mut(),
+            security_quality_of_service: std::ptr::null_mut(),
+        };
+        let mut iosb = IoStatusBlock {
+            status: 0,
+            information: 0,
+        };
+        let mut handle: RawHandle = std::ptr::null_mut();
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                &mut attrs,
+                &mut iosb,
+                std::ptr::null_mut(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status < 0 {
+            return Err(PathCapabilityError::Io);
+        }
+        Ok(unsafe { File::from_raw_handle(handle) })
+    }
+
     pub(super) fn file_identity(file: &File) -> Result<(u32, u64, bool), PathCapabilityError> {
         use windows_sys::Win32::Foundation::HANDLE;
         use windows_sys::Win32::Storage::FileSystem::{

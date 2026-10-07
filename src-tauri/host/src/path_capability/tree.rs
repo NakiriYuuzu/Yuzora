@@ -47,26 +47,10 @@ impl PinnedDir {
 
     #[cfg(windows)]
     fn independent_cursor(&self) -> Result<Self, PathCapabilityError> {
-        use std::os::windows::io::{AsRawHandle, FromRawHandle};
-        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-        use windows_sys::Win32::Storage::FileSystem::{
-            ReOpenFile, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        // DuplicateHandle shares the directory cursor. ReOpenFile creates a new
-        // file object from this handle, without resolving its former pathname.
-        let handle = unsafe {
-            ReOpenFile(
-                self.handle.as_raw_handle(),
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(PathCapabilityError::Io);
-        }
-        let file = unsafe { File::from_raw_handle(handle) };
+        // DuplicateHandle shares the directory cursor and ReOpenFile is denied
+        // for these handles. An empty name relative to this handle opens a new
+        // file object without resolving its former pathname.
+        let file = win_at::reopen_directory(&self.handle)?;
         reject_reparse_handle(&file)?;
         let id = file_id(&file)?;
         if id != self.id {

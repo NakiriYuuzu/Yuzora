@@ -229,7 +229,14 @@ mod host {
                 };
             }
             let expected = self.roots.get(workspace).ok_or("git-repository-not-open")?;
-            if requested_root != Some(expected.canonical_path.as_str()) {
+            // Git reports a Windows root as `C:/…` while the stored identity is
+            // canonical (`\\?\C:\…`), so compare canonical forms.
+            let same_root = requested_root.is_some_and(|requested| {
+                requested == expected.canonical_path
+                    || observe_identity(requested)
+                        .is_ok_and(|seen| seen.canonical_path == expected.canonical_path)
+            });
+            if !same_root {
                 return Err("git-repository-identity-mismatch".into());
             }
             let current =
@@ -425,6 +432,41 @@ mod tests {
         assert_eq!(redetected["root"], root.as_str());
         assert!(git
             .execute_root(path, &trust, "ws", Some("../outside"), GitCommand::Detect)
+            .is_err());
+    }
+
+    // Windows reports `C:/…` roots against a `\\?\C:\…` identity; an alias of
+    // the open repository is the same root, any other repository is not.
+    #[cfg(unix)]
+    #[test]
+    fn open_repository_accepts_another_spelling_of_its_root_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let workspace = tmp.path().join("ws");
+        let other = tmp.path().join("other");
+        for repo in [&workspace, &other] {
+            std::fs::create_dir_all(repo).unwrap();
+            test_repo::init(repo);
+            test_repo::write_and_commit(repo, "a.txt", "1", "c1");
+        }
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+        let path = workspace.to_str().unwrap();
+        trust.0.grant_for_tests(path);
+        let mut git = HostGit::default();
+        git.execute_root(path, &trust, "ws", None, GitCommand::Detect)
+            .unwrap();
+
+        assert!(git
+            .execute_root(path, &trust, "ws", alias.to_str(), GitCommand::Branches)
+            .is_ok());
+        assert_eq!(
+            git.execute_root(path, &trust, "ws", other.to_str(), GitCommand::Branches)
+                .unwrap_err(),
+            "git-repository-identity-mismatch"
+        );
+        assert!(git
+            .execute_root(path, &trust, "ws", None, GitCommand::Branches)
             .is_err());
     }
 }

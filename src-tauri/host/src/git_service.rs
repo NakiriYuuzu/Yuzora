@@ -2342,6 +2342,8 @@ pub mod test_repo {
         git(dir, &["config", "user.email", "t@t"]);
         git(dir, &["config", "user.name", "t"]);
         git(dir, &["config", "commit.gpgsign", "false"]);
+        // Windows Git defaults to autocrlf=true; fixtures compare exact bytes.
+        git(dir, &["config", "core.autocrlf", "false"]);
     }
 
     pub fn write_and_commit(dir: &Path, name: &str, content: &str, msg: &str) {
