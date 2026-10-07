@@ -12,11 +12,21 @@ import { useWorkspaceStore } from "../state/workspaceStore"
 // before rendering, mirroring the EditorPane.test.tsx documentRegistry mock.
 let mockResult: OpenFileResult = { kind: "full", content: "", size: 0, lineEnding: "lf" }
 vi.mock("../editor/documentRegistry", () => ({
+    documentGeneration: vi.fn(() => 0),
     getDocument: vi.fn(async () => ({ result: mockResult }))
 }))
+const viewListeners = vi.hoisted(() => new Set<(change: "view" | "document") => void>())
 vi.mock("../editor/viewRegistry", () => ({
-    getView: vi.fn(() => undefined)
+    getView: vi.fn(() => undefined),
+    subscribeView: vi.fn((_path: string, listener: (change: "view" | "document") => void) => {
+        viewListeners.add(listener)
+        return () => viewListeners.delete(listener)
+    })
 }))
+
+function emitViewChange(change: "view" | "document" = "document") {
+    for (const listener of viewListeners) listener(change)
+}
 vi.mock("@tauri-apps/plugin-opener", () => ({
     openUrl: vi.fn(async () => undefined)
 }))
@@ -30,6 +40,7 @@ const {
 
 afterEach(() => {
     cleanup()
+    expect(viewListeners.size).toBe(0)
     vi.clearAllMocks()
     vi.unstubAllGlobals()
     // clearAllMocks keeps implementations; a test that made getView return a
@@ -38,7 +49,7 @@ afterEach(() => {
     vi.useRealTimers()
 })
 
-// A minimal live-view stand-in whose doc content is controllable per tick.
+// A minimal live-view stand-in whose doc content is controllable per event.
 function fakeView(read: () => string) {
     return { state: { doc: { toString: read } } } as unknown as ReturnType<typeof getView>
 }
@@ -386,7 +397,7 @@ test("synthetic offsets 證明 editor／preview scroll events 雙向接線（非
     }
 })
 
-test("400ms content rerender rebuilds live anchors and preserves preview driver source line", async () => {
+test("subscription content rerender rebuilds live anchors and preserves preview driver source line", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const geometry = installSyntheticPreviewGeometry()
     const flushFrame = installAnimationFrameQueue()
@@ -411,7 +422,7 @@ test("400ms content rerender rebuilds live anchors and preserves preview driver 
         geometry.setMarkerScale(150)
         editor.setContent("# one\n\nchanged\n\n## next\n\nlast")
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(450)
+            emitViewChange()
         })
 
         expect(screen.getByText("changed")).toBeTruthy()
@@ -438,7 +449,7 @@ test("late EditorView attach succeeds, and unmount removes scroll sync without g
         vi.mocked(getView).mockReturnValue(editor.view)
 
         await act(async () => {
-            await vi.advanceTimersByTimeAsync(450)
+            emitViewChange("view")
         })
         await waitFor(() => expect(subscribeEditorScroll).toHaveBeenCalledWith(
             "scroll",
@@ -670,7 +681,7 @@ test("父 re-render 內容未變時不重解／重 sanitize（R4-1）", async ()
     expect(__renderMarkdownCallCount()).toBe(base)
 })
 
-test("內容未變時輪詢不重複 doc.toString（R4-3）", async () => {
+test("內容未變時訂閱不重複 doc.toString（R4-3）", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const toString = vi.fn(() => "# stable")
     const doc = { toString }
@@ -682,6 +693,7 @@ test("內容未變時輪詢不重複 doc.toString（R4-3）", async () => {
     await screen.findByRole("heading", { level: 1 })
     toString.mockClear()
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(2000)
     })
     expect(toString).not.toHaveBeenCalled()
@@ -697,14 +709,16 @@ test("外部 reload 跨 10MB 邊界 full→tooLarge 更新 kind、停用渲染�
     // 模擬外部 reload：檔案跨界變 tooLarge → 快取 kind 改變。
     mockResult = { kind: "tooLarge", size: 20_000_000 }
     live = "x"
+    vi.mocked(getView).mockReturnValue(undefined)
     await act(async () => {
+        emitViewChange("view")
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(screen.getByTestId("markdown-preview-downgrade")).toBeTruthy()
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull()
 })
 
-test("輪詢 tick 的 getDocument reject 不逸出未捕捉錯誤、下一 tick 恢復（R5-1）", async () => {
+test("訂閱事件的 getDocument reject 不逸出未捕捉錯誤、下一事件恢復（R5-1）", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let live = "# ok"
     vi.mocked(getView).mockImplementation(() => fakeView(() => live))
@@ -712,24 +726,26 @@ test("輪詢 tick 的 getDocument reject 不逸出未捕捉錯誤、下一 tick 
     render(<MarkdownPreview sourcePath="/w/d.md" />)
     await screen.findByRole("heading", { level: 1 })
 
-    // 外部刪檔 → reloadDocument 清快取 → 下一 tick getDocument 走 openFile reject。
+    // 外部刪檔 → reloadDocument 清快取 → 下一事件 getDocument 走 openFile reject。
     vi.mocked(getDocument).mockRejectedValueOnce(new Error("gone"))
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
-    // 元件不崩、仍顯示原內容（tick 級靜默，loadError 語意留給 init 路徑）。
+    // 元件不崩、仍顯示原內容（事件級靜默，loadError 語意留給 init 路徑）。
     expect(screen.getByRole("heading", { level: 1 })).toBeTruthy()
     expect(screen.queryByTestId("markdown-preview-error")).toBeNull()
 
-    // 下一 tick 檔案恢復可讀 → 內容更新。
+    // 下一事件 檔案恢復可讀 → 內容更新。
     live = "# back"
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(screen.getByText("back")).toBeTruthy()
 })
 
-test("full 檔輪詢中注入超長行顯示降級、移除後自動恢復（R2-2）", async () => {
+test("full 檔編輯中注入超長行顯示降級、移除後自動恢復（R2-2）", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     let live = "# Title"
     vi.mocked(getView).mockImplementation(() => fakeView(() => live))
@@ -740,13 +756,15 @@ test("full 檔輪詢中注入超長行顯示降級、移除後自動恢復（R2-
     // 注入 >10000 字元單行 → content-derived grade 變 veryLongLine → 顯示降級。
     live = "x".repeat(10_001)
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(screen.getByTestId("markdown-preview-downgrade")).toBeTruthy()
 
-    // 移除長行後輪詢仍在（kind 仍 full）→ 自動恢復渲染，無需 remount。
+    // 移除長行後訂閱仍在（kind 仍 full）→ 自動恢復渲染，無需 remount。
     live = "# Back"
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(screen.getByRole("heading", { level: 1 })).toBeTruthy()
@@ -762,15 +780,17 @@ test("veryLongLine 期間不做白費的全量渲染、長行移除後恢復（R
     await screen.findByRole("heading", { level: 1 })
 
     // 注入 >10000 字元單行 → grade 變 veryLongLine → 顯示 downgrade：期間即使
-    // 每 tick content 變動，也不得對整個 buffer 執行 renderMarkdown（輸出被丟棄）。
+    // 每次事件 content 變動，也不得對整個 buffer 執行 renderMarkdown（輸出被丟棄）。
     const before = __renderMarkdownCallCount()
     live = "x".repeat(10_001)
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(screen.getByTestId("markdown-preview-downgrade")).toBeTruthy()
     live = "y".repeat(10_002)
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(__renderMarkdownCallCount()).toBe(before)
@@ -778,6 +798,7 @@ test("veryLongLine 期間不做白費的全量渲染、長行移除後恢復（R
     // 長行移除後 grade 回 full → renderMarkdown 重新被呼叫、preview 正常渲染。
     live = "# Back"
     await act(async () => {
+        emitViewChange()
         await vi.advanceTimersByTimeAsync(500)
     })
     expect(__renderMarkdownCallCount()).toBeGreaterThan(before)
@@ -804,4 +825,16 @@ test("Close preview 關閉相鄰 group 的 markdown preview tab", () => {
     expect(useWorkspaceStore.getState().hasMarkdownPreview("/w/a.md")).toBe(false)
     expect(useWorkspaceStore.getState().groups).toHaveLength(1)
     expect(markdownPreviewPath("/w/a.md")).toContain("markdown-preview")
+})
+
+test("limited document edits re-check kind without stringifying the oversized live doc", async () => {
+    const toString = vi.fn(() => "# limited")
+    vi.mocked(getView).mockReturnValue(fakeView(toString))
+    mockResult = { kind: "limited", content: "# limited", size: 50_000_000, lineEnding: "lf" }
+    render(<MarkdownPreview sourcePath="/w/limited.md" />)
+    await screen.findByTestId("markdown-preview-downgrade")
+    const reads = vi.mocked(getDocument).mock.calls.length
+    await act(async () => emitViewChange())
+    expect(getDocument).toHaveBeenCalledTimes(reads + 1)
+    expect(toString).not.toHaveBeenCalled()
 })

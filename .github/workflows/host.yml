@@ -33,7 +33,7 @@ jobs:
             target: linux-x86_64
           - runner: ubuntu-24.04-arm
             target: linux-aarch64
-          - runner: macos-14
+          - runner: macos-15
             target: macos-aarch64
           - runner: macos-15-intel
             target: macos-x86_64
@@ -43,14 +43,16 @@ jobs:
     timeout-minutes: 45
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source-ref || github.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          toolchain: 1.96.0
+          toolchain: 1.98.1
           components: rustfmt, clippy
       - run: cargo fmt --manifest-path src-tauri/host/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings
@@ -59,7 +61,7 @@ jobs:
       - name: Verify isolated HERDR runtime contract
         timeout-minutes: 3
         run: bun scripts/verify-herdr-runtime.ts src-tauri/resources/host/${{ matrix.target }}/herdr${{ matrix.executable-suffix }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: host-${{ matrix.target }}
           path: src-tauri/resources/host/

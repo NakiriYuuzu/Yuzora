@@ -137,6 +137,7 @@ beforeEach(() => {
     useUiStore.setState(uiInitialState)
     useWorkspaceStore.setState({
         workspacePath: null,
+        workspaceCapabilityId: "ws-test",
         groups: [{ tabs: [], activePath: null }],
         activeGroupIndex: 0
     })
@@ -1144,7 +1145,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         useTextInputDialogStore.getState().respond(name)
         expect(await operation).toBe("completed")
 
-        expect(calls.find((c) => c.cmd === command)?.args).toEqual({ workspace: "/w", path: `/w/src/${name}` })
+        expect(calls.find((c) => c.cmd === command)?.args).toEqual({ workspaceCapabilityId: "ws-test", path: `src/${name}` })
         expect(useFileTreeStore.getState().trees["/w"].expandedDirs.has("/w/src")).toBe(true)
         expect(useWorkspaceStore.getState().groups[0].activePath).toBe(action === "cmNewFile" ? `/w/src/${name}` : null)
     })
@@ -1218,8 +1219,8 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         runLegacyContextMenuAction("explorer", "cmNewFile", {})
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_create_file")).toBe(true))
         expect(calls.find((c) => c.cmd === "fs_create_file")?.args).toMatchObject({
-            workspace: "/w",
-            path: "/w/new.ts"
+            workspaceCapabilityId: "ws-test",
+            path: "new.ts"
         })
         await vi.waitFor(() =>
             expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/new.ts")
@@ -1241,8 +1242,8 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         runLegacyContextMenuAction("explorer", "cmNewFolder", {})
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_create_dir")).toBe(true))
         expect(calls.find((c) => c.cmd === "fs_create_dir")?.args).toMatchObject({
-            workspace: "/w",
-            path: "/w/assets"
+            workspaceCapabilityId: "ws-test",
+            path: "assets"
         })
         await vi.waitFor(() => expect(useWorkspaceStore.getState().treeRevision).toBe(1))
         expect(useWorkspaceStore.getState().groups[0].activePath).toBeNull()
@@ -1269,9 +1270,9 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         runLegacyContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
         await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_rename")).toBe(true))
         expect(calls.find((c) => c.cmd === "fs_rename")?.args).toMatchObject({
-            workspace: "/w",
-            from: "/w/src/old.ts",
-            to: "/w/src/renamed.ts"
+            workspaceCapabilityId: "ws-test",
+            from: "src/old.ts",
+            to: "src/renamed.ts"
         })
         await vi.waitFor(() => expect(useWorkspaceStore.getState().treeRevision).toBe(1))
         promptSpy.mockRestore()
@@ -1311,8 +1312,8 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         expect(String(confirmCall?.args.message)).toContain("f.ts")
         expect(String(confirmCall?.args.message)).not.toContain("資料夾")
         expect(calls.find((c) => c.cmd === "fs_delete")?.args).toMatchObject({
-            workspace: "/w",
-            path: "/w/f.ts"
+            workspaceCapabilityId: "ws-test",
+            path: "f.ts"
         })
         await vi.waitFor(() => expect(useWorkspaceStore.getState().treeRevision).toBe(1))
     })
@@ -1328,7 +1329,7 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         expect(String(confirmCall?.args.message)).toContain("all of its contents")
     })
 
-    it("file: cmDelete 的 Windows confirm 顯示 basename，後端仍收到 raw path", async () => {
+    it("file: cmDelete 的 Windows confirm 顯示 basename，後端收到 capability 與相對路徑", async () => {
         const workspace = String.raw`\\?\C:\Work\中文 workspace`
         const path = String.raw`\\?\C:\Work\中文 workspace\a.ts`
         const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
@@ -1345,7 +1346,49 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         const message = String(calls.find((call) => call.cmd === "plugin:dialog|message")?.args.message)
         expect(message).toContain("a.ts")
         expect(message).not.toContain(path)
-        expect(calls.find((call) => call.cmd === "fs_delete")?.args).toMatchObject({ workspace, path })
+        expect(calls.find((call) => call.cmd === "fs_delete")?.args).toMatchObject({ workspaceCapabilityId: "ws-test", path: "a.ts" })
+    })
+
+    it("file: cmDelete 刪到一半被取消 → 刷新樹並提示已刪除的無法復原；計數時取消則不提示", async () => {
+        const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+        let failure = "delete-cancelled-partial"
+        mockIPC((cmd, args) => {
+            calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
+            if (cmd === "plugin:dialog|message") return "Ok"
+            if (cmd === "fs_delete") throw new Error(failure)
+            return cmd === "log_event" ? null : undefined
+        })
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+        const messages = () => calls.filter((c) => c.cmd === "plugin:dialog|message").map((c) => String(c.args.message))
+
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/big", isDir: true })
+        await vi.waitFor(() => expect(messages().some((m) => m.includes("cannot be restored"))).toBe(true))
+        expect(useWorkspaceStore.getState().treeRevision).toBe(1)
+        expect(calls.find((c) => c.cmd === "fs_delete")?.args).toMatchObject({ path: "big", operationId: expect.stringMatching(/^delete:/) })
+
+        calls.length = 0
+        failure = "delete-cancelled"
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/big", isDir: true })
+        await vi.waitFor(() => expect(calls.some((c) => c.cmd === "fs_delete")).toBe(true))
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        // Only the delete confirmation was shown: nothing was removed, nothing to report.
+        expect(messages()).toHaveLength(1)
+        expect(useWorkspaceStore.getState().treeRevision).toBe(1)
+    })
+
+    it("file: cmDelete 的確認按鈕寫「刪除」而非預設的「繼續」", async () => {
+        const requests: Array<{ confirmLabel?: string; destructive?: boolean }> = []
+        useAppDialogStore.setState({
+            confirm: async (request) => {
+                requests.push(request)
+                return false
+            }
+        })
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/f.ts", isDir: false })
+        await vi.waitFor(() => expect(requests).toHaveLength(1))
+        expect(requests[0]).toMatchObject({ confirmLabel: "Delete", destructive: true })
     })
 
     it("file: cmDelete 取消 confirm 不呼叫 fs_delete、不 refreshTree", async () => {

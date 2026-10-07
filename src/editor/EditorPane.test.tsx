@@ -25,6 +25,7 @@ vi.mock("./viewRegistry", () => ({
 vi.mock("./documentRegistry", () => ({
     getDocument: () => getDocument(),
     updateBuffer: vi.fn(),
+    saveDocumentContent: () => saveFile(),
     documentGeneration: () => documentGeneration()
 }))
 

@@ -2,6 +2,7 @@ import { create } from "zustand"
 
 import { listDir } from "../lib/ipc"
 import type { FileNode } from "../lib/types"
+import { relativePathWithin } from "../lib/paths"
 import { useWorkspaceStore } from "./workspaceStore"
 
 // Per-workspace file-tree state (#59 T4b, spec Phase 3.2), bucketed by workspace
@@ -98,18 +99,31 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
             const prev = dir === root ? tree.rootNodes : tree.childrenByDir[dir]
             if (prev !== undefined && sameNodes(prev, nodes)) return s
             const liveDirs = new Set(nodes.filter((n) => n.isDir).map((n) => n.path))
-            const removed = Object.keys(tree.childrenByDir).filter(
+            const cachedDirs = Object.keys(tree.childrenByDir)
+            const removed = new Set(cachedDirs.filter(
                 (key) => parentOf(key) === dir && !liveDirs.has(key)
-            )
-            const childrenByDir = { ...tree.childrenByDir }
-            const expandedDirs = new Set(tree.expandedDirs)
-            for (const gone of removed) {
-                for (const key of Object.keys(childrenByDir)) {
-                    if (key === gone || isUnder(key, gone)) delete childrenByDir[key]
+            ))
+            const childrenByDir = dir !== root || removed.size > 0
+                ? { ...tree.childrenByDir } : tree.childrenByDir
+            let expandedDirs = tree.expandedDirs
+            if (removed.size > 0) {
+                const single = removed.size === 1 ? removed.values().next().value : undefined
+                // Removed entries are immediate children of dir. Resolve that
+                // component once instead of scanning every removed subtree.
+                const isRemoved = (path: string) => {
+                    if (single !== undefined) return path === single || isUnder(path, single)
+                    if (removed.has(path)) return true
+                    if (!isUnder(path, dir)) return false
+                    if (removed.has(dir)) return true
+                    const child = path.slice(dir.length + 1).split(/[/\\]/, 1)[0]
+                    return removed.has(dir + path[dir.length] + child)
                 }
-                for (const key of [...expandedDirs]) {
-                    if (key === gone || isUnder(key, gone)) expandedDirs.delete(key)
+                for (const key of cachedDirs) {
+                    if (isRemoved(key)) delete childrenByDir[key]
                 }
+                const expanded = new Set(tree.expandedDirs)
+                for (const key of expanded) if (isRemoved(key)) expanded.delete(key)
+                expandedDirs = expanded
             }
             if (dir !== root) childrenByDir[dir] = nodes
             return {
@@ -213,7 +227,26 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
                 // listed fresh on first expand anyway.
                 if (dir === root || tree.childrenByDir[dir] !== undefined) dirs.add(dir)
             }
-            await mapLimit([...dirs], REVALIDATE_CONCURRENCY, (dir) => relistDir(root, dir))
+            // A coalesced directory invalidates its loaded descendants too,
+            // without walking or loading any previously uncached subtree.
+            for (const dir of Object.keys(tree.childrenByDir)) {
+                if (paths.some((path) => relativePathWithin(path, dir) !== null)) dirs.add(dir)
+            }
+            // Parents must prune removed subtrees before descendants are listed;
+            // otherwise a late child result can recreate a deleted cache entry.
+            const levels = new Map<number, string[]>()
+            for (const dir of dirs) {
+                const depth = dir.split(/[/\\]+/).length
+                const level = levels.get(depth) ?? []
+                level.push(dir)
+                levels.set(depth, level)
+            }
+            for (const depth of [...levels.keys()].sort((a, b) => a - b)) {
+                await mapLimit(levels.get(depth)!, REVALIDATE_CONCURRENCY, async (dir) => {
+                    if (dir === root || get().trees[root]?.childrenByDir[dir] !== undefined)
+                        await relistDir(root, dir)
+                })
+            }
         },
         consumePreciseRevision: (root, revision) => {
             const marker = get().preciseRevision

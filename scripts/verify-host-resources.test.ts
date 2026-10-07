@@ -20,7 +20,7 @@ it("blocks missing targets, version drift, changed helper bytes, and executables
       const files = HERDR_RESOURCE_TARGETS[target].files
       await writeFile(join(root, target, `yuzora-host${suffix}`), helper)
       await writeFile(join(root, target, `herdr${suffix}`), "fixture")
-      const artifact: HostArtifact = { protocol: 1, version: "0.0.9-beta.3", target, helper: { path: `${target}/yuzora-host${suffix}`, sha256: createHash("sha256").update(helper).digest("hex") }, herdr: { path: `${target}/herdr${suffix}`, sha256: files.find(file => file.path === `herdr${suffix}`)!.sha256, version: "0.9.1", protocol: 22 }, files:files.filter(file => file.path !== `herdr${suffix}`).map(file => ({path:`${target}/${file.path}`,sha256:file.sha256})) }
+      const artifact: HostArtifact = { protocol: 1, version: "0.0.9-beta.3", target, helper: { path: `${target}/yuzora-host${suffix}`, sha256: createHash("sha256").update(helper).digest("hex") }, herdr: { path: `${target}/herdr${suffix}`, sha256: files.find(file => file.path === `herdr${suffix}`)!.sha256, version: "0.9.3", protocol: 22 }, files:files.filter(file => file.path !== `herdr${suffix}`).map(file => ({path:`${target}/${file.path}`,sha256:file.sha256})) }
       artifacts.push(artifact)
       await writeFile(join(root, `${target}.json`), JSON.stringify(artifact))
     }

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>刪除檔案進度條 — 2026-10-07</title>
+<style>
+:root{color-scheme:light;--bg:#f6f8fb;--card:#fff;--ink:#172033;--muted:#5b6578;--line:#dce2ec;--pass:#08783f;--accent:#3157d5}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}main{max-width:1080px;margin:0 auto;padding:36px 24px 72px}h1{font-size:28px;margin:0 0 8px}h2{margin:28px 0 12px;font-size:20px}.sub{color:var(--muted);margin:0 0 22px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}th,td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{background:#eef2f8}tr:last-child td{border-bottom:0}.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:12px;color:var(--pass);background:#e8f7ef}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#eef2f8;padding:1px 5px;border-radius:5px}.shots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.shots figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px}.shots img{width:100%;border-radius:8px;display:block}.shots figcaption{font-size:12px;color:var(--muted);margin-top:6px}.muted{color:var(--muted)}@media(max-width:760px){.shots{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<h1>刪除檔案顯示進度條</h1>
+<p class="sub">日期：2026-10-07 · 驗收：隔離的 <code>Yuzora Acceptance</code>（HOME／XDG／HERDR socket 隔離）＋ pi-codex-app 原生 CUA · 測試資料：<code>/tmp/yz-copy-ws</code></p>
+
+<section class="card">
+<h2>做了什麼</h2>
+<ul>
+<li>刪除超過 0.3 秒時，右下角通知顯示「正在刪除「名稱」」、進度條與數量；快速刪除不出現通知。</li>
+<li>本機刪除先計數再刪，進度約每 0.1 秒回報一次（Tauri Channel）；可按「取消」：計數中取消不刪任何東西，刪除中取消會刷新檔案樹並提示「取消前已刪除的項目無法復原」。</li>
+<li>本機單次上限由 5 萬項／10 秒改為 200 萬項、無時間限制；超過 200 萬項在計數階段就拒絕，不會刪到一半。</li>
+<li>SSH 遠端／SFTP 沒有進度通道：只顯示不定進度條、無取消；遠端仍是 5 萬項／10 秒，超過時改顯示可理解的「部分已刪除，請再刪一次」。</li>
+</ul>
+</section>
+
+<h2>實機驗收</h2>
+<table>
+<thead><tr><th style="width:56px">項目</th><th style="width:72px">結果</th><th>步驟與證據</th></tr></thead>
+<tbody>
+<tr><td>D1</td><td><span class="badge">PASS</span></td><td>刪除 60,061 項的資料夾：先「正在計算項目數…已找到 54,056 個」，接著 18% → 43% → 64% → 90%（「已刪除 10,725 / 60,061 個項目」…），完成後通知消失、資料夾不存在。（圖 1）</td></tr>
+<tr><td>D2</td><td><span class="badge">PASS</span></td><td>刪除 250,251 項的資料夾，在「已刪除 4,247 / 250,251」時按「取消」→ 立即停止並彈出「已取消刪除：取消前已刪除的項目無法復原」；剩 239,315 個檔案。（圖 2）</td></tr>
+<tr><td>D3</td><td><span class="badge">PASS</span></td><td>刪除單一小檔：完成前後都沒有出現進度通知。</td></tr>
+<tr><td>D4</td><td><span class="badge">PASS</span></td><td>計數中（已找到 25,027 個）按「取消」→ 沒有任何檔案被刪（仍 239,315 個），不跳對話框。</td></tr>
+</tbody>
+</table>
+
+<div class="shots">
+<figure><img src="delete-progress-2026-10-07-assets/01-progress-toast.jpg" alt=""><figcaption>圖 1　右下角刪除進度通知（含取消）</figcaption></figure>
+<figure><img src="delete-progress-2026-10-07-assets/02-cancelled-partial.jpg" alt=""><figcaption>圖 2　刪除中取消後的提示</figcaption></figure>
+</div>
+
+<section class="card">
+<h2>自動化驗證</h2>
+<ul>
+<li>Rust：<code>count_tree</code>／<code>remove_tree_with</code>（計數、上限、tick 中斷）、<code>delete_pinned_reporting</code>（事先取消不刪、最後回報總數）；手動探針 <code>delete_handles_more_entries_than_the_old_budget</code>：60,061 項 2.6 秒刪完、26 次進度回報。</li>
+<li>前端：通知出現與更新、取消按鈕、快速刪除不出通知、遠端無取消；store 的取消流程（刪到一半提示＋刷新、計數中取消不提示）。vitest 全套 3,624 通過。</li>
+<li><code>src-tauri</code> 459 通過；clippy baseline 19 筆相符（<code>fs_service.rs</code> 三筆既有警告行號下移，已同步 JSON）；fmt、typecheck、eslint（0 error）通過。</li>
+<li>Windows 版刪除迴圈無法在本機交叉編譯（<code>ring</code> 缺 Windows C 標頭），已逐行對照 unix 版，待 CI 的 Windows <code>cargo check</code> 確認。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>其他</h2>
+<ul>
+<li>順手加固智慧簽出：改以 <code>git stash push</code> 的輸出判斷是否有暫存，任何失敗路徑都會明確提示變更保留在 stash「Yuzora smart checkout」。</li>
+<li>修正既有的 <code>listing_close_releases_owned_capability_and_rejects_reuse</code>：它以全程序 <code>/dev/fd</code> 數做嚴格相等比對，平行跑時被其他測試干擾而失敗。改為允許 50 個以內的並行雜訊（100 次循環若每次洩漏 1 個會多出 100 個）；全套 host 連跑 3 次皆過，故意注入每次 1 個 fd 的洩漏時仍會失敗（4 → 104）。</li>
+<li>刪除確認按鈕由預設的「繼續」改為「刪除」：檔案樹刪除與 SFTP 遠端刪除（全專案僅這兩處破壞性確認沿用預設文字），各補一個測試。</li>
+</ul>
+</section>
+
+<p class="muted">未在使用者 repo 執行任何 git 寫入（add／commit／push）。</p>
+</main></body></html>

@@ -37,7 +37,8 @@ export const HERDR_RESOURCE_VERSION = version
 export const HERDR_RESOURCE_TARGETS: Record<string, HerdrResourceTarget> = targets
 
 export function resourceTargetIdsForHost(platform: NodeJS.Platform): string[] {
-  if (platform === "darwin") return ["macos-aarch64", "macos-x86_64"]
+  // Apple Silicon desktop/dev only; host:prepare selects remote targets independently.
+  if (platform === "darwin") return ["macos-aarch64"]
   if (platform === "win32") return ["windows-x86_64"]
   if (platform === "linux") return ["linux-aarch64", "linux-x86_64"]
   throw new Error(`Yuzora does not build desktop Herdr resources on ${platform}`)

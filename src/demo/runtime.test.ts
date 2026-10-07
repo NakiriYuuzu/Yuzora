@@ -1,17 +1,25 @@
 import { fsCreateDir, fsCreateFile, listDir, openFile, saveFile, gitStage, gitStatus, gitUnstage } from "@/lib/ipc";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
+import { useWorkspaceStore } from "@/state/workspaceStore";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { invoke } from "@tauri-apps/api/core";
 import { useDbStore } from "@/state/dbStore";
 import { files, ROOT, installDemoRuntime } from "./runtime";
 
 const initialFiles = { ...files };
+beforeEach(() => {
+  useWorkspaceStore.setState({ workspacePath: ROOT, workspaceCapabilityId: "demo-workspace" });
+});
 afterEach(() => {
   for (const key of Object.keys(files)) delete files[key];
   Object.assign(files, initialFiles);
 });
 
 afterEach(clearMocks);
+it("reports the demo runtime as ready without a startup server", async () => {
+  installDemoRuntime();
+  expect(await invoke("herdr_startup_status")).toEqual({ state: "ready", error: null });
+});
 it("creates and lists empty demo directories, then opens and saves a new empty file", async () => {
   installDemoRuntime();
   await fsCreateDir(ROOT, `${ROOT}/empty`);

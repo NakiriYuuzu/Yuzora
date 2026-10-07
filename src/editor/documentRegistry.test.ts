@@ -1,7 +1,13 @@
-import { expect, test, afterEach } from "vitest"
+import { expect, test, afterEach, vi } from "vitest"
+import { createElement } from "react"
+import { act, render } from "@testing-library/react"
+import * as events from "@tauri-apps/api/event"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 import {
     getDocument,
+    saveDocumentContent,
+    documentChangedOnDisk,
+    sameDiskSnapshot,
     updateBuffer,
     dropDocument,
     renameDocument,
@@ -11,9 +17,353 @@ import {
 } from "./documentRegistry"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import type { OpenFileResult } from "../lib/types"
-import { registerRuntimeWorkspace, saveRemoteFile } from "../lib/remoteFiles"
+import { reconnectRemoteWorkspaces, registerRuntimeWorkspace, saveRemoteFile } from "../lib/remoteFiles"
+import * as ipc from "../lib/ipc"
+import { remoteFilePath } from "../lib/runtimeIdentity"
+import { ExternalChangeBridge } from "../workbench/ExternalChangeBridge"
 
-afterEach(() => { clearMocks(); clearAll(); useWorkspaceStore.setState({ workspacePath: null }) })
+vi.mock("@tauri-apps/api/event", async importOriginal => ({
+    ...await importOriginal<typeof events>(),
+    listen: vi.fn()
+}))
+
+afterEach(() => { vi.restoreAllMocks(); clearMocks(); clearAll(); useWorkspaceStore.setState({ workspacePath: null }) })
+
+test.each([1, 2, 3, 4, 5])("releases document generation paths across 100 workspace lifecycles (run %i)", async run => {
+    const prefix = `["/perf-gen-${run}-`
+    const originalSet = Map.prototype.set
+    let retainedSize = () => 0
+    vi.spyOn(Map.prototype, "set").mockImplementation(function (this: Map<unknown, unknown>, key, value) {
+        if (typeof key === "string" && key.startsWith(prefix) && typeof value === "number") {
+            retainedSize = () => [...this.keys()].filter(candidate => typeof candidate === "string" && candidate.startsWith(prefix)).length
+        }
+        return originalSet.call(this, key, value)
+    })
+    mockIPC(() => ({ kind: "full", content: "disk", size: 4, lineEnding: "lf" }))
+    const cycle = async (index: number) => {
+        const workspace = `/perf-gen-${run}-${index}`
+        useWorkspaceStore.setState({ workspacePath: workspace })
+        const paths = [0, 1, 2].map(file => `${workspace}/file-${file}.txt`)
+        for (const path of paths) await getDocument(path)
+        await reloadDocument(paths[0])
+        await reloadDocument(paths[0])
+        const old = paths.map(path => documentGeneration(path))
+        clearAll()
+        for (let file = 0; file < paths.length; file++) {
+            const entry = await getDocument(paths[file])
+            expect(documentGeneration(paths[file])).not.toBe(old[file])
+            updateBuffer(paths[file], "stale flush", old[file], workspace)
+            expect(entry.result).toMatchObject({ content: "disk" })
+            dropDocument(paths[file])
+        }
+    }
+    for (let index = 0; index < 10; index++) await cycle(index)
+    const afterWarmup = retainedSize()
+    for (let index = 10; index < 110; index++) await cycle(index)
+    const afterCycles = retainedSize()
+    if (import.meta.env.YUZORA_PERF_MEASURE) console.info(JSON.stringify({ experiment: "document-generations", run, cycles: 100,
+        afterWarmup, afterCycles, retainedPerCycle: (afterCycles - afterWarmup) / 100 }))
+    expect(afterCycles).toBe(0)
+})
+
+test("clearAll invalidates a dropped document token without changing per-document reload increments", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/epoch-fixture" })
+    mockIPC(() => ({ kind: "full", content: "disk", size: 4, lineEnding: "lf" }))
+    const first = "/epoch-fixture/first.txt", second = "/epoch-fixture/second.txt"
+    await getDocument(first)
+    await getDocument(second)
+    const secondBefore = documentGeneration(second)
+    for (let i = 0; i < 3; i++) await reloadDocument(first)
+    await reloadDocument(second)
+    expect(documentGeneration(second)).toBe(secondBefore + 1)
+    const stale = documentGeneration(first)
+    dropDocument(first)
+    clearAll()
+    const reopened = await getDocument(first)
+    updateBuffer(first, "stale flush", stale)
+    expect(reopened.result).toMatchObject({ content: "disk" })
+    expect(documentGeneration(first)).toBeGreaterThan(stale)
+})
+
+test("a failed save leaves the last-loaded disk snapshot intact", async () => {
+    const path = "/w/failed-save.txt"
+    const generation = documentGeneration(path)
+    mockIPC(command => {
+        if (command === "save_file") throw new Error("failed")
+        return { kind: "full", content: "disk", size: 4, lineEnding: "lf" }
+    })
+    await getDocument(path)
+    await expect(saveDocumentContent(path, "unsaved")).rejects.toThrow("failed")
+    expect(await documentChangedOnDisk(path)).toBe(false)
+    expect(documentGeneration(path)).toBe(generation)
+})
+
+test("same-path saves serialize writes and baseline updates despite reverse-ready replies", async () => {
+    const path = "/w/ordered-save.txt"
+    let disk = "A"
+    const writes: string[] = []
+    let finishB!: (value: number) => void
+    let finishC!: (value: number) => void
+    const replyB = new Promise<number>(resolve => { finishB = resolve })
+    const replyC = new Promise<number>(resolve => { finishC = resolve })
+    mockIPC((command, args) => {
+        if (command === "save_file") {
+            disk = (args as { content: string }).content
+            writes.push(disk)
+            return disk === "B" ? replyB : replyC
+        }
+        return { kind: "full", content: disk, size: 1, lineEnding: "lf" }
+    })
+    const entry = await getDocument(path)
+    const first = saveDocumentContent(path, "B")
+    const second = saveDocumentContent(path, "C")
+    // C's response is ready before B's, but its write must not start yet.
+    finishC(3)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const writesBeforeBReply = [...writes]
+    finishB(2)
+    expect(await first).toBe(2)
+    expect(await second).toBe(3)
+    expect(entry.diskResult).toMatchObject({ content: "C" })
+    expect(writesBeforeBReply).toEqual(["B"])
+    expect(writes).toEqual(["B", "C"])
+    expect(disk).toBe("C")
+    expect(await documentChangedOnDisk(path)).toBe(false)
+})
+
+test("a rejected queued save propagates its error without blocking the next save or other paths", async () => {
+    const path = "/w/queue-failure.txt"
+    let reject!: (error: Error) => void
+    const failed = new Promise<number>((_resolve, rejectPromise) => { reject = rejectPromise })
+    const writes: string[] = []
+    mockIPC((command, args) => {
+        if (command === "save_file") {
+            const { content } = args as { content: string }
+            writes.push(content)
+            return content === "B" ? failed : 3
+        }
+        return { kind: "full", content: "A", size: 1, lineEnding: "lf" }
+    })
+    const entry = await getDocument(path)
+    const first = saveDocumentContent(path, "B")
+    const rejection = expect(first).rejects.toThrow("disk full")
+    const second = saveDocumentContent(path, "C")
+    await saveDocumentContent("/w/independent.txt", "independent")
+    expect(entry.diskResult).toMatchObject({ content: "A" })
+    expect(writes).toEqual(["B", "independent"])
+    reject(new Error("disk full"))
+    await rejection
+    expect(await second).toBe(3)
+    expect(entry.diskResult).toMatchObject({ content: "C" })
+    expect(writes).toEqual(["B", "independent", "C"])
+})
+
+test.each(["resolve", "reject"] as const)("remote queued saves retain G1 after reconnect when the first write replies with %s", async (reply) => {
+    const owner = { hostId: `registry-save-reconnect-${reply}`, generation: 1 }
+    const writes: { generation: number; content: string }[] = []
+    let finish!: (value: { revision: string }) => void
+    let reject!: (error: Error) => void
+    const deferred = new Promise<{ revision: string }>((resolve, rejectPromise) => { finish = resolve; reject = rejectPromise })
+    mockIPC((command, payload) => {
+        if (command !== "host_request") return
+        const { owner, operation } = payload as {
+            owner: { generation: number }
+            operation: { method: string; params: { content: string } }
+        }
+        if (operation.method === "workspaceOpen") return { canonicalPath: "/project", capabilityId: `workspace-${owner.generation}` }
+        if (operation.method === "filesWrite") {
+            writes.push({ generation: owner.generation, content: operation.params.content })
+            return operation.params.content === "B" ? deferred : { revision: "saved" }
+        }
+        return { file: { kind: "full", content: "A", size: 1, lineEnding: "lf" }, revision: "original" }
+    })
+    const root = await registerRuntimeWorkspace(owner, "/project", () => true)
+    useWorkspaceStore.setState({ workspacePath: root })
+    const path = root + "/file.txt"
+    const entry = await getDocument(path)
+    const first = saveDocumentContent(path, "B")
+    await vi.waitFor(() => expect(writes).toEqual([{ generation: 1, content: "B" }]))
+    const second = saveDocumentContent(path, "C")
+    const outcomes = Promise.allSettled([first, second])
+    // Let saveFile's dynamic import enter the remote queue before reconnecting.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await reconnectRemoteWorkspaces({ ...owner, generation: 2 }, () => true)
+    if (reply === "resolve") finish({ revision: "written-on-G1" })
+    else reject(new Error("G1 write failed"))
+    const [firstOutcome, secondOutcome] = await outcomes
+    expect(firstOutcome.status).toBe("rejected")
+    expect.soft(secondOutcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("connection changed") }) })
+    expect.soft(writes).toEqual([{ generation: 1, content: "B" }])
+    expect.soft(entry.diskResult).toMatchObject({ content: "A" })
+    // Only a new request made on G2 may write there; rejected tails cannot block it.
+    expect(await saveDocumentContent(path, "D")).toBe(1)
+    expect(writes).toEqual([{ generation: 1, content: "B" }, { generation: 2, content: "D" }])
+    expect(entry.diskResult).toMatchObject({ content: "D" })
+})
+
+test("a successful G1 save remains the baseline after queued C is rejected on reconnect and flags an external revert", async () => {
+    const owner = { hostId: "registry-save-success-reconnect", generation: 1 }
+    const writes: { generation: number; content: string }[] = []
+    let disk = "A"
+    let revision = "original"
+    let reconnect!: Promise<void>
+    let finishB!: (value: { revision: string }) => void
+    const replyB = new Promise<{ revision: string }>(resolve => { finishB = resolve })
+    mockIPC((command, payload) => {
+        if (command !== "host_request") return
+        const { owner, operation } = payload as {
+            owner: { generation: number }
+            operation: { method: string; params: { content: string } }
+        }
+        if (operation.method === "workspaceOpen") return { canonicalPath: "/project", capabilityId: `workspace-${owner.generation}` }
+        if (operation.method === "filesWrite") {
+            writes.push({ generation: owner.generation, content: operation.params.content })
+            disk = operation.params.content
+            return disk === "B" ? replyB : { revision: "saved" }
+        }
+        return { file: { kind: "full", content: disk, size: 1, lineEnding: "lf" }, revision }
+    })
+    const root = await registerRuntimeWorkspace(owner, "/project", () => true)
+    useWorkspaceStore.setState({ workspacePath: root })
+    const path = root + "/file.txt"
+    const entry = await getDocument(path)
+    const first = saveDocumentContent(path, "B")
+    await vi.waitFor(() => expect(writes).toEqual([{ generation: 1, content: "B" }]))
+    const second = saveDocumentContent(path, "C")
+    const outcomes = Promise.allSettled([first, second])
+    // Both requests must enter the real provider on G1 before B replies.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    finishB({
+        get revision() {
+            revision = "written-on-G1"
+            // Start reconnect at B's response: its synchronous post-write guard
+            // still sees G1; workspaceOpen switches to G2 during queue release,
+            // before queued C can pass its own backend guard.
+            reconnect = reconnectRemoteWorkspaces({ ...owner, generation: 2 }, () => true)
+            return revision
+        }
+    })
+    const [firstOutcome, secondOutcome] = await outcomes
+    await reconnect
+    expect(firstOutcome).toEqual({ status: "fulfilled", value: 1 })
+    expect(secondOutcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("connection changed") }) })
+    expect(writes).toEqual([{ generation: 1, content: "B" }])
+    expect(disk).toBe("B")
+    expect.soft(entry.diskResult).toMatchObject({ content: "B" })
+
+    // An external B -> A is a real conflict with the still-dirty C buffer.
+    updateBuffer(path, "C", documentGeneration(path))
+    useWorkspaceStore.getState().openTab(path)
+    useWorkspaceStore.getState().markDirty(path, true)
+    disk = "A"
+    revision = "external-revert"
+    expect.soft(await documentChangedOnDisk(path)).toBe(true)
+    let listener!: (event: { payload: { workspaceRoot: string; paths: string[] } }) => void
+    vi.mocked(events.listen).mockImplementation(async (_event, callback) => {
+        listener = callback as typeof listener
+        return () => {}
+    })
+    const bridge = render(createElement(ExternalChangeBridge))
+    try {
+        await act(async () => { listener({ payload: { workspaceRoot: root, paths: [path] } }) })
+        const tab = useWorkspaceStore.getState().groups.flatMap(group => group.tabs).find(tab => tab.path === path)
+        expect(tab).toMatchObject({ dirty: true, externallyModified: true })
+        expect(entry.result).toMatchObject({ content: "C" })
+    } finally {
+        bridge.unmount()
+        useWorkspaceStore.getState().closeTab(0, path)
+    }
+})
+
+test.each(["resolve", "reject"] as const)("remote reverse-order replies preserve the latest successful baseline after C's %s", async (reply) => {
+    const path = remoteFilePath(`registry-save-order-${reply}`, "/project/file.txt", "/project")
+    const snapshot = { kind: "full", content: "A", size: 1, lineEnding: "lf" } as const
+    vi.spyOn(ipc, "openFileSnapshot").mockResolvedValue({ result: snapshot, accept: () => {} })
+    let finishB!: (value: number) => void
+    let finishC!: (value: number) => void
+    let rejectC!: (error: Error) => void
+    const replyB = new Promise<number>(resolve => { finishB = resolve })
+    const replyC = new Promise<number>((resolve, reject) => { finishC = resolve; rejectC = reject })
+    // Isolate registry reply ordering from the remote provider's write queue.
+    const save = vi.spyOn(ipc, "saveFile").mockReturnValueOnce(replyB).mockReturnValueOnce(replyC)
+    const entry = await getDocument(path)
+    const first = saveDocumentContent(path, "B")
+    const second = saveDocumentContent(path, "C")
+    const secondOutcome = second.then(value => value, error => error)
+    const callsBeforeReplies = save.mock.calls.length
+    if (reply === "resolve") finishC(3)
+    else rejectC(new Error("C failed"))
+    // With the old registry queue C cannot settle until B, so release both on failure.
+    if (callsBeforeReplies !== 2) finishB(2)
+    expect(await secondOutcome).toEqual(reply === "resolve" ? 3 : new Error("C failed"))
+    expect(entry.diskResult).toMatchObject({ content: reply === "resolve" ? "C" : "A" })
+    finishB(2)
+    expect(await first).toBe(2)
+    expect(entry.diskResult).toMatchObject({ content: reply === "resolve" ? "C" : "B" })
+    expect(callsBeforeReplies).toBe(2)
+})
+
+test.each(["resolve", "reject"] as const)("a remote success advances the baseline while C is pending and preserves it after C's %s", async (reply) => {
+    const path = remoteFilePath(`registry-save-latest-pending-${reply}`, "/project/file.txt", "/project")
+    const snapshot = { kind: "full", content: "A", size: 1, lineEnding: "lf" } as const
+    vi.spyOn(ipc, "openFileSnapshot").mockResolvedValue({ result: snapshot, accept: () => {} })
+    let finishB!: (value: number) => void
+    let finishC!: (value: number) => void
+    let rejectC!: (error: Error) => void
+    const replyB = new Promise<number>(resolve => { finishB = resolve })
+    const replyC = new Promise<number>((resolve, reject) => { finishC = resolve; rejectC = reject })
+    const save = vi.spyOn(ipc, "saveFile").mockReturnValueOnce(replyB).mockReturnValueOnce(replyC).mockResolvedValue(4)
+    const entry = await getDocument(path)
+    const first = saveDocumentContent(path, "B")
+    const second = saveDocumentContent(path, "C")
+    const secondOutcome = second.then(value => value, error => error)
+    expect(save).toHaveBeenCalledTimes(2)
+    finishB(2)
+    expect(await first).toBe(2)
+    const baselineAfterB = entry.diskResult
+    if (reply === "resolve") finishC(3)
+    else rejectC(new Error("C failed"))
+    expect(await secondOutcome).toEqual(reply === "resolve" ? 3 : new Error("C failed"))
+    expect.soft(baselineAfterB).toMatchObject({ content: "B" })
+    expect.soft(entry.diskResult).toMatchObject({ content: reply === "resolve" ? "C" : "B" })
+    expect(await saveDocumentContent(path, "D")).toBe(4)
+    expect(entry.diskResult).toMatchObject({ content: "D" })
+})
+
+test("explicit reload replaces an unsaved buffer even when disk equals its baseline", async () => {
+    const path = "/w/explicit-reload.txt"
+    mockIPC(() => ({ kind: "full", content: "A", size: 1, lineEnding: "lf" }))
+    const entry = await getDocument(path)
+    const generation = documentGeneration(path)
+    updateBuffer(path, "B", generation)
+    expect(await reloadDocument(path, () => true, "reconcile")).toBe(entry)
+    expect(documentGeneration(path)).toBe(generation)
+    const reloaded = await reloadDocument(path)
+    expect(reloaded.result).toMatchObject({ content: "A" })
+    expect(reloaded).not.toBe(entry)
+    expect(documentGeneration(path)).toBe(generation + 1)
+})
+
+test("disk snapshots distinguish kind, line endings, encoding and byte size", () => {
+    const full = { kind: "full", content: "same", size: 4, lineEnding: "lf" } as const
+    expect(sameDiskSnapshot(full, { ...full })).toBe(true)
+    expect(sameDiskSnapshot(full, { ...full, kind: "limited" })).toBe(false)
+    expect(sameDiskSnapshot(full, { ...full, lineEnding: "crlf" })).toBe(false)
+    expect(sameDiskSnapshot(full, { ...full, size: 5 })).toBe(false)
+    const encoded = { kind: "nonUtf8Readonly", content: "same", size: 8, encoding: "UTF-16LE" } as const
+    expect(sameDiskSnapshot(encoded, { ...encoded, encoding: "UTF-16BE" })).toBe(false)
+    expect(sameDiskSnapshot(encoded, { ...encoded })).toBe(true)
+    expect(sameDiskSnapshot({ kind: "binary", size: 4 }, { kind: "binary", size: 4 })).toBe(false)
+})
+
+test("unsaved cached buffers and renames retain their separate disk snapshot", async () => {
+    mockIPC(() => ({ kind: "full", content: "disk", size: 4, lineEnding: "lf" }))
+    await getDocument("/w/old.txt")
+    updateBuffer("/w/old.txt", "unsaved", documentGeneration("/w/old.txt"))
+    renameDocument("/w/old.txt", "/w/new.txt", "live unsaved")
+    expect(await documentChangedOnDisk("/w/new.txt")).toBe(false)
+    expect((await getDocument("/w/new.txt")).result).toMatchObject({ content: "live unsaved" })
+})
 
 test("overlapping native workspaces isolate document content and late pane cleanup", async () => {
     const path = "/repo/nested/shared.ts"
@@ -136,6 +486,7 @@ test("renameDocument 帶 liveContent 時把未存檔內容一起帶到新 key（
 })
 
 test("renameDocument 把 generation 一起移到新 path，後續 reload 仍能前進", async () => {
+    const unmappedGeneration = documentGeneration("/w/gen-old.ts")
     let calls = 0
     mockIPC((cmd) => {
         if (cmd !== "open_file") return undefined
@@ -148,7 +499,7 @@ test("renameDocument 把 generation 一起移到新 path，後續 reload 仍能�
 
     renameDocument("/w/gen-old.ts", "/w/gen-new.ts")
 
-    expect(documentGeneration("/w/gen-old.ts")).toBe(0)
+    expect(documentGeneration("/w/gen-old.ts")).toBe(unmappedGeneration)
     expect(documentGeneration("/w/gen-new.ts")).toBe(movedGeneration)
     await reloadDocument("/w/gen-new.ts")
     expect(documentGeneration("/w/gen-new.ts")).toBe(movedGeneration + 1)

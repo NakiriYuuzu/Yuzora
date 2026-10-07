@@ -45,14 +45,15 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
     const active = createPaneScrollController({
       read: (signal) => readPaneScroll(sessionName, paneId, signal),
       write: (offset, signal) => setPaneScroll(sessionName, paneId, offset, signal),
-      allowed: () => permission.current(),
-      change: (next) => { setState(next); if (next) setUnavailableReason(null) },
+      allowed: () => document.visibilityState !== "hidden" && permission.current(),
+      change: (next) => { setState(next); if (next) { setWritable(true); setUnavailableReason(null) } },
       metric: (metric) => recordHerdrScrollMetric({ ...metric, session: sessionName, pane: paneId }),
       error: (error) => { setUnavailableReason(herdrErrorKind(error)); errorHandler.current?.(error) },
     })
     controller.current = active
     if (controllerRef) controllerRef.current = active
     const refresh = (next?: PaneScrollInfo | null) => {
+      if (document.visibilityState === "hidden") return
       const writable = permission.current()
       setWritable(writable)
       if (!writable) { active.reset(); return }
@@ -60,10 +61,19 @@ export function HerdrScrollbar({ sessionName, paneId, enabled, canScroll, refres
       else void active.refresh()
     }
     refreshRef.current = refresh
-    refresh()
-    const timer = window.setInterval(refresh, 1000)
+    let timer: ReturnType<typeof setInterval> | undefined
+    const visibilityChanged = () => {
+      clearInterval(timer)
+      timer = undefined
+      if (document.visibilityState === "hidden") { active.reset(); return }
+      refresh()
+      timer = setInterval(refresh, 5000)
+    }
+    visibilityChanged()
+    document.addEventListener("visibilitychange", visibilityChanged)
     return () => {
-      window.clearInterval(timer)
+      clearInterval(timer)
+      document.removeEventListener("visibilitychange", visibilityChanged)
       active.dispose()
       controller.current = null
       if (controllerRef?.current === active) controllerRef.current = null

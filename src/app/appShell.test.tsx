@@ -315,17 +315,17 @@ describe("AppShell", () => {
     }
   })
 
-  it("restores the saved bot animation switch after remounting the app", () => {
+  it("restores the saved bot animation switch after remounting the app", async () => {
     const app = render(<AppShell />)
     fireEvent.click(screen.getByRole("button", { name: "Settings" }))
-    fireEvent.click(screen.getByRole("switch", { name: "Bot animations" }))
+    fireEvent.click(await screen.findByRole("switch", { name: "Bot animations" }))
     expect(document.documentElement.dataset.botAnimations).toBe("false")
     app.unmount()
     useUiStore.setState(uiInitialState)
     render(<AppShell />)
     expect(document.documentElement.dataset.botAnimations).toBe("false")
     fireEvent.click(screen.getByRole("button", { name: "Settings" }))
-    expect(screen.getByRole("switch", { name: "Bot animations" })).not.toBeChecked()
+    expect(await screen.findByRole("switch", { name: "Bot animations" })).not.toBeChecked()
   })
 
   it("預設 auto 且系統為深色時套用 dark class，並把偏好寫回 localStorage", () => {
@@ -455,7 +455,7 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Sidebar navigation")).toBeInTheDocument()
   })
 
-  it("opens history directly from GIT and restores the previous work surface from Files", () => {
+  it("opens history directly from GIT and restores the previous work surface from Files", async () => {
     render(<AppShell />)
     act(() => useUiStore.getState().setGitPanelTab("local"))
     fireEvent.click(document.querySelector<HTMLButtonElement>('button[aria-controls="workbench-tools"]')!)
@@ -465,7 +465,7 @@ describe("AppShell", () => {
     expect(gitTab).toHaveAttribute("aria-selected", "true")
     expect(useUiStore.getState().mode).toBe("git")
     expect(useUiStore.getState().gitPanelTab).toBe("log")
-    const gitSurface = screen.getByRole("button", { name: "Back to working files" }).closest(".workbench-mode-surface")
+    const gitSurface = (await screen.findByRole("button", { name: "Back to working files" })).closest(".workbench-mode-surface")
     expect(gitSurface).not.toHaveAttribute("hidden")
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Files" }), {button:0, ctrlKey:false})
     expect(useUiStore.getState().mode).toBe("ade")

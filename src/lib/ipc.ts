@@ -15,6 +15,7 @@ export { invoke }
 export const isWorkbenchWindowActive = () => invoke<boolean>("workbench_is_window_active")
 
 import type {
+    DeleteProgress,
     FileNode,
     WorkspaceOpenResult,
     OpenFileResult,
@@ -58,7 +59,7 @@ import type {
     SftpDownloadDest,
     SftpListing,
     SftpUploadSource,
-    PerfSnapshot
+    PerfSnapshot, GitDiscovery, GitConflictSides, GitOperationOutcome, GitStashEntry, GitResetMode
 } from "./types"
 
 /** Full latest-status snapshot for one deduplicated rollback path. */
@@ -96,6 +97,10 @@ export function openWorkspace(path: string): Promise<WorkspaceOpenResult> {
 
 export function openWorkspaceDirectory(workspaceId: string, path: string): Promise<void> {
     return invoke("open_workspace_directory", { workspaceId, path })
+}
+
+export function searchWorkspaceFileNames(root: string, query: string): Promise<import("./fileNameSearchTypes").FileNameSearchResponse> {
+    return invoke("search_workspace_file_names", { root, query })
 }
 
 export function listDir(path: string): Promise<FileNode[]> {
@@ -141,24 +146,102 @@ export function saveFile(path: string, content: string): Promise<number> {
     return saved.then((result) => { notifyFileSaved(path); return result })
 }
 
+async function localMutation(workspace: string, paths: string[]) {
+    const { useWorkspaceStore } = await import("@/state/workspaceStore")
+    const { relativePathWithin } = await import("./paths")
+    const state = useWorkspaceStore.getState()
+    if (state.workspacePath !== workspace || !state.workspaceCapabilityId) throw new Error("workspace-capability-missing")
+    const relative = paths.map(path => {
+        const value = relativePathWithin(workspace, path)
+        if (!value || value.includes("\0") || value.split("/").some(part => part === "." || part === ".." || !part)) throw new Error("path-outside-workspace")
+        return value
+    })
+    return { workspaceCapabilityId: state.workspaceCapabilityId, relative }
+}
+
 export function fsCreateFile(workspace: string, path: string): Promise<void> {
     if (parseRemoteFilePath(workspace) || parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.createRemotePath(workspace, path, false))
-    return invoke("fs_create_file", { workspace, path })
+    return localMutation(workspace, [path]).then(({ workspaceCapabilityId, relative }) => invoke("fs_create_file", { workspaceCapabilityId, path: relative[0] }))
 }
 
 export function fsCreateDir(workspace: string, path: string): Promise<void> {
     if (parseRemoteFilePath(workspace) || parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.createRemotePath(workspace, path, true))
-    return invoke("fs_create_dir", { workspace, path })
+    return localMutation(workspace, [path]).then(({ workspaceCapabilityId, relative }) => invoke("fs_create_dir", { workspaceCapabilityId, path: relative[0] }))
 }
 
 export function fsRename(workspace: string, from: string, to: string): Promise<void> {
     if ([workspace, from, to].some((path) => parseRemoteFilePath(path))) return import("./remoteFiles").then((remote) => remote.renameRemotePath(workspace, from, to))
-    return invoke("fs_rename", { workspace, from, to })
+    return localMutation(workspace, [from, to]).then(({ workspaceCapabilityId, relative }) => invoke("fs_rename", { workspaceCapabilityId, from: relative[0], to: relative[1] }))
 }
 
-export function fsDelete(workspace: string, path: string): Promise<void> {
+async function localTargetDir(workspace: string, targetDir: string): Promise<string> {
+    if (targetDir === workspace) return ""
+    const [relative] = (await localMutation(workspace, [targetDir])).relative
+    return relative
+}
+
+async function absoluteInWorkspace(workspace: string, relative: string[]): Promise<string[]> {
+    const { isWindowsPath, nativePathJoin } = await import("./paths")
+    return relative.map((path) => nativePathJoin(workspace, isWindowsPath(workspace) ? path.replace(/\//g, "\\") : path))
+}
+
+/** Recursively copies files/folders into `targetDir` (never overwrites; collisions get a "copy" name). Returns the created paths. */
+export async function fsCopyPaths(workspace: string, sources: string[], targetDir: string): Promise<string[]> {
+    if ([workspace, targetDir, ...sources].some((path) => parseRemoteFilePath(path))) {
+        return import("./remoteFiles").then((remote) => remote.copyRemotePaths(workspace, sources, targetDir))
+    }
+    const { workspaceCapabilityId, relative } = await localMutation(workspace, sources)
+    const created = await invoke<string[]>("fs_copy_paths", { workspaceCapabilityId, sources: relative, targetDir: await localTargetDir(workspace, targetDir) })
+    return absoluteInWorkspace(workspace, created)
+}
+
+/** Moves files/folders into `targetDir` inside the same workspace. Returns their new paths. */
+export async function fsMovePaths(workspace: string, sources: string[], targetDir: string): Promise<string[]> {
+    if ([workspace, targetDir, ...sources].some((path) => parseRemoteFilePath(path))) {
+        return import("./remoteFiles").then((remote) => remote.moveRemotePaths(workspace, sources, targetDir))
+    }
+    const { workspaceCapabilityId, relative } = await localMutation(workspace, sources)
+    const moved = await invoke<string[]>("fs_move_paths", { workspaceCapabilityId, sources: relative, targetDir: await localTargetDir(workspace, targetDir) })
+    return absoluteInWorkspace(workspace, moved)
+}
+
+/** Copies the files currently on the OS clipboard (e.g. from Finder or Explorer) into `targetDir`. Local workspaces only. */
+export async function fsPasteClipboardFiles(workspace: string, targetDir: string): Promise<string[]> {
+    if (parseRemoteFilePath(workspace)) throw new Error("clipboard-import-remote-unsupported")
+    const { workspaceCapabilityId } = await localMutation(workspace, [])
+    const created = await invoke<string[]>("fs_paste_clipboard_files", { workspaceCapabilityId, targetDir: await localTargetDir(workspace, targetDir) })
+    return absoluteInWorkspace(workspace, created)
+}
+
+/** Puts workspace files on the OS clipboard so Finder / Explorer can paste them. Local workspaces only. */
+export async function clipboardWriteWorkspaceFiles(workspace: string, paths: string[]): Promise<void> {
+    if (parseRemoteFilePath(workspace)) throw new Error("clipboard-export-remote-unsupported")
+    const { workspaceCapabilityId, relative } = await localMutation(workspace, paths)
+    await invoke("clipboard_write_workspace_files", { workspaceCapabilityId, paths: relative })
+}
+
+/** Absolute paths currently on the OS clipboard as a file list (empty when none). */
+export function clipboardReadFileList(): Promise<string[]> {
+    return invoke<string[]>("clipboard_read_file_list")
+}
+
+/** Local deletes report progress and can be cancelled by `operation.id`; remote ones report nothing. */
+export function fsDelete(
+    workspace: string,
+    path: string,
+    operation?: { id: string; onProgress: (progress: DeleteProgress) => void }
+): Promise<void> {
     if (parseRemoteFilePath(workspace) || parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.deleteRemotePath(workspace, path))
-    return invoke("fs_delete", { workspace, path })
+    return localMutation(workspace, [path]).then(({ workspaceCapabilityId, relative }) => {
+        const onProgress = new Channel<DeleteProgress>()
+        if (operation) onProgress.onmessage = operation.onProgress
+        const operationId = operation?.id ?? crypto.randomUUID()
+        return invoke("fs_delete", { workspaceCapabilityId, path: relative[0], operationId, onProgress })
+    })
+}
+
+export function fsDeleteCancel(operationId: string): Promise<void> {
+    return invoke("fs_delete_cancel", { operationId })
 }
 
 let watchRequestGeneration = 0
@@ -189,8 +272,20 @@ export function gitCloseWorkspace(path: string): void {
 // #57 T3：冷開 workspace 的 git 首載——一趟完成 detect→(status‖branches)，
 // 消除 detect 先行寫 State、status/branches 才能發的結構性 waterfall。
 // 細粒度 gitStatus/gitBranches 保留給後續 refresh。
-export function gitBootstrap(path: string): Promise<GitBootstrapResult> {
-    return invokeGit("git_bootstrap", { path })
+export function gitBootstrap(path: string, repositoryPath: string | null = null): Promise<GitBootstrapResult> {
+    // `repositoryPath` selects a repository nested in the workspace, relative to it.
+    return invokeGit("git_bootstrap", { path, repositoryPath })
+}
+
+/** Lists the repositories inside the workspace without running Git. */
+export async function gitDiscover(workspacePath: string): Promise<GitDiscovery> {
+    if (parseRemoteFilePath(workspacePath)) {
+        return import("./remoteGit").then((remote) => remote.invokeRemoteGit<GitDiscovery>("git_discover", { path: workspacePath }))
+    }
+    const { useWorkspaceStore } = await import("@/state/workspaceStore")
+    const state = useWorkspaceStore.getState()
+    if (state.workspacePath !== workspacePath || !state.workspaceCapabilityId) throw new Error("workspace-capability-missing")
+    return invoke("git_discover", { workspaceCapabilityId: state.workspaceCapabilityId })
 }
 
 export function workspaceTrustStatus(path: string): Promise<WorkspaceTrustStatus> {
@@ -249,20 +344,23 @@ export function gitBranches(repositoryRoot: string): Promise<BranchList> {
     return invokeGit("git_branches", { repositoryRoot })
 }
 
+// `smart`: JetBrains "Smart Checkout" — stash local changes for the switch
+// and restore them afterwards.
 export function gitCreateBranch(
     repositoryRoot: string,
     name: string,
-    startPoint?: string
-): Promise<void> {
-    return invokeGit("git_create_branch", { repositoryRoot, name, startPoint: startPoint ?? null })
+    startPoint?: string,
+    smart?: boolean
+): Promise<GitOperationOutcome> {
+    return invokeGit("git_create_branch", { repositoryRoot, name, startPoint: startPoint ?? null, ...(smart ? { smart } : {}) })
 }
 
-export function gitCheckout(repositoryRoot: string, name: string): Promise<void> {
-    return invokeGit("git_checkout", { repositoryRoot, name })
+export function gitCheckout(repositoryRoot: string, name: string, smart?: boolean): Promise<GitOperationOutcome> {
+    return invokeGit("git_checkout", { repositoryRoot, name, ...(smart ? { smart } : {}) })
 }
 
-export function gitCheckoutDetached(repositoryRoot: string, rev: string): Promise<void> {
-    return invokeGit("git_checkout_detached", { repositoryRoot, rev })
+export function gitCheckoutDetached(repositoryRoot: string, rev: string, smart?: boolean): Promise<GitOperationOutcome> {
+    return invokeGit("git_checkout_detached", { repositoryRoot, rev, ...(smart ? { smart } : {}) })
 }
 
 export function gitCherryPick(repositoryRoot: string, hash: string): Promise<void> {
@@ -273,12 +371,62 @@ export function gitFetch(repositoryRoot: string, background: boolean): Promise<v
     return invokeGit("git_fetch_cmd", { repositoryRoot, background })
 }
 
-export function gitPull(repositoryRoot: string): Promise<void> {
-    return invokeGit("git_pull_cmd", { repositoryRoot })
+export function gitPull(repositoryRoot: string, mode?: "merge" | "rebase"): Promise<void> {
+    return invokeGit("git_pull_cmd", { repositoryRoot, mode: mode ?? null })
 }
 
-export function gitPush(repositoryRoot: string): Promise<void> {
-    return invokeGit("git_push_cmd", { repositoryRoot })
+export function gitPush(repositoryRoot: string, options?: { forceWithLease?: boolean; tags?: boolean }): Promise<void> {
+    return invokeGit("git_push_cmd", {
+        repositoryRoot,
+        forceWithLease: options?.forceWithLease ?? false,
+        tags: options?.tags ?? false,
+    })
+}
+
+export function gitMergeBranch(repositoryRoot: string, name: string): Promise<GitOperationOutcome> {
+    return invokeGit("git_merge_branch", { repositoryRoot, name })
+}
+
+export function gitRebaseOnto(repositoryRoot: string, upstream: string): Promise<GitOperationOutcome> {
+    return invokeGit("git_rebase_onto", { repositoryRoot, upstream })
+}
+
+export function gitRenameBranch(repositoryRoot: string, oldName: string, newName: string): Promise<void> {
+    return invokeGit("git_rename_branch", { repositoryRoot, oldName, newName })
+}
+
+/** Without `force`, an unmerged branch fails with a "not fully merged" error. */
+export function gitDeleteBranch(repositoryRoot: string, name: string, force: boolean): Promise<void> {
+    return invokeGit("git_delete_branch", { repositoryRoot, name, force })
+}
+
+export function gitRevertCommit(repositoryRoot: string, hash: string): Promise<GitOperationOutcome> {
+    return invokeGit("git_revert_commit", { repositoryRoot, hash })
+}
+
+export function gitResetBranch(repositoryRoot: string, hash: string, mode: GitResetMode): Promise<void> {
+    return invokeGit("git_reset_branch", { repositoryRoot, hash, mode })
+}
+
+export function gitStashList(repositoryRoot: string): Promise<GitStashEntry[]> {
+    return invokeGit("git_stash_list", { repositoryRoot })
+}
+
+export function gitStashPush(
+    repositoryRoot: string,
+    message: string | null,
+    includeUntracked: boolean,
+    keepIndex: boolean,
+): Promise<void> {
+    return invokeGit("git_stash_push", { repositoryRoot, message, includeUntracked, keepIndex })
+}
+
+export function gitStashApply(repositoryRoot: string, index: number, pop: boolean): Promise<GitOperationOutcome> {
+    return invokeGit("git_stash_apply", { repositoryRoot, index, pop })
+}
+
+export function gitStashDrop(repositoryRoot: string, index: number): Promise<void> {
+    return invokeGit("git_stash_drop", { repositoryRoot, index })
 }
 
 export function gitRemoteProbe(repositoryRoot: string): Promise<RemoteProbe> {
@@ -300,6 +448,19 @@ export function gitConflictAbort(repositoryRoot: string, op: string): Promise<vo
 
 export function gitConflictContinue(repositoryRoot: string, op: string): Promise<void> {
     return invokeGit("git_conflict_continue", { repositoryRoot, op })
+}
+
+export function gitConflictSkip(repositoryRoot: string, op: string): Promise<void> {
+    return invokeGit("git_conflict_skip", { repositoryRoot, op })
+}
+
+export function gitConflictSides(repositoryRoot: string, path: string): Promise<GitConflictSides> {
+    return invokeGit("git_conflict_sides", { repositoryRoot, path })
+}
+
+/** Accept one whole side of each conflicted path and mark it resolved. */
+export function gitConflictResolve(repositoryRoot: string, paths: string[], side: "ours" | "theirs"): Promise<void> {
+    return invokeGit("git_conflict_resolve", { repositoryRoot, paths, side })
 }
 
 export function askpassRespond(id: number, response: string | null): Promise<void> {

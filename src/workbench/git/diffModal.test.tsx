@@ -310,6 +310,14 @@ describe("DiffModal — commit source", () => {
         await waitFor(() => expect(screen.getByText("Diff unavailable")).toBeInTheDocument())
     })
 
+    it("an empty commit shows a no-files state instead of an endless loading state", () => {
+        render(<DiffModal />)
+        openCommit([], ["parent".padEnd(40, "0")])
+        expect(screen.getByText("No file changes to compare")).toBeInTheDocument()
+        expect(screen.queryByText(/Loading diff/i)).toBeNull()
+        expect(gitFileAtRev).not.toHaveBeenCalled()
+    })
+
     it("switching active file via the store loads the newly-active file", async () => {
         render(<DiffModal />)
         const parent = "parent".padEnd(40, "0")
@@ -426,6 +434,33 @@ describe("DiffModal — mode toggle + close", () => {
         expect(screen.queryByRole("option", { name: /file0\.ts/ })).toBeNull()
         expect(useDiffModalStore.getState().activeIndex).toBe(0)
         await waitFor(() => expect(gitDiffContent).toHaveBeenCalledWith("/w", "file0.ts", false, null))
+    })
+
+    it("a newly opened source starts unfiltered instead of inheriting a hidden query", () => {
+        render(<DiffModal />)
+        act(() => {
+            useDiffModalStore.getState().openWorktree(
+                "/w",
+                Array.from({ length: 16 }, (_, i) => ({
+                    path: `file${i}.ts`,
+                    origPath: null,
+                    status: "M",
+                    staged: false
+                }))
+            )
+        })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
+        fireEvent.change(screen.getByLabelText("Filter files"), { target: { value: "file15" } })
+        act(() => {
+            useDiffModalStore.getState().openWorktree("/w", [
+                { path: "other.ts", origPath: null, status: "M", staged: false },
+                { path: "more.ts", origPath: null, status: "M", staged: false }
+            ])
+        })
+        fireEvent.click(screen.getByRole("button", { name: "Expand file list" }))
+        expect(screen.getByRole("option", { name: /other\.ts/ })).toBeInTheDocument()
+        expect(screen.getByRole("option", { name: /more\.ts/ })).toBeInTheDocument()
+        expect(screen.queryByLabelText("Filter files")).toBeNull()
     })
 
     it("keeps a mounted roving tabindex when the active file is filtered out", () => {

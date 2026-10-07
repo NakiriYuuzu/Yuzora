@@ -9,6 +9,7 @@ vi.mock("@/state/folderPickerStore", () => ({ chooseWorkspaceFolder: vi.fn() }))
 
 vi.mock("@/lib/herdrIpc", () => ({
   herdrSessions: vi.fn(),
+  herdrStartupStatus: vi.fn(),
   herdrCapabilities: vi.fn(),
   herdrSnapshot: vi.fn(),
   herdrTabFocus: vi.fn(),
@@ -32,6 +33,7 @@ import {
   herdrCapabilities,
   herdrSessions,
   herdrSnapshot,
+  herdrStartupStatus,
   herdrTabFocus,
   herdrTabRename,
   herdrTerminalCreate,
@@ -43,7 +45,7 @@ import {
 import { runtimeOwner } from "@/lib/herdrProvider"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
-import { herdrInitialState, useHerdrStore } from "./herdrStore"
+import { herdrInitialState, isHerdrStartupPending, useHerdrStore } from "./herdrStore"
 import { useWorkspaceStore } from "./workspaceStore"
 import { useUiStore } from "./uiStore"
 import { chooseWorkspaceFolder } from "./folderPickerStore"
@@ -295,6 +297,7 @@ describe("herdrStore", () => {
     })
     vi.mocked(runtimeOwner).mockReset().mockReturnValue(null)
     vi.mocked(herdrSessions).mockReset().mockResolvedValue(sessions)
+    vi.mocked(herdrStartupStatus).mockReset().mockResolvedValue({ state: "ready", error: null })
     vi.mocked(herdrCapabilities).mockReset().mockResolvedValue(caps)
     vi.mocked(herdrSnapshot).mockReset().mockResolvedValue(rawSnapshot)
     vi.mocked(herdrWorktreeList).mockReset().mockResolvedValue({
@@ -446,6 +449,48 @@ describe("herdrStore", () => {
 
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
   })
+
+  it("switches between ready Sessions with live subscriptions without repeating bootstrap RPCs", async () => {
+    const store = useHerdrStore.getState()
+    await store.refreshSessions()
+    await store.bootstrap("default")
+    await store.bootstrap("work")
+    store.setEventsHealth("default", true, "default-events")
+    store.setEventsHealth("work", true, "work-events")
+    vi.mocked(herdrCapabilities).mockClear()
+    vi.mocked(herdrSnapshot).mockClear()
+    vi.mocked(herdrWorktreeList).mockClear()
+    const states: string[] = []
+    const stop = useHerdrStore.subscribe(state => { states.push(state.connectionState) })
+    try {
+      await store.selectSession("work")
+      await store.selectSession("default")
+    } finally { stop() }
+    expect(states).not.toContain("connecting")
+    expect(herdrCapabilities).not.toHaveBeenCalled()
+    expect(herdrSnapshot).not.toHaveBeenCalled()
+    expect(herdrWorktreeList).not.toHaveBeenCalled()
+  })
+
+  it.each(["unhealthy", "unsubscribed", "socket", "host", "error"])(
+    "renegotiates a previously ready Session after %s changes", async reason => {
+      const store = useHerdrStore.getState()
+      await store.refreshSessions()
+      await store.bootstrap("work")
+      store.setEventsHealth("work", true, "work-events")
+      if (reason === "unhealthy") store.setEventsHealth("work", false, "work-events")
+      if (reason === "unsubscribed") store.setEventsHealth("work", true, null)
+      if (reason === "socket") useHerdrStore.setState({ sessions: sessions.map(session => session.name === "work" ? { ...session, socketPath: "/tmp/replaced.sock" } : session) })
+      if (reason === "host") vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 2 })
+      if (reason === "error") {
+        const runtimes = useHerdrStore.getState().runtimesBySession
+        useHerdrStore.setState({ runtimesBySession: { ...runtimes, work: { ...runtimes.work, errorMessage: "stale stream" } } })
+      }
+      vi.mocked(herdrCapabilities).mockClear()
+      await store.selectSession("work")
+      expect(herdrCapabilities).toHaveBeenCalledExactlyOnceWith("work")
+    }
+  )
 
   it("marks stopped sessions without launching anything", async () => {
     await useHerdrStore.getState().refreshSessions()
@@ -854,6 +899,68 @@ describe("herdrStore", () => {
       focusedTabId: "tab-2",
       focusedPaneId: "pane-2"
     })
+  })
+
+  it("restores Space selection when clearing the runtime error is a no-op", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const runtime = useHerdrStore.getState().runtimesBySession.default
+    expect(runtime.errorMessage).toBeNull()
+    useHerdrStore.getState().setSelectedSpaceId("ws-2")
+
+    expect(await useHerdrStore.getState().restoreFocusedState("default")).toEqual({ ok: true })
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(useHerdrStore.getState().selectedSpaceBySession.default).toBe("ws-1")
+    expect(useHerdrStore.getState().runtimesBySession.default).toBe(runtime)
+  })
+
+  it("commits Tab selection when its runtime patch becomes a no-op during focus", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const tab = useHerdrStore.getState().tabs()[0]
+    useHerdrStore.getState().setSelectedSpaceId("ws-2")
+    // A runtime reset can remove the snapshot while the focus RPC is pending.
+    vi.mocked(herdrTabFocus).mockImplementationOnce(async () => {
+      useHerdrStore.setState(state => ({
+        runtimesBySession: {
+          ...state.runtimesBySession,
+          default: { ...state.runtimesBySession.default, snapshot: null, baseSnapshot: null }
+        }
+      }))
+    })
+
+    expect(await useHerdrStore.getState().activateTab(tab)).toEqual({ ok: true })
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(useHerdrStore.getState().selectedSpaceBySession.default).toBe("ws-1")
+    expect(useHerdrStore.getState().snapshot).toBeNull()
+  })
+
+  it.each(["Space", "Tab"])("composes %s selection with an updated runtime patch", async kind => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const tab = useHerdrStore.getState().tabs()[0]
+    useHerdrStore.getState().setSelectedSpaceId("ws-2")
+
+    const result = kind === "Space"
+      ? await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-1" })
+      : await useHerdrStore.getState().activateTab(tab)
+    expect(result).toEqual({ ok: true })
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
+    expect(useHerdrStore.getState().selectedSpaceBySession.default).toBe("ws-1")
+    expect(useHerdrStore.getState().snapshot?.focusedTabId).toBe(tab.id)
+  })
+
+  it("projects selected event health even when its runtime patch is a no-op", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    useHerdrStore.getState().setEventsHealth("default", true, "sub")
+    const runtime = useHerdrStore.getState().runtimesBySession.default
+    useHerdrStore.setState({ eventsHealthy: false, eventsSubscriptionId: null })
+
+    useHerdrStore.getState().setEventsHealth("default", true, "sub")
+    expect(useHerdrStore.getState().eventsHealthy).toBe(true)
+    expect(useHerdrStore.getState().eventsSubscriptionId).toBe("sub")
+    expect(useHerdrStore.getState().runtimesBySession.default).toBe(runtime)
   })
 
   it("restores the Yuzora page from Herdr focus without mutating Herdr focus", async () => {
@@ -1468,6 +1575,120 @@ describe("herdrStore", () => {
     expect(after.focusedPaneId).toBe(before.focusedPaneId)
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-1")
     expect(useHerdrStore.getState().applyWorkspaceOrder("default", ["missing", "ws-1"])).toBe(false)
+  })
+
+  it("retains session references and emits no store update for an identical poll", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    const before = useHerdrStore.getState()
+    const listener = vi.fn()
+    const unsubscribe = useHerdrStore.subscribe(listener)
+    try {
+      vi.mocked(herdrSessions).mockResolvedValue(sessions.map(session => ({ ...session })))
+      await useHerdrStore.getState().refreshSessions()
+      expect(useHerdrStore.getState()).toBe(before)
+      expect(listener).not.toHaveBeenCalled()
+      vi.mocked(herdrSessions).mockResolvedValue(sessions.map(session => ({ ...session, running: session.name === "work" ? false : session.running })))
+      await useHerdrStore.getState().refreshSessions()
+      expect(useHerdrStore.getState().sessions).not.toBe(before.sessions)
+      expect(useHerdrStore.getState().sessions[0]).toBe(before.sessions[0])
+      expect(useHerdrStore.getState().sessions[1]).not.toBe(before.sessions[1])
+      expect(useHerdrStore.getState().sessions[1].running).toBe(false)
+      expect(listener).toHaveBeenCalledOnce()
+    } finally { unsubscribe() }
+  })
+
+  it("keeps session identity across reordering and projects a removed selection", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    const before = useHerdrStore.getState().sessions
+    vi.mocked(herdrSessions).mockResolvedValue([...sessions].reverse().map(session => ({ ...session })))
+    await useHerdrStore.getState().refreshSessions()
+    expect(useHerdrStore.getState().sessions[0]).toBe(before[2])
+    vi.mocked(herdrSessions).mockResolvedValue([{ ...sessions[1] }])
+    await useHerdrStore.getState().refreshSessions()
+    expect(useHerdrStore.getState().selectedSessionName).toBe("work")
+  })
+
+  it("does not notify or replace snapshots, inventory, or health on identical polls", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    useHerdrStore.getState().setEventsHealth("default", true, "sub")
+    const before = useHerdrStore.getState()
+    const listener = vi.fn()
+    const unsubscribe = useHerdrStore.subscribe(listener)
+    try {
+      vi.mocked(herdrSnapshot).mockResolvedValue(JSON.parse(JSON.stringify(rawSnapshot)))
+      await useHerdrStore.getState().refreshSnapshot("default")
+      await useHerdrStore.getState().refreshWorktreeInventory("default")
+      useHerdrStore.getState().setEventsHealth("default", true, "sub")
+      expect(useHerdrStore.getState()).toBe(before)
+      expect(listener).not.toHaveBeenCalled()
+      vi.mocked(herdrSnapshot).mockResolvedValue({ ...rawSnapshot, snapshot: { ...rawSnapshot.snapshot, focused_pane_id: "changed" } })
+      await useHerdrStore.getState().refreshSnapshot("default")
+      expect(useHerdrStore.getState().snapshot).not.toBe(before.snapshot)
+      expect(useHerdrStore.getState().snapshot?.focusedPaneId).toBe("changed")
+      useHerdrStore.getState().setEventsHealth("default", false)
+      expect(useHerdrStore.getState().eventsHealthy).toBe(false)
+    } finally { unsubscribe() }
+  })
+
+  it("preserves seen attention on equal snapshots but still repairs event-derived attention", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const snapshot = useHerdrStore.getState().snapshot!
+    const blocked = { ...snapshot, agents: snapshot.agents.map(agent => ({ ...agent, status: "blocked" as const })) }
+    useHerdrStore.getState().applySnapshot("default", blocked)
+    useHerdrStore.getState().markAttentionSeen("default", "pane-1")
+    useHerdrStore.getState().setEventsHealth("default", true, "sub")
+    const before = useHerdrStore.getState()
+    useHerdrStore.getState().applySnapshot("default", JSON.parse(JSON.stringify(blocked)))
+    expect(useHerdrStore.getState()).toBe(before)
+    useHerdrStore.getState().applySubscriptionEvent("default", { type: "pane_exited", subscriptionId: "sub", paneId: "pane-1", workspaceId: "ws-1" })
+    expect(useHerdrStore.getState().attentionItems("default").some(item => item.paneId === "pane-1")).toBe(false)
+    useHerdrStore.getState().applySnapshot("default", blocked)
+    expect(useHerdrStore.getState().attentionItems("default").some(item => item.paneId === "pane-1")).toBe(true)
+  })
+
+  it("settles connecting into stopped when completed startup still reports a stopped session", async () => {
+    vi.mocked(herdrStartupStatus).mockResolvedValueOnce({ state: "starting", error: null })
+    vi.mocked(herdrSessions).mockResolvedValue([{ ...sessions[0], running: false }])
+    await useHerdrStore.getState().refreshSessions()
+    expect(useHerdrStore.getState().connectionState).toBe("connecting")
+    await useHerdrStore.getState().refreshSessions()
+    expect(useHerdrStore.getState().connectionState).toBe("stopped")
+  })
+
+  it("keeps only the local default connecting during startup without inventing running", async () => {
+    vi.mocked(herdrStartupStatus).mockResolvedValue({ state: "starting", error: null })
+    vi.mocked(herdrSessions).mockResolvedValue(sessions.map(session => ({ ...session, running: false })))
+    await useHerdrStore.getState().refreshSessions()
+    const state = useHerdrStore.getState()
+    expect(state.connectionState).toBe("connecting")
+    expect(state.errorMessage).toBeNull()
+    expect(state.sessions[0].running).toBe(false)
+    expect(isHerdrStartupPending(state, state.sessions[0])).toBe(true)
+    expect(isHerdrStartupPending(state, { ...state.sessions[0], hostId: "remote" })).toBe(false)
+    expect(isHerdrStartupPending(state, state.sessions[1])).toBe(false)
+    await state.bootstrap("default")
+    await state.refreshSnapshot("default")
+    await state.selectSession("default")
+    expect(useHerdrStore.getState().connectionState).toBe("connecting")
+    expect(herdrCapabilities).not.toHaveBeenCalled()
+    expect(herdrSnapshot).not.toHaveBeenCalled()
+    await state.bootstrap("work")
+    expect(useHerdrStore.getState().runtimesBySession.work.connectionState).toBe("stopped")
+    useHerdrStore.getState().setHerdrStartup({ state: "failed", error: "startup failed" })
+    expect(useHerdrStore.getState().connectionState).toBe("error")
+    expect(useHerdrStore.getState().errorMessage).toBe("startup failed")
+  })
+
+  it("does not let an older status query overwrite the startup completion event", async () => {
+    let resolve!: (status: { state: "starting"; error: null }) => void
+    vi.mocked(herdrStartupStatus).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const poll = useHerdrStore.getState().refreshSessions()
+    useHerdrStore.getState().setHerdrStartup({ state: "failed", error: "failed" })
+    resolve({ state: "starting", error: null })
+    await poll
+    expect(useHerdrStore.getState().herdrStartup).toEqual({ state: "failed", error: "failed" })
   })
 
   it("does not apply or repeatedly poll snapshots during a workspace mutation", async () => {

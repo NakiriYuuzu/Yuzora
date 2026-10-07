@@ -57,10 +57,12 @@ async fn authenticate_password(
         .await
         .map_err(|error| format!("SSH 密碼驗證發生錯誤：{error}"))?;
     let mut answered = false;
-    for _ in 0..3 {
+    // Classify the final response too, without answering a fourth challenge.
+    for round in 0..=3 {
         match reply {
             Reply::Success => return Ok(true),
             Reply::Failure { .. } => return Ok(false),
+            Reply::InfoRequest { .. } if round == 3 => break,
             Reply::InfoRequest { prompts, .. } => {
                 let responses = if prompts.is_empty() {
                     Vec::new()
@@ -1128,10 +1130,10 @@ fn temp_transfer_name(name: &str, token: &str) -> String {
 /// Directories first, then case-insensitive by name — matching the local tree's
 /// ordering (`fs_service::list_dir_entries`). Pure, so it's unit-tested.
 fn sort_sftp_entries(entries: &mut [SftpEntry]) {
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    entries.sort_by_cached_key(|entry| {
+        // Compute one Unicode lowercase key per entry.
+        // Equal keys retain their input order.
+        (!entry.is_dir, entry.name.to_lowercase())
     });
 }
 
@@ -1467,9 +1469,13 @@ impl SshManager {
             .await
             .map_err(|e| format!("無法解析遠端路徑：{e}"))?;
         let read = sftp
-            .read_dir(cwd.clone())
+            .read_dir_bounded(cwd.clone(), 50_000, 16 * 1024 * 1024)
             .await
-            .map_err(|e| format!("無法讀取遠端目錄 {cwd}：{e}"))?;
+            .map_err(|e| match e {
+                russh_sftp::client::error::Error::Limited(_) => "sftp-directory-limit".into(),
+                russh_sftp::client::error::Error::Timeout => "sftp-directory-timeout".into(),
+                _ => format!("無法讀取遠端目錄 {cwd}：{e}"),
+            })?;
         let mut entries: Vec<SftpEntry> = read
             .map(|entry| {
                 let ft = entry.file_type();
@@ -1735,21 +1741,30 @@ impl SshManager {
         let mut scratch = destinations.take_scratch(destination_capability_id, transfer_id)?;
         let _slot = self.transfer_dests.acquire(scratch.dest_key())?;
         let sftp = transfer.run(self.ensure_sftp(session_id)).await?;
-        let total = sftp
-            .metadata(remote_path.to_string())
-            .await
-            .ok()
-            .and_then(|m| m.size)
-            .unwrap_or(0);
-        let mut remote = match sftp.open(remote_path.to_string()).await {
-            Ok(file) => file,
-            Err(_) => {
-                scratch.discard();
-                return Err("sftp-remote-open-failed".into());
-            }
-        };
-
-        let mut out = tokio::fs::File::from_std(scratch.take_file());
+        let mut remote = transfer
+            .run(async {
+                sftp.open(remote_path.to_string())
+                    .await
+                    .map_err(|_| "sftp-remote-open-failed".into())
+            })
+            .await?;
+        // FSTAT binds the expected length/type to the opened handle, not a
+        // pathname the server could replace between STAT and OPEN.
+        let metadata = transfer
+            .run(async {
+                remote
+                    .metadata()
+                    .await
+                    .map_err(|_| "sftp-size-unknown".into())
+            })
+            .await?;
+        if !metadata.is_regular() {
+            return Err("sftp-not-regular-file".into());
+        }
+        let total = metadata.size.ok_or("sftp-size-unknown")?;
+        let file = scratch.take_file();
+        let mut budget = crate::sftp_download_budget::DownloadBudget::acquire(&file, total)?;
+        let mut out = tokio::fs::File::from_std(file);
 
         let mut buf = vec![0u8; SFTP_CHUNK];
         let mut transferred = 0u64;
@@ -1759,34 +1774,42 @@ impl SshManager {
         let copy = transfer
             .run(async {
                 loop {
-                    let n = remote
-                        .read(&mut buf)
+                    let n = tokio::time::timeout(Duration::from_secs(60), remote.read(&mut buf))
                         .await
+                        .map_err(|_| "sftp-read-timeout")?
                         .map_err(|_| "sftp-read-failed".to_string())?;
                     if n == 0 {
                         break;
                     }
+                    budget.before_write(n)?;
                     out.write_all(&buf[..n])
                         .await
                         .map_err(|_| "sftp-write-failed".to_string())?;
+                    budget.written(n);
                     transferred += n as u64;
                     if transferred - last_emit >= SFTP_PROGRESS_STEP {
                         last_emit = transferred;
                         progress(transferred, total, false);
                     }
                 }
+                budget.finish()?;
                 out.sync_all()
                     .await
                     .map_err(|_| "sftp-write-failed".to_string())
             })
             .await;
 
+        // Release the budget's duplicate handle before cleanup or promotion.
+        drop(budget);
         // Close the temp file so the rename sees a released handle on every platform.
         drop(out);
         if let Err(e) = copy {
             scratch.discard();
             return Err(e);
         }
+        transfer
+            .run(async { remote.close().await.map_err(|_| "sftp-close-failed".into()) })
+            .await?;
         transfer.check()?;
         if scratch.promote().is_err() {
             return Err("sftp-promote-failed".into());
@@ -2795,20 +2818,36 @@ mod tests {
         spawn_test_ssh_server_with_auth(host_key, auth_calls, false).await
     }
 
+    struct KeyboardAuthStep {
+        expected_response: Option<Vec<&'static str>>,
+        reply: russh::server::Auth,
+    }
+
     async fn spawn_test_ssh_server_with_auth(
         host_key: russh::keys::PrivateKey,
         auth_calls: Arc<Mutex<Vec<String>>>,
         keyboard_only: bool,
+    ) -> u16 {
+        spawn_test_ssh_server_with_auth_steps(host_key, auth_calls, keyboard_only, Vec::new()).await
+    }
+
+    async fn spawn_test_ssh_server_with_auth_steps(
+        host_key: russh::keys::PrivateKey,
+        auth_calls: Arc<Mutex<Vec<String>>>,
+        keyboard_only: bool,
+        keyboard_steps: Vec<KeyboardAuthStep>,
     ) -> u16 {
         use russh::server::{self, Auth, Server as _};
 
         struct TestServer {
             auth_calls: Arc<Mutex<Vec<String>>>,
             keyboard_only: bool,
+            keyboard_steps: std::collections::VecDeque<KeyboardAuthStep>,
         }
         struct TestHandler {
             auth_calls: Arc<Mutex<Vec<String>>>,
             keyboard_only: bool,
+            keyboard_steps: std::collections::VecDeque<KeyboardAuthStep>,
         }
         impl server::Server for TestServer {
             type Handler = TestHandler;
@@ -2816,6 +2855,7 @@ mod tests {
                 TestHandler {
                     auth_calls: self.auth_calls.clone(),
                     keyboard_only: self.keyboard_only,
+                    keyboard_steps: std::mem::take(&mut self.keyboard_steps),
                 }
             }
         }
@@ -2847,6 +2887,24 @@ mod tests {
                 _submethods: &str,
                 response: Option<server::Response<'a>>,
             ) -> Result<Auth, Self::Error> {
+                if let Some(step) = self.keyboard_steps.pop_front() {
+                    let response = response.map(|response| {
+                        response
+                            .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
+                            .collect::<Vec<_>>()
+                    });
+                    assert_eq!(
+                        response,
+                        step.expected_response.map(|values| {
+                            values.into_iter().map(String::from).collect::<Vec<_>>()
+                        })
+                    );
+                    self.auth_calls
+                        .lock()
+                        .unwrap()
+                        .push(format!("keyboard:{user}"));
+                    return Ok(step.reply);
+                }
                 if let Some(mut response) = response {
                     self.auth_calls
                         .lock()
@@ -2891,6 +2949,7 @@ mod tests {
         let mut server = TestServer {
             auth_calls,
             keyboard_only,
+            keyboard_steps: keyboard_steps.into(),
         };
         tokio::spawn(async move {
             let _ = server.run_on_socket(Arc::new(config), &listener).await;
@@ -3007,6 +3066,147 @@ mod tests {
         assert!(error.contains("認證失敗"));
         assert!(!error.contains("incorrect"));
         assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    fn keyboard_challenge(prompts: Vec<(&'static str, bool)>) -> russh::server::Auth {
+        russh::server::Auth::Partial {
+            name: "PAM".into(),
+            instructions: "Authentication notification".into(),
+            prompts: prompts
+                .into_iter()
+                .map(|(text, echo)| (text.into(), echo))
+                .collect::<Vec<_>>()
+                .into(),
+        }
+    }
+
+    async fn assert_keyboard_connect_script(
+        steps: Vec<KeyboardAuthStep>,
+        expected_error: Option<&str>,
+    ) {
+        let expected_keyboard_calls = steps.len();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let key = russh::keys::PrivateKey::from_openssh(TEST_HOST_KEY).unwrap();
+        let port = spawn_test_ssh_server_with_auth_steps(key, calls.clone(), true, steps).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (manager, prompts) = test_manager(
+            tmp.path().join("known_hosts.json"),
+            Duration::from_secs(5),
+            Arc::new(StdHostKeyIo),
+        );
+        let manager = Arc::new(manager);
+        let connection = spawn_connect(manager.clone(), "127.0.0.1", port, "alice");
+        let SshHostKeyPrompt::New {
+            challenge_id,
+            endpoint,
+            fingerprint,
+            ..
+        } = wait_for_new_prompt(&prompts).await
+        else {
+            panic!("expected host-key prompt");
+        };
+        assert!(calls.lock().unwrap().is_empty());
+        manager
+            .respond_host_key(&challenge_id, true, &endpoint, &fingerprint)
+            .unwrap();
+        let result = connection.await.unwrap();
+        let mut expected_calls = vec!["password:alice"];
+        expected_calls.extend(vec!["keyboard:alice"; expected_keyboard_calls]);
+        assert_eq!(calls.lock().unwrap().as_slice(), expected_calls);
+        if let Some(expected_error) = expected_error {
+            assert_eq!(result.unwrap_err(), expected_error);
+        } else {
+            let result = result.expect("third keyboard-interactive response must accept success");
+            manager.disconnect(&result.session_id).await.unwrap();
+        }
+        assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    fn three_round_keyboard_steps(terminal_reply: russh::server::Auth) -> Vec<KeyboardAuthStep> {
+        vec![
+            KeyboardAuthStep {
+                expected_response: None,
+                reply: keyboard_challenge(vec![]),
+            },
+            KeyboardAuthStep {
+                expected_response: Some(vec![]),
+                reply: keyboard_challenge(vec![("Password:", false)]),
+            },
+            KeyboardAuthStep {
+                expected_response: Some(vec!["secret"]),
+                reply: keyboard_challenge(vec![]),
+            },
+            KeyboardAuthStep {
+                expected_response: Some(vec![]),
+                reply: terminal_reply,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_accepts_third_round_success() {
+        assert_keyboard_connect_script(
+            three_round_keyboard_steps(russh::server::Auth::Accept),
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_classifies_third_round_failure() {
+        assert_keyboard_connect_script(
+            three_round_keyboard_steps(russh::server::Auth::reject()),
+            Some("SSH 認證失敗：帳號、密碼或金鑰不正確"),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_rejects_fourth_challenge_without_answering() {
+        assert_keyboard_connect_script(
+            three_round_keyboard_steps(keyboard_challenge(vec![])),
+            Some("SSH 主機重複要求驗證，連線已中止"),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_never_reuses_password_for_additional_prompts() {
+        for prompt in ["Password:", "OTP:", "One-time password:", "New password:"] {
+            assert_keyboard_connect_script(
+                vec![
+                    KeyboardAuthStep {
+                        expected_response: None,
+                        reply: keyboard_challenge(vec![("Password:", false)]),
+                    },
+                    KeyboardAuthStep {
+                        expected_response: Some(vec!["secret"]),
+                        reply: keyboard_challenge(vec![(prompt, false)]),
+                    },
+                ],
+                Some("SSH 主機要求額外互動驗證；目前密碼連線只支援單一密碼提示"),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_never_answers_unsafe_initial_prompts() {
+        for prompts in [
+            vec![("Password:", true)],
+            vec![("OTP:", false)],
+            vec![("New password:", false)],
+            vec![("Password:", false), ("OTP:", false)],
+        ] {
+            assert_keyboard_connect_script(
+                vec![KeyboardAuthStep {
+                    expected_response: None,
+                    reply: keyboard_challenge(prompts),
+                }],
+                Some("SSH 主機要求額外互動驗證；目前密碼連線只支援單一密碼提示"),
+            )
+            .await;
+        }
     }
 
     pub(super) const TEST_HOST_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
@@ -3609,8 +3809,83 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
         let order: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(order, vec!["Alpha", "apple", "beta.txt", "Zebra.txt"]);
     }
+
+    #[test]
+    fn sftp_sort_preserves_metadata_and_unicode_tie_order() {
+        let names = [
+            "A",
+            "a",
+            "İ",
+            "i\u{307}",
+            "Σ",
+            "σ",
+            "ς",
+            "É",
+            "é",
+            "中文😀",
+            "a\nb",
+            "",
+            "\0bad",
+        ];
+        for count in 0..=128 {
+            for order in 0..4 {
+                let mut actual: Vec<_> = (0..count)
+                    .map(|index| {
+                        let mut value =
+                            entry(names[(index * 7) % names.len()], index.is_multiple_of(3));
+                        value.path = format!("/owned/{index}");
+                        value.size = index as u64;
+                        value.name_safe = !index.is_multiple_of(11);
+                        value.is_symlink = index.is_multiple_of(17);
+                        value
+                    })
+                    .collect();
+                if order == 1 {
+                    actual.reverse();
+                }
+                if order == 2 {
+                    actual.rotate_left(count / 2);
+                }
+                let mut expected = actual.clone();
+                expected.sort_by(|a, b| {
+                    b.is_dir
+                        .cmp(&a.is_dir)
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+                if order == 3 {
+                    actual = expected.clone();
+                }
+                sort_sftp_entries(&mut actual);
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap(),
+                    "{count}/{order}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
 #[path = "sftp_integration_tests.rs"]
 mod sftp_integration_tests;
+
+#[cfg(all(test, unix))]
+#[path = "ssh_tcp_open_tests.rs"]
+mod tcp_open_tests;
+
+#[cfg(test)]
+#[path = "sftp_directory_contract_tests.rs"]
+mod directory_contract_tests;
+
+#[cfg(test)]
+#[path = "sftp_file_contract_tests.rs"]
+mod file_contract_tests;
+
+#[cfg(test)]
+#[path = "sftp_orphan_handle_contract_tests.rs"]
+mod orphan_handle_contract_tests;
+
+#[cfg(test)]
+#[path = "sftp_close_ack_tests.rs"]
+mod close_ack_tests;

@@ -26,6 +26,7 @@ import { InputGroup,InputGroupInput,InputGroupAddon,InputGroupButton } from "@/c
 import { Empty,EmptyHeader,EmptyTitle,EmptyDescription,EmptyContent } from "@/components/ui/empty"
 import { EditorSyntaxSettings } from "./EditorSyntaxSettings"
 import { UpdateChannelSettings } from "./UpdateChannelSettings"
+import { UpdateInstallConfirmDialog } from "./UpdateInstallConfirmDialog"
 import { KeyboardSettings } from "./KeyboardSettings"
 import { SettingsThemePicker } from "./SettingsThemePicker"
 import { SETTINGS_GROUPS,settingsSearchResults,type SettingsSectionId } from "./settings-search"
@@ -36,8 +37,6 @@ import {
   DialogClose,
   DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
   DialogTitle,
   dialogMinSize,
 } from "@/components/ui/dialog"
@@ -197,6 +196,7 @@ export function SettingsDialog({
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [installBlockedByDirty, setInstallBlockedByDirty] = useState(false)
   const [installConfirmationOpen, setInstallConfirmationOpen] = useState(false)
+  const [installConfirmationNonce, setInstallConfirmationNonce] = useState(0)
   const isWindows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent)
   const settingsLogSource = useUiStore((s) => s.settingsLogSource)
   const updateStatus = useUpdateStore((s) => s.status)
@@ -284,6 +284,7 @@ export function SettingsDialog({
       return
     }
     setInstallBlockedByDirty(false)
+    setInstallConfirmationNonce((nonce) => nonce + 1)
     setInstallConfirmationOpen(true)
   }
 
@@ -569,38 +570,16 @@ export function SettingsDialog({
           </div>
         </Tabs>
       </DialogContent>
-      <Dialog open={installConfirmationOpen} onOpenChange={setInstallConfirmationOpen}>
-<DialogContent
-          resizeId="settings-install"
-          showCloseButton={false}
-          className="flex min-h-0 flex-col"
-        >
-          <DialogHeader>
-            <DialogTitle>{tw("settings.installConfirmTitle")}</DialogTitle>
-            <DialogDescription>
-              {tw("settings.installConfirmDescription")}
-              {isWindows && (
-                <span className="mt-2 block font-medium text-(--ink-1)">
-                  {tw("settings.installConfirmWindowsHerdr")}
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setInstallConfirmationOpen(false)}>
-              {tw("settings.cancelInstall")}
-            </Button>
-            <Button
-              onClick={() => {
-                setInstallConfirmationOpen(false)
-                void installAndRelaunch()
-              }}
-            >
-              {tw("settings.installAndRestart")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <UpdateInstallConfirmDialog
+        key={installConfirmationNonce}
+        open={installConfirmationOpen}
+        onOpenChange={setInstallConfirmationOpen}
+        stopHerdr={isWindows}
+        onConfirm={() => {
+          setInstallConfirmationOpen(false)
+          void installAndRelaunch()
+        }}
+      />
     </Dialog>
   )
 }

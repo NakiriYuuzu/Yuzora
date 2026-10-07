@@ -23,6 +23,7 @@ import { WorkspaceTrustHost } from "@/workbench/WorkspaceTrustHost";
 import { ConfirmDialogHost } from "@/workbench/ConfirmDialogHost";
 import { TextInputDialogHost } from "@/workbench/TextInputDialogHost";
 import { GitRollbackDialog } from "@/workbench/git/GitRollbackDialog";
+import { GitConflictHost } from "@/workbench/git/GitConflictHost";
 
 function App() {
   return (
@@ -53,6 +54,7 @@ function App() {
       <ConfirmDialogHost />
       <TextInputDialogHost />
       <GitRollbackDialog />
+      <GitConflictHost />
     </>
   );
 }

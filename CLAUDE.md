@@ -58,14 +58,14 @@ Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact 
 
 ## 測試慣例
 
-- vitest + jsdom（`src/test/setup.ts`、globals on）；測試檔與原始碼同目錄、`.test.ts(x)` 後綴。
+- Vitest 分為 node／jsdom projects（globals on）：`src/test/nodeTests.json` 精確 allowlist 使用 node，其餘與新增測試預設 jsdom（`src/test/setup.ts`）；新增 DOM 依賴時移除對應 allowlist 路徑。測試通常同目錄、`.test.ts(x)` 後綴；Node-dependent config 測試放 repo root，避免污染 browser types。
 - root `tests/`＝DB docker-compose 與 integration fixtures；root `fixtures/`＝非單元測試所需的可執行／資料 fixtures。
 - jsdom 測不到的（watcher、tab 拖曳、dialog、HERDR terminal 視覺）→ 用 `gui-acceptance` 或已授權的 computer-use 實機驗收。
-- Rust 單元測試 inline；`lib.rs` 的 `command_inventory_tests` 會解析自身原始碼守護 shutdown 順序——改 `run()` 結構前先看它。
+- Rust 單元測試採 inline 或 `<module>/tests.rs`；`lib.rs` 的 `command_inventory_tests` 會解析自身原始碼守護 shutdown 順序——改 `run()` 結構前先看它。
 
 ## CI 守門（`ci.yml`）
 
-frontend（lint→typecheck→test→build）＋三平台 `cargo check --locked --all-targets`＋macOS 上 fmt／clippy／`cargo test`＋Linux 真實資料庫 integration。
+frontend checks（lint→typecheck→build）與 3 個 test shards 平行；固定名稱 `Frontend (lint · typecheck · test · build)` aggregator 要求全部成功。checks／各 shard 先建立 Pages/demo fixtures。另有三平台 `cargo check --locked --all-targets`＋macOS 上 fmt／clippy／`cargo test`＋Linux 真實資料庫 integration。
 
 **Clippy 是 exact baseline**（`.github/clippy-baseline.json`，fingerprint＝code/file/line/message/count）：任何 warning 的新增、消失、搬移都會 fail。修掉或新增 warning 後要同步更新該 JSON（腳本只驗證、不重產）。
 

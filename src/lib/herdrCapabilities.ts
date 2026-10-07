@@ -53,6 +53,16 @@ export function supportsHerdrTerminalScroll(
 
 export type HerdrScrollStrategy = "pane" | "terminal" | "unavailable"
 
+function isWslRuntime(hostId?: string | null, hostKind?: "ssh" | "wsl"): boolean {
+  return hostKind === "wsl" || (!hostKind && /^wsl[:-]/i.test(hostId ?? ""))
+}
+
+function runtimeProtocol(capabilities: HerdrCapabilities | null | undefined): number | null | undefined {
+  return capabilities?.api.schemaProtocol
+    ?? capabilities?.binaryProtocol
+    ?? capabilities?.server.protocol
+}
+
 /**
  * The WSL bridge shipped with protocol 20 advertises terminal control but
  * can terminate the connector when it receives `terminal.scroll`. Keep that
@@ -65,10 +75,8 @@ export function herdrScrollStrategyForRuntime(
   hostId?: string | null,
   hostKind?: "ssh" | "wsl"
 ): HerdrScrollStrategy {
-  if (hostKind === "wsl" || (!hostKind && /^wsl[:-]/i.test(hostId ?? ""))) {
-    const protocol = capabilities?.api.schemaProtocol
-      ?? capabilities?.binaryProtocol
-      ?? capabilities?.server.protocol
+  if (isWslRuntime(hostId, hostKind)) {
+    const protocol = runtimeProtocol(capabilities)
     if (protocol == null || protocol < 22) return "unavailable"
     // The WSL bridge historically tears down its connector when receiving
     // terminal.scroll. Protocol 22 is the boundary where the pane-owned API
@@ -76,12 +84,31 @@ export function herdrScrollStrategyForRuntime(
     return supportsHerdrPaneScrollCandidate(capabilities) ? "pane" : "unavailable"
   }
   // Native desktop HERDR uses the same pane API as WSL when it is available:
-  // absolute "latest offset wins" writes at a steady cadence felt smoother on
-  // macOS than the relative connector command, which remains the fallback for
-  // runtimes without the pane API (frame-paced in the transport).
+  // absolute "latest offset wins" writes drive the scrollbar. Physical wheels
+  // still go through the connector where supportsHerdrApplicationWheel allows
+  // it, because only HERDR knows whether the child owns the wheel.
   if (supportsHerdrPaneScrollCandidate(capabilities)) return "pane"
   if (supportsHerdrTerminalScroll(capabilities)) return "terminal"
   return herdrScrollStrategy(capabilities)
+}
+
+/**
+ * `pane.scroll` only moves host scrollback; it never reaches a TUI that owns
+ * the wheel (Claude Code fullscreen, vim, less, or a normal-buffer app with
+ * mouse reporting). The connector command lets HERDR route every physical
+ * wheel like its official client: mouse report, alternate-scroll keys or
+ * host scrollback. WSL keeps the protocol 22 boundary above: the
+ * connector-closing `terminal.scroll` report predates that runtime.
+ */
+export function supportsHerdrApplicationWheel(
+  capabilities: HerdrCapabilities | null | undefined,
+  hostId?: string | null,
+  hostKind?: "ssh" | "wsl"
+): boolean {
+  if (!supportsHerdrTerminalScroll(capabilities)) return false
+  if (!isWslRuntime(hostId, hostKind)) return true
+  const protocol = runtimeProtocol(capabilities)
+  return protocol != null && protocol >= 22
 }
 
 export function herdrScrollStrategy(

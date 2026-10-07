@@ -270,6 +270,14 @@ describe("TerminalOutputQueue soak", () => {
 })
 
 describe("TerminalOutputQueue UTF-8 accounting", () => {
+  it.each([0, 31, 32, 4096])("counts Unicode suffixes after %i ASCII code units without splitting surrogates", (prefixLength) => {
+    const encoder = new TextEncoder()
+    for (const suffix of ["", "\x00\x7f", "é", "中文", "😀", "\ud800", "\udc00", "\ud800x"]) {
+      const text = "a".repeat(prefixLength) + suffix
+      expect(utf8Length(text)).toBe(encoder.encode(text).length)
+    }
+  })
+
   it("counts UTF-8 bytes, not UTF-16 code units", () => {
     expect(utf8Length("abc")).toBe(3)
     expect(utf8Length("編譯完成")).toBe(12)
@@ -519,4 +527,135 @@ describe("terminal output metrics registry", () => {
     unregisterTerminalOutputQueue("session-a")
     expect(terminalOutputMetricsSnapshot()).toEqual({})
   })
+})
+
+function referenceOutputBuffer(limit: number) {
+  const encoder = new TextEncoder()
+  const chunks: string[] = []
+  const bytes = (text: string) => encoder.encode(text).length
+  let size = 0
+  let dropped = 0
+  let truncated = false
+  return {
+    chunks,
+    get size() { return size },
+    get dropped() { return dropped },
+    get truncated() { return truncated },
+    push(text: string) {
+      const length = bytes(text)
+      if (!length) return
+      chunks.push(text)
+      size += length
+      while (size > limit) {
+        truncated = true
+        if (chunks.length > 1) {
+          const removed = bytes(chunks.shift()!)
+          size -= removed
+          dropped += removed
+        } else {
+          const points = Array.from(chunks[0])
+          const suffix: string[] = []
+          let tailSize = 0
+          for (let index = points.length - 1; index >= 0; index -= 1) {
+            const length = bytes(points[index])
+            if (tailSize + length > limit) break
+            suffix.unshift(points[index])
+            tailSize += length
+          }
+          dropped += size - tailSize
+          chunks[0] = suffix.join("")
+          size = tailSize
+        }
+      }
+    },
+  }
+}
+
+it("keeps FIFO bytes and output identical across repeated hidden-buffer compaction", () => {
+  for (const limit of [1, 3, 8, 64, 4096]) {
+    const writes: string[] = []
+    const queue = new TerminalOutputQueue((data, done) => { writes.push(data); done?.() }, false, limit)
+    const reference = referenceOutputBuffer(limit)
+    const inputs = ["a", "你", "🙂", "\ud800", "\udc00", "\u001b[31mx", "界🙂a".repeat(7)]
+    for (let index = 0; index < 4000; index += 1) {
+      const input = inputs[index % inputs.length]
+      reference.push(input)
+      queue.push(input)
+      expect(queue.hiddenBytes).toBe(reference.size)
+      expect(queue.droppedBytes).toBe(reference.dropped)
+      expect(queue.needsResync).toBe(reference.truncated)
+    }
+    const visible = referenceOutputBuffer(limit)
+    if (reference.truncated) visible.push(TERMINAL_OUTPUT_TRUNCATED_NOTICE)
+    for (const chunk of reference.chunks) visible.push(chunk)
+    queue.setVisible(true)
+    queue.flushNow()
+    expect(writes.join("")).toBe((visible.truncated ? TERMINAL_OUTPUT_TRUNCATED_NOTICE : "") + visible.chunks.join(""))
+    expect(queue.droppedBytes).toBe(reference.dropped + visible.dropped)
+    queue.dispose()
+    expect(frames.size).toBe(0)
+  }
+})
+
+it("preserves blocked output through visibility changes and an authoritative replacement", () => {
+  const writes: string[] = []
+  let complete: (() => void) | undefined
+  let block = true
+  const queue = new TerminalOutputQueue((data, done) => {
+    writes.push(data)
+    if (block) { block = false; complete = done }
+    else done?.()
+  }, true, 20000)
+  queue.push("in flight")
+  queue.flushNow()
+  const pending = referenceOutputBuffer(20000)
+  for (let index = 0; index < 40000; index += 1) {
+    const text = index % 17 === 0 ? "界" : String.fromCharCode(65 + index % 26)
+    pending.push(text)
+    queue.push(text)
+  }
+  expect(queue.pendingBytes).toBe(pending.size)
+  const dropped = queue.droppedBytes
+  queue.setVisible(false)
+  expect(queue.hiddenBytes).toBe(pending.size)
+  expect(queue.pendingBytes).toBe(0)
+  queue.setVisible(true)
+  const restored = referenceOutputBuffer(20000)
+  if (pending.truncated) restored.push(TERMINAL_OUTPUT_TRUNCATED_NOTICE)
+  for (const chunk of pending.chunks) restored.push(chunk)
+  complete?.()
+  queue.flushNow()
+  expect(writes[1]).toBe((restored.truncated ? TERMINAL_OUTPUT_TRUNCATED_NOTICE : "") + restored.chunks.join(""))
+  expect(queue.droppedBytes).toBe(dropped + restored.dropped)
+  queue.setVisible(false)
+  for (let index = 0; index < 200; index += 1) queue.push(`stale-${index}`)
+  queue.replace("authoritative".repeat(2000))
+  queue.push(":current tail")
+  queue.setVisible(true)
+  queue.flushNow()
+  expect(writes.at(-1)).toBe("authoritative".repeat(2000) + ":current tail")
+  queue.dispose()
+  expect(frames.size).toBe(0)
+})
+
+it("releases evicted strings and bounds queue storage during long fragmentation", () => {
+  const limit = 20000
+  const queue = new TerminalOutputQueue((_data, done) => done?.(), false, limit)
+  const evicted = "discard this allocation:" + "x".repeat(2000)
+  queue.push(evicted)
+  const storage = queue as unknown as { hiddenChunks: string[]; hiddenSizes: number[]; hiddenHead: number; pendingChunks: string[]; pendingHead?: number }
+  for (let index = 0; index < 100000; index += 1) {
+    queue.push(String.fromCharCode(65 + index % 26))
+    expect(storage.hiddenChunks.length).toBeLessThanOrEqual(limit * 2 + 128)
+    expect(storage.hiddenSizes.length).toBe(storage.hiddenChunks.length)
+    expect(queue.hiddenBytes).toBeLessThanOrEqual(limit)
+  }
+  expect(storage.hiddenChunks).not.toContain(evicted)
+  expect(storage.hiddenChunks.slice(0, storage.hiddenHead).every(value => value === "")).toBe(true)
+  queue.dispose()
+  expect(storage.hiddenChunks).toHaveLength(0)
+  expect(storage.pendingChunks).toHaveLength(0)
+  expect(storage.hiddenHead).toBe(0)
+  expect(storage.pendingHead ?? 0).toBe(0)
+  expect(frames.size).toBe(0)
 })

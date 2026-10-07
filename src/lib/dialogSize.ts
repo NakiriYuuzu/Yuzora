@@ -26,7 +26,6 @@ export const DIALOG_SIZE_IDS = [
   "command-palette",
   "symbol-picker",
   "settings",
-  "settings-install",
   "database-recovery",
   "database-connection",
   "ssh-host",
@@ -37,6 +36,9 @@ export const DIALOG_SIZE_IDS = [
   "external-change",
   "git-rollback",
   "git-diff",
+  "git-conflicts",
+  "git-merge",
+  "git-stash",
 ] as const
 
 export type DialogSizeId = (typeof DIALOG_SIZE_IDS)[number]
@@ -84,7 +86,7 @@ export function isValidRatio(value: unknown): value is number {
 }
 
 export function defaultDialogSizePreference(id?: DialogSizeId): DialogSizePreference {
-  if (id === "git-diff") return { widthRatio: 1, heightRatio: 1 }
+  if (id === "git-diff" || id === "git-merge") return { widthRatio: 1, heightRatio: 1 }
   return {
     widthRatio: DEFAULT_DIALOG_SIZE_RATIO,
     heightRatio: DEFAULT_DIALOG_SIZE_RATIO,

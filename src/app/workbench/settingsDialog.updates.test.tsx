@@ -1,15 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
-const { check, getVersion, relaunch } = vi.hoisted(() => ({
+const { check, getVersion, relaunch, updateHerdrProcesses, updateStopHerdr } = vi.hoisted(() => ({
   check: vi.fn(),
   getVersion: vi.fn(async () => "0.0.3"),
   relaunch: vi.fn(async () => undefined),
+  updateHerdrProcesses: vi.fn(),
+  updateStopHerdr: vi.fn(),
 }))
 
 vi.mock("@tauri-apps/api/app", () => ({ getVersion }))
 vi.mock("@tauri-apps/plugin-updater", () => ({ check }))
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch }))
+vi.mock("@/lib/updateChannel", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/updateChannel")>()),
+  updateHerdrProcesses,
+  updateStopHerdr,
+}))
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }))
@@ -37,10 +44,29 @@ function installLocalStorage(): void {
   })
 }
 
+const originalUserAgent = window.navigator.userAgent
+
+function setUserAgent(value: string): void {
+  Object.defineProperty(window.navigator, "userAgent", {
+    configurable: true,
+    value,
+  })
+}
+
+afterEach(() => {
+  setUserAgent(originalUserAgent)
+})
+
 beforeEach(() => {
   cleanup()
   vi.clearAllMocks()
   check.mockResolvedValue(null)
+  updateHerdrProcesses.mockResolvedValue({
+    path: "C:\\Program Files\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+    version: "0.9.3",
+    pids: [101, 202],
+  })
+  updateStopHerdr.mockResolvedValue(undefined)
   getVersion.mockResolvedValue("0.0.3")
   relaunch.mockResolvedValue(undefined)
   useUpdateStore.getState().reset()
@@ -316,7 +342,7 @@ describe("Settings · About & Updates pane", () => {
     const installButton = await screen.findByRole("button", { name: "Install and restart" })
     fireEvent.click(installButton)
 
-    let confirmation = await screen.findByRole("dialog", {
+    let confirmation = await screen.findByRole("alertdialog", {
       name: "Install update and restart?",
     })
     expect(
@@ -328,14 +354,14 @@ describe("Settings · About & Updates pane", () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole("dialog", { name: "Install update and restart?" })
+        screen.queryByRole("alertdialog", { name: "Install update and restart?" })
       ).not.toBeInTheDocument()
     )
     expect(install).not.toHaveBeenCalled()
     expect(relaunch).not.toHaveBeenCalled()
 
     fireEvent.click(installButton)
-    confirmation = await screen.findByRole("dialog", {
+    confirmation = await screen.findByRole("alertdialog", {
       name: "Install update and restart?",
     })
     fireEvent.click(
@@ -352,38 +378,104 @@ describe("Settings · About & Updates pane", () => {
     await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
   })
 
-  it("warns Windows users to close HERDR before installing", async () => {
-    Object.defineProperty(window.navigator, "userAgent", {
-      configurable: true,
-      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    })
+  it("does not stop HERDR outside Windows", async () => {
+    setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
     const install = vi.fn(async () => undefined)
     const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
       onEvent?.({ event: "Finished" })
     })
     check.mockResolvedValue({ version: "0.0.4", download, install })
 
-    render(
-      <SettingsDialog
-        open
-        onOpenChange={() => {}}
-        theme="light"
-        onThemeChange={() => {}}
-        initialSection="about"
-      />,
-    )
+    await openInstallConfirmation()
+    const confirmation = await screen.findByRole("alertdialog", {
+      name: "Install update and restart?",
+    })
+    expect(within(confirmation).queryByText(/force-stops the HERDR in use/)).not.toBeInTheDocument()
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Install and restart" }))
 
-    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Download update" }))
-    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }))
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    expect(updateHerdrProcesses).not.toHaveBeenCalled()
+    expect(updateStopHerdr).not.toHaveBeenCalled()
+  })
 
-    const confirmation = await screen.findByRole("dialog", {
+  it("on Windows, warns about lost progress, shows the HERDR in use, and stops it before installing", async () => {
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    const order: string[] = []
+    updateStopHerdr.mockImplementation(async () => {
+      order.push("stop")
+    })
+    const install = vi.fn(async () => {
+      order.push("install")
+    })
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Finished" })
+    })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+
+    await openInstallConfirmation()
+    const confirmation = await screen.findByRole("alertdialog", {
       name: "Install update and restart?",
     })
     expect(
       within(confirmation).getByText(
-        "On Windows, close HERDR before continuing. The installer cannot replace a running HERDR executable.",
+        "The Windows installer can't replace a running HERDR. Continuing force-stops the HERDR in use and every Session it runs — running commands, Agents, and terminal progress will be lost and can't be recovered.",
       ),
     ).toBeInTheDocument()
+    expect(await within(confirmation).findByText("0.9.3")).toBeInTheDocument()
+    expect(
+      within(confirmation).getByText("C:\\Program Files\\Yuzora\\herdr\\windows-x86_64\\herdr.exe"),
+    ).toBeInTheDocument()
+    expect(within(confirmation).getByText("2")).toBeInTheDocument()
+    expect(updateStopHerdr).not.toHaveBeenCalled()
+
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Stop HERDR and install" }))
+
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    expect(order).toEqual(["stop", "install"])
+    await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
+  })
+
+  it("on Windows, keeps the update uninstalled when HERDR cannot be stopped", async () => {
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    updateStopHerdr.mockRejectedValueOnce("HERDR processes are still running: 101")
+    const install = vi.fn(async () => undefined)
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Finished" })
+    })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+
+    await openInstallConfirmation()
+    const confirmation = await screen.findByRole("alertdialog", {
+      name: "Install update and restart?",
+    })
+    await within(confirmation).findByText("0.9.3")
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Stop HERDR and install" }))
+
+    expect(
+      await within(confirmation).findByText(
+        "Couldn't stop HERDR, so the update wasn't installed: HERDR processes are still running: 101",
+      ),
+    ).toBeInTheDocument()
+    expect(install).not.toHaveBeenCalled()
+    expect(relaunch).not.toHaveBeenCalled()
+    expect(
+      within(confirmation).getByRole("button", { name: "Stop HERDR and install" }),
+    ).toBeEnabled()
   })
 })
+
+async function openInstallConfirmation(): Promise<void> {
+  render(
+    <SettingsDialog
+      open
+      onOpenChange={() => {}}
+      theme="light"
+      onThemeChange={() => {}}
+      initialSection="about"
+    />,
+  )
+
+  fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Download update" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }))
+}

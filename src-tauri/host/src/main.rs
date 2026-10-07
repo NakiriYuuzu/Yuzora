@@ -1,4 +1,7 @@
 fn main() {
+    if std::env::var_os(yuzora_host::db_remote::LOCAL_WORKER_ENV).is_some() {
+        std::process::exit(yuzora_host::sqlite_lane::run_local());
+    }
     if std::env::var_os(yuzora_host::db_query_worker::WORKER_ENV).is_some() {
         std::process::exit(yuzora_host::db_query_worker::run());
     }

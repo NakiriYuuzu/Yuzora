@@ -24,6 +24,19 @@ pub struct SqliteOpen {
     pub identity: ConnectionIdentity,
 }
 
+/// Only decoded by the app-spawned local worker, never by the remote lane.
+pub const LOCAL_WORKER_ENV: &str = "YUZORA_LOCAL_SQLITE_WORKER";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalSqliteOpen {
+    pub version: u32,
+    pub owner: ConnectionOwner,
+    pub database_path: String,
+    pub file_identity: String,
+    pub identity: ConnectionIdentity,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SqliteRequest {

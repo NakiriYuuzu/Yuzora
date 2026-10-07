@@ -8,12 +8,13 @@ import { HERDR_RESOURCE_VERSION } from "./prepare-herdr-resources"
 import { removeRuntimeFixture } from "./runtime-fixture-cleanup"
 import methodFixture from "../src-tauri/host/tests/fixtures/herdr-0.9.0-methods.json"
 import methodFixture091 from "../src-tauri/host/tests/fixtures/herdr-0.9.1-methods.json"
+import methodFixture093 from "../src-tauri/host/tests/fixtures/herdr-0.9.3-methods.json"
 
 // Uses only temporary XDG roots and its own named server. Never stops a user's server.
 check(process.argv[2], "usage: bun scripts/verify-herdr-runtime.ts /absolute/path/to/herdr")
 const binary = await realpath(process.argv[2])
 const expectedVersion = process.argv[3] ?? HERDR_RESOURCE_VERSION.baseVersion
-check(["0.8.2", "0.9.0", "0.9.1"].includes(expectedVersion), "unverified runtime version; update compatibility fixtures first")
+check(["0.8.2", "0.9.0", "0.9.1", "0.9.2", "0.9.3"].includes(expectedVersion), "unverified runtime version; update compatibility fixtures first")
 const serverBinary = process.argv[4] ? await realpath(process.argv[4]) : binary
 const serverVersion = process.argv[5] ?? expectedVersion
 const expectedProtocol = expectedVersion === "0.8.2" ? 20 : 22
@@ -91,7 +92,8 @@ manifest_check = false
   const schema = await command(["api", "schema", "--json"])
   check(schema.protocol === expectedProtocol, "unexpected official schema protocol")
   const methods = schema.schemas.request.oneOf.map((entry: { properties: { method: { const: string } } }) => entry.properties.method.const)
-  const fixture = expectedVersion === "0.9.1" ? methodFixture091 : methodFixture
+  // 0.9.2 and 0.9.3 expose the identical method inventory.
+  const fixture = expectedVersion === "0.9.3" || expectedVersion === "0.9.2" ? methodFixture093 : expectedVersion === "0.9.1" ? methodFixture091 : methodFixture
   if (expectedVersion !== "0.8.2") check(JSON.stringify(methods) === JSON.stringify(fixture.methods), "official method fixture must match the pinned binary")
   console.log(`Verified HERDR ${expectedVersion} protocol ${schema.protocol} method schema`)
   server = start(["server"], serverBinary)

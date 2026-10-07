@@ -4,6 +4,7 @@
 
 > 適用範圍：CI、GitHub Release、Tauri updater、GitHub Pages，以及相關失敗處理。
 > Runtime／payload 與產品驗收範圍更新：2026-09-23（v0.0.16 新增 Windows x86_64 SSH host 與五平台 host payload，候選另行驗收）；Host 與 Stable 恢復 workflow 最後查證：2026-09-23；Release／Pages 流程最後查證：2026-09-12；Pages SEO 建置流程更新：2026-09-20。v0.0.9-beta.3 已於 2026-09-10 發布。
+> Toolchain／Actions 設定更新：2026-09-27；本機驗證不代表遠端 CI 或安裝包／GUI 已驗收。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
@@ -66,7 +67,7 @@ Required CI checks：
 
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend lint、typecheck、test、build；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
+| CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend checks 與 3 個 test shards 平行、固定名稱 aggregator 守門；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
@@ -77,12 +78,15 @@ Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflo
 
 ### CI 重要特性
 
-- Host helper workflow 的 Bun 尚未固定版本；Frontend 與 release jobs 固定使用 Bun `1.3.14`，Rust compile、database、candidate 與 Release jobs 固定使用 Rust `1.96.0`；升級任一 toolchain 時需在同一個 PR 更新 CI、candidate、Release workflow 與 exact Clippy baseline，再搭配 `@typescript/native` typecheck 驗證。
+- Frontend、Host helper、HERDR compatibility、candidate、Release、recovery 與 Pages jobs 統一固定 Bun `1.4.2`；執行前端工具鏈的 jobs 另固定 Node `24.21.0`（Vitest／jsdom 不接受 Node 25）。Rust compile、database、Host、candidate 與 Release jobs 固定 Rust `1.98.1`。升級時須同步核對所有 workflows 與 exact Clippy baseline，不可直接接受新增警告。
+- `actions-rust-lang/setup-rust-toolchain` v2 的 `build-warnings` 明確設為空字串，保留既有 exact Clippy baseline／Host `-D warnings` 政策，不額外由 action 預設將所有 build warnings 升為錯誤。
+- Host Apple Silicon 與 HERDR compatibility 使用 `macos-15`，避開 `macos-14` 退役；Intel macOS 遠端 Host 保留 `macos-15-intel`。recovery 依原始 source matrix 選擇 macOS 14／15 的 exact job name，未知或重複 ARM runner 拒絕恢復。
+- Checkout v7、artifact upload v7／download v8、Pages configure v6／upload v5／deploy v5 使用已查證的完整 SHA；保留 artifact archive 預設與 digest mismatch 拒絕行為，不放寬 source／permissions／簽章 gates。
 - Rust 在 macOS、Windows x86-64、Linux x86-64 執行 `cargo check --locked --all-targets`。
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture，並執行 `database_integration` 與 `database_workbench` 的 ignored 測試。
 - PostgreSQL 暫停第一頁的記憶體回歸測試先暖機並固定 helper PIDs，再限制查詢造成的 RSS 增量小於 64 MiB；不以跨平台差異很大的程序總 RSS 判斷是否保留未讀資料。128 MiB 結果的舊無界讀取負向驗證必須仍超限。
-- Frontend job 在測試前執行 `site:companions`、`site:seo` 與 `demo:build`，讓官網 artifact 測試在乾淨 checkout 也能驗證 `demo/` 連結，並在 merge 前驗證 Pages 建置；Demo Vite 設定也納入 typecheck。此 build check 不代表瀏覽器互動驗收。
+- Frontend checks（lint、typecheck、build）與 3 個 test shards 平行；固定 required-check 名稱的 Frontend aggregator 僅在全部成功時通過。checks／每個 shard 均先執行 `site:companions`、`site:seo` 與 `demo:build`，驗證乾淨 checkout 的 Pages/demo artifacts；Demo Vite 設定也納入 typecheck。Vitest 的 node project 使用 `src/test/nodeTests.json` 精確 allowlist，其餘／新增測試回到 jsdom。此 build check 不代表瀏覽器互動驗收。
 - `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
 - 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消。
 - 現行 PR CI 沒有獨立執行 `check:version` 與 `check:updater-release`；在新增 blocking contract job 前，Release PR 必須保留第 5 節的本機 preflight 證據。
@@ -598,7 +602,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - Deploy artifact 是完整 `site/` 目錄，包含靜態官網 `index.html`、`styles.css`、`app.js`、`i18n.js`、`downloads.js`、`assets/`，以及建置後的 `en/`、`sitemap.xml` 與 `demo/`。網站 PNG favicon fallback 與桌面 app 圖示由同一品牌來源生成；inline SVG Logo 跟隨頁面主題。
 - `CI` 成功的 `main` push 會觸發 Pages 部署，也可從 Actions 手動 dispatch `Deploy Pages`；兩條路徑都必須先通過同一 `head_sha` 的成功 CI 查證。
 - Deploy job 以已查證的 exact SHA 建置完整 `site/` artifact。這個 gate 只驗證 CI 與來源一致性，仍不取代瀏覽器 smoke test。
-- Workflow 使用 Bun `1.3.14`，依序執行 `bun install --frozen-lockfile`、`bun run site:companions`、`bun run site:seo` 與 `bun run demo:build`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。Demo 使用相對 asset URL，支援 `/Yuzora/demo/` repository subpath；`site/demo/` 是忽略的建置產物，不提交。
+- Workflow 使用 Bun `1.4.2` 與 Node `24.21.0`，依序執行 `bun install --frozen-lockfile`、`bun run site:companions`、`bun run site:seo` 與 `bun run demo:build`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。Demo 使用相對 asset URL，支援 `/Yuzora/demo/` repository subpath；`site/demo/` 是忽略的建置產物，不提交。
 - 官網保持靜態 ES module；Demo 由 Vite bundle。兩者皆不得在發布頁面引用 `node_modules` runtime path。`site:companions` 會更新官網角色 markup 與 `assets/brand/companions.css`，來源是 App 的 SpaceCharacter。
 - `site-remotion/` 是影片原始碼，不包含在 Pages artifact。
 
@@ -701,7 +705,7 @@ site/downloads.js
 ### 主機設定與診斷
 
 - 「新增資料夾 → Windows 本機／WSL／遠端」分開執行環境。WSL 預設關閉，須在「設定 → HERDR」啟用才探索或自動連線；關閉只釋放 Yuzora helper，保留設定與執行中 Session。SSH 沿用密碼／金鑰及 host-key 驗證。純 SFTP 不要求 helper。
-- 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。目前隨附 HERDR 0.9.1／private protocol 22，保留 0.9.0 相容性，仍須 schema／capability 檢查。macOS 已驗證 0.9.0、0.9.1 client／server 的四種版本組合；升級 client 不會自動停止或替換正在執行的舊版 server。
+- 「設定此主機」部署雜湊驗證的 `yuzora-host` 與官方 HERDR 到使用者專屬版本目錄，不需 root、不覆寫外部 runtime。目前隨附 HERDR 0.9.3／private protocol 22，保留 0.9.0、0.9.1 相容性，仍須 schema／capability 檢查。macOS 已驗證 0.9.3 client 對 0.9.0、0.9.1 server 的混版組合；升級 client 不會自動停止或替換正在執行的舊版 server。
 - 官方版本、protocol、五平台 URL／SHA-256 與 license digest 統一放在 `src-tauri/herdr-runtime.json`，由準備腳本與 native manifest guard 共用；更新該檔會觸發 helper workflow。升級時核對官方 release assets 的 digest、實際 binary schema 與 method／subscription fixtures，不能只改 protocol 數字。
 - 已保存且啟用的 WSL／SSH host 在每次 App 啟動首次連線時，比對安裝包 manifest 的 artifact identity。helper 不一致時，先驗證既有 HERDR client 與全部 running Sessions，再部署至新的 immutable 目錄並切換 Yuzora helper；成功後立即重新取得各 Session 的能力資訊。保留原 HERDR binary 完整路徑與來源政策，不停止 HERDR／Agent。helperArtifactIdentity 與原 runtime artifactIdentity 分開保存，避免把僅更新 helper 誤認為已升級 HERDR。檢查／部署失敗則保留或重連原 helper，於主機設定顯示錯誤；同一 App 執行期間不由四秒 health poll 重複部署，可透過重新開啟 App 或明確套用主機設定重試。
 - HERDR client 來源與版本的切換仍從「設定 → HERDR」選取原主機，選擇 Yuzora 管理／主機已安裝／自訂完整路徑，按「檢查／重新偵測」後套用；來源政策與實際 binary／helper 路徑分開保存，更新保留舊檔與執行中的工作。
@@ -755,6 +759,12 @@ cargo test --locked --manifest-path src-tauri/host/Cargo.toml
 ```
 
 每個 target 包含 `yuzora-host`、官方 `herdr` 與 `<target>.json` manifest，另含 HERDR license；Windows 使用 `.exe`，並完整包含 pinned ConPTY、OpenConsole 與授權檔。Release reusable build 明確使用 guard 的 `source_sha`；不可混用其他 source tree 的 helper。Stable metadata 恢復依原 installer source SHA 的 `host.yml` 要求 host jobs：四個 Unix target，matrix 含 `windows-x86_64` 時另加 Windows；job 數量須完全一致且全部成功。
+
+macOS App 僅支援 Apple Silicon，受管 HERDR 共用 `Contents/Resources/host/macos-aarch64/herdr`；`tauri.macos.conf.json` 不再映射 `resources/herdr/macos-aarch64/` 或 `resources/herdr/macos-x86_64/`，只保留 HERDR license、完整 `host/` 與 `legacy-cleanup/`。五平台遠端 Host（含 Intel macOS）不變，Windows 原生 HERDR 路徑不搬移。候選驗收須確認 `.app` 沒有 `herdr/macos-*` 重複 binary，且從共用 host 路徑啟動受管 HERDR 正常。
+
+本機 `herdr:prepare` 在 macOS 只準備 Apple Silicon source-tree binary，保留 `src-tauri/resources/herdr/macos-aarch64/herdr` 供開發與 compatibility gate 使用；`host:prepare macos-x86_64` 仍獨立準備 Intel 遠端 payload，不依賴桌面準備清單。
+
+App 與獨立 Host 的 Cargo release profile 使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。
 
 Windows 安裝包建置後，在具備 verifier 所需解包工具的 Windows 環境驗證：
 

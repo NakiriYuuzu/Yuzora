@@ -43,4 +43,25 @@ describe("sortHerdrAgentsByUrgency", () => {
       "second"
     ])
   })
+
+  it("preserves locale-aware numeric labels, title fallback and ID tie-breaks", () => {
+    const labels = [
+      "", " ", "Agent 2", "agent 02", "AGENT 10", "Agent 0002",
+      "a", "A", "á", "a\u0301", "ä", "Å", "ß", "ss", "İ", "I", "ı", "i",
+      "中文", "臺灣", "台湾", "が", "か\u3099", "한글", "مرحبا", "שלום", "😀", "🧑‍💻"
+    ]
+    const input: HerdrAgentInfo[] = labels.flatMap((label, index) => [
+      agent(`${index}-b`, "working", label),
+      { id: `${index}-a`, name: label, status: "working", workspaceId: "w1" }
+    ])
+    input.push(agent("id-2", "working", "Agent 2"), agent("id-10", "working", "agent 02"))
+    const expected = [...input].sort((left, right) =>
+      (left.title ?? left.name).localeCompare(right.title ?? right.name, undefined, {
+        numeric: true,
+        sensitivity: "base"
+      }) || left.id.localeCompare(right.id)
+    )
+
+    expect(sortHerdrAgentsByUrgency(input)).toEqual(expected)
+  })
 })

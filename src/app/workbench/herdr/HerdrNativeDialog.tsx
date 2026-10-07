@@ -55,7 +55,12 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
     const osc = term.parser.registerOscHandler(52, data => {
       const encoded = data.slice(data.indexOf(";") + 1)
       if (encoded === "?" || encoded.length > 4 * 1024 * 1024) return true
-      try { const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0)); void writeText(new TextDecoder().decode(bytes)).catch(cause => { if (!disposed) setError(String(cause)) }) } catch { /* malformed clipboard output */ }
+      try {
+        const decoded = atob(encoded)
+        const bytes = new Uint8Array(decoded.length)
+        for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index)
+        void writeText(new TextDecoder().decode(bytes)).catch(cause => { if (!disposed) setError(String(cause)) })
+      } catch { /* malformed clipboard output */ }
       return true
     })
     const input = term.onData(send)

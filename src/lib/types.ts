@@ -34,7 +34,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
 
 export function languageFromPath(path: string): string {
     const ext = path.split(".").pop()?.toLowerCase() ?? ""
-    return LANGUAGE_BY_EXT[ext] ?? "Plain Text"
+    return Object.hasOwn(LANGUAGE_BY_EXT, ext) ? LANGUAGE_BY_EXT[ext] : "Plain Text"
 }
 
 export const MAX_LINE_LEN_SYNTAX_OFF = 10_000
@@ -90,6 +90,18 @@ export interface GitBootstrapResult {
     branches: BranchList | null
     snapshotError?: string | null
 }
+/** A repository found inside the workspace (multi-repository workspaces). */
+export interface DiscoveredRepository {
+    /** `/`-separated, relative to the workspace; empty for the workspace itself. */
+    relativePath: string
+    name: string
+    /** `.git` is a file: a submodule or a linked worktree. */
+    linked: boolean
+}
+export interface GitDiscovery {
+    repositories: DiscoveredRepository[]
+    truncated: boolean
+}
 export type WorkspaceTrustStateKind = "trusted" | "untrusted" | "invalid"
 export interface WorkspaceTrustStatus {
     state: WorkspaceTrustStateKind | string
@@ -115,10 +127,26 @@ export type GradedText =
     | { kind: "tooLarge" }
     | { kind: "binary" }
 export interface DiffContent { original: GradedText; modified: GradedText }
+/** Sides of one unmerged path: index stages 1 (base), 2 (ours), 3 (theirs) and the conflicted working file. */
+export interface GitConflictSides {
+    /** Porcelain XY code: UU, AA, DU, UD, AU, UA or DD. */
+    code: string
+    base: GradedText | null
+    ours: GradedText | null
+    theirs: GradedText | null
+    worktree: GradedText | null
+}
+/** Outcome of an operation that can stop on merge conflicts (the repository is then mid-operation). */
+export interface GitOperationOutcome { conflicts: boolean }
+export interface GitStashEntry { index: number; message: string; timestamp: number }
+export type GitResetMode = "soft" | "mixed" | "hard" | "keep"
 export interface SearchMatch { line: number; col: number; preview: string }
 export type SearchEvent =
     | { type: "match"; path: string; matches: SearchMatch[] }
     | { type: "done"; truncated: boolean; fileCount: number }
+export type DeleteProgress =
+    | { phase: "counting"; found: number }
+    | { phase: "deleting"; removed: number; total: number }
 export type AskpassKind = "username" | "password" | "passphrase" | "fingerprint" | "other"
 export type AskpassOperation = "fetch" | "pull" | "push" | "probe"
 export interface AskpassRequest {

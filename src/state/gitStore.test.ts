@@ -26,6 +26,8 @@ function makeBootstrap(root = "/w"): GitBootstrapResult {
     }
 }
 
+vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn(async () => undefined) }))
+
 vi.mock("../lib/ipc", () => ({
     gitBootstrap: vi.fn(async () => ({
         environment: { status: "ready", root: "/w", version: "2.50.1" },
@@ -47,7 +49,19 @@ vi.mock("../lib/ipc", () => ({
     gitStatus: vi.fn(async () => makeStatus()),
     gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     gitRemoteProbe: vi.fn(async () => "yes"),
-    gitFetch: vi.fn(async () => undefined)
+    gitFetch: vi.fn(async () => undefined),
+    gitDiscover: vi.fn(async () => ({ repositories: [], truncated: false }))
+}))
+
+const trustMock = vi.hoisted(() => ({
+    refreshStatus: vi.fn(async () => ({ state: "trusted" })),
+    requestWorkspaceGrant: vi.fn(async () => true)
+}))
+vi.mock("./workspaceTrustStore", () => ({
+    useWorkspaceTrustStore: { getState: () => trustMock }
+}))
+vi.mock("./uiStore", () => ({
+    useUiStore: { getState: () => ({ resetGitRepositoryUi: vi.fn() }) }
 }))
 
 // The Bun-hosted test runtime injects an empty `localStorage` global with no
@@ -238,7 +252,7 @@ describe("gitStore", () => {
         expect(useGitStore.getState().lastError).toBeNull()
     })
 
-    it("refresh reruns once when called during an in-flight fetch (m3)", async () => {
+    it("a storm of 1000 refreshes during one in-flight fetch schedules only one rerun", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
         useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
@@ -251,12 +265,14 @@ describe("gitStore", () => {
         void useGitStore.getState().refresh()
         await vi.advanceTimersByTimeAsync(300) // debounce fires → gitStatus called, now hanging
         expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
-        // Second call arrives during the in-flight fetch → should schedule a rerun.
-        void useGitStore.getState().refresh()
+        // Coalesced watcher batches are conservative full refreshes, but bounded.
+        for (let i = 0; i < 1000; i++) void useGitStore.getState().refresh()
         release()
         await Promise.resolve()
         await Promise.resolve()
         await vi.advanceTimersByTimeAsync(300) // rerun debounce fires → second fetch
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(2)
+        await vi.advanceTimersByTimeAsync(1000)
         expect(ipc.gitStatus).toHaveBeenCalledTimes(2)
     })
 
@@ -647,6 +663,74 @@ describe("gitStore", () => {
         expect(ipc.gitFetch).not.toHaveBeenCalled()
     })
 
+    describe("multi-repository workspaces", () => {
+        const nested = (relativePath: string) => ({ relativePath, name: relativePath.split("/").pop()!, linked: false })
+
+        it("opens the first nested repository of a plain folder after asking for trust", async () => {
+            const { useGitStore } = await import("./gitStore")
+            const ipc = await import("../lib/ipc")
+            trustMock.refreshStatus.mockResolvedValueOnce({ state: "untrusted", challengeId: "c1", canonicalPath: "/w" } as never)
+            vi.mocked(ipc.gitBootstrap)
+                .mockResolvedValueOnce({ environment: { status: "notARepo" }, status: null, branches: null })
+                .mockResolvedValueOnce(makeBootstrap("/w/apps/api"))
+            vi.mocked(ipc.gitDiscover).mockResolvedValueOnce({ repositories: [nested("apps/api"), nested("web")], truncated: false })
+
+            await useGitStore.getState().detect("/w")
+            await useGitStore.getState().discover("/w")
+            await vi.waitFor(() => expect(useGitStore.getState().environment).toMatchObject({ status: "ready", root: "/w/apps/api" }))
+
+            expect(trustMock.requestWorkspaceGrant).toHaveBeenCalledTimes(1)
+            expect(ipc.gitBootstrap).toHaveBeenLastCalledWith("/w", "apps/api")
+            expect(useGitStore.getState().repositoryPath).toBe("apps/api")
+            expect(useGitStore.getState().repositories?.map((r) => r.relativePath)).toEqual(["apps/api", "web"])
+        })
+
+        it("remembers the selected repository per workspace and keeps separate snapshots", async () => {
+            const { useGitStore } = await import("./gitStore")
+            const ipc = await import("../lib/ipc")
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/w"))
+            await useGitStore.getState().detect("/w")
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/w/web"))
+            await useGitStore.getState().selectRepository("web")
+            expect(useGitStore.getState().environment).toMatchObject({ root: "/w/web" })
+
+            // Reopening the workspace restores the nested selection from storage.
+            vi.mocked(ipc.gitBootstrap).mockImplementationOnce(() => new Promise(() => {}))
+            void useGitStore.getState().detect("/w")
+            expect(ipc.gitBootstrap).toHaveBeenLastCalledWith("/w", "web")
+            expect(useGitStore.getState().environment).toMatchObject({ root: "/w/web" })
+            expect(useGitStore.getState().snapshotStale).toBe(true)
+        })
+
+        it("falls back to the workspace when the remembered repository disappeared", async () => {
+            const { useGitStore } = await import("./gitStore")
+            const ipc = await import("../lib/ipc")
+            localStorage.setItem("yuzora.git.activeRepository", JSON.stringify({ "/w": "gone" }))
+            vi.mocked(ipc.gitBootstrap).mockRejectedValueOnce(new Error("git could not resolve repository gone"))
+            await useGitStore.getState().detect("/w")
+            vi.mocked(ipc.gitDiscover).mockResolvedValueOnce({ repositories: [nested("web")], truncated: false })
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/w"))
+            await useGitStore.getState().discover("/w")
+
+            expect(ipc.gitBootstrap).toHaveBeenLastCalledWith("/w", null)
+            expect(useGitStore.getState().repositoryPath).toBeNull()
+            expect(localStorage.getItem("yuzora.git.activeRepository")).toBe("{}")
+        })
+
+        it("does not switch when the trust prompt is declined", async () => {
+            const { useGitStore } = await import("./gitStore")
+            const ipc = await import("../lib/ipc")
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce({ environment: { status: "notARepo" }, status: null, branches: null })
+            await useGitStore.getState().detect("/w")
+            trustMock.refreshStatus.mockResolvedValueOnce({ state: "untrusted", challengeId: "c1", canonicalPath: "/w" } as never)
+            trustMock.requestWorkspaceGrant.mockResolvedValueOnce(false)
+            await useGitStore.getState().selectRepository("web")
+
+            expect(ipc.gitBootstrap).toHaveBeenCalledTimes(1)
+            expect(useGitStore.getState().repositoryPath).toBeNull()
+        })
+    })
+
     it("setRemoteCheck persists to localStorage", async () => {
         const { useGitStore, REMOTE_CHECK_STORAGE_KEY } = await import("./gitStore")
         useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
@@ -730,7 +814,7 @@ describe("gitStore", () => {
         expect(await opDone).toBe(true)
         const log = useGitStore.getState().consoleLog
         expect(log).toHaveLength(1)
-        expect(log[0].cmd).toBe("git pull --rebase")
+        expect(log[0].cmd).toBe("git pull")
         expect(log[0].tone).toBe("ok")
         expect(log[0].out).toEqual(["Done"])
     })
@@ -826,7 +910,7 @@ describe("gitStore", () => {
             expect(useGitStore.getState().lastError).toContain("bootstrap boom")
             vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/a"))
             await useGitStore.getState().retrySnapshot()
-            expect(ipc.gitBootstrap).toHaveBeenLastCalledWith("/a")
+            expect(ipc.gitBootstrap).toHaveBeenLastCalledWith("/a", null)
             expect(useGitStore.getState().snapshotStale).toBe(false)
             expect(useGitStore.getState().lastError).toBeNull()
         })
@@ -1177,6 +1261,19 @@ describe("gitStore", () => {
         expect(log[0].cmd).toBe("git push")
         expect(log[0].tone).toBe("err")
         expect(log[0].out[0]).toContain("remote rejected")
+    })
+
+    it("runOp writes failures to the app log with URL credentials redacted", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const { logUserAction } = await import("@/features/logs/userAction")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        await useGitStore.getState().runOp("push", async () => {
+            throw new Error("git push: fatal: unable to access 'https://user:ghp_secret@github.com/o/r.git/'")
+        })
+        expect(logUserAction).toHaveBeenCalledWith("git_operation_failed", "git push failed", {
+            op: "push",
+            error: "Error: git push: fatal: unable to access 'https://<redacted>@github.com/o/r.git/'"
+        })
     })
 
     it("discards a pre-mutation refresh and runOp waits for the current-epoch publish", async () => {
@@ -1718,5 +1815,69 @@ describe("gitStore", () => {
         await newDone
         expect(useGitStore.getState().status).toEqual(next)
         expect(useGitStore.getState().lastError).toBe(null)
+    })
+
+    it("an older quiet status settling late cannot replace a newer loud refresh in the same epoch", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" }, status: makeStatus() })
+        let releaseQuiet: (status: GitStatus) => void = () => {}
+        vi.mocked(ipc.gitStatus).mockImplementationOnce(() => new Promise((resolve) => { releaseQuiet = resolve }))
+        const quiet = useGitStore.getState().refreshQuiet()
+        const newer = { ...makeStatus(), untracked: ["later.txt"] }
+        vi.mocked(ipc.gitStatus).mockImplementationOnce(async () => newer)
+        const loud = useGitStore.getState().refresh()
+        await vi.advanceTimersByTimeAsync(300)
+        await loud
+        expect(useGitStore.getState().status).toEqual(newer)
+        const revision = useGitStore.getState().statusRevision
+
+        releaseQuiet(makeStatus())
+        await quiet
+        expect(useGitStore.getState().status).toEqual(newer)
+        expect(useGitStore.getState().statusRevision).toBe(revision)
+    })
+
+    it("a watcher refresh during an uncached bootstrap reruns once the repository is ready", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        let release: (result: GitBootstrapResult) => void = () => {}
+        vi.mocked(ipc.gitBootstrap).mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+        const pending = useGitStore.getState().detect("/w")
+        expect(useGitStore.getState().environment).toBeNull()
+        // A file changed after bootstrap sampled status, before it returned.
+        void useGitStore.getState().refresh()
+        const later = { ...makeStatus(), untracked: ["later.txt"] }
+        vi.mocked(ipc.gitStatus).mockImplementationOnce(async () => later)
+        release(makeBootstrap("/w"))
+        await pending
+        await vi.advanceTimersByTimeAsync(300)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(1)
+        expect(useGitStore.getState().status).toEqual(later)
+    })
+
+    it("switching back to a cached workspace does not carry another repository's commit draft", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        vi.mocked(ipc.gitBootstrap)
+            .mockImplementationOnce(async () => makeBootstrap("/a"))
+            .mockImplementationOnce(async () => makeBootstrap("/b"))
+            .mockImplementationOnce(async () => makeBootstrap("/a"))
+        await useGitStore.getState().detect("/a")
+        await useGitStore.getState().detect("/b")
+        useGitStore.getState().setCommitMessage("feat: belongs to b")
+
+        const back = useGitStore.getState().detect("/a")
+        // Snapshot hit hydrates A synchronously; B's draft must already be gone.
+        expect(useGitStore.getState().environment).toMatchObject({ root: "/a" })
+        expect(useGitStore.getState().commitMessage).toBe("")
+        await back
+        expect(useGitStore.getState().commitMessage).toBe("")
+
+        // Re-detecting the same workspace keeps its own draft.
+        useGitStore.getState().setCommitMessage("feat: belongs to a")
+        vi.mocked(ipc.gitBootstrap).mockImplementationOnce(async () => makeBootstrap("/a"))
+        await useGitStore.getState().detect("/a")
+        expect(useGitStore.getState().commitMessage).toBe("feat: belongs to a")
     })
 })

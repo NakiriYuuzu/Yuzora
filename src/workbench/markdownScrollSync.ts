@@ -105,6 +105,34 @@ export function normalizeAnchors(
     return monotonic
 }
 
+const LINEAR_SCAN_LIMIT = 128
+const LINEAR_SCAN_PREFIX = 8
+
+// Called only when the query is past the prefix of a long monotonic sequence.
+// Keep this search separate from the short, common linear path.
+function upperAnchorAfterPrefix(
+    value: number,
+    anchors: readonly SourceAnchor[],
+    coordinate: "line" | "previewOffset"
+): number {
+    let lowerIndex = LINEAR_SCAN_PREFIX, upperIndex = LINEAR_SCAN_PREFIX * 2
+    let upper = anchors[upperIndex]
+    while (value > upper[coordinate]) {
+        lowerIndex = upperIndex
+        upperIndex = Math.min(upperIndex * 2, anchors.length - 1)
+        upper = anchors[upperIndex]
+    }
+    while (upperIndex - lowerIndex > 1) {
+        const middle = Math.floor((lowerIndex + upperIndex) / 2)
+        const candidate = anchors[middle]
+        if (value > candidate[coordinate]) lowerIndex = middle
+        else {
+            upperIndex = middle
+        }
+    }
+    return upperIndex
+}
+
 export function sourceLineToPreviewOffset(
     sourceLine: number,
     anchors: readonly SourceAnchor[]
@@ -114,7 +142,10 @@ export function sourceLineToPreviewOffset(
     const last = anchors[anchors.length - 1]
     if (sourceLine >= last.line) return last.previewOffset
 
-    for (let index = 1; index < anchors.length; index++) {
+    const start = anchors.length > LINEAR_SCAN_LIMIT && sourceLine > anchors[LINEAR_SCAN_PREFIX].line
+        ? upperAnchorAfterPrefix(sourceLine, anchors, "line")
+        : 1
+    for (let index = start; index < anchors.length; index++) {
         const upper = anchors[index]
         if (sourceLine > upper.line) continue
         const lower = anchors[index - 1]
@@ -135,7 +166,10 @@ export function previewOffsetToSourceLine(
     const last = anchors[anchors.length - 1]
     if (previewOffset >= last.previewOffset) return last.line
 
-    for (let index = 1; index < anchors.length; index++) {
+    const start = anchors.length > LINEAR_SCAN_LIMIT && previewOffset > anchors[LINEAR_SCAN_PREFIX].previewOffset
+        ? upperAnchorAfterPrefix(previewOffset, anchors, "previewOffset")
+        : 1
+    for (let index = start; index < anchors.length; index++) {
         const upper = anchors[index]
         if (previewOffset > upper.previewOffset) continue
         const lower = anchors[index - 1]

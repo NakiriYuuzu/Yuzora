@@ -6,6 +6,12 @@
 
 export type HerdrEventsStatus = "deferred" | "available" | "unavailable"
 
+/** Local runtime startup; remote hosts have independent connection lifecycles. */
+export interface HerdrStartupStatus {
+  state: "starting" | "ready" | "failed"
+  error: string | null
+}
+
 /** App-global Herdr binary preference. */
 export type HerdrBinarySource = "global" | "default" | "custom"
 
@@ -574,6 +580,8 @@ export interface HerdrLayoutSetSplitRatioRequest {
 }
 
 export interface HerdrSessionRuntime {
+  /** Host generation and Session socket for the last successful negotiation. */
+  capabilityIdentity?: string | null
   eventsHealthy?: boolean
   eventsSubscriptionId?: string | null
   capabilities: HerdrCapabilities | null

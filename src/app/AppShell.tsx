@@ -1,5 +1,5 @@
 import { bindingLabel, useKeyboardSettingsStore } from "@/state/keyboardSettingsStore"
-import { memo, useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
+import { lazy, Suspense, memo, useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -12,19 +12,16 @@ import { isTauri } from "@/lib/platform"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import { type Mode } from "@/app/modes"
-import { DatabasePanel } from "@/app/panels/DatabasePanel"
 import { EditorPanel } from "@/app/panels/EditorPanel"
-import { GitPanel } from "@/app/panels/GitPanel"
 import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { ContextMenu } from "@/app/workbench/ContextMenu"
-import { DiffModal } from "@/workbench/git/DiffModal"
 import { ProjectEditorPopover } from "@/app/workbench/ProjectEditorPopover"
 import { SpaceAgentSidebar } from "@/app/workbench/SpaceAgentSidebar"
 import { WorkspaceToolsPanel, type WorkspaceTool } from "@/app/workbench/WorkspaceToolsPanel"
-import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
-import { SettingsDialog, type ThemePreference } from "@/app/workbench/SettingsDialog"
+import type { ThemePreference } from "@/app/workbench/SettingsDialog"
 import { loadAppearanceSettings, saveAppearanceSettings } from "@/app/workbench/settingsStorage"
 import { StatusBar } from "@/app/workbench/StatusBar"
+import { useDiffModalStore } from "@/state/diffModalStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
@@ -35,6 +32,13 @@ import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
 import { applyAccentPreference, type AccentPreference } from "@/theme/accent"
 import "./workbench/workbench-shell.css"
+
+const DatabasePanel = lazy(() => import("@/app/panels/DatabasePanel").then(m => ({ default: m.DatabasePanel })))
+const GitPanel = lazy(() => import("@/app/panels/GitPanel").then(m => ({ default: m.GitPanel })))
+const DiffModal = lazy(() => import("@/workbench/git/DiffModal").then(m => ({ default: m.DiffModal })))
+const DatabaseNavContent = lazy(() => import("@/app/workbench/DatabaseNavContent").then(m => ({ default: m.DatabaseNavContent })))
+const SettingsDialog = lazy(() => import("@/app/workbench/SettingsDialog").then(m => ({ default: m.SettingsDialog })))
+const surfaceFallback = <div className="min-h-0 min-w-0 flex-1 bg-(--paper-0)" aria-busy="true" />
 
 const DEFAULT_NAV_WIDTH = 288
 const MIN_NAV_WIDTH = 256
@@ -115,7 +119,12 @@ export function AppShell() {
   // Settings open/target is a single source of truth in uiStore so the global
   // openSettings(section?, language?) API (rail avatar, CommandPalette, T11
   // status-bar entry) drives one place instead of chrome-local state.
+  const diffOpen = useDiffModalStore((s) => s.open)
+  const [diffVisited, setDiffVisited] = useState(false)
+  const [settingsVisited, setSettingsVisited] = useState(false)
   const settingsOpen = useUiStore((s) => s.settingsOpen)
+  if (diffOpen && !diffVisited) setDiffVisited(true)
+  if (settingsOpen && !settingsVisited) setSettingsVisited(true)
   const settingsSection = useUiStore((s) => s.settingsSection)
   const settingsNonce = useUiStore((s) => s.settingsNonce)
   const openSettings = useUiStore((s) => s.openSettings)
@@ -506,15 +515,15 @@ export function AppShell() {
         <div className="workbench-workspace" data-utility-row={mode === "git" && (navCollapsed || !toolsVisible)}>
           <div data-testid="main-surface" className="workbench-main-surface" style={{minHeight:mainSurfaceMinHeight}}>
             <div hidden={mode!=="files" && mode!=="ade"} inert={mode!=="files" && mode!=="ade"} className="workbench-mode-surface">{editorPanel}</div>
-            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface"><StableGitPanel onReturnToWork={handleReturnToWork} /></div>}
+            {(gitVisited || mode === "git") && <div hidden={mode!=="git"} inert={mode!=="git"} className="workbench-mode-surface"><Suspense fallback={surfaceFallback}><StableGitPanel onReturnToWork={handleReturnToWork} /></Suspense></div>}
             {(databaseVisited || mode === "database") && <div hidden={mode!=="database"} inert={mode!=="database"} className="workbench-database-surface">
               <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
                 <ResizablePanel id="database-navigation" defaultSize="280px" minSize="240px" maxSize="480px" groupResizeBehavior="preserve-pixel-size">
-                  <aside aria-label={t("databaseConnections")} className="workbench-database-nav">{databaseNav}</aside>
+                  <aside aria-label={t("databaseConnections")} className="workbench-database-nav"><Suspense fallback={surfaceFallback}>{databaseNav}</Suspense></aside>
                 </ResizablePanel>
                 <ResizableHandle withHandle aria-label={t("resizeDatabase")} className="workbench-database-resize" />
                 <ResizablePanel id="database-content" minSize="280px">
-                  <div className="workbench-database-main">{databasePanel}</div>
+                  <div className="workbench-database-main"><Suspense fallback={surfaceFallback}>{databasePanel}</Suspense></div>
                 </ResizablePanel>
               </ResizablePanelGroup>
             </div>}
@@ -542,7 +551,7 @@ export function AppShell() {
         onOpenSettings={handleOpenSettings}
       />
 
-      <StableSettingsDialog
+      {(settingsVisited || settingsOpen) && <Suspense fallback={null}><StableSettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         theme={theme}
@@ -556,7 +565,7 @@ export function AppShell() {
         onBotAnimationsChange={handleBotAnimationsChange}
         initialSection={settingsSection ?? undefined}
         openNonce={settingsNonce}
-      />
+      /></Suspense>}
 
       {contextMenu}
       {projectEditorPopover}
@@ -564,7 +573,7 @@ export function AppShell() {
       {/* App-level Diff viewer host (design §D). Renders in-tree (no portal) so
           the overlay's absolute inset-0 covers this relative shell root. Inert
           until the diff modal store opens. */}
-      {diffModal}
+      {(diffVisited || diffOpen) && <Suspense fallback={null}>{diffModal}</Suspense>}
     </div>
   )
 }

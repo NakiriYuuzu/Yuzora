@@ -94,8 +94,115 @@ afterEach(() => {
 const SESSION: WorkspaceSession = {
   workspacePath: "/ws",
   tabs: ["/ws/a.ts", "/ws/b.ts"],
-  activePath: "/ws/a.ts"
+    activePath: "/ws/a.ts"
 }
+
+describe("editor dirty notification measurement", () => {
+  it.each([1, 2, 3, 4, 5])("releases the session subscription across repeated mounts (run %i)", (run) => {
+    const path = "/lifecycle/file.ts"
+    useWorkspaceStore.setState({ workspacePath: "/lifecycle", groups: [{
+      tabs: [{ path, name: "file.ts", dirty: false, externallyModified: false }], activePath: path
+    }] })
+    saveWorkspaceSession({ workspacePath: "/lifecycle", tabs: [path], activePath: path })
+    const originalSubscribe = useWorkspaceStore.subscribe
+    const originalSet = localStorage.setItem
+    let subscriptions = 0
+    let writes = 0
+    useWorkspaceStore.subscribe = (...args) => {
+      subscriptions += 1
+      const stop = originalSubscribe(...args)
+      let active = true
+      return () => { if (active) subscriptions -= 1; active = false; stop() }
+    }
+    localStorage.setItem = (key, value) => {
+      if (key === WORKSPACE_SESSION_STORAGE_KEY) writes += 1
+      originalSet.call(localStorage, key, value)
+    }
+    const metrics = []
+    try {
+      for (let cycle = 0; cycle < 110; cycle++) {
+        render(<SessionRestoreBridge />)
+        expect(subscriptions).toBe(1)
+        const before = writes
+        act(() => {
+          const store = useWorkspaceStore.getState()
+          store.markDirty(path, true)
+          store.markDirty(path, true)
+          store.markDirty(path, false)
+        })
+        cleanup()
+        expect(subscriptions).toBe(0)
+        const afterClose = writes
+        useWorkspaceStore.getState().markDirty(path, true)
+        useWorkspaceStore.getState().markDirty(path, false)
+        expect(writes).toBe(afterClose)
+        metrics.push({ cycle, warmup: cycle < 10, writes: afterClose - before, subscriptionsAfterClose: subscriptions })
+      }
+    } finally {
+      cleanup()
+      useWorkspaceStore.subscribe = originalSubscribe
+      localStorage.setItem = originalSet
+    }
+    if (import.meta.env.VITE_YUZORA_PERF_MEASURE) console.info("DIRTY_SUBSCRIPTION_LIFECYCLE", JSON.stringify({ run, metrics }))
+  })
+
+  it.each([1, 2, 3, 4, 5])("preserves session data across editor updates (run %i)", (run) => {
+    const makeTabs = (root: string) => Array.from({ length: 20 }, (_, i) => ({
+      path: `${root}/${i}.ts`, name: `${i}.ts`, dirty: false, externallyModified: false
+    }))
+    for (let i = 0; i < 19; i++) {
+      const root = `/history-${i}`
+      saveWorkspaceSession({ workspacePath: root, tabs: makeTabs(root).map(tab => tab.path), activePath: null })
+    }
+    const first = makeTabs("/editor")
+    const second = makeTabs("/split")
+    useWorkspaceStore.setState({ workspacePath: "/editor", groups: [
+      { tabs: first, activePath: first[0].path },
+      { tabs: second, activePath: second[0].path }
+    ] })
+    saveWorkspaceSession({ workspacePath: "/editor", tabs: first.map(tab => tab.path), activePath: first[0].path })
+    const mounted = render(<SessionRestoreBridge />)
+    const store = useWorkspaceStore.getState()
+    for (let i = 0; i < 20; i++) {
+      store.markDirty(first[0].path, false)
+      store.markDirty(first[0].path, true)
+    }
+    const saved = localStorage.getItem(WORKSPACE_SESSION_STORAGE_KEY)
+    const originalSet = localStorage.setItem
+    let writes = 0
+    let notifications = 0
+    localStorage.setItem = (key, value) => {
+      if (key === WORKSPACE_SESSION_STORAGE_KEY) writes += 1
+      originalSet.call(localStorage, key, value)
+    }
+    const stop = useWorkspaceStore.subscribe(() => { notifications += 1 })
+    const metrics = []
+    try {
+      for (const scenario of ["already-dirty", "sibling-toggle", "active-toggle", "missing-path"] as const) {
+        writes = 0
+        notifications = 0
+        const started = performance.now()
+        act(() => {
+          for (let i = 0; i < 100; i++) {
+            if (scenario === "already-dirty") store.markDirty(first[0].path, true)
+            if (scenario === "sibling-toggle") store.markDirty(second[0].path, i % 2 === 0)
+            if (scenario === "active-toggle") store.markDirty(first[0].path, i % 2 === 1)
+            if (scenario === "missing-path") store.markDirty("/absent/file.ts", true)
+          }
+        })
+        metrics.push({ scenario, operations: 100, writes, notifications, wallMs: performance.now() - started })
+        expect(localStorage.getItem(WORKSPACE_SESSION_STORAGE_KEY)).toBe(saved)
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+        expect(useWorkspaceStore.getState().groups[1].tabs[0].dirty).toBe(false)
+      }
+    } finally {
+      stop()
+      localStorage.setItem = originalSet
+      mounted.unmount()
+    }
+    if (import.meta.env.VITE_YUZORA_PERF_MEASURE) console.info("DIRTY_NOTIFICATION_MEASUREMENT", JSON.stringify({ run, metrics }))
+  })
+})
 
 // Startup splash contract: the bridge dismisses the index.html splash exactly
 // when the restore attempt settles (or immediately when there is nothing to

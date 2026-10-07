@@ -281,9 +281,48 @@ fn resident_memory_limit_exceeded(observed_bytes: u64, limit_bytes: u64) -> bool
     observed_bytes > limit_bytes
 }
 
+#[cfg(target_os = "macos")]
+fn macos_resident_memory(pid: sysinfo::Pid) -> Option<u64> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // Use the same RSS field as sysinfo without enumerating other processes
+    // or refreshing unrelated metadata on every watchdog tick.
+    let copied = unsafe {
+        libc::proc_pidinfo(
+            pid.as_u32() as libc::pid_t,
+            libc::PROC_PIDTASKINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if copied != size {
+        return None;
+    }
+    // A complete successful reply initialized the entire proc_taskinfo.
+    Some(unsafe { info.assume_init() }.pti_resident_size)
+}
+
+#[cfg(unix)]
+fn resident_memory(system: &mut sysinfo::System, pid: sysinfo::Pid) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    if let Some(memory) = macos_resident_memory(pid) {
+        return Some(memory);
+    }
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+
+    // Keep the existing reader for other Unix platforms and failed native reads.
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
+    system.process(pid).map(|process| process.memory())
+}
+
 #[cfg(unix)]
 fn start_resident_memory_watchdog(bytes: u64) -> Result<(), String> {
-    use sysinfo::{get_current_pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{get_current_pid, System};
 
     let pid = get_current_pid().map_err(|error| format!("resolve worker pid failed: {error}"))?;
     std::thread::Builder::new()
@@ -291,16 +330,10 @@ fn start_resident_memory_watchdog(bytes: u64) -> Result<(), String> {
         .spawn(move || {
             let mut system = System::new();
             loop {
-                let pids = [pid];
-                system.refresh_processes_specifics(
-                    ProcessesToUpdate::Some(&pids),
-                    true,
-                    ProcessRefreshKind::nothing().with_memory(),
-                );
-                let Some(process) = system.process(pid) else {
+                let Some(memory) = resident_memory(&mut system, pid) else {
                     return;
                 };
-                if resident_memory_limit_exceeded(process.memory(), bytes) {
+                if resident_memory_limit_exceeded(memory, bytes) {
                     std::process::abort();
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -439,10 +472,19 @@ where
         value_too_large_error()
     })?;
     let result = async {
-        writer
-            .write_all(&len.to_be_bytes())
-            .await
-            .map_err(helper_io_error)?;
+        // Keep small frames within one reader-sized chunk, using only spare
+        // capacity so adding the header cannot reallocate encoded contents.
+        if body.len() + 4 <= 8 * 1024 && body.capacity() - body.len() >= 4 {
+            let body_len = body.len();
+            body.resize(body_len + 4, 0);
+            body.copy_within(..body_len, 4);
+            body[..4].copy_from_slice(&len.to_be_bytes());
+        } else {
+            writer
+                .write_all(&len.to_be_bytes())
+                .await
+                .map_err(helper_io_error)?;
+        }
         writer.write_all(&body).await.map_err(helper_io_error)?;
         writer.flush().await.map_err(helper_io_error)
     }
@@ -1272,5 +1314,254 @@ mod tests {
                 "message": "setrlimit failed"
             })
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod memory_watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn native_rss_matches_legacy_reader_with_owned_resident_pages() {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+        let pid = sysinfo::get_current_pid().unwrap();
+        let pages = vec![1u8; 32 * 1024 * 1024];
+        std::hint::black_box(&pages);
+        let mut system = System::new();
+        for _ in 0..5 {
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
+            let legacy = system.process(pid).unwrap().memory();
+            let native = macos_resident_memory(pid).unwrap();
+            assert!(native >= pages.len() as u64);
+            // The two snapshots run sequentially; allow bounded reader allocations.
+            assert!(native.abs_diff(legacy) <= 1024 * 1024);
+        }
+    }
+
+    #[test]
+    fn missing_process_uses_the_existing_none_result() {
+        let invalid = sysinfo::Pid::from_u32(u32::MAX);
+        assert_eq!(macos_resident_memory(invalid), None);
+        assert_eq!(resident_memory(&mut sysinfo::System::new(), invalid), None);
+    }
+
+    #[test]
+    fn watchdog_keeps_healthy_child_alive_then_aborts_owned_growth() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "db_query_worker::memory_watchdog_tests::owned_watchdog_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("YUZORA_TEST_OWNED_WATCHDOG", "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(77));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("healthy-before-growth"));
+    }
+
+    #[test]
+    #[ignore = "Only the parent contract test launches this isolated process"]
+    fn owned_watchdog_child() {
+        use std::io::Write;
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+        assert_eq!(
+            std::env::var("YUZORA_TEST_OWNED_WATCHDOG").as_deref(),
+            Ok("1")
+        );
+        extern "C" fn expected_abort(_: i32) {
+            // Exit this owned child without producing an operating-system crash dump.
+            unsafe { libc::_exit(77) }
+        }
+        unsafe { libc::signal(libc::SIGABRT, expected_abort as *const () as usize) };
+        let pid = sysinfo::get_current_pid().unwrap();
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_memory(),
+        );
+        let limit = system.process(pid).unwrap().memory() + 32 * 1024 * 1024;
+        apply_process_memory_limit(limit).unwrap();
+        let healthy = vec![1u8; 8 * 1024 * 1024];
+        std::hint::black_box(&healthy);
+        std::thread::sleep(Duration::from_millis(100));
+        println!("healthy-before-growth");
+        std::io::stdout().flush().unwrap();
+        let growth = vec![2u8; 64 * 1024 * 1024];
+        std::hint::black_box(&growth);
+        std::thread::sleep(Duration::from_secs(2));
+        panic!("owned child was not stopped above its resident limit");
+    }
+}
+
+#[cfg(test)]
+mod frame_write_tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct CaptureWriter {
+        bytes: Vec<u8>,
+        chunk: usize,
+        fail_after: Option<usize>,
+        fail_flush: bool,
+        flushes: usize,
+    }
+
+    impl CaptureWriter {
+        fn new(chunk: usize) -> Self {
+            Self {
+                bytes: Vec::new(),
+                chunk,
+                fail_after: None,
+                fail_flush: false,
+                flushes: 0,
+            }
+        }
+    }
+
+    impl AsyncWrite for CaptureWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let remaining = self
+                .fail_after
+                .map_or(usize::MAX, |limit| limit.saturating_sub(self.bytes.len()));
+            if remaining == 0 {
+                return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+            }
+            let count = bytes.len().min(self.chunk).min(remaining);
+            self.bytes.extend_from_slice(&bytes[..count]);
+            Poll::Ready(Ok(count))
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            self.flushes += 1;
+            if self.fail_flush {
+                Poll::Ready(Err(std::io::ErrorKind::PermissionDenied.into()))
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn expected_frame(value: &impl Serialize) -> Vec<u8> {
+        let body = serde_json::to_vec(value).unwrap();
+        [(body.len() as u32).to_be_bytes().as_slice(), &body].concat()
+    }
+
+    #[tokio::test]
+    async fn short_writes_preserve_response_and_request_bytes_and_flush_each_frame() {
+        let responses = [
+            WorkerResponse::Ready {
+                engine: "postgres".into(),
+            },
+            WorkerResponse::Version { value: None },
+            WorkerResponse::Row {
+                values: vec![
+                    DbValue::Integer { value: "42".into() },
+                    DbValue::Text {
+                        value: "資料🙂\0\n\t\"\\".repeat(256),
+                    },
+                ],
+            },
+            WorkerResponse::Cancelled,
+            WorkerResponse::Closed,
+        ];
+        for chunk in [1, 3, 4, 7, usize::MAX] {
+            let mut writer = CaptureWriter::new(chunk);
+            let mut expected = Vec::new();
+            for response in &responses {
+                expected.extend(expected_frame(response));
+                write_frame(&mut writer, response).await.unwrap();
+                assert_eq!(writer.bytes, expected);
+            }
+            assert_eq!(writer.flushes, responses.len());
+            let mut request = WorkerRequest::ConnectMssql {
+                host: "owned.invalid".into(),
+                port: 1433,
+                connect_address: None,
+                database: "owned".into(),
+                user: "owned".into(),
+                password: "owned-test-password".into(),
+                trust_cert: false,
+            };
+            expected.extend(expected_frame(&request));
+            write_request(&mut writer, &mut request).await.unwrap();
+            assert_eq!(writer.bytes, expected);
+            assert_eq!(writer.flushes, responses.len() + 1);
+            match request {
+                WorkerRequest::ConnectMssql { password, .. } => assert!(password.is_empty()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn header_body_and_flush_failures_keep_the_existing_error_classification() {
+        let response = WorkerResponse::Version {
+            value: Some("owned-value".into()),
+        };
+        let expected = expected_frame(&response);
+        for offset in [0, 2, 4, 5, expected.len() - 1] {
+            let mut writer = CaptureWriter::new(7);
+            writer.fail_after = Some(offset);
+            let error = write_frame(&mut writer, &response).await.unwrap_err();
+            assert_eq!(error.code.as_deref(), Some("valueTooLarge"));
+            assert_eq!(writer.bytes, expected[..offset]);
+            assert_eq!(writer.flushes, 0);
+        }
+        let mut writer = CaptureWriter::new(7);
+        writer.fail_flush = true;
+        let error = write_frame(&mut writer, &response).await.unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("helperIo"));
+        assert_eq!(writer.bytes, expected);
+        assert_eq!(writer.flushes, 1);
+    }
+
+    #[tokio::test]
+    async fn frame_limit_counts_only_json_and_rejects_oversize_before_writing() {
+        let overhead = serde_json::to_vec(&WorkerResponse::Version {
+            value: Some(String::new()),
+        })
+        .unwrap()
+        .len();
+        let mut response = WorkerResponse::Version {
+            value: Some("x".repeat(MAX_HELPER_FRAME_BYTES - overhead)),
+        };
+        let mut writer = CaptureWriter::new(4096);
+        write_frame(&mut writer, &response).await.unwrap();
+        assert_eq!(writer.bytes.len(), MAX_HELPER_FRAME_BYTES + 4);
+        assert_eq!(
+            writer.bytes[..4],
+            (MAX_HELPER_FRAME_BYTES as u32).to_be_bytes()
+        );
+        assert_eq!(writer.flushes, 1);
+        if let WorkerResponse::Version { value: Some(value) } = &mut response {
+            value.push('x');
+        }
+        let mut rejected = CaptureWriter::new(4096);
+        let error = write_frame(&mut rejected, &response).await.unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("valueTooLarge"));
+        assert!(rejected.bytes.is_empty());
+        assert_eq!(rejected.flushes, 0);
     }
 }

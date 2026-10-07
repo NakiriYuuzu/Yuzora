@@ -143,6 +143,52 @@ describe("normalizeHerdrSnapshot", () => {
     expect(normalized.focusedTerminalId).toBe("term_1")
   })
 
+  it("preserves representative precedence, explicit counts and first duplicate tab metadata", () => {
+    const snapshot = normalizeHerdrSnapshot({
+      protocol: 22, version: "0.9.3", snapshot: {
+        focused_pane_id: "focused",
+        tabs: [
+          { tab_id: "wire", workspace_id: "ws", label: "First", pane_count: 9 },
+          { tab_id: "wire", workspace_id: "ws", label: "Duplicate", pane_count: 1 },
+          { tab_id: "derived", workspace_id: "ws" },
+          { tab_id: "empty", workspace_id: "ws" }
+        ],
+        panes: [
+          { tab_id: "wire", workspace_id: "ws", pane_id: "first", terminal_id: "first-terminal" },
+          { tab_id: "wire", workspace_id: "ws", pane_id: "focused", terminal_id: "focused-terminal" },
+          { tab_id: "wire", workspace_id: "ws", pane_id: "focused", terminal_id: "duplicate-focus" },
+          { tab_id: "derived", workspace_id: "ws", pane_id: "p1", terminal_id: "t1" },
+          { tab_id: "derived", workspace_id: "ws", pane_id: "p2", terminal_id: "t2" }
+        ],
+        agents: [
+          { tab_id: "agent-only", workspace_id: "ws", pane_id: "a1", terminal_id: "at1" },
+          { tab_id: "agent-only", workspace_id: "ws", pane_id: "a2", terminal_id: "at2", focused: true }
+        ]
+      }
+    })
+    expect(snapshot.tabs).toEqual([
+      expect.objectContaining({ id: "wire", label: "First", paneCount: 9, terminalId: "focused-terminal" }),
+      expect.objectContaining({ id: "derived", paneCount: 2, terminalId: "t1" }),
+      expect.objectContaining({ id: "empty", paneCount: 0, terminalId: null }),
+      expect.objectContaining({ id: "agent-only", paneCount: 1, terminalId: "at1" })
+    ])
+  })
+
+  it("retains partial snapshots' terminal-only representative when no focused pane is supplied", () => {
+    const snapshot = normalizeHerdrSnapshot({
+      protocol: 22, version: "0.9.3", snapshot: {
+        panes: [
+          { tab_id: "partial", workspace_id: "ws", pane_id: "p1", terminal_id: "t1" },
+          { tab_id: "partial", workspace_id: "ws", terminal_id: "terminal-only" },
+          { tab_id: "partial", workspace_id: "ws", terminal_id: "second-terminal-only" }
+        ]
+      }
+    })
+    expect(snapshot.tabs).toEqual([
+      expect.objectContaining({ id: "partial", paneCount: 3, paneId: null, terminalId: "terminal-only" })
+    ])
+  })
+
   it("tolerates empty or malformed payload", () => {
     const empty = normalizeHerdrSnapshot({
       protocol: 19,

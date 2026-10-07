@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
@@ -310,6 +310,24 @@ describe("ExternalChangeResolver", () => {
         expect(documentGeneration(PATH)).toBe(genBefore)
     })
 
+    it("keeps the resolver merge view and progress on an unchanged sibling notification", async () => {
+        mountMainView("mine")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useWorkspaceStore.getState().openTab(PATH)
+        useUiStore.getState().openResolver(PATH)
+        const { container } = render(<ExternalChangeResolver />)
+        await screen.findByRole("button", { name: "解決並存檔" })
+        const editor = container.ownerDocument.querySelector(".external-resolver-merge .cm-editor")!
+        const view = EditorView.findFromDOM(editor as HTMLElement)!
+        view.dispatch({ changes: { from: 0, insert: "in progress " } })
+        await act(async () => capturedFsListener({ payload: { workspaceRoot: "/w", paths: ["/w"] } }))
+        expect(ipc.openFile).toHaveBeenCalledTimes(2)
+        expect(container.ownerDocument.querySelector(".external-resolver-merge .cm-editor")).toBe(editor)
+        expect(view.state.doc.toString()).toBe("in progress mine")
+        expect(screen.queryByText("磁碟版已再次變更")).not.toBeInTheDocument()
+    })
+
     // Finding #3: fs:external-change rebuild path. Injecting a disk-rechange
     // event for this path surfaces the "磁碟版已再次變更" hint.
     it("fs:external-change for this path shows the re-changed hint", async () => {
@@ -324,6 +342,31 @@ describe("ExternalChangeResolver", () => {
         vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk2", size: 5, lineEnding: "lf" })
         capturedFsListener({ payload: { workspaceRoot: "/w", paths: [PATH] } })
         expect(await screen.findByText("磁碟版已再次變更")).toBeInTheDocument()
+    })
+
+    it.each([
+        { path: "/w/target/a.txt", root: "/w", directory: "/w/target", matches: true },
+        { path: "/w/targetX/a.txt", root: "/w", directory: "/w/target", matches: false },
+        { path: String.raw`C:\Work\Target\a.txt`, root: "C:/Work", directory: "c:/work/target", matches: true },
+    ])("coalesced $directory matches $path: $matches", async ({ path, root, directory, matches }) => {
+        mountMainView("mine", path)
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: root })
+        useWorkspaceStore.getState().openTab(path)
+        useUiStore.getState().openResolver(path)
+        render(<ExternalChangeResolver />)
+        await screen.findByRole("button", { name: "解決並存檔" })
+        expect(ipc.openFile).toHaveBeenCalledTimes(1)
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "changed", size: 7, lineEnding: "lf" })
+        capturedFsListener({ payload: { workspaceRoot: root, paths: [directory] } })
+        if (matches) {
+            expect(await screen.findByText("磁碟版已再次變更")).toBeInTheDocument()
+            expect(ipc.openFile).toHaveBeenLastCalledWith(path)
+            expect(ipc.openFile).toHaveBeenCalledTimes(2)
+        } else {
+            expect(ipc.openFile).toHaveBeenCalledTimes(1)
+            expect(screen.queryByText("磁碟版已再次變更")).not.toBeInTheDocument()
+        }
     })
 
     // #57 T3 AC4：resolver 開著時，舊 workspace watcher 的殘留事件（root 不符）

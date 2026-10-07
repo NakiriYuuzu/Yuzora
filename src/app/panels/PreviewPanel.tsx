@@ -113,6 +113,7 @@ export function PreviewPanel() {
 
   const external = !!nav.url && (isTauri() || !isLocalPreviewUrl(nav.url))
   const renderedPreview = useRemotePreviewUrl(workspace, nav.url, nav.reloadNonce)
+  const hasWebviewHost = external && !renderedPreview.error
   const { selecting, selectionFeedback, toggleElementSelection } = usePreviewInteractions({
     workspace, url: nav.url, nativeSessionId, external, previewVisible,
   })
@@ -230,13 +231,18 @@ export function PreviewPanel() {
   // Track the placeholder's bounds so the native layer stays glued to it as the
   // panel resizes (nav width, terminal drawer, responsive-frame toggle, window).
   useEffect(() => {
-    if (!isTauri() || !external || !workspace || !nav.url) return
+    if (!isTauri() || !hasWebviewHost || !workspace || !nav.url) return
     const host = webviewHostRef.current
     if (!host) return
     const targetWorkspace = workspace
     const targetUrl = nav.url
+    let queued = false
     const update = () => {
+      if (queued) return
+      queued = true
       void enqueueNativePreviewOperation(async () => {
+        // Waiting notifications share the latest bounds; an in-flight write can queue a follow-up.
+        queued = false
         if (
           useWorkspaceStore.getState().workspacePath !== targetWorkspace
           || usePreviewStore.getState().navForWorkspace(targetWorkspace).url !== targetUrl
@@ -254,7 +260,7 @@ export function PreviewPanel() {
       observer.disconnect()
       window.removeEventListener("resize", update)
     }
-  }, [external, nav.url, workspace])
+  }, [hasWebviewHost, nav.url, workspace])
 
   // Visibility gate: show the webview only when the preview is the visible
   // foreground — Files mode, no overlay open (the webview paints above every DOM

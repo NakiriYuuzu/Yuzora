@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { resolveProjectPresentation } from "@/app/workbench/projectPresentation";
-import { useHerdrStore } from "@/state/herdrStore";
+import { isHerdrStartupPending, useHerdrStore } from "@/state/herdrStore";
 import { useUiStore } from "@/state/uiStore";
 import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
@@ -107,9 +107,10 @@ export function SpaceAgentTree() {
   const session = useHerdrStore((s) => s.selectedSessionName) ?? "";
   const rawSessions = useHerdrStore((s) => s.sessions),
     runtimes = useHerdrStore((s) => s.runtimesBySession);
+  const herdrStartup = useHerdrStore((s) => s.herdrStartup);
   const sessions = useMemo(
-    () => rawSessions.filter((item) => item.running).map((item) => ({ ...item, name: sessionScope(item)! })),
-    [rawSessions],
+    () => rawSessions.filter((item) => item.running || isHerdrStartupPending({ herdrStartup }, item)).map((item) => ({ ...item, name: sessionScope(item)! })),
+    [rawSessions, herdrStartup],
   );
   const attention = useHerdrStore((s) => s.attentionByKey);
   const selectedSpace = useHerdrStore((s) => s.selectedSpaceId);
@@ -151,6 +152,8 @@ export function SpaceAgentTree() {
     return runtime?.capabilities?.server.compatible === false || runtime?.connectionState === "unsupported" || !!runtime?.errorMessage;
   }
   function sessionNotice(name: string) {
+    if (isHerdrStartupPending({ herdrStartup }, rawSessions.find((item) => sessionScope(item) === name)))
+      return t("loading");
     const runtime = runtimes[name];
     const caps = runtime?.capabilities;
     if (caps?.server.compatible === false) {

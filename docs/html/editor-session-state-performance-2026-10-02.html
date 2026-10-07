@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>檔案狀態保留與 Session 切換：修正及待驗證範圍</title>
+<style>
+body{max-width:960px;margin:48px auto;padding:0 24px;background:#f8f7f3;color:#202731;font:16px/1.8 system-ui,sans-serif}h1{font-size:30px;line-height:1.4}h2{margin-top:36px;font-size:21px}table{border-collapse:collapse;width:100%}th,td{padding:12px;border-bottom:1px solid #d9dee4;text-align:left;vertical-align:top}code{font-size:13px;overflow-wrap:anywhere}a{color:#235b87}.pending{padding:16px 20px;border-left:4px solid #aa792d;background:#f3ead9}small{color:#5d6570}@media print{body{margin:0;max-width:none}}
+</style>
+<h1>檔案狀態保留與 Session 切換</h1>
+<p><small>2026-10-02 · 工作樹局部修正 · 尚未完成使用者實機驗收</small></p>
+<p>使用者回報檔案切換後捲動位置、游標／選取範圍遺失，以及檔案／工作區／Session 切換卡頓、閒置資源占用。本輪確認並修正 Markdown 文件模式與已就緒 Session 重複初始化兩條路徑；不能據此宣稱所有狀態保留與效能問題均已解決。</p>
+<h2>重現與修正</h2>
+<table>
+<tr><th>路徑</th><th>修正前證據</th><th>本輪處理</th></tr>
+<tr><td>Markdown A → B → A</td><td>實際 EditorArea／RichMarkdownEditor 整合測試：選取 12–20 字元後往返，回到第 1 字元。Source 模式也重設為 Document。</td><td>依工作區＋文件保存模式、文件模式的選取與捲動位置；最多保存 200 份。僅在來源文件一致時還原位置，不保留背景 EditorView／Tiptap instance。</td></tr>
+<tr><td>編輯後往返</td><td>輸入後，SelectionUpdate 早於 CodeMirror 來源更新，初版修正仍把游標退回第 1 字元。</td><td>來源寫入後重新記錄選取與 viewport，補上編輯後往返回歸。</td></tr>
+<tr><td>Markdown 游標移動</td><td>10 次只改選取範圍／工具列狀態的操作，觸發 9 次整份 Markdown 序列化。</td><td>round-trip 安全檢查依 editor／source 記憶化，同一測試降為 0 次序列化。這是操作次數改善，未宣稱實機耗時改善比例。</td></tr>
+<tr><td>已就緒 Session 往返</td><td>目標已有健康事件訂閱，選取仍進入 connecting 並重新讀取 capabilities、snapshot、worktree inventory。</td><td>成功協商記錄主機世代與 Session socket。狀態 ready、無錯誤、能力相容、snapshot 存在且訂閱健康時直接切換；異常、取消訂閱、主機世代或 socket 改變仍重新協商。</td></tr>
+</table>
+<h2>驗證</h2>
+<ul>
+<li>30 個測試檔、453 個測試通過：編輯器、實際 EditorArea 切換、Session store、bridge、Session picker、terminal page 等受影響範圍。</li>
+<li><code>bun run build</code>（包含 typecheck）通過；仍有 bundle 大小提示。</li>
+<li><code>bun run lint</code>：0 errors、48 warnings；沒有使用自動修正。</li>
+<li><code>git diff --check</code> 通過。</li>
+<li>本機執行環境為 Bun 1.3.14、Node 25.8.1；本輪不是 CI 固定工具鏈、跨平台或安裝包驗收。</li>
+</ul>
+<p>紀錄：<code>/tmp/yuzora-navigation-20261002.xwjdml/tests.log</code>、<code>build.log</code>、<code>lint.log</code>。未變更 Rust，未重跑 Rust suite；未 stage、commit、push。</p>
+<h2>仍待完成</h2>
+<div class="pending"><ul>
+<li>一般文字／程式檔的選取往返測試通過，尚未重現其實機捲動／游標遺失；使用者尚未確認最常出問題的檔案類型。</li>
+<li>捲動測試目前只驗證 viewport 數值經元件卸載／掛載的傳遞；jsdom 沒有實際版面，不能證明真實捲動像素或瀏覽器 clamping 正確。</li>
+<li>本輪新增的 Markdown 保存只涵蓋可編輯的文件模式及 Source 模式選擇；大型／不支援語法的唯讀 MarkdownDocumentPreview、獨立 Markdown Preview、圖片／SVG 尚未納入此修正。</li>
+<li>沒有運行中的 Yuzora 可量測閒置 CPU／記憶體。歷史 diagnostics 同時存在 WebView 用量零值及背景 timer lag，不能視為本輪前景閒置基準。</li>
+<li>Session 改善驗證的是避免重複 bootstrap 與能力清空；真實本機／SSH 多 Session 切換延遲、記憶體峰值及閒置用量仍待量測。</li>
+<li>瀏覽器／E2E 驗證依使用者提供的 AGENTS 規則已另行詢問，尚未取得本輪明確同意，因此未執行。</li>
+</ul></div>
+<h2>主要檔案</h2>
+<ul>
+<li><a href="../../src/editor/RichMarkdownEditor.tsx">RichMarkdownEditor.tsx</a>、<a href="../../src/editor/markdownViewState.ts">markdownViewState.ts</a></li>
+<li><a href="../../src/state/herdrStore.ts">herdrStore.ts</a>、<a href="../../src/lib/herdrTypes.ts">herdrTypes.ts</a></li>
+<li><a href="../../src/workbench/editorNavigationState.test.tsx">editorNavigationState.test.tsx</a>、<a href="../../src/state/herdrStore.test.ts">herdrStore.test.ts</a></li>
+</ul>
+</html>

@@ -248,10 +248,13 @@ mod tests {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(cmd.split_whitespace().last().unwrap())
             .unwrap();
+        let (code_units, remainder) = bytes.as_chunks::<2>();
+        assert!(remainder.is_empty());
         let script = String::from_utf16(
-            &bytes
-                .chunks_exact(2)
-                .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            &code_units
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
                 .collect::<Vec<_>>(),
         )
         .unwrap();

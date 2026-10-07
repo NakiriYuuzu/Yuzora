@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react"
+import { listen } from "@tauri-apps/api/event"
+import type { HerdrStartupStatus } from "@/lib/herdrTypes"
 import { herdrEventsRelease, herdrEventsSubscribe } from "@/lib/herdrIpc"
 import { runtimeOwner, sessionScope } from "@/lib/herdrProvider"
 import { isHerdrPagePath } from "@/lib/herdrPages"
@@ -6,7 +8,7 @@ import { canonicalPathKey } from "@/lib/paths"
 import { useHostStore } from "@/state/hostStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS, shouldPollHerdrSnapshots, shouldRefreshWorktreeInventory } from "./herdrBridgePolicy"
+import { HERDR_HEALTHY_SNAPSHOT_FALLBACK_MS, shouldPollHerdrSnapshots, shouldRefreshWorktreeInventory, startHerdrVisibilityPolling } from "./herdrBridgePolicy"
 
 interface RuntimeSubscription {
   scope: string
@@ -36,6 +38,8 @@ export function HerdrBridge() {
     cancelledRef.current = false
     const active = new Map<string, RuntimeSubscription>()
     let listing = false
+    let pollQueued = false
+    let disposed = false
     const current = (entry: RuntimeSubscription) => !cancelledRef.current && active.get(entry.scope) === entry
     const release = (entry: RuntimeSubscription) => {
       entry.subscriptionGeneration++
@@ -205,7 +209,7 @@ export function HerdrBridge() {
       } finally { entry.inFlight = false }
     }
 
-    const reconcileRuntimes = () => {
+    const reconcileRuntimes = (refreshExisting = true) => {
       const wanted = new Map<string, string>()
       for (const session of useHerdrStore.getState().sessions) {
         const scope = sessionScope(session)!
@@ -220,23 +224,45 @@ export function HerdrBridge() {
       }
       for (const [scope, identity] of wanted) {
         let entry = active.get(scope)
+        const shouldRefresh = refreshExisting || !entry
         if (!entry) {
           entry = {scope, identity, needsBootstrap:runtimeOwner(scope) !== null, inFlight:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
           active.set(scope, entry)
         }
-        void refresh(entry).catch(() => undefined)
+        if (shouldRefresh) void refresh(entry).catch(() => undefined)
       }
     }
-    const poll = async () => {
-      if (listing || cancelledRef.current) return
+    const poll = async (refreshExisting = true) => {
+      if (disposed) return
+      // A slow Host's discovery must not stall known runtimes' fallback snapshots.
+      // Queued discovery has already served its tick, so only start new identities.
+      reconcileRuntimes(refreshExisting)
+      if (listing) { pollQueued = true; return }
       listing = true
       try {
         await useHerdrStore.getState().refreshSessions()
-        if (!cancelledRef.current) reconcileRuntimes()
-      } finally { listing = false }
+        // Existing runtimes already refreshed on the tick; start only new identities.
+        if (!disposed) reconcileRuntimes(false)
+      } finally {
+        listing = false
+        if (pollQueued && !disposed) { pollQueued = false; void poll(false) }
+      }
     }
+    // Listen before discovery so a fast startup cannot be missed. Discovery also
+    // reads the status command to recover events emitted before this effect.
+    const unlistenStartup = listen<HerdrStartupStatus>("herdr:startup", ({ payload }) => {
+      if (disposed) return
+      useHerdrStore.getState().setHerdrStartup(payload)
+      for (const entry of active.values()) {
+        if (runtimeOwner(entry.scope) === null) {
+          entry.needsBootstrap = true
+          entry.nextAttempt = 0
+        }
+      }
+      void poll()
+    }).catch(() => undefined)
     void poll()
-    const interval = setInterval(() => void poll(), 4000)
+    const stopPolling = startHerdrVisibilityPolling(() => void poll())
     // Helper replacement keeps named Session IDs. Refresh every Session's
     // capability contract immediately when its connection generation changes.
     const unsubscribeHosts = useHostStore.subscribe((state, previous) => {
@@ -268,8 +294,10 @@ export function HerdrBridge() {
       }
     })
     return () => {
+      disposed = true
       cancelledRef.current = true
-      clearInterval(interval)
+      stopPolling()
+      void unlistenStartup.then(unlisten => unlisten?.()).catch(() => undefined)
       unsubscribeHosts()
       unsubscribeWorkspaceRestore()
       unsubscribeFocus()

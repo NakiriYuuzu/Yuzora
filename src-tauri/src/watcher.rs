@@ -250,6 +250,7 @@ mod tests {
         .unwrap();
         assert_eq!(v["workspaceRoot"], "/w");
         assert_eq!(v["paths"][0], "/w/a.txt");
+        assert_eq!(v.as_object().unwrap().len(), 2);
     }
 
     #[test]

@@ -71,6 +71,10 @@ pub enum StreamCommand {
     Scroll {
         direction: HerdrScrollDirection,
         lines: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        column: Option<u16>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        row: Option<u16>,
     },
     Close,
 }
@@ -158,5 +162,41 @@ mod tests {
         request.owner = owner.clone();
         request.version += 1;
         assert_eq!(request.validate(&owner).unwrap_err(), "protocol-mismatch");
+    }
+
+    #[test]
+    fn scroll_pointer_cell_is_optional_on_the_wire() {
+        // A frame the helper cannot parse ends the whole stream, so a scroll
+        // without a pointer cell must keep its original shape.
+        let bare: StreamCommand =
+            serde_json::from_str(r#"{"command":"scroll","direction":"up","lines":3}"#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"command":"scroll","direction":"up","lines":3}"#
+        );
+        let nulls: StreamCommand = serde_json::from_str(
+            r#"{"command":"scroll","direction":"up","lines":3,"column":null,"row":null}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            nulls,
+            StreamCommand::Scroll {
+                column: None,
+                row: None,
+                ..
+            }
+        ));
+        let at_cell: StreamCommand = serde_json::from_str(
+            r#"{"command":"scroll","direction":"down","lines":1,"column":10,"row":5}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            at_cell,
+            StreamCommand::Scroll {
+                column: Some(10),
+                row: Some(5),
+                ..
+            }
+        ));
     }
 }

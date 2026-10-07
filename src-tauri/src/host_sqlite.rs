@@ -17,7 +17,7 @@ struct Call {
     reply: oneshot::Sender<Result<SqliteResult, DatabaseOperationalError>>,
 }
 struct Proxy {
-    connection: Arc<HostConnection>,
+    connection: Option<Arc<HostConnection>>,
     cancelled: watch::Sender<bool>,
     requests: mpsc::Sender<Call>,
 }
@@ -36,7 +36,11 @@ impl Drop for PendingGuard {
 }
 impl RemoteSqlite for Proxy {
     fn is_closed(&self) -> bool {
-        *self.cancelled.borrow() || *self.connection.cancelled.borrow()
+        *self.cancelled.borrow()
+            || self
+                .connection
+                .as_ref()
+                .is_some_and(|connection| *connection.cancelled.borrow())
     }
     fn abort(&self) {
         self.cancelled.send_replace(true);
@@ -46,6 +50,10 @@ impl RemoteSqlite for Proxy {
             if self.is_closed() {
                 return Err(disconnected());
             }
+            // Preserve local long-running queries: isolation supplies the memory
+            // boundary; users still own cancellation. Remote requests retain their deadline.
+            let local_query =
+                self.connection.is_none() && matches!(&command, SqliteCommand::QueryRun(_));
             let (reply, response) = oneshot::channel();
             self.requests
                 .try_send(Call { command, reply })
@@ -56,9 +64,16 @@ impl RemoteSqlite for Proxy {
                     )
                 })?;
             let mut guard = PendingGuard(Some(self.cancelled.clone()));
-            let result = tokio::time::timeout(Duration::from_secs(120), response).await;
+            let result = if local_query {
+                response.await.ok()
+            } else {
+                tokio::time::timeout(Duration::from_secs(120), response)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+            };
             match result {
-                Ok(Ok(result)) if !self.is_closed() => {
+                Some(result) if !self.is_closed() => {
                     guard.0 = None;
                     result
                 }
@@ -223,7 +238,89 @@ pub(crate) async fn open(
         finished.send_replace(true);
     });
     Ok(DbHandle::RemoteSqlite(Arc::new(Proxy {
-        connection,
+        connection: Some(connection),
+        cancelled,
+        requests,
+    })))
+}
+
+/// Local profiles use the same persistent request/cancel protocol, without
+/// granting a remote caller the ability to bypass workspace trust.
+pub(crate) async fn open_local(
+    path: String,
+    identity: ConnectionIdentity,
+) -> Result<DbHandle, DatabaseOperationalError> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let permit = SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(16)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            DatabaseOperationalError::new(
+                DatabaseOperationalErrorCode::ConnectionBusy,
+                "local SQLite connection limit reached",
+            )
+        })?;
+    let canonical = yuzora_host::db_service::validate_existing_sqlite_path(&path)?;
+    let file = yuzora_host::path_capability::open_absolute_file_nofollow(&canonical)
+        .map_err(|_| disconnected())?
+        .file;
+    let owner = ConnectionOwner {
+        host_id: format!("local-sqlite-{}", uuid::Uuid::new_v4()),
+        generation: 1,
+    };
+    let config = LocalSqliteOpen {
+        version: PROTOCOL_VERSION,
+        owner: owner.clone(),
+        database_path: canonical.to_str().ok_or_else(disconnected)?.to_owned(),
+        file_identity: yuzora_host::path_capability::opened_file_identity(&file)
+            .map_err(|_| disconnected())?,
+        identity: identity.clone(),
+    };
+    let operation = async {
+        let child = tokio::process::Command::new(yuzora_host::db_query_worker::helper_program())
+            .env(LOCAL_WORKER_ENV, "1")
+            .env_remove(yuzora_host::db_query_worker::WORKER_ENV)
+            .env_remove("YUZORA_ASKPASS_ENDPOINT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|_| disconnected())?;
+        let mut io =
+            crate::host_service::owned_process_stream(child).map_err(|_| disconnected())?;
+        send(&mut io, &config).await.map_err(|_| disconnected())?;
+        let mut io = BufReader::new(io);
+        let bytes = yuzora_host::wire::read_frame(&mut io)
+            .await
+            .map_err(|_| disconnected())?
+            .ok_or_else(disconnected)?;
+        let reply = parse(&bytes, &owner).map_err(|_| unexpected_reply())?;
+        if reply.id != 0 {
+            return Err(unexpected_reply());
+        }
+        match reply.result.map_err(DatabaseOperationalError::from)? {
+            SqliteResult::Opened(opened) if opened == identity => {}
+            _ => return Err(unexpected_reply()),
+        }
+        Ok::<HostStream, DatabaseOperationalError>(Box::new(io))
+    };
+    let io = tokio::time::timeout(Duration::from_secs(30), operation)
+        .await
+        .map_err(|_| disconnected())??;
+    let (cancelled, receiver) = watch::channel(false);
+    let (requests, queue) = mpsc::channel(MAX_DATABASE_REQUESTS);
+    let finished = cancelled.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        let (keep_alive, host_cancelled) = watch::channel(false);
+        let _ = run(io, owner, queue, receiver, host_cancelled).await;
+        drop(keep_alive);
+        finished.send_replace(true);
+    });
+    Ok(DbHandle::RemoteSqlite(Arc::new(Proxy {
+        connection: None,
         cancelled,
         requests,
     })))
@@ -237,6 +334,130 @@ mod tests {
     use yuzora_host::db_connection_actor::ProductionConnectionActor;
     use yuzora_host::db_result_session::ResultSessionState;
     use yuzora_host::db_service::*;
+
+    #[tokio::test]
+    #[ignore = "121-second local deadline regression; requires YUZORA_DB_QUERY_WORKER_BIN"]
+    async fn local_long_query_remains_cancelable_past_the_remote_deadline() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("long-query.sqlite");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE seed(x)")
+            .unwrap();
+        let identity = ConnectionIdentity {
+            descriptor_id: DescriptorId("long".into()),
+            connection_id: ConnectionId("long".into()),
+            connection_generation: ConnectionGeneration("1".into()),
+        };
+        let DbHandle::RemoteSqlite(proxy) =
+            open_local(path.to_str().unwrap().into(), identity.clone())
+                .await
+                .unwrap()
+        else {
+            panic!()
+        };
+        let owner = QueryRunOwner {
+            descriptor_id: identity.descriptor_id.clone(),
+            connection_id: identity.connection_id.clone(),
+            connection_generation: identity.connection_generation.clone(),
+            query_run_id: QueryRunId("long-query".into()),
+        };
+        let query = SqliteCommand::QueryRun(QueryRunRequest {
+            descriptor_id: identity.descriptor_id, connection_id: identity.connection_id,
+            connection_generation: identity.connection_generation, query_run_id: owner.query_run_id.clone(), mode: QueryRunMode::Primary,
+            statements: NonEmptyVec::try_from(vec![QueryExecutionUnit { sql: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x < 1000000000000) SELECT count(*) FROM n".into(), transaction_boundary: TransactionBoundary::None }]).unwrap(),
+        });
+        let mut running = proxy.request(query);
+        tokio::select! {
+            result = &mut running => panic!("local query retired before explicit cancellation: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(121)) => {}
+        }
+        assert!(!proxy.is_closed());
+        let cancel = proxy.request(SqliteCommand::Cancel(owner)).await.unwrap();
+        assert!(matches!(cancel, SqliteResult::Cancelled(_)));
+        assert!(tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .is_ok());
+        assert!(proxy.request(SqliteCommand::Probe).await.is_ok());
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a freshly built YUZORA_DB_QUERY_WORKER_BIN"]
+    async fn local_production_proxy_preserves_results_and_retires_only_its_connection() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("local.sqlite");
+        rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'original');").unwrap();
+        let identity = ConnectionIdentity {
+            descriptor_id: DescriptorId("local-profile".into()),
+            connection_id: ConnectionId("local-connection".into()),
+            connection_generation: ConnectionGeneration("1".into()),
+        };
+        let DbHandle::RemoteSqlite(first) =
+            open_local(path.to_str().unwrap().into(), identity.clone())
+                .await
+                .unwrap()
+        else {
+            panic!("desktop retained a native SQLite handle");
+        };
+        let mut other_identity = identity.clone();
+        other_identity.connection_id = ConnectionId("other".into());
+        let DbHandle::RemoteSqlite(other) =
+            open_local(path.to_str().unwrap().into(), other_identity)
+                .await
+                .unwrap()
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            first.request(SqliteCommand::Probe).await.unwrap(),
+            SqliteResult::Version(_)
+        ));
+        for (index, sql) in [
+            "BEGIN",
+            "UPDATE sample SET value='updated' WHERE id=1",
+            "COMMIT",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let result = first
+                .request(SqliteCommand::QueryRun(QueryRunRequest {
+                    descriptor_id: identity.descriptor_id.clone(),
+                    connection_id: identity.connection_id.clone(),
+                    connection_generation: identity.connection_generation.clone(),
+                    query_run_id: QueryRunId(format!("run-{index}")),
+                    mode: QueryRunMode::Primary,
+                    statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
+                        sql: sql.into(),
+                        transaction_boundary: TransactionBoundary::None,
+                    }])
+                    .unwrap(),
+                }))
+                .await
+                .unwrap();
+            assert!(matches!(result, SqliteResult::Run(_)));
+        }
+        assert_eq!(
+            rusqlite::Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT value FROM sample WHERE id=1", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "updated"
+        );
+        first.abort();
+        assert!(first.is_closed());
+        assert!(first.request(SqliteCommand::Probe).await.is_err());
+        assert!(other.request(SqliteCommand::Probe).await.is_ok());
+        other.abort();
+        let missing = home.path().join("missing.sqlite");
+        assert!(open_local(missing.to_str().unwrap().into(), identity)
+            .await
+            .is_err());
+        assert!(!missing.exists());
+    }
 
     #[tokio::test]
     #[ignore = "requires a freshly built YUZORA_HOST_TEST_BINARY"]

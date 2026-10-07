@@ -2,9 +2,9 @@ type UnknownRecord = Record<string, unknown>
 
 type Workflow = UnknownRecord
 
-// Verified upstream on 2026-08-26: actions/checkout releases/v4 backport #2524.
+// Verified upstream on 2026-09-27: actions/checkout v7.0.1.
 const REVIEWED_CHECKOUT_REF =
-  "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 
 function record(value: unknown, label: string): UnknownRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -355,7 +355,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
   const inputDownload = stepByName(prepareSteps, "Download assembled updater inputs")
   assert(
     !prepareSteps.some((step) => includes(step.run, "gh release")) &&
-      inputDownload.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" &&
+      inputDownload.uses === "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" &&
       record(inputDownload.with, "updater input download").name === "yuzora-release-updater-inputs" &&
       steps(assemble, "jobs.assemble-draft").some((step) => step.name === "Upload assembled updater inputs"),
     "read-only metadata preparation must consume assembled inputs without accessing a private draft"
@@ -646,7 +646,7 @@ function verifyCiLinuxDependencySetup(ci: Workflow): void {
 function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], windowsCondition: string): void {
   const download = stepByName(buildSteps, "Download Unix host runtimes")
   const options = record(download.with, "runtime download options")
-  assert(download.uses === "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")
+  assert(download.uses === "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")
   assert(includes(stepByName(buildSteps, "Verify Unix host runtime payloads").run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
   const verify = stepByName(buildSteps, "Verify Windows native and Unix runtime payloads")
   assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify native and Unix runtime payloads extracted from MSI and NSIS")

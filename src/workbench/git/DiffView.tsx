@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
-import { EditorSelection, EditorState } from "@codemirror/state"
+import { ChangeSet, EditorSelection, EditorState } from "@codemirror/state"
 import { EditorView, lineNumbers } from "@codemirror/view"
 import { syntaxHighlighting } from "@codemirror/language"
 import {
@@ -7,21 +7,22 @@ import {
     goToNextChunk,
     goToPreviousChunk,
     MergeView,
-    unifiedMergeView
+    unifiedMergeView,
+    originalDocChangeEffect,
+    getOriginalDoc
 } from "@codemirror/merge"
 import { FileWarning } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import i18n from "@/lib/i18n"
 import { appHighlightStyle, appTheme } from "@/editor/cmTheme"
-import { hasVeryLongLine, languageExtensionFromPath } from "@/editor/cmExtensions"
+import { hasVeryLongLine, languageExtensions } from "@/editor/cmExtensions"
 import { EmptyState } from "@/app/workbench/EmptyState"
 import type { DiffContent, GradedText } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { useUiStore } from "@/state/uiStore"
 import {
     clampGitDiffSplitRatio,
-    currentChunkIndex,
     GIT_DIFF_SPLIT_MAX,
     GIT_DIFF_SPLIT_MIN,
     GIT_DIFF_SPLIT_STEP
@@ -53,6 +54,25 @@ function docOf(side: GradedText): string {
 
 function navView(view: EditorView | MergeView): EditorView {
     return view instanceof MergeView ? view.b : view
+}
+
+/** 0-based index of the chunk under (or just before) the main selection. */
+function currentChunkIndex(state: EditorState): number {
+    const info = getChunks(state)
+    if (!info || info.chunks.length === 0) return -1
+    const head = state.selection.main.head
+    const side = info.side ?? "b"
+    for (let i = 0; i < info.chunks.length; i++) {
+        const chunk = info.chunks[i]
+        const from = side === "b" ? chunk.fromB : chunk.fromA
+        const to = side === "b" ? chunk.toB : chunk.toA
+        if (from <= head && head <= to) return i
+    }
+    for (let i = info.chunks.length - 1; i >= 0; i--) {
+        const to = side === "b" ? info.chunks[i].toB : info.chunks[i].toA
+        if (to < head) return i
+    }
+    return 0
 }
 
 function readChunkState(state: EditorState): { current: number; total: number } {
@@ -90,12 +110,6 @@ export function DiffView({ content, mode, path }: { content: DiffContent; mode: 
     const reason = undisplayable(content.original) ?? undisplayable(content.modified)
     const original = docOf(content.original)
     const modified = docOf(content.modified)
-    // Language facet lets @codemirror/merge highlight both sides (incl. deleted
-    // lines via syntaxHighlightDeletions). Very long lines (minified diffs) skip
-    // it to keep the parser from stalling, matching the editor's syntaxOff guard.
-    const langExt =
-        hasVeryLongLine(original) || hasVeryLongLine(modified) ? null : languageExtensionFromPath(path)
-
     useLayoutEffect(() => {
         const host = containerRef.current
         if (!host) return
@@ -107,7 +121,14 @@ export function DiffView({ content, mode, path }: { content: DiffContent; mode: 
         const parent = containerRef.current
         if (!parent) return
 
-        const langExtensions = langExt ? [langExt] : []
+        // Highlight both sides (including deletions) once the grammar arrives.
+        // Keep minified diffs unparsed, matching the editor's syntaxOff guard.
+        const langExtensions = languageExtensions(path, hasVeryLongLine(original) || hasVeryLongLine(modified), mode === "unified" ? view => {
+            // Merge deletion widgets capture their creation state. Re-diff the
+            // same original after syntax reconfiguration without replacing the view.
+            const doc = getOriginalDoc(view.state)
+            view.dispatch({ effects: originalDocChangeEffect(view.state, ChangeSet.of({ from: 0, to: doc.length, insert: doc }, doc.length)) })
+        } : undefined)
         const updateListener = EditorView.updateListener.of((update) => {
             if (update.selectionSet || update.docChanged) {
                 setChunkState(readChunkState(update.state))

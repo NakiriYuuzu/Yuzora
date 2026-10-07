@@ -5,6 +5,8 @@ import { adjacentHerdrWorkspace, herdrReorderMembers } from "@/lib/herdrWorkspac
 import { systemRevealPath } from "@/lib/revealPath"
 import { isFileTab } from "@/lib/markdownPreviewTab"
 import { gitWorkingFilePath, openGitWorkingFile } from "@/workbench/git/gitWorkingFile"
+import { deleteBranch, mergeIntoCurrent, rebaseCurrentOnto, renameBranch } from "@/workbench/git/gitOperations"
+import { copyFilesToClipboard, duplicatePath, pasteFiles } from "@/workbench/fileClipboard"
 import { findRuntimeSession, sessionScope } from "@/lib/herdrProvider"
 import { closeHerdrTerminalPages } from "@/lib/herdrFeatureNavigation"
 import { getViewEntry } from "@/editor/viewRegistry"
@@ -183,6 +185,30 @@ function rightSplitAvailability(groupIndex: number): ContextMenuAvailability {
   return groups.length >= 2 && groupIndex >= groups.length - 1
     ? disabled(DISABLED_TWO_GROUP_LIMIT)
     : available()
+}
+
+
+function gitCurrentBranch(): string {
+  const status = useGitStore.getState().status
+  return status && !status.detached && status.branch ? status.branch : "HEAD"
+}
+
+function gitBranchMutationAvailability(request: ContextMenuRequestFor<"gitBranch">): ContextMenuAvailability {
+  const state = useGitStore.getState()
+  if (state.environment?.status !== "ready" || state.environment.root !== request.repositoryRoot) return hidden()
+  return state.busy != null || state.snapshotStale ? disabled(DISABLED_TARGET) : available()
+}
+
+function gitBranchIntegrationAvailability(request: ContextMenuRequestFor<"gitBranch">): ContextMenuAvailability {
+  const status = useGitStore.getState().status
+  if (request.isCurrent || !status || status.detached) return hidden()
+  if (status.inProgress || status.conflicted.length > 0) return disabled(DISABLED_TARGET)
+  return gitBranchMutationAvailability(request)
+}
+
+async function completeAfter(action: Promise<void>): Promise<"completed"> {
+  await action
+  return "completed"
 }
 
 function gitAvailability(request: ContextMenuRequestFor<"git"> | ContextMenuRequestFor<"status">) {
@@ -431,6 +457,14 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       danger: false,
       executor: legacy("cmNewFolder"),
     }),
+    item<"explorer">("cmPaste", {
+      availability: (request) => currentWorkspace(request.workspacePath) ? available() : hidden(),
+      danger: false,
+      executor: async (request) => {
+        const pasted = await pasteFiles(request.workspacePath!, null)
+        return pasted.length ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
+      },
+    }),
     "separator",
     item<"explorer">("cmRefresh", {
       availability: (request) => currentWorkspace(request.workspacePath) ? available() : hidden(),
@@ -476,6 +510,30 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
           : disabled(DISABLED_TARGET),
       danger: false,
       executor: legacy("cmOpenSplit"),
+    }),
+    "separator",
+    item<"file">("cmCut", {
+      availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => { await copyFilesToClipboard(request.workspacePath, [request.path], "cut"); return CONTEXT_MENU_COMPLETED },
+    }),
+    item<"file">("cmCopy", {
+      availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => { await copyFilesToClipboard(request.workspacePath, [request.path], "copy"); return CONTEXT_MENU_COMPLETED },
+    }),
+    item<"file">("cmPaste", {
+      availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => {
+        const pasted = await pasteFiles(request.workspacePath, { path: request.path, isDirectory: request.isDirectory })
+        return pasted.length ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED
+      },
+    }),
+    item<"file">("cmDuplicate", {
+      availability: (request) => currentWorkspace(request.workspacePath) ? available() : disabled(DISABLED_TARGET),
+      danger: false,
+      executor: async (request) => (await duplicatePath(request.workspacePath, request.path)).length ? CONTEXT_MENU_COMPLETED : CONTEXT_MENU_CANCELLED,
     }),
     "separator",
     item<"file">("cmRename", {
@@ -634,6 +692,33 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
     item<"git">("cmFetch", { availability: gitAvailability, danger: false, executor: legacy("cmFetch") }),
     item<"git">("cmPull", { availability: gitAvailability, danger: false, executor: legacy("cmPull") }),
     item<"git">("cmPush", { availability: gitAvailability, danger: false, executor: legacy("cmPush") }),
+  ],
+  gitBranch: [
+    item<"gitBranch">("cmMergeIntoCurrent", {
+      label: (request) => i18n.t("gitActions.mergeInto", { ns: "menus", branch: request.name, current: gitCurrentBranch() }),
+      availability: (request) => gitBranchIntegrationAvailability(request),
+      danger: false,
+      executor: (request) => completeAfter(mergeIntoCurrent(request.name)),
+    }),
+    item<"gitBranch">("cmRebaseOntoBranch", {
+      label: (request) => i18n.t("gitActions.rebaseOnto", { ns: "menus", branch: request.name, current: gitCurrentBranch() }),
+      availability: (request) => gitBranchIntegrationAvailability(request),
+      danger: false,
+      executor: (request) => completeAfter(rebaseCurrentOnto(request.name)),
+    }),
+    "separator",
+    item<"gitBranch">("cmRenameBranch", {
+      label: () => i18n.t("gitActions.renameItem", { ns: "menus" }),
+      availability: (request) => request.branchKind !== "local" ? hidden() : gitBranchMutationAvailability(request),
+      danger: false,
+      executor: (request) => completeAfter(renameBranch(request.name)),
+    }),
+    item<"gitBranch">("cmDeleteBranch", {
+      label: () => i18n.t("gitActions.deleteItem", { ns: "menus" }),
+      availability: (request) => request.branchKind !== "local" || request.isCurrent ? hidden() : gitBranchMutationAvailability(request),
+      danger: true,
+      executor: (request) => completeAfter(deleteBranch(request.name)),
+    }),
   ],
   gitChange: [
     item<"gitChange">("cmOpenWorkingFile", {

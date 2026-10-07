@@ -122,9 +122,14 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
     },
 
     listRemote: async (hostId, path) => {
+        const sessionId = sessionIdOf(hostId)
+        // A stale UI callback after profile removal must not recreate its cache.
+        if (!sessionId && !useSshStore.getState().hosts.some(host => host.id === hostId)) {
+            listings.delete(hostId)
+            return
+        }
         const token = Symbol(hostId)
         listings.set(hostId, token)
-        const sessionId = sessionIdOf(hostId)
         if (!sessionId) {
             set((s) => ({
                 remote: {
@@ -223,7 +228,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         if (!sessionId || !cwd) return
         const epoch = transferEpoch
         const reservation = await reserveTransfer(sessionId)
-        if (epoch !== transferEpoch) { if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined); return }
+        if (epoch !== transferEpoch || sessionIdOf(hostId) !== sessionId) { if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined); return }
         const transferId = reservation.id
         const name = source.kind === "workspace" ? baseName(source.relativePath) : source.name
         set((s) => ({
@@ -246,6 +251,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
             const expectedRevision = await sftpFileRevision(sessionId, remoteJoin(cwd, name), transferId)
             if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
+            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
             if (expectedRevision !== null && !await requestAppConfirmation({
                 title: i18n.t("panels:sshPanel.sftpOverwriteRemoteTitle"),
                 description: i18n.t("panels:sshPanel.sftpOverwriteRemoteConfirm", { name }),
@@ -279,7 +285,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         if (!sessionId) return
         const epoch = transferEpoch
         const reservation = await reserveTransfer(sessionId)
-        if (epoch !== transferEpoch) { if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined); return }
+        if (epoch !== transferEpoch || sessionIdOf(hostId) !== sessionId) { if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined); return }
         const transferId = reservation.id
         set((s) => ({
             transfers: {
@@ -321,7 +327,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         if (!sessionId) return
         const epoch = transferEpoch
         const reservation = await reserveTransfer(sessionId)
-        if (epoch !== transferEpoch) {
+        if (epoch !== transferEpoch || sessionIdOf(hostId) !== sessionId) {
             if (!reservation.error) await sftpTransferCancel(sessionId, reservation.id).catch(() => undefined)
             return
         }
@@ -390,3 +396,27 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
         set({ panelOpen: false, remote: {}, transfers: {} })
     }
 }))
+
+/** Drop projections for removed host profiles; SSH owns native cancellation. */
+export function forgetSftpHosts(hostIds: readonly string[]): void {
+    if (hostIds.length === 0) return
+    const removed = new Set(hostIds)
+    for (const hostId of removed) listings.delete(hostId)
+    useSftpStore.setState((state) => {
+        let remote = state.remote
+        for (const hostId of removed) {
+            if (!Object.hasOwn(remote, hostId)) continue
+            if (remote === state.remote) remote = { ...remote }
+            delete remote[hostId]
+        }
+        let transfers = state.transfers
+        for (const [id, transfer] of Object.entries(state.transfers)) {
+            if (!removed.has(transfer.hostId)) continue
+            if (transfers === state.transfers) transfers = { ...transfers }
+            delete transfers[id]
+        }
+        return remote === state.remote && transfers === state.transfers
+            ? state
+            : { remote, transfers }
+    })
+}

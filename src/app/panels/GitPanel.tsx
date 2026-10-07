@@ -11,6 +11,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { GitGuidedSetup } from "@/app/workbench/GitNavContent"
 import { EmptyState } from "@/app/workbench/EmptyState"
+import { GitRepositoryList, GitRepositorySelect } from "@/workbench/git/GitRepositorySelect"
+import { forcePushWithLease, pullWithRebase, pushWithTags } from "@/workbench/git/gitOperations"
+import { useGitActionDialogStore } from "@/state/gitActionDialogStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { commitLikeFrom, useDiffModalStore } from "@/state/diffModalStore"
 import { changedPathSet, useGitStore } from "@/state/gitStore"
@@ -50,6 +53,7 @@ export function GitPanel({ onReturnToWork = () => useUiStore.getState().setMode(
         <Button variant="ghost" size="sm" onClick={onReturnToWork}>
           <ArrowLeft data-icon="inline-start" aria-hidden="true" />{t("backFiles", { ns: "gitWorkflow" })}
         </Button>
+        <GitRepositorySelect />
       </div>
       {environment?.status === "missing" ? (
         <GitGuidedSetup
@@ -60,12 +64,13 @@ export function GitPanel({ onReturnToWork = () => useUiStore.getState().setMode(
       ) : environment?.status === "ready" && status ? (
         <GitPanelTabs />
       ) : environment?.status === "notARepo" ? (
-        <div className="flex h-full items-center justify-center p-[16px]">
+        <div className="flex h-full flex-col items-center justify-center gap-[12px] p-[16px]">
           <EmptyState
             icon={FolderGit2}
             title={t("gitPanel.notARepoTitle")}
             description={t("gitPanel.notARepoDescription")}
           />
+          <GitRepositoryList />
         </div>
       ) : (
         <div className="flex h-full flex-col items-center justify-center gap-[10px] p-[16px] text-center">
@@ -258,12 +263,12 @@ function GitTabActions() {
             size="icon-sm"
             aria-label={t("gitPanel.moreActionsAriaLabel")}
             disabled={busy != null || snapshotStale}
-            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50 @min-[720px]/git-panel:hidden"
+            className="flex size-[30px] shrink-0 items-center justify-center rounded-[9px] text-(--ink-3) transition-colors duration-150 hover:bg-(--paper-2) hover:text-(--ink-1) disabled:opacity-50"
           >
             <MoreHorizontal className="size-[15px]" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-[140px]">
+        <DropdownMenuContent align="end" className="min-w-[200px]">
           <DropdownMenuItem
             disabled={busy != null || snapshotStale}
             onSelect={() => void runOp("fetch", () => gitFetch(environment.root, false))}
@@ -278,9 +283,34 @@ function GitTabActions() {
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={busy != null || snapshotStale}
+            onSelect={() => void pullWithRebase()}
+          >
+            {t("gitActions.pullRebase")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busy != null || snapshotStale}
             onSelect={() => void runOp("push", () => gitPush(environment.root))}
           >
             {t("branchPopover.push", { ns: "menus" })}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busy != null || snapshotStale}
+            onSelect={() => void pushWithTags()}
+          >
+            {t("gitActions.pushTags")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={busy != null || snapshotStale || !!status?.detached}
+            onSelect={() => void forcePushWithLease()}
+          >
+            {t("gitActions.forcePushItem")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={busy != null || snapshotStale}
+            onSelect={() => useGitActionDialogStore.getState().openStash()}
+          >
+            {t("gitActions.stashItem")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

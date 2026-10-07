@@ -119,6 +119,29 @@ describe("terminal image paste and selection copy", () => {
     expect(writeText).not.toHaveBeenCalled()
     controller.dispose()
   })
+  it("copies an extended HERDR selection from HERDR, falling back to the visible part", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    const { element, term } = terminalStub()
+    vi.mocked(writeText).mockResolvedValue(undefined)
+    const read = vi.fn(async () => "older line\nvisible line")
+    const controller = installTerminalClipboardHandling(term, {
+      extendedSelection: { active: () => true, read }
+    })
+    // Scrolled fully out of the frame: xterm has nothing selected.
+    const event = new KeyboardEvent("keydown", { key: "c", metaKey: true, cancelable: true })
+    element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("older line\nvisible line"))
+
+    vi.mocked(writeText).mockClear()
+    read.mockRejectedValueOnce(new Error("herdr pane.selection.read unavailable"))
+    vi.mocked(term.hasSelection).mockReturnValue(true)
+    vi.mocked(term.getSelection).mockReturnValue("visible line")
+    element.dispatchEvent(new KeyboardEvent("keydown", { key: "c", metaKey: true, cancelable: true }))
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("visible line"))
+    controller.dispose()
+  })
+
   it("left-aligns prose and removes terminal padding", async () => {
     const { element, term } = terminalStub()
     vi.mocked(writeText).mockResolvedValue(undefined)

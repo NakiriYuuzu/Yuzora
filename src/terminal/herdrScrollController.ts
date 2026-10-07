@@ -45,10 +45,13 @@ export function createPaneScrollController(options: {
   let frameStart: number | null = null
   let timer: ReturnType<typeof setTimeout> | undefined
   let reconcile: ReturnType<typeof setTimeout> | undefined
+  let frameRefresh: ReturnType<typeof setTimeout> | undefined
+  let lastFrameRefresh = -Infinity
+  let frameDirty = false
   let abort = new AbortController()
   const metric = (phase: HerdrScrollMetric['phase'], extra = {}) => options.metric?.({ phase, serial, at: performance.now(), pending: Number(pending !== null), attempt: attempts, ...extra })
   const publish = (next: PaneScrollInfo | null) => { state = next; options.change(next) }
-  const clearTimers = () => { clearTimeout(timer); clearTimeout(reconcile); timer = undefined; reconcile = undefined }
+  const clearTimers = () => { clearTimeout(timer); clearTimeout(reconcile); clearTimeout(frameRefresh); timer = undefined; reconcile = undefined; frameRefresh = undefined }
   const current = (g: number) => !disposed && g === generation && options.allowed()
   const fail = (error: unknown) => {
     const kind = herdrErrorKind(error)
@@ -61,6 +64,9 @@ export function createPaneScrollController(options: {
   const refresh = async () => {
     if (disposed || blocked || writing || reading || pending !== null || !options.allowed()) return
     clearTimeout(reconcile); reconcile = undefined
+    clearTimeout(frameRefresh); frameRefresh = undefined
+    frameDirty = false
+    lastFrameRefresh = performance.now()
     reading = true
     const g = generation, token = revision
     try {
@@ -85,7 +91,17 @@ export function createPaneScrollController(options: {
     } finally {
       reading = false
       if (!disposed && g !== generation) void refresh()
+      else if (frameDirty) scheduleFrameRefresh()
     }
+  }
+  const scheduleFrameRefresh = () => {
+    if (disposed || blocked || !options.allowed() || frameRefresh !== undefined) return
+    // The pending flag survives an in-flight read/write; its completion schedules
+    // the trailing read so the last output frame of a burst is never lost.
+    frameRefresh = setTimeout(() => {
+      frameRefresh = undefined
+      void refresh()
+    }, Math.max(0, lastFrameRefresh + 350 - performance.now()))
   }
   const scheduleReconcile = () => {
     clearTimeout(reconcile)
@@ -142,10 +158,15 @@ export function createPaneScrollController(options: {
   }
   return {
     refresh, move,
+    /** Latest published range, including an optimistic offset still being written. */
+    state: () => state,
     frame() {
       // This is the next received frame, not proof that the requested offset
       // was painted; native acceptance correlates visible fixture rows too.
       if (frameStart !== null) { metric('next-frame', { elapsedMs: performance.now() - frameStart }); frameStart = null }
+      if (disposed || blocked || !options.allowed()) return
+      frameDirty = true
+      scheduleFrameRefresh()
     },
     sync(next: PaneScrollInfo | null) {
       if (disposed || blocked || !options.allowed()) return
@@ -161,7 +182,7 @@ export function createPaneScrollController(options: {
     reset() {
       if (disposed) return
       generation++; revision++; pendingDelta = 0; pending = null; blocked = false; frameStart = null
-      attempts = 0; busySince = null; retryAt = 0; lastSent = -Infinity
+      attempts = 0; busySince = null; retryAt = 0; lastSent = -Infinity; lastFrameRefresh = -Infinity; frameDirty = false
       clearTimers(); abort.abort(); abort = new AbortController(); publish(null)
     },
     dispose() { disposed = true; generation++; pending = null; pendingDelta = 0; clearTimers(); abort.abort() }

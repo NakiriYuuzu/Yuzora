@@ -1,6 +1,7 @@
-import { EditorState, type Extension } from "@codemirror/state"
+import { Compartment, EditorState, type Extension } from "@codemirror/state"
 import {
     EditorView,
+    ViewPlugin,
     keymap,
     lineNumbers,
     highlightActiveLine,
@@ -10,36 +11,6 @@ import { defaultHighlightStyle, LanguageSupport, LRLanguage, StreamLanguage, syn
 import { styleTags, tags, type Tag } from "@lezer/highlight"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search"
-import { javascript } from "@codemirror/lang-javascript"
-import { python } from "@codemirror/lang-python"
-import { rust } from "@codemirror/lang-rust"
-import { markdown } from "@codemirror/lang-markdown"
-import { json } from "@codemirror/lang-json"
-import { html } from "@codemirror/lang-html"
-import { css } from "@codemirror/lang-css"
-import { yaml } from "@codemirror/lang-yaml"
-import { sql } from "@codemirror/lang-sql"
-import { xml } from "@codemirror/lang-xml"
-import { cpp } from "@codemirror/lang-cpp"
-import { java } from "@codemirror/lang-java"
-import { go } from "@codemirror/lang-go"
-import { php } from "@codemirror/lang-php"
-import { sass } from "@codemirror/lang-sass"
-import { less } from "@codemirror/lang-less"
-import { vue } from "@codemirror/lang-vue"
-import { svelte } from "@replit/codemirror-lang-svelte"
-import { shell } from "@codemirror/legacy-modes/mode/shell"
-import { toml } from "@codemirror/legacy-modes/mode/toml"
-import { ruby } from "@codemirror/legacy-modes/mode/ruby"
-import { swift } from "@codemirror/legacy-modes/mode/swift"
-import { lua } from "@codemirror/legacy-modes/mode/lua"
-import { perl } from "@codemirror/legacy-modes/mode/perl"
-import { r } from "@codemirror/legacy-modes/mode/r"
-import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile"
-import { diff } from "@codemirror/legacy-modes/mode/diff"
-import { properties } from "@codemirror/legacy-modes/mode/properties"
-import { csharp, kotlin, dart, scala } from "@codemirror/legacy-modes/mode/clike"
-import { powerShell } from "@codemirror/legacy-modes/mode/powershell"
 import { appHighlightStyle, appTheme } from "./cmTheme"
 import { minimap, minimapCompartment } from "./minimap"
 import { largeFileSearch } from "./largeFileSearch"
@@ -51,55 +22,60 @@ function withSyntaxTags(support: LanguageSupport, styles: Record<string, Tag>): 
     return new LanguageSupport((support.language as LRLanguage).configure({ props: [styleTags(styles)] }), support.support)
 }
 function stylesheet(support: LanguageSupport): LanguageSupport {
-    return withSyntaxTags(support, { Callee: tags.function(tags.variableName) })
+    // Context specificity takes precedence over the grammar's generic Callee tag.
+    return withSyntaxTags(support, { "CallExpression/Callee": tags.function(tags.variableName) })
 }
 
-export function languageExtensionFromPath(path: string): Extension | null {
+function languageKey(path: string): string {
     const basename = path.split(/[\\/]/).pop() ?? path
     const name = basename.toLowerCase()
-    if (name === "dockerfile" || name === "containerfile" || name.startsWith("dockerfile.")) return StreamLanguage.define(dockerFile)
-    if ([".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile"].includes(name) || name === ".env" || name.startsWith(".env.")) return StreamLanguage.define(shell)
-    if ([".gitconfig", ".editorconfig", ".npmrc", ".yarnrc"].includes(name)) return StreamLanguage.define(properties)
+    if (name === "dockerfile" || name === "containerfile" || name.startsWith("dockerfile.")) return "dockerfile"
+    if ([".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile"].includes(name) || name === ".env" || name.startsWith(".env.")) return "sh"
+    if ([".gitconfig", ".editorconfig", ".npmrc", ".yarnrc"].includes(name)) return "properties"
     const ext = basename.includes(".") ? name.split(".").pop() ?? "" : ""
+    return ext
+}
+
+async function importLanguage(ext: string): Promise<Extension | null> {
     switch (ext) {
         case "mts":
         case "cts":
         case "ts":
         case "tsx":
-            return javascript({ typescript: true, jsx: ext === "tsx" })
+            return (await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx: ext === "tsx" })
         case "mjs":
         case "cjs":
         case "js":
         case "jsx":
-            return javascript({ jsx: ext === "jsx" })
+            return (await import("@codemirror/lang-javascript")).javascript({ jsx: ext === "jsx" })
         case "pyi":
         case "pyw":
         case "py":
-            return python()
+            return (await import("@codemirror/lang-python")).python()
         case "rs":
-            return rust()
+            return (await import("@codemirror/lang-rust")).rust()
         case "markdown":
         case "md":
-            return markdown()
+            return (await import("@codemirror/lang-markdown")).markdown()
         case "json":
-            return json()
+            return (await import("@codemirror/lang-json")).json()
         case "htm":
         case "html":
-            return html()
+            return (await import("@codemirror/lang-html")).html()
         case "css":
-            return stylesheet(css())
+            return stylesheet((await import("@codemirror/lang-css")).css())
         case "yml":
         case "yaml":
-            return yaml()
+            return (await import("@codemirror/lang-yaml")).yaml()
         case "sql":
-            return sql()
+            return (await import("@codemirror/lang-sql")).sql()
         case "svg":
         case "xsd":
         case "xsl":
         case "csproj":
         case "fsproj":
         case "xml":
-            return xml()
+            return (await import("@codemirror/lang-xml")).xml()
         case "c":
         case "h":
         case "cc":
@@ -108,20 +84,27 @@ export function languageExtensionFromPath(path: string): Extension | null {
         case "hh":
         case "hxx":
         case "hpp":
-            return withSyntaxTags(cpp(), { "FunctionDeclarator/FieldIdentifier": tags.function(tags.definition(tags.propertyName)) })
+            return withSyntaxTags((await import("@codemirror/lang-cpp")).cpp(), { "FunctionDeclarator/FieldIdentifier": tags.function(tags.definition(tags.propertyName)) })
         case "java":
-            return java()
+            return (await import("@codemirror/lang-java")).java()
         case "go":
-            return go()
+            return (await import("@codemirror/lang-go")).go()
         case "php":
-            return php()
+            return (await import("@codemirror/lang-php")).php()
         case "scss":
-            return stylesheet(sass())
+            return stylesheet((await import("@codemirror/lang-sass")).sass())
         case "sass":
-            return stylesheet(sass({ indented: true }))
+            return stylesheet((await import("@codemirror/lang-sass")).sass({ indented: true }))
         case "less":
-            return stylesheet(less())
-        case "vue":
+            return stylesheet((await import("@codemirror/lang-less")).less())
+        case "vue": {
+            const [{ vue }, { html }, { javascript }, { sass }, { less }] = await Promise.all([
+                import("@codemirror/lang-vue"),
+                import("@codemirror/lang-html"),
+                import("@codemirror/lang-javascript"),
+                import("@codemirror/lang-sass"),
+                import("@codemirror/lang-less"),
+            ])
             return vue({ base: html({ nestedLanguages: [
                 { tag: "script", attrs: attrs => attrs.lang === "tsx", parser: javascript({ typescript: true, jsx: true }).language.parser },
                 { tag: "script", attrs: attrs => attrs.lang === "jsx", parser: javascript({ jsx: true }).language.parser },
@@ -130,51 +113,103 @@ export function languageExtensionFromPath(path: string): Extension | null {
                 { tag: "style", attrs: attrs => attrs.lang === "sass", parser: stylesheet(sass({ indented: true })).language.parser },
                 { tag: "style", attrs: attrs => attrs.lang === "less", parser: stylesheet(less()).language.parser },
             ] }) })
+        }
         case "svelte":
-            return svelte()
+            return (await import("@replit/codemirror-lang-svelte")).svelte()
         case "sh":
         case "bash":
         case "zsh":
-            return StreamLanguage.define(shell)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/shell")).shell)
         case "toml":
-            return StreamLanguage.define(toml)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/toml")).toml)
         case "rb":
-            return StreamLanguage.define(ruby)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/ruby")).ruby)
         case "cs":
         case "csx":
-            return StreamLanguage.define(csharp)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).csharp)
         case "kt":
         case "kts":
-            return StreamLanguage.define(kotlin)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).kotlin)
         case "dart":
-            return StreamLanguage.define(dart)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).dart)
         case "scala":
         case "sc":
-            return StreamLanguage.define(scala)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).scala)
         case "ps1":
         case "psm1":
         case "psd1":
-            return StreamLanguage.define(powerShell)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/powershell")).powerShell)
         case "swift":
-            return StreamLanguage.define(swift)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/swift")).swift)
         case "lua":
-            return StreamLanguage.define(lua)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/lua")).lua)
         case "pm":
         case "pl":
-            return StreamLanguage.define(perl)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/perl")).perl)
         case "r":
-            return StreamLanguage.define(r)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/r")).r)
         case "dockerfile":
-            return StreamLanguage.define(dockerFile)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/dockerfile")).dockerFile)
         case "diff":
         case "patch":
-            return StreamLanguage.define(diff)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/diff")).diff)
         case "properties":
         case "ini":
-            return StreamLanguage.define(properties)
+            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/properties")).properties)
         default:
             return null
     }
+}
+
+// Cache by language/dialect, not document path; concurrent panes share one load.
+const languages = new Map<string, Extension | null>()
+const pendingLanguages = new Map<string, Promise<Extension | null>>()
+
+export function languageExtensionFromPath(path: string): Extension | null {
+    return languages.get(languageKey(path)) ?? null
+}
+
+export function loadLanguageExtension(path: string): Promise<Extension | null> {
+    const key = languageKey(path)
+    if (languages.has(key)) return Promise.resolve(languages.get(key) ?? null)
+    const pending = pendingLanguages.get(key)
+    if (pending) return pending
+    const load = importLanguage(key).then(extension => {
+        languages.set(key, extension)
+        pendingLanguages.delete(key)
+        return extension
+    }, error => {
+        pendingLanguages.delete(key)
+        throw error
+    })
+    pendingLanguages.set(key, load)
+    return load
+}
+
+// The plugin belongs to the view, so a late grammar never touches a destroyed
+// pane. Reconfiguration changes only syntax, preserving document/history/scroll.
+export function languageExtensions(path: string, syntaxOff: boolean, onLoaded?: (view: EditorView) => void): Extension[] {
+    if (syntaxOff) return []
+    const compartment = new Compartment()
+    const initialExtension = languageExtensionFromPath(path)
+    return [
+        compartment.of(initialExtension ?? []),
+        ViewPlugin.define(view => {
+            let disposed = false
+            void loadLanguageExtension(path).then(extension => {
+                if (!disposed && extension) {
+                    if (extension !== initialExtension) {
+                        view.dispatch({ effects: compartment.reconfigure(extension) })
+                    }
+                    onLoaded?.(view)
+                }
+            }).catch(() => {
+                // A failed optional grammar must not prevent editing or saving.
+                if (!disposed) console.warn("Syntax grammar could not be loaded")
+            })
+            return { destroy() { disposed = true } }
+        }),
+    ]
 }
 
 export function hasVeryLongLine(content: string): boolean {
@@ -229,10 +264,7 @@ export function buildExtensions(
             if (update.docChanged) onDocChanged()
         })
     ]
-    if (!flags.syntaxOff) {
-        const lang = languageExtensionFromPath(path)
-        if (lang) extensions.push(lang)
-    }
+    extensions.push(...languageExtensions(path, flags.syntaxOff))
     if (flags.readonly) {
         extensions.push(EditorState.readOnly.of(true), EditorView.editable.of(false))
     }

@@ -41,6 +41,15 @@ struct ProcessStream {
     stdin: Option<tokio::process::ChildStdin>,
     stdout: tokio::process::ChildStdout,
 }
+pub(crate) fn owned_process_stream(mut child: tokio::process::Child) -> Result<HostStream, String> {
+    let stdin = child.stdin.take().ok_or("helper-stdin-missing")?;
+    let stdout = child.stdout.take().ok_or("helper-stdout-missing")?;
+    Ok(Box::new(ProcessStream {
+        child: Some(child),
+        stdin: Some(stdin),
+        stdout,
+    }))
+}
 impl AsyncRead for ProcessStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -323,6 +332,25 @@ impl HostConnection {
         };
         Ok((queued, permit))
     }
+    /// A burst of connector openings (a tab of many panes becoming visible,
+    /// leaves reconnecting, restored Sessions) waits for an opening slot
+    /// instead of failing a leaf outright.
+    pub(crate) async fn acquire_stream_opening(
+        &self,
+    ) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        let mut cancelled = self.cancelled.subscribe();
+        if *cancelled.borrow() {
+            return Err("host-disconnected".into());
+        }
+        tokio::select! {
+            _ = cancelled.changed() => Err("host-disconnected".into()),
+            result = tokio::time::timeout(Duration::from_secs(30), self.stream_openings.acquire()) => {
+                result
+                    .map_err(|_| "host-stream-open-wait-timeout")?
+                    .map_err(|_| "host-disconnected".into())
+            }
+        }
+    }
     pub(crate) async fn request_with_timeout(
         &self,
         operation: Operation,
@@ -338,6 +366,8 @@ impl HostConnection {
             operation,
         };
         let mut bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+        // Release the request payload before waiting for the shared IO slot.
+        drop(request);
         if bytes.len() >= MAX_FRAME_BYTES {
             return Err("request-too-large".into());
         }
@@ -356,6 +386,8 @@ impl HostConnection {
                 .await
                 .map_err(|e| e.to_string())?;
             io.get_mut().flush().await.map_err(|e| e.to_string())?;
+            // Outgoing bytes are no longer needed while awaiting the response.
+            drop(bytes);
             let frame = yuzora_host::wire::read_frame(&mut io)
                 .await?
                 .ok_or("host-disconnected")?;
@@ -699,6 +731,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn aborting_queued_request_preserves_stream_and_permits() {
+        let (io, peer) = tokio::io::duplex(1024);
+        let connection = Arc::new(HostConnection::new(
+            ConnectionOwner {
+                host_id: "owned-queued-request".into(),
+                generation: 1,
+            },
+            HostTarget::Local,
+            "/owned-unused-helper".into(),
+            Box::new(io),
+        ));
+        let gate = connection.io.lock().await;
+        let queued_connection = Arc::clone(&connection);
+        let queued = tokio::spawn(async move {
+            queued_connection
+                .request_with_timeout(
+                    Operation::FilesWrite {
+                        workspace: "owned".into(),
+                        path: "file.txt".into(),
+                        content: "x".repeat(65536),
+                        revision: "r1".into(),
+                    },
+                    Duration::from_secs(2),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(connection.requests.available_permits(), 15);
+        assert_eq!(connection.request_queue.available_permits(), 31);
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        assert_eq!(connection.requests.available_permits(), 16);
+        assert_eq!(connection.request_queue.available_permits(), 32);
+        assert!(gate.is_some());
+        drop(gate);
+        let mut peer = BufReader::new(peer);
+        let server = async {
+            let frame = yuzora_host::wire::read_frame(&mut peer)
+                .await
+                .unwrap()
+                .unwrap();
+            let request: Request = serde_json::from_slice(&frame).unwrap();
+            assert!(matches!(request.operation, Operation::Hello));
+            assert_eq!(request.owner, connection.owner);
+            let mut response = serde_json::to_vec(&Response {
+                version: PROTOCOL_VERSION,
+                id: request.id,
+                owner: request.owner,
+                outcome: Outcome::Ok {
+                    value: serde_json::json!("healthy"),
+                },
+            })
+            .unwrap();
+            response.push(b'\n');
+            peer.get_mut().write_all(&response).await.unwrap();
+        };
+        let (result, ()) = tokio::join!(
+            connection.request_with_timeout(Operation::Hello, Duration::from_secs(2)),
+            server
+        );
+        assert_eq!(result.unwrap(), serde_json::json!("healthy"));
+        assert!(connection.io.lock().await.is_some());
+        assert_eq!(connection.requests.available_permits(), 16);
+        assert_eq!(connection.request_queue.available_permits(), 32);
+    }
+
+    #[tokio::test]
+    async fn aborting_sent_request_discards_stream_and_releases_permits() {
+        let (io, peer) = tokio::io::duplex(1024);
+        let connection = Arc::new(HostConnection::new(
+            ConnectionOwner {
+                host_id: "owned-sent-request".into(),
+                generation: 1,
+            },
+            HostTarget::Local,
+            "/owned-unused-helper".into(),
+            Box::new(io),
+        ));
+        let request_connection = Arc::clone(&connection);
+        let request = tokio::spawn(async move {
+            request_connection
+                .request_with_timeout(
+                    Operation::FilesWrite {
+                        workspace: "owned".into(),
+                        path: "file.txt".into(),
+                        content: "x".repeat(65536),
+                        revision: "r1".into(),
+                    },
+                    Duration::from_secs(2),
+                )
+                .await
+        });
+        let mut peer = BufReader::new(peer);
+        let frame = yuzora_host::wire::read_frame(&mut peer)
+            .await
+            .unwrap()
+            .unwrap();
+        let received: Request = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(received.owner, connection.owner);
+        assert!(
+            matches!(received.operation, Operation::FilesWrite { content, .. } if content.len() == 65536)
+        );
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert!(connection.io.lock().await.is_none());
+        assert_eq!(connection.requests.available_permits(), 16);
+        assert_eq!(connection.request_queue.available_permits(), 32);
+        let mut byte = [0];
+        assert_eq!(
+            tokio::io::AsyncReadExt::read(peer.get_mut(), &mut byte)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .request_with_timeout(Operation::Hello, Duration::from_secs(2))
+                .await
+                .unwrap_err(),
+            "host-disconnected"
+        );
+    }
+
+    #[tokio::test]
     async fn control_requests_wait_within_a_bounded_cancellable_queue() {
         let (io, _peer) = tokio::io::duplex(1024);
         let connection = HostConnection::new(
@@ -733,5 +889,36 @@ mod tests {
         connection.cancelled.send_replace(true);
         assert!(matches!(next.await, Err(error) if error == "host-disconnected"));
         assert_eq!(connection.request_queue.available_permits(), 32);
+    }
+
+    #[tokio::test]
+    async fn stream_openings_queue_behind_a_burst_and_cancel_with_the_host() {
+        let (io, _peer) = tokio::io::duplex(1024);
+        let connection = HostConnection::new(
+            ConnectionOwner {
+                host_id: "fixture".into(),
+                generation: 1,
+            },
+            HostTarget::Local,
+            "/helper".into(),
+            Box::new(io),
+        );
+        let burst = connection.stream_openings.acquire_many(8).await.unwrap();
+        let next = connection.acquire_stream_opening();
+        tokio::pin!(next);
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut next)
+            .await
+            .is_err());
+        drop(burst);
+        drop(next.await.unwrap());
+        assert_eq!(connection.stream_openings.available_permits(), 8);
+        let _burst = connection.stream_openings.acquire_many(8).await.unwrap();
+        let next = connection.acquire_stream_opening();
+        tokio::pin!(next);
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut next)
+            .await
+            .is_err());
+        connection.cancelled.send_replace(true);
+        assert!(matches!(next.await, Err(error) if error == "host-disconnected"));
     }
 }

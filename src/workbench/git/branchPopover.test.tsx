@@ -140,7 +140,7 @@ describe("BranchPopover", () => {
         })
         render(<BranchPopover open onOpenChange={() => {}} />)
         fireEvent.click(screen.getByRole("option", { name: "dev" }))
-        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "dev"))
+        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "dev", false))
     })
 
     it("checkout blocked when dirty tabs exist", async () => {
@@ -411,7 +411,7 @@ describe("BranchPopover", () => {
         })
         render(<BranchPopover open onOpenChange={onOpenChange} />)
         fireEvent.click(screen.getByRole("option", { name: "feature/x" }))
-        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "feature/x"))
+        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "feature/x", false))
         expect(ipc.gitCheckout).not.toHaveBeenCalledWith("/w", "x")
         await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
     })
@@ -428,7 +428,8 @@ describe("BranchPopover", () => {
         await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith(
             "/w",
             "feature/x",
-            "refs/remotes/origin/feature/x"
+            "refs/remotes/origin/feature/x",
+            false
         ))
         expect(ipc.gitCheckout).not.toHaveBeenCalled()
     })
@@ -571,7 +572,7 @@ describe("BranchPopover", () => {
         render(<BranchPopover open onOpenChange={() => {}} />)
         selectTab(/remote/i)
         fireEvent.click(screen.getByRole("option", { name: "upstream/feature/topic" }))
-        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "work/topic"))
+        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "work/topic", false))
         expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
     })
 
@@ -611,7 +612,7 @@ describe("BranchPopover", () => {
         })
         expect(ipc.gitCheckoutDetached).not.toHaveBeenCalled()
         act(() => useAppDialogStore.getState().respond(true))
-        await waitFor(() => expect(ipc.gitCheckoutDetached).toHaveBeenCalledWith("/w", "refs/tags/v1.0.0"))
+        await waitFor(() => expect(ipc.gitCheckoutDetached).toHaveBeenCalledWith("/w", "refs/tags/v1.0.0", false))
         expect(ipc.gitCheckout).not.toHaveBeenCalledWith("/w", "v1.0.0")
     })
 
@@ -631,7 +632,8 @@ describe("BranchPopover", () => {
         await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith(
             "/w",
             "release/1.0.0",
-            "refs/tags/release/v1.0.0"
+            "refs/tags/release/v1.0.0",
+            false
         ))
     })
 
@@ -777,7 +779,8 @@ describe("BranchPopover", () => {
         await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith(
             "/w",
             "release/1.0.0",
-            "refs/tags/v1.0.0"
+            "refs/tags/v1.0.0",
+            false
         ))
     })
 
@@ -818,7 +821,8 @@ describe("BranchPopover", () => {
         await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith(
             "/w",
             "from-origin",
-            "refs/remotes/origin/main"
+            "refs/remotes/origin/main",
+            false
         ))
     })
 
@@ -879,7 +883,7 @@ describe("BranchPopover", () => {
         const list = screen.getByRole("listbox", { name: /local branches/i })
         fireEvent.keyDown(list, { key: "End" })
         fireEvent.keyDown(list, { key: "Enter" })
-        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "gamma"))
+        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "gamma", false))
         fireEvent.keyDown(list, { key: "Home" })
         fireEvent.keyDown(list, { key: "Enter" })
         expect(ipc.gitCheckout).not.toHaveBeenCalledWith("/w", "alpha")

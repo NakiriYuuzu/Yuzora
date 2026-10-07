@@ -4,6 +4,8 @@ import { EditorView } from "@codemirror/view"
 
 import { DatabasePanel, reorderColumns } from "@/app/panels/DatabasePanel"
 import { formatDbValue } from "@/lib/types"
+import * as dbTypes from "@/lib/types"
+import i18n from "@/lib/i18n"
 import type {
   DbQueryRun,
   DbQueryRunRequest,
@@ -12,6 +14,7 @@ import type {
   DbResultSessionOwner,
 } from "@/lib/types"
 import { resultPageKey, useDbStore } from "@/state/dbStore"
+import * as dbStoreModule from "@/state/dbStore"
 
 const originalUserAgent = navigator.userAgent
 
@@ -1392,4 +1395,87 @@ describe("DatabasePanel result session controls", () => {
       expect(mockQueryCancel).not.toHaveBeenCalled()
     },
   )
+})
+
+it("ticks only the elapsed text leaf, then stops on settlement and unmount", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  useDbStore.getState().setSql("SELECT slow();")
+  let request!: DbQueryRunRequest
+  let settleRun!: (run: DbQueryRun) => void
+  mockQueryRun.mockImplementationOnce((nextRequest) => {
+    request = nextRequest
+    return new Promise((resolve) => { settleRun = resolve })
+  })
+  // This function is called unconditionally in DatabaseConsole's render body.
+  const consoleRenderProbe = vi.spyOn(dbStoreModule, "queryRunGroupIsCancellable")
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] })
+  const rendered = render(<DatabasePanel />)
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Run all statements" })))
+    expect(screen.getByText("0 ms")).toBeInTheDocument()
+    const renders = consoleRenderProbe.mock.calls.length
+    expect(renders).toBeGreaterThan(0)
+    for (let elapsed = 100; elapsed <= 1000; elapsed += 100) {
+      await act(async () => vi.advanceTimersByTimeAsync(100))
+      expect(screen.getByText(`${elapsed} ms`)).toBeInTheDocument()
+      expect(consoleRenderProbe).toHaveBeenCalledTimes(renders)
+    }
+    await act(async () => settleRun(panelRunFromResult(request, threeCol)))
+    const settledRenders = consoleRenderProbe.mock.calls.length
+    const elapsedText = screen.getByText(/\d+ ms/).textContent
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(screen.getByText(elapsedText!)).toBeInTheDocument()
+    expect(consoleRenderProbe).toHaveBeenCalledTimes(settledRenders)
+    rendered.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    rendered.unmount()
+    vi.useRealTimers()
+    consoleRenderProbe.mockRestore()
+  }
+})
+
+it("keeps overlapping result rows while formatting the newly visible row", async () => {
+  const result: Extract<DbQueryResult, { kind: "select" }> = {
+    ...threeCol,
+    columns: ["id", "name"],
+    rows: Array.from({ length: 500 }, (_, index) => [
+      { kind: "integer", value: String(index) },
+      { kind: "text", value: `marker-${index}` },
+    ]),
+  }
+  mockRunResultOnce(result)
+  await openWithResult()
+  render(<DatabasePanel />)
+  const viewport = screen.getByRole("table").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+  fireEvent.scroll(viewport, { target: { scrollTop: 3164 } })
+  await waitFor(() => expect(screen.getByText("marker-100")).toBeInTheDocument())
+  const overlapping = screen.getByText("marker-101").closest("tr")
+  const format = vi.spyOn(dbTypes, "formatDbValue")
+  try {
+    fireEvent.scroll(viewport, { target: { scrollTop: 3193 } })
+    await waitFor(() => expect(screen.getByText("marker-137")).toBeInTheDocument())
+    expect(screen.queryByText("marker-100")).not.toBeInTheDocument()
+    expect(screen.getByText("marker-101").closest("tr")).toBe(overlapping)
+    expect(format).toHaveBeenCalledTimes(2)
+  } finally {
+    format.mockRestore()
+  }
+})
+
+it("refreshes memoized cell hints in place when the language changes", async () => {
+  await openWithResult()
+  render(<DatabasePanel />)
+  const cell = screen.getByText("alice").closest("td")!
+  const englishHint = i18n.t("readOnlyHint", { ns: "databaseWorkbench" })
+  expect(cell).toHaveAttribute("title", englishHint)
+  try {
+    await act(async () => { await i18n.changeLanguage("zh-TW") })
+    const translatedHint = i18n.t("readOnlyHint", { ns: "databaseWorkbench" })
+    expect(translatedHint).not.toBe(englishHint)
+    expect(screen.getByText("alice").closest("td")).toBe(cell)
+    expect(cell).toHaveAttribute("title", translatedHint)
+  } finally {
+    await act(async () => { await i18n.changeLanguage("en") })
+  }
 })

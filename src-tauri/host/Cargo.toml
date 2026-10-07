@@ -1,6 +1,6 @@
 [package]
 name = "yuzora-host"
-version = "0.0.16"
+version = "0.0.17-beta.1"
 edition = "2021"
 publish = false
 
@@ -11,17 +11,17 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "net", "sync", "time"] }
 sha2 = "0.11.0"
 base64 = "0.23"
-rand = "0.10.2"
+rand = "0.10.3"
 libc = "0.2"
 encoding_rs = "0.8"
 ignore = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
-dirs = "6"
+dirs = "7"
 chrono = { version = "0.4", features = ["serde"] }
 notify = "8.2.0"
 tempfile = "3"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }
 
 secrecy = { version = "0.10.3", features = ["serde"] }
@@ -40,3 +40,8 @@ portable-pty = "0.9.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+# Keep default panic unwinding for catch_unwind and codegen units for build time.

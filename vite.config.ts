@@ -3,6 +3,13 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 import process from "node:process";
+import { readFileSync } from "node:fs";
+
+// Explicit allowlist: each file passed node without DOM setup. JSON keeps this
+// shared test data outside the app/config composite TypeScript project boundary.
+const nodeTests: string[] = JSON.parse(
+  readFileSync(path.resolve(import.meta.dirname, "src/test/nodeTests.json"), "utf8"),
+);
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -45,9 +52,27 @@ export default defineConfig(({ mode }) => ({
     },
   },
   test: {
-    environment: "jsdom",
-    setupFiles: "./src/test/setup.ts",
     globals: true,
     exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: nodeTests,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "jsdom",
+          environment: "jsdom",
+          setupFiles: "./src/test/setup.ts",
+          // Only proven DOM-free tests opt out; new tests keep the safe default.
+          exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", ...nodeTests],
+        },
+      },
+    ],
   },
 }));

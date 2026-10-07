@@ -4,6 +4,7 @@ import { EditorView } from "@codemirror/view"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, waitFor } from "@testing-library/react"
 import { minimap, minimapViewportGeometry, minimapCompartment } from "./minimap"
+import i18n from "@/lib/i18n"
 
 const views: EditorView[] = []
 afterEach(() => {
@@ -26,6 +27,68 @@ function editor() {
 }
 
 describe("interactive editor minimap", () => {
+    it("keeps labels while scrolling, dragging and using keyboard navigation without retranslating", async () => {
+        const view = editor()
+        const panel = view.dom.querySelector<HTMLElement>(".yz-minimap")!
+        Object.defineProperty(panel, "clientHeight", { configurable: true, value: 100 })
+        panel.getBoundingClientRect = () => ({ top: 0, left: 0, width: 64, height: 100, right: 64, bottom: 100, x: 0, y: 0, toJSON: () => ({}) })
+        view.scrollDOM.scrollTop = 100
+        fireEvent.scroll(view.scrollDOM)
+        await waitFor(() => expect(panel.getAttribute("aria-valuenow")).toBe("100"))
+        const translate = vi.spyOn(i18n, "t")
+        view.scrollDOM.scrollTop = 300
+        fireEvent.scroll(view.scrollDOM)
+        await waitFor(() => expect(panel.getAttribute("aria-valuenow")).toBe("300"))
+        fireEvent.pointerDown(panel, { pointerId: 1, button: 0, clientY: 35 })
+        fireEvent.pointerMove(panel, { pointerId: 1, clientY: 55 })
+        fireEvent.pointerUp(panel, { pointerId: 1 })
+        expect(view.scrollDOM.scrollTop).toBe(500)
+        fireEvent.keyDown(panel, { key: "Home" })
+        expect(view.scrollDOM.scrollTop).toBe(0)
+        expect(view.state.selection.main.head).toBe(0)
+        expect(panel.getAttribute("aria-label")).toBe("Document overview")
+        expect(panel.title).toContain("Click to scroll")
+        expect(translate).not.toHaveBeenCalled()
+    })
+
+    it("refreshes labels for coalesced and repeated language events", async () => {
+        const view = editor()
+        const panel = view.dom.querySelector<HTMLElement>(".yz-minimap")!
+        const translate = vi.spyOn(i18n, "t")
+        await i18n.changeLanguage("zh-TW")
+        await waitFor(() => expect(panel.getAttribute("aria-label")).toBe("文件縮圖"))
+        expect(panel.title).toContain("點擊定位")
+        translate.mockClear()
+        void i18n.changeLanguage("en")
+        void i18n.changeLanguage("zh-TW")
+        await waitFor(() => expect(translate).toHaveBeenCalledTimes(2))
+        expect(panel.getAttribute("aria-label")).toBe("文件縮圖")
+        translate.mockClear()
+        i18n.emit("languageChanged", "zh-TW")
+        await waitFor(() => expect(translate).toHaveBeenCalledTimes(2))
+        view.dispatch({ effects: minimapCompartment.reconfigure(minimap(false)) })
+        await i18n.changeLanguage("en")
+        view.dispatch({ effects: minimapCompartment.reconfigure(minimap(true)) })
+        expect(view.dom.querySelector(".yz-minimap")!.getAttribute("aria-label")).toBe("Document overview")
+    })
+
+    it("removes each language subscription over repeated editor lifetimes", () => {
+        const subscribe = vi.spyOn(i18n, "on")
+        const unsubscribe = vi.spyOn(i18n, "off")
+        for (let cycle = 0; cycle < 100; cycle++) {
+            const view = editor()
+            const panel = view.dom.querySelector<HTMLElement>(".yz-minimap")!
+            const handler = subscribe.mock.calls.at(-1)![1]
+            i18n.emit("languageChanged", "en")
+            view.destroy()
+            views.pop()
+            expect(unsubscribe).toHaveBeenLastCalledWith("languageChanged", handler)
+            expect(panel.isConnected).toBe(false)
+        }
+        expect(subscribe).toHaveBeenCalledTimes(100)
+        expect(unsubscribe).toHaveBeenCalledTimes(100)
+    })
+
     it("positions source bars by CodeMirror's visual blocks after folding instead of equal source-line spacing", async () => {
         const view = editor()
         view.dispatch({ effects: StateEffect.appendConfig.of(codeFolding()) })

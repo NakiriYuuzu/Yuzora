@@ -146,7 +146,7 @@ impl ResultSessionRegistry {
         if self.sessions.contains_key(&key) {
             return Err(SessionError::SessionAlreadyExists);
         }
-        let probe = StoredSession {
+        let mut probe = StoredSession {
             owner,
             columns,
             pages: vec![Vec::new()],
@@ -167,6 +167,7 @@ impl ResultSessionRegistry {
         if session_bytes > self.session_limit || projected_process > self.process_limit {
             return Err(SessionError::BudgetExceeded);
         }
+        probe.bytes = session_bytes;
         self.sessions.insert(key.clone(), probe);
         self.refresh_accounting();
         debug_assert!(self
@@ -265,9 +266,9 @@ impl ResultSessionRegistry {
     ) -> Result<PushRowOutcome, SessionError> {
         self.validate_active_run(owner)?;
         let key = owner.result_session_id.0.as_str();
-        let session = self
+        let (stored_key, session) = self
             .sessions
-            .get(key)
+            .get_key_value(key)
             .ok_or(SessionError::SessionNotFound)?;
         if session.owner != *owner {
             return Err(SessionError::OwnerMismatch);
@@ -278,17 +279,19 @@ impl ResultSessionRegistry {
         if session.result_limit_reached {
             return Ok(PushRowOutcome::LimitReached);
         }
-        if let Some(kind) = classify_converted_row(&row, self.field_limit, self.row_limit) {
-            let session = self
-                .sessions
-                .get_mut(key)
-                .expect("the exact session was validated before classification");
-            session.value_too_large = true;
-            let _ = kind;
-            return Ok(PushRowOutcome::ValueTooLarge);
-        }
+        let row_bytes = match classify_converted_row(&row, self.field_limit, self.row_limit) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let session = self
+                    .sessions
+                    .get_mut(key)
+                    .expect("the exact session was validated before classification");
+                session.value_too_large = true;
+                return Ok(PushRowOutcome::ValueTooLarge);
+            }
+        };
         let projected_session =
-            estimate_session_after_push(&owner.result_session_id.0, session, &row);
+            estimate_session_after_push(&owner.result_session_id.0, stored_key, session, row_bytes);
         let process_without_session = self.total_bytes.saturating_sub(session.bytes);
         let projected_process = process_without_session.saturating_add(projected_session);
         if projected_session > self.session_limit || projected_process > self.process_limit {
@@ -303,19 +306,41 @@ impl ResultSessionRegistry {
             .sessions
             .get_mut(key)
             .expect("the exact session was validated before insertion");
-        if session
+        let new_page = session
             .pages
             .last()
-            .is_some_and(|page| page.len() == RESULT_PAGE_ROWS)
-        {
+            .is_some_and(|page| page.len() == RESULT_PAGE_ROWS);
+        let pages_capacity_before = session.pages.capacity();
+        let rows_capacity_before = if new_page {
+            0
+        } else {
+            session.pages.last().map(Vec::capacity).unwrap_or(0)
+        };
+        if new_page {
             session.pages.push(Vec::new());
         }
-        session
+        let page = session
             .pages
             .last_mut()
-            .expect("a materialized session always has one page")
-            .push(row);
-        self.refresh_accounting();
+            .expect("a materialized session always has one page");
+        page.push(row);
+        let added_bytes = row_bytes
+            .saturating_add(
+                page.capacity()
+                    .saturating_sub(rows_capacity_before)
+                    .saturating_mul(size_of::<Vec<DbValue>>()),
+            )
+            .saturating_add(
+                session
+                    .pages
+                    .capacity()
+                    .saturating_sub(pages_capacity_before)
+                    .saturating_mul(size_of::<Vec<Vec<DbValue>>>()),
+            );
+        // Appending a row changes only these allocations. The map, owner,
+        // columns and other sessions keep their already-accounted storage.
+        session.bytes = session.bytes.saturating_add(added_bytes);
+        self.total_bytes = self.total_bytes.saturating_add(added_bytes);
         debug_assert!(self
             .sessions
             .get(key)
@@ -662,9 +687,8 @@ impl ResultSessionRegistry {
     }
 
     fn refresh_accounting(&mut self) {
-        for (key, session) in &mut self.sessions {
-            session.bytes = estimate_session_retained_bytes(key, session);
-        }
+        // Session storage is accounted at creation and on each row append.
+        // Membership changes affect only the retained sessions and map capacity.
         self.total_bytes = estimate_registry_retained_bytes(&self.sessions);
     }
 }
@@ -799,8 +823,23 @@ fn map_insert_growth_bytes(len: usize, capacity: usize) -> usize {
     }
 }
 
-fn estimate_session_after_push(key: &String, session: &StoredSession, row: &Vec<DbValue>) -> usize {
-    let current = estimate_session_retained_bytes(key, session);
+fn estimate_session_after_push(
+    key: &String,
+    stored_key: &String,
+    session: &StoredSession,
+    row_bytes: usize,
+) -> usize {
+    // Keep the caller key's original capacity charge. Cached bytes include the
+    // stored map key, which is a different allocation from either owner ID.
+    let current = if session.bytes == usize::MAX {
+        // Saturation lost information needed to replace just the key term.
+        estimate_session_retained_bytes(key, session)
+    } else {
+        session
+            .bytes
+            .saturating_sub(stored_key.capacity())
+            .saturating_add(key.capacity())
+    };
     let last_len = session.pages.last().map(Vec::len).unwrap_or(0);
     let last_cap = session.pages.last().map(Vec::capacity).unwrap_or(0);
     let need_new_page = last_len == RESULT_PAGE_ROWS;
@@ -823,7 +862,7 @@ fn estimate_session_after_push(key: &String, session: &StoredSession, row: &Vec<
     current
         .saturating_add(extra_page_slots)
         .saturating_add(extra_row_slots)
-        .saturating_add(estimate_row_heap_bytes(row, row.capacity()))
+        .saturating_add(row_bytes)
 }
 
 fn db_value_retained_bytes(value: &DbValue) -> usize {
@@ -844,7 +883,7 @@ fn classify_converted_row(
     row: &Vec<DbValue>,
     field_limit: usize,
     row_limit: usize,
-) -> Option<ResultLimitKind> {
+) -> Result<usize, ResultLimitKind> {
     let mut used = row.capacity().saturating_mul(size_of::<DbValue>());
     for value in row {
         let retained = db_value_retained_bytes(value);
@@ -853,14 +892,14 @@ fn classify_converted_row(
             _ => retained,
         };
         if raw > field_limit {
-            return Some(ResultLimitKind::Field);
+            return Err(ResultLimitKind::Field);
         }
         used = used.saturating_add(retained);
         if used > row_limit {
-            return Some(ResultLimitKind::Row);
+            return Err(ResultLimitKind::Row);
         }
     }
-    None
+    Ok(used)
 }
 
 #[derive(Clone, Default)]
@@ -920,6 +959,290 @@ mod tests {
             statement_execution_id: StatementExecutionId(statement.into()),
             result_session_id: ResultSessionId(session.into()),
         }
+    }
+
+    #[test]
+    fn validated_row_bytes_preserve_capacities_and_first_limit_failure() {
+        fn spare(value: &str, capacity: usize) -> String {
+            let mut text = String::with_capacity(capacity);
+            text.push_str(value);
+            text
+        }
+
+        let mut row = Vec::with_capacity(17);
+        row.extend([
+            DbValue::Null,
+            DbValue::Boolean { value: true },
+            DbValue::Integer {
+                value: spare("1", 64),
+            },
+            DbValue::Decimal {
+                value: spare("1.25", 64),
+            },
+            DbValue::Text {
+                value: spare("資料", 64),
+            },
+            DbValue::Json {
+                value: spare("{}", 64),
+            },
+            DbValue::Date {
+                value: spare("2026-10-05", 64),
+            },
+            DbValue::Time {
+                value: spare("00:00:00", 64),
+            },
+            DbValue::DateTime {
+                value: spare("2026-10-05T00:00:00Z", 64),
+            },
+            DbValue::Binary {
+                hex: spare("00ff", 96),
+            },
+        ]);
+        let expected = estimate_row_heap_bytes(&row, row.capacity());
+        assert_eq!(
+            classify_converted_row(&row, usize::MAX, expected),
+            Ok(expected)
+        );
+        assert_eq!(
+            classify_converted_row(&row, usize::MAX, expected - 1),
+            Err(ResultLimitKind::Row)
+        );
+
+        let field_first = vec![DbValue::Text {
+            value: spare("x", 64),
+        }];
+        assert_eq!(
+            classify_converted_row(&field_first, 63, 0),
+            Err(ResultLimitKind::Field)
+        );
+        let row_first = vec![
+            DbValue::Null,
+            DbValue::Text {
+                value: spare("x", 64),
+            },
+        ];
+        assert_eq!(
+            classify_converted_row(&row_first, 0, 0),
+            Err(ResultLimitKind::Row)
+        );
+
+        let binary = vec![DbValue::Binary {
+            hex: spare("00ff", 96),
+        }];
+        let binary_bytes = estimate_row_heap_bytes(&binary, binary.capacity());
+        assert_eq!(
+            classify_converted_row(&binary, 2, binary_bytes),
+            Ok(binary_bytes)
+        );
+        assert_eq!(
+            classify_converted_row(&binary, 1, binary_bytes),
+            Err(ResultLimitKind::Field)
+        );
+
+        // Preserve the existing empty-row classification; projection still charges its capacity.
+        let empty = Vec::<DbValue>::with_capacity(4);
+        assert_eq!(
+            classify_converted_row(&empty, 0, 0),
+            Ok(estimate_row_heap_bytes(&empty, empty.capacity()))
+        );
+    }
+
+    #[test]
+    fn validated_row_projection_preserves_saturated_cache_fallback() {
+        let mut registry = ResultSessionRegistry::default();
+        let mut caller = owner("saturated", "statement", "session");
+        registry.begin_run(&run_owner("saturated")).unwrap();
+        registry
+            .begin_session(caller.clone(), vec!["value".into()])
+            .unwrap();
+        registry
+            .push_row(
+                &caller,
+                vec![DbValue::Text {
+                    value: "existing".into(),
+                }],
+            )
+            .unwrap();
+        {
+            let session = registry
+                .sessions
+                .get_mut(&caller.result_session_id.0)
+                .unwrap();
+            session.pages.last_mut().unwrap().reserve(8);
+            session.bytes = usize::MAX;
+        }
+        caller.result_session_id.0.reserve(4096);
+        let mut row = Vec::with_capacity(5);
+        row.push(DbValue::Text {
+            value: "next".into(),
+        });
+        let bytes = classify_converted_row(&row, usize::MAX, usize::MAX).unwrap();
+        let (stored_key, session) = registry
+            .sessions
+            .get_key_value(&caller.result_session_id.0)
+            .unwrap();
+        let full = estimate_session_retained_bytes(&caller.result_session_id.0, session);
+        assert_eq!(
+            estimate_session_after_push(&caller.result_session_id.0, stored_key, session, bytes),
+            full.saturating_add(estimate_row_heap_bytes(&row, row.capacity()))
+        );
+        assert_eq!(
+            estimate_session_after_push(
+                &caller.result_session_id.0,
+                stored_key,
+                session,
+                usize::MAX
+            ),
+            usize::MAX
+        );
+    }
+
+    #[test]
+    fn projection_preserves_caller_key_capacity_at_both_budget_boundaries() {
+        let compact = owner("key-capacity", "statement", "session");
+        let mut overallocated = compact.clone();
+        overallocated.result_session_id.0.reserve(4096);
+        assert_eq!(overallocated, compact);
+
+        for stored_owner_spare in [0, 1024] {
+            let make_registry = || {
+                let mut registry = ResultSessionRegistry::default();
+                registry.begin_run(&run_owner("key-capacity")).unwrap();
+                let mut stored_owner = compact.clone();
+                // The owner ID and HashMap key are separate allocations.
+                stored_owner.result_session_id.0.reserve(stored_owner_spare);
+                registry
+                    .begin_session(stored_owner, vec!["value".into()])
+                    .unwrap();
+                registry
+            };
+            let mut probe = make_registry();
+            assert_eq!(
+                probe.push_row(&compact, vec![DbValue::Null]).unwrap(),
+                PushRowOutcome::Stored
+            );
+            let exact_session_limit = probe.session_bytes(&compact).unwrap();
+            let exact_process_limit = probe.total_bytes();
+            for process_limit in [false, true] {
+                for (caller, below_boundary, expected) in [
+                    (&compact, 0, PushRowOutcome::Stored),
+                    (&compact, 1, PushRowOutcome::LimitReached),
+                    (&overallocated, 0, PushRowOutcome::LimitReached),
+                ] {
+                    let mut registry = make_registry();
+                    // Isolate row projection from conservative map reservation.
+                    if process_limit {
+                        registry.process_limit = exact_process_limit - below_boundary;
+                    } else {
+                        registry.session_limit = exact_session_limit - below_boundary;
+                    }
+                    let before = registry.total_bytes();
+                    assert_eq!(
+                        registry.push_row(caller, vec![DbValue::Null]).unwrap(),
+                        expected
+                    );
+                    if expected == PushRowOutcome::LimitReached {
+                        assert_eq!(registry.total_bytes(), before);
+                        assert!(registry.result_limit_reached(&compact).unwrap());
+                    }
+                    registry
+                        .finish_session(&compact, EffectOutcome::None)
+                        .unwrap();
+                    assert_eq!(
+                        registry.page(&compact, 0).unwrap().rows.len(),
+                        usize::from(expected == PushRowOutcome::Stored)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn appended_rows_match_full_accounting_through_capacity_and_page_growth() {
+        fn assert_full_accounting(registry: &ResultSessionRegistry) {
+            for (key, session) in &registry.sessions {
+                assert_eq!(session.bytes, estimate_session_retained_bytes(key, session));
+            }
+            assert_eq!(
+                registry.total_bytes,
+                estimate_registry_retained_bytes(&registry.sessions)
+            );
+        }
+
+        let mut registry = ResultSessionRegistry::default();
+        registry.begin_run(&run_owner("accounting")).unwrap();
+        let background = owner("accounting", "background", "background-result");
+        registry
+            .begin_session(background.clone(), vec!["value".into()])
+            .unwrap();
+        for _ in 0..64 {
+            registry
+                .push_row(
+                    &background,
+                    vec![DbValue::Text {
+                        value: "retained".into(),
+                    }],
+                )
+                .unwrap();
+        }
+        registry
+            .finish_session(&background, EffectOutcome::None)
+            .unwrap();
+        let mut target = owner("accounting", "target", "target-result");
+        target.result_session_id.0.reserve(128);
+        let mut columns = Vec::with_capacity(16);
+        for name in ["text", "binary", "integer", "boolean", "null", "decimal"] {
+            let mut column = String::with_capacity(48);
+            column.push_str(name);
+            columns.push(column);
+        }
+        registry.begin_session(target.clone(), columns).unwrap();
+        for index in 0..1001 {
+            let mut text = String::with_capacity(31 + index % 129);
+            text.push_str("資料");
+            let mut hex = String::with_capacity(17 + index % 5);
+            hex.push_str("ab");
+            let mut row = Vec::with_capacity(8 + index % 3);
+            row.extend([
+                DbValue::Text { value: text },
+                DbValue::Binary { hex },
+                DbValue::Integer {
+                    value: index.to_string(),
+                },
+                DbValue::Boolean {
+                    value: index % 2 == 0,
+                },
+                DbValue::Null,
+                DbValue::Decimal {
+                    value: "12345678901234567890.01".into(),
+                },
+            ]);
+            assert_eq!(
+                registry.push_row(&target, row).unwrap(),
+                PushRowOutcome::Stored
+            );
+            assert_full_accounting(&registry);
+        }
+        registry
+            .finish_session(&target, EffectOutcome::None)
+            .unwrap();
+        let retained = registry.total_bytes();
+        registry.release(&target).unwrap();
+        assert_eq!(registry.total_bytes(), retained);
+        assert_full_accounting(&registry);
+        registry.discard(&target).unwrap();
+        assert_full_accounting(&registry);
+        assert_eq!(registry.page(&background, 0).unwrap().rows.len(), 64);
+        registry
+            .release_connection(&ConnectionIdentity {
+                descriptor_id: target.descriptor_id,
+                connection_id: target.connection_id,
+                connection_generation: target.connection_generation,
+            })
+            .unwrap();
+        assert_eq!(registry.session_count(), 0);
+        assert_eq!(registry.total_bytes(), 0);
+        assert_full_accounting(&registry);
     }
 
     #[test]
@@ -1573,5 +1896,171 @@ mod tests {
             + registry.page(&second, 0).unwrap().rows.len();
         assert_eq!(accepted, 1);
         assert!(registry.total_bytes() <= process_limit);
+    }
+}
+
+#[cfg(test)]
+mod membership_accounting_tests {
+    use super::*;
+    use crate::db_service::{
+        ConnectionGeneration, ConnectionId, QueryRunId, ResultSessionId, StatementExecutionId,
+    };
+
+    fn owners(
+        descriptor: &str,
+        run_id: &str,
+        session_id: &str,
+    ) -> (QueryRunOwner, ResultSessionOwner) {
+        let run = QueryRunOwner {
+            descriptor_id: DescriptorId(descriptor.into()),
+            connection_id: ConnectionId(format!("connection-{descriptor}")),
+            connection_generation: ConnectionGeneration("generation".into()),
+            query_run_id: QueryRunId(run_id.into()),
+        };
+        let owner = ResultSessionOwner {
+            descriptor_id: run.descriptor_id.clone(),
+            connection_id: run.connection_id.clone(),
+            connection_generation: run.connection_generation.clone(),
+            query_run_id: run.query_run_id.clone(),
+            statement_execution_id: StatementExecutionId("statement".into()),
+            result_session_id: ResultSessionId(session_id.into()),
+        };
+        (run, owner)
+    }
+
+    fn identity(owner: &ResultSessionOwner) -> ConnectionIdentity {
+        ConnectionIdentity {
+            descriptor_id: owner.descriptor_id.clone(),
+            connection_id: owner.connection_id.clone(),
+            connection_generation: owner.connection_generation.clone(),
+        }
+    }
+
+    fn assert_full_model(registry: &ResultSessionRegistry) {
+        let mut occupied = 0usize;
+        for (key, session) in &registry.sessions {
+            let full = estimate_session_retained_bytes(key, session);
+            assert_eq!(session.bytes, full);
+            occupied = occupied.saturating_add(full);
+        }
+        let spare_slots = registry
+            .sessions
+            .capacity()
+            .saturating_mul(HASH_MAP_SLOT_MULTIPLIER)
+            .saturating_sub(registry.sessions.len());
+        assert_eq!(
+            registry.total_bytes(),
+            occupied.saturating_add(spare_slots.saturating_mul(session_map_slot_bytes()))
+        );
+    }
+
+    #[test]
+    fn session_membership_matches_full_model_through_map_growth_and_retirement() {
+        let mut registry = ResultSessionRegistry::default();
+        let mut all = Vec::new();
+        for index in 0..24 {
+            let (run, owner) = owners(
+                &format!("descriptor-{index}"),
+                "run",
+                &format!("session-{index}"),
+            );
+            registry.begin_run(&run).unwrap();
+            let mut stored_owner = owner.clone();
+            stored_owner.result_session_id.0.reserve(128 + index);
+            let mut columns = Vec::with_capacity(8 + index);
+            let mut column = String::with_capacity(64 + index);
+            column.push_str("value");
+            columns.push(column);
+            registry.begin_session(stored_owner, columns).unwrap();
+            assert_full_model(&registry);
+            for row in 0..[0, 1, 4, 8, 500, 501][index % 6] {
+                let mut value = String::with_capacity(40 + row % 13);
+                value.push_str("cached value");
+                let mut values = Vec::with_capacity(4 + row % 3);
+                values.push(DbValue::Text { value });
+                assert_eq!(
+                    registry.push_row(&owner, values),
+                    Ok(PushRowOutcome::Stored)
+                );
+            }
+            if index % 4 == 1 {
+                registry
+                    .finish_session(&owner, EffectOutcome::None)
+                    .unwrap();
+            }
+            assert_full_model(&registry);
+            all.push(owner);
+        }
+        for (index, owner) in all.iter().enumerate() {
+            match index % 4 {
+                0 => registry.release(owner).unwrap(),
+                1 => {
+                    let original = registry.page(owner, 0).unwrap().rows;
+                    let before = registry.total_bytes();
+                    registry.release(owner).unwrap();
+                    assert_eq!(registry.total_bytes(), before);
+                    assert_eq!(registry.page(owner, 0).unwrap().rows, original);
+                    registry.discard(owner).unwrap();
+                }
+                2 => registry.discard(owner).unwrap(),
+                _ => registry.release_connection(&identity(owner)).unwrap(),
+            }
+            assert_full_model(&registry);
+            registry.release_connection(&identity(owner)).unwrap();
+            assert_full_model(&registry);
+        }
+        assert_eq!(registry.session_count(), 0);
+        assert_eq!(registry.total_bytes(), 0);
+        assert!(registry.active_runs.is_empty());
+    }
+
+    #[test]
+    fn repeated_new_runs_keep_other_connection_pages_and_accounting_intact() {
+        let mut registry = ResultSessionRegistry::default();
+        let (stable_run, stable) = owners("stable", "stable-run", "stable-session");
+        registry.begin_run(&stable_run).unwrap();
+        registry
+            .begin_session(stable.clone(), vec!["value".into()])
+            .unwrap();
+        for _ in 0..501 {
+            registry
+                .push_row(&stable, vec![DbValue::Integer { value: "42".into() }])
+                .unwrap();
+        }
+        registry
+            .finish_session(&stable, EffectOutcome::None)
+            .unwrap();
+        let stable_bytes = registry.session_bytes(&stable).unwrap();
+        let stable_page = registry.page(&stable, 1).unwrap().rows;
+        let mut previous = None;
+        for index in 0..100 {
+            let (run, current) = owners("changing", &format!("run-{index}"), "changing-session");
+            registry.begin_run(&run).unwrap();
+            if let Some(old) = &previous {
+                assert_eq!(registry.page(old, 0), Err(SessionError::OwnerMismatch));
+            }
+            assert_full_model(&registry);
+            registry
+                .begin_session(current.clone(), vec!["value".repeat(index + 1)])
+                .unwrap();
+            registry.push_row(&current, vec![DbValue::Null]).unwrap();
+            registry
+                .finish_session(&current, EffectOutcome::Unknown)
+                .unwrap();
+            if index % 2 == 0 {
+                registry.release(&current).unwrap();
+            }
+            assert_full_model(&registry);
+            assert_eq!(registry.session_bytes(&stable).unwrap(), stable_bytes);
+            assert_eq!(registry.page(&stable, 1).unwrap().rows, stable_page);
+            previous = Some(current);
+        }
+        registry
+            .release_connection(&identity(&previous.unwrap()))
+            .unwrap();
+        assert_full_model(&registry);
+        registry.release_connection(&identity(&stable)).unwrap();
+        assert_eq!(registry.total_bytes(), 0);
+        assert!(registry.active_runs.is_empty());
     }
 }

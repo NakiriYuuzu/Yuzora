@@ -81,7 +81,7 @@ afterEach(() => {
 
 
 describe("Git/Database/SSH/Agent mode entry states", () => {
-  it("shows the git nav and enables all three git view tabs", () => {
+  it("shows the git nav and enables all three git view tabs", async () => {
     useGitStore.setState({
       environment: { status: "ready", root: "/w", version: "2.50.1" },
       status: {
@@ -100,20 +100,20 @@ describe("Git/Database/SSH/Agent mode entry states", () => {
     expect(within(nav).getByText("Working tree clean")).toBeInTheDocument()
 
     // Log (default), Local changes and Console are all live now.
-    const gitViews = screen.getByRole("tablist", { name: "Git views" })
+    const gitViews = await screen.findByRole("tablist", { name: "Git views" })
     expect(within(gitViews).getByRole("tab", { name: /Log/ })).not.toBeDisabled()
     expect(within(gitViews).getByRole("tab", { name: "Local changes" })).not.toBeDisabled()
     expect(within(gitViews).getByRole("tab", { name: "Console" })).not.toBeDisabled()
   })
 
-  it("shows the database nav and main entry states", () => {
+  it("shows the database nav and main entry states", async () => {
     render(<AppShell />)
     fireEvent.click(screen.getByRole("button", {name:"Database"}))
 
     const nav = screen.getByLabelText("Database connections")
-    expect(within(nav).getByText("No database connections")).toBeInTheDocument()
+    expect(await within(nav).findByText("No database connections")).toBeInTheDocument()
     expect(within(nav).getByRole("button", { name: "New connection…" })).toBeInTheDocument()
-    expect(screen.getByText("Database connections are not configured")).toBeInTheDocument()
+    expect(await screen.findByText("Database connections are not configured")).toBeInTheDocument()
   })
 
   it("opens SFTP transfers from Files without a separate SSH mode", () => {

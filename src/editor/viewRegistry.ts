@@ -1,4 +1,5 @@
-import type { EditorView } from "@codemirror/view"
+import { Compartment, StateEffect } from "@codemirror/state"
+import { EditorView } from "@codemirror/view"
 
 import { canonicalPathKey, isWindowsPath } from "../lib/paths"
 
@@ -70,6 +71,7 @@ export function registerView(
         readonly: metadata.readonly ?? false
     }
     for (const key of registrationKeys(path)) views.set(key, entry)
+    refreshSubscriptions()
 }
 
 export function unregisterView(path: string, view?: EditorView): void {
@@ -81,6 +83,7 @@ export function unregisterView(path: string, view?: EditorView): void {
     for (const [key, entry] of views) {
         if (entry === current) views.delete(key)
     }
+    refreshSubscriptions()
 }
 
 export function getView(path: string): EditorView | undefined {
@@ -89,4 +92,92 @@ export function getView(path: string): EditorView | undefined {
 
 export function getViewEntry(path: string): RegisteredEditorView | undefined {
     return findViewEntry(path)
+}
+
+export type ViewChange = "view" | "document"
+
+interface ViewSubscription {
+    path: string
+    listener: (change: ViewChange) => void
+    view: EditorView | undefined
+    pending?: ViewChange
+}
+
+const subscriptions = new Set<ViewSubscription>()
+const observers = new Map<EditorView, Set<ViewSubscription>>()
+// Reuse the empty compartment when a view is subscribed again, rather than
+// accumulating an appendConfig slot on every preview toggle.
+const compartments = new WeakMap<EditorView, Compartment>()
+
+function notify(subscription: ViewSubscription, change: ViewChange) {
+    if (subscription.pending) {
+        if (change === "view") subscription.pending = change
+        return
+    }
+    subscription.pending = change
+    queueMicrotask(() => {
+        const pending = subscription.pending
+        subscription.pending = undefined
+        if (pending && subscriptions.has(subscription)) subscription.listener(pending)
+    })
+}
+
+function observe(subscription: ViewSubscription) {
+    const view = subscription.view
+    if (!view) return
+    const existing = observers.get(view)
+    if (existing) {
+        existing.add(subscription)
+        return
+    }
+    const listeners = new Set([subscription])
+    observers.set(view, listeners)
+    const compartment = compartments.get(view) ?? new Compartment()
+    compartments.set(view, compartment)
+    const extension = EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+            for (const listener of listeners) notify(listener, "document")
+        }
+    })
+    view.dispatch({
+        effects: compartment.get(view.state) === undefined
+            ? StateEffect.appendConfig.of(compartment.of(extension))
+            : compartment.reconfigure(extension)
+    })
+}
+
+function unobserve(subscription: ViewSubscription) {
+    const view = subscription.view
+    if (!view) return
+    const listeners = observers.get(view)
+    if (!listeners) return
+    listeners.delete(subscription)
+    if (listeners.size > 0) return
+    observers.delete(view)
+    view.dispatch({ effects: compartments.get(view)!.reconfigure([]) })
+}
+
+function refreshSubscriptions() {
+    for (const subscription of subscriptions) {
+        const view = getView(subscription.path)
+        if (view === subscription.view) continue
+        unobserve(subscription)
+        subscription.view = view
+        observe(subscription)
+        notify(subscription, "view")
+    }
+}
+
+/** Subscribe to subsequent view replacements/removals and immutable doc changes.
+ * Notifications run outside CodeMirror's update cycle and coalesce per microtask.
+ * Lookup uses the same Windows alias / exact POSIX precedence as getView.
+ */
+export function subscribeView(path: string, listener: (change: ViewChange) => void): () => void {
+    const subscription: ViewSubscription = { path, listener, view: getView(path) }
+    subscriptions.add(subscription)
+    observe(subscription)
+    return () => {
+        if (!subscriptions.delete(subscription)) return
+        unobserve(subscription)
+    }
 }

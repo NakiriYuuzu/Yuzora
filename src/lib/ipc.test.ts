@@ -1,6 +1,7 @@
 import { expect, test, it, afterEach, describe } from "vitest"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 import * as ipcModule from "./ipc"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 import {
     openFile,
     isOpenableFile,
@@ -193,6 +194,25 @@ test("languageFromPath 依副檔名判斷", () => {
     expect(languageFromPath("/a/b.ts")).toBe("TypeScript")
     expect(languageFromPath("/a/b.rs")).toBe("Rust")
     expect(languageFromPath("/a/b.unknown")).toBe("Plain Text")
+    for (const extension of ["__proto__", "constructor", "hasOwnProperty", "toString"]) {
+        expect(languageFromPath(`/a/b.${extension}`)).toBe("Plain Text")
+    }
+    expect(languageFromPath("/a/b.TS")).toBe("TypeScript")
+})
+
+it("native file mutations send the active capability and relative paths", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/work", workspaceCapabilityId: "ws-active" })
+    const calls: unknown[] = []
+    mockIPC((command, payload) => { calls.push([command, payload]) })
+    await ipcModule.fsCreateFile("/work", "/work/sub/file")
+    await ipcModule.fsRename("/work", "/work/sub/file", "/work/sub/next")
+    expect(calls).toEqual([
+        ["fs_create_file", { workspaceCapabilityId: "ws-active", path: "sub/file" }],
+        ["fs_rename", { workspaceCapabilityId: "ws-active", from: "sub/file", to: "sub/next" }],
+    ])
+    await expect(ipcModule.fsDelete("/other", "/other/file")).rejects.toThrow("workspace-capability-missing")
+    await expect(ipcModule.fsDelete("/work", "/work/../outside")).rejects.toThrow()
+    expect(calls).toHaveLength(2)
 })
 
 // #57 T3：git 面板首載單趟完成——bootstrap 一次回齊 environment＋status＋branches
@@ -385,14 +405,18 @@ it("gitPull forwards optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
     await gitPull("/repo")
-    expect(seen[0]).toEqual(["git_pull_cmd", { repositoryRoot: "/repo" }])
+    expect(seen[0]).toEqual(["git_pull_cmd", { repositoryRoot: "/repo", mode: null }])
+    await gitPull("/repo", "rebase")
+    expect(seen[1]).toEqual(["git_pull_cmd", { repositoryRoot: "/repo", mode: "rebase" }])
 })
 
 it("gitPush forwards optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
     await gitPush("/repo")
-    expect(seen[0]).toEqual(["git_push_cmd", { repositoryRoot: "/repo" }])
+    expect(seen[0]).toEqual(["git_push_cmd", { repositoryRoot: "/repo", forceWithLease: false, tags: false }])
+    await gitPush("/repo", { forceWithLease: true, tags: true })
+    expect(seen[1]).toEqual(["git_push_cmd", { repositoryRoot: "/repo", forceWithLease: true, tags: true }])
 })
 
 it("gitCherryPick forwards hash", async () => {

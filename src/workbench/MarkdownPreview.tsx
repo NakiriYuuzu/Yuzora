@@ -4,7 +4,8 @@ import DOMPurify from "dompurify"
 import { openUrl } from "@tauri-apps/plugin-opener"
 
 import { getDocument } from "../editor/documentRegistry"
-import { getView } from "../editor/viewRegistry"
+import { getView, subscribeView } from "../editor/viewRegistry"
+import { subscribePreviewView } from "./subscribePreviewView"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { fileGradeOf } from "../lib/types"
 import type { OpenFileResult } from "../lib/types"
@@ -247,57 +248,56 @@ export const MarkdownPreview = memo(function MarkdownPreview({
 
     useEffect(() => {
         let disposed = false
+        let revision = 0
+        let lastResult: OpenFileResult | undefined
         setLoadError(false)
-        void getDocument(sourcePath)
-            .then((entry) => {
-                if (disposed) return
-                setResult(entry.result)
-                lastDocRef.current = getView(sourcePath)?.state.doc ?? null
-                setContent(bufferContent(sourcePath, entry.result))
-            })
-            // openFile reject（檔案被刪／權限）：改顯示錯誤態，避免永卡「載入中」
-            // 與 unhandled rejection（R3-7）。
-            .catch(() => {
-                if (!disposed) setLoadError(true)
-            })
+        setResult(null)
+        setContent("")
+        lastDocRef.current = null
+
+        function refresh(initial = false) {
+            const request = ++revision
+            void getDocument(sourcePath)
+                .then((entry) => {
+                    if (disposed || request !== revision) return
+                    // Re-check kind even when no live view exists: external reload
+                    // across 10MB unregisters the old view without creating another.
+                    setResult(entry.result)
+                    setLoadError(false)
+                    // Keep observing kind transitions, but never stringify a
+                    // downgraded (potentially tens-of-MB) document on edits.
+                    if (entry.result.kind !== "full") {
+                        lastDocRef.current = null
+                        setContent("")
+                        return
+                    }
+                    const doc = getView(sourcePath)?.state.doc
+                    const unchanged = doc
+                        ? doc === lastDocRef.current
+                        : entry.result === lastResult
+                    lastResult = entry.result
+                    if (unchanged) return
+                    lastDocRef.current = doc ?? null
+                    pendingSourceLineRef.current = coordinatorRef.current?.snapshotSourceLine() ?? null
+                    const live = bufferContent(sourcePath, entry.result)
+                    setContent((current) => current === live ? current : live)
+                })
+                // Initial read failures show the error surface. A later event can
+                // retry a failed external read without an idle polling loop.
+                .catch(() => {
+                    if (!disposed && request === revision && initial) setLoadError(true)
+                })
+        }
+
+        const unsubscribe = subscribePreviewView(sourcePath, () => refresh())
+        refresh(true)
         return () => {
             disposed = true
+            unsubscribe()
         }
     }, [sourcePath])
 
     const grade = useMemo(() => (result ? fileGradeOf(result, content) : null), [result, content])
-
-    // 即時更新（debounce by poll）：定時讀 live doc，內容變動才 setState。
-    // 條件看 kind-derived grade（result.kind），不看 content-derived grade：
-    // full 檔即持續輪詢——即使暫態貼入超長行讓 content-derived grade 變
-    // veryLongLine（渲染分支顯示降級），輪詢不停，長行刪除後自動恢復（R2-2、W4）。
-    useEffect(() => {
-        if (result?.kind !== "full") return
-        const id = setInterval(() => {
-            // R4-5：外部 reload 可能跨 10MB 邊界改 kind（full↔tooLarge）；每 tick
-            // 重讀快取比對 kind，變動即 setResult（full→tooLarge 時同步停用渲染守衛
-            // 並終止輪詢）。documentRegistry 無同步 peek／更新事件，故經 getDocument
-            // 讀快取引用。
-            void getDocument(sourcePath)
-                .then((entry) => {
-                    if (entry.result.kind !== result.kind) {
-                        setResult(entry.result)
-                        return
-                    }
-                    // R4-3：doc identity 未變則跳過 toString（CM6 doc immutable）。
-                    const doc = getView(sourcePath)?.state.doc
-                    if (doc === undefined || doc === lastDocRef.current) return
-                    lastDocRef.current = doc
-                    const live = doc.toString()
-                    pendingSourceLineRef.current = coordinatorRef.current?.snapshotSourceLine() ?? null
-                    setContent((current) => current === live ? current : live)
-                })
-                // 外部刪檔清快取後，tick 的 getDocument 走 openFile reject——tick 級
-                // 靜默即可（loadError 語意留給 init 路徑；下一 tick 自然重試）（R5-1）。
-                .catch(() => {})
-        }, 400)
-        return () => clearInterval(id)
-    }, [sourcePath, result?.kind])
 
     // preview 連結一律不得讓 webview 導航離開（會失去整個 editor 狀態）：攔截
     // anchor，http/https 改用系統瀏覽器外開，其他 scheme（含相對路徑）僅擋掉（W10）。
@@ -419,13 +419,14 @@ export const MarkdownPreview = memo(function MarkdownPreview({
             }
         }
 
-        // EditorPane registers asynchronously. Re-check on the same 400ms cadence
-        // as live content polling; preview remains independently usable meanwhile.
+        // EditorPane may register after the preview mounts.
+        const unsubscribe = subscribeView(sourcePath, (change) => {
+            if (change === "view") attachCurrentView()
+        })
         attachCurrentView()
-        const attachInterval = setInterval(attachCurrentView, 400)
         return () => {
             disposed = true
-            clearInterval(attachInterval)
+            unsubscribe()
             detach()
             coordinatorRef.current = null
             rebuildAnchorsRef.current = null

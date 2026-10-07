@@ -61,7 +61,19 @@ struct Lane {
 }
 impl Lane {
     async fn start(fixture: &Fixture, host: &str, path: &Path) -> (Self, SqliteReply) {
-        let mut child = tokio::process::Command::new(support::helper_binary())
+        Self::start_mode(fixture, host, path, false).await
+    }
+    async fn start_mode(
+        fixture: &Fixture,
+        host: &str,
+        path: &Path,
+        local: bool,
+    ) -> (Self, SqliteReply) {
+        let mut command = tokio::process::Command::new(support::helper_binary());
+        if local {
+            command.env(LOCAL_WORKER_ENV, "1");
+        }
+        let mut child = command
             .arg("--database")
             .env("HOME", fixture.home.path())
             .stdin(Stdio::piped())
@@ -88,10 +100,25 @@ impl Lane {
             database_path: path.to_str().unwrap().into(),
             identity: lane.identity.clone(),
         };
+        let initial = if local {
+            encode(&LocalSqliteOpen {
+                version: PROTOCOL_VERSION,
+                owner: lane.owner.clone(),
+                database_path: path.to_str().unwrap().into(),
+                file_identity: yuzora_host::path_capability::opened_file_identity(
+                    &std::fs::File::open(path).unwrap(),
+                )
+                .unwrap(),
+                identity: lane.identity.clone(),
+            })
+            .unwrap()
+        } else {
+            encode(&config).unwrap()
+        };
         lane.input
             .as_mut()
             .unwrap()
-            .write_all(&encode(&config).unwrap())
+            .write_all(&initial)
             .await
             .unwrap();
         let reply = lane.read().await;
@@ -127,11 +154,11 @@ impl Lane {
             .unwrap();
         self.next
     }
-    async fn call(&mut self, call: SqliteCommand) -> Result<SqliteResult, SqliteError> {
+    async fn call(&mut self, call: SqliteCommand) -> Result<SqliteResult, Box<SqliteError>> {
         let id = self.send(call).await;
         let response = self.read().await;
         assert_eq!(response.id, id);
-        response.result
+        response.result.map_err(Box::new)
     }
     fn query(&self, run: &str, sql: &str) -> QueryRunRequest {
         QueryRunRequest {
@@ -410,4 +437,102 @@ async fn sqlite_rejects_untrusted_missing_external_files_and_replayed_writes() {
             .unwrap(),
         1
     );
+}
+
+#[tokio::test]
+async fn local_sqlite_worker_preserves_connection_transactions_and_contains_failure() {
+    // The local user-selected file does not require a remote workspace trust grant.
+    let fixture = Fixture::new("local", false);
+    let (mut first, opened) = Lane::start_mode(&fixture, "local", &fixture.path, true).await;
+    assert!(matches!(opened.result, Ok(SqliteResult::Opened(_))));
+    let (mut second, opened) =
+        Lane::start_mode(&fixture, "local-second", &fixture.path, true).await;
+    assert!(opened.result.is_ok());
+    assert!(matches!(
+        first.call(SqliteCommand::Probe).await.unwrap(),
+        SqliteResult::Version(_)
+    ));
+    assert!(matches!(
+        first
+            .call(SqliteCommand::ListTables {
+                identity: first.identity.clone()
+            })
+            .await
+            .unwrap(),
+        SqliteResult::Tables(_)
+    ));
+    for (id, sql) in [
+        ("begin", "BEGIN"),
+        ("update", "UPDATE sample SET counter=7 WHERE id=1"),
+        ("commit", "COMMIT"),
+    ] {
+        let request = first.query(id, sql);
+        let SqliteResult::Run(result) = first.call(SqliteCommand::QueryRun(request)).await.unwrap()
+        else {
+            panic!()
+        };
+        assert!(!result.connection_terminated);
+    }
+    assert_eq!(
+        rusqlite::Connection::open(&fixture.path)
+            .unwrap()
+            .query_row("SELECT counter FROM sample WHERE id=1", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+    // Use SQLite's process-global hard heap ceiling for a deterministic failure,
+    // rather than making the test machine allocate gigabytes to trip an RSS poll.
+    // Its isolation from this process also proves this is a real worker boundary.
+    let parent_heap_limit = unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(-1) };
+    let request = first.query("heap-limit", "PRAGMA hard_heap_limit=33554432");
+    let SqliteResult::Run(run) = first.call(SqliteCommand::QueryRun(request)).await.unwrap() else {
+        panic!()
+    };
+    first
+        .call(SqliteCommand::Release(session(&run)))
+        .await
+        .unwrap();
+    assert_eq!(
+        unsafe { rusqlite::ffi::sqlite3_hard_heap_limit64(-1) },
+        parent_heap_limit
+    );
+    rusqlite::Connection::open(&fixture.path)
+        .unwrap()
+        .execute_batch("CREATE VIEW hostile AS SELECT length(hex(randomblob(67108864))) AS value")
+        .unwrap();
+    let request = first.query("allocation", "SELECT * FROM hostile LIMIT 100");
+    first.send(SqliteCommand::QueryRun(request)).await;
+    let reply = tokio::time::timeout(
+        Duration::from_secs(15),
+        yuzora_host::wire::read_frame(&mut first.output),
+    )
+    .await
+    .unwrap();
+    if let Ok(Some(bytes)) = reply {
+        let response: SqliteReply = serde_json::from_slice(&bytes).unwrap();
+        // QueryRun carries SQL execution failures inside its typed statement
+        // result; an Ok transport envelope is not a successful SQL execution.
+        let rejected = match &response.result {
+            Err(_) => true,
+            Ok(SqliteResult::Run(run)) => run.statements.iter().all(|statement| {
+                matches!(statement.result, StatementExecutionResult::Error { .. })
+            }),
+            _ => false,
+        };
+        assert!(
+            rejected,
+            "large allocation must not return a successful SQL result: {response:?}"
+        );
+    }
+    let _ = first.child.start_kill();
+    tokio::time::timeout(Duration::from_secs(5), first.child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        second.call(SqliteCommand::Probe).await.unwrap(),
+        SqliteResult::Version(_)
+    ));
+    second.eof(true).await;
 }

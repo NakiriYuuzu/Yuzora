@@ -19,14 +19,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-14, ubuntu-24.04, windows-latest]
+        runner: [macos-15, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
       - name: Detect new unverified formal HERDR releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -53,3 +55,12 @@ jobs:
       - name: Verify 0.9.0 baseline and mixed versions on Windows
         if: runner.os == 'Windows'
         run: bun scripts/prepare-herdr-baseline.ts 0.9.0 src-tauri/resources/herdr/windows-x86_64/herdr.exe
+      - name: Verify 0.9.1 baseline and mixed versions on macOS
+        if: runner.os == 'macOS'
+        run: bun scripts/prepare-herdr-baseline.ts 0.9.1 src-tauri/resources/herdr/macos-aarch64/herdr
+      - name: Verify 0.9.1 baseline and mixed versions on Linux
+        if: runner.os == 'Linux'
+        run: bun scripts/prepare-herdr-baseline.ts 0.9.1 src-tauri/resources/herdr/linux-x86_64/herdr
+      - name: Verify 0.9.1 baseline and mixed versions on Windows
+        if: runner.os == 'Windows'
+        run: bun scripts/prepare-herdr-baseline.ts 0.9.1 src-tauri/resources/herdr/windows-x86_64/herdr.exe

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import {
     DropdownMenu,
@@ -13,7 +14,9 @@ import {
 
 import type { CommitFileChange } from "@/lib/types"
 import { logUserAction } from "@/features/logs/userAction"
-import { gitCheckout, gitCherryPick } from "@/lib/ipc"
+import { gitCheckoutDetached, gitCherryPick } from "@/lib/ipc"
+import { useGitActionDialogStore } from "@/state/gitActionDialogStore"
+import { revertCommit, switchBranch, undoLastCommit } from "./gitOperations"
 import { useGitLogStore } from "@/state/gitLogStore"
 import { useGitStore } from "@/state/gitStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -242,7 +245,8 @@ export function LogTab({
         }
         setCheckoutNotice(null)
         if (mutationsDisabled || !repositoryRoot) return
-        const ok = await runOp("checkout", () => gitCheckout(repositoryRoot, hash))
+        const root = repositoryRoot
+        const ok = await switchBranch(root, "checkout", hash.slice(0, 7), (smart) => gitCheckoutDetached(root, hash, smart))
         if (ok) void logUserAction("git_checkout", `checkout ${hash.slice(0, 7)}`)
     }
 
@@ -279,12 +283,12 @@ export function LogTab({
                         <circle cx="11" cy="11" r="7" />
                         <path d="m21 21-4.3-4.3" />
                     </svg>
-                    <input
+                    <Input
                         value={query}
                         onChange={(e) => onQueryChange(e.target.value)}
                         placeholder={t("logTab.filterCommitsPlaceholder")}
                         aria-label={t("logTab.filterCommitsAriaLabel")}
-                        className="min-w-0 flex-1 border-none bg-transparent font-sans text-[12px] text-(--ink-1) outline-none"
+                        className="h-auto min-w-0 flex-1 rounded-none border-none bg-transparent p-0 font-sans text-[12px] text-(--ink-1) shadow-none outline-none focus-visible:ring-0 md:text-[12px] dark:bg-transparent"
                     />
                 </div>
 
@@ -386,6 +390,12 @@ export function LogTab({
                         && void runOp("cherry-pick", () => gitCherryPick(repositoryRoot, hash))
                     }
                     cherryPickDisabled={cherryPickDisabled}
+                    onRevert={(commit) => void revertCommit(commit.hash, commit.subject)}
+                    onReset={(commit) => useGitActionDialogStore.getState().openReset({ hash: commit.hash, subject: commit.subject })}
+                    onUndo={selectedCommit && status?.headOid === selectedCommit.hash && selectedCommit.parents.length > 0
+                        ? (commit) => void undoLastCommit(commit.subject)
+                        : undefined}
+                    historyActionsDisabled={cherryPickDisabled}
                 />
                 </ResizablePanel>
             </ResizablePanelGroup>

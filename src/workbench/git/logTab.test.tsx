@@ -61,7 +61,7 @@ const gitLogPage = vi.fn<(...a: unknown[]) => Promise<LogPage>>(async () => ({
 }))
 const gitLogAuthors = vi.fn<(...a: unknown[]) => Promise<AuthorEntry[]>>(async () => [])
 const gitCommitDetail = vi.fn<(root: string, hash: string) => Promise<CommitDetail>>(async () => makeDetail())
-const gitCheckout = vi.fn<(...a: unknown[]) => Promise<void>>(async () => undefined)
+const gitCheckoutDetached = vi.fn<(...a: unknown[]) => Promise<void>>(async () => undefined)
 const gitCherryPick = vi.fn<(root: string, hash: string) => Promise<void>>(async () => undefined)
 const logUserAction = vi.fn<
     (event: string, message: string, metadata?: Record<string, unknown>) => Promise<void>
@@ -72,7 +72,7 @@ vi.mock("@/lib/ipc", () => ({
     gitLogPage: (...a: unknown[]) => gitLogPage(...a),
     gitLogAuthors: (root: string) => gitLogAuthors(root),
     gitCommitDetail: (root: string, h: string) => gitCommitDetail(root, h),
-    gitCheckout: (...a: unknown[]) => gitCheckout(...a),
+    gitCheckoutDetached: (...a: unknown[]) => gitCheckoutDetached(...a),
     gitCherryPick: (root: string, h: string) => gitCherryPick(root, h),
     // gitStore also imports these; harmless stubs for its module graph.
     gitDetect: vi.fn(async () => ({ status: "ready", root: "/w", version: "2.50" })),
@@ -125,7 +125,7 @@ beforeEach(() => {
     gitLogPage.mockReset().mockResolvedValue({ commits: [], hasMore: false, nextCursor: null })
     gitLogAuthors.mockReset().mockResolvedValue([])
     gitCommitDetail.mockReset().mockResolvedValue(makeDetail())
-    gitCheckout.mockClear()
+    gitCheckoutDetached.mockClear()
     gitCherryPick.mockClear()
     logUserAction.mockClear()
     writeText.mockClear()
@@ -520,10 +520,10 @@ describe("LogTab details actions", () => {
         await waitFor(() => expect(writeText).toHaveBeenCalled())
     })
 
-    it("Checkout routes through gitStore.runOp / gitCheckout", async () => {
+    it("Checkout detaches HEAD at the commit through gitStore.runOp", async () => {
         await renderWithSelection()
         fireEvent.click(screen.getByRole("button", { name: "Checkout" }))
-        await waitFor(() => expect(gitCheckout).toHaveBeenCalled())
+        await waitFor(() => expect(gitCheckoutDetached).toHaveBeenCalledWith("/w", makeCommit(0).hash, false))
     })
 
     it("Cherry-pick routes through gitStore.runOp / gitCherryPick", async () => {
@@ -545,7 +545,7 @@ describe("LogTab details actions", () => {
         })
         await renderWithSelection()
         fireEvent.click(screen.getByRole("button", { name: "Checkout" }))
-        expect(gitCheckout).not.toHaveBeenCalled()
+        expect(gitCheckoutDetached).not.toHaveBeenCalled()
         expect(await screen.findByText(/unsaved changes/)).toBeInTheDocument()
     })
 
@@ -571,10 +571,20 @@ describe("LogTab details actions", () => {
         )
     })
 
-    it("Compare / Reset are present and disabled", async () => {
+    it("Compare stays disabled without details while history actions are available", async () => {
         await renderWithSelection()
         expect(await screen.findByRole("button", { name: "Compare" })).toBeDisabled()
-        expect(screen.getByRole("button", { name: "Reset main to here…" })).toBeDisabled()
+        expect(screen.getByRole("button", { name: "Reset current branch to here…" })).toBeEnabled()
+        expect(screen.getByRole("button", { name: "Revert" })).toBeEnabled()
+    })
+
+    it("disables history actions while a conflict is unresolved", async () => {
+        await renderWithSelection()
+        act(() => useGitStore.setState({
+            status: makeStatus({ conflicted: [{ path: "a.ts", origPath: null, status: "UU" }] })
+        }))
+        expect(await screen.findByRole("button", { name: "Revert" })).toBeDisabled()
+        expect(screen.getByRole("button", { name: "Reset current branch to here…" })).toBeDisabled()
     })
 
     it("shows the empty details prompt before any selection", async () => {

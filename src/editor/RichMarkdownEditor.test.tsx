@@ -4,6 +4,7 @@ import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { history, undo } from "@codemirror/commands"
 import { useEffect, useRef } from "react"
+import { clearMarkdownViewStatesForTest } from "./markdownViewState"
 
 const fixture = vi.hoisted(() => ({ content: "# Hello\n\nWorld", save: vi.fn(), view: null as EditorView | null, editable: true }))
 vi.mock("./EditorPane", () => ({
@@ -25,7 +26,7 @@ beforeEach(() => {
     Range.prototype.getClientRects = () => [] as unknown as DOMRectList
     Range.prototype.getBoundingClientRect = () => new DOMRect()
     fixture.content = "# Hello\n\nWorld"; fixture.editable = true; fixture.save.mockReset() })
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); clearMarkdownViewStatesForTest(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 it("keeps the original bytes and CM identity through document/source switches", async () => {
     render(<RichMarkdownEditor path="/w/a.md" groupIndex={0} />)

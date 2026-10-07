@@ -95,14 +95,20 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<ParsedStatus, String> {
                 }
             }
             'u' => {
-                let path = rec
-                    .splitn(11, ' ')
-                    .nth(10)
+                let mut fields = rec.splitn(11, ' ');
+                // XY tells which sides changed: UU both modified, AA both
+                // added, DU/UD deleted by us/them, AU/UA added by us/them, DD.
+                let code = fields
+                    .nth(1)
+                    .filter(|code| code.len() == 2)
+                    .ok_or_else(|| format!("malformed u record: {rec}"))?;
+                let path = fields
+                    .nth(8)
                     .ok_or_else(|| format!("malformed u record: {rec}"))?;
                 s.conflicted.push(GitFileEntry {
                     path: path.to_string(),
                     orig_path: None,
-                    status: "U".into(),
+                    status: code.into(),
                 })
             }
             '?' => {

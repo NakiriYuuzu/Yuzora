@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { useHerdrStore } from "@/state/herdrStore"
+import { isHerdrStartupPending, useHerdrStore } from "@/state/herdrStore"
 import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { Button } from "@/components/ui/button"
 import { useHerdrToolsStore, type HerdrTool, type HerdrToolsSelection } from "@/state/herdrToolsStore"
@@ -31,6 +31,7 @@ const tools: { id: HerdrTool; icon: LucideIcon }[] = [
 export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsSelection }) {
   const { t } = useTranslation("herdrTools")
   const sessions = useHerdrStore(s => s.sessions)
+  const herdrStartup = useHerdrStore(s => s.herdrStartup)
   const hosts = useHostStore(s => s.hosts)
   const hostConfigs = useHostStore(s => s.configs)
   const [scope, setScope] = useState(selection.sessionName)
@@ -59,7 +60,7 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
   const hostOptions = [{ value: LOCAL_HOST_ID, label: t("local") }, ...Object.values(hostConfigs).map(host => ({ value: host.hostId, label: host.label, disabled: !hosts[host.hostId]?.connection }))]
   const currentSession = hostSessions.find(session => sessionScope(session) === scope)
   const sessionOptions = [
-    ...hostSessions.map(session => ({ value: sessionScope(session)!, label: <>{session.name}{!session.running && <span className="text-muted-foreground"> · {t("stopped")}</span>}</> })),
+    ...hostSessions.map(session => ({ value: sessionScope(session)!, label: <>{session.name}{(isHerdrStartupPending({ herdrStartup }, session) || !session.running) && <span className="text-muted-foreground"> · {t(isHerdrStartupPending({ herdrStartup }, session) ? "workbench:herdrNav.connecting" : "stopped")}</span>}</> })),
     ...(currentSession ? [] : [{ value: scope, label: t("sessionNone") }]),
   ]
   const spaceOptions = snapshot?.spaces.map(space => ({ value: space.id, label: space.label })) ?? []

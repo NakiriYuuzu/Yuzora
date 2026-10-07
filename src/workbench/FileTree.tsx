@@ -1,16 +1,19 @@
 import { gitFileNameStyle, worktreeFilesFrom, worktreeFileMetadata } from "./git/fileRows"
 import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
-import { useEffect, useRef } from "react"
+import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { logUserAction } from "@/features/logs/userAction"
 import { relativePathWithin } from "@/lib/paths"
 import { FileIcon } from "../lib/fileIcons"
-import type { FileNode } from "../lib/types"
+import type { FileNode, GitStatus } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
 import { useFileTreeStore } from "../state/fileTreeStore"
 import { useGitStore } from "../state/gitStore"
 import { useDiffModalStore } from "../state/diffModalStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { useFileClipboardStore } from "../state/fileClipboardStore"
+import { isMacPlatform } from "@/lib/platform"
+import { copyFilesToClipboard, duplicatePath, pasteFiles } from "./fileClipboard"
 
 // Repo-relative form of an absolute node path, matched against the git status
 // (which reports paths relative to the repo root). Uses forward slashes.
@@ -39,15 +42,41 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
     // git status paths are relative to the repo root, which may sit above the
     // opened workspace (workspace = repo subdirectory). Use environment.root when
     // ready; fall back to workspacePath otherwise.
-    const repoRoot = useGitStore((s) =>
-        s.environment?.status === "ready" ? s.environment.root : workspacePath
+    // Subscribe only to the two values displayed by this row. The first
+    // character carries staged state; the remainder is the full status code.
+    // Diff actions below read the current metadata directly from the store.
+    const selectGitFileState = useMemo(() => {
+        if (node.isDir) return () => null
+        let previousStatus: GitStatus | null | undefined
+        let previousRoot: string | null | undefined
+        let previousRelativePath = ""
+        let value: string | null = null
+        return (s: ReturnType<typeof useGitStore.getState>) => {
+            const repoRoot = s.environment?.status === "ready" ? s.environment.root : workspacePath
+            if (s.status === previousStatus && repoRoot === previousRoot) return value
+            const rel = repoRoot === previousRoot ? previousRelativePath : relativePath(node.path, repoRoot)
+            const file = worktreeFileMetadata(s.status).get(rel)
+            value = file ? `${file.staged ? "1" : "0"}${file.status}` : null
+            previousStatus = s.status
+            previousRoot = repoRoot
+            previousRelativePath = rel
+            return value
+        }
+    }, [node.isDir, node.path, workspacePath])
+    const gitFileState = useGitStore(selectGitFileState)
+    const isChanged = gitFileState !== null
+    const selected = useFileClipboardStore(
+        (s) => s.selection?.workspacePath === root && s.selection.path === node.path
     )
-    const rel = relativePath(node.path, repoRoot)
-    const gitStatus = useGitStore((s) => s.status)
-    const gitFile = !node.isDir ? worktreeFileMetadata(gitStatus).get(rel) : undefined
-    const isChanged = Boolean(gitFile)
+    const cut = useFileClipboardStore(
+        (s) => s.clipboard?.mode === "cut" && s.clipboard.workspacePath === root && s.clipboard.paths.includes(node.path)
+    )
 
-    function onClick() {
+    function onClick(event: MouseEvent<HTMLButtonElement>) {
+        // WebKit (macOS) does not focus a clicked button; without focus the
+        // tree's Cmd+C / Cmd+V never fire and the menu copies page text instead.
+        event.currentTarget.focus({ preventScroll: true })
+        useFileClipboardStore.getState().select(root, node.path)
         if (node.isDir) {
             void useFileTreeStore.getState().toggleDir(root, node.path)
         } else {
@@ -69,19 +98,28 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                     type="button"
                     onClick={onClick}
                     onDoubleClick={onDoubleClick}
-                    onContextMenu={workspacePath ? contextMenuHandler({
-                        kind: "file",
-                        workspacePath,
-                        path: node.path,
-                        isDirectory: node.isDir,
-                        sourceGroupIndex
-                    }) : undefined}
+                    data-tree-path={node.path}
+                    data-tree-dir={node.isDir ? "true" : undefined}
+                    data-selected={selected ? "true" : undefined}
+                    onContextMenu={workspacePath ? (event) => {
+                        useFileClipboardStore.getState().select(root, node.path)
+                        contextMenuHandler({
+                            kind: "file",
+                            workspacePath,
+                            path: node.path,
+                            isDirectory: node.isDir,
+                            sourceGroupIndex
+                        })(event)
+                    } : undefined}
                     style={{ paddingLeft: `${14 + depth * 15}px` }}
                     className={
                         "flex h-[27px] w-full items-center gap-[7px] rounded-[8px] pr-[8px] text-left text-[12.5px] transition-colors duration-100 " +
                         (active
                             ? "bg-(--yz-active) text-(--ink-0) shadow-(--shadow-xs)"
-                            : "hover:bg-(--yz-hover)")
+                            : selected
+                              ? "bg-(--yz-hover) hover:bg-(--yz-hover)"
+                              : "hover:bg-(--yz-hover)") +
+                        (cut ? " opacity-55" : "")
                     }
                 >
                     {node.isDir ? (
@@ -105,7 +143,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                         />
                     )}
                     <span
-                        style={gitFile ? gitFileNameStyle(gitFile.status, gitFile.staged) : undefined}
+                        style={gitFileState !== null ? gitFileNameStyle(gitFileState.slice(1), gitFileState[0] === "1") : undefined}
                         className={
                             "truncate " +
                             (node.isDir
@@ -126,6 +164,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                         onClick={() => {
                             const git = useGitStore.getState()
                             if (git.environment?.status !== "ready") return
+                            const rel = relativePath(node.path, git.environment.root)
                             const files = worktreeFilesFrom(git.status)
                             const file = files.find((entry) => entry.path === rel && !entry.staged) ?? files.find((entry) => entry.path === rel)
                             if (file) useDiffModalStore.getState().openWorktree(git.environment.root, files, { path: rel, staged: file.staged })
@@ -145,6 +184,15 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
             )}
         </li>
     )
+}
+
+function runClipboardKey(workspacePath: string, key: string, row: HTMLElement) {
+    const path = row.dataset.treePath
+    if (!path) return
+    useFileClipboardStore.getState().select(workspacePath, path)
+    if (key === "c" || key === "x") void copyFilesToClipboard(workspacePath, [path], key === "x" ? "cut" : "copy")
+    else if (key === "v") void pasteFiles(workspacePath, { path, isDirectory: row.dataset.treeDir === "true" })
+    else void duplicatePath(workspacePath, path)
 }
 
 export function FileTree() {
@@ -192,10 +240,54 @@ export function FileTree() {
         return () => scroller.removeEventListener("scroll", onScroll)
     }, [workspacePath])
 
+    // macOS routes Cmd+C / Cmd+X / Cmd+V through the Edit menu, so the page
+    // never sees those keydowns. WebKit fires clipboard events instead, and
+    // only once a `before*` listener claims them; without a text selection the
+    // menu items otherwise stay disabled.
+    useEffect(() => {
+        if (!workspacePath) return
+        const focusedRow = () => {
+            const active = document.activeElement
+            return active instanceof HTMLElement && listRef.current?.contains(active)
+                ? active.closest<HTMLElement>("[data-tree-path]")
+                : null
+        }
+        const claim = (event: Event) => {
+            if (focusedRow()) event.preventDefault()
+        }
+        const act = (event: Event) => {
+            const row = focusedRow()
+            if (!row) return
+            event.preventDefault()
+            runClipboardKey(workspacePath, event.type === "copy" ? "c" : event.type === "cut" ? "x" : "v", row)
+        }
+        const claims = ["beforecopy", "beforecut", "beforepaste"]
+        const actions = ["copy", "cut", "paste"]
+        claims.forEach((type) => document.addEventListener(type, claim))
+        actions.forEach((type) => document.addEventListener(type, act))
+        return () => {
+            claims.forEach((type) => document.removeEventListener(type, claim))
+            actions.forEach((type) => document.removeEventListener(type, act))
+        }
+    }, [workspacePath])
+
     if (!workspacePath) return null
 
+    // Finder / Explorer style clipboard keys while a tree row has focus.
+    const onKeyDown = (event: KeyboardEvent<HTMLUListElement>) => {
+        const mod = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
+        if (!mod || event.altKey || event.shiftKey) return
+        const row = (event.target as HTMLElement).closest<HTMLElement>("[data-tree-path]")
+        if (!row) return
+        const key = event.key.toLowerCase()
+        if (!["c", "x", "v", "d"].includes(key)) return
+        event.preventDefault()
+        event.stopPropagation()
+        runClipboardKey(workspacePath, key, row)
+    }
+
     return (
-        <ul ref={listRef} className="flex flex-col gap-[1px]">
+        <ul ref={listRef} className="flex flex-col gap-[1px]" onKeyDown={onKeyDown}>
             {(rootNodes ?? []).map((node) => (
                 <TreeNode key={node.path} node={node} root={workspacePath} depth={0} />
             ))}

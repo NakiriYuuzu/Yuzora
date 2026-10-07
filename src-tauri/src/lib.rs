@@ -9,6 +9,7 @@ pub mod db_result_session;
 pub mod db_service;
 mod db_transport;
 pub mod env_path;
+pub mod file_clipboard;
 pub mod file_content;
 pub mod fs_service;
 pub mod git_log;
@@ -17,12 +18,17 @@ pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
 pub mod herdr_service;
+mod herdr_startup;
 pub mod host_bootstrap;
 mod host_git;
 mod host_herdr;
 mod host_reveal;
 pub mod host_service;
 mod host_sqlite;
+pub mod local_sqlite {
+    pub use yuzora_host::db_remote::LOCAL_WORKER_ENV;
+    pub use yuzora_host::sqlite_lane::run_local;
+}
 pub mod host_streams;
 pub mod host_tunnels;
 mod host_windows;
@@ -37,11 +43,13 @@ mod reveal_directory;
 pub mod run_context;
 pub mod run_summary;
 pub mod search_service;
+mod sftp_download_budget;
 pub mod sftp_edit;
 mod sftp_transfer;
 mod sftp_tree;
 pub mod ssh_service;
 pub mod update_channel;
+mod update_herdr;
 pub mod watcher;
 mod window_activation;
 pub mod workspace_trust;
@@ -232,6 +240,7 @@ pub fn run() {
         )
         .manage(path_capability::WorkspacePathState::new())
         .manage(path_capability::DownloadDestinationState::new())
+        .manage(fs_service::DeleteOperations::default())
         .manage(sftp_tree::TreeState::default())
         .setup(|app| {
             use tauri::{Emitter, Manager};
@@ -285,10 +294,10 @@ pub fn run() {
                 .ok()
                 .or_else(packaged_resource_dir_from_current_exe);
             herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir);
-            if let Err(error) = herdr_manager.ensure_server_running_on_startup() {
-                eprintln!("herdr server startup failed: {error}");
-            }
-            app.manage(herdr_service::HerdrState(herdr_manager));
+            app.manage(herdr_service::HerdrState(herdr_manager.clone()));
+            app.manage(herdr_startup::HerdrStartupState::new());
+            app.state::<herdr_startup::HerdrStartupState>()
+                .launch(app.handle().clone(), herdr_manager);
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
             // preference applies; the frontend shows it on its first themed
@@ -314,6 +323,8 @@ pub fn run() {
             reveal_directory::open_workspace_directory,
             update_channel::check_preview_update,
             update_channel::check_release_update,
+            update_herdr::update_herdr_processes,
+            update_herdr::update_stop_herdr,
             brand_icon::set_brand_icon,
             host_service::host_connect,
             host_service::host_request,
@@ -345,6 +356,12 @@ pub fn run() {
             fs_service::fs_create_dir,
             fs_service::fs_rename,
             fs_service::fs_delete,
+            fs_service::fs_delete_cancel,
+            file_clipboard::fs_copy_paths,
+            file_clipboard::fs_move_paths,
+            file_clipboard::fs_paste_clipboard_files,
+            file_clipboard::clipboard_write_workspace_files,
+            file_clipboard::clipboard_read_file_list,
             fs_service::read_file_base64,
             logging::log_event,
             logging::log_query,
@@ -358,6 +375,7 @@ pub fn run() {
             watcher::start_watch,
             watcher::stop_watch,
             search_service::search_workspace,
+            search_service::search_workspace_file_names,
             db_service::db_list_tables,
             db_service::db_list_databases,
             db_service::db_table_columns,
@@ -395,6 +413,7 @@ pub fn run() {
             workspace_trust::workspace_trust_revoke,
             git_service::git_close_workspace,
             git_service::git_bootstrap,
+            git_service::git_discover,
             git_service::git_status_cmd,
             git_service::git_stage,
             git_service::git_unstage,
@@ -413,6 +432,19 @@ pub fn run() {
             git_service::git_diff_content,
             git_service::git_conflict_abort,
             git_service::git_conflict_continue,
+            git_service::git_conflict_skip,
+            git_service::git_conflict_sides,
+            git_service::git_conflict_resolve,
+            git_service::git_merge_branch,
+            git_service::git_rebase_onto,
+            git_service::git_rename_branch,
+            git_service::git_delete_branch,
+            git_service::git_revert_commit,
+            git_service::git_reset_branch,
+            git_service::git_stash_list,
+            git_service::git_stash_push,
+            git_service::git_stash_apply,
+            git_service::git_stash_drop,
             git_log::git_log_page,
             git_log::git_commit_detail,
             git_log::git_log_authors,
@@ -434,6 +466,7 @@ pub fn run() {
             sftp_tree::sftp_pick_tree,
             sftp_tree::sftp_transfer_tree,
             herdr_service::herdr_sessions,
+            herdr_startup::herdr_startup_status,
             herdr_service::herdr_feature,
             herdr_service::herdr_capabilities,
             herdr_service::herdr_snapshot,
@@ -460,6 +493,7 @@ pub fn run() {
             herdr_service::herdr_pane_focus,
             herdr_service::herdr_pane_scroll_state,
             herdr_service::herdr_pane_scroll_to,
+            herdr_service::herdr_pane_selection_read,
             herdr_service::herdr_pane_rename,
             herdr_service::herdr_pane_split,
             herdr_service::herdr_pane_zoom,
@@ -555,17 +589,29 @@ mod command_inventory_tests {
         let configure = run_source
             .find("herdr_manager.configure_paths(herdr_config_dir, herdr_resource_dir)")
             .expect("startup must configure Herdr paths");
-        let launch = run_source
-            .find("herdr_manager.ensure_server_running_on_startup()")
-            .expect("startup must launch the resolved Herdr server");
         let manage = run_source
-            .find("app.manage(herdr_service::HerdrState(herdr_manager))")
+            .find("app.manage(herdr_service::HerdrState(herdr_manager.clone()))")
             .expect("startup must register Herdr state");
+        let status = run_source
+            .find("app.manage(herdr_startup::HerdrStartupState::new())")
+            .expect("startup status must be available before the worker starts");
+        let launch = run_source
+            .find(".launch(app.handle().clone(), herdr_manager)")
+            .expect("startup must launch the resolved Herdr server in the background");
 
         assert!(
-            resource_fallback < configure && configure < launch && launch < manage,
-            "Herdr must resolve its configured or managed binary before startup and register state afterward"
+            resource_fallback < configure
+                && configure < manage
+                && manage < status
+                && status < launch,
+            "Herdr must configure paths and register IPC state before background startup"
         );
+        assert!(!run_source.contains("ensure_server_running_on_startup()"));
+        assert!(run_source.contains("herdr_startup::herdr_startup_status,"));
+        let startup_source = include_str!("herdr_startup.rs");
+        assert!(startup_source.contains("std::thread::spawn(move ||"));
+        assert!(startup_source.contains("manager.ensure_server_running_on_startup()"));
+        assert!(startup_source.contains("app.emit(\"herdr:startup\", status)"));
     }
 
     #[test]

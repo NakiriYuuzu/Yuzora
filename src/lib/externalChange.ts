@@ -1,4 +1,5 @@
 import type { TabInfo } from "../state/workspaceStore"
+import { relativePathWithin } from "./paths"
 
 export interface ExternalChangePlan {
     reload: string[]
@@ -11,12 +12,14 @@ export function handleExternalChange(
     recentlySaved: ReadonlySet<string>
 ): ExternalChangePlan {
     const plan: ExternalChangePlan = { reload: [], markModified: [] }
-    for (const path of changedPaths) {
-        if (recentlySaved.has(path)) continue
-        const t = openTabs.find((tab) => tab.path === path)
-        if (!t) continue
-        if (t.dirty) plan.markModified.push(path)
-        else plan.reload.push(path)
+    const handled = new Set<string>()
+    for (const t of openTabs) {
+        if (handled.has(t.path) || recentlySaved.has(t.path)) continue
+        // Coalesced directory notifications must also reach open descendants.
+        if (!changedPaths.some((changed) => relativePathWithin(changed, t.path) !== null)) continue
+        handled.add(t.path)
+        if (t.dirty) plan.markModified.push(t.path)
+        else plan.reload.push(t.path)
     }
     return plan
 }

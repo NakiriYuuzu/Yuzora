@@ -6,21 +6,21 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@remotion/cli": "4.0.509",
-    "@remotion/google-fonts": "^4.0.509",
-    "@remotion/tailwind-v4": "4.0.509",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "remotion": "4.0.509",
+    "@remotion/cli": "4.0.529",
+    "@remotion/google-fonts": "4.0.529",
+    "@remotion/tailwind-v4": "4.0.529",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.529",
     "tailwindcss": "4.3.3"
   },
   "devDependencies": {
-    "@remotion/eslint-config-flat": "4.0.509",
+    "@remotion/eslint-config-flat": "4.0.529",
     "@typescript/native": "npm:typescript@7.0.2",
-    "@types/react": "19.2.18",
-    "@types/web": "0.0.354",
-    "eslint": "10.8.1",
-    "prettier": "3.9.6",
+    "@types/react": "19.3.0",
+    "@types/web": "0.0.357",
+    "eslint": "10.11.0",
+    "prettier": "3.9.9",
     "typescript": "6.0.3"
   },
   "scripts": {
@@ -30,7 +30,7 @@
     "lint": "eslint src && bun ./node_modules/@typescript/native/bin/tsc"
   },
   "overrides": {
-    "typescript-eslint": "8.67.0"
+    "typescript-eslint": "8.70.1"
   },
   "sideEffects": [
     "*.css"

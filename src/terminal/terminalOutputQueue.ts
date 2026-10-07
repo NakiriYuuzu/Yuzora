@@ -41,7 +41,15 @@ export function terminalOutputLossNotice(
  */
 export function utf8Length(value: string): number {
   let bytes = 0
-  for (let index = 0; index < value.length; index += 1) {
+  let index = 0
+  // ANSI/output frames usually have a long ASCII prefix. Scan it natively,
+  // then count only the Unicode suffix; short control frames avoid regex cost.
+  if (value.length >= 32) {
+    index = value.search(/[\u0080-\uffff]/)
+    if (index < 0) return value.length
+    bytes = index
+  }
+  for (; index < value.length; index += 1) {
     const code = value.charCodeAt(index)
     if (code < 0x80) {
       bytes += 1
@@ -149,6 +157,7 @@ export class TerminalOutputQueue {
   private writing = false
   private scheduled: ScheduledFrame | null = null
   private hiddenChunks: string[] = []
+  private hiddenHead = 0
   // Per-chunk UTF-8 sizes, so trimming the ring buffer never rescans a chunk.
   private hiddenSizes: number[] = []
   private hiddenSize = 0
@@ -282,6 +291,7 @@ export class TerminalOutputQueue {
   replace(data: string, beforeWrite?: () => void): void {
     if (this.disposed) return
     this.hiddenChunks = []
+    this.hiddenHead = 0
     this.hiddenSizes = []
     this.hiddenSize = 0
     this.hiddenTruncated = false
@@ -317,8 +327,11 @@ export class TerminalOutputQueue {
     }
 
     if (this.hiddenTruncated) this.appendPending(TERMINAL_OUTPUT_TRUNCATED_NOTICE)
-    for (const chunk of this.hiddenChunks) this.appendPending(chunk)
+    for (let index = this.hiddenHead; index < this.hiddenChunks.length; index += 1) {
+      this.appendPending(this.hiddenChunks[index])
+    }
     this.hiddenChunks = []
+    this.hiddenHead = 0
     this.hiddenSizes = []
     this.hiddenSize = 0
     this.hiddenTruncated = false
@@ -342,6 +355,7 @@ export class TerminalOutputQueue {
     this.noticeDroppedBytes = 0
     this.noticeMissedEvents = 0
     this.hiddenChunks = []
+    this.hiddenHead = 0
     this.hiddenSizes = []
     this.pendingChunks = []
     this.pendingSizes = []
@@ -358,20 +372,25 @@ export class TerminalOutputQueue {
     this.hiddenSize += bytes
     while (this.hiddenSize > this.limit) {
       this.hiddenTruncated = true
-      if (this.hiddenChunks.length > 1) {
-        this.hiddenChunks.shift()
-        const removed = this.hiddenSizes.shift()!
+      if (this.hiddenChunks.length - this.hiddenHead > 1) {
+        let removed: number
+        if (this.hiddenHead === 0 && this.hiddenChunks.length <= 16384) {
+          this.hiddenChunks.shift()
+          removed = this.hiddenSizes.shift()!
+        } else {
+          removed = this.evictHiddenChunk()
+        }
         this.hiddenSize -= removed
         this.droppedTotal += removed
         continue
       }
       // A single chunk larger than the buffer keeps its newest tail, matching
       // the Rust `OutputBuffer` rule.
-      const tail = utf8Tail(this.hiddenChunks[0], this.limit)
+      const tail = utf8Tail(this.hiddenChunks[this.hiddenHead], this.limit)
       const tailBytes = utf8Length(tail)
       this.droppedTotal += this.hiddenSize - tailBytes
-      this.hiddenChunks[0] = tail
-      this.hiddenSizes[0] = tailBytes
+      this.hiddenChunks[this.hiddenHead] = tail
+      this.hiddenSizes[this.hiddenHead] = tailBytes
       this.hiddenSize = tailBytes
     }
   }
@@ -399,6 +418,23 @@ export class TerminalOutputQueue {
       this.pendingSize = tailBytes
     }
   }
+
+  private evictHiddenChunk(): number {
+    const removed = this.hiddenSizes[this.hiddenHead]!
+    this.hiddenChunks[this.hiddenHead] = ""
+    this.hiddenSizes[this.hiddenHead] = 0
+    this.hiddenHead += 1
+    // Release old references immediately and compact a bounded prefix in place.
+    if (this.hiddenHead >= 64 && this.hiddenHead * 16 >= this.hiddenChunks.length) {
+      this.hiddenChunks.copyWithin(0, this.hiddenHead)
+      this.hiddenChunks.length -= this.hiddenHead
+      this.hiddenSizes.copyWithin(0, this.hiddenHead)
+      this.hiddenSizes.length -= this.hiddenHead
+      this.hiddenHead = 0
+    }
+    return removed
+  }
+
 
   private schedule(): void {
     if (

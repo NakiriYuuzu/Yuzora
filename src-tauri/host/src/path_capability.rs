@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fs::{File, FileType};
 #[cfg(unix)]
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -269,7 +269,7 @@ pub struct OpenedFile {
 }
 
 /// Stable identity from the opened handle, including Windows volume/file IDs.
-pub(crate) fn opened_file_identity(file: &File) -> Result<String, String> {
+pub fn opened_file_identity(file: &File) -> Result<String, String> {
     file_id(file).map(|id| id.as_key()).map_err(String::from)
 }
 
@@ -381,40 +381,34 @@ impl PinnedDir {
         Ok(())
     }
 
-    /// Recursion is descriptor-relative and never follows a link. The shared
-    /// budget bounds partial deletions; errors report that work may be partial.
+    /// Recursion is descriptor-relative and never follows a link. `tick` runs
+    /// once per entry before it is removed and may stop the walk; errors report
+    /// that work may be partial.
     #[cfg(unix)]
-    pub fn remove_tree(
+    pub fn remove_tree_with(
         &self,
         name: &SafeLeafName,
-        budget: &mut usize,
-        deadline: Instant,
+        tick: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
-        self.remove_tree_depth(name, budget, deadline, 0)
+        self.remove_tree_depth(name, tick, 0)
     }
 
     #[cfg(unix)]
     fn remove_tree_depth(
         &self,
         name: &SafeLeafName,
-        budget: &mut usize,
-        deadline: Instant,
+        tick: &mut dyn FnMut() -> Result<(), String>,
         depth: usize,
     ) -> Result<(), String> {
-        if *budget == 0 || depth >= 128 || Instant::now() >= deadline {
+        if depth >= 128 {
             return Err("delete-limit-reached-partial".into());
         }
-        *budget -= 1;
+        tick()?;
         if self.existing_kind(name)? == Some(NodeKind::Directory) {
             let child = self.open_subdir(name.as_str())?;
             for entry in child.entries()? {
                 let (entry_name, _) = entry?;
-                child.remove_tree_depth(
-                    &SafeLeafName::parse(&entry_name)?,
-                    budget,
-                    deadline,
-                    depth + 1,
-                )?;
+                child.remove_tree_depth(&SafeLeafName::parse(&entry_name)?, tick, depth + 1)?;
             }
             // Refuse removal if the selected directory was replaced during traversal.
             if self.open_subdir(name.as_str())?.id_key() != child.id_key() {
@@ -661,7 +655,10 @@ impl PinnedDir {
         }
     }
 
-    fn existing_kind(&self, name: &SafeLeafName) -> Result<Option<NodeKind>, PathCapabilityError> {
+    pub fn existing_kind(
+        &self,
+        name: &SafeLeafName,
+    ) -> Result<Option<NodeKind>, PathCapabilityError> {
         #[cfg(unix)]
         {
             let c_name = to_cstring(Path::new(name.as_str()))?;
@@ -729,7 +726,20 @@ pub struct PinnedEntries<'a> {
 impl Iterator for PinnedEntries<'_> {
     type Item = Result<(String, NodeKind), String>;
     fn next(&mut self) -> Option<Self::Item> {
+        self.next_until(&mut || false)
+    }
+}
+
+#[cfg(unix)]
+impl PinnedEntries<'_> {
+    fn next_until(
+        &mut self,
+        stop: &mut impl FnMut() -> bool,
+    ) -> Option<Result<(String, NodeKind), String>> {
         loop {
+            if stop() {
+                return Some(Err("directory-listing-stopped".into()));
+            }
             // POSIX distinguishes end-of-directory from failure through errno.
             #[cfg(target_os = "macos")]
             unsafe {
@@ -884,6 +894,26 @@ pub struct WorkspacePathRegistry {
 }
 
 impl WorkspacePathRegistry {
+    /// Snapshot the backend-held root before I/O, without holding the registry
+    /// mutex across filesystem calls. The ID never resolves an arbitrary root.
+    pub fn mutation_root(&self, workspace_id: &str) -> Result<(PathBuf, PinnedDir), String> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| "workspace-capability-lock")?;
+        let workspace = active
+            .as_ref()
+            .filter(|w| w.id == workspace_id)
+            .ok_or("workspace-capability-missing")?;
+        let root = workspace.pinned.open_subdir("")?;
+        let path = PathBuf::from(&workspace.canonical_root);
+        drop(active);
+        if PinnedDir::open_dir(&path)?.id_key() != root.id_key() {
+            return Err("workspace-identity-changed".into());
+        }
+        Ok((path, root))
+    }
+
     pub fn new() -> Self {
         Self {
             active: Mutex::new(None),
@@ -1257,7 +1287,9 @@ fn unix_open_components(
     for (index, name) in components.iter().enumerate() {
         let last = index + 1 == components.len();
         let flags = if last {
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW
+            // A FIFO may replace the leaf before open. Validate the opened
+            // handle below, without ever blocking while opening a special file.
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
         } else {
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW
         };
@@ -1718,6 +1750,27 @@ fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_open_does_not_block_the_workspace_registry() {
+        let root = tempfile::tempdir().unwrap();
+        let fifo = std::ffi::CString::new(root.path().join("pipe").as_os_str().as_encoded_bytes())
+            .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let registry = WorkspacePathRegistry::new();
+        let id = registry.activate(root.path()).unwrap();
+        let started = Instant::now();
+        assert!(matches!(
+            registry.open_file(&id, "pipe"),
+            Err(PathCapabilityError::NotARegularFile)
+        ));
+        registry.clear();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        std::fs::write(root.path().join("normal"), b"ok").unwrap();
+        let next = registry.activate(root.path()).unwrap();
+        assert_eq!(registry.open_file(&next, "normal").unwrap().len, 2);
+    }
     use std::io::{Read, Write};
 
     #[test]

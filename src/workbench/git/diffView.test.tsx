@@ -1,11 +1,30 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { EditorView } from "@codemirror/view"
+import { tags } from "@lezer/highlight"
+import { appHighlightStyle } from "@/editor/cmTheme"
+
+const keyword = `.${appHighlightStyle.style([tags.keyword])}`
+
+const grammar = vi.hoisted(() => {
+    let release!: () => void
+    const ready = new Promise<void>(resolve => { release = resolve })
+    return { ready, release }
+})
+vi.mock("@codemirror/lang-javascript", async importOriginal => {
+    await grammar.ready
+    return importOriginal()
+})
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { DiffView } from "./DiffView"
 
 const full = (content: string) => ({ kind: "full" as const, content })
 
 describe("DiffView", () => {
+    beforeEach(() => {
+        Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+        Range.prototype.getBoundingClientRect = () => new DOMRect()
+    })
     it.each(["unified", "split"] as const)("preserves native scrollbar pointer and mouse defaults in %s mode", (mode) => {
         const { container } = render(<DiffView content={{ original: full("one\n"), modified: full("two\n") }} mode={mode} path="a.txt" />)
         const scroll = container.querySelector(mode === "split" ? ".cm-mergeView" : ".cm-scroller")!
@@ -64,19 +83,35 @@ describe("DiffView", () => {
         )
         expect(container.querySelectorAll(".cm-lineNumbers").length).toBe(2)
     })
-    it("syntax-highlights unified diff when the path resolves a language", () => {
-        // Identical sides → no change decorations, so any span[class] proves the
-        // language facet is driving syntax highlighting (not merge markup).
+    it("syntax-highlights unified diff when the path resolves a language", async () => {
+        // Hold the cold grammar until both deletion widgets and the view exist.
         const { container } = render(
             <DiffView
-                content={{ original: full("const x = 1\n"), modified: full("const x = 1\n") }}
+                content={{ original: full("const removed = 1\n"), modified: full("const inserted = 2\n") }}
                 mode="unified"
                 path="a.ts"
             />
         )
-        expect(container.querySelectorAll(".cm-line span[class]").length).toBeGreaterThan(0)
+        const editor = container.querySelector(".cm-editor")
+        expect(editor).not.toBeNull()
+        const view = EditorView.findFromDOM(editor as HTMLElement)!
+        await waitFor(() => expect(screen.getByText("1 / 1")).toBeInTheDocument())
+        // Let initial chunk navigation finish before testing grammar-only updates.
+        await new Promise(resolve => requestAnimationFrame(resolve))
+        view.dispatch({ selection: { anchor: 3 } })
+        view.scrollDOM.scrollTop = 120
+        expect(container.querySelectorAll(`.cm-line ${keyword}`)).toHaveLength(0)
+        expect(container.querySelectorAll(`.cm-deletedLine ${keyword}`)).toHaveLength(0)
+        grammar.release()
+        await waitFor(() => expect(container.querySelectorAll(`.cm-line ${keyword}`).length).toBeGreaterThan(0))
+        await waitFor(() => expect(container.querySelectorAll(`.cm-deletedLine ${keyword}`).length).toBeGreaterThan(0))
+        expect(container.querySelector(".cm-editor")).toBe(editor)
+        expect(view.state.selection.main.anchor).toBe(3)
+        expect(view.scrollDOM.scrollTop).toBe(120)
     })
-    it("syntax-highlights split diff when the path resolves a language", () => {
+    it("syntax-highlights split diff when the path resolves a language", async () => {
+        // Release the held grammar here too so this case passes when run alone.
+        grammar.release()
         const { container } = render(
             <DiffView
                 content={{ original: full("const x = 1\n"), modified: full("const x = 1\n") }}
@@ -84,7 +119,7 @@ describe("DiffView", () => {
                 path="a.ts"
             />
         )
-        expect(container.querySelectorAll(".cm-line span[class]").length).toBeGreaterThan(0)
+        await waitFor(() => expect(container.querySelectorAll(".cm-line span[class]").length).toBeGreaterThan(0))
     })
     it("mounts without a language for unknown extensions", () => {
         const { container } = render(

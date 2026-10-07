@@ -37,7 +37,7 @@ fn read_bounded(mut file: std::fs::File) -> Result<(Vec<u8>, std::fs::Metadata, 
     if before.len() > MAX_FILE_BYTES {
         return Err("file-too-large".into());
     }
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(before.len() as usize);
     (&mut file)
         .take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -53,6 +53,11 @@ fn read_bounded(mut file: std::fs::File) -> Result<(Vec<u8>, std::fs::Metadata, 
         return Err("file-changed-during-read".into());
     }
     Ok((bytes, after, identity))
+}
+
+fn sort_listing_entries(entries: &mut [(String, NodeKind)]) {
+    // Cache Unicode keys before JSON construction; equal keys keep reader order.
+    entries.sort_by_cached_key(|(name, kind)| (*kind != NodeKind::Directory, name.to_lowercase()));
 }
 
 impl WorkspaceFiles {
@@ -75,6 +80,17 @@ impl WorkspaceFiles {
 
     pub fn canonical_root(&self, id: &str) -> Result<&str, String> {
         Ok(&self.get(id)?.canonical)
+    }
+
+    pub(crate) fn file_name_search_root(
+        &self,
+        id: &str,
+    ) -> Result<crate::file_name_search::PinnedSearchRoot, String> {
+        let workspace = self.get(id)?;
+        Ok(crate::file_name_search::PinnedSearchRoot {
+            canonical: workspace.canonical.clone().into(),
+            dir: workspace.root.open_subdir("")?,
+        })
     }
 
     pub fn create(&self, id: &str, path: &str, directory: bool) -> Result<Value, String> {
@@ -119,6 +135,26 @@ impl WorkspaceFiles {
         Ok(Value::Null)
     }
 
+    /// An owned clone of the workspace root for work moved onto a blocking thread.
+    pub(crate) fn pinned_root(&self, id: &str) -> Result<PinnedDir, String> {
+        Ok(self.get(id)?.root.open_subdir("")?)
+    }
+
+    pub fn copy(&self, id: &str, sources: &[String], target_dir: &str) -> Result<Value, String> {
+        let created = crate::file_transfer::copy_into(&self.get(id)?.root, sources, target_dir)?;
+        Ok(json!(created))
+    }
+
+    pub fn move_paths(
+        &self,
+        id: &str,
+        sources: &[String],
+        target_dir: &str,
+    ) -> Result<Value, String> {
+        let moved = crate::file_transfer::move_into(&self.get(id)?.root, sources, target_dir)?;
+        Ok(json!(moved))
+    }
+
     pub fn read_base64(&self, id: &str, path: &str, max_bytes: u64) -> Result<Value, String> {
         use base64::Engine;
         let file = self
@@ -149,14 +185,16 @@ impl WorkspaceFiles {
     pub fn list(&self, id: &str, path: &str) -> Result<Value, String> {
         let workspace = self.get(id)?;
         let dir = workspace.root.open_subdir(path)?;
-        let mut entries = Vec::new();
-        for (name, kind) in dir.list_entries(50_000).map_err(|error| {
+        let mut listed = dir.list_entries(50_000).map_err(|error| {
             if error == "sftp-tree-entry-limit" {
                 "directory-too-large".into()
             } else {
                 error
             }
-        })? {
+        })?;
+        sort_listing_entries(&mut listed);
+        let mut entries = Vec::new();
+        for (name, kind) in listed {
             let relative = if path.is_empty() {
                 name.clone()
             } else {
@@ -167,19 +205,7 @@ impl WorkspaceFiles {
                 return Err("directory-too-large".into());
             }
         }
-        entries.sort_by(|a, b| {
-            b["isDir"]
-                .as_bool()
-                .cmp(&a["isDir"].as_bool())
-                .then_with(|| {
-                    a["name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .cmp(&b["name"].as_str().unwrap_or_default().to_lowercase())
-                })
-        });
-        Ok(json!(entries))
+        Ok(Value::Array(entries))
     }
 
     pub fn read(&self, id: &str, path: &str) -> Result<Value, String> {
@@ -248,6 +274,27 @@ impl WorkspaceFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn copy_and_move_run_against_the_workspace_capability() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dest")).unwrap();
+        std::fs::write(root.path().join("a.txt"), b"a").unwrap();
+        let mut files = WorkspaceFiles::default();
+        let opened = files.open(root.path().to_str().unwrap()).unwrap();
+        let id = opened["capabilityId"].as_str().unwrap();
+        let sources = vec!["a.txt".to_string()];
+        assert_eq!(
+            files.copy(id, &sources, "dest").unwrap(),
+            json!(["dest/a.txt"])
+        );
+        assert_eq!(
+            files.move_paths(id, &sources, "dest").unwrap(),
+            json!(["dest/a copy.txt"])
+        );
+        assert!(!root.path().join("a.txt").exists());
+        assert!(files.copy("nope", &sources, "dest").is_err());
+        assert!(files.copy(id, &sources, "../out").is_err());
+    }
     #[test]
     fn new_file_save_returns_the_revision_used_by_the_next_save() {
         // Run with TMPDIR on /mnt/c, /mnt/d and /home for the WSL/DrvFS matrix.
@@ -380,4 +427,81 @@ mod tests {
         files.close(id);
         assert!(files.read(id, "a.txt").is_err());
     }
+
+    #[test]
+    fn listing_sort_matches_legacy_json_order_and_stable_unicode_ties() {
+        let names = [
+            "",
+            "a",
+            "A",
+            "ä",
+            "Ä",
+            "Σ",
+            "σ",
+            "ς",
+            "İ",
+            "i\u{307}",
+            "I",
+            "i",
+            "ß",
+            "SS",
+            "ss",
+            "é",
+            "e\u{301}",
+            "中文😀",
+            "\"quote\"",
+            "line\nB",
+        ];
+        let kinds = [
+            NodeKind::File,
+            NodeKind::Directory,
+            NodeKind::Symlink,
+            NodeKind::Other,
+        ];
+        let records = names
+            .iter()
+            .flat_map(|name| kinds.iter().map(move |kind| (name.to_string(), *kind)))
+            .collect::<Vec<_>>();
+        let mut seed = 43_u64;
+        for variant in 0..128 {
+            let mut actual = records.clone();
+            if variant == 0 {
+                actual.sort_by(|a, b| a.0.cmp(&b.0));
+            } else if variant == 1 {
+                actual.reverse();
+            } else {
+                for i in (1..actual.len()).rev() {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    actual.swap(i, (seed as usize) % (i + 1));
+                }
+            }
+            let before = actual.clone();
+            let mut legacy = before.iter().enumerate().map(|(index, (name, kind))| {
+                json!({ "name": name, "isDir": *kind == NodeKind::Directory, "index": index })
+            }).collect::<Vec<_>>();
+            // Original JSON comparator is the oracle, including stable ties.
+            legacy.sort_by(|a, b| {
+                b["isDir"]
+                    .as_bool()
+                    .cmp(&a["isDir"].as_bool())
+                    .then_with(|| {
+                        a["name"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .cmp(&b["name"].as_str().unwrap_or_default().to_lowercase())
+                    })
+            });
+            let expected = legacy
+                .iter()
+                .map(|entry| before[entry["index"].as_u64().unwrap() as usize].clone())
+                .collect::<Vec<_>>();
+            sort_listing_entries(&mut actual);
+            assert_eq!(actual, expected, "permutation {variant}");
+        }
+    }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "files/listing_perf_tests.rs"]
+mod listing_perf_tests;

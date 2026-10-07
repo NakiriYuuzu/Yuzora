@@ -167,9 +167,21 @@ describe("LocalChangesTab", () => {
             }
         })
         render(<LocalChangesTab />)
-        expect(screen.getByRole("button", { name: "Stage conflict.ts" })).toBeDisabled()
+        expect(screen.getByRole("button", { name: "Mark conflict.ts as resolved" })).toBeEnabled()
         fireEvent.click(screen.getByRole("button", { name: "Stage all" }))
         await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["b.ts"]))
+    })
+
+    it("marks a single resolved conflict through stage", async () => {
+        useGitStore.setState({
+            status: {
+                ...makeStatus(),
+                conflicted: [{ path: "conflict.ts", origPath: null, status: "UU" }]
+            }
+        })
+        render(<LocalChangesTab />)
+        fireEvent.click(screen.getByRole("button", { name: "Mark conflict.ts as resolved" }))
+        await waitFor(() => expect(ipc.gitStage).toHaveBeenCalledWith("/w", ["conflict.ts"]))
     })
 
     it("Stage all forwards only the changed paths", async () => {
@@ -415,6 +427,31 @@ describe("LocalChangesTab", () => {
         expect(screen.getByRole("option", { name: /f15\.ts/ })).toBeInTheDocument()
         expect(screen.queryByRole("option", { name: /f0\.ts/ })).toBeNull()
         expect(useUiStore.getState().gitChangeSelection).toEqual([])
+    })
+
+    it("keeps a non-empty filter editable after the list shrinks below the threshold", () => {
+        useGitStore.setState({
+            status: {
+                ...makeStatus(),
+                unstaged: Array.from({ length: 16 }, (_, i) => ({ path: `f${i}.ts`, origPath: null, status: "M" }))
+            }
+        })
+        render(<LocalChangesTab />)
+        fireEvent.change(screen.getByLabelText("Filter files"), { target: { value: "f15" } })
+        act(() => {
+            useGitStore.setState({
+                status: {
+                    ...makeStatus(),
+                    unstaged: ["f0.ts", "f1.ts"].map((path) => ({ path, origPath: null, status: "M" }))
+                }
+            })
+        })
+        // The query still hides both rows, so the filter must stay reachable to clear it.
+        const filter = screen.getByLabelText("Filter files")
+        expect(screen.queryByRole("option", { name: /f0\.ts/ })).toBeNull()
+        fireEvent.change(filter, { target: { value: "" } })
+        expect(screen.getByRole("option", { name: /f0\.ts/ })).toBeInTheDocument()
+        expect(screen.queryByLabelText("Filter files")).toBeNull()
     })
 
     it("uses listbox keyboard navigation against uiStore selection", () => {

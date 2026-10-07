@@ -82,6 +82,14 @@ async function inflate(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<Array
   return result
 }
 
+function decodeImageBytes(encoded: string): Uint8Array<ArrayBuffer> {
+  // Keep the temporary binary string local to the synchronous conversion.
+  const binary = atob(encoded)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
+
 export class KittyGraphics<T> {
   readonly images = new Map<number, KittyImage<T>>()
   readonly placements = new Map<string, KittyPlacement>()
@@ -103,12 +111,15 @@ export class KittyGraphics<T> {
         // Padded base64 length of the byte limit; decoded size is checked again below.
         if (upload.size > 4 * Math.ceil(MAX_KITTY_BYTES / 3)) throw new Error("EFBIG: Image exceeds memory limit")
         if (!/^[A-Za-z0-9+/]*={0,2}$/.test(token.payload)) throw new Error("EINVAL: Invalid image encoding")
-        upload.parts.push(token.payload)
+        if (token.payload.length > 0) upload.parts.push(token.payload)
         if (token.control.m === "1") return
         this.upload = null
         if (control.t && control.t !== "d") throw new Error("ENOTSUP: Only inline image data is supported")
         const encoded = upload.parts.join("")
-        let bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0))
+        // Preserve the decompression path's measured memory profile.
+        let bytes = control.o === "z"
+          ? Uint8Array.from(atob(encoded), char => char.charCodeAt(0))
+          : decodeImageBytes(encoded)
         if (control.o === "z") bytes = await inflate(bytes)
         else if (control.o) throw new Error("ENOTSUP: Unknown compression")
         const format = integer(control.f, 32)

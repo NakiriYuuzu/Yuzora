@@ -2,8 +2,12 @@ use crate::file_content::{
     analyze_byte_content, ByteContent, FILE_ANALYSIS_BYTES, FULL_FEATURE_MAX_BYTES, HARD_CAP_BYTES,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +36,10 @@ fn file_node_kind(file_type: std::fs::FileType) -> FileNodeKind {
     }
 }
 
+fn sort_file_nodes(nodes: &mut [FileNode]) {
+    nodes.sort_by_cached_key(|node| (std::cmp::Reverse(node.is_dir), node.name.to_lowercase()));
+}
+
 pub fn list_dir_entries(dir: &Path) -> Result<Vec<FileNode>, String> {
     let mut nodes: Vec<FileNode> = std::fs::read_dir(dir)
         .map_err(|e| format!("read_dir failed: {e}"))?
@@ -52,11 +60,7 @@ pub fn list_dir_entries(dir: &Path) -> Result<Vec<FileNode>, String> {
             })
         })
         .collect();
-    nodes.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    sort_file_nodes(&mut nodes);
     Ok(nodes)
 }
 
@@ -82,7 +86,7 @@ pub struct WorkspaceOpenResult {
 /// `tauri::async_runtime::spawn_blocking`（tokio 缺 `rt` feature，不可用
 /// `tokio::task::spawn_blocking`）。`open_workspace`／`list_dir` 依 spec 維持
 /// sync（µs 級 canonicalize／lazy 單層列目錄）。
-async fn run_blocking<T, F>(task: F) -> Result<T, String>
+pub(crate) async fn run_blocking<T, F>(task: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -298,144 +302,236 @@ pub async fn save_file(path: String, content: String) -> Result<u64, String> {
     run_blocking(move || write_file(&path, &content)).await
 }
 
-// 純字面（不碰檔案系統）正規化：吃掉 "." 、對 ".." 做 pop。因為新建/改名的目標
-// 可能尚未存在（無法 canonicalize），字面解析先擋掉 ".." 逃逸。此函式本身不解析
-// symlink——symlink component 逃逸另由 resolve_in_workspace canonicalize「已存在
-// 的最深祖先」把關（見下方）。
-fn normalize_lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in p.components() {
-        match comp {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            other => out.push(other.as_os_str()),
+// Native mutations are anchored to the workspace handle, never to a caller's
+// absolute path. Canonicalization is only used to preserve in-root directory
+// symlink aliases; every subsequent operation walks the resulting path no-follow.
+fn mutation_parent(
+    canonical: &Path,
+    root: &crate::path_capability::PinnedDir,
+    relative: &str,
+    create_parents: bool,
+) -> Result<
+    (
+        crate::path_capability::PinnedDir,
+        crate::path_capability::SafeLeafName,
+    ),
+    String,
+> {
+    use crate::path_capability::{SafeLeafName, SafeRelativePath};
+    let safe = SafeRelativePath::parse(relative)?;
+    let parent = Path::new(relative).parent().unwrap_or(Path::new(""));
+    let absolute = canonical.join(parent);
+    let mut existing = absolute.as_path();
+    while existing.symlink_metadata().is_err() {
+        existing = existing.parent().ok_or("invalid-parent")?;
+    }
+    let resolved = existing.canonicalize().map_err(|e| e.to_string())?;
+    let suffix = absolute
+        .strip_prefix(existing)
+        .map_err(|_| "invalid-parent")?;
+    let resolved = resolved.join(suffix);
+    let relative_parent = resolved
+        .strip_prefix(canonical)
+        .map_err(|_| "path escapes the workspace via symlink")?;
+    let mut pinned = root.open_subdir("")?;
+    for component in relative_parent.components() {
+        let Component::Normal(name) = component else {
+            return Err("invalid-parent".into());
+        };
+        let name = SafeLeafName::parse(name.to_str().ok_or("path-not-utf8")?)?;
+        if create_parents && pinned.existing_kind(&name)?.is_none() {
+            // A concurrent creator may win; the no-follow open below still decides.
+            let _ = pinned.mkdir(&name);
         }
+        pinned = pinned.open_subdir(name.as_str())?;
     }
-    out
+    Ok((pinned, safe.leaf().clone()))
 }
 
-// 從 target 逐層往上，回傳最深的、實際存在的祖先（含 target 本身）。用
-// symlink_metadata（lstat）偵測存在，dangling symlink 也算存在——這樣穿越
-// 外部 symlink 的路徑會停在該 symlink component 上，交給呼叫端 canonicalize
-// 檢查。root 必然存在且是 target 的祖先，迴圈至少停在 root。
-fn deepest_existing_ancestor(target: &Path) -> PathBuf {
-    let mut cur = target;
-    loop {
-        if cur.symlink_metadata().is_ok() {
-            return cur.to_path_buf();
-        }
-        match cur.parent() {
-            Some(parent) => cur = parent,
-            None => return cur.to_path_buf(),
-        }
-    }
-}
-
-// 把前端傳來的目標 path 綁進 workspace 邊界：
-//   1. canonicalize workspace root（實際存在、解析 symlink）。
-//   2. 字面正規化目標，要求它在 root 底下、且不是 root 本身（不允許對 workspace
-//      根目錄本身建立/改名/刪除）——擋掉 path 參數帶 "../.." 的字面逃逸。
-//   3. symlink 逃逸：字面 containment 檢查不到「path 中某個 component 是指向
-//      workspace 外的 symlink」，實際 fs 操作會沿著它逃出邊界。canonicalize
-//      目標「已存在的最深祖先」（要新建的尾段本身尚不存在，無法 canonicalize），
-//      確認其真實位置仍在 root 底下；剩餘尚不存在的尾段已由 lexical 正規化保證
-//      不含 ".."，只會在 root 內往下建立。
-// 回傳正規化後的絕對路徑供後續 fs 操作使用。
-fn resolve_in_workspace(workspace: &str, path: &str) -> Result<PathBuf, String> {
-    let root = std::fs::canonicalize(workspace).map_err(|e| format!("invalid workspace: {e}"))?;
-    let target = normalize_lexical(Path::new(path));
-    if target == root {
-        return Err("refusing to operate on the workspace root".into());
-    }
-    if !target.starts_with(&root) {
-        return Err("path escapes the workspace".into());
-    }
-    let existing = deepest_existing_ancestor(&target);
-    let canonical = std::fs::canonicalize(&existing).map_err(|e| format!("invalid path: {e}"))?;
-    if !canonical.starts_with(&root) {
-        return Err("path escapes the workspace via symlink".into());
-    }
-    Ok(target)
-}
-
-// 以下四個 workspace 檔案操作：sync 核心（可直接單元測試、行為與 async 化前
-// 完全一致）＋ thin async command wrapper（spawn_blocking 移出 main thread）。
-
-pub fn create_file_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
-    let target = resolve_in_workspace(workspace, path)?;
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create parent dir failed: {e}"))?;
-    }
-    // create_new 讓「檢查不存在＋建立」成為單一原子操作，避免 TOCTOU 覆蓋。
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                format!("file already exists: {}", target.display())
-            } else {
-                format!("create file failed: {e}")
-            }
-        })?;
-    Ok(())
-}
-
-pub fn create_dir_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
-    let target = resolve_in_workspace(workspace, path)?;
-    if target.exists() {
-        return Err(format!("directory already exists: {}", target.display()));
-    }
-    std::fs::create_dir_all(&target).map_err(|e| format!("create dir failed: {e}"))?;
-    Ok(())
-}
-
-pub fn rename_in_workspace(workspace: &str, from: &str, to: &str) -> Result<(), String> {
-    let src = resolve_in_workspace(workspace, from)?;
-    let dst = resolve_in_workspace(workspace, to)?;
-    if !src.exists() {
-        return Err(format!("source does not exist: {}", src.display()));
-    }
-    if dst.exists() {
-        return Err(format!("target already exists: {}", dst.display()));
-    }
-    std::fs::rename(&src, &dst).map_err(|e| format!("rename failed: {e}"))?;
-    Ok(())
-}
-
-pub fn delete_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
-    let target = resolve_in_workspace(workspace, path)?;
-    // symlink_metadata：symlink 一律當檔案處理（remove_file 只砍連結、不遞迴刪
-    // 連結目標）。
-    let meta = std::fs::symlink_metadata(&target).map_err(|e| format!("stat failed: {e}"))?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(&target).map_err(|e| format!("remove dir failed: {e}"))?;
+fn create_pinned(
+    canonical: &Path,
+    root: &crate::path_capability::PinnedDir,
+    path: &str,
+    directory: bool,
+) -> Result<(), String> {
+    let (parent, leaf) = mutation_parent(canonical, root, path, true)?;
+    if directory {
+        parent.mkdir(&leaf)
     } else {
-        std::fs::remove_file(&target).map_err(|e| format!("remove file failed: {e}"))?;
+        parent
+            .create_exclusive(&leaf)?
+            .sync_all()
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn validate_mutation_leaf(
+    canonical: &Path,
+    relative: &str,
+    parent: &crate::path_capability::PinnedDir,
+    leaf: &crate::path_capability::SafeLeafName,
+) -> Result<(), String> {
+    if parent.existing_kind(leaf)? == Some(crate::path_capability::NodeKind::Symlink) {
+        let target = canonical
+            .join(relative)
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        if !target.starts_with(canonical) {
+            return Err("path escapes the workspace via symlink".into());
+        }
     }
     Ok(())
 }
 
-#[tauri::command]
-pub async fn fs_create_file(workspace: String, path: String) -> Result<(), String> {
-    run_blocking(move || create_file_in_workspace(&workspace, &path)).await
+fn rename_pinned(
+    canonical: &Path,
+    root: &crate::path_capability::PinnedDir,
+    from: &str,
+    to: &str,
+) -> Result<(), String> {
+    let (source, source_leaf) = mutation_parent(canonical, root, from, false)?;
+    let (destination, target_leaf) = mutation_parent(canonical, root, to, false)?;
+    validate_mutation_leaf(canonical, from, &source, &source_leaf)?;
+    source.rename_entry_new(&source_leaf, &destination, &target_leaf)
+}
+
+/// The user sees progress and can cancel, so a delete has no deadline; this
+/// only stops a runaway walk.
+const DELETE_ENTRY_LIMIT: usize = 2_000_000;
+const DELETE_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", tag = "phase")]
+pub enum DeleteProgress {
+    /// Walking the tree to learn its size.
+    Counting {
+        found: usize,
+    },
+    Deleting {
+        removed: usize,
+        total: usize,
+    },
+}
+
+/// In-flight deletes by frontend operation id, so the user can cancel one.
+#[derive(Default)]
+pub struct DeleteOperations(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
+#[cfg(test)]
+fn delete_pinned(
+    canonical: &Path,
+    root: &crate::path_capability::PinnedDir,
+    path: &str,
+) -> Result<(), String> {
+    delete_pinned_reporting(canonical, root, path, &AtomicBool::new(false), &mut |_| {})
+}
+
+/// Counts the tree first so progress has a total, then deletes it. A cancel
+/// during the count deletes nothing; later it leaves a partial delete.
+fn delete_pinned_reporting(
+    canonical: &Path,
+    root: &crate::path_capability::PinnedDir,
+    path: &str,
+    cancelled: &AtomicBool,
+    report: &mut dyn FnMut(DeleteProgress),
+) -> Result<(), String> {
+    let (parent, leaf) = mutation_parent(canonical, root, path, false)?;
+    validate_mutation_leaf(canonical, path, &parent, &leaf)?;
+    if parent.existing_kind(&leaf)?.is_none() {
+        return Err("file-not-found".into());
+    }
+    let mut last = Instant::now();
+    let total = parent.count_tree(&leaf, DELETE_ENTRY_LIMIT, &mut |found| {
+        if last.elapsed() >= DELETE_PROGRESS_INTERVAL {
+            last = Instant::now();
+            report(DeleteProgress::Counting { found });
+        }
+        cancelled.load(Ordering::Relaxed)
+    })?;
+    let mut removed = 0;
+    parent.remove_tree_with(&leaf, &mut || {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("delete-cancelled-partial".into());
+        }
+        if removed >= DELETE_ENTRY_LIMIT {
+            return Err("delete-limit-reached-partial".into());
+        }
+        removed += 1;
+        if last.elapsed() >= DELETE_PROGRESS_INTERVAL {
+            last = Instant::now();
+            report(DeleteProgress::Deleting { removed, total });
+        }
+        Ok(())
+    })?;
+    report(DeleteProgress::Deleting {
+        removed: total,
+        total,
+    });
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn fs_create_dir(workspace: String, path: String) -> Result<(), String> {
-    run_blocking(move || create_dir_in_workspace(&workspace, &path)).await
+pub async fn fs_create_file(
+    state: tauri::State<'_, crate::path_capability::WorkspacePathState>,
+    workspace_capability_id: String,
+    path: String,
+) -> Result<(), String> {
+    let (canonical, root) = state.0.mutation_root(&workspace_capability_id)?;
+    run_blocking(move || create_pinned(&canonical, &root, &path, false)).await
 }
 
 #[tauri::command]
-pub async fn fs_rename(workspace: String, from: String, to: String) -> Result<(), String> {
-    run_blocking(move || rename_in_workspace(&workspace, &from, &to)).await
+pub async fn fs_create_dir(
+    state: tauri::State<'_, crate::path_capability::WorkspacePathState>,
+    workspace_capability_id: String,
+    path: String,
+) -> Result<(), String> {
+    let (canonical, root) = state.0.mutation_root(&workspace_capability_id)?;
+    run_blocking(move || create_pinned(&canonical, &root, &path, true)).await
 }
 
 #[tauri::command]
-pub async fn fs_delete(workspace: String, path: String) -> Result<(), String> {
-    run_blocking(move || delete_in_workspace(&workspace, &path)).await
+pub async fn fs_rename(
+    state: tauri::State<'_, crate::path_capability::WorkspacePathState>,
+    workspace_capability_id: String,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let (canonical, root) = state.0.mutation_root(&workspace_capability_id)?;
+    run_blocking(move || rename_pinned(&canonical, &root, &from, &to)).await
+}
+
+#[tauri::command]
+pub async fn fs_delete(
+    state: tauri::State<'_, crate::path_capability::WorkspacePathState>,
+    operations: tauri::State<'_, DeleteOperations>,
+    workspace_capability_id: String,
+    path: String,
+    operation_id: String,
+    on_progress: tauri::ipc::Channel<DeleteProgress>,
+) -> Result<(), String> {
+    let (canonical, root) = state.0.mutation_root(&workspace_capability_id)?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    operations
+        .0
+        .lock()
+        .unwrap()
+        .insert(operation_id.clone(), cancelled.clone());
+    let result = run_blocking(move || {
+        delete_pinned_reporting(&canonical, &root, &path, &cancelled, &mut |progress| {
+            let _ = on_progress.send(progress);
+        })
+    })
+    .await;
+    operations.0.lock().unwrap().remove(&operation_id);
+    result
+}
+
+#[tauri::command]
+pub fn fs_delete_cancel(operations: tauri::State<'_, DeleteOperations>, operation_id: String) {
+    if let Some(cancelled) = operations.0.lock().unwrap().get(&operation_id) {
+        cancelled.store(true, Ordering::Relaxed);
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -476,6 +572,121 @@ pub async fn read_file_base64(path: String, max_bytes: u64) -> Result<FileBase64
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn capability_mutations_preserve_aliases_and_resist_parent_substitution() {
+        use crate::path_capability::WorkspacePathRegistry;
+        use std::os::unix::fs::symlink;
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(workspace.path().join("dir")).unwrap();
+        symlink("dir", workspace.path().join("alias")).unwrap();
+        let registry = WorkspacePathRegistry::new();
+        let id = registry.activate(workspace.path()).unwrap();
+        let (canonical, root) = registry.mutation_root(&id).unwrap();
+        create_pinned(&canonical, &root, "alias/nested/ok", false).unwrap();
+        assert!(workspace.path().join("dir/nested/ok").is_file());
+        let (parent, leaf) = mutation_parent(&canonical, &root, "dir/created", false).unwrap();
+        fs::rename(workspace.path().join("dir"), workspace.path().join("moved")).unwrap();
+        symlink(outside.path(), workspace.path().join("dir")).unwrap();
+        parent.create_exclusive(&leaf).unwrap();
+        assert!(!outside.path().join("created").exists());
+        assert!(workspace.path().join("moved/created").exists());
+        assert!(create_pinned(&canonical, &root, "dir/escaped", false).is_err());
+        // Preserve native policy: only in-root final links can be renamed/deleted.
+        symlink(outside.path(), workspace.path().join("external-link")).unwrap();
+        assert!(delete_pinned(&canonical, &root, "external-link").is_err());
+        symlink("moved", workspace.path().join("final-link")).unwrap();
+        rename_pinned(&canonical, &root, "final-link", "renamed-link").unwrap();
+        delete_pinned(&canonical, &root, "renamed-link").unwrap();
+        assert!(workspace.path().join("moved").is_dir());
+        assert!(outside.path().is_dir());
+        registry.clear();
+        assert!(registry.mutation_root(&id).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual: creates 60k files to show deletes outgrow the old 50k budget"]
+    fn delete_handles_more_entries_than_the_old_budget() {
+        use crate::path_capability::WorkspacePathRegistry;
+        let workspace = tempfile::tempdir().unwrap();
+        for dir in 0..60 {
+            let dir = workspace.path().join(format!("big/{dir}"));
+            fs::create_dir_all(&dir).unwrap();
+            for file in 0..1_000 {
+                fs::write(dir.join(file.to_string()), "").unwrap();
+            }
+        }
+        let registry = WorkspacePathRegistry::new();
+        let id = registry.activate(workspace.path()).unwrap();
+        let (canonical, root) = registry.mutation_root(&id).unwrap();
+        let started = Instant::now();
+        let mut reports = 0;
+        delete_pinned_reporting(
+            &canonical,
+            &root,
+            "big",
+            &AtomicBool::new(false),
+            &mut |_| reports += 1,
+        )
+        .unwrap();
+        assert!(!workspace.path().join("big").exists());
+        eprintln!(
+            "deleted 60,061 entries in {:?} with {reports} progress reports",
+            started.elapsed()
+        );
+        registry.clear();
+    }
+
+    #[test]
+    fn delete_reports_its_total_and_a_cancel_before_deleting_keeps_everything() {
+        use crate::path_capability::WorkspacePathRegistry;
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join("big/nested")).unwrap();
+        for i in 0..5 {
+            fs::write(workspace.path().join(format!("big/nested/{i}.txt")), "x").unwrap();
+        }
+        let registry = WorkspacePathRegistry::new();
+        let id = registry.activate(workspace.path()).unwrap();
+        let (canonical, root) = registry.mutation_root(&id).unwrap();
+
+        let error = delete_pinned_reporting(
+            &canonical,
+            &root,
+            "big",
+            &AtomicBool::new(true),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(error, "delete-cancelled");
+        assert_eq!(
+            fs::read_dir(workspace.path().join("big/nested"))
+                .unwrap()
+                .count(),
+            5
+        );
+
+        let mut reports = Vec::new();
+        delete_pinned_reporting(
+            &canonical,
+            &root,
+            "big",
+            &AtomicBool::new(false),
+            &mut |progress| reports.push(progress),
+        )
+        .unwrap();
+        assert!(!workspace.path().join("big").exists());
+        // big, nested and five files.
+        assert_eq!(
+            reports.last(),
+            Some(&DeleteProgress::Deleting {
+                removed: 7,
+                total: 7
+            })
+        );
+        registry.clear();
+    }
 
     #[test]
     fn list_dir_sorts_dirs_first_then_by_name() {
@@ -675,6 +886,48 @@ mod tests {
             .into_owned()
     }
 
+    fn with_mutation_root<T>(
+        workspace: &str,
+        f: impl FnOnce(&Path, &crate::path_capability::PinnedDir) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let registry = crate::path_capability::WorkspacePathRegistry::new();
+        let id = registry.activate(Path::new(workspace))?;
+        let (canonical, root) = registry.mutation_root(&id)?;
+        f(&canonical, &root)
+    }
+    fn relative_test_path<'a>(workspace: &str, path: &'a str) -> Result<&'a str, String> {
+        Path::new(path)
+            .strip_prefix(workspace)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or("outside-workspace".into())
+    }
+    fn create_file_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
+        with_mutation_root(workspace, |canonical, root| {
+            create_pinned(canonical, root, relative_test_path(workspace, path)?, false)
+        })
+    }
+    fn create_dir_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
+        with_mutation_root(workspace, |canonical, root| {
+            create_pinned(canonical, root, relative_test_path(workspace, path)?, true)
+        })
+    }
+    fn rename_in_workspace(workspace: &str, from: &str, to: &str) -> Result<(), String> {
+        with_mutation_root(workspace, |canonical, root| {
+            rename_pinned(
+                canonical,
+                root,
+                relative_test_path(workspace, from)?,
+                relative_test_path(workspace, to)?,
+            )
+        })
+    }
+    fn delete_in_workspace(workspace: &str, path: &str) -> Result<(), String> {
+        with_mutation_root(workspace, |canonical, root| {
+            delete_pinned(canonical, root, relative_test_path(workspace, path)?)
+        })
+    }
+
     fn under(workspace: &str, rel: &str) -> String {
         format!("{workspace}/{rel}")
     }
@@ -850,5 +1103,108 @@ mod tests {
             }
             other => panic!("expected NonUtf8Readonly, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod directory_sort_tests {
+    use super::*;
+
+    fn node(name: &str, kind: FileNodeKind, position: usize) -> FileNode {
+        FileNode {
+            name: name.to_owned(),
+            path: format!("/owned/{position}/{name}"),
+            is_dir: kind == FileNodeKind::Directory,
+            kind,
+        }
+    }
+
+    #[test]
+    fn lowercase_ties_preserve_order_and_metadata() {
+        let mut nodes = vec![
+            node("a", FileNodeKind::File, 0),
+            node("A", FileNodeKind::Symlink, 1),
+            node("K", FileNodeKind::Other, 2),
+            node("K", FileNodeKind::File, 3),
+            node("k", FileNodeKind::Symlink, 4),
+            node("İ", FileNodeKind::File, 5),
+            node("i\u{307}", FileNodeKind::Other, 6),
+            node("Σ", FileNodeKind::File, 7),
+            node("σ", FileNodeKind::Symlink, 8),
+            node("A", FileNodeKind::Directory, 9),
+            node("a", FileNodeKind::Directory, 10),
+        ];
+        let expected: Vec<_> = [9, 10, 0, 1, 5, 6, 2, 3, 4, 7, 8]
+            .map(|index| serde_json::to_value(&nodes[index]).unwrap())
+            .into();
+        sort_file_nodes(&mut nodes);
+        assert_eq!(
+            serde_json::to_value(nodes).unwrap(),
+            serde_json::json!(expected)
+        );
+    }
+
+    #[test]
+    fn cached_sort_matches_stable_comparator_across_sizes() {
+        let names = [
+            "Z", "a", "A", "Ä", "ä", "İ", "i\u{307}", "資料", "Σ", "σ", "ς", "K", "K", "k", "é",
+            "e\u{301}",
+        ];
+        let kinds = [
+            FileNodeKind::File,
+            FileNodeKind::Directory,
+            FileNodeKind::Symlink,
+            FileNodeKind::Other,
+        ];
+        for count in [0, 1, 2, 7, 32, 257, 4096] {
+            let make = || {
+                (0..count)
+                    .rev()
+                    .map(|i| {
+                        node(
+                            names[(i * 7) % names.len()],
+                            kinds[(i / 3) % kinds.len()],
+                            i,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut actual = make();
+            let mut expected = make();
+            expected.sort_by(|a, b| {
+                b.is_dir
+                    .cmp(&a.is_dir)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+            sort_file_nodes(&mut actual);
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "count {count}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_listing_preserves_symlinks_and_read_errors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("Zdir")).unwrap();
+        std::fs::write(root.path().join("Alpha"), "owned").unwrap();
+        std::os::unix::fs::symlink(root.path().join("Zdir"), root.path().join("DirLink")).unwrap();
+        std::os::unix::fs::symlink(root.path().join("missing"), root.path().join("Broken"))
+            .unwrap();
+        let nodes = list_dir_entries(root.path()).unwrap();
+        assert_eq!(
+            nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
+            ["Zdir", "Alpha", "Broken", "DirLink"]
+        );
+        for node in &nodes[2..] {
+            assert_eq!(node.kind, FileNodeKind::Symlink);
+            assert!(!node.is_dir);
+        }
+        assert!(list_dir_entries(&root.path().join("missing"))
+            .unwrap_err()
+            .starts_with("read_dir failed:"));
     }
 }

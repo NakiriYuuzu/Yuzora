@@ -13,6 +13,22 @@ export function loadUpdateChannel(): UpdateChannel {
     } catch { return "auto" }
 }
 
+/** Processes of the HERDR binary this app currently uses (Windows install preflight). */
+export interface UpdateHerdrProcesses {
+    path: string | null
+    version: string | null
+    pids: number[]
+}
+
+export function updateHerdrProcesses(): Promise<UpdateHerdrProcesses> {
+    return invoke("update_herdr_processes")
+}
+
+/** Terminates every process tree of the HERDR binary in use; sessions are lost. */
+export function updateStopHerdr(): Promise<void> {
+    return invoke("update_stop_herdr")
+}
+
 export function resolveUpdateChannel(preference: UpdateChannel, version: string): "stable" | "preview" {
     if (preference !== "auto") return preference
     return /^\d+\.\d+\.\d+-[0-9A-Za-z.-]+(?:\+[0-9A-Za-z.-]+)?$/.test(version) ? "preview" : "stable"

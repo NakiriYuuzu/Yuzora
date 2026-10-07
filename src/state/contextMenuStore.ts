@@ -40,6 +40,8 @@ import {
 import { isFileTab, isMarkdownPreviewTab } from "../lib/markdownPreviewTab"
 import { useSvgPreviewStore } from "./svgPreviewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
+import { withDeleteProgress } from "../workbench/deleteProgress"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { useDiffModalStore, type WorktreeDiffFile } from "./diffModalStore"
 import { useFileTreeStore } from "./fileTreeStore"
 import { useGitStore } from "./gitStore"
@@ -365,26 +367,7 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
     const target = path.slice(0, slash + 1) + name
     try {
         await fsRename(workspace, path, target)
-        // Re-point every open tab + its editor state from the old path to the new
-        // one, so a later save lands on the renamed file instead of recreating the
-        // old path (Finding 3). Move the document-registry entry (snapshotting the
-        // live buffer so unsaved edits survive) before updateTabPath remounts
-        // EditorPane. Linked markdown-preview tabs are store-owned adjacent-group
-        // tabs; updateTabPath rebases their sourcePath/identity in the same pass.
-        const svgPreview = useSvgPreviewStore.getState()
-        for (const oldPath of affectedTabPaths(path)) {
-            const newPath = rebasePath(path, target, oldPath)
-            if (!newPath) continue
-            renameDocument(oldPath, newPath, getView(oldPath)?.state.doc.toString())
-            // SVG previews default open, so the *closed* flag is what follows
-            // the rename. Forget the old path unconditionally: after a double-toggle
-            // the store holds a false-valued flag (isOpen already true) that would
-            // otherwise linger on the stale path until a workspace switch.
-            const svgWasClosed = !svgPreview.isOpen(oldPath)
-            svgPreview.forget(oldPath)
-            if (svgWasClosed && svgPreview.isOpen(newPath)) svgPreview.toggle(newPath)
-        }
-        useWorkspaceStore.getState().updateTabPath(path, target)
+        retargetOpenDocuments(path, target)
         // 舊、新路徑一起失效：同層 re-list 反映改名；資料夾改名時 relist 的
         // prune 會丟掉舊路徑底下的快取子樹（新路徑首次展開時重新 list）。
         await useFileTreeStore.getState().invalidatePaths(workspace, [path, target])
@@ -412,12 +395,13 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
     const ok = await requestAppConfirmation({
         title: i18n.t("contextMenu.confirm.deleteTitle", { ns: "menus" }),
         description: text,
+        confirmLabel: i18n.t("contextMenu.confirm.deleteConfirm", { ns: "menus" }),
         kind: "warning",
         destructive: true
     })
     if (!ok) return CONTEXT_MENU_CANCELLED
     try {
-        await fsDelete(workspace, path)
+        await withDeleteProgress(name, !parseRemoteFilePath(workspace), (operation) => fsDelete(workspace, path, operation))
         // Close every tab that pointed at the deleted file/folder and drop its
         // editor + preview state, so a stale tab can't recreate the file on its
         // next save (Finding 3).
@@ -432,9 +416,27 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
         await useFileTreeStore.getState().invalidatePaths(workspace, [path])
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
+        const message = String(e)
+        // A delete stopped midway already removed part of the tree.
+        if (message.includes("partial")) await useFileTreeStore.getState().invalidatePaths(workspace, [path])
+        if (message.includes("delete-cancelled")) {
+            if (message.includes("partial")) {
+                await showAppMessage({
+                    title: i18n.t("deleteProgress.cancelledTitle", { ns: "menus" }),
+                    description: i18n.t("deleteProgress.cancelledPartial", { ns: "menus" }),
+                    kind: "info"
+                })
+            }
+            return CONTEXT_MENU_CANCELLED
+        }
+        const description = message.includes("delete-limit-reached-partial")
+            ? i18n.t("deleteProgress.limitPartial", { ns: "menus" })
+            : message.includes("delete-limit-reached")
+                ? i18n.t("deleteProgress.tooMany", { ns: "menus" })
+                : message
         await showAppMessage({
             title: i18n.t("contextMenu.actionErrorTitle.delete", { ns: "menus" }),
-            description: String(e),
+            description,
             kind: "error"
         })
         return CONTEXT_MENU_CANCELLED
@@ -636,4 +638,30 @@ export async function executeLegacyContextMenuAction(
     }
 
     return CONTEXT_MENU_CANCELLED
+}
+
+/**
+ * Re-points every open tab + its editor state from a moved/renamed path (file
+ * or folder) to its new location, so a later save lands on the new file
+ * instead of recreating the old path (Finding 3). Moves the document-registry
+ * entry (snapshotting the live buffer so unsaved edits survive) before
+ * updateTabPath remounts EditorPane. Linked markdown-preview tabs are
+ * store-owned adjacent-group tabs; updateTabPath rebases their
+ * sourcePath/identity in the same pass.
+ */
+export function retargetOpenDocuments(from: string, to: string): void {
+    const svgPreview = useSvgPreviewStore.getState()
+    for (const oldPath of affectedTabPaths(from)) {
+        const newPath = rebasePath(from, to, oldPath)
+        if (!newPath) continue
+        renameDocument(oldPath, newPath, getView(oldPath)?.state.doc.toString())
+        // SVG previews default open, so the *closed* flag is what follows
+        // the rename. Forget the old path unconditionally: after a double-toggle
+        // the store holds a false-valued flag (isOpen already true) that would
+        // otherwise linger on the stale path until a workspace switch.
+        const svgWasClosed = !svgPreview.isOpen(oldPath)
+        svgPreview.forget(oldPath)
+        if (svgWasClosed && svgPreview.isOpen(newPath)) svgPreview.toggle(newPath)
+    }
+    useWorkspaceStore.getState().updateTabPath(from, to)
 }

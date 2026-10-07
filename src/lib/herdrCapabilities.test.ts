@@ -3,6 +3,7 @@ import {
   hasHerdrMethod,
   herdrScrollStrategy,
   herdrScrollStrategyForRuntime,
+  supportsHerdrApplicationWheel,
   supportsHerdrPaneScroll,
   supportsHerdrPaneScrollCandidate,
   supportsHerdrTerminalScroll
@@ -142,5 +143,32 @@ describe("HERDR capability adapter", () => {
     caps.binaryProtocol = 22
     caps.api.schemaProtocol = 22
     expect(supportsHerdrPaneScrollCandidate(caps)).toBe(true)
+  })
+
+  it("routes an alternate-screen wheel through the connector on native and protocol-22 WSL", () => {
+    const caps = capabilities(["session.snapshot", "pane.get", "pane.scroll"])
+    caps.api.schemaProtocol = 22
+
+    expect(herdrScrollStrategyForRuntime(caps, "local")).toBe("pane")
+    expect(supportsHerdrApplicationWheel(caps, "local")).toBe(true)
+    expect(herdrScrollStrategyForRuntime(caps, "wsl:Debian")).toBe("pane")
+    expect(supportsHerdrApplicationWheel(caps, "wsl:Debian")).toBe(true)
+    expect(supportsHerdrApplicationWheel(caps, "custom-host", "wsl")).toBe(true)
+    expect(supportsHerdrApplicationWheel(capabilities(["pane.get", "pane.scroll"], { scroll: false }), "local")).toBe(false)
+  })
+
+  it("keeps the connector wheel off for legacy or unknown-protocol WSL", () => {
+    const legacy = capabilities(["session.snapshot", "pane.get"])
+    legacy.binaryProtocol = 20
+    legacy.api.schemaProtocol = 20
+    expect(supportsHerdrApplicationWheel(legacy, "wsl:Debian")).toBe(false)
+    expect(supportsHerdrApplicationWheel(legacy, "wsl-ubuntu")).toBe(false)
+    expect(supportsHerdrApplicationWheel(legacy, "local")).toBe(true)
+
+    const unknown = capabilities(["session.snapshot"])
+    unknown.binaryProtocol = null
+    unknown.api.schemaProtocol = null
+    unknown.server.protocol = null
+    expect(supportsHerdrApplicationWheel(unknown, "wsl:Debian")).toBe(false)
   })
 })

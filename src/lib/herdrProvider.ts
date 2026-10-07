@@ -14,6 +14,8 @@ interface RuntimeHost {
   binary: string
   label: string
   sessions: HerdrNamedSession[]
+  /** The helper accepts a pointer cell on stream `scroll`; older helpers end the stream on it. */
+  scrollCell: boolean
 }
 const hosts = new Map<string, RuntimeHost>()
 const streams = new Map<string, { host: RuntimeHost; streamId: string }>()
@@ -47,12 +49,13 @@ export function parseRuntimeScope(scope: string): RuntimeKey {
 export function registerRuntimeHost(host: ConnectedHost, binary: string, label: string, kind: "wsl" | "ssh" = "ssh"): void {
   if (host.owner.hostId === LOCAL_HOST_ID) throw new Error("Local runtime identity is reserved")
   const previous = hosts.get(host.owner.hostId)
+  const scrollCell = host.hello.methods.includes("herdrScrollCell")
   if (previous && sameConnection(previous.owner, host.owner)) {
-    Object.assign(previous, { binary, label, kind })
+    Object.assign(previous, { binary, label, kind, scrollCell })
     return
   }
   if (previous) unregisterRuntimeHost(previous.owner)
-  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [] })
+  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [], scrollCell })
 }
 
 export function unregisterRuntimeHost(owner: ConnectionOwner): void {
@@ -195,7 +198,12 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
     ensureCurrent(stream.host)
     const operation = command === "herdr_terminal_input" ? { command: "input", text: args.text, bytesBase64: args.bytesBase64 }
       : command === "herdr_terminal_resize" ? { command: "resize", cols: args.cols, rows: args.rows }
-        : command === "herdr_terminal_scroll" ? { command: "scroll", direction: args.direction, lines: args.lines } : null
+        : command === "herdr_terminal_scroll" ? {
+          command: "scroll",
+          direction: args.direction,
+          lines: args.lines,
+          ...(stream.host.scrollCell ? { column: args.column, row: args.row } : {})
+        } : null
     if (!operation) throw new Error("Unsupported stream command")
     return nativeInvoke<T>("host_stream_command", { owner: stream.host.owner, streamId: stream.streamId, operation })
   }

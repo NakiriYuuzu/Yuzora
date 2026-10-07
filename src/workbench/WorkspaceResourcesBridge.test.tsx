@@ -71,3 +71,88 @@ it("reclaims old remote capabilities across more than the host limit of workspac
   await act(async () => useWorkspaceStore.setState({ workspacePath: null }))
   expect(capabilities.size).toBe(0)
 })
+
+it("preserves unsaved documents and SVG state across cloned metadata and focus updates", async () => {
+  let reads = 0
+  mockIPC(command => { if (command === "open_file") { reads++; return { kind: "full", content: "disk", size: 4, lineEnding: "lf" } } })
+  const path = "/repo/metadata.svg"
+  useWorkspaceStore.setState({ workspacePath: "/repo", groups: [{ tabs: [{ path, name: "metadata.svg", kind: "file", dirty: false, externallyModified: false }], activePath: path }] })
+  render(<WorkspaceResourcesBridge />)
+  await getDocument(path)
+  updateBuffer(path, "unsaved", documentGeneration(path))
+  useSvgPreviewStore.getState().toggle(path)
+  for (let i = 0; i < 100; i++) {
+    act(() => useWorkspaceStore.setState(s => ({ groups: s.groups.map(g => ({ ...g, activePath: i % 2 ? path : null, tabs: g.tabs.map(tab => ({ ...tab, name: `title-${i}`, dirty: Boolean(i % 2), externallyModified: Boolean(i % 3), pinned: Boolean(i % 4) })) })) })))
+    expect((await getDocument(path)).result).toMatchObject({ content: "unsaved" })
+    expect(useSvgPreviewStore.getState().isOpen(path)).toBe(false)
+  }
+  expect(reads).toBe(1)
+})
+
+it("retires a file when its unchanged path becomes a non-file tab", async () => {
+  let reads = 0
+  mockIPC(command => { if (command === "open_file") { reads++; return { kind: "full", content: "disk", size: 4, lineEnding: "lf" } } })
+  const path = "/repo/kind.svg"
+  useWorkspaceStore.setState({ workspacePath: "/repo", groups: [{ tabs: [{ path, name: "kind.svg", kind: "file", dirty: false, externallyModified: false }], activePath: path }] })
+  render(<WorkspaceResourcesBridge />)
+  await getDocument(path)
+  updateBuffer(path, "unsaved", documentGeneration(path))
+  useSvgPreviewStore.getState().toggle(path)
+  act(() => useWorkspaceStore.setState(s => ({ groups: s.groups.map(g => ({ ...g, tabs: g.tabs.map(tab => ({ ...tab, kind: "markdown-preview" as const })) })) })))
+  expect(useSvgPreviewStore.getState().closedPaths).toEqual({})
+  expect((await getDocument(path)).result).toMatchObject({ content: "disk" })
+  expect(reads).toBe(2)
+})
+
+it("keeps a duplicate file owner until the final file tab disappears", async () => {
+  let reads = 0
+  mockIPC(command => { if (command === "open_file") { reads++; return { kind: "full", content: "disk", size: 4, lineEnding: "lf" } } })
+  const path = "/repo/shared.ts", tab = { path, name: "shared.ts", kind: "file" as const, dirty: false, externallyModified: false }
+  useWorkspaceStore.setState({ workspacePath: "/repo", groups: [{ tabs: [tab], activePath: path }, { tabs: [{ ...tab }], activePath: path }] })
+  render(<WorkspaceResourcesBridge />)
+  await getDocument(path)
+  updateBuffer(path, "unsaved", documentGeneration(path))
+  act(() => useWorkspaceStore.setState(s => ({ groups: [{ ...s.groups[0], tabs: [{ ...tab, kind: "markdown-preview" }] }, s.groups[1]] })))
+  expect((await getDocument(path)).result).toMatchObject({ content: "unsaved" })
+  expect(reads).toBe(1)
+  act(() => useWorkspaceStore.setState(s => ({ groups: [s.groups[0], { tabs: [], activePath: null }] })))
+  expect((await getDocument(path)).result).toMatchObject({ content: "disk" })
+  expect(reads).toBe(2)
+})
+
+it("retires workspace-scoped entries even when every tab reference is unchanged", async () => {
+  let reads = 0
+  mockIPC(command => { if (command === "open_file") { reads++; return { kind: "full", content: "disk", size: 4, lineEnding: "lf" } } })
+  const path = "/repo/sub/shared.ts", groups = [{ tabs: [{ path, name: "shared.ts", kind: "file" as const, dirty: false, externallyModified: false }], activePath: path }]
+  useWorkspaceStore.setState({ workspacePath: "/repo", groups })
+  render(<WorkspaceResourcesBridge />)
+  await getDocument(path)
+  updateBuffer(path, "unsaved old workspace", documentGeneration(path))
+  act(() => useWorkspaceStore.setState({ workspacePath: "/repo/sub", groups }))
+  expect((await getDocument(path)).result).toMatchObject({ content: "disk" })
+  act(() => useWorkspaceStore.setState({ workspacePath: "/repo", groups }))
+  expect((await getDocument(path)).result).toMatchObject({ content: "disk" })
+  expect(reads).toBe(3)
+})
+
+it("keeps metadata-only pending reads but invalidates a pending removed owner", async () => {
+  const path = "/repo/pending.ts"
+  let finish: ((value: unknown) => void) | undefined
+  mockIPC(command => command === "open_file" ? new Promise(resolve => { finish = resolve }) : null)
+  const tab = { path, name: "pending.ts", kind: "file" as const, dirty: false, externallyModified: false }
+  useWorkspaceStore.setState({ workspacePath: "/repo", groups: [{ tabs: [tab], activePath: path }] })
+  render(<WorkspaceResourcesBridge />)
+  const reading = getDocument(path)
+  act(() => useWorkspaceStore.setState(s => ({ groups: s.groups.map(g => ({ ...g, tabs: g.tabs.map(t => ({ ...t, name: "renamed title" })) })) })))
+  await Promise.resolve()
+  finish!({ kind: "full", content: "kept", size: 4, lineEnding: "lf" })
+  expect((await reading).result).toMatchObject({ content: "kept" })
+  const other = "/repo/removed.ts"
+  act(() => useWorkspaceStore.getState().openTab(other))
+  const pending = getDocument(other)
+  const rejected = expect(pending).rejects.toThrow("Document workspace changed")
+  act(() => useWorkspaceStore.getState().closeTab(0, other))
+  await Promise.resolve()
+  finish!({ kind: "full", content: "late", size: 4, lineEnding: "lf" })
+  await rejected
+})

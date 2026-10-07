@@ -16,7 +16,7 @@ import type { HerdrNamedSession, HerdrRuntimeSelection } from "@/lib/herdrTypes"
 import { wslDistributions, type HostTarget, type WslDistribution } from "@/lib/hostIpc";
 import { isWindowsPlatform } from "@/lib/platform";
 import { LOCAL_HOST_ID } from "@/lib/runtimeIdentity";
-import { useHerdrStore } from "@/state/herdrStore";
+import { isHerdrStartupPending, useHerdrStore } from "@/state/herdrStore";
 import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 import { selectionForHost, useHostStore } from "@/state/hostStore";
 import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore";
@@ -42,6 +42,7 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   const { t } = useTranslation("spaceTree");
   const { t: th } = useTranslation("hosts");
   const sessions = useHerdrStore((state) => state.sessions);
+  const herdrStartup = useHerdrStore((state) => state.herdrStartup);
   const currentSession = useHerdrStore((state) => state.selectedSessionName);
   const hosts = useHostStore((state) => state.hosts);
   const hostConfigs = useHostStore((state) => state.configs);
@@ -99,7 +100,8 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
     JSON.stringify(host.target) === JSON.stringify(target));
   const availableSessions = source === "connected" ? sessions : hostReady
     ? sessions.filter((session) => parseRuntimeScope(sessionScope(session)!).hostId === hostId) : [];
-  const runningSessions = availableSessions.filter((session) => session.running);
+  const startupPending = availableSessions.some((session) => isHerdrStartupPending({ herdrStartup }, session));
+  const runningSessions = availableSessions.filter((session) => session.running && !isHerdrStartupPending({ herdrStartup }, session));
   const targetSession = runningSessions.some((session) => sessionScope(session) === requestedSession)
     ? requestedSession : sessionScope(runningSessions[0]) ?? "";
   const runningCount = sessions.filter((session) => session.running).length;
@@ -125,7 +127,8 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   async function loadSession(scope = targetSession) {
     if (!hostReady || !scope) return;
     await run(async () => {
-      if (!useHerdrStore.getState().sessions.some((session) => session.running && sessionScope(session) === scope))
+      const latest = useHerdrStore.getState();
+      if (!latest.sessions.some((session) => session.running && !isHerdrStartupPending(latest, session) && sessionScope(session) === scope))
         throw new Error(t("sessionUnavailable"));
       await useHerdrStore.getState().selectSession(scope);
       if (!mounted.current) return;
@@ -142,11 +145,11 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   const hint = busy ? t("loading")
     : source === "ssh" && !target ? t("pickerHintConnect")
       : hostId && target && !hostReady ? t("pickerHintSetup")
-        : !runningSessions.length ? t("pickerHintNothing")
+        : !runningSessions.length ? t(startupPending ? "loading" : "pickerHintNothing")
           : selected ? t("pickerHintLoad", { session: runtimeSessionLabel(targetSession, selected) })
             : t("pickerHintSelect");
   const sessionList = (items: HerdrNamedSession[]) => hostReady && (
-    runningSessions.length || busy ? (
+    runningSessions.length || startupPending || busy ? (
       <SessionList
         sessions={items}
         value={targetSession}
@@ -274,6 +277,7 @@ function SessionList({ sessions, value, current, disabled, kindOf, onValueChange
 }) {
   const { t } = useTranslation("spaceTree");
   const runtimes = useHerdrStore((state) => state.runtimesBySession);
+  const herdrStartup = useHerdrStore((state) => state.herdrStartup);
   const groups = new Map<string, HerdrNamedSession[]>();
   for (const session of sessions) {
     const scope = sessionScope(session)!;
@@ -303,27 +307,30 @@ function SessionList({ sessions, value, current, disabled, kindOf, onValueChange
         return <CommandGroup key={first} heading={hostTitle(first, items[0])}>
           {items.map((session) => {
             const scope = sessionScope(session)!;
+            const pending = isHerdrStartupPending({ herdrStartup }, session);
             const kind = kindOf(scope);
             const Icon = kind === "local" ? Laptop : kind === "wsl" ? SquareTerminal : Server;
             return <CommandItem
               key={scope}
               value={scope}
-              disabled={disabled || !session.running}
-              aria-label={`${runtimeSessionLabel(scope, session)}${session.running ? "" : ` · ${t("sessionNotRunning")}`}`}
+              disabled={disabled || pending || !session.running}
+              aria-label={`${runtimeSessionLabel(scope, session)}${pending ? ` · ${t("loading")}` : session.running ? "" : ` · ${t("sessionNotRunning")}`}`}
               className="herdr-session-picker-row"
               onSelect={() => onValueChange(scope)}
-              onDoubleClick={() => { if (!disabled && session.running) { onValueChange(scope); onLoad(scope); } }}
+              onDoubleClick={() => { if (!disabled && !pending && session.running) { onValueChange(scope); onLoad(scope); } }}
             >
               <span className="herdr-session-picker-glyph" aria-hidden="true"><Icon /></span>
               <span className="herdr-session-picker-row-main">
                 <span className="herdr-session-picker-row-title">{session.name}</span>
-                <span className="herdr-session-picker-row-sub">{!session.running
-                  ? t("pickerStoppedHint")
+                <span className="herdr-session-picker-row-sub">{pending
+                  ? t("loading")
+                  : !session.running ? t("pickerStoppedHint")
                   : runtimes[scope]?.snapshot
                     ? t("pickerSessionSummary", { spaces: runtimes[scope]!.snapshot!.spaces.length, agents: runtimes[scope]!.snapshot!.agents.length })
                     : hostTitle(scope, session)}</span>
               </span>
-              {scope === current
+              {pending ? <Badge variant="outline" data-status="connecting">{t("loading")}</Badge>
+                : scope === current
                 ? <Badge variant="secondary">{t("pickerCurrent")}</Badge>
                 : <Badge variant="outline" data-status={session.running ? "running" : "stopped"}>{t(session.running ? "pickerRunning" : "sessionNotRunning")}</Badge>}
             </CommandItem>;

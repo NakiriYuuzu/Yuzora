@@ -15,6 +15,8 @@ import {writeFileSync} from "node:fs";
 const args=process.argv.slice(2),path=args[1]||"",mode=process.env.FIXTURE_MODE;
 const sha="a".repeat(40),digest="sha256:"+"c".repeat(64);
 const names=["Main CI / release channel","host-artifacts / build (ubuntu-24.04, linux-x86_64)","host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)","host-artifacts / build (macos-14, macos-aarch64)","host-artifacts / build (macos-15-intel, macos-x86_64)","Build macOS Apple Silicon installers","Build Windows x86-64 installers","Assemble draft release from build artifacts"];
+const sourceRunner=mode==="unknown_runner"?"macos-26":mode==="missing_arm_runner"?"":mode==="valid"?"macos-14":"macos-15";
+if(sourceRunner!=="macos-14"&&mode!=="wrong_arm_job")names[names.indexOf("host-artifacts / build (macos-14, macos-aarch64)")]="host-artifacts / build ("+sourceRunner+", macos-aarch64)";
 const assets=["Yuzora_0.0.9_aarch64.dmg","Yuzora_0.0.9_aarch64.app.tar.gz","Yuzora_0.0.9_aarch64.app.tar.gz.sig","Yuzora_0.0.9_x64-setup.exe","Yuzora_0.0.9_x64-setup.exe.sig","Yuzora_0.0.9_x64_en-US.msi","Yuzora_0.0.9_x64_en-US.msi.sig","Yuzora-macos-aarch64.dmg","Yuzora-windows-x64-setup.exe","Yuzora-windows-x64.msi"].map((name,id)=>({id,name,size:100,digest}));
 const windowsHost=["windows_host","failed_windows_helper","missing_windows_helper"].includes(mode);
 if(windowsHost&&mode!=="missing_windows_helper")names.push("host-artifacts / build (windows-latest, windows-x86_64)");
@@ -32,7 +34,8 @@ if(args[0]==="release"){
 }else if(path.includes("/actions/runs/")){
  emit({path:".github/workflows/release.yml",event:mode==="wrong_event"?"pull_request":"workflow_run",head_branch:"main",head_sha:sha,conclusion:"failure"});
 }else if(path.includes("/contents/.github/workflows/host.yml")){
- console.log(Buffer.from("jobs:\\n  build:\\n    strategy:\\n      matrix:\\n        include:\\n          - target: macos-x86_64\\n"+(windowsHost?"          - target: windows-x86_64\\n":"")).toString("base64"));
+ const arm="          - runner: "+sourceRunner+"\\n            target: macos-aarch64\\n";
+ console.log(Buffer.from("jobs:\\n  build:\\n    strategy:\\n      matrix:\\n        include:\\n"+arm+(mode==="duplicate_arm_runner"?arm:"")+"          - runner: macos-15-intel\\n            target: macos-x86_64\\n"+(windowsHost?"          - runner: windows-latest\\n            target: windows-x86_64\\n":"")).toString("base64"));
 }else if(path.includes("/contents/package.json")){
  console.log(Buffer.from(JSON.stringify({version:mode==="beta"?"0.0.9-beta.1":"0.0.9"})).toString("base64"));
 }else if(path.includes("/git/ref/tags/")){emit({object:{type:"tag",sha:"b".repeat(40)}});
@@ -64,6 +67,11 @@ describe("stable release recovery", () => {
     expect(readFileSync(result.output, "utf8")).toContain("tag_name=v0.0.9")
   })
 
+  it("recovers the upgraded macOS runner without losing legacy macOS 14 recovery", () => {
+    const result = runGuard("macos_15")
+    expect(result.status, result.stderr).toBe(0)
+  })
+
   it("requires the Windows host build when the source host matrix includes it", () => {
     expect(runGuard("windows_host").status).toBe(0)
   })
@@ -77,7 +85,7 @@ describe("stable release recovery", () => {
     }
   })
 
-  it.each(["wrong_event", "missing_ci", "failed_build", "failed_windows_helper", "missing_windows_helper", "wrong_tag", "published", "missing_asset", "beta"])("stops recovery for %s", (mode) => {
+  it.each(["wrong_event", "missing_ci", "failed_build", "failed_windows_helper", "missing_windows_helper", "wrong_tag", "published", "missing_asset", "beta", "wrong_arm_job", "unknown_runner", "missing_arm_runner", "duplicate_arm_runner"])("stops recovery for %s", (mode) => {
     expect(runGuard(mode).status).not.toBe(0)
   })
 

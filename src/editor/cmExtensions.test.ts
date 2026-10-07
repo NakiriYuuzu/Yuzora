@@ -4,7 +4,7 @@ import { EditorView } from "@codemirror/view"
 import { highlightingFor } from "@codemirror/language"
 import { tags } from "@lezer/highlight"
 import { Compartment } from "@codemirror/state"
-import { buildExtensions, hasVeryLongLine, languageExtensionFromPath } from "./cmExtensions"
+import { buildExtensions, hasVeryLongLine, languageExtensionFromPath, loadLanguageExtension } from "./cmExtensions"
 import { minimap, minimapBarGeometry, minimapCompartment } from "./minimap"
 import { appTheme } from "./cmTheme"
 
@@ -13,13 +13,20 @@ test("hasVeryLongLine 偵測超長單行", () => {
     expect(hasVeryLongLine(`a\n${"x".repeat(10_001)}\nb`)).toBe(true)
 })
 
-test("languageExtensionFromPath 對已知副檔名回傳 extension、未知回傳 null", () => {
+test("languageExtensionFromPath 對已知副檔名回傳 cached extension、未知回傳 null", async () => {
+    expect(languageExtensionFromPath("/a.ts")).toBeNull()
+    const pending = loadLanguageExtension("/a.ts")
+    expect(loadLanguageExtension("/other.ts")).toBe(pending)
+    const extension = await pending
+    expect(languageExtensionFromPath("/other.ts")).toBe(extension)
+    await loadLanguageExtension("/a.rs")
     expect(languageExtensionFromPath("/a.ts")).not.toBeNull()
     expect(languageExtensionFromPath("/a.rs")).not.toBeNull()
     expect(languageExtensionFromPath("/a.unknown")).toBeNull()
 })
 
-test("languageExtensionFromPath 覆蓋新增語言（官方套件與 legacy-modes）", () => {
+test("languageExtensionFromPath 覆蓋新增語言（官方套件與 legacy-modes）", async () => {
+    await Promise.all(["/a.yaml", "/a.go", "/a.sh", "/a.toml", "/path/to/Dockerfile"].map(loadLanguageExtension))
     expect(languageExtensionFromPath("/a.yaml")).not.toBeNull()
     expect(languageExtensionFromPath("/a.go")).not.toBeNull()
     expect(languageExtensionFromPath("/a.sh")).not.toBeNull()
@@ -27,7 +34,8 @@ test("languageExtensionFromPath 覆蓋新增語言（官方套件與 legacy-mode
     expect(languageExtensionFromPath("/path/to/Dockerfile")).not.toBeNull()
 })
 
-test("buildExtensions 掛上 syntaxHighlighting，語法節點會渲染成帶 class 的 span", () => {
+test("buildExtensions 掛上 syntaxHighlighting，語法節點會渲染成帶 class 的 span", async () => {
+    await loadLanguageExtension("/a.ts")
     const extensions = buildExtensions("/a.ts", { readonly: false, syntaxOff: false }, () => {}, () => {}, false)
     const view = new EditorView({
         state: EditorState.create({ doc: 'const x = "hi"', extensions }),

@@ -48,6 +48,8 @@ export function PerfBridge() {
     useEffect(() => {
         const telemetry = createStallTelemetry()
         telemetry.start()
+        let disposed = false
+        let inFlight = false
 
         let pollsSinceReport = 0
         // 落盤用的增量計數。**不能**改用 perfStore 的 samplingHealth()：那是 30 筆
@@ -57,8 +59,11 @@ export function PerfBridge() {
         // terminal 的 droppedBytes／flushCount 是**每個 queue 各自的累計量**，而
         // `terminalOutputMetricsSnapshot()` 只看得到活著的 session（#39 的 registry
         // 在 unregister 時移除）。直接加總會在 session 關閉時倒退，讓 Rust 端的
-        // 「取最大值」低報。改為記錄每個 session id 的高水位，總和因此單調遞增。
+        // 「取最大值」低報。只保留 live session 的高水位，將增量加進固定大小的
+        // 累計值；關閉後移除 identity，避免記憶體與 report 成本隨歷史 session 成長。
         const terminalHighWater = new Map<string, { dropped: number; flushes: number }>()
+        let terminalDroppedBytes = 0
+        let terminalFlushCount = 0
 
         const countOutcome = (kind: keyof SamplingDelta) => {
             delta.attempts += 1
@@ -71,18 +76,23 @@ export function PerfBridge() {
             const stall = telemetry.drain()
             store.setStall(stall)
             const snapshot = store.snapshot
-            const terminals = Object.entries(terminalOutputMetricsSnapshot())
+            const terminalSnapshot = terminalOutputMetricsSnapshot()
+            const terminals = Object.entries(terminalSnapshot)
             for (const [sessionId, metrics] of terminals) {
                 const previous = terminalHighWater.get(sessionId)
-                terminalHighWater.set(sessionId, {
+                const next = {
                     dropped: Math.max(previous?.dropped ?? 0, metrics.droppedBytes),
                     flushes: Math.max(previous?.flushes ?? 0, metrics.flushCount)
-                })
+                }
+                terminalDroppedBytes += next.dropped - (previous?.dropped ?? 0)
+                terminalFlushCount += next.flushes - (previous?.flushes ?? 0)
+                terminalHighWater.set(sessionId, next)
+            }
+            for (const sessionId of terminalHighWater.keys()) {
+                if (!Object.prototype.hasOwnProperty.call(terminalSnapshot, sessionId)) terminalHighWater.delete(sessionId)
             }
             const liveSum = (pick: (m: (typeof terminals)[number][1]) => number) =>
                 terminals.reduce((total, [, metrics]) => total + pick(metrics), 0)
-            const cumulative = (pick: (v: { dropped: number; flushes: number }) => number) =>
-                [...terminalHighWater.values()].reduce((total, value) => total + pick(value), 0)
             // metadata 的 key 名是與 Rust `run_summary::absorb_diagnostics` 的契約。
             void logDiagnosticsSample("renderer diagnostics sample", {
                 long_task_supported: stall.longTaskSupported,
@@ -109,8 +119,8 @@ export function PerfBridge() {
                 terminal_sessions: terminals.length,
                 terminal_pending_bytes: liveSum((m) => m.pendingBytes),
                 terminal_hidden_bytes: liveSum((m) => m.hiddenBytes),
-                terminal_dropped_bytes: cumulative((v) => v.dropped),
-                terminal_flush_count: cumulative((v) => v.flushes),
+                terminal_dropped_bytes: terminalDroppedBytes,
+                terminal_flush_count: terminalFlushCount,
                 terminal_last_flush_latency_ms: terminals.reduce(
                     (max, [, m]) => Math.max(max, m.lastFlushLatencyMs),
                     0
@@ -131,14 +141,20 @@ export function PerfBridge() {
         }
 
         const poll = () => {
+            if (disposed) return
             if (!document.hasFocus()) {
                 usePerfStore.getState().recordOutcome("skipped_no_focus")
                 countOutcome("skippedNoFocus")
                 maybeReport()
                 return
             }
+            // A slow native process-tree sample must not accumulate more reads
+            // behind itself. Resume the normal cadence after it settles.
+            if (inFlight) return
+            inFlight = true
             void perfSnapshot()
                 .then((snapshot) => {
+                    if (disposed) return
                     const store = usePerfStore.getState()
                     if (snapshot === null) {
                         // `Ok(None)`：後端有回應但沒有資料（aggregate_tree 找不到自身
@@ -155,11 +171,13 @@ export function PerfBridge() {
                 // §3.5：原本是 `.catch(() => {})`，失敗完全看不見。改成落進有界的
                 // 診斷狀態，StatusBar 會顯示，週期性 report 也會把它寫進 log。
                 .catch((error: unknown) => {
+                    if (disposed) return
                     usePerfStore.getState().recordOutcome("failed", errorMessage(error))
                     countOutcome("failures")
                 })
                 .finally(() => {
-                    maybeReport()
+                    inFlight = false
+                    if (!disposed) maybeReport()
                 })
         }
 
@@ -171,6 +189,7 @@ export function PerfBridge() {
         // 要涵蓋它需要把量測搬到 renderer 之外（Rust 側的 watchdog），超出 #40。
         const id = setInterval(poll, POLL_INTERVAL_MS)
         return () => {
+            disposed = true
             clearInterval(id)
             telemetry.stop()
         }

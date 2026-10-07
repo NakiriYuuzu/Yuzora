@@ -44,10 +44,11 @@ fn detect_commit_and_watch(
     repo_shared: &std::sync::Arc<yuzora_host::git_registry::GitRegistry>,
     generation: u64,
     workspace_path: &str,
+    target: &Path,
 ) -> Result<GitEnvironment, String> {
     use tauri::Emitter;
-    let _job = repo_shared.try_job()?;
-    let env = detect_environment(Path::new(workspace_path));
+    let _job = repo_shared.acquire_job()?;
+    let env = detect_environment(target);
     let watcher = if let GitEnvironment::Ready { ref root, .. } = env {
         let event_root = workspace_path.to_string();
         Some(crate::git_watch::build_repository_watcher(
@@ -87,14 +88,36 @@ fn detect_trusted_environment(
     Ok(env)
 }
 
+/// A repository nested in a multi-repository workspace. Authority comes from
+/// the trusted workspace (the nested folder is never trusted on its own), and
+/// the detected root must stay inside it.
+fn detect_trusted_nested_environment(
+    trust: &crate::workspace_trust::WorkspaceTrustState,
+    workspace: &str,
+    detect: impl FnOnce() -> Result<GitEnvironment, String>,
+) -> Result<GitEnvironment, String> {
+    let identity = trust.require_trusted(workspace)?;
+    let env = detect()?;
+    if let GitEnvironment::Ready { root, .. } = &env {
+        yuzora_host::git_discovery::require_root_inside(Path::new(workspace), root)?;
+        trust.bind_session_git_root(&identity, root);
+    }
+    Ok(env)
+}
+
 fn detect_trusted_and_finish(
     trust: &crate::workspace_trust::WorkspaceTrustState,
     registry: &yuzora_host::git_registry::GitRegistry,
     generation: u64,
     path: &str,
+    nested: bool,
     detect: impl FnOnce() -> Result<GitEnvironment, String>,
 ) -> Result<GitEnvironment, String> {
-    let result = detect_trusted_environment(trust, path, detect);
+    let result = if nested {
+        detect_trusted_nested_environment(trust, path, detect)
+    } else {
+        detect_trusted_environment(trust, path, detect)
+    };
     match &result {
         Ok(environment) if !matches!(environment, GitEnvironment::Ready { .. }) => {
             // The filesystem-only empty state bypasses detect_commit_and_watch.
@@ -177,14 +200,31 @@ pub async fn git_bootstrap(
     state: tauri::State<'_, GitServiceState>,
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     path: String,
+    repository_path: Option<String>,
 ) -> Result<GitBootstrapDto, String> {
     let generation = state.0.begin(&path)?;
     let repo_shared = state.0.clone();
     let trust = trust.inner().clone();
+    // A nested repository of a multi-repository workspace, relative to `path`.
+    let nested = repository_path.filter(|relative| !relative.is_empty());
     let env = run_blocking(move || {
-        detect_trusted_and_finish(&trust, &repo_shared, generation, &path, || {
-            detect_commit_and_watch(app, &repo_shared, generation, &path)
-        })
+        detect_trusted_and_finish(
+            &trust,
+            &repo_shared,
+            generation,
+            &path,
+            nested.is_some(),
+            || {
+                let target = match &nested {
+                    Some(relative) => yuzora_host::git_discovery::repository_target(
+                        Path::new(&path),
+                        Some(relative),
+                    )?,
+                    None => PathBuf::from(&path),
+                };
+                detect_commit_and_watch(app, &repo_shared, generation, &path, &target)
+            },
+        )
     })
     .await?;
     let root = match &env {
@@ -205,6 +245,17 @@ pub async fn git_bootstrap(
     Ok(dto)
 }
 
+/// Lists the repositories inside the active workspace (filesystem only, the
+/// same authority as its file tree), for multi-repository workspaces.
+#[tauri::command]
+pub async fn git_discover(
+    paths: tauri::State<'_, crate::path_capability::WorkspacePathState>,
+    workspace_capability_id: String,
+) -> Result<yuzora_host::git_discovery::GitDiscovery, String> {
+    let (canonical, _) = paths.0.mutation_root(&workspace_capability_id)?;
+    run_blocking(move || yuzora_host::git_discovery::discover_repositories(&canonical)).await
+}
+
 #[tauri::command]
 pub async fn git_status_cmd(
     state: tauri::State<'_, GitServiceState>,
@@ -212,7 +263,7 @@ pub async fn git_status_cmd(
     repository_root: String,
     pathspec: Option<Vec<String>>,
 ) -> Result<GitStatusDto, String> {
-    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+    with_requested_repo_read_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         status_of(root, pathspec)
     })
     .await
@@ -349,6 +400,27 @@ where
     .await
 }
 
+/// Read-only twin of `with_requested_repo_blocking`: same trust and identity
+/// checks, but it does not queue behind a running mutation (push/pull/fetch can
+/// hold the repository lock for the whole remote timeout).
+pub(crate) async fn with_requested_repo_read_blocking<T>(
+    state: &GitServiceState,
+    trust: &crate::workspace_trust::WorkspaceTrustState,
+    requested_root: String,
+    operation: impl FnOnce(&Path) -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    let shared = state.0.clone();
+    let trust = trust.clone();
+    run_blocking(move || {
+        trust.require_trusted_git(&requested_root)?;
+        shared.with_repository_read(&requested_root, operation)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn git_stage(
     state: tauri::State<'_, GitServiceState>,
@@ -423,7 +495,7 @@ pub async fn git_branches(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
 ) -> Result<BranchList, String> {
-    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, branches).await
+    with_requested_repo_read_blocking(state.inner(), trust.inner(), repository_root, branches).await
 }
 
 #[tauri::command]
@@ -433,9 +505,12 @@ pub async fn git_create_branch(
     repository_root: String,
     name: String,
     start_point: Option<String>,
-) -> Result<(), String> {
+    smart: Option<bool>,
+) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        create_branch(root, &name, start_point.as_deref())
+        switch_keeping_changes(root, smart.unwrap_or(false), || {
+            create_branch(root, &name, start_point.as_deref())
+        })
     })
     .await
 }
@@ -446,9 +521,12 @@ pub async fn git_checkout_detached(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     rev: String,
-) -> Result<(), String> {
+    smart: Option<bool>,
+) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        checkout_detached(root, &rev)
+        switch_keeping_changes(root, smart.unwrap_or(false), || {
+            checkout_detached(root, &rev)
+        })
     })
     .await
 }
@@ -459,9 +537,10 @@ pub async fn git_checkout(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     name: String,
-) -> Result<(), String> {
+    smart: Option<bool>,
+) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        checkout(root, &name)
+        switch_keeping_changes(root, smart.unwrap_or(false), || checkout(root, &name))
     })
     .await
 }
@@ -506,6 +585,7 @@ pub async fn git_pull_cmd(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     repository_root: String,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let askpass = askpass.inner().clone();
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
@@ -517,7 +597,9 @@ pub async fn git_pull_cmd(
         );
         let mut env = op.env().to_vec();
         env.extend(editor_true());
-        run_ok_with_askpass(root, &["pull"], REMOTE_TIMEOUT, &env, &op).map(|_| ())
+        let args = pull_args_with_mode(root, mode.as_deref())?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_ok_with_askpass(root, &args, REMOTE_TIMEOUT, &env, &op).map(|_| ())
     })
     .await
 }
@@ -528,6 +610,8 @@ pub async fn git_push_cmd(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     repository_root: String,
+    force_with_lease: Option<bool>,
+    tags: Option<bool>,
 ) -> Result<(), String> {
     let askpass = askpass.inner().clone();
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
@@ -537,7 +621,13 @@ pub async fn git_push_cmd(
             crate::askpass::AskpassOperationKind::Push,
             false,
         );
-        run_ok_with_askpass(root, &["push"], REMOTE_TIMEOUT, op.env(), &op).map(|_| ())
+        let args = push_args_with_options(
+            root,
+            force_with_lease.unwrap_or(false),
+            tags.unwrap_or(false),
+        )?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_ok_with_askpass(root, &args, REMOTE_TIMEOUT, op.env(), &op).map(|_| ())
     })
     .await
 }
@@ -550,7 +640,7 @@ pub async fn git_remote_probe(
     repository_root: String,
 ) -> Result<String, String> {
     let askpass = askpass.inner().clone();
-    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+    with_requested_repo_read_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         let op = begin_remote_askpass(
             &askpass,
             root,
@@ -571,7 +661,7 @@ pub async fn git_diff_content(
     staged: bool,
     orig_path: Option<String>,
 ) -> Result<DiffContent, String> {
-    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+    with_requested_repo_read_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         diff_content(root, &path, staged, orig_path.as_deref())
     })
     .await
@@ -599,6 +689,181 @@ pub async fn git_conflict_continue(
 ) -> Result<(), String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
         conflict_continue(root, &op)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_conflict_skip(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    op: String,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        conflict_skip(root, &op)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_conflict_sides(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    path: String,
+) -> Result<GitConflictSides, String> {
+    with_requested_repo_read_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        conflict_sides(root, &path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_conflict_resolve(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    paths: Vec<String>,
+    side: String,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        conflict_resolve(root, &paths, &side)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_merge_branch(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    name: String,
+) -> Result<GitOperationOutcome, String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        merge_branch(root, &name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_rebase_onto(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    upstream: String,
+) -> Result<GitOperationOutcome, String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        rebase_onto(root, &upstream)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_rename_branch(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    old_name: String,
+    new_name: String,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        rename_branch(root, &old_name, &new_name)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_delete_branch(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    name: String,
+    force: bool,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        delete_branch(root, &name, force)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_revert_commit(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    hash: String,
+) -> Result<GitOperationOutcome, String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        revert_commit(root, &hash)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_reset_branch(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    hash: String,
+    mode: String,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        reset_branch(root, &hash, &mode)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_stash_list(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+) -> Result<Vec<GitStashEntry>, String> {
+    with_requested_repo_read_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        stash_list(root)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_stash_push(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    message: Option<String>,
+    include_untracked: bool,
+    keep_index: bool,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        stash_push(root, message.as_deref(), include_untracked, keep_index)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_stash_apply(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    index: u32,
+    pop: bool,
+) -> Result<GitOperationOutcome, String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        stash_apply(root, index, pop)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_stash_drop(
+    state: tauri::State<'_, GitServiceState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
+    repository_root: String,
+    index: u32,
+) -> Result<(), String> {
+    with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
+        stash_drop(root, index)
     })
     .await
 }
@@ -1359,6 +1624,217 @@ mod tests {
         let status = status_of(r, None).unwrap().parsed;
         assert!(status.staged.is_empty());
         assert!(status.unstaged.is_empty());
+    }
+
+    #[test]
+    fn rollback_rename_rejects_occupied_source_without_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "base\n", "base");
+        let moved = run_git(r, &["mv", "--", "a.txt", "b.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(moved.code, 0, "{}", moved.stderr);
+        std::fs::write(r.join("a.txt"), "must survive\n").unwrap();
+
+        let target = rollback_target(
+            "b.txt",
+            tracked_classification(Some("R"), None, Some("a.txt")),
+        );
+        let error = rollback_paths(r, &[target], false).unwrap_err();
+        assert!(error.contains("rename source a.txt"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(r.join("a.txt")).unwrap(),
+            "must survive\n"
+        );
+        assert!(r.join("b.txt").exists());
+        assert_eq!(status_of(r, None).unwrap().parsed.staged[0].status, "R");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_rename_rejects_hard_link_at_source_without_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "a.txt", "base\n", "base");
+        let moved = run_git(r, &["mv", "--", "a.txt", "b.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(moved.code, 0, "{}", moved.stderr);
+        // Same inode as the rename destination, but a distinct directory entry.
+        std::fs::hard_link(r.join("b.txt"), r.join("a.txt")).unwrap();
+
+        let target = rollback_target(
+            "b.txt",
+            tracked_classification(Some("R"), None, Some("a.txt")),
+        );
+        let error = rollback_paths(r, &[target], false).unwrap_err();
+        assert!(error.contains("rename source a.txt"), "{error}");
+        assert!(r.join("a.txt").exists());
+        assert!(r.join("b.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_rename_fails_closed_when_source_cannot_be_inspected() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root bypasses directory permissions, so the inspection error cannot occur.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        std::fs::create_dir(r.join("locked")).unwrap();
+        test_repo::write_and_commit(r, "locked/a.txt", "base\n", "base");
+        let moved = run_git(
+            r,
+            &["mv", "--", "locked/a.txt", "b.txt"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(moved.code, 0, "{}", moved.stderr);
+
+        let locked = r.join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let target = rollback_target(
+            "b.txt",
+            tracked_classification(Some("R"), None, Some("locked/a.txt")),
+        );
+        let result = rollback_paths(r, &[target], false);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.contains("rename source locked/a.txt"), "{error}");
+        assert!(r.join("b.txt").exists());
+        assert!(!r.join("locked/a.txt").exists());
+    }
+
+    #[test]
+    fn rollback_case_only_rename_restores_original_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "readme.md", "base\n", "base");
+        let moved = run_git(
+            r,
+            &["mv", "--", "readme.md", "README.md"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(moved.code, 0, "{}", moved.stderr);
+        let status = status_of(r, None).unwrap().parsed;
+        let renamed = status
+            .staged
+            .iter()
+            .find(|entry| entry.path == "README.md")
+            .expect("staged case-only rename");
+        assert_eq!(renamed.orig_path.as_deref(), Some("readme.md"));
+
+        let target = rollback_target(
+            "README.md",
+            tracked_classification(Some("R"), None, Some("readme.md")),
+        );
+        rollback_paths(r, &[target], false).unwrap();
+        let names: Vec<_> = std::fs::read_dir(r)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.eq_ignore_ascii_case("readme.md"))
+            .collect();
+        assert_eq!(names, vec!["readme.md"]);
+        let status = status_of(r, None).unwrap().parsed;
+        assert!(status.staged.is_empty());
+        assert!(status.unstaged.is_empty());
+    }
+
+    #[test]
+    fn destructive_mutations_reject_lossy_decoded_paths_without_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        // On Linux a non-UTF-8 name and this literal name both decode to the same
+        // status string; deleting by that string could remove the wrong file.
+        let name = "bad\u{FFFD}.txt";
+        std::fs::write(r.join(name), "keep\n").unwrap();
+
+        let error = discard(r, &[], &[name.to_string()]).unwrap_err();
+        assert!(error.contains("not valid UTF-8"), "{error}");
+        let error = rollback_paths(
+            r,
+            &[rollback_target(name, GitRollbackClassification::Untracked)],
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("not valid UTF-8"), "{error}");
+        assert!(r.join(name).exists());
+    }
+
+    #[test]
+    fn rollback_accepts_frontend_camel_case_classification_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "tracked.txt", "base\n", "base");
+        test_repo::write_and_commit(r, "old.txt", "old\n", "old");
+        std::fs::write(r.join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(r.join("added.txt"), "added\n").unwrap();
+        stage(r, &["added.txt".into()]).unwrap();
+        let moved = run_git(r, &["mv", "--", "old.txt", "new.txt"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(moved.code, 0, "{}", moved.stderr);
+
+        // Exact wire shape built by src/workbench/git/gitChangeSelection.ts.
+        let targets: Vec<GitRollbackTarget> = serde_json::from_str(
+            r#"[
+                {"path":"tracked.txt","classification":{"kind":"tracked","stagedStatus":null,"unstagedStatus":"M","origPath":null}},
+                {"path":"added.txt","classification":{"kind":"added","stagedStatus":"A","unstagedStatus":null}},
+                {"path":"new.txt","classification":{"kind":"tracked","stagedStatus":"R","unstagedStatus":null,"origPath":"old.txt"}}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            targets[0].classification,
+            tracked_classification(None, Some("M"), None)
+        );
+        assert_eq!(
+            targets[2].classification,
+            tracked_classification(Some("R"), None, Some("old.txt"))
+        );
+
+        let result = rollback_paths(r, &targets, false).unwrap();
+        assert_eq!(result.restored, vec!["tracked.txt", "new.txt"]);
+        assert_eq!(result.preserved_untracked, vec!["added.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(r.join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(std::fs::read_to_string(r.join("old.txt")).unwrap(), "old\n");
+        assert!(!r.join("new.txt").exists());
+
+        let serialized = serde_json::to_value(&targets[2].classification).unwrap();
+        assert_eq!(
+            serialized,
+            serde_json::json!({"kind":"tracked","stagedStatus":"R","unstagedStatus":null,"origPath":"old.txt"})
+        );
+    }
+
+    #[test]
+    fn git_environment_missing_serializes_minimum_version_in_camel_case() {
+        let environment = GitEnvironment::Missing {
+            reason: "too old".into(),
+            kind: Some("unsupportedVersion".into()),
+            minimum_version: Some("2.24".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&environment).unwrap(),
+            serde_json::json!({
+                "status": "missing",
+                "reason": "too old",
+                "kind": "unsupportedVersion",
+                "minimumVersion": "2.24"
+            })
+        );
     }
 
     #[test]
@@ -2152,6 +2628,47 @@ mod tests {
     }
 
     #[test]
+    fn diff_content_reports_oversized_worktree_file_without_full_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "base.txt", "base\n", "base");
+        let huge = std::fs::File::create(r.join("huge.bin")).unwrap();
+        // Sparse: cheap to create, but larger than the hard cap.
+        huge.set_len(crate::file_content::HARD_CAP_BYTES * 4)
+            .unwrap();
+        drop(huge);
+        // The read itself stops one byte past the cap instead of loading the file.
+        let bytes = read_worktree(r, "huge.bin").unwrap().unwrap();
+        assert_eq!(bytes.len() as u64, crate::file_content::HARD_CAP_BYTES + 1);
+        let diff = diff_content(r, "huge.bin", false, None).unwrap();
+        assert!(matches!(diff.modified, GradedText::TooLarge));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn diff_content_rejects_fifo_without_blocking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        test_repo::write_and_commit(r, "pipe", "base\n", "base");
+        std::fs::remove_file(r.join("pipe")).unwrap();
+        let name = std::ffi::CString::new(r.join("pipe").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = r.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(diff_content(&root, "pipe", false, None).map(|_| ()));
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("diff of a FIFO must not block");
+        let error = result.unwrap_err();
+        assert!(error.contains("non-regular file pipe"), "{error}");
+    }
+
+    #[test]
     fn diff_content_staged_added_uses_empty_original() {
         let tmp = tempfile::tempdir().unwrap();
         let r = tmp.path();
@@ -2425,10 +2942,11 @@ mod tests {
         assert!(registry.with_repository(path, |_| Ok(())).is_ok());
         std::fs::remove_dir(&marker).unwrap();
         let generation = registry.begin(path).unwrap();
-        let environment = detect_trusted_and_finish(&trust, &registry, generation, path, || {
-            panic!("non-repository detection must not execute git")
-        })
-        .unwrap();
+        let environment =
+            detect_trusted_and_finish(&trust, &registry, generation, path, false, || {
+                panic!("non-repository detection must not execute git")
+            })
+            .unwrap();
         assert!(matches!(environment, GitEnvironment::NotARepo));
         assert!(registry.with_repository(path, |_| Ok(())).is_err());
         assert!(
@@ -2459,13 +2977,65 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            detect_trusted_and_finish(&trust, &registry, stale, path, || {
+            detect_trusted_and_finish(&trust, &registry, stale, path, false, || {
                 panic!("non-repository detection must not execute git")
             })
             .unwrap(),
             GitEnvironment::NotARepo
         ));
         assert!(registry.with_repository(path, |_| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn nested_repository_uses_the_trusted_workspace_and_stays_inside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = crate::workspace_trust::WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let workspace = tmp.path().join("plain");
+        let nested = workspace.join("apps/api");
+        std::fs::create_dir_all(&nested).unwrap();
+        test_repo::init(&nested);
+        let workspace_path = workspace.to_str().unwrap();
+        let detect_nested = || {
+            let target = yuzora_host::git_discovery::repository_target(
+                Path::new(workspace_path),
+                Some("apps/api"),
+            )?;
+            Ok(detect_environment(&target))
+        };
+
+        let Err(untrusted) =
+            detect_trusted_nested_environment(&trust, workspace_path, detect_nested)
+        else {
+            panic!("an untrusted workspace must not open a nested repository")
+        };
+        assert!(untrusted.contains("untrustedWorkspace"), "{untrusted}");
+
+        trust.0.grant_for_tests(workspace_path);
+        let env = detect_trusted_nested_environment(&trust, workspace_path, detect_nested).unwrap();
+        let GitEnvironment::Ready { root, .. } = env else {
+            panic!("the nested repository should be detected")
+        };
+        assert_eq!(
+            Path::new(&root).canonicalize().unwrap(),
+            nested.canonicalize().unwrap()
+        );
+        assert!(trust.require_trusted_git(&root).is_ok());
+
+        // A plain subfolder resolves upwards; it must not escape the workspace.
+        let outer = tmp.path().join("outer");
+        std::fs::create_dir_all(outer.join("inner/plain")).unwrap();
+        test_repo::init(&outer);
+        let inner = outer.join("inner");
+        trust.0.grant_for_tests(inner.to_str().unwrap());
+        let Err(escaped) =
+            detect_trusted_nested_environment(&trust, inner.to_str().unwrap(), || {
+                let target = yuzora_host::git_discovery::repository_target(&inner, Some("plain"))?;
+                Ok(detect_environment(&target))
+            })
+        else {
+            panic!("a plain subfolder must not resolve to the parent repository")
+        };
+        assert!(escaped.contains("not inside the workspace"), "{escaped}");
     }
 
     #[test]

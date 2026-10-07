@@ -61,6 +61,15 @@ interface GitChangeContextMenuRequest {
   selected: readonly GitChangeTarget[]
 }
 
+/** A branch row of the branch popover (JetBrains branch actions). */
+interface GitBranchContextMenuRequest {
+  kind: "gitBranch"
+  repositoryRoot: string
+  name: string
+  branchKind: "local" | "remote"
+  isCurrent: boolean
+}
+
 interface StatusContextMenuRequest {
   kind: "status"
   repositoryRoot: string | null
@@ -123,6 +132,7 @@ export type ContextMenuRequest =
   | EditorContextMenuRequest
   | GitContextMenuRequest
   | GitChangeContextMenuRequest
+  | GitBranchContextMenuRequest
   | StatusContextMenuRequest
   | SshHostContextMenuRequest
   | DbConnectionContextMenuRequest

@@ -339,6 +339,7 @@ impl HerdrManager {
     }
 
     fn start_named_session(&self, name: &str) -> Result<Value, String> {
+        let _startup = self.startup_lock.lock().unwrap();
         let binary = self.resolve_binary().ok_or("herdr-unavailable")?;
         let status = run_herdr_json_with_session(&binary, &["status", "--json"], Some(name))?;
         if status.pointer("/server/running").and_then(Value::as_bool) == Some(true) {

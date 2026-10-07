@@ -138,6 +138,39 @@ describe("fileTreeStore — hydrate 與展開狀態", () => {
 })
 
 describe("fileTreeStore — 精準失效 invalidatePaths", () => {
+    it.each(["/fixture", "C:\\fixture"])("prunes multiple removed subtrees without touching prefix siblings or prior snapshots under %s", async root => {
+        const separator = root.startsWith("C:") ? "\\" : "/"
+        const path = (suffix: string) => root + separator + suffix.replaceAll("/", separator)
+        const cached = ["gone", "gone/deep", "other", "other/deep", "gone-keep", "gone-keep/deep", "keep"]
+        const before = {
+            rootNodes: ["gone", "other", "gone-keep", "keep"].map(dir => entry(path(dir), true)),
+            childrenByDir: Object.fromEntries(cached.map(dir => [path(dir), []])),
+            expandedDirs: new Set(cached.map(path)),
+            scrollTop: 123
+        }
+        useFileTreeStore.setState({ trees: { [root]: before } })
+        fakeFs[root] = [entry(path("gone-keep"), true), entry(path("keep"), true)]
+        await useFileTreeStore.getState().invalidatePaths(root, [path("changed.txt")])
+        const after = useFileTreeStore.getState().trees[root]
+        expect(Object.keys(after.childrenByDir).sort()).toEqual(["gone-keep", "gone-keep/deep", "keep"].map(path).sort())
+        expect([...after.expandedDirs].sort()).toEqual(["gone-keep", "gone-keep/deep", "keep"].map(path).sort())
+        expect(after.scrollTop).toBe(123)
+        expect(Object.keys(before.childrenByDir)).toHaveLength(cached.length)
+        expect(before.expandedDirs.size).toBe(cached.length)
+        expect(listCalls).toEqual([root])
+    })
+
+    it("preserves child-cache and expansion identity when a root file alone changes", async () => {
+        const before = { rootNodes: [entry("/a/src", true)], childrenByDir: { "/a/src": [] }, expandedDirs: new Set(["/a/src"]), scrollTop: 0 }
+        useFileTreeStore.setState({ trees: { "/a": before } })
+        fakeFs["/a"] = [...before.rootNodes, entry("/a/new.ts", false)]
+        await useFileTreeStore.getState().invalidatePaths("/a", ["/a/new.ts"])
+        const after = useFileTreeStore.getState().trees["/a"]
+        expect(after.rootNodes).toEqual(fakeFs["/a"])
+        expect(after.childrenByDir).toBe(before.childrenByDir)
+        expect(after.expandedDirs).toBe(before.expandedDirs)
+    })
+
     it("只 re-list 受影響且已快取的目錄；展開狀態保留；bump treeRevision 並留 marker", async () => {
         fakeFs["/a"] = [entry("/a/src", true)]
         fakeFs["/a/src"] = [entry("/a/src/main.ts", false)]
@@ -156,6 +189,67 @@ describe("fileTreeStore — 精準失效 invalidatePaths", () => {
         // marker 一次性：同 revision 消費一次為 true，再問為 false。
         expect(useFileTreeStore.getState().consumePreciseRevision("/a", 1)).toBe(true)
         expect(useFileTreeStore.getState().consumePreciseRevision("/a", 1)).toBe(false)
+    })
+
+    it("coalesced directory relists only cached descendants once, not targetX or uncached subtrees", async () => {
+        fakeFs["/a"] = [entry("/a/target", true), entry("/a/targetX", true)]
+        fakeFs["/a/target"] = [entry("/a/target/debug", true), entry("/a/target/uncached", true)]
+        fakeFs["/a/target/debug"] = [entry("/a/target/debug/out", false)]
+        fakeFs["/a/targetX"] = [entry("/a/targetX/other", false)]
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        for (const dir of ["/a/target", "/a/target/debug", "/a/targetX"]) await store.toggleDir("/a", dir)
+        fakeFs["/a/target/debug"] = [entry("/a/target/debug/new", false)]
+        listCalls = []
+
+        await store.invalidatePaths("/a", ["/a/target", "/a/target", "/a/target/debug/out"])
+
+        expect(listCalls.sort()).toEqual(["/a", "/a/target", "/a/target/debug"])
+        const tree = useFileTreeStore.getState().trees["/a"]
+        expect(tree?.childrenByDir["/a/target/debug"]).toEqual(fakeFs["/a/target/debug"])
+        expect(tree?.childrenByDir["/a/target/uncached"]).toBeUndefined()
+        expect(tree?.expandedDirs.has("/a/target/debug")).toBe(true)
+    })
+
+    it("prunes a removed nested directory before listing coalesced descendants", async () => {
+        fakeFs["/a"] = [entry("/a/src", true)]
+        fakeFs["/a/src"] = [entry("/a/src/nested", true), entry("/a/src/keep", true)]
+        fakeFs["/a/src/nested"] = [entry("/a/src/nested/deep", true)]
+        fakeFs["/a/src/nested/deep"] = []
+        fakeFs["/a/src/keep"] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        for (const dir of ["/a/src", "/a/src/nested", "/a/src/nested/deep", "/a/src/keep"])
+            await store.toggleDir("/a", dir)
+        // Keep stale fake child listings: requesting them would resurrect the cache.
+        fakeFs["/a/src"] = [entry("/a/src/keep", true)]
+        listCalls = []
+
+        await store.invalidatePaths("/a", ["/a/src", "/a/src/nested/deep/file"])
+
+        expect(listCalls).toEqual(["/a", "/a/src", "/a/src/keep"])
+        const tree = useFileTreeStore.getState().trees["/a"]!
+        expect(Object.keys(tree.childrenByDir)).toEqual(["/a/src", "/a/src/keep"])
+        expect([...tree.expandedDirs]).toEqual(["/a/src", "/a/src/keep"])
+    })
+
+    it("coalesced Windows directory matches cached casing and separators without matching targetX", async () => {
+        const root = String.raw`C:\Work`
+        const target = String.raw`C:\Work\Target`
+        const nested = String.raw`C:\Work\Target\Debug`
+        const other = String.raw`C:\Work\TargetX`
+        fakeFs[root] = [entry(target, true), entry(other, true)]
+        fakeFs[target] = [entry(nested, true)]
+        fakeFs[nested] = []
+        fakeFs[other] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree(root)
+        for (const dir of [target, nested, other]) await store.toggleDir(root, dir)
+        listCalls = []
+
+        await store.invalidatePaths(root, ["c:/work/target"])
+
+        expect(listCalls.sort()).toEqual([target, nested].sort())
     })
 
     it("root 直屬路徑變更 → re-list root", async () => {
@@ -194,8 +288,10 @@ describe("fileTreeStore — 精準失效 invalidatePaths", () => {
         fakeFs["/a"] = []
         delete fakeFs["/a/src"]
         delete fakeFs["/a/src/nested"]
+        listCalls = []
         await useFileTreeStore.getState().invalidatePaths("/a", ["/a/src"])
         const tree = useFileTreeStore.getState().trees["/a"]
+        expect(listCalls).toEqual(["/a"])
         expect(tree?.rootNodes).toEqual([])
         expect(tree?.childrenByDir["/a/src"]).toBeUndefined()
         expect(tree?.childrenByDir["/a/src/nested"]).toBeUndefined()

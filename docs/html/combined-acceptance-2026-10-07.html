@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yuzora Git／分支 modal／檔案複製貼上 實機驗收 — 2026-10-07</title>
+<style>
+:root{color-scheme:light;--bg:#f6f8fb;--card:#fff;--ink:#172033;--muted:#5b6578;--line:#dce2ec;--pass:#08783f;--fail:#b42318;--blocked:#9a6700;--accent:#3157d5}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif}main{max-width:1180px;margin:0 auto;padding:36px 24px 72px}h1{font-size:30px;line-height:1.2;margin:0 0 8px}h2{margin:32px 0 12px;font-size:21px}h3{margin:22px 0 8px;font-size:16px}.sub{color:var(--muted);margin:0 0 24px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:14px 0;box-shadow:0 4px 18px rgba(28,39,60,.05)}.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{padding:16px;border:1px solid var(--line);border-radius:12px;background:#fff}.metric strong{display:block;font-size:26px}.pass{color:var(--pass)}.fail{color:var(--fail)}.blocked{color:var(--blocked)}table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}th,td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{background:#eef2f8;font-weight:700}tr:last-child td{border-bottom:0}.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:12px;white-space:nowrap}.badge.pass{background:#e8f7ef}.badge.fail{background:#fff0ee}.badge.blocked{background:#fff7db}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#eef2f8;padding:1px 5px;border-radius:5px}.callout{border-left:4px solid var(--accent);padding:12px 14px;background:#f2f5ff;border-radius:8px}.warn{border-left-color:var(--blocked);background:#fffaf0}.muted{color:var(--muted)}ul,ol{padding-left:22px}.small{font-size:12px}.shots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.shots figure{margin:0;background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px}.shots img{width:100%;border-radius:8px;display:block}.shots figcaption{font-size:12px;color:var(--muted);margin-top:6px}@media(max-width:760px){.summary,.shots{grid-template-columns:1fr}main{padding:24px 12px}table{display:block;overflow-x:auto}}
+</style>
+</head>
+<body><main>
+<h1>Git／分支 modal／檔案複製貼上 實機驗收</h1>
+<p class="sub">日期：2026-10-07 · 方式：pi-codex-app MCP（macOS native CUA）直接操作 · App：隔離的 <code>Yuzora Acceptance</code>（<code>dev.yuuzu.yuzora.acceptance</code>，HOME／XDG／HERDR socket 全隔離）· 測試資料：<code>/tmp/yz-git-multi</code>、<code>/tmp/yz-copy-ws</code>、GitHub 私有測試倉庫 <code>NakiriYuuzu/yuzora-git-acceptance</code></p>
+
+<section class="summary">
+<div class="metric"><span>Git 常用操作（M1–M14）</span><strong class="pass">14 / 14</strong><small>M4、M8、M12 依當下確認後執行</small></div>
+<div class="metric"><span>分支 modal 修正（V1–V6）</span><strong class="pass">6 / 6</strong><small>髒工作樹下所有操作恢復可用</small></div>
+<div class="metric"><span>檔案複製貼上（C1–C8）</span><strong id="c-score" class="pass">8 / 8</strong><small>C3 實機找到兩個 bug，修正後重驗通過</small></div>
+<div class="metric"><span>隔離／真實 repo 影響</span><strong class="pass">0</strong><small>驗收版只連隔離 HERDR server；未碰使用者 repo</small></div>
+</section>
+
+<section class="card">
+<h2>分支 modal「點什麼都報錯」根因</h2>
+<p>使用者的工作樹幾乎總是有未提交變更（本 repo 目前 364 個）。分支 modal 的動作在這種狀態下全部被 git 拒絕：</p>
+<ul>
+<li>簽出本地分支、簽出遠端為本地分支、簽出 tag／從 tag 建分支 → <code>error: Your local changes … would be overwritten by checkout</code>。</li>
+<li>Rebase onto（右鍵選單）→ 只要工作樹髒就一律 <code>cannot rebase: You have unstaged changes</code>。</li>
+<li>Merge into current、Pull → 檔案重疊時 <code>would be overwritten by merge</code>（若使用者設了 <code>pull.rebase</code> 則一律失敗）。</li>
+<li>另外 Log 的「簽出」把 commit hash 交給 <code>git switch</code>，必定 <code>fatal: a branch is expected, got commit</code>（與髒不髒無關）。</li>
+</ul>
+<p>修法對齊 JetBrains：簽出遇到本機變更時跳出「Git 簽出問題」→「智慧簽出」（stash → switch → 還原，盡量保留 staged 狀態；還原衝突就開衝突對話框並保留 stash）；Pull／Merge／Rebase 改用 <code>--autostash</code>（merge 類需 git ≥ 2.27）；Log 簽出改為 detached。</p>
+</section>
+
+<h2>逐項結果</h2>
+<h3>分支 modal 修正（髒工作樹）</h3>
+<table>
+<thead><tr><th style="width:64px">項目</th><th style="width:90px">結果</th><th>步驟與證據</th></tr></thead>
+<tbody>
+<tr><td>V0</td><td><span class="badge fail">修前</span></td><td>staged 變更下點分支 modal 的「簽出」→ 紅色錯誤 <code>git switch: error: Your local changes … overwritten by checkout</code>；遠端分支「簽出為本地分支」同錯。（圖 1）</td></tr>
+<tr><td>V1</td><td><span class="badge pass">PASS</span></td><td><code>long.txt</code> staged WIP → 簽出 <code>feature/smart-clean</code> → 出現「Git 簽出問題」→ 智慧簽出 → 切換成功，分支的第 1 行與本機第 12 行並存、仍為 staged、未殘留 stash。（圖 2、3）</td></tr>
+<tr><td>V2</td><td><span class="badge pass">PASS</span></td><td>同伴 clone 推一個改 README 第 C 行的 commit；本機 README 第 A 行有 WIP → modal「抓取」→「拉取」→ 產生 merge，WIP 與遠端修改並存、無殘留 stash（autostash 不保留 staged 狀態，與 git／JetBrains 相同）。</td></tr>
+<tr><td>V3</td><td><span class="badge pass">PASS</span></td><td>Log 選 <code>ddc0476</code> →「簽出」→ 智慧簽出 → <code>HEAD (no branch)</code> 於 <code>ddc0476</code>，WIP 還原。（圖 4，重設按鈕已無鎖頭圖示）</td></tr>
+<tr><td>V4</td><td><span class="badge pass">PASS</span></td><td>modal 右鍵 <code>main</code> →「將 'feature/smart-clean' rebase 到 'main'」→ 確認 → 成功，WIP（README、long.txt）保留。（圖 5）</td></tr>
+<tr><td>V5</td><td><span class="badge pass">PASS</span></td><td>本機改 <code>long.txt</code> 第 1 行（與目標衝突）→ 智慧簽出 <code>main</code> → 自動開啟衝突對話框（long.txt），stash「Yuzora smart checkout」保留 → 接受 Theirs 後解決。（圖 6）</td></tr>
+<tr><td>V6</td><td><span class="badge pass">PASS</span></td><td>modal 右鍵重新命名 <code>feature/merge-me</code> → <code>feature/merge-me-v2</code>，Log 的分支標籤立即更新。<span class="muted">（首次嘗試失敗是 CUA 的 End 鍵輸入了 <code>\x04</code> 控制字元，git 正確拒絕；非 App 問題。）</span></td></tr>
+</tbody>
+</table>
+
+<h3>Git 常用操作（M1–M14）</h3>
+<table>
+<thead><tr><th style="width:64px">項目</th><th style="width:90px">結果</th><th>步驟與證據</th></tr></thead>
+<tbody>
+<tr><td>M1</td><td><span class="badge pass">PASS</span></td><td>非 repo 根目錄 <code>yz-git-multi</code> 列出 <code>libs/second</code>、<code>work</code> 兩個巢狀 repo。</td></tr>
+<tr><td>M2–M3</td><td><span class="badge pass">PASS</span></td><td>前一輪完成（stash 建立、分支重新命名）。</td></tr>
+<tr><td>M4</td><td><span class="badge pass">PASS</span></td><td>刪除未合併分支 → 「尚未完全合併」→ 強制刪除（使用者當下確認）。</td></tr>
+<tr><td>M5</td><td><span class="badge pass">PASS</span></td><td>Merge 衝突 → 衝突對話框 → 三窗格合併工具 → Both → Apply → Continue → <code>8e020e0</code>。</td></tr>
+<tr><td>M6–M7</td><td><span class="badge pass">PASS</span></td><td>Revert → <code>d38d72f</code>；復原 commit（soft reset，變更留在暫存區）。</td></tr>
+<tr><td>M8</td><td><span class="badge pass">PASS</span></td><td>Hard 重設（使用者當下確認）。</td></tr>
+<tr><td>M9</td><td><span class="badge pass">PASS</span></td><td>Rebase 衝突 → Skip。</td></tr>
+<tr><td>M10–M11</td><td><span class="badge pass">PASS</span></td><td>Pull（rebase）；Push（含 tags）→ 遠端 <code>0d01be7</code>。</td></tr>
+<tr><td>M12</td><td><span class="badge pass">PASS</span></td><td>強制 Push（with lease，使用者當下確認）→ 遠端 main 由 <code>0d01be7</code> 回到 <code>b6749d4</code>（<code>ls-remote</code> 核對）。</td></tr>
+<tr><td>M13</td><td><span class="badge pass">PASS</span></td><td>Stash 對話框：輸入訊息 →「Stash 變更」→ 工作樹乾淨；「套用」→ 變更還原、條目保留。Pop／刪除屬刪資料動作，本輪未在 GUI 執行（單元測試涵蓋）。</td></tr>
+<tr><td>M14</td><td><span class="badge pass">PASS</span></td><td>repository 選擇器 <code>work</code> ↔ <code>libs/second</code>：Log、狀態、變更清單同步切換。（圖 7）</td></tr>
+</tbody>
+</table>
+
+<h3>檔案複製貼上（C1–C8，<code>/tmp/yz-copy-ws</code>）</h3>
+<table>
+<thead><tr><th style="width:64px">項目</th><th style="width:90px">結果</th><th>步驟與證據</th></tr></thead>
+<tbody>
+<tr><td>C1</td><td><span class="badge pass">PASS</span></td><td>右鍵 <code>src/a.ts</code>「複製」→ OS 剪貼簿為 <code>/private/tmp/yz-copy-ws/src/a.ts</code>（可貼到 Finder）→ 右鍵 <code>docs</code>「貼上」→ <code>docs/a.ts</code>，docs 自動展開。（圖 8）</td></tr>
+<tr><td>C2</td><td><span class="badge pass">PASS</span></td><td>再貼一次 → <code>docs/a copy.ts</code>。</td></tr>
+<tr><td>C3</td><td id="c3-cell"><span class="badge pass">PASS</span></td><td id="c3-detail">鍵盤 Cmd+C／Cmd+V。實機找到兩個 bug：① WebKit 點擊 button 不給焦點，按鍵到不了樹；② macOS 預設 Edit 選單攔走 Cmd+C／X／V，頁面收不到 keydown（Cmd+D 可用即為對照）。已修：點擊時主動 focus 列；改監聽 <code>beforecopy／copy／cut／paste</code>。重建後：點 <code>src/components</code> → Cmd+C（OS 剪貼簿為該資料夾）→ 點 <code>docs</code> → Cmd+V → <code>docs/components/Button.tsx</code>；Cmd+X 檔案列 → Cmd+V 亦正確移動（點檔案列開預覽分頁後焦點仍留在樹）。</td></tr>
+<tr><td>C4</td><td><span class="badge pass">PASS</span></td><td>開啟 README.md 分頁 → 剪下（列變淡）→ 貼到 <code>src</code> → 根目錄 README 消失、分頁跟著指向新路徑且無錯誤 → 編輯 + Cmd+S 寫入 <code>src/README.md</code>，根目錄未被重建。（圖 9）</td></tr>
+<tr><td>C5</td><td><span class="badge pass">PASS</span></td><td>右鍵 <code>.env</code>「製作副本」→ <code>.env copy</code>（內容相同）。</td></tr>
+<tr><td>C6</td><td><span class="badge pass">PASS</span></td><td>Finder 剪貼簿放 <code>photo.txt</code> 與 <code>assets/</code> → 貼到 <code>docs</code> → 檔案與資料夾（含兩個 svg）出現，外部來源未變。</td></tr>
+<tr><td>C7</td><td><span class="badge pass">PASS</span></td><td>複製 <code>src</code> → 貼到 <code>src/components</code> →「無法貼上：無法把資料夾複製到它自己裡面。」檔案樹前後 diff 為空。（圖 10）</td></tr>
+<tr><td>C8</td><td><span class="badge pass">PASS</span></td><td>App 內剪下 <code>docs/notes.md</code>（OS 剪貼簿同步為 notes.md）→ 之後 Finder 複製 <code>photo.txt</code> → 貼到 <code>src</code> → 得到 <code>src/photo copy.txt</code>（Finder 優先），<code>notes.md</code> 未被移動。</td></tr>
+</tbody>
+</table>
+
+<h2>截圖</h2>
+<div class="shots">
+<figure><img src="combined-acceptance-2026-10-07-assets/01-before-checkout-error.jpg" alt=""><figcaption>圖 1　修前：髒工作樹簽出即報錯</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/02-smart-checkout-dialog.jpg" alt=""><figcaption>圖 2　Git 簽出問題 → 智慧簽出</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/03-smart-checkout-done.jpg" alt=""><figcaption>圖 3　智慧簽出完成，無錯誤</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/04-log-commit-actions.jpg" alt=""><figcaption>圖 4　Log commit 動作（重設按鈕無鎖頭）</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/05-branch-context-menu.jpg" alt=""><figcaption>圖 5　分支 modal 右鍵：Merge／Rebase／重新命名／刪除</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/06-smart-checkout-conflicts.jpg" alt=""><figcaption>圖 6　還原衝突 → 自動開啟衝突對話框</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/07-repo-switch.jpg" alt=""><figcaption>圖 7　巢狀 repo 切換</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/08-c1-paste.jpg" alt=""><figcaption>圖 8　C1 貼上並自動展開</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/09-c4-cut-move-tab.jpg" alt=""><figcaption>圖 9　C4 剪下移動後分頁跟隨</figcaption></figure>
+<figure><img src="combined-acceptance-2026-10-07-assets/10-c7-guard.jpg" alt=""><figcaption>圖 10　C7 自我複製防呆</figcaption></figure>
+</div>
+
+<section class="card">
+<h2>本輪修正清單</h2>
+<ol>
+<li>智慧簽出：<code>git_checkout</code>／<code>git_create_branch</code>／<code>git_checkout_detached</code> 新增 <code>smart</code>（本機與 SSH host 共用 <code>switch_keeping_changes</code>）；前端 <code>switchBranch</code> 偵測錯誤後詢問。</li>
+<li>Pull／Merge／Rebase <code>--autostash</code>（merge 類依 git 版本 ≥ 2.27）。</li>
+<li>Log「簽出」commit 改 detached（原本必定失敗）。</li>
+<li>重新命名／刪除分支後重載 Log 的 ref 標籤。</li>
+<li>重設按鈕移除舊設計的鎖頭圖示與「按住以重設」提示；Skip 確認按鈕文字改為「跳過」。</li>
+<li>檔案樹：點擊列取得焦點；macOS 改經 Edit 選單的剪貼簿事件處理 Cmd+C／X／V。</li>
+</ol>
+</section>
+
+<section class="card">
+<h2>限制與後續</h2>
+<ul>
+<li>智慧簽出只處理「追蹤檔會被覆寫」；未追蹤檔擋住簽出時仍顯示 git 原文。未提供 JetBrains 的「強制簽出」（會丟棄變更）。</li>
+<li>git 2.24–2.26 的 merge／pull（merge 模式）沒有 autostash，重疊時仍會失敗。</li>
+<li>遠端 workspace 不支援從 Finder 匯入；SFTP 工作區不支援複製／移動；多 repo 只監看作用中的 repo。</li>
+<li>Stash pop／drop 屬刪除動作，本輪未在 GUI 執行（Rust／前端單元測試涵蓋）。</li>
+</ul>
+</section>
+
+<section class="card">
+<h2>自動化驗證</h2>
+<ul>
+<li>Rust host：538／538（兩個既有時序敏感測試在 build 負載下失敗，單獨重跑通過）；新增智慧簽出 3 項、autostash 1 項，更新 pull 參數 2 項。</li>
+<li>前端：vitest 全套 296 檔 3621 通過；新增智慧簽出流程 2 項、檔案樹焦點與 Edit 選單剪貼簿事件 2 項（焦點測試在拿掉修正時會失敗）。</li>
+<li><code>src-tauri</code>：<code>cargo test</code> 458 通過。全套並行時抓到 <code>concurrent_status_reads…</code> 偶發失敗：stage 的「仍有衝突標記」前置檢查原本跑完整 <code>git status</code>，改為只讀 index 的 <code>git ls-files --unmerged</code> 後全套通過。</li>
+<li><code>cargo check --all-targets</code>、<code>cargo fmt --check</code>、clippy baseline（19 筆相符）、<code>bun run typecheck</code>、<code>eslint src</code>（0 error）通過。</li>
+</ul>
+</section>
+
+<p class="muted small">本報告只寫入驗收交付檔與 <code>/tmp</code> 測試資料；未在使用者 repo 執行任何 git 寫入（add／commit／push）。</p>
+</main></body></html>

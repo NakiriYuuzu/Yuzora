@@ -94,7 +94,12 @@ export function sanitizeSessionPaths(
 
 function sanitizeEntry(entry: WorkspaceSessionEntry): WorkspaceSessionEntry {
     const result = sanitizeSessionPaths(entry.tabs, entry.activePath)
-    const pinnedPaths = Array.isArray(entry.pinnedPaths) ? entry.pinnedPaths.filter((path) => result.tabs.includes(path)) : []
+    // Pinned tabs normally occupy the matching prefix of the tab list.
+    // Preserve the full membership fallback for old, reordered or duplicate pins.
+    const pinnedPaths = Array.isArray(entry.pinnedPaths)
+        ? entry.pinnedPaths.filter((path, index) =>
+            (index < result.tabs.length && result.tabs[index] === path) || result.tabs.includes(path))
+        : []
     return pinnedPaths.length ? { ...result, pinnedPaths } : result
 }
 

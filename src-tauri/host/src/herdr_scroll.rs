@@ -33,6 +33,26 @@ fn parse_scroll(
     Ok(Some(scroll))
 }
 
+/// A pane text coordinate: `row` counts from the oldest host-scrollback row
+/// (the visible frame starts at `max_offset_from_bottom - offset_from_bottom`),
+/// `col` is inclusive.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+pub struct HerdrPaneTextPoint {
+    pub row: u32,
+    pub col: u16,
+}
+
+fn parse_selection(response: serde_json::Value, pane_id: &str) -> Result<String, String> {
+    let result = &response["result"];
+    if result["type"] != "pane_selection" || result["pane_id"].as_str() != Some(pane_id) {
+        return Err("pane.selection.read returned a different pane".into());
+    }
+    result["text"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "pane.selection.read returned no text".into())
+}
+
 /// Protocol 22 introduced the official pane-owned scroll endpoints. Some
 /// remote/WSL schema responses advertise the snapshot method but omit one or
 /// both pane methods from the method list. In that case the protocol boundary
@@ -85,11 +105,51 @@ impl HerdrManager {
         // request, which is especially visible across Windows/WSL.
         parse_scroll(response, &pane_id)
     }
+
+    /// Reads the text between two pane points, including rows that are no
+    /// longer in the visible frame (xterm only holds the current frame).
+    pub fn pane_selection_read(
+        &self,
+        session: Option<&str>,
+        pane_id: String,
+        anchor: HerdrPaneTextPoint,
+        cursor: HerdrPaneTextPoint,
+    ) -> Result<String, String> {
+        if pane_id.trim().is_empty() {
+            return Err("pane_id is required".into());
+        }
+        let response = self.call_checked_api(
+            session,
+            |api| pane_api_available(api, "pane.selection.read"),
+            "pane.selection.read",
+            serde_json::json!({"pane_id": pane_id, "anchor": anchor, "cursor": cursor}),
+            "herdr pane.selection.read unavailable",
+        )?;
+        parse_selection(response, &pane_id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selection_text_is_bound_to_the_requested_pane() {
+        let response = serde_json::json!({"result":{"type":"pane_selection","pane_id":"w1:p1","text":"line one\nline two"}});
+        assert_eq!(
+            parse_selection(response.clone(), "w1:p1").unwrap(),
+            "line one\nline two"
+        );
+        assert!(parse_selection(response, "w1:p2").is_err());
+        assert!(parse_selection(
+            serde_json::json!({"result":{"type":"pane_info","pane_id":"w1:p1"}}),
+            "w1:p1"
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::to_value(HerdrPaneTextPoint { row: 790, col: 3 }).unwrap(),
+            serde_json::json!({"row":790,"col":3})
+        );
+    }
     #[test]
     fn reads_only_official_ranges_and_exact_pane_identity() {
         let response = serde_json::json!({"result":{"type":"pane_info","pane":{"pane_id":"w1:p1","scroll":{"offset_from_bottom":20,"max_offset_from_bottom":100,"viewport_rows":24}}}});

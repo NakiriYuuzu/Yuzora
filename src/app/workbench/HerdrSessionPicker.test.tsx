@@ -217,6 +217,42 @@ it("lists every host's Sessions as a keyboard listbox and loads with Enter or a 
   await waitFor(() => expect(onSelect).toHaveBeenCalledWith('["alpha","default"]'));
 });
 
+it.each(["ready", "failed"] as const)("shows a disabled loading default rather than stopped until startup is %s", async (state) => {
+  addSession("alpha", "Alpha");
+  useHerdrStore.setState(current => ({
+    herdrStartup: { state: "starting", error: null },
+    sessions: [{ name: "default", default: true, running: false, sessionDir: "/", socketPath: "/sock" }, ...current.sessions],
+  }));
+  render(<HerdrSessionPicker initialSession={null} onSelect={onSelect} onClose={onClose} returnFocusRef={{ current: null }} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "載入 Session" })).toBeEnabled());
+  const pending = screen.getByRole("option", { name: new RegExp(`default.*${i18n.t("spaceTree:loading")}`) });
+  expect(pending).toHaveAttribute("aria-disabled", "true");
+  expect(pending).not.toHaveTextContent(i18n.t("spaceTree:sessionNotRunning"));
+  expect(pending).not.toHaveTextContent(i18n.t("spaceTree:pickerStoppedHint"));
+  fireEvent.doubleClick(pending);
+  expect(mocks.select).not.toHaveBeenCalled();
+  act(() => useHerdrStore.setState({ herdrStartup: { state, error: state === "failed" ? "startup failed" : null } }));
+  const stopped = screen.getByRole("option", { name: new RegExp(`default.*${i18n.t("spaceTree:sessionNotRunning")}`) });
+  expect(stopped).toHaveAttribute("aria-disabled", "true");
+  expect(stopped).toHaveTextContent(i18n.t("spaceTree:pickerStoppedHint"));
+});
+
+it("keeps a pending-only picker visible but non-loadable", async () => {
+  useHerdrStore.setState({
+    herdrStartup: { state: "starting", error: null },
+    sessions: [{ name: "default", default: true, running: true, sessionDir: "/", socketPath: "/sock" }],
+  });
+  render(<HerdrSessionPicker initialSession="default" onSelect={onSelect} onClose={onClose} returnFocusRef={{ current: null }} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: i18n.t("spaceTree:refreshSessions") })).toBeEnabled());
+  const pending = screen.getByRole("option", { name: new RegExp(`default.*${i18n.t("spaceTree:loading")}`) });
+  expect(pending).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByRole("button", { name: "載入 Session" })).toBeDisabled();
+  expect(screen.queryByText(i18n.t("spaceTree:noRunningSessions"))).not.toBeInTheDocument();
+  fireEvent.doubleClick(pending);
+  fireEvent.keyDown(pending.closest("[cmdk-root]")!, { key: "Enter" });
+  expect(mocks.select).not.toHaveBeenCalled();
+});
+
 it("explains why nothing can be loaded and offers the Session tools", async () => {
   addSession("alpha", "Alpha");
   useHerdrStore.setState(state => ({ sessions: state.sessions.map(session => ({ ...session, running: false })) }));

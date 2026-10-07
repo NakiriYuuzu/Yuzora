@@ -1,12 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import i18n from "@/lib/i18n"
+import type { HerdrTerminalEvent } from "@/lib/herdrTypes"
 import { useHerdrNativeStore, type HerdrNativeSelection } from "@/state/herdrNativeStore"
 import HerdrNativeDialog from "./HerdrNativeDialog"
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(), feature: vi.fn(), release: vi.fn(), resize: vi.fn(), input: vi.fn(), paneFocus: vi.fn(),
-  bootstrap: vi.fn(), terminalOpen: vi.fn(), terminalDispose: vi.fn(), graphicsDispose: vi.fn(), fit: vi.fn(), onData: vi.fn()
+  bootstrap: vi.fn(), terminalOpen: vi.fn(), terminalDispose: vi.fn(), graphicsDispose: vi.fn(), fit: vi.fn(), onData: vi.fn(),
+  graphicsWrite: vi.fn(), writeText: vi.fn(), oscHandler: vi.fn()
 }))
 
 vi.mock("@/lib/herdrProvider", () => ({ invokeHerdr: mocks.invoke }))
@@ -16,8 +18,9 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalInput: mocks.input, herdrPaneFocus: mocks.paneFocus
 }))
 vi.mock("@/state/herdrStore", () => ({ useHerdrStore: { getState: () => ({ bootstrap: mocks.bootstrap }) } }))
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: mocks.writeText }))
 vi.mock("@/terminal/kittyRenderer", () => ({
-  installKittyRenderer: () => ({ write: vi.fn().mockResolvedValue(undefined), dispose: mocks.graphicsDispose })
+  installKittyRenderer: () => ({ write: mocks.graphicsWrite, dispose: mocks.graphicsDispose })
 }))
 vi.mock("@/terminal/terminalClipboard", () => ({
   installTerminalClipboardHandling: () => ({ flushPendingPaste: vi.fn(), dispose: vi.fn() })
@@ -29,7 +32,7 @@ vi.mock("@xterm/xterm", () => ({
     rows = 24
     options = {}
     element?: HTMLElement
-    parser = { registerOscHandler: () => ({ dispose: vi.fn() }) }
+    parser = { registerOscHandler: (code: number, handler: (data: string) => boolean) => { mocks.oscHandler(code, handler); return { dispose: vi.fn() } } }
     open(element: HTMLElement) {
       this.element = document.createElement("div")
       this.element.innerHTML = '<div class="xterm-screen"></div>'
@@ -58,7 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.invoke.mockResolvedValue({ sessionId: "native-client-1" })
   mocks.feature.mockResolvedValue({})
-  for (const fn of [mocks.release, mocks.resize, mocks.input, mocks.paneFocus, mocks.bootstrap]) fn.mockResolvedValue(undefined)
+  for (const fn of [mocks.release, mocks.resize, mocks.input, mocks.paneFocus, mocks.bootstrap, mocks.graphicsWrite, mocks.writeText]) fn.mockResolvedValue(undefined)
   useHerdrNativeStore.setState({ selection: null })
 })
 
@@ -68,6 +71,96 @@ afterEach(() => {
 })
 
 describe("HERDR native client dialog lifecycle", () => {
+  function frame(bytesBase64: string): HerdrTerminalEvent {
+    return { type: "frame", sessionId: "native-client-1", seq: 1, full: false, encoding: "ansi", width: 80, height: 24, bytesBase64 }
+  }
+
+  async function openOutputDialog() {
+    const dialog = render(<HerdrNativeDialog selection={{ sessionName: "e2e-session" }} />)
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalledTimes(1))
+    return {
+      ...dialog,
+      onEvent: mocks.invoke.mock.calls[0][1].onEvent as (event: HerdrTerminalEvent) => void,
+      onOsc: mocks.oscHandler.mock.calls[0][1] as (data: string) => boolean
+    }
+  }
+
+  it.each([0, 64, 16384])("preserves every byte in a %i-byte native frame", async size => {
+    const bytes = Uint8Array.from({ length: size }, (_, index) => (index * 37 + 11) & 255)
+    const { onEvent } = await openOutputDialog()
+    await act(async () => { onEvent(frame(btoa(String.fromCharCode(...bytes)))) })
+    expect(mocks.graphicsWrite).toHaveBeenCalledExactlyOnceWith(bytes)
+  })
+
+  it("preserves invalid-frame rejection", async () => {
+    const { onEvent } = await openOutputDialog()
+    expect(() => onEvent(frame("%%%"))).toThrow()
+    expect(mocks.graphicsWrite).not.toHaveBeenCalled()
+  })
+
+  it("keeps decoded output ordered while the first renderer write is pending", async () => {
+    let finish!: () => void
+    mocks.graphicsWrite.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    const { onEvent } = await openOutputDialog()
+    await act(async () => { onEvent(frame(btoa("first"))) })
+    await act(async () => { onEvent(frame(btoa("second"))) })
+    expect(mocks.graphicsWrite).toHaveBeenCalledTimes(1)
+    await act(async () => { finish() })
+    expect(mocks.graphicsWrite.mock.calls.map(([bytes]) => new TextDecoder().decode(bytes))).toEqual(["first", "second"])
+  })
+
+  it("retires queued output and ignores malformed late frames after disposal", async () => {
+    let finish!: () => void
+    mocks.graphicsWrite.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    const { onEvent, unmount } = await openOutputDialog()
+    await act(async () => { onEvent(frame(btoa("first"))) })
+    act(() => { onEvent(frame(btoa("queued"))) })
+    unmount()
+    await act(async () => { finish() })
+    expect(() => onEvent(frame("%%%"))).not.toThrow()
+    expect(mocks.graphicsWrite).toHaveBeenCalledTimes(1)
+    expect(mocks.graphicsDispose).toHaveBeenCalledTimes(1)
+    expect(mocks.release).toHaveBeenCalledExactlyOnceWith("native-client-1")
+  })
+
+  it.each([512, 513])("preserves the 8 MiB queue limit for %i native-sized frames", async count => {
+    const { onEvent } = await openOutputDialog()
+    const event = frame(btoa("x".repeat(16384)))
+    await act(async () => { for (let index = 0; index < count; index++) onEvent(event) })
+    if (count === 512) {
+      expect(mocks.graphicsWrite).toHaveBeenCalledTimes(512)
+      expect(mocks.release).not.toHaveBeenCalled()
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    } else {
+      expect(mocks.graphicsWrite).not.toHaveBeenCalled()
+      expect(mocks.release).toHaveBeenCalledExactlyOnceWith("native-client-1")
+      expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("herdrTools:nativeOutputLimit"))
+    }
+  })
+
+  it("decodes UTF-8 OSC52 text and accepts base64 whitespace", async () => {
+    const text = "Hello 中文 😀\n", bytes = new TextEncoder().encode(text)
+    const encoded = btoa(String.fromCharCode(...bytes)).replace(/.{4}/g, "$& \n")
+    const { onOsc } = await openOutputDialog()
+    await act(async () => { expect(onOsc("c;" + encoded)).toBe(true) })
+    expect(mocks.oscHandler).toHaveBeenCalledWith(52, expect.any(Function))
+    expect(mocks.writeText).toHaveBeenCalledExactlyOnceWith(text)
+  })
+
+  it.each(["query", "malformed", "oversized"])("ignores %s OSC52 data", async kind => {
+    const encoded = kind === "query" ? "?" : kind === "malformed" ? "%%%" : "A".repeat(4 * 1024 * 1024 + 4)
+    const { onOsc } = await openOutputDialog()
+    await act(async () => { expect(onOsc("c;" + encoded)).toBe(true) })
+    expect(mocks.writeText).not.toHaveBeenCalled()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it.each([0, 4 * 1024 * 1024])("accepts the OSC52 encoded boundary of %i characters", async size => {
+    const { onOsc } = await openOutputDialog()
+    await act(async () => { expect(onOsc("c;" + "A".repeat(size))).toBe(true) })
+    expect(mocks.writeText).toHaveBeenCalledExactlyOnceWith("\0".repeat(size / 4 * 3))
+  })
+
   it("serializes pre-open input before input typed while that first write is pending", async () => {
     let open!: (value: { sessionId: string }) => void
     let finishInput!: () => void

@@ -1,6 +1,3 @@
-import type { EditorState } from "@codemirror/state"
-import { getChunks } from "@codemirror/merge"
-
 export const GIT_DIFF_SPLIT_MIN = 0.25
 export const GIT_DIFF_SPLIT_MAX = 0.75
 export const GIT_DIFF_SPLIT_DEFAULT = 0.5
@@ -29,23 +26,4 @@ export function pathMatchesFilter(path: string, query: string): boolean {
 
 export function filterRowsByPath<T extends { path: string }>(rows: readonly T[], query: string): T[] {
     return rows.filter((row) => pathMatchesFilter(row.path, query))
-}
-
-/** 0-based index of the chunk under (or just before) the main selection. */
-export function currentChunkIndex(state: EditorState): number {
-    const info = getChunks(state)
-    if (!info || info.chunks.length === 0) return -1
-    const head = state.selection.main.head
-    const side = info.side ?? "b"
-    for (let i = 0; i < info.chunks.length; i++) {
-        const chunk = info.chunks[i]
-        const from = side === "b" ? chunk.fromB : chunk.fromA
-        const to = side === "b" ? chunk.toB : chunk.toA
-        if (from <= head && head <= to) return i
-    }
-    for (let i = info.chunks.length - 1; i >= 0; i--) {
-        const to = side === "b" ? info.chunks[i].toB : info.chunks[i].toA
-        if (to < head) return i
-    }
-    return 0
 }

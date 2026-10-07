@@ -9,6 +9,10 @@ use yuzora_host::workspace_trust::WorkspaceIdentity;
 
 pub(crate) type GitChannels = Mutex<HashMap<String, Arc<GitLane>>>;
 
+/// How long a remote git request queues for one of the host's job permits
+/// before failing with `host-git-limit` (it used to fail immediately).
+const GIT_PERMIT_WAIT: Duration = Duration::from_secs(30);
+
 pub(crate) struct GitLane {
     cancelled: tokio::sync::watch::Sender<bool>,
     state: tokio::sync::Mutex<Option<GitChannel>>,
@@ -55,7 +59,10 @@ impl HostConnection {
         repository_root: Option<String>,
         call: GitCommand,
     ) -> Result<serde_json::Value, String> {
-        let _permit = self.git_jobs.try_acquire().map_err(|_| "host-git-limit")?;
+        let _permit = tokio::time::timeout(GIT_PERMIT_WAIT, self.git_jobs.acquire())
+            .await
+            .map_err(|_| "host-git-limit")?
+            .map_err(|_| "host-git-limit")?;
         let lane = {
             let mut lanes = self.git_channels.lock().unwrap();
             if !lanes.contains_key(&workspace) && lanes.len() >= 128 {
@@ -81,7 +88,10 @@ impl HostConnection {
         }
         let run = async {
             let mut slot = lane.state.lock().await;
-            let discovering = matches!(call, GitCommand::Detect | GitCommand::Bootstrap);
+            let discovering = matches!(
+                call,
+                GitCommand::Detect | GitCommand::Bootstrap | GitCommand::Discover
+            );
             if slot.is_none() {
                 if !discovering && !call.is_read() {
                     return Err("git-refresh-required".into());
@@ -122,10 +132,12 @@ impl HostConnection {
                     return Err("workspace-identity-changed".into());
                 }
                 if !discovering {
+                    // Re-detect the same repository; in a multi-repository
+                    // workspace it may be nested below the workspace root.
                     let detected = connection
                         .request(Operation::Git {
                             workspace: capability.clone(),
-                            repository_root: None,
+                            repository_root: repository_root.clone(),
                             call: GitCommand::Detect,
                         })
                         .await?;

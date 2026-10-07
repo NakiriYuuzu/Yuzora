@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora：fullscreen TUI 滾輪、遠端 host limit、HERDR 0.9.3 升級與多方審查</title>
+<style>
+:root{color-scheme:light;--ink:#172b36;--muted:#536777;--line:#cdd9df;--paper:#f3f5f3;--panel:#fff;--accent:#176477;--good:#14634c;--warn:#8a5716;--bad:#9b2c2c}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.8 system-ui,-apple-system,"PingFang TC",sans-serif}
+main{max-width:1080px;margin:auto;padding:44px 30px 80px}header{padding-bottom:24px;border-bottom:3px solid var(--accent)}
+h1{font-size:32px;line-height:1.3;margin:8px 0 16px}h2{font-size:23px;margin:0 0 14px}h3{font-size:18px;margin:22px 0 8px}
+.meta{color:var(--muted);font-size:14px}.block{background:var(--panel);border:1px solid var(--line);padding:24px;margin:22px 0;border-radius:12px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:10px 8px;vertical-align:top;text-align:left}th{background:#edf2f3}
+code{font-size:.9em;background:#edf2f3;border-radius:4px;padding:1px 5px;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;border:1px solid var(--line);background:#edf2f3;padding:14px;font:13px/1.6 ui-monospace,monospace}
+.ok{color:var(--good);font-weight:700}.warn{color:var(--warn);font-weight:700}.bad{color:var(--bad);font-weight:700}
+li{margin:6px 0}
+</style>
+</head>
+<body><main>
+<header>
+<div class="meta">2026-10-02（Asia/Taipei）· 基準 HEAD 9f4592e（v0.0.16）＋既有未提交工作樹 · 未 commit</div>
+<h1>fullscreen TUI 滾輪、遠端 host limit、HERDR 0.9.3 升級與多方審查</h1>
+<p>四項需求皆已處理：第 1、2 項確認根因並依使用者選定方案修正；第 3 項升級至 HERDR v0.9.3 並通過隔離環境契約驗證；第 4 項派出 5 位 reviewer 審查整個未提交工作樹，另以第 6 位 reviewer 審查本次修正。實機 GUI 驗收尚未執行（需使用者授權）。</p>
+</header>
+
+<section class="block">
+<h2>總覽</h2>
+<table>
+<tr><th>項目</th><th>結論</th><th>狀態</th></tr>
+<tr><td>1. 任何 agent 的 fullscreen TUI 無法滾動</td><td>原生 runtime 的滾輪走 <code>pane.scroll</code>，只移 host scrollback，TUI 收不到；09-28 的未提交修法只涵蓋「host 範圍=0」的情況</td><td class="ok">已實證、已修（方案 A）</td></tr>
+<tr><td>2. 偶發 host-…-limit 後該 terminal 完全失效</td><td>遠端 stream 開啟以 <code>try_acquire</code>（每 host 8 個）立即失敗；前端開啟／復原失敗不重試、Reconnect 只在 takeover 時出現</td><td class="ok">已確認、已修</td></tr>
+<tr><td>3. 預設 HERDR 升至最新</td><td>0.9.1 → 0.9.3（protocol 仍 22）；0.9.3 對 0.9.3、0.9.3 client 對 0.9.1 server 皆通過</td><td class="ok">已完成</td></tr>
+<tr><td>4. 多位 reviewer 檢查專案</td><td>5 位領域 reviewer：0 個 P0／P1（本次修正範圍外），數個 P2；第 6 位審本次修正：1 個 P1＋3 個 P2 已修</td><td class="warn">P2 待決定</td></tr>
+</table>
+</section>
+
+<section class="block">
+<h2>1. fullscreen TUI 滾輪</h2>
+<h3>實證（隔離 HERDR 0.9.3 server＋假 TUI，不連使用者 server）</h3>
+<table>
+<tr><th>情境</th><th>pane.get 範圍</th><th>pane.scroll 後 TUI 收到</th><th>terminal.scroll 後 TUI 收到</th></tr>
+<tr><td>A：alt screen＋SGR 滑鼠（Claude Code fullscreen、opencode 類）</td><td>max=0</td><td>0 bytes</td><td><code>\e[&lt;64;11;6M</code></td></tr>
+<tr><td>B：normal buffer＋SGR 滑鼠＋300 行歷史</td><td>max=280</td><td>0 bytes（只移 host viewport）</td><td><code>\e[&lt;64;11;6M</code></td></tr>
+<tr><td>C：alt screen＋1007（less／vim 類）</td><td>max=0</td><td>0 bytes</td><td><code>\e[A</code></td></tr>
+</table>
+<p>HERDR 只在 connector <code>terminal.scroll</code> 依子程式模式分派（上游 <code>src/server/pane_input.rs apply_scroll</code> → <code>src/pane/terminal.rs wheel_routing()</code>，0.9.1 與 0.9.3 相同）；JSON connector 在 0.9.3 仍丟棄 <code>MouseCapture</code>，client 無從得知子程式模式。v0.0.16（使用者安裝版）全部情境失效；09-28 未提交修法修好 A、C，但 B 仍失效。</p>
+<h3>修正（使用者選方案 A）</h3>
+<ul>
+<li><code>src/terminal/terminalTransport.ts</code>：<code>supportsHerdrApplicationWheel</code> 允許時，實體滾輪一律送 <code>terminal.scroll</code>＋游標格；<code>pane.scroll</code> 只保留給 scrollbar 拖曳，以及指令不可用或斷路器跳開時的 fallback。不再先讀 pane 範圍（少一次 round trip）。</li>
+<li>remote stream 佇列滿（<code>stream-closed-or-busy</code>）視為背壓：丟棄排隊中的滾輪，不讓斷路器永久跳開；失敗時一併清除殘留的 pending 滾輪狀態。</li>
+<li><code>herdrScrollController.hostRange()</code> 因此成為孤兒而移除；相關註解同步更新。</li>
+</ul>
+<p class="warn">代價：一般 shell 的歷史捲動改走相對指令，與 F3 選的 pane 路徑手感不同。WSL protocol 22 也會每次滾輪都送 terminal.scroll（歷史上 WSL bridge 曾因此斷 connector），需 Windows 實機驗收。</p>
+</section>
+
+<section class="block">
+<h2>2. 遠端 host-…-limit 後 terminal 失效</h2>
+<p>使用者環境：SSH runtime host「Oracle-SG」（高延遲），同時開 10 多個 agent session。<code>host-*-limit</code> 類錯誤只出現在遠端 helper 路徑，本機 macOS 路徑沒有對應上限。</p>
+<h3>根因（程式路徑確認）</h3>
+<ul>
+<li><code>src-tauri/src/host_streams.rs</code> <code>host_stream_open</code>：<code>stream_openings.try_acquire()</code>（8）失敗即回 <code>host-stream-open-limit</code>；permit 持有到 Open 回覆（SSH events 另含多次 round trip 的 capabilities 查詢）。tab／Space 一次顯示多個 pane、重連、啟動還原都會造成 burst。</li>
+<li><code>HerdrTerminalPage</code>：初次開啟失敗只印 <code>[Failed to open Herdr terminal…]</code>；<code>recoverOutput</code> 失敗只顯示狀態；Reconnect 按鈕只在 takeover 時出現 → 該 leaf 永久失效，其他 terminal 正常。</li>
+<li>遠端 stream 中斷以 <code>{type:"error", code:"host-stream-closed"}</code> 送達，transport 留著已死的 session id。</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li>Rust：新增 <code>HostConnection::acquire_stream_opening</code>（30 秒上限、host 斷線即取消的 FIFO 排隊），逾時回 <code>host-stream-open-wait-timeout</code>。</li>
+<li>前端：<code>isRetryableHerdrConnectError</code>；自動路徑（初次開啟、resync、輸入失敗、遠端 stream 中斷）以 0.5／1／2／4／8 秒退避重試。connector 穩定 10 秒才恢復重試額度，所以「一開就死」（有沒有 full frame 都一樣）最後會停在 Reconnect，不會無限重開。手動 Reconnect（含 takeover）一次一試，不用 timer 搶回控制。</li>
+<li>transport 把 <code>host-stream-closed</code> 視為 connector 遺失，不當成 pane exit，因此不會讓 BSP leaf 收合。</li>
+<li>i18n：<code>herdrTerminal.reconnecting</code>（en／zh-TW）。</li>
+</ul>
+<p class="warn">尚存限制：每 host 32 條 stream 上限（<code>too-many-host-streams</code>）在 10 多個 session 且 pane 很多時仍可能觸頂，重試只能延後 Reconnect 出現。每條遠端 stream 各佔一條 SSH session channel，若主機 sshd 的 <code>MaxSessions</code> 是預設 10，會成為另一個確定性的硬上限，請在主機上以 <code>sshd -T | grep -i maxsessions</code> 確認（未驗證）。</p>
+</section>
+
+<section class="block">
+<h2>3. HERDR 0.9.1 → 0.9.3</h2>
+<ul>
+<li><code>src-tauri/herdr-runtime.json</code>：5 個平台的 URL 與 sha256 全部更新（與 GitHub digest 及實算值一致）；Windows zip 內只有 <code>herdr.exe</code> 改變。</li>
+<li>新增 fixture <code>herdr-0.9.3-methods.json</code>（102 個 method：移除 <code>pane.graphics.*</code>，Yuzora 未使用；新增 <code>pane.clear</code>、<code>server.ssh_agent.register</code>），內容與 scout 獨立產生的版本一致。</li>
+<li>CI gate <code>check-herdr-releases.ts</code>：原本 v0.9.2／v0.9.3 發布後就必紅，現在 <code>missing: []</code>。</li>
+<li>herdr-compatibility workflow 新增 0.9.1 baseline 混版步驟；README、docs/operations.md、CHANGELOG 已同步。</li>
+<li><code>events_lost</code>（0.9.2 新增）：HerdrBridge 收到 error 會重新訂閱並取快照，不需修改。</li>
+</ul>
+</section>
+
+<section class="block">
+<h2>4. 審查發現（未修，請決定）</h2>
+<table>
+<tr><th>等級</th><th>發現</th><th>位置</th></tr>
+<tr><td>P2</td><td>遠端 pinned 檔名搜尋：一個 symlink 的 <code>.gitignore</code>、非 UTF-8 或含 <code>\</code> 的檔名，就讓整個 DFS 回空結果（本機版只會略過該項）</td><td><code>src-tauri/host/src/file_name_search/pinned.rs</code></td></tr>
+<tr><td>P2</td><td>Demo／Pages runtime 缺 <code>search_workspace_file_names</code>，Files 篩選因此退化成錯誤</td><td><code>src/demo/runtime.ts</code></td></tr>
+<tr><td>P2</td><td>lazy chunk 載入失敗時沒有 ErrorBoundary，整個 root 會白屏</td><td><code>src/app/AppShell.tsx</code> 等</td></tr>
+<tr><td>P2</td><td>視窗 hidden→visible 時 <code>reset()</code> 會解除 blocked，不支援的 runtime 每次切回都會重報錯</td><td><code>src/terminal/HerdrScrollbar.tsx</code></td></tr>
+<tr><td>P2</td><td>startup 期間 bridge 的 backoff 累積；漏接事件時就緒後最多晚 16 秒才連上</td><td><code>src/workbench/HerdrBridge.tsx</code></td></tr>
+<tr><td>P2</td><td>frame 驅動的 <code>pane.get</code>（每 pane 約 350ms）會增加遠端控制通道負載</td><td><code>src/terminal/herdrScrollController.ts</code></td></tr>
+<tr><td>P2</td><td>外部變更比對期間按 ⌘S，可能誤開 Resolver（不會遺失資料）</td><td><code>src/editor/documentRegistry.ts</code></td></tr>
+<tr><td>P2（推測）</td><td><code>FileNameSearch</code> 逾時後，卡在慢速 FS 的 blocking thread 可能堆積</td><td><code>src-tauri/host/src/server.rs</code></td></tr>
+</table>
+<p>反駁成立（審過、沒有問題）：測試搬移沒有遺失（db 71↔71、db_profiles 58→59）、command 註冊完整、CSP 不會擋到既有功能、release 觸發與 updater 簽章未被動到、clippy baseline 行號吻合、node／jsdom 測試分流沒有漏測。</p>
+</section>
+
+<section class="block">
+<h2>驗證</h2>
+<table>
+<tr><th>指令</th><th>結果</th></tr>
+<tr><td><code>bun run test</code>（全部）</td><td class="ok">279 檔／3313 測試通過</td></tr>
+<tr><td><code>bun run typecheck</code>／<code>bun run lint</code></td><td class="ok">通過／0 error（48 個既有 warning）</td></tr>
+<tr><td><code>cargo check --locked --all-targets</code>、<code>cargo test --lib host_s</code></td><td class="ok">通過；8/8（含新的 stream 開啟排隊測試）</td></tr>
+<tr><td>clippy baseline</td><td class="ok">吻合 19 筆</td></tr>
+<tr><td><code>cargo fmt --check</code></td><td class="warn">失敗於 <code>src-tauri/src/git_service.rs:2272</code>：該檔是同時運行的 pi 程序在本次期間寫入，不是本次修改；本次修改的 Rust 檔格式正確</td></tr>
+<tr><td><code>verify-herdr-runtime.ts</code>（0.9.3/0.9.3、0.9.3 client/0.9.1 server）</td><td class="ok">兩者通過</td></tr>
+<tr><td>native／features E2E（headless、隔離 XDG）</td><td class="ok">通過（implementer 執行；helper 為 9/28 舊版建置）</td></tr>
+<tr><td>Mutation 自證（4 組）</td><td class="ok">每組都由對應測試抓到，檔案以 shasum 確認還原</td></tr>
+</table>
+<h3>未驗證</h3>
+<ul>
+<li>實機 GUI：Claude Code／Codex fullscreen 滾動手感、一般 shell 捲動手感、SSH 10 多個 session 的實際行為（需授權 computer-use）。</li>
+<li>Windows／WSL／Linux 實機；0.9.2 的 Kitty 與 escape-key 行為變更（Alt+方向鍵、Option+Backspace、Shift+Enter）。</li>
+<li>使用者看到的完整錯誤字串未取得。根據程式路徑與觸發條件，最可能是 <code>host-stream-open-limit</code>。</li>
+</ul>
+</section>
+
+<footer class="meta">本次修改檔：src-tauri/src/host_service.rs、src-tauri/src/host_streams.rs、src/terminal/terminalTransport.ts、src/terminal/herdrScrollController.ts、src/terminal/herdrTerminalTransport.test.ts、src/lib/herdrErrors.ts（＋新 test）、src/lib/herdrCapabilities.ts、src/app/panels/HerdrTerminalPage.tsx(+test)、i18n workbench.json ×2；升級檔見第 3 節。未執行任何 git 寫入。</footer>
+</main></body></html>

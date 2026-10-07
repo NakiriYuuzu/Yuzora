@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora 可行依賴升級與驗證 — 2026-09-27</title>
+<style>
+:root{color-scheme:light;--ink:#182232;--muted:#526071;--line:#dce1e7;--accent:#245f75}*{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:var(--ink);font:16px/1.7 system-ui,"PingFang TC",sans-serif}main{max-width:1080px;margin:auto;padding:32px 24px 64px}header,section{background:white;border:1px solid var(--line);border-radius:12px;padding:24px;margin-bottom:20px}h1{font-size:30px;line-height:1.3}h2{font-size:22px;color:var(--accent)}h3{font-size:18px}p,ul{margin:12px 0}code{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{background:#f2f5f7}.note{color:var(--muted)}.ok{border-left:4px solid #21815c;padding-left:16px}.risk{border-left:4px solid #bc7b16;padding-left:16px}a{color:var(--accent)}nav a{margin-right:16px}@media print{body{background:white}main{max-width:none;padding:0}header,section{border-radius:0;break-inside:avoid}details{display:block}}
+</style>
+</head>
+<body><main>
+<header>
+<h1>可行依賴升級與驗證</h1>
+<p>Yuzora · 2026-09-27 · 授權範圍：「將所有可行的先進行升級」</p>
+<p class="ok"><strong>本機非瀏覽器品質檢查通過。</strong>前端 3,119 個測試、Rust App 398 個測試、獨立 Host 398 個測試成功。三個 Bun 專案 audit 均零告警；Cargo 仍有 5 個套件身分命中安全／維護公告。</p>
+<p class="note">以 macOS Apple Silicon 驗證；不是 Windows／Linux、原生 GUI、遠端 CI 或安裝包驗收。未 stage、commit、push、建立 PR 或發布。仍在原本 main dirty worktree 作業，既有變更與其他工作新增的 specs 保留。</p>
+<nav><a href="#upgrades">升級</a><a href="#fixes">相容修正</a><a href="#checks">驗證</a><a href="#risks">暫緩與風險</a><a href="#evidence">證據</a></nav>
+</header>
+<section id="upgrades">
+<h2>升級範圍</h2>
+<p>涵蓋 root、<code>site-remotion/</code>、<code>spikes/cm6-perf/</code> 三組 Bun manifests／locks，以及 <code>src-tauri/</code> 與 <code>src-tauri/host/</code> 兩組 Cargo manifests／locks。直接 npm 宣告變更共 <strong>39 筆</strong>（22／11／6）；這不是 lock 中所有更新套件的數量。</p>
+<table><thead><tr><th>範圍</th><th>主要更新</th></tr></thead><tbody>
+<tr><td>Tauri</td><td>API／CLI／Rust core 2.12.0；tauri-build 2.7.0；JS／Rust updater 2.13.0。clipboard 2.4.0、dialog 2.8.0、notification 2.5.0、opener 2.6.0、process 2.4.0 同步兩側 lock。</td></tr>
+<tr><td>CodeMirror</td><td>commands 6.11.1、state 6.7.6、view 6.43.13；root／spike 的 state／view exact overrides 對齊。</td></tr>
+<tr><td>前端與工具</td><td>DOMPurify 3.4.16、lucide-react 1.48.0、react-i18next 17.0.15、react-resizable-panels 4.14.1；Vite 8.3.1、Vitest 5.0.2、ESLint 10.11.0、typescript-eslint 8.70.1、jsdom 30.1.1。</td></tr>
+<tr><td>Remotion</td><td>五個直接 Remotion 套件統一 exact 4.0.529（含 google-fonts）；React／ReactDOM 19.3.0；Prettier 3.9.9；保留 parser override。</td></tr>
+<tr><td>效能 spike</td><td>@types/bun 1.4.2、Playwright 1.63.0、Vite 8.3.1 及上述 CodeMirror；只執行型別檢查與 build，未執行瀏覽器量測。</td></tr>
+<tr><td>Rust</td><td>App／Host 的 dirs 7、rand 0.10.3、rustls 0.23.45；App 的 russh-sftp 3.0.0；更新兩個 lock 的範圍內間接依賴。</td></tr>
+<tr><td>工具鏈</td><td>Bun 1.4.2、Node 24.21.0、Rust 1.98.1。新增 <code>.node-version</code>、packageManager／Node engines；本機 Bun／Node 使用 checksummed 暫存安裝，未取代全域版本；Rust 採 explicit toolchain。</td></tr>
+<tr><td>CI／發布</td><td>六份 workflow 同步 Bun／Rust；前端 jobs 明確設定 Node。升級並以官方完整 SHA 固定關鍵 Checkout、artifact、Pages 與 Rust setup Actions。Apple Silicon Host／compatibility runner 改 macos-15；保留 Intel 遠端 Host。</td></tr>
+</tbody></table>
+<p class="note">manifest caret 下限與 lock 實際版本可能不同；例如 Rust updater 宣告 <code>2.12.0</code>，lock 解析為 <code>2.13.0</code>。兩個 Cargo lock 的共有 name／version／source 身分 checksum 無不一致；generic-array 0.14.7 是新版 generic-array 1.4.5 相容依賴鏈的解析結果，不是手動降級鎖版。</p>
+<h3>明確保留的契約</h3>
+<ul>
+<li>一般 TypeScript 6.0.3 與 native TypeScript 7.0.2 分流；目前 lint parser 的 TS peer 尚不支援全面改用 TS7。</li>
+<li>CodeMirror／Vite singleton overrides、Remotion exact 同版、xterm 6.0.0 的 source／UMD／ESM WidthCache patch。</li>
+<li>Herdr／ConPTY checksummed distribution、Tiberius path fork、interprocess exact pin。</li>
+<li>macOS App 僅 aarch64；遠端 Intel macOS Host 不移除；既有 release／tag 不重寫；Stable updater 簽章與 source／digest／permission gates 不放寬。</li>
+</ul>
+</section>
+<section id="fixes">
+<h2>實測發現與最小相容修正</h2>
+<ol>
+<li><strong>CSS／SCSS 函式高亮：</strong>新版 Lezer 下原本泛用 <code>Callee</code> 規則未取得預期優先權。於 <code>src/editor/cmExtensions.ts</code> 改成 <code>CallExpression/Callee</code>，未放寬普通 token 著色。原 production corpus 的 3 個失敗已先重現，原斷言保留後全數通過。</li>
+<li><strong>新版 Clippy 的 async 大型錯誤診斷：</strong><code>src-tauri/src/db_profiles.rs</code> 的 <code>ProfileError.error</code> 改為 <code>Option&lt;Box&lt;DatabaseError&gt;&gt;</code>，直接承接底層 Box；保留 code／message 與 JSON 形狀。新增 size 回歸測試，並加上完整序列化 equality。</li>
+<li><strong>測試程式相容性：</strong><code>src-tauri/src/host_windows.rs</code> 的 UTF-16 測試改用 <code>as_chunks&lt;2&gt;</code> 並驗證沒有剩餘 byte；<code>src-tauri/host/tests/sqlite_stdio.rs</code> 只將測試 helper 的大型 error 包裝為 Box，不改 wire protocol 或正式程式邏輯。</li>
+<li><strong>Clippy baseline：</strong>先用舊 baseline 驗證修正後只有 missing 診斷，再刪除 36 個確實消失的 fingerprints（71 次 diagnostics）。保留其餘 14 fingerprints／19 diagnostics，包括原本 dirty worktree 的 SSH 行號調整；沒有新增 suppress／allow 或豁免。</li>
+<li><strong>歷史 release recovery：</strong>從原始 source SHA 的 Host matrix 選取 macos-14／15 job 名稱；未知、缺失與重複 runner fail closed。測試涵蓋新舊成功及錯誤分支，不以新 runner 名稱覆蓋歷史契約。</li>
+</ol>
+<p>新增 <code>scripts/dependency-contract.test.ts</code> 守護 compiler split、overrides、patch、Remotion pairing、工具鏈設定；<code>scripts/release-contract.ts</code> 與 <code>scripts/release-recovery.test.ts</code> 同步 Actions／recovery 契約，<code>docs/operations.md</code> 同步運維說明。</p>
+</section>
+<section id="checks">
+<h2>已執行的驗證</h2>
+<table><thead><tr><th>檢查</th><th>結果</th></tr></thead><tbody>
+<tr><td>Root typecheck／lint／build</td><td>通過；typecheck 使用專案既有 native compiler。修正後再次 lint／正式 build。</td></tr>
+<tr><td>Root Vitest</td><td><strong>262 files／3,119 tests 通過</strong>；六份高亮／發布／依賴定向測試 135 tests 通過（是完整套件的子集，非額外加總）。</td></tr>
+<tr><td>官網／Demo</td><td>site:companions、site:seo、demo:build 通過。驗證產生的隨機 companions inline style 變動已移除，不納入升級 diff。</td></tr>
+<tr><td>Remotion／spike</td><td>Remotion lint／bundle 通過；spike TypeScript／Vite build 通過。未 render／studio／Playwright measure。</td></tr>
+<tr><td>Bun 三 scope</td><td><code>bun install --dry-run --frozen-lockfile --ignore-scripts</code> 通過；manifest／lock 宣告一致；<code>bun audit --json</code> 皆為 <code>{}</code>；outdated 只剩 root／media 刻意保留的 TypeScript 6。</td></tr>
+<tr><td>Rust App</td><td><code>check --locked --all-targets</code>、<code>test --locked</code> 通過：<strong>398 passed／5 ignored</strong>，包含新增 layout 測試。</td></tr>
+<tr><td>獨立 Host</td><td><code>check --locked --all-targets</code>、<code>test --locked</code> 通過：<strong>398 passed／1 ignored</strong>。</td></tr>
+<tr><td>Rust 格式／Clippy</td><td>兩 root fmt 通過；App exact baseline 符合 19 diagnostics；Host <code>clippy --locked --all-targets -- -D warnings</code> 通過。</td></tr>
+<tr><td>Workflow 靜態檢查</td><td>6 份 YAML 解析、54 段 Bash syntax 通過；release／recovery contract tests 通過。尚未在 GitHub runners 執行。</td></tr>
+<tr><td>變更安全</td><td><code>git diff --check</code> 通過；原 dirty patch 仍能 reverse-check，未真的反向套用；vendor、runtime manifest、xterm patch 無 diff；baseline 只刪除已驗證告警。</td></tr>
+<tr><td>獨立審查</td><td>兩個 <code>yuuzu-router/gpt-6-astra</code> 唯讀 lanes 審查依賴與 CI；原 reviewer 再複核 CSS／Rust 相容修正。未提出新 P1／P2。最後 baseline 刪除與 Host 測試 helper 由主代理精讀／測試驗證，不宣稱 reviewer 覆蓋所有最終行。</td></tr>
+</tbody></table>
+<p class="note">沒有完整升級前測試 baseline；不能把本次全部通過解讀為所有既有缺陷都已消失。ignored 的真實資料庫／平台驗收未執行。</p>
+</section>
+<section id="risks">
+<h2>暫緩項目與剩餘安全風險</h2>
+<ul>
+<li><strong>russh 0.63.3 暫緩：</strong>新 host-key／certificate API 需要先定義信任政策；保留 0.62.7 lock，不改動既有 SSH 認證工作。</li>
+<li><strong>Tiberius 0.13 暫緩：</strong>本地 0.12.3 fork 有 10 個實際修改的 Rust 檔案，須重新驗證 TLS provider、timeout、精確 MONEY／SMALLMONEY、DONE_COUNT 與 EOF rows_affected。不能直接替換或只依 fork 文件判斷。</li>
+<li><strong>TypeScript 6 保留：</strong>不是漏升級；TS7 native 已用於專案 typecheck，普通 TS6 留給相容的 lint compiler API。</li>
+</ul>
+<p class="risk">更新後對兩個 Cargo locks 共 770 個 public crate/version 身分（含 Tiberius 上游基底）查詢 OSV，5 個身分仍命中 11 個公告 ID；其中部分 GHSA／RUSTSEC 是同一問題的別名。這不是 11 個獨立可利用漏洞，也不是完整漏洞保證。</p>
+<table><thead><tr><th>剩餘套件</th><th>公告／限制</th></tr></thead><tbody>
+<tr><td>glib 0.18.5</td><td>RUSTSEC-2024-0429／GHSA-wrw7-89jp-8q8g：VariantStrIter unsoundness；GTK／Tauri 上游相容鏈限制，未強推不相容 major。</td></tr>
+<tr><td>rsa 0.10.0-rc.18</td><td>RUSTSEC-2023-0071：Marvin timing side-channel。未聲稱此次修復。</td></tr>
+<tr><td>rustls-webpki 0.101.7</td><td>RUSTSEC-2026-0098／0099／0104 及 GHSA aliases：URI／wildcard name constraints、CRL parsing panic。Tiberius 舊 TLS 分支保留；升級 rustls 0.23 不會修復此分支。</td></tr>
+<tr><td>proc-macro-error 1.0.4</td><td>RUSTSEC-2024-0370：停止維護；不等同已證實可利用漏洞。</td></tr>
+<tr><td>rustls-pemfile 1.0.4</td><td>RUSTSEC-2025-0134：停止維護；不等同已證實可利用漏洞。</td></tr>
+</tbody></table>
+<p>官方 Tauri GHSA-w28w-mhc8-qvjv 修補門檻為 2.11.6，本次升至 2.12.0；rustls 0.23.45 對應 RUSTSEC-2026-0285 修補。OSV 可能落後官方 repository advisory，不能只憑掃描零筆認定安全。</p>
+<h3>尚未驗收</h3>
+<p>Windows／Linux 實際編譯與執行、原生 WebView／updater／panel layout／xterm 字型與 IME、SFTP3 真實遠端預讀與取消、Docker 真實 PostgreSQL／MSSQL integration、GitHub Actions artifacts／Pages／簽章安裝包。瀏覽器、原生 UI／E2E 必須另取得當前對話的明確同意；本次未執行。</p>
+</section>
+<section id="evidence">
+<h2>證據與重跑方式</h2>
+<p>升級前備份與本機 logs：<code>/tmp/yuzora-dependency-upgrade.IXPmVy/</code>；原盤點：<code>/tmp/yuzora-dependency-audit.OqO4RE/REPORT.md</code>。暫存路徑可能被系統清理；此報告保留結果與界線，完整版本以提交前 manifests／locks 為準。</p>
+<ul>
+<li><code>pre-existing.patch</code>、<code>before/</code>：升級開始時 dirty diff 與 manifest／lock 副本。</li>
+<li><code>frontend-test-final.log</code>、<code>highlight-red.log</code>、<code>highlight-contract-green.log</code>：前端 red／green 與完整結果。</li>
+<li><code>cargo-app-test-final.log</code>、<code>cargo-host-test-final.log</code>、<code>profile-error-red.log</code>：Rust 完整結果及新增測試的失敗重現。</li>
+<li><code>clippy-app-before-prune.log</code>、<code>clippy-baseline-before-prune.json</code>、<code>clippy-app-final.log</code>、<code>clippy-host-final.log</code>：baseline 精準刪除與最終品質門檻。</li>
+<li><code>audit-{root,remotion,spike}.json</code>、<code>rust-osv-final.json</code>、<code>action-pins.json</code>：registry／安全掃描與官方 Actions SHA 證據。</li>
+</ul>
+<pre><code># 使用支援的 Node 24.21.0、Bun 1.4.2
+bun run typecheck
+bun run lint
+bun run test --maxWorkers=4
+bun run build
+
+# 本機非 packaging 檢查；不代表 bundled runtime／installer 驗收
+export TAURI_CONFIG='{"bundle":{"resources":[]}}'
+export RUSTUP_TOOLCHAIN=1.98.1
+cargo check --locked --all-targets --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+(cd src-tauri &amp;&amp; ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json)
+cargo check --locked --all-targets --manifest-path src-tauri/host/Cargo.toml
+cargo test --locked --manifest-path src-tauri/host/Cargo.toml
+cargo clippy --locked --all-targets --manifest-path src-tauri/host/Cargo.toml -- -D warnings</code></pre>
+<p class="note">未取得提交／推送許可，因此沒有建立 commit、push 或發布。後續整併仍須遵循 Issue／獨立 branch／PR 與候選安裝驗收流程。</p>
+</section>
+</main></body></html>

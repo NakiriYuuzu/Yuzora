@@ -12,7 +12,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
-![Version](https://img.shields.io/badge/version-0.0.16-86b81f?style=flat-square&labelColor=1b1a17)
+![Version](https://img.shields.io/badge/version-0.0.17--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
 
@@ -176,7 +176,9 @@ Older betas, including **v0.0.9-beta.3**, shipped with automatic updates disable
 | Terminal | xterm.js + HERDR terminal pages |
 | Toolchain | Bun · Vitest · Cargo |
 
-Yuzora bundles HERDR 0.9.1 and retains compatibility with 0.9.0 through private protocol 22 and schema checks. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
+Yuzora bundles HERDR 0.9.3 and retains compatibility with 0.9.0 and 0.9.1 through private protocol 22 and schema checks. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
+
+The Apple Silicon macOS app shares its managed HERDR binary with `Contents/Resources/host/macos-aarch64/herdr`; it does not bundle separate `herdr/macos-*` binaries. All five remote Host payloads remain included, including Intel macOS. Windows keeps its separate native HERDR paths.
 
 The sidebar's **HERDR tools** manage Worktrees, pane moves, Agent start/prompt/wait/rename/keys, Integrations, running and stopped Sessions, and Plugin installation, enablement and removal. Background agents can notify through in-app toasts, system notifications and sound when they finish or need input. System notifications are opt-in and require OS permission.
 

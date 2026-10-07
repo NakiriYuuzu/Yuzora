@@ -1,5 +1,5 @@
 import { useUiStore } from "../state/uiStore"
-import { memo } from "react"
+import { lazy, memo, Suspense } from "react"
 import { FileCode2, Globe, Search, SquareTerminal } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -13,7 +13,6 @@ import { HerdrTerminalPage } from "@/app/panels/HerdrTerminalPage"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
 import { isMarkdownPreviewTab, previewTabSourcePath } from "../lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
-import { RichMarkdownEditor } from "../editor/RichMarkdownEditor"
 import { isMarkdownPath } from "./MarkdownPreview"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
@@ -21,6 +20,8 @@ import { TabBar } from "./TabBar"
 import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
 import { SvgSplitView, isSvgPath } from "./SvgSplitView"
+
+const RichMarkdownEditor = lazy(() => import("../editor/RichMarkdownEditor").then(m => ({ default: m.RichMarkdownEditor })))
 
 // Keep background terminal trees mounted without rerendering every one when
 // only the active tab changes. Runtime subscriptions still update each page.
@@ -155,7 +156,7 @@ export function EditorArea() {
                                             )
                                         }
                                         if (isMarkdownPath(group.activePath)) {
-                                            return <RichMarkdownEditor key={`${group.activePath}:${documentGeneration(group.activePath)}`} path={group.activePath} groupIndex={i} />
+                                            return <Suspense fallback={<div className="editor-pane" aria-busy="true" />}><RichMarkdownEditor key={`${group.activePath}:${documentGeneration(group.activePath)}`} path={group.activePath} groupIndex={i} /></Suspense>
                                         }
                                         if (isSvgPath(group.activePath)) {
                                             return (

@@ -111,12 +111,16 @@ function FileRow({
                 aria-label={
                     row.staged
                         ? t("localChangesTab.unstageFileAriaLabel", { path: row.path })
-                        : t("localChangesTab.stageFileAriaLabel", { path: row.path })
+                        : row.classification === "conflicted"
+                            ? t("localChangesTab.markResolvedAriaLabel", { path: row.path })
+                            : t("localChangesTab.stageFileAriaLabel", { path: row.path })
                 }
                 title={
                     row.staged
                         ? t("localChangesTab.unstageFileTitle")
-                        : t("localChangesTab.stageFileTitle")
+                        : row.classification === "conflicted"
+                            ? t("localChangesTab.markResolvedTitle")
+                            : t("localChangesTab.stageFileTitle")
                 }
                 onClick={onStageToggle}
                 onKeyDown={(event) => {
@@ -202,7 +206,9 @@ export function LocalChangesTab() {
         return indexes
     }, [virtualItems])
     const selectedIds = useMemo(() => gitChangeIdSet(selection), [selection])
-    const showFilter = rows.length > FILE_FILTER_MIN_COUNT
+    // Keep a non-empty filter editable even when the list shrinks below the threshold;
+    // otherwise the hidden query would keep hiding files with no way to clear it.
+    const showFilter = rows.length > FILE_FILTER_MIN_COUNT || fileFilter !== ""
 
     useEffect(() => {
         reconcileGitChangeSelection(rows)
@@ -372,7 +378,7 @@ export function LocalChangesTab() {
                 onContextMenu={(event) => openGitChangeContextMenu(event, row, visualOrder)}
                 onStageToggle={() => void (row.staged ? unstageOne(row) : stageOne(row))}
                 onListKeyDown={(event) => onListKeyDown(event, row)}
-                disabled={busy != null || snapshotStale || row.classification === "conflicted"}
+                disabled={busy != null || snapshotStale}
             />
         )
     }
