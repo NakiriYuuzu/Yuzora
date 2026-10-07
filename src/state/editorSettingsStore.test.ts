@@ -30,30 +30,30 @@ function installLocalStorage(): void {
 
 beforeEach(() => {
     installLocalStorage()
-    useEditorSettingsStore.setState({ fontSize: 13, minimap: false, syntaxTheme: "github" })
+    useEditorSettingsStore.setState({ fontSize: 13, minimap: false, syntaxTheme: "github", markdownDefaultMode: "document" })
 })
 
 describe("loadEditorSettings", () => {
     it("returns the defaults (13 / false) when nothing is stored", () => {
-        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github" })
+        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github", markdownDefaultMode: "document" })
     })
 
     it("round-trips a valid persisted payload", () => {
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 15, minimap: true, syntaxTheme: "github" }))
-        expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: true, syntaxTheme: "github" })
+        expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: true, syntaxTheme: "github", markdownDefaultMode: "document" })
     })
 
     it("falls back per-field on out-of-whitelist font size / non-boolean minimap", () => {
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 99, minimap: "yes" }))
-        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github" })
+        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github", markdownDefaultMode: "document" })
         // A valid field survives even when its sibling is invalid.
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 14, minimap: 1 }))
-        expect(loadEditorSettings()).toEqual({ fontSize: 14, minimap: false, syntaxTheme: "github" })
+        expect(loadEditorSettings()).toEqual({ fontSize: 14, minimap: false, syntaxTheme: "github", markdownDefaultMode: "document" })
     })
 
     it("falls back to defaults on malformed JSON", () => {
         localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, "{not json")
-        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github" })
+        expect(loadEditorSettings()).toEqual({ fontSize: 13, minimap: false, syntaxTheme: "github", markdownDefaultMode: "document" })
     })
 })
 
@@ -69,12 +69,19 @@ describe("useEditorSettingsStore", () => {
         useEditorSettingsStore.getState().setMinimap(true)
         expect(useEditorSettingsStore.getState()).toMatchObject({ fontSize: 12, minimap: true, syntaxTheme: "github" })
         // Both fields land together in localStorage — a fresh app load restores both.
-        expect(loadEditorSettings()).toEqual({ fontSize: 12, minimap: true, syntaxTheme: "github" })
+        expect(loadEditorSettings()).toEqual({ fontSize: 12, minimap: true, syntaxTheme: "github", markdownDefaultMode: "document" })
     })
 })
 
 it("persists syntax theme without losing other editor preferences", () => {
     useEditorSettingsStore.getState().setSyntaxTheme("one")
     useEditorSettingsStore.getState().setFontSize(15)
-    expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: false, syntaxTheme: "one" })
+    expect(loadEditorSettings()).toEqual({ fontSize: 15, minimap: false, syntaxTheme: "one", markdownDefaultMode: "document" })
+})
+
+it("persists the Markdown default view and rejects unknown modes", () => {
+    useEditorSettingsStore.getState().setMarkdownDefaultMode("source")
+    expect(loadEditorSettings().markdownDefaultMode).toBe("source")
+    localStorage.setItem(EDITOR_SETTINGS_STORAGE_KEY, JSON.stringify({ fontSize: 14, markdownDefaultMode: "preview" }))
+    expect(loadEditorSettings()).toMatchObject({ fontSize: 14, markdownDefaultMode: "document" })
 })

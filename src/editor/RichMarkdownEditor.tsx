@@ -2,6 +2,7 @@ import { MarkdownDocumentPreview } from "@/workbench/MarkdownDocumentPreview"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
+import { CodeBlock, type CodeBlockOptions } from "@tiptap/extension-code-block"
 import { Markdown } from "@tiptap/markdown"
 import { TableKit } from "@tiptap/extension-table"
 import TaskList from "@tiptap/extension-task-list"
@@ -18,9 +19,42 @@ import { EditorPane } from "./EditorPane"
 import { markdownRoundTripSafe, needsMarkdownSource } from "./markdownSafety"
 import { markdownViewState, type MarkdownViewState } from "./markdownViewState"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { createCodeCopyButton } from "@/workbench/markdownCodeCopy"
 import "./richMarkdown.css"
 
 const RICH_DOCUMENT_LIMIT = 128 * 1024
+
+// The stock pre > code markup, with a copy control outside the editable code.
+const CopyableCodeBlock = CodeBlock.extend<CodeBlockOptions & { copyLabel: string }>({
+    addOptions() {
+        return { ...this.parent!(), copyLabel: "Copy code" }
+    },
+    addNodeView() {
+        return ({ node: initial }) => {
+            let node = initial
+            const dom = document.createElement("pre")
+            const contentDOM = document.createElement("code")
+            const button = createCodeCopyButton(this.options.copyLabel, () => node.textContent)
+            const applyLanguage = () => {
+                const language = node.attrs.language as string | null
+                if (language) contentDOM.className = `${this.options.languageClassPrefix ?? ""}${language}`
+                else contentDOM.removeAttribute("class")
+            }
+            applyLanguage()
+            dom.append(contentDOM, button)
+            return {
+                dom, contentDOM,
+                update: next => {
+                    if (next.type !== node.type) return false
+                    node = next
+                    applyLanguage()
+                    return true
+                },
+                stopEvent: event => button.contains(event.target as Node),
+            }
+        }
+    },
+})
 
 // Preserve the document's leading/trailing newlines when Tiptap serializes edits.
 function preserveDocumentWhitespace(original: string, replacement: string): string {
@@ -139,7 +173,8 @@ function MarkdownRichEditor({ source, owner, onChange, restoreFocus, navigation 
     const writeEnabled = useRef(false)
     const scrollport = useRef<HTMLDivElement>(null)
     const editor = useEditor({
-        extensions: [StarterKit.configure({ undoRedo: false, link: { openOnClick: false, autolink: false } }), Markdown, TableKit, TaskList, TaskItem.configure({ nested: true, a11y: { checkboxLabel: (node) => t("taskCheckbox", { text: node.textContent }) } })],
+        extensions: [StarterKit.configure({ undoRedo: false, codeBlock: false, link: { openOnClick: false, autolink: false } }),
+            CopyableCodeBlock.configure({ copyLabel: t("copyCode", { ns: "markdownDocument" }) }), Markdown, TableKit, TaskList, TaskItem.configure({ nested: true, a11y: { checkboxLabel: (node) => t("taskCheckbox", { text: node.textContent }) } })],
         content: source,
         contentType: "markdown",
         autofocus: restoreFocus ? "start" : false,

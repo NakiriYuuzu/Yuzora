@@ -41,6 +41,7 @@
         "@tauri-apps/plugin-opener": "^2.6.0",
         "@tauri-apps/plugin-process": "^2.4.0",
         "@tauri-apps/plugin-updater": "^2.13.0",
+        "@tiptap/extension-code-block": "^3.31.3",
         "@tiptap/extension-table": "^3.31.3",
         "@tiptap/extension-task-item": "^3.31.3",
         "@tiptap/extension-task-list": "^3.31.3",

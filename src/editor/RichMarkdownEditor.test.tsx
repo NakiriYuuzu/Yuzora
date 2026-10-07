@@ -5,6 +5,7 @@ import { EditorView } from "@codemirror/view"
 import { history, undo } from "@codemirror/commands"
 import { useEffect, useRef } from "react"
 import { clearMarkdownViewStatesForTest } from "./markdownViewState"
+import { useEditorSettingsStore } from "@/state/editorSettingsStore"
 
 const fixture = vi.hoisted(() => ({ content: "# Hello\n\nWorld", save: vi.fn(), view: null as EditorView | null, editable: true }))
 vi.mock("./EditorPane", () => ({
@@ -20,6 +21,9 @@ vi.mock("./EditorPane", () => ({
     }
 }))
 vi.mock("@/workbench/MarkdownDocumentPreview", () => ({ MarkdownDocumentPreview: ({ content }: { content: string }) => <div data-testid="document-preview">Safe reading preview<pre>{content}</pre></div> }))
+const clipboard = vi.hoisted(() => ({ writeText: vi.fn(async () => undefined) }))
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: clipboard.writeText }))
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 import { RichMarkdownEditor } from "./RichMarkdownEditor"
 
 beforeEach(() => {
@@ -168,4 +172,37 @@ it("replaces the owner when the file path changes without exposing the previous 
     expect(preview.querySelector("pre")!.textContent).toBe(fixture.content)
     expect(fixture.view).not.toBe(oldView)
     expect(screen.queryByRole("textbox", { name: "Markdown rich text editor" })).toBeNull()
+})
+
+it("opens in the configured default view until the file's own mode is chosen", async () => {
+    useEditorSettingsStore.setState({ markdownDefaultMode: "source" })
+    try {
+        const first = render(<RichMarkdownEditor path="/w/default.md" groupIndex={0} />)
+        await screen.findByTestId("source-owner")
+        expect(screen.getByRole("radio", { name: "Source" })).toHaveAttribute("aria-checked", "true")
+        expect(screen.queryByRole("textbox", { name: "Markdown rich text editor" })).toBeNull()
+        fireEvent.click(screen.getByRole("radio", { name: "Document" }))
+        await screen.findByRole("textbox", { name: "Markdown rich text editor" })
+        first.unmount()
+
+        // The explicit choice wins over the default; untouched files follow it.
+        render(<RichMarkdownEditor path="/w/default.md" groupIndex={0} />)
+        await screen.findByRole("textbox", { name: "Markdown rich text editor" })
+        cleanup()
+        render(<RichMarkdownEditor path="/w/other.md" groupIndex={0} />)
+        expect(screen.getByRole("radio", { name: "Source" })).toHaveAttribute("aria-checked", "true")
+    } finally {
+        useEditorSettingsStore.setState({ markdownDefaultMode: "document" })
+    }
+})
+
+it("copies a rich code block's text without editing or serializing the control", async () => {
+    fixture.content = "# Code\n\n```ts\nconst a = 1\nreturn a\n```"
+    render(<RichMarkdownEditor path="/w/code.md" groupIndex={0} />)
+    const editor = await screen.findByRole("textbox", { name: "Markdown rich text editor" })
+    expect(editor.querySelector("pre > code.language-ts")?.textContent).toBe("const a = 1\nreturn a")
+    fireEvent.mouseDown(screen.getByRole("button", { name: "Copy code" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }))
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith("const a = 1\nreturn a"))
+    expect(fixture.view?.state.doc.toString()).toBe(fixture.content)
 })

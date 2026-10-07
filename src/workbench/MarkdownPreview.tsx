@@ -1,7 +1,8 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import MarkdownIt from "markdown-it"
 import DOMPurify from "dompurify"
 import { openUrl } from "@tauri-apps/plugin-opener"
+import { useTranslation } from "react-i18next"
 
 import { getDocument } from "../editor/documentRegistry"
 import { getView, subscribeView } from "../editor/viewRegistry"
@@ -16,6 +17,7 @@ import {
     writeEditorViewportTopLine
 } from "./markdownScrollSync"
 import type { ScrollSyncCoordinator, SourceAnchor } from "./markdownScrollSync"
+import { attachCodeCopyButtons } from "./markdownCodeCopy"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 // A4 裁決：渲染器＝markdown-it，sanitizer＝DOMPurify。html:true 讓原始 HTML
@@ -477,7 +479,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
                     "data-testid": "markdown-preview-body",
                 }}
             >
-                <div dangerouslySetInnerHTML={{ __html: html ?? "" }} />
+                <MarkdownHtml html={html ?? ""} />
             </ScrollArea>
         )
     }
@@ -520,6 +522,17 @@ export const MarkdownPreview = memo(function MarkdownPreview({
     )
 })
 
+/** Sanitized markdown HTML plus trusted per-block copy controls. */
+export function MarkdownHtml({ html, copyCode = true }: { html: string; copyCode?: boolean }) {
+    const { t } = useTranslation("markdownDocument")
+    const ref = useRef<HTMLDivElement>(null)
+    useLayoutEffect(() => {
+        if (!copyCode || !ref.current) return
+        return attachCodeCopyButtons(ref.current, t("copyCode"))
+    }, [html, copyCode, t])
+    return <div ref={ref} dangerouslySetInnerHTML={{ __html: html }} />
+}
+
 // Rendered HTML comes from dangerouslySetInnerHTML, so Tailwind can't reach it.
 // A scoped style block gives the sanitized markdown legible prose styling
 // without adding a CSS file (out of this task's scope).
@@ -527,6 +540,8 @@ export const MarkdownPreview = memo(function MarkdownPreview({
 // 內任何 position:fixed 子元素只相對 preview 內容區定位，無法覆蓋 editor。這是對
 // CSS-overlay 逃逸的根因防禦（不依賴列舉 style/class 等個別屬性通道）（R11-1b）。
 // jsdom 測不到 layout 定位，實機效果歸 T15 gui-acceptance。
+// pre 與 rich editor 一樣換行：Radix viewport 的 display:table 包層會被最長一行
+// 撐寬，連帶整份文件出現 overflow-x。
 export function MarkdownPreviewProse() {
     return (
         <style>{`
@@ -542,7 +557,7 @@ export function MarkdownPreviewProse() {
 .markdown-preview-body li{margin:.2em 0}
 .markdown-preview-body a{color:var(--yz-accent-ink);text-decoration:underline}
 .markdown-preview-body code{font-family:var(--font-mono,monospace);font-size:.88em;background:var(--paper-3);border-radius:4px;padding:.1em .35em}
-.markdown-preview-body pre{background:var(--paper-3);border-radius:8px;padding:12px 14px;margin:.6em 0}
+.markdown-preview-body pre{background:var(--paper-3);border-radius:8px;padding:12px 14px;margin:.6em 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .markdown-preview-body pre code{background:none;padding:0}
 .markdown-preview-body blockquote{border-left:3px solid var(--line-1);margin:.6em 0;padding:.1em 0 .1em 14px;color:var(--ink-3)}
 .markdown-preview-body table{border-collapse:collapse;margin:.6em 0}

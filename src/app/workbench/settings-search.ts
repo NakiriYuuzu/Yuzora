@@ -8,7 +8,7 @@ export const SETTINGS_GROUPS=[
 const fields:Partial<Record<SettingsSectionId,{ns:string;keys:string[]}>>={
   appearance:{ns:'workbench',keys:['settings.theme','settings.accentColor','settings.leftSidebarBackground','settings.rightSidebarBackground','settings.botAnimations','settings.language','settings.moveOpenedWorkspaceToTop']},
   keyboard:{ns:'editorPreferences',keys:['search']},
-  editor:{ns:'workbench',keys:['editorPreferences:syntaxTheme','settings.editorFontSize','settings.showMinimap']},
+  editor:{ns:'workbench',keys:['editorPreferences:syntaxTheme','settings.editorFontSize','settings.showMinimap','settings.markdownDefaultMode']},
   terminal:{ns:'terminal',keys:['fontFamilyLabel','fontSizeLabel']},
   herdr:{ns:'workbench',keys:['herdrSettings.binarySource']},
   git:{ns:'workbench',keys:['gitSettings.detectionLabel','gitSettings.remoteCheckLabel']},
@@ -20,6 +20,7 @@ const aliases:Record<string,string>={
   'settings.botAnimations':'角色 機器人 夥伴 動畫 效能 bot animation motion performance companion',
   'editorPreferences:syntaxTheme':'語法 高亮 配色 syntax highlight palette GitHub Yuzora One',
   'settings.editorFontSize':'字級 字體 字型 font size typography',
+  'settings.markdownDefaultMode':'預覽 原始碼 文件 程式碼 preview source document code md',
   fontSizeLabel:'字級 字體 字型 font size typography',
   fontFamilyLabel:'字體 字型 font family JetBrains Mono Menlo Cascadia Consolas monospace',
   'settings.theme':'淺色 深色 系統 light dark system',

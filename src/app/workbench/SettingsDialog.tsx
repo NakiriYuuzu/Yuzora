@@ -48,7 +48,7 @@ import {
   setLanguagePreference,
   type LanguagePreference,
 } from "@/lib/i18n"
-import { useEditorSettingsStore, type EditorFontSize } from "@/state/editorSettingsStore"
+import { useEditorSettingsStore, type EditorFontSize, type MarkdownViewMode } from "@/state/editorSettingsStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useUpdateStore } from "@/state/updateStore"
@@ -187,6 +187,8 @@ export function SettingsDialog({
   const setFontSize = useEditorSettingsStore((s) => s.setFontSize)
   const minimap = useEditorSettingsStore((s) => s.minimap)
   const setMinimap = useEditorSettingsStore((s) => s.setMinimap)
+  const markdownDefaultMode = useEditorSettingsStore((s) => s.markdownDefaultMode)
+  const setMarkdownDefaultMode = useEditorSettingsStore((s) => s.setMarkdownDefaultMode)
   const moveOpenedWorkspaceToTop = useRecentWorkspacesStore((s) => s.moveOpenedWorkspaceToTop)
   const setMoveOpenedWorkspaceToTop = useRecentWorkspacesStore(
     (s) => s.setMoveOpenedWorkspaceToTop
@@ -421,6 +423,18 @@ export function SettingsDialog({
                     onCheckedChange={setMinimap}
                   />
                 </SettingsRowGroup>
+
+                <SettingCard label={tw("settings.markdownDefaultMode")} sub={tw("settings.markdownDefaultModeSub")}>
+                  <Segmented
+                    label={tw("settings.markdownDefaultMode")}
+                    options={[
+                      { id: "document", label: tw("settings.markdownModeDocument") },
+                      { id: "source", label: tw("settings.markdownModeSource") },
+                    ]}
+                    value={markdownDefaultMode}
+                    onChange={(id) => setMarkdownDefaultMode(id as MarkdownViewMode)}
+                  />
+                </SettingCard>
               </FieldGroup>
             )}
 

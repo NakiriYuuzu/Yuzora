@@ -1,8 +1,9 @@
 import type { Text } from "@codemirror/state"
+import { useEditorSettingsStore, type MarkdownViewMode } from "@/state/editorSettingsStore"
 
 // Match source-editor state lifetime: per workspace/document, bounded in memory.
 interface SavedMarkdownViewState {
-    mode: "document" | "source"
+    mode: MarkdownViewMode
     selection?: { doc: Text; anchor: number; head: number }
     scroll?: { doc: Text; top: number; left: number }
 }
@@ -18,8 +19,12 @@ export function markdownViewState(workspace: string | null, path: string): Markd
     const key = JSON.stringify([workspace, path])
     let state = states.get(key)
     if (!state) {
-        let snapshot: SavedMarkdownViewState = { mode: "document" }
-        state = { get: () => snapshot, set: patch => { snapshot = { ...snapshot, ...patch } } }
+        // Until this file's mode is chosen, it follows the editor setting.
+        let snapshot: Omit<SavedMarkdownViewState, "mode"> & { mode?: MarkdownViewMode } = {}
+        state = {
+            get: () => ({ ...snapshot, mode: snapshot.mode ?? useEditorSettingsStore.getState().markdownDefaultMode }),
+            set: patch => { snapshot = { ...snapshot, ...patch } }
+        }
     }
     states.delete(key)
     states.set(key, state)
