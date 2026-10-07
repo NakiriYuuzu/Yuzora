@@ -91,6 +91,9 @@ jobs:
     # verify the real resources downloaded from host-artifacts.
     env:
       TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+      # Line tables keep test backtraces readable while cutting compile, link
+      # and cache time against full debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     strategy:
       fail-fast: false
       matrix:
@@ -128,8 +131,12 @@ jobs:
         with:
           workspaces: src-tauri
           key: ci-${{ matrix.cache-key }}
+          cache-on-failure: true
 
+      # On macOS the Clippy baseline below compiles the same locked targets
+      # and fails on any compiler error, so a separate check would repeat it.
       - name: Compile all targets with locked dependencies
+        if: runner.os != 'macOS'
         working-directory: src-tauri
         run: cargo check --locked --all-targets
 
@@ -171,6 +178,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/host.yml
+    with:
+      caller: ci
 
   release-candidate:
     needs: host-artifacts
@@ -216,6 +225,7 @@ jobs:
         with:
           workspaces: src-tauri
           key: release-candidate-${{ runner.os }}
+          cache-on-failure: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -286,6 +296,7 @@ jobs:
     name: Real database integration (Linux x86-64)
     env:
       TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -309,6 +320,7 @@ jobs:
         with:
           workspaces: src-tauri
           key: database-integration-linux-x86-64
+          cache-on-failure: true
 
       - name: Start PostgreSQL and MSSQL fixtures
         run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait

@@ -46,6 +46,10 @@ export default defineConfig(({ mode }) => ({
     },
   },
   envPrefix: ["VITE_", "TAURI_"],
+  build: {
+    // Gzip estimates for every chunk only lengthen each production build.
+    reportCompressedSize: false,
+  },
   resolve: {
     alias: {
 "@": path.resolve(import.meta.dirname, "./src"),

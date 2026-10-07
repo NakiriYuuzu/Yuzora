@@ -1,5 +1,6 @@
 [
   "frontend-ci.test.ts",
+  "host-ci.test.ts",
   "scripts/build-local-installers.test.ts",
   "scripts/finalize-updater-metadata.test.ts",
   "scripts/legacy-cleanup.test.ts",

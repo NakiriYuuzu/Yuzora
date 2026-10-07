@@ -98,6 +98,11 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWe
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0.2"
 
+# Dependencies are rarely stepped through in a debugger; dropping their debug
+# info shrinks dev and test builds and shortens linking.
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 strip = "symbols"
 lto = "thin"

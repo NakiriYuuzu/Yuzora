@@ -69,7 +69,7 @@ Required CI checks：
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend checks 與 3 個 test shards 平行、固定名稱 aggregator 守門；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
-| Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
+| Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR（`release/*` PR 只由 CI 呼叫，不重複觸發）、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -88,7 +88,9 @@ Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflo
 - PostgreSQL 暫停第一頁的記憶體回歸測試先暖機並固定 helper PIDs，再限制查詢造成的 RSS 增量小於 64 MiB；不以跨平台差異很大的程序總 RSS 判斷是否保留未讀資料。128 MiB 結果的舊無界讀取負向驗證必須仍超限。
 - Frontend checks（lint、typecheck、build）與 3 個 test shards 平行；固定 required-check 名稱的 Frontend aggregator 僅在全部成功時通過。checks／每個 shard 均先執行 `site:companions`、`site:seo` 與 `demo:build`，驗證乾淨 checkout 的 Pages/demo artifacts；Demo Vite 設定也納入 typecheck。Vitest 的 node project 使用 `src/test/nodeTests.json` 精確 allowlist，其餘／新增測試回到 jsdom。此 build check 不代表瀏覽器互動驗收。
 - `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
-- 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消。
+- 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消；HERDR compatibility 的 PR run 與 Host helper 的直接 PR run（依 target）也會被新 push 取消。
+- 建置速度：Host helper 以 `Swatinem/rust-cache`（固定 SHA）依 target 快取，Release 呼叫時只會還原 `main` 範圍的快取；CI 透過 `caller: ci` 呼叫 Host helper，`release/*` PR 不再另跑一份直接觸發的五平台建置。Rust 編譯／測試 jobs 設定 `CARGO_PROFILE_DEV_DEBUG=line-tables-only`，失敗時仍保存快取；macOS 不另跑 `cargo check`，由同樣 `--locked --all-targets` 的 exact Clippy baseline 承擔編譯檢查（任何編譯錯誤都使其失敗）。
+- `src-tauri` 與 Host 的 dev profile 不產生第三方 dependency debug info（自身 crate 保留完整 debug info）；Vite production build 不計算各 chunk 的 gzip 大小。兩者都不影響 release profile 與發布產物。
 - 現行 PR CI 沒有獨立執行 `check:version` 與 `check:updater-release`；在新增 blocking contract job 前，Release PR 必須保留第 5 節的本機 preflight 證據。
 
 ---
