@@ -930,15 +930,15 @@ mod tests {
         let advertised = path.to_string_lossy().into_owned();
         let client =
             connect_local_stream(&advertised, Instant::now() + Duration::from_secs(2)).unwrap();
-        let mut server = listener.accept().unwrap();
+        let server = listener.accept().unwrap();
         let mut buffer = [0u8; 1];
         assert!(matches!(
-            poll_local_stream_read(&mut server, &mut buffer).unwrap(),
+            poll_local_stream_read(&server, &mut buffer).unwrap(),
             LocalStreamRead::Pending
         ));
         drop(client);
         assert!(matches!(
-            poll_local_stream_read(&mut server, &mut buffer).unwrap(),
+            poll_local_stream_read(&server, &mut buffer).unwrap(),
             LocalStreamRead::Closed
         ));
         let _ = std::fs::remove_file(path);

@@ -33,6 +33,9 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 function check(ok: unknown, message: string): asserts ok { if (!ok) throw new Error(message) }
 function start(args: string[], executable = binary) {
   const child = spawn(executable, ["--session", session, ...args], { cwd: join(root, "work"), env, stdio: "pipe" })
+  // Teardown ends the input of children that may already have exited; that
+  // EPIPE is expected. Any other stream error still fails the run.
+  child.stdin.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "EPIPE") throw error })
   children.push(child)
   return child
 }

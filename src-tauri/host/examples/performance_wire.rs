@@ -24,6 +24,7 @@ fn process_usage() -> (Option<f64>, Option<i64>) {
     (None, None)
 }
 
+#[cfg(unix)]
 fn descriptor_count() -> Option<usize> {
     let path = if cfg!(target_os = "linux") {
         "/proc/self/fd"
