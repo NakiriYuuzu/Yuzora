@@ -11,3 +11,12 @@ export function canMergeConflict(code: string): boolean {
     const { ours, theirs } = conflictSideChanges(code)
     return ours !== "deleted" && theirs !== "deleted"
 }
+
+/**
+ * Git's side for the user's "Yours" / "Theirs". A rebase replays the user's
+ * commits onto upstream, so Git's "ours" is upstream and "theirs" the user's.
+ */
+export function gitSide(side: "ours" | "theirs", inProgress: string | null | undefined): "ours" | "theirs" {
+    if (inProgress !== "rebase") return side
+    return side === "ours" ? "theirs" : "ours"
+}

@@ -462,7 +462,9 @@ export function GitMergeTool() {
         let cancelled = false
         const setState = (next: { path: string; texts?: MergeTexts; error?: string }) => { if (!cancelled) setLoaded(next) }
         gitConflictSides(repositoryRoot, path).then((sides) => {
-            const texts = mergeTexts(sides)
+            // The left pane is the user's side, which a rebase stores as theirs.
+            const rebase = useGitStore.getState().status?.inProgress === "rebase"
+            const texts = mergeTexts(rebase ? { ...sides, ours: sides.theirs, theirs: sides.ours } : sides)
             setState(typeof texts === "string"
                 ? { path, error: t(texts === "deleted" ? "gitMerge.deletedSide" : "gitMerge.binary") }
                 : { path, texts })

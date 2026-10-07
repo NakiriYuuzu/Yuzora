@@ -18,7 +18,7 @@ import { gitConflictResolve } from "@/lib/ipc"
 import { useGitConflictStore } from "@/state/gitConflictStore"
 import { useGitStore } from "@/state/gitStore"
 import { useOverlayPresence } from "@/state/overlayStore"
-import { canMergeConflict, conflictSideChanges } from "./conflictSides"
+import { canMergeConflict, conflictSideChanges, gitSide } from "./conflictSides"
 
 
 /**
@@ -53,7 +53,7 @@ export function GitConflictsDialog() {
         if (disabled || !repositoryRoot || !targets.length) return
         const paths = [...targets]
         const ok = await runOp(side === "ours" ? "conflict-accept-ours" : "conflict-accept-theirs", () =>
-            gitConflictResolve(repositoryRoot, paths, side))
+            gitConflictResolve(repositoryRoot, paths, gitSide(side, status?.inProgress)))
         if (ok) void logUserAction("git_conflict_accept", `accept ${side} (${paths.length})`)
     }
 
@@ -87,6 +87,8 @@ export function GitConflictsDialog() {
                             </div>
                             {conflicted.map((entry) => {
                                 const changes = conflictSideChanges(entry.status)
+                                const yours = changes[gitSide("ours", status?.inProgress)]
+                                const theirs = changes[gitSide("theirs", status?.inProgress)]
                                 const isChecked = selected.includes(entry.path)
                                 return (
                                     <div
@@ -104,8 +106,8 @@ export function GitConflictsDialog() {
                                             />
                                         </span>
                                         <span role="cell" className="truncate font-mono" title={entry.path}>{entry.path}</span>
-                                        <span role="cell" className="text-(--ink-2)">{sideLabel(changes.ours)}</span>
-                                        <span role="cell" className="text-(--ink-2)">{sideLabel(changes.theirs)}</span>
+                                        <span role="cell" className="text-(--ink-2)">{sideLabel(yours)}</span>
+                                        <span role="cell" className="text-(--ink-2)">{sideLabel(theirs)}</span>
                                     </div>
                                 )
                             })}

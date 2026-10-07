@@ -121,6 +121,10 @@ export async function pasteFiles(
         }
         return []
     } catch (error) {
+        // A failed batch keeps the entries it finished; show them so a retry
+        // is not mistaken for a first paste.
+        const touched = useInternal && internal.mode === "cut" ? [targetDir, ...internal.paths] : [targetDir]
+        await useFileTreeStore.getState().invalidatePaths(workspacePath, touched).catch(() => undefined)
         await reportError(error)
         return []
     }

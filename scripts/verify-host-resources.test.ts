@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { expect, it } from "vitest"
 import { HOST_TARGETS, type HostArtifact } from "./prepare-host-resources"
 import { HERDR_RESOURCE_TARGETS } from "./prepare-herdr-resources"
-import { verifyHostResources } from "./verify-host-resources"
+import { assertExecutableMode, verifyHostResources } from "./verify-host-resources"
 
 it("blocks missing targets, version drift, changed helper bytes, and executables for the wrong platform", async () => {
   const root = await mkdtemp(join(tmpdir(), "yuzora-runtime-payload-"))
@@ -32,4 +32,11 @@ it("blocks missing targets, version drift, changed helper bytes, and executables
     await writeFile(join(root, "herdr.exe"), "legacy")
     await expect(verifyHostResources(root, "0.0.9-beta.3")).rejects.toThrow("exactly five")
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it("rejects Unix runtime executables that lost their execute bits on the way through artifacts", () => {
+  expect(() => assertExecutableMode("macos-aarch64/herdr", 0o100644, "darwin")).toThrow("lost its execute permission")
+  expect(() => assertExecutableMode("macos-aarch64/herdr", 0o100755, "darwin")).not.toThrow()
+  // Windows runners cannot represent Unix modes; their installers carry the bits elsewhere.
+  expect(() => assertExecutableMode("macos-aarch64/herdr", 0o100666, "win32")).not.toThrow()
 })

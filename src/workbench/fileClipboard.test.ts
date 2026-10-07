@@ -95,6 +95,14 @@ describe("copy, cut and paste", () => {
         expect(ipc.fsPasteClipboardFiles).not.toHaveBeenCalled()
     })
 
+    it("shows the entries a failed Finder paste already copied", async () => {
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["/Users/me/a.png", "/Users/me/huge"])
+        vi.mocked(ipc.fsPasteClipboardFiles).mockRejectedValueOnce("copy-limit-reached")
+        expect(await pasteFiles(W, { path: "/w/src", isDirectory: true })).toEqual([])
+        expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/src"])
+        expect(showAppMessage).toHaveBeenCalled()
+    })
+
     it("explains backend refusals", async () => {
         await copyFilesToClipboard(W, ["/w/src"], "copy")
         vi.mocked(ipc.fsCopyPaths).mockRejectedValueOnce("copy-into-itself")

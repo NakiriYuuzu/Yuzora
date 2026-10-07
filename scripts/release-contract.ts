@@ -647,7 +647,16 @@ function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], window
   const download = stepByName(buildSteps, "Download Unix host runtimes")
   const options = record(download.with, "runtime download options")
   assert(download.uses === "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")
-  assert(includes(stepByName(buildSteps, "Verify Unix host runtime payloads").run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
+  const restore = stepByName(buildSteps, "Restore Unix host runtime execute bits")
+  const verifyPayloads = stepByName(buildSteps, "Verify Unix host runtime payloads")
+  assert(
+    restore.if === "runner.os != 'Windows'" &&
+      includes(restore.run, "chmod 0755") &&
+      buildSteps.indexOf(download) < buildSteps.indexOf(restore) &&
+      buildSteps.indexOf(restore) < buildSteps.indexOf(verifyPayloads),
+    "macOS installers must restore runtime execute bits lost by artifact upload before verifying"
+  )
+  assert(includes(verifyPayloads.run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
   const verify = stepByName(buildSteps, "Verify Windows native and Unix runtime payloads")
   assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify native and Unix runtime payloads extracted from MSI and NSIS")
   const smoke = stepByName(buildSteps, "Verify isolated native Windows HERDR contract")

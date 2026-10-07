@@ -71,6 +71,19 @@ describe("GitConflictsDialog", () => {
         expect(runOp).toHaveBeenCalledWith("conflict-accept-theirs", expect.any(Function))
     })
 
+    it("maps Yours to the replayed commit, Git's theirs, during a rebase", async () => {
+        useGitStore.setState({ status: { ...status([{ path: "b.txt", origPath: null, status: "UD" }]), inProgress: "rebase" } })
+        useGitConflictStore.setState({ conflictsOpen: true })
+        render(<GitConflictsDialog />)
+
+        const dialog = await screen.findByRole("dialog")
+        const cells = within(within(dialog).getAllByRole("row")[1]).getAllByRole("cell")
+        expect(cells[2]).toHaveTextContent("Deleted")
+        expect(cells[3]).toHaveTextContent("Modified")
+        fireEvent.click(within(dialog).getByRole("button", { name: "Accept Yours" }))
+        await waitFor(() => expect(ipc.gitConflictResolve).toHaveBeenCalledWith("/w", ["b.txt"], "theirs"))
+    })
+
     it("only offers the merge tool when both sides kept the file", async () => {
         useGitStore.setState({ status: status([{ path: "b.txt", origPath: null, status: "UD" }]) })
         useGitConflictStore.setState({ conflictsOpen: true })
@@ -175,6 +188,22 @@ describe("GitMergeTool", () => {
         await resolveAndApply("1\n<<<<<<< ours\nO\n=======\nT\n>>>>>>> theirs\n")
         await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith("/w/m.txt", "1\nT\n"))
         expect(useAppDialogStore.getState().pending).toBeNull()
+    })
+
+    it("shows the replayed commit as Yours while rebasing", async () => {
+        useGitStore.setState({ status: { ...status([{ path: "r.txt", origPath: null, status: "UU" }]), inProgress: "rebase" } })
+        vi.mocked(ipc.gitConflictSides).mockResolvedValue({
+            code: "UU",
+            base: { kind: "full", content: "1\n2\n" },
+            ours: { kind: "full", content: "1\nupstream\n" },
+            theirs: { kind: "full", content: "1\nmine\n" },
+            worktree: { kind: "full", content: "1\n<<<<<<< upstream\n" }
+        })
+        useGitConflictStore.setState({ mergePath: "r.txt" })
+        render(<GitMergeTool />)
+        await screen.findByText("1 changes, 1 conflicts left")
+        expect(document.querySelector("[data-merge-pane='yours']")).toHaveTextContent("mine")
+        expect(document.querySelector("[data-merge-pane='theirs']")).toHaveTextContent("upstream")
     })
 
     it("explains why a deleted side cannot be merged", async () => {

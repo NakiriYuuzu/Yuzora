@@ -735,6 +735,8 @@ Agent 通知預設僅 toast；系統通知與聲音分別選配。首次快照�
 
 一般 Rust compile／database integration jobs 使用 `TAURI_CONFIG={"bundle":{"resources":[]}}`，讓乾淨 checkout 不依賴未下載的 installer payload。此設定只屬編譯／測試 jobs；candidate／Release 必須保留實際 resources 與 `runtime:verify`、installer payload gate，不得沿用空資源設定。
 
+`upload-artifact` 會把 `host-*` artifact 內的檔案一律存成 0644，而 macOS App 從 `host/macos-aarch64/herdr` 執行內建 HERDR。candidate／Release 在下載後、`runtime:verify` 前，以「Restore Unix host runtime execute bits」步驟恢復執行權限；`runtime:verify` 在非 Windows runner 上遇到不可執行的 Unix helper／HERDR 會直接失敗，release contract 也檢查這個步驟的存在與順序。
+
 Helper 程序測試使用隔離的 shell／npm fixture，避免 CI runner 的 login profile 改寫測試 PATH；工作區替換測試保留原 inode，確保測到不同的檔案系統身分；SQLite 取消測試沿用正式查詢的 pre-step cancellation guard。
 
 HERDR runtime verifier 停止自身隔離 Session 後，先等待程序正常退出，再終止逾時的自身子程序。Windows 檔案鎖可能晚於退出事件釋放，暫存目錄刪除使用有上限的重試；持續無法清理仍使驗證失敗，不略過 gate 或操作使用者的 Sessions。

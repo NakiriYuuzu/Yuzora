@@ -237,6 +237,13 @@ jobs:
           merge-multiple: true
           path: src-tauri/resources/host/
 
+      # upload-artifact stores every file as 0644; the macOS app runs its
+      # bundled HERDR from host/macos-aarch64, so restore the execute bits.
+      - name: Restore Unix host runtime execute bits
+        if: runner.os != 'Windows'
+        shell: bash
+        run: find src-tauri/resources/host -mindepth 2 -type f \( -name herdr -o -name yuzora-host \) -exec chmod 0755 {} +
+
       - name: Verify Unix host runtime payloads
         run: bun run runtime:verify
 
