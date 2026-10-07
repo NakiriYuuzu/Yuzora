@@ -210,7 +210,7 @@ pub(crate) fn poll_local_stream_read(
 }
 
 #[cfg(windows)]
-fn windows_named_pipe_available(stream: &mut LocalStream) -> io::Result<Option<u32>> {
+fn windows_named_pipe_available(stream: &LocalStream) -> io::Result<Option<u32>> {
     use std::os::windows::io::{AsHandle, AsRawHandle};
 
     let LocalStream::NamedPipe(pipe) = stream;
