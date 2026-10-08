@@ -58,6 +58,20 @@ describe("MachinesPanel actions", () => {
     expect(within(alert).getByText(i18n.t("machines:panel.diagnostics"))).toBeInTheDocument()
   })
 
+  it("still reports a failed mutation while a stale list's refresh error is shown", async () => {
+    await mount()
+    ipc.list.mockRejectedValue("machines-timeout")
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    await screen.findByText(i18n.t("machines:panel.loadFailed"))
+    ipc.rename.mockRejectedValue("herdr-operation-error: label already used by 4f2a")
+    fireEvent.click(within(row()).getByRole("button", { name: "Rename" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "Machine name" }), { target: { value: "Other" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    expect(await screen.findByText(i18n.t("machines:errors.herdr-operation-error"))).toBeInTheDocument()
+    expect(screen.getByText("label already used by 4f2a")).toBeInTheDocument()
+    expect(screen.getAllByRole("alert")).toHaveLength(2)
+  })
+
   it("disables a machine and hides nothing else", async () => {
     await mount()
     ipc.setEnabled.mockResolvedValue([{ ...lab, enabled: false }])

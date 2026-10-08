@@ -135,13 +135,15 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
       </Button>
     </div>
     {windows && <p className="text-xs text-muted-foreground">{t("panel.windowsReconnectHint")}</p>}
-    {(listError ?? actionError) && <div role="alert" className="text-sm text-destructive [overflow-wrap:anywhere]">
-      <p>{listError ? t("panel.loadFailed") : actionError?.message}</p>
-      {!listError && actionError?.detail && <details className="mt-1 text-xs"><summary>{t("panel.diagnostics")}</summary><pre className="whitespace-pre-wrap [overflow-wrap:anywhere]">{actionError.detail}</pre></details>}
-      {listError && <>
-        <p>{describeMachineError(listError, t2).message}</p>
-        <Button size="sm" variant="outline" onClick={() => void useMachinesStore.getState().refreshList()}>{t("panel.retry")}</Button>
-      </>}
+    {listError && <div role="alert" className="text-sm text-destructive [overflow-wrap:anywhere]">
+      <p>{t("panel.loadFailed")}</p>
+      <p>{describeMachineError(listError, t2).message}</p>
+      <Button size="sm" variant="outline" onClick={() => void useMachinesStore.getState().refreshList()}>{t("panel.retry")}</Button>
+    </div>}
+    {/* Separate from a stale-list warning: the rows stay actionable, so their failures must show. */}
+    {actionError && <div role="alert" className="text-sm text-destructive [overflow-wrap:anywhere]">
+      <p>{actionError.message}</p>
+      {actionError.detail && <details className="mt-1 text-xs"><summary>{t("panel.diagnostics")}</summary><pre className="whitespace-pre-wrap [overflow-wrap:anywhere]">{actionError.detail}</pre></details>}
     </div>}
     {!machines.length && !listError && (loading
       ? <p role="status">{t("panel.loading")}</p>
