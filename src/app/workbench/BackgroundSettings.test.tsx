@@ -121,6 +121,53 @@ describe("background settings", () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it("drops a palette import a newer import or palette change superseded", async () => {
+    const pending: Array<{ resolve: (colors: string[]) => void; reject: (error: Error) => void }> = []
+    mocks.extract.mockImplementation(() => new Promise<string[]>((resolve, reject) => { pending.push({ resolve, reject }) }))
+    const onChange = renderSettings(gradientValue)
+    const input = screen.getByTestId("background-image-input")
+    fireEvent.change(input, { target: { files: [new File(["a"], "slow.png")] } })
+    fireEvent.change(input, { target: { files: [new File(["b"], "fast.png")] } })
+    pending[1].resolve(["#445566"])
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
+    pending[0].resolve(["#112233"])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange.mock.lastCall?.[0].backgroundGradient.colors).toEqual(["#445566"])
+
+    // A preset picked while an import decodes wins, and the import's failure stays silent.
+    fireEvent.change(input, { target: { files: [new File(["c"], "late.png")] } })
+    fireEvent.click(screen.getByRole("button", { name: "Sunset" }))
+    pending[2].reject(new Error("decode failed"))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onChange.mock.lastCall?.[0].backgroundGradient.colors).toEqual([...BACKGROUND_PRESETS.sunset])
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
+  it("offers Save again once a saved gradient's intensity changes", () => {
+    const saved = { colors: ["#3ddc97", "#46a0ff"], intensity: 60 }
+    renderSettings({ ...gradientValue, savedGradients: [saved] })
+    expect(screen.getByRole("button", { name: "In palette" })).toBeDisabled()
+    cleanup()
+    const onChange = renderSettings({ ...gradientValue, backgroundGradient: { ...saved, intensity: 30 }, savedGradients: [saved] })
+    fireEvent.click(screen.getByRole("button", { name: "Save to palette" }))
+    expect(onChange).toHaveBeenCalledWith({ savedGradients: [{ colors: saved.colors, intensity: 30 }] })
+  })
+
+  it("ignores a right-click on the color pad", () => {
+    const capture = vi.spyOn(HTMLElement.prototype, "setPointerCapture").mockImplementation(() => {})
+    const onChange = renderSettings(gradientValue)
+    const pad = screen.getByRole("button", { name: /^Color 2/ }).parentElement!
+    vi.spyOn(pad, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 100))
+    fireEvent.pointerDown(pad, { pointerId: 1, button: 2, clientX: 100, clientY: 50 })
+    fireEvent.pointerMove(pad, { pointerId: 1, clientX: 150, clientY: 50 })
+    expect(capture).not.toHaveBeenCalled()
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.pointerDown(pad, { pointerId: 2, button: 0, clientX: 100, clientY: 50 })
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
   it("removes a saved gradient from the palette", () => {
     const saved = { colors: ["#112233"], intensity: 40 }
     const onChange = renderSettings({ ...gradientValue, savedGradients: [saved] })

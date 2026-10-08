@@ -55,10 +55,18 @@ export function BackgroundSettings({
     return () => { live = false }
   }, [])
   const selectedIndex = Math.min(selected, backgroundGradient.colors.length - 1)
-  const isSaved = savedGradients.some(entry => sameGradientColors(entry.colors, backgroundGradient.colors))
+  // Same colors at another intensity can still be saved: Save then replaces that entry.
+  const isSaved = savedGradients.some(entry =>
+    sameGradientColors(entry.colors, backgroundGradient.colors) && entry.intensity === backgroundGradient.intensity)
+  /** Bumped by palette imports and every later palette or source change: only the latest intent applies. */
+  const paletteRequest = useRef(0)
+  const changePalette = (patch: Partial<BackgroundAppearance>) => {
+    paletteRequest.current += 1
+    onChange(patch)
+  }
 
   const applyGradient = (gradient: BackgroundGradient, patch: Partial<BackgroundAppearance> = {}) => {
-    onChange({ backgroundSource: "gradient", backgroundGradient: gradient, ...patch })
+    changePalette({ backgroundSource: "gradient", backgroundGradient: gradient, ...patch })
   }
   const setColors = (colors: string[]) => applyGradient({ ...backgroundGradient, colors })
   const setColor = (index: number, color: string) => setColors(backgroundGradient.colors.map((entry, i) => i === index ? color : entry))
@@ -96,15 +104,18 @@ export function BackgroundSettings({
   }
 
   const importImage = async (file: File) => {
+    const request = ++paletteRequest.current
     setImageError(false)
     try {
       const colors = await extractPaletteFromImage(file)
+      // A newer import or palette change since then wins; this result is stale.
+      if (request !== paletteRequest.current) return
       if (colors.length === 0) throw new Error("no colors")
       const gradient = { colors, intensity: backgroundGradient.intensity }
       setSelected(0)
       applyGradient(gradient, { savedGradients: addSavedGradient(savedGradients, gradient) })
     } catch {
-      setImageError(true)
+      if (request === paletteRequest.current) setImageError(true)
     }
   }
 
@@ -119,7 +130,7 @@ export function BackgroundSettings({
             { id: "image", label: tw("settings.backgroundImage") },
           ]}
           value={backgroundSource}
-          onChange={id => onChange({ backgroundSource: id as BackgroundSource })}
+          onChange={id => changePalette({ backgroundSource: id as BackgroundSource })}
         />
         {backgroundSource === "gradient" && <div className="background-editor">
           <GradientPad
@@ -131,7 +142,7 @@ export function BackgroundSettings({
           <div className="background-editor-actions">
             <Button variant="outline" size="sm" disabled={backgroundGradient.colors.length >= MAX_GRADIENT_COLORS} onClick={addColor}><Plus data-icon="inline-start" />{tw("settings.backgroundAddColor")}</Button>
             <Button variant="outline" size="sm" disabled={backgroundGradient.colors.length <= 1} onClick={removeColor}><Minus data-icon="inline-start" />{tw("settings.backgroundRemoveColor")}</Button>
-            <Button variant="outline" size="sm" disabled={isSaved} onClick={() => onChange({ savedGradients: addSavedGradient(savedGradients, backgroundGradient) })}><BookmarkPlus data-icon="inline-start" />{tw(isSaved ? "settings.backgroundSaved" : "settings.backgroundSave")}</Button>
+            <Button variant="outline" size="sm" disabled={isSaved} onClick={() => changePalette({ savedGradients: addSavedGradient(savedGradients, backgroundGradient) })}><BookmarkPlus data-icon="inline-start" />{tw(isSaved ? "settings.backgroundSaved" : "settings.backgroundSave")}</Button>
           </div>
           <Field data-settings-label={tw("settings.backgroundIntensity")}>
             <FieldLabel>{tw("settings.backgroundIntensity")}</FieldLabel>
@@ -194,7 +205,7 @@ export function BackgroundSettings({
               type="button"
               className="background-swatch-remove"
               aria-label={tw("settings.backgroundRemoveSaved", { index: index + 1 })}
-              onClick={() => onChange({ savedGradients: savedGradients.filter((_, i) => i !== index) })}
+              onClick={() => changePalette({ savedGradients: savedGradients.filter((_, i) => i !== index) })}
             ><X aria-hidden="true" /></button>
           </span>)}
           <button type="button" className="background-swatch background-swatch-upload" aria-label={tw("settings.backgroundFromImage")} title={tw("settings.backgroundFromImage")} onClick={() => fileRef.current?.click()}><ImagePlus aria-hidden="true" /></button>
@@ -261,6 +272,8 @@ function GradientPad({
       ref={padRef}
       className="background-pad"
       onPointerDown={event => {
+        // A right-click (context menu) or other button must not recolor anything.
+        if (event.button !== 0) return
         const dot = (event.target as HTMLElement).closest<HTMLElement>("[data-dot-index]")
         const index = dot ? Number(dot.dataset.dotIndex) : selected
         onSelect(index)
