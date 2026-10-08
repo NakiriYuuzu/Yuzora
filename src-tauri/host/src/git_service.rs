@@ -1791,9 +1791,18 @@ fn verify_stash_identity(root: &Path, name: &str, oid: &str) -> Result<(), Strin
     ))
 }
 
-/// Apply (or pop) `stash@{index}`, which must still be commit `oid`. A
-/// conflicting apply leaves unmerged paths; a conflicting `pop` keeps the
-/// stash, as git does.
+/// Arguments that apply a stash by its commit oid. Unlike `stash@{N}`, an oid
+/// cannot be renumbered by another client pushing or dropping a stash after
+/// the identity check.
+fn stash_apply_args(oid: &str) -> [&str; 3] {
+    ["stash", "apply", oid]
+}
+
+/// Apply (or pop) `stash@{index}`, which must still be commit `oid`. The
+/// stash is applied by oid, so the check cannot be outrun. A conflicting apply
+/// leaves unmerged paths; a conflicting `pop` keeps the stash, as git does.
+/// `git stash pop` only accepts `stash@{N}`, so pop is apply-by-oid followed by
+/// a drop that re-verifies the entry and is skipped if it moved meanwhile.
 pub fn stash_apply(
     root: &Path,
     index: u32,
@@ -1802,11 +1811,19 @@ pub fn stash_apply(
 ) -> Result<GitOperationOutcome, String> {
     let name = format!("stash@{{{index}}}");
     verify_stash_identity(root, &name, oid)?;
-    let sub = if pop { "pop" } else { "apply" };
-    let out = run_git(root, &["stash", sub, &name], DEFAULT_TIMEOUT, &[])?;
-    operation_outcome(root, "stash", out)
+    let out = run_git(root, &stash_apply_args(oid), DEFAULT_TIMEOUT, &[])?;
+    let outcome = operation_outcome(root, "stash", out)?;
+    // Changes are applied; the stash is only removed when it is still the
+    // listed one. Otherwise keep it: the list reloads and still shows it.
+    if pop && !outcome.conflicts && verify_stash_identity(root, &name, oid).is_ok() {
+        run_ok(root, &["stash", "drop", &name], DEFAULT_TIMEOUT, &[])?;
+    }
+    Ok(outcome)
 }
 
+/// Drop `stash@{index}` after checking it is still commit `oid`. A residual
+/// millisecond window remains between the check and the drop: `git stash drop`
+/// only accepts `stash@{N}` and offers no atomic compare-and-delete.
 pub fn stash_drop(root: &Path, index: u32, oid: &str) -> Result<(), String> {
     let name = format!("stash@{{{index}}}");
     verify_stash_identity(root, &name, oid)?;
@@ -2953,6 +2970,36 @@ mod tests {
         // The matching oid still works at its renumbered index.
         stash_drop(repo, 1, &listed[0].oid).unwrap();
         assert_eq!(stash_list(repo).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stash_apply_targets_the_oid_not_a_renumberable_index() {
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(stash_apply_args(oid), ["stash", "apply", oid]);
+        assert!(!stash_apply_args(oid).iter().any(|a| a.contains("stash@")));
+    }
+
+    #[test]
+    fn stash_pop_removes_only_the_popped_stash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "first\n").unwrap();
+        stash_push(repo, Some("first"), false, false).unwrap();
+        std::fs::write(repo.join("a.txt"), "second\n").unwrap();
+        stash_push(repo, Some("second"), false, false).unwrap();
+        let listed = stash_list(repo).unwrap();
+
+        let outcome = stash_apply(repo, 1, &listed[1].oid, true).unwrap();
+        assert!(!outcome.conflicts);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "first\n"
+        );
+        let left = stash_list(repo).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].oid, listed[0].oid);
     }
 
     #[test]
