@@ -3769,10 +3769,14 @@ CJMUHxWue08xy9ec7FmhAAAAC3l1em9yYS10ZXN0AQI=
             validate_upload_target("C:/", "report.txt").unwrap(),
             "C:/report.txt"
         );
-        assert_eq!(
-            validate_upload_target("/home/u", "CON").unwrap(),
-            "/home/u/CON"
-        );
+        // A POSIX remote keeps Windows names; a Windows client's own leaf rule
+        // still rejects them first, since no local Windows file can carry one.
+        let posix_remote = validate_upload_target("/home/u", "CON");
+        if cfg!(windows) {
+            assert_eq!(posix_remote, Err(PathCapabilityError::UnsafeLeaf.into()));
+        } else {
+            assert_eq!(posix_remote.unwrap(), "/home/u/CON");
+        }
     }
 
     #[test]
