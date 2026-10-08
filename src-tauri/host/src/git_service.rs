@@ -1813,16 +1813,26 @@ pub fn stash_apply(
     verify_stash_identity(root, &name, oid)?;
     let out = run_git(root, &stash_apply_args(oid), DEFAULT_TIMEOUT, &[])?;
     let outcome = operation_outcome(root, "stash", out)?;
-    // Changes are applied; the stash is only removed when it is still the
-    // listed one. Otherwise keep it: the list reloads and still shows it.
-    if pop && !outcome.conflicts && verify_stash_identity(root, &name, oid).is_ok() {
-        // The changes are already applied: report a failed drop as such, not as a failed pop that a
-        // retry would apply again.
-        run_ok(root, &["stash", "drop", &name], DEFAULT_TIMEOUT, &[]).map_err(|error| {
-            format!("git stash: applied {name} but could not drop it, so it is kept: {error}")
-        })?;
+    if pop && !outcome.conflicts {
+        drop_popped_stash(root, &name, oid)?;
     }
     Ok(outcome)
+}
+
+/// Remove a stash whose changes were just applied by OID. It is only dropped while `name` still names `oid`;
+/// otherwise, or when the drop fails, report it as applied but kept, never as a failed pop that a retry would
+/// apply again.
+fn drop_popped_stash(root: &Path, name: &str, oid: &str) -> Result<(), String> {
+    if verify_stash_identity(root, name, oid).is_err() {
+        return Err(format!(
+            "git stash: applied {name} but it moved before it could be dropped, so it is kept"
+        ));
+    }
+    run_ok(root, &["stash", "drop", name], DEFAULT_TIMEOUT, &[])
+        .map(|_| ())
+        .map_err(|error| {
+            format!("git stash: applied {name} but could not drop it, so it is kept: {error}")
+        })
 }
 
 /// Drop `stash@{index}` after checking it is still commit `oid`. A residual
@@ -3009,6 +3019,24 @@ mod tests {
             "stashed\n"
         );
         assert_eq!(stash_list(repo).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stash_pop_keeps_an_applied_stash_that_moved_before_the_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "first\n").unwrap();
+        stash_push(repo, Some("first"), false, false).unwrap();
+        let popped = stash_list(repo).unwrap()[0].oid.clone();
+        // Another client pushes after the apply: stash@{0} now names a different stash.
+        std::fs::write(repo.join("a.txt"), "second\n").unwrap();
+        stash_push(repo, Some("second"), false, false).unwrap();
+        let before = stash_list(repo).unwrap();
+        let error = drop_popped_stash(repo, "stash@{0}", &popped).unwrap_err();
+        assert!(error.contains("applied stash@{0} but it moved"), "{error}");
+        assert_eq!(stash_list(repo).unwrap(), before);
     }
 
     #[test]
