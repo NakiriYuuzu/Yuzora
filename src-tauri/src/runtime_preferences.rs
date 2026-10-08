@@ -99,6 +99,7 @@ pub fn runtime_preferences_get(
 pub fn runtime_preferences_set(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimePreferencesState>,
+    hosts: tauri::State<'_, crate::host_service::HostState>,
     wsl_enabled: bool,
 ) -> Result<RuntimePreferences, String> {
     let dir = app
@@ -106,9 +107,17 @@ pub fn runtime_preferences_set(
         .app_data_dir()
         .map_err(|e| format!("{PREFERENCES_UNWRITABLE_ERROR}: {e}"))?;
     let next = RuntimePreferences { wsl_enabled };
-    let mut current = state.0.lock().unwrap();
-    save_to(&dir, &next).map_err(|e| format!("{PREFERENCES_UNWRITABLE_ERROR}: {e}"))?;
-    *current = next;
+    {
+        let mut current = state.0.lock().unwrap();
+        save_to(&dir, &next).map_err(|e| format!("{PREFERENCES_UNWRITABLE_ERROR}: {e}"))?;
+        *current = next;
+    }
+    // Lookups already refuse WSL; also end streams opened before the switch.
+    // The preferences lock is released first: admitting a connection takes
+    // the connection lock before it reads the preferences.
+    if !wsl_enabled {
+        hosts.0.disconnect_wsl();
+    }
     Ok(next)
 }
 

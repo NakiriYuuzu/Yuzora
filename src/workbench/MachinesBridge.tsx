@@ -2,7 +2,7 @@ import { useEffect } from "react"
 import { isWindowsPlatform } from "@/lib/platform"
 import { useMachinesStore } from "@/state/machinesStore"
 import {
-  HERDR_BINARY_SOURCE_CHANGED_EVENT, MACHINES_CONCURRENCY, machineBackoffDelay, machinePollIntervals
+  HERDR_BINARY_SOURCE_CHANGED_EVENT, MACHINES_CAPABILITY_RETRY_MS, MACHINES_CONCURRENCY, machineBackoffDelay, machinePollIntervals
 } from "./machinesPolicy"
 
 interface MachineBackoff { failures: number; nextAt: number; authBlocked: boolean }
@@ -119,13 +119,21 @@ function createMachinesPoller() {
 export function MachinesBridge() {
   useEffect(() => {
     let poller: ReturnType<typeof createMachinesPoller> | null = null
+    let capabilityRetry: ReturnType<typeof setTimeout> | null = null
     let disposed = false
     const sync = () => {
-      const { capabilities, machines, listError } = useMachinesStore.getState()
+      const { capabilities, capabilitiesError, machines, listError } = useMachinesStore.getState()
       // A catalog that failed to load keeps a list retry alive; a loaded empty catalog stays idle.
       const shouldPoll = Boolean(capabilities?.supported) && (machines.length > 0 || listError !== null)
       if (shouldPoll && !poller) { poller = createMachinesPoller(); poller.start() }
       else if (!shouldPoll && poller) { poller.stop(); poller = null }
+      // A probe that failed or found no parsable version (timeout, spawn failure, missing binary) is
+      // retried slowly; a confirmed old version and a remote-only source stay idle.
+      const incomplete = capabilitiesError !== null || (capabilities !== null && !capabilities.supported
+        && capabilities.version === null && capabilities.reason !== "machines-local-only")
+      if (incomplete && !capabilityRetry && !disposed) {
+        capabilityRetry = setTimeout(() => { capabilityRetry = null; void bootstrap() }, MACHINES_CAPABILITY_RETRY_MS)
+      } else if (!incomplete && capabilityRetry) { clearTimeout(capabilityRetry); capabilityRetry = null }
     }
     const bootstrap = async () => {
       const capabilities = await useMachinesStore.getState().loadCapabilities()
@@ -154,6 +162,7 @@ export function MachinesBridge() {
       disposed = true
       unsubscribe()
       poller?.stop()
+      if (capabilityRetry) clearTimeout(capabilityRetry)
       document.removeEventListener("visibilitychange", onVisibility)
       window.removeEventListener(HERDR_BINARY_SOURCE_CHANGED_EVENT, onBinarySource)
     }

@@ -55,6 +55,21 @@ describe("HERDR mouse input", () => {
     ])
   })
 
+  it("ends a drag at its last cell when the window loses focus mid-gesture", () => {
+    const { send, mouse } = setup()
+    mouse("mousedown", 5, 5)
+    mouse("mousemove", 25, 15, { buttons: 1 })
+    window.dispatchEvent(new Event("blur"))
+    mouse("mousemove", 45, 15)
+    mouse("mouseup", 45, 15)
+    window.dispatchEvent(new Event("blur"))
+    expect(send.mock.calls).toEqual([
+      ["down", { column: 0, row: 0 }, 0],
+      ["drag", { column: 2, row: 1 }, 0],
+      ["up", { column: 2, row: 1 }, 0]
+    ])
+  })
+
   it.each([
     ["Shift-forced selection", { shiftKey: true }, 5],
     ["the link-open gesture", { metaKey: true }, 5],

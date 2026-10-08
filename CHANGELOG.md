@@ -12,7 +12,7 @@
 ### 修正
 
 - Windows：「已安裝」來源只會選用 `herdr.exe`，不再誤選同名的指令碼；自訂路徑貼上時帶的引號或前後空白會自動去除，且須為 `.exe`。
-- WSL 開關改由 Yuzora 後端保存並強制，關閉時不會再探索或連線 WSL。
+- WSL 開關改由 Yuzora 後端保存並強制，關閉時不會再探索或連線 WSL，已開啟的 WSL 連線也會立即中止。
 - Windows 更新安裝時只會停止 Yuzora 隨附的 HERDR；自行安裝的 HERDR 只會在確認視窗中列出，其中的 Session 不會被中止。
 - 從 HERDR pane 內啟動 Yuzora（例如在 pane 裡執行 `tauri dev` 或 `open`）時，Yuzora 的 HERDR 連線不再誤連到外層 pane 所屬的 server，會使用設定中選定的 Session。
 - 關閉 WSL 時，正在連線中的 WSL 主機不會在關閉後完成連線並被加入。

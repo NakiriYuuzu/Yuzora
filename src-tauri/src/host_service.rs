@@ -588,6 +588,27 @@ impl HostManager {
         Ok(())
     }
 
+    /// Cancels every WSL connection, which ends its stream actors; called once
+    /// WSL is turned off so already-open streams stop instead of waiting for
+    /// the frontend to reconcile.
+    pub fn disconnect_wsl(&self) {
+        let revoked: Vec<_> = {
+            let mut connections = self.connections.lock().unwrap();
+            let ids: Vec<String> = connections
+                .iter()
+                .filter(|(_, connection)| matches!(connection.target, HostTarget::Wsl { .. }))
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| connections.remove(id)).collect()
+        };
+        for connection in revoked {
+            connection.cancelled.send_replace(true);
+            connection.streams.lock().unwrap().clear();
+            connection.tunnels.lock().unwrap().clear();
+            connection.close_all_git();
+        }
+    }
+
     pub fn disconnect_all(&self) {
         self.shutting_down.store(true, Ordering::Release);
         for (_, connection) in self.connections.lock().unwrap().drain() {
@@ -809,6 +830,45 @@ mod tests {
         state.0.lock().unwrap().wsl_enabled = true;
         assert_eq!(manager.admit("wsl-fixture".into(), connection(2)), Ok(()));
         assert_eq!(manager.connections.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn herdr_disabling_wsl_cancels_only_wsl_connections() {
+        let manager = HostManager::default();
+        let mut peers = Vec::new();
+        for (id, target) in [
+            (
+                "wsl",
+                HostTarget::Wsl {
+                    distro: "Ubuntu".into(),
+                },
+            ),
+            ("local", HostTarget::Local),
+        ] {
+            let (io, peer) = tokio::io::duplex(1024);
+            peers.push(peer);
+            let connection = Arc::new(HostConnection::new(
+                ConnectionOwner {
+                    host_id: id.into(),
+                    generation: 1,
+                },
+                target,
+                "/helper".into(),
+                Box::new(io),
+            ));
+            manager
+                .connections
+                .lock()
+                .unwrap()
+                .insert(id.into(), connection);
+        }
+        let wsl = manager.connections.lock().unwrap()["wsl"].clone();
+        let mut cancelled = wsl.cancelled.subscribe();
+        manager.disconnect_wsl();
+        assert!(*cancelled.borrow_and_update());
+        let connections = manager.connections.lock().unwrap();
+        assert_eq!(connections.keys().collect::<Vec<_>>(), vec!["local"]);
+        assert!(!*connections["local"].cancelled.borrow());
     }
 
     #[tokio::test]

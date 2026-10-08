@@ -63,6 +63,34 @@ describe("MachinesBridge", () => {
     await advance(120 * SEC)
     expect(ipc.list).not.toHaveBeenCalled()
     expect(ipc.agents).not.toHaveBeenCalled()
+    // A confirmed old version is not probed again.
+    expect(ipc.caps).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ["an unparsable or timed-out version probe", (caps: typeof supportedCaps) => ({ ...caps, supported: false, version: null, reason: "machines-runtime-too-old" })],
+    ["a missing binary", (caps: typeof supportedCaps) => ({ ...caps, supported: false, version: null, reason: "machines-binary-unavailable" })]
+  ])("retries the capability probe slowly after %s and polls once it recovers", async (_name, incomplete) => {
+    ipc.caps.mockResolvedValueOnce(incomplete(supportedCaps)).mockResolvedValue(supportedCaps)
+    ipc.list.mockResolvedValue([machine("a")])
+    render(<MachinesBridge />)
+    await advance(59 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(1)
+    expect(ipc.list).not.toHaveBeenCalled()
+    await advance(1 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(2)
+    expect(ipc.agents.mock.calls.map(c => c[0])).toEqual([machine("a").id])
+    await advance(120 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries a failed capability call and stays idle for a remote-only source", async () => {
+    ipc.caps.mockRejectedValueOnce(new Error("ipc down")).mockResolvedValue({ ...supportedCaps, supported: false, version: null, reason: "machines-local-only" })
+    render(<MachinesBridge />)
+    await advance(60 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(2)
+    await advance(180 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(2)
   })
 
   it("polls enabled machines every 15s while visible and skips disabled ones", async () => {
