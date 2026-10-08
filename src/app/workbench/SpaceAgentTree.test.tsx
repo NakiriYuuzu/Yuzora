@@ -569,30 +569,57 @@ function setProjectSpaces() {
     },
   });
 }
-const agentSmall = (id: string) =>
-  screen.getAllByRole("treeitem").find(row => row.getAttribute("aria-label")?.startsWith(`${id} ·`))!.querySelector("small")!.textContent;
+const agentRow = (id: string) =>
+  screen.getAllByRole("treeitem").find(row => row.getAttribute("aria-label")?.startsWith(`${id} ·`))!;
+const agentTags = (id: string) =>
+  Array.from(agentRow(id).querySelectorAll(".tree-agent-tag")).map(tag => `${tag.getAttribute("data-tag")}:${tag.textContent}`);
+const showAgentsView = () => fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
 
-it("shows the repo name, not the branch, beside Agents in the Agents view", () => {
+it("shows folder then branch tags on a second line for a Git repo Agent in the Agents view", () => {
   setProjectSpaces();
   render(<SpaceAgentTree />);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
-  expect(agentSmall("agent-main")).toBe("yuzora-core");
-  expect(agentSmall("agent-linked")).toBe("yuzora-core");
-  expect(agentSmall("agent-plain")).toBe("notes-folder");
-  const row = screen.getAllByRole("treeitem").find(item => item.getAttribute("aria-label")?.startsWith("agent-linked ·"))!;
-  expect(row.getAttribute("aria-label")).toContain("yuzora-core");
-  expect(row.getAttribute("aria-label")).not.toContain("fix/linked");
+  showAgentsView();
+  expect(agentTags("agent-main")).toEqual(["folder:yuzora-core", "branch:feature/main"]);
+  const tags = agentRow("agent-main").querySelector(".tree-agent-tags")!;
+  expect(tags.parentElement).toBe(agentRow("agent-main").querySelector(".tree-node-label"));
+  expect(tags.children[0].getAttribute("title")).toBe("yuzora-core");
+  expect(tags.children[1].getAttribute("title")).toBe("feature/main");
 });
-it("uses the custom project name beside Agents and keeps branches on Spaces worktree rows", () => {
+it("shows the main repo name and the worktree branch for a linked worktree Agent", () => {
+  setProjectSpaces();
+  render(<SpaceAgentTree />);
+  showAgentsView();
+  expect(agentTags("agent-linked")).toEqual(["folder:yuzora-core", "branch:fix/linked"]);
+});
+it("shows only the folder tag for a non-Git folder Agent", () => {
+  setProjectSpaces();
+  render(<SpaceAgentTree />);
+  showAgentsView();
+  expect(agentTags("agent-plain")).toEqual(["folder:notes-folder"]);
+});
+it("applies the custom project name to the folder tag", () => {
   setProjectSpaces();
   useRecentWorkspacesStore.setState({
     presentations: { [spacePresentationKey(scopes[0], "/work/yuzora-core")]: { name: "Custom Repo" } as never },
   });
   render(<SpaceAgentTree />);
-  const levels = () => screen.getAllByRole("treeitem").filter(row => row.getAttribute("aria-level") === "2").map(row => row.textContent);
-  expect(levels().join("|")).toContain("feature/main");
-  expect(levels().join("|")).toContain("fix/linked");
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
-  expect(agentSmall("agent-main")).toBe("Custom Repo");
-  expect(agentSmall("agent-linked")).toBe("Custom Repo");
+  showAgentsView();
+  expect(agentTags("agent-main")).toEqual(["folder:Custom Repo", "branch:feature/main"]);
+  expect(agentTags("agent-linked")).toEqual(["folder:Custom Repo", "branch:fix/linked"]);
+});
+it("shows no tags in the Spaces view and keeps branches on worktree rows", () => {
+  setProjectSpaces();
+  render(<SpaceAgentTree />);
+  expect(document.querySelector(".tree-agent-tag")).toBeNull();
+  const levels = screen.getAllByRole("treeitem").filter(row => row.getAttribute("aria-level") === "2").map(row => row.textContent);
+  expect(levels.join("|")).toContain("feature/main");
+  expect(levels.join("|")).toContain("fix/linked");
+});
+it("puts folder and branch in the Agent aria-label", () => {
+  setProjectSpaces();
+  render(<SpaceAgentTree />);
+  showAgentsView();
+  expect(agentRow("agent-linked").getAttribute("aria-label")).toContain(" · yuzora-core · fix/linked · ");
+  expect(agentRow("agent-plain").getAttribute("aria-label")).toContain(" · notes-folder · ");
+  expect(agentRow("agent-plain").getAttribute("aria-label")).not.toContain("undefined");
 });

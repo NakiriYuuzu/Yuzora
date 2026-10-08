@@ -39,7 +39,7 @@ beforeEach(() => {
         capabilities: { server: { running: true }, api: { workspaceFocus: true, tabFocus: true } } as HerdrSessionRuntime["capabilities"],
         snapshot: {
           herdrSessionId: "s1", protocol: 22, version: "0.9.1",
-          spaces: [{ id: "space", label: "Project", path: "/repo", order: 0, focused: true }],
+          spaces: [{ id: "space", label: "Project", path: "/work/folder-name", branch: "feat/branch-name", order: 0, focused: true }],
           agents, tabs: [], terminals: [], raw: {},
         } as HerdrSnapshot,
       },
@@ -94,5 +94,16 @@ it("jumps with Alt+N and cycles with Alt+` without moving focus into the sidebar
   expect(activateAgent).toHaveBeenLastCalledWith(expect.objectContaining({ id: "one" }));
   expect(screen.queryByRole("listbox")).toBeNull();
   expect(document.activeElement).toBe(terminal);
+  terminal.remove();
+});
+
+it("shows folder and branch in the Alt switcher subtitle", () => {
+  render(<SpaceAgentTree />);
+  const terminal = document.body.appendChild(document.createElement("textarea"));
+  terminal.focus();
+  fireEvent.keyDown(terminal, { key: "`", code: "Backquote", altKey: true });
+  const items = screen.getAllByRole("option");
+  expect(items[0].textContent).toContain("folder-name · feat/branch-name · ");
+  fireEvent.keyUp(terminal, { key: "Alt", code: "AltLeft" });
   terminal.remove();
 });

@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  Folder,
   GitBranch,
   EllipsisVertical,
   Plus,
@@ -70,6 +71,11 @@ interface TreeNode {
   glyph?: string;
   avatarMode?: "character" | "glyph";
   character?: SpaceCharacterConfig;
+}
+
+/** Folder (project) then branch, for an Agent's accessible name and switcher subtitle. */
+function agentPlace(node: TreeNode): string {
+  return [node.projectName, node.space.branch].filter(Boolean).join(" · ");
 }
 
 /** WAI-ARIA `aria-keyshortcuts` form of an app binding (Mod resolves per platform). */
@@ -843,7 +849,7 @@ export function SpaceAgentTree() {
                         tabIndex={node.key === tabKey ? 0 : -1}
                         aria-label={
                           node.kind === "agent"
-                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.projectName} · ${node.sessionName}`
+                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${agentPlace(node)} · ${node.sessionName}`
                             : node.kind === "project"
                               ? `${node.label} · ${t("agentCount", { count: node.count })} · ${node.sessionName}`
                               : `${node.label} · ${node.space.path} · ${node.sessionName}`
@@ -865,7 +871,7 @@ export function SpaceAgentTree() {
                             ? t("agentHint")
                             : (node.space.path ?? undefined)
                         }
-                        className={`space-tree-row tree-${node.kind}`}
+                        className={`space-tree-row tree-${node.kind}${node.kind === "agent" && viewMode === "agents" ? " tree-agent-tagged" : ""}`}
                         // Native HTML5 drag sessions suppress pointer events in WKWebView.
                         // Pointer Events own the gesture so macOS WebView and touch/pen
                         // input share the same reliable path into HERDR workspace.move.
@@ -938,7 +944,18 @@ export function SpaceAgentTree() {
                         <span className="tree-node-label">
                           <span>{node.label}</span>
                           {node.kind === "agent" && viewMode === "agents" && (
-                            <small>{node.projectName}</small>
+                            <span className="tree-agent-tags">
+                              <span className="tree-agent-tag" data-tag="folder" title={node.projectName}>
+                                <Folder aria-hidden="true" />
+                                <span>{node.projectName}</span>
+                              </span>
+                              {node.space.branch && (
+                                <span className="tree-agent-tag" data-tag="branch" title={node.space.branch}>
+                                  <GitBranch aria-hidden="true" />
+                                  <span>{node.space.branch}</span>
+                                </span>
+                              )}
+                            </span>
                           )}
                           {node.kind === "project" && (
                             <small>
@@ -1077,7 +1094,7 @@ export function SpaceAgentTree() {
           items={agentHotkeys.switcher.items.map((node): AgentSwitcherItem => ({
             key: node.key,
             title: node.label,
-            subtitle: `${node.projectName} · ${sessionLabel(node.sessionName)}`,
+            subtitle: `${agentPlace(node)} · ${sessionLabel(node.sessionName)}`,
             status: node.agent?.status,
             statusLabel: t(`status.${node.agent?.status}`),
             logoKind: resolveAgentKind(node.agent?.displayAgent, node.agent?.name, node.label),
