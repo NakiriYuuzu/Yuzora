@@ -2882,7 +2882,7 @@ async fn postgres_maintenance_falls_back_in_order() {
 
 #[tokio::test]
 async fn postgres_maintenance_never_falls_back_to_template1() {
-    for user in ["postgres", "template1", "", "  "] {
+    for user in ["postgres", "template0", "template1", "", "  "] {
         let (result, attempts) = pg_maintenance_fixture("", user, &["3D000"]).await;
         assert_eq!(
             result

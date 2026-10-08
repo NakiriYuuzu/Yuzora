@@ -8,7 +8,11 @@ import { useMachinesInteractiveStore } from "@/state/machinesInteractiveStore";
 import { machine, snapshot } from "@/test/machinesFixtures";
 import type { HerdrMachineAgent } from "@/lib/machinesTypes";
 
-vi.mock("./HerdrLauncher", () => ({ HerdrLauncher: ({ viewSwitcher }: { viewSwitcher: import("react").ReactNode }) => viewSwitcher }));
+vi.mock("./HerdrLauncher", () => ({
+  HerdrLauncher: ({ viewSwitcher, onScopeChange }: { viewSwitcher: import("react").ReactNode; onScopeChange?: (name: string | null) => void }) => (
+    <>{viewSwitcher}<button type="button" data-testid="scope-one" onClick={() => onScopeChange?.('["host-a","one"]')} /></>
+  ),
+}));
 
 const agent = (patch: Partial<HerdrMachineAgent>): HerdrMachineAgent => ({
   terminalId: "t1", paneId: "p1", tabId: "tab", workspaceId: "w", workspaceLabel: null, agent: "codex", name: "Codex",
@@ -108,6 +112,31 @@ it("joins machine rows to the single roving tabindex with Arrow/Home/End navigat
   codex.focus();
   fireEvent.keyDown(codex, { key: "End" });
   expect(reviewer).toHaveFocus();
+});
+
+it("skips the rows of Sessions hidden by the Session scope when arrowing into machines", () => {
+  const id = (name: string) => `["host-a","${name}"]`;
+  const session = (name: string) => ({ name: id(name), runtimeId: id(name), hostId: "host-a", hostLabel: "A", running: true, default: name === "one", sessionDir: "/", socketPath: "/sock" });
+  const runtime = (name: string, agent: string) => ({
+    capabilities: null, connectionState: "ready", errorMessage: null, worktreeInventory: null,
+    snapshot: { herdrSessionId: id(name), protocol: 20, version: "0.8.2", spaces: [{ id: `space-${name}`, label: `Project ${name}`, path: `/repo-${name}`, order: 0, focused: true }],
+      agents: [{ id: agent, name: agent, status: "unknown", workspaceId: `space-${name}`, paneId: `pane-${name}` }], tabs: [], terminals: [], raw: {} },
+  });
+  useHerdrStore.setState({
+    ...herdrInitialState,
+    sessions: [session("one"), session("two")],
+    runtimesBySession: { [id("one")]: runtime("one", "OneBot"), [id("two")]: runtime("two", "TwoBot") } as never,
+    selectedSessionName: id("one"), selectedSpaceId: "space-one", attentionByKey: new Map(),
+  });
+  render(<SpaceAgentTree />);
+  fireEvent.click(screen.getByTestId("scope-one"));
+  expect(screen.queryByRole("treeitem", { name: /TwoBot/ })).not.toBeInTheDocument();
+  const items = screen.getAllByRole("treeitem");
+  const group = screen.getByRole("treeitem", { name: "Lab box" });
+  const lastLocal = items[items.indexOf(group) - 1];
+  lastLocal.focus();
+  fireEvent.keyDown(lastLocal, { key: "ArrowDown" });
+  expect(group).toHaveFocus();
 });
 
 it("moves between local agent rows and machine rows with one tab stop", () => {

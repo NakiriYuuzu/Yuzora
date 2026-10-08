@@ -2138,11 +2138,11 @@ async fn pg_open_with_timeout(
     // Authorize the original profile above, not each internal maintenance
     // candidate: insecure exceptions are bound to the user's database choice.
     let discover = database.trim().is_empty();
-    // Never fall back to template1: this connection stays open as the working
-    // session, which blocks CREATE DATABASE server-wide and lets DDL leak into
-    // every database created afterwards.
+    // Never fall back to a template database: this connection stays open as the
+    // working session, which blocks CREATE DATABASE server-wide and lets DDL leak
+    // into template1 copies or alter the pristine template0.
     let mut candidates = vec![if discover { "postgres" } else { &database }];
-    if discover && !["", "postgres", "template1"].contains(&user.trim()) {
+    if discover && !["", "postgres", "template0", "template1"].contains(&user.trim()) {
         candidates.push(&user);
     }
     let mut cfg = endpoint.postgres_config();

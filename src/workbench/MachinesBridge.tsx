@@ -121,8 +121,9 @@ export function MachinesBridge() {
     let poller: ReturnType<typeof createMachinesPoller> | null = null
     let disposed = false
     const sync = () => {
-      const { capabilities, machines } = useMachinesStore.getState()
-      const shouldPoll = Boolean(capabilities?.supported) && machines.length > 0
+      const { capabilities, machines, listError } = useMachinesStore.getState()
+      // A catalog that failed to load keeps a list retry alive; a loaded empty catalog stays idle.
+      const shouldPoll = Boolean(capabilities?.supported) && (machines.length > 0 || listError !== null)
       if (shouldPoll && !poller) { poller = createMachinesPoller(); poller.start() }
       else if (!shouldPoll && poller) { poller.stop(); poller = null }
     }
