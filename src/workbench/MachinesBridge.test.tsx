@@ -5,10 +5,10 @@ import { useMachinesStore } from "@/state/machinesStore"
 import { MachinesBridge } from "./MachinesBridge"
 import { HERDR_BINARY_SOURCE_CHANGED_EVENT, machineBackoffDelay, machinePollIntervals } from "./machinesPolicy"
 
-const ipc = vi.hoisted(() => ({ caps: vi.fn(), list: vi.fn(), agents: vi.fn(), windows: false }))
+const ipc = vi.hoisted(() => ({ caps: vi.fn(), list: vi.fn(), agents: vi.fn(), status: vi.fn(), windows: false }))
 vi.mock("@/lib/machinesIpc", () => ({
   machinesCapabilities: ipc.caps, machinesList: ipc.list, machinesAgents: ipc.agents,
-  machinesStatus: vi.fn(), machinesRename: vi.fn(), machinesSetEnabled: vi.fn(), machinesRemove: vi.fn()
+  machinesStatus: ipc.status, machinesRename: vi.fn(), machinesSetEnabled: vi.fn(), machinesRemove: vi.fn()
 }))
 vi.mock("@/lib/platform", async original => ({ ...await original<typeof import("@/lib/platform")>(), isWindowsPlatform: () => ipc.windows }))
 
@@ -214,4 +214,92 @@ it("re-enabling a blocked machine polls it again even when no round saw it disab
     await flush()
     expect(ipc.caps).toHaveBeenCalledTimes(1)
   })
+
+  it("a reachable manual status check lifts the auth block of that machine only and fetches once", async () => {
+    ipc.agents.mockImplementation(async (id: string) => { throw id.startsWith("a") ? "machines-auth-required" : "machines-unreachable" })
+    await mount([machine("a"), machine("b")])
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+    ipc.agents.mockClear()
+    ipc.agents.mockImplementation(async (id: string) => snapshot(id))
+    ipc.status.mockResolvedValue({ id: machine("a").id, label: "x", status: "reachable", error: null })
+    await act(async () => { await useMachinesStore.getState().refreshStatus(machine("a").id) })
+    await flush()
+    expect(ipc.agents.mock.calls.map(c => c[0])).toEqual([machine("a").id])
+    // b stays in backoff (next at 30s) while a polls normally again.
+    await advance(15 * SEC)
+    expect(ipc.agents.mock.calls.map(c => c[0])).toEqual([machine("a").id, machine("a").id])
+  })
+
+it("a superseded snapshot failure cannot re-block a machine a newer snapshot reached", async () => {
+  await mount()
+  let failOld!: () => void
+  ipc.agents.mockImplementationOnce(() => new Promise((_, reject) => { failOld = () => reject("machines-auth-required") }))
+  ipc.status.mockResolvedValue({ id: machine("a").id, label: "x", status: "reachable", error: null })
+  // The recovery fetch stays in flight while a forced round reaches the machine.
+  await act(async () => { await useMachinesStore.getState().refreshStatus(machine("a").id) })
+  act(() => useMachinesStore.getState().requestRefresh(true))
+  await flush()
+  failOld()
+  await flush()
+  ipc.agents.mockClear()
+  await advance(15 * SEC)
+  expect(ipc.agents).toHaveBeenCalledTimes(1)
+})
+
+  it("an older in-flight failure cannot re-block a machine after a reachable status recovery", async () => {
+    let fail!: () => void
+    ipc.agents.mockImplementationOnce(() => new Promise((_, reject) => { fail = () => reject("machines-auth-required") }))
+    await mount()
+    ipc.agents.mockImplementation(async (id: string) => snapshot(id))
+    ipc.status.mockResolvedValue({ id: machine("a").id, label: "x", status: "reachable", error: null })
+    await act(async () => { await useMachinesStore.getState().refreshStatus(machine("a").id) })
+    await flush()
+    fail()
+    await flush()
+    ipc.agents.mockClear()
+    await advance(15 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not create a poller when bootstrap finishes after unmount", async () => {
+    ipc.caps.mockResolvedValue(supportedCaps)
+    let release!: (machines: ReturnType<typeof machine>[]) => void
+    ipc.list.mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    const view = render(<MachinesBridge />)
+    await flush()
+    view.unmount()
+    release([machine("a")])
+    await flush()
+    await advance(60 * SEC)
+    expect(ipc.agents).not.toHaveBeenCalled()
+  })
+
+  it("does not fetch the list or poll when capabilities resolve after unmount", async () => {
+    let release!: (caps: typeof supportedCaps) => void
+    ipc.caps.mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    ipc.list.mockResolvedValue([machine("a")])
+    const view = render(<MachinesBridge />)
+    await flush()
+    view.unmount()
+    release(supportedCaps)
+    await flush()
+    await advance(60 * SEC)
+    expect(ipc.list).not.toHaveBeenCalled()
+    expect(ipc.agents).not.toHaveBeenCalled()
+  })
+
+  it("skips a machine that was disabled while its round was already running", async () => {
+    await mount([machine("a")])
+    ipc.agents.mockClear()
+    const release: Array<() => void> = []
+    ipc.agents.mockImplementation((id: string) => new Promise(resolve => { release.push(() => resolve(snapshot(id))) }))
+    ipc.list.mockResolvedValue([machine("a"), machine("b"), machine("c")])
+    await advance(15 * SEC)
+    // two workers busy on a and b; c is queued
+    useMachinesStore.setState({ machines: [machine("a"), machine("b"), machine("c", { enabled: false })] })
+    release.splice(0).forEach(r => r())
+    await flush()
+    expect(ipc.agents.mock.calls.map(c => c[0])).not.toContain(machine("c").id)
+  })
+
 })

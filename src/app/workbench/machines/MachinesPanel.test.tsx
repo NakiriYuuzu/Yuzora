@@ -125,4 +125,48 @@ describe("MachinesPanel actions", () => {
     await waitFor(() => expect(useMachinesStore.getState().refreshNonce).toBe(1))
     expect(useMachinesStore.getState().refreshForce).toBe(false)
   })
+
+  it("says the binary is unavailable (not too old) when there is no active HERDR binary", async () => {
+    ipc.caps.mockResolvedValue({ ...supportedCaps, supported: false, version: null, reason: "machines-binary-unavailable" })
+    render(<MachinesPanel onClose={onClose} />)
+    expect(await screen.findByText("HERDR binary not available")).toBeInTheDocument()
+    expect(screen.getByText("The HERDR binary is unavailable.")).toBeInTheDocument()
+    expect(screen.queryByText(/too old/)).not.toBeInTheDocument()
+  })
+
+  it("keeps the too-old message for an old runtime", async () => {
+    ipc.caps.mockResolvedValue({ ...supportedCaps, supported: false, version: "0.9.0", reason: "machines-runtime-too-old" })
+    render(<MachinesPanel onClose={onClose} />)
+    expect(await screen.findByText(/0\.9\.0\) is too old/)).toBeInTheDocument()
+  })
+
+  it("shows the capability probe failure with a retry instead of an empty list", async () => {
+    ipc.caps.mockRejectedValueOnce("machines-binary-unavailable")
+    render(<MachinesPanel onClose={onClose} />)
+    expect(await screen.findByText("Could not check HERDR machines support")).toBeInTheDocument()
+    expect(screen.getByText("The HERDR binary is unavailable.")).toBeInTheDocument()
+    expect(screen.queryByText("No HERDR machines yet")).not.toBeInTheDocument()
+    ipc.caps.mockResolvedValue(supportedCaps)
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await screen.findByText("Lab box").catch(() => undefined)
+    await waitFor(() => expect(useMachinesStore.getState().capabilities?.supported).toBe(true))
+  })
+
+  it("keeps a row busy until its own action finishes when another row's action ends first", async () => {
+    const other = machine("lab2", { label: "Other box" })
+    ipc.list.mockResolvedValue([lab, other])
+    render(<MachinesPanel onClose={onClose} />)
+    await screen.findByText("Other box")
+    const rowOf = (label: string) => screen.getByText(label).closest("li")!
+    let finishFirst!: (v: unknown) => void
+    ipc.status.mockReturnValueOnce(new Promise(resolve => { finishFirst = resolve }))
+    ipc.status.mockResolvedValueOnce({ id: other.id, label: other.label, status: "reachable", error: null })
+    fireEvent.click(within(rowOf("Lab box")).getByRole("button", { name: "Check status" }))
+    fireEvent.click(within(rowOf("Other box")).getByRole("button", { name: "Check status" }))
+    await waitFor(() => expect(within(rowOf("Other box")).getByText("Reachable")).toBeInTheDocument())
+    expect(within(rowOf("Lab box")).getByRole("button", { name: "Check status" })).toBeDisabled()
+    finishFirst({ id: lab.id, label: lab.label, status: "reachable", error: null })
+    await waitFor(() => expect(within(rowOf("Lab box")).getByRole("button", { name: "Check status" })).toBeEnabled())
+  })
+
 })

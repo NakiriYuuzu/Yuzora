@@ -15,6 +15,8 @@ export interface MachineRefreshResult {
   ok: boolean
   /** Machines error code when the call failed (`null` on success or an unclassified failure). */
   code: string | null
+  /** A newer snapshot of the same machine superseded this call; its outcome must not be acted on. */
+  stale?: boolean
 }
 
 interface MachinesState {
@@ -28,6 +30,8 @@ interface MachinesState {
   staleById: Record<string, boolean>
   errorById: Record<string, string>
   loading: boolean
+  /** Bumped when a manual status check finds a machine reachable; the Bridge lifts that machine's poll block. */
+  recoverSignal: { id: string; seq: number } | null
   /** Bumped by `requestRefresh`; the Bridge forces a round (and clears auth/backoff blocks). */
   refreshNonce: number
   /** Whether the latest `requestRefresh` also clears auth/backoff blocks. */
@@ -50,6 +54,20 @@ function prune<T>(record: Record<string, T>, machines: HerdrMachine[]): Record<s
   return Object.fromEntries(Object.entries(record).filter(([id]) => ids.has(id)))
 }
 
+/*
+ * Concurrency rules (each async action only lets its own result land when nothing newer superseded it):
+ *  1. loadCapabilities: latest call wins (capsSeq), on success AND failure; a stale call returns the current state.
+ *  2. refreshList: a result/error lands only if no newer list was started or adopted (listGeneration); `loading`
+ *     is cleared only by the newest refreshList call (listRequest), never by an older one.
+ *  3. Mutations (rename/setEnabled/remove) run one at a time through a promise queue, so list adoption follows
+ *     call order; a failed mutation does not block the queue.
+ *  4. Losing support, a failed capability probe or reset() advances `epoch`: every in-flight call from the old
+ *     epoch (list, mutation, status, snapshot) drops its result.
+ *  5. refreshStatus / refreshSnapshot: the latest call per machine and kind wins; results for machines that no
+ *     longer exist are dropped (errors included).
+ *  6. A reachable status check emits `recoverSignal` for that machine only; the Bridge lifts just its poll block.
+ */
+
 const initial = {
   capabilities: null,
   capabilitiesError: null,
@@ -60,6 +78,7 @@ const initial = {
   staleById: {},
   errorById: {},
   loading: false,
+  recoverSignal: null,
   refreshNonce: 0,
   refreshForce: true
 } satisfies Partial<MachinesState>
@@ -71,77 +90,123 @@ const derivedInitial = {
   statusById: {},
   snapshotById: {},
   staleById: {},
-  errorById: {}
+  errorById: {},
+  loading: false
 } satisfies Partial<MachinesState>
 
 export const useMachinesStore = create<MachinesState>((set, get) => {
-  /** Advances whenever a list is adopted; an older in-flight `machinesList()` must not overwrite a newer one. */
+  let epoch = 0
+  let capsSeq = 0
+  let capsLatest: Promise<HerdrMachinesCapabilities | null> = Promise.resolve(null)
+  /** Advances whenever a list is requested or adopted; an older in-flight `machinesList()` must not overwrite a newer one. */
   let listGeneration = 0
+  /** The newest refreshList call; only it may clear `loading`. */
+  let listRequest = 0
+  let queue: Promise<unknown> = Promise.resolve()
+  const statusSeq = new Map<string, number>()
+  const snapshotSeq = new Map<string, number>()
+  let recoverSeq = 0
+  const exists = (id: string) => get().machines.some((machine) => machine.id === id)
+  // A new epoch also starts a fresh mutation queue, so a call stuck in the old epoch cannot block it.
+  const invalidate = () => { epoch += 1; listGeneration += 1; listRequest += 1; queue = Promise.resolve() }
   /** The list returned by a mutation (or refresh) is authoritative: drop state of vanished machines. */
   const adopt = (machines: HerdrMachine[]) => {
     listGeneration += 1
     set((state) => ({
-    machines,
-    listError: null,
-    statusById: prune(state.statusById, machines),
-    snapshotById: prune(state.snapshotById, machines),
-    staleById: prune(state.staleById, machines),
-    errorById: prune(state.errorById, machines)
+      machines,
+      listError: null,
+      statusById: prune(state.statusById, machines),
+      snapshotById: prune(state.snapshotById, machines),
+      staleById: prune(state.staleById, machines),
+      errorById: prune(state.errorById, machines)
     }))
+  }
+  const mutate = (call: () => Promise<HerdrMachine[]>): Promise<void> => {
+    const mine = epoch
+    const run = queue.then(async () => {
+      if (mine !== epoch) return
+      const machines = await call()
+      if (mine === epoch) adopt(machines)
+    })
+    queue = run.catch(() => undefined)
+    return run
   }
   return {
     ...initial,
-    async loadCapabilities() {
-      try {
-        const capabilities = await machinesCapabilities()
-        // Losing support invalidates everything derived from the machine list, including in-flight lists.
-        if (!capabilities.supported) listGeneration += 1
-        set(capabilities.supported
-          ? { capabilities, capabilitiesError: null }
-          : { ...derivedInitial, capabilities, capabilitiesError: null })
-        return capabilities
-      } catch (cause) {
-        listGeneration += 1
-        set({ ...derivedInitial, capabilities: null, capabilitiesError: messageOf(cause) })
-        return null
-      }
+    loadCapabilities() {
+      const seq = ++capsSeq
+      // A superseded call resolves to the latest call's result, never to a not-yet-loaded null.
+      const latest = () => (capsLatest === run ? Promise.resolve(get().capabilities) : capsLatest)
+      const run: Promise<HerdrMachinesCapabilities | null> = (async () => {
+        try {
+          const capabilities = await machinesCapabilities()
+          if (seq !== capsSeq) return latest()
+          if (capabilities.supported) {
+            set({ capabilities, capabilitiesError: null })
+          } else {
+            // Losing support invalidates everything derived from the machine list, including in-flight calls.
+            invalidate()
+            set({ ...derivedInitial, capabilities, capabilitiesError: null })
+          }
+          return capabilities
+        } catch (cause) {
+          if (seq !== capsSeq) return latest()
+          invalidate()
+          set({ ...derivedInitial, capabilities: null, capabilitiesError: messageOf(cause) })
+          return null
+        }
+      })()
+      capsLatest = run
+      return run
     },
     async refreshList() {
-      set({ loading: true })
+      const mine = epoch
+      const request = ++listRequest
       const generation = ++listGeneration
+      set({ loading: true })
       try {
         const machines = await machinesList()
-        // A newer refresh or a mutation result was adopted meanwhile: this response is stale.
-        if (generation !== listGeneration) return get().machines
+        // A newer refresh, a mutation result or a support loss happened meanwhile: this response is stale.
+        if (mine !== epoch || generation !== listGeneration) return get().machines
         adopt(machines)
         return machines
       } catch (cause) {
-        set({ listError: messageOf(cause) })
+        if (mine === epoch && generation === listGeneration) set({ listError: messageOf(cause) })
         return null
       } finally {
-        set({ loading: false })
+        if (mine === epoch && request === listRequest) set({ loading: false })
       }
     },
     async refreshStatus(id) {
+      const mine = epoch
+      const seq = (statusSeq.get(id) ?? 0) + 1
+      statusSeq.set(id, seq)
+      const current = () => mine === epoch && statusSeq.get(id) === seq && exists(id)
       try {
         const status = await machinesStatus(id)
+        if (!current()) return null
         set((state) => {
           const { [id]: _error, ...errorById } = state.errorById
           return { statusById: { ...state.statusById, [id]: status }, errorById }
         })
+        if (status.status === "reachable") set({ recoverSignal: { id, seq: ++recoverSeq } })
         return status
       } catch (cause) {
         // A busy manager is not a machine failure; stay silent.
-        if (messageOf(cause).startsWith("machines-busy")) return null
+        if (messageOf(cause).startsWith("machines-busy") || !current()) return null
         set((state) => ({ errorById: { ...state.errorById, [id]: messageOf(cause) } }))
         return null
       }
     },
     async refreshSnapshot(id) {
+      const mine = epoch
+      const seq = (snapshotSeq.get(id) ?? 0) + 1
+      snapshotSeq.set(id, seq)
+      const current = () => mine === epoch && snapshotSeq.get(id) === seq && exists(id)
       try {
         const snapshot = await machinesAgents(id)
-        // The machine may have been removed while the call was in flight.
-        if (!get().machines.some((machine) => machine.id === id)) return { ok: true, code: null }
+        // Removed, superseded by a newer call, or the store was reset meanwhile.
+        if (!current()) return { ok: true, code: null, stale: true }
         set((state) => {
           const { [id]: _error, ...errorById } = state.errorById
           const { [id]: _stale, ...staleById } = state.staleById
@@ -154,17 +219,27 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
         const raw = messageOf(cause)
         // A busy manager is not a machine failure; keep everything as is.
         if (raw.startsWith("machines-busy")) return { ok: false, code: "machines-busy" }
-        set((state) => ({
-          errorById: { ...state.errorById, [id]: raw },
-          staleById: id in state.snapshotById ? { ...state.staleById, [id]: true } : state.staleById
-        }))
-        return { ok: false, code: parseMachineError(raw).code }
+        const code = parseMachineError(raw).code
+        if (current()) {
+          set((state) => ({
+            errorById: { ...state.errorById, [id]: raw },
+            staleById: id in state.snapshotById ? { ...state.staleById, [id]: true } : state.staleById
+          }))
+        }
+        return current() ? { ok: false, code } : { ok: false, code, stale: true }
       }
     },
-    async rename(id, label) { adopt(await machinesRename(id, label)) },
-    async setEnabled(id, enabled) { adopt(await machinesSetEnabled(id, enabled)) },
-    async remove(id) { adopt(await machinesRemove(id)) },
+    rename: (id, label) => mutate(() => machinesRename(id, label)),
+    setEnabled: (id, enabled) => mutate(() => machinesSetEnabled(id, enabled)),
+    remove: (id) => mutate(() => machinesRemove(id)),
     requestRefresh(force = true) { set((state) => ({ refreshNonce: state.refreshNonce + 1, refreshForce: force })) },
-    reset() { listGeneration += 1; set({ ...initial }) }
+    reset() {
+      invalidate()
+      capsSeq += 1
+      capsLatest = Promise.resolve(null)
+      statusSeq.clear()
+      snapshotSeq.clear()
+      set({ ...initial })
+    }
   }
 })

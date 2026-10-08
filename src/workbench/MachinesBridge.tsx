@@ -15,6 +15,8 @@ function createMachinesPoller() {
   const windows = isWindowsPlatform()
   const intervals = machinePollIntervals(windows)
   const state = new Map<string, MachineBackoff>()
+  /** Bumped by `recover(id)`; an older in-flight result for that machine must not re-block it. */
+  const recovery = new Map<string, number>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let running = false
   let rerun = false
@@ -27,11 +29,27 @@ function createMachinesPoller() {
     for (const id of [...state.keys()]) if (!machines.some((machine) => machine.id === id && machine.enabled)) state.delete(id)
   }
 
+  /** Query one machine and fold the outcome into its backoff entry. */
+  async function fetchOne(id: string) {
+    const token = recovery.get(id) ?? 0
+    const result = await useMachinesStore.getState().refreshSnapshot(id)
+    if (stopped || (recovery.get(id) ?? 0) !== token) return
+    if (result.stale || result.code === "machines-busy") return
+    if (result.ok) { state.delete(id); return }
+    const failures = (state.get(id)?.failures ?? 0) + 1
+    state.set(id, {
+      failures,
+      nextAt: Date.now() + machineBackoffDelay(intervals.visible, failures),
+      authBlocked: result.code === "machines-auth-required"
+    })
+  }
+
   async function round(force: boolean) {
     const store = useMachinesStore.getState()
     if (!store.capabilities?.supported) return
     if (force) state.clear()
     await store.refreshList()
+    if (stopped) return
     // Hidden window: keep only the low-frequency list refresh.
     if (hidden() && !force) return
     const machines = useMachinesStore.getState().machines
@@ -46,15 +64,9 @@ function createMachinesPoller() {
     const worker = async () => {
       while (!stopped && cursor < due.length) {
         const machine = due[cursor++]
-        const result = await useMachinesStore.getState().refreshSnapshot(machine.id)
-        if (result.code === "machines-busy") continue
-        if (result.ok) { state.delete(machine.id); continue }
-        const failures = (state.get(machine.id)?.failures ?? 0) + 1
-        state.set(machine.id, {
-          failures,
-          nextAt: Date.now() + machineBackoffDelay(intervals.visible, failures),
-          authBlocked: result.code === "machines-auth-required"
-        })
+        // A mutation may have removed or disabled it since the due list was computed.
+        if (!useMachinesStore.getState().machines.some((entry) => entry.id === machine.id && entry.enabled)) continue
+        await fetchOne(machine.id)
       }
     }
     await Promise.all(Array.from({ length: Math.min(MACHINES_CONCURRENCY, due.length) }, worker))
@@ -87,6 +99,13 @@ function createMachinesPoller() {
       void tick()
     },
     prune,
+    /** A manual status check found the machine reachable: lift only its auth/backoff block and fetch once. */
+    recover(id: string) {
+      if (stopped) return
+      recovery.set(id, (recovery.get(id) ?? 0) + 1)
+      state.delete(id)
+      if (useMachinesStore.getState().machines.some((machine) => machine.id === id && machine.enabled)) void fetchOne(id)
+    },
     /** Re-arm the timer with the current visibility's interval. */
     reschedule() { if (!stopped && !running) schedule() },
     stop() {
@@ -100,6 +119,7 @@ function createMachinesPoller() {
 export function MachinesBridge() {
   useEffect(() => {
     let poller: ReturnType<typeof createMachinesPoller> | null = null
+    let disposed = false
     const sync = () => {
       const { capabilities, machines } = useMachinesStore.getState()
       const shouldPoll = Boolean(capabilities?.supported) && machines.length > 0
@@ -108,7 +128,9 @@ export function MachinesBridge() {
     }
     const bootstrap = async () => {
       const capabilities = await useMachinesStore.getState().loadCapabilities()
+      if (disposed) return
       if (capabilities?.supported) await useMachinesStore.getState().refreshList()
+      if (disposed) return
       sync()
     }
     void bootstrap()
@@ -117,6 +139,7 @@ export function MachinesBridge() {
       sync()
       // A disable and re-enable can both land between two rounds; prune on every list change.
       if (state.machines !== previous.machines) poller?.prune(state.machines)
+      if (state.recoverSignal && state.recoverSignal !== previous.recoverSignal) poller?.recover(state.recoverSignal.id)
       if (state.refreshNonce !== nonce) { nonce = state.refreshNonce; poller?.kick(state.refreshForce) }
     })
     const onVisibility = () => {
@@ -127,6 +150,7 @@ export function MachinesBridge() {
     document.addEventListener("visibilitychange", onVisibility)
     window.addEventListener(HERDR_BINARY_SOURCE_CHANGED_EVENT, onBinarySource)
     return () => {
+      disposed = true
       unsubscribe()
       poller?.stop()
       document.removeEventListener("visibilitychange", onVisibility)

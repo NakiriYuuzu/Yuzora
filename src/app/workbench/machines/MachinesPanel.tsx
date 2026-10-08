@@ -20,6 +20,7 @@ import { MachineRow, type MachineRowStatus } from "./MachineRow"
 export function MachinesPanel({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation("machines")
   const capabilities = useMachinesStore((state) => state.capabilities)
+  const capabilitiesError = useMachinesStore((state) => state.capabilitiesError)
   const machines = useMachinesStore((state) => state.machines)
   const listError = useMachinesStore((state) => state.listError)
   const loading = useMachinesStore((state) => state.loading)
@@ -29,7 +30,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
   const errorById = useMachinesStore((state) => state.errorById)
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState<HerdrMachine | null>(null)
-  const [busyId, setBusyId] = useState<string | null>(null)
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const [actionError, setActionError] = useState<string | null>(null)
   const mounted = useRef(true)
   const windows = isWindowsPlatform()
@@ -50,11 +51,19 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
   }, [])
 
   async function guarded(id: string | null, action: () => Promise<unknown>) {
-    setBusyId(id)
+    const setBusy = (on: boolean) => {
+      if (!id || !mounted.current) return
+      setBusyIds((current) => {
+        const next = new Set(current)
+        if (on) next.add(id); else next.delete(id)
+        return next
+      })
+    }
+    setBusy(true)
     setActionError(null)
     try { await action() }
     catch (cause) { if (mounted.current) setActionError(describeMachineError(cause, t2).message) }
-    finally { if (mounted.current) setBusyId(null) }
+    finally { setBusy(false) }
   }
   function openInteractive(selection: MachineInteractiveSelection) {
     if (!useMachinesInteractiveStore.getState().open(selection)) {
@@ -88,11 +97,23 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
     return raw ? describeMachineError(raw, t2).message : null
   }
 
-  if (capabilities && !capabilities.supported) {
+  if (!capabilities && capabilitiesError) {
     return <Empty>
       <EmptyHeader>
-        <EmptyTitle role="status">{t("unsupported.title")}</EmptyTitle>
-        <EmptyDescription>{t("unsupported.description", { version: capabilities.version ?? t("unsupported.unknownVersion") })}</EmptyDescription>
+        <EmptyTitle role="alert">{t("unsupported.probeFailed")}</EmptyTitle>
+        <EmptyDescription>{describeMachineError(capabilitiesError, t2).message}</EmptyDescription>
+      </EmptyHeader>
+      <Button variant="outline" onClick={() => void useMachinesStore.getState().loadCapabilities()}>{t("panel.retry")}</Button>
+    </Empty>
+  }
+  if (capabilities && !capabilities.supported) {
+    const binaryMissing = capabilities.reason === "machines-binary-unavailable"
+    return <Empty>
+      <EmptyHeader>
+        <EmptyTitle role="status">{binaryMissing ? t("unsupported.binaryUnavailableTitle") : t("unsupported.title")}</EmptyTitle>
+        <EmptyDescription>{binaryMissing
+          ? describeMachineError(capabilities.reason, t2).message
+          : t("unsupported.description", { version: capabilities.version ?? t("unsupported.unknownVersion") })}</EmptyDescription>
       </EmptyHeader>
       <Button variant="outline" onClick={() => { onClose(); useUiStore.getState().openSettings("herdr") }}>{t("unsupported.openSettings")}</Button>
     </Empty>
@@ -125,7 +146,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
         stale={Boolean(staleById[machine.id])}
         errorMessage={rowError(machine)}
         canReconnect={canReconnect}
-        busy={busyId === machine.id}
+        busy={busyIds.has(machine.id)}
         actions={{
           onRename: (label) => void guarded(machine.id, () => useMachinesStore.getState().rename(machine.id, label)),
           onToggleEnabled: () => void guarded(machine.id, () => useMachinesStore.getState().setEnabled(machine.id, !machine.enabled)),

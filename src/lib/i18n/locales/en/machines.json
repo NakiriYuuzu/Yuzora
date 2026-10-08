@@ -18,6 +18,8 @@
   "unsupported": {
     "title": "HERDR machines need HERDR 0.9.2 or newer",
     "description": "The selected HERDR binary ({{version}}) is too old. Use the bundled HERDR 0.9.3 (recommended).",
+    "binaryUnavailableTitle": "HERDR binary not available",
+    "probeFailed": "Could not check HERDR machines support",
     "unknownVersion": "unknown version",
     "openSettings": "Go to HERDR settings"
   },
