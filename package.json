@@ -1,7 +1,7 @@
 {
   "name": "yuzora",
   "private": true,
-  "version": "0.0.17",
+  "version": "0.0.18",
   "type": "module",
   "packageManager": "bun@1.4.2",
   "engines": {
