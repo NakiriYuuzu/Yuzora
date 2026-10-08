@@ -34,7 +34,7 @@ export const useRuntimePreferencesStore = create<RuntimePreferencesState>((set, 
       try {
         let { wslEnabled } = await runtimePreferencesGet()
         // One-time migration of the former localStorage flag; keep it on failure so the next launch retries.
-        if (!wslEnabled && legacyWslEnabled()) {
+        if (!wslEnabled && !get().userSet && legacyWslEnabled()) {
           try {
             wslEnabled = (await runtimePreferencesSet(true)).wslEnabled
             clearLegacy()

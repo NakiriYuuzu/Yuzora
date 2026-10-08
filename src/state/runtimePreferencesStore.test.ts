@@ -85,3 +85,17 @@ it("does not let an older in-flight hydrate overwrite a value the user saved mea
   await hydrating
   expect(useRuntimePreferencesStore.getState()).toMatchObject({ wslEnabled: true, hydrated: true })
 })
+
+it("does not migrate the legacy flag when the user saved a value while the backend read was in flight", async () => {
+  window.localStorage.setItem(LEGACY_RUNTIME_PREFERENCES_KEY, JSON.stringify({ wslEnabled: true }))
+  let resolveGet!: (value: { wslEnabled: boolean }) => void
+  ipc.get.mockReturnValue(new Promise(resolve => { resolveGet = resolve }))
+  ipc.set.mockResolvedValue({ wslEnabled: false })
+  const hydrating = useRuntimePreferencesStore.getState().hydrate()
+  await useRuntimePreferencesStore.getState().setWslEnabled(false)
+  ipc.set.mockClear()
+  resolveGet({ wslEnabled: false })
+  await hydrating
+  expect(ipc.set).not.toHaveBeenCalled()
+  expect(useRuntimePreferencesStore.getState()).toMatchObject({ wslEnabled: false, hydrated: true })
+})

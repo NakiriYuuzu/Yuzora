@@ -37,8 +37,9 @@ export function UpdateInstallConfirmDialog({
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState<string | null>(null)
   const herdrChecking = stopHerdr && herdr === null && !herdrCheckFailed
-  // Only a user-installed HERDR is running: nothing bundled to stop, so no kill warning or stop call.
-  const externalOnly = stopHerdr && herdr !== null && herdr.pids.length === 0 && !!herdr.external
+  // No managed binary exists (only a user-installed HERDR): nothing bundled to stop. A managed binary with
+  // zero PIDs in the snapshot may still start after the dialog opened, so it is stopped again on confirm.
+  const externalOnly = stopHerdr && herdr !== null && herdr.path === null && !!herdr.external
   const willStop = stopHerdr && !externalOnly
 
   useEffect(() => {

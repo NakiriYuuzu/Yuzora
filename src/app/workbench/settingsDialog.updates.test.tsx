@@ -485,6 +485,28 @@ describe("Settings · About & Updates pane", () => {
     expect(updateStopHerdr).not.toHaveBeenCalled()
   })
 
+  it("on Windows, still runs the final stop when the managed HERDR had no PID at preflight but an external one is active", async () => {
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    updateHerdrProcesses.mockResolvedValue({
+      path: "C:\\Program Files\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      version: "0.9.3",
+      pids: [],
+      external: { path: "C:\\Tools\\herdr.exe", version: null, pids: [303] },
+    })
+    const install = vi.fn(async () => undefined)
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Finished" })
+    })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+
+    await openInstallConfirmation()
+    const confirmation = await screen.findByRole("alertdialog", { name: "Install update and restart?" })
+    await within(confirmation).findByTestId("herdr-external-note")
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Stop HERDR and install" }))
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    expect(updateStopHerdr).toHaveBeenCalledTimes(1)
+  })
+
   it("on Windows, keeps the update uninstalled when HERDR cannot be stopped", async () => {
     setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
     updateStopHerdr.mockRejectedValueOnce("HERDR processes are still running: 101")
