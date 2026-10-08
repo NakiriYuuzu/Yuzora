@@ -1,6 +1,28 @@
 import { afterEach, describe, expect, it } from "vitest"
 
-import { buildXtermTheme } from "./xtermTheme"
+import { buildXtermTheme, xtermMinimumContrastRatio } from "./xtermTheme"
+// @ts-expect-error Node types are excluded from the browser tsconfig; Vitest runs this test in Node.
+import { readFileSync } from "node:fs"
+
+const styles = readFileSync("src/styles.css", "utf8")
+
+function relativeLuminance(hex: string): number {
+    const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+function contrastRatio(a: string, b: string): number {
+    const [light, dark] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x)
+    return (light + 0.05) / (dark + 0.05)
+}
+
+function lightTerminalBackground(): string {
+    const lightTokens = styles.slice(styles.indexOf(":root {"), styles.indexOf(".dark {"))
+    const match = /--term-bg:\s*(#[0-9a-f]{6})/i.exec(lightTokens)
+    if (!match) throw new Error("light --term-bg not found in styles.css")
+    return match[1]
+}
 
 const tokenValues = {
     "--term-bg": "#101010",
@@ -62,7 +84,7 @@ describe("buildXtermTheme", () => {
         expect(light.blue).toBe("#2456cc")
         expect(light.magenta).toBe("#8a4dbf")
         expect(light.cyan).toBe("#1f7f8a")
-        expect(light.white).toBe("#f7f3ea")
+        expect(light.white).toBe("#6e6a61")
         expect(light.brightBlack).toBe("#8a8691")
         expect(light.brightRed).toBe("#d65f5f")
         expect(light.brightGreen).toBe("#42a870")
@@ -70,7 +92,7 @@ describe("buildXtermTheme", () => {
         expect(light.brightBlue).toBe("#3d6df0")
         expect(light.brightMagenta).toBe("#a86bd6")
         expect(light.brightCyan).toBe("#3198a3")
-        expect(light.brightWhite).toBe("#ffffff")
+        expect(light.brightWhite).toBe("#2e2b27")
 
         expect(dark.black).toBe("#0f0e13")
         expect(dark.red).toBe("#ff6b6b")
@@ -91,5 +113,26 @@ describe("buildXtermTheme", () => {
 
         expect(light.red).not.toBe(dark.red)
         expect(light.blue).not.toBe(dark.blue)
+    })
+
+    it("keeps light ANSI white text readable on the light terminal background", () => {
+        // PowerShell draws ordinary arguments in white (37) and numbers in bright white (97).
+        const background = lightTerminalBackground()
+        const light = buildXtermTheme("light")
+
+        for (const color of [light.white!, light.brightWhite!]) {
+            expect(contrastRatio(color, background)).toBeGreaterThanOrEqual(4.5)
+            // Reaching 4.5:1 caps white's distance from black (5.9:1) at about 1.3.
+            expect(contrastRatio(color, light.black!)).toBeGreaterThanOrEqual(1.25)
+            expect(contrastRatio(color, light.brightBlack!)).toBeGreaterThanOrEqual(1.25)
+        }
+    })
+})
+
+describe("xtermMinimumContrastRatio", () => {
+    it("lifts low-contrast foregrounds in light mode only", () => {
+        // PSReadLine selects text as black on white (30;47); the darker light white needs the safety net.
+        expect(xtermMinimumContrastRatio("light")).toBe(3)
+        expect(xtermMinimumContrastRatio("dark")).toBe(1)
     })
 })

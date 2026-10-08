@@ -32,7 +32,8 @@ const ansi16Palettes: Record<ThemeMode, Ansi16Theme> = {
         blue: "#2456cc",
         magenta: "#8a4dbf",
         cyan: "#1f7f8a",
-        white: "#f7f3ea",
+        // Shells print ordinary text in white (PowerShell arguments), so it must read on --term-bg.
+        white: "#6e6a61",
         brightBlack: "#8a8691",
         brightRed: "#d65f5f",
         brightGreen: "#42a870",
@@ -40,7 +41,8 @@ const ansi16Palettes: Record<ThemeMode, Ansi16Theme> = {
         brightBlue: "#3d6df0",
         brightMagenta: "#a86bd6",
         brightCyan: "#3198a3",
-        brightWhite: "#ffffff"
+        // As in dark mode, bright white is the most prominent text.
+        brightWhite: "#2e2b27"
     },
     dark: {
         black: "#0f0e13",
@@ -103,6 +105,14 @@ function currentMode(): ThemeMode {
 function readToken(styles: CSSStyleDeclaration, name: keyof typeof fallbacks): string {
     const value = styles.getPropertyValue(name).trim()
     return value || fallbacks[name]
+}
+
+/**
+ * xterm `minimumContrastRatio` for the mode. Light white is a dark gray, so text drawn on a
+ * white background (PSReadLine selects as black on white) needs xterm to lift its foreground.
+ */
+export function xtermMinimumContrastRatio(mode: ThemeMode = currentMode()): number {
+    return mode === "light" ? 3 : 1
 }
 
 export function buildXtermTheme(mode: ThemeMode = currentMode()): ITheme {

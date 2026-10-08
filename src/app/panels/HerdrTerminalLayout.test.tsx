@@ -90,7 +90,8 @@ vi.mock("@/terminal/terminalImeHandling", () => ({
 }))
 
 vi.mock("@/terminal/xtermTheme", () => ({
-  buildXtermTheme: vi.fn(() => ({}))
+  buildXtermTheme: vi.fn(() => ({})),
+  xtermMinimumContrastRatio: vi.fn((mode?: string) => (mode === "dark" ? 1 : 3))
 }))
 
 vi.mock("@/lib/herdrIpc", () => ({

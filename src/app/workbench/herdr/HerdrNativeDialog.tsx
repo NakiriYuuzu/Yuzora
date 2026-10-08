@@ -14,7 +14,7 @@ import { herdrFeature } from "@/lib/herdrFeatures"
 import { herdrPaneFocus, herdrTerminalInput, herdrTerminalRelease, herdrTerminalResize } from "@/lib/herdrIpc"
 import type { HerdrTerminalEvent, HerdrTerminalOpenResult } from "@/lib/herdrTypes"
 import { terminalFontStack } from "@/terminal/terminalFonts"
-import { buildXtermTheme } from "@/terminal/xtermTheme"
+import { buildXtermTheme, xtermMinimumContrastRatio } from "@/terminal/xtermTheme"
 import { installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
 import { installKittyRenderer } from "@/terminal/kittyRenderer"
 import "@xterm/xterm/css/xterm.css"
@@ -33,7 +33,7 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
     if (!element) return
     let disposed = false, failed = false, id: string | null = null, queue = Promise.resolve(), queuedBytes = 0
     const settings = useTerminalSettingsStore.getState()
-    const term = new Terminal({ fontFamily: terminalFontStack(settings.fontFamily), fontSize: settings.fontSize, allowProposedApi: true, allowTransparency: true, scrollback: 0, theme: buildXtermTheme(document.documentElement.classList.contains("dark") ? "dark" : "light") })
+    const term = new Terminal({ fontFamily: terminalFontStack(settings.fontFamily), fontSize: settings.fontSize, allowProposedApi: true, allowTransparency: true, scrollback: 0, theme: buildXtermTheme(document.documentElement.classList.contains("dark") ? "dark" : "light"), minimumContrastRatio: xtermMinimumContrastRatio(document.documentElement.classList.contains("dark") ? "dark" : "light") })
     const fit = new FitAddon()
     term.loadAddon(fit); term.open(element); fit.fit()
     const fail = (cause: unknown) => {
@@ -78,7 +78,7 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
     // Webfont measurement can change xterm's screen without resizing its host.
     const screen = term.element?.querySelector<HTMLElement>(".xterm-screen")
     if (screen) resize.observe(screen)
-    const theme = new MutationObserver(() => { if (!disposed) term.options.theme = buildXtermTheme(document.documentElement.classList.contains("dark") ? "dark" : "light") })
+    const theme = new MutationObserver(() => { if (disposed) return; const mode = document.documentElement.classList.contains("dark") ? "dark" : "light"; term.options.theme = buildXtermTheme(mode); term.options.minimumContrastRatio = xtermMinimumContrastRatio(mode) })
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
     const onEvent = (event: HerdrTerminalEvent) => {
       if (disposed || failed) return
