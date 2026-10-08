@@ -31,8 +31,12 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
   const [error, setError] = useState<{ message: string; detail: string | null } | null>(null)
   const [ready, setReady] = useState(false)
   const [ended, setEnded] = useState(false)
-  const idsBefore = useRef<Set<string> | null>(null)
-  if (idsBefore.current === null) idsBefore.current = new Set(useMachinesStore.getState().machines.map(machine => machine.id))
+  // The ids saved before an add, or null when no list ever loaded: then a success cannot be confirmed.
+  const idsBefore = useRef<{ ids: Set<string> | null } | null>(null)
+  if (idsBefore.current === null) {
+    const { machines, listLoaded, listError } = useMachinesStore.getState()
+    idsBefore.current = { ids: listLoaded && !listError ? new Set(machines.map(machine => machine.id)) : null }
+  }
   const { spec } = selection
 
   useEffect(() => {
@@ -115,9 +119,11 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
       }, onEvent).then(async opened => {
         id = opened.sessionId
         if (disposed || failed) { await herdrTerminalRelease(id); return }
+        // A short command can end before the open response: skip setup, release once its frames drain.
+        if (closed) { const sessionId = id; await queue; await herdrTerminalRelease(sessionId).catch(() => undefined); return }
         if (pendingInput.length) send(pendingInput.splice(0).join(""))
         await inputQueue
-        if (disposed || failed) return
+        if (disposed || failed || closed) return
         await herdrTerminalResize(id, term.cols, term.rows)
         if (disposed) return
         setReady(true); clipboard.flushPendingPaste(); term.focus()
@@ -143,8 +149,9 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
         useMachinesStore.getState().requestRefresh()
         return
       }
-      if (!machines) { toast.warning(t("interactive.unconfirmed")); return }
-      const added = machines.some(machine => !idsBefore.current?.has(machine.id) && machine.target === spec.target)
+      const before = idsBefore.current?.ids
+      if (!machines || !before) { toast.warning(t("interactive.unconfirmed")); return }
+      const added = machines.some(machine => !before.has(machine.id) && machine.target === spec.target)
       if (added) toast.success(t("interactive.saved", { target: spec.target }))
       else toast.warning(t("interactive.notSaved"))
     })

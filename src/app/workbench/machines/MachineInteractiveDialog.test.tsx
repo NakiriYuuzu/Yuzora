@@ -123,9 +123,37 @@ describe("MachineInteractiveDialog", () => {
     expect(useMachinesStore.getState().refreshForce).toBe(true)
   })
 
+  it("cannot confirm an add when no machine list had loaded before it", async () => {
+    mocks.list.mockResolvedValue([machine("old", { target: "me@box" })])
+    useMachinesInteractiveStore.setState({ selection: { spec: { kind: "add", target: "me@box" } } })
+    render(<MachineInteractiveDialog selection={{ spec: { kind: "add", target: "me@box" } }} />)
+    await nextFrame()
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalled())
+    await act(async () => { onEvent({ type: "closed", sessionId: "herdr-client-1" }) })
+    fireEvent.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!)
+    await waitFor(() => expect(mocks.toastWarn).toHaveBeenCalled())
+    expect(mocks.toastOk).not.toHaveBeenCalled()
+  })
+
+  it("treats a command that ended before the open response as completed, not failed", async () => {
+    mocks.open.mockImplementation(async (_spec, _size, listener) => {
+      onEvent = listener
+      listener({ type: "closed", sessionId: "herdr-client-1" })
+      return { sessionId: "herdr-client-1" }
+    })
+    render(<MachineInteractiveDialog selection={{ spec: { kind: "client" }, machineLabel: "Lab box" }} />)
+    await nextFrame()
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledWith("herdr-client-1"))
+    expect(screen.getByText("The session has ended.")).toBeInTheDocument()
+    expect(mocks.resize).not.toHaveBeenCalled()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
   it("reports a saved machine after an add finishes", async () => {
     const added = machine("new", { target: "me@box" })
     mocks.list.mockResolvedValue([added])
+    // A loaded (empty) list is the baseline that makes the new id provably new.
+    useMachinesStore.setState({ machines: [], listLoaded: true })
     useMachinesInteractiveStore.setState({ selection: { spec: { kind: "add", target: "me@box" } } })
     render(<MachineInteractiveDialog selection={{ spec: { kind: "add", target: "me@box" } }} />)
     await nextFrame()
@@ -138,6 +166,7 @@ describe("MachineInteractiveDialog", () => {
 
   it("warns when the machine was not saved", async () => {
     mocks.list.mockResolvedValue([])
+    useMachinesStore.setState({ machines: [], listLoaded: true })
     useMachinesInteractiveStore.setState({ selection: { spec: { kind: "add", target: "me@box" } } })
     render(<MachineInteractiveDialog selection={{ spec: { kind: "add", target: "me@box" } }} />)
     await nextFrame()

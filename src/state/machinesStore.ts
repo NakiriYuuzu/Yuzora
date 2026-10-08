@@ -24,6 +24,8 @@ interface MachinesState {
   capabilitiesError: string | null
   machines: HerdrMachine[]
   listError: string | null
+  /** True once a machine list loaded successfully in this epoch (an empty list included). */
+  listLoaded: boolean
   statusById: Record<string, HerdrMachineStatus>
   snapshotById: Record<string, HerdrMachineSnapshot>
   /** Snapshot kept from an earlier success while the latest refresh failed. */
@@ -74,6 +76,7 @@ const initial = {
   capabilitiesError: null,
   machines: [],
   listError: null,
+  listLoaded: false,
   statusById: {},
   snapshotById: {},
   staleById: {},
@@ -88,6 +91,7 @@ const initial = {
 const derivedInitial = {
   machines: [],
   listError: null,
+  listLoaded: false,
   statusById: {},
   snapshotById: {},
   staleById: {},
@@ -118,6 +122,7 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
     set((state) => ({
       machines,
       listError: null,
+      listLoaded: true,
       statusById: prune(state.statusById, machines),
       snapshotById: prune(state.snapshotById, machines),
       staleById: prune(state.staleById, machines),

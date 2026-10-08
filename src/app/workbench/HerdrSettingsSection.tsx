@@ -135,7 +135,7 @@ function NativeRuntimeSettings() {
     } catch (error) { if (generation.current === token) setError(String(error)) }
     finally { if (generation.current === token) setBusy(false) }
   }
-  const customMissing = [info?.reason, info?.configuredReason, info?.configurationError].some(reason => reason && describeHerdrError(reason, te).code === "herdr-custom-path-not-executable")
+  const customMissing = [info?.reason, info?.configuredReason, info?.configurationError].some(reason => reason && ["herdr-custom-path-not-executable", "herdr-custom-path-not-exe"].includes(describeHerdrError(reason, te).code ?? ""))
   async function revertToBundled() {
     const token = ++generation.current
     setBusy(true); setError(null); setNotice(null)

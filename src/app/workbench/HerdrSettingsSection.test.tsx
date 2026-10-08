@@ -149,6 +149,12 @@ it("offers to switch a missing custom binary back to the bundled version and res
   expect(ipc.set).toHaveBeenCalledWith("default")
   expect(changed).toHaveBeenCalledOnce()
 })
+it("offers the same bundled recovery for a Windows custom path that is not an .exe", async () => {
+  ipc.get.mockResolvedValue({ ...customInfo, available: false, reason: "herdr-custom-path-not-exe: C:\\tools\\herdr.cmd" })
+  render(<HerdrSettingsSection />)
+  expect(await screen.findByRole("button", { name: "Switch back to bundled version and restart" })).toBeInTheDocument()
+})
+
 it("saves but does not relaunch when documents are dirty while switching back to bundled", async () => {
   useWorkspaceStore.setState({ groups: [{ tabs: [{ path: "/a", dirty: true }], activePath: "/a" }] } as never)
   ipc.get.mockResolvedValueOnce(missingInfo).mockResolvedValue({ ...customInfo, configured: "default", available: true, restartRequired: true })
