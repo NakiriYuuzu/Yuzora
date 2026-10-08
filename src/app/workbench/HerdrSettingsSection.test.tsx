@@ -32,6 +32,12 @@ beforeEach(() => {
   useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }] } as never)
 })
 afterEach(() => vi.unstubAllGlobals())
+// Source actions stay disabled until the saved source has loaded; a click before that is a no-op.
+async function enabledButton(name: string) {
+  const button = await screen.findByRole("button", { name })
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
+}
 it("shows the active Windows client and saved target, and discovers WSL only after opt-in", async () => {
   render(<HerdrSettingsSection />)
   expect(await screen.findByText("C:\\installed\\herdr.exe")).toBeInTheDocument()
@@ -45,7 +51,7 @@ it("shows the active Windows client and saved target, and discovers WSL only aft
 it("blocks applying a mismatched client without changing the saved source", async () => {
   ipc.check.mockResolvedValue({ ...check, canApply: false, clientVersion: "0.8.2", clientProtocol: 20, sessions: [{ ...check.sessions[0], compatible: false }] })
   render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  fireEvent.click(await enabledButton("Check / detect again"))
   expect(await screen.findByText("Cannot apply this selection")).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Apply source" })).toBeDisabled()
   expect(screen.getByText("Server: 0.9.0 · protocol 22")).toBeInTheDocument()
@@ -58,7 +64,7 @@ afterEach(() => window.removeEventListener("yuzora:herdr-binary-source-changed",
 it("dispatches the binary-source-changed event only after a successful apply", async () => {
   ipc.set.mockResolvedValue({ configured: "default", restartRequired: false })
   render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  fireEvent.click(await enabledButton("Check / detect again"))
   const apply = screen.getByRole("button", { name: "Apply source" })
   await waitFor(() => expect(apply).toBeEnabled())
   fireEvent.click(apply)
@@ -68,7 +74,7 @@ it("dispatches the binary-source-changed event only after a successful apply", a
 it("rechecks on apply and reports a backend rejection without claiming success", async () => {
   ipc.set.mockRejectedValue(new Error("server changed during check"))
   render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  fireEvent.click(await enabledButton("Check / detect again"))
   const apply = screen.getByRole("button", { name: "Apply source" })
   await waitFor(() => expect(apply).toBeEnabled())
   fireEvent.click(apply)
@@ -103,7 +109,7 @@ it("ignores a delayed check after changing the selected host", async () => {
   let resolve!: (result: RuntimeBinaryCheck) => void
   ipc.check.mockReturnValue(new Promise(done => { resolve = done }))
   const mounted = render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  fireEvent.click(await enabledButton("Check / detect again"))
   act(() => useUiStore.setState({ settingsHostId: "unknown" }))
   await act(async () => resolve(check))
   expect(screen.queryByRole("button", { name: "Apply source" })).not.toBeInTheDocument()
@@ -114,7 +120,7 @@ const customInfo = { configured: "custom", active: "default", available: true, p
 it("hands the backend a clean path when the pasted custom path is quoted and contains spaces", async () => {
   ipc.get.mockResolvedValue(customInfo)
   render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  fireEvent.click(await enabledButton("Check / detect again"))
   await waitFor(() => expect(ipc.check).toHaveBeenCalledWith("custom", "C:\\Program Files\\Herdr\\herdr.exe"))
   const input = screen.getByLabelText("Custom executable path") as HTMLInputElement
   fireEvent.change(input, { target: { value: '  "D:\\My Tools\\herdr.exe"  ' } })
@@ -160,7 +166,7 @@ it("saves but does not relaunch when documents are dirty while switching back to
   ipc.get.mockResolvedValueOnce(missingInfo).mockResolvedValue({ ...customInfo, configured: "default", available: true, restartRequired: true })
   ipc.set.mockResolvedValue({ configured: "default", restartRequired: true })
   render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("button", { name: "Switch back to bundled version" }))
+  fireEvent.click(await enabledButton("Switch back to bundled version"))
   expect(await screen.findByText(/restart Yuzora manually/)).toBeInTheDocument()
   expect(ipc.set).toHaveBeenCalledWith("default")
   expect(ipc.relaunch).not.toHaveBeenCalled()
