@@ -1480,6 +1480,13 @@ pub fn checkout_detached(root: &Path, rev: &str) -> Result<(), String> {
 
 const SMART_CHECKOUT_STASH: &str = "Yuzora smart checkout";
 const SMART_CHECKOUT_UNTRACKED_STASH: &str = "Yuzora smart checkout (untracked files)";
+
+/// The stash message for one smart checkout: `base` plus a nonce, so two
+/// operations on one repository (two windows) never claim each other's entry.
+fn stash_label(base: &str) -> String {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    format!("{base} [{}]", &nonce[..12])
+}
 const BLOCKED_BY_UNTRACKED: &str = "untracked working tree files would be overwritten by checkout";
 
 /// Runs a branch switch. With `smart` (JetBrains "Smart Checkout") local
@@ -1498,9 +1505,10 @@ pub fn switch_keeping_changes(
     }
     let magic = [(ALLOW_PATHSPEC_MAGIC_ENV.to_string(), "1".to_string())];
     let before = stash_top(root)?;
+    let label = stash_label(SMART_CHECKOUT_STASH);
     let pushed = run_ok(
         root,
-        &["stash", "push", "-m", SMART_CHECKOUT_STASH],
+        &["stash", "push", "-m", label.as_str()],
         DEFAULT_TIMEOUT,
         &magic,
     )?;
@@ -1511,17 +1519,15 @@ pub fn switch_keeping_changes(
     }
     // Another client may stash right after us: find our entry, never assume
     // the top. Unidentified, the changes stay safely stashed and HEAD stays.
-    let parked = pushed_stash(root, before.as_deref(), SMART_CHECKOUT_STASH)
+    let parked = pushed_stash(root, before.as_deref(), &label)
         .ok()
         .flatten()
         .ok_or_else(|| {
-            format!(
-                "git stash: your local changes are kept in the stash \"{SMART_CHECKOUT_STASH}\""
-            )
+            format!("git stash: your local changes are kept in the stash \"{label}\"")
         })?;
     let switched = switch_over_untracked(root, target, &switch);
     // A failed switch left HEAD where it was, so the changes go back as they were.
-    let restored = restore_parked_changes(root, Some(&parked));
+    let restored = restore_parked_changes(root, Some(&parked), &label);
     match (switched, restored) {
         (Ok(()), restored) => restored,
         (Err(error), Ok(_)) => Err(error),
@@ -1553,12 +1559,9 @@ fn switch_over_untracked(
     }
     let pathspec = paths.join("\0");
     let from_stdin = ["--pathspec-from-file=-", "--pathspec-file-nul"];
-    let kept = || {
-        format!(
-            "git stash: your untracked files are kept in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
-        )
-    };
-    let parked = match park_untracked(root, &pathspec) {
+    let label = stash_label(SMART_CHECKOUT_UNTRACKED_STASH);
+    let kept = || format!("git stash: your untracked files are kept in the stash \"{label}\"");
+    let parked = match park_untracked(root, &pathspec, &label) {
         Err(error) => return Err(format!("{blocked}\n{error}")),
         // The blocking files vanished before git could stash them, so nothing
         // is parked and nothing needs restoring: just try the switch again.
@@ -1584,7 +1587,7 @@ fn switch_over_untracked(
             && run_ok(root, &["stash", "drop", "--quiet"], DEFAULT_TIMEOUT, &[]).is_ok();
         dropped.then_some(()).ok_or_else(|| {
             format!(
-                "git stash: your untracked files are restored and a copy stays in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
+                "git stash: your untracked files are restored and a copy stays in the stash \"{label}\""
             )
         })
     });
@@ -1635,14 +1638,14 @@ fn pushed_stash(
 /// stash. `None` when git saved nothing: it still exits 0 ("No local changes
 /// to save") and the top stash is then someone else's, never ours to restore
 /// or drop.
-fn park_untracked(root: &Path, pathspec: &str) -> Result<Option<String>, String> {
+fn park_untracked(root: &Path, pathspec: &str, label: &str) -> Result<Option<String>, String> {
     let before = stash_top(root)?;
     let push = [
         "stash",
         "push",
         "--include-untracked",
         "-m",
-        SMART_CHECKOUT_UNTRACKED_STASH,
+        label,
         "--pathspec-from-file=-",
         "--pathspec-file-nul",
     ];
@@ -1650,10 +1653,8 @@ fn park_untracked(root: &Path, pathspec: &str) -> Result<Option<String>, String>
     if out.code != 0 {
         return Err(git_err("stash", &out.stderr));
     }
-    pushed_stash(root, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).map_err(|error| {
-        format!(
-            "{error}\ngit stash: your untracked files may be kept in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
-        )
+    pushed_stash(root, before.as_deref(), label).map_err(|error| {
+        format!("{error}\ngit stash: your untracked files may be kept in the stash \"{label}\"")
     })
 }
 
@@ -1720,10 +1721,9 @@ fn stash_top(root: &Path) -> Result<Option<String>, String> {
 fn restore_parked_changes(
     root: &Path,
     parked: Option<&str>,
+    label: &str,
 ) -> Result<GitOperationOutcome, String> {
-    let kept = || {
-        format!("git stash: your local changes are kept in the stash \"{SMART_CHECKOUT_STASH}\"")
-    };
+    let kept = || format!("git stash: your local changes are kept in the stash \"{label}\"");
     if let Some(parked) = parked {
         if stash_top(root).map_err(|_| kept())?.as_deref() != Some(parked) {
             return Err(kept());
@@ -3494,10 +3494,12 @@ mod tests {
         );
         let mine = stash_top(repo).unwrap().unwrap();
         // git exits 0 with "No local changes to save" for a path that is gone.
-        assert_eq!(park_untracked(repo, "gone.txt").unwrap(), None);
+        assert_eq!(park_untracked(repo, "gone.txt", "mine [1]").unwrap(), None);
         assert_eq!(stash_top(repo).unwrap().as_deref(), Some(mine.as_str()));
         std::fs::write(repo.join("shared.txt"), "local\n").unwrap();
-        let parked = park_untracked(repo, "shared.txt").unwrap().unwrap();
+        let parked = park_untracked(repo, "shared.txt", "mine [2]")
+            .unwrap()
+            .unwrap();
         assert_ne!(parked, mine);
         assert!(!repo.join("shared.txt").exists());
         assert_eq!(stash_list(repo).unwrap().len(), 2);
@@ -3549,6 +3551,34 @@ mod tests {
             ],
         );
         assert!(pushed_stash(repo, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).is_err());
+    }
+
+    #[test]
+    fn a_concurrent_smart_checkout_never_claims_another_operations_stash() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        let ours = stash_label(SMART_CHECKOUT_UNTRACKED_STASH);
+        let theirs = stash_label(SMART_CHECKOUT_UNTRACKED_STASH);
+        assert_ne!(ours, theirs);
+        assert!(ours.starts_with(SMART_CHECKOUT_UNTRACKED_STASH));
+        let before = stash_top(repo).unwrap();
+        // The other window parks the same kind of file right after our `before`.
+        test_repo::git(
+            repo,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                theirs.as_str(),
+                "--",
+                "shared.txt",
+            ],
+        );
+        // Our own push saved nothing (its blockers vanished): no entry is ours.
+        assert_eq!(park_untracked(repo, "gone.txt", &ours).unwrap(), None);
+        assert_eq!(pushed_stash(repo, before.as_deref(), &ours).unwrap(), None);
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
     }
 
     #[test]
