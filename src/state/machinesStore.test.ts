@@ -153,6 +153,20 @@ const deferred = <T,>() => {
 const unsupportedCaps = { ...supportedCaps, supported: false, reason: "machines-runtime-too-old" }
 
 describe("machinesStore concurrency", () => {
+  it("a superseded list refresh resolves to the newest list instead of the stale cache", async () => {
+    let resolveOld!: (machines: typeof a[]) => void
+    let resolveNew!: (machines: typeof a[]) => void
+    ipc.list.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+    ipc.list.mockReturnValueOnce(new Promise((resolve) => { resolveNew = resolve }))
+    const older = useMachinesStore.getState().refreshList()
+    const newer = useMachinesStore.getState().refreshList()
+    resolveOld([a])
+    await Promise.resolve()
+    resolveNew([a, b])
+    await expect(older).resolves.toEqual([a, b])
+    await expect(newer).resolves.toEqual([a, b])
+  })
+
   it("drops a snapshot or status that resolves after its machine was disabled", async () => {
     useMachinesStore.setState({ machines: [a] })
     let resolveSnapshot!: (value: ReturnType<typeof snapshot>) => void
@@ -279,10 +293,12 @@ it("drops a disabled machine's snapshot and status so re-enabling cannot show ol
     const first = useMachinesStore.getState().refreshList()
     const second = useMachinesStore.getState().refreshList()
     older.resolve([a])
-    await first
+    // The superseded call now waits for the newest request, so only flush its own settlement here.
+    for (let i = 0; i < 5; i++) await Promise.resolve()
     expect(useMachinesStore.getState().loading).toBe(true)
     newer.resolve([b])
-    await second
+    await expect(second).resolves.toEqual([b])
+    await expect(first).resolves.toEqual([b])
     expect(useMachinesStore.getState().loading).toBe(false)
   })
 

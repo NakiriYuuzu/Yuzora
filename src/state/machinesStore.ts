@@ -103,6 +103,7 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
   let epoch = 0
   let capsSeq = 0
   let capsLatest: Promise<HerdrMachinesCapabilities | null> = Promise.resolve(null)
+  let listLatest: Promise<HerdrMachine[] | null> = Promise.resolve(null)
   /** Advances whenever a list is requested or adopted; an older in-flight `machinesList()` must not overwrite a newer one. */
   let listGeneration = 0
   /** The newest refreshList call; only it may clear `loading`. */
@@ -175,23 +176,32 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
       capsLatest = run
       return run
     },
-    async refreshList() {
+    refreshList() {
       const mine = epoch
       const request = ++listRequest
       const generation = ++listGeneration
       set({ loading: true })
-      try {
-        const machines = await machinesList()
-        // A newer refresh, a mutation result or a support loss happened meanwhile: this response is stale.
-        if (mine !== epoch || generation !== listGeneration) return get().machines
-        adopt(machines)
-        return machines
-      } catch (cause) {
-        if (mine === epoch && generation === listGeneration) set({ listError: messageOf(cause) })
-        return null
-      } finally {
-        if (mine === epoch && request === listRequest) set({ loading: false })
-      }
+      // A superseded call resolves to the newest list request (or the list a mutation adopted), never to a
+      // cache that predates it; a support loss or reset resolves to null (unknown).
+      const latest = () => (listLatest === run ? Promise.resolve(get().machines) : listLatest)
+      const run: Promise<HerdrMachine[] | null> = (async () => {
+        try {
+          const machines = await machinesList()
+          if (mine !== epoch) return null
+          if (generation !== listGeneration) return latest()
+          adopt(machines)
+          return machines
+        } catch (cause) {
+          if (mine !== epoch) return null
+          if (generation !== listGeneration) return latest()
+          set({ listError: messageOf(cause) })
+          return null
+        } finally {
+          if (mine === epoch && request === listRequest) set({ loading: false })
+        }
+      })()
+      listLatest = run
+      return run
     },
     async refreshStatus(id) {
       const mine = epoch
@@ -256,6 +266,7 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
       invalidate()
       capsSeq += 1
       capsLatest = Promise.resolve(null)
+      listLatest = Promise.resolve(null)
       statusSeq.clear()
       snapshotSeq.clear()
       set({ ...initial })
