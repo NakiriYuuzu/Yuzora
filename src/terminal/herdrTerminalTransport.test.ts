@@ -5,6 +5,7 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalInput: vi.fn(),
   herdrTerminalResize: vi.fn(),
   herdrTerminalScroll: vi.fn(),
+  herdrTerminalMouse: vi.fn(),
   herdrTerminalRelease: vi.fn()
 }))
 vi.mock("./herdrScrollIpc", () => ({
@@ -14,6 +15,7 @@ vi.mock("./herdrScrollIpc", () => ({
 
 import {
   herdrTerminalInput,
+  herdrTerminalMouse,
   herdrTerminalOpen,
   herdrTerminalRelease,
   herdrTerminalResize,
@@ -1285,5 +1287,63 @@ describe("alternate-screen wheel routing", () => {
     const burst = vi.mocked(herdrTerminalScroll).mock.calls.slice(1)
     expect(burst).toHaveLength(6)
     expect(burst.reduce((rows, [, , lines]) => rows + lines, 0)).toBe(8)
+  })
+})
+
+describe("terminal mouse", () => {
+  beforeEach(() => {
+    vi.mocked(herdrTerminalOpen).mockReset().mockResolvedValue({
+      sessionId: "sess-mouse", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    vi.mocked(herdrTerminalMouse).mockReset().mockResolvedValue(undefined)
+  })
+
+  async function open(mouseEnabled: () => boolean, mode: "control" | "observe" = "control") {
+    if (mode === "observe") {
+      vi.mocked(herdrTerminalOpen).mockResolvedValue({
+        sessionId: "sess-mouse", target: "t1", mode: "observe", role: "observer", cols: 80, rows: 24, takeover: false
+      })
+    }
+    const transport = createHerdrTerminalTransport({ terminalId: "t1", mode, mouseEnabled })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    return transport
+  }
+
+  it("sends one event at a time in order and keeps only the latest queued drag", async () => {
+    let release!: () => void
+    vi.mocked(herdrTerminalMouse).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const transport = await open(() => true)
+    const first = transport.mouse?.("down", { column: 1, row: 2 }, 0)
+    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledOnce())
+    void transport.mouse?.("drag", { column: 2, row: 2 }, 0)
+    void transport.mouse?.("drag", { column: 3, row: 2 }, 0)
+    void transport.mouse?.("up", { column: 3, row: 2 }, 4)
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+    release()
+    await first
+
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([
+      ["sess-mouse", "down", { column: 1, row: 2 }, 0],
+      ["sess-mouse", "drag", { column: 3, row: 2 }, 0],
+      ["sess-mouse", "up", { column: 3, row: 2 }, 4]
+    ])
+  })
+
+  it("never sends to connectors without terminal.mouse or without control", async () => {
+    await (await open(() => false)).mouse?.("down", { column: 0, row: 0 }, 0)
+    await (await open(() => true, "observe")).mouse?.("down", { column: 0, row: 0 }, 0)
+    expect(herdrTerminalMouse).not.toHaveBeenCalled()
+  })
+
+  it("drops the rest of a gesture after a failed send instead of replaying it", async () => {
+    vi.mocked(herdrTerminalMouse).mockRejectedValueOnce(new Error("busy"))
+    const transport = await open(() => true)
+    const first = transport.mouse?.("down", { column: 1, row: 1 }, 0)
+    void transport.mouse?.("up", { column: 1, row: 1 }, 0)
+    await expect(first).resolves.toBeUndefined()
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+
+    await transport.mouse?.("down", { column: 4, row: 4 }, 0)
+    expect(vi.mocked(herdrTerminalMouse).mock.calls.at(-1)).toEqual(["sess-mouse", "down", { column: 4, row: 4 }, 0])
   })
 })

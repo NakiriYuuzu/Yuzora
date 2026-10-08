@@ -2,6 +2,7 @@
 
 import {
   herdrTerminalInput,
+  herdrTerminalMouse,
   herdrTerminalOpen,
   herdrTerminalRelease,
   herdrTerminalResize,
@@ -12,6 +13,7 @@ import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 import { recordHerdrTerminalMetric, timeHerdrTerminalIpc } from "./herdrTerminalDiagnostics"
 import type { PaneScrollController, PaneScrollInfo } from "./herdrScrollController"
 import type {
+  HerdrMouseAction,
   HerdrTerminalEvent,
   HerdrTerminalMode,
   HerdrTerminalRole
@@ -109,6 +111,8 @@ export interface TerminalTransport {
   paste(text: string): Promise<void>
   resize(cols: number, rows: number): Promise<void>
   scroll?(delta: number, cell?: TerminalCell): Promise<void>
+  /** Best-effort left-button event; resolves once the queued events are sent. */
+  mouse?(action: HerdrMouseAction, cell: TerminalCell, modifiers: number): Promise<void>
   release(): Promise<void>
   /**
    * Clear the active connector without sending a backend release. Component
@@ -186,6 +190,8 @@ export interface HerdrTerminalTransportOptions {
    * even when pane scrolling is otherwise the preferred or only transport.
    */
   applicationWheelEnabled?: () => boolean
+  /** True when the connector accepts `terminal.mouse` (HERDR 0.9.2+). */
+  mouseEnabled?: () => boolean
   /** Publish the authoritative pane state returned by pane.scroll without another read. */
   onPaneScroll?: (state: PaneScrollInfo) => void
   /** Share the scrollbar's optimistic position and immediate writer. */
@@ -219,6 +225,7 @@ export function createHerdrTerminalTransport(
     scrollEnabled,
     terminalScrollEnabled,
     applicationWheelEnabled,
+    mouseEnabled,
     onPaneScroll,
     paneScrollController,
     onAttachment,
@@ -238,6 +245,12 @@ export function createHerdrTerminalTransport(
   let disposed = false
   type InputQueue = { frames: Array<{ text: string; paste: boolean; bytes: number }>; bytes: number; drain: Promise<void> | null }
   let inputQueue: InputQueue | null = null
+  /**
+   * Each command is a separate IPC that may run concurrently, so pointer
+   * events wait for the previous one: HERDR must see down, drag, up in order.
+   */
+  let mouseQueue: Array<{ action: HerdrMouseAction; cell: TerminalCell; modifiers: number }> = []
+  let mouseDrain: Promise<void> | null = null
   let pendingScrollDelta = 0
   let pendingScrollCell: TerminalCell | undefined
   /** Wheel events behind pendingScrollDelta; an application gets one report each. */
@@ -285,6 +298,7 @@ export function createHerdrTerminalTransport(
   const discardInput = () => {
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
     inputQueue = null
+    mouseQueue = []
   }
   const failInput = (queue: InputQueue, message: string) => {
     if (inputQueue !== queue) return
@@ -613,6 +627,29 @@ export function createHerdrTerminalTransport(
       })()
       scrollDrain = drain
       return drain
+    },
+    mouse(action, cell, modifiers) {
+      if (disposed || !sessionId || mode !== "control" || mouseEnabled?.() !== true) return Promise.resolve()
+      // Only the latest position of a queued drag matters.
+      if (action === "drag" && mouseQueue.at(-1)?.action === "drag") mouseQueue.pop()
+      mouseQueue.push({ action, cell, modifiers })
+      mouseDrain ??= (async () => {
+        await Promise.resolve()
+        try {
+          while (mouseQueue.length) {
+            const id = sessionId
+            if (disposed || !id || mode !== "control") break
+            const event = mouseQueue.shift()!
+            await herdrTerminalMouse(id, event.action, event.cell, event.modifiers)
+          }
+        } catch {
+          // Delivery is unknown; never replay part of a gesture.
+        } finally {
+          mouseQueue = []
+          mouseDrain = null
+        }
+      })()
+      return mouseDrain
     },
     detach() {
       discardInput()

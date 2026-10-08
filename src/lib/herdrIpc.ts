@@ -11,6 +11,7 @@ import type {
   HerdrLayoutDescription,
   HerdrLayoutExportRequest,
   HerdrLayoutSetSplitRatioRequest,
+  HerdrMouseAction,
   HerdrNamedSession,
   HerdrPaneCloseRequest,
   HerdrPaneFocusRequest,
@@ -320,6 +321,16 @@ export function herdrTerminalScroll(
     column: cell?.column ?? null,
     row: cell?.row ?? null
   })
+}
+
+/** Zero-based cell; HERDR drops the event unless the child enabled mouse reporting. */
+export function herdrTerminalMouse(
+  sessionId: string,
+  action: HerdrMouseAction,
+  cell: { column: number; row: number },
+  modifiers: number
+): Promise<void> {
+  return invoke("herdr_terminal_mouse", { sessionId, action, column: cell.column, row: cell.row, modifiers })
 }
 
 export function herdrTerminalRelease(sessionId: string): Promise<void> {

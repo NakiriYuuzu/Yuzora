@@ -494,6 +494,7 @@ pub fn run() {
             herdr_service::terminal_clipboard_image,
             herdr_service::herdr_terminal_resize,
             herdr_service::herdr_terminal_scroll,
+            herdr_service::herdr_terminal_mouse,
             herdr_service::herdr_terminal_release,
             herdr_service::herdr_terminal_create,
             herdr_service::herdr_workspace_focus,

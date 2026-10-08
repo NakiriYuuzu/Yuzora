@@ -56,6 +56,24 @@ describe("host runtime routing", () => {
       { command: "scroll", direction: "up", lines: 3, column: 10, row: 5 }
     ])
   })
+  it("sends terminal mouse events only to helpers that advertise them", async () => {
+    // A saved older helper cannot parse the stream command and ends the stream.
+    const upgraded = { ...host("b"), hello: { ...host("b").hello, methods: ["herdrTerminalMouse"] } }
+    const operations: unknown[] = []
+    mockIPC((command, args) => {
+      if (command === "host_stream_open") return { streamId: "term", value: { sessionId: "herdr-term-1", target: "same" } }
+      if (command === "host_stream_command") operations.push((args as { operation: unknown }).operation)
+      return null
+    })
+    const click = async () => {
+      const opened = await invokeHerdr<{ sessionId: string }>("herdr_terminal_open", { target: "same", cols: 80, rows: 24, sessionName: runtimeKey({ hostId: "b", sessionName: "same" }), onEvent: () => undefined })
+      await invokeHerdr("herdr_terminal_mouse", { sessionId: opened.sessionId, action: "down", column: 10, row: 5, modifiers: 2 })
+    }
+    await click()
+    registerRuntimeHost(upgraded, "/herdr", "B")
+    await click()
+    expect(operations).toEqual([{ command: "mouse", action: "down", column: 10, row: 5, modifiers: 2 }])
+  })
   it("resolves same-name remote Sessions and keeps legacy live pages local", () => {
     const scope = runtimeKey({ hostId: "a", sessionName: "same" })
     const remote = { ...session, hostId: "a", runtimeId: scope }

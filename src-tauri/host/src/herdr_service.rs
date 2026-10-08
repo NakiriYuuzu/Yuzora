@@ -510,6 +510,15 @@ pub enum HerdrScrollDirection {
     Down,
 }
 
+/// Left-button pointer action for the connector `terminal.mouse` (HERDR 0.9.2+).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HerdrMouseAction {
+    Down,
+    Up,
+    Drag,
+}
+
 // ── Wire helpers (Herdr public NDJSON / connector frames) ───────────────────
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
@@ -663,6 +672,15 @@ pub enum TerminalControlCommand {
         column: Option<u16>,
         #[serde(skip_serializing_if = "Option::is_none")]
         row: Option<u16>,
+    },
+    /// HERDR encodes the event at this zero-based cell for the child's mouse
+    /// mode, and drops it when the child has not enabled mouse reporting.
+    #[serde(rename = "terminal.mouse")]
+    Mouse {
+        action: HerdrMouseAction,
+        column: u16,
+        row: u16,
+        modifiers: u8,
     },
     #[serde(rename = "terminal.release")]
     Release,
@@ -2723,6 +2741,23 @@ impl HerdrManager {
         row: Option<u16>,
     ) -> Result<(), String> {
         let cmd = TerminalControlCommand::scroll(direction, lines, column, row)?;
+        self.send_control(session_id, &cmd)
+    }
+
+    pub fn terminal_mouse(
+        &self,
+        session_id: &str,
+        action: HerdrMouseAction,
+        column: u16,
+        row: u16,
+        modifiers: u8,
+    ) -> Result<(), String> {
+        let cmd = TerminalControlCommand::Mouse {
+            action,
+            column,
+            row,
+            modifiers,
+        };
         self.send_control(session_id, &cmd)
     }
 

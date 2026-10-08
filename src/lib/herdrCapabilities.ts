@@ -111,6 +111,22 @@ export function supportsHerdrApplicationWheel(
   return protocol != null && protocol >= 22
 }
 
+/**
+ * `terminal.mouse` is a connector command parsed by the selected HERDR
+ * binary, so its version is the only signal: connectors before 0.9.2 print
+ * an ignored-command error for every event, which surfaces as a terminal error.
+ */
+export function supportsHerdrTerminalMouse(
+  capabilities: HerdrCapabilities | null | undefined
+): boolean {
+  if (!capabilities?.terminal.control || !capabilities.terminal.input) return false
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(capabilities.binaryVersion?.trim() ?? "")
+  if (!match) return false
+  const [major, minor, patch] = match.slice(1).map(Number)
+  if (major !== 0) return major > 0
+  return minor > 9 || (minor === 9 && patch >= 2)
+}
+
 export function herdrScrollStrategy(
   capabilities: HerdrCapabilities | null | undefined
 ): HerdrScrollStrategy {

@@ -1,6 +1,7 @@
 //! One dedicated stdio channel per terminal or event subscription.
 use crate::herdr_service::{
-    HerdrScrollDirection, HerdrSubscriptionEvent, HerdrTerminalEvent, HerdrTerminalMode,
+    HerdrMouseAction, HerdrScrollDirection, HerdrSubscriptionEvent, HerdrTerminalEvent,
+    HerdrTerminalMode,
 };
 use crate::protocol::{ConnectionOwner, Outcome, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,13 @@ pub enum StreamCommand {
         column: Option<u16>,
         #[serde(skip_serializing_if = "Option::is_none")]
         row: Option<u16>,
+    },
+    /// Sent only to helpers advertising `herdrTerminalMouse`.
+    Mouse {
+        action: HerdrMouseAction,
+        column: u16,
+        row: u16,
+        modifiers: u8,
     },
     Close,
 }
@@ -198,5 +206,21 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn mouse_command_wire_shape() {
+        let wire = r#"{"command":"mouse","action":"drag","column":3,"row":7,"modifiers":2}"#;
+        let mouse: StreamCommand = serde_json::from_str(wire).unwrap();
+        assert!(matches!(
+            mouse,
+            StreamCommand::Mouse {
+                action: HerdrMouseAction::Drag,
+                column: 3,
+                row: 7,
+                modifiers: 2,
+            }
+        ));
+        assert_eq!(serde_json::to_string(&mouse).unwrap(), wire);
     }
 }

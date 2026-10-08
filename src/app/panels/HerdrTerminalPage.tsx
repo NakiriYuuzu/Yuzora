@@ -1,6 +1,7 @@
 import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
 import { installHerdrDragSelection, type HerdrDragSelection } from "@/terminal/herdrDragSelection"
+import { installHerdrMouseInput } from "@/terminal/herdrMouseInput"
 import { readPaneSelection } from "@/terminal/herdrScrollIpc"
 import { terminalFontStack } from "@/terminal/terminalFonts"
 import {
@@ -29,7 +30,7 @@ import {
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
 import { isRetryableHerdrConnectError } from "@/lib/herdrErrors"
-import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate } from "@/lib/herdrCapabilities"
+import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate, supportsHerdrTerminalMouse } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
 import { useHostStore } from "@/state/hostStore"
 import {
@@ -946,6 +947,13 @@ function HerdrTerminalLeaf({
         && Boolean(paneScrollControllerRef.current),
       readText: (anchor, cursor) => readPaneSelection(contextSessionName, scrollPaneId ?? "", anchor, cursor)
     })
+    // Clicks reach mouse-reporting TUIs (Claude Code, vim, lazygit) through HERDR.
+    const mouseInput = installHerdrMouseInput(term, {
+      enabled: () =>
+        !disposedRef.current && activeRef.current && visibleRef.current
+        && Boolean(transportRef.current?.canWrite()),
+      send: (action, cell, modifiers) => { void transportRef.current?.mouse?.(action, cell, modifiers) }
+    })
     term.attachCustomWheelEventHandler((event) => {
       const transport = transportRef.current
       if (
@@ -1037,6 +1045,7 @@ function HerdrTerminalLeaf({
         clipboardRef.current = null
         dragSelectionRef.current?.dispose()
         dragSelectionRef.current = null
+        mouseInput.dispose()
         parsedDisposable?.dispose()
         container.removeEventListener("mouseleave", resetTargetHover)
         window.removeEventListener("blur", resetTargetHover)
@@ -1089,6 +1098,14 @@ function HerdrTerminalLeaf({
           : null)
           ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
         return supportsHerdrApplicationWheel(capabilities, targetHostId, targetHostId ? useHostStore.getState().configs[targetHostId]?.kind : undefined)
+      },
+      mouseEnabled: () => {
+        const state = useHerdrStore.getState()
+        const capabilities = (targetSessionName
+          ? state.runtimesBySession[targetSessionName]?.capabilities
+          : null)
+          ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        return supportsHerdrTerminalMouse(capabilities)
       },
       onAttachment: ({ sessionId, mode, role: nextRole, takeover, target }) => {
         if (disposedRef.current) return
@@ -1428,6 +1445,7 @@ function HerdrTerminalLeaf({
       clipboardRef.current = null
       dragSelectionRef.current?.dispose()
       dragSelectionRef.current = null
+      mouseInput.dispose()
       parsedDisposable?.dispose()
       container.removeEventListener("mouseleave", resetTargetHover)
       window.removeEventListener("blur", resetTargetHover)

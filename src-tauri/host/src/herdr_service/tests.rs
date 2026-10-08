@@ -152,6 +152,17 @@ fn control_command_json_matches_herdr_wire() {
         serde_json::to_string(&at_cell).unwrap(),
         r#"{"type":"terminal.scroll","direction":"down","lines":1,"column":10,"row":5}"#
     );
+    // HERDR 0.9.2+ connectors default the button to left.
+    let mouse = TerminalControlCommand::Mouse {
+        action: HerdrMouseAction::Down,
+        column: 12,
+        row: 5,
+        modifiers: 4,
+    };
+    assert_eq!(
+        serde_json::to_string(&mouse).unwrap(),
+        r#"{"type":"terminal.mouse","action":"down","column":12,"row":5,"modifiers":4}"#
+    );
     assert_eq!(
         serde_json::to_string(&TerminalControlCommand::Release).unwrap(),
         r#"{"type":"terminal.release"}"#
