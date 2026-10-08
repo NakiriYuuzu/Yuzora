@@ -1,0 +1,191 @@
+import { act, cleanup, render } from "@testing-library/react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { machine, snapshot, supportedCaps } from "@/test/machinesFixtures"
+import { useMachinesStore } from "@/state/machinesStore"
+import { MachinesBridge } from "./MachinesBridge"
+import { HERDR_BINARY_SOURCE_CHANGED_EVENT, machineBackoffDelay, machinePollIntervals } from "./machinesPolicy"
+
+const ipc = vi.hoisted(() => ({ caps: vi.fn(), list: vi.fn(), agents: vi.fn(), windows: false }))
+vi.mock("@/lib/machinesIpc", () => ({
+  machinesCapabilities: ipc.caps, machinesList: ipc.list, machinesAgents: ipc.agents,
+  machinesStatus: vi.fn(), machinesRename: vi.fn(), machinesSetEnabled: vi.fn(), machinesRemove: vi.fn()
+}))
+vi.mock("@/lib/platform", async original => ({ ...await original<typeof import("@/lib/platform")>(), isWindowsPlatform: () => ipc.windows }))
+
+const SEC = 1000
+const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+const flush = () => advance(0)
+function setVisibility(state: "visible" | "hidden") {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state })
+  document.dispatchEvent(new Event("visibilitychange"))
+}
+async function mount(machines = [machine("a")]) {
+  ipc.caps.mockResolvedValue(supportedCaps)
+  ipc.list.mockResolvedValue(machines)
+  render(<MachinesBridge />)
+  await flush()
+}
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.resetAllMocks()
+  ipc.windows = false
+  ipc.agents.mockImplementation(async (id: string) => snapshot(id))
+  useMachinesStore.getState().reset()
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" })
+})
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
+
+describe("polling policy helpers", () => {
+  it("uses slower intervals on Windows and caps backoff at five minutes", () => {
+    expect(machinePollIntervals(false)).toEqual({ visible: 15_000, hidden: 60_000 })
+    expect(machinePollIntervals(true)).toEqual({ visible: 30_000, hidden: 120_000 })
+    expect(machineBackoffDelay(15_000, 1)).toBe(30_000)
+    expect(machineBackoffDelay(15_000, 2)).toBe(60_000)
+    expect(machineBackoffDelay(15_000, 10)).toBe(300_000)
+  })
+})
+
+describe("MachinesBridge", () => {
+  it("does not poll when no machine exists", async () => {
+    await mount([])
+    await advance(120 * SEC)
+    expect(ipc.list).toHaveBeenCalledTimes(1)
+    expect(ipc.agents).not.toHaveBeenCalled()
+  })
+
+  it("does not touch machines when the binary is unsupported", async () => {
+    ipc.caps.mockResolvedValue({ ...supportedCaps, supported: false, reason: "machines-runtime-too-old" })
+    render(<MachinesBridge />)
+    await advance(120 * SEC)
+    expect(ipc.list).not.toHaveBeenCalled()
+    expect(ipc.agents).not.toHaveBeenCalled()
+  })
+
+  it("polls enabled machines every 15s while visible and skips disabled ones", async () => {
+    await mount([machine("a"), machine("b", { enabled: false })])
+    expect(ipc.agents.mock.calls.map(c => c[0])).toEqual([machine("a").id])
+    await advance(14 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    await advance(1 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+    expect(useMachinesStore.getState().snapshotById[machine("a").id]).toBeDefined()
+  })
+
+  it("uses the Windows interval", async () => {
+    ipc.windows = true
+    await mount()
+    await advance(29 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    await advance(1 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps only a 60s list refresh while hidden", async () => {
+    await mount()
+    setVisibility("hidden")
+    ipc.list.mockClear(); ipc.agents.mockClear()
+    await advance(59 * SEC)
+    expect(ipc.list).not.toHaveBeenCalled()
+    await advance(1 * SEC)
+    expect(ipc.list).toHaveBeenCalledTimes(1)
+    expect(ipc.agents).not.toHaveBeenCalled()
+    setVisibility("visible")
+    await flush()
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+  })
+
+  it("queries at most two machines at once", async () => {
+    let active = 0, peak = 0
+    const release: Array<() => void> = []
+    ipc.agents.mockImplementation((id: string) => new Promise(resolve => {
+      active++; peak = Math.max(peak, active)
+      release.push(() => { active--; resolve(snapshot(id)) })
+    }))
+    await mount(["a", "b", "c", "d", "e"].map(id => machine(id)))
+    expect(peak).toBe(2)
+    for (let index = 0; index < 5; index++) { release.shift()?.(); await flush() }
+    expect(ipc.agents).toHaveBeenCalledTimes(5)
+    expect(peak).toBe(2)
+  })
+
+  it("backs off exponentially after consecutive failures", async () => {
+    ipc.agents.mockRejectedValue("machines-unreachable")
+    await mount()
+    expect(ipc.agents).toHaveBeenCalledTimes(1) // t=0
+    await advance(15 * SEC) // t=15 still backing off (next at 30)
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    await advance(15 * SEC) // t=30
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+    await advance(60 * SEC) // t=90 (next at 30+60)
+    expect(ipc.agents).toHaveBeenCalledTimes(3)
+  })
+
+  it("resets the backoff after a success", async () => {
+    ipc.agents.mockRejectedValueOnce("machines-unreachable")
+    await mount()
+    await advance(30 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+    await advance(15 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(3)
+  })
+
+  it("never retries auth-required until the user asks for a refresh", async () => {
+    ipc.agents.mockRejectedValue("machines-auth-required")
+    await mount()
+    await advance(10 * 60 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    act(() => useMachinesStore.getState().requestRefresh())
+    await flush()
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+  })
+
+  it("a soft refresh (opening the Machines tab) keeps the auth-required block", async () => {
+    ipc.agents.mockRejectedValue("machines-auth-required")
+    await mount()
+    act(() => useMachinesStore.getState().requestRefresh(false))
+    await flush()
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+  })
+
+  it("never starts a round while the previous one is unfinished", async () => {
+    ipc.agents.mockImplementation(() => new Promise(() => undefined))
+    await mount()
+    await advance(5 * 60 * SEC)
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    expect(ipc.list).toHaveBeenCalledTimes(2) // bootstrap + the single running round
+  })
+
+  it("defers a forced refresh while a round is still running", async () => {
+    let finish!: () => void
+    ipc.agents.mockImplementationOnce((id: string) => new Promise(resolve => { finish = () => resolve(snapshot(id)) }))
+    await mount()
+    act(() => useMachinesStore.getState().requestRefresh())
+    await flush()
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    finish()
+    await flush()
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+  })
+
+  it("stops polling once the last machine disappears", async () => {
+    await mount()
+    ipc.list.mockResolvedValue([])
+    await advance(15 * SEC)
+    ipc.agents.mockClear(); ipc.list.mockClear()
+    await advance(120 * SEC)
+    expect(ipc.list).not.toHaveBeenCalled()
+    expect(ipc.agents).not.toHaveBeenCalled()
+  })
+
+  it("reloads capabilities when the binary source changes", async () => {
+    await mount()
+    ipc.caps.mockClear()
+    window.dispatchEvent(new Event(HERDR_BINARY_SOURCE_CHANGED_EVENT))
+    await flush()
+    expect(ipc.caps).toHaveBeenCalledTimes(1)
+  })
+})

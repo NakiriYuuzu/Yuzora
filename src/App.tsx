@@ -10,6 +10,7 @@ import { FileDropBridge } from "@/workbench/FileDropBridge";
 import { WorkbenchKeyboardBridge } from "@/workbench/WorkbenchKeyboardBridge";
 import { WorkbenchFocusBridge } from "@/workbench/WorkbenchFocusBridge";
 import { HerdrBridge } from "@/workbench/HerdrBridge";
+import { MachinesBridge } from "@/workbench/MachinesBridge";
 import { HerdrToolsHost } from "@/workbench/HerdrToolsHost";
 import { HerdrNotificationBridge } from "@/workbench/HerdrNotificationBridge";
 import { ToasterHost } from "@/workbench/ToasterHost";
@@ -38,6 +39,7 @@ function App() {
       <FileDropBridge />
       <SessionRestoreBridge />
       <HerdrBridge />
+      <MachinesBridge />
       <HerdrToolsHost />
       <HerdrNotificationBridge />
       <ToasterHost />

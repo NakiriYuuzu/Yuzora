@@ -48,6 +48,7 @@ import { bindingLabel, effectiveBinding, useKeyboardSettingsStore, type AppComma
 import { Kbd } from "@/components/ui/kbd";
 import { isMacPlatform } from "@/lib/platform";
 import { AgentLogo } from "./AgentLogo";
+import { MachineAgentGroup } from "./machines/MachineAgentGroup";
 import { resolveAgentKind } from "./agentLogos";
 import type { SpaceCharacterConfig } from "./space-character";
 
@@ -1078,6 +1079,7 @@ export function SpaceAgentTree() {
               </Fragment>
             );
           })}
+          {viewMode === "agents" && <MachineAgentGroup />}
         </div>
         {!shownSessions.length && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
         {visible.filter(

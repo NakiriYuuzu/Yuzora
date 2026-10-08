@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { Laptop, RefreshCw, Server, SquareTerminal } from "lucide-react";
+import { Laptop, Network, RefreshCw, Server, SquareTerminal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
@@ -20,13 +20,17 @@ import { isHerdrStartupPending, useHerdrStore } from "@/state/herdrStore";
 import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 import { selectionForHost, useHostStore } from "@/state/hostStore";
 import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore";
-import { useSshStore } from "@/state/sshStore";
+import { useSshStore, type SshHost } from "@/state/sshStore";
+import { useMachinesInteractiveStore } from "@/state/machinesInteractiveStore";
+import { useMachinesStore } from "@/state/machinesStore";
 import { useUiStore } from "@/state/uiStore";
 import { HostList } from "./HostList";
 import { RuntimeSourceFields } from "./RuntimeSourceFields";
 import { runtimeSessionLabel } from "./spaceTreeIdentity";
+import { MachinesPanel } from "./machines/MachinesPanel";
+import { MigrateSshHostDialog } from "./machines/MigrateSshHostDialog";
 
-type SessionSource = "connected" | "ssh" | "wsl";
+type SessionSource = "connected" | "ssh" | "wsl" | "machines";
 
 /**
  * Join an existing Herdr Session (design A): sources on the left, the Session
@@ -41,6 +45,9 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
 }) {
   const { t } = useTranslation("spaceTree");
   const { t: th } = useTranslation("hosts");
+  const { t: tm } = useTranslation("machines");
+  const machineCount = useMachinesStore((state) => state.machines.length);
+  const [migrating, setMigrating] = useState<SshHost | null>(null);
   const sessions = useHerdrStore((state) => state.sessions);
   const herdrStartup = useHerdrStore((state) => state.herdrStartup);
   const currentSession = useHerdrStore((state) => state.selectedSessionName);
@@ -185,7 +192,7 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
         <DialogDescription>{t("sessionHostHint")}</DialogDescription>
       </DialogHeader>
       <Tabs orientation="vertical" value={source} className="herdr-session-picker-body" onValueChange={(value) => {
-        if (value === "connected" || value === "ssh" || value === "wsl") {
+        if (value === "connected" || value === "ssh" || value === "wsl" || value === "machines") {
           setSource(value); setRequestedSession(""); setError(null);
         }
       }}>
@@ -197,6 +204,9 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
             </TabsTrigger>
             <TabsTrigger value="ssh" disabled={busy}>
               <Server data-icon="inline-start" />{t("sshHosts")}<span className="herdr-session-picker-count" aria-hidden="true">{sshHosts.length}</span>
+            </TabsTrigger>
+            <TabsTrigger value="machines" disabled={busy}>
+              <Network data-icon="inline-start" />{tm("tabs.machines")}<span className="herdr-session-picker-count" aria-hidden="true">{machineCount}</span>
             </TabsTrigger>
             {windows && <TabsTrigger value="wsl" disabled={busy}>
               <SquareTerminal data-icon="inline-start" />WSL<span className="herdr-session-picker-count" aria-hidden="true">{wslEnabled ? distros?.length ?? "—" : t("pickerOff")}</span>
@@ -215,6 +225,17 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
               {ssh?.error && <p role="alert">{ssh.error}</p>}
               {!target && <p className="herdr-session-picker-hint">{t("connectSshHostHint")}</p>}
             </FieldSet>
+            <section className="flex flex-col gap-2" aria-label={tm("legacy.badge")}>
+              <div className="flex items-center gap-2"><Badge variant="outline" data-legacy="true">{tm("legacy.badge")}</Badge></div>
+              <p className="herdr-session-picker-hint">{tm("legacy.description")}</p>
+              {sshHosts.map((item) => <div key={item.id} className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate" title={item.name}>{item.name}</span>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => setMigrating(item)}>{tm("legacy.migrate")}</Button>
+              </div>)}
+            </section>
+          </TabsContent>
+          <TabsContent value="machines" className="flex flex-col gap-3">
+            <MachinesPanel onClose={onClose} />
           </TabsContent>
           {windows && <TabsContent value="wsl" className="flex flex-col gap-3">
             {wslEnabled ? <FieldGroup>
@@ -255,8 +276,24 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
         <Button variant="ghost" disabled={busy} onClick={() => void run(() => useHerdrStore.getState().refreshSessions())}>
           <RefreshCw data-icon="inline-start" />{t("refreshSessions")}
         </Button>
-        <Button disabled={busy || !hostReady || !targetSession} onClick={() => void loadSession()}>{t(busy ? "loading" : "loadSession")}</Button>
+        {source !== "machines" && <Button disabled={busy || !hostReady || !targetSession} onClick={() => void loadSession()}>{t(busy ? "loading" : "loadSession")}</Button>}
       </DialogFooter>
+    {migrating && <MigrateSshHostDialog
+      host={migrating}
+      onCancel={() => setMigrating(null)}
+      onSubmit={(values) => {
+        setMigrating(null);
+        const opened = useMachinesInteractiveStore.getState().open({
+          spec: {
+            kind: "add",
+            target: values.target,
+            ...(values.remoteSession ? { remoteSession: values.remoteSession } : {}),
+            ...(values.label ? { label: values.label } : {}),
+          },
+        });
+        if (opened) onClose();
+      }}
+    />}
     </DialogContent>
   </Dialog>;
 }

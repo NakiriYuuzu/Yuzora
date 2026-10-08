@@ -35,6 +35,7 @@
 .tree-agent-tag > svg { flex-shrink:0; width:11px; height:11px; }
 .tree-agent-tag > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tree-agent-tag[data-tag="folder"] { flex:0 1 auto; max-width:55%; }
+.tree-agent-tag[data-tag="machine"] { flex:0 1 auto; max-width:45%; }
 .tree-agent-tag[data-tag="branch"] { flex:0 1 auto; min-width:48px; }
 .tree-agent-status { flex-shrink:0; padding:0 6px; border-radius:999px; font-size:11px; line-height:18px; color:var(--ink-2); background:var(--yz-hover); }
 .tree-agent-status[data-status="working"] { color:var(--yz-run); background:color-mix(in srgb,var(--yz-run) 12%,transparent); }
@@ -282,3 +283,11 @@
 .herdr-session-picker .herdr-session-picker-footer { flex-direction:row; align-items:center; gap:8px; margin:0; padding:12px 16px; border-top:1px solid var(--line-1); background:var(--yz-sunk); }
 .herdr-session-picker-footer-hint { flex:1; min-width:0; margin:0; font-size:12px; color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media(max-width:560px) { .herdr-session-picker-body { grid-template-columns:1fr; } .herdr-session-picker-rail { border-right:0; border-bottom:1px solid var(--line-1); } }
+
+.tree-machine { height:28px; min-height:28px; }
+.tree-machine-note { display:inline-flex; align-items:center; gap:3px; flex-shrink:0; font-size:11px; color:var(--ink-3); }
+.tree-machine-note > svg { width:11px; height:11px; }
+.tree-machine-note[data-health="auth-required"],.tree-machine-note[data-health="error"] { color:var(--destructive); }
+.tree-status-dot[data-machine-health="reachable"] { background:var(--term-ok); }
+.tree-status-dot[data-machine-health="auth-required"],.tree-status-dot[data-machine-health="error"] { background:var(--destructive); }
+.tree-machine-empty { margin:0 0 4px 22px; font-size:11px; color:var(--ink-3); }
