@@ -386,4 +386,30 @@ describe("ExternalChangeResolver", () => {
         expect(ipc.openFile).toHaveBeenCalledTimes(1)
         expect(screen.queryByText("磁碟版已再次變更")).not.toBeInTheDocument()
     })
+
+    // #123 item 2：resolver 開著時磁碟版變成不可合併，必須撤下 merge view 並進入
+    // degraded，不得再提供以舊內容運作的 merge 動作。
+    it.each([
+        { name: "binary", next: { kind: "binary", size: 9 } as const, text: "磁碟版無法比對差異（二進位或過大）。" },
+        { name: "tooLarge", next: { kind: "tooLarge", size: 99999999 } as const, text: "磁碟版無法比對差異（二進位或過大）。" },
+        { name: "deleted", next: null, text: "磁碟上的檔案已不存在，無法比對差異。" },
+    ])("fs:external-change to $name while open drops the merge view and degrades", async ({ next, text }) => {
+        mountMainView("mine")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+        await screen.findByRole("button", { name: "解決並存檔" })
+        if (next) vi.mocked(ipc.openFile).mockResolvedValue(next)
+        else vi.mocked(ipc.openFile).mockRejectedValue(new Error("missing"))
+        capturedFsListener({ payload: { workspaceRoot: "/w", paths: [PATH] } })
+        expect(await screen.findByText(text)).toBeInTheDocument()
+        expect(screen.queryByRole("button", { name: "解決並存檔" })).not.toBeInTheDocument()
+        expect(screen.queryByRole("button", { name: "全部採用磁碟版" })).not.toBeInTheDocument()
+        expect(document.querySelector(".external-resolver-merge")).toBeNull()
+        expect(document.querySelector(".cm-mergeView, .cm-deletedChunk, .cm-changedLine")).toBeNull()
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+    })
 })

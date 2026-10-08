@@ -97,6 +97,19 @@ export function ResolverBody({ path }: { path: string }) {
         }
     }, [path, closeResolver])
 
+    // The disk side became undiffable while the resolver is open: tear down the
+    // merge view so no stale-disk action (takeDisk / resolveAndSave) remains, keep
+    // the user's in-progress doc as the buffer, and switch to the degraded UI.
+    function enterDegraded(view: EditorView | null, next: "binary" | "deleted") {
+        if (view) {
+            bufferRef.current = view.state.doc.toString()
+            view.destroy()
+            mergeViewRef.current = null
+        }
+        setDegraded(next)
+        setReady(true)
+    }
+
     // While open, react to further disk changes for this same path: rebuild the
     // merge view with the current in-progress doc against the fresh disk as the
     // new original, and surface a one-line hint. Rebuilding (rather than
@@ -114,9 +127,12 @@ export function ResolverBody({ path }: { path: string }) {
                     diskSnapshotRef.current = disk
                     setRechanged(true)
                     const view = mergeViewRef.current
+                    if (disk.kind === "binary" || disk.kind === "tooLarge") {
+                        enterDegraded(view, "binary")
+                        return
+                    }
                     const parent = containerRef.current
                     if (!view || !parent) return
-                    if (disk.kind === "binary" || disk.kind === "tooLarge") return
                     diskRef.current = disk.content
                     const doc = view.state.doc.toString()
                     view.destroy()
@@ -133,7 +149,10 @@ export function ResolverBody({ path }: { path: string }) {
                         parent
                     })
                 })
-                .catch(() => setRechanged(true))
+                .catch(() => {
+                    setRechanged(true)
+                    enterDegraded(mergeViewRef.current, "deleted")
+                })
         })
         return () => {
             void unlisten.then((fn) => fn())
