@@ -55,6 +55,7 @@
   "invalid-runtime-file": "A HERDR runtime file is invalid.",
   "invalid-herdr-output": "HERDR printed output Yuzora couldn't understand. Check the HERDR version.",
   "herdr-invalid-json": "HERDR returned invalid JSON. Check the HERDR version.",
+  "runtime-preferences-unwritable": "Yuzora could not save the runtime preference. Check that its app data folder is writable.",
   "wsl-runtime-disabled-open-settings": "WSL is turned off. Enable it in Settings > HERDR.",
   "wsl-requires-windows": "WSL is only available on Windows.",
   "wsl-discovery-failed": "Couldn't list WSL distributions. Make sure WSL 2 is installed.",

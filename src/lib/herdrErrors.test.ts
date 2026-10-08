@@ -32,7 +32,7 @@ describe("describeHerdrError", () => {
   const zh = zhMessages as Record<string, unknown>
   const codes = Object.keys(en).filter((key) => key !== "ui")
   // Codes the Rust side is known to emit; removing one from both locales must also fail.
-  const REQUIRED = ["herdr-custom-path-not-executable", "herdr-custom-path-not-exe", "herdr-custom-path-required", "herdr-not-found-on-path", "herdr-path-binary-not-found", "herdr-binary-unavailable", "runtime-incompatible", "wsl-runtime-disabled-open-settings", "host-artifact-missing", "native-client-limit", "herdr-session-incompatible"]
+  const REQUIRED = ["herdr-custom-path-not-executable", "herdr-custom-path-not-exe", "herdr-custom-path-required", "herdr-not-found-on-path", "herdr-path-binary-not-found", "herdr-binary-unavailable", "runtime-incompatible", "wsl-runtime-disabled-open-settings", "runtime-preferences-unwritable", "host-artifact-missing", "native-client-limit", "herdr-session-incompatible"]
 
   it("ships every code in both locales with identical keys", () => {
     expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort())

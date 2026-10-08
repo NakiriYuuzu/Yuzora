@@ -55,6 +55,7 @@
   "invalid-runtime-file": "HERDR 執行階段檔案無效。",
   "invalid-herdr-output": "HERDR 輸出的內容 Yuzora 無法解讀。請檢查 HERDR 版本。",
   "herdr-invalid-json": "HERDR 回傳了無效的 JSON。請檢查 HERDR 版本。",
+  "runtime-preferences-unwritable": "無法儲存執行環境偏好設定。請確認 Yuzora 的 app data 資料夾可以寫入。",
   "wsl-runtime-disabled-open-settings": "WSL 目前停用，請到設定 > HERDR 啟用。",
   "wsl-requires-windows": "WSL 僅適用於 Windows。",
   "wsl-discovery-failed": "無法列出 WSL 發行版。請確認已安裝 WSL 2。",

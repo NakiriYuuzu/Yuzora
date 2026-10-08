@@ -1,7 +1,7 @@
 export const MACHINES_BACKOFF_CAP_MS = 5 * 60_000
 export const MACHINES_CONCURRENCY = 2
 /** Dispatched on window after the HERDR binary source changes; reloads capabilities. */
-export const HERDR_BINARY_SOURCE_CHANGED_EVENT = "yuzora:herdr-binary-source-changed"
+export { HERDR_BINARY_SOURCE_CHANGED_EVENT } from "@/lib/herdrBinarySourceEvents"
 
 /** Windows has no SSH ControlMaster, so every machine call pays a full handshake: poll less. */
 export function machinePollIntervals(windows: boolean) {
