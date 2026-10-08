@@ -177,6 +177,54 @@ fn control_command_rejects_invalid_combos() {
     assert!(TerminalControlCommand::scroll(HerdrScrollDirection::Down, 0, None, None).is_err());
 }
 
+/// Removed variables appear as `None`; set ones carry their value.
+fn command_envs(command: &Command) -> HashMap<String, Option<String>> {
+    command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn herdr_children_ignore_the_launching_pane_environment() {
+    // Yuzora started inside a HERDR pane inherits that pane's socket, which
+    // HERDR prefers over HERDR_SESSION (#132).
+    let binary = Path::new("/herdr");
+    let cases = [
+        (
+            terminal_connector_command(binary, &["terminal".to_string()], "work"),
+            Some("work"),
+        ),
+        (default_server_command(binary), None),
+        (herdr_cli_command(binary, &["status", "--json"], None), None),
+        (
+            herdr_cli_command(binary, &["status", "--json"], Some(" ")),
+            None,
+        ),
+        (
+            herdr_cli_command(binary, &["status", "--json"], Some("work")),
+            Some("work"),
+        ),
+    ];
+    for (command, session) in cases {
+        let envs = command_envs(&command);
+        for key in PARENT_PANE_HERDR_ENV {
+            assert_eq!(envs.get(key), Some(&None), "{key} must not be inherited");
+        }
+        assert_eq!(
+            envs.get("HERDR_SESSION"),
+            Some(&session.map(str::to_string)),
+            "{:?}",
+            command.get_args().collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn parse_snapshot_response_reads_protocol_from_payload() {
     let response = serde_json::json!({

@@ -953,12 +953,7 @@ impl HerdrManager {
                 return Ok(false);
             }
 
-            let mut command = Command::new(&binary);
-            command
-                .arg("server")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+            let mut command = default_server_command(&binary);
             process_kill::configure_background_process(&mut command);
             let mut child = command.spawn().map_err(|error| {
                 format!(
@@ -2618,14 +2613,7 @@ impl HerdrManager {
             args.push("--takeover".to_string());
         }
 
-        let mut cmd = Command::new(&binary);
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Official connector child: bind to the named session via HERDR_SESSION.
-        // Default session remains valid. Never guess socket paths here.
-        cmd.env("HERDR_SESSION", &named.name);
+        let mut cmd = terminal_connector_command(&binary, &args, &named.name);
         // Connector only — never a process group that could sweep Herdr panes.
         process_kill::configure_background_process(&mut cmd);
 
@@ -3663,6 +3651,61 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Variables a HERDR pane exports to its children. HERDR prefers an inherited
+/// `HERDR_SOCKET_PATH` over `HERDR_SESSION`, so Yuzora launched from a pane
+/// (`tauri dev`, `open`) would otherwise send its HERDR children to that
+/// pane's server instead of the Session it selected (#132).
+pub(crate) const PARENT_PANE_HERDR_ENV: [&str; 6] = [
+    "HERDR_SOCKET_PATH",
+    "HERDR_CLIENT_SOCKET_PATH",
+    "HERDR_ENV",
+    "HERDR_PANE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_WORKSPACE_ID",
+];
+
+/// Routes a HERDR child to `session`, or to the default Session for `None`,
+/// whatever environment Yuzora itself inherited.
+pub(crate) fn pin_herdr_session(command: &mut Command, session: Option<&str>) {
+    for key in PARENT_PANE_HERDR_ENV {
+        command.env_remove(key);
+    }
+    match session {
+        Some(name) => command.env("HERDR_SESSION", name),
+        None => command.env_remove("HERDR_SESSION"),
+    };
+}
+
+fn default_server_command(binary: &Path) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .arg("server")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    pin_herdr_session(&mut command, None);
+    command
+}
+
+/// Official connector child: bind to the named session via HERDR_SESSION.
+/// Default session remains valid. Never guess socket paths here.
+fn terminal_connector_command(binary: &Path, args: &[String], session: &str) -> Command {
+    let mut cmd = Command::new(binary);
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    pin_herdr_session(&mut cmd, Some(session));
+    cmd
+}
+
+fn herdr_cli_command(binary: &Path, args: &[&str], session_name: Option<&str>) -> Command {
+    let mut cmd = Command::new(binary);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    pin_herdr_session(&mut cmd, session_name.filter(|s| !s.trim().is_empty()));
+    cmd
+}
+
 fn run_herdr_json(binary: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
     run_herdr_json_with_session(binary, args, None)
 }
@@ -3681,14 +3724,8 @@ fn run_herdr_json_with_session_timeout(
     session_name: Option<&str>,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = Command::new(binary);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut cmd = herdr_cli_command(binary, args, session_name);
     process_kill::configure_background_process(&mut cmd);
-    if let Some(name) = session_name.filter(|s| !s.trim().is_empty()) {
-        cmd.env("HERDR_SESSION", name)
-            .env_remove("HERDR_SOCKET_PATH")
-            .env_remove("HERDR_ENV");
-    }
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let mut process_tree = process_kill::attach_process_tree(&mut child)
         .map_err(|e| format!("process containment failed: {e}"))?;
