@@ -471,18 +471,22 @@ async fn runtime_metadata(
     serde_json::from_slice(&bytes).map_err(|error| format!("invalid-runtime-json: {error}"))
 }
 
+/// Runs one remote command per document; `allowed` is re-read before each, so
+/// turning WSL off mid-inspection stops at the next command.
 async fn inspect_host_binary(
     target: &HostTarget,
-    ssh: &SshManager,
+    ssh: Option<&SshManager>,
     binary: &str,
+    allowed: &(dyn Fn() -> Result<(), String> + Sync),
 ) -> Result<RuntimeBinaryCheck, String> {
-    let schema =
-        runtime_metadata(target, Some(ssh), binary, "default", "api schema --json").await?;
-    let sessions =
-        runtime_metadata(target, Some(ssh), binary, "default", "session list --json").await?;
+    allowed()?;
+    let schema = runtime_metadata(target, ssh, binary, "default", "api schema --json").await?;
+    allowed()?;
+    let sessions = runtime_metadata(target, ssh, binary, "default", "session list --json").await?;
     let mut statuses = Vec::new();
     for name in session_names(&sessions)? {
-        let status = runtime_metadata(target, Some(ssh), binary, &name, "status --json").await?;
+        allowed()?;
+        let status = runtime_metadata(target, ssh, binary, &name, "status --json").await?;
         statuses.push((name, status));
     }
     inspect_documents(binary.to_string(), schema, statuses)
@@ -543,9 +547,8 @@ pub async fn host_runtime_check(
     if !exists && source != HerdrBinarySource::Default {
         return Err(format!("herdr-not-executable-on-selected-host: {binary}"));
     }
-    wsl_allowed()?;
     let check = if exists {
-        Some(inspect_host_binary(&target, &ssh.0, &binary).await?)
+        Some(inspect_host_binary(&target, Some(&ssh.0), &binary, &wsl_allowed).await?)
     } else {
         None
     };
@@ -650,8 +653,7 @@ pub async fn host_prepare(
     }
     // Recheck the actual chosen binary and every running Session before replacing
     // the helper connection or allowing the frontend to persist new paths.
-    wsl_allowed()?;
-    inspect_host_binary(&target, &ssh.0, &binary)
+    inspect_host_binary(&target, Some(&ssh.0), &binary, &wsl_allowed)
         .await?
         .require_compatible()?;
     let connection = state
@@ -719,6 +721,41 @@ mod tests {
             .unwrap();
             assert_eq!(schema["description"].as_str().unwrap().len(), size - 18);
         }
+    }
+
+    #[tokio::test]
+    async fn inspection_stops_at_the_next_command_once_wsl_is_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls.log");
+        let binary = dir.path().join("herdr");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {}\nif [ \"$1\" = session ]; then printf '%s' '{{\"sessions\":[{{\"name\":\"work\",\"running\":true}}]}}'; else printf '{{}}'; fi\n",
+                shell_quote(log.to_str().unwrap()).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Allowed for the schema and the Session list, then WSL goes off.
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let allowed = || {
+            if checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2 {
+                Err(crate::runtime_preferences::WSL_DISABLED_ERROR.to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result =
+            inspect_host_binary(&HostTarget::Local, None, binary.to_str().unwrap(), &allowed).await;
+        assert_eq!(
+            result.unwrap_err(),
+            crate::runtime_preferences::WSL_DISABLED_ERROR
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "api schema --json\nsession list --json\n"
+        );
     }
 
     #[tokio::test]
