@@ -8,6 +8,8 @@
 - 設定 → HERDR：錯誤改為可讀的說明，並保留可複製的診斷內容；切換本機來源後可立即重新啟動 Yuzora；自訂路徑失效時可一鍵改回隨附版本。
 - HERDR 終端機的點擊、拖曳與雙擊會轉送給啟用滑鼠回報的程式（例如 Claude Code、`vim` 的 `mouse=a`、lazygit）；一般 shell 仍是本機選取。按住 Shift 可強制本機選取，⌘／Ctrl＋點擊開啟連結。需要 HERDR client 0.9.2 以上；遠端（SSH／WSL）需搭配同版本的 Yuzora helper。
 - 側欄 Agents 檢視重新設計：每個 Agent 的標題下方以標籤依序顯示所屬資料夾與 Git 分支（資料夾套用自訂專案名稱，linked worktree 顯示主 repo；非 Git 資料夾只顯示資料夾），取代 v0.0.17 起只顯示分支的小字；Agent 切換器的副標題也一致。
+- 智慧簽出現在也能處理被未追蹤檔案擋下的簽出（目標分支追蹤了同一路徑）：只暫存擋路的檔案，切換後把你的版本寫回，在 Git 面板顯示為修改；目標分支已 commit 的版本仍可取回。其他未追蹤檔案與建置產物不受影響。
+- Windows 只發行 MSI 安裝檔：下載頁與 README 改為 `Yuzora-windows-x64.msi`。從 NSIS（`.exe`）版本更新到本版後，Yuzora 首次啟動會移除 NSIS 留下的解除安裝項目與重複捷徑，「新增或移除程式」只剩一個 Yuzora，設定與資料都會保留。
 
 ### 修正
 
@@ -23,16 +25,19 @@
 - 外部變更衝突視窗開著時，若檔案變成二進位、過大或無法讀取，會改為對應的提示畫面，不再以先前讀到的舊內容提供「採用磁碟版本」或「解決並儲存」；檔案恢復成可比對的文字時會自動回到比對畫面。
 - Stash 對話框套用、取回或刪除 stash 時，若清單載入後 stash 編號已被其他 Git 工具改變，會中止操作並重新載入清單，不再作用到別的 stash。
 - 淺色主題下，終端機以白色輸出的文字（例如 PowerShell 的參數、路徑與數字）不再幾乎看不見；PowerShell 選取文字的反白也維持可讀。
+- Kitty graphics：放置圖片時若未設定 `C=1`，游標會依規格移到圖片右側，後續文字不再與圖片重疊；HERDR 官方 client 一律帶 `C=1`，畫面不受影響。
 
 ### 已知限制
 
 - 從側欄開啟 machine 上的 Agent 時，官方 client 無法自動選定該主機，需要在官方側欄手動切換；machine 上的 Agent 不顯示分支。
 - Windows 不支援 machine 的「重新連線」（HERDR 官方限制），請使用 ssh-agent 管理金鑰。
+- 智慧簽出遇到目錄與檔案互相衝突（例如未追蹤檔案的路徑在目標分支是資料夾）時仍無法處理，會把檔案放回原處並顯示原本的錯誤。
 
 ### 安裝說明
 
 - macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。
 - Windows Authenticode 尚未啟用，安裝或首次開啟時仍可能出現 SmartScreen 提示。
+- 固定下載連結 `Yuzora-windows-x64-setup.exe` 自本版起停止更新（舊版本的資產不變），請改用 `Yuzora-windows-x64.msi`。
 
 ## [0.0.17] - 2026-10-07
 
