@@ -548,3 +548,51 @@ it('falls back only when a one-member block was explicitly rejected as unsupport
   dragRows(source, target);
   await vi.waitFor(() => expect(herdrWorkspaceMove).toHaveBeenCalledWith({ sessionName: scopes[0], workspaceId: 'b', insertIndex: 0 }));
 });
+
+function setProjectSpaces() {
+  const runtime = useHerdrStore.getState().runtimesBySession[scopes[0]];
+  const agent = (id: string, workspaceId: string) => ({ ...runtime.snapshot!.agents[0], id, name: id, workspaceId, paneId: id });
+  useHerdrStore.setState({
+    runtimesBySession: {
+      [scopes[0]]: {
+        ...runtime,
+        snapshot: {
+          ...runtime.snapshot!,
+          spaces: [
+            { id: "main", label: "Main Label", branch: "feature/main", repoKey: "repo", worktreeGroupKey: "repo", repoRoot: "/work/yuzora-core", path: "/work/yuzora-core", isLinkedWorktree: false, order: 0, focused: true },
+            { id: "linked", label: "Linked Label", branch: "fix/linked", repoKey: "repo", worktreeGroupKey: "repo", repoRoot: "/work/yuzora-core", path: "/work/yuzora-wt", isLinkedWorktree: true, order: 1, focused: false },
+            { id: "plain", label: "Notes Label", path: "/work/notes-folder", order: 2, focused: false },
+          ],
+          agents: [agent("agent-main", "main"), agent("agent-linked", "linked"), agent("agent-plain", "plain")],
+        },
+      },
+    },
+  });
+}
+const agentSmall = (id: string) =>
+  screen.getAllByRole("treeitem").find(row => row.getAttribute("aria-label")?.startsWith(`${id} ·`))!.querySelector("small")!.textContent;
+
+it("shows the repo name, not the branch, beside Agents in the Agents view", () => {
+  setProjectSpaces();
+  render(<SpaceAgentTree />);
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
+  expect(agentSmall("agent-main")).toBe("yuzora-core");
+  expect(agentSmall("agent-linked")).toBe("yuzora-core");
+  expect(agentSmall("agent-plain")).toBe("notes-folder");
+  const row = screen.getAllByRole("treeitem").find(item => item.getAttribute("aria-label")?.startsWith("agent-linked ·"))!;
+  expect(row.getAttribute("aria-label")).toContain("yuzora-core");
+  expect(row.getAttribute("aria-label")).not.toContain("fix/linked");
+});
+it("uses the custom project name beside Agents and keeps branches on Spaces worktree rows", () => {
+  setProjectSpaces();
+  useRecentWorkspacesStore.setState({
+    presentations: { [spacePresentationKey(scopes[0], "/work/yuzora-core")]: { name: "Custom Repo" } as never },
+  });
+  render(<SpaceAgentTree />);
+  const levels = () => screen.getAllByRole("treeitem").filter(row => row.getAttribute("aria-level") === "2").map(row => row.textContent);
+  expect(levels().join("|")).toContain("feature/main");
+  expect(levels().join("|")).toContain("fix/linked");
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Agents" }), { button: 0, ctrlKey: false });
+  expect(agentSmall("agent-main")).toBe("Custom Repo");
+  expect(agentSmall("agent-linked")).toBe("Custom Repo");
+});

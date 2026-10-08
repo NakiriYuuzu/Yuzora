@@ -61,6 +61,7 @@ interface TreeNode {
   label: string;
   space: HerdrSpaceInfo;
   identityKey?: string;
+  projectName?: string;
   agent?: HerdrAgentInfo;
   children: TreeNode[];
   count: number;
@@ -439,6 +440,7 @@ export function SpaceAgentTree() {
                     label: agent.title ?? agent.name ?? agent.id,
                     space,
                     agent: { ...agent, sessionName },
+                    projectName: identity.name,
                     children: [],
                     count: 0,
                     pending: 0,
@@ -841,7 +843,7 @@ export function SpaceAgentTree() {
                         tabIndex={node.key === tabKey ? 0 : -1}
                         aria-label={
                           node.kind === "agent"
-                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.space.branch ?? node.space.label} · ${node.sessionName}`
+                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.projectName} · ${node.sessionName}`
                             : node.kind === "project"
                               ? `${node.label} · ${t("agentCount", { count: node.count })} · ${node.sessionName}`
                               : `${node.label} · ${node.space.path} · ${node.sessionName}`
@@ -936,7 +938,7 @@ export function SpaceAgentTree() {
                         <span className="tree-node-label">
                           <span>{node.label}</span>
                           {node.kind === "agent" && viewMode === "agents" && (
-                            <small>{node.space.branch ?? node.space.label}</small>
+                            <small>{node.projectName}</small>
                           )}
                           {node.kind === "project" && (
                             <small>
@@ -1075,7 +1077,7 @@ export function SpaceAgentTree() {
           items={agentHotkeys.switcher.items.map((node): AgentSwitcherItem => ({
             key: node.key,
             title: node.label,
-            subtitle: `${node.space.branch ?? node.space.label} · ${sessionLabel(node.sessionName)}`,
+            subtitle: `${node.projectName} · ${sessionLabel(node.sessionName)}`,
             status: node.agent?.status,
             statusLabel: t(`status.${node.agent?.status}`),
             logoKind: resolveAgentKind(node.agent?.displayAgent, node.agent?.name, node.label),
