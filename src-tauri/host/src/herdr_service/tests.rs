@@ -4,6 +4,7 @@ use std::fs;
 use std::io::BufRead;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 #[cfg(unix)]
@@ -564,7 +565,6 @@ fn custom_source_requires_an_absolute_executable_path() {
     assert!(checked_custom_binary(None).is_err());
 }
 
-#[cfg(unix)]
 #[test]
 fn managed_binary_override_resolves_only_the_default_source() {
     let dir = tempfile::tempdir().unwrap();
@@ -586,6 +586,155 @@ fn managed_binary_override_resolves_only_the_default_source() {
     *mgr.active_source.lock().unwrap() = HerdrBinarySource::Custom;
     assert_eq!(mgr.resolve_binary(), None);
     assert_eq!(mgr.managed_binary().as_deref(), Some(binary.as_path()));
+}
+
+fn pathbufs(items: &[&str]) -> Vec<PathBuf> {
+    items.iter().map(PathBuf::from).collect()
+}
+
+#[test]
+fn herdr_which_windows_only_returns_exe() {
+    let dirs = pathbufs(&["/a", "/b"]);
+    let existing = |present: &'static [&'static str]| {
+        move |path: &Path| present.iter().any(|p| Path::new(p) == path)
+    };
+    // .cmd, .bat and extensionless files are never candidates on Windows.
+    assert_eq!(
+        resolve_in_dirs(
+            &dirs,
+            "herdr",
+            true,
+            existing(&["/a/herdr.cmd", "/a/herdr.bat", "/b/herdr"])
+        ),
+        None
+    );
+    assert_eq!(
+        resolve_in_dirs(
+            &dirs,
+            "herdr",
+            true,
+            existing(&["/a/herdr.cmd", "/b/herdr.exe"])
+        ),
+        Some(PathBuf::from("/b/herdr.exe"))
+    );
+    // A command that already ends in .exe (any case) is used as-is.
+    assert_eq!(
+        resolve_in_dirs(&dirs, "herdr.EXE", true, existing(&["/a/herdr.EXE"])),
+        Some(PathBuf::from("/a/herdr.EXE"))
+    );
+}
+
+#[test]
+fn herdr_which_unix_returns_extensionless_file_in_path_order() {
+    let dirs = pathbufs(&["/a", "/b"]);
+    assert_eq!(
+        resolve_in_dirs(&dirs, "herdr", false, |p| p == Path::new("/b/herdr")),
+        Some(PathBuf::from("/b/herdr"))
+    );
+    assert_eq!(
+        resolve_in_dirs(&dirs, "herdr", false, |_| true),
+        Some(PathBuf::from("/a/herdr"))
+    );
+    assert_eq!(
+        resolve_in_dirs(&dirs, "herdr", false, |p| p == Path::new("/a/herdr.exe")),
+        None
+    );
+}
+
+#[test]
+fn herdr_normalize_custom_path_strips_one_pair_of_quotes() {
+    for (raw, expected) in [
+        (r#""C:\a b\herdr.exe""#, r"C:\a b\herdr.exe"),
+        ("'/opt/x'", "/opt/x"),
+        ("  \"/opt/x\"  ", "/opt/x"),
+        ("  /opt/x  ", "/opt/x"),
+        ("\"/opt/x", "\"/opt/x"),
+        ("/opt/x'", "/opt/x'"),
+        ("\"'/opt/x'\"", "'/opt/x'"),
+        ("\"/opt/x'", "\"/opt/x'"),
+        ("\" /opt/x \"", "/opt/x"),
+        ("", ""),
+        ("   ", ""),
+        ("\"", "\""),
+    ] {
+        assert_eq!(normalize_custom_path(raw), expected, "{raw:?}");
+    }
+}
+
+#[test]
+fn herdr_require_exe_on_windows_checks_extension_case_insensitively() {
+    assert!(require_exe_on_windows(Path::new(r"C:\h\herdr.exe"), true).is_ok());
+    assert!(require_exe_on_windows(Path::new(r"C:\h\HERDR.EXE"), true).is_ok());
+    for bad in [
+        r"C:\h\herdr.cmd",
+        r"C:\h\herdr.bat",
+        r"C:\h\herdr",
+        r"C:\h\herdr.exe.txt",
+    ] {
+        let error = require_exe_on_windows(Path::new(bad), true).unwrap_err();
+        assert!(error.starts_with("herdr-custom-path-not-exe"), "{error}");
+    }
+    // Other platforms never apply the .exe rule.
+    assert!(require_exe_on_windows(Path::new("/opt/herdr"), false).is_ok());
+}
+
+#[test]
+fn herdr_strip_verbatim_prefix_handles_drive_and_unc() {
+    for (input, expected) in [
+        (r"\\?\C:\Users\a\herdr.exe", r"C:\Users\a\herdr.exe"),
+        (
+            r"\\?\UNC\server\share\herdr.exe",
+            r"\\server\share\herdr.exe",
+        ),
+        (r"C:\plain\herdr.exe", r"C:\plain\herdr.exe"),
+        ("/opt/herdr", "/opt/herdr"),
+        (r"\\?\Volume{1}\x", r"\\?\Volume{1}\x"),
+    ] {
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(input)),
+            PathBuf::from(expected),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn herdr_custom_path_quotes_are_stripped_before_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope");
+    let quoted = format!("\"{}\"", missing.display());
+    let error = checked_custom_binary(Some(Path::new(&quoted))).unwrap_err();
+    // The error reports the normalized path, not the quoted spelling.
+    assert!(error.contains(&missing.display().to_string()), "{error}");
+    assert!(!error.contains('"'), "{error}");
+    if cfg!(unix) {
+        let binary = dir.path().join("herdr");
+        fs::write(&binary, "x").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let quoted = format!("  '{}'  ", binary.display());
+        assert_eq!(
+            checked_custom_binary(Some(Path::new(&quoted))).unwrap(),
+            binary
+        );
+    }
+}
+
+#[test]
+fn herdr_binary_source_load_migrates_quoted_custom_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("herdr");
+    let quoted = format!("\"{}\"", binary.display());
+    fs::write(
+        binary_source_config_path(dir.path()),
+        serde_json::json!({"binarySource": "custom", "customPath": quoted}).to_string(),
+    )
+    .unwrap();
+    let loaded = load_binary_source_preference(dir.path());
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_eq!(loaded.custom_path.as_deref(), Some(binary.as_path()));
+    let rewritten = fs::read_to_string(binary_source_config_path(dir.path())).unwrap();
+    assert!(!rewritten.contains("\\\""), "{rewritten}");
 }
 
 #[test]
@@ -3489,4 +3638,35 @@ fn unix_pid_exists(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+#[test]
+fn herdr_path_binary_missing_error_is_a_code_not_an_english_sentence() {
+    assert_eq!(HERDR_PATH_BINARY_NOT_FOUND, "herdr-path-binary-not-found");
+    let source = include_str!("../herdr_service.rs");
+    assert!(source.contains(".ok_or_else(|| HERDR_PATH_BINARY_NOT_FOUND.to_string())"));
+    assert!(!source.contains("\"herdr binary not found on PATH\""));
+}
+
+#[cfg(unix)]
+#[test]
+fn herdr_probe_version_with_timeout_returns_version_or_none_when_slow() {
+    let dir = tempfile::tempdir().unwrap();
+    let fast = dir.path().join("fast");
+    write_executable_fixture(
+        &fast,
+        "#!/bin/sh\nprintf '%s\\n' '{\"client\":{\"version\":\"9.9.9\",\"protocol\":1}}'\n",
+    );
+    assert_eq!(
+        probe_binary_version_with_timeout(&fast, Duration::from_secs(2)).as_deref(),
+        Some("9.9.9")
+    );
+    let slow = dir.path().join("slow");
+    write_executable_fixture(&slow, "#!/bin/sh\nsleep 30\n");
+    let started = Instant::now();
+    assert_eq!(
+        probe_binary_version_with_timeout(&slow, Duration::from_millis(300)),
+        None
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
 }

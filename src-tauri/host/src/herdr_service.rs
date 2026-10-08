@@ -55,6 +55,8 @@ const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const RUNTIME_VALIDATION_TTL: Duration = Duration::from_secs(10);
 /// Cheap socket identity checks retain their faster restart-detection cadence.
 const SOCKET_IDENTITY_TTL: Duration = Duration::from_secs(1);
+/// Error code shown (translated by the UI) when no `herdr` is on PATH.
+pub const HERDR_PATH_BINARY_NOT_FOUND: &str = "herdr-path-binary-not-found";
 #[cfg(not(test))]
 const HERDR_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
@@ -921,7 +923,7 @@ impl HerdrManager {
         let result = (|| -> Result<bool, String> {
             let binary = self
                 .resolve_binary()
-                .ok_or_else(|| "herdr binary is unavailable for startup".to_string())?;
+                .ok_or_else(|| "herdr-binary-unavailable".to_string())?;
             let existing = query_herdr_server_startup_status(&binary, status_timeout)?;
             if existing.running {
                 if existing.compatible == Some(false) {
@@ -1121,17 +1123,17 @@ impl HerdrManager {
                 .unwrap_or((None, None))
         };
         HerdrBinarySourceInfo {
-            custom_path: custom_path.map(|path| path.to_string_lossy().into_owned()),
+            custom_path: custom_path.map(display_path),
             configured,
             active,
             resolved,
             available: active_path.is_some(),
-            path: active_path.map(|p| p.to_string_lossy().into_owned()),
+            path: active_path.map(display_path),
             reason: active_reason,
             version,
             protocol,
             configured_available: configured_path.is_some(),
-            configured_path: configured_path.map(|p| p.to_string_lossy().into_owned()),
+            configured_path: configured_path.map(display_path),
             configured_reason,
             configured_version,
             configured_protocol,
@@ -1150,6 +1152,7 @@ impl HerdrManager {
         custom_path: Option<String>,
     ) -> Result<crate::herdr_runtime::RuntimeBinaryCheck, String> {
         let binary = if source == HerdrBinarySource::Custom {
+            let custom_path = custom_path.as_deref().map(normalize_custom_path);
             checked_custom_binary(custom_path.as_deref().map(Path::new))?
         } else {
             let (path, reason) = self.resolve_binary_for_source(source);
@@ -1176,7 +1179,10 @@ impl HerdrManager {
         self.check_binary_source(source, custom_path.clone())?
             .require_compatible()?;
         let custom_path = if source == HerdrBinarySource::Custom {
-            custom_path.map(PathBuf::from)
+            custom_path
+                .as_deref()
+                .map(normalize_custom_path)
+                .map(PathBuf::from)
         } else {
             None
         };
@@ -1253,7 +1259,7 @@ impl HerdrManager {
             }
             HerdrBinarySource::Global => match which_binary("herdr").map(PathBuf::from) {
                 Some(path) => (Some(path), None),
-                None => (None, Some("Herdr was not found on PATH".into())),
+                None => (None, Some("herdr-not-found-on-path".into())),
             },
             HerdrBinarySource::Default => {
                 if let Some(path) = self.managed_binary_override.lock().unwrap().clone() {
@@ -2566,7 +2572,7 @@ impl HerdrManager {
 
         let binary = self
             .resolve_binary()
-            .ok_or_else(|| "herdr binary not found on PATH".to_string())?;
+            .ok_or_else(|| HERDR_PATH_BINARY_NOT_FOUND.to_string())?;
 
         let role = match mode {
             HerdrTerminalMode::Observe => HerdrTerminalRole::Observer,
@@ -3069,15 +3075,73 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
 
 // ── Binary / API helpers ────────────────────────────────────────────────────
 
+/// Strip one pair of matching surrounding quotes left by "Copy as path" or a
+/// hand-typed value. Unpaired quotes and nested pairs are kept.
+pub fn normalize_custom_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if first == last && (first == b'"' || first == b'\'') {
+            return trimmed[1..trimmed.len() - 1].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Windows can only run `.exe` here; `.cmd`/`.bat` shims are not spawnable.
+pub fn require_exe_on_windows(path: &Path, windows: bool) -> Result<(), String> {
+    if windows
+        && !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        return Err(format!("herdr-custom-path-not-exe: {}", path.display()));
+    }
+    Ok(())
+}
+
 fn checked_custom_binary(path: Option<&Path>) -> Result<PathBuf, String> {
     let path = path.ok_or("herdr-custom-path-required")?;
-    if !path.is_absolute() || !is_executable(path) {
+    let path = PathBuf::from(normalize_custom_path(&path.to_string_lossy()));
+    if !path.is_absolute() {
         return Err(format!(
             "herdr-custom-path-not-executable: {}",
             path.display()
         ));
     }
-    Ok(path.to_path_buf())
+    require_exe_on_windows(&path, cfg!(windows))?;
+    if !is_executable(&path) {
+        return Err(format!(
+            "herdr-custom-path-not-executable: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// Drop the Windows verbatim prefix (`\\?\C:\` and `\\?\UNC\`) so paths shown to
+/// the user match what Explorer prints. Operates on text, on every platform.
+pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    match strip_verbatim_text(&path.to_string_lossy()) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path,
+    }
+}
+
+/// Text form of [`strip_verbatim_prefix`]; `None` when nothing needs stripping.
+pub fn strip_verbatim_text(text: &str) -> Option<String> {
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{share}"));
+    }
+    let rest = text.strip_prefix(r"\\?\")?;
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\')
+        .then(|| rest.to_string())
+}
+
+fn display_path(path: PathBuf) -> String {
+    strip_verbatim_prefix(path).to_string_lossy().into_owned()
 }
 
 fn managed_binary_path(resource_dir: &Path) -> PathBuf {
@@ -3153,10 +3217,16 @@ fn load_binary_source_preference(config_dir: &Path) -> BinarySourcePreferenceLoa
             )))
         }
     };
-    let custom_path = value
-        .get("customPath")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from);
+    let raw_custom_path = value.get("customPath").and_then(|v| v.as_str());
+    let custom_path = raw_custom_path.map(|raw| PathBuf::from(normalize_custom_path(raw)));
+    if source == HerdrBinarySource::Custom {
+        // Preferences saved before normalization may carry quotes: rewrite them.
+        if let (Some(raw), Some(normalized)) = (raw_custom_path, custom_path.as_deref()) {
+            if normalized.is_absolute() && normalized.to_string_lossy() != raw {
+                let _ = save_binary_source_preference(config_dir, source, Some(normalized));
+            }
+        }
+    }
     if source == HerdrBinarySource::Custom && !custom_path.as_deref().is_some_and(Path::is_absolute)
     {
         return fallback(Some("invalid Herdr custom binary path".into()));
@@ -3198,6 +3268,23 @@ fn save_binary_source_preference(
         .and_then(|directory| directory.sync_all())
         .map_err(|e| format!("failed to sync herdr config directory: {e}"))?;
     Ok(())
+}
+
+/// Version reported by `herdr status --json`, for display only.
+pub fn probe_binary_version(binary: &Path) -> Option<String> {
+    probe_binary_identity(binary).0
+}
+
+/// Like [`probe_binary_version`] but bounded by `timeout`; a timeout or any
+/// failure yields `None`.
+pub fn probe_binary_version_with_timeout(binary: &Path, timeout: Duration) -> Option<String> {
+    let status =
+        run_herdr_json_with_session_timeout(binary, &["status", "--json"], None, timeout).ok()?;
+    let client = status.get("client").unwrap_or(&status);
+    client
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }
 
 fn probe_binary_identity(binary: &Path) -> (Option<String>, Option<u32>) {
@@ -3443,7 +3530,7 @@ pub fn parse_subscription_event_line(
     }))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
     let raw = raw
         .filter(|value| !value.trim().is_empty())
@@ -3474,25 +3561,29 @@ fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Windows only launches `.exe` here: `herdr.cmd`/`.bat` shims and extensionless
+/// files on PATH are not spawnable, so they are never candidates.
+pub fn resolve_in_dirs(
+    dirs: &[PathBuf],
+    command: &str,
+    windows: bool,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let file_name = if !windows || command.to_ascii_lowercase().ends_with(".exe") {
+        command.to_string()
+    } else {
+        format!("{command}.exe")
+    };
+    dirs.iter()
+        .map(|dir| dir.join(&file_name))
+        .find(|candidate| is_file(candidate))
+}
+
 fn which_binary(command: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(command);
-        if is_executable(&candidate) {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-        #[cfg(windows)]
-        {
-            let pathext = std::env::var("PATHEXT").ok();
-            for ext in windows_executable_extensions(pathext.as_deref()) {
-                let candidate = dir.join(format!("{command}{ext}"));
-                if is_executable(&candidate) {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-    None
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    resolve_in_dirs(&dirs, command, cfg!(windows), is_executable)
+        .map(|found| found.to_string_lossy().into_owned())
 }
 
 fn is_executable(path: &Path) -> bool {

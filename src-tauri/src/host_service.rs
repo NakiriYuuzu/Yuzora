@@ -573,10 +573,12 @@ pub struct HostState(pub Arc<HostManager>);
 pub async fn host_connect(
     state: tauri::State<'_, HostState>,
     ssh: tauri::State<'_, crate::ssh_service::SshState>,
+    preferences: tauri::State<'_, crate::runtime_preferences::RuntimePreferencesState>,
     host_id: String,
     target: HostTarget,
     helper: String,
 ) -> Result<ConnectedHost, String> {
+    crate::runtime_preferences::require_wsl_enabled(&preferences, &target)?;
     state.0.connect(host_id, target, helper, &ssh.0).await
 }
 #[tauri::command]

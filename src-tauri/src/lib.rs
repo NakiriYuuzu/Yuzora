@@ -43,6 +43,7 @@ pub mod process_kill;
 mod reveal_directory;
 pub mod run_context;
 pub mod run_summary;
+mod runtime_preferences;
 pub mod search_service;
 mod sftp_download_budget;
 pub mod sftp_edit;
@@ -92,7 +93,11 @@ fn packaged_resource_dir_from_current_exe() -> Option<std::path::PathBuf> {
     }
     #[cfg(target_os = "windows")]
     {
-        executable.parent()?.canonicalize().ok()
+        executable
+            .parent()?
+            .canonicalize()
+            .ok()
+            .map(yuzora_host::herdr_service::strip_verbatim_prefix)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -299,6 +304,11 @@ pub fn run() {
             app.manage(herdr_startup::HerdrStartupState::new());
             app.state::<herdr_startup::HerdrStartupState>()
                 .launch(app.handle().clone(), herdr_manager);
+            app.manage(runtime_preferences::RuntimePreferencesState(
+                std::sync::Arc::new(std::sync::Mutex::new(
+                    runtime_preferences::load_for_startup(app.path().app_data_dir()),
+                )),
+            ));
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
             // preference applies; the frontend shows it on its first themed
@@ -340,6 +350,8 @@ pub fn run() {
             host_bootstrap::host_runtime_check,
             host_wsl::host_wsl_distributions,
             host_wsl::host_wsl_path,
+            runtime_preferences::runtime_preferences_get,
+            runtime_preferences::runtime_preferences_set,
             host_reveal::host_reveal_in_explorer,
             sftp_edit::sftp_open_file,
             sftp_edit::sftp_create_file,
@@ -679,6 +691,21 @@ mod command_inventory_tests {
             app_start < run_source.find("tauri::Builder::default()").unwrap(),
             "app_start must be recorded before the app builder starts writing other events"
         );
+    }
+
+    #[test]
+    fn herdr_runtime_preference_commands_are_registered() {
+        let source = include_str!("lib.rs");
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        for cmd in [
+            "runtime_preferences::runtime_preferences_get,",
+            "runtime_preferences::runtime_preferences_set,",
+        ] {
+            assert!(
+                run_source.contains(cmd),
+                "missing runtime preference command: {cmd}"
+            );
+        }
     }
 
     #[test]

@@ -64,8 +64,7 @@ ConvertTo-Json -InputObject $result -Compress
     .map_err(|_| "wsl-discovery-timeout".to_owned())?
 }
 
-#[tauri::command]
-pub async fn host_wsl_distributions() -> Result<Vec<WslDistribution>, String> {
+async fn list_distributions() -> Result<Vec<WslDistribution>, String> {
     #[cfg(windows)]
     {
         return registrations().await;
@@ -74,8 +73,16 @@ pub async fn host_wsl_distributions() -> Result<Vec<WslDistribution>, String> {
     Ok(Vec::new())
 }
 
+#[tauri::command]
+pub async fn host_wsl_distributions(
+    preferences: tauri::State<'_, crate::runtime_preferences::RuntimePreferencesState>,
+) -> Result<Vec<WslDistribution>, String> {
+    crate::runtime_preferences::require_wsl_flag(preferences.wsl_enabled(), true)?;
+    list_distributions().await
+}
+
 pub(crate) async fn verify_identity(host_id: &str, distro: &str) -> Result<(), String> {
-    let entries = host_wsl_distributions().await?;
+    let entries = list_distributions().await?;
     if !entries
         .iter()
         .any(|entry| entry.host_id == host_id && entry.name == distro && entry.version == 2)
@@ -131,10 +138,12 @@ fn normalize_windows_folder(path: &str, distro: &str) -> Result<WslPathInput, St
 #[tauri::command]
 pub async fn host_wsl_path(
     ssh: tauri::State<'_, crate::ssh_service::SshState>,
+    preferences: tauri::State<'_, crate::runtime_preferences::RuntimePreferencesState>,
     host_id: String,
     distro: String,
     path: String,
 ) -> Result<String, String> {
+    crate::runtime_preferences::require_wsl_flag(preferences.wsl_enabled(), true)?;
     verify_identity(&host_id, &distro).await?;
     let path = match normalize_windows_folder(&path, &distro)? {
         WslPathInput::Linux(path) => return Ok(path),

@@ -11,7 +11,9 @@ use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yuzora_host::herdr_limits::MAX_NDJSON_LINE_BYTES;
 use yuzora_host::herdr_runtime::{inspect_documents, session_names, RuntimeBinaryCheck};
-use yuzora_host::herdr_service::HerdrBinarySource;
+use yuzora_host::herdr_service::{
+    normalize_custom_path, require_exe_on_windows, HerdrBinarySource,
+};
 use yuzora_host::protocol::{Operation, PROTOCOL_VERSION};
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -396,7 +398,13 @@ fn select_host_binary(
             .installed_herdr
             .clone()
             .ok_or("herdr-not-found-on-selected-host")?,
-        HerdrBinarySource::Custom => custom_path.ok_or("herdr-custom-path-required")?.to_string(),
+        HerdrBinarySource::Custom => {
+            let path = normalize_custom_path(custom_path.ok_or("herdr-custom-path-required")?);
+            if info.os == "windows" {
+                require_exe_on_windows(Path::new(&path), true)?;
+            }
+            path
+        }
     };
     if (if info.os == "windows" {
         !crate::host_windows::is_windows_path(&binary)
@@ -473,6 +481,10 @@ pub async fn host_runtime_check(
     source: HerdrBinarySource,
     custom_path: Option<String>,
 ) -> Result<HostRuntimeCheck, String> {
+    crate::runtime_preferences::require_wsl_enabled(
+        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
+        &target,
+    )?;
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
     }
@@ -533,6 +545,10 @@ pub async fn host_prepare(
     source: HerdrBinarySource,
     custom_path: Option<String>,
 ) -> Result<PreparedHost, String> {
+    crate::runtime_preferences::require_wsl_enabled(
+        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
+        &target,
+    )?;
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
     }
@@ -814,5 +830,42 @@ mod tests {
         .await
         .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"user modification");
+    }
+}
+
+#[cfg(test)]
+mod custom_path_tests {
+    use super::*;
+
+    fn probe(os: &str) -> HostProbe {
+        HostProbe {
+            os: os.into(),
+            arch: "x86_64".into(),
+            home: "/home/u".into(),
+            installed_herdr: None,
+        }
+    }
+
+    fn custom(os: &str, path: &str) -> Result<String, String> {
+        select_host_binary(
+            &probe(os),
+            HerdrBinarySource::Custom,
+            Some(path),
+            "candidate",
+        )
+    }
+
+    #[test]
+    fn herdr_remote_custom_path_is_normalized_and_exe_checked_on_windows_only() {
+        assert_eq!(
+            custom("windows", r#"  "C:\Program Files\herdr\herdr.exe"  "#).unwrap(),
+            r"C:\Program Files\herdr\herdr.exe"
+        );
+        let error = custom("windows", r"C:\tools\herdr.cmd").unwrap_err();
+        assert!(error.starts_with("herdr-custom-path-not-exe"), "{error}");
+        // Unix-like remotes keep extensionless binaries and quote stripping.
+        assert_eq!(custom("linux", "'/opt/herdr'").unwrap(), "/opt/herdr");
+        assert_eq!(custom("macos", "/opt/herdr").unwrap(), "/opt/herdr");
+        assert!(custom("linux", "relative/herdr").is_err());
     }
 }

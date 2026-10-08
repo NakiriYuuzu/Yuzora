@@ -1,8 +1,9 @@
 //! Windows installers cannot replace an executable that is still running. The
 //! update confirmation lists every process of the HERDR binary this app is
-//! currently using and of the bundled one the installer replaces, and only
-//! after the user confirms losing that work are those process trees terminated
-//! so the installer can replace the files.
+//! bundled (managed) one the installer replaces, and only after the user
+//! confirms losing that work are those process trees terminated so the
+//! installer can replace the files. A user-installed HERDR is only listed: it
+//! is not what the installer replaces, so it is never terminated.
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -10,14 +11,28 @@ use sysinfo::{get_current_pid, Pid, ProcessRefreshKind, ProcessesToUpdate, Syste
 
 use crate::herdr_service::HerdrState;
 use crate::process_kill;
+use yuzora_host::herdr_service::{probe_binary_version_with_timeout, strip_verbatim_prefix};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// The version is display-only: a slow probe is dropped, never awaited longer.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateHerdrProcesses {
+    /// The managed (bundled) HERDR the installer replaces.
     path: Option<String>,
+    version: Option<String>,
+    pids: Vec<u32>,
+    /// The active HERDR when it is user-installed; display only.
+    external: Option<ExternalHerdr>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalHerdr {
+    path: String,
     version: Option<String>,
     pids: Vec<u32>,
 }
@@ -135,19 +150,52 @@ fn stop_binary_processes(
     }
 }
 
-/// The HERDR in use plus the bundled one, which a server started before
-/// switching to another source can still hold open.
-fn update_binaries(active: Option<PathBuf>, managed: Option<PathBuf>) -> Vec<PathBuf> {
-    let mut binaries: Vec<PathBuf> = Vec::new();
-    for binary in [active, managed].into_iter().flatten() {
-        if !binaries
-            .iter()
-            .any(|seen| comparable(seen) == comparable(&binary))
-        {
-            binaries.push(binary);
-        }
+/// Only the managed binary is replaced by an app update.
+fn managed_update_binaries(managed: Option<PathBuf>) -> Vec<PathBuf> {
+    managed.into_iter().collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct UpdateStopPlan {
+    /// Binaries whose processes are terminated before the installer runs.
+    to_stop: Vec<PathBuf>,
+    /// The active user-installed binary: reported, never terminated.
+    external: Option<PathBuf>,
+}
+
+fn plan_update_stop(active: Option<PathBuf>, managed: Option<PathBuf>) -> UpdateStopPlan {
+    let external = active.filter(|active| {
+        managed
+            .as_deref()
+            .is_none_or(|managed| comparable(active) != comparable(managed))
+    });
+    UpdateStopPlan {
+        to_stop: managed_update_binaries(managed),
+        external,
     }
-    binaries
+}
+
+/// Probe managed and external versions concurrently, so the confirmation data
+/// waits at most one probe timeout in total.
+fn probe_versions(
+    managed: Option<&Path>,
+    external: Option<&Path>,
+    probe: impl Fn(&Path) -> Option<String> + Sync,
+) -> (Option<String>, Option<String>) {
+    std::thread::scope(|scope| {
+        let managed = managed.map(|binary| scope.spawn(|| probe(binary)));
+        let external = external.map(|binary| scope.spawn(|| probe(binary)));
+        (
+            managed.and_then(|handle| handle.join().ok().flatten()),
+            external.and_then(|handle| handle.join().ok().flatten()),
+        )
+    })
+}
+
+fn display(path: &Path) -> String {
+    strip_verbatim_prefix(path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[tauri::command]
@@ -156,20 +204,40 @@ pub async fn update_herdr_processes(
 ) -> Result<UpdateHerdrProcesses, String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let info = manager.binary_source_info();
+        let plan = plan_update_stop(manager.resolve_binary(), manager.managed_binary());
         let mut system = System::new();
-        let mut pids: Vec<u32> =
-            update_binaries(manager.resolve_binary(), manager.managed_binary())
-                .iter()
-                .flat_map(|binary| binary_processes(&mut system, binary))
-                .map(|(pid, _)| pid)
-                .collect();
+        let mut pids: Vec<u32> = plan
+            .to_stop
+            .iter()
+            .flat_map(|binary| binary_processes(&mut system, binary))
+            .map(|(pid, _)| pid)
+            .collect();
         pids.sort_unstable();
         pids.dedup();
+        let managed = plan.to_stop.first();
+        let (managed_version, external_version) = probe_versions(
+            managed.map(PathBuf::as_path),
+            plan.external.as_deref(),
+            |binary| probe_binary_version_with_timeout(binary, VERSION_PROBE_TIMEOUT),
+        );
+        let external = plan.external.map(|binary| {
+            let mut external_pids: Vec<u32> = binary_processes(&mut system, &binary)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect();
+            external_pids.sort_unstable();
+            external_pids.dedup();
+            ExternalHerdr {
+                path: display(&binary),
+                version: external_version,
+                pids: external_pids,
+            }
+        });
         UpdateHerdrProcesses {
-            path: info.path,
-            version: info.version,
+            path: managed.map(|binary| display(binary)),
+            version: managed_version,
             pids,
+            external,
         }
     })
     .await
@@ -180,12 +248,15 @@ pub async fn update_herdr_processes(
 pub async fn update_stop_herdr(state: tauri::State<'_, HerdrState>) -> Result<(), String> {
     let manager = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let binaries = update_binaries(manager.resolve_binary(), manager.managed_binary());
-        if binaries.is_empty() {
+        let plan = plan_update_stop(manager.resolve_binary(), manager.managed_binary());
+        if plan.to_stop.is_empty() {
             return Ok(());
         }
-        manager.release_all_connectors();
-        for binary in &binaries {
+        // Connectors of a user-installed HERDR stay up: only the managed one dies.
+        if plan.external.is_none() {
+            manager.release_all_connectors();
+        }
+        for binary in &plan.to_stop {
             stop_binary_processes(binary, process_kill::kill_tree_pid, STOP_TIMEOUT)?;
         }
         Ok(())
@@ -194,117 +265,72 @@ pub async fn update_stop_herdr(state: tauri::State<'_, HerdrState>) -> Result<()
     .map_err(|error| error.to_string())?
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Child, Command};
 
-    /// Run a copy of `sleep` from `binary`, which may sit in nested directories.
-    fn spawn_copy(binary: &Path) -> Child {
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        std::fs::copy("/bin/sleep", binary).unwrap();
-        // macOS kills a relocated platform binary unless it is re-signed.
-        if cfg!(target_os = "macos") {
-            let signed = Command::new("codesign")
-                .args(["-s", "-", "-f"])
-                .arg(binary)
-                .output()
-                .unwrap();
-            assert!(signed.status.success(), "{signed:?}");
-        }
-        Command::new(binary).arg("30").spawn().unwrap()
-    }
-
-    fn wait_until_listed(binary: &Path, pid: u32) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !binary_processes(&mut System::new(), binary)
-            .iter()
-            .any(|(listed, _)| *listed == pid)
-        {
-            assert!(Instant::now() < deadline, "process {pid} was never listed");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    fn sigkill(pid: u32) -> std::io::Result<()> {
-        let status = Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other("kill failed"))
-        }
+    fn p(text: &str) -> PathBuf {
+        PathBuf::from(text)
     }
 
     #[test]
-    fn update_covers_the_bundled_binary_beside_another_selected_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let custom = dir.path().join("custom-herdr");
-        let bundled = dir.path().join("bundled-herdr");
-        let alias = dir.path().join("bundled-alias");
-        std::fs::write(&custom, "").unwrap();
-        std::fs::write(&bundled, "").unwrap();
-        std::os::unix::fs::symlink(&bundled, &alias).unwrap();
-
-        assert_eq!(
-            update_binaries(Some(custom.clone()), Some(bundled.clone())),
-            vec![custom, bundled.clone()]
+    fn herdr_update_version_probes_run_in_parallel_with_a_short_timeout() {
+        assert!(VERSION_PROBE_TIMEOUT <= Duration::from_secs(2));
+        let started = Instant::now();
+        let (managed, external) = probe_versions(
+            Some(Path::new("/m/herdr")),
+            Some(Path::new("/x/herdr")),
+            |binary| {
+                std::thread::sleep(Duration::from_millis(600));
+                Some(binary.to_string_lossy().into_owned())
+            },
         );
+        assert_eq!(managed.as_deref(), Some("/m/herdr"));
+        assert_eq!(external.as_deref(), Some("/x/herdr"));
+        assert!(started.elapsed() < Duration::from_millis(1100));
         assert_eq!(
-            update_binaries(Some(alias.clone()), Some(bundled.clone())),
-            vec![alias]
+            probe_versions(None, None, |_| Some("x".into())),
+            (None, None)
         );
-        assert_eq!(update_binaries(None, Some(bundled.clone())), vec![bundled]);
-        assert!(update_binaries(None, None).is_empty());
     }
 
     #[test]
-    fn lists_only_processes_of_the_selected_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("herdr");
-        let mut selected = spawn_copy(&binary);
-        let mut other = Command::new("/bin/sleep").arg("30").spawn().unwrap();
-
-        wait_until_listed(&binary, selected.id());
-        let pids: Vec<_> = binary_processes(&mut System::new(), &binary)
-            .into_iter()
-            .map(|(pid, _)| pid)
-            .collect();
-        assert_eq!(pids, vec![selected.id()]);
-
-        let _ = selected.kill();
-        let _ = other.kill();
-        let _ = selected.wait();
-        let _ = other.wait();
+    fn herdr_update_binaries_cover_only_the_managed_binary() {
+        assert_eq!(
+            managed_update_binaries(Some(p("/m/herdr"))),
+            vec![p("/m/herdr")]
+        );
+        assert!(managed_update_binaries(None).is_empty());
     }
 
     #[test]
-    fn lists_conpty_hosts_shipped_beside_the_selected_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("herdr");
-        std::fs::copy("/bin/sleep", &binary).unwrap();
-        let mut console = spawn_copy(&dir.path().join("conpty/x64/OpenConsole.exe"));
-        let mut unrelated = spawn_copy(&other.path().join("conpty/x64/OpenConsole.exe"));
-
-        wait_until_listed(&binary, console.id());
-        // The unrelated host is running and visible; it belongs to another HERDR.
-        wait_until_listed(&other.path().join("herdr"), unrelated.id());
-        let pids: Vec<_> = binary_processes(&mut System::new(), &binary)
-            .into_iter()
-            .map(|(pid, _)| pid)
-            .collect();
-        assert_eq!(pids, vec![console.id()]);
-
-        let _ = console.kill();
-        let _ = unrelated.kill();
-        let _ = console.wait();
-        let _ = unrelated.wait();
+    fn herdr_update_stops_only_managed() {
+        let plan = plan_update_stop(Some(p("/custom/herdr")), Some(p("/m/herdr")));
+        assert_eq!(plan.to_stop, vec![p("/m/herdr")]);
+        assert!(!plan.to_stop.contains(&p("/custom/herdr")));
     }
 
     #[test]
-    fn windows_paths_compare_without_verbatim_prefix_or_case() {
+    fn herdr_update_external_listed_not_stopped() {
+        let plan = plan_update_stop(Some(p("/custom/herdr")), Some(p("/m/herdr")));
+        assert_eq!(plan.external, Some(p("/custom/herdr")));
+        assert_eq!(plan.to_stop, vec![p("/m/herdr")]);
+
+        let same = plan_update_stop(Some(p("/m/herdr")), Some(p("/m/herdr")));
+        assert_eq!(same.external, None);
+        assert_eq!(same.to_stop, vec![p("/m/herdr")]);
+
+        let no_managed = plan_update_stop(Some(p("/custom/herdr")), None);
+        assert!(no_managed.to_stop.is_empty());
+        assert_eq!(no_managed.external, Some(p("/custom/herdr")));
+
+        let nothing = plan_update_stop(None, Some(p("/m/herdr")));
+        assert_eq!(nothing.external, None);
+        assert_eq!(nothing.to_stop, vec![p("/m/herdr")]);
+    }
+
+    #[test]
+    fn herdr_windows_paths_compare_without_verbatim_prefix_or_case() {
         assert_eq!(
             fold_path(r"\\?\C:\Program Files\Yuzora\herdr\herdr.exe", true),
             fold_path(r"C:\program files\yuzora\HERDR\herdr.EXE", true)
@@ -319,37 +345,125 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stops_every_process_of_the_selected_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("herdr");
-        let selected = spawn_copy(&binary);
-        let pid = selected.id();
-        wait_until_listed(&binary, pid);
-        // Reap concurrently so the killed child cannot linger as a zombie.
-        let reaper = std::thread::spawn(move || {
-            let mut selected = selected;
-            selected.wait()
-        });
+    #[cfg(unix)]
+    mod process_tests {
+        use super::super::*;
+        use std::process::{Child, Command};
 
-        stop_binary_processes(&binary, sigkill, Duration::from_secs(5)).unwrap();
+        /// Run a copy of `sleep` from `binary`, which may sit in nested directories.
+        fn spawn_copy(binary: &Path) -> Child {
+            std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            std::fs::copy("/bin/sleep", binary).unwrap();
+            // macOS kills a relocated platform binary unless it is re-signed.
+            if cfg!(target_os = "macos") {
+                let signed = Command::new("codesign")
+                    .args(["-s", "-", "-f"])
+                    .arg(binary)
+                    .output()
+                    .unwrap();
+                assert!(signed.status.success(), "{signed:?}");
+            }
+            Command::new(binary).arg("30").spawn().unwrap()
+        }
 
-        assert!(binary_processes(&mut System::new(), &binary).is_empty());
-        reaper.join().unwrap().unwrap();
-    }
+        fn wait_until_listed(binary: &Path, pid: u32) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !binary_processes(&mut System::new(), binary)
+                .iter()
+                .any(|(listed, _)| *listed == pid)
+            {
+                assert!(Instant::now() < deadline, "process {pid} was never listed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
 
-    #[test]
-    fn reports_processes_that_survive_the_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("herdr");
-        let mut selected = spawn_copy(&binary);
-        wait_until_listed(&binary, selected.id());
+        fn sigkill(pid: u32) -> std::io::Result<()> {
+            let status = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("kill failed"))
+            }
+        }
 
-        let error =
-            stop_binary_processes(&binary, |_| Ok(()), Duration::from_millis(300)).unwrap_err();
-        assert!(error.contains(&selected.id().to_string()), "{error}");
+        #[test]
+        fn lists_only_processes_of_the_selected_binary() {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("herdr");
+            let mut selected = spawn_copy(&binary);
+            let mut other = Command::new("/bin/sleep").arg("30").spawn().unwrap();
 
-        let _ = selected.kill();
-        let _ = selected.wait();
+            wait_until_listed(&binary, selected.id());
+            let pids: Vec<_> = binary_processes(&mut System::new(), &binary)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect();
+            assert_eq!(pids, vec![selected.id()]);
+
+            let _ = selected.kill();
+            let _ = other.kill();
+            let _ = selected.wait();
+            let _ = other.wait();
+        }
+
+        #[test]
+        fn lists_conpty_hosts_shipped_beside_the_selected_binary() {
+            let dir = tempfile::tempdir().unwrap();
+            let other = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("herdr");
+            std::fs::copy("/bin/sleep", &binary).unwrap();
+            let mut console = spawn_copy(&dir.path().join("conpty/x64/OpenConsole.exe"));
+            let mut unrelated = spawn_copy(&other.path().join("conpty/x64/OpenConsole.exe"));
+
+            wait_until_listed(&binary, console.id());
+            // The unrelated host is running and visible; it belongs to another HERDR.
+            wait_until_listed(&other.path().join("herdr"), unrelated.id());
+            let pids: Vec<_> = binary_processes(&mut System::new(), &binary)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect();
+            assert_eq!(pids, vec![console.id()]);
+
+            let _ = console.kill();
+            let _ = unrelated.kill();
+            let _ = console.wait();
+            let _ = unrelated.wait();
+        }
+
+        #[test]
+        fn stops_every_process_of_the_selected_binary() {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("herdr");
+            let selected = spawn_copy(&binary);
+            let pid = selected.id();
+            wait_until_listed(&binary, pid);
+            // Reap concurrently so the killed child cannot linger as a zombie.
+            let reaper = std::thread::spawn(move || {
+                let mut selected = selected;
+                selected.wait()
+            });
+
+            stop_binary_processes(&binary, sigkill, Duration::from_secs(5)).unwrap();
+
+            assert!(binary_processes(&mut System::new(), &binary).is_empty());
+            reaper.join().unwrap().unwrap();
+        }
+
+        #[test]
+        fn reports_processes_that_survive_the_timeout() {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("herdr");
+            let mut selected = spawn_copy(&binary);
+            wait_until_listed(&binary, selected.id());
+
+            let error =
+                stop_binary_processes(&binary, |_| Ok(()), Duration::from_millis(300)).unwrap_err();
+            assert!(error.contains(&selected.id().to_string()), "{error}");
+
+            let _ = selected.kill();
+            let _ = selected.wait();
+        }
     }
 }
