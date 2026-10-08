@@ -74,6 +74,13 @@ describe("MachinesPanel actions", () => {
     await waitFor(() => expect(within(row()).getByText("Authentication required")).toBeInTheDocument())
   })
 
+  it("keeps the reason of a structured status error visible", async () => {
+    await mount()
+    ipc.status.mockResolvedValue({ id: lab.id, label: lab.label, status: "error", error: "boom" })
+    fireEvent.click(within(row()).getByRole("button", { name: "Check status" }))
+    await waitFor(() => expect(within(row()).getByText(/boom/)).toBeInTheDocument())
+  })
+
   it("shows reachable once a snapshot exists and an error message when the last refresh failed", async () => {
     await mount()
     useMachinesStore.setState({ snapshotById: { [lab.id]: snapshot(lab.id) } })

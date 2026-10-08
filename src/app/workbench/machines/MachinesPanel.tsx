@@ -97,7 +97,10 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
   }
   function rowError(machine: HerdrMachine): string | null {
     const raw = errorById[machine.id] ?? (statusById[machine.id]?.status === "error" ? statusById[machine.id]?.error : null)
-    return raw ? describeMachineError(raw, t2).message : null
+    if (!raw) return null
+    // An unrecognised reason (e.g. a structured status error) is the only diagnostic: keep it visible.
+    const described = describeMachineError(raw, t2)
+    return described.code || !described.detail ? described.message : `${described.message}: ${described.detail}`
   }
 
   if (!capabilities && capabilitiesError) {

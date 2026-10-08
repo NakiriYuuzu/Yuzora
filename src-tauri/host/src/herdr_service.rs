@@ -3278,13 +3278,30 @@ pub fn probe_binary_version(binary: &Path) -> Option<String> {
 /// Like [`probe_binary_version`] but bounded by `timeout`; a timeout or any
 /// failure yields `None`.
 pub fn probe_binary_version_with_timeout(binary: &Path, timeout: Duration) -> Option<String> {
-    let status =
-        run_herdr_json_with_session_timeout(binary, &["status", "--json"], None, timeout).ok()?;
-    let client = status.get("client").unwrap_or(&status);
-    client
-        .get("version")
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
+    let binary = binary.to_path_buf();
+    // Killing and reaping a hung probe can outlast `timeout`; bound the whole probe.
+    within(timeout, move || {
+        let status =
+            run_herdr_json_with_session_timeout(&binary, &["status", "--json"], None, timeout)
+                .ok()?;
+        let client = status.get("client").unwrap_or(&status);
+        client
+            .get("version")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    })
+}
+
+/// Run `probe` on its own thread and give up after `timeout`; a slow tail finishes detached.
+fn within<T: Send + 'static>(
+    timeout: Duration,
+    probe: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(probe());
+    });
+    receiver.recv_timeout(timeout).ok().flatten()
 }
 
 fn probe_binary_identity(binary: &Path) -> (Option<String>, Option<u32>) {
@@ -4685,6 +4702,23 @@ fn parse_pane_info_response(response: serde_json::Value) -> Result<HerdrPaneIden
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod within_tests {
+    use super::*;
+
+    #[test]
+    fn herdr_bounded_probe_returns_within_its_timeout() {
+        let started = std::time::Instant::now();
+        let slow = within(Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_secs(2));
+            Some(1)
+        });
+        assert_eq!(slow, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(within(Duration::from_secs(1), || Some(2)), Some(2));
+    }
+}
 
 #[cfg(test)]
 mod tests;
