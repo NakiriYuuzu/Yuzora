@@ -310,6 +310,15 @@ describe("background settings", () => {
     expect(onChange.mock.calls).toEqual([[{ backgroundSource: "accent" }], [{ backgroundImageVersion: 1791460000000 }]])
   })
 
+  it("keeps the image and says so when it can't be deleted", async () => {
+    mocks.clear.mockRejectedValueOnce(new Error("aborted"))
+    const onChange = renderSettings({ ...DEFAULT_BACKGROUND_APPEARANCE, backgroundSource: "image", backgroundImageVersion: 7 })
+    fireEvent.click(screen.getByRole("button", { name: "Remove image" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't remove the image")
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "Remove image" })).toBeInTheDocument()
+  })
+
   it("still offers picking gradient colors from an image", () => {
     renderSettings(gradientValue)
     expect(screen.getByRole("button", { name: "Pick colors from an image" })).toBeInTheDocument()

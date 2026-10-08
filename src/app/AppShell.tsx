@@ -486,6 +486,10 @@ export function AppShell() {
   }, [])
 
   const handleBackgroundChange = useCallback((patch: Partial<BackgroundAppearance>) => {
+    // Out of image mode nothing shows the image: drop its URL so the revoke effect frees it.
+    if ((patch.backgroundSource !== undefined && patch.backgroundSource !== "image") || patch.backgroundImageVersion === 0) {
+      setBackgroundImageUrl(null)
+    }
     setAppearance(current => ({ ...current, ...patch }))
   }, [])
   // Stable identity keeps the memoized settings dialog from re-rendering with the shell.

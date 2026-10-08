@@ -496,6 +496,7 @@
     "backgroundImageIntensity": "Image strength",
     "backgroundImageEmpty": "No image yet. The chosen image is scaled down and kept on this device; the original file is not changed.",
     "backgroundImageUnusable": "Couldn't use that image. Try a PNG, JPEG or WebP file.",
+    "backgroundImageRemoveFailed": "Couldn't remove the image. Try again.",
     "backgroundAddColor": "Add color",
     "backgroundRemoveColor": "Remove color",
     "backgroundSave": "Save to palette",

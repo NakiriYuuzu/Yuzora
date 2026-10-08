@@ -472,6 +472,25 @@ describe("AppShell", () => {
     root.style.removeProperty("--yz-image-veil")
   })
 
+  it("離開圖片背景時釋放圖片 URL", async () => {
+    const root = document.documentElement
+    const createObjectURL = vi.fn(() => "blob:tauri://localhost/bg-leave")
+    const revokeObjectURL = vi.fn()
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundSource: "image", backgroundImageVersion: 3 }))
+    backgroundImageMocks.load.mockResolvedValueOnce(new Blob(["img"]))
+    const view = render(<AppShell />)
+    await waitFor(() => expect(root.style.getPropertyValue("--yz-bg-image")).toBe('url("blob:tauri://localhost/bg-leave")'))
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Follow accent" }))
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:tauri://localhost/bg-leave"))
+    expect(root.dataset.background).toBe("accent")
+    view.unmount()
+    root.style.removeProperty("--yz-bg-image")
+    root.style.removeProperty("--yz-image-veil")
+  })
+
   it("自訂漸層取代主題色背景並持久化，切回主題色後清除覆寫", async () => {
     const root = document.documentElement
     render(<AppShell />)

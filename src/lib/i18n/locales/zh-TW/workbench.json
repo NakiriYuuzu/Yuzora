@@ -496,6 +496,7 @@
     "backgroundImageIntensity": "圖片強度",
     "backgroundImageEmpty": "尚未選擇圖片。選擇的圖片會縮小後保存在這台裝置，原始檔案不會被修改。",
     "backgroundImageUnusable": "無法使用這張圖片，請改用 PNG、JPEG 或 WebP 檔案。",
+    "backgroundImageRemoveFailed": "無法移除圖片，請再試一次。",
     "backgroundAddColor": "新增顏色",
     "backgroundRemoveColor": "移除顏色",
     "backgroundSave": "存入色盤",

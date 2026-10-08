@@ -1497,6 +1497,7 @@ pub fn switch_keeping_changes(
         return switch().map(|()| GitOperationOutcome { conflicts: false });
     }
     let magic = [(ALLOW_PATHSPEC_MAGIC_ENV.to_string(), "1".to_string())];
+    let before = stash_top(root)?;
     let pushed = run_ok(
         root,
         &["stash", "push", "-m", SMART_CHECKOUT_STASH],
@@ -1508,10 +1509,19 @@ pub fn switch_keeping_changes(
         return switch_over_untracked(root, target, &switch)
             .map(|()| GitOperationOutcome { conflicts: false });
     }
-    let parked = stash_top(root).ok().flatten();
+    // Another client may stash right after us: find our entry, never assume
+    // the top. Unidentified, the changes stay safely stashed and HEAD stays.
+    let parked = pushed_stash(root, before.as_deref(), SMART_CHECKOUT_STASH)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            format!(
+                "git stash: your local changes are kept in the stash \"{SMART_CHECKOUT_STASH}\""
+            )
+        })?;
     let switched = switch_over_untracked(root, target, &switch);
     // A failed switch left HEAD where it was, so the changes go back as they were.
-    let restored = restore_parked_changes(root, parked.as_deref());
+    let restored = restore_parked_changes(root, Some(&parked));
     match (switched, restored) {
         (Ok(()), restored) => restored,
         (Err(error), Ok(_)) => Err(error),
@@ -1585,6 +1595,42 @@ fn switch_over_untracked(
     }
 }
 
+/// The entry a `stash push -m message` just created: the newest one above
+/// `before` recording that message. Another client may stash right after the
+/// push, so the top alone proves nothing. `None` when the push saved nothing.
+fn pushed_stash(
+    root: &Path,
+    before: Option<&str>,
+    message: &str,
+) -> Result<Option<String>, String> {
+    let listed = run_ok(
+        root,
+        &["stash", "list", "--format=%H%x1f%gs"],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    let mut ours = None;
+    for line in String::from_utf8_lossy(&listed.stdout).lines() {
+        let Some((oid, subject)) = line.split_once('\x1f') else {
+            continue;
+        };
+        if Some(oid) == before {
+            break;
+        }
+        // `stash push -m` records "On <branch>: <message>"; branch names never
+        // contain ':'.
+        if subject.split_once(": ").map(|(_, rest)| rest) == Some(message) {
+            if ours.is_some() {
+                return Err(format!(
+                    "git stash: more than one new \"{message}\" stash; all are kept"
+                ));
+            }
+            ours = Some(oid.to_string());
+        }
+    }
+    Ok(ours)
+}
+
 /// Stashes just `pathspec`, untracked files included, and returns the new
 /// stash. `None` when git saved nothing: it still exits 0 ("No local changes
 /// to save") and the top stash is then someone else's, never ours to restore
@@ -1604,12 +1650,11 @@ fn park_untracked(root: &Path, pathspec: &str) -> Result<Option<String>, String>
     if out.code != 0 {
         return Err(git_err("stash", &out.stderr));
     }
-    let after = stash_top(root).map_err(|error| {
+    pushed_stash(root, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).map_err(|error| {
         format!(
             "{error}\ngit stash: your untracked files may be kept in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
         )
-    })?;
-    Ok(after.filter(|top| before.as_ref() != Some(top)))
+    })
 }
 
 /// Untracked, non-ignored files whose path `target` tracks as a file: the ones
@@ -3456,6 +3501,54 @@ mod tests {
         assert_ne!(parked, mine);
         assert!(!repo.join("shared.txt").exists());
         assert_eq!(stash_list(repo).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pushed_stash_is_found_under_a_foreign_stash_pushed_right_after() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        let before = stash_top(repo).unwrap();
+        test_repo::git(
+            repo,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                SMART_CHECKOUT_UNTRACKED_STASH,
+                "--",
+                "shared.txt",
+            ],
+        );
+        let ours = git_line(repo, &["rev-parse", "refs/stash"]);
+        std::fs::write(repo.join("c.txt"), "foreign\n").unwrap();
+        test_repo::git(repo, &["stash", "push", "-m", "someone else"]);
+        assert_ne!(stash_top(repo).unwrap().as_deref(), Some(ours.as_str()));
+        assert_eq!(
+            pushed_stash(repo, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).unwrap(),
+            Some(ours.clone())
+        );
+        // Nothing of ours above `before`: none, whatever sits on top.
+        let top = stash_top(repo).unwrap();
+        assert_eq!(
+            pushed_stash(repo, top.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).unwrap(),
+            None
+        );
+        // Two of ours since `before`: refuse to guess.
+        std::fs::write(repo.join("other.txt"), "x\n").unwrap();
+        test_repo::git(
+            repo,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                SMART_CHECKOUT_UNTRACKED_STASH,
+                "--",
+                "other.txt",
+            ],
+        );
+        assert!(pushed_stash(repo, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).is_err());
     }
 
     #[test]

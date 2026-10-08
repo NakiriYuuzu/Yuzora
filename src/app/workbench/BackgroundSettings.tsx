@@ -41,7 +41,8 @@ export function BackgroundSettings({
   const { backgroundSource, backgroundGradient, savedGradients } = value
   const [selected, setSelected] = useState(0)
   const [imageError, setImageError] = useState(false)
-  const [backdropImageError, setBackdropImageError] = useState(false)
+  /** i18n key of the backdrop image failure being shown. */
+  const [backdropImageError, setBackdropImageError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const backdropFileRef = useRef<HTMLInputElement>(null)
   /** Bumped by every pick and removal: a slower, older pick must not land after a newer action. */
@@ -88,7 +89,7 @@ export function BackgroundSettings({
   const setBackdropImage = async (file: File) => {
     const request = ++imageRequest.current
     const mine = ++intent.current
-    setBackdropImageError(false)
+    setBackdropImageError(null)
     try {
       const image = await prepareBackgroundImage(file)
       // IndexedDB runs the writes in the order they start, so a pick that
@@ -102,13 +103,20 @@ export function BackgroundSettings({
         ? { backgroundSource: "image", backgroundImageVersion: Date.now() }
         : { backgroundImageVersion: Date.now() })
     } catch {
-      if (request === imageRequest.current && mine === intent.current) setBackdropImageError(true)
+      if (request === imageRequest.current && mine === intent.current) setBackdropImageError("settings.backgroundImageUnusable")
     }
   }
   const removeBackdropImage = async () => {
     const request = ++imageRequest.current
     const mine = ++intent.current
-    await clearBackgroundImage().catch(() => {})
+    setBackdropImageError(null)
+    try {
+      await clearBackgroundImage()
+    } catch {
+      // Still stored: keep the image (and its Remove button) and say so.
+      if (request === imageRequest.current) setBackdropImageError("settings.backgroundImageRemoveFailed")
+      return
+    }
     if (request !== imageRequest.current) return
     onChange(mine === intent.current
       ? { backgroundSource: "accent", backgroundImageVersion: 0 }
@@ -190,7 +198,7 @@ export function BackgroundSettings({
               </div>
             </Field>
             : <p className="settings-inline-hint">{tw("settings.backgroundImageEmpty")}</p>}
-          {backdropImageError && <p role="alert" className="settings-inline-hint background-image-error">{tw("settings.backgroundImageUnusable")}</p>}
+          {backdropImageError && <p role="alert" className="settings-inline-hint background-image-error">{tw(backdropImageError)}</p>}
         </div>}
         <div className="background-swatches" role="group" aria-label={tw("settings.backgroundPalette")}>
           {PRESETS.map(([id, colors]) => <button

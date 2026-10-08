@@ -1329,6 +1329,17 @@ describe("terminal mouse", () => {
     ])
   })
 
+  it("hands a gesture release queued during teardown to HERDR before detaching", async () => {
+    const transport = await open(() => true)
+    void transport.mouse?.("up", { column: 2, row: 3 }, 0)
+    expect(herdrTerminalMouse).not.toHaveBeenCalled()
+    transport.detach()
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([["sess-mouse", "up", { column: 2, row: 3 }, 0]])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+  })
+
   it("never sends to connectors without terminal.mouse or without control", async () => {
     await (await open(() => false)).mouse?.("down", { column: 0, row: 0 }, 0)
     await (await open(() => true, "observe")).mouse?.("down", { column: 0, row: 0 }, 0)

@@ -652,6 +652,15 @@ export function createHerdrTerminalTransport(
       return mouseDrain
     },
     detach() {
+      // A gesture ended by the teardown (dispose sends `up`) is still queued
+      // behind the drain's microtask: hand it to HERDR now, in order, before
+      // the session goes, so the child is not left with a pressed button.
+      const id = sessionId
+      if (id && mode === "control" && !disposed) {
+        for (const event of mouseQueue) {
+          void herdrTerminalMouse(id, event.action, event.cell, event.modifiers).catch(() => undefined)
+        }
+      }
       discardInput()
       discardScroll()
       disposed = true
