@@ -51,14 +51,14 @@
   {
     "code": "clippy::manual_contains",
     "file": "src/ssh_service.rs",
-    "line": 3282,
+    "line": 3286,
     "message": "using `contains()` instead of `iter().any()` is more efficient",
     "count": 1
   },
   {
     "code": "clippy::needless_borrow",
     "file": "src/ssh_service.rs",
-    "line": 3268,
+    "line": 3272,
     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
     "count": 1
   },
@@ -72,7 +72,7 @@
   {
     "code": "clippy::suspicious_open_options",
     "file": "src/ssh_service.rs",
-    "line": 443,
+    "line": 447,
     "message": "file opened with `create`, but `truncate` behavior not defined",
     "count": 2
   },

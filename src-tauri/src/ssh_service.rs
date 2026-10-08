@@ -319,7 +319,11 @@ impl HostKeyPersistIo for StdHostKeyIo {
     }
 
     fn sync_file(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::File::open(path)?.sync_all()
+        // Windows FlushFileBuffers rejects read-only handles (os error 5).
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .sync_all()
     }
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
