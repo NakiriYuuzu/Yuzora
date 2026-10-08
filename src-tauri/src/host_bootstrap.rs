@@ -488,6 +488,13 @@ async fn inspect_host_binary(
     inspect_documents(binary.to_string(), schema, statuses)
 }
 
+fn wsl_still_allowed(app: &tauri::AppHandle, target: &HostTarget) -> Result<(), String> {
+    crate::runtime_preferences::require_wsl_enabled(
+        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
+        target,
+    )
+}
+
 #[tauri::command]
 pub async fn host_runtime_check(
     app: tauri::AppHandle,
@@ -497,13 +504,13 @@ pub async fn host_runtime_check(
     source: HerdrBinarySource,
     custom_path: Option<String>,
 ) -> Result<HostRuntimeCheck, String> {
-    crate::runtime_preferences::require_wsl_enabled(
-        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
-        &target,
-    )?;
+    // Re-read before every remote step: WSL may be turned off meanwhile.
+    let wsl_allowed = || wsl_still_allowed(&app, &target);
+    wsl_allowed()?;
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
     }
+    wsl_allowed()?;
     let info = probe(&target, &ssh.0).await?;
     let platform = format!("{}-{}", info.os, info.arch);
     let bytes = tokio::fs::read(resource_root(&app)?.join(format!("{platform}.json")))
@@ -517,6 +524,7 @@ pub async fn host_runtime_check(
     let artifact_identity = hash(&bytes);
     let directory = format!("{}-{platform}-{artifact_identity}", manifest.version);
     let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
+    wsl_allowed()?;
     let exists = if info.os == "windows" {
         crate::host_windows::execute(&target, Some(&ssh.0), &format!("if (Test-Path -LiteralPath {} -PathType Leaf) {{ [Console]::Write('yes') }} else {{ [Console]::Write('no') }}", crate::host_windows::quote(&binary)?), &[], MAX_PROBE_OUTPUT_BYTES).await? == b"yes"
     } else {
@@ -535,6 +543,7 @@ pub async fn host_runtime_check(
     if !exists && source != HerdrBinarySource::Default {
         return Err(format!("herdr-not-executable-on-selected-host: {binary}"));
     }
+    wsl_allowed()?;
     let check = if exists {
         Some(inspect_host_binary(&target, &ssh.0, &binary).await?)
     } else {
@@ -561,13 +570,14 @@ pub async fn host_prepare(
     source: HerdrBinarySource,
     custom_path: Option<String>,
 ) -> Result<PreparedHost, String> {
-    crate::runtime_preferences::require_wsl_enabled(
-        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
-        &target,
-    )?;
+    // Re-read before every remote step: WSL may be turned off while this
+    // probes, deploys and inspects the distribution.
+    let wsl_allowed = || wsl_still_allowed(&app, &target);
+    wsl_allowed()?;
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
     }
+    wsl_allowed()?;
     let info = probe(&target, &ssh.0).await?;
     let platform = format!("{}-{}", info.os, info.arch);
     let root = resource_root(&app)?;
@@ -587,6 +597,7 @@ pub async fn host_prepare(
         platform,
         hash(&manifest_bytes)
     );
+    wsl_allowed()?;
     let helper = deploy_file(
         &target,
         Some(&ssh.0),
@@ -603,6 +614,7 @@ pub async fn host_prepare(
     .await?;
     let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
     if source == HerdrBinarySource::Default {
+        wsl_allowed()?;
         deploy_file(
             &target,
             Some(&ssh.0),
@@ -623,6 +635,7 @@ pub async fn host_prepare(
                 .path
                 .strip_prefix(&format!("{platform}/"))
                 .ok_or("invalid-runtime-file")?;
+            wsl_allowed()?;
             deploy_file(
                 &target,
                 Some(&ssh.0),
@@ -637,6 +650,7 @@ pub async fn host_prepare(
     }
     // Recheck the actual chosen binary and every running Session before replacing
     // the helper connection or allowing the frontend to persist new paths.
+    wsl_allowed()?;
     inspect_host_binary(&target, &ssh.0, &binary)
         .await?
         .require_compatible()?;

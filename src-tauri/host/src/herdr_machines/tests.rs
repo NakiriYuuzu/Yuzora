@@ -673,7 +673,7 @@ mod fake {
         let script = format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"--version\" ]; then echo 'herdr {version}'; exit 0; fi\n\
-             if [ \"$1\" = machine ] && [ \"$2\" = status ] && [ \"$3\" = \"--help\" ]; then exit 0; fi\n\
+             if [ \"$1\" = machine ] && [ \"$3\" = \"--help\" ]; then exit 0; fi\n\
              echo \"$@\" >> \"$(dirname \"$0\")/calls.log\"\n\
              {body}\n"
         );
@@ -754,6 +754,20 @@ fi
             machines_list(&manager).unwrap_err(),
             "machines-runtime-too-old"
         );
+    }
+
+    #[test]
+    fn herdr_machine_reconnect_is_probed_on_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdr");
+        let script = "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'herdr 0.9.3'; exit 0; fi\n\
+             if [ \"$2\" = reconnect ]; then echo 'unrecognized subcommand' >&2; exit 2; fi\n\
+             exit 0\n";
+        write_executable(&path, script);
+        let caps = machines_capabilities(&HerdrManager::with_binary(path));
+        assert!(caps.supported && caps.has_status, "{caps:?}");
+        assert!(!caps.has_reconnect, "{caps:?}");
     }
 
     #[test]

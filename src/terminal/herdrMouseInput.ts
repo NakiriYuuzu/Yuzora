@@ -41,12 +41,13 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
     pressed = null
     window.removeEventListener("mousemove", onMouseMove, true)
     window.removeEventListener("mouseup", onMouseUp, true)
-    window.removeEventListener("blur", onBlur)
+    window.removeEventListener("blur", endGesture)
   }
 
-  // A release outside the window after it lost focus never arrives: end the
+  // A release outside the window after it lost focus, outside it without a
+  // focus change, or after the terminal went away never arrives: end the
   // gesture at the last cell so the child does not stay mid-drag.
-  const onBlur = () => {
+  const endGesture = () => {
     if (!pressed) return
     const cell = pressed
     release()
@@ -56,7 +57,7 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
   const onMouseMove = (event: MouseEvent) => {
     // Released outside the window without losing focus: no mouseup arrived.
     if (pressed && (event.buttons & 1) === 0) {
-      onBlur()
+      endGesture()
       return
     }
     const cell = cellAt(event)
@@ -88,7 +89,7 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
     pressed = cell
     window.addEventListener("mousemove", onMouseMove, true)
     window.addEventListener("mouseup", onMouseUp, true)
-    window.addEventListener("blur", onBlur)
+    window.addEventListener("blur", endGesture)
     options.send("down", cell, modifiersOf(event))
   }
 
@@ -96,6 +97,7 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
   return {
     dispose: () => {
       element.removeEventListener("mousedown", onMouseDown, true)
+      endGesture()
       release()
     }
   }

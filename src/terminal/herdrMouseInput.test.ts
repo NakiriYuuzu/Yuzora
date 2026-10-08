@@ -70,6 +70,19 @@ describe("HERDR mouse input", () => {
     ])
   })
 
+  it("ends a held gesture at its last cell when the input is disposed", () => {
+    const { send, mouse } = setup()
+    mouse("mousedown", 5, 5)
+    mouse("mousemove", 25, 15, { buttons: 1 })
+    installed.splice(0).forEach((input) => input.dispose())
+    mouse("mouseup", 25, 15)
+    expect(send.mock.calls).toEqual([
+      ["down", { column: 0, row: 0 }, 0],
+      ["drag", { column: 2, row: 1 }, 0],
+      ["up", { column: 2, row: 1 }, 0]
+    ])
+  })
+
   it("ends a drag at its last cell when a move arrives with the button already released", () => {
     const { send, mouse } = setup()
     mouse("mousedown", 5, 5)

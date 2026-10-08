@@ -205,6 +205,7 @@ pub enum MachineOp<'a> {
     Disable(&'a str),
     Remove(&'a str),
     Capability,
+    ReconnectCapability,
 }
 
 /// Argv for the non-interactive operations. Inputs must already be validated.
@@ -219,6 +220,7 @@ pub fn build_machine_argv(op: &MachineOp<'_>) -> Vec<String> {
         MachineOp::Disable(id) => v(&["machine", "disable", id]),
         MachineOp::Remove(id) => v(&["machine", "remove", id]),
         MachineOp::Capability => v(&["machine", "status", "--help"]),
+        MachineOp::ReconnectCapability => v(&["machine", "reconnect", "--help"]),
     }
 }
 
@@ -856,6 +858,7 @@ struct Detection {
     version: Option<String>,
     parsed: Option<(u32, u32, u32)>,
     has_status: bool,
+    has_reconnect: bool,
 }
 
 type DetectionKey = (PathBuf, Option<SystemTime>);
@@ -882,25 +885,28 @@ fn detect(binary: &Path) -> Detection {
     // probe could not run to a normal exit (timeout, spawn failure, oversized
     // output), which is transient and must not be cached.
     let mut probe_completed = true;
-    let has_status = if parsed.is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION)) {
-        match run_machine_cli(
-            binary,
-            &build_machine_argv(&MachineOp::Capability),
-            SHORT_TIMEOUT,
-        ) {
+    let supported = parsed.is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION));
+    // A custom build may ship `machine status` without `machine reconnect`
+    // (Windows HERDR has none), so each subcommand is probed on its own.
+    let mut probe = |op: MachineOp<'_>| {
+        if !supported {
+            return false;
+        }
+        match run_machine_cli(binary, &build_machine_argv(&op), SHORT_TIMEOUT) {
             Ok(out) => out.success(),
             Err(_) => {
                 probe_completed = false;
                 false
             }
         }
-    } else {
-        false
     };
+    let has_status = probe(MachineOp::Capability);
+    let has_reconnect = probe(MachineOp::ReconnectCapability);
     let detection = Detection {
         version,
         parsed,
         has_status,
+        has_reconnect,
     };
     // Transient failures (timeout, non-zero exit, unparsable output) are not
     // cached so the next call re-detects instead of sticking until the binary
@@ -956,7 +962,7 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
         version: detection.version,
         supported,
         has_status: supported && detection.has_status,
-        has_reconnect: supported && detection.has_status,
+        has_reconnect: supported && detection.has_reconnect,
         source,
         reason,
     }
