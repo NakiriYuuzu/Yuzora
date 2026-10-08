@@ -1340,6 +1340,26 @@ describe("terminal mouse", () => {
     expect(herdrTerminalMouse).toHaveBeenCalledOnce()
   })
 
+  it("keeps the teardown flush behind a pointer event still on the wire", async () => {
+    let release!: () => void
+    vi.mocked(herdrTerminalMouse).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const transport = await open(() => true)
+    void transport.mouse?.("down", { column: 1, row: 1 }, 0)
+    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledOnce())
+    void transport.mouse?.("drag", { column: 2, row: 1 }, 0)
+    void transport.mouse?.("up", { column: 2, row: 1 }, 0)
+    transport.detach()
+    // Nothing overtakes the in-flight `down`.
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+    release()
+    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledTimes(3))
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([
+      ["sess-mouse", "down", { column: 1, row: 1 }, 0],
+      ["sess-mouse", "drag", { column: 2, row: 1 }, 0],
+      ["sess-mouse", "up", { column: 2, row: 1 }, 0]
+    ])
+  })
+
   it("never sends to connectors without terminal.mouse or without control", async () => {
     await (await open(() => false)).mouse?.("down", { column: 0, row: 0 }, 0)
     await (await open(() => true, "observe")).mouse?.("down", { column: 0, row: 0 }, 0)

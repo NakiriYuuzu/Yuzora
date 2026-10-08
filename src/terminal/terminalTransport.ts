@@ -251,6 +251,8 @@ export function createHerdrTerminalTransport(
    */
   let mouseQueue: Array<{ action: HerdrMouseAction; cell: TerminalCell; modifiers: number }> = []
   let mouseDrain: Promise<void> | null = null
+  /** The pointer event currently on the wire, if any. */
+  let mouseInFlight: Promise<void> | null = null
   let pendingScrollDelta = 0
   let pendingScrollCell: TerminalCell | undefined
   /** Wheel events behind pendingScrollDelta; an application gets one report each. */
@@ -640,26 +642,34 @@ export function createHerdrTerminalTransport(
             const id = sessionId
             if (disposed || !id || mode !== "control") break
             const event = mouseQueue.shift()!
-            await herdrTerminalMouse(id, event.action, event.cell, event.modifiers)
+            mouseInFlight = herdrTerminalMouse(id, event.action, event.cell, event.modifiers)
+            await mouseInFlight
+            mouseInFlight = null
           }
         } catch {
           // Delivery is unknown; never replay part of a gesture.
         } finally {
           mouseQueue = []
           mouseDrain = null
+          mouseInFlight = null
         }
       })()
       return mouseDrain
     },
     detach() {
-      // A gesture ended by the teardown (dispose sends `up`) is still queued
-      // behind the drain's microtask: hand it to HERDR now, in order, before
-      // the session goes, so the child is not left with a pressed button.
+      // A gesture ended by the teardown (dispose sends `up`) is still queued:
+      // hand it to HERDR before the session goes, so the child is not left
+      // with a pressed button. Each IPC may run concurrently, so every event
+      // waits for the one before it; with nothing on the wire the first goes
+      // out right away, ahead of the attachment release.
       const id = sessionId
       if (id && mode === "control" && !disposed) {
-        for (const event of mouseQueue) {
-          void herdrTerminalMouse(id, event.action, event.cell, event.modifiers).catch(() => undefined)
+        let previous: Promise<unknown> | null = mouseInFlight
+        for (const { action, cell, modifiers } of mouseQueue) {
+          const send = () => herdrTerminalMouse(id, action, cell, modifiers)
+          previous = previous ? previous.catch(() => undefined).then(send) : send()
         }
+        void previous?.catch(() => undefined)
       }
       discardInput()
       discardScroll()
