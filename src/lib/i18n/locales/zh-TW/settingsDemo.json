@@ -25,7 +25,17 @@
     "coral": "珊瑚",
     "amber": "琥珀"
   },
-  "paletteHint": "主題色同步套用至背景、側欄、選單與控制項。各 Space 的角色與配色仍可獨立編輯。",
+  "backgrounds": {
+    "aurora": "極光",
+    "sunset": "夕陽",
+    "ocean": "海洋",
+    "sakura": "櫻花",
+    "forest": "森林",
+    "lavender": "薰衣草",
+    "citrus": "柑橘",
+    "graphite": "石墨"
+  },
+  "paletteHint": "主題色套用至側欄、選單與控制項；背景選擇「跟隨主題色」時也一併套用。各 Space 的角色與配色仍可獨立編輯。",
   "resultsTitle": "搜尋設定",
   "resultsCount": "「{{query}}」找到 {{count}} 個分類與設定項目",
   "noResults": "找不到這項設定",

@@ -21,7 +21,7 @@ tauri-build = { version = "2.7.0", features = [] }
 yuzora-host = { path = "host" }
 # `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
 # uses to overlay an external-URL browser webview over the panel region (P3).
-tauri = { version = "2.12.0", features = ["unstable", "protocol-asset", "image-png"] }
+tauri = { version = "2.12.0", features = ["unstable", "macos-private-api", "protocol-asset", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"

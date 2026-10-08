@@ -1,4 +1,5 @@
 import type {TFunction} from 'i18next'
+import {supportsWindowGlass} from '@/theme/windowGlass'
 export type SettingsSectionId='appearance'|'editor'|'keyboard'|'terminal'|'herdr'|'git'|'safety'|'logs'|'about'
 export const SETTINGS_GROUPS=[
   {id:'personal',sections:['appearance','editor','keyboard']},
@@ -6,7 +7,7 @@ export const SETTINGS_GROUPS=[
   {id:'application',sections:['safety','logs','about']},
 ] as const
 const fields:Partial<Record<SettingsSectionId,{ns:string;keys:string[]}>>={
-  appearance:{ns:'workbench',keys:['settings.theme','settings.accentColor','settings.leftSidebarBackground','settings.rightSidebarBackground','settings.botAnimations','settings.language','settings.moveOpenedWorkspaceToTop']},
+  appearance:{ns:'workbench',keys:['settings.theme','settings.accentColor','settings.background','settings.windowGlass','settings.leftSidebarBackground','settings.rightSidebarBackground','settings.botAnimations','settings.language','settings.moveOpenedWorkspaceToTop']},
   keyboard:{ns:'editorPreferences',keys:['search']},
   editor:{ns:'workbench',keys:['editorPreferences:syntaxTheme','settings.editorFontSize','settings.showMinimap','settings.markdownDefaultMode']},
   terminal:{ns:'terminal',keys:['fontFamilyLabel','fontSizeLabel']},
@@ -25,6 +26,8 @@ const aliases:Record<string,string>={
   fontFamilyLabel:'字體 字型 font family JetBrains Mono Menlo Cascadia Consolas monospace',
   'settings.theme':'淺色 深色 系統 light dark system',
   'settings.accentColor':'配色 palette accent color',
+  'settings.background':'背景 漸層 色盤 圖片 背景圖 取色 桌布 background gradient palette image picture photo wallpaper arc',
+  'settings.windowGlass':'玻璃 毛玻璃 透明 模糊 glass glassmorphism vibrancy acrylic transparent blur macos windows',
   'settings.leftSidebarBackground':'左側欄 背景 邊框 霧面 sidebar background border glass',
   'settings.rightSidebarBackground':'右側欄 背景 邊框 霧面 sidebar background border glass',
   'updates:channelLabel':'beta prerelease preview stable channel 預發 預覽 穩定 更新 頻道',
@@ -35,7 +38,7 @@ export function settingsSearchResults(query:string,t:TFunction) {
   return SETTINGS_GROUPS.flatMap(group=>group.sections).flatMap(section=>{
     const category=t(`settings.sections.${section}.label`,{ns:'workbench'})
     const sub=t(`settings.sections.${section}.sub`,{ns:'workbench'})
-    const entries=[{key:section,label:category,target:null as string|null},...(fields[section]?.keys??[]).map(key=>({key,label:t(key,{ns:fields[section]!.ns}),target:t(key,{ns:fields[section]!.ns})}))]
+    const entries=[{key:section,label:category,target:null as string|null},...(fields[section]?.keys??[]).filter(key=>key!=='settings.windowGlass'||supportsWindowGlass()).map(key=>({key,label:t(key,{ns:fields[section]!.ns}),target:t(key,{ns:fields[section]!.ns})}))]
     return entries.filter(item=>words.every(word=>`${section} ${category} ${sub} ${item.label} ${item.key} ${aliases[item.key]??''}`.toLocaleLowerCase().includes(word))).map(item=>({...item,section,category,sub}))
   })
 }

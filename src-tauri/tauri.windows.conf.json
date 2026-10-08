@@ -1,4 +1,23 @@
 {
+  "app": {
+    "windows": [
+      {
+        "title": "Yuzora",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 480,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 22,
+          "y": 35
+        },
+        "visible": false,
+        "transparent": true
+      }
+    ]
+  },
   "bundle": {
     "targets": ["msi"],
     "resources": {

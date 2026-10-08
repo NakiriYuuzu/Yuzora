@@ -29,6 +29,7 @@ import { UpdateChannelSettings } from "./UpdateChannelSettings"
 import { UpdateInstallConfirmDialog } from "./UpdateInstallConfirmDialog"
 import { KeyboardSettings } from "./KeyboardSettings"
 import { SettingsThemePicker } from "./SettingsThemePicker"
+import { BackgroundSettings } from "./BackgroundSettings"
 import { SETTINGS_GROUPS,settingsSearchResults,type SettingsSectionId } from "./settings-search"
 import "./settings-modern.css"
 import { extractReleaseNotes, parseReleaseNoteLines } from "@/lib/releaseNotes"
@@ -71,7 +72,7 @@ export type {
   ThemePreference,
 } from "./settingsStorage"
 
-import type { ThemePreference } from "./settingsStorage"
+import { DEFAULT_BACKGROUND_APPEARANCE, type BackgroundAppearance, type ThemePreference } from "./settingsStorage"
 import type { TrustedWorkspace } from "@/lib/types"
 import {
   ACCENT_THEMES,
@@ -91,6 +92,8 @@ interface SettingsDialogProps {
   onSidebarBackgroundChange?: (side: "left" | "right", enabled: boolean) => void
   botAnimations?: boolean
   onBotAnimationsChange?: (enabled: boolean) => void
+  background?: BackgroundAppearance
+  onBackgroundChange?: (patch: Partial<BackgroundAppearance>) => void
   // Optional target applied whenever the dialog opens (or the target changes
   // while open).
   initialSection?: string
@@ -168,6 +171,8 @@ export function SettingsDialog({
   onSidebarBackgroundChange = () => {},
   botAnimations = false,
   onBotAnimationsChange = () => {},
+  background = DEFAULT_BACKGROUND_APPEARANCE,
+  onBackgroundChange = () => {},
   initialSection,
   openNonce,
 }: SettingsDialogProps) {
@@ -351,6 +356,8 @@ export function SettingsDialog({
                   </RadioGroup>
                   <p className="settings-inline-hint">{td("paletteHint")}</p>
                 </SettingCard>
+
+                <BackgroundSettings value={background} onChange={onBackgroundChange} />
 
                 <SettingsRowGroup>
                   <ToggleRow
