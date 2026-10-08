@@ -103,6 +103,12 @@ describe("MachinesPanel actions", () => {
     expect(useMachinesInteractiveStore.getState().selection).toEqual({ spec: { kind: "reconnect", machineId: lab.id }, machineLabel: "Lab box" })
   })
 
+  it("hides Check status when the binary has no machine status subcommand", async () => {
+    ipc.caps.mockResolvedValue({ ...supportedCaps, hasStatus: false })
+    await mount()
+    expect(within(row()).queryByRole("button", { name: "Check status" })).not.toBeInTheDocument()
+  })
+
   it("hides Reconnect on Windows and shows the ssh-agent hint", async () => {
     ipc.windows = true
     await mount()

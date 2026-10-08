@@ -16,11 +16,13 @@ export interface MachineRowActions {
   onOpenClient: () => void
 }
 
-export function MachineRow({ machine, status, stale, errorMessage, canReconnect, busy, actions }: {
+export function MachineRow({ machine, status, stale, errorMessage, canCheckStatus, canReconnect, busy, actions }: {
   machine: HerdrMachine
   status: MachineRowStatus
   stale: boolean
   errorMessage: string | null
+  /** False hides Check status (a binary without `machine status`). */
+  canCheckStatus: boolean
   /** False hides Reconnect (Windows, or an old binary without the subcommand). */
   canReconnect: boolean
   busy: boolean
@@ -54,7 +56,7 @@ export function MachineRow({ machine, status, stale, errorMessage, canReconnect,
     <div className="flex flex-wrap gap-1" role="group" aria-label={t("row.actions", { label: machine.label })}>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setDraft(machine.label); setRenaming(true) }}>{t("actions.rename")}</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={actions.onToggleEnabled}>{t(machine.enabled ? "actions.disable" : "actions.enable")}</Button>
-      <Button size="sm" variant="ghost" disabled={busy || !machine.enabled} onClick={actions.onCheckStatus}>{t("actions.checkStatus")}</Button>
+      {canCheckStatus && <Button size="sm" variant="ghost" disabled={busy || !machine.enabled} onClick={actions.onCheckStatus}>{t("actions.checkStatus")}</Button>}
       {canReconnect && <Button size="sm" variant="ghost" disabled={busy || !machine.enabled} onClick={actions.onReconnect}>{t("actions.reconnect")}</Button>}
       <Button size="sm" variant="ghost" disabled={busy || !machine.enabled} onClick={actions.onOpenClient}>{t("actions.openClient")}</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={actions.onRemove}>{t("actions.remove")}</Button>

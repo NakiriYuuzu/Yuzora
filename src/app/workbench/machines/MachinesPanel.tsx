@@ -124,6 +124,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
       <Button variant="outline" onClick={() => { onClose(); useUiStore.getState().openSettings("herdr") }}>{t("unsupported.openSettings")}</Button>
     </Empty>
   }
+  const canCheckStatus = capabilities?.hasStatus ?? false
   const canReconnect = !windows && (capabilities?.hasReconnect ?? false)
   return <div className="flex flex-col gap-3">
     <p className="herdr-session-picker-hint">{t("panel.description")}</p>
@@ -151,6 +152,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
         status={rowStatus(machine)}
         stale={Boolean(staleById[machine.id])}
         errorMessage={rowError(machine)}
+        canCheckStatus={canCheckStatus}
         canReconnect={canReconnect}
         busy={busyIds.has(machine.id)}
         actions={{

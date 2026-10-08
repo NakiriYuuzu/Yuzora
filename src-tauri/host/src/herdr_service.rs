@@ -3078,12 +3078,20 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
 /// Strip one pair of matching surrounding quotes left by "Copy as path" or a
 /// hand-typed value. Unpaired quotes and nested pairs are kept.
 pub fn normalize_custom_path(raw: &str) -> String {
+    // The same quote pairs as the frontend's sanitizeCustomPath, including smart quotes.
+    const PAIRS: [(char, char); 4] = [
+        ('"', '"'),
+        ('\'', '\''),
+        ('\u{201c}', '\u{201d}'),
+        ('\u{2018}', '\u{2019}'),
+    ];
     let trimmed = raw.trim();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 {
-        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
-        if first == last && (first == b'"' || first == b'\'') {
-            return trimmed[1..trimmed.len() - 1].trim().to_string();
+    let mut chars = trimmed.chars();
+    if let (Some(first), Some(last)) = (chars.next(), chars.next_back()) {
+        if PAIRS.contains(&(first, last)) {
+            return trimmed[first.len_utf8()..trimmed.len() - last.len_utf8()]
+                .trim()
+                .to_string();
         }
     }
     trimmed.to_string()
@@ -4717,6 +4725,23 @@ mod within_tests {
         assert_eq!(slow, None);
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(within(Duration::from_secs(1), || Some(2)), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod custom_path_quote_tests {
+    use super::*;
+
+    #[test]
+    fn herdr_normalize_custom_path_strips_smart_quote_pairs() {
+        for (raw, expected) in [
+            ("\u{201c}C:\\a b\\herdr.exe\u{201d}", "C:\\a b\\herdr.exe"),
+            ("\u{2018}/opt/herdr\u{2019}", "/opt/herdr"),
+            ("\u{201c}/opt/herdr", "\u{201c}/opt/herdr"),
+            ("\u{201c}", "\u{201c}"),
+        ] {
+            assert_eq!(normalize_custom_path(raw), expected, "{raw:?}");
+        }
     }
 }
 
