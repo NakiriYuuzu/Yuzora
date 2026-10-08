@@ -18,16 +18,26 @@ interface RuntimePreferencesState {
   hydrated: boolean
   /** Set once the user saved a value; an older in-flight hydrate must not overwrite it. */
   userSet: boolean
+  /** Set synchronously when the user saves, before the write is queued: a pending migration yields to it. */
+  userIntent: boolean
   hydrate: () => Promise<void>
   setWslEnabled: (enabled: boolean) => Promise<void>
 }
 
 let hydrating: Promise<void> | null = null
+// Preference writes run one at a time, so an older migration write cannot land after a user save.
+let writes: Promise<unknown> = Promise.resolve()
+function enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
+  const run = writes.then(task)
+  writes = run.catch(() => undefined)
+  return run
+}
 
 export const useRuntimePreferencesStore = create<RuntimePreferencesState>((set, get) => ({
   wslEnabled: false,
   hydrated: false,
   userSet: false,
+  userIntent: false,
   hydrate() {
     if (get().hydrated) return Promise.resolve()
     hydrating ??= (async () => {
@@ -36,8 +46,14 @@ export const useRuntimePreferencesStore = create<RuntimePreferencesState>((set, 
         // One-time migration of the former localStorage flag; keep it on failure so the next launch retries.
         if (!wslEnabled && !get().userSet && legacyWslEnabled()) {
           try {
-            wslEnabled = (await runtimePreferencesSet(true)).wslEnabled
-            clearLegacy()
+            // Re-check at write time: a user save queued meanwhile wins.
+            const migrated = await enqueueWrite(async () => {
+              if (get().userIntent || get().userSet) return null
+              const saved = await runtimePreferencesSet(true)
+              clearLegacy()
+              return saved.wslEnabled
+            })
+            if (migrated !== null) wslEnabled = migrated
           } catch (error) {
             console.warn("runtime preference migration failed", error)
           }
@@ -54,7 +70,8 @@ export const useRuntimePreferencesStore = create<RuntimePreferencesState>((set, 
     return hydrating
   },
   async setWslEnabled(enabled) {
-    const saved = await runtimePreferencesSet(enabled)
+    set({ userIntent: true })
+    const saved = await enqueueWrite(() => runtimePreferencesSet(enabled))
     set({ wslEnabled: saved.wslEnabled, userSet: true })
   }
 }))

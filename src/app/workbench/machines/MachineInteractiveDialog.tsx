@@ -38,7 +38,7 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
   useEffect(() => {
     const element = container
     if (!element) return
-    let disposed = false, failed = false, id: string | null = null, queue = Promise.resolve(), queuedBytes = 0
+    let disposed = false, failed = false, closed = false, id: string | null = null, queue = Promise.resolve(), queuedBytes = 0
     const settings = useTerminalSettingsStore.getState()
     const mode = () => (document.documentElement.classList.contains("dark") ? "dark" : "light")
     const term = new Terminal({ fontFamily: terminalFontStack(settings.fontFamily), fontSize: settings.fontSize, allowProposedApi: true, allowTransparency: true, scrollback: 0, theme: buildXtermTheme(mode()), minimumContrastRatio: xtermMinimumContrastRatio(mode()) })
@@ -53,12 +53,14 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
     const pendingInput: string[] = []
     let inputQueue = Promise.resolve()
     const send = (text: string) => {
-      if (disposed || failed) return
-      if (id) inputQueue = inputQueue.then(async () => { if (!disposed && !failed && id) await herdrTerminalInput(id, text) }).catch(fail)
+      if (disposed || failed || closed) return
+      if (id) inputQueue = inputQueue.then(async () => { if (!disposed && !failed && !closed && id) await herdrTerminalInput(id, text) }).catch(fail)
       else if (pendingInput.reduce((size, part) => size + part.length, 0) + text.length <= 16384) pendingInput.push(text)
     }
     const graphics = installKittyRenderer(term, send)
-    const clipboard = installTerminalClipboardHandling(term, { canPaste: () => Boolean(id) && !failed, onCopyError: fail })
+    // A failed copy must not end the official command (e.g. an in-progress machine add).
+    const copyFailed = () => { if (!disposed) toast.error(i18n.t("clipboardCopyFailed", { ns: "terminal" })) }
+    const clipboard = installTerminalClipboardHandling(term, { canPaste: () => Boolean(id) && !failed && !closed, onCopyError: copyFailed })
     // Official Copy mode exports its selection via OSC 52; clipboard reads ("?") are not implemented.
     const osc = term.parser.registerOscHandler(52, data => {
       const encoded = data.slice(data.indexOf(";") + 1)
@@ -67,7 +69,7 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
         const decoded = atob(encoded)
         const bytes = new Uint8Array(decoded.length)
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index)
-        void writeText(new TextDecoder().decode(bytes)).catch(cause => { if (!disposed) fail(cause) })
+        void writeText(new TextDecoder().decode(bytes)).catch(copyFailed)
       } catch { /* malformed clipboard output */ }
       return true
     })
@@ -79,7 +81,7 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
         fitFrame = 0
         if (disposed) return
         fit.fit()
-        if (id && !failed) void herdrTerminalResize(id, term.cols, term.rows).catch(fail)
+        if (id && !failed && !closed) void herdrTerminalResize(id, term.cols, term.rows).catch(fail)
       })
     })
     resize.observe(element)
@@ -88,12 +90,14 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
     const theme = new MutationObserver(() => { if (disposed) return; term.options.theme = buildXtermTheme(mode()); term.options.minimumContrastRatio = xtermMinimumContrastRatio(mode()) })
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
     const onEvent = (event: HerdrTerminalEvent) => {
-      if (disposed || failed) return
+      if (disposed || failed || closed) return
       if (event.type === "error") { fail(event.message); return }
       if (event.type === "closed") {
         // The official process ended: the outcome is decided by re-reading the machine list.
-        failed = true; setReady(false); setEnded(true); term.options.disableStdin = true
-        if (id) void herdrTerminalRelease(id).catch(() => undefined)
+        // Frames already queued still render (its last message), then the PTY is released.
+        closed = true; setReady(false); setEnded(true); term.options.disableStdin = true
+        const sessionId = id
+        queue = queue.finally(() => { if (sessionId) void herdrTerminalRelease(sessionId).catch(() => undefined) })
         return
       }
       if (event.type !== "frame") return

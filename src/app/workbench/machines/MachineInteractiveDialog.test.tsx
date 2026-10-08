@@ -9,7 +9,7 @@ import MachineInteractiveDialog from "./MachineInteractiveDialog"
 
 const mocks = vi.hoisted(() => ({
   open: vi.fn(), release: vi.fn(), resize: vi.fn(), input: vi.fn(), graphicsWrite: vi.fn(), list: vi.fn(),
-  toastOk: vi.fn(), toastWarn: vi.fn()
+  toastOk: vi.fn(), toastWarn: vi.fn(), toastError: vi.fn(), copyError: undefined as undefined | (() => void)
 }))
 vi.mock("@/lib/machinesIpc", () => ({
   machinesInteractiveOpen: mocks.open, machinesList: mocks.list, machinesCapabilities: vi.fn(), machinesStatus: vi.fn(),
@@ -18,10 +18,15 @@ vi.mock("@/lib/machinesIpc", () => ({
 vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalRelease: mocks.release, herdrTerminalResize: mocks.resize, herdrTerminalInput: mocks.input
 }))
-vi.mock("sonner", () => ({ toast: { success: mocks.toastOk, warning: mocks.toastWarn } }))
+vi.mock("sonner", () => ({ toast: { success: mocks.toastOk, warning: mocks.toastWarn, error: mocks.toastError } }))
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn() }))
 vi.mock("@/terminal/kittyRenderer", () => ({ installKittyRenderer: () => ({ write: mocks.graphicsWrite, dispose: vi.fn() }) }))
-vi.mock("@/terminal/terminalClipboard", () => ({ installTerminalClipboardHandling: () => ({ flushPendingPaste: vi.fn(), dispose: vi.fn() }) }))
+vi.mock("@/terminal/terminalClipboard", () => ({
+  installTerminalClipboardHandling: (_term: unknown, options: { onCopyError?: () => void }) => {
+    mocks.copyError = options.onCopyError
+    return { flushPendingPaste: vi.fn(), dispose: vi.fn() }
+  }
+}))
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit = vi.fn() } }))
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -80,6 +85,30 @@ describe("MachineInteractiveDialog", () => {
     expect(mocks.release).toHaveBeenCalledWith("herdr-client-1")
     fireEvent.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!)
     expect(useMachinesInteractiveStore.getState().selection).toBeNull()
+  })
+
+  it("still renders frames queued before the official command exits", async () => {
+    render(<MachineInteractiveDialog selection={{ spec: { kind: "client" }, machineLabel: "Lab box" }} />)
+    await nextFrame()
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalled())
+    let releaseFirst!: () => void
+    mocks.graphicsWrite.mockImplementationOnce(() => new Promise<void>(resolve => { releaseFirst = resolve }))
+    await act(async () => { onEvent(frame("first")); onEvent(frame("last line")) })
+    await act(async () => { onEvent({ type: "closed", sessionId: "herdr-client-1" }) })
+    expect(mocks.release).not.toHaveBeenCalled()
+    await act(async () => { releaseFirst() })
+    await waitFor(() => expect(mocks.graphicsWrite).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocks.release).toHaveBeenCalledWith("herdr-client-1"))
+  })
+
+  it("reports a clipboard failure without ending the official command", async () => {
+    render(<MachineInteractiveDialog selection={{ spec: { kind: "client" }, machineLabel: "Lab box" }} />)
+    await nextFrame()
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalled())
+    act(() => { mocks.copyError?.() })
+    expect(mocks.toastError).toHaveBeenCalled()
+    expect(mocks.release).not.toHaveBeenCalled()
+    expect(screen.queryByText("The session has ended.")).not.toBeInTheDocument()
   })
 
   it("forces a machines refresh when the official client closes", async () => {

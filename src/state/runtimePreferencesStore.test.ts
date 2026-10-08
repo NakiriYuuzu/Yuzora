@@ -99,3 +99,24 @@ it("does not migrate the legacy flag when the user saved a value while the backe
   expect(ipc.set).not.toHaveBeenCalled()
   expect(useRuntimePreferencesStore.getState()).toMatchObject({ wslEnabled: false, hydrated: true })
 })
+
+it("serializes the migration write with a user save so the user's choice is what persists", async () => {
+  window.localStorage.setItem(LEGACY_RUNTIME_PREFERENCES_KEY, JSON.stringify({ wslEnabled: true }))
+  ipc.get.mockResolvedValue({ wslEnabled: false })
+  let backend = false
+  let releaseMigration!: () => void
+  ipc.set.mockImplementation(async (value: boolean) => {
+    if (value) await new Promise<void>((resolve) => { releaseMigration = resolve })
+    backend = value
+    return { wslEnabled: value }
+  })
+  const hydrating = useRuntimePreferencesStore.getState().hydrate()
+  await vi.waitFor(() => expect(ipc.set).toHaveBeenCalledWith(true))
+  const saving = useRuntimePreferencesStore.getState().setWslEnabled(false)
+  await Promise.resolve()
+  releaseMigration()
+  await hydrating
+  await saving
+  expect(backend).toBe(false)
+  expect(useRuntimePreferencesStore.getState().wslEnabled).toBe(false)
+})
