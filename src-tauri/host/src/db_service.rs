@@ -2226,9 +2226,12 @@ async fn pg_open_with_timeout(
                     diagnostic.push_str(&format!("; {hint}"));
                 }
                 attempts.push(diagnostic);
-                // Only changing the database can remedy missing databases or
-                // denied CONNECT. Never retry auth, TLS, policy or network errors.
-                let database_unavailable = matches!(error.code.as_deref(), Some("3D000" | "42501"));
+                // Only changing the database can remedy a missing database,
+                // denied CONNECT or one that disallows connections (55000,
+                // datallowconn = false). Never retry auth, TLS, policy or
+                // network errors.
+                let database_unavailable =
+                    matches!(error.code.as_deref(), Some("3D000" | "42501" | "55000"));
                 let try_next = database_unavailable && index + 1 < candidates.len();
                 if !try_next {
                     failure.error.detail = Some(attempts.join("\n"));

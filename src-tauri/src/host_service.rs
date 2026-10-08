@@ -466,6 +466,8 @@ impl HostManager {
         if self.connections.lock().unwrap().contains_key(&host_id) {
             return Err("host-already-connected".into());
         }
+        // WSL may have been turned off while the identity check ran.
+        self.require_wsl_target(&target)?;
         let stream = open_stream(&target, &helper, HostLane::Control, ssh).await?;
         let owner = ConnectionOwner {
             host_id: host_id.clone(),
@@ -480,10 +482,20 @@ impl HostManager {
             return Err("unsupported-host-platform-or-protocol".into());
         }
         let _ = connection.platform.set(hello.os.clone());
+        self.admit(host_id, connection)?;
+        Ok(ConnectedHost { owner, hello })
+    }
+
+    /// Registers a connection that finished its handshake. A refused one is
+    /// dropped here, which closes its helper stream.
+    fn admit(&self, host_id: String, connection: Arc<HostConnection>) -> Result<(), String> {
         let mut connections = self.connections.lock().unwrap();
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("host-manager-shutting-down".into());
         }
+        // Re-checked under the lock: WSL may have been turned off during the
+        // handshake, and a lookup after this insert re-checks it again.
+        self.require_wsl_allowed(&connection)?;
         if connections.contains_key(&host_id) {
             return Err("host-already-connected".into());
         }
@@ -491,7 +503,7 @@ impl HostManager {
             return Err("too-many-connected-hosts".into());
         }
         connections.insert(host_id, connection);
-        Ok(ConnectedHost { owner, hello })
+        Ok(())
     }
 
     pub async fn request(
@@ -509,13 +521,15 @@ impl HostManager {
         let _ = self.wsl_gate.set(state);
     }
 
-    fn require_wsl_allowed(&self, connection: &HostConnection) -> Result<(), String> {
+    fn require_wsl_target(&self, target: &HostTarget) -> Result<(), String> {
         match self.wsl_gate.get() {
-            Some(state) => {
-                crate::runtime_preferences::require_wsl_enabled(state, &connection.target)
-            }
+            Some(state) => crate::runtime_preferences::require_wsl_enabled(state, target),
             None => Ok(()),
         }
+    }
+
+    fn require_wsl_allowed(&self, connection: &HostConnection) -> Result<(), String> {
+        self.require_wsl_target(&connection.target)
     }
 
     pub(crate) fn connection_for_host(&self, host_id: &str) -> Result<Arc<HostConnection>, String> {
@@ -759,6 +773,42 @@ mod tests {
             request,
             Err("wsl-runtime-disabled-open-settings".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn herdr_wsl_connection_is_not_admitted_once_wsl_is_disabled() {
+        let manager = HostManager::default();
+        let state = crate::runtime_preferences::RuntimePreferencesState::default();
+        manager.set_wsl_gate(state.clone());
+        let connection = |generation| {
+            let (io, _peer) = tokio::io::duplex(1024);
+            Arc::new(HostConnection::new(
+                ConnectionOwner {
+                    host_id: "wsl-fixture".into(),
+                    generation,
+                },
+                HostTarget::Wsl {
+                    distro: "Ubuntu".into(),
+                },
+                "/helper".into(),
+                Box::new(io),
+            ))
+        };
+        // Disabled while the handshake ran: the precheck in host_connect passed.
+        assert_eq!(
+            manager.require_wsl_target(&HostTarget::Wsl {
+                distro: "Ubuntu".into()
+            }),
+            Err("wsl-runtime-disabled-open-settings".to_string())
+        );
+        assert_eq!(
+            manager.admit("wsl-fixture".into(), connection(1)),
+            Err("wsl-runtime-disabled-open-settings".to_string())
+        );
+        assert!(manager.connections.lock().unwrap().is_empty());
+        state.0.lock().unwrap().wsl_enabled = true;
+        assert_eq!(manager.admit("wsl-fixture".into(), connection(2)), Ok(()));
+        assert_eq!(manager.connections.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

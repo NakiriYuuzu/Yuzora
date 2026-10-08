@@ -31,7 +31,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState<HerdrMachine | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<{ message: string; detail: string | null } | null>(null)
   const mounted = useRef(true)
   const windows = isWindowsPlatform()
   const t2 = (key: string, options?: Record<string, unknown>) => t(key, options) as string
@@ -65,12 +65,12 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setActionError(null)
     try { await action() }
-    catch (cause) { if (mounted.current) setActionError(describeMachineError(cause, t2).message) }
+    catch (cause) { if (mounted.current) setActionError(describeMachineError(cause, t2)) }
     finally { setBusy(false) }
   }
   function openInteractive(selection: MachineInteractiveSelection) {
     if (!useMachinesInteractiveStore.getState().open(selection)) {
-      setActionError(t("interactiveAlreadyOpen"))
+      setActionError({ message: t("interactiveAlreadyOpen"), detail: null })
       return
     }
     onClose()
@@ -136,7 +136,8 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
     </div>
     {windows && <p className="text-xs text-muted-foreground">{t("panel.windowsReconnectHint")}</p>}
     {(listError ?? actionError) && <div role="alert" className="text-sm text-destructive [overflow-wrap:anywhere]">
-      <p>{listError ? t("panel.loadFailed") : actionError}</p>
+      <p>{listError ? t("panel.loadFailed") : actionError?.message}</p>
+      {!listError && actionError?.detail && <details className="mt-1 text-xs"><summary>{t("panel.diagnostics")}</summary><pre className="whitespace-pre-wrap [overflow-wrap:anywhere]">{actionError.detail}</pre></details>}
       {listError && <>
         <p>{describeMachineError(listError, t2).message}</p>
         <Button size="sm" variant="outline" onClick={() => void useMachinesStore.getState().refreshList()}>{t("panel.retry")}</Button>

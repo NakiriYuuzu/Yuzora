@@ -18,6 +18,11 @@ pub struct SearchMatch {
     pub line: u32,
     pub col: u32,
     pub preview: String,
+    /// Matches inside `preview` as UTF-16 `[start, end)` offsets, found with the
+    /// search's own matcher so case folding (Σ / ς, s / ſ) agrees. Older helpers
+    /// omit it and the UI falls back to its own lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranges: Option<Vec<[u32; 2]>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -40,6 +45,26 @@ pub enum SearchEvent {
 fn make_preview(line: &str) -> String {
     let trimmed = line.trim();
     trimmed.chars().take(PREVIEW_LEN).collect()
+}
+
+fn preview_ranges(matcher: &RegexMatcher, preview: &str) -> std::io::Result<Vec<[u32; 2]>> {
+    let utf16 = |end: usize| {
+        preview
+            .get(..end)
+            .map(|head| head.encode_utf16().count() as u32)
+    };
+    let mut ranges = Vec::new();
+    matcher
+        .find_iter(preview.as_bytes(), |found| {
+            if let (false, Some(start), Some(end)) =
+                (found.is_empty(), utf16(found.start()), utf16(found.end()))
+            {
+                ranges.push([start, end]);
+            }
+            true
+        })
+        .map_err(std::io::Error::other)?;
+    Ok(ranges)
 }
 
 /// Collects matches for a single file. Stops the search and discards nothing
@@ -71,10 +96,13 @@ impl Sink for MatchCollector<'_> {
             let col = String::from_utf8_lossy(&mat.bytes()[..found.start()])
                 .chars()
                 .count() as u32;
+            let preview = make_preview(&line);
+            let ranges = preview_ranges(self.matcher, &preview)?;
             self.matches.push(SearchMatch {
                 line: mat.line_number().unwrap_or(0) as u32,
                 col,
-                preview: make_preview(&line),
+                preview,
+                ranges: Some(ranges),
             });
             if self.matches.len() >= self.budget {
                 return Ok(false);
@@ -373,6 +401,7 @@ mod tests {
                 line: 1,
                 col: 0,
                 preview: "hi".into(),
+                ranges: None,
             }],
         };
         let d = SearchEvent::Done {
@@ -411,6 +440,36 @@ mod tests {
                 assert_eq!(matches[0].preview, line);
             }
         }
+    }
+
+    #[test]
+    fn preview_ranges_follow_the_matcher_in_utf16_offsets() {
+        // Case folding the UI's toLowerCase cannot reproduce, a surrogate pair
+        // before the hit, and leading whitespace trimmed from the preview.
+        for (line, query, preview, ranges) in [
+            ("ΣΑΣ x ς", "σ", "ΣΑΣ x ς", vec![[0, 1], [2, 3], [6, 7]]),
+            ("😀s ſ", "s", "😀s ſ", vec![[2, 3], [4, 5]]),
+            ("   ab ab", "b", "ab ab", vec![[1, 2], [4, 5]]),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("a.txt"), format!("{line}\n")).unwrap();
+            let events = collect(tmp.path(), query, false);
+            let SearchEvent::Match { matches, .. } = &events[0] else {
+                panic!("missing match for {query:?}")
+            };
+            assert_eq!(matches[0].preview, preview);
+            assert_eq!(matches[0].ranges.as_deref(), Some(ranges.as_slice()));
+        }
+        assert_eq!(
+            serde_json::to_string(&SearchMatch {
+                line: 1,
+                col: 0,
+                preview: "ab".into(),
+                ranges: Some(vec![[1, 2]]),
+            })
+            .unwrap(),
+            r#"{"line":1,"col":0,"preview":"ab","ranges":[[1,2]]}"#
+        );
     }
 
     #[test]

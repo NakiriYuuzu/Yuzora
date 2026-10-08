@@ -46,6 +46,18 @@ describe("MachinesPanel actions", () => {
     expect(ipc.rename).toHaveBeenCalledWith(lab.id, "Renamed")
   })
 
+  it("keeps the CLI diagnostic of a failed mutation behind a disclosure", async () => {
+    await mount()
+    ipc.rename.mockRejectedValue("herdr-operation-error: label already used by 4f2a")
+    fireEvent.click(within(row()).getByRole("button", { name: "Rename" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "Machine name" }), { target: { value: "Other" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    const alert = await screen.findByRole("alert")
+    expect(alert).toHaveTextContent(i18n.t("machines:errors.herdr-operation-error"))
+    expect(within(alert).getByText("label already used by 4f2a")).toBeInTheDocument()
+    expect(within(alert).getByText(i18n.t("machines:panel.diagnostics"))).toBeInTheDocument()
+  })
+
   it("disables a machine and hides nothing else", async () => {
     await mount()
     ipc.setEnabled.mockResolvedValue([{ ...lab, enabled: false }])

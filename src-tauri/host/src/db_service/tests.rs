@@ -2873,6 +2873,7 @@ async fn postgres_maintenance_falls_back_in_order() {
         (vec![], vec!["postgres"]),
         (vec!["42501"], vec!["postgres", "alice"]),
         (vec!["3D000"], vec!["postgres", "alice"]),
+        (vec!["55000"], vec!["postgres", "alice"]),
     ] {
         let (result, attempts) = pg_maintenance_fixture("  ", "alice", &failures).await;
         assert!(result.is_ok(), "{:?}", result.err());
@@ -2989,6 +2990,7 @@ async fn postgres_maintenance_does_not_retry_auth_or_explicit_database_failures(
         ("", "08006"),
         ("app", "42501"),
         ("app", "3D000"),
+        ("app", "55000"),
     ] {
         let (result, attempts) = pg_maintenance_fixture(database, "alice", &[code]).await;
         assert_eq!(

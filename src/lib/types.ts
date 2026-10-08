@@ -140,7 +140,8 @@ export interface GitConflictSides {
 export interface GitOperationOutcome { conflicts: boolean }
 export interface GitStashEntry { index: number; oid: string; message: string; timestamp: number }
 export type GitResetMode = "soft" | "mixed" | "hard" | "keep"
-export interface SearchMatch { line: number; col: number; preview: string }
+/** `ranges`: matches inside `preview` as UTF-16 `[start, end)` offsets; absent from older helpers. */
+export interface SearchMatch { line: number; col: number; preview: string; ranges?: [number, number][] }
 export type SearchEvent =
     | { type: "match"; path: string; matches: SearchMatch[] }
     | { type: "done"; truncated: boolean; fileCount: number }
