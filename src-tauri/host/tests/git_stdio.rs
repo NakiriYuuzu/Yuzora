@@ -262,18 +262,21 @@ async fn eof_cancels_an_inflight_git_hook_and_does_not_replay_the_commit() {
             },
         ))
         .await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !repo.join("hook.pid").exists() {
+    // The shell creates hook.pid before it writes the pid: wait for the line.
+    let pid: i32 = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let written = std::fs::read_to_string(repo.join("hook.pid"))
+                .ok()
+                .filter(|text| text.ends_with('\n'))
+                .and_then(|text| text.trim().parse().ok());
+            if let Some(pid) = written {
+                break pid;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    let pid: i32 = std::fs::read_to_string(repo.join("hook.pid"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
     helper.close().await;
     tokio::time::timeout(Duration::from_secs(3), async {
         while unsafe { libc::kill(pid, 0) } == 0 {
