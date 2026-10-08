@@ -138,7 +138,7 @@ export interface GitConflictSides {
 }
 /** Outcome of an operation that can stop on merge conflicts (the repository is then mid-operation). */
 export interface GitOperationOutcome { conflicts: boolean }
-export interface GitStashEntry { index: number; message: string; timestamp: number }
+export interface GitStashEntry { index: number; oid: string; message: string; timestamp: number }
 export type GitResetMode = "soft" | "mixed" | "hard" | "keep"
 export interface SearchMatch { line: number; col: number; preview: string }
 export type SearchEvent =

@@ -71,9 +71,12 @@ export function GitStashDialog() {
         if (!target) return
         let conflicts = false
         const ok = await useGitStore.getState().runOp(pop ? "stash-pop" : "stash-apply", async () => {
-            conflicts = (await gitStashApply(target, entry.index, pop)).conflicts
+            conflicts = (await gitStashApply(target, entry.index, entry.oid, pop)).conflicts
         })
-        if (!ok) return
+        if (!ok) {
+            load() // a stale index aborts in the host; show the renumbered list
+            return
+        }
         void logUserAction(pop ? "git_stash_pop" : "git_stash_apply", `stash@{${entry.index}}`)
         load()
         if (conflicts) {
@@ -93,7 +96,8 @@ export function GitStashDialog() {
             destructive: true
         })
         if (!ok || actionableRoot() !== target) return
-        if (await useGitStore.getState().runOp("stash-drop", () => gitStashDrop(target, entry.index))) load()
+        await useGitStore.getState().runOp("stash-drop", () => gitStashDrop(target, entry.index, entry.oid))
+        load()
     }
 
     return (

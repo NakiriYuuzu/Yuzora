@@ -847,10 +847,11 @@ pub async fn git_stash_apply(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     index: u32,
+    oid: String,
     pop: bool,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        stash_apply(root, index, pop)
+        stash_apply(root, index, &oid, pop)
     })
     .await
 }
@@ -861,9 +862,10 @@ pub async fn git_stash_drop(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     index: u32,
+    oid: String,
 ) -> Result<(), String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        stash_drop(root, index)
+        stash_drop(root, index, &oid)
     })
     .await
 }

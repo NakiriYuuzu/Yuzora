@@ -80,9 +80,9 @@ pub enum GitCommand {
         keep_index: bool,
     },
     #[serde(rename = "git_stash_apply")]
-    StashApply { index: u32, pop: bool },
+    StashApply { index: u32, oid: String, pop: bool },
     #[serde(rename = "git_stash_drop")]
-    StashDrop { index: u32 },
+    StashDrop { index: u32, oid: String },
     #[serde(rename = "git_remote_probe")]
     RemoteProbe,
     #[serde(rename = "git_diff_content")]
@@ -344,8 +344,10 @@ mod host {
                     include_untracked,
                     keep_index,
                 )),
-                GitCommand::StashApply { index, pop } => value(stash_apply(root, index, pop)),
-                GitCommand::StashDrop { index } => value(stash_drop(root, index)),
+                GitCommand::StashApply { index, oid, pop } => {
+                    value(stash_apply(root, index, &oid, pop))
+                }
+                GitCommand::StashDrop { index, oid } => value(stash_drop(root, index, &oid)),
                 GitCommand::RemoteProbe => value(remote_probe(root, &[])),
                 GitCommand::Diff {
                     path,

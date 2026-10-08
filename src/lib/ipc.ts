@@ -421,12 +421,12 @@ export function gitStashPush(
     return invokeGit("git_stash_push", { repositoryRoot, message, includeUntracked, keepIndex })
 }
 
-export function gitStashApply(repositoryRoot: string, index: number, pop: boolean): Promise<GitOperationOutcome> {
-    return invokeGit("git_stash_apply", { repositoryRoot, index, pop })
+export function gitStashApply(repositoryRoot: string, index: number, oid: string, pop: boolean): Promise<GitOperationOutcome> {
+    return invokeGit("git_stash_apply", { repositoryRoot, index, oid, pop })
 }
 
-export function gitStashDrop(repositoryRoot: string, index: number): Promise<void> {
-    return invokeGit("git_stash_drop", { repositoryRoot, index })
+export function gitStashDrop(repositoryRoot: string, index: number, oid: string): Promise<void> {
+    return invokeGit("git_stash_drop", { repositoryRoot, index, oid })
 }
 
 export function gitRemoteProbe(repositoryRoot: string): Promise<RemoteProbe> {

@@ -139,7 +139,7 @@ describe("smart checkout", () => {
 
 describe("GitStashDialog", () => {
     it("stashes with the chosen options and pops with conflict handoff", async () => {
-        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, message: "On main: wip", timestamp: 1 }])
+        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid: "a".repeat(40), message: "On main: wip", timestamp: 1 }])
         vi.mocked(ipc.gitStashApply).mockResolvedValueOnce({ conflicts: true })
         useGitActionDialogStore.setState({ stashOpen: true })
         render(<GitStashDialog />)
@@ -152,9 +152,24 @@ describe("GitStashDialog", () => {
         await waitFor(() => expect(ipc.gitStashPush).toHaveBeenCalledWith("/w", "half done", true, true))
 
         fireEvent.click(within(dialog).getByRole("button", { name: "Pop stash@{0}" }))
-        await waitFor(() => expect(ipc.gitStashApply).toHaveBeenCalledWith("/w", 0, true))
+        await waitFor(() => expect(ipc.gitStashApply).toHaveBeenCalledWith("/w", 0, "a".repeat(40), true))
         await waitFor(() => expect(useGitConflictStore.getState().conflictsOpen).toBe(true))
         expect(useGitActionDialogStore.getState().stashOpen).toBe(false)
+    })
+
+    it("shows the error and reloads the list when a stash changed under the dialog", async () => {
+        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid: "a".repeat(40), message: "On main: wip", timestamp: 1 }])
+        vi.mocked(ipc.gitStashApply).mockRejectedValueOnce("git stash: stash@{0} changed since the list was loaded; reload and try again")
+        useGitActionDialogStore.setState({ stashOpen: true })
+        render(<GitStashDialog />)
+        const dialog = await screen.findByRole("dialog")
+        await within(dialog).findByText("On main: wip")
+        const loads = vi.mocked(ipc.gitStashList).mock.calls.length
+
+        fireEvent.click(within(dialog).getByRole("button", { name: "Apply stash@{0}" }))
+        await waitFor(() => expect(useGitStore.getState().lastError).toContain("changed since the list"))
+        await waitFor(() => expect(vi.mocked(ipc.gitStashList).mock.calls.length).toBeGreaterThan(loads))
+        expect(useGitActionDialogStore.getState().stashOpen).toBe(true)
     })
 })
 

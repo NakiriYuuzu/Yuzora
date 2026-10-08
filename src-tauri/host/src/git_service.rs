@@ -1712,6 +1712,7 @@ pub fn reset_branch(root: &Path, hash: &str, mode: &str) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct GitStashEntry {
     pub index: u32,
+    pub oid: String,
     pub message: String,
     pub timestamp: i64,
 }
@@ -1719,7 +1720,7 @@ pub struct GitStashEntry {
 pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     let out = run_ok(
         root,
-        &["stash", "list", "-z", "--format=%gd%x1f%s%x1f%ct"],
+        &["stash", "list", "-z", "--format=%gd%x1f%H%x1f%s%x1f%ct"],
         DEFAULT_TIMEOUT,
         &[],
     )?;
@@ -1727,9 +1728,9 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     text.split('\0')
         .filter(|record| !record.is_empty())
         .map(|record| {
-            let mut fields = record.splitn(3, '\u{1f}');
-            let (Some(name), Some(message), Some(time)) =
-                (fields.next(), fields.next(), fields.next())
+            let mut fields = record.splitn(4, '\u{1f}');
+            let (Some(name), Some(oid), Some(message), Some(time)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
             else {
                 return Err("git stash list: unexpected output".to_string());
             };
@@ -1740,6 +1741,7 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
                 .ok_or_else(|| "git stash list: unexpected stash name".to_string())?;
             Ok(GitStashEntry {
                 index,
+                oid: oid.to_string(),
                 message: message.to_string(),
                 timestamp: time.trim().parse::<i64>().unwrap_or(0),
             })
@@ -1772,17 +1774,42 @@ pub fn stash_push(
     Ok(())
 }
 
-/// Apply (or pop) `stash@{index}`. A conflicting apply leaves unmerged paths;
-/// a conflicting `pop` keeps the stash, as git does.
-pub fn stash_apply(root: &Path, index: u32, pop: bool) -> Result<GitOperationOutcome, String> {
+/// Abort unless `stash@{index}` still names `oid`: another client may have
+/// pushed or dropped a stash since the list was read, renumbering the entries.
+fn verify_stash_identity(root: &Path, name: &str, oid: &str) -> Result<(), String> {
+    let current = run_git(
+        root,
+        &["rev-parse", "--quiet", "--verify", name],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if current.code == 0 && String::from_utf8_lossy(&current.stdout).trim() == oid {
+        return Ok(());
+    }
+    Err(format!(
+        "git stash: {name} changed since the list was loaded; reload and try again"
+    ))
+}
+
+/// Apply (or pop) `stash@{index}`, which must still be commit `oid`. A
+/// conflicting apply leaves unmerged paths; a conflicting `pop` keeps the
+/// stash, as git does.
+pub fn stash_apply(
+    root: &Path,
+    index: u32,
+    oid: &str,
+    pop: bool,
+) -> Result<GitOperationOutcome, String> {
     let name = format!("stash@{{{index}}}");
+    verify_stash_identity(root, &name, oid)?;
     let sub = if pop { "pop" } else { "apply" };
     let out = run_git(root, &["stash", sub, &name], DEFAULT_TIMEOUT, &[])?;
     operation_outcome(root, "stash", out)
 }
 
-pub fn stash_drop(root: &Path, index: u32) -> Result<(), String> {
+pub fn stash_drop(root: &Path, index: u32, oid: &str) -> Result<(), String> {
     let name = format!("stash@{{{index}}}");
+    verify_stash_identity(root, &name, oid)?;
     run_ok(root, &["stash", "drop", &name], DEFAULT_TIMEOUT, &[])?;
     Ok(())
 }
@@ -2876,7 +2903,7 @@ mod tests {
         assert!(list[0].timestamp > 1_000_000_000);
 
         // apply keeps the entry, pop removes it.
-        let outcome = stash_apply(repo, 1, false).unwrap();
+        let outcome = stash_apply(repo, 1, &list[1].oid, false).unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
         assert_eq!(
             std::fs::read_to_string(repo.join("a.txt")).unwrap(),
@@ -2884,14 +2911,48 @@ mod tests {
         );
         assert_eq!(stash_list(repo).unwrap().len(), 2);
         test_repo::git(repo, &["checkout", "--", "a.txt"]);
-        stash_apply(repo, 1, true).unwrap();
+        stash_apply(repo, 1, &list[1].oid, true).unwrap();
         let list = stash_list(repo).unwrap();
         assert_eq!(list.len(), 1);
         assert!(list[0].message.contains("with untracked"));
 
-        stash_drop(repo, 0).unwrap();
+        let last = stash_list(repo).unwrap()[0].oid.clone();
+        stash_drop(repo, 0, &last).unwrap();
         assert!(stash_list(repo).unwrap().is_empty());
-        assert!(stash_drop(repo, 0).is_err());
+        assert!(stash_drop(repo, 0, &last).is_err());
+    }
+
+    #[test]
+    fn stash_operations_abort_when_the_index_no_longer_names_the_listed_stash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "first\n").unwrap();
+        stash_push(repo, Some("first"), false, false).unwrap();
+        let listed = stash_list(repo).unwrap();
+        assert_eq!(listed[0].oid.len(), 40);
+
+        // Another client pushes: stash@{0} now names a different stash.
+        std::fs::write(repo.join("a.txt"), "second\n").unwrap();
+        stash_push(repo, Some("second"), false, false).unwrap();
+        let before = stash_list(repo).unwrap();
+
+        for pop in [false, true] {
+            let err = stash_apply(repo, 0, &listed[0].oid, pop).unwrap_err();
+            assert!(err.contains("changed since the list"), "{err}");
+        }
+        let err = stash_drop(repo, 0, &listed[0].oid).unwrap_err();
+        assert!(err.contains("changed since the list"), "{err}");
+        // A vanished index also aborts.
+        assert!(stash_drop(repo, 5, &listed[0].oid).is_err());
+
+        assert_eq!(stash_list(repo).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "1\n");
+
+        // The matching oid still works at its renumbered index.
+        stash_drop(repo, 1, &listed[0].oid).unwrap();
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
     }
 
     #[test]
@@ -2919,7 +2980,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
         stash_push(repo, None, false, false).unwrap();
         test_repo::write_and_commit(repo, "a.txt", "committed\n", "c2");
-        let outcome = stash_apply(repo, 0, true).unwrap();
+        let outcome = stash_apply(repo, 0, &stash_list(repo).unwrap()[0].oid, true).unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: true });
         assert_eq!(
             stash_list(repo).unwrap().len(),
@@ -3042,7 +3103,12 @@ mod tests {
         let repo = tmp.path();
         test_repo::init(repo);
         test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
-        assert!(stash_apply(repo, 0, false).is_err());
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, None, false, false).unwrap();
+        // Local edits to the same file make git refuse the apply outright.
+        std::fs::write(repo.join("a.txt"), "local\n").unwrap();
+        let oid = stash_list(repo).unwrap()[0].oid.clone();
+        assert!(stash_apply(repo, 0, &oid, false).is_err());
     }
 
     #[test]
