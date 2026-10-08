@@ -17,6 +17,7 @@ pub mod git_oid;
 pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
+mod herdr_machines;
 pub mod herdr_service;
 mod herdr_startup;
 pub mod host_bootstrap;
@@ -504,6 +505,14 @@ pub fn run() {
             herdr_service::herdr_binary_source_get,
             herdr_service::herdr_binary_source_set,
             herdr_service::herdr_binary_source_check,
+            herdr_machines::herdr_machines_capabilities,
+            herdr_machines::herdr_machines_list,
+            herdr_machines::herdr_machines_status,
+            herdr_machines::herdr_machines_agents,
+            herdr_machines::herdr_machines_rename,
+            herdr_machines::herdr_machines_set_enabled,
+            herdr_machines::herdr_machines_remove,
+            herdr_machines::herdr_machine_interactive_open,
             herdr_service::herdr_events_subscribe,
             herdr_service::herdr_events_release
         ]))
@@ -697,6 +706,14 @@ mod command_inventory_tests {
             "herdr_service::herdr_binary_source_set",
             "herdr_service::herdr_events_subscribe",
             "herdr_service::herdr_events_release",
+            "herdr_machines::herdr_machines_capabilities",
+            "herdr_machines::herdr_machines_list",
+            "herdr_machines::herdr_machines_status",
+            "herdr_machines::herdr_machines_agents",
+            "herdr_machines::herdr_machines_rename",
+            "herdr_machines::herdr_machines_set_enabled",
+            "herdr_machines::herdr_machines_remove",
+            "herdr_machines::herdr_machine_interactive_open",
         ] {
             assert!(
                 inventory_source.contains(cmd),
