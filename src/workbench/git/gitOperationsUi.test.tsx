@@ -118,6 +118,20 @@ describe("smart checkout", () => {
             cancelLabel: "Don't Checkout"
         }))
         expect(useGitConflictStore.getState().conflictsOpen).toBe(true)
+        expect(dialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: expect.not.stringContaining("Untracked files") }))
+    })
+
+    it("offers Smart Checkout when untracked files block the switch and explains they come back as changes", async () => {
+        const run = vi.fn(async (smart: boolean): Promise<GitOperationOutcome> => {
+            if (!smart) throw new Error("git switch: error: The following untracked working tree files would be overwritten by checkout:\n\tshared.txt\nPlease move or remove them before you switch branches.\nAborting")
+            return { conflicts: false }
+        })
+        expect(await switchBranch("/w", "checkout", "feature/x", run)).toBe(true)
+        expect(run.mock.calls).toEqual([[false], [true]])
+        expect(dialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({
+            description: expect.stringMatching(/would overwrite your local changes[\s\S]*Untracked files have the same paths as files tracked in 'feature\/x'/)
+        }))
+        expect(useGitConflictStore.getState().conflictsOpen).toBe(false)
     })
 
     it("leaves other failures and a declined prompt alone", async () => {

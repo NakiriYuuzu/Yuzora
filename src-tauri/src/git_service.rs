@@ -508,7 +508,7 @@ pub async fn git_create_branch(
     smart: Option<bool>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        switch_keeping_changes(root, smart.unwrap_or(false), || {
+        switch_keeping_changes(root, smart.unwrap_or(false), start_point.as_deref(), || {
             create_branch(root, &name, start_point.as_deref())
         })
     })
@@ -524,7 +524,7 @@ pub async fn git_checkout_detached(
     smart: Option<bool>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        switch_keeping_changes(root, smart.unwrap_or(false), || {
+        switch_keeping_changes(root, smart.unwrap_or(false), Some(&rev), || {
             checkout_detached(root, &rev)
         })
     })
@@ -540,7 +540,10 @@ pub async fn git_checkout(
     smart: Option<bool>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        switch_keeping_changes(root, smart.unwrap_or(false), || checkout(root, &name))
+        let branch = format!("refs/heads/{name}");
+        switch_keeping_changes(root, smart.unwrap_or(false), Some(&branch), || {
+            checkout(root, &name)
+        })
     })
     .await
 }

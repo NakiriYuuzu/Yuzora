@@ -286,18 +286,26 @@ mod host {
                     name,
                     start_point,
                     smart,
-                } => value(switch_keeping_changes(root, smart.unwrap_or(false), || {
-                    create_branch(root, &name, start_point.as_deref())
-                })),
-                GitCommand::CheckoutDetached { rev, smart } => {
-                    value(switch_keeping_changes(root, smart.unwrap_or(false), || {
-                        checkout_detached(root, &rev)
-                    }))
-                }
+                } => value(switch_keeping_changes(
+                    root,
+                    smart.unwrap_or(false),
+                    start_point.as_deref(),
+                    || create_branch(root, &name, start_point.as_deref()),
+                )),
+                GitCommand::CheckoutDetached { rev, smart } => value(switch_keeping_changes(
+                    root,
+                    smart.unwrap_or(false),
+                    Some(&rev),
+                    || checkout_detached(root, &rev),
+                )),
                 GitCommand::Checkout { name, smart } => {
-                    value(switch_keeping_changes(root, smart.unwrap_or(false), || {
-                        checkout(root, &name)
-                    }))
+                    let branch = format!("refs/heads/{name}");
+                    value(switch_keeping_changes(
+                        root,
+                        smart.unwrap_or(false),
+                        Some(&branch),
+                        || checkout(root, &name),
+                    ))
                 }
                 GitCommand::CherryPick { hash } => value(cherry_pick(root, &hash)),
                 GitCommand::Fetch => {

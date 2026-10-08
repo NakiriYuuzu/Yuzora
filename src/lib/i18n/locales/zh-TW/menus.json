@@ -566,6 +566,7 @@
     "stashItem": "Stash／取回 stash…",
     "checkoutProblemTitle": "Git 簽出問題",
     "checkoutProblem": "簽出「{{target}}」會覆寫目前的本機變更。\n\n智慧簽出會先把變更 stash 起來、切換後再自動還原；還原時若有衝突，會開啟衝突對話框，變更也會保留在 stash。",
+    "checkoutProblemUntracked": "有未追蹤的檔案和「{{target}}」追蹤的檔案同路徑。智慧簽出切換後會把你的版本寫回這些檔案，在 Git 面板顯示為修改；「{{target}}」已 commit 的版本仍可取回。",
     "smartCheckout": "智慧簽出",
     "dontCheckout": "不要簽出"
   },

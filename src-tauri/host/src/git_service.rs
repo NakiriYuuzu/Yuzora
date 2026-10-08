@@ -1479,14 +1479,19 @@ pub fn checkout_detached(root: &Path, rev: &str) -> Result<(), String> {
 }
 
 const SMART_CHECKOUT_STASH: &str = "Yuzora smart checkout";
+const SMART_CHECKOUT_UNTRACKED_STASH: &str = "Yuzora smart checkout (untracked files)";
+const BLOCKED_BY_UNTRACKED: &str = "untracked working tree files would be overwritten by checkout";
 
 /// Runs a branch switch. With `smart` (JetBrains "Smart Checkout") local
 /// changes are stashed for the switch and restored on the new HEAD; a restore
 /// that conflicts keeps the stash and leaves the conflicts to the merge tool.
+/// `target` is the commit the switch lands on, so untracked files it also
+/// tracks can be carried over.
 pub fn switch_keeping_changes(
     root: &Path,
     smart: bool,
-    switch: impl FnOnce() -> Result<(), String>,
+    target: Option<&str>,
+    switch: impl Fn() -> Result<(), String>,
 ) -> Result<GitOperationOutcome, String> {
     if !smart {
         return switch().map(|()| GitOperationOutcome { conflicts: false });
@@ -1500,10 +1505,11 @@ pub fn switch_keeping_changes(
     )?;
     // git reports, rather than fails, when there was nothing to save.
     if String::from_utf8_lossy(&pushed.stdout).contains("No local changes to save") {
-        return switch().map(|()| GitOperationOutcome { conflicts: false });
+        return switch_over_untracked(root, target, &switch)
+            .map(|()| GitOperationOutcome { conflicts: false });
     }
     let parked = stash_top(root).ok().flatten();
-    let switched = switch();
+    let switched = switch_over_untracked(root, target, &switch);
     // A failed switch left HEAD where it was, so the changes go back as they were.
     let restored = restore_parked_changes(root, parked.as_deref());
     match (switched, restored) {
@@ -1511,6 +1517,126 @@ pub fn switch_keeping_changes(
         (Err(error), Ok(_)) => Err(error),
         (Err(error), Err(restore_error)) => Err(format!("{error}\n{restore_error}")),
     }
+}
+
+/// Runs `switch`. When untracked files block it because `target` tracks the
+/// same paths, parks just those files, switches, and writes the local copies
+/// back over the target's versions: they read as edits to its files, whose
+/// committed version stays recoverable. A switch that still fails puts them
+/// back as they were.
+fn switch_over_untracked(
+    root: &Path,
+    target: Option<&str>,
+    switch: &impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    let blocked = match switch() {
+        Err(error) if error.contains(BLOCKED_BY_UNTRACKED) => error,
+        other => return other,
+    };
+    let Some(target) = target else {
+        return Err(blocked);
+    };
+    let paths =
+        untracked_paths_tracked_by(root, target).map_err(|error| format!("{blocked}\n{error}"))?;
+    if paths.is_empty() {
+        return Err(blocked);
+    }
+    let pathspec = paths.join("\0");
+    let from_stdin = ["--pathspec-from-file=-", "--pathspec-file-nul"];
+    let mut push = vec![
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        SMART_CHECKOUT_UNTRACKED_STASH,
+    ];
+    push.extend(from_stdin);
+    let out = run_git_with_stdin(root, &push, DEFAULT_TIMEOUT, &[], pathspec.as_bytes())?;
+    if out.code != 0 {
+        return Err(format!("{blocked}\n{}", git_err("stash", &out.stderr)));
+    }
+    let kept = || {
+        format!(
+            "git stash: your untracked files are kept in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
+        )
+    };
+    let parked = stash_top(root).ok().flatten().ok_or_else(kept)?;
+    let switched = switch();
+    // Either the target now holds its own versions or HEAD never moved; both
+    // ways `--worktree` writes the parked copies and leaves the index alone.
+    let source = format!("{parked}^3");
+    let mut restore = vec!["restore", "--source", source.as_str(), "--worktree"];
+    restore.extend(from_stdin);
+    let restored = run_git_with_stdin(root, &restore, DEFAULT_TIMEOUT, &[], pathspec.as_bytes())
+        .and_then(|out| match out.code {
+            0 => Ok(()),
+            _ => Err(git_err("restore", &out.stderr)),
+        })
+        .map_err(|error| format!("{error}\n{}", kept()));
+    // Someone else stashing meanwhile leaves both stashes alone.
+    let restored = restored.and_then(|()| {
+        let top = stash_top(root).ok().flatten();
+        let dropped = top.as_deref() == Some(parked.as_str())
+            && run_ok(root, &["stash", "drop", "--quiet"], DEFAULT_TIMEOUT, &[]).is_ok();
+        dropped.then_some(()).ok_or_else(|| {
+            format!(
+                "git stash: your untracked files are restored and a copy stays in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
+            )
+        })
+    });
+    match (switched, restored) {
+        (Ok(()), restored) => restored,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => Err(format!("{error}\n{restore_error}")),
+    }
+}
+
+/// Untracked, non-ignored files whose path `target` tracks as a file: the ones
+/// a switch to it refuses to overwrite.
+fn untracked_paths_tracked_by(root: &Path, target: &str) -> Result<Vec<String>, String> {
+    let oid = crate::git_oid::resolve_commit_oid(root, target)?;
+    let listed = run_ok(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+        ],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    let untracked: Vec<&str> = listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|path| std::str::from_utf8(path).ok())
+        .filter(|path| !path.is_empty() && !path.contains('\n'))
+        .collect();
+    if untracked.is_empty() {
+        return Ok(Vec::new());
+    }
+    let queries: String = untracked
+        .iter()
+        .map(|path| format!("{}:{path}\n", oid.as_str()))
+        .collect();
+    let kinds = run_git_with_stdin(
+        root,
+        &["cat-file", "--batch-check=%(objecttype)"],
+        DEFAULT_TIMEOUT,
+        &[],
+        queries.as_bytes(),
+    )?;
+    if kinds.code != 0 {
+        return Err(git_err("cat-file", &kinds.stderr));
+    }
+    // One answer per query: the object type, or "<query> missing".
+    Ok(untracked
+        .into_iter()
+        .zip(String::from_utf8_lossy(&kinds.stdout).lines())
+        .filter(|(_, kind)| *kind == "blob")
+        .map(|(path, _)| path.to_string())
+        .collect())
 }
 
 fn stash_top(root: &Path) -> Result<Option<String>, String> {
@@ -3127,14 +3253,19 @@ mod tests {
         let repo = tmp.path();
         std::fs::write(repo.join("c.txt"), EIGHT_LINES.replace("8\n", "eight\n")).unwrap();
         test_repo::git(repo, &["add", "c.txt"]);
-        let blocked =
-            switch_keeping_changes(repo, false, || checkout(repo, "feature")).unwrap_err();
+        let blocked = switch_keeping_changes(repo, false, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap_err();
         assert!(
             blocked.contains("would be overwritten by checkout"),
             "{blocked}"
         );
 
-        let outcome = switch_keeping_changes(repo, true, || checkout(repo, "feature")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
         assert_eq!(git_line(repo, &["branch", "--show-current"]), "feature");
         assert_eq!(
@@ -3155,7 +3286,10 @@ mod tests {
         let tmp = eight_line_repo();
         let repo = tmp.path();
         std::fs::write(repo.join("c.txt"), EIGHT_LINES.replacen("1\n", "uno\n", 1)).unwrap();
-        let outcome = switch_keeping_changes(repo, true, || checkout(repo, "feature")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: true });
         assert_eq!(git_line(repo, &["branch", "--show-current"]), "feature");
         let stashes = stash_list(repo).unwrap();
@@ -3169,14 +3303,119 @@ mod tests {
         let repo = tmp.path();
         let edited = EIGHT_LINES.replace("8\n", "eight\n");
         std::fs::write(repo.join("c.txt"), &edited).unwrap();
-        assert!(switch_keeping_changes(repo, true, || checkout(repo, "missing")).is_err());
+        assert!(
+            switch_keeping_changes(repo, true, Some("refs/heads/missing"), || checkout(
+                repo, "missing"
+            ))
+            .is_err()
+        );
         assert_eq!(git_line(repo, &["branch", "--show-current"]), "main");
         assert_eq!(read_text(repo, "c.txt"), edited);
         assert!(stash_list(repo).unwrap().is_empty());
         // Nothing to park: a clean tree switches directly.
         test_repo::git(repo, &["checkout", "--", "c.txt"]);
-        let outcome = switch_keeping_changes(repo, true, || checkout(repo, "feature")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
+    }
+
+    /// eight_line_repo plus feature-only `shared.txt` and `extra` files, with
+    /// local untracked `shared.txt` and `keep.txt` on main.
+    fn shared_file_repo(extra: &[&str]) -> tempfile::TempDir {
+        let tmp = eight_line_repo();
+        let repo = tmp.path();
+        test_repo::git(repo, &["switch", "feature"]);
+        test_repo::write_and_commit(repo, "shared.txt", "feature\n", "shared");
+        for path in extra {
+            std::fs::create_dir_all(repo.join(path).parent().unwrap()).unwrap();
+            test_repo::write_and_commit(repo, path, "x\n", "extra");
+        }
+        test_repo::git(repo, &["switch", "main"]);
+        std::fs::write(repo.join("shared.txt"), "local\n").unwrap();
+        std::fs::write(repo.join("keep.txt"), "untouched\n").unwrap();
+        tmp
+    }
+
+    fn assert_local_copy_over_feature(repo: &Path) {
+        assert_eq!(git_line(repo, &["branch", "--show-current"]), "feature");
+        assert_eq!(read_text(repo, "shared.txt"), "local\n");
+        assert_eq!(git_line(repo, &["show", "HEAD:shared.txt"]), "feature");
+        assert!(git_line(repo, &["diff", "--name-only"])
+            .lines()
+            .any(|path| path == "shared.txt"));
+        assert!(!git_line(repo, &["diff", "--cached", "--name-only"]).contains("shared.txt"));
+        assert_eq!(read_text(repo, "keep.txt"), "untouched\n");
+        assert_eq!(
+            git_line(repo, &["ls-files", "--others", "--exclude-standard"]),
+            "keep.txt"
+        );
+        assert!(stash_list(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn smart_checkout_writes_blocking_untracked_files_over_the_target() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        let blocked = switch_keeping_changes(repo, false, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap_err();
+        assert!(blocked.contains(BLOCKED_BY_UNTRACKED), "{blocked}");
+
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
+        assert_eq!(outcome, GitOperationOutcome { conflicts: false });
+        assert_local_copy_over_feature(repo);
+    }
+
+    #[test]
+    fn smart_checkout_carries_blocking_untracked_files_with_tracked_changes() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        std::fs::write(repo.join("c.txt"), EIGHT_LINES.replace("8\n", "eight\n")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
+        assert_eq!(outcome, GitOperationOutcome { conflicts: false });
+        assert_local_copy_over_feature(repo);
+        assert_eq!(
+            read_text(repo, "c.txt"),
+            EIGHT_LINES
+                .replacen("1\n", "one\n", 1)
+                .replace("8\n", "eight\n")
+        );
+    }
+
+    #[test]
+    fn smart_checkout_puts_untracked_files_back_when_the_switch_still_fails() {
+        let tmp = shared_file_repo(&["dir/inner.txt"]);
+        let repo = tmp.path();
+        // A file where feature needs a directory still blocks after parking.
+        std::fs::write(repo.join("dir"), "blocker\n").unwrap();
+        std::fs::write(repo.join("c.txt"), EIGHT_LINES.replace("8\n", "eight\n")).unwrap();
+
+        let error = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap_err();
+        assert!(error.contains(BLOCKED_BY_UNTRACKED), "{error}");
+        assert_eq!(git_line(repo, &["branch", "--show-current"]), "main");
+        assert_eq!(read_text(repo, "shared.txt"), "local\n");
+        assert_eq!(read_text(repo, "dir"), "blocker\n");
+        assert_eq!(
+            read_text(repo, "c.txt"),
+            EIGHT_LINES.replace("8\n", "eight\n")
+        );
+        assert_eq!(
+            git_line(repo, &["ls-files", "--others", "--exclude-standard"]),
+            "dir\nkeep.txt\nshared.txt"
+        );
+        assert!(stash_list(repo).unwrap().is_empty());
     }
 
     #[test]
