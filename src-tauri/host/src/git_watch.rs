@@ -167,10 +167,16 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(650)),
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
-        let start = Instant::now();
-        drop(watcher);
-        // Generous for loaded runners: a worker that never woke would hang the join instead.
-        assert!(start.elapsed() < Duration::from_secs(5));
+        // A worker the drop failed to wake would block the join forever. The
+        // bound is loose because stopping notify's FSEvents stream can take
+        // seconds while fseventsd is busy.
+        let (dropped, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(watcher);
+            let _ = dropped.send(());
+        });
+        done.recv_timeout(EVENT_TIMEOUT)
+            .expect("drop must wake the idle worker");
         assert!(matches!(
             rx.try_recv(),
             Err(mpsc::TryRecvError::Disconnected)
