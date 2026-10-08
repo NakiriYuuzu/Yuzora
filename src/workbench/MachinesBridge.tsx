@@ -22,7 +22,13 @@ function createMachinesPoller() {
   let rerun = false
   let stopped = false
   const hidden = () => document.visibilityState === "hidden"
-  const base = () => (hidden() ? intervals.hidden : intervals.visible)
+  // A loaded empty catalog only needs to notice a machine added outside Yuzora (the
+  // official CLI); a failed one retries at the normal pace.
+  const idleCatalog = () => {
+    const { machines, listError } = useMachinesStore.getState()
+    return machines.length === 0 && listError === null
+  }
+  const base = () => (hidden() || idleCatalog() ? intervals.hidden : intervals.visible)
 
   /** Forget machines that vanished or were disabled, so re-enabling one polls it again. */
   function prune(machines: readonly { id: string; enabled: boolean }[]) {
@@ -122,9 +128,10 @@ export function MachinesBridge() {
     let capabilityRetry: ReturnType<typeof setTimeout> | null = null
     let disposed = false
     const sync = () => {
-      const { capabilities, capabilitiesError, machines, listError } = useMachinesStore.getState()
-      // A catalog that failed to load keeps a list retry alive; a loaded empty catalog stays idle.
-      const shouldPoll = Boolean(capabilities?.supported) && (machines.length > 0 || listError !== null)
+      const { capabilities, capabilitiesError } = useMachinesStore.getState()
+      // Every supported runtime keeps polling: an empty or failed catalog at the slow
+      // interval, so machines added through the official CLI still show up.
+      const shouldPoll = Boolean(capabilities?.supported)
       if (shouldPoll && !poller) { poller = createMachinesPoller(); poller.start() }
       else if (!shouldPoll && poller) { poller.stop(); poller = null }
       // A probe that failed or found no parsable version (timeout, spawn failure, missing binary) is

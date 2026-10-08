@@ -50,11 +50,15 @@ describe("polling policy helpers", () => {
 })
 
 describe("MachinesBridge", () => {
-  it("does not poll when no machine exists", async () => {
+  it("refreshes an empty catalog at the slow interval and picks up machines added outside Yuzora", async () => {
     await mount([])
-    await advance(120 * SEC)
+    ipc.list.mockClear()
+    await advance(59 * SEC)
+    expect(ipc.list).not.toHaveBeenCalled()
+    ipc.list.mockResolvedValue([machine("a")])
+    await advance(1 * SEC)
     expect(ipc.list).toHaveBeenCalledTimes(1)
-    expect(ipc.agents).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(ipc.agents.mock.calls.map(c => c[0])).toEqual([machine("a").id]))
   })
 
   it("does not touch machines when the binary is unsupported", async () => {
@@ -236,13 +240,13 @@ describe("MachinesBridge", () => {
     expect(ipc.agents).toHaveBeenCalledTimes(2)
   })
 
-  it("stops polling once the last machine disappears", async () => {
+  it("falls back to the slow catalog refresh once the last machine disappears", async () => {
     await mount()
     ipc.list.mockResolvedValue([])
     await advance(15 * SEC)
     ipc.agents.mockClear(); ipc.list.mockClear()
     await advance(120 * SEC)
-    expect(ipc.list).not.toHaveBeenCalled()
+    expect(ipc.list).toHaveBeenCalledTimes(2)
     expect(ipc.agents).not.toHaveBeenCalled()
   })
 
