@@ -1108,7 +1108,7 @@ export function SpaceAgentTree() {
             onKeyDown: onMachineKey,
           }} />}
         </div>
-        {!shownSessions.length && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
+        {!shownSessions.length && !(viewMode === "agents" && machines.some((machine) => machine.enabled)) && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
         {visible.filter(
           (node) =>
             node.kind === "worktree" &&

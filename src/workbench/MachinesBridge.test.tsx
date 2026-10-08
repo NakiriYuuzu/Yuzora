@@ -143,6 +143,32 @@ describe("MachinesBridge", () => {
     expect(ipc.agents).toHaveBeenCalledTimes(2)
   })
 
+it("re-enabling a blocked machine polls it again even when no round saw it disabled", async () => {
+  ipc.agents.mockRejectedValue("machines-auth-required")
+  await mount()
+  expect(ipc.agents).toHaveBeenCalledTimes(1)
+  // Both mutations adopt their lists before the next round runs.
+  act(() => useMachinesStore.setState({ machines: [machine("a", { enabled: false })] }))
+  act(() => useMachinesStore.setState({ machines: [machine("a")] }))
+  ipc.agents.mockImplementation(async (id: string) => snapshot(id))
+  await advance(machinePollIntervals(false).visible)
+  expect(ipc.agents).toHaveBeenCalledTimes(2)
+})
+
+  it("clears auth-required block of a machine that was disabled, so re-enabling polls it again", async () => {
+    ipc.agents.mockRejectedValue("machines-auth-required")
+    await mount()
+    expect(ipc.agents).toHaveBeenCalledTimes(1)
+    ipc.list.mockResolvedValue([machine("a", { enabled: false })])
+    act(() => useMachinesStore.getState().requestRefresh(false))
+    await flush()
+    ipc.list.mockResolvedValue([machine("a")])
+    ipc.agents.mockImplementation(async (id: string) => snapshot(id))
+    act(() => useMachinesStore.getState().requestRefresh(false))
+    await flush()
+    expect(ipc.agents).toHaveBeenCalledTimes(2)
+  })
+
   it("a soft refresh (opening the Machines tab) keeps the auth-required block", async () => {
     ipc.agents.mockRejectedValue("machines-auth-required")
     await mount()

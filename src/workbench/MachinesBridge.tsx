@@ -22,6 +22,11 @@ function createMachinesPoller() {
   const hidden = () => document.visibilityState === "hidden"
   const base = () => (hidden() ? intervals.hidden : intervals.visible)
 
+  /** Forget machines that vanished or were disabled, so re-enabling one polls it again. */
+  function prune(machines: readonly { id: string; enabled: boolean }[]) {
+    for (const id of [...state.keys()]) if (!machines.some((machine) => machine.id === id && machine.enabled)) state.delete(id)
+  }
+
   async function round(force: boolean) {
     const store = useMachinesStore.getState()
     if (!store.capabilities?.supported) return
@@ -30,7 +35,7 @@ function createMachinesPoller() {
     // Hidden window: keep only the low-frequency list refresh.
     if (hidden() && !force) return
     const machines = useMachinesStore.getState().machines
-    for (const id of [...state.keys()]) if (!machines.some((machine) => machine.id === id)) state.delete(id)
+    prune(machines)
     const now = Date.now()
     const due = machines.filter((machine) => {
       if (!machine.enabled) return false
@@ -81,6 +86,7 @@ function createMachinesPoller() {
       if (timer) { clearTimeout(timer); timer = null }
       void tick()
     },
+    prune,
     /** Re-arm the timer with the current visibility's interval. */
     reschedule() { if (!stopped && !running) schedule() },
     stop() {
@@ -107,8 +113,10 @@ export function MachinesBridge() {
     }
     void bootstrap()
     let nonce = useMachinesStore.getState().refreshNonce
-    const unsubscribe = useMachinesStore.subscribe((state) => {
+    const unsubscribe = useMachinesStore.subscribe((state, previous) => {
       sync()
+      // A disable and re-enable can both land between two rounds; prune on every list change.
+      if (state.machines !== previous.machines) poller?.prune(state.machines)
       if (state.refreshNonce !== nonce) { nonce = state.refreshNonce; poller?.kick(state.refreshForce) }
     })
     const onVisibility = () => {

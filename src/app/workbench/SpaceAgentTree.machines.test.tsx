@@ -132,3 +132,9 @@ it("moves between local agent rows and machine rows with one tab stop", () => {
   fireEvent.keyDown(screen.getByRole("treeitem", { name: /^Reviewer · / }), { key: "Home" });
   expect(items[0]).toHaveFocus();
 });
+
+it("does not show the no-Sessions empty state next to visible machine rows", () => {
+  render(<SpaceAgentTree />);
+  expect(screen.getByRole("treeitem", { name: "Lab box" })).toBeInTheDocument();
+  expect(screen.queryByText("No running Sessions.")).not.toBeInTheDocument();
+});

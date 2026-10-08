@@ -48,6 +48,34 @@ describe("machinesStore", () => {
     expect(useMachinesStore.getState().machines).toEqual([a, b])
   })
 
+  it("clears machine-derived state when capabilities report no support", async () => {
+    useMachinesStore.setState({ machines: [a], snapshotById: { [a.id]: snapshot(a.id) }, errorById: { [a.id]: "x" } })
+    ipc.caps.mockResolvedValue({ ...supportedCaps, supported: false })
+    await useMachinesStore.getState().loadCapabilities()
+    const state = useMachinesStore.getState()
+    expect(state.machines).toEqual([])
+    expect(state.snapshotById).toEqual({})
+    expect(state.errorById).toEqual({})
+  })
+
+it("an in-flight list cannot restore machines after support is lost", async () => {
+  let resolveOld: (machines: typeof a[]) => void = () => {}
+  ipc.list.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+  const pending = useMachinesStore.getState().refreshList()
+  ipc.caps.mockResolvedValue({ ...supportedCaps, supported: false })
+  await useMachinesStore.getState().loadCapabilities()
+  resolveOld([a])
+  await pending
+  expect(useMachinesStore.getState().machines).toEqual([])
+})
+
+  it("a successful snapshot supersedes an older manual status result", async () => {
+    useMachinesStore.setState({ machines: [a], statusById: { [a.id]: { id: a.id, status: "auth-required" } as never } })
+    ipc.agents.mockResolvedValueOnce(snapshot(a.id))
+    await useMachinesStore.getState().refreshSnapshot(a.id)
+    expect(useMachinesStore.getState().statusById[a.id]).toBeUndefined()
+  })
+
   it("keeps the previous snapshot and marks it stale when a refresh fails", async () => {
     useMachinesStore.setState({ machines: [a] })
     ipc.agents.mockResolvedValueOnce(snapshot(a.id))

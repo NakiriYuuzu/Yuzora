@@ -64,6 +64,16 @@ const initial = {
   refreshForce: true
 } satisfies Partial<MachinesState>
 
+/** Machine-derived state that must not outlive machines support. */
+const derivedInitial = {
+  machines: [],
+  listError: null,
+  statusById: {},
+  snapshotById: {},
+  staleById: {},
+  errorById: {}
+} satisfies Partial<MachinesState>
+
 export const useMachinesStore = create<MachinesState>((set, get) => {
   /** Advances whenever a list is adopted; an older in-flight `machinesList()` must not overwrite a newer one. */
   let listGeneration = 0
@@ -84,10 +94,15 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
     async loadCapabilities() {
       try {
         const capabilities = await machinesCapabilities()
-        set({ capabilities, capabilitiesError: null })
+        // Losing support invalidates everything derived from the machine list, including in-flight lists.
+        if (!capabilities.supported) listGeneration += 1
+        set(capabilities.supported
+          ? { capabilities, capabilitiesError: null }
+          : { ...derivedInitial, capabilities, capabilitiesError: null })
         return capabilities
       } catch (cause) {
-        set({ capabilities: null, capabilitiesError: messageOf(cause) })
+        listGeneration += 1
+        set({ ...derivedInitial, capabilities: null, capabilitiesError: messageOf(cause) })
         return null
       }
     },
@@ -130,7 +145,9 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
         set((state) => {
           const { [id]: _error, ...errorById } = state.errorById
           const { [id]: _stale, ...staleById } = state.staleById
-          return { snapshotById: { ...state.snapshotById, [id]: snapshot }, errorById, staleById }
+          // A successful snapshot supersedes an older manual status check (auth-required / error).
+          const { [id]: _status, ...statusById } = state.statusById
+          return { snapshotById: { ...state.snapshotById, [id]: snapshot }, errorById, staleById, statusById }
         })
         return { ok: true, code: null }
       } catch (cause) {
