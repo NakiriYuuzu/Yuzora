@@ -149,7 +149,8 @@ vi.mock("@/terminal/terminalImeHandling", () => ({
 }))
 
 vi.mock("@/terminal/xtermTheme", () => ({
-  buildXtermTheme: vi.fn(() => ({}))
+  buildXtermTheme: vi.fn(() => ({})),
+  xtermMinimumContrastRatio: vi.fn((mode?: string) => (mode === "dark" ? 1 : 3))
 }))
 
 const herdrIpcMock = vi.hoisted(() => {
@@ -696,6 +697,19 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     herdrIpcMock.emit({ ...frame(2, "resized", true), width: 55, height: 15 })
     await waitFor(() => expect([term.cols, term.rows]).toEqual([55, 15]))
     expect(term.options.fontSize).toBe(22)
+  })
+
+  it("applies the light-mode contrast floor and follows theme switches", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const term = xtermMock.state.terminals[0]
+    expect(term.options.minimumContrastRatio).toBe(3)
+    try {
+      document.documentElement.classList.add("dark")
+      await waitFor(() => expect(term.options.minimumContrastRatio).toBe(1))
+    } finally {
+      document.documentElement.classList.remove("dark")
+    }
   })
 
   it("keeps the rendered font while an obsolete resize frame is queued", async () => {

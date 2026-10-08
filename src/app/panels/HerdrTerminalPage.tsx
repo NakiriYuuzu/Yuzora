@@ -68,7 +68,7 @@ import {
   terminalWheelCell,
   type TerminalTransportEvent
 } from "@/terminal/terminalTransport"
-import { buildXtermTheme } from "@/terminal/xtermTheme"
+import { buildXtermTheme, xtermMinimumContrastRatio } from "@/terminal/xtermTheme"
 import {
   installTerminalTargetOpen,
   resolveHerdrTerminalBaseCwd
@@ -898,6 +898,7 @@ function HerdrTerminalLeaf({
       fontSize,
       fontFamily: terminalFontStack(fontFamily),
       theme: { ...buildXtermTheme(currentMode()) },
+      minimumContrastRatio: xtermMinimumContrastRatio(currentMode()),
       disableStdin: false,
       scrollback: 0,
       scrollOnUserInput: false,
@@ -1020,6 +1021,7 @@ function HerdrTerminalLeaf({
       const themeObserver = new MutationObserver(() => {
         if (disposedRef.current) return
         term.options.theme = { ...buildXtermTheme(currentMode()) }
+        term.options.minimumContrastRatio = xtermMinimumContrastRatio(currentMode())
       })
       themeObserver.observe(document.documentElement, {
         attributes: true,
@@ -1407,6 +1409,7 @@ function HerdrTerminalLeaf({
     const themeObserver = new MutationObserver(() => {
       if (disposedRef.current) return
       term.options.theme = { ...buildXtermTheme(currentMode()) }
+      term.options.minimumContrastRatio = xtermMinimumContrastRatio(currentMode())
     })
     themeObserver.observe(document.documentElement, {
       attributes: true,
