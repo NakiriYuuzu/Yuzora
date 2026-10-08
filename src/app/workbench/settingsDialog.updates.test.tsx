@@ -435,6 +435,56 @@ describe("Settings · About & Updates pane", () => {
     await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
   })
 
+  it("on Windows, lists a user-installed HERDR as informational and still stops the bundled one", async () => {
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    updateHerdrProcesses.mockResolvedValue({
+      path: "C:\\Program Files\\Yuzora\\herdr\\windows-x86_64\\herdr.exe",
+      version: "0.9.3",
+      pids: [101],
+      external: { path: "C:\\Tools\\herdr.exe", version: "0.9.2", pids: [303, 404] },
+    })
+    const install = vi.fn(async () => undefined)
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Finished" })
+    })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+
+    await openInstallConfirmation()
+    const confirmation = await screen.findByRole("alertdialog", { name: "Install update and restart?" })
+    const note = await within(confirmation).findByTestId("herdr-external-note")
+    expect(within(note).getByText("You use a self-installed HERDR")).toBeInTheDocument()
+    expect(within(note).getByText("C:\\Tools\\herdr.exe")).toBeInTheDocument()
+    expect(within(note).getByText("303, 404")).toBeInTheDocument()
+    expect(note.className).not.toContain("destructive")
+    expect(within(note).queryByText(/force-stops/)).not.toBeInTheDocument()
+    expect(within(confirmation).getByText(/force-stops the HERDR in use/)).toBeInTheDocument()
+    expect(updateStopHerdr).not.toHaveBeenCalled()
+  })
+
+  it("on Windows, a user-installed-only HERDR shows no kill warning and is never stopped", async () => {
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    updateHerdrProcesses.mockResolvedValue({
+      path: null,
+      version: null,
+      pids: [],
+      external: { path: "C:\\Tools\\herdr.exe", version: null, pids: [303] },
+    })
+    const install = vi.fn(async () => undefined)
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Finished" })
+    })
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+
+    await openInstallConfirmation()
+    const confirmation = await screen.findByRole("alertdialog", { name: "Install update and restart?" })
+    await within(confirmation).findByTestId("herdr-external-note")
+    expect(within(confirmation).queryByText(/force-stops/)).not.toBeInTheDocument()
+    expect(within(confirmation).queryByRole("button", { name: "Stop HERDR and install" })).not.toBeInTheDocument()
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Install and restart" }))
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    expect(updateStopHerdr).not.toHaveBeenCalled()
+  })
+
   it("on Windows, keeps the update uninstalled when HERDR cannot be stopped", async () => {
     setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
     updateStopHerdr.mockRejectedValueOnce("HERDR processes are still running: 101")

@@ -4,8 +4,11 @@ import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
 import { useHostStore } from "@/state/hostStore"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
+import { useWorkspaceStore } from "@/state/workspaceStore"
 import type { RuntimeBinaryCheck } from "@/lib/herdrTypes"
-const ipc = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), check: vi.fn(), distros: vi.fn(), remote: vi.fn(), copy: vi.fn() }))
+const ipc = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), check: vi.fn(), distros: vi.fn(), remote: vi.fn(), copy: vi.fn(), relaunch: vi.fn(), prefsSet: vi.fn() }))
+vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: ipc.relaunch }))
+vi.mock("@/lib/runtimePreferencesIpc", () => ({ runtimePreferencesGet: vi.fn(), runtimePreferencesSet: ipc.prefsSet }))
 vi.mock("@/lib/herdrIpc", () => ({ herdrBinarySourceGet: ipc.get, herdrBinarySourceSet: ipc.set, herdrBinarySourceCheck: ipc.check }))
 vi.mock("@/lib/hostIpc", () => ({ checkHostRuntime: ipc.remote, wslDistributions: ipc.distros }))
 vi.mock("@/lib/platform", () => ({ isWindowsPlatform: () => true }))
@@ -24,6 +27,9 @@ beforeEach(() => {
   ipc.check.mockResolvedValue(check)
   ipc.distros.mockResolvedValue([{ hostId: "wsl-a", name: "Ubuntu", version: 2 }])
   ipc.copy.mockResolvedValue(undefined)
+  ipc.relaunch.mockResolvedValue(undefined)
+  ipc.prefsSet.mockImplementation(async (value: boolean) => ({ wslEnabled: value }))
+  useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }] } as never)
 })
 afterEach(() => vi.unstubAllGlobals())
 it("shows the active Windows client and saved target, and discovers WSL only after opt-in", async () => {
@@ -45,6 +51,20 @@ it("blocks applying a mismatched client without changing the saved source", asyn
   expect(screen.getByText("Server: 0.9.0 · protocol 22")).toBeInTheDocument()
   expect(ipc.set).not.toHaveBeenCalled()
 })
+const changed = vi.fn()
+beforeEach(() => { changed.mockClear(); window.addEventListener("yuzora:herdr-binary-source-changed", changed) })
+afterEach(() => window.removeEventListener("yuzora:herdr-binary-source-changed", changed))
+
+it("dispatches the binary-source-changed event only after a successful apply", async () => {
+  ipc.set.mockResolvedValue({ configured: "default", restartRequired: false })
+  render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  const apply = screen.getByRole("button", { name: "Apply source" })
+  await waitFor(() => expect(apply).toBeEnabled())
+  fireEvent.click(apply)
+  await waitFor(() => expect(changed).toHaveBeenCalledOnce())
+})
+
 it("rechecks on apply and reports a backend rejection without claiming success", async () => {
   ipc.set.mockRejectedValue(new Error("server changed during check"))
   render(<HerdrSettingsSection />)
@@ -55,6 +75,7 @@ it("rechecks on apply and reports a backend rejection without claiming success",
   expect(await screen.findByText(/server changed during check/)).toBeInTheDocument()
   expect(ipc.set).toHaveBeenCalledWith("default", undefined)
   expect(ipc.get).toHaveBeenCalledOnce()
+  expect(changed).not.toHaveBeenCalled()
 })
 it("targets a disabled WSL host without probing its binary", () => {
   useUiStore.setState({ settingsHostId: "wsl-a" })
@@ -87,4 +108,67 @@ it("ignores a delayed check after changing the selected host", async () => {
   await act(async () => resolve(check))
   expect(screen.queryByRole("button", { name: "Apply source" })).not.toBeInTheDocument()
   mounted.unmount()
+})
+
+const customInfo = { configured: "custom", active: "default", available: true, path: "C:\\Yuzora\\herdr.exe", version: "0.9.3", protocol: 22, customPath: '"C:\\Program Files\\Herdr\\herdr.exe"', restartRequired: false }
+it("hands the backend a clean path when the pasted custom path is quoted and contains spaces", async () => {
+  ipc.get.mockResolvedValue(customInfo)
+  render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Check / detect again" }))
+  await waitFor(() => expect(ipc.check).toHaveBeenCalledWith("custom", "C:\\Program Files\\Herdr\\herdr.exe"))
+  const input = screen.getByLabelText("Custom executable path") as HTMLInputElement
+  fireEvent.change(input, { target: { value: '  "D:\\My Tools\\herdr.exe"  ' } })
+  expect(input.value).toBe('  "D:\\My Tools\\herdr.exe"  ')
+  fireEvent.blur(input)
+  expect(input.value).toBe("D:\\My Tools\\herdr.exe")
+})
+it("shows a restart button that relaunches, and disables it while a document is dirty", async () => {
+  render(<HerdrSettingsSection />)
+  const button = await screen.findByRole("button", { name: "Restart Yuzora now" })
+  expect(button).toBeEnabled()
+  fireEvent.click(button)
+  await waitFor(() => expect(ipc.relaunch).toHaveBeenCalledOnce())
+})
+it("blocks the restart button while an editor tab has unsaved changes", async () => {
+  useWorkspaceStore.setState({ groups: [{ tabs: [{ path: "/a", dirty: true }], activePath: "/a" }] } as never)
+  render(<HerdrSettingsSection />)
+  const button = await screen.findByRole("button", { name: "Restart Yuzora now" })
+  expect(button).toBeDisabled()
+  expect(screen.getByText("Save or discard unsaved editor changes before restarting.")).toBeInTheDocument()
+  fireEvent.click(button)
+  expect(ipc.relaunch).not.toHaveBeenCalled()
+})
+const missingInfo = { ...customInfo, available: false, reason: "herdr-custom-path-not-executable: C:\\gone\\herdr.exe" }
+it("offers to switch a missing custom binary back to the bundled version and restarts", async () => {
+  ipc.get.mockResolvedValueOnce(missingInfo).mockResolvedValue({ ...customInfo, configured: "default", available: true, restartRequired: true })
+  ipc.set.mockResolvedValue({ configured: "default", restartRequired: true })
+  render(<HerdrSettingsSection />)
+  expect(await screen.findByText(/custom HERDR path can't be run/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Switch back to bundled version and restart" }))
+  await waitFor(() => expect(ipc.relaunch).toHaveBeenCalledOnce())
+  expect(ipc.set).toHaveBeenCalledWith("default")
+  expect(changed).toHaveBeenCalledOnce()
+})
+it("saves but does not relaunch when documents are dirty while switching back to bundled", async () => {
+  useWorkspaceStore.setState({ groups: [{ tabs: [{ path: "/a", dirty: true }], activePath: "/a" }] } as never)
+  ipc.get.mockResolvedValueOnce(missingInfo).mockResolvedValue({ ...customInfo, configured: "default", available: true, restartRequired: true })
+  ipc.set.mockResolvedValue({ configured: "default", restartRequired: true })
+  render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Switch back to bundled version" }))
+  expect(await screen.findByText(/restart Yuzora manually/)).toBeInTheDocument()
+  expect(ipc.set).toHaveBeenCalledWith("default")
+  expect(ipc.relaunch).not.toHaveBeenCalled()
+})
+it("does not offer the revert for unrelated errors", async () => {
+  ipc.get.mockResolvedValue({ ...customInfo, available: false, reason: "herdr-socket-timeout" })
+  render(<HerdrSettingsSection />)
+  expect(await screen.findByText("The HERDR server didn't respond in time.")).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /Switch back to bundled/ })).not.toBeInTheDocument()
+})
+it("keeps the WSL switch off and reports the error when the backend refuses to save", async () => {
+  ipc.prefsSet.mockRejectedValue("runtime-preferences-write-failed")
+  render(<HerdrSettingsSection />)
+  fireEvent.click(await screen.findByRole("switch"))
+  expect(await screen.findByText("runtime-preferences-write-failed")).toBeInTheDocument()
+  expect(screen.getByRole("switch")).not.toBeChecked()
 })

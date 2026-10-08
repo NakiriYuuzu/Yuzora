@@ -13,11 +13,21 @@ export function loadUpdateChannel(): UpdateChannel {
     } catch { return "auto" }
 }
 
-/** Processes of the HERDR binary this app currently uses (Windows install preflight). */
+export interface UpdateExternalHerdr {
+    path: string
+    version: string | null
+    pids: number[]
+}
+
+/**
+ * Processes of the bundled (managed) HERDR, which the installer stops (Windows install preflight).
+ * `external` is a user-installed HERDR in use; it is shown but never stopped automatically.
+ */
 export interface UpdateHerdrProcesses {
     path: string | null
     version: string | null
     pids: number[]
+    external?: UpdateExternalHerdr | null
 }
 
 export function updateHerdrProcesses(): Promise<UpdateHerdrProcesses> {

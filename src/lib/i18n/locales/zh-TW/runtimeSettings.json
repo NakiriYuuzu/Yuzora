@@ -42,8 +42,8 @@
   "updateApply": "更新主機工具並套用",
   "managedHint": "使用此 Yuzora 隨附並驗證的固定版本。",
   "installedHint": "重新偵測此主機的 HERDR。找不到或不相容時停止套用，不自動改用其他來源。",
-  "customLocalHint": "指定此電腦上 HERDR 執行檔的完整絕對路徑。",
-  "customRemoteHint": "指定所選主機內的 Linux／macOS 絕對路徑。WSL 請勿填入 Windows 路徑。",
+  "customLocalHint": "指定此電腦上 HERDR 執行檔的絕對路徑。",
+  "customRemoteHint": "指定所選主機內的絕對路徑：Linux／macOS 例如 /opt/herdr/herdr，Windows 例如 C:\\Tools\\herdr.exe。不要為 WSL 使用 Windows 路徑。",
   "customPath": "自訂執行檔路徑",
   "compatible": "相容",
   "incompatible": "不相容",
@@ -53,5 +53,12 @@
   "notRunning": "未執行",
   "server": "Server",
   "blocked": "目前無法套用",
-  "preserveSessions": "請選擇與現有 server 相容的 client。若確實需要處理 server，先保存工作並確認上列受影響 Session；Yuzora 不會自動停止它們。"
+  "preserveSessions": "請選擇與現有 server 相容的 client。若確實需要處理 server，先保存工作並確認上列受影響 Session；Yuzora 不會自動停止它們。",
+  "customLocalHintWindows": "指定此電腦上 herdr.exe 的完整路徑，例如 C:\\Tools\\herdr.exe。路徑前後的引號會自動移除。",
+  "restartNow": "立即重啟 Yuzora",
+  "restartBlockedDirty": "請先儲存或放棄編輯器中尚未儲存的變更，再重啟。",
+  "customMissingHint": "已儲存的自訂 HERDR 無法執行。可改回隨附版本以繼續使用。",
+  "revertToBundled": "改回隨附版本",
+  "revertToBundledRestart": "改回隨附版本並重啟",
+  "revertSavedManualRestart": "已改回隨附版本。請先儲存工作，再手動重啟 Yuzora。"
 }

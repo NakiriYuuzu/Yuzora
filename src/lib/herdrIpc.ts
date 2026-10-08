@@ -1,4 +1,5 @@
 import { invokeHerdr as invoke } from "./herdrProvider"
+import { sanitizeCustomPath } from "./herdrPath"
 
 import type {
   HerdrBinarySource,
@@ -344,11 +345,11 @@ export function herdrBinarySourceSet(
   source: HerdrBinarySource,
   customPath?: string
 ): Promise<HerdrBinarySourceSetResult> {
-  return invoke("herdr_binary_source_set", { source, customPath: customPath ?? null })
+  return invoke("herdr_binary_source_set", { source, customPath: customPath === undefined ? null : sanitizeCustomPath(customPath) })
 }
 
 export function herdrBinarySourceCheck(source: HerdrBinarySource, customPath?: string): Promise<import("./herdrTypes").RuntimeBinaryCheck> {
-  return invoke("herdr_binary_source_check", { source, customPath: customPath ?? null })
+  return invoke("herdr_binary_source_check", { source, customPath: customPath === undefined ? null : sanitizeCustomPath(customPath) })
 }
 
 export function herdrEventsSubscribe(args: {

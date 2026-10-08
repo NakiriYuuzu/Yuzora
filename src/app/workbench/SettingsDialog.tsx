@@ -52,7 +52,7 @@ import { useEditorSettingsStore, type EditorFontSize, type MarkdownViewMode } fr
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useUpdateStore } from "@/state/updateStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
+import { useRestartYuzora } from "@/state/useRestartYuzora"
 import { workspacePathForDisplay } from "@/lib/paths"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { SettingCard, SettingsRowGroup, Segmented, ToggleRow } from "./settingsPrimitives"
@@ -208,9 +208,7 @@ export function SettingsDialog({
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates)
   const downloadUpdate = useUpdateStore((s) => s.downloadUpdate)
   const installAndRelaunch = useUpdateStore((s) => s.installAndRelaunch)
-  const hasDirtyDocuments = useWorkspaceStore((s) =>
-    s.groups.some((group) => group.tabs.some((tab) => tab.dirty))
-  )
+  const { blocked: hasDirtyDocuments } = useRestartYuzora()
   const trustedWorkspaces = useWorkspaceTrustStore((s) => s.trustedWorkspaces)
   const refreshTrustList = useWorkspaceTrustStore((s) => s.refreshList)
   const revokeWorkspace = useWorkspaceTrustStore((s) => s.revokeWorkspace)

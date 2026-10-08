@@ -12,12 +12,17 @@ import { herdrBinarySourceCheck, herdrBinarySourceGet, herdrBinarySourceSet } fr
 import { checkHostRuntime, wslDistributions } from "@/lib/hostIpc"
 import type { HostRuntimeCheck, HostTarget, WslDistribution } from "@/lib/hostIpc"
 import type { HerdrBinarySourceInfo, HerdrRuntimeSelection, RuntimeBinaryCheck } from "@/lib/herdrTypes"
+import { notifyHerdrBinarySourceChanged } from "@/lib/herdrBinarySourceEvents"
+import { describeHerdrError } from "@/lib/herdrErrors"
+import { sanitizeCustomPath, sanitizeSelection } from "@/lib/herdrPath"
 import { isWindowsPlatform } from "@/lib/platform"
 import { LOCAL_HOST_ID } from "@/lib/runtimeIdentity"
 import { selectionForHost, useHostStore } from "@/state/hostStore"
 import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore"
+import { useRestartYuzora } from "@/state/useRestartYuzora"
 import { useSshStore } from "@/state/sshStore"
 import { useUiStore } from "@/state/uiStore"
+import { DescribedError } from "./DescribedError"
 import { RuntimeCheckView, RuntimeSourceFields } from "./RuntimeSourceFields"
 
 export function HerdrSettingsSection() {
@@ -55,7 +60,7 @@ function RuntimeSettings({ initialHostId }: { initialHostId: string }) {
   return <div className="flex min-w-0 flex-col gap-4">
     {windows && <Card size="sm"><CardHeader><CardTitle>{t("windowsRuntime")}</CardTitle><CardDescription>{t("windowsHint")}</CardDescription></CardHeader><CardContent>
       <Field orientation="horizontal"><div className="flex flex-1 flex-col gap-1"><FieldLabel htmlFor="wsl-runtime-enabled">{t("enableWsl")}</FieldLabel><FieldDescription>{t("enableWslHint")}</FieldDescription></div>
-        <Switch id="wsl-runtime-enabled" className="yz-switch" checked={enabled} onCheckedChange={value => { try { useRuntimePreferencesStore.getState().setWslEnabled(value); setError(null) } catch (error) { setError(String(error)) } }} />
+        <Switch id="wsl-runtime-enabled" className="yz-switch" checked={enabled} onCheckedChange={value => { void useRuntimePreferencesStore.getState().setWslEnabled(value).then(() => setError(null)).catch(error => setError(String(error))) }} />
       </Field>
     </CardContent></Card>}
     <Field><FieldLabel htmlFor="herdr-runtime-host">{t("host")}</FieldLabel><Select value={hostId} onValueChange={setHostId}>
@@ -73,7 +78,20 @@ function RuntimeSettings({ initialHostId }: { initialHostId: string }) {
 
 function RuntimeError({ error }: { error: string }) {
   const { t } = useTranslation("runtimeSettings")
-  return <Alert variant="destructive"><AlertTitle>{t("checkFailed")}</AlertTitle><AlertDescription className="break-all">{error}</AlertDescription></Alert>
+  return <DescribedError error={error} title={t("checkFailed")} />
+}
+
+function RestartControl() {
+  const { t } = useTranslation("runtimeSettings")
+  const { blocked, restart } = useRestartYuzora()
+  const [failed, setFailed] = useState<string | null>(null)
+  return <div className="flex flex-col gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" disabled={blocked} onClick={() => { setFailed(null); void restart().catch(error => setFailed(String(error))) }}>{t("restartNow")}</Button>
+      {blocked && <p role="status" className="text-sm text-muted-foreground">{t("restartBlockedDirty")}</p>}
+    </div>
+    {failed && <RuntimeError error={failed} />}
+  </div>
 }
 
 function NativeRuntimeSettings() {
@@ -85,6 +103,9 @@ function NativeRuntimeSettings() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [restartSaved, setRestartSaved] = useState(false)
+  const { t: te } = useTranslation("herdrErrors")
+  const { blocked: restartBlocked, restart } = useRestartYuzora()
   const generation = useRef(0)
   useEffect(() => {
     const counter = generation
@@ -98,7 +119,7 @@ function NativeRuntimeSettings() {
   async function inspect() {
     const token = ++generation.current
     setBusy(true); setError(null); setNotice(null); setCheck(null)
-    try { const next = await herdrBinarySourceCheck(selection.source, selection.customPath); if (generation.current === token) setCheck(next) }
+    try { const clean = sanitizeSelection(selection); const next = await herdrBinarySourceCheck(clean.source, clean.customPath); if (generation.current === token) setCheck(next) }
     catch (error) { if (generation.current === token) setError(String(error)) }
     finally { if (generation.current === token) setBusy(false) }
   }
@@ -106,9 +127,26 @@ function NativeRuntimeSettings() {
     const token = ++generation.current
     setBusy(true); setError(null)
     try {
-      const result = await herdrBinarySourceSet(selection.source, selection.customPath)
+      const clean = sanitizeSelection(selection)
+      const result = await herdrBinarySourceSet(clean.source, clean.customPath)
+      notifyHerdrBinarySourceChanged()
       const next = await herdrBinarySourceGet()
-      if (generation.current === token) { setInfo(next); setNotice(t(result.restartRequired ? "savedRestart" : "saved")) }
+      if (generation.current === token) { setInfo(next); setRestartSaved(result.restartRequired); setNotice(t(result.restartRequired ? "savedRestart" : "saved")) }
+    } catch (error) { if (generation.current === token) setError(String(error)) }
+    finally { if (generation.current === token) setBusy(false) }
+  }
+  const customMissing = [info?.reason, info?.configuredReason, info?.configurationError].some(reason => reason && describeHerdrError(reason, te).code === "herdr-custom-path-not-executable")
+  async function revertToBundled() {
+    const token = ++generation.current
+    setBusy(true); setError(null); setNotice(null)
+    try {
+      await herdrBinarySourceSet("default")
+      notifyHerdrBinarySourceChanged()
+      const next = await herdrBinarySourceGet()
+      if (generation.current !== token) return
+      setInfo(next); setSelection({ source: "default" }); setCheck(null); setRestartSaved(true)
+      if (restartBlocked) setNotice(t("revertSavedManualRestart"))
+      else await restart()
     } catch (error) { if (generation.current === token) setError(String(error)) }
     finally { if (generation.current === token) setBusy(false) }
   }
@@ -122,10 +160,12 @@ function NativeRuntimeSettings() {
       {info?.restartRequired && <Alert><AlertTitle>{t("savedRestart")}</AlertTitle><AlertDescription className="break-all">{info.configuredPath}</AlertDescription></Alert>}
       {info?.configurationError && <RuntimeError error={info.configurationError} />}
       {info?.reason && !info.available && <RuntimeError error={info.reason} />}
+      {customMissing && <div className="flex flex-col gap-2"><p className="text-sm text-muted-foreground">{t("customMissingHint")}</p><div><Button variant="outline" size="sm" disabled={busy || loading} onClick={() => void revertToBundled()}>{t(restartBlocked ? "revertToBundled" : "revertToBundledRestart")}</Button></div></div>}
+      {(info?.restartRequired || restartSaved) && <RestartControl />}
     </CardContent></Card>
     <Card size="sm"><CardHeader><CardTitle>{t("desired")}</CardTitle><CardDescription>{t("checkBeforeApply")}</CardDescription></CardHeader><CardContent className="flex flex-col gap-3">
       <RuntimeSourceFields local value={selection} disabled={busy || loading} onChange={value => { generation.current++; setSelection(value); setCheck(null); setNotice(null); setError(null) }} />
-      {selection.source === "custom" && <Button variant="outline" disabled={busy || loading} onClick={() => { void open({ multiple: false, directory: false }).then(path => { if (typeof path === "string") { setSelection({ source: "custom", customPath: path }); setCheck(null) } }).catch(error => setError(String(error))) }}>{t("browseBinary")}</Button>}
+      {selection.source === "custom" && <Button variant="outline" disabled={busy || loading} onClick={() => { void open({ multiple: false, directory: false }).then(path => { if (typeof path === "string") { setSelection({ source: "custom", customPath: sanitizeCustomPath(path) }); setCheck(null) } }).catch(error => setError(String(error))) }}>{t("browseBinary")}</Button>}
       {check && <RuntimeCheckView check={check} />}
       {error && <RuntimeError error={error} />}
       {notice && <p role="status">{notice}</p>}
@@ -154,7 +194,7 @@ function RemoteRuntimeSettings({ hostId, label, target }: { hostId: string; labe
     const token = ++generation.current
     setBusy(true); setError(null); setNotice(null); setDesired(null); setCurrent(null); setCurrentError(null)
     const results = await Promise.allSettled([
-      checkHostRuntime(hostId, target, selection),
+      checkHostRuntime(hostId, target, sanitizeSelection(selection)),
       config ? checkHostRuntime(hostId, target, { source: "custom", customPath: config.binary }) : Promise.resolve(null)
     ])
     if (generation.current !== token) return
@@ -166,7 +206,7 @@ function RemoteRuntimeSettings({ hostId, label, target }: { hostId: string; labe
     const token = ++generation.current
     setBusy(true); setError(null)
     try {
-      await useHostStore.getState().setup(hostId, label, target, selection)
+      await useHostStore.getState().setup(hostId, label, target, sanitizeSelection(selection))
       if (generation.current !== token) return
       setNotice(t("saved")); setCurrent(null); setCurrentError(null); setDesired(null)
     } catch (error) { if (generation.current === token) setError(String(error)) }
