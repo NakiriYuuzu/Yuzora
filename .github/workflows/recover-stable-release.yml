@@ -97,11 +97,10 @@ jobs:
           printf '%s\n' \
             "Yuzora_${VERSION}_aarch64.dmg" \
             "Yuzora_${VERSION}_aarch64.app.tar.gz" "Yuzora_${VERSION}_aarch64.app.tar.gz.sig" \
-            "Yuzora_${VERSION}_x64-setup.exe" "Yuzora_${VERSION}_x64-setup.exe.sig" \
             "Yuzora_${VERSION}_x64_en-US.msi" "Yuzora_${VERSION}_x64_en-US.msi.sig" \
-            Yuzora-macos-aarch64.dmg Yuzora-windows-x64-setup.exe Yuzora-windows-x64.msi | sort > expected-assets.txt
+            Yuzora-macos-aarch64.dmg Yuzora-windows-x64.msi | sort > expected-assets.txt
           diff -u expected-assets.txt release-inputs/asset-names.txt
-          for pair in "Yuzora-macos-aarch64.dmg:Yuzora_${VERSION}_aarch64.dmg" "Yuzora-windows-x64-setup.exe:Yuzora_${VERSION}_x64-setup.exe" "Yuzora-windows-x64.msi:Yuzora_${VERSION}_x64_en-US.msi"; do
+          for pair in "Yuzora-macos-aarch64.dmg:Yuzora_${VERSION}_aarch64.dmg" "Yuzora-windows-x64.msi:Yuzora_${VERSION}_x64_en-US.msi"; do
             jq -e --arg alias "${pair%%:*}" --arg original "${pair#*:}" '[.assets[] | select(.name == $alias or .name == $original)] | length == 2 and .[0].size == .[1].size and .[0].digest == .[1].digest' release-inputs/release.json >/dev/null
           done
           gh release download "$TAG_NAME" --pattern '*.sig' --dir release-inputs
@@ -256,7 +255,6 @@ jobs:
           }
 
           DMG_NAME="$(find_single_asset "versioned macOS DMG" "Yuzora_${VERSION}_*.dmg")"
-          SETUP_NAME="$(find_single_asset "versioned Windows setup EXE" "Yuzora_${VERSION}_*-setup.exe")"
           MAC_ARCHIVE_URL="$(jq -r '.platforms["darwin-aarch64"].url' "$TMP_DIR/latest.json")"
           MAC_ARCHIVE_NAME="${MAC_ARCHIVE_URL##*/}"
           WINDOWS_MSI_URL="$(jq -r '.platforms["windows-x86_64"].url' "$TMP_DIR/latest.json")"
@@ -266,14 +264,11 @@ jobs:
 
           EXPECTED_ASSETS=(
             "$DMG_NAME"
-            "$SETUP_NAME"
-            "${SETUP_NAME}.sig"
             "$MAC_ARCHIVE_NAME"
             "${MAC_ARCHIVE_NAME}.sig"
             "$WINDOWS_MSI_NAME"
             "${WINDOWS_MSI_NAME}.sig"
             "Yuzora-macos-aarch64.dmg"
-            "Yuzora-windows-x64-setup.exe"
             "Yuzora-windows-x64.msi"
             "latest.json"
           )

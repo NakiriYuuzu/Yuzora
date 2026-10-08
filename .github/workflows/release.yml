@@ -430,10 +430,8 @@ jobs:
             mv "${MAC_SIGNATURES[0]}" "release-assets/Yuzora_${VERSION}_aarch64.app.tar.gz.sig"
           else
             BUNDLE_DIR="src-tauri/target/release/bundle"
-            copy_exactly_one "Windows NSIS installer" "$BUNDLE_DIR"/nsis/*setup.exe
             copy_exactly_one "Windows MSI installer" "$BUNDLE_DIR"/msi/*.msi
             copy_exactly_one "Windows MSI updater signature" "$BUNDLE_DIR"/msi/*.msi.sig
-            copy_exactly_one "Windows NSIS updater signature" "$BUNDLE_DIR"/nsis/*setup.exe.sig
           fi
 
       # actions/upload-artifact@v7.0.1
@@ -487,20 +485,24 @@ jobs:
           [ "${#ASSETS[@]}" -gt 0 ] || { echo "::error::no build artifacts found"; exit 1; }
           ALIAS_ASSETS=()
           if [ "$IS_BETA" = "true" ]; then
-            [ "${#ASSETS[@]}" -eq 3 ] || { echo "::error::Beta requires exactly three installers"; exit 1; }
+            [ "${#ASSETS[@]}" -eq 5 ] || { echo "::error::Beta requires exactly five build artifacts"; exit 1; }
+            BETA_KINDS=""
             for asset in "${ASSETS[@]}"; do
               case "$(basename "$asset")" in
-                *.dmg|*setup.exe|*.msi) ;;
+                *_aarch64.dmg) BETA_KINDS="$BETA_KINDS dmg" ;;
+                *_aarch64.app.tar.gz) BETA_KINDS="$BETA_KINDS archive" ;;
+                *_aarch64.app.tar.gz.sig) BETA_KINDS="$BETA_KINDS archive-sig" ;;
+                *_x64_en-US.msi) BETA_KINDS="$BETA_KINDS msi" ;;
+                *_x64_en-US.msi.sig) BETA_KINDS="$BETA_KINDS msi-sig" ;;
                 *) echo "::error::unexpected Beta artifact $(basename "$asset")"; exit 1 ;;
               esac
             done
+            [ "$(printf '%s\n' $BETA_KINDS | sort | tr '\n' ' ')" = "archive archive-sig dmg msi msi-sig " ] || { echo "::error::Beta artifacts must be one each of DMG, updater archive, MSI and their signatures"; exit 1; }
           else
             DMG="$(find release-artifacts -maxdepth 1 -type f -name '*.dmg' -print -quit)"
-            SETUP="$(find release-artifacts -maxdepth 1 -type f -name '*setup.exe' -print -quit)"
             MSI="$(find release-artifacts -maxdepth 1 -type f -name '*.msi' -print -quit)"
             for pair in \
               "$DMG:Yuzora-macos-aarch64.dmg" \
-              "$SETUP:Yuzora-windows-x64-setup.exe" \
               "$MSI:Yuzora-windows-x64.msi"; do
               source="${pair%%:*}"
               alias="${pair#*:}"
@@ -718,7 +720,6 @@ jobs:
           }
 
           DMG_NAME="$(find_single_asset "versioned macOS DMG" "Yuzora_${VERSION}_aarch64.dmg")"
-          SETUP_NAME="$(find_single_asset "versioned Windows setup EXE" "Yuzora_${VERSION}_*-setup.exe")"
           MAC_ARCHIVE_URL="$(jq -r '.platforms["darwin-aarch64"].url' "$TMP_DIR/latest.json")"
           MAC_ARCHIVE_NAME="${MAC_ARCHIVE_URL##*/}"
           WINDOWS_MSI_URL="$(jq -r '.platforms["windows-x86_64"].url' "$TMP_DIR/latest.json")"
@@ -728,14 +729,11 @@ jobs:
 
           EXPECTED_ASSETS=(
             "$DMG_NAME"
-            "$SETUP_NAME"
-            "${SETUP_NAME}.sig"
             "$MAC_ARCHIVE_NAME"
             "${MAC_ARCHIVE_NAME}.sig"
             "$WINDOWS_MSI_NAME"
             "${WINDOWS_MSI_NAME}.sig"
             "Yuzora-macos-aarch64.dmg"
-            "Yuzora-windows-x64-setup.exe"
             "Yuzora-windows-x64.msi"
             "latest.json"
           )
@@ -832,7 +830,6 @@ jobs:
           }
 
           DMG_NAME="$(find_single_asset "versioned macOS DMG" "Yuzora_${VERSION}_aarch64.dmg")"
-          SETUP_NAME="$(find_single_asset "versioned Windows setup EXE" "Yuzora_${VERSION}_*-setup.exe")"
           MAC_ARCHIVE_URL="$(jq -r '.platforms["darwin-aarch64"].url' "$TMP_DIR/latest.json")"
           MAC_ARCHIVE_NAME="${MAC_ARCHIVE_URL##*/}"
           WINDOWS_MSI_URL="$(jq -r '.platforms["windows-x86_64"].url' "$TMP_DIR/latest.json")"
@@ -842,8 +839,6 @@ jobs:
 
           EXPECTED_ASSETS=(
             "$DMG_NAME"
-            "$SETUP_NAME"
-            "${SETUP_NAME}.sig"
             "$MAC_ARCHIVE_NAME"
             "${MAC_ARCHIVE_NAME}.sig"
             "$WINDOWS_MSI_NAME"

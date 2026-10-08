@@ -96,7 +96,7 @@ export function verifyStableProductUpdaterConfig(config: UnknownRecord): void {
   const plugins = record(config.plugins, "plugins")
   const updater = record(plugins.updater, "plugins.updater")
   assert(bundle.createUpdaterArtifacts === true, "bundle.createUpdaterArtifacts must remain true for stable")
-  assert(bundle.targets === "all", "bundle.targets must keep MSI and NSIS manual assets")
+  assert(bundle.targets === "all", "bundle.targets must stay all so macOS keeps the app archive and DMG")
   assert(typeof updater.pubkey === "string" && updater.pubkey.length > 0, "updater pubkey is required")
   assert(
     Array.isArray(updater.endpoints) &&
@@ -105,17 +105,28 @@ export function verifyStableProductUpdaterConfig(config: UnknownRecord): void {
   )
 }
 
+export function verifyWindowsMsiOnlyConfig(windowsConfig: UnknownRecord): void {
+  const bundle = record(windowsConfig.bundle, "windows bundle")
+  assert(
+    Array.isArray(bundle.targets) && bundle.targets.length === 1 && bundle.targets[0] === "msi",
+    "tauri.windows.conf.json bundle.targets must be exactly [\"msi\"]; Windows ships MSI only"
+  )
+}
+
+export async function loadTauriWindowsConfig(): Promise<UnknownRecord> {
+  return record(await Bun.file("src-tauri/tauri.windows.conf.json").json(), "src-tauri/tauri.windows.conf.json")
+}
+
 export function betaReleaseAssetNamesAreSafe(assetNames: Iterable<string>, version: string): boolean {
   const names = [...assetNames]
-  if (names.length !== 8 || new Set(names).size !== names.length) return false
+  if (names.length !== 6 || new Set(names).size !== names.length) return false
 
   const prefix = `Yuzora_${version}_`
-  const setup = names.filter((name) => name.startsWith(prefix) && name.endsWith("-setup.exe"))
   const msi = names.filter((name) => name.startsWith(prefix) && name.endsWith(".msi"))
-  if (setup.length !== 1 || msi.length !== 1) return false
+  if (msi.length !== 1) return false
   const expected = new Set([
     `${prefix}aarch64.dmg`, `${prefix}aarch64.app.tar.gz`, `${prefix}aarch64.app.tar.gz.sig`,
-    setup[0], `${setup[0]}.sig`, msi[0], `${msi[0]}.sig`, "latest.json",
+    msi[0], `${msi[0]}.sig`, "latest.json",
   ])
   return names.every((name) => expected.has(name))
 }
@@ -297,12 +308,11 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, "BUNDLE_DIR=\"src-tauri/target/release/bundle\"") &&
       includes(collect.run, "dmg/*.dmg") &&
       includes(collect.run, "macos/*.app.tar.gz") &&
-      includes(collect.run, "nsis/*setup.exe") &&
+      !includes(collect.run, "nsis") &&
       includes(collect.run, "msi/*.msi") &&
       includes(collect.run, "*.app.tar.gz.sig") &&
-      includes(collect.run, "*.msi.sig") &&
-      includes(collect.run, 'copy_exactly_one "Windows NSIS updater signature"'),
-    "build must validate Tauri CLI macOS Apple Silicon and Windows NSIS/MSI/updater output paths"
+      includes(collect.run, "*.msi.sig"),
+    "build must validate Tauri CLI macOS Apple Silicon and Windows MSI-only/updater output paths"
   )
   verifyRuntimePayloadSteps(buildSteps, "matrix.artifact_name == 'windows'")
 
@@ -338,6 +348,13 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(assembleUpload.run, 'gh release upload "$TAG_NAME" "${ASSETS[@]}" --clobber') &&
       includes(assembleUpload.run, 'gh release upload "$TAG_NAME" "$alias" --clobber'),
     "matching drafts must rebuild and idempotently repair notes, versioned assets, and stable aliases"
+  )
+  assert(
+    includes(assembleUpload.run, '[ "${#ASSETS[@]}" -eq 5 ]') &&
+      includes(assembleUpload.run, "Beta requires exactly five build artifacts") &&
+      !includes(assembleUpload.run, "setup.exe") &&
+      !includes(assembleUpload.run, "SETUP"),
+    "beta assembly must require exactly the five MSI-only build artifacts"
   )
 
   const prepare = jobFor(workflow, "prepare-updater-metadata")
@@ -488,7 +505,9 @@ export function verifyStableReleaseContract(workflow: Workflow): void {
   assert(
     includes(verifyAssets.run, "find_single_asset") &&
       includes(verifyAssets.run, "EXPECTED_ASSETS=(") &&
-      includes(verifyAssets.run, '"${SETUP_NAME}.sig"') &&
+      !includes(verifyAssets.run, "SETUP_NAME") &&
+      !includes(verifyAssets.run, "-setup.exe") &&
+      includes(verifyAssets.run, '"Yuzora-windows-x64.msi"') &&
       includes(verifyAssets.run, '"${MAC_ARCHIVE_NAME}.sig"') &&
       includes(verifyAssets.run, '"${WINDOWS_MSI_NAME}.sig"') &&
       includes(verifyAssets.run, "diff -u") &&
@@ -581,6 +600,8 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
       includes(verify.run, '"${MAC_ARCHIVE_NAME}.sig"') &&
       includes(verify.run, '"${WINDOWS_MSI_NAME}.sig"') &&
       includes(verify.run, "diff -u") &&
+      !includes(verify.run, "SETUP_NAME") &&
+      !includes(verify.run, "-setup.exe") &&
       !includes(verify.run, '"Yuzora-macos-aarch64.dmg"'),
     "beta publish must use an exact signed-updater allowlist without stable aliases"
   )
@@ -658,7 +679,7 @@ function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], window
   )
   assert(includes(verifyPayloads.run, "bun run runtime:verify"), "installers must verify Unix runtime manifests and hashes before building")
   const verify = stepByName(buildSteps, "Verify Windows native and Unix runtime payloads")
-  assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify native and Unix runtime payloads extracted from MSI and NSIS")
+  assert(verify.if === windowsCondition && verify.shell === "powershell" && includes(verify.run, "scripts/verify-windows-runtime-payload.ps1") && includes(verify.run, "src-tauri/target/release/bundle"), "Windows installers must verify native and Unix runtime payloads extracted from the MSI")
   const smoke = stepByName(buildSteps, "Verify isolated native Windows HERDR contract")
   assert(smoke.if === windowsCondition && smoke.run === "bun scripts/verify-herdr-runtime.ts src-tauri/resources/herdr/windows-x86_64/herdr.exe", "Windows installers must pass the isolated native runtime contract")
   assert(!buildSteps.some((step) => includes(step.run, "yuzora-wsl-agents")), "legacy WSL plugin must not run during installer builds")

@@ -148,9 +148,9 @@ Stable releases are built by GitHub Actions and published on [GitHub Releases](h
 | Platform | Format | Download |
 |:--|:--|:--|
 | **macOS** | `.dmg` — Apple Silicon (M series) only | [Yuzora-macos-aarch64.dmg](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-aarch64.dmg) |
-| **Windows** | `.exe` (NSIS) — x64 | [Yuzora-windows-x64-setup.exe](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe) |
+| **Windows** | `.msi` — x64 | [Yuzora-windows-x64.msi](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi) |
 
-The Windows `.msi` installer and past versions live on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Linux is used as a CI/test host only and is not a supported Yuzora desktop release platform.
+Windows ships as an MSI installer only; the NSIS `.exe` installer is discontinued and `Yuzora-windows-x64-setup.exe` is no longer updated (assets of older releases are unchanged). Past versions live on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Linux is used as a CI/test host only and is not a supported Yuzora desktop release platform.
 
 Starting with v0.0.9, the macOS App requires Apple Silicon. Intel macOS remote Hosts remain supported.
 

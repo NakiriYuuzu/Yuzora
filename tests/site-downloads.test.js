@@ -31,7 +31,7 @@ describe("GitHub Pages platform download selection", () => {
     expect(resolveDownloadTarget({ userAgentData: { platform: "Windows" } })).toMatchObject({
       status: "supported",
       platform: "windows",
-      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
     })
   })
 
@@ -116,7 +116,7 @@ describe("GitHub Pages platform download selection", () => {
     expect(target).toMatchObject({
       status: "supported",
       platform: "windows",
-      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
     })
   })
 
@@ -163,7 +163,7 @@ describe("GitHub Pages platform download selection", () => {
     await initDownloadExperience({ userAgentData: { platform: "Windows" } }, document)
 
     expect(document.querySelector("#primary-download")?.getAttribute("href")).toBe(
-      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
+      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
     )
     expect(document.querySelector("[data-device-message='windows']")).not.toHaveAttribute("hidden")
   })
@@ -175,7 +175,7 @@ describe("GitHub Pages platform download selection", () => {
     await initDownloadExperience({ userAgentData: { platform: "Windows" } }, page)
 
     expect(page.querySelector("#primary-download")?.getAttribute("href")).toBe(
-      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
+      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
     )
     expect(
       page.querySelector("[data-platform-download='windows']")?.classList.contains("is-recommended"),

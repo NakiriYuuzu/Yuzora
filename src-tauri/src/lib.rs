@@ -35,6 +35,7 @@ pub mod host_tunnels;
 mod host_windows;
 pub mod host_wsl;
 pub mod logging;
+mod nsis_migration;
 pub mod path_capability;
 pub mod perf_service;
 mod preview_resources;
@@ -256,6 +257,7 @@ pub fn run() {
                     eprintln!("window activation observer unavailable: {error}");
                 }
             }
+            nsis_migration::spawn();
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;

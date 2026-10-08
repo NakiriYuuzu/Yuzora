@@ -1,5 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
@@ -66,15 +68,15 @@ describe("release workflow contracts", () => {
   })
 
   // Each subprocess fixture gets its own timeout budget; shared CI runners can
-  // take over five seconds to execute the entire six-case batch.
-  it.each(['valid', 'missing-signature', 'unexpected-asset', 'universal-mac', 'wrong-version', 'empty-signature'])("verifies beta publish fixture %s without network or publishing", (scenario) => {
+  // take over five seconds to execute the entire seven-case batch.
+  it.each(['valid', 'missing-signature', 'unexpected-asset', 'legacy-nsis', 'universal-mac', 'wrong-version', 'empty-signature'])("verifies beta publish fixture %s without network or publishing", (scenario) => {
     const verifyAssets = releaseWorkflow().jobs["publish-beta-release"].steps.find((step) => step.name === "Verify beta release assets")!.run!
     const version = "0.0.10-beta.2"
     const tag = `v${version}`
     const prefix = `Yuzora_${version}_`
     const archive = `${prefix}aarch64.app.tar.gz`
     const msi = `${prefix}x64_en-US.msi`
-    const assets = [`${prefix}aarch64.dmg`, `${prefix}x64-setup.exe`, `${prefix}x64-setup.exe.sig`, archive, `${archive}.sig`, msi, `${msi}.sig`, "latest.json"]
+    const assets = [`${prefix}aarch64.dmg`, archive, `${archive}.sig`, msi, `${msi}.sig`, "latest.json"]
     const metadata = { version, notes: "Beta notes", platforms: {
       "darwin-aarch64": { url: `https://github.com/NakiriYuuzu/Yuzora/releases/download/${tag}/${archive}`, signature: "mac-signature" },
       "windows-x86_64": { url: `https://github.com/NakiriYuuzu/Yuzora/releases/download/${tag}/${msi}`, signature: "msi-signature" },
@@ -105,6 +107,7 @@ describe("release workflow contracts", () => {
     })
     const names = scenario === 'missing-signature' ? assets.filter(name => name !== `${msi}.sig`)
       : scenario === 'unexpected-asset' ? [...assets, "Yuzora-windows-x64.msi"]
+      : scenario === 'legacy-nsis' ? [...assets, `${prefix}x64-setup.exe`, `${prefix}x64-setup.exe.sig`]
       : scenario === 'universal-mac' ? assets.map(name => name.replace("aarch64.dmg", "universal.dmg"))
       : assets
     const value = scenario === 'wrong-version' ? { ...metadata, version: "0.0.10-beta.1" }
@@ -559,8 +562,6 @@ describe("release workflow contracts", () => {
   it("accepts signed beta updater assets while rejecting unsigned, wrong-version and stable aliases", () => {
     const installers = [
       "Yuzora_0.0.9-beta.1_aarch64.dmg",
-      "Yuzora_0.0.9-beta.1_x64-setup.exe",
-      "Yuzora_0.0.9-beta.1_x64-setup.exe.sig",
       "Yuzora_0.0.9-beta.1_x64_en-US.msi",
       "Yuzora_0.0.9-beta.1_x64_en-US.msi.sig",
       "Yuzora_0.0.9-beta.1_aarch64.app.tar.gz",
@@ -575,9 +576,10 @@ describe("release workflow contracts", () => {
       [...installers, "Yuzora_0.0.9-beta.1_universal.dmg"],
       [
         "Yuzora_0.0.9-beta.10_universal.dmg",
-        "Yuzora_0.0.9-beta.1_x64-setup.exe",
         "Yuzora_0.0.9-beta.1_x64_en-US.msi",
       ],
+      [...installers, "Yuzora_0.0.9-beta.1_x64-setup.exe"],
+      [...installers.slice(0, -1), "Yuzora_0.0.9-beta.1_x64-setup.exe.sig"],
       [...installers, "Yuzora_0.0.9-beta.1_universal.dmg.SIG"],
       [...installers, "Yuzora_0.0.9-beta.1_universal.app.tar.gz"],
       [...installers, "Yuzora_0.0.9-beta.1_windows.zip"],
@@ -585,5 +587,100 @@ describe("release workflow contracts", () => {
     ]) {
       expect(betaReleaseAssetNamesAreSafe(unsafe, "0.0.9-beta.1")).toBe(false)
     }
+  })
+
+  describe("MSI-only build, assembly and publish stay in lockstep", () => {
+    const version = "0.0.18"
+    const step = (job: string, name: string) => {
+      const found = releaseWorkflow().jobs[job].steps.find((item) => item.name === name)
+      expect(found, `${job}: ${name}`).toBeDefined()
+      return found!.run!
+    }
+    const globToRegExp = (glob: string) =>
+      new RegExp(`^${glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`)
+    // What the Tauri CLI leaves in each bundle directory. The nsis entries are
+    // deliberately present: nothing may collect them any more.
+    const bundleOutput = [
+      "dmg/Yuzora_0.0.18_aarch64.dmg",
+      "macos/Yuzora.app.tar.gz", "macos/Yuzora.app.tar.gz.sig",
+      "msi/Yuzora_0.0.18_x64_en-US.msi", "msi/Yuzora_0.0.18_x64_en-US.msi.sig",
+      "nsis/Yuzora_0.0.18_x64-setup.exe", "nsis/Yuzora_0.0.18_x64-setup.exe.sig",
+    ]
+    const collectedGlobs = () =>
+      [...step("build", "Collect verified local installer artifacts").matchAll(/copy_exactly_one "[^"]+" "\$BUNDLE_DIR"\/(\S+)/g)].map((m) => m[1])
+    const buildArtifacts = () => {
+      const renamed: Record<string, string> = {
+        "Yuzora.app.tar.gz": `Yuzora_${version}_aarch64.app.tar.gz`,
+        "Yuzora.app.tar.gz.sig": `Yuzora_${version}_aarch64.app.tar.gz.sig`,
+      }
+      return collectedGlobs().map((glob) => {
+        const matches = bundleOutput.filter((file) => globToRegExp(glob).test(file))
+        expect(matches, glob).toHaveLength(1)
+        const base = matches[0].split("/").pop()!
+        return renamed[base] ?? base
+      }).sort()
+    }
+    const resolveAllowlist = (run: string) => {
+      const body = /EXPECTED_ASSETS=\(\n([\s\S]*?)\n\s*\)/.exec(run)![1]
+      const names: Record<string, string> = {
+        MAC_ARCHIVE_NAME: `Yuzora_${version}_aarch64.app.tar.gz`,
+        DMG_NAME: `Yuzora_${version}_aarch64.dmg`,
+        WINDOWS_MSI_NAME: `Yuzora_${version}_x64_en-US.msi`,
+      }
+      return body.split("\n").map((line) => line.trim().replace(/^"|"$/g, "")
+        .replace(/\$\{(\w+)\}|\$(\w+)/g, (_, a, b) => names[a ?? b])).sort()
+    }
+    const runAssembly = (isBeta: boolean, files: string[]) => {
+      const run = step("assemble-draft", "Create or repair draft and upload versioned assets")
+      const script = run.slice(run.indexOf("mapfile -t ASSETS"), run.indexOf('RELEASE_VIEW_ERROR="$(mktemp)"'))
+      const dir = mkdtempSync(join(tmpdir(), "yuzora-assembly-"))
+      try {
+        mkdirSync(join(dir, "release-artifacts"))
+        for (const file of files) writeFileSync(join(dir, "release-artifacts", file), "x")
+        const result = spawnSync("bash", ["-c", `set -euo pipefail\n${script}\nprintf '%s\\n' "\${ALIAS_ASSETS[@]:-}"`], {
+          cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH, IS_BETA: String(isBeta) },
+        })
+        return { status: result.status, aliases: result.stdout.split("\n").filter(Boolean).sort() }
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    it("collects exactly five artifacts and never an NSIS file", () => {
+      const artifacts = buildArtifacts()
+      expect(artifacts).toEqual([
+        `Yuzora_${version}_aarch64.app.tar.gz`, `Yuzora_${version}_aarch64.app.tar.gz.sig`,
+        `Yuzora_${version}_aarch64.dmg`, `Yuzora_${version}_x64_en-US.msi`, `Yuzora_${version}_x64_en-US.msi.sig`,
+      ].sort())
+      expect(artifacts.some((name) => name.includes("setup.exe"))).toBe(false)
+    })
+
+    it("lets Beta assembly accept exactly the build output and reject any deviation", () => {
+      const artifacts = buildArtifacts()
+      expect(runAssembly(true, artifacts).status).toBe(0)
+      for (const mutated of [
+        artifacts.slice(1),
+        [...artifacts, `Yuzora_${version}_x64-setup.exe`],
+        [...artifacts, `Yuzora_${version}_x64-setup.exe.sig`],
+        [...artifacts.slice(1), `Yuzora_${version}_x64-setup.exe`],
+        [...artifacts, "latest.json"],
+        [...artifacts.slice(1), `Yuzora_${version}_aarch64.dmg.sig`],
+      ]) {
+        expect(runAssembly(true, mutated).status).not.toBe(0)
+      }
+    })
+
+    it("publishes 6 Beta assets and 8 Stable assets that extend the build output", () => {
+      const artifacts = buildArtifacts()
+      const beta = resolveAllowlist(step("publish-beta-release", "Verify beta release assets"))
+      const stable = resolveAllowlist(step("publish-release", "Verify release assets and updater metadata"))
+      expect(beta).toHaveLength(6)
+      expect(beta).toEqual([...artifacts, "latest.json"].sort())
+      expect(stable).toHaveLength(8)
+      const assembly = runAssembly(false, artifacts)
+      expect(assembly.status).toBe(0)
+      expect(assembly.aliases).toEqual(["Yuzora-macos-aarch64.dmg", "Yuzora-windows-x64.msi"])
+      expect(stable).toEqual([...beta, ...assembly.aliases].sort())
+    })
   })
 })

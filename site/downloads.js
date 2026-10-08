@@ -7,7 +7,7 @@ const DOWNLOADS = {
   },
   windows: {
     platform: "windows",
-    url: `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64-setup.exe`,
+    url: `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64.msi`,
   },
 }
 

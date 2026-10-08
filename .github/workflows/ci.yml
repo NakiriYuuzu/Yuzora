@@ -201,7 +201,6 @@ jobs:
             build-args: ""
             artifact-name: yuzora-release-candidate-windows-x86-64
             artifact-path: |
-              src-tauri/target/release/bundle/nsis/*setup.exe
               src-tauri/target/release/bundle/msi/*.msi
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
