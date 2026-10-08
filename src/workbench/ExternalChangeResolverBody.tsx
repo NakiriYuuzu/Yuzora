@@ -29,8 +29,10 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 
 // A "degraded" load happens when the disk side can't be diffed: binary/tooLarge
 // grades, or the file was deleted (openFile rejects). No merge view is shown —
-// just a message and two coarse actions.
-type Degraded = "binary" | "deleted" | null
+// just a message and two coarse actions. "unreadable" is a read failure while the
+// resolver is open (deleted, permission, remote host hiccup): only keep-mine is
+// offered, and a later successful read restores the merge view.
+type Degraded = "binary" | "deleted" | "unreadable" | null
 
 export function ResolverBody({ path }: { path: string }) {
     const containerRef = useRef<HTMLDivElement>(null)
@@ -41,6 +43,11 @@ export function ResolverBody({ path }: { path: string }) {
     // gets pulled up to the buffer once the user runs keepAll (acceptChunk).
     const diskRef = useRef<string>("")
     const diskSnapshotRef = useRef<OpenFileResult | undefined>(undefined)
+    // Monotonic id of the latest disk read; stale read results are ignored.
+    const readGenRef = useRef(0)
+    // Disk text waiting for the merge container to mount (degraded recovery).
+    const pendingRestoreRef = useRef<string | null>(null)
+    const [restoreTick, setRestoreTick] = useState(0)
     const [degraded, setDegraded] = useState<Degraded>(null)
     const [rechanged, setRechanged] = useState(false)
     const [ready, setReady] = useState(false)
@@ -62,9 +69,10 @@ export function ResolverBody({ path }: { path: string }) {
         const buffer = mainView.state.doc.toString()
         bufferRef.current = buffer
 
+        const gen = ++readGenRef.current
         void openFile(path)
             .then((disk) => {
-                if (disposed) return
+                if (disposed || gen !== readGenRef.current) return
                 diskSnapshotRef.current = disk
                 if (disk.kind === "binary" || disk.kind === "tooLarge") {
                     setDegraded("binary")
@@ -85,7 +93,7 @@ export function ResolverBody({ path }: { path: string }) {
                 setReady(true)
             })
             .catch(() => {
-                if (disposed) return
+                if (disposed || gen !== readGenRef.current) return
                 setDegraded("deleted")
                 setReady(true)
             })
@@ -100,15 +108,32 @@ export function ResolverBody({ path }: { path: string }) {
     // The disk side became undiffable while the resolver is open: tear down the
     // merge view so no stale-disk action (takeDisk / resolveAndSave) remains, keep
     // the user's in-progress doc as the buffer, and switch to the degraded UI.
-    function enterDegraded(view: EditorView | null, next: "binary" | "deleted") {
+    function enterDegraded(view: EditorView | null, next: "binary" | "unreadable") {
         if (view) {
             bufferRef.current = view.state.doc.toString()
             view.destroy()
             mergeViewRef.current = null
         }
+        pendingRestoreRef.current = null
         setDegraded(next)
         setReady(true)
     }
+
+    // The merge container only exists while not degraded, so recovery clears
+    // degraded first and builds the view here once the container is mounted.
+    useEffect(() => {
+        const parent = containerRef.current
+        const original = pendingRestoreRef.current
+        if (original === null || !parent || mergeViewRef.current) return
+        pendingRestoreRef.current = null
+        mergeViewRef.current = new EditorView({
+            state: EditorState.create({
+                doc: bufferRef.current,
+                extensions: [unifiedMergeView({ original, mergeControls: true })]
+            }),
+            parent
+        })
+    }, [restoreTick, degraded])
 
     // While open, react to further disk changes for this same path: rebuild the
     // merge view with the current in-progress doc against the fresh disk as the
@@ -116,13 +141,16 @@ export function ResolverBody({ path }: { path: string }) {
     // patching the original in place) keeps the user's accept/reject progress
     // while guaranteeing a consistent diff against the new disk content.
     useEffect(() => {
+        let disposed = false
         const unlisten = listen<ExternalChangePayload>("fs:external-change", (e) => {
             // #57 T3：先比對 live workspacePath，舊 workspace watcher 的殘留
             // 事件不得觸發 rebuild（防串場）。
             if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
             if (!e.payload.paths.some((changed) => relativePathWithin(changed, path) !== null)) return
+            const gen = ++readGenRef.current
             void openFile(path)
                 .then((disk) => {
+                    if (disposed || gen !== readGenRef.current) return
                     if (sameDiskSnapshot(diskSnapshotRef.current, disk)) return
                     diskSnapshotRef.current = disk
                     setRechanged(true)
@@ -131,9 +159,17 @@ export function ResolverBody({ path }: { path: string }) {
                         enterDegraded(view, "binary")
                         return
                     }
-                    const parent = containerRef.current
-                    if (!view || !parent) return
                     diskRef.current = disk.content
+                    if (!view) {
+                        // Degraded (or never built): rebuild from the in-progress buffer.
+                        pendingRestoreRef.current = disk.content
+                        setDegraded(null)
+                        setReady(true)
+                        setRestoreTick((n) => n + 1)
+                        return
+                    }
+                    const parent = containerRef.current
+                    if (!parent) return
                     const doc = view.state.doc.toString()
                     view.destroy()
                     mergeViewRef.current = new EditorView({
@@ -150,11 +186,15 @@ export function ResolverBody({ path }: { path: string }) {
                     })
                 })
                 .catch(() => {
+                    if (disposed || gen !== readGenRef.current) return
                     setRechanged(true)
-                    enterDegraded(mergeViewRef.current, "deleted")
+                    // Forget the snapshot so the next successful read always restores.
+                    diskSnapshotRef.current = undefined
+                    enterDegraded(mergeViewRef.current, "unreadable")
                 })
         })
         return () => {
+            disposed = true
             void unlisten.then((fn) => fn())
         }
     }, [path])
@@ -283,7 +323,9 @@ export function ResolverBody({ path }: { path: string }) {
                     <DialogDescription>
                         {degraded === "deleted"
                             ? "磁碟上的檔案已不存在，無法比對差異。"
-                            : degraded === "binary"
+                            : degraded === "unreadable"
+                              ? "無法讀取磁碟版本（檔案可能已刪除或暫時無法存取）。"
+                              : degraded === "binary"
                               ? "磁碟版無法比對差異（二進位或過大）。"
                               : workspacePathForDisplay(path)}
                     </DialogDescription>
@@ -303,7 +345,9 @@ export function ResolverBody({ path }: { path: string }) {
                     <ScrollArea className="min-h-0 flex-1" focusable viewportClassName="text-[13px] text-(--ink-2)">
                         {degraded === "deleted"
                             ? "你可以保留目前編輯內容並覆寫存檔，或丟棄變更並關閉分頁。"
-                            : "你可以保留目前編輯內容並覆寫存檔，或改用磁碟版重新載入。"}
+                            : degraded === "unreadable"
+                              ? "你可以保留目前編輯內容並覆寫存檔；磁碟版本可再次讀取時會自動恢復比對。"
+                              : "你可以保留目前編輯內容並覆寫存檔，或改用磁碟版重新載入。"}
                     </ScrollArea>
                 ) : (
                     <div
@@ -322,7 +366,7 @@ export function ResolverBody({ path }: { path: string }) {
                                 <Button variant="outline" onClick={discardAndCloseTab}>
                                     丟棄並關閉分頁
                                 </Button>
-                            ) : (
+                            ) : degraded === "unreadable" ? null : (
                                 <Button variant="outline" onClick={takeDiskReload}>
                                     採用磁碟版（重新載入）
                                 </Button>
