@@ -73,7 +73,15 @@ export async function applyWindowGlass(enabled: boolean, root: HTMLElement = doc
   } else if (root.dataset.glass === "true") {
     leaveGlass(root)
   }
-  if (!platform) return
+  if (!platform) {
+    // Detection can fail later (a UA-CH query on Windows): an effect already on
+    // the window must still go, using the platform it was applied with.
+    if (desired?.active) {
+      desired = { ...desired, active: false }
+      await syncNative(root)
+    }
+    return
+  }
   desired = { active, platform }
   await syncNative(root)
 }

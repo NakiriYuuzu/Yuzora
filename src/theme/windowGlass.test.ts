@@ -152,6 +152,16 @@ describe("window glass", () => {
     expect(root.style.backgroundColor).toBe("transparent")
   })
 
+  it("still clears an applied effect when a later detection fails", async () => {
+    onWindows("15.0.0")
+    await applyWindowGlass(true, root)
+    expect(native.setEffects).toHaveBeenCalledTimes(1)
+    onWindows(new Error("UA-CH unavailable"))
+    await applyWindowGlass(false, root)
+    expect(native.clearEffects).toHaveBeenCalledTimes(1)
+    expect(root.dataset.glass).toBeUndefined()
+  })
+
   it("applies native effect changes one at a time in request order", async () => {
     let finish: () => void = () => {}
     native.setEffects.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
