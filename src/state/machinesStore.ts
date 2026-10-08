@@ -246,8 +246,12 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
         return { ok: true, code: null }
       } catch (cause) {
         const raw = messageOf(cause)
-        // A busy manager is not a machine failure; keep everything as is.
-        if (raw.startsWith("machines-busy")) return { ok: false, code: "machines-busy" }
+        // A busy manager is not a machine failure; keep everything as is. The host rejected this call because
+        // the previous one for this machine is still running, so give that one back its place as the latest.
+        if (raw.startsWith("machines-busy")) {
+          if (mine === epoch && snapshotSeq.get(id) === seq) snapshotSeq.set(id, seq - 1)
+          return { ok: false, code: "machines-busy" }
+        }
         const code = parseMachineError(raw).code
         if (current()) {
           set((state) => ({

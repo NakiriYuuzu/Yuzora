@@ -153,6 +153,18 @@ const deferred = <T,>() => {
 const unsupportedCaps = { ...supportedCaps, supported: false, reason: "machines-runtime-too-old" }
 
 describe("machinesStore concurrency", () => {
+  it("a snapshot rejected as busy does not supersede the one still in flight", async () => {
+    useMachinesStore.setState({ machines: [a] })
+    let resolveFirst!: (value: ReturnType<typeof snapshot>) => void
+    ipc.agents.mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
+    const first = useMachinesStore.getState().refreshSnapshot(a.id)
+    ipc.agents.mockRejectedValueOnce("machines-busy")
+    await expect(useMachinesStore.getState().refreshSnapshot(a.id)).resolves.toEqual({ ok: false, code: "machines-busy" })
+    resolveFirst(snapshot(a.id))
+    await expect(first).resolves.toEqual({ ok: true, code: null })
+    expect(useMachinesStore.getState().snapshotById[a.id]).toEqual(snapshot(a.id))
+  })
+
   it("a superseded list refresh resolves to the newest list instead of the stale cache", async () => {
     let resolveOld!: (machines: typeof a[]) => void
     let resolveNew!: (machines: typeof a[]) => void
