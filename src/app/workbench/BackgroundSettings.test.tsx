@@ -269,6 +269,47 @@ describe("background settings", () => {
     expect(onChange).toHaveBeenCalledTimes(1)
   })
 
+  it("lets a later source choice cancel a pending image pick or palette import", async () => {
+    let decoded!: (image: Blob) => void
+    mocks.prepare.mockReturnValueOnce(new Promise<Blob>(resolve => { decoded = resolve }))
+    mocks.save.mockResolvedValue()
+    const onChange = renderSettings({ ...DEFAULT_BACKGROUND_APPEARANCE, backgroundSource: "image", backgroundImageVersion: 7 })
+    fireEvent.change(screen.getByTestId("background-backdrop-input"), { target: { files: [new File(["a"], "slow.png")] } })
+    fireEvent.click(screen.getByRole("radio", { name: "Follow accent" }))
+    decoded(new Blob(["slow"]))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(mocks.save).not.toHaveBeenCalled()
+    expect(onChange.mock.calls).toEqual([[{ backgroundSource: "accent" }]])
+    cleanup()
+
+    // A palette import pending when an image is picked never switches back to the gradient.
+    let extracted!: (colors: string[]) => void
+    mocks.extract.mockReturnValueOnce(new Promise<string[]>(resolve => { extracted = resolve }))
+    mocks.prepare.mockResolvedValueOnce(new Blob(["img"]))
+    vi.spyOn(Date, "now").mockReturnValue(1791460000000)
+    const next = renderSettings({ ...gradientValue, backgroundSource: "image" })
+    fireEvent.change(screen.getByTestId("background-image-input"), { target: { files: [new File(["p"], "palette.png")] } })
+    fireEvent.change(screen.getByTestId("background-backdrop-input"), { target: { files: [new File(["i"], "photo.png")] } })
+    await waitFor(() => expect(next).toHaveBeenLastCalledWith({ backgroundSource: "image", backgroundImageVersion: 1791460000000 }))
+    extracted(["#112233"])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(next).toHaveBeenLastCalledWith({ backgroundSource: "image", backgroundImageVersion: 1791460000000 })
+  })
+
+  it("records an image saved before a newer source choice without switching back to it", async () => {
+    let saved!: () => void
+    mocks.prepare.mockResolvedValueOnce(new Blob(["img"]))
+    mocks.save.mockReturnValueOnce(new Promise<void>(resolve => { saved = resolve }))
+    vi.spyOn(Date, "now").mockReturnValue(1791460000000)
+    const onChange = renderSettings({ ...DEFAULT_BACKGROUND_APPEARANCE, backgroundSource: "image", backgroundImageVersion: 7 })
+    fireEvent.change(screen.getByTestId("background-backdrop-input"), { target: { files: [new File(["a"], "photo.png")] } })
+    await waitFor(() => expect(mocks.save).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole("radio", { name: "Follow accent" }))
+    saved()
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2))
+    expect(onChange.mock.calls).toEqual([[{ backgroundSource: "accent" }], [{ backgroundImageVersion: 1791460000000 }]])
+  })
+
   it("still offers picking gradient colors from an image", () => {
     renderSettings(gradientValue)
     expect(screen.getByRole("button", { name: "Pick colors from an image" })).toBeInTheDocument()

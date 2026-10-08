@@ -58,10 +58,14 @@ export function BackgroundSettings({
   // Same colors at another intensity can still be saved: Save then replaces that entry.
   const isSaved = savedGradients.some(entry =>
     sameGradientColors(entry.colors, backgroundGradient.colors) && entry.intensity === backgroundGradient.intensity)
-  /** Bumped by palette imports and every later palette or source change: only the latest intent applies. */
-  const paletteRequest = useRef(0)
+  /**
+   * Bumped by every source-affecting action (gradient edits, source switch,
+   * palette import, image pick or removal): a slower, older one never
+   * overrides the newer intent.
+   */
+  const intent = useRef(0)
   const changePalette = (patch: Partial<BackgroundAppearance>) => {
-    paletteRequest.current += 1
+    intent.current += 1
     onChange(patch)
   }
 
@@ -83,39 +87,47 @@ export function BackgroundSettings({
 
   const setBackdropImage = async (file: File) => {
     const request = ++imageRequest.current
+    const mine = ++intent.current
     setBackdropImageError(false)
     try {
       const image = await prepareBackgroundImage(file)
       // IndexedDB runs the writes in the order they start, so a pick that
       // still saves here is the latest one or is followed by the newer write.
-      if (request !== imageRequest.current) return
+      if (request !== imageRequest.current || mine !== intent.current) return
       await saveBackgroundImage(image)
       if (request !== imageRequest.current) return
-      onChange({ backgroundSource: "image", backgroundImageVersion: Date.now() })
+      // Stored before a newer source choice landed: keep that choice and only
+      // record the new image.
+      onChange(mine === intent.current
+        ? { backgroundSource: "image", backgroundImageVersion: Date.now() }
+        : { backgroundImageVersion: Date.now() })
     } catch {
-      if (request === imageRequest.current) setBackdropImageError(true)
+      if (request === imageRequest.current && mine === intent.current) setBackdropImageError(true)
     }
   }
   const removeBackdropImage = async () => {
     const request = ++imageRequest.current
+    const mine = ++intent.current
     await clearBackgroundImage().catch(() => {})
     if (request !== imageRequest.current) return
-    onChange({ backgroundSource: "accent", backgroundImageVersion: 0 })
+    onChange(mine === intent.current
+      ? { backgroundSource: "accent", backgroundImageVersion: 0 }
+      : { backgroundImageVersion: 0 })
   }
 
   const importImage = async (file: File) => {
-    const request = ++paletteRequest.current
+    const request = ++intent.current
     setImageError(false)
     try {
       const colors = await extractPaletteFromImage(file)
       // A newer import or palette change since then wins; this result is stale.
-      if (request !== paletteRequest.current) return
+      if (request !== intent.current) return
       if (colors.length === 0) throw new Error("no colors")
       const gradient = { colors, intensity: backgroundGradient.intensity }
       setSelected(0)
       applyGradient(gradient, { savedGradients: addSavedGradient(savedGradients, gradient) })
     } catch {
-      if (request === paletteRequest.current) setImageError(true)
+      if (request === intent.current) setImageError(true)
     }
   }
 
