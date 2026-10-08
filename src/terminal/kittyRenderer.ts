@@ -75,6 +75,12 @@ export function installKittyRenderer(term: Terminal, reply: (text: string) => vo
     load: loadImage,
     dispose: canvas => { canvas.width = 0; canvas.height = 0 },
     cursor: () => ({ col: term.buffer.active.cursorX, row: term.buffer.active.baseY + term.buffer.active.cursorY }),
+    cell: () => ({ width: screen.clientWidth / term.cols, height: screen.clientHeight / term.rows }),
+    // IND scrolls at the bottom margin like Kitty; CHA lands on the column after the image.
+    advance: (cols, rows) => new Promise<void>(resolve => {
+      const col = term.buffer.active.cursorX + cols, wrap = col >= term.cols
+      term.write(`${"\x1bD".repeat(rows - 1 + (wrap ? 1 : 0))}\x1b[${wrap ? 1 : col + 1}G`, resolve)
+    }),
     reply, changed: schedule
   })
   const parser = new KittyStreamParser(), decoder = new TextDecoder()

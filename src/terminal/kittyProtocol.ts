@@ -44,6 +44,10 @@ interface GraphicsTarget<T> {
   load: (bytes: Uint8Array<ArrayBuffer>, width: number, height: number, format: number) => Promise<KittyImage<T>>
   dispose: (image: T) => void
   cursor: () => { col: number; row: number }
+  /** Cell size in the same pixels a placement without `c`/`r` is drawn in. */
+  cell: () => { width: number; height: number }
+  /** Moves the cursor right by `cols` and down by `rows - 1`, wrapping and scrolling like Kitty. */
+  advance: (cols: number, rows: number) => Promise<void>
   reply: (data: string) => void
   changed: () => void
 }
@@ -141,9 +145,9 @@ export class KittyGraphics<T> {
         const previous = this.images.get(id)
         if (previous) this.target.dispose(previous.image)
         this.images.set(id, image)
-        if (action === "T") this.place(id, control)
+        if (action === "T") await this.advance(this.place(id, control), control)
       } else if (action === "p") {
-        this.place(integer(control.i), control)
+        await this.advance(this.place(integer(control.i), control), control)
       } else if (action === "d") {
         const mode = control.d ?? "a", imageId = integer(control.i), placementId = integer(control.p)
         if (!["a", "A", "i", "I"].includes(mode)) throw new Error("ENOTSUP: Unsupported deletion")
@@ -186,6 +190,14 @@ export class KittyGraphics<T> {
       || placement.cols < 0 || placement.cols > 1000 || placement.rows < 0 || placement.rows > 1000) throw new Error("EINVAL: Invalid placement")
     if (this.placements.size >= 512 && !this.placements.has(`${imageId}:${id}`)) throw new Error("ENOSPC: Too many placements")
     this.placements.set(`${imageId}:${id}`, placement)
+    return placement
+  }
+  // Kitty moves the cursor past a placement's cell rectangle unless the client sent C=1.
+  private async advance(placement: KittyPlacement, control: Record<string, string>) {
+    if (control.C === "1") return
+    const cell = this.target.cell()
+    const span = (cells: number, pixels: number, size: number) => cells || (size > 0 ? Math.ceil(pixels / size) : 1)
+    await this.target.advance(span(placement.cols, placement.width + placement.offsetX, cell.width), span(placement.rows, placement.height + placement.offsetY, cell.height))
   }
   private clearImages() {
     for (const image of this.images.values()) this.target.dispose(image.image)
