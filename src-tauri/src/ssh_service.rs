@@ -320,14 +320,16 @@ impl HostKeyPersistIo for StdHostKeyIo {
 
     fn sync_file(&self, path: &Path) -> std::io::Result<()> {
         // Windows FlushFileBuffers rejects read-only handles (os error 5).
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)?
-            .sync_all()
+        retry_transient(windows_scanner_held, || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .sync_all()
+        })
     }
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        std::fs::rename(from, to)
+        retry_transient(windows_scanner_held, || std::fs::rename(from, to))
     }
 
     fn sync_dir(&self, path: &Path) -> std::io::Result<()> {
@@ -341,6 +343,34 @@ impl HostKeyPersistIo for StdHostKeyIo {
             Ok(())
         }
     }
+}
+
+/// Windows scanners (Defender, indexers) briefly hold a file that was just
+/// written, so reopening or renaming it can fail with a sharing violation or
+/// access denied for a few milliseconds.
+fn windows_scanner_held(error: &std::io::Error) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    cfg!(windows)
+        && matches!(
+            error.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+        )
+}
+
+/// Retries only failures `transient` accepts, a few times over ~150 ms;
+/// anything else, or a failure that persists, is returned (fail closed).
+fn retry_transient<T>(
+    transient: fn(&std::io::Error) -> bool,
+    mut op: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    for _ in 0..5 {
+        match op() {
+            Err(error) if transient(&error) => std::thread::sleep(Duration::from_millis(30)),
+            other => return other,
+        }
+    }
+    op()
 }
 
 #[cfg(test)]
@@ -3116,7 +3146,14 @@ mod tests {
         let result = connection.await.unwrap();
         let mut expected_calls = vec!["password:alice"];
         expected_calls.extend(vec!["keyboard:alice"; expected_keyboard_calls]);
-        assert_eq!(calls.lock().unwrap().as_slice(), expected_calls);
+        // Without the connect error an early end (e.g. a host-key persist
+        // failure before auth) shows up only as missing calls.
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            expected_calls,
+            "connect error: {:?}",
+            result.as_ref().err()
+        );
         if let Some(expected_error) = expected_error {
             assert_eq!(result.unwrap_err(), expected_error);
         } else {
@@ -3194,6 +3231,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn transient_io_failures_are_retried_briefly_and_others_fail_closed() {
+        let busy = |error: &std::io::Error| error.kind() == std::io::ErrorKind::WouldBlock;
+        let attempts = std::cell::Cell::new(0);
+        let result = retry_transient(busy, || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            } else {
+                Ok(attempts.get())
+            }
+        });
+        assert_eq!(result.unwrap(), 3);
+        attempts.set(0);
+        let denied = retry_transient(busy, || {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(
+            denied.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(attempts.get(), 1);
+        attempts.set(0);
+        let stuck = retry_transient(busy, || {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        });
+        assert!(stuck.is_err());
+        assert_eq!(attempts.get(), 6);
+        // Off Windows the scanner errors mean something else and are never retried.
+        assert_eq!(
+            windows_scanner_held(&std::io::Error::from_raw_os_error(32)),
+            cfg!(windows)
+        );
+    }
+
     #[tokio::test]
     async fn keyboard_interactive_never_answers_unsafe_initial_prompts() {
         for prompts in [
@@ -3202,6 +3276,7 @@ mod tests {
             vec![("New password:", false)],
             vec![("Password:", false), ("OTP:", false)],
         ] {
+            eprintln!("prompt set: {prompts:?}");
             assert_keyboard_connect_script(
                 vec![KeyboardAuthStep {
                     expected_response: None,
