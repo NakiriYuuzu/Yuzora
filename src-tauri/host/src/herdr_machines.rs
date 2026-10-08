@@ -36,6 +36,9 @@ pub struct HerdrMachinesCapabilities {
     pub supported: bool,
     pub has_status: bool,
     pub has_reconnect: bool,
+    /// False when a subcommand probe could not finish (timeout, signal, spawn
+    /// failure, oversized output): the frontend asks again later.
+    pub probes_complete: bool,
     pub source: String,
     pub reason: Option<String>,
 }
@@ -900,11 +903,13 @@ fn detect(binary: &Path) -> Detection {
     detection
 }
 
-/// Whether `op`'s subcommand exists. Only a present one is cached: a nonzero
-/// exit, signal, timeout or oversized output may be transient, so an absent
-/// answer is asked again next time. Capabilities are read rarely (startup,
-/// the Machines panel, retries), never per poll, so that stays cheap.
-fn has_subcommand(binary: &Path, op: MachineOp<'_>, name: &'static str) -> bool {
+/// Whether `op`'s subcommand exists, and whether the probe finished. Only a
+/// present one is cached: a nonzero exit, signal, timeout or oversized output
+/// may be transient, so an absent answer is asked again next time.
+/// Capabilities are read rarely (startup, the Machines panel, retries), never
+/// per poll, so that stays cheap. A probe that never reached an exit code
+/// (timeout, signal, spawn failure, oversized output) is incomplete.
+fn has_subcommand(binary: &Path, op: MachineOp<'_>, name: &'static str) -> (bool, bool) {
     let key = (detection_key(binary), name);
     if SUBCOMMANDS
         .lock()
@@ -912,10 +917,11 @@ fn has_subcommand(binary: &Path, op: MachineOp<'_>, name: &'static str) -> bool 
         .as_ref()
         .is_some_and(|found| found.contains(&key))
     {
-        return true;
+        return (true, true);
     }
-    let present = run_machine_cli(binary, &build_machine_argv(&op), SHORT_TIMEOUT)
-        .is_ok_and(|out| out.success());
+    let probe = run_machine_cli(binary, &build_machine_argv(&op), SHORT_TIMEOUT);
+    let complete = probe.as_ref().is_ok_and(|out| out.code.is_some());
+    let present = probe.is_ok_and(|out| out.success());
     if present {
         let mut guard = SUBCOMMANDS.lock().unwrap();
         let found = guard.get_or_insert_with(HashSet::new);
@@ -924,7 +930,7 @@ fn has_subcommand(binary: &Path, op: MachineOp<'_>, name: &'static str) -> bool 
         }
         found.insert(key);
     }
-    present
+    (present, complete)
 }
 
 pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilities {
@@ -936,6 +942,7 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
             supported: false,
             has_status: false,
             has_reconnect: false,
+            probes_complete: true,
             source,
             reason: Some("machines-local-only".into()),
         };
@@ -947,6 +954,7 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
             supported: false,
             has_status: false,
             has_reconnect: false,
+            probes_complete: true,
             source,
             reason: Some("machines-binary-unavailable".into()),
         };
@@ -957,9 +965,16 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
         .is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION));
     // A custom build may ship `machine status` without `machine reconnect`
     // (Windows HERDR has none), so each subcommand is probed on its own.
-    let has_status = supported && has_subcommand(&binary, MachineOp::Capability, "status");
-    let has_reconnect =
-        supported && has_subcommand(&binary, MachineOp::ReconnectCapability, "reconnect");
+    let (has_status, status_complete) = if supported {
+        has_subcommand(&binary, MachineOp::Capability, "status")
+    } else {
+        (false, true)
+    };
+    let (has_reconnect, reconnect_complete) = if supported {
+        has_subcommand(&binary, MachineOp::ReconnectCapability, "reconnect")
+    } else {
+        (false, true)
+    };
     let reason = (!supported).then(|| {
         if source == "global" {
             error("machines-runtime-too-old", "global-use-bundled")
@@ -973,6 +988,7 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
         supported,
         has_status,
         has_reconnect,
+        probes_complete: status_complete && reconnect_complete,
         source,
         reason,
     }

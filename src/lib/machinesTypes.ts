@@ -9,6 +9,8 @@ export interface HerdrMachinesCapabilities {
   supported: boolean
   hasStatus: boolean
   hasReconnect: boolean
+  /** False when a subcommand probe could not finish; the bridge asks again later. */
+  probesComplete?: boolean
   source: "default" | "global" | "custom"
   reason: string | null
 }

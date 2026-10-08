@@ -134,10 +134,12 @@ export function MachinesBridge() {
       const shouldPoll = Boolean(capabilities?.supported)
       if (shouldPoll && !poller) { poller = createMachinesPoller(); poller.start() }
       else if (!shouldPoll && poller) { poller.stop(); poller = null }
-      // A probe that failed or found no parsable version (timeout, spawn failure, missing binary) is
-      // retried slowly; a confirmed old version and a remote-only source stay idle.
+      // A probe that failed or found no parsable version (timeout, spawn failure, missing binary),
+      // or a supported runtime whose subcommand probes did not finish, is retried slowly; a
+      // confirmed old version and a remote-only source stay idle.
       const incomplete = capabilitiesError !== null || (capabilities !== null && !capabilities.supported
         && capabilities.version === null && capabilities.reason !== "machines-local-only")
+        || capabilities?.probesComplete === false
       if (incomplete && !capabilityRetry && !disposed) {
         capabilityRetry = setTimeout(() => { capabilityRetry = null; void bootstrap() }, MACHINES_CAPABILITY_RETRY_MS)
       } else if (!incomplete && capabilityRetry) { clearTimeout(capabilityRetry); capabilityRetry = null }

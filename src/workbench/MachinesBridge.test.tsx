@@ -88,6 +88,19 @@ describe("MachinesBridge", () => {
     expect(ipc.caps).toHaveBeenCalledTimes(2)
   })
 
+  it("re-reads capabilities when a subcommand probe did not finish and stops once it has", async () => {
+    ipc.caps.mockResolvedValueOnce({ ...supportedCaps, hasStatus: false, probesComplete: false }).mockResolvedValue(supportedCaps)
+    ipc.list.mockResolvedValue([machine("a")])
+    render(<MachinesBridge />)
+    await advance(59 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(1)
+    await advance(1 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(2)
+    expect(useMachinesStore.getState().capabilities?.hasStatus).toBe(true)
+    await advance(180 * SEC)
+    expect(ipc.caps).toHaveBeenCalledTimes(2)
+  })
+
   it("retries a failed capability call and stays idle for a remote-only source", async () => {
     ipc.caps.mockRejectedValueOnce(new Error("ipc down")).mockResolvedValue({ ...supportedCaps, supported: false, version: null, reason: "machines-local-only" })
     render(<MachinesBridge />)

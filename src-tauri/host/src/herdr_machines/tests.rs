@@ -779,6 +779,36 @@ fi
     }
 
     #[test]
+    fn herdr_machine_flags_a_probe_that_never_finished_as_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdr");
+        // `status --help` floods past the output cap (no exit code reached);
+        // `reconnect --help` exits 2 like a missing subcommand.
+        let script = "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'herdr 0.9.3'; exit 0; fi\n\
+             if [ \"$2\" = status ]; then head -c 3000000 /dev/zero | tr '\\0' x; exit 0; fi\n\
+             if [ \"$2\" = reconnect ]; then exit 2; fi\n\
+             exit 0\n";
+        write_executable(&path, script);
+        let caps = machines_capabilities(&HerdrManager::with_binary(path.clone()));
+        assert!(
+            caps.supported && !caps.has_status && !caps.probes_complete,
+            "{caps:?}"
+        );
+        // A missing subcommand alone is a complete answer.
+        let script = "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'herdr 0.9.3'; exit 0; fi\n\
+             if [ \"$2\" = reconnect ]; then exit 2; fi\n\
+             exit 0\n";
+        write_executable(&path, script);
+        let caps = machines_capabilities(&HerdrManager::with_binary(path));
+        assert!(
+            caps.has_status && !caps.has_reconnect && caps.probes_complete,
+            "{caps:?}"
+        );
+    }
+
+    #[test]
     fn herdr_machine_reconnect_is_probed_on_its_own() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("herdr");
