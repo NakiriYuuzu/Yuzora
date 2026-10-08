@@ -1454,10 +1454,11 @@ function HerdrTerminalLeaf({
       outputQueueRef.current?.dispose()
       unregisterTerminalOutputQueue(attachmentKey)
       clearRetry()
-      transport.detach()
+      // A gesture released by this teardown reaches HERDR before its connector goes.
+      const mouseFlushed = transport.detach()
       recoverOutputRef.current = null
       transportRef.current = null
-      void useHerdrStore.getState().releaseAttachment(attachmentKey).catch(() => undefined)
+      void useHerdrStore.getState().releaseAttachment(attachmentKey, mouseFlushed).catch(() => undefined)
       unregisterFocus()
       term.dispose()
       termRef.current = null

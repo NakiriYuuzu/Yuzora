@@ -1348,11 +1348,15 @@ describe("terminal mouse", () => {
     await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledOnce())
     void transport.mouse?.("drag", { column: 2, row: 1 }, 0)
     void transport.mouse?.("up", { column: 2, row: 1 }, 0)
-    transport.detach()
+    let flushed = false
+    void transport.detach().then(() => { flushed = true })
     // Nothing overtakes the in-flight `down`.
     expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+    await Promise.resolve()
+    expect(flushed).toBe(false)
     release()
-    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(flushed).toBe(true))
+    expect(herdrTerminalMouse).toHaveBeenCalledTimes(3)
     expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([
       ["sess-mouse", "down", { column: 1, row: 1 }, 0],
       ["sess-mouse", "drag", { column: 2, row: 1 }, 0],

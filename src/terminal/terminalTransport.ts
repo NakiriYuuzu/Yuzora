@@ -207,7 +207,8 @@ export interface HerdrTerminalTransportOptions {
 }
 
 export interface HerdrTerminalTransport extends TerminalTransport {
-  detach(): void
+  /** Resolves once queued pointer events have been handed to HERDR; release the connector after it. */
+  detach(): Promise<void>
   detachSession(): string | null
 }
 
@@ -663,13 +664,14 @@ export function createHerdrTerminalTransport(
       // waits for the one before it; with nothing on the wire the first goes
       // out right away, ahead of the attachment release.
       const id = sessionId
-      if (id && mode === "control" && !disposed) {
+      let flushed: Promise<void> = Promise.resolve()
+      if (id && mode === "control" && !disposed && mouseQueue.length) {
         let previous: Promise<unknown> | null = mouseInFlight
         for (const { action, cell, modifiers } of mouseQueue) {
           const send = () => herdrTerminalMouse(id, action, cell, modifiers)
           previous = previous ? previous.catch(() => undefined).then(send) : send()
         }
-        void previous?.catch(() => undefined)
+        flushed = previous!.then(() => undefined, () => undefined)
       }
       discardInput()
       discardScroll()
@@ -678,6 +680,7 @@ export function createHerdrTerminalTransport(
       eventHandler = null
       sessionId = null
       lastSeq = null
+      return flushed
     },
     detachSession() {
       discardInput()
