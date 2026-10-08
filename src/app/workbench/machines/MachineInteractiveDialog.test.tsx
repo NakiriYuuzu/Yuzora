@@ -82,6 +82,18 @@ describe("MachineInteractiveDialog", () => {
     expect(useMachinesInteractiveStore.getState().selection).toBeNull()
   })
 
+  it("forces a machines refresh when the official client closes", async () => {
+    useMachinesStore.setState({ refreshNonce: 0, refreshForce: false })
+    useMachinesInteractiveStore.setState({ selection: { spec: { kind: "client" }, machineLabel: "Lab box" } })
+    render(<MachineInteractiveDialog selection={{ spec: { kind: "client" }, machineLabel: "Lab box" }} />)
+    await nextFrame()
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalled())
+    await act(async () => { onEvent({ type: "closed", sessionId: "herdr-client-1" }) })
+    fireEvent.click(screen.getAllByRole("button", { name: "Close" }).at(-1)!)
+    expect(useMachinesStore.getState().refreshNonce).toBe(1)
+    expect(useMachinesStore.getState().refreshForce).toBe(true)
+  })
+
   it("reports a saved machine after an add finishes", async () => {
     const added = machine("new", { target: "me@box" })
     mocks.list.mockResolvedValue([added])

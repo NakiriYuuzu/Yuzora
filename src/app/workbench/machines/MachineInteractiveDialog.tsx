@@ -129,7 +129,11 @@ export default function MachineInteractiveDialog({ selection }: { selection: Mac
   const close = () => {
     useMachinesInteractiveStore.getState().close()
     const store = useMachinesStore.getState()
-    if (spec.kind === "client") return
+    if (spec.kind === "client") {
+      // The official client may have completed auth / host-key confirmation: force a round to clear auth blocks.
+      store.requestRefresh(true)
+      return
+    }
     void store.refreshList().then(machines => {
       if (spec.kind === "reconnect") {
         useMachinesStore.getState().requestRefresh()

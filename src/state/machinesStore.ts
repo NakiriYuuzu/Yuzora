@@ -65,15 +65,20 @@ const initial = {
 } satisfies Partial<MachinesState>
 
 export const useMachinesStore = create<MachinesState>((set, get) => {
+  /** Advances whenever a list is adopted; an older in-flight `machinesList()` must not overwrite a newer one. */
+  let listGeneration = 0
   /** The list returned by a mutation (or refresh) is authoritative: drop state of vanished machines. */
-  const adopt = (machines: HerdrMachine[]) => set((state) => ({
+  const adopt = (machines: HerdrMachine[]) => {
+    listGeneration += 1
+    set((state) => ({
     machines,
     listError: null,
     statusById: prune(state.statusById, machines),
     snapshotById: prune(state.snapshotById, machines),
     staleById: prune(state.staleById, machines),
     errorById: prune(state.errorById, machines)
-  }))
+    }))
+  }
   return {
     ...initial,
     async loadCapabilities() {
@@ -88,8 +93,11 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
     },
     async refreshList() {
       set({ loading: true })
+      const generation = ++listGeneration
       try {
         const machines = await machinesList()
+        // A newer refresh or a mutation result was adopted meanwhile: this response is stale.
+        if (generation !== listGeneration) return get().machines
         adopt(machines)
         return machines
       } catch (cause) {
@@ -140,6 +148,6 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
     async setEnabled(id, enabled) { adopt(await machinesSetEnabled(id, enabled)) },
     async remove(id) { adopt(await machinesRemove(id)) },
     requestRefresh(force = true) { set((state) => ({ refreshNonce: state.refreshNonce + 1, refreshForce: force })) },
-    reset() { set({ ...initial }) }
+    reset() { listGeneration += 1; set({ ...initial }) }
   }
 })

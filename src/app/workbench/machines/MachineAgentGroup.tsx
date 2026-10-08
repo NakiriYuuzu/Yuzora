@@ -1,4 +1,4 @@
-import { Fragment } from "react"
+import { Fragment, type KeyboardEvent } from "react"
 import { useTranslation } from "react-i18next"
 import { Folder, Server, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -8,14 +8,21 @@ import { useMachinesInteractiveStore } from "@/state/machinesInteractiveStore"
 import { useMachinesStore } from "@/state/machinesStore"
 import { AgentLogo } from "../AgentLogo"
 import { resolveAgentKind } from "../agentLogos"
+import { machineAgentNodeKey, machineNodeKey } from "./machineNavKeys"
 
-const machineNodeKey = (machineId: string) => JSON.stringify(["machine", machineId])
-const machineAgentNodeKey = (machineId: string, terminalId: string) => JSON.stringify(["machine", machineId, "agent", terminalId])
+
+export interface MachineAgentGroupNav {
+  /** The single tabbable row key of the whole tree. */
+  tabKey: string | null | undefined
+  register: (key: string, element: HTMLButtonElement | null) => void
+  onFocusKey: (key: string) => void
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, key: string) => void
+}
 
 const machineAgentTitle = (agent: HerdrMachineAgent) => agent.name ?? agent.title ?? agent.agent ?? agent.terminalId
 
 /** Agents view only: enabled HERDR machines and the agents their last snapshot reported. */
-export function MachineAgentGroup() {
+export function MachineAgentGroup({ nav }: { nav: MachineAgentGroupNav }) {
   const { t } = useTranslation("machines")
   const { t: ts } = useTranslation("spaceTree")
   const machines = useMachinesStore((state) => state.machines)
@@ -44,7 +51,10 @@ export function MachineAgentGroup() {
           <Button
             variant="ghost"
             role="treeitem"
-            tabIndex={0}
+            ref={(element) => nav.register(machineNodeKey(machine.id), element)}
+            tabIndex={nav.tabKey === machineNodeKey(machine.id) ? 0 : -1}
+            onFocus={() => nav.onFocusKey(machineNodeKey(machine.id))}
+            onKeyDown={(event) => nav.onKeyDown(event, machineNodeKey(machine.id))}
             aria-level={1}
             aria-selected={false}
             aria-label={`${machine.label}${note ? ` · ${note}` : ""}`}
@@ -66,7 +76,10 @@ export function MachineAgentGroup() {
             <Button
               variant="ghost"
               role="treeitem"
-              tabIndex={0}
+              ref={(element) => nav.register(machineAgentNodeKey(machine.id, agent.terminalId), element)}
+              tabIndex={nav.tabKey === machineAgentNodeKey(machine.id, agent.terminalId) ? 0 : -1}
+              onFocus={() => nav.onFocusKey(machineAgentNodeKey(machine.id, agent.terminalId))}
+              onKeyDown={(event) => nav.onKeyDown(event, machineAgentNodeKey(machine.id, agent.terminalId))}
               aria-level={2}
               aria-selected={false}
               aria-label={`${title} · ${ts(`status.${agent.status}`)} · ${machine.label}`}

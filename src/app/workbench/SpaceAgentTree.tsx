@@ -49,6 +49,8 @@ import { Kbd } from "@/components/ui/kbd";
 import { isMacPlatform } from "@/lib/platform";
 import { AgentLogo } from "./AgentLogo";
 import { MachineAgentGroup } from "./machines/MachineAgentGroup";
+import { machineNavKeys } from "./machines/machineNavKeys";
+import { useMachinesStore } from "@/state/machinesStore";
 import { resolveAgentKind } from "./agentLogos";
 import type { SpaceCharacterConfig } from "./space-character";
 
@@ -125,6 +127,8 @@ export function SpaceAgentTree() {
   const presentations = useRecentWorkspacesStore((s) => s.presentations);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  const machines = useMachinesStore((s) => s.machines);
+  const machineSnapshots = useMachinesStore((s) => s.snapshotById);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reorderError, setReorderError] = useState<string | null>(null);
@@ -525,10 +529,15 @@ export function SpaceAgentTree() {
         node.sessionName === session &&
         node.space.id === selectedSpace,
     )?.key;
-  const tabKey = visible.some((node) => node.key === focusKey)
+  // Machine rows (Agents view) join the same roving tabindex after the local rows.
+  const machineKeys = useMemo(
+    () => (viewMode === "agents" ? machineNavKeys(machines, machineSnapshots) : []),
+    [viewMode, machines, machineSnapshots],
+  );
+  const navKeys = [...visible.map((node) => node.key), ...machineKeys];
+  const tabKey = navKeys.includes(focusKey ?? "")
     ? focusKey
-    : (visible.find((node) => node.key === selectedKey)?.key ??
-      visible[0]?.key);
+    : (visible.find((node) => node.key === selectedKey)?.key ?? navKeys[0]);
 
   // Breadcrumb/Session changes reveal their owning folder, without reopening a
   // folder the user deliberately collapses while staying on the same checkout.
@@ -651,6 +660,21 @@ export function SpaceAgentTree() {
     }
   }
 
+  function navTarget(key: string, from: string) {
+    const index = navKeys.indexOf(from);
+    if (key === "ArrowDown") return navKeys[Math.min(index + 1, navKeys.length - 1)];
+    if (key === "ArrowUp") return navKeys[Math.max(0, index - 1)];
+    if (key === "Home") return navKeys[0];
+    return navKeys.at(-1);
+  }
+  function onMachineKey(event: KeyboardEvent<HTMLButtonElement>, key: string) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const next = navTarget(event.key, key);
+    event.preventDefault();
+    event.stopPropagation();
+    if (next) focus(next);
+  }
+
   function onKey(event: KeyboardEvent<HTMLButtonElement>, node: TreeNode) {
     if (event.key === "F2" && node.kind === "project") {
       event.preventDefault();
@@ -659,15 +683,10 @@ export function SpaceAgentTree() {
       setEditingSpace(node);
       return;
     }
-    const index = visible.findIndex((item) => item.key === node.key);
     let next: string | undefined;
-    if (event.key === "ArrowDown")
-      next = visible[Math.min(index + 1, visible.length - 1)]?.key;
-    else if (event.key === "ArrowUp")
-      next = visible[Math.max(0, index - 1)]?.key;
-    else if (event.key === "Home") next = visible[0]?.key;
-    else if (event.key === "End") next = visible.at(-1)?.key;
-    else if (event.key === "ArrowRight") {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+      next = navTarget(event.key, node.key);
+    } else if (event.key === "ArrowRight") {
       if (node.kind === "agent") return;
       if (collapsed.has(node.key)) expand(node.key, true);
       else next = node.children[0]?.key;
@@ -1079,7 +1098,15 @@ export function SpaceAgentTree() {
               </Fragment>
             );
           })}
-          {viewMode === "agents" && <MachineAgentGroup />}
+          {viewMode === "agents" && <MachineAgentGroup nav={{
+            tabKey,
+            register: (key, element) => {
+              if (element) refs.current.set(key, element);
+              else refs.current.delete(key);
+            },
+            onFocusKey: setFocusKey,
+            onKeyDown: onMachineKey,
+          }} />}
         </div>
         {!shownSessions.length && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
         {visible.filter(

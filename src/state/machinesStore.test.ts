@@ -17,6 +17,28 @@ beforeEach(() => {
 })
 
 describe("machinesStore", () => {
+  it("ignores an older list response that resolves after a mutation result", async () => {
+    let resolveOld!: (value: unknown) => void
+    ipc.list.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+    const pending = useMachinesStore.getState().refreshList()
+    ipc.remove.mockResolvedValue([b])
+    await useMachinesStore.getState().remove(a.id)
+    resolveOld([a, b])
+    await pending
+    expect(useMachinesStore.getState().machines).toEqual([b])
+  })
+
+  it("ignores an older list response that resolves after a newer refresh", async () => {
+    let resolveOld!: (value: unknown) => void
+    ipc.list.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+    const older = useMachinesStore.getState().refreshList()
+    ipc.list.mockResolvedValueOnce([b])
+    await useMachinesStore.getState().refreshList()
+    resolveOld([a])
+    await older
+    expect(useMachinesStore.getState().machines).toEqual([b])
+  })
+
   it("loads capabilities and the list", async () => {
     ipc.caps.mockResolvedValue(supportedCaps)
     ipc.list.mockResolvedValue([a, b])

@@ -62,11 +62,10 @@ it("hides the group when no machine is enabled", () => {
   expect(screen.queryByText("HERDR machines")).not.toBeInTheDocument();
 });
 
-it("keeps machine groups and machine agents as plain tabbable buttons that Enter/Space can activate", () => {
+it("keeps machine groups and machine agents as plain buttons that Enter/Space can activate", () => {
   render(<SpaceAgentTree />);
   for (const item of [screen.getByRole("treeitem", { name: "Lab box" }), screen.getByRole("treeitem", { name: /^Codex · / })]) {
     expect(item.tagName).toBe("BUTTON");
-    expect(item).toHaveAttribute("tabindex", "0");
     item.focus();
     expect(item).toHaveFocus();
     for (const key of ["Enter", " "]) {
@@ -75,4 +74,61 @@ it("keeps machine groups and machine agents as plain tabbable buttons that Enter
       expect(event.defaultPrevented).toBe(false);
     }
   }
+});
+
+it("joins machine rows to the single roving tabindex with Arrow/Home/End navigation", () => {
+  render(<SpaceAgentTree />);
+  const group = screen.getByRole("treeitem", { name: "Lab box" });
+  const codex = screen.getByRole("treeitem", { name: /^Codex · / });
+  const reviewer = screen.getByRole("treeitem", { name: /^Reviewer · / });
+  const tabbable = () => screen.getAllByRole("treeitem").filter((item) => item.getAttribute("tabindex") === "0");
+  expect(tabbable()).toHaveLength(1);
+  group.focus();
+  expect(tabbable()).toEqual([group]);
+  fireEvent.keyDown(group, { key: "ArrowDown" });
+  expect(codex).toHaveFocus();
+  expect(tabbable()).toEqual([codex]);
+  fireEvent.keyDown(codex, { key: "ArrowDown" });
+  expect(reviewer).toHaveFocus();
+  fireEvent.keyDown(reviewer, { key: "ArrowDown" });
+  expect(reviewer).toHaveFocus();
+  fireEvent.keyDown(reviewer, { key: "ArrowUp" });
+  expect(codex).toHaveFocus();
+  fireEvent.keyDown(codex, { key: "Home" });
+  expect(group).toHaveFocus();
+  fireEvent.keyDown(group, { key: "ArrowUp" });
+  expect(group).toHaveFocus();
+  codex.focus();
+  fireEvent.keyDown(codex, { key: "End" });
+  expect(reviewer).toHaveFocus();
+});
+
+it("moves between local agent rows and machine rows with one tab stop", () => {
+  const scope = '["host-a","same"]';
+  useHerdrStore.setState({
+    ...herdrInitialState,
+    sessions: [{ name: "same", runtimeId: scope, hostId: "host-a", hostLabel: "A", running: true, default: true, sessionDir: "/", socketPath: "/sock" }],
+    runtimesBySession: { [scope]: {
+      capabilities: null, connectionState: "ready", errorMessage: null, worktreeInventory: null,
+      snapshot: { herdrSessionId: scope, protocol: 20, version: "0.8.2", spaces: [{ id: "space", label: "Project", path: "/repo", order: 0, focused: true }],
+        agents: [{ id: "agent", name: "LocalBot", status: "unknown", workspaceId: "space", paneId: "pane" }], tabs: [], terminals: [], raw: {} },
+    } as never },
+    selectedSessionName: scope, selectedSpaceId: "space", attentionByKey: new Map(),
+  });
+  render(<SpaceAgentTree />);
+  const local = screen.getByRole("treeitem", { name: /^Project|LocalBot/ });
+  const items = screen.getAllByRole("treeitem");
+  const group = screen.getByRole("treeitem", { name: "Lab box" });
+  const lastLocal = items[items.indexOf(group) - 1];
+  expect(local).toBeTruthy();
+  expect(items.filter((item) => item.getAttribute("tabindex") === "0")).toHaveLength(1);
+  lastLocal.focus();
+  fireEvent.keyDown(lastLocal, { key: "ArrowDown" });
+  expect(group).toHaveFocus();
+  fireEvent.keyDown(group, { key: "ArrowUp" });
+  expect(lastLocal).toHaveFocus();
+  fireEvent.keyDown(lastLocal, { key: "End" });
+  expect(screen.getByRole("treeitem", { name: /^Reviewer · / })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole("treeitem", { name: /^Reviewer · / }), { key: "Home" });
+  expect(items[0]).toHaveFocus();
 });
