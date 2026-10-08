@@ -25,6 +25,11 @@
 - 從側欄開啟 machine 上的 Agent 時，官方 client 無法自動選定該主機，需要在官方側欄手動切換；machine 上的 Agent 不顯示分支。
 - Windows 不支援 machine 的「重新連線」（HERDR 官方限制），請使用 ssh-agent 管理金鑰。
 
+### 安裝說明
+
+- macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。
+- Windows Authenticode 尚未啟用，安裝或首次開啟時仍可能出現 SmartScreen 提示。
+
 ## [0.0.17] - 2026-10-07
 
 ### 新增與改善
