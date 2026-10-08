@@ -36,17 +36,20 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
   const windows = isWindowsPlatform()
   const t2 = (key: string, options?: Record<string, unknown>) => t(key, options) as string
 
+  // Opening the tab and retrying a failed probe both reload the list: a failed probe cleared it.
+  async function loadMachines() {
+    const store = useMachinesStore.getState()
+    const loaded = await store.loadCapabilities()
+    if (loaded?.supported && mounted.current) {
+      await store.refreshList()
+      // Must not clear auth-required blocks or backoff: only a soft round.
+      store.requestRefresh(false)
+    }
+  }
+
   useEffect(() => {
     mounted.current = true
-    void (async () => {
-      const store = useMachinesStore.getState()
-      const loaded = await store.loadCapabilities()
-      if (loaded?.supported && mounted.current) {
-        await store.refreshList()
-        // Opening the tab must not clear auth-required blocks or backoff: only a soft round.
-        store.requestRefresh(false)
-      }
-    })()
+    void loadMachines()
     return () => { mounted.current = false }
   }, [])
 
@@ -103,7 +106,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
         <EmptyTitle role="alert">{t("unsupported.probeFailed")}</EmptyTitle>
         <EmptyDescription>{describeMachineError(capabilitiesError, t2).message}</EmptyDescription>
       </EmptyHeader>
-      <Button variant="outline" onClick={() => void useMachinesStore.getState().loadCapabilities()}>{t("panel.retry")}</Button>
+      <Button variant="outline" onClick={() => void loadMachines()}>{t("panel.retry")}</Button>
     </Empty>
   }
   if (capabilities && !capabilities.supported) {

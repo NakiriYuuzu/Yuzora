@@ -148,7 +148,9 @@ describe("MachinesPanel actions", () => {
     expect(screen.queryByText("No HERDR machines yet")).not.toBeInTheDocument()
     ipc.caps.mockResolvedValue(supportedCaps)
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
-    await screen.findByText("Lab box").catch(() => undefined)
+    // A failed probe cleared the list, so a successful retry must load it again.
+    expect(await screen.findByText("Lab box")).toBeInTheDocument()
+    expect(ipc.list).toHaveBeenCalled()
     await waitFor(() => expect(useMachinesStore.getState().capabilities?.supported).toBe(true))
   })
 

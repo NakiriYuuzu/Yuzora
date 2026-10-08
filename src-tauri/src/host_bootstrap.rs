@@ -364,10 +364,26 @@ fn resource_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub async fn host_probe(
+    app: tauri::AppHandle,
     ssh: tauri::State<'_, SshState>,
     target: HostTarget,
 ) -> Result<HostProbe, String> {
-    probe(&target, &ssh.0).await
+    probe_allowed(
+        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
+        &target,
+        &ssh.0,
+    )
+    .await
+}
+
+/// Probing honours the WSL opt-out like host_prepare and host_runtime_check.
+async fn probe_allowed(
+    preferences: &crate::runtime_preferences::RuntimePreferencesState,
+    target: &HostTarget,
+    ssh: &SshManager,
+) -> Result<HostProbe, String> {
+    crate::runtime_preferences::require_wsl_enabled(preferences, target)?;
+    probe(target, ssh).await
 }
 
 #[derive(Serialize)]
@@ -836,6 +852,19 @@ mod tests {
 #[cfg(test)]
 mod custom_path_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn herdr_host_probe_refuses_wsl_when_disabled() {
+        let preferences = crate::runtime_preferences::RuntimePreferencesState::default();
+        let ssh = SshManager::with_log(Box::new(|_| {}));
+        let target = HostTarget::Wsl {
+            distro: "Ubuntu".into(),
+        };
+        let error = probe_allowed(&preferences, &target, &ssh)
+            .await
+            .unwrap_err();
+        assert_eq!(error, crate::runtime_preferences::WSL_DISABLED_ERROR);
+    }
 
     fn probe(os: &str) -> HostProbe {
         HostProbe {

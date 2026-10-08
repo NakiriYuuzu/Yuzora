@@ -49,8 +49,9 @@ interface MachinesState {
 
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 
+/** Keep per-machine data only for enabled machines: a disabled one must not show old agents when re-enabled. */
 function prune<T>(record: Record<string, T>, machines: HerdrMachine[]): Record<string, T> {
-  const ids = new Set(machines.map((machine) => machine.id))
+  const ids = new Set(machines.filter((machine) => machine.enabled).map((machine) => machine.id))
   return Object.fromEntries(Object.entries(record).filter(([id]) => ids.has(id)))
 }
 

@@ -153,6 +153,17 @@ const deferred = <T,>() => {
 const unsupportedCaps = { ...supportedCaps, supported: false, reason: "machines-runtime-too-old" }
 
 describe("machinesStore concurrency", () => {
+it("drops a disabled machine's snapshot and status so re-enabling cannot show old agents", async () => {
+  useMachinesStore.setState({ machines: [a], snapshotById: { [a.id]: snapshot(a.id) }, statusById: { [a.id]: { id: a.id, status: "reachable" } as never } })
+  ipc.setEnabled.mockResolvedValueOnce([machine("a", { enabled: false })])
+  await useMachinesStore.getState().setEnabled(a.id, false)
+  ipc.setEnabled.mockResolvedValueOnce([a])
+  await useMachinesStore.getState().setEnabled(a.id, true)
+  const state = useMachinesStore.getState()
+  expect(state.snapshotById[a.id]).toBeUndefined()
+  expect(state.statusById[a.id]).toBeUndefined()
+})
+
   it("a superseded capability load resolves to the latest result instead of null", async () => {
     let resolveOld!: (caps: typeof supportedCaps) => void
     let resolveNew!: (caps: typeof supportedCaps) => void

@@ -1190,7 +1190,7 @@ impl SshManager {
     }
 
     #[cfg(test)]
-    fn with_log(log: LogFn) -> Self {
+    pub(crate) fn with_log(log: LogFn) -> Self {
         Self::with_parts(
             log,
             default_known_hosts_path(),
