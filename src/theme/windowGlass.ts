@@ -47,6 +47,12 @@ async function windowsSupportsAcrylic(): Promise<boolean> {
 }
 
 let glassRequest = 0
+/** The latest toggle's wish; queued native steps apply whatever it is when they run. */
+let desired: { active: boolean; platform: GlassPlatform } | null = null
+/** What the window's native effects are now. */
+let nativeActive = false
+let nativeSteps = 0
+let nativeQueue: Promise<void> = Promise.resolve()
 
 /**
  * Lets the blurred desktop show through the window backdrop and sidebars.
@@ -61,24 +67,42 @@ export async function applyWindowGlass(enabled: boolean, root: HTMLElement = doc
   const platform = await windowGlassPlatform()
   if (request !== glassRequest) return
   const active = enabled === true && platform !== null
-  const wasActive = root.dataset.glass === "true"
-  if (active === wasActive) return
-  if (!active) {
+  if (active) {
+    root.dataset.glass = "true"
+    root.style.backgroundColor = "transparent"
+  } else if (root.dataset.glass === "true") {
     leaveGlass(root)
-    if (platform) await getCurrentWindow().clearEffects().catch(() => {})
-    return
   }
-  const appWindow = getCurrentWindow()
-  root.dataset.glass = "true"
-  root.style.backgroundColor = "transparent"
-  try {
-    await appWindow.setEffects(glassEffects(platform))
-  } catch {
-    // Without native blur the faded backdrop would show the raw desktop, so a
-    // refused request falls back to the opaque window — unless a newer toggle
-    // already superseded it.
-    if (request === glassRequest) leaveGlass(root)
-  }
+  if (!platform) return
+  desired = { active, platform }
+  await syncNative(root)
+}
+
+/**
+ * Native calls run one at a time and each applies the latest wish, so a slow
+ * call can never land after a newer toggle and leave the window out of step.
+ */
+function syncNative(root: HTMLElement): Promise<void> {
+  const step = ++nativeSteps
+  const run = nativeQueue.then(async () => {
+    const want = desired
+    if (!want || want.active === nativeActive) return
+    try {
+      if (want.active) await getCurrentWindow().setEffects(glassEffects(want.platform))
+      else await getCurrentWindow().clearEffects()
+      nativeActive = want.active
+    } catch {
+      // Without native blur the faded backdrop would show the raw desktop, so
+      // a refused enable falls back to the opaque window — unless a newer step
+      // is queued and will try again.
+      if (want.active && step === nativeSteps) {
+        desired = { ...want, active: false }
+        leaveGlass(root)
+      }
+    }
+  })
+  nativeQueue = run.catch(() => undefined)
+  return run
 }
 
 function leaveGlass(root: HTMLElement): void {

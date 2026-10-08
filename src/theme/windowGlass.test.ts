@@ -31,10 +31,13 @@ function onWindows(platformVersion: string | Error | null) {
   Object.defineProperty(navigator, "userAgentData", { configurable: true, value: userAgentData })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   native.isTauri.mockReturnValue(true)
   native.isMac.mockReturnValue(true)
   native.isWindows.mockReturnValue(false)
+  // The module remembers the window's native state: start every test with glass off.
+  await applyWindowGlass(false, root)
+  vi.clearAllMocks()
   // index.html pins an opaque background before the first paint.
   root.style.backgroundColor = "#fbfaf6"
 })
@@ -140,13 +143,29 @@ describe("window glass", () => {
     native.setEffects.mockImplementationOnce(() => new Promise<void>((_, reject) => { refuse = reject }))
     const first = applyWindowGlass(true, root)
     await vi.waitFor(() => expect(native.setEffects).toHaveBeenCalledTimes(1))
-    await applyWindowGlass(false, root)
-    await applyWindowGlass(true, root)
-    expect(native.setEffects).toHaveBeenCalledTimes(2)
+    const off = applyWindowGlass(false, root)
+    const on = applyWindowGlass(true, root)
     refuse(new Error("late"))
-    await first
+    await Promise.all([first, off, on])
+    expect(native.setEffects).toHaveBeenCalledTimes(2)
     expect(root.dataset.glass).toBe("true")
     expect(root.style.backgroundColor).toBe("transparent")
+  })
+
+  it("applies native effect changes one at a time in request order", async () => {
+    let finish: () => void = () => {}
+    native.setEffects.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    const on = applyWindowGlass(true, root)
+    await vi.waitFor(() => expect(native.setEffects).toHaveBeenCalledTimes(1))
+    const off = applyWindowGlass(false, root)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // A slow enable must not be overtaken by the newer disable.
+    expect(native.clearEffects).not.toHaveBeenCalled()
+    finish()
+    await Promise.all([on, off])
+    expect(native.clearEffects).toHaveBeenCalledTimes(1)
+    expect(native.setEffects.mock.invocationCallOrder[0]).toBeLessThan(native.clearEffects.mock.invocationCallOrder[0])
+    expect(root.dataset.glass).toBeUndefined()
   })
 
   it("maps the tint percentage onto the backdrop opacity", () => {
