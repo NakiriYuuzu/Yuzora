@@ -428,6 +428,10 @@ pub struct HostManager {
     next_generation: AtomicU64,
     opening: AtomicUsize,
     shutting_down: AtomicBool,
+    /// Live runtime preferences. When set, every lookup of an existing WSL
+    /// connection re-checks the WSL opt-in so turning it off takes effect before
+    /// the frontend finishes disconnecting. Unset (tests) means no gate.
+    wsl_gate: std::sync::OnceLock<crate::runtime_preferences::RuntimePreferencesState>,
 }
 
 struct Opening<'a>(&'a AtomicUsize);
@@ -501,6 +505,19 @@ impl HostManager {
         result
     }
 
+    pub(crate) fn set_wsl_gate(&self, state: crate::runtime_preferences::RuntimePreferencesState) {
+        let _ = self.wsl_gate.set(state);
+    }
+
+    fn require_wsl_allowed(&self, connection: &HostConnection) -> Result<(), String> {
+        match self.wsl_gate.get() {
+            Some(state) => {
+                crate::runtime_preferences::require_wsl_enabled(state, &connection.target)
+            }
+            None => Ok(()),
+        }
+    }
+
     pub(crate) fn connection_for_host(&self, host_id: &str) -> Result<Arc<HostConnection>, String> {
         let connection = self
             .connections
@@ -512,6 +529,7 @@ impl HostManager {
         if *connection.cancelled.borrow() {
             return Err("host-disconnected".into());
         }
+        self.require_wsl_allowed(&connection)?;
         Ok(connection)
     }
 
@@ -532,6 +550,7 @@ impl HostManager {
         if *connection.cancelled.borrow() {
             return Err("host-disconnected".into());
         }
+        self.require_wsl_allowed(&connection)?;
         Ok(connection)
     }
 
@@ -690,6 +709,56 @@ mod tests {
             Box::new(RuntimeDropStream(io)),
         );
         std::thread::spawn(move || drop(connection)).join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn herdr_existing_wsl_connection_is_refused_once_wsl_is_disabled() {
+        let manager = HostManager::default();
+        let state = crate::runtime_preferences::RuntimePreferencesState::default();
+        state.0.lock().unwrap().wsl_enabled = true;
+        manager.set_wsl_gate(state.clone());
+        let (io, _peer) = tokio::io::duplex(1024);
+        let owner = ConnectionOwner {
+            host_id: "wsl-fixture".into(),
+            generation: 1,
+        };
+        let connection = Arc::new(HostConnection::new(
+            owner.clone(),
+            HostTarget::Wsl {
+                distro: "Ubuntu".into(),
+            },
+            "/helper".into(),
+            Box::new(io),
+        ));
+        manager
+            .connections
+            .lock()
+            .unwrap()
+            .insert("wsl-fixture".into(), connection);
+        assert!(manager.connection(&owner).is_ok());
+        assert!(manager.connection_for_host("wsl-fixture").is_ok());
+        state.0.lock().unwrap().wsl_enabled = false;
+        for result in [
+            manager.connection(&owner).map(|_| ()),
+            manager.connection_for_host("wsl-fixture").map(|_| ()),
+        ] {
+            assert_eq!(
+                result,
+                Err("wsl-runtime-disabled-open-settings".to_string())
+            );
+        }
+        let request = manager
+            .request(
+                owner,
+                Operation::WorkspaceClose {
+                    workspace: "w".into(),
+                },
+            )
+            .await;
+        assert_eq!(
+            request,
+            Err("wsl-runtime-disabled-open-settings".to_string())
+        );
     }
 
     #[tokio::test]

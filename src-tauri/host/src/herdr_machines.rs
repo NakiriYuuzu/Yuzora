@@ -649,7 +649,7 @@ pub fn classify_machine_error(
         };
         return (code.to_string(), detail);
     }
-    let trimmed = stderr.trim_start();
+    let trimmed = source.trim_start();
     if trimmed.starts_with('{') {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed.trim()) {
             if let Some(err) = json.get("error") {
@@ -671,7 +671,7 @@ pub fn classify_machine_error(
     }
     // Plain text failures (for example ssh output relayed verbatim): reuse the
     // substring rules, but do not claim "unreachable" for unrelated errors.
-    let (code, _) = classify_message(stderr, &detail);
+    let (code, _) = classify_message(source, &detail);
     if code != "machines-unreachable"
         || [
             "connection refused",
@@ -878,13 +878,25 @@ fn detect(binary: &Path) -> Detection {
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
     let parsed = version_text.as_deref().and_then(parse_version);
     let version = parsed.map(|(a, b, c)| format!("{a}.{b}.{c}"));
-    let has_status = parsed.is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION))
-        && run_machine_cli(
+    // `None` = no probe was needed (old/unparsed version); `Some(false)` = the
+    // probe could not run to a normal exit (timeout, spawn failure, oversized
+    // output), which is transient and must not be cached.
+    let mut probe_completed = true;
+    let has_status = if parsed.is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION)) {
+        match run_machine_cli(
             binary,
             &build_machine_argv(&MachineOp::Capability),
             SHORT_TIMEOUT,
-        )
-        .is_ok_and(|out| out.success());
+        ) {
+            Ok(out) => out.success(),
+            Err(_) => {
+                probe_completed = false;
+                false
+            }
+        }
+    } else {
+        false
+    };
     let detection = Detection {
         version,
         parsed,
@@ -893,7 +905,7 @@ fn detect(binary: &Path) -> Detection {
     // Transient failures (timeout, non-zero exit, unparsable output) are not
     // cached so the next call re-detects instead of sticking until the binary
     // changes.
-    if detection.parsed.is_some() {
+    if detection.parsed.is_some() && probe_completed {
         let mut guard = DETECTIONS.lock().unwrap();
         let map = guard.get_or_insert_with(HashMap::new);
         if map.len() >= 8 {

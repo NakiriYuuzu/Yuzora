@@ -309,6 +309,11 @@ pub fn run() {
                     runtime_preferences::load_for_startup(app.path().app_data_dir()),
                 )),
             ));
+            app.state::<host_service::HostState>().0.set_wsl_gate(
+                app.state::<runtime_preferences::RuntimePreferencesState>()
+                    .inner()
+                    .clone(),
+            );
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
             // preference applies; the frontend shows it on its first themed

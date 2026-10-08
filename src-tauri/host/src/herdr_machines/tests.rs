@@ -472,6 +472,24 @@ fn code(exit: i32, stderr: &str) -> String {
 }
 
 #[test]
+fn herdr_machine_classify_uses_stdout_when_stderr_is_empty() {
+    let (code, _) = classify_machine_error(
+        Some(1),
+        "Error: Custom { kind: Other, error: \"Permission denied (publickey).\" }",
+        "",
+    );
+    assert_eq!(code, "machines-auth-required");
+    let (code, _) = classify_machine_error(Some(1), "Permission denied (publickey).", "  \n");
+    assert_eq!(code, "machines-auth-required");
+    let (code, _) = classify_machine_error(
+        Some(1),
+        "{\"error\":{\"code\":\"protocol_mismatch\",\"message\":\"x\"}}",
+        "",
+    );
+    assert_eq!(code, "machines-remote-incompatible");
+}
+
+#[test]
 fn herdr_machine_classify_exit_two_variants() {
     assert_eq!(
         code(2, "error: unknown machine 'x'"),
@@ -682,6 +700,29 @@ mod fake {
         let caps = machines_capabilities(&manager);
         assert!(caps.supported, "{:?}", caps.reason);
         assert_eq!(caps.version.as_deref(), Some("0.9.3"));
+    }
+
+    #[test]
+    fn herdr_machine_detection_is_not_cached_when_status_probe_fails_to_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdr");
+        // First probe floods stdout past the output cap (no normal exit);
+        // after the flag file exists it behaves.
+        let script = "#!/bin/sh\n\
+             d=\"$(dirname \"$0\")\"\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'herdr 0.9.3'; exit 0; fi\n\
+             if [ \"$3\" = \"--help\" ]; then\n\
+               if [ ! -f \"$d/ok\" ]; then head -c 3000000 /dev/zero | tr '\\0' x; fi\n\
+               exit 0\n\
+             fi\n\
+             exit 0\n";
+        write_executable(&path, script);
+        let manager = HerdrManager::with_binary(path);
+        let caps = machines_capabilities(&manager);
+        assert!(!caps.has_status, "{caps:?}");
+        std::fs::write(dir.path().join("ok"), "").unwrap();
+        let caps = machines_capabilities(&manager);
+        assert!(caps.supported && caps.has_status, "{caps:?}");
     }
 
     fn calls(dir: &Path) -> String {
