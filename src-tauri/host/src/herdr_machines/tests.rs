@@ -757,6 +757,28 @@ fi
     }
 
     #[test]
+    fn herdr_machine_failed_subcommand_probes_are_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("herdr");
+        // Until the flag file exists, `--help` fails like a transient crash.
+        let script = "#!/bin/sh\n\
+             d=\"$(dirname \"$0\")\"\n\
+             if [ \"$1\" = \"--version\" ]; then echo 'herdr 0.9.3'; exit 0; fi\n\
+             if [ \"$3\" = \"--help\" ] && [ ! -f \"$d/ok\" ]; then exit 1; fi\n\
+             exit 0\n";
+        write_executable(&path, script);
+        let manager = HerdrManager::with_binary(path);
+        let caps = machines_capabilities(&manager);
+        assert!(
+            caps.supported && !caps.has_status && !caps.has_reconnect,
+            "{caps:?}"
+        );
+        std::fs::write(dir.path().join("ok"), "").unwrap();
+        let caps = machines_capabilities(&manager);
+        assert!(caps.has_status && caps.has_reconnect, "{caps:?}");
+    }
+
+    #[test]
     fn herdr_machine_reconnect_is_probed_on_its_own() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("herdr");

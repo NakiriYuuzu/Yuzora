@@ -16,11 +16,12 @@ export interface MachineRowActions {
   onOpenClient: () => void
 }
 
-export function MachineRow({ machine, status, stale, errorMessage, canCheckStatus, canReconnect, busy, actions }: {
+export function MachineRow({ machine, status, stale, error, canCheckStatus, canReconnect, busy, actions }: {
   machine: HerdrMachine
   status: MachineRowStatus
   stale: boolean
-  errorMessage: string | null
+  /** The latest refresh failure; `detail` is the CLI diagnostic, collapsed. */
+  error: { message: string; detail: string | null } | null
   /** False hides Check status (a binary without `machine status`). */
   canCheckStatus: boolean
   /** False hides Reconnect (Windows, or an old binary without the subcommand). */
@@ -52,7 +53,10 @@ export function MachineRow({ machine, status, stale, errorMessage, canCheckStatu
     <p className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={`${machine.target} · ${machine.session}`}>
       {machine.target} · {machine.session}
     </p>
-    {errorMessage && <p role="status" className="text-xs text-destructive [overflow-wrap:anywhere]">{errorMessage}</p>}
+    {error && <div className="text-xs text-destructive [overflow-wrap:anywhere]">
+      <p role="status">{error.message}</p>
+      {error.detail && <details className="mt-1"><summary>{t("panel.diagnostics")}</summary><pre className="whitespace-pre-wrap [overflow-wrap:anywhere]">{error.detail}</pre></details>}
+    </div>}
     <div className="flex flex-wrap gap-1" role="group" aria-label={t("row.actions", { label: machine.label })}>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setDraft(machine.label); setRenaming(true) }}>{t("actions.rename")}</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={actions.onToggleEnabled}>{t(machine.enabled ? "actions.disable" : "actions.enable")}</Button>

@@ -116,6 +116,14 @@ describe("MachinesPanel actions", () => {
     expect(within(row()).getByText("Stale")).toBeInTheDocument()
   })
 
+  it("keeps the CLI diagnostic of a recognised refresh failure behind a disclosure", async () => {
+    await mount()
+    useMachinesStore.setState({ errorById: { [lab.id]: "herdr-operation-error: ssh: connect to host lab port 22: Connection refused" } })
+    await waitFor(() => expect(within(row()).getByText(i18n.t("machines:errors.herdr-operation-error"))).toBeInTheDocument())
+    expect(within(row()).getByText(i18n.t("machines:panel.diagnostics"))).toBeInTheDocument()
+    expect(within(row()).getByText("ssh: connect to host lab port 22: Connection refused")).toBeInTheDocument()
+  })
+
   it("opens the official client for the machine and closes the picker", async () => {
     await mount()
     fireEvent.click(within(row()).getByRole("button", { name: "Open in official client" }))

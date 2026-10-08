@@ -853,20 +853,25 @@ fn run_machine_cli_ungated(
 
 // ── Capability detection ────────────────────────────────────────────────────
 
+/// The parsed version, which every machine operation checks.
 #[derive(Clone)]
 struct Detection {
     version: Option<String>,
     parsed: Option<(u32, u32, u32)>,
-    has_status: bool,
-    has_reconnect: bool,
 }
 
 type DetectionKey = (PathBuf, Option<SystemTime>);
 static DETECTIONS: Mutex<Option<HashMap<DetectionKey, Detection>>> = Mutex::new(None);
+/// Subcommands found present; an absent or failed probe is never stored.
+static SUBCOMMANDS: Mutex<Option<HashSet<(DetectionKey, &'static str)>>> = Mutex::new(None);
+
+fn detection_key(binary: &Path) -> DetectionKey {
+    let mtime = std::fs::metadata(binary).and_then(|m| m.modified()).ok();
+    (binary.to_path_buf(), mtime)
+}
 
 fn detect(binary: &Path) -> Detection {
-    let mtime = std::fs::metadata(binary).and_then(|m| m.modified()).ok();
-    let key = (binary.to_path_buf(), mtime);
+    let key = detection_key(binary);
     if let Some(found) = DETECTIONS
         .lock()
         .unwrap()
@@ -881,37 +886,10 @@ fn detect(binary: &Path) -> Detection {
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
     let parsed = version_text.as_deref().and_then(parse_version);
     let version = parsed.map(|(a, b, c)| format!("{a}.{b}.{c}"));
-    // `None` = no probe was needed (old/unparsed version); `Some(false)` = the
-    // probe could not run to a normal exit (timeout, spawn failure, oversized
-    // output), which is transient and must not be cached.
-    let mut probe_completed = true;
-    let supported = parsed.is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION));
-    // A custom build may ship `machine status` without `machine reconnect`
-    // (Windows HERDR has none), so each subcommand is probed on its own.
-    let mut probe = |op: MachineOp<'_>| {
-        if !supported {
-            return false;
-        }
-        match run_machine_cli(binary, &build_machine_argv(&op), SHORT_TIMEOUT) {
-            Ok(out) => out.success(),
-            Err(_) => {
-                probe_completed = false;
-                false
-            }
-        }
-    };
-    let has_status = probe(MachineOp::Capability);
-    let has_reconnect = probe(MachineOp::ReconnectCapability);
-    let detection = Detection {
-        version,
-        parsed,
-        has_status,
-        has_reconnect,
-    };
-    // Transient failures (timeout, non-zero exit, unparsable output) are not
-    // cached so the next call re-detects instead of sticking until the binary
-    // changes.
-    if detection.parsed.is_some() && probe_completed {
+    let detection = Detection { version, parsed };
+    // A failed or unparsable probe is not cached, so the next call re-detects
+    // instead of sticking until the binary changes.
+    if detection.parsed.is_some() {
         let mut guard = DETECTIONS.lock().unwrap();
         let map = guard.get_or_insert_with(HashMap::new);
         if map.len() >= 8 {
@@ -920,6 +898,33 @@ fn detect(binary: &Path) -> Detection {
         map.insert(key, detection.clone());
     }
     detection
+}
+
+/// Whether `op`'s subcommand exists. Only a present one is cached: a nonzero
+/// exit, signal, timeout or oversized output may be transient, so an absent
+/// answer is asked again next time. Capabilities are read rarely (startup,
+/// the Machines panel, retries), never per poll, so that stays cheap.
+fn has_subcommand(binary: &Path, op: MachineOp<'_>, name: &'static str) -> bool {
+    let key = (detection_key(binary), name);
+    if SUBCOMMANDS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|found| found.contains(&key))
+    {
+        return true;
+    }
+    let present = run_machine_cli(binary, &build_machine_argv(&op), SHORT_TIMEOUT)
+        .is_ok_and(|out| out.success());
+    if present {
+        let mut guard = SUBCOMMANDS.lock().unwrap();
+        let found = guard.get_or_insert_with(HashSet::new);
+        if found.len() >= 16 {
+            found.clear();
+        }
+        found.insert(key);
+    }
+    present
 }
 
 pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilities {
@@ -950,6 +955,11 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
     let supported = detection
         .parsed
         .is_some_and(|v| version_at_least(v, MIN_MACHINES_VERSION));
+    // A custom build may ship `machine status` without `machine reconnect`
+    // (Windows HERDR has none), so each subcommand is probed on its own.
+    let has_status = supported && has_subcommand(&binary, MachineOp::Capability, "status");
+    let has_reconnect =
+        supported && has_subcommand(&binary, MachineOp::ReconnectCapability, "reconnect");
     let reason = (!supported).then(|| {
         if source == "global" {
             error("machines-runtime-too-old", "global-use-bundled")
@@ -961,8 +971,8 @@ pub fn machines_capabilities(manager: &HerdrManager) -> HerdrMachinesCapabilitie
         binary_path: binary.display().to_string(),
         version: detection.version,
         supported,
-        has_status: supported && detection.has_status,
-        has_reconnect: supported && detection.has_reconnect,
+        has_status,
+        has_reconnect,
         source,
         reason,
     }

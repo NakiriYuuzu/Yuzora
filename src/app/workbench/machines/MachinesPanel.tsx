@@ -95,12 +95,13 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
     if (checked) return checked.status
     return snapshotById[machine.id] ? "reachable" : "unknown"
   }
-  function rowError(machine: HerdrMachine): string | null {
+  function rowError(machine: HerdrMachine): { message: string; detail: string | null } | null {
     const raw = errorById[machine.id] ?? (statusById[machine.id]?.status === "error" ? statusById[machine.id]?.error : null)
     if (!raw) return null
-    // An unrecognised reason (e.g. a structured status error) is the only diagnostic: keep it visible.
     const described = describeMachineError(raw, t2)
-    return described.code || !described.detail ? described.message : `${described.message}: ${described.detail}`
+    // An unrecognised reason (e.g. a structured status error) is the only diagnostic: keep it visible.
+    if (!described.code && described.detail) return { message: `${described.message}: ${described.detail}`, detail: null }
+    return { message: described.message, detail: described.detail }
   }
 
   if (!capabilities && capabilitiesError) {
@@ -154,7 +155,7 @@ export function MachinesPanel({ onClose }: { onClose: () => void }) {
         machine={machine}
         status={rowStatus(machine)}
         stale={Boolean(staleById[machine.id])}
-        errorMessage={rowError(machine)}
+        error={rowError(machine)}
         canCheckStatus={canCheckStatus}
         canReconnect={canReconnect}
         busy={busyIds.has(machine.id)}
