@@ -1543,24 +1543,18 @@ fn switch_over_untracked(
     }
     let pathspec = paths.join("\0");
     let from_stdin = ["--pathspec-from-file=-", "--pathspec-file-nul"];
-    let mut push = vec![
-        "stash",
-        "push",
-        "--include-untracked",
-        "-m",
-        SMART_CHECKOUT_UNTRACKED_STASH,
-    ];
-    push.extend(from_stdin);
-    let out = run_git_with_stdin(root, &push, DEFAULT_TIMEOUT, &[], pathspec.as_bytes())?;
-    if out.code != 0 {
-        return Err(format!("{blocked}\n{}", git_err("stash", &out.stderr)));
-    }
     let kept = || {
         format!(
             "git stash: your untracked files are kept in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
         )
     };
-    let parked = stash_top(root).ok().flatten().ok_or_else(kept)?;
+    let parked = match park_untracked(root, &pathspec) {
+        Err(error) => return Err(format!("{blocked}\n{error}")),
+        // The blocking files vanished before git could stash them, so nothing
+        // is parked and nothing needs restoring: just try the switch again.
+        Ok(None) => return switch(),
+        Ok(Some(parked)) => parked,
+    };
     let switched = switch();
     // Either the target now holds its own versions or HEAD never moved; both
     // ways `--worktree` writes the parked copies and leaves the index alone.
@@ -1589,6 +1583,33 @@ fn switch_over_untracked(
         (Err(error), Ok(())) => Err(error),
         (Err(error), Err(restore_error)) => Err(format!("{error}\n{restore_error}")),
     }
+}
+
+/// Stashes just `pathspec`, untracked files included, and returns the new
+/// stash. `None` when git saved nothing: it still exits 0 ("No local changes
+/// to save") and the top stash is then someone else's, never ours to restore
+/// or drop.
+fn park_untracked(root: &Path, pathspec: &str) -> Result<Option<String>, String> {
+    let before = stash_top(root)?;
+    let push = [
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        SMART_CHECKOUT_UNTRACKED_STASH,
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+    ];
+    let out = run_git_with_stdin(root, &push, DEFAULT_TIMEOUT, &[], pathspec.as_bytes())?;
+    if out.code != 0 {
+        return Err(git_err("stash", &out.stderr));
+    }
+    let after = stash_top(root).map_err(|error| {
+        format!(
+            "{error}\ngit stash: your untracked files may be kept in the stash \"{SMART_CHECKOUT_UNTRACKED_STASH}\""
+        )
+    })?;
+    Ok(after.filter(|top| before.as_ref() != Some(top)))
 }
 
 /// Untracked, non-ignored files whose path `target` tracks as a file: the ones
@@ -3416,6 +3437,25 @@ mod tests {
             "dir\nkeep.txt\nshared.txt"
         );
         assert!(stash_list(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parking_vanished_untracked_files_never_claims_an_existing_stash() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        test_repo::git(
+            repo,
+            &["stash", "push", "--include-untracked", "-m", "mine"],
+        );
+        let mine = stash_top(repo).unwrap().unwrap();
+        // git exits 0 with "No local changes to save" for a path that is gone.
+        assert_eq!(park_untracked(repo, "gone.txt").unwrap(), None);
+        assert_eq!(stash_top(repo).unwrap().as_deref(), Some(mine.as_str()));
+        std::fs::write(repo.join("shared.txt"), "local\n").unwrap();
+        let parked = park_untracked(repo, "shared.txt").unwrap().unwrap();
+        assert_ne!(parked, mine);
+        assert!(!repo.join("shared.txt").exists());
+        assert_eq!(stash_list(repo).unwrap().len(), 2);
     }
 
     #[test]

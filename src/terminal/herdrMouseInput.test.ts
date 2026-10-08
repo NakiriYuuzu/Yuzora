@@ -70,6 +70,20 @@ describe("HERDR mouse input", () => {
     ])
   })
 
+  it("ends a drag at its last cell when a move arrives with the button already released", () => {
+    const { send, mouse } = setup()
+    mouse("mousedown", 5, 5)
+    mouse("mousemove", 25, 15, { buttons: 1 })
+    mouse("mousemove", 45, 25, { buttons: 0 })
+    mouse("mousemove", 55, 25, { buttons: 1 })
+    mouse("mouseup", 55, 25)
+    expect(send.mock.calls).toEqual([
+      ["down", { column: 0, row: 0 }, 0],
+      ["drag", { column: 2, row: 1 }, 0],
+      ["up", { column: 2, row: 1 }, 0]
+    ])
+  })
+
   it.each([
     ["Shift-forced selection", { shiftKey: true }, 5],
     ["the link-open gesture", { metaKey: true }, 5],

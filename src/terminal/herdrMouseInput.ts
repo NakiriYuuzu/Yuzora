@@ -54,6 +54,11 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
   }
 
   const onMouseMove = (event: MouseEvent) => {
+    // Released outside the window without losing focus: no mouseup arrived.
+    if (pressed && (event.buttons & 1) === 0) {
+      onBlur()
+      return
+    }
     const cell = cellAt(event)
     if (!pressed || !cell || (cell.column === pressed.column && cell.row === pressed.row)) return
     pressed = cell

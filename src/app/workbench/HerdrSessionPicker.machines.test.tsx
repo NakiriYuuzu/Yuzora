@@ -47,6 +47,17 @@ it("adds a Machines tab that lists the saved machines", async () => {
   expect(screen.queryByRole("button", { name: "重新整理 Sessions" })).not.toBeInTheDocument();
 });
 
+it("keeps the Machines tab usable while the Session refresh is still running", async () => {
+  useHerdrStore.setState({ refreshSessions: vi.fn(() => new Promise<void>(() => undefined)) });
+  render(<HerdrSessionPicker initialSession={null} onSelect={vi.fn()} onClose={onClose} returnFocusRef={{ current: null }} />);
+  const machines = screen.getByRole("tab", { name: /HERDR machines/ });
+  expect(machines).toBeEnabled();
+  // Opening the picker still lands on the Sessions tab, not on the only enabled one.
+  expect(screen.getAllByRole("tab")[0]).toHaveAttribute("aria-selected", "true");
+  fireEvent.mouseDown(machines, { button: 0, ctrlKey: false });
+  expect(await screen.findByText("Lab box")).toBeInTheDocument();
+});
+
 it("explains the version requirement and links to HERDR settings when machines are unsupported", async () => {
   ipc.caps.mockResolvedValue({ ...supportedCaps, supported: false, version: "0.9.1", reason: "machines-runtime-too-old" });
   const openSettings = vi.spyOn(useUiStore.getState(), "openSettings").mockImplementation(() => undefined);

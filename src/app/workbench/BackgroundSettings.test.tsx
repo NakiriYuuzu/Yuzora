@@ -180,6 +180,48 @@ describe("background settings", () => {
     expect(mocks.clear).toHaveBeenCalled()
   })
 
+  it("lets only the latest image pick or removal commit", async () => {
+    const pending: Array<(image: Blob) => void> = []
+    mocks.prepare.mockImplementation(() => new Promise<Blob>(resolve => { pending.push(resolve) }))
+    mocks.save.mockResolvedValue()
+    mocks.clear.mockResolvedValue()
+    const onChange = renderSettings({ ...DEFAULT_BACKGROUND_APPEARANCE, backgroundSource: "image", backgroundImageVersion: 7 })
+    const input = screen.getByTestId("background-backdrop-input")
+    const older = new Blob(["older"]), newer = new Blob(["newer"])
+    fireEvent.change(input, { target: { files: [new File(["a"], "slow.png")] } })
+    fireEvent.change(input, { target: { files: [new File(["b"], "fast.png")] } })
+    pending[1](newer)
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1))
+    pending[0](older)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(mocks.save.mock.calls).toEqual([[newer]])
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    // A pick still decoding when the image is removed never re-enables it.
+    fireEvent.change(input, { target: { files: [new File(["c"], "late.png")] } })
+    fireEvent.click(screen.getByRole("button", { name: "Remove image" }))
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith({ backgroundSource: "accent", backgroundImageVersion: 0 }))
+    pending[2](new Blob(["late"]))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(mocks.save).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenLastCalledWith({ backgroundSource: "accent", backgroundImageVersion: 0 })
+  })
+
+  it("does not let a slow removal undo an image picked after it", async () => {
+    let cleared!: () => void
+    mocks.clear.mockReturnValueOnce(new Promise<void>(resolve => { cleared = resolve }))
+    mocks.prepare.mockResolvedValueOnce(new Blob(["new"]))
+    mocks.save.mockResolvedValueOnce()
+    vi.spyOn(Date, "now").mockReturnValue(1791460000000)
+    const onChange = renderSettings({ ...DEFAULT_BACKGROUND_APPEARANCE, backgroundSource: "image", backgroundImageVersion: 7 })
+    fireEvent.click(screen.getByRole("button", { name: "Remove image" }))
+    fireEvent.change(screen.getByTestId("background-backdrop-input"), { target: { files: [new File(["n"], "new.png")] } })
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ backgroundSource: "image", backgroundImageVersion: 1791460000000 }))
+    cleared()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
   it("still offers picking gradient colors from an image", () => {
     renderSettings(gradientValue)
     expect(screen.getByRole("button", { name: "Pick colors from an image" })).toBeInTheDocument()

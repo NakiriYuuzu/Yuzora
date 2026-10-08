@@ -44,6 +44,8 @@ export function BackgroundSettings({
   const [backdropImageError, setBackdropImageError] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const backdropFileRef = useRef<HTMLInputElement>(null)
+  /** Bumped by every pick and removal: a slower, older pick must not land after a newer action. */
+  const imageRequest = useRef(0)
   const hasImage = value.backgroundImageVersion > 0
   // Windows reports its build asynchronously (UA-CH), so the glass row appears once known.
   const [glassPlatform, setGlassPlatform] = useState<GlassPlatform | null>(null)
@@ -72,16 +74,24 @@ export function BackgroundSettings({
   }
 
   const setBackdropImage = async (file: File) => {
+    const request = ++imageRequest.current
     setBackdropImageError(false)
     try {
-      await saveBackgroundImage(await prepareBackgroundImage(file))
+      const image = await prepareBackgroundImage(file)
+      // IndexedDB runs the writes in the order they start, so a pick that
+      // still saves here is the latest one or is followed by the newer write.
+      if (request !== imageRequest.current) return
+      await saveBackgroundImage(image)
+      if (request !== imageRequest.current) return
       onChange({ backgroundSource: "image", backgroundImageVersion: Date.now() })
     } catch {
-      setBackdropImageError(true)
+      if (request === imageRequest.current) setBackdropImageError(true)
     }
   }
   const removeBackdropImage = async () => {
+    const request = ++imageRequest.current
     await clearBackgroundImage().catch(() => {})
+    if (request !== imageRequest.current) return
     onChange({ backgroundSource: "accent", backgroundImageVersion: 0 })
   }
 

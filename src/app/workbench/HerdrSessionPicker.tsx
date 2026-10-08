@@ -64,6 +64,8 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   const [distros, setDistros] = useState<WslDistribution[] | null>(null);
   const [wslError, setWslError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The running operation only refreshes Sessions: switching sources meanwhile is harmless. */
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const mounted = useRef(true);
@@ -71,19 +73,20 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const run = useCallback(async (action: () => Promise<unknown>) => {
+  const run = useCallback(async (action: () => Promise<unknown>, refreshOnly = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
+    setRefreshing(refreshOnly);
     setError(null);
     try { await action(); }
     catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally {
       inFlight.current = false;
-      if (mounted.current) setBusy(false);
+      if (mounted.current) { setBusy(false); setRefreshing(false); }
     }
   }, []);
-  useEffect(() => { void run(() => useHerdrStore.getState().refreshSessions()); }, [run]);
+  useEffect(() => { void run(() => useHerdrStore.getState().refreshSessions(), true); }, [run]);
   useEffect(() => {
     if (!windows || !wslEnabled || source !== "wsl") return;
     let active = true;
@@ -112,6 +115,9 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   const targetSession = runningSessions.some((session) => sessionScope(session) === requestedSession)
     ? requestedSession : sessionScope(runningSessions[0]) ?? "";
   const runningCount = sessions.filter((session) => session.running).length;
+  // Only Session loads and host setup lock the source; with every other tab disabled the
+  // tab list would hand its initial focus (and selection) to the always-enabled Machines tab.
+  const sourceLocked = busy && !refreshing;
 
   function manageHost() {
     onClose();
@@ -199,16 +205,17 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
         <div className="herdr-session-picker-rail">
           <p className="herdr-session-picker-rail-title" aria-hidden="true">{t("sessionSource")}</p>
           <TabsList variant="line" aria-label={t("sessionSource")} className="w-full items-stretch gap-0.5 p-0">
-            <TabsTrigger value="connected" disabled={busy}>
+            <TabsTrigger value="connected" disabled={sourceLocked}>
               <Laptop data-icon="inline-start" />{t("connectedSessions")}<span className="herdr-session-picker-count" aria-hidden="true">{runningCount}</span>
             </TabsTrigger>
-            <TabsTrigger value="ssh" disabled={busy}>
+            <TabsTrigger value="ssh" disabled={sourceLocked}>
               <Server data-icon="inline-start" />{t("sshHosts")}<span className="herdr-session-picker-count" aria-hidden="true">{sshHosts.length}</span>
             </TabsTrigger>
-            <TabsTrigger value="machines" disabled={busy}>
+            {/* Machines never depend on a Session operation. */}
+            <TabsTrigger value="machines">
               <Network data-icon="inline-start" />{tm("tabs.machines")}<span className="herdr-session-picker-count" aria-hidden="true">{machineCount}</span>
             </TabsTrigger>
-            {windows && <TabsTrigger value="wsl" disabled={busy}>
+            {windows && <TabsTrigger value="wsl" disabled={sourceLocked}>
               <SquareTerminal data-icon="inline-start" />WSL<span className="herdr-session-picker-count" aria-hidden="true">{wslEnabled ? distros?.length ?? "—" : t("pickerOff")}</span>
             </TabsTrigger>}
           </TabsList>
@@ -274,7 +281,7 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
       {/* The Machines tab has its own status and refresh; the Session footer does not apply there. */}
       {source !== "machines" && <DialogFooter className="herdr-session-picker-footer">
         <p className="herdr-session-picker-footer-hint" aria-live="polite">{hint}</p>
-        <Button variant="ghost" disabled={busy} onClick={() => void run(() => useHerdrStore.getState().refreshSessions())}>
+        <Button variant="ghost" disabled={busy} onClick={() => void run(() => useHerdrStore.getState().refreshSessions(), true)}>
           <RefreshCw data-icon="inline-start" />{t("refreshSessions")}
         </Button>
         <Button disabled={busy || !hostReady || !targetSession} onClick={() => void loadSession()}>{t(busy ? "loading" : "loadSession")}</Button>
