@@ -1072,7 +1072,12 @@ fn mutate(
     let binary = ready_binary(manager)?;
     let out = run_machine_cli(&binary, &build_machine_argv(&op), SHORT_TIMEOUT)?;
     expect_success(&out)?;
-    list_with(&binary)
+    // The catalog already changed: a failed relist must not read as a failed mutation.
+    list_with(&binary).map_err(|detail| relist_failed(&detail))
+}
+
+fn relist_failed(detail: &str) -> String {
+    error("machines-relist-failed", detail)
 }
 
 pub fn machines_rename(

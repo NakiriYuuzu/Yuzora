@@ -50,6 +50,13 @@ it("orders tags machine then folder and omits missing values", () => {
   expect([...partial.querySelectorAll(".tree-agent-tag")].map((tag) => tag.getAttribute("data-tag"))).toEqual(["machine"]);
 });
 
+it("shows a machine as needing authentication after a failing manual status check", () => {
+  useMachinesStore.setState({ statusById: { [lab.id]: { id: lab.id, label: "Lab box", status: "auth-required", error: "denied" } as never } });
+  render(<SpaceAgentTree />);
+  expect(screen.getByRole("treeitem", { name: /^Lab box · / })).toBeInTheDocument();
+  expect(screen.queryByRole("treeitem", { name: "Lab box" })).not.toBeInTheDocument();
+});
+
 it("opens the official client with the machine label when an agent is clicked", () => {
   render(<SpaceAgentTree />);
   fireEvent.click(screen.getByRole("treeitem", { name: /^Codex · / }));

@@ -29,6 +29,7 @@ export function MachineAgentGroup({ nav }: { nav: MachineAgentGroupNav }) {
   const snapshotById = useMachinesStore((state) => state.snapshotById)
   const staleById = useMachinesStore((state) => state.staleById)
   const errorById = useMachinesStore((state) => state.errorById)
+  const statusById = useMachinesStore((state) => state.statusById)
   const enabled = machines.filter((machine) => machine.enabled)
   if (!enabled.length) return null
   const openClient = (machine: HerdrMachine) => {
@@ -43,7 +44,10 @@ export function MachineAgentGroup({ nav }: { nav: MachineAgentGroupNav }) {
       const error = errorById[machine.id]
       const stale = Boolean(staleById[machine.id])
       const code = error ? parseMachineError(error).code : null
-      const health = code === "machines-auth-required" ? "auth-required" : error ? "error" : snapshot ? "reachable" : "unknown"
+      // A manual status verdict is newer than any snapshot (a successful snapshot clears it).
+      const verdict = statusById[machine.id]?.status
+      const health = code === "machines-auth-required" || verdict === "auth-required" ? "auth-required"
+        : error || verdict === "error" ? "error" : snapshot ? "reachable" : "unknown"
       const note = health === "auth-required" ? t("sidebar.authRequired") : stale ? t("sidebar.stale") : error ? t("sidebar.error") : null
       const hint = t("sidebar.openClient", { label: machine.label })
       return <Fragment key={machine.id}>

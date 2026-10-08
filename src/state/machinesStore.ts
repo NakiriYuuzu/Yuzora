@@ -107,7 +107,9 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
   const statusSeq = new Map<string, number>()
   const snapshotSeq = new Map<string, number>()
   let recoverSeq = 0
-  const exists = (id: string) => get().machines.some((machine) => machine.id === id)
+  // Per-machine results only land for machines that are still listed AND enabled: a result started before a
+  // disable must not repopulate the state the disable just dropped.
+  const exists = (id: string) => get().machines.some((machine) => machine.id === id && machine.enabled)
   // A new epoch also starts a fresh mutation queue, so a call stuck in the old epoch cannot block it.
   const invalidate = () => { epoch += 1; listGeneration += 1; listRequest += 1; queue = Promise.resolve() }
   /** The list returned by a mutation (or refresh) is authoritative: drop state of vanished machines. */
@@ -126,7 +128,15 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
     const mine = epoch
     const run = queue.then(async () => {
       if (mine !== epoch) return
-      const machines = await call()
+      let machines: HerdrMachine[]
+      try {
+        machines = await call()
+      } catch (cause) {
+        // The catalog change was committed; only the follow-up list failed. Report success and relist.
+        if (!messageOf(cause).startsWith("machines-relist-failed")) throw cause
+        if (mine === epoch) void get().refreshList()
+        return
+      }
       if (mine === epoch) adopt(machines)
     })
     queue = run.catch(() => undefined)
@@ -188,7 +198,10 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
         if (!current()) return null
         set((state) => {
           const { [id]: _error, ...errorById } = state.errorById
-          return { statusById: { ...state.statusById, [id]: status }, errorById }
+          // A failing verdict makes the cached agents out of date until a snapshot succeeds again.
+          const failing = status.status === "auth-required" || status.status === "error"
+          const staleById = failing && id in state.snapshotById ? { ...state.staleById, [id]: true } : state.staleById
+          return { statusById: { ...state.statusById, [id]: status }, errorById, staleById }
         })
         if (status.status === "reachable") set({ recoverSignal: { id, seq: ++recoverSeq } })
         return status

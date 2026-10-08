@@ -153,6 +153,39 @@ const deferred = <T,>() => {
 const unsupportedCaps = { ...supportedCaps, supported: false, reason: "machines-runtime-too-old" }
 
 describe("machinesStore concurrency", () => {
+  it("drops a snapshot or status that resolves after its machine was disabled", async () => {
+    useMachinesStore.setState({ machines: [a] })
+    let resolveSnapshot!: (value: ReturnType<typeof snapshot>) => void
+    let resolveStatus!: (value: unknown) => void
+    ipc.agents.mockReturnValueOnce(new Promise((resolve) => { resolveSnapshot = resolve }))
+    ipc.status.mockReturnValueOnce(new Promise((resolve) => { resolveStatus = resolve }))
+    const pendingSnapshot = useMachinesStore.getState().refreshSnapshot(a.id)
+    const pendingStatus = useMachinesStore.getState().refreshStatus(a.id)
+    ipc.setEnabled.mockResolvedValueOnce([machine("a", { enabled: false })])
+    await useMachinesStore.getState().setEnabled(a.id, false)
+    resolveSnapshot(snapshot(a.id))
+    resolveStatus({ id: a.id, label: "x", status: "reachable", error: null })
+    await pendingSnapshot
+    await pendingStatus
+    expect(useMachinesStore.getState().snapshotById[a.id]).toBeUndefined()
+    expect(useMachinesStore.getState().statusById[a.id]).toBeUndefined()
+  })
+
+  it("a failing manual status verdict marks the cached agents stale", async () => {
+    useMachinesStore.setState({ machines: [a], snapshotById: { [a.id]: snapshot(a.id) } })
+    ipc.status.mockResolvedValueOnce({ id: a.id, label: "x", status: "auth-required", error: "denied" })
+    await useMachinesStore.getState().refreshStatus(a.id)
+    expect(useMachinesStore.getState().staleById[a.id]).toBe(true)
+  })
+
+  it("treats a mutation whose relist failed as committed and relists", async () => {
+    useMachinesStore.setState({ machines: [a] })
+    ipc.rename.mockRejectedValueOnce("machines-relist-failed: timeout")
+    ipc.list.mockResolvedValueOnce([machine("a", { label: "renamed" })])
+    await expect(useMachinesStore.getState().rename(a.id, "renamed")).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(useMachinesStore.getState().machines).toEqual([machine("a", { label: "renamed" })]))
+  })
+
 it("drops a disabled machine's snapshot and status so re-enabling cannot show old agents", async () => {
   useMachinesStore.setState({ machines: [a], snapshotById: { [a.id]: snapshot(a.id) }, statusById: { [a.id]: { id: a.id, status: "reachable" } as never } })
   ipc.setEnabled.mockResolvedValueOnce([machine("a", { enabled: false })])

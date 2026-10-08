@@ -853,6 +853,16 @@ exit 9"
     }
 
     #[test]
+    fn herdr_machine_committed_mutation_reports_a_failed_relist_distinctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let body =
+            "if [ \"$1\" = machine ] && [ \"$2\" = list ]; then echo boom >&2; exit 1; fi\nexit 0";
+        let manager = HerdrManager::with_binary(fake_herdr(dir.path(), "0.9.3", body));
+        let error = machines_rename(&manager, ID, "new").unwrap_err();
+        assert!(error.starts_with("machines-relist-failed"), "{error}");
+    }
+
+    #[test]
     fn herdr_machine_mutations_run_then_relist() {
         let dir = tempfile::tempdir().unwrap();
         let body = format!("{LIST}\nexit 0");
