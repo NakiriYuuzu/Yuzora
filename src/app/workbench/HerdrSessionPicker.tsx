@@ -271,13 +271,14 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
           {(error || (source !== "connected" && host?.error)) && <p role="alert" className="herdr-session-picker-error [overflow-wrap:anywhere]">{error ?? host?.error}</p>}
         </ScrollArea>
       </Tabs>
-      <DialogFooter className="herdr-session-picker-footer">
+      {/* The Machines tab has its own status and refresh; the Session footer does not apply there. */}
+      {source !== "machines" && <DialogFooter className="herdr-session-picker-footer">
         <p className="herdr-session-picker-footer-hint" aria-live="polite">{hint}</p>
         <Button variant="ghost" disabled={busy} onClick={() => void run(() => useHerdrStore.getState().refreshSessions())}>
           <RefreshCw data-icon="inline-start" />{t("refreshSessions")}
         </Button>
-        {source !== "machines" && <Button disabled={busy || !hostReady || !targetSession} onClick={() => void loadSession()}>{t(busy ? "loading" : "loadSession")}</Button>}
-      </DialogFooter>
+        <Button disabled={busy || !hostReady || !targetSession} onClick={() => void loadSession()}>{t(busy ? "loading" : "loadSession")}</Button>
+      </DialogFooter>}
     {migrating && <MigrateSshHostDialog
       host={migrating}
       onCancel={() => setMigrating(null)}

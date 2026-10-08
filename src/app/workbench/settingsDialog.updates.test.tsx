@@ -457,7 +457,10 @@ describe("Settings · About & Updates pane", () => {
     expect(within(note).getByText("303, 404")).toBeInTheDocument()
     expect(note.className).not.toContain("destructive")
     expect(within(note).queryByText(/force-stops/)).not.toBeInTheDocument()
-    expect(within(confirmation).getByText(/force-stops the HERDR in use/)).toBeInTheDocument()
+    // Only the bundled HERDR is stopped, so the warning and the action must not claim the HERDR in use.
+    expect(within(confirmation).getByText(/force-stops the bundled HERDR/)).toBeInTheDocument()
+    expect(within(confirmation).queryByText(/force-stops the HERDR in use/)).not.toBeInTheDocument()
+    expect(within(confirmation).getByRole("button", { name: "Stop bundled HERDR and install" })).toBeInTheDocument()
     expect(updateStopHerdr).not.toHaveBeenCalled()
   })
 
@@ -502,7 +505,7 @@ describe("Settings · About & Updates pane", () => {
     await openInstallConfirmation()
     const confirmation = await screen.findByRole("alertdialog", { name: "Install update and restart?" })
     await within(confirmation).findByTestId("herdr-external-note")
-    fireEvent.click(within(confirmation).getByRole("button", { name: "Stop HERDR and install" }))
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Stop bundled HERDR and install" }))
     await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
     expect(updateStopHerdr).toHaveBeenCalledTimes(1)
   })

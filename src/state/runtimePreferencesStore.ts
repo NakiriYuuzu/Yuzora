@@ -72,6 +72,8 @@ export const useRuntimePreferencesStore = create<RuntimePreferencesState>((set, 
   async setWslEnabled(enabled) {
     set({ userIntent: true })
     const saved = await enqueueWrite(() => runtimePreferencesSet(enabled))
+    // The backend now holds the user's choice: the legacy flag must never migrate over it later.
+    clearLegacy()
     set({ wslEnabled: saved.wslEnabled, userSet: true })
   }
 }))

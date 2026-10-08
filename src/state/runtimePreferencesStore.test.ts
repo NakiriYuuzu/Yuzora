@@ -120,3 +120,10 @@ it("serializes the migration write with a user save so the user's choice is what
   expect(backend).toBe(false)
   expect(useRuntimePreferencesStore.getState().wslEnabled).toBe(false)
 })
+
+it("clears the legacy flag after a successful user save so a later launch cannot re-enable WSL", async () => {
+  window.localStorage.setItem(LEGACY_RUNTIME_PREFERENCES_KEY, JSON.stringify({ wslEnabled: true }))
+  ipc.set.mockResolvedValue({ wslEnabled: false })
+  await useRuntimePreferencesStore.getState().setWslEnabled(false)
+  expect(legacy()).toBeNull()
+})

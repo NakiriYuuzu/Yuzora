@@ -44,6 +44,7 @@ it("adds a Machines tab that lists the saved machines", async () => {
   expect(await screen.findByText("Lab box")).toBeInTheDocument();
   expect(screen.getByText("me@lab · default")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "載入 Session" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "重新整理 Sessions" })).not.toBeInTheDocument();
 });
 
 it("explains the version requirement and links to HERDR settings when machines are unsupported", async () => {

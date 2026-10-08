@@ -1816,7 +1816,11 @@ pub fn stash_apply(
     // Changes are applied; the stash is only removed when it is still the
     // listed one. Otherwise keep it: the list reloads and still shows it.
     if pop && !outcome.conflicts && verify_stash_identity(root, &name, oid).is_ok() {
-        run_ok(root, &["stash", "drop", &name], DEFAULT_TIMEOUT, &[])?;
+        // The changes are already applied: report a failed drop as such, not as a failed pop that a
+        // retry would apply again.
+        run_ok(root, &["stash", "drop", &name], DEFAULT_TIMEOUT, &[]).map_err(|error| {
+            format!("git stash: applied {name} but could not drop it, so it is kept: {error}")
+        })?;
     }
     Ok(outcome)
 }
@@ -2977,6 +2981,34 @@ mod tests {
         let oid = "0123456789abcdef0123456789abcdef01234567";
         assert_eq!(stash_apply_args(oid), ["stash", "apply", oid]);
         assert!(!stash_apply_args(oid).iter().any(|a| a.contains("stash@")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stash_pop_reports_an_applied_stash_whose_drop_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, None, false, false).unwrap();
+        let oid = stash_list(repo).unwrap()[0].oid.clone();
+        // Applying needs no ref writes; dropping must lock refs/stash, which a read-only refs dir refuses.
+        let refs = repo.join(".git/refs");
+        std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = stash_apply(repo, 0, &oid, true);
+        std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("applied stash@{0} but could not drop it"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "stashed\n"
+        );
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
     }
 
     #[test]

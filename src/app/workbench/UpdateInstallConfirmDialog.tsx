@@ -41,6 +41,8 @@ export function UpdateInstallConfirmDialog({
   // zero PIDs in the snapshot may still start after the dialog opened, so it is stopped again on confirm.
   const externalOnly = stopHerdr && herdr !== null && herdr.path === null && !!herdr.external
   const willStop = stopHerdr && !externalOnly
+  // A self-installed HERDR is in use: only the bundled one is stopped, so say so.
+  const bundledStop = willStop && !!herdr?.external
 
   useEffect(() => {
     if (!open || !stopHerdr) return
@@ -87,7 +89,7 @@ export function UpdateInstallConfirmDialog({
         </AlertDialogHeader>
         {willStop && (
           <div className="grid gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-[12px]">
-            <p className="font-medium text-destructive">{tw("settings.installConfirmHerdrWarning")}</p>
+            <p className="font-medium text-destructive">{tw(bundledStop ? "settings.installConfirmHerdrWarningBundled" : "settings.installConfirmHerdrWarning")}</p>
             {herdrChecking ? (
               <p className="text-muted-foreground">{tw("settings.installConfirmHerdrChecking")}</p>
             ) : herdrCheckFailed ? (
@@ -135,7 +137,7 @@ export function UpdateInstallConfirmDialog({
             {stopping
               ? tw("settings.stoppingHerdr")
               : willStop
-                ? tw("settings.stopHerdrAndInstall")
+                ? tw(bundledStop ? "settings.stopBundledHerdrAndInstall" : "settings.stopHerdrAndInstall")
                 : tw("settings.installAndRestart")}
           </Button>
         </AlertDialogFooter>
