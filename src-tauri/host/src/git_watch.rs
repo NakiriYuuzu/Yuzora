@@ -38,25 +38,30 @@ pub fn build_git_watcher(
     build_metadata_watcher(vec![git_dir.to_owned()], on_change)
 }
 
+#[cfg(unix)]
 fn directory_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_dir() {
-        return None;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some((metadata.dev(), metadata.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        let created = metadata
-            .created()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?;
-        Some((created.as_secs(), u64::from(created.subsec_nanos())))
-    }
+    metadata.is_dir().then(|| (metadata.dev(), metadata.ino()))
+}
+
+/// Volume serial and file index. A creation time is no identity here: NTFS
+/// tunnelling can hand a recreated directory its predecessor's timestamp.
+#[cfg(windows)]
+fn directory_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    const FILE_SHARE_ALL: u32 = 0x0000_0007;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_ALL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+    let (volume, index, is_directory) =
+        crate::path_capability::windows_file_identity(&file).ok()?;
+    is_directory.then_some((u64::from(volume), index))
 }
 
 fn build_metadata_watcher(
@@ -144,6 +149,10 @@ mod tests {
     use super::*;
     use crate::git_service::{run_ok, DEFAULT_TIMEOUT};
 
+    /// Upper bound for an expected notification; loaded runners deliver FSEvents and
+    /// ReadDirectoryChangesW batches seconds late, and a hit returns at once.
+    const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
+
     #[test]
     fn git_watcher_idle_has_no_periodic_callbacks_and_drop_wakes_worker() {
         let temp = tempfile::tempdir().unwrap();
@@ -160,11 +169,29 @@ mod tests {
         ));
         let start = Instant::now();
         drop(watcher);
-        assert!(start.elapsed() < Duration::from_secs(1));
+        // Generous for loaded runners: a worker that never woke would hang the join instead.
+        assert!(start.elapsed() < Duration::from_secs(5));
         assert!(matches!(
             rx.try_recv(),
             Err(mpsc::TryRecvError::Disconnected)
         ));
+    }
+
+    #[test]
+    fn directory_identity_tells_a_recreated_directory_apart() {
+        let temp = tempfile::tempdir().unwrap();
+        let refs = temp.path().join("refs");
+        std::fs::create_dir(&refs).unwrap();
+        let original = directory_identity(&refs).expect("directory identity");
+        assert_eq!(directory_identity(&refs), Some(original));
+        // Same name in the same parent right away: what NTFS tunnelling targets.
+        std::fs::rename(&refs, temp.path().join("old-refs")).unwrap();
+        std::fs::create_dir(&refs).unwrap();
+        let replaced = directory_identity(&refs).expect("replacement identity");
+        assert_ne!(replaced, original);
+        std::fs::write(temp.path().join("file"), "").unwrap();
+        assert_eq!(directory_identity(&temp.path().join("file")), None);
+        assert_eq!(directory_identity(&temp.path().join("missing")), None);
     }
 
     #[test]
@@ -180,11 +207,10 @@ mod tests {
         // Keep the old directory alive so a replacement cannot reuse its inode.
         std::fs::rename(&refs, temp.path().join("old-refs")).unwrap();
         std::fs::create_dir_all(refs.join("heads")).unwrap();
-        rx.recv_timeout(Duration::from_secs(5))
-            .expect("refs replacement");
+        rx.recv_timeout(EVENT_TIMEOUT).expect("refs replacement");
         while rx.recv_timeout(Duration::from_millis(500)).is_ok() {}
         std::fs::write(refs.join("heads/new-branch"), "fixture").unwrap();
-        rx.recv_timeout(Duration::from_secs(5))
+        rx.recv_timeout(EVENT_TIMEOUT)
             .expect("reattached refs change");
     }
 
@@ -224,7 +250,7 @@ mod tests {
         })
         .unwrap();
         std::fs::write(dirs.git_dir.join("MERGE_HEAD"), "fixture").unwrap();
-        rx.recv_timeout(Duration::from_secs(5))
+        rx.recv_timeout(EVENT_TIMEOUT)
             .expect("private git-dir change");
         assert_eq!(
             crate::git_service::status_of(&linked, None)
@@ -237,7 +263,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
         while rx.try_recv().is_ok() {}
         git(&repo, &["branch", "shared-ref"]);
-        rx.recv_timeout(Duration::from_secs(5))
+        rx.recv_timeout(EVENT_TIMEOUT)
             .expect("common-dir refs change");
         drop(watcher);
         while rx.try_recv().is_ok() {}
