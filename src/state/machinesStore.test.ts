@@ -435,6 +435,43 @@ it("drops a disabled machine's snapshot and status so re-enabling cannot show ol
     expect(useMachinesStore.getState().statusById[a.id].status).toBe("reachable")
   })
 
+  it("rule 5: an older snapshot failure cannot restore an error over a newer reachable status", async () => {
+    useMachinesStore.setState({ machines: [a] })
+    const older = deferred<never>()
+    ipc.agents.mockReturnValueOnce(older.promise)
+    ipc.status.mockResolvedValueOnce({ id: a.id, label: a.label, status: "reachable", error: null })
+    const poll = useMachinesStore.getState().refreshSnapshot(a.id)
+    await useMachinesStore.getState().refreshStatus(a.id)
+    older.reject("machines-unreachable: late")
+    await expect(poll).resolves.toMatchObject({ stale: true })
+    expect(useMachinesStore.getState().errorById).toEqual({})
+    expect(useMachinesStore.getState().statusById[a.id].status).toBe("reachable")
+  })
+
+  it("rule 5: an older snapshot success cannot clear a newer auth-required verdict", async () => {
+    useMachinesStore.setState({ machines: [a] })
+    const older = deferred<ReturnType<typeof snapshot>>()
+    ipc.agents.mockReturnValueOnce(older.promise)
+    ipc.status.mockResolvedValueOnce({ id: a.id, label: a.label, status: "auth-required", error: null })
+    const poll = useMachinesStore.getState().refreshSnapshot(a.id)
+    await useMachinesStore.getState().refreshStatus(a.id)
+    older.resolve(snapshot(a.id))
+    await expect(poll).resolves.toMatchObject({ stale: true })
+    expect(useMachinesStore.getState().statusById[a.id].status).toBe("auth-required")
+  })
+
+  it("rule 5: a status check rejected as busy does not supersede the snapshot still in flight", async () => {
+    useMachinesStore.setState({ machines: [a] })
+    const inFlight = deferred<ReturnType<typeof snapshot>>()
+    ipc.agents.mockReturnValueOnce(inFlight.promise)
+    ipc.status.mockRejectedValueOnce("machines-busy")
+    const poll = useMachinesStore.getState().refreshSnapshot(a.id)
+    await expect(useMachinesStore.getState().refreshStatus(a.id)).resolves.toBeNull()
+    inFlight.resolve(snapshot(a.id))
+    await expect(poll).resolves.toEqual({ ok: true, code: null })
+    expect(useMachinesStore.getState().snapshotById[a.id]).toEqual(snapshot(a.id))
+  })
+
   it("rule 6: only a reachable status check emits a recover signal for that machine", async () => {
     useMachinesStore.setState({ machines: [a, b] })
     ipc.status.mockResolvedValueOnce({ id: a.id, label: a.label, status: "auth-required", error: null })

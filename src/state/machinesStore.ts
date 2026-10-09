@@ -66,8 +66,8 @@ function prune<T>(record: Record<string, T>, machines: HerdrMachine[]): Record<s
  *     call order; a failed mutation does not block the queue.
  *  4. Losing support, a failed capability probe or reset() advances `epoch`: every in-flight call from the old
  *     epoch (list, mutation, status, snapshot) drops its result.
- *  5. refreshStatus / refreshSnapshot: the latest call per machine and kind wins; results for machines that no
- *     longer exist are dropped (errors included).
+ *  5. refreshStatus / refreshSnapshot: the latest call per machine wins, across both kinds since both decide its
+ *     verdict; results for machines that no longer exist are dropped (errors included).
  *  6. A reachable status check emits `recoverSignal` for that machine only; the Bridge lifts just its poll block.
  */
 
@@ -109,8 +109,17 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
   /** The newest refreshList call; only it may clear `loading`. */
   let listRequest = 0
   let queue: Promise<unknown> = Promise.resolve()
-  const statusSeq = new Map<string, number>()
-  const snapshotSeq = new Map<string, number>()
+  /** Status checks and snapshots of one machine share a generation: both decide its verdict. */
+  const requestSeq = new Map<string, number>()
+  const nextRequest = (id: string) => {
+    const seq = (requestSeq.get(id) ?? 0) + 1
+    requestSeq.set(id, seq)
+    return seq
+  }
+  /** The host rejected this call as busy because an earlier one for the machine still runs: that one is the latest again. */
+  const giveBack = (mine: number, id: string, seq: number) => {
+    if (mine === epoch && requestSeq.get(id) === seq) requestSeq.set(id, seq - 1)
+  }
   let recoverSeq = 0
   // Per-machine results only land for machines that are still listed AND enabled: a result started before a
   // disable must not repopulate the state the disable just dropped.
@@ -205,9 +214,8 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
     },
     async refreshStatus(id) {
       const mine = epoch
-      const seq = (statusSeq.get(id) ?? 0) + 1
-      statusSeq.set(id, seq)
-      const current = () => mine === epoch && statusSeq.get(id) === seq && exists(id)
+      const seq = nextRequest(id)
+      const current = () => mine === epoch && requestSeq.get(id) === seq && exists(id)
       try {
         const status = await machinesStatus(id)
         if (!current()) return null
@@ -222,16 +230,19 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
         return status
       } catch (cause) {
         // A busy manager is not a machine failure; stay silent.
-        if (messageOf(cause).startsWith("machines-busy") || !current()) return null
+        if (messageOf(cause).startsWith("machines-busy")) {
+          giveBack(mine, id, seq)
+          return null
+        }
+        if (!current()) return null
         set((state) => ({ errorById: { ...state.errorById, [id]: messageOf(cause) } }))
         return null
       }
     },
     async refreshSnapshot(id) {
       const mine = epoch
-      const seq = (snapshotSeq.get(id) ?? 0) + 1
-      snapshotSeq.set(id, seq)
-      const current = () => mine === epoch && snapshotSeq.get(id) === seq && exists(id)
+      const seq = nextRequest(id)
+      const current = () => mine === epoch && requestSeq.get(id) === seq && exists(id)
       try {
         const snapshot = await machinesAgents(id)
         // Removed, superseded by a newer call, or the store was reset meanwhile.
@@ -246,10 +257,9 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
         return { ok: true, code: null }
       } catch (cause) {
         const raw = messageOf(cause)
-        // A busy manager is not a machine failure; keep everything as is. The host rejected this call because
-        // the previous one for this machine is still running, so give that one back its place as the latest.
+        // A busy manager is not a machine failure; keep everything as is.
         if (raw.startsWith("machines-busy")) {
-          if (mine === epoch && snapshotSeq.get(id) === seq) snapshotSeq.set(id, seq - 1)
+          giveBack(mine, id, seq)
           return { ok: false, code: "machines-busy" }
         }
         const code = parseMachineError(raw).code
@@ -271,8 +281,7 @@ export const useMachinesStore = create<MachinesState>((set, get) => {
       capsSeq += 1
       capsLatest = Promise.resolve(null)
       listLatest = Promise.resolve(null)
-      statusSeq.clear()
-      snapshotSeq.clear()
+      requestSeq.clear()
       set({ ...initial })
     }
   }
