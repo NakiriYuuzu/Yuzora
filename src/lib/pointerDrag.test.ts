@@ -164,6 +164,18 @@ describe("beginPointerDrag", () => {
         expect(onDrop).not.toHaveBeenCalled()
     })
 
+    test("a press whose release was lost before the threshold never becomes a drag", () => {
+        const { onDrop, onStart } = track()
+        pointerDrag(source, [{ x: 1, y: 0 }], { release: false })
+        fireEvent.pointerMove(window, { buttons: 0, pointerId: 1, clientX: 150, clientY: 0 })
+        expect(onStart).not.toHaveBeenCalled()
+        expect(isPointerDragActive()).toBe(false)
+        expect(document.documentElement).not.toHaveAttribute("data-pointer-dragging")
+        expect(targetA).not.toHaveAttribute("data-pointer-drop-target")
+        fireEvent.pointerUp(window, { pointerId: 1, clientX: 150, clientY: 0 })
+        expect(onDrop).not.toHaveBeenCalled()
+    })
+
     test("events from another pointer are ignored", () => {
         const { onDrop } = track()
         pointerDrag(source, [{ x: 10, y: 0 }, { x: 150, y: 0 }], { release: false, pointerId: 7 })

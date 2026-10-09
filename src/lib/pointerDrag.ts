@@ -202,8 +202,9 @@ export function beginPointerDrag<T>(press: PointerPress, options: PointerDragOpt
     function onMove(event: PointerEvent) {
         if (!matches(event)) return
         point = { x: event.clientX, y: event.clientY }
-        if (active && event.buttons === 0) {
-            // The release happened where no pointerup could reach us.
+        if ((event.buttons & 1) === 0) {
+            // The release happened where no pointerup could reach us, before
+            // or after the threshold.
             end()
             return
         }
