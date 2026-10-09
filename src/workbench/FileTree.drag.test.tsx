@@ -1,5 +1,7 @@
 import { act, cleanup, render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
+// @ts-expect-error Node types are excluded from the browser tsconfig; Vitest still runs in Node.
+import { readFileSync } from "node:fs"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 
 const fs = vi.hoisted(() => ({ fsMovePaths: vi.fn(async () => [] as string[]) }))
@@ -73,6 +75,14 @@ afterEach(() => {
     vi.clearAllMocks()
     useFileTreeStore.setState({ trees: {}, preciseRevision: null })
     useFileClipboardStore.setState({ clipboard: null, selection: null })
+})
+
+test("檔案樹列保留觸控的垂直捲動", async () => {
+    await mountTree()
+    // touch-action: none on every row would turn each swipe into a file drag.
+    expect(row("a.txt")).toHaveAttribute("data-pointer-drag-handle", "pan-y")
+    const styles = readFileSync("src/styles.css", "utf8")
+    expect(styles).toMatch(/\[data-pointer-drag-handle="pan-y"\]\s*\{\s*touch-action:\s*pan-y;/)
 })
 
 test("拖到資料夾列並確認後移動檔案，且不碰 clipboard", async () => {

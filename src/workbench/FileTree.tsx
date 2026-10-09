@@ -188,7 +188,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                     onPointerDown={onPointerDown}
                     onDoubleClick={onDoubleClick}
                     data-tree-path={node.path}
-                    data-pointer-drag-handle
+                    data-pointer-drag-handle="pan-y"
                     data-tree-dir={node.isDir ? "true" : undefined}
                     data-selected={selected ? "true" : undefined}
                     onContextMenu={workspacePath ? (event) => {

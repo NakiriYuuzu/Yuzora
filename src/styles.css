@@ -369,6 +369,11 @@
     user-select: none;
     touch-action: none;
 }
+/* Rows of a vertically scrolling list keep touch swipes for scrolling; a
+   swipe that pans cancels the pointer, so only a sideways start drags. */
+[data-pointer-drag-handle="pan-y"] {
+    touch-action: pan-y;
+}
 html[data-pointer-dragging],
 html[data-pointer-dragging] * {
     cursor: grabbing !important;
