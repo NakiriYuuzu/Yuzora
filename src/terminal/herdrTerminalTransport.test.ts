@@ -169,6 +169,17 @@ describe("createHerdrTerminalTransport", () => {
     expect(frame.indexOf("\x1b[201~")).toBe(frame.length - "\x1b[201~".length)
   })
 
+  it("strips deeply nested paste delimiters in linear time", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-1", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    // Each pass of a strip-until-unchanged loop exposes only one new delimiter,
+    // so this ~250 KB paste would rescan the whole text 36k times.
+    const depth = 36_000
+    await transport.paste("a" + "\x1b[2".repeat(depth) + "\x1b[200~" + "00~".repeat(depth) + "b")
+    expect(vi.mocked(herdrTerminalInput).mock.calls[0]?.[1]).toBe("\x1b[200~ab\x1b[201~")
+  }, 1_000)
+
   beforeEach(() => {
     vi.mocked(herdrTerminalOpen).mockReset()
     vi.mocked(herdrTerminalInput).mockReset()

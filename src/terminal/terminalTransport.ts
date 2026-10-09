@@ -144,16 +144,20 @@ const frameDecoder = typeof TextDecoder !== "undefined"
   : null
 const inputEncoder = new TextEncoder()
 
-// Strip until nothing changes: removing one delimiter can join its neighbours
-// into a new one ("\x1b[2" + delimiter + "01~"), which would end the paste
-// early and deliver the rest of the text as typed keystrokes.
+// Removing one delimiter can join its neighbours into a new one ("\x1b[2" +
+// delimiter + "01~"), which would end the paste early and deliver the rest of
+// the text as typed keystrokes. The kept text is a stack that never holds a
+// delimiter, so one that forms is dropped as it appears, in linear time.
 function stripPasteDelimiters(text: string): string {
-  let current = text
-  for (;;) {
-    const next = current.replaceAll("\x1b[200~", "").replaceAll("\x1b[201~", "")
-    if (next === current) return next
-    current = next
+  if (!text.includes("\x1b")) return text
+  const kept: string[] = []
+  for (const char of text) {
+    kept.push(char)
+    if (char !== "~" || kept.length < 6) continue
+    const tail = kept.slice(-6).join("")
+    if (tail === "\x1b[200~" || tail === "\x1b[201~") kept.length -= 6
   }
+  return kept.join("")
 }
 
 function decodeFrameBytes(bytesBase64: string): string {
