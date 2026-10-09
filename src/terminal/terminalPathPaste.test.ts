@@ -72,6 +72,10 @@ it("quotes windows paths only when needed and refuses names PowerShell would exp
   for (const quote of ["\u201c", "\u201d", "\u201e"]) {
     expect(() => quotePathsForShell([`C:\\x${quote};calc;${quote}y.txt`], "windows")).toThrow(expect.objectContaining({ code: "unsafe-name" }))
   }
+  // cmd expands %NAME% inside double quotes, and !NAME! with delayed expansion.
+  for (const name of ["C:\\files\\%USERNAME%\\note.txt", "C:\\files\\!USERNAME!\\note.txt"]) {
+    expect(() => quotePathsForShell([name], "windows")).toThrow(expect.objectContaining({ code: "unsafe-name" }))
+  }
   // Other non-ASCII names still paste.
   expect(quotePathsForShell(["C:\\資料\\報告.txt"], "windows")).toBe('"C:\\資料\\報告.txt" ')
 })

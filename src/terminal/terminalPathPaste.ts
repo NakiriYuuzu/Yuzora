@@ -27,9 +27,10 @@ const WINDOWS_SAFE = /^[A-Za-z0-9_\-.:\\/]*$/
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
 // `$` and backtick stay live inside PowerShell double quotes, and PowerShell
-// also ends a double-quoted string at the smart quotes U+201C-U+201E. No quoting
+// also ends a double-quoted string at the smart quotes U+201C-U+201E; cmd
+// expands `%NAME%` (and `!NAME!` with delayed expansion) inside them. No quoting
 // is literal in both cmd and PowerShell, so a Windows name with them is refused.
-const WINDOWS_UNQUOTABLE = /[$`"“”„]/
+const WINDOWS_UNQUOTABLE = /[$`"“”„%!]/
 const WINDOWS_LIKE_HOST_PATH = /^[A-Za-z]:[\\/]|^\\\\/
 
 function quotePosix(path: string): string {
