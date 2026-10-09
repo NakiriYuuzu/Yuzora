@@ -133,10 +133,11 @@ export function beginPointerDrag<T>(press: PointerPress, options: PointerDragOpt
         for (const element of options.autoScroll?.() ?? []) {
             if (!element) continue
             const rect = element.getBoundingClientRect()
-            const dx = element.scrollWidth > element.clientWidth && within(point.y, rect.top, rect.bottom)
-                ? edgeStep(point.x, rect.left, rect.right) : 0
-            const dy = element.scrollHeight > element.clientHeight && within(point.x, rect.left, rect.right)
-                ? edgeStep(point.y, rect.top, rect.bottom) : 0
+            // Only the container under the pointer scrolls: side-by-side tab
+            // strips must not drift while the pointer is over a neighbour.
+            if (!within(point.x, rect.left, rect.right) || !within(point.y, rect.top, rect.bottom)) continue
+            const dx = element.scrollWidth > element.clientWidth ? edgeStep(point.x, rect.left, rect.right) : 0
+            const dy = element.scrollHeight > element.clientHeight ? edgeStep(point.y, rect.top, rect.bottom) : 0
             if (!dx && !dy) continue
             const before = [element.scrollLeft, element.scrollTop]
             element.scrollLeft += dx

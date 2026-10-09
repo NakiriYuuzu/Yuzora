@@ -263,6 +263,37 @@ describe("beginPointerDrag", () => {
         fireEvent.pointerUp(window, { pointerId: 1, clientX: 150, clientY: 50 })
         raf.mockRestore()
     })
+
+    test("auto-scrolls only the container under the pointer", () => {
+        const frames: FrameRequestCallback[] = []
+        const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+            frames.push(callback)
+            return frames.length
+        })
+        const strip = (left: number) => {
+            const element = document.createElement("div")
+            document.body.append(element)
+            Object.defineProperties(element, {
+                scrollWidth: { value: 1000 },
+                clientWidth: { value: 300 },
+                scrollHeight: { value: 30 },
+                clientHeight: { value: 30 },
+            })
+            vi.spyOn(element, "getBoundingClientRect").mockReturnValue(rect(left, 0, 300, 30))
+            return element
+        }
+        // Two editor groups' tab strips side by side; the right one is scrolled.
+        const leftStrip = strip(0)
+        const rightStrip = strip(300)
+        rightStrip.scrollLeft = 200
+        track({ resolveTarget: () => null, autoScroll: () => [leftStrip, rightStrip] })
+        pointerDrag(source, [{ x: 10, y: 15 }, { x: 295, y: 15 }], { release: false })
+        frames.shift()?.(0)
+        expect(leftStrip.scrollLeft).toBeGreaterThan(0)
+        expect(rightStrip.scrollLeft).toBe(200)
+        fireEvent.pointerUp(window, { pointerId: 1, clientX: 295, clientY: 15 })
+        raf.mockRestore()
+    })
 })
 
 test("insertionSide splits an element at its midpoint", () => {
