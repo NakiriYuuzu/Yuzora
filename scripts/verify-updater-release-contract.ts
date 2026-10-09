@@ -1,12 +1,15 @@
 import {
   loadReleaseWorkflow,
   loadTauriConfig,
+  loadTauriWindowsConfig,
   verifyStableProductUpdaterConfig,
   verifyStableReleaseContract,
+  verifyWindowsMsiOnlyConfig,
 } from "./release-contract"
 
 export async function verifyUpdaterReleaseContract() {
   verifyStableProductUpdaterConfig(await loadTauriConfig())
+  verifyWindowsMsiOnlyConfig(await loadTauriWindowsConfig())
   verifyStableReleaseContract(await loadReleaseWorkflow())
   return "Stable updater release contract verified"
 }

@@ -29,6 +29,7 @@ import { UpdateChannelSettings } from "./UpdateChannelSettings"
 import { UpdateInstallConfirmDialog } from "./UpdateInstallConfirmDialog"
 import { KeyboardSettings } from "./KeyboardSettings"
 import { SettingsThemePicker } from "./SettingsThemePicker"
+import { BackgroundSettings } from "./BackgroundSettings"
 import { SETTINGS_GROUPS,settingsSearchResults,type SettingsSectionId } from "./settings-search"
 import "./settings-modern.css"
 import { extractReleaseNotes, parseReleaseNoteLines } from "@/lib/releaseNotes"
@@ -52,7 +53,7 @@ import { useEditorSettingsStore, type EditorFontSize, type MarkdownViewMode } fr
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useUpdateStore } from "@/state/updateStore"
-import { useWorkspaceStore } from "@/state/workspaceStore"
+import { useRestartYuzora } from "@/state/useRestartYuzora"
 import { workspacePathForDisplay } from "@/lib/paths"
 import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { SettingCard, SettingsRowGroup, Segmented, ToggleRow } from "./settingsPrimitives"
@@ -71,7 +72,7 @@ export type {
   ThemePreference,
 } from "./settingsStorage"
 
-import type { ThemePreference } from "./settingsStorage"
+import { DEFAULT_BACKGROUND_APPEARANCE, type BackgroundAppearance, type ThemePreference } from "./settingsStorage"
 import type { TrustedWorkspace } from "@/lib/types"
 import {
   ACCENT_THEMES,
@@ -91,6 +92,8 @@ interface SettingsDialogProps {
   onSidebarBackgroundChange?: (side: "left" | "right", enabled: boolean) => void
   botAnimations?: boolean
   onBotAnimationsChange?: (enabled: boolean) => void
+  background?: BackgroundAppearance
+  onBackgroundChange?: (patch: Partial<BackgroundAppearance>) => void
   // Optional target applied whenever the dialog opens (or the target changes
   // while open).
   initialSection?: string
@@ -168,6 +171,8 @@ export function SettingsDialog({
   onSidebarBackgroundChange = () => {},
   botAnimations = false,
   onBotAnimationsChange = () => {},
+  background = DEFAULT_BACKGROUND_APPEARANCE,
+  onBackgroundChange = () => {},
   initialSection,
   openNonce,
 }: SettingsDialogProps) {
@@ -208,9 +213,7 @@ export function SettingsDialog({
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates)
   const downloadUpdate = useUpdateStore((s) => s.downloadUpdate)
   const installAndRelaunch = useUpdateStore((s) => s.installAndRelaunch)
-  const hasDirtyDocuments = useWorkspaceStore((s) =>
-    s.groups.some((group) => group.tabs.some((tab) => tab.dirty))
-  )
+  const { blocked: hasDirtyDocuments } = useRestartYuzora()
   const trustedWorkspaces = useWorkspaceTrustStore((s) => s.trustedWorkspaces)
   const refreshTrustList = useWorkspaceTrustStore((s) => s.refreshList)
   const revokeWorkspace = useWorkspaceTrustStore((s) => s.revokeWorkspace)
@@ -353,6 +356,8 @@ export function SettingsDialog({
                   </RadioGroup>
                   <p className="settings-inline-hint">{td("paletteHint")}</p>
                 </SettingCard>
+
+                <BackgroundSettings value={background} onChange={onBackgroundChange} />
 
                 <SettingsRowGroup>
                   <ToggleRow

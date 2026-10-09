@@ -118,6 +118,20 @@ describe("smart checkout", () => {
             cancelLabel: "Don't Checkout"
         }))
         expect(useGitConflictStore.getState().conflictsOpen).toBe(true)
+        expect(dialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({ description: expect.not.stringContaining("Untracked files") }))
+    })
+
+    it("offers Smart Checkout when untracked files block the switch and explains they come back as changes", async () => {
+        const run = vi.fn(async (smart: boolean): Promise<GitOperationOutcome> => {
+            if (!smart) throw new Error("git switch: error: The following untracked working tree files would be overwritten by checkout:\n\tshared.txt\nPlease move or remove them before you switch branches.\nAborting")
+            return { conflicts: false }
+        })
+        expect(await switchBranch("/w", "checkout", "feature/x", run)).toBe(true)
+        expect(run.mock.calls).toEqual([[false], [true]])
+        expect(dialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({
+            description: expect.stringMatching(/would overwrite your local changes[\s\S]*Untracked files have the same paths as files tracked in 'feature\/x'/)
+        }))
+        expect(useGitConflictStore.getState().conflictsOpen).toBe(false)
     })
 
     it("leaves other failures and a declined prompt alone", async () => {
@@ -139,7 +153,7 @@ describe("smart checkout", () => {
 
 describe("GitStashDialog", () => {
     it("stashes with the chosen options and pops with conflict handoff", async () => {
-        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, message: "On main: wip", timestamp: 1 }])
+        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid: "a".repeat(40), message: "On main: wip", timestamp: 1 }])
         vi.mocked(ipc.gitStashApply).mockResolvedValueOnce({ conflicts: true })
         useGitActionDialogStore.setState({ stashOpen: true })
         render(<GitStashDialog />)
@@ -152,9 +166,24 @@ describe("GitStashDialog", () => {
         await waitFor(() => expect(ipc.gitStashPush).toHaveBeenCalledWith("/w", "half done", true, true))
 
         fireEvent.click(within(dialog).getByRole("button", { name: "Pop stash@{0}" }))
-        await waitFor(() => expect(ipc.gitStashApply).toHaveBeenCalledWith("/w", 0, true))
+        await waitFor(() => expect(ipc.gitStashApply).toHaveBeenCalledWith("/w", 0, "a".repeat(40), true))
         await waitFor(() => expect(useGitConflictStore.getState().conflictsOpen).toBe(true))
         expect(useGitActionDialogStore.getState().stashOpen).toBe(false)
+    })
+
+    it("shows the error and reloads the list when a stash changed under the dialog", async () => {
+        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid: "a".repeat(40), message: "On main: wip", timestamp: 1 }])
+        vi.mocked(ipc.gitStashApply).mockRejectedValueOnce("git stash: stash@{0} changed since the list was loaded; reload and try again")
+        useGitActionDialogStore.setState({ stashOpen: true })
+        render(<GitStashDialog />)
+        const dialog = await screen.findByRole("dialog")
+        await within(dialog).findByText("On main: wip")
+        const loads = vi.mocked(ipc.gitStashList).mock.calls.length
+
+        fireEvent.click(within(dialog).getByRole("button", { name: "Apply stash@{0}" }))
+        await waitFor(() => expect(useGitStore.getState().lastError).toContain("changed since the list"))
+        await waitFor(() => expect(vi.mocked(ipc.gitStashList).mock.calls.length).toBeGreaterThan(loads))
+        expect(useGitActionDialogStore.getState().stashOpen).toBe(true)
     })
 })
 

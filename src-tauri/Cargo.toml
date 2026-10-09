@@ -1,6 +1,6 @@
 [package]
 name = "yuzora"
-version = "0.0.17"
+version = "0.0.18"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -21,7 +21,7 @@ tauri-build = { version = "2.7.0", features = [] }
 yuzora-host = { path = "host" }
 # `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
 # uses to overlay an external-URL browser webview over the panel region (P3).
-tauri = { version = "2.12.0", features = ["unstable", "protocol-asset", "image-png"] }
+tauri = { version = "2.12.0", features = ["unstable", "macos-private-api", "protocol-asset", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -87,7 +87,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2.12.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Com", "Win32_System_SystemServices", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_ApplicationInstallationAndServicing", "Win32_System_Pipes", "Win32_System_Com", "Win32_System_SystemServices", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"

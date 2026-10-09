@@ -171,7 +171,12 @@
   },
   "fileTree": {
     "openDiffFile": "Open diff {{name}}",
-    "openDiffTitle": "Open diff"
+    "openDiffTitle": "Open diff",
+    "moveConfirm": {
+      "title": "Move item?",
+      "description": "Move \"{{name}}\" into \"{{target}}\"?",
+      "confirm": "Move"
+    }
   },
   "editorArea": {
     "splitRightAriaLabel": "Split right",
@@ -568,6 +573,7 @@
     "stashItem": "Stash / unstash…",
     "checkoutProblemTitle": "Git Checkout Problem",
     "checkoutProblem": "Checking out '{{target}}' would overwrite your local changes.\n\nSmart Checkout stashes them, switches, and restores them afterwards. If restoring them conflicts, the Conflicts dialog opens and the changes stay in the stash.",
+    "checkoutProblemUntracked": "Untracked files have the same paths as files tracked in '{{target}}'. Smart Checkout puts your copies back over them after switching, so they show as changes in the Git panel; the versions committed in '{{target}}' stay available.",
     "smartCheckout": "Smart Checkout",
     "dontCheckout": "Don't Checkout"
   },
@@ -611,6 +617,7 @@
   },
   "fileClipboard": {
     "errorTitle": "Could not paste",
+    "moveErrorTitle": "Could not move",
     "error": {
       "copy-into-itself": "A folder cannot be copied into itself.",
       "move-into-itself": "A folder cannot be moved into itself.",

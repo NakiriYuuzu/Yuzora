@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks"
 
 import { AppShell, WORKBENCH_LAYOUT_STORAGE_KEY } from "@/app/AppShell"
-import { APPEARANCE_SETTINGS_STORAGE_KEY } from "@/app/workbench/settingsStorage"
+import { APPEARANCE_SETTINGS_STORAGE_KEY, DEFAULT_BACKGROUND_APPEARANCE } from "@/app/workbench/settingsStorage"
 import type { SaveDirtyTabOutcome } from "@/editor/saveDocument"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 import { useContextMenuStore } from "@/state/contextMenuStore"
@@ -25,6 +25,17 @@ const windowMocks = vi.hoisted(() => ({
       return Promise.resolve(() => {})
     }
   ),
+}))
+
+const backgroundImageMocks = vi.hoisted(() => ({
+  load: vi.fn(async (): Promise<Blob | null> => null),
+}))
+
+vi.mock("@/theme/backgroundImage", () => ({
+  loadBackgroundImage: backgroundImageMocks.load,
+  prepareBackgroundImage: vi.fn(),
+  saveBackgroundImage: vi.fn(),
+  clearBackgroundImage: vi.fn(),
 }))
 
 const updaterMocks = vi.hoisted(() => ({
@@ -347,7 +358,7 @@ describe("AppShell", () => {
 
       expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+      JSON.stringify({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true , ...DEFAULT_BACKGROUND_APPEARANCE })
       )
     } finally {
       matchMediaSpy.mockRestore()
@@ -363,7 +374,7 @@ describe("AppShell", () => {
 
     expect(document.documentElement.classList.contains("dark")).toBe(true)
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+      JSON.stringify({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true , ...DEFAULT_BACKGROUND_APPEARANCE })
     )
   })
 
@@ -378,7 +389,7 @@ describe("AppShell", () => {
     expect(document.documentElement.style.getPropertyValue("--yz-accent-rgb")).toBe("47, 107, 255")
     expect(document.documentElement.style.getPropertyValue("--yz-accent-ink")).toBe("#2456cc")
     expect(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)).toBe(
-      JSON.stringify({ theme: "auto", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+      JSON.stringify({ theme: "auto", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true , ...DEFAULT_BACKGROUND_APPEARANCE })
     )
   })
 
@@ -398,11 +409,107 @@ describe("AppShell", () => {
     fireEvent.click(right)
     expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "false")
     fireEvent.click(left)
-    expect(stored()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: false, botAnimations: true })
+    expect(stored()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: false, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
     view.unmount()
     render(<AppShell />)
     expect(document.getElementById("workbench-spaces")).toHaveAttribute("data-background", "true")
     expect(document.getElementById("workbench-tools")).toHaveAttribute("data-background", "false")
+  })
+
+  it("圖片背景從本機儲存載入；讀不到圖片時維持主題色背景", async () => {
+    const root = document.documentElement
+    const createObjectURL = vi.fn(() => "blob:tauri://localhost/bg")
+    const revokeObjectURL = vi.fn()
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundSource: "image", backgroundImageVersion: 3, backgroundImageIntensity: 70 }))
+
+    backgroundImageMocks.load.mockResolvedValueOnce(null)
+    const missing = render(<AppShell />)
+    await waitFor(() => expect(backgroundImageMocks.load).toHaveBeenCalledTimes(1))
+    expect(root.dataset.background).toBe("accent")
+    expect(root.style.getPropertyValue("--yz-bg-image")).toBe("")
+    missing.unmount()
+
+    backgroundImageMocks.load.mockResolvedValueOnce(new Blob(["jpeg"], { type: "image/jpeg" }))
+    const view = render(<AppShell />)
+    await waitFor(() => expect(root.dataset.background).toBe("image"))
+    expect(root.style.getPropertyValue("--yz-bg-image")).toBe('url("blob:tauri://localhost/bg")')
+    expect(root.style.getPropertyValue("--yz-image-veil")).toContain("44%")
+    view.unmount()
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:tauri://localhost/bg")
+    root.style.removeProperty("--yz-bg-image")
+    root.style.removeProperty("--yz-image-veil")
+  })
+
+  it("換圖時保留舊圖直到新圖載入，之後才釋放舊 URL", async () => {
+    const root = document.documentElement
+    let created = 0
+    const createObjectURL = vi.fn(() => `blob:tauri://localhost/bg-${++created}`)
+    const revokeObjectURL = vi.fn()
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundSource: "image", backgroundImageVersion: 3 }))
+    backgroundImageMocks.load.mockResolvedValueOnce(new Blob(["old"]))
+    const view = render(<AppShell />)
+    await waitFor(() => expect(root.style.getPropertyValue("--yz-bg-image")).toBe('url("blob:tauri://localhost/bg-1")'))
+
+    let finish: (image: Blob) => void = () => {}
+    backgroundImageMocks.load.mockImplementationOnce(() => new Promise<Blob>(resolve => { finish = resolve }))
+    const loadsBefore = backgroundImageMocks.load.mock.calls.length
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.change(within(dialog).getByTestId("background-backdrop-input"), { target: { files: [new File(["new"], "new.png", { type: "image/png" })] } })
+    await waitFor(() => expect(backgroundImageMocks.load.mock.calls.length).toBe(loadsBefore + 1))
+    expect(root.dataset.background).toBe("image")
+    expect(root.style.getPropertyValue("--yz-bg-image")).toBe('url("blob:tauri://localhost/bg-1")')
+    expect(revokeObjectURL).not.toHaveBeenCalled()
+
+    await act(async () => finish(new Blob(["new"])))
+    expect(root.style.getPropertyValue("--yz-bg-image")).toBe('url("blob:tauri://localhost/bg-2")')
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:tauri://localhost/bg-1")
+    view.unmount()
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:tauri://localhost/bg-2")
+    root.style.removeProperty("--yz-bg-image")
+    root.style.removeProperty("--yz-image-veil")
+  })
+
+  it("離開圖片背景時釋放圖片 URL", async () => {
+    const root = document.documentElement
+    const createObjectURL = vi.fn(() => "blob:tauri://localhost/bg-leave")
+    const revokeObjectURL = vi.fn()
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundSource: "image", backgroundImageVersion: 3 }))
+    backgroundImageMocks.load.mockResolvedValueOnce(new Blob(["img"]))
+    const view = render(<AppShell />)
+    await waitFor(() => expect(root.style.getPropertyValue("--yz-bg-image")).toBe('url("blob:tauri://localhost/bg-leave")'))
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Follow accent" }))
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:tauri://localhost/bg-leave"))
+    expect(root.dataset.background).toBe("accent")
+    view.unmount()
+    root.style.removeProperty("--yz-bg-image")
+    root.style.removeProperty("--yz-image-veil")
+  })
+
+  it("自訂漸層取代主題色背景並持久化，切回主題色後清除覆寫", async () => {
+    const root = document.documentElement
+    render(<AppShell />)
+    expect(root.dataset.background).toBe("accent")
+    expect(root.style.getPropertyValue("--yz-glow-a-light")).toBe("")
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    const dialog = await screen.findByRole("dialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sunset" }))
+    expect(root.dataset.background).toBe("gradient")
+    expect(root.style.getPropertyValue("--yz-glow-a-light")).toContain("#ff7a59")
+    expect(root.style.getPropertyValue("--yz-accent")).toBe("#86b81f")
+    expect(JSON.parse(localStorage.getItem(APPEARANCE_SETTINGS_STORAGE_KEY)!)).toMatchObject({
+      accent: "lime",
+      backgroundSource: "gradient",
+      backgroundGradient: { colors: ["#ff7a59", "#ffb347", "#ff5c8a"] },
+    })
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Follow accent" }))
+    expect(root.dataset.background).toBe("accent")
+    expect(root.style.getPropertyValue("--yz-glow-a-light")).toBe("")
   })
 
   it("重啟時從持久化 appearance 還原 accent", () => {

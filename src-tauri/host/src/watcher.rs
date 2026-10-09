@@ -351,7 +351,11 @@ mod tests {
         }
         let saw_stop = stopped.load(Ordering::Acquire);
         release_send.send(()).unwrap();
-        closed_receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Dropping also stops notify's FSEvents stream, which takes seconds
+        // while fseventsd is busy; a watcher that never closes still fails.
+        closed_receive
+            .recv_timeout(Duration::from_secs(20))
+            .expect("dropping the watcher must finish once its callback returns");
         thread.join().unwrap();
         assert!(saw_stop);
         assert_eq!(callbacks.load(Ordering::Relaxed), 1);

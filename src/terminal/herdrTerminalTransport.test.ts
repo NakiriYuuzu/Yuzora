@@ -5,6 +5,7 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalInput: vi.fn(),
   herdrTerminalResize: vi.fn(),
   herdrTerminalScroll: vi.fn(),
+  herdrTerminalMouse: vi.fn(),
   herdrTerminalRelease: vi.fn()
 }))
 vi.mock("./herdrScrollIpc", () => ({
@@ -14,6 +15,7 @@ vi.mock("./herdrScrollIpc", () => ({
 
 import {
   herdrTerminalInput,
+  herdrTerminalMouse,
   herdrTerminalOpen,
   herdrTerminalRelease,
   herdrTerminalResize,
@@ -154,6 +156,29 @@ describe("createHerdrTerminalTransport", () => {
       "\x1b[200~a\nb\x1b[201~", "\x1b[200~c\nd\x1b[201~"
     ])
   })
+
+  it("removes paste delimiters that only form once an inner one is stripped", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-1", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    // A single pass would join "\x1b[2" + "01~" into a fresh end marker and
+    // send "\x03rm -rf ~\n" as typed keystrokes after the paste ended.
+    await transport.paste("x\x1b[2\x1b[201~01~\x03rm -rf ~\n\x1b[20\x1b[200~0~y")
+    const frame = vi.mocked(herdrTerminalInput).mock.calls[0]?.[1] ?? ""
+    expect(frame).toBe("\x1b[200~x\x03rm -rf ~\ny\x1b[201~")
+    expect(frame.indexOf("\x1b[201~")).toBe(frame.length - "\x1b[201~".length)
+  })
+
+  it("strips deeply nested paste delimiters in linear time", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-1", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    // Each pass of a strip-until-unchanged loop exposes only one new delimiter,
+    // so this ~250 KB paste would rescan the whole text 36k times.
+    const depth = 36_000
+    await transport.paste("a" + "\x1b[2".repeat(depth) + "\x1b[200~" + "00~".repeat(depth) + "b")
+    expect(vi.mocked(herdrTerminalInput).mock.calls[0]?.[1]).toBe("\x1b[200~ab\x1b[201~")
+  }, 1_000)
 
   beforeEach(() => {
     vi.mocked(herdrTerminalOpen).mockReset()
@@ -1285,5 +1310,98 @@ describe("alternate-screen wheel routing", () => {
     const burst = vi.mocked(herdrTerminalScroll).mock.calls.slice(1)
     expect(burst).toHaveLength(6)
     expect(burst.reduce((rows, [, , lines]) => rows + lines, 0)).toBe(8)
+  })
+})
+
+describe("terminal mouse", () => {
+  beforeEach(() => {
+    vi.mocked(herdrTerminalOpen).mockReset().mockResolvedValue({
+      sessionId: "sess-mouse", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    vi.mocked(herdrTerminalMouse).mockReset().mockResolvedValue(undefined)
+  })
+
+  async function open(mouseEnabled: () => boolean, mode: "control" | "observe" = "control") {
+    if (mode === "observe") {
+      vi.mocked(herdrTerminalOpen).mockResolvedValue({
+        sessionId: "sess-mouse", target: "t1", mode: "observe", role: "observer", cols: 80, rows: 24, takeover: false
+      })
+    }
+    const transport = createHerdrTerminalTransport({ terminalId: "t1", mode, mouseEnabled })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    return transport
+  }
+
+  it("sends one event at a time in order and keeps only the latest queued drag", async () => {
+    let release!: () => void
+    vi.mocked(herdrTerminalMouse).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const transport = await open(() => true)
+    const first = transport.mouse?.("down", { column: 1, row: 2 }, 0)
+    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledOnce())
+    void transport.mouse?.("drag", { column: 2, row: 2 }, 0)
+    void transport.mouse?.("drag", { column: 3, row: 2 }, 0)
+    void transport.mouse?.("up", { column: 3, row: 2 }, 4)
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+    release()
+    await first
+
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([
+      ["sess-mouse", "down", { column: 1, row: 2 }, 0],
+      ["sess-mouse", "drag", { column: 3, row: 2 }, 0],
+      ["sess-mouse", "up", { column: 3, row: 2 }, 4]
+    ])
+  })
+
+  it("hands a gesture release queued during teardown to HERDR before detaching", async () => {
+    const transport = await open(() => true)
+    void transport.mouse?.("up", { column: 2, row: 3 }, 0)
+    expect(herdrTerminalMouse).not.toHaveBeenCalled()
+    transport.detach()
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([["sess-mouse", "up", { column: 2, row: 3 }, 0]])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the teardown flush behind a pointer event still on the wire", async () => {
+    let release!: () => void
+    vi.mocked(herdrTerminalMouse).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const transport = await open(() => true)
+    void transport.mouse?.("down", { column: 1, row: 1 }, 0)
+    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledOnce())
+    void transport.mouse?.("drag", { column: 2, row: 1 }, 0)
+    void transport.mouse?.("up", { column: 2, row: 1 }, 0)
+    let flushed = false
+    void transport.detach().then(() => { flushed = true })
+    // Nothing overtakes the in-flight `down`.
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+    await Promise.resolve()
+    expect(flushed).toBe(false)
+    release()
+    await vi.waitFor(() => expect(flushed).toBe(true))
+    expect(herdrTerminalMouse).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([
+      ["sess-mouse", "down", { column: 1, row: 1 }, 0],
+      ["sess-mouse", "drag", { column: 2, row: 1 }, 0],
+      ["sess-mouse", "up", { column: 2, row: 1 }, 0]
+    ])
+  })
+
+  it("never sends to connectors without terminal.mouse or without control", async () => {
+    await (await open(() => false)).mouse?.("down", { column: 0, row: 0 }, 0)
+    await (await open(() => true, "observe")).mouse?.("down", { column: 0, row: 0 }, 0)
+    expect(herdrTerminalMouse).not.toHaveBeenCalled()
+  })
+
+  it("drops the rest of a gesture after a failed send instead of replaying it", async () => {
+    vi.mocked(herdrTerminalMouse).mockRejectedValueOnce(new Error("busy"))
+    const transport = await open(() => true)
+    const first = transport.mouse?.("down", { column: 1, row: 1 }, 0)
+    void transport.mouse?.("up", { column: 1, row: 1 }, 0)
+    await expect(first).resolves.toBeUndefined()
+    expect(herdrTerminalMouse).toHaveBeenCalledOnce()
+
+    await transport.mouse?.("down", { column: 4, row: 4 }, 0)
+    expect(vi.mocked(herdrTerminalMouse).mock.calls.at(-1)).toEqual(["sess-mouse", "down", { column: 4, row: 4 }, 0])
   })
 })

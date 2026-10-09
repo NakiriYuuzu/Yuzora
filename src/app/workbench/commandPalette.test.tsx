@@ -408,6 +408,24 @@ it("a plain query renders the workspace search group and reveals a hit on select
     vi.useRealTimers()
 })
 
+it("workspace search marks the helper's ranges, including folds toLowerCase misses", async () => {
+    vi.useFakeTimers()
+    searchWorkspace.mockImplementation((_r, _q, _cs, cb) => {
+        cb({ type: "match", path: "/ws/src/a.ts", matches: [{ line: 1, col: 0, preview: "Straße ſtraße", ranges: [[0, 2], [7, 9]] }] })
+        cb({ type: "done", truncated: false, fileCount: 1 })
+        return Promise.resolve()
+    })
+
+    render(<Harness />)
+    fireEvent.change(screen.getByPlaceholderText("Search files, run a command…"), { target: { value: "st" } })
+    await act(async () => {
+        await vi.advanceTimersByTimeAsync(250)
+    })
+
+    expect([...document.querySelectorAll("mark")].map((mark) => mark.textContent)).toEqual(["St", "ſt"])
+    vi.useRealTimers()
+})
+
 it("workspace search sanitizes an extended Windows child path but reveals the raw target", async () => {
     vi.useFakeTimers()
     const workspace = String.raw`\\?\C:\Work\中文 workspace`

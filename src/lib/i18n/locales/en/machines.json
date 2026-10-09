@@ -1,0 +1,130 @@
+{
+  "tabs": { "machines": "HERDR machines" },
+  "panel": {
+    "title": "HERDR machines",
+    "description": "Remote HERDR servers reached over SSH. Live terminals open in the official client.",
+    "add": "Add machine",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "loading": "Loading machines…",
+    "loadFailed": "Could not load machines",
+    "empty": "No HERDR machines yet",
+    "emptyHint": "Add an SSH target to watch its agents here and open its sessions in the official client.",
+    "diagnostics": "Diagnostics",
+    "sshAgentHint": "Authentication uses ssh-agent and ~/.ssh/config. Key files saved in Yuzora are not passed on.",
+    "windowsReconnectHint": "Reconnect is not available on Windows. Load your key into ssh-agent, then check the status again."
+  },
+  "interactiveAlreadyOpen": "An interactive HERDR terminal is already open. Close it first.",
+  "unsupported": {
+    "title": "HERDR machines need HERDR 0.9.2 or newer",
+    "description": "The selected HERDR binary ({{version}}) is too old. Use the bundled HERDR 0.9.3 (recommended).",
+    "binaryUnavailableTitle": "HERDR binary not available",
+    "probeFailed": "Could not check HERDR machines support",
+    "unknownVersion": "unknown version",
+    "openSettings": "Go to HERDR settings"
+  },
+  "status": {
+    "reachable": "Reachable",
+    "auth-required": "Authentication required",
+    "error": "Error",
+    "disabled": "Disabled",
+    "unknown": "Not checked",
+    "stale": "Stale"
+  },
+  "row": {
+    "target": "Target",
+    "session": "Session",
+    "actions": "Actions for {{label}}"
+  },
+  "actions": {
+    "rename": "Rename",
+    "renameSave": "Save",
+    "renameCancel": "Cancel",
+    "renameLabel": "Machine name",
+    "enable": "Enable",
+    "disable": "Disable",
+    "remove": "Remove",
+    "checkStatus": "Check status",
+    "reconnect": "Reconnect",
+    "openClient": "Open in official client"
+  },
+  "remove": {
+    "title": "Remove {{label}}?",
+    "description": "This only removes the machine from your local HERDR list. The remote HERDR server and its sessions are not affected.",
+    "confirm": "Remove",
+    "cancel": "Cancel"
+  },
+  "add": {
+    "title": "Add HERDR machine",
+    "description": "Choosing the remote session and any install prompt happen in the terminal on the next step.",
+    "target": "SSH target",
+    "targetPlaceholder": "user@host or ssh://user@host:2222",
+    "label": "Name (optional)",
+    "session": "Remote session (optional)",
+    "sessionPlaceholder": "default",
+    "submit": "Continue",
+    "cancel": "Cancel"
+  },
+  "interactive": {
+    "addTitle": "Add HERDR machine",
+    "reconnectTitle": "Reconnect {{label}}",
+    "clientTitle": "HERDR client",
+    "clientSelectTitle": "Select {{label}} in the sidebar",
+    "clientHint": "The official client cannot preselect a machine. Pick {{label}} in its machines sidebar.",
+    "hint": "Finish SSH authentication and choices in this terminal. Esc or Ctrl+C cancels and nothing is saved.",
+    "connecting": "Starting the official client…",
+    "ended": "The session has ended.",
+    "close": "Close",
+    "saved": "Machine added: {{target}}",
+    "notSaved": "Machine was not saved",
+    "unconfirmed": "Could not confirm whether the machine was saved. Refresh the list.",
+    "reconnected": "Reconnect finished"
+  },
+  "legacy": {
+    "badge": "Legacy path",
+    "description": "Saved SSH hosts stay for Files, Git, databases, SFTP and Browser forwarding. For remote HERDR, use HERDR machines instead.",
+    "migrate": "Convert to HERDR machine"
+  },
+  "migrate": {
+    "title": "Convert {{name}} to a HERDR machine",
+    "description": "The saved SSH host is kept as is. A HERDR machine is added next to it.",
+    "target": "SSH target",
+    "label": "Name",
+    "keyWarning": "This host uses a key file. The official HERDR does not accept key files: add the key to ssh-agent or configure it in ~/.ssh/config.",
+    "confirm": "Continue",
+    "cancel": "Cancel"
+  },
+  "sidebar": {
+    "group": "HERDR machines",
+    "noAgents": "No agents",
+    "stale": "Showing the last result",
+    "error": "Unavailable",
+    "authRequired": "Authentication required",
+    "openClient": "Open in official client: select {{label}} in its sidebar"
+  },
+  "errors": {
+    "unknown": "HERDR machine operation failed",
+    "machines-runtime-too-old": "The HERDR binary is too old for machines. Use the bundled version (0.9.2 or newer).",
+    "machines-binary-unavailable": "The HERDR binary is unavailable.",
+    "machines-invalid-id": "Invalid machine id.",
+    "machines-invalid-target": "Invalid SSH target. Use user@host or ssh://user@host:port without a password.",
+    "machines-invalid-label": "Invalid name. Use 1 to 128 characters without control characters.",
+    "machines-invalid-session": "Invalid remote session name.",
+    "machines-unknown-machine": "This machine no longer exists. Refresh the list.",
+    "machines-disabled": "This machine is disabled. Enable it first.",
+    "machines-unsupported-subcommand": "This HERDR version does not support that machine command.",
+    "machines-auth-required": "SSH authentication is required. Load your key into ssh-agent or reconnect.",
+    "machines-host-key": "SSH host key verification failed. Check ~/.ssh/known_hosts.",
+    "machines-unreachable": "The host is unreachable (connection refused, timed out or DNS failed).",
+    "machines-remote-incompatible": "The remote HERDR does not support machine API forwarding. Update it.",
+    "machines-remote-server-stopped": "The remote HERDR server is not running.",
+    "machines-timeout": "The machine did not answer in time.",
+    "machines-output-too-large": "The machine returned too much data.",
+    "machines-parse-failed": "The HERDR output could not be parsed.",
+    "machines-reconnect-unsupported-windows": "Reconnect is not supported on Windows. Use ssh-agent instead.",
+    "native-client-limit": "Too many official clients are open. Close one and try again.",
+    "machines-local-only": "This operation is only available on the local machine.",
+    "machines-busy": "Another operation on this machine is in progress.",
+    "herdr-operation-error": "The HERDR operation failed."
+  }
+}

@@ -17,7 +17,7 @@ const sha="a".repeat(40),digest="sha256:"+"c".repeat(64);
 const names=["Main CI / release channel","host-artifacts / build (ubuntu-24.04, linux-x86_64)","host-artifacts / build (ubuntu-24.04-arm, linux-aarch64)","host-artifacts / build (macos-14, macos-aarch64)","host-artifacts / build (macos-15-intel, macos-x86_64)","Build macOS Apple Silicon installers","Build Windows x86-64 installers","Assemble draft release from build artifacts"];
 const sourceRunner=mode==="unknown_runner"?"macos-26":mode==="missing_arm_runner"?"":mode==="valid"?"macos-14":"macos-15";
 if(sourceRunner!=="macos-14"&&mode!=="wrong_arm_job")names[names.indexOf("host-artifacts / build (macos-14, macos-aarch64)")]="host-artifacts / build ("+sourceRunner+", macos-aarch64)";
-const assets=["Yuzora_0.0.9_aarch64.dmg","Yuzora_0.0.9_aarch64.app.tar.gz","Yuzora_0.0.9_aarch64.app.tar.gz.sig","Yuzora_0.0.9_x64-setup.exe","Yuzora_0.0.9_x64-setup.exe.sig","Yuzora_0.0.9_x64_en-US.msi","Yuzora_0.0.9_x64_en-US.msi.sig","Yuzora-macos-aarch64.dmg","Yuzora-windows-x64-setup.exe","Yuzora-windows-x64.msi"].map((name,id)=>({id,name,size:100,digest}));
+const assets=["Yuzora_0.0.9_aarch64.dmg","Yuzora_0.0.9_aarch64.app.tar.gz","Yuzora_0.0.9_aarch64.app.tar.gz.sig","Yuzora_0.0.9_x64_en-US.msi","Yuzora_0.0.9_x64_en-US.msi.sig","Yuzora-macos-aarch64.dmg","Yuzora-windows-x64.msi"].map((name,id)=>({id,name,size:100,digest}));
 const windowsHost=["windows_host","failed_windows_helper","missing_windows_helper"].includes(mode);
 if(windowsHost&&mode!=="missing_windows_helper")names.push("host-artifacts / build (windows-latest, windows-x86_64)");
 if(mode==="changed_asset")assets[0].digest="sha256:"+"d".repeat(64);

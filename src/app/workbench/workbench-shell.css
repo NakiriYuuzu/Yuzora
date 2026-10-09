@@ -1,3 +1,15 @@
+/* The backdrop is its own layer so glass can fade it over the native vibrancy. */
+.workbench-root { isolation:isolate; --yz-glass-thin:rgba(251,250,246,.03); --yz-glass-island:rgba(255,255,255,.28); }
+.dark .workbench-root { --yz-glass-thin:rgba(34,33,40,.04); --yz-glass-island:rgba(32,31,38,.34); }
+.workbench-root::before { content:""; position:absolute; inset:0; z-index:-1; background:var(--yz-bg); pointer-events:none; }
+:root[data-background="image"] .workbench-root::before { background:linear-gradient(var(--yz-image-veil),var(--yz-image-veil)),var(--yz-bg-image) center / cover no-repeat,var(--yz-tone-base); }
+:root[data-glass="true"],:root[data-glass="true"] body { background:transparent; }
+:root[data-glass="true"] .workbench-root::before { opacity:var(--yz-glass-tint,.5); }
+/* Glass thins the sidebars to a light frost and keeps the main island one step
+   denser, so the three areas still read apart. A sidebar background turned off
+   below still wins (same specificity, later rule). */
+:root[data-glass="true"] :is(.workbench-spaces-surface,.workbench-tools-surface) { background:var(--yz-glass-thin); }
+:root[data-glass="true"] .workbench-main-surface { --paper-0:var(--yz-glass-island); }
 /* Each sidebar owns its window chrome; the center starts at the top edge. */
 .workbench-window-grip { position:absolute; inset:0 0 auto; height:8px; z-index:3; user-select:none; }
 .workbench-body { --workbench-reveal-start:0px; --workbench-reveal-end:0px; --workbench-sidebar-duration:260ms; --workbench-sidebar-ease:cubic-bezier(0.2,0.8,0.2,1); position:relative; display:flex; flex:1; min-height:0; gap:0; padding:8px; }

@@ -55,9 +55,10 @@ export function EditorArea() {
                 return (
                     <div
                         key={group.id ?? `legacy-group-${i}`}
+                        data-editor-group-index={i}
                         onMouseDown={() => setActiveGroup(i)}
                         className={
-                            "editor-group flex min-h-0 min-w-0 flex-1 flex-col" +
+                            "editor-group relative flex min-h-0 min-w-0 flex-1 flex-col data-[pointer-drop-target=inside]:after:pointer-events-none data-[pointer-drop-target=inside]:after:absolute data-[pointer-drop-target=inside]:after:inset-0 data-[pointer-drop-target=inside]:after:z-50 data-[pointer-drop-target=inside]:after:shadow-[inset_0_0_0_2px_var(--yz-accent)]" +
                             (i > 0 ? " border-l border-(--line-1)" : "")
                         }
                     >

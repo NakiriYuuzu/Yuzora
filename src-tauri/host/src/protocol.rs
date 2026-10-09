@@ -182,6 +182,9 @@ pub fn methods() -> Vec<String> {
         // `scroll`. A saved older helper rejects those fields and ends the
         // stream, so clients send them only when this is advertised.
         "herdrScrollCell",
+        // Not an operation: terminal streams accept `mouse`. An older helper
+        // cannot parse it and ends the stream, so clients gate on this.
+        "herdrTerminalMouse",
     ]
     .into_iter()
     .map(str::to_owned)

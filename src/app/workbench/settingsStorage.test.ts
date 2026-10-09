@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   APPEARANCE_SETTINGS_STORAGE_KEY,
+  DEFAULT_BACKGROUND_APPEARANCE,
   TERMINAL_SETTINGS_STORAGE_KEY,
   loadAppearanceSettings,
   loadTerminalSettings,
@@ -78,17 +79,17 @@ describe("appearance settings", () => {
   it("舊版設定預設開啟兩側背景，非 boolean 值不視為使用者偏好", () => {
     for (const sidebarFields of [{}, { leftSidebarBackground: "false", rightSidebarBackground: 0 }]) {
       localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: "light", accent: "blue", ...sidebarFields }))
-      expect(loadAppearanceSettings()).toEqual({ theme: "light", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+      expect(loadAppearanceSettings()).toEqual({ theme: "light", accent: "blue", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
     }
   })
 
   it("沒有持久化值時回傳預設 auto 與 lime", () => {
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
   })
 
   it("壞 JSON 時回傳預設 auto 與 lime", () => {
     localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, "{not json")
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
   })
 
   it("非法 theme 或 accent 值時分別回傳預設值", () => {
@@ -96,12 +97,12 @@ describe("appearance settings", () => {
       APPEARANCE_SETTINGS_STORAGE_KEY,
       JSON.stringify({ theme: "neon", accent: "infrared" })
     )
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
     localStorage.setItem(
       APPEARANCE_SETTINGS_STORAGE_KEY,
       JSON.stringify({ theme: 42, accent: 42 })
     )
-    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+    expect(loadAppearanceSettings()).toEqual({ theme: "auto", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
   })
 
   it("不把 Object prototype inherited keys 當成合法 accent", () => {
@@ -110,15 +111,65 @@ describe("appearance settings", () => {
         APPEARANCE_SETTINGS_STORAGE_KEY,
         JSON.stringify({ theme: "dark", accent }),
       )
-      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true })
+      expect(loadAppearanceSettings()).toEqual({ theme: "dark", accent: "lime", leftSidebarBackground: true, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
     }
   })
 
   it("save→load 往返保留合法 theme 與 accent", () => {
     for (const theme of ["light", "dark", "auto"] as const) {
-      saveAppearanceSettings({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true })
-      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true })
+      saveAppearanceSettings({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
+      expect(loadAppearanceSettings()).toEqual({ theme, accent: "violet", leftSidebarBackground: false, rightSidebarBackground: true, botAnimations: true, ...DEFAULT_BACKGROUND_APPEARANCE })
     }
+  })
+
+  it("既有使用者預設維持跟隨主題色的背景且不啟用玻璃", () => {
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: "light", accent: "blue" }))
+    expect(loadAppearanceSettings()).toMatchObject({ backgroundSource: "accent", glass: false, savedGradients: [] })
+  })
+
+  it("自訂漸層與色盤 save→load 往返保留", () => {
+    const backgroundGradient = { colors: ["#ff7a59", "#46a0ff"], intensity: 72 }
+    const savedGradients = [backgroundGradient, { colors: ["#7d8597"], intensity: 30 }]
+    saveAppearanceSettings({ ...loadAppearanceSettings(), backgroundSource: "gradient", backgroundGradient, savedGradients, glass: true, glassTint: 35 })
+    expect(loadAppearanceSettings()).toMatchObject({ backgroundSource: "gradient", backgroundGradient, savedGradients, glass: true, glassTint: 35 })
+  })
+
+  it("正規化損壞的背景欄位", () => {
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({
+      backgroundSource: "photo",
+      backgroundGradient: { colors: ["#FF7A59", "red", "#00c2a8", "#3d5afe", "#ffffff"], intensity: 140 },
+      savedGradients: [{ colors: [] }, "nope", { colors: ["#123456"], intensity: -4 }, ...Array.from({ length: 20 }, (_, i) => ({ colors: [`#0000${String(i).padStart(2, "0")}`] }))],
+      glass: "true",
+      glassTint: "half",
+    }))
+    const settings = loadAppearanceSettings()
+    expect(settings.backgroundSource).toBe("accent")
+    expect(settings.backgroundGradient).toEqual({ colors: ["#ff7a59", "#00c2a8", "#3d5afe"], intensity: 100 })
+    expect(settings.savedGradients[0]).toEqual({ colors: ["#123456"], intensity: 0 })
+    expect(settings.savedGradients).toHaveLength(12)
+    expect(settings.glass).toBe(false)
+    expect(settings.glassTint).toBe(DEFAULT_BACKGROUND_APPEARANCE.glassTint)
+  })
+
+  it("色盤去除重複顏色並保留先出現的那筆", () => {
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({
+      savedGradients: [{ colors: ["#111111"], intensity: 10 }, { colors: ["#222222"] }, { colors: ["#111111"], intensity: 90 }],
+    }))
+    expect(loadAppearanceSettings().savedGradients).toEqual([{ colors: ["#111111"], intensity: 10 }, { colors: ["#222222"], intensity: 50 }])
+  })
+
+  it("保留圖片背景來源，並正規化圖片強度與版本", () => {
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundSource: "image", backgroundImageIntensity: 140, backgroundImageVersion: 1791460000000 }))
+    expect(loadAppearanceSettings()).toMatchObject({ backgroundSource: "image", backgroundImageIntensity: 100, backgroundImageVersion: 1791460000000 })
+    for (const backgroundImageVersion of [-1, 1.5, "1", null]) {
+      localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundImageVersion, backgroundImageIntensity: "max" }))
+      expect(loadAppearanceSettings()).toMatchObject({ backgroundImageVersion: 0, backgroundImageIntensity: DEFAULT_BACKGROUND_APPEARANCE.backgroundImageIntensity })
+    }
+  })
+
+  it("沒有任何合法顏色的漸層回到預設漸層", () => {
+    localStorage.setItem(APPEARANCE_SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundGradient: { colors: ["blue"] } }))
+    expect(loadAppearanceSettings().backgroundGradient).toEqual(DEFAULT_BACKGROUND_APPEARANCE.backgroundGradient)
   })
 })
 

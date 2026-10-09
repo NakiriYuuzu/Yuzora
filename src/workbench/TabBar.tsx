@@ -1,5 +1,5 @@
 import { activateRuntimeWorkbenchTab, activateWorkbenchTab, visibleWorkbenchTabs } from "@/lib/workbenchTabNavigation"
-import { useEffect, useLayoutEffect, useRef, type DragEvent, type KeyboardEvent } from "react"
+import { useEffect, useLayoutEffect, useRef, type KeyboardEvent, type PointerEvent } from "react"
 import { Bot, Globe, Plus, SquareTerminal, Pin } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import {
@@ -7,7 +7,7 @@ import {
     isMarkdownPreviewTab,
     previewTabSourcePath
 } from "../lib/markdownPreviewTab"
-import { type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
+import { PREVIEW_TAB_PATH, type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
 import type { HerdrTabInfo } from "../lib/herdrTypes"
 import { useUiStore } from "../state/uiStore"
 import { useConfirmDialogStore } from "../state/confirmDialogStore"
@@ -31,11 +31,19 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { herdrTabMove } from "@/lib/herdrIpc"
+import { queueHerdrMutation } from "@/lib/herdrMutationQueue"
 import { closeHerdrTabIdempotently } from "@/lib/herdrTabActions"
 import { herdrInsertIndexForProjectedDrop } from "@/lib/workbenchTabReorder"
 import { showActionError } from "@/lib/actionFeedback"
 import { WorkspaceHostBadge } from "./WorkspaceHostBadge"
 import { findRuntimeSession, parseRuntimeScope } from "@/lib/herdrProvider"
+import { beginPointerDrag, elementAtPoint, insertionSide, type DragPoint, type PointerDropTarget } from "@/lib/pointerDrag"
+
+const GROUP_SELECTOR = "[data-editor-group-index]"
+
+type TabDropData =
+    | { kind: "reorder"; destProjectedIndex: number }
+    | { kind: "move"; groupIndex: number; insertIndex: number | null }
 
 export function TabBar({ groupIndex }: { groupIndex: number }) {
     const { t } = useTranslation("menus")
@@ -78,7 +86,13 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
     const setActiveTab = useWorkspaceStore((s) => s.setActiveTab)
     const closeTab = useWorkspaceStore((s) => s.closeTab)
     const reorderProjectedTab = useWorkspaceStore((s) => s.reorderProjectedTab)
-    const draggedTabPathRef = useRef<string | null>(null)
+    const dragDisposerRef = useRef<(() => void) | null>(null)
+    useEffect(() => () => dragDisposerRef.current?.(), [])
+    const latestDragRef = useRef<{
+        prepareTabReorder: (tab: TabInfo, dest: number) => (() => void) | null
+        canDragTab: (tab: TabInfo) => boolean
+        projectedTabs: TabInfo[]
+    } | null>(null)
     const closePreviewTab = useWorkspaceStore((s) => s.closePreviewTab)
     const closeMarkdownPreviewTab = useWorkspaceStore((s) => s.closeMarkdownPreviewTab)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
@@ -142,35 +156,17 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         return tab.kind !== "herdr-terminal" || canReorderHerdrTab(tab)
     }
 
-    function onTabDragStart(event: DragEvent<HTMLButtonElement>, tab: TabInfo) {
-        if (!canDragTab(tab)) {
-            event.preventDefault()
-            return
-        }
-        draggedTabPathRef.current = tab.path
-        if (event.dataTransfer) {
-            event.dataTransfer.effectAllowed = "move"
-            event.dataTransfer.setData("text/plain", tab.path)
-        }
-    }
-
-    function onTabDragOver(event: DragEvent<HTMLSpanElement>) {
-        if (!draggedTabPathRef.current && event.dataTransfer.types.includes("text/plain")) {
-            event.preventDefault()
-            return
-        }
-        if (draggedTabPathRef.current) event.preventDefault()
-    }
-
-    async function moveHerdrTab(sessionName: string, tabId: string, insertIndex: number) {
-        try {
-            await herdrTabMove({ sessionName, tabId, insertIndex })
-            useHerdrStore.getState().bumpTopologyRevision()
-            await useHerdrStore.getState().refreshSnapshot(sessionName)
-            void logUserAction("reorder_tab", `move herdr ${sessionName}:${tabId}`)
-        } catch (error) {
-            await showActionError(t("tabBar.reorderHerdrFailed"), error)
-        }
+    function moveHerdrTab(sessionName: string, tabId: string, insertIndex: number) {
+        return queueHerdrMutation(sessionName, async () => {
+            try {
+                await herdrTabMove({ sessionName, tabId, insertIndex })
+                useHerdrStore.getState().bumpTopologyRevision()
+                await useHerdrStore.getState().refreshSnapshot(sessionName)
+                void logUserAction("reorder_tab", `move herdr ${sessionName}:${tabId}`)
+            } catch (error) {
+                await showActionError(t("tabBar.reorderHerdrFailed"), error)
+            }
+        })
     }
 
     function prepareTabReorder(
@@ -218,15 +214,96 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         }
     }
 
-    function onTabDrop(event: DragEvent<HTMLSpanElement>, destProjectedIndex: number) {
-        event.preventDefault()
-        const sourcePath =
-            draggedTabPathRef.current || event.dataTransfer?.getData("text/plain")
-        draggedTabPathRef.current = null
-        if (!sourcePath) return
-        const sourceTab = projectedTabs.find((tab) => tab.path === sourcePath)
-        if (!sourceTab) return
-        prepareTabReorder(sourceTab, destProjectedIndex)?.()
+    function canMoveTabToOtherGroup(tab: TabInfo) {
+        return (
+            useWorkspaceStore.getState().groups.length === 2 &&
+            tab.path !== PREVIEW_TAB_PATH &&
+            !isMarkdownPreviewTab(tab)
+        )
+    }
+
+    function moveTabToGroup(path: string, dstGroup: number, insertIndex: number | null) {
+        const state = useWorkspaceStore.getState()
+        const tab = state.groups[groupIndex]?.tabs.find((candidate) => candidate.path === path)
+        if (!tab || !state.groups[dstGroup] || dstGroup === groupIndex || !canMoveTabToOtherGroup(tab)) return
+        state.openTabInGroup(path, dstGroup)
+        void logUserAction("move_tab_group", `move ${path} to group ${dstGroup}`)
+        // Runtime order governs HERDR tab positions; only plain tabs take the drop slot.
+        if (tab.kind === "herdr-terminal" || insertIndex === null) return
+        const projected = visibleWorkbenchTabs(dstGroup)
+        const dest = Math.min(insertIndex, projected.length - 1)
+        if (dest < 0 || projected[dest]?.path === path) return
+        useWorkspaceStore.getState().reorderProjectedTab(dstGroup, path, dest, projected)
+    }
+
+    // A moved tab first lands at the end of its pinned/unpinned run and the store
+    // refuses to reorder it across that boundary, so only promise slots it honours.
+    function crossGroupSlotHonoured(tab: TabInfo, dstGroup: number, insertIndex: number): boolean {
+        const landed = [...visibleWorkbenchTabs(dstGroup), tab].sort(
+            (a, b) => Number(!!b.pinned) - Number(!!a.pinned)
+        )
+        const dest = landed[Math.min(insertIndex, landed.length - 1)]
+        return dest?.path === tab.path || Boolean(dest?.pinned) === Boolean(tab.pinned)
+    }
+
+    function resolveTabDrop(point: DragPoint, sourcePath: string): PointerDropTarget<TabDropData> | null {
+        const latest = latestDragRef.current
+        const sourceTab = useWorkspaceStore.getState().groups[groupIndex]?.tabs.find((tab) => tab.path === sourcePath)
+        if (!latest || !sourceTab) return null
+        const hit = elementAtPoint(point)
+        const slot = hit?.closest<HTMLElement>("[data-tab-slot]")
+        const slotGroup = slot ? Number(slot.dataset.groupIndex) : null
+        if (slot && slotGroup === groupIndex) {
+            const destProjectedIndex = Number(slot.dataset.projectedIndex)
+            const sourceIndex = latest.projectedTabs.findIndex((tab) => tab.path === sourcePath)
+            if (!latest.prepareTabReorder(sourceTab, destProjectedIndex)) return null
+            return {
+                element: slot,
+                position: destProjectedIndex < sourceIndex ? "before" : "after",
+                data: { kind: "reorder", destProjectedIndex }
+            }
+        }
+        const groupElement = hit?.closest<HTMLElement>(GROUP_SELECTOR)
+        const targetGroup = groupElement ? Number(groupElement.dataset.editorGroupIndex) : null
+        if (!groupElement || targetGroup === null || targetGroup === groupIndex) return null
+        if (!canMoveTabToOtherGroup(sourceTab)) return null
+        // HERDR tabs take their runtime position, so only the group is a target for them.
+        if (slot && slotGroup === targetGroup && sourceTab.kind !== "herdr-terminal") {
+            const slotIndex = Number(slot.dataset.projectedIndex)
+            const side = insertionSide(slot, point, "x")
+            const insertIndex = side === "before" ? slotIndex : slotIndex + 1
+            if (crossGroupSlotHonoured(sourceTab, targetGroup, insertIndex)) {
+                return { element: slot, position: side, data: { kind: "move", groupIndex: targetGroup, insertIndex } }
+            }
+        }
+        return {
+            element: groupElement,
+            position: "inside",
+            data: { kind: "move", groupIndex: targetGroup, insertIndex: null }
+        }
+    }
+
+    function onTabPointerDown(event: PointerEvent<HTMLButtonElement>, tab: TabInfo, label: string) {
+        if (!canDragTab(tab) && !canMoveTabToOtherGroup(tab)) return
+        const sourcePath = tab.path
+        dragDisposerRef.current = beginPointerDrag<TabDropData>(event, {
+            label,
+            // The query also matches this strip's own viewport; scroll each strip once.
+            autoScroll: () => [...new Set([
+                viewportRef.current,
+                ...document.querySelectorAll(`${GROUP_SELECTOR} .group-header [data-slot="scroll-area-viewport"]`)
+            ])],
+            resolveTarget: (point) => resolveTabDrop(point, sourcePath),
+            onDrop: ({ data }) => {
+                if (data.kind === "move") {
+                    moveTabToGroup(sourcePath, data.groupIndex, data.insertIndex)
+                    return
+                }
+                const latest = latestDragRef.current
+                const sourceTab = useWorkspaceStore.getState().groups[groupIndex]?.tabs.find((candidate) => candidate.path === sourcePath)
+                if (sourceTab) latest?.prepareTabReorder(sourceTab, data.destProjectedIndex)?.()
+            }
+        })
     }
 
     function onTabKeyDown(
@@ -316,6 +393,10 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         void logUserAction("close_tab", `close ${tab.path}`)
     }
 
+    // Drag callbacks outlive the render that started them; they must see the newest closures.
+    // eslint-disable-next-line react-hooks/refs
+    latestDragRef.current = { prepareTabReorder, canDragTab, projectedTabs }
+
     return (
         <ScrollArea
             className="h-[44px] min-w-0 flex-1"
@@ -374,8 +455,10 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                         data-tauri-drag-region="false"
                         onContextMenu={tabContextMenu}
                         data-pinned={tab.pinned || undefined}
-                        onDragOver={onTabDragOver}
-                        onDrop={(event) => void onTabDrop(event, index)}
+                        data-tab-slot=""
+                        data-group-index={groupIndex}
+                        data-projected-index={index}
+                        data-tab-path={tab.path}
                         onMouseDown={(event) => {
                             // Middle button: suppress the platform autoscroll cursor.
                             if (event.button === 1) event.preventDefault()
@@ -389,12 +472,13 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             "tab flex h-[30px] shrink-0 items-center gap-[8px] rounded-[9px] pr-[8px] pl-[12px] transition-[background-color,color,box-shadow] duration-150 ease-(--ease-out) " +
                             (active
                                 ? "active bg-(--yz-active) text-(--ink-0) shadow-(--shadow-xs)"
-                                : "text-(--ink-3) hover:bg-(--yz-hover)")
+                                : "text-(--ink-3) hover:bg-(--yz-hover)") +
+                            " data-[pointer-drop-target=before]:shadow-[inset_2px_0_0_0_var(--yz-accent)] data-[pointer-drop-target=after]:shadow-[inset_-2px_0_0_0_var(--yz-accent)]"
                         }
                     >
                         <button
                             type="button"
-                            draggable={canDragTab(tab)}
+                            data-pointer-drag-handle=""
                             title={
                                 tab.kind === "herdr-terminal"
                                     ? tab.name
@@ -406,10 +490,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                             }
                             aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+P"
                             aria-label={isFileTab(tab) && tab.dirty ? t("tabBar.unsavedTabLabel", { name: tab.name }) : displayName}
-                            onDragStart={(event) => onTabDragStart(event, tab)}
-                            onDragEnd={() => {
-                                draggedTabPathRef.current = null
-                            }}
+                            onPointerDown={(event) => onTabPointerDown(event, tab, displayName)}
                             onKeyDown={(event) => onTabKeyDown(event, tab, index)}
                             onMouseDown={(event) => {
                                 if (event.button !== 0) return

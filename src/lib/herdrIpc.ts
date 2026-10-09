@@ -1,4 +1,5 @@
 import { invokeHerdr as invoke } from "./herdrProvider"
+import { sanitizeCustomPath } from "./herdrPath"
 
 import type {
   HerdrBinarySource,
@@ -10,6 +11,7 @@ import type {
   HerdrLayoutDescription,
   HerdrLayoutExportRequest,
   HerdrLayoutSetSplitRatioRequest,
+  HerdrMouseAction,
   HerdrNamedSession,
   HerdrPaneCloseRequest,
   HerdrPaneFocusRequest,
@@ -321,6 +323,16 @@ export function herdrTerminalScroll(
   })
 }
 
+/** Zero-based cell; HERDR drops the event unless the child enabled mouse reporting. */
+export function herdrTerminalMouse(
+  sessionId: string,
+  action: HerdrMouseAction,
+  cell: { column: number; row: number },
+  modifiers: number
+): Promise<void> {
+  return invoke("herdr_terminal_mouse", { sessionId, action, column: cell.column, row: cell.row, modifiers })
+}
+
 export function herdrTerminalRelease(sessionId: string): Promise<void> {
   return invoke("herdr_terminal_release", { sessionId })
 }
@@ -344,11 +356,11 @@ export function herdrBinarySourceSet(
   source: HerdrBinarySource,
   customPath?: string
 ): Promise<HerdrBinarySourceSetResult> {
-  return invoke("herdr_binary_source_set", { source, customPath: customPath ?? null })
+  return invoke("herdr_binary_source_set", { source, customPath: customPath === undefined ? null : sanitizeCustomPath(customPath) })
 }
 
 export function herdrBinarySourceCheck(source: HerdrBinarySource, customPath?: string): Promise<import("./herdrTypes").RuntimeBinaryCheck> {
-  return invoke("herdr_binary_source_check", { source, customPath: customPath ?? null })
+  return invoke("herdr_binary_source_check", { source, customPath: customPath === undefined ? null : sanitizeCustomPath(customPath) })
 }
 
 export function herdrEventsSubscribe(args: {

@@ -189,11 +189,11 @@ it("keeps WSL dormant by default and disconnects only the helper when disabled",
   useHostStore.getState().reconcile()
   expect(mocks.connect).not.toHaveBeenCalled()
   await expect(useHostStore.getState().setup("host", "Ubuntu", { kind: "wsl", distro: "Ubuntu" })).rejects.toThrow("wsl-runtime-disabled")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   mocks.connect.mockResolvedValue(host())
   useHostStore.getState().reconcile()
   await vi.waitFor(() => expect(useHostStore.getState().hosts.host.connection).toEqual(host()))
-  useRuntimePreferencesStore.getState().setWslEnabled(false)
+  useRuntimePreferencesStore.setState({ wslEnabled: false })
   useHostStore.getState().reconcile()
   await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(host().owner))
   expect(useHostStore.getState().configs.host).toEqual(wsl)
@@ -213,7 +213,7 @@ it("migrates old managed paths while preserving explicitly installed and custom 
 it("starts the saved enabled WSL runtime before publishing its reconnected helper", async () => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   const connected = { ...host(), hello: { ...host().hello, methods: ["herdrStart"] } }
   mocks.connect.mockResolvedValue(connected)
   const start = deferred<unknown>()
@@ -234,7 +234,7 @@ it("starts the saved enabled WSL runtime before publishing its reconnected helpe
 it("releases WSL helper on startup failure and retains its saved configuration for retry", async () => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   const connected = { ...host(), hello: { ...host().hello, methods: ["herdrStart"] } }
   const saved = { ...config, kind: "wsl" as const, distro: "Ubuntu" }
   mocks.connect.mockResolvedValue(connected)
@@ -250,7 +250,7 @@ it("releases WSL helper on startup failure and retains its saved configuration f
 it("does not publish WSL when disabled while runtime startup is pending", async () => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   const connected = { ...host(), hello: { ...host().hello, methods: ["herdrStart"] } }
   const start = deferred<unknown>()
   mocks.connect.mockResolvedValue(connected)
@@ -258,7 +258,7 @@ it("does not publish WSL when disabled while runtime startup is pending", async 
   useHostStore.setState({ configs: { host: { ...config, kind: "wsl", distro: "Ubuntu" } } })
   useHostStore.getState().reconcile()
   await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledOnce())
-  useRuntimePreferencesStore.getState().setWslEnabled(false)
+  useRuntimePreferencesStore.setState({ wslEnabled: false })
   start.resolve({ started: true })
   await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(connected.owner))
   expect(mocks.register).not.toHaveBeenCalled()
@@ -276,7 +276,7 @@ it("does not start an SSH runtime on an ordinary reconnect", async () => {
 it("surfaces repair for a saved WSL helper without startup capability", async () => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   const connected = { ...host(), hello: { ...host().hello, methods: [] } }
   mocks.connect.mockResolvedValue(connected)
   useHostStore.setState({ configs: { host: { ...config, kind: "wsl", distro: "Ubuntu" } } })
@@ -291,7 +291,7 @@ it("surfaces repair for a saved WSL helper without startup capability", async ()
 it.each([undefined, { source: "default" as const }, { source: "global" as const }, { source: "custom" as const, customPath: "/herdr" }])("upgrades the saved WSL helper before publishing while preserving HERDR policy %j", async (selection) => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   const saved = { ...config, kind: "wsl" as const, distro: "Ubuntu-26.04", selection, artifactIdentity: "b".repeat(64) }
   const prepared = { connection: host(2), helper: "/new/yuzora-host", binary: saved.binary, artifactIdentity: "a".repeat(64) }
   mocks.prepare.mockResolvedValue(prepared)
@@ -341,14 +341,14 @@ it("reconnects the saved helper if a replacement fails after the old helper is r
 it("discards an automatic helper update when WSL is disabled during deployment", async () => {
   const { useHostStore } = await import("./hostStore")
   const { useRuntimePreferencesStore } = await import("./runtimePreferencesStore")
-  useRuntimePreferencesStore.getState().setWslEnabled(true)
+  useRuntimePreferencesStore.setState({ wslEnabled: true })
   const saved = { ...config, kind: "wsl" as const, distro: "Ubuntu", artifactIdentity: "b".repeat(64) }
   const result = deferred<{ connection: ConnectedHost; helper: string; binary: string; artifactIdentity: string }>()
   mocks.prepare.mockReturnValue(result.promise)
   useHostStore.setState({ configs: { host: saved } })
   useHostStore.getState().reconcile()
   await vi.waitFor(() => expect(mocks.prepare).toHaveBeenCalledOnce())
-  useRuntimePreferencesStore.getState().setWslEnabled(false)
+  useRuntimePreferencesStore.setState({ wslEnabled: false })
   result.resolve({ connection: host(2), helper: "/new/helper", binary: "/herdr", artifactIdentity: "a".repeat(64) })
   await vi.waitFor(() => expect(mocks.disconnect).toHaveBeenCalledWith(host(2).owner))
   expect(mocks.register).not.toHaveBeenCalled()

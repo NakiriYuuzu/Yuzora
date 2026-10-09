@@ -1,6 +1,6 @@
 [package]
 name = "yuzora-host"
-version = "0.0.17"
+version = "0.0.18"
 edition = "2021"
 publish = false
 
@@ -15,6 +15,7 @@ rand = "0.10.3"
 libc = "0.2"
 encoding_rs = "0.8"
 ignore = "0.4"
+grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 dirs = "7"

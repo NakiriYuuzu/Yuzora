@@ -565,6 +565,30 @@ describe("herdrStore", () => {
     expect(herdrTerminalRelease).toHaveBeenCalledWith("herdr-term-1")
   })
 
+  it("releaseAttachment drops the entry at once but releases the connector after `after`", async () => {
+    vi.mocked(herdrTerminalRelease).mockResolvedValue(undefined)
+    const key = "yuzora://herdr/default/term-1::term-1"
+    useHerdrStore.getState().registerAttachment(key, {
+      sessionId: "herdr-term-1",
+      pagePath: "yuzora://herdr/default/term-1",
+      paneKey: "term-1",
+      herdrSessionId: "default",
+      terminalId: "term-1",
+      target: "term-1",
+      mode: "control",
+      role: "controller",
+      takeover: true
+    })
+    let flushed!: () => void
+    const released = useHerdrStore.getState().releaseAttachment(key, new Promise<void>((resolve) => { flushed = resolve }))
+    expect(useHerdrStore.getState().attachments.has(key)).toBe(false)
+    await Promise.resolve()
+    expect(herdrTerminalRelease).not.toHaveBeenCalled()
+    flushed()
+    await released
+    expect(herdrTerminalRelease).toHaveBeenCalledWith("herdr-term-1")
+  })
+
   it("preserves a non-takeover controller attachment when its mode is refreshed", () => {
     const attachmentKey = "yuzora://herdr/default/term-1::term-1"
     useHerdrStore.getState().registerAttachment(attachmentKey, {

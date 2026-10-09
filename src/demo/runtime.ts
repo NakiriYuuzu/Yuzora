@@ -614,6 +614,7 @@ export function installDemoRuntime() {
         case "git_close_workspace":
         case "herdr_pane_focus":
         case "herdr_terminal_scroll":
+        case "herdr_terminal_mouse":
         case "log_event":
         case "log_user_action":
           return null;

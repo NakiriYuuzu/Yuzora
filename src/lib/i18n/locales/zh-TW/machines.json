@@ -1,0 +1,130 @@
+{
+  "tabs": { "machines": "HERDR machines" },
+  "panel": {
+    "title": "HERDR machines",
+    "description": "透過 SSH 連線的遠端 HERDR 伺服器。即時終端機在官方 client 中檢視。",
+    "add": "新增 machine",
+    "refresh": "重新整理",
+    "retry": "重試",
+    "loading": "正在載入 machines…",
+    "loadFailed": "無法載入 machines",
+    "empty": "尚無 HERDR machine",
+    "emptyHint": "新增 SSH target 後，可在此監看其 Agent，並在官方 client 中開啟其 Session。",
+    "diagnostics": "診斷資訊",
+    "sshAgentHint": "認證使用 ssh-agent 與 ~/.ssh/config；Yuzora 儲存的金鑰檔不會被帶入。",
+    "windowsReconnectHint": "Windows 不支援重新連線。請先把金鑰載入 ssh-agent，再重新檢查狀態。"
+  },
+  "interactiveAlreadyOpen": "已有互動式 HERDR 終端機開啟，請先關閉。",
+  "unsupported": {
+    "title": "HERDR machines 需要 HERDR 0.9.2 以上",
+    "description": "目前選用的 HERDR（{{version}}）版本過舊。建議改用隨附的 HERDR 0.9.3。",
+    "binaryUnavailableTitle": "找不到 HERDR 程式",
+    "probeFailed": "無法檢查 HERDR machines 支援狀態",
+    "unknownVersion": "未知版本",
+    "openSettings": "前往 HERDR 設定"
+  },
+  "status": {
+    "reachable": "可連線",
+    "auth-required": "需要認證",
+    "error": "錯誤",
+    "disabled": "已停用",
+    "unknown": "尚未檢查",
+    "stale": "資料過期"
+  },
+  "row": {
+    "target": "目標",
+    "session": "Session",
+    "actions": "{{label}} 的動作"
+  },
+  "actions": {
+    "rename": "重新命名",
+    "renameSave": "儲存",
+    "renameCancel": "取消",
+    "renameLabel": "Machine 名稱",
+    "enable": "啟用",
+    "disable": "停用",
+    "remove": "移除",
+    "checkStatus": "檢查狀態",
+    "reconnect": "重新連線",
+    "openClient": "在官方 client 中開啟"
+  },
+  "remove": {
+    "title": "移除 {{label}}？",
+    "description": "這只會從本機 HERDR 清單移除此 machine，不影響遠端 HERDR server 與其 Session。",
+    "confirm": "移除",
+    "cancel": "取消"
+  },
+  "add": {
+    "title": "新增 HERDR machine",
+    "description": "遠端 Session 的選擇與安裝詢問，會在下一步的終端機內進行。",
+    "target": "SSH target",
+    "targetPlaceholder": "user@host 或 ssh://user@host:2222",
+    "label": "名稱（選填）",
+    "session": "遠端 Session（選填）",
+    "sessionPlaceholder": "default",
+    "submit": "繼續",
+    "cancel": "取消"
+  },
+  "interactive": {
+    "addTitle": "新增 HERDR machine",
+    "reconnectTitle": "重新連線 {{label}}",
+    "clientTitle": "HERDR client",
+    "clientSelectTitle": "在側欄選擇 {{label}}",
+    "clientHint": "官方 client 無法預先選取 machine，請在其 machines 側欄選擇 {{label}}。",
+    "hint": "在此終端機內完成 SSH 認證與選擇；Esc 或 Ctrl+C 取消，未儲存。",
+    "connecting": "正在啟動官方 client…",
+    "ended": "已結束。",
+    "close": "關閉",
+    "saved": "已新增 machine：{{target}}",
+    "notSaved": "Machine 未儲存",
+    "unconfirmed": "無法確認是否已儲存，請重新整理。",
+    "reconnected": "重新連線已結束"
+  },
+  "legacy": {
+    "badge": "舊路徑",
+    "description": "已儲存的 SSH 主機保留給 Files、Git、資料庫、SFTP 與 Browser 轉送使用；遠端 HERDR 建議改用 HERDR machines。",
+    "migrate": "轉成 HERDR machine"
+  },
+  "migrate": {
+    "title": "將 {{name}} 轉成 HERDR machine",
+    "description": "原本儲存的 SSH 主機不會變動，會另外新增一台 HERDR machine。",
+    "target": "SSH target",
+    "label": "名稱",
+    "keyWarning": "此主機使用金鑰檔。官方 HERDR 不接受金鑰檔：請把金鑰加入 ssh-agent，或在 ~/.ssh/config 設定。",
+    "confirm": "繼續",
+    "cancel": "取消"
+  },
+  "sidebar": {
+    "group": "HERDR machines",
+    "noAgents": "沒有 Agent",
+    "stale": "顯示上次結果",
+    "error": "無法取得",
+    "authRequired": "需要認證",
+    "openClient": "在官方 client 中開啟：請在其側欄選擇 {{label}}"
+  },
+  "errors": {
+    "unknown": "HERDR machine 操作失敗",
+    "machines-runtime-too-old": "HERDR 版本過舊，無法使用 machines。請改用隨附版本（0.9.2 以上）。",
+    "machines-binary-unavailable": "找不到可用的 HERDR 程式。",
+    "machines-invalid-id": "Machine id 無效。",
+    "machines-invalid-target": "SSH target 無效。請使用 user@host 或 ssh://user@host:port，且不含密碼。",
+    "machines-invalid-label": "名稱無效。請使用 1 至 128 字元且不含控制字元。",
+    "machines-invalid-session": "遠端 Session 名稱無效。",
+    "machines-unknown-machine": "此 machine 已不存在，請重新整理清單。",
+    "machines-disabled": "此 machine 已停用，請先啟用。",
+    "machines-unsupported-subcommand": "此 HERDR 版本不支援該 machine 指令。",
+    "machines-auth-required": "需要 SSH 認證。請把金鑰載入 ssh-agent 或重新連線。",
+    "machines-host-key": "SSH 主機金鑰驗證失敗，請檢查 ~/.ssh/known_hosts。",
+    "machines-unreachable": "無法連到主機（連線被拒、逾時或 DNS 失敗）。",
+    "machines-remote-incompatible": "遠端 HERDR 不支援 machine API 轉送，請更新遠端版本。",
+    "machines-remote-server-stopped": "遠端 HERDR server 未執行。",
+    "machines-timeout": "Machine 未在時限內回應。",
+    "machines-output-too-large": "Machine 回傳的資料過大。",
+    "machines-parse-failed": "無法解析 HERDR 輸出。",
+    "machines-reconnect-unsupported-windows": "Windows 不支援重新連線，請改用 ssh-agent。",
+    "native-client-limit": "開啟的官方 client 過多，請關閉一個後再試。",
+    "machines-local-only": "此操作僅限本機使用。",
+    "machines-busy": "此 machine 正在進行另一項操作。",
+    "herdr-operation-error": "HERDR 操作失敗。"
+  }
+}

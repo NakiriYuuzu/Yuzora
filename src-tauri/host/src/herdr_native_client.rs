@@ -80,16 +80,87 @@ impl HerdrManager {
         }
         let (session, _) = self.require_running_session_socket(Some(session_name))?;
         let binary = self.resolve_binary().ok_or("herdr-unavailable")?;
+        // The explicit client subcommand never auto-starts a server if the
+        // Session stops between the compatibility check and process creation.
+        let args = vec![
+            "--session".to_string(),
+            session.name.clone(),
+            "client".to_string(),
+        ];
+        let id = self.spawn_native_pty(
+            &binary,
+            &args,
+            Some(&session.name),
+            &size,
+            on_event,
+            "too-many-native-herdr-clients",
+        )?;
+        let (cols, rows) = (size.cols, size.rows);
+        Ok(HerdrTerminalOpenResult {
+            session_id: id,
+            target: session.name,
+            mode: HerdrTerminalMode::Control,
+            role: HerdrTerminalRole::Controller,
+            cols,
+            rows,
+            takeover: false,
+        })
+    }
+
+    /// Open a machine-management or machines-sidebar command in a PTY. Local
+    /// manager only; shares the native client limit and the `herdr-client-` id.
+    pub fn open_native_command(
+        self: &Arc<Self>,
+        binary: &Path,
+        args: &[String],
+        size: HerdrClientSize,
+        on_event: OnTerminalEvent,
+    ) -> Result<String, String> {
+        if self.remote.is_some() {
+            return Err("machines-local-only".into());
+        }
+        self.spawn_native_pty(binary, args, None, &size, on_event, "native-client-limit")
+    }
+
+    pub fn machines_is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    pub fn machines_active_source(&self) -> &'static str {
+        match *self.active_source.lock().unwrap() {
+            HerdrBinarySource::Default => "default",
+            HerdrBinarySource::Global => "global",
+            HerdrBinarySource::Custom => "custom",
+        }
+    }
+
+    /// Shared PTY spawn for the official client and machine commands. The
+    /// caller supplies the argv; `session_env` pins `HERDR_SESSION` or clears it.
+    fn spawn_native_pty(
+        self: &Arc<Self>,
+        binary: &Path,
+        args: &[String],
+        session_env: Option<&str>,
+        size: &HerdrClientSize,
+        on_event: OnTerminalEvent,
+        limit_error: &'static str,
+    ) -> Result<String, String> {
+        if self.native_clients.lock().unwrap().len() >= MAX_NATIVE_CLIENTS {
+            return Err(limit_error.into());
+        }
         let pair = native_pty_system()
             .openpty(size.pty_size()?)
             .map_err(|e| e.to_string())?;
         let mut output = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let input = pair.master.take_writer().map_err(|e| e.to_string())?;
         let mut command = CommandBuilder::new(binary);
-        // The explicit client subcommand never auto-starts a server if the
-        // Session stops between the compatibility check and process creation.
-        command.args(["--session", &session.name, "client"]);
-        command.env("HERDR_SESSION", &session.name);
+        command.args(args);
+        match session_env {
+            Some(name) => command.env("HERDR_SESSION", name),
+            // Machine management and the machines sidebar client must not
+            // inherit a Session pin from a parent HERDR pane.
+            None => command.env_remove("HERDR_SESSION"),
+        }
         command.env_remove("HERDR_ENV");
         command.env_remove("HERDR_SOCKET_PATH");
         command.env_remove("HERDR_CLIENT_SOCKET_PATH");
@@ -131,7 +202,7 @@ impl HerdrManager {
             if clients.len() >= MAX_NATIVE_CLIENTS {
                 drop(clients);
                 let _ = terminate_native_client(client.child.lock().unwrap().as_mut());
-                return Err("too-many-native-herdr-clients".into());
+                return Err(limit_error.into());
             }
             clients.insert(id.clone(), client.clone());
         }
@@ -180,15 +251,7 @@ impl HerdrManager {
                 return Err(error.to_string());
             }
         }
-        Ok(HerdrTerminalOpenResult {
-            session_id: id,
-            target: session.name,
-            mode: HerdrTerminalMode::Control,
-            role: HerdrTerminalRole::Controller,
-            cols,
-            rows,
-            takeover: false,
-        })
+        Ok(id)
     }
 
     pub(super) fn native_client_input(

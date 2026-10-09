@@ -1479,38 +1479,231 @@ pub fn checkout_detached(root: &Path, rev: &str) -> Result<(), String> {
 }
 
 const SMART_CHECKOUT_STASH: &str = "Yuzora smart checkout";
+const SMART_CHECKOUT_UNTRACKED_STASH: &str = "Yuzora smart checkout (untracked files)";
+
+/// The stash message for one smart checkout: `base` plus a nonce, so two
+/// operations on one repository (two windows) never claim each other's entry.
+fn stash_label(base: &str) -> String {
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    format!("{base} [{}]", &nonce[..12])
+}
+const BLOCKED_BY_UNTRACKED: &str = "untracked working tree files would be overwritten by checkout";
 
 /// Runs a branch switch. With `smart` (JetBrains "Smart Checkout") local
 /// changes are stashed for the switch and restored on the new HEAD; a restore
 /// that conflicts keeps the stash and leaves the conflicts to the merge tool.
+/// `target` is the commit the switch lands on, so untracked files it also
+/// tracks can be carried over.
 pub fn switch_keeping_changes(
     root: &Path,
     smart: bool,
-    switch: impl FnOnce() -> Result<(), String>,
+    target: Option<&str>,
+    switch: impl Fn() -> Result<(), String>,
 ) -> Result<GitOperationOutcome, String> {
     if !smart {
         return switch().map(|()| GitOperationOutcome { conflicts: false });
     }
     let magic = [(ALLOW_PATHSPEC_MAGIC_ENV.to_string(), "1".to_string())];
+    let before = stash_top(root)?;
+    let label = stash_label(SMART_CHECKOUT_STASH);
     let pushed = run_ok(
         root,
-        &["stash", "push", "-m", SMART_CHECKOUT_STASH],
+        &["stash", "push", "-m", label.as_str()],
         DEFAULT_TIMEOUT,
         &magic,
     )?;
     // git reports, rather than fails, when there was nothing to save.
     if String::from_utf8_lossy(&pushed.stdout).contains("No local changes to save") {
-        return switch().map(|()| GitOperationOutcome { conflicts: false });
+        return switch_over_untracked(root, target, &switch)
+            .map(|()| GitOperationOutcome { conflicts: false });
     }
-    let parked = stash_top(root).ok().flatten();
-    let switched = switch();
+    // Another client may stash right after us: find our entry, never assume
+    // the top. Unidentified, the changes stay safely stashed and HEAD stays.
+    let parked = pushed_stash(root, before.as_deref(), &label)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            format!("git stash: your local changes are kept in the stash \"{label}\"")
+        })?;
+    let switched = switch_over_untracked(root, target, &switch);
     // A failed switch left HEAD where it was, so the changes go back as they were.
-    let restored = restore_parked_changes(root, parked.as_deref());
+    let restored = restore_parked_changes(root, Some(&parked), &label);
     match (switched, restored) {
         (Ok(()), restored) => restored,
         (Err(error), Ok(_)) => Err(error),
         (Err(error), Err(restore_error)) => Err(format!("{error}\n{restore_error}")),
     }
+}
+
+/// Runs `switch`. When untracked files block it because `target` tracks the
+/// same paths, parks just those files, switches, and writes the local copies
+/// back over the target's versions: they read as edits to its files, whose
+/// committed version stays recoverable. A switch that still fails puts them
+/// back as they were.
+fn switch_over_untracked(
+    root: &Path,
+    target: Option<&str>,
+    switch: &impl Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    let blocked = match switch() {
+        Err(error) if error.contains(BLOCKED_BY_UNTRACKED) => error,
+        other => return other,
+    };
+    let Some(target) = target else {
+        return Err(blocked);
+    };
+    let paths =
+        untracked_paths_tracked_by(root, target).map_err(|error| format!("{blocked}\n{error}"))?;
+    if paths.is_empty() {
+        return Err(blocked);
+    }
+    let pathspec = paths.join("\0");
+    let from_stdin = ["--pathspec-from-file=-", "--pathspec-file-nul"];
+    let label = stash_label(SMART_CHECKOUT_UNTRACKED_STASH);
+    let kept = || format!("git stash: your untracked files are kept in the stash \"{label}\"");
+    let parked = match park_untracked(root, &pathspec, &label) {
+        Err(error) => return Err(format!("{blocked}\n{error}")),
+        // The blocking files vanished before git could stash them, so nothing
+        // is parked and nothing needs restoring: just try the switch again.
+        Ok(None) => return switch(),
+        Ok(Some(parked)) => parked,
+    };
+    let switched = switch();
+    // Either the target now holds its own versions or HEAD never moved; both
+    // ways `--worktree` writes the parked copies and leaves the index alone.
+    let source = format!("{parked}^3");
+    let mut restore = vec!["restore", "--source", source.as_str(), "--worktree"];
+    restore.extend(from_stdin);
+    let restored = run_git_with_stdin(root, &restore, DEFAULT_TIMEOUT, &[], pathspec.as_bytes())
+        .and_then(|out| match out.code {
+            0 => Ok(()),
+            _ => Err(git_err("restore", &out.stderr)),
+        })
+        .map_err(|error| format!("{error}\n{}", kept()));
+    // Someone else stashing meanwhile leaves both stashes alone.
+    let restored = restored.and_then(|()| {
+        let top = stash_top(root).ok().flatten();
+        let dropped = top.as_deref() == Some(parked.as_str())
+            && run_ok(root, &["stash", "drop", "--quiet"], DEFAULT_TIMEOUT, &[]).is_ok();
+        dropped.then_some(()).ok_or_else(|| {
+            format!(
+                "git stash: your untracked files are restored and a copy stays in the stash \"{label}\""
+            )
+        })
+    });
+    match (switched, restored) {
+        (Ok(()), restored) => restored,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => Err(format!("{error}\n{restore_error}")),
+    }
+}
+
+/// The entry a `stash push -m message` just created: the newest one above
+/// `before` recording that message. Another client may stash right after the
+/// push, so the top alone proves nothing. `None` when the push saved nothing.
+fn pushed_stash(
+    root: &Path,
+    before: Option<&str>,
+    message: &str,
+) -> Result<Option<String>, String> {
+    let listed = run_ok(
+        root,
+        &["stash", "list", "--format=%H%x1f%gs"],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    let mut ours = None;
+    for line in String::from_utf8_lossy(&listed.stdout).lines() {
+        let Some((oid, subject)) = line.split_once('\x1f') else {
+            continue;
+        };
+        if Some(oid) == before {
+            break;
+        }
+        // `stash push -m` records "On <branch>: <message>"; branch names never
+        // contain ':'.
+        if subject.split_once(": ").map(|(_, rest)| rest) == Some(message) {
+            if ours.is_some() {
+                return Err(format!(
+                    "git stash: more than one new \"{message}\" stash; all are kept"
+                ));
+            }
+            ours = Some(oid.to_string());
+        }
+    }
+    Ok(ours)
+}
+
+/// Stashes just `pathspec`, untracked files included, and returns the new
+/// stash. `None` when git saved nothing: it still exits 0 ("No local changes
+/// to save") and the top stash is then someone else's, never ours to restore
+/// or drop.
+fn park_untracked(root: &Path, pathspec: &str, label: &str) -> Result<Option<String>, String> {
+    let before = stash_top(root)?;
+    let push = [
+        "stash",
+        "push",
+        "--include-untracked",
+        "-m",
+        label,
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+    ];
+    let out = run_git_with_stdin(root, &push, DEFAULT_TIMEOUT, &[], pathspec.as_bytes())?;
+    if out.code != 0 {
+        return Err(git_err("stash", &out.stderr));
+    }
+    pushed_stash(root, before.as_deref(), label).map_err(|error| {
+        format!("{error}\ngit stash: your untracked files may be kept in the stash \"{label}\"")
+    })
+}
+
+/// Untracked, non-ignored files whose path `target` tracks as a file: the ones
+/// a switch to it refuses to overwrite.
+fn untracked_paths_tracked_by(root: &Path, target: &str) -> Result<Vec<String>, String> {
+    let oid = crate::git_oid::resolve_commit_oid(root, target)?;
+    let listed = run_ok(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+        ],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    let untracked: Vec<&str> = listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|path| std::str::from_utf8(path).ok())
+        .filter(|path| !path.is_empty() && !path.contains('\n'))
+        .collect();
+    if untracked.is_empty() {
+        return Ok(Vec::new());
+    }
+    let queries: String = untracked
+        .iter()
+        .map(|path| format!("{}:{path}\n", oid.as_str()))
+        .collect();
+    let kinds = run_git_with_stdin(
+        root,
+        &["cat-file", "--batch-check=%(objecttype)"],
+        DEFAULT_TIMEOUT,
+        &[],
+        queries.as_bytes(),
+    )?;
+    if kinds.code != 0 {
+        return Err(git_err("cat-file", &kinds.stderr));
+    }
+    // One answer per query: the object type, or "<query> missing".
+    Ok(untracked
+        .into_iter()
+        .zip(String::from_utf8_lossy(&kinds.stdout).lines())
+        .filter(|(_, kind)| *kind == "blob")
+        .map(|(path, _)| path.to_string())
+        .collect())
 }
 
 fn stash_top(root: &Path) -> Result<Option<String>, String> {
@@ -1528,10 +1721,9 @@ fn stash_top(root: &Path) -> Result<Option<String>, String> {
 fn restore_parked_changes(
     root: &Path,
     parked: Option<&str>,
+    label: &str,
 ) -> Result<GitOperationOutcome, String> {
-    let kept = || {
-        format!("git stash: your local changes are kept in the stash \"{SMART_CHECKOUT_STASH}\"")
-    };
+    let kept = || format!("git stash: your local changes are kept in the stash \"{label}\"");
     if let Some(parked) = parked {
         if stash_top(root).map_err(|_| kept())?.as_deref() != Some(parked) {
             return Err(kept());
@@ -1712,6 +1904,7 @@ pub fn reset_branch(root: &Path, hash: &str, mode: &str) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct GitStashEntry {
     pub index: u32,
+    pub oid: String,
     pub message: String,
     pub timestamp: i64,
 }
@@ -1719,7 +1912,7 @@ pub struct GitStashEntry {
 pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     let out = run_ok(
         root,
-        &["stash", "list", "-z", "--format=%gd%x1f%s%x1f%ct"],
+        &["stash", "list", "-z", "--format=%gd%x1f%H%x1f%s%x1f%ct"],
         DEFAULT_TIMEOUT,
         &[],
     )?;
@@ -1727,9 +1920,9 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     text.split('\0')
         .filter(|record| !record.is_empty())
         .map(|record| {
-            let mut fields = record.splitn(3, '\u{1f}');
-            let (Some(name), Some(message), Some(time)) =
-                (fields.next(), fields.next(), fields.next())
+            let mut fields = record.splitn(4, '\u{1f}');
+            let (Some(name), Some(oid), Some(message), Some(time)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
             else {
                 return Err("git stash list: unexpected output".to_string());
             };
@@ -1740,6 +1933,7 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
                 .ok_or_else(|| "git stash list: unexpected stash name".to_string())?;
             Ok(GitStashEntry {
                 index,
+                oid: oid.to_string(),
                 message: message.to_string(),
                 timestamp: time.trim().parse::<i64>().unwrap_or(0),
             })
@@ -1772,17 +1966,73 @@ pub fn stash_push(
     Ok(())
 }
 
-/// Apply (or pop) `stash@{index}`. A conflicting apply leaves unmerged paths;
-/// a conflicting `pop` keeps the stash, as git does.
-pub fn stash_apply(root: &Path, index: u32, pop: bool) -> Result<GitOperationOutcome, String> {
-    let name = format!("stash@{{{index}}}");
-    let sub = if pop { "pop" } else { "apply" };
-    let out = run_git(root, &["stash", sub, &name], DEFAULT_TIMEOUT, &[])?;
-    operation_outcome(root, "stash", out)
+/// Abort unless `stash@{index}` still names `oid`: another client may have
+/// pushed or dropped a stash since the list was read, renumbering the entries.
+fn verify_stash_identity(root: &Path, name: &str, oid: &str) -> Result<(), String> {
+    let current = run_git(
+        root,
+        &["rev-parse", "--quiet", "--verify", name],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if current.code == 0 && String::from_utf8_lossy(&current.stdout).trim() == oid {
+        return Ok(());
+    }
+    Err(format!(
+        "git stash: {name} changed since the list was loaded; reload and try again"
+    ))
 }
 
-pub fn stash_drop(root: &Path, index: u32) -> Result<(), String> {
+/// Arguments that apply a stash by its commit oid. Unlike `stash@{N}`, an oid
+/// cannot be renumbered by another client pushing or dropping a stash after
+/// the identity check.
+fn stash_apply_args(oid: &str) -> [&str; 3] {
+    ["stash", "apply", oid]
+}
+
+/// Apply (or pop) `stash@{index}`, which must still be commit `oid`. The
+/// stash is applied by oid, so the check cannot be outrun. A conflicting apply
+/// leaves unmerged paths; a conflicting `pop` keeps the stash, as git does.
+/// `git stash pop` only accepts `stash@{N}`, so pop is apply-by-oid followed by
+/// a drop that re-verifies the entry and is skipped if it moved meanwhile.
+pub fn stash_apply(
+    root: &Path,
+    index: u32,
+    oid: &str,
+    pop: bool,
+) -> Result<GitOperationOutcome, String> {
     let name = format!("stash@{{{index}}}");
+    verify_stash_identity(root, &name, oid)?;
+    let out = run_git(root, &stash_apply_args(oid), DEFAULT_TIMEOUT, &[])?;
+    let outcome = operation_outcome(root, "stash", out)?;
+    if pop && !outcome.conflicts {
+        drop_popped_stash(root, &name, oid)?;
+    }
+    Ok(outcome)
+}
+
+/// Remove a stash whose changes were just applied by OID. It is only dropped while `name` still names `oid`;
+/// otherwise, or when the drop fails, report it as applied but kept, never as a failed pop that a retry would
+/// apply again.
+fn drop_popped_stash(root: &Path, name: &str, oid: &str) -> Result<(), String> {
+    if verify_stash_identity(root, name, oid).is_err() {
+        return Err(format!(
+            "git stash: applied {name} but it moved before it could be dropped, so it is kept"
+        ));
+    }
+    run_ok(root, &["stash", "drop", name], DEFAULT_TIMEOUT, &[])
+        .map(|_| ())
+        .map_err(|error| {
+            format!("git stash: applied {name} but could not drop it, so it is kept: {error}")
+        })
+}
+
+/// Drop `stash@{index}` after checking it is still commit `oid`. A residual
+/// millisecond window remains between the check and the drop: `git stash drop`
+/// only accepts `stash@{N}` and offers no atomic compare-and-delete.
+pub fn stash_drop(root: &Path, index: u32, oid: &str) -> Result<(), String> {
+    let name = format!("stash@{{{index}}}");
+    verify_stash_identity(root, &name, oid)?;
     run_ok(root, &["stash", "drop", &name], DEFAULT_TIMEOUT, &[])?;
     Ok(())
 }
@@ -2876,7 +3126,7 @@ mod tests {
         assert!(list[0].timestamp > 1_000_000_000);
 
         // apply keeps the entry, pop removes it.
-        let outcome = stash_apply(repo, 1, false).unwrap();
+        let outcome = stash_apply(repo, 1, &list[1].oid, false).unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
         assert_eq!(
             std::fs::read_to_string(repo.join("a.txt")).unwrap(),
@@ -2884,14 +3134,124 @@ mod tests {
         );
         assert_eq!(stash_list(repo).unwrap().len(), 2);
         test_repo::git(repo, &["checkout", "--", "a.txt"]);
-        stash_apply(repo, 1, true).unwrap();
+        stash_apply(repo, 1, &list[1].oid, true).unwrap();
         let list = stash_list(repo).unwrap();
         assert_eq!(list.len(), 1);
         assert!(list[0].message.contains("with untracked"));
 
-        stash_drop(repo, 0).unwrap();
+        let last = stash_list(repo).unwrap()[0].oid.clone();
+        stash_drop(repo, 0, &last).unwrap();
         assert!(stash_list(repo).unwrap().is_empty());
-        assert!(stash_drop(repo, 0).is_err());
+        assert!(stash_drop(repo, 0, &last).is_err());
+    }
+
+    #[test]
+    fn stash_operations_abort_when_the_index_no_longer_names_the_listed_stash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "first\n").unwrap();
+        stash_push(repo, Some("first"), false, false).unwrap();
+        let listed = stash_list(repo).unwrap();
+        assert_eq!(listed[0].oid.len(), 40);
+
+        // Another client pushes: stash@{0} now names a different stash.
+        std::fs::write(repo.join("a.txt"), "second\n").unwrap();
+        stash_push(repo, Some("second"), false, false).unwrap();
+        let before = stash_list(repo).unwrap();
+
+        for pop in [false, true] {
+            let err = stash_apply(repo, 0, &listed[0].oid, pop).unwrap_err();
+            assert!(err.contains("changed since the list"), "{err}");
+        }
+        let err = stash_drop(repo, 0, &listed[0].oid).unwrap_err();
+        assert!(err.contains("changed since the list"), "{err}");
+        // A vanished index also aborts.
+        assert!(stash_drop(repo, 5, &listed[0].oid).is_err());
+
+        assert_eq!(stash_list(repo).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "1\n");
+
+        // The matching oid still works at its renumbered index.
+        stash_drop(repo, 1, &listed[0].oid).unwrap();
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stash_apply_targets_the_oid_not_a_renumberable_index() {
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(stash_apply_args(oid), ["stash", "apply", oid]);
+        assert!(!stash_apply_args(oid).iter().any(|a| a.contains("stash@")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stash_pop_reports_an_applied_stash_whose_drop_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, None, false, false).unwrap();
+        let oid = stash_list(repo).unwrap()[0].oid.clone();
+        // Applying needs no ref writes; dropping must lock refs/stash, which a read-only refs dir refuses.
+        let refs = repo.join(".git/refs");
+        std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = stash_apply(repo, 0, &oid, true);
+        std::fs::set_permissions(&refs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("applied stash@{0} but could not drop it"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "stashed\n"
+        );
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stash_pop_keeps_an_applied_stash_that_moved_before_the_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "first\n").unwrap();
+        stash_push(repo, Some("first"), false, false).unwrap();
+        let popped = stash_list(repo).unwrap()[0].oid.clone();
+        // Another client pushes after the apply: stash@{0} now names a different stash.
+        std::fs::write(repo.join("a.txt"), "second\n").unwrap();
+        stash_push(repo, Some("second"), false, false).unwrap();
+        let before = stash_list(repo).unwrap();
+        let error = drop_popped_stash(repo, "stash@{0}", &popped).unwrap_err();
+        assert!(error.contains("applied stash@{0} but it moved"), "{error}");
+        assert_eq!(stash_list(repo).unwrap(), before);
+    }
+
+    #[test]
+    fn stash_pop_removes_only_the_popped_stash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
+        std::fs::write(repo.join("a.txt"), "first\n").unwrap();
+        stash_push(repo, Some("first"), false, false).unwrap();
+        std::fs::write(repo.join("a.txt"), "second\n").unwrap();
+        stash_push(repo, Some("second"), false, false).unwrap();
+        let listed = stash_list(repo).unwrap();
+
+        let outcome = stash_apply(repo, 1, &listed[1].oid, true).unwrap();
+        assert!(!outcome.conflicts);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "first\n"
+        );
+        let left = stash_list(repo).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].oid, listed[0].oid);
     }
 
     #[test]
@@ -2919,7 +3279,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
         stash_push(repo, None, false, false).unwrap();
         test_repo::write_and_commit(repo, "a.txt", "committed\n", "c2");
-        let outcome = stash_apply(repo, 0, true).unwrap();
+        let outcome = stash_apply(repo, 0, &stash_list(repo).unwrap()[0].oid, true).unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: true });
         assert_eq!(
             stash_list(repo).unwrap().len(),
@@ -2959,14 +3319,19 @@ mod tests {
         let repo = tmp.path();
         std::fs::write(repo.join("c.txt"), EIGHT_LINES.replace("8\n", "eight\n")).unwrap();
         test_repo::git(repo, &["add", "c.txt"]);
-        let blocked =
-            switch_keeping_changes(repo, false, || checkout(repo, "feature")).unwrap_err();
+        let blocked = switch_keeping_changes(repo, false, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap_err();
         assert!(
             blocked.contains("would be overwritten by checkout"),
             "{blocked}"
         );
 
-        let outcome = switch_keeping_changes(repo, true, || checkout(repo, "feature")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
         assert_eq!(git_line(repo, &["branch", "--show-current"]), "feature");
         assert_eq!(
@@ -2987,7 +3352,10 @@ mod tests {
         let tmp = eight_line_repo();
         let repo = tmp.path();
         std::fs::write(repo.join("c.txt"), EIGHT_LINES.replacen("1\n", "uno\n", 1)).unwrap();
-        let outcome = switch_keeping_changes(repo, true, || checkout(repo, "feature")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: true });
         assert_eq!(git_line(repo, &["branch", "--show-current"]), "feature");
         let stashes = stash_list(repo).unwrap();
@@ -3001,14 +3369,216 @@ mod tests {
         let repo = tmp.path();
         let edited = EIGHT_LINES.replace("8\n", "eight\n");
         std::fs::write(repo.join("c.txt"), &edited).unwrap();
-        assert!(switch_keeping_changes(repo, true, || checkout(repo, "missing")).is_err());
+        assert!(
+            switch_keeping_changes(repo, true, Some("refs/heads/missing"), || checkout(
+                repo, "missing"
+            ))
+            .is_err()
+        );
         assert_eq!(git_line(repo, &["branch", "--show-current"]), "main");
         assert_eq!(read_text(repo, "c.txt"), edited);
         assert!(stash_list(repo).unwrap().is_empty());
         // Nothing to park: a clean tree switches directly.
         test_repo::git(repo, &["checkout", "--", "c.txt"]);
-        let outcome = switch_keeping_changes(repo, true, || checkout(repo, "feature")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
+    }
+
+    /// eight_line_repo plus feature-only `shared.txt` and `extra` files, with
+    /// local untracked `shared.txt` and `keep.txt` on main.
+    fn shared_file_repo(extra: &[&str]) -> tempfile::TempDir {
+        let tmp = eight_line_repo();
+        let repo = tmp.path();
+        test_repo::git(repo, &["switch", "feature"]);
+        test_repo::write_and_commit(repo, "shared.txt", "feature\n", "shared");
+        for path in extra {
+            std::fs::create_dir_all(repo.join(path).parent().unwrap()).unwrap();
+            test_repo::write_and_commit(repo, path, "x\n", "extra");
+        }
+        test_repo::git(repo, &["switch", "main"]);
+        std::fs::write(repo.join("shared.txt"), "local\n").unwrap();
+        std::fs::write(repo.join("keep.txt"), "untouched\n").unwrap();
+        tmp
+    }
+
+    fn assert_local_copy_over_feature(repo: &Path) {
+        assert_eq!(git_line(repo, &["branch", "--show-current"]), "feature");
+        assert_eq!(read_text(repo, "shared.txt"), "local\n");
+        assert_eq!(git_line(repo, &["show", "HEAD:shared.txt"]), "feature");
+        assert!(git_line(repo, &["diff", "--name-only"])
+            .lines()
+            .any(|path| path == "shared.txt"));
+        assert!(!git_line(repo, &["diff", "--cached", "--name-only"]).contains("shared.txt"));
+        assert_eq!(read_text(repo, "keep.txt"), "untouched\n");
+        assert_eq!(
+            git_line(repo, &["ls-files", "--others", "--exclude-standard"]),
+            "keep.txt"
+        );
+        assert!(stash_list(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn smart_checkout_writes_blocking_untracked_files_over_the_target() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        let blocked = switch_keeping_changes(repo, false, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap_err();
+        assert!(blocked.contains(BLOCKED_BY_UNTRACKED), "{blocked}");
+
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
+        assert_eq!(outcome, GitOperationOutcome { conflicts: false });
+        assert_local_copy_over_feature(repo);
+    }
+
+    #[test]
+    fn smart_checkout_carries_blocking_untracked_files_with_tracked_changes() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        std::fs::write(repo.join("c.txt"), EIGHT_LINES.replace("8\n", "eight\n")).unwrap();
+        let outcome = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap();
+        assert_eq!(outcome, GitOperationOutcome { conflicts: false });
+        assert_local_copy_over_feature(repo);
+        assert_eq!(
+            read_text(repo, "c.txt"),
+            EIGHT_LINES
+                .replacen("1\n", "one\n", 1)
+                .replace("8\n", "eight\n")
+        );
+    }
+
+    #[test]
+    fn smart_checkout_puts_untracked_files_back_when_the_switch_still_fails() {
+        let tmp = shared_file_repo(&["dir/inner.txt"]);
+        let repo = tmp.path();
+        // A file where feature needs a directory still blocks after parking.
+        std::fs::write(repo.join("dir"), "blocker\n").unwrap();
+        std::fs::write(repo.join("c.txt"), EIGHT_LINES.replace("8\n", "eight\n")).unwrap();
+
+        let error = switch_keeping_changes(repo, true, Some("refs/heads/feature"), || {
+            checkout(repo, "feature")
+        })
+        .unwrap_err();
+        assert!(error.contains(BLOCKED_BY_UNTRACKED), "{error}");
+        assert_eq!(git_line(repo, &["branch", "--show-current"]), "main");
+        assert_eq!(read_text(repo, "shared.txt"), "local\n");
+        assert_eq!(read_text(repo, "dir"), "blocker\n");
+        assert_eq!(
+            read_text(repo, "c.txt"),
+            EIGHT_LINES.replace("8\n", "eight\n")
+        );
+        assert_eq!(
+            git_line(repo, &["ls-files", "--others", "--exclude-standard"]),
+            "dir\nkeep.txt\nshared.txt"
+        );
+        assert!(stash_list(repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parking_vanished_untracked_files_never_claims_an_existing_stash() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        test_repo::git(
+            repo,
+            &["stash", "push", "--include-untracked", "-m", "mine"],
+        );
+        let mine = stash_top(repo).unwrap().unwrap();
+        // git exits 0 with "No local changes to save" for a path that is gone.
+        assert_eq!(park_untracked(repo, "gone.txt", "mine [1]").unwrap(), None);
+        assert_eq!(stash_top(repo).unwrap().as_deref(), Some(mine.as_str()));
+        std::fs::write(repo.join("shared.txt"), "local\n").unwrap();
+        let parked = park_untracked(repo, "shared.txt", "mine [2]")
+            .unwrap()
+            .unwrap();
+        assert_ne!(parked, mine);
+        assert!(!repo.join("shared.txt").exists());
+        assert_eq!(stash_list(repo).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pushed_stash_is_found_under_a_foreign_stash_pushed_right_after() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        let before = stash_top(repo).unwrap();
+        test_repo::git(
+            repo,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                SMART_CHECKOUT_UNTRACKED_STASH,
+                "--",
+                "shared.txt",
+            ],
+        );
+        let ours = git_line(repo, &["rev-parse", "refs/stash"]);
+        std::fs::write(repo.join("c.txt"), "foreign\n").unwrap();
+        test_repo::git(repo, &["stash", "push", "-m", "someone else"]);
+        assert_ne!(stash_top(repo).unwrap().as_deref(), Some(ours.as_str()));
+        assert_eq!(
+            pushed_stash(repo, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).unwrap(),
+            Some(ours.clone())
+        );
+        // Nothing of ours above `before`: none, whatever sits on top.
+        let top = stash_top(repo).unwrap();
+        assert_eq!(
+            pushed_stash(repo, top.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).unwrap(),
+            None
+        );
+        // Two of ours since `before`: refuse to guess.
+        std::fs::write(repo.join("other.txt"), "x\n").unwrap();
+        test_repo::git(
+            repo,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                SMART_CHECKOUT_UNTRACKED_STASH,
+                "--",
+                "other.txt",
+            ],
+        );
+        assert!(pushed_stash(repo, before.as_deref(), SMART_CHECKOUT_UNTRACKED_STASH).is_err());
+    }
+
+    #[test]
+    fn a_concurrent_smart_checkout_never_claims_another_operations_stash() {
+        let tmp = shared_file_repo(&[]);
+        let repo = tmp.path();
+        let ours = stash_label(SMART_CHECKOUT_UNTRACKED_STASH);
+        let theirs = stash_label(SMART_CHECKOUT_UNTRACKED_STASH);
+        assert_ne!(ours, theirs);
+        assert!(ours.starts_with(SMART_CHECKOUT_UNTRACKED_STASH));
+        let before = stash_top(repo).unwrap();
+        // The other window parks the same kind of file right after our `before`.
+        test_repo::git(
+            repo,
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                theirs.as_str(),
+                "--",
+                "shared.txt",
+            ],
+        );
+        // Our own push saved nothing (its blockers vanished): no entry is ours.
+        assert_eq!(park_untracked(repo, "gone.txt", &ours).unwrap(), None);
+        assert_eq!(pushed_stash(repo, before.as_deref(), &ours).unwrap(), None);
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
     }
 
     #[test]
@@ -3042,7 +3612,12 @@ mod tests {
         let repo = tmp.path();
         test_repo::init(repo);
         test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
-        assert!(stash_apply(repo, 0, false).is_err());
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, None, false, false).unwrap();
+        // Local edits to the same file make git refuse the apply outright.
+        std::fs::write(repo.join("a.txt"), "local\n").unwrap();
+        let oid = stash_list(repo).unwrap()[0].oid.clone();
+        assert!(stash_apply(repo, 0, &oid, false).is_err());
     }
 
     #[test]

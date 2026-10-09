@@ -7,7 +7,8 @@
   --yz-glow-c-light: #c4dbf6; --yz-glow-d-light: #f6e6c8;
   --yz-glow-a-dark: #232c18; --yz-glow-b-dark: #15261d;
   --yz-glow-c-dark: #182236; --yz-glow-d-dark: #2a2017;
-  --yz-tone-base: #f6f5ef;
+  /* Custom gradients (theme/background.ts) override the glows and base inline. */
+  --yz-tone-base: var(--yz-base-light, #f6f5ef);
   --yz-tone-a: var(--yz-glow-a-light);
   --yz-tone-b: var(--yz-glow-b-light);
   --yz-tone-c: var(--yz-glow-c-light);
@@ -43,7 +44,7 @@
 }
 
 :root.dark {
-  --yz-tone-base: #100f14;
+  --yz-tone-base: var(--yz-base-dark, #100f14);
   --yz-tone-a: var(--yz-glow-a-dark);
   --yz-tone-b: var(--yz-glow-b-dark);
   --yz-tone-c: var(--yz-glow-c-dark);

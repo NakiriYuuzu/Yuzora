@@ -314,6 +314,15 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 .ok_or("terminal-unavailable")?
                 .terminal_scroll(&id, direction, lines, column, row)
                 .map(|_| Value::Null),
+            StreamCommand::Mouse {
+                action,
+                column,
+                row,
+                modifiers,
+            } if terminal => manager
+                .ok_or("terminal-unavailable")?
+                .terminal_mouse(&id, action, column, row, modifiers)
+                .map(|_| Value::Null),
             _ => Err("invalid-stream-command".into()),
         })
         .await

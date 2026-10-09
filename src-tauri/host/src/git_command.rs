@@ -80,9 +80,9 @@ pub enum GitCommand {
         keep_index: bool,
     },
     #[serde(rename = "git_stash_apply")]
-    StashApply { index: u32, pop: bool },
+    StashApply { index: u32, oid: String, pop: bool },
     #[serde(rename = "git_stash_drop")]
-    StashDrop { index: u32 },
+    StashDrop { index: u32, oid: String },
     #[serde(rename = "git_remote_probe")]
     RemoteProbe,
     #[serde(rename = "git_diff_content")]
@@ -286,18 +286,26 @@ mod host {
                     name,
                     start_point,
                     smart,
-                } => value(switch_keeping_changes(root, smart.unwrap_or(false), || {
-                    create_branch(root, &name, start_point.as_deref())
-                })),
-                GitCommand::CheckoutDetached { rev, smart } => {
-                    value(switch_keeping_changes(root, smart.unwrap_or(false), || {
-                        checkout_detached(root, &rev)
-                    }))
-                }
+                } => value(switch_keeping_changes(
+                    root,
+                    smart.unwrap_or(false),
+                    start_point.as_deref(),
+                    || create_branch(root, &name, start_point.as_deref()),
+                )),
+                GitCommand::CheckoutDetached { rev, smart } => value(switch_keeping_changes(
+                    root,
+                    smart.unwrap_or(false),
+                    Some(&rev),
+                    || checkout_detached(root, &rev),
+                )),
                 GitCommand::Checkout { name, smart } => {
-                    value(switch_keeping_changes(root, smart.unwrap_or(false), || {
-                        checkout(root, &name)
-                    }))
+                    let branch = format!("refs/heads/{name}");
+                    value(switch_keeping_changes(
+                        root,
+                        smart.unwrap_or(false),
+                        Some(&branch),
+                        || checkout(root, &name),
+                    ))
                 }
                 GitCommand::CherryPick { hash } => value(cherry_pick(root, &hash)),
                 GitCommand::Fetch => {
@@ -344,8 +352,10 @@ mod host {
                     include_untracked,
                     keep_index,
                 )),
-                GitCommand::StashApply { index, pop } => value(stash_apply(root, index, pop)),
-                GitCommand::StashDrop { index } => value(stash_drop(root, index)),
+                GitCommand::StashApply { index, oid, pop } => {
+                    value(stash_apply(root, index, &oid, pop))
+                }
+                GitCommand::StashDrop { index, oid } => value(stash_drop(root, index, &oid)),
                 GitCommand::RemoteProbe => value(remote_probe(root, &[])),
                 GitCommand::Diff {
                     path,

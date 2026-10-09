@@ -25,7 +25,17 @@
     "coral": "Coral",
     "amber": "Amber"
   },
-  "paletteHint": "Theme colors also tint the background, sidebars, menus, and controls. Space characters and colors remain independently editable.",
+  "backgrounds": {
+    "aurora": "Aurora",
+    "sunset": "Sunset",
+    "ocean": "Ocean",
+    "sakura": "Sakura",
+    "forest": "Forest",
+    "lavender": "Lavender",
+    "citrus": "Citrus",
+    "graphite": "Graphite"
+  },
+  "paletteHint": "Theme colors tint the sidebars, menus, and controls, and the background when it follows the accent. Space characters and colors remain independently editable.",
   "resultsTitle": "Search settings",
   "resultsCount": "{{count}} categories and settings found for “{{query}}”",
   "noResults": "No matching settings",

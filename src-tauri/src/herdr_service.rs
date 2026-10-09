@@ -143,6 +143,21 @@ pub async fn herdr_terminal_scroll(
 }
 
 #[tauri::command]
+pub async fn herdr_terminal_mouse(
+    state: tauri::State<'_, HerdrState>,
+    session_id: String,
+    action: HerdrMouseAction,
+    column: u16,
+    row: u16,
+    modifiers: u8,
+) -> Result<(), String> {
+    with_herdr_manager(&state, move |manager| {
+        manager.terminal_mouse(&session_id, action, column, row, modifiers)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn herdr_terminal_release(
     state: tauri::State<'_, HerdrState>,
     session_id: String,

@@ -34,8 +34,21 @@ function doneEvent(events: SearchEvent[]) {
 }
 
 // Split preview around the query so the matched substring renders as its own
-// <mark>. Case-insensitive to mirror the default (case-insensitive) search.
-function highlight(preview: string, query: string) {
+// <mark>. The helper's ranges follow the search's own case folding; older
+// helpers send none, so fall back to a case-insensitive lookup of the query.
+function highlight(preview: string, query: string, ranges?: [number, number][]) {
+    if (ranges) {
+        const parts: (string | { mark: string })[] = []
+        let from = 0
+        for (const [start, end] of ranges) {
+            if (start < from || end <= start || end > preview.length) continue
+            if (start > from) parts.push(preview.slice(from, start))
+            parts.push({ mark: preview.slice(start, end) })
+            from = end
+        }
+        if (from < preview.length) parts.push(preview.slice(from))
+        return parts
+    }
     if (!query) return [preview]
     const lower = preview.toLowerCase()
     const needle = query.toLowerCase()
@@ -156,7 +169,7 @@ export function WorkspaceSearchGroup({
                                 {m.line}
                             </span>
                             <span className="truncate text-(--ink-2)">
-                                {highlight(m.preview, query).map((part, j) =>
+                                {highlight(m.preview, query, m.ranges).map((part, j) =>
                                     typeof part === "string" ? (
                                         <span key={j}>{part}</span>
                                     ) : (

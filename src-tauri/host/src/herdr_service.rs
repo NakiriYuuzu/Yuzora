@@ -55,6 +55,8 @@ const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const RUNTIME_VALIDATION_TTL: Duration = Duration::from_secs(10);
 /// Cheap socket identity checks retain their faster restart-detection cadence.
 const SOCKET_IDENTITY_TTL: Duration = Duration::from_secs(1);
+/// Error code shown (translated by the UI) when no `herdr` is on PATH.
+pub const HERDR_PATH_BINARY_NOT_FOUND: &str = "herdr-path-binary-not-found";
 #[cfg(not(test))]
 const HERDR_CLI_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(test)]
@@ -508,6 +510,15 @@ pub enum HerdrScrollDirection {
     Down,
 }
 
+/// Left-button pointer action for the connector `terminal.mouse` (HERDR 0.9.2+).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HerdrMouseAction {
+    Down,
+    Up,
+    Drag,
+}
+
 // ── Wire helpers (Herdr public NDJSON / connector frames) ───────────────────
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
@@ -661,6 +672,15 @@ pub enum TerminalControlCommand {
         column: Option<u16>,
         #[serde(skip_serializing_if = "Option::is_none")]
         row: Option<u16>,
+    },
+    /// HERDR encodes the event at this zero-based cell for the child's mouse
+    /// mode, and drops it when the child has not enabled mouse reporting.
+    #[serde(rename = "terminal.mouse")]
+    Mouse {
+        action: HerdrMouseAction,
+        column: u16,
+        row: u16,
+        modifiers: u8,
     },
     #[serde(rename = "terminal.release")]
     Release,
@@ -921,7 +941,7 @@ impl HerdrManager {
         let result = (|| -> Result<bool, String> {
             let binary = self
                 .resolve_binary()
-                .ok_or_else(|| "herdr binary is unavailable for startup".to_string())?;
+                .ok_or_else(|| "herdr-binary-unavailable".to_string())?;
             let existing = query_herdr_server_startup_status(&binary, status_timeout)?;
             if existing.running {
                 if existing.compatible == Some(false) {
@@ -933,12 +953,7 @@ impl HerdrManager {
                 return Ok(false);
             }
 
-            let mut command = Command::new(&binary);
-            command
-                .arg("server")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
+            let mut command = default_server_command(&binary);
             process_kill::configure_background_process(&mut command);
             let mut child = command.spawn().map_err(|error| {
                 format!(
@@ -1121,17 +1136,17 @@ impl HerdrManager {
                 .unwrap_or((None, None))
         };
         HerdrBinarySourceInfo {
-            custom_path: custom_path.map(|path| path.to_string_lossy().into_owned()),
+            custom_path: custom_path.map(display_path),
             configured,
             active,
             resolved,
             available: active_path.is_some(),
-            path: active_path.map(|p| p.to_string_lossy().into_owned()),
+            path: active_path.map(display_path),
             reason: active_reason,
             version,
             protocol,
             configured_available: configured_path.is_some(),
-            configured_path: configured_path.map(|p| p.to_string_lossy().into_owned()),
+            configured_path: configured_path.map(display_path),
             configured_reason,
             configured_version,
             configured_protocol,
@@ -1150,6 +1165,7 @@ impl HerdrManager {
         custom_path: Option<String>,
     ) -> Result<crate::herdr_runtime::RuntimeBinaryCheck, String> {
         let binary = if source == HerdrBinarySource::Custom {
+            let custom_path = custom_path.as_deref().map(normalize_custom_path);
             checked_custom_binary(custom_path.as_deref().map(Path::new))?
         } else {
             let (path, reason) = self.resolve_binary_for_source(source);
@@ -1176,7 +1192,10 @@ impl HerdrManager {
         self.check_binary_source(source, custom_path.clone())?
             .require_compatible()?;
         let custom_path = if source == HerdrBinarySource::Custom {
-            custom_path.map(PathBuf::from)
+            custom_path
+                .as_deref()
+                .map(normalize_custom_path)
+                .map(PathBuf::from)
         } else {
             None
         };
@@ -1253,7 +1272,7 @@ impl HerdrManager {
             }
             HerdrBinarySource::Global => match which_binary("herdr").map(PathBuf::from) {
                 Some(path) => (Some(path), None),
-                None => (None, Some("Herdr was not found on PATH".into())),
+                None => (None, Some("herdr-not-found-on-path".into())),
             },
             HerdrBinarySource::Default => {
                 if let Some(path) = self.managed_binary_override.lock().unwrap().clone() {
@@ -2566,7 +2585,7 @@ impl HerdrManager {
 
         let binary = self
             .resolve_binary()
-            .ok_or_else(|| "herdr binary not found on PATH".to_string())?;
+            .ok_or_else(|| HERDR_PATH_BINARY_NOT_FOUND.to_string())?;
 
         let role = match mode {
             HerdrTerminalMode::Observe => HerdrTerminalRole::Observer,
@@ -2594,14 +2613,7 @@ impl HerdrManager {
             args.push("--takeover".to_string());
         }
 
-        let mut cmd = Command::new(&binary);
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Official connector child: bind to the named session via HERDR_SESSION.
-        // Default session remains valid. Never guess socket paths here.
-        cmd.env("HERDR_SESSION", &named.name);
+        let mut cmd = terminal_connector_command(&binary, &args, &named.name);
         // Connector only — never a process group that could sweep Herdr panes.
         process_kill::configure_background_process(&mut cmd);
 
@@ -2717,6 +2729,23 @@ impl HerdrManager {
         row: Option<u16>,
     ) -> Result<(), String> {
         let cmd = TerminalControlCommand::scroll(direction, lines, column, row)?;
+        self.send_control(session_id, &cmd)
+    }
+
+    pub fn terminal_mouse(
+        &self,
+        session_id: &str,
+        action: HerdrMouseAction,
+        column: u16,
+        row: u16,
+        modifiers: u8,
+    ) -> Result<(), String> {
+        let cmd = TerminalControlCommand::Mouse {
+            action,
+            column,
+            row,
+            modifiers,
+        };
         self.send_control(session_id, &cmd)
     }
 
@@ -3069,15 +3098,81 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
 
 // ── Binary / API helpers ────────────────────────────────────────────────────
 
+/// Strip one pair of matching surrounding quotes left by "Copy as path" or a
+/// hand-typed value. Unpaired quotes and nested pairs are kept.
+pub fn normalize_custom_path(raw: &str) -> String {
+    // The same quote pairs as the frontend's sanitizeCustomPath, including smart quotes.
+    const PAIRS: [(char, char); 4] = [
+        ('"', '"'),
+        ('\'', '\''),
+        ('\u{201c}', '\u{201d}'),
+        ('\u{2018}', '\u{2019}'),
+    ];
+    let trimmed = raw.trim();
+    let mut chars = trimmed.chars();
+    if let (Some(first), Some(last)) = (chars.next(), chars.next_back()) {
+        if PAIRS.contains(&(first, last)) {
+            return trimmed[first.len_utf8()..trimmed.len() - last.len_utf8()]
+                .trim()
+                .to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Windows can only run `.exe` here; `.cmd`/`.bat` shims are not spawnable.
+pub fn require_exe_on_windows(path: &Path, windows: bool) -> Result<(), String> {
+    if windows
+        && !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        return Err(format!("herdr-custom-path-not-exe: {}", path.display()));
+    }
+    Ok(())
+}
+
 fn checked_custom_binary(path: Option<&Path>) -> Result<PathBuf, String> {
     let path = path.ok_or("herdr-custom-path-required")?;
-    if !path.is_absolute() || !is_executable(path) {
+    let path = PathBuf::from(normalize_custom_path(&path.to_string_lossy()));
+    if !path.is_absolute() {
         return Err(format!(
             "herdr-custom-path-not-executable: {}",
             path.display()
         ));
     }
-    Ok(path.to_path_buf())
+    require_exe_on_windows(&path, cfg!(windows))?;
+    if !is_executable(&path) {
+        return Err(format!(
+            "herdr-custom-path-not-executable: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// Drop the Windows verbatim prefix (`\\?\C:\` and `\\?\UNC\`) so paths shown to
+/// the user match what Explorer prints. Operates on text, on every platform.
+pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    match strip_verbatim_text(&path.to_string_lossy()) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path,
+    }
+}
+
+/// Text form of [`strip_verbatim_prefix`]; `None` when nothing needs stripping.
+pub fn strip_verbatim_text(text: &str) -> Option<String> {
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{share}"));
+    }
+    let rest = text.strip_prefix(r"\\?\")?;
+    let bytes = rest.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\')
+        .then(|| rest.to_string())
+}
+
+fn display_path(path: PathBuf) -> String {
+    strip_verbatim_prefix(path).to_string_lossy().into_owned()
 }
 
 fn managed_binary_path(resource_dir: &Path) -> PathBuf {
@@ -3153,10 +3248,16 @@ fn load_binary_source_preference(config_dir: &Path) -> BinarySourcePreferenceLoa
             )))
         }
     };
-    let custom_path = value
-        .get("customPath")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from);
+    let raw_custom_path = value.get("customPath").and_then(|v| v.as_str());
+    let custom_path = raw_custom_path.map(|raw| PathBuf::from(normalize_custom_path(raw)));
+    if source == HerdrBinarySource::Custom {
+        // Preferences saved before normalization may carry quotes: rewrite them.
+        if let (Some(raw), Some(normalized)) = (raw_custom_path, custom_path.as_deref()) {
+            if normalized.is_absolute() && normalized.to_string_lossy() != raw {
+                let _ = save_binary_source_preference(config_dir, source, Some(normalized));
+            }
+        }
+    }
     if source == HerdrBinarySource::Custom && !custom_path.as_deref().is_some_and(Path::is_absolute)
     {
         return fallback(Some("invalid Herdr custom binary path".into()));
@@ -3198,6 +3299,40 @@ fn save_binary_source_preference(
         .and_then(|directory| directory.sync_all())
         .map_err(|e| format!("failed to sync herdr config directory: {e}"))?;
     Ok(())
+}
+
+/// Version reported by `herdr status --json`, for display only.
+pub fn probe_binary_version(binary: &Path) -> Option<String> {
+    probe_binary_identity(binary).0
+}
+
+/// Like [`probe_binary_version`] but bounded by `timeout`; a timeout or any
+/// failure yields `None`.
+pub fn probe_binary_version_with_timeout(binary: &Path, timeout: Duration) -> Option<String> {
+    let binary = binary.to_path_buf();
+    // Killing and reaping a hung probe can outlast `timeout`; bound the whole probe.
+    within(timeout, move || {
+        let status =
+            run_herdr_json_with_session_timeout(&binary, &["status", "--json"], None, timeout)
+                .ok()?;
+        let client = status.get("client").unwrap_or(&status);
+        client
+            .get("version")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    })
+}
+
+/// Run `probe` on its own thread and give up after `timeout`; a slow tail finishes detached.
+fn within<T: Send + 'static>(
+    timeout: Duration,
+    probe: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(probe());
+    });
+    receiver.recv_timeout(timeout).ok().flatten()
 }
 
 fn probe_binary_identity(binary: &Path) -> (Option<String>, Option<u32>) {
@@ -3443,7 +3578,7 @@ pub fn parse_subscription_event_line(
     }))
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
     let raw = raw
         .filter(|value| !value.trim().is_empty())
@@ -3474,25 +3609,29 @@ fn windows_executable_extensions(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// Windows only launches `.exe` here: `herdr.cmd`/`.bat` shims and extensionless
+/// files on PATH are not spawnable, so they are never candidates.
+pub fn resolve_in_dirs(
+    dirs: &[PathBuf],
+    command: &str,
+    windows: bool,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let file_name = if !windows || command.to_ascii_lowercase().ends_with(".exe") {
+        command.to_string()
+    } else {
+        format!("{command}.exe")
+    };
+    dirs.iter()
+        .map(|dir| dir.join(&file_name))
+        .find(|candidate| is_file(candidate))
+}
+
 fn which_binary(command: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(command);
-        if is_executable(&candidate) {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-        #[cfg(windows)]
-        {
-            let pathext = std::env::var("PATHEXT").ok();
-            for ext in windows_executable_extensions(pathext.as_deref()) {
-                let candidate = dir.join(format!("{command}{ext}"));
-                if is_executable(&candidate) {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-    None
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    resolve_in_dirs(&dirs, command, cfg!(windows), is_executable)
+        .map(|found| found.to_string_lossy().into_owned())
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -3510,6 +3649,61 @@ fn is_executable(path: &Path) -> bool {
     {
         true
     }
+}
+
+/// Variables a HERDR pane exports to its children. HERDR prefers an inherited
+/// `HERDR_SOCKET_PATH` over `HERDR_SESSION`, so Yuzora launched from a pane
+/// (`tauri dev`, `open`) would otherwise send its HERDR children to that
+/// pane's server instead of the Session it selected (#132).
+pub(crate) const PARENT_PANE_HERDR_ENV: [&str; 6] = [
+    "HERDR_SOCKET_PATH",
+    "HERDR_CLIENT_SOCKET_PATH",
+    "HERDR_ENV",
+    "HERDR_PANE_ID",
+    "HERDR_TAB_ID",
+    "HERDR_WORKSPACE_ID",
+];
+
+/// Routes a HERDR child to `session`, or to the default Session for `None`,
+/// whatever environment Yuzora itself inherited.
+pub(crate) fn pin_herdr_session(command: &mut Command, session: Option<&str>) {
+    for key in PARENT_PANE_HERDR_ENV {
+        command.env_remove(key);
+    }
+    match session {
+        Some(name) => command.env("HERDR_SESSION", name),
+        None => command.env_remove("HERDR_SESSION"),
+    };
+}
+
+fn default_server_command(binary: &Path) -> Command {
+    let mut command = Command::new(binary);
+    command
+        .arg("server")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    pin_herdr_session(&mut command, None);
+    command
+}
+
+/// Official connector child: bind to the named session via HERDR_SESSION.
+/// Default session remains valid. Never guess socket paths here.
+fn terminal_connector_command(binary: &Path, args: &[String], session: &str) -> Command {
+    let mut cmd = Command::new(binary);
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    pin_herdr_session(&mut cmd, Some(session));
+    cmd
+}
+
+fn herdr_cli_command(binary: &Path, args: &[&str], session_name: Option<&str>) -> Command {
+    let mut cmd = Command::new(binary);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    pin_herdr_session(&mut cmd, session_name.filter(|s| !s.trim().is_empty()));
+    cmd
 }
 
 fn run_herdr_json(binary: &Path, args: &[&str]) -> Result<serde_json::Value, String> {
@@ -3530,14 +3724,8 @@ fn run_herdr_json_with_session_timeout(
     session_name: Option<&str>,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = Command::new(binary);
-    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut cmd = herdr_cli_command(binary, args, session_name);
     process_kill::configure_background_process(&mut cmd);
-    if let Some(name) = session_name.filter(|s| !s.trim().is_empty()) {
-        cmd.env("HERDR_SESSION", name)
-            .env_remove("HERDR_SOCKET_PATH")
-            .env_remove("HERDR_ENV");
-    }
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let mut process_tree = process_kill::attach_process_tree(&mut child)
         .map_err(|e| format!("process containment failed: {e}"))?;
@@ -4594,6 +4782,40 @@ fn parse_pane_info_response(response: serde_json::Value) -> Result<HerdrPaneIden
 // ── Tauri commands ──────────────────────────────────────────────────────────
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod within_tests {
+    use super::*;
+
+    #[test]
+    fn herdr_bounded_probe_returns_within_its_timeout() {
+        let started = std::time::Instant::now();
+        let slow = within(Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_secs(2));
+            Some(1)
+        });
+        assert_eq!(slow, None);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(within(Duration::from_secs(1), || Some(2)), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod custom_path_quote_tests {
+    use super::*;
+
+    #[test]
+    fn herdr_normalize_custom_path_strips_smart_quote_pairs() {
+        for (raw, expected) in [
+            ("\u{201c}C:\\a b\\herdr.exe\u{201d}", "C:\\a b\\herdr.exe"),
+            ("\u{2018}/opt/herdr\u{2019}", "/opt/herdr"),
+            ("\u{201c}/opt/herdr", "\u{201c}/opt/herdr"),
+            ("\u{201c}", "\u{201c}"),
+        ] {
+            assert_eq!(normalize_custom_path(raw), expected, "{raw:?}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

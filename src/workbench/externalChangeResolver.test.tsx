@@ -386,4 +386,99 @@ describe("ExternalChangeResolver", () => {
         expect(ipc.openFile).toHaveBeenCalledTimes(1)
         expect(screen.queryByText("磁碟版已再次變更")).not.toBeInTheDocument()
     })
+
+    // #123 item 2：resolver 開著時磁碟版變成不可合併，必須撤下 merge view 並進入
+    // degraded，不得再提供以舊內容運作的 merge 動作。
+    it.each([
+        { name: "binary", next: { kind: "binary", size: 9 } as const, text: "磁碟版無法比對差異（二進位或過大）。" },
+        { name: "tooLarge", next: { kind: "tooLarge", size: 99999999 } as const, text: "磁碟版無法比對差異（二進位或過大）。" },
+        { name: "unreadable", next: null, text: "無法讀取磁碟版本（檔案可能已刪除或暫時無法存取）。" },
+    ])("fs:external-change to $name while open drops the merge view and degrades", async ({ next, text }) => {
+        mountMainView("mine")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+        await screen.findByRole("button", { name: "解決並存檔" })
+        if (next) vi.mocked(ipc.openFile).mockResolvedValue(next)
+        else vi.mocked(ipc.openFile).mockRejectedValue(new Error("missing"))
+        capturedFsListener({ payload: { workspaceRoot: "/w", paths: [PATH] } })
+        expect(await screen.findByText(text)).toBeInTheDocument()
+        expect(screen.queryByRole("button", { name: "解決並存檔" })).not.toBeInTheDocument()
+        expect(screen.queryByRole("button", { name: "全部採用磁碟版" })).not.toBeInTheDocument()
+        expect(document.querySelector(".external-resolver-merge")).toBeNull()
+        expect(document.querySelector(".cm-mergeView, .cm-deletedChunk, .cm-changedLine")).toBeNull()
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+    })
+
+    async function openWithFullDisk() {
+        mountMainView("mine")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        useWorkspaceStore.setState({ workspacePath: "/w" })
+        useWorkspaceStore.getState().openTab(PATH)
+        useWorkspaceStore.getState().markExternallyModified(PATH, true)
+        useUiStore.getState().openResolver(PATH)
+        render(<ExternalChangeResolver />)
+        await screen.findByRole("button", { name: "解決並存檔" })
+        const view = EditorView.findFromDOM(document.querySelector(".external-resolver-merge .cm-editor") as HTMLElement)!
+        return view
+    }
+    const fire = () => capturedFsListener({ payload: { workspaceRoot: "/w", paths: [PATH] } })
+    const mergeDoc = () =>
+        EditorView.findFromDOM(document.querySelector(".external-resolver-merge .cm-editor") as HTMLElement)!.state.doc.toString()
+
+    // Codex review 3: an older read finishing after a newer one must be ignored.
+    it("ignores an older binary read that finishes after a newer text read", async () => {
+        await openWithFullDisk()
+        let resolveOld!: (v: Awaited<ReturnType<typeof ipc.openFile>>) => void
+        vi.mocked(ipc.openFile)
+            .mockImplementationOnce(() => new Promise((r) => { resolveOld = r }))
+            .mockResolvedValueOnce({ kind: "full", content: "disk2", size: 5, lineEnding: "lf" })
+        fire()
+        fire()
+        expect(await screen.findByText("磁碟版已再次變更")).toBeInTheDocument()
+        await act(async () => resolveOld({ kind: "binary", size: 9 }))
+        expect(screen.getByRole("button", { name: "解決並存檔" })).toBeInTheDocument()
+        expect(screen.queryByText("磁碟版無法比對差異（二進位或過大）。")).not.toBeInTheDocument()
+        expect(document.querySelector(".external-resolver-merge .cm-editor")).not.toBeNull()
+    })
+
+    // Codex review 2: degraded must recover and keep the in-progress edit.
+    it("recovers from binary degraded when a later read returns text, keeping in-progress edits", async () => {
+        const view = await openWithFullDisk()
+        view.dispatch({ changes: { from: 0, insert: "wip " } })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "binary", size: 9 })
+        fire()
+        await screen.findByText("磁碟版無法比對差異（二進位或過大）。")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk3", size: 5, lineEnding: "lf" })
+        fire()
+        expect(await screen.findByRole("button", { name: "解決並存檔" })).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: "全部保留我的" })).toBeEnabled()
+        expect(screen.getByRole("button", { name: "全部採用磁碟版" })).toBeEnabled()
+        expect(screen.queryByText("磁碟版無法比對差異（二進位或過大）。")).not.toBeInTheDocument()
+        expect(mergeDoc()).toBe("wip mine")
+        fireEvent.click(screen.getByRole("button", { name: "全部採用磁碟版" }))
+        expect(mergeDoc()).toBe("disk3")
+    })
+
+    // Codex review 1: a read failure is "unreadable", not "deleted", and recovers.
+    it("read failure enters unreadable with only cancel/keep-mine, then recovers", async () => {
+        const view = await openWithFullDisk()
+        view.dispatch({ changes: { from: 0, insert: "wip " } })
+        vi.mocked(ipc.openFile).mockRejectedValue(new Error("EACCES"))
+        fire()
+        expect(await screen.findByRole("button", { name: "保留我的（覆寫存檔）" })).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument()
+        for (const name of ["丟棄並關閉分頁", "全部採用磁碟版", "解決並存檔", "採用磁碟版（重新載入）"]) {
+            expect(screen.queryByRole("button", { name })).not.toBeInTheDocument()
+        }
+        // Same content as before the failure must still restore.
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        fire()
+        expect(await screen.findByRole("button", { name: "解決並存檔" })).toBeInTheDocument()
+        expect(screen.queryByRole("button", { name: "保留我的（覆寫存檔）" })).not.toBeInTheDocument()
+        expect(mergeDoc()).toBe("wip mine")
+    })
 })

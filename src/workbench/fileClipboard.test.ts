@@ -23,7 +23,7 @@ import { retargetOpenDocuments } from "@/state/contextMenuStore"
 import { useFileClipboardStore } from "@/state/fileClipboardStore"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { copyFilesToClipboard, duplicatePath, pasteFiles, pasteTargetDir } from "./fileClipboard"
+import { copyFilesToClipboard, duplicatePath, moveFilesTo, pasteFiles, pasteTargetDir } from "./fileClipboard"
 
 const W = "/w"
 
@@ -131,5 +131,36 @@ describe("remote workspaces", () => {
         await pasteFiles(R, null)
         expect(ipc.clipboardReadFileList).not.toHaveBeenCalled()
         expect(ipc.fsCopyPaths).toHaveBeenCalledWith(R, [A], R)
+    })
+})
+
+describe("moveFilesTo", () => {
+    it("moves into the folder, re-points open editors and leaves the clipboard alone", async () => {
+        useFileClipboardStore.setState({ clipboard: { workspacePath: W, paths: ["/w/keep.ts"], mode: "copy" } })
+        vi.mocked(ipc.fsMovePaths).mockResolvedValueOnce(["/w/src/a.ts"])
+
+        expect(await moveFilesTo(W, ["/w/a.ts"], "/w/src")).toEqual(["/w/src/a.ts"])
+        expect(ipc.fsMovePaths).toHaveBeenCalledWith(W, ["/w/a.ts"], "/w/src")
+        expect(retargetOpenDocuments).toHaveBeenCalledWith("/w/a.ts", "/w/src/a.ts")
+        expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/a.ts", "/w/src/a.ts"])
+        expect(tree.toggleDir).toHaveBeenCalledWith(W, "/w/src")
+        expect(useFileClipboardStore.getState().clipboard).toEqual({ workspacePath: W, paths: ["/w/keep.ts"], mode: "copy" })
+        expect(ipc.clipboardReadFileList).not.toHaveBeenCalled()
+    })
+
+    it("does nothing once the workspace changed", async () => {
+        useWorkspaceStore.setState({ workspacePath: "/other" })
+        expect(await moveFilesTo(W, ["/w/a.ts"], "/w/src")).toEqual([])
+        expect(ipc.fsMovePaths).not.toHaveBeenCalled()
+    })
+
+    it("reports a refused move and refreshes what it touched", async () => {
+        vi.mocked(ipc.fsMovePaths).mockRejectedValueOnce("move-into-itself")
+        expect(await moveFilesTo(W, ["/w/src"], "/w/src/inner")).toEqual([])
+        expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/src/inner", "/w/src"])
+        expect(showAppMessage).toHaveBeenCalledWith(expect.objectContaining({
+            title: "Could not move",
+            description: "A folder cannot be moved into itself."
+        }))
     })
 })

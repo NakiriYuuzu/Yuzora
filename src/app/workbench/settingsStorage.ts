@@ -5,6 +5,19 @@ import {
   isAccentPreference,
   type AccentPreference,
 } from "@/theme/accent"
+import {
+  DEFAULT_BACKGROUND_GRADIENT,
+  DEFAULT_GLASS_TINT,
+  DEFAULT_IMAGE_INTENSITY,
+  MAX_SAVED_GRADIENTS,
+  addSavedGradient,
+  isBackgroundSource,
+  normalizeBackgroundGradient,
+  normalizeGlassTint,
+  normalizeGradientIntensity,
+  type BackgroundGradient,
+  type BackgroundSource,
+} from "@/theme/background"
 
 export const TERMINAL_SETTINGS_STORAGE_KEY = "yuzora:terminal-settings"
 export const APPEARANCE_SETTINGS_STORAGE_KEY = "yuzora:appearance-settings"
@@ -17,7 +30,22 @@ export interface AppearanceSettings {
   leftSidebarBackground: boolean
   rightSidebarBackground: boolean
   botAnimations: boolean
+  backgroundSource: BackgroundSource
+  backgroundGradient: BackgroundGradient
+  savedGradients: BackgroundGradient[]
+  /** 0–100, how strongly the stored image shows through the theme veil. */
+  backgroundImageIntensity: number
+  /** Bumped on every image import so the shell reloads it; 0 = no image stored. */
+  backgroundImageVersion: number
+  glass: boolean
+  glassTint: number
 }
+
+export type BackgroundAppearance = Pick<
+  AppearanceSettings,
+  | "backgroundSource" | "backgroundGradient" | "savedGradients"
+  | "backgroundImageIntensity" | "backgroundImageVersion" | "glass" | "glassTint"
+>
 
 export interface TerminalSettings {
   copyOnSelect: boolean
@@ -26,12 +54,23 @@ export interface TerminalSettings {
   fontFamily: TerminalFontFamily
 }
 
+export const DEFAULT_BACKGROUND_APPEARANCE: BackgroundAppearance = {
+  backgroundSource: "accent",
+  backgroundGradient: DEFAULT_BACKGROUND_GRADIENT,
+  savedGradients: [],
+  backgroundImageIntensity: DEFAULT_IMAGE_INTENSITY,
+  backgroundImageVersion: 0,
+  glass: false,
+  glassTint: DEFAULT_GLASS_TINT,
+}
+
 const DEFAULT_APPEARANCE_SETTINGS: AppearanceSettings = {
   theme: "auto",
   accent: DEFAULT_ACCENT_PREFERENCE,
   leftSidebarBackground: true,
   rightSidebarBackground: true,
   botAnimations: false,
+  ...DEFAULT_BACKGROUND_APPEARANCE,
 }
 
 const VALID_THEME_PREFERENCES: ThemePreference[] = ["light", "dark", "auto"]
@@ -97,6 +136,25 @@ export function loadAppearanceSettings(): AppearanceSettings {
     botAnimations: typeof settings.botAnimations === "boolean"
       ? settings.botAnimations
       : defaultBotAnimationsEnabled(),
+    backgroundSource: isBackgroundSource(settings.backgroundSource) ? settings.backgroundSource : "accent",
+    backgroundGradient: normalizeBackgroundGradient(settings.backgroundGradient)
+      ?? DEFAULT_APPEARANCE_SETTINGS.backgroundGradient,
+    savedGradients: Array.isArray(settings.savedGradients)
+      ? settings.savedGradients
+        .map(normalizeBackgroundGradient)
+        .filter((gradient): gradient is BackgroundGradient => gradient !== null)
+        // Hand-edited storage may repeat colors; swatches are keyed by them.
+        .reduceRight<BackgroundGradient[]>(addSavedGradient, [])
+        .slice(0, MAX_SAVED_GRADIENTS)
+      : DEFAULT_APPEARANCE_SETTINGS.savedGradients,
+    backgroundImageIntensity: typeof settings.backgroundImageIntensity === "number"
+      ? normalizeGradientIntensity(settings.backgroundImageIntensity)
+      : DEFAULT_BACKGROUND_APPEARANCE.backgroundImageIntensity,
+    backgroundImageVersion: typeof settings.backgroundImageVersion === "number" && Number.isSafeInteger(settings.backgroundImageVersion) && settings.backgroundImageVersion > 0
+      ? settings.backgroundImageVersion
+      : 0,
+    glass: settings.glass === true,
+    glassTint: normalizeGlassTint(settings.glassTint),
   }
 }
 

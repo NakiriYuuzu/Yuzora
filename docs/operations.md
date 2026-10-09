@@ -303,7 +303,7 @@ beta.3 的產品範圍依已接受的 ADR-0004：Terminal 統一使用 HERDR，A
 - 沒有 Space 或 HERDR 不相容時，共用新增資料夾入口仍可使用；未連線的近期資料夾導回原主機登入與原根目錄。
 - 取消資料夾選擇後，背景 snapshot 不得再次彈窗或擅自開啟工作區；主動點選沒有 Files 根目錄的外部 Space／Agent，仍可開啟其 Terminal Sessions 並保留原 Files 工作區。
 - 使用主機 discovery 的 socket；跨主機同名 Session、terminal、路徑、信任與事件不互相污染。Agent cwd 不得覆寫 Files 根目錄。
-- MSI／NSIS 包含四平台 Unix 與 Windows x86_64 遠端 runtime、manifest 及受控清理工具；另含固定版本原生 Windows HERDR、ConPTY 與授權檔，逐檔核對 lockfile 雜湊；不得含 WSL Agent Plugin 或散落在核准原生／host 目錄之外的舊 HERDR／ConPTY。從 installer 解包驗證，不以 source inventory 代替。
+- MSI 包含四平台 Unix 與 Windows x86_64 遠端 runtime、manifest 及受控清理工具；另含固定版本原生 Windows HERDR、ConPTY 與授權檔，逐檔核對 lockfile 雜湊；不得含 WSL Agent Plugin 或散落在核准原生／host 目錄之外的舊 HERDR／ConPTY。從 installer 解包驗證，不以 source inventory 代替。
 - 在 HERDR Terminal 手動啟動 Pi／Claude／Codex，驗證 prompt、working／idle／blocked、observe／control／takeover及重連；官方 native Session restore 與 layout restore 分開記錄。停止的 Sessions 不再出現在側欄／Session 選單，但保留 runtime 資料。
 - 遠端編輯／安全儲存、Git diff／worktree、Browser 導覽／歷史／WebSocket forwarding、DB tunnel／TLS hostname／SQLite／取消，及 SFTP 版本衝突與部分傳輸失敗。
 - 新版雙側欄、Space／Agent 切換、Inspector、窄視窗資料夾選擇器、Git 並排 diff、Markdown 文件／原始碼切換與安全回退、檔案釘選重啟恢復、設定搜尋／主題與資源用量。HERDR／Browser 釘選只驗證本次應用程式工作階段。
@@ -403,7 +403,7 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 
 - Stable macOS Apple Silicon：僅 Apple Silicon（M 系列）；無 Apple Developer ID 簽章／公證，產生 `.dmg`、`.app.tar.gz` 與 updater signature。
 - macOS App 主程式以 `lipo -archs` 驗證必須只有 `arm64`。CLI 產出的 `Yuzora.app.tar.gz` 與 `.sig` 在收集發布 artifacts 時成對命名為 `Yuzora_<version>_aarch64.app.tar.gz` 與 `.sig`，供 metadata 以版本和架構精確比對。
-- Stable Windows x64：本機產生 NSIS `setup.exe`、`.msi` 與 MSI updater signature。
+- Stable Windows x64：只產生 `.msi` 與 MSI updater signature（`src-tauri/tauri.windows.conf.json` 的 `bundle.targets` 為 `["msi"]`，不再產生 NSIS）。
 - Beta macOS／Windows：產生 versioned installers、Apple Silicon updater archive 與 `.sig`，後續產出 per-release `latest.json`。Build environment 有 Tauri updater signing secrets，沒有 contents-write token 或 Apple credentials；macOS 無 Developer ID／notarization，Windows 無 Authenticode。
 
 `build` job 只執行 `bun tauri build`、驗證 Tauri CLI 的實際 bundle paths，並以 Actions artifacts 上傳結果；它不建立或上傳 GitHub Release。Fresh release 與 same-SHA draft recovery 都必須讓兩平台 build 成功。之後獨立的無 checkout `assemble-draft` write job 下載已驗證的 Actions artifacts，先在任何 GitHub Release mutation 前驗證本地 handoff與Stable alias sources：沒有 Release 時才建立暫態 draft `Yuzora v<version>`；已有 Guard 核准的 draft 時，重新驗證 draft／channel、同步並讀回比對 release notes。接著以 `gh release upload --clobber` 上傳全部 versioned assets；Stable 固定檔名 aliases 也以 `--clobber` 覆寫。Draft 只用來避免 matrix 尚未完成時讓部分資產對外可見，不是人工發版佇列，也不是略過重建的信任來源。
@@ -415,13 +415,15 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 | 平台    | 固定檔名                                                                            |
 | ------- | ----------------------------------------------------------------------------------- |
 | macOS   | `Yuzora-macos-aarch64.dmg`                                                        |
-| Windows | `Yuzora-windows-x64-setup.exe`、`Yuzora-windows-x64.msi`                            |
+| Windows | `Yuzora-windows-x64.msi`                                                            |
+
+Windows 只發行 MSI；`Yuzora-windows-x64-setup.exe` 固定連結已停止更新，舊 release 的既有資產不變，不再出現在新 release。
 
 固定檔名如有變更，必須在同一個 PR 更新所有實際 consumer：
 
-- 三個 alias 都要同步 `.github/workflows/release.yml` 與本文件。
-- 產品頁直接使用的 macOS DMG 與 Windows NSIS EXE，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
-- MSI 若新增其他頁面或 script consumer，也要一併更新並補測試。
+- 兩個 alias 都要同步 `.github/workflows/release.yml` 與本文件。
+- 產品頁直接使用的 macOS DMG 與 Windows MSI，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
+- MSI alias 若新增其他頁面或 script consumer，也要一併更新並補測試。
 
 固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
 
@@ -441,14 +443,14 @@ Guard 與後續 build／metadata jobs 都是 `contents: read`：它們可以 che
 Publish 前 workflow 自動驗證：
 
 - Release 仍是 draft、不是 prerelease，且 release body 非空。
-- Release asset inventory 必須精確等於本輪重建的 versioned DMG、NSIS setup EXE、MSI、macOS／NSIS／MSI updater signatures、三個固定檔名別名與 `latest.json`；updater archive／MSI名稱由已驗證 metadata 綁定，任一額外、重複或缺少 asset 都會 fail closed。
+- Release asset inventory 必須精確等於本輪重建的 versioned DMG、Apple Silicon `.app.tar.gz` 與 `.sig`、MSI 與 `.sig`、兩個固定檔名別名（DMG、MSI）與 `latest.json`（共八項）；updater archive／MSI名稱由已驗證 metadata 綁定，任一額外、重複或缺少 asset 都會 fail closed。
 - `latest.json.version` 與 tag 相同，notes 非空。
 - `darwin-aarch64`、`windows-x86_64` 都有非空 URL 與 signature。
 - 不含 Intel macOS、Linux 或 Windows NSIS updater key、不含 Linux 固定別名資產，且 Windows OTA URL 使用 `.msi`。
 
 Stable 全部成功後執行 `gh release edit --draft=false --prerelease=false --latest`，並再次查證 `publishedAt`。任一條件失敗時 workflow 結束為失敗，Release 保持 draft，不會出現部分成功卻永久等待人工 Publish 的正常路徑。
 
-`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，必須等待 macOS／Windows Beta 重建、draft assembly、metadata 產生與上傳全部成功。它驗證 release body、Apple Silicon／MSI-only metadata，以及精確八項 assets：versioned DMG、NSIS EXE 與 `.sig`、MSI 與 `.sig`、Apple Silicon `.app.tar.gz` 與 `.sig`、`latest.json`。所有 Stable fixed aliases、Intel App、額外或缺少的 assets 都會被拒絕；最後只執行 `gh release edit --draft=false --prerelease=true`，不傳入 `--latest`，不改變 `releases/latest`。
+`publish-beta-release` 使用獨立、無 checkout 的 contents-write job，必須等待 macOS／Windows Beta 重建、draft assembly、metadata 產生與上傳全部成功。它驗證 release body、Apple Silicon／MSI-only metadata，以及精確六項 assets：versioned DMG、MSI 與 `.sig`、Apple Silicon `.app.tar.gz` 與 `.sig`、`latest.json`；Beta draft assembly 同樣要求 build 只產出前五項。所有 Stable fixed aliases、Intel App、額外或缺少的 assets 都會被拒絕；最後只執行 `gh release edit --draft=false --prerelease=true`，不傳入 `--latest`，不改變 `releases/latest`。
 
 ---
 
@@ -459,7 +461,7 @@ Release workflow 的 automated publish gate 是 blocking gate；Stable 的 macOS
 受影響平台的主要互動式驗收已在 release PR merge 前完成。Release Published 後仍應儘快確認正式 artifacts 與 updater 路徑：
 
 - macOS DMG 掛載、安裝與首次啟動。
-- Windows NSIS／MSI 安裝；OTA 預期路徑以 MSI 為準。
+- Windows MSI 安裝；OTA 預期路徑以 MSI 為準。
 - 從上一個 stable 版本執行 updater smoke test。
 - 確認 release notes 已揭露 Windows Authenticode 與 macOS Apple 簽章／公證未啟用；記錄 Gatekeeper／SmartScreen 與首次啟動的實機結果。
 
@@ -504,7 +506,6 @@ curl -fsSL \
 至少確認以下 URL 回傳成功：
 
 - `Yuzora-macos-aarch64.dmg`
-- `Yuzora-windows-x64-setup.exe`
 - `Yuzora-windows-x64.msi`
 
 ### OTA smoke test

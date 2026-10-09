@@ -1,0 +1,20 @@
+/* Arc-style backdrop editor. The pad approximates theme/background.ts padColor():
+   hue across, vivid at the top fading to pastel at the bottom. */
+.background-editor { display:flex; flex-direction:column; gap:14px; margin-top:16px; }
+.background-pad { position:relative; height:136px; border:1px solid var(--line-2); border-radius:12px; cursor:crosshair; touch-action:none; user-select:none; background:linear-gradient(to bottom, hsl(0 0% 84% / 0), hsl(0 0% 86% / .8)), linear-gradient(to right, hsl(0 100% 52%), hsl(60 100% 52%), hsl(120 100% 52%), hsl(180 100% 52%), hsl(240 100% 52%), hsl(300 100% 52%), hsl(360 100% 52%)); }
+.background-pad-dot { position:absolute; width:22px; height:22px; margin:-11px 0 0 -11px; padding:0; border:3px solid #fff; border-radius:50%; box-shadow:0 1px 4px rgb(0 0 0 / .35); cursor:grab; }
+.background-pad-dot[data-selected="true"] { width:26px; height:26px; margin:-13px 0 0 -13px; outline:2px solid var(--ink-1); outline-offset:1px; }
+.background-pad-dot:focus-visible { outline:2px solid var(--ring); outline-offset:2px; }
+.background-editor-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.background-swatches { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:16px; }
+.background-swatch { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:0; border:0; border-radius:50%; box-shadow:inset 0 0 0 1px rgb(0 0 0 / .14); cursor:pointer; }
+.background-swatch[aria-pressed="true"] { outline:2px solid var(--ink-1); outline-offset:2px; }
+.background-swatch:focus-visible { outline:2px solid var(--ring); outline-offset:2px; }
+.background-swatch-upload { background:var(--yz-sunk); color:var(--ink-2); box-shadow:inset 0 0 0 1px var(--line-2); }
+.background-swatch-upload > svg { width:15px; height:15px; }
+.background-swatch-saved { position:relative; display:inline-flex; }
+.background-swatch-remove { position:absolute; top:-5px; right:-5px; display:none; align-items:center; justify-content:center; width:16px; height:16px; padding:0; border:0; border-radius:50%; background:var(--ink-1); color:var(--paper-1); cursor:pointer; }
+.background-swatch-remove > svg { width:10px; height:10px; }
+.background-swatch-saved:is(:hover,:focus-within) > .background-swatch-remove { display:inline-flex; }
+.background-image-error { color:var(--destructive); }
+.background-glass-tint { padding:0 20px 14px; }

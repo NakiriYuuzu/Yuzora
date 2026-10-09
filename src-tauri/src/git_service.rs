@@ -508,7 +508,7 @@ pub async fn git_create_branch(
     smart: Option<bool>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        switch_keeping_changes(root, smart.unwrap_or(false), || {
+        switch_keeping_changes(root, smart.unwrap_or(false), start_point.as_deref(), || {
             create_branch(root, &name, start_point.as_deref())
         })
     })
@@ -524,7 +524,7 @@ pub async fn git_checkout_detached(
     smart: Option<bool>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        switch_keeping_changes(root, smart.unwrap_or(false), || {
+        switch_keeping_changes(root, smart.unwrap_or(false), Some(&rev), || {
             checkout_detached(root, &rev)
         })
     })
@@ -540,7 +540,10 @@ pub async fn git_checkout(
     smart: Option<bool>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        switch_keeping_changes(root, smart.unwrap_or(false), || checkout(root, &name))
+        let branch = format!("refs/heads/{name}");
+        switch_keeping_changes(root, smart.unwrap_or(false), Some(&branch), || {
+            checkout(root, &name)
+        })
     })
     .await
 }
@@ -847,10 +850,11 @@ pub async fn git_stash_apply(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     index: u32,
+    oid: String,
     pop: bool,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        stash_apply(root, index, pop)
+        stash_apply(root, index, &oid, pop)
     })
     .await
 }
@@ -861,9 +865,10 @@ pub async fn git_stash_drop(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     repository_root: String,
     index: u32,
+    oid: String,
 ) -> Result<(), String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        stash_drop(root, index)
+        stash_drop(root, index, &oid)
     })
     .await
 }

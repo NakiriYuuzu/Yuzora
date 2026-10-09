@@ -1,9 +1,15 @@
 import { gitFileNameStyle, worktreeFilesFrom, worktreeFileMetadata } from "./git/fileRows"
 import { ChevronDown, ChevronRight, GitCompareArrows } from "lucide-react"
-import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useRef } from "react"
+import { type KeyboardEvent, type MouseEvent, type PointerEvent, useEffect, useMemo, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { logUserAction } from "@/features/logs/userAction"
-import { relativePathWithin } from "@/lib/paths"
+import { canonicalPathKey, isSameOrDescendantPath, nativePathParent, relativePathWithin, workspacePathBasename } from "@/lib/paths"
+import { beginPointerDrag, elementAtPoint, type DragPoint, type PointerDropTarget } from "@/lib/pointerDrag"
+import { remoteWorkspaceCanMove } from "@/lib/remoteFiles"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
+import { requestAppConfirmation } from "@/state/appDialogStore"
+import { terminalDropTargetAt, type TerminalDropTarget } from "@/terminal/terminalDropTargets"
+import { notifyTerminalPathPasteError, pastePathsIntoTerminal } from "@/terminal/terminalPathPaste"
 import { FileIcon } from "../lib/fileIcons"
 import type { FileNode, GitStatus } from "../lib/types"
 import { contextMenuHandler } from "../state/contextMenuStore"
@@ -13,13 +19,34 @@ import { useDiffModalStore } from "../state/diffModalStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { useFileClipboardStore } from "../state/fileClipboardStore"
 import { isMacPlatform } from "@/lib/platform"
-import { copyFilesToClipboard, duplicatePath, pasteFiles } from "./fileClipboard"
+import { copyFilesToClipboard, duplicatePath, moveFilesTo, pasteFiles } from "./fileClipboard"
 
 // Repo-relative form of an absolute node path, matched against the git status
 // (which reports paths relative to the repo root). Uses forward slashes.
 function relativePath(path: string, root: string | null) {
     if (!root) return path
     return relativePathWithin(root, path) ?? path
+}
+
+type TreeDragData =
+    | { kind: "terminal"; terminal: TerminalDropTarget }
+    | { kind: "move"; dir: string }
+    | { kind: "open"; group: number }
+
+// Whether moving `source` into `dir` would change anything.
+function canMoveInto(source: string, dir: string) {
+    if (isSameOrDescendantPath(source, dir)) return false
+    try {
+        return canonicalPathKey(nativePathParent(source)) !== canonicalPathKey(dir)
+    } catch {
+        return false
+    }
+}
+
+// The folder row whose expanded list holds `row`; null at the workspace root.
+function containingFolderRow(row: HTMLElement): HTMLElement | null {
+    return row.closest("li")?.parentElement?.closest("li")
+        ?.querySelector<HTMLElement>(':scope > div > [data-tree-dir="true"]') ?? null
 }
 
 // Controlled node (#59 T4b): expansion + children live in fileTreeStore's
@@ -86,6 +113,67 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
         }
     }
 
+    const disposeDrag = useRef<(() => void) | null>(null)
+    useEffect(() => () => disposeDrag.current?.(), [])
+
+    function resolveDragTarget(point: DragPoint): PointerDropTarget<TreeDragData> | null {
+        const hit = elementAtPoint(point)
+        const terminal = terminalDropTargetAt(hit)
+        const leaf = hit?.closest<HTMLElement>("[data-attachment-key]")
+        if (terminal && leaf) return { element: leaf, data: { kind: "terminal", terminal } }
+        if (useWorkspaceStore.getState().workspacePath !== root) return null
+        const zone = hit?.closest<HTMLElement>("[data-file-tree-root]")
+        const row = hit?.closest<HTMLElement>("[data-tree-path]")
+        if (row || zone) {
+            // SFTP has no in-place move; only runtime-backed remote workspaces do.
+            if (parseRemoteFilePath(root) && !remoteWorkspaceCanMove(root)) return null
+            // A file row stands for the folder that holds it.
+            const folder = row?.dataset.treeDir === "true" ? row : row ? containingFolderRow(row) : null
+            const dir = folder?.dataset.treePath ?? root
+            const element = folder ?? zone
+            if (!element || !isSameOrDescendantPath(root, dir) || !canMoveInto(node.path, dir)) return null
+            return { element, data: { kind: "move", dir } }
+        }
+        const group = hit?.closest<HTMLElement>("[data-editor-group-index]")
+        const index = Number(group?.dataset.editorGroupIndex)
+        if (group && !node.isDir && Number.isInteger(index)) return { element: group, data: { kind: "open", group: index } }
+        return null
+    }
+
+    async function dropOn({ data }: PointerDropTarget<TreeDragData>) {
+        if (data.kind === "terminal") {
+            await pastePathsIntoTerminal(data.terminal, [node.path]).catch(notifyTerminalPathPasteError)
+            return
+        }
+        if (useWorkspaceStore.getState().workspacePath !== root) return
+        if (data.kind === "open") {
+            useWorkspaceStore.getState().openTabInGroup(node.path, data.group)
+            return
+        }
+        const accepted = await requestAppConfirmation({
+            title: t("fileTree.moveConfirm.title"),
+            description: t("fileTree.moveConfirm.description", {
+                name: node.name,
+                target: workspacePathBasename(data.dir)
+            }),
+            confirmLabel: t("fileTree.moveConfirm.confirm"),
+            kind: "warning"
+        })
+        if (accepted) await moveFilesTo(root, [node.path], data.dir)
+    }
+
+    function onPointerDown(event: PointerEvent<HTMLButtonElement>) {
+        const row = event.currentTarget
+        disposeDrag.current = beginPointerDrag<TreeDragData>(event, {
+            label: node.name,
+            autoScroll: () => [
+                row.closest('[data-slot="scroll-area-viewport"], [data-radix-scroll-area-viewport]')
+            ],
+            resolveTarget: resolveDragTarget,
+            onDrop: (target) => void dropOn(target)
+        })
+    }
+
     function onDoubleClick() {
         // Double click keeps the file open as a regular tab.
         if (!node.isDir) openTab(node.path)
@@ -97,8 +185,10 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                 <button
                     type="button"
                     onClick={onClick}
+                    onPointerDown={onPointerDown}
                     onDoubleClick={onDoubleClick}
                     data-tree-path={node.path}
+                    data-pointer-drag-handle="pan-y"
                     data-tree-dir={node.isDir ? "true" : undefined}
                     data-selected={selected ? "true" : undefined}
                     onContextMenu={workspacePath ? (event) => {
@@ -119,7 +209,8 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                             : selected
                               ? "bg-(--yz-hover) hover:bg-(--yz-hover)"
                               : "hover:bg-(--yz-hover)") +
-                        (cut ? " opacity-55" : "")
+                        (cut ? " opacity-55" : "") +
+                        " data-[pointer-drop-target=inside]:bg-(--yz-hover) data-[pointer-drop-target=inside]:shadow-[inset_0_0_0_1.5px_var(--yz-accent)]"
                     }
                 >
                     {node.isDir ? (

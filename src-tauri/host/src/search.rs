@@ -1,4 +1,5 @@
-use grep_regex::RegexMatcherBuilder;
+use grep_matcher::Matcher;
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
 use ignore::WalkBuilder;
 use std::io::Read;
@@ -17,6 +18,11 @@ pub struct SearchMatch {
     pub line: u32,
     pub col: u32,
     pub preview: String,
+    /// Matches inside `preview` as UTF-16 `[start, end)` offsets, found with the
+    /// search's own matcher so case folding (Σ / ς, s / ſ) agrees. Older helpers
+    /// omit it and the UI falls back to its own lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranges: Option<Vec<[u32; 2]>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -36,24 +42,29 @@ pub enum SearchEvent {
     },
 }
 
-fn find_col(line: &str, query: &str, case_sensitive: bool) -> Option<u32> {
-    // Case-insensitive matching must count the column on the *same* lowercased
-    // string the byte offset came from: `to_lowercase()` can change byte lengths
-    // (e.g. 'İ' U+0130 → "i\u{0307}"), so slicing the original `line` by an offset
-    // found in its lowercased form can land mid-char and panic.
-    if case_sensitive {
-        let byte = line.find(query)?;
-        Some(line[..byte].chars().count() as u32)
-    } else {
-        let lower = line.to_lowercase();
-        let byte = lower.find(&query.to_lowercase())?;
-        Some(lower[..byte].chars().count() as u32)
-    }
-}
-
 fn make_preview(line: &str) -> String {
     let trimmed = line.trim();
     trimmed.chars().take(PREVIEW_LEN).collect()
+}
+
+fn preview_ranges(matcher: &RegexMatcher, preview: &str) -> std::io::Result<Vec<[u32; 2]>> {
+    let utf16 = |end: usize| {
+        preview
+            .get(..end)
+            .map(|head| head.encode_utf16().count() as u32)
+    };
+    let mut ranges = Vec::new();
+    matcher
+        .find_iter(preview.as_bytes(), |found| {
+            if let (false, Some(start), Some(end)) =
+                (found.is_empty(), utf16(found.start()), utf16(found.end()))
+            {
+                ranges.push([start, end]);
+            }
+            true
+        })
+        .map_err(std::io::Error::other)?;
+    Ok(ranges)
 }
 
 /// Collects matches for a single file. Stops the search and discards nothing
@@ -63,8 +74,7 @@ fn make_preview(line: &str) -> String {
 /// remaining global match budget); enforcing it inside `matched` keeps a single
 /// pathological file from buffering tens of thousands of matches before emit.
 struct MatchCollector<'a> {
-    query: &'a str,
-    case_sensitive: bool,
+    matcher: &'a RegexMatcher,
     matches: Vec<SearchMatch>,
     budget: usize,
 }
@@ -74,11 +84,25 @@ impl Sink for MatchCollector<'_> {
 
     fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
         let line = String::from_utf8_lossy(mat.bytes());
-        if let Some(col) = find_col(&line, self.query, self.case_sensitive) {
+        // Use the same Unicode case-folding rules as the searcher. Lowercasing
+        // and searching again can discard valid matches (e.g. Σ / ς or s / ſ).
+        if let Some(found) = self
+            .matcher
+            .find(mat.bytes())
+            .map_err(std::io::Error::other)?
+        {
+            // Preserve the zero-based Unicode scalar column in the original
+            // decoded line, even if lowercasing would expand a preceding char.
+            let col = String::from_utf8_lossy(&mat.bytes()[..found.start()])
+                .chars()
+                .count() as u32;
+            let preview = make_preview(&line);
+            let ranges = preview_ranges(self.matcher, &preview)?;
             self.matches.push(SearchMatch {
                 line: mat.line_number().unwrap_or(0) as u32,
                 col,
-                preview: make_preview(&line),
+                preview,
+                ranges: Some(ranges),
             });
             if self.matches.len() >= self.budget {
                 return Ok(false);
@@ -191,8 +215,7 @@ pub fn run_search(
         // global budget, so the total never overshoots TOTAL_MATCH_CAP.
         let budget = ((TOTAL_MATCH_CAP - total_matches) as usize).min(PER_FILE_MATCH_CAP);
         let mut collector = MatchCollector {
-            query,
-            case_sensitive,
+            matcher: &matcher,
             matches: Vec::new(),
             budget,
         };
@@ -260,6 +283,20 @@ mod tests {
                 file_count: 1
             })
         ));
+    }
+
+    #[test]
+    fn unicode_case_insensitive_matches_are_not_discarded() {
+        for (line, query) in [("ς", "Σ"), ("ſ", "s"), ("s", "ſ")] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("a.txt"), format!("{line}\n")).unwrap();
+            let events = collect(tmp.path(), query, false);
+            assert!(
+                matches!(&events[0], SearchEvent::Match { matches, .. } if matches.len() == 1 && matches[0].col == 0),
+                "missing Unicode match: {line:?} / {query:?}: {events:?}"
+            );
+            assert_eq!(collect(tmp.path(), query, true).len(), 1);
+        }
     }
 
     #[test]
@@ -364,6 +401,7 @@ mod tests {
                 line: 1,
                 col: 0,
                 preview: "hi".into(),
+                ranges: None,
             }],
         };
         let d = SearchEvent::Done {
@@ -389,13 +427,70 @@ mod tests {
     }
 
     #[test]
-    fn find_col_handles_variable_length_lowercase() {
-        // U+0130 'İ' lowercases to two chars (i + combining dot above), so a byte
-        // offset taken in the lowercased string can exceed the original line's byte
-        // length. Slicing the original line by that offset used to panic; col is now
-        // computed on the same lowercased string it was found in.
-        // lowercase("İİx") == "i\u{0307}i\u{0307}x"; 'x' is char index 4.
-        assert_eq!(find_col("İİx", "x", false), Some(4));
+    fn columns_count_original_unicode_scalars() {
+        for case_sensitive in [false, true] {
+            for (line, col) in [("İİx", 2), ("😀éx", 2), ("中文 x", 3)] {
+                let tmp = tempfile::tempdir().unwrap();
+                std::fs::write(tmp.path().join("a.txt"), format!("{line}\n")).unwrap();
+                let events = collect(tmp.path(), "x", case_sensitive);
+                let SearchEvent::Match { matches, .. } = &events[0] else {
+                    panic!("missing match")
+                };
+                assert_eq!((matches[0].line, matches[0].col), (1, col));
+                assert_eq!(matches[0].preview, line);
+            }
+        }
+    }
+
+    #[test]
+    fn preview_ranges_follow_the_matcher_in_utf16_offsets() {
+        // Case folding the UI's toLowerCase cannot reproduce, a surrogate pair
+        // before the hit, and leading whitespace trimmed from the preview.
+        for (line, query, preview, ranges) in [
+            ("ΣΑΣ x ς", "σ", "ΣΑΣ x ς", vec![[0, 1], [2, 3], [6, 7]]),
+            ("😀s ſ", "s", "😀s ſ", vec![[2, 3], [4, 5]]),
+            ("   ab ab", "b", "ab ab", vec![[1, 2], [4, 5]]),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("a.txt"), format!("{line}\n")).unwrap();
+            let events = collect(tmp.path(), query, false);
+            let SearchEvent::Match { matches, .. } = &events[0] else {
+                panic!("missing match for {query:?}")
+            };
+            assert_eq!(matches[0].preview, preview);
+            assert_eq!(matches[0].ranges.as_deref(), Some(ranges.as_slice()));
+        }
+        assert_eq!(
+            serde_json::to_string(&SearchMatch {
+                line: 1,
+                col: 0,
+                preview: "ab".into(),
+                ranges: Some(vec![[1, 2]]),
+            })
+            .unwrap(),
+            r#"{"line":1,"col":0,"preview":"ab","ranges":[[1,2]]}"#
+        );
+    }
+
+    #[test]
+    fn empty_query_finishes_without_matches_and_metacharacters_stay_literal() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a.b\naxb\n").unwrap();
+        assert!(matches!(
+            collect(tmp.path(), "", false).as_slice(),
+            [SearchEvent::Done {
+                truncated: false,
+                file_count: 0
+            }]
+        ));
+        for case_sensitive in [false, true] {
+            let events = collect(tmp.path(), ".", case_sensitive);
+            let SearchEvent::Match { matches, .. } = &events[0] else {
+                panic!("missing match")
+            };
+            assert_eq!(matches.len(), 1);
+            assert_eq!((matches[0].line, matches[0].col), (1, 1));
+        }
     }
 
     #[test]

@@ -52,6 +52,7 @@ Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact 
 - 產品範圍：terminal 統一由 HERDR 提供；編輯器不含 LSP；Browser 開啟網站、已執行的服務及工作區 HTML（受限自訂資源協定），支援選取元素複製 AI 上下文；不提供專案 Dev Server 管理。Markdown／SVG／圖片檢視仍屬編輯器功能。見 `.yuuzu/adr/0004-herdr-terminals-browser-only.html`。
 - HERDR 主機路由：Windows 使用原生 named pipe，WSL 預設關閉並由設定啟用；macOS／Linux 原生及 SSH runtime 保留。來源切換先驗證 client／各 Session，相容性 gate 不放寬，不自動停止 server；原生來源保存後重啟 Yuzora 生效。見 `.yuuzu/adr/0005-native-windows-opt-in-wsl.html`。
 - HERDR 工具：`herdrFeatures.ts`／shared `herdr_features.rs` 提供封閉 typed 操作；主機與 named Session 必須明確選取。完整 Session 畫面透過 PTY 啟動官方 `herdr … client`，提供搜尋、Copy mode、Kitty 圖形與原生 popup；此 PTY 僅承載官方 client，不新增獨立 shell。關閉僅釋放 client，同 Session 的一般 pane connectors 隨之恢復。Windows x86_64 SSH 使用 helper stdio 與 named pipe，不走 Unix direct-streamlocal。
+- HERDR machines：遠端 HERDR Session 採官方 saved machines（`herdr machine …`／`--machine`，需 0.9.2+），host `herdr_machines.rs` 以 argv 包裝 CLI；前端 `machinesIpc.ts`／`machinesStore`／`MachinesBridge`。遠端即時畫面只在官方 client；`machine add`／`reconnect` 以白名單走同一個官方 client PTY。不讀寫官方 catalog 檔。見 `.yuuzu/adr/0007-herdr-saved-machines-remote-sessions.html`。
 - 路徑 alias：`@/` → `src/`。
 
 **i18n**：`src/lib/i18n/locales/{en,zh-TW}/<ns>.json`，`import.meta.glob` 自動註冊——新增 namespace 只要在兩個語系各放一個 JSON；UI 文字兩語系都要填。

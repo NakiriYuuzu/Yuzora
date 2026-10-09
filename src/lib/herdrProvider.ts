@@ -16,6 +16,8 @@ interface RuntimeHost {
   sessions: HerdrNamedSession[]
   /** The helper accepts a pointer cell on stream `scroll`; older helpers end the stream on it. */
   scrollCell: boolean
+  /** The helper accepts stream `mouse`; older helpers end the stream on it. */
+  terminalMouse: boolean
 }
 const hosts = new Map<string, RuntimeHost>()
 const streams = new Map<string, { host: RuntimeHost; streamId: string }>()
@@ -50,12 +52,13 @@ export function registerRuntimeHost(host: ConnectedHost, binary: string, label: 
   if (host.owner.hostId === LOCAL_HOST_ID) throw new Error("Local runtime identity is reserved")
   const previous = hosts.get(host.owner.hostId)
   const scrollCell = host.hello.methods.includes("herdrScrollCell")
+  const terminalMouse = host.hello.methods.includes("herdrTerminalMouse")
   if (previous && sameConnection(previous.owner, host.owner)) {
-    Object.assign(previous, { binary, label, kind, scrollCell })
+    Object.assign(previous, { binary, label, kind, scrollCell, terminalMouse })
     return
   }
   if (previous) unregisterRuntimeHost(previous.owner)
-  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [], scrollCell })
+  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [], scrollCell, terminalMouse })
 }
 
 export function unregisterRuntimeHost(owner: ConnectionOwner): void {
@@ -196,6 +199,11 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
       return nativeInvoke<T>("host_stream_close", { owner: stream.host.owner, streamId: stream.streamId })
     }
     ensureCurrent(stream.host)
+    if (command === "herdr_terminal_mouse") {
+      if (!stream.host.terminalMouse) return undefined as T
+      const operation = { command: "mouse", action: args.action, column: args.column, row: args.row, modifiers: args.modifiers }
+      return nativeInvoke<T>("host_stream_command", { owner: stream.host.owner, streamId: stream.streamId, operation })
+    }
     const operation = command === "herdr_terminal_input" ? { command: "input", text: args.text, bytesBase64: args.bytesBase64 }
       : command === "herdr_terminal_resize" ? { command: "resize", cols: args.cols, rows: args.rows }
         : command === "herdr_terminal_scroll" ? {

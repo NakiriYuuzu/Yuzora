@@ -47,10 +47,12 @@ async function runOutcomeOp(name: string, fn: () => Promise<GitOperationOutcome>
 }
 
 const BLOCKED_BY_LOCAL_CHANGES = /Your local changes to the following files would be overwritten by checkout/
+const BLOCKED_BY_UNTRACKED = /untracked working tree files would be overwritten by checkout/
 
 /**
  * Runs a checkout. When local changes block it, offers JetBrains' Smart
- * Checkout: stash them, switch, and restore them on the new branch.
+ * Checkout: stash them, switch, and restore them on the new branch. Untracked
+ * files the target also tracks come back over its versions.
  */
 export async function switchBranch(
     root: string,
@@ -59,10 +61,13 @@ export async function switchBranch(
     run: (smart: boolean) => Promise<GitOperationOutcome>
 ): Promise<boolean> {
     if (await useGitStore.getState().runOp(name, () => run(false))) return true
-    if (!BLOCKED_BY_LOCAL_CHANGES.test(useGitStore.getState().lastError ?? "")) return false
+    const error = useGitStore.getState().lastError ?? ""
+    const untracked = BLOCKED_BY_UNTRACKED.test(error)
+    if (!untracked && !BLOCKED_BY_LOCAL_CHANGES.test(error)) return false
+    const description = t("gitActions.checkoutProblem", { target })
     const smart = await requestAppConfirmation({
         title: t("gitActions.checkoutProblemTitle"),
-        description: t("gitActions.checkoutProblem", { target }),
+        description: untracked ? `${description}\n\n${t("gitActions.checkoutProblemUntracked", { target })}` : description,
         confirmLabel: t("gitActions.smartCheckout"),
         cancelLabel: t("gitActions.dontCheckout"),
         kind: "warning"

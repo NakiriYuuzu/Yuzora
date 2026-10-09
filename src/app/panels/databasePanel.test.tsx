@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { EditorView } from "@codemirror/view"
 
 import { DatabasePanel, reorderColumns } from "@/app/panels/DatabasePanel"
 import { formatDbValue } from "@/lib/types"
+import { pointerDrag, stubElementFromPoint } from "@/test/pointerDrag"
 import * as dbTypes from "@/lib/types"
 import i18n from "@/lib/i18n"
 import type {
@@ -408,6 +409,18 @@ async function openWithCachedLifecycle(
   }
   throw new Error("expected cached result owner")
 }
+
+/** Maps x to a column header by 100px slots; y below the header hits a body cell. */
+function stubHeaderHitTest(): () => void {
+  return stubElementFromPoint(({ x, y }) => (
+    y > 100
+      ? screen.getAllByRole("cell")[0] ?? null
+      : screen.getAllByRole("columnheader")[Math.min(Math.floor(x / 100), 2)] ?? null
+  ))
+}
+
+/** The click swallower of a finished drag is removed on a 0ms timer. */
+const settleDragClick = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 5)))
 
 function headerTexts(): string[] {
   return screen.getAllByRole("columnheader").map((c) => c.textContent ?? "")
@@ -1165,14 +1178,21 @@ describe("DatabasePanel result table", () => {
     await waitFor(() => expect(idHeader()).toHaveAttribute("aria-sort", "none"))
   })
 
+  let restoreHitTest: (() => void) | null = null
+  afterEach(() => {
+    restoreHitTest?.()
+    restoreHitTest = null
+  })
+
   it("drag-reorder keeps sort keyed to the original column, not the display slot", async () => {
     await openWithResult()
     render(<DatabasePanel />)
+    restoreHitTest = stubHeaderHitTest()
 
     // Drag "id" (display 0, original 0) onto "age" (display 2) → [name, age, id].
-    fireEvent.dragStart(screen.getByRole("button", { name: "Sort by id" }))
-    fireEvent.drop(screen.getByRole("button", { name: "Sort by age" }))
+    pointerDrag(screen.getByRole("button", { name: "Sort by id" }), [{ x: 20, y: 10 }, { x: 250, y: 10 }])
     expect(headerTexts()).toEqual(["name", "age", "id"])
+    await settleDragClick()
 
     // The header now in display slot 0 is still the original "name" column.
     mockQueryRun.mockClear()
@@ -1183,13 +1203,35 @@ describe("DatabasePanel result table", () => {
     expect(mockQueryRun).not.toHaveBeenCalled()
   })
 
+  it("a drag does not toggle sorting", async () => {
+    await openWithResult()
+    render(<DatabasePanel />)
+    restoreHitTest = stubHeaderHitTest()
+
+    const id = screen.getByRole("button", { name: "Sort by id" })
+    pointerDrag(id, [{ x: 20, y: 10 }, { x: 150, y: 10 }])
+    expect(headerTexts()).toEqual(["name", "id", "age"])
+    fireEvent.click(id)
+    for (const th of screen.getAllByRole("columnheader")) expect(th).toHaveAttribute("aria-sort", "none")
+  })
+
+  it("dragging with the pointer below the header still reorders", async () => {
+    await openWithResult()
+    render(<DatabasePanel />)
+    restoreHitTest = stubHeaderHitTest()
+
+    pointerDrag(screen.getByRole("button", { name: "Sort by id" }), [{ x: 20, y: 10 }, { x: 250, y: 400 }])
+    expect(headerTexts()).toEqual(["name", "age", "id"])
+  })
+
   it("preserves a dragged order when the same columns come back, resets on new columns", async () => {
     await openWithResult()
     render(<DatabasePanel />)
+    restoreHitTest = stubHeaderHitTest()
 
-    fireEvent.dragStart(screen.getByRole("button", { name: "Sort by id" }))
-    fireEvent.drop(screen.getByRole("button", { name: "Sort by age" }))
+    pointerDrag(screen.getByRole("button", { name: "Sort by id" }), [{ x: 20, y: 10 }, { x: 250, y: 10 }])
     expect(headerTexts()).toEqual(["name", "age", "id"])
+    await settleDragClick()
 
     // A page-local header sort keeps the dragged display order.
     mockQueryRun.mockClear()

@@ -133,7 +133,8 @@ interface HerdrState {
     mode: HerdrTerminalMode,
     role: HerdrTerminalRole
   ) => void
-  releaseAttachment: (attachmentKey: string) => Promise<void>
+  /** `after` delays only the connector release IPC (e.g. behind a mouse flush); the entry goes at once. */
+  releaseAttachment: (attachmentKey: string, after?: Promise<unknown>) => Promise<void>
   releaseAttachmentsForPage: (pagePath: string) => Promise<void>
   releaseAllAttachments: () => Promise<void>
   createTerminalInSelectedSpace: () => Promise<HerdrCreateTerminalResult | null>
@@ -1032,14 +1033,16 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     })
   },
 
-  async releaseAttachment(attachmentKey) {
+  async releaseAttachment(attachmentKey, after) {
     const record = get().attachments.get(attachmentKey)
     if (!record) return
+    // Dropped right away: a remount may register the same key before `after` settles.
     set((state) => {
       const attachments = new Map(state.attachments)
       attachments.delete(attachmentKey)
       return { attachments }
     })
+    await after?.catch(() => undefined)
     // Never pane.close — release connector only.
     await herdrTerminalRelease(record.sessionId).catch(() => undefined)
   },

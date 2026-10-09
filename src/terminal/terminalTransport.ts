@@ -2,6 +2,7 @@
 
 import {
   herdrTerminalInput,
+  herdrTerminalMouse,
   herdrTerminalOpen,
   herdrTerminalRelease,
   herdrTerminalResize,
@@ -12,6 +13,7 @@ import { readPaneScroll, setPaneScroll } from "./herdrScrollIpc"
 import { recordHerdrTerminalMetric, timeHerdrTerminalIpc } from "./herdrTerminalDiagnostics"
 import type { PaneScrollController, PaneScrollInfo } from "./herdrScrollController"
 import type {
+  HerdrMouseAction,
   HerdrTerminalEvent,
   HerdrTerminalMode,
   HerdrTerminalRole
@@ -109,6 +111,8 @@ export interface TerminalTransport {
   paste(text: string): Promise<void>
   resize(cols: number, rows: number): Promise<void>
   scroll?(delta: number, cell?: TerminalCell): Promise<void>
+  /** Best-effort left-button event; resolves once the queued events are sent. */
+  mouse?(action: HerdrMouseAction, cell: TerminalCell, modifiers: number): Promise<void>
   release(): Promise<void>
   /**
    * Clear the active connector without sending a backend release. Component
@@ -139,6 +143,22 @@ const frameDecoder = typeof TextDecoder !== "undefined"
   ? new TextDecoder("utf-8", { fatal: false })
   : null
 const inputEncoder = new TextEncoder()
+
+// Removing one delimiter can join its neighbours into a new one ("\x1b[2" +
+// delimiter + "01~"), which would end the paste early and deliver the rest of
+// the text as typed keystrokes. The kept text is a stack that never holds a
+// delimiter, so one that forms is dropped as it appears, in linear time.
+function stripPasteDelimiters(text: string): string {
+  if (!text.includes("\x1b")) return text
+  const kept: string[] = []
+  for (const char of text) {
+    kept.push(char)
+    if (char !== "~" || kept.length < 6) continue
+    const tail = kept.slice(-6).join("")
+    if (tail === "\x1b[200~" || tail === "\x1b[201~") kept.length -= 6
+  }
+  return kept.join("")
+}
 
 function decodeFrameBytes(bytesBase64: string): string {
   try {
@@ -186,6 +206,8 @@ export interface HerdrTerminalTransportOptions {
    * even when pane scrolling is otherwise the preferred or only transport.
    */
   applicationWheelEnabled?: () => boolean
+  /** True when the connector accepts `terminal.mouse` (HERDR 0.9.2+). */
+  mouseEnabled?: () => boolean
   /** Publish the authoritative pane state returned by pane.scroll without another read. */
   onPaneScroll?: (state: PaneScrollInfo) => void
   /** Share the scrollbar's optimistic position and immediate writer. */
@@ -201,7 +223,8 @@ export interface HerdrTerminalTransportOptions {
 }
 
 export interface HerdrTerminalTransport extends TerminalTransport {
-  detach(): void
+  /** Resolves once queued pointer events have been handed to HERDR; release the connector after it. */
+  detach(): Promise<void>
   detachSession(): string | null
 }
 
@@ -219,6 +242,7 @@ export function createHerdrTerminalTransport(
     scrollEnabled,
     terminalScrollEnabled,
     applicationWheelEnabled,
+    mouseEnabled,
     onPaneScroll,
     paneScrollController,
     onAttachment,
@@ -238,6 +262,14 @@ export function createHerdrTerminalTransport(
   let disposed = false
   type InputQueue = { frames: Array<{ text: string; paste: boolean; bytes: number }>; bytes: number; drain: Promise<void> | null }
   let inputQueue: InputQueue | null = null
+  /**
+   * Each command is a separate IPC that may run concurrently, so pointer
+   * events wait for the previous one: HERDR must see down, drag, up in order.
+   */
+  let mouseQueue: Array<{ action: HerdrMouseAction; cell: TerminalCell; modifiers: number }> = []
+  let mouseDrain: Promise<void> | null = null
+  /** The pointer event currently on the wire, if any. */
+  let mouseInFlight: Promise<void> | null = null
   let pendingScrollDelta = 0
   let pendingScrollCell: TerminalCell | undefined
   /** Wheel events behind pendingScrollDelta; an application gets one report each. */
@@ -285,6 +317,7 @@ export function createHerdrTerminalTransport(
   const discardInput = () => {
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
     inputQueue = null
+    mouseQueue = []
   }
   const failInput = (queue: InputQueue, message: string) => {
     if (inputQueue !== queue) return
@@ -446,7 +479,7 @@ export function createHerdrTerminalTransport(
     },
     write: (data) => enqueueInput(data, false),
     paste: (text) => {
-      const payload = text.replace(/\r\n?/g, "\n").replaceAll("\x1b[200~", "").replaceAll("\x1b[201~", "")
+      const payload = stripPasteDelimiters(text.replace(/\r\n?/g, "\n"))
       return payload ? enqueueInput("\x1b[200~" + payload + "\x1b[201~", true) : Promise.resolve()
     },
     async resize(cols, rows) {
@@ -614,7 +647,48 @@ export function createHerdrTerminalTransport(
       scrollDrain = drain
       return drain
     },
+    mouse(action, cell, modifiers) {
+      if (disposed || !sessionId || mode !== "control" || mouseEnabled?.() !== true) return Promise.resolve()
+      // Only the latest position of a queued drag matters.
+      if (action === "drag" && mouseQueue.at(-1)?.action === "drag") mouseQueue.pop()
+      mouseQueue.push({ action, cell, modifiers })
+      mouseDrain ??= (async () => {
+        await Promise.resolve()
+        try {
+          while (mouseQueue.length) {
+            const id = sessionId
+            if (disposed || !id || mode !== "control") break
+            const event = mouseQueue.shift()!
+            mouseInFlight = herdrTerminalMouse(id, event.action, event.cell, event.modifiers)
+            await mouseInFlight
+            mouseInFlight = null
+          }
+        } catch {
+          // Delivery is unknown; never replay part of a gesture.
+        } finally {
+          mouseQueue = []
+          mouseDrain = null
+          mouseInFlight = null
+        }
+      })()
+      return mouseDrain
+    },
     detach() {
+      // A gesture ended by the teardown (dispose sends `up`) is still queued:
+      // hand it to HERDR before the session goes, so the child is not left
+      // with a pressed button. Each IPC may run concurrently, so every event
+      // waits for the one before it; with nothing on the wire the first goes
+      // out right away, ahead of the attachment release.
+      const id = sessionId
+      let flushed: Promise<void> = Promise.resolve()
+      if (id && mode === "control" && !disposed && mouseQueue.length) {
+        let previous: Promise<unknown> | null = mouseInFlight
+        for (const { action, cell, modifiers } of mouseQueue) {
+          const send = () => herdrTerminalMouse(id, action, cell, modifiers)
+          previous = previous ? previous.catch(() => undefined).then(send) : send()
+        }
+        flushed = previous!.then(() => undefined, () => undefined)
+      }
       discardInput()
       discardScroll()
       disposed = true
@@ -622,6 +696,7 @@ export function createHerdrTerminalTransport(
       eventHandler = null
       sessionId = null
       lastSeq = null
+      return flushed
     },
     detachSession() {
       discardInput()

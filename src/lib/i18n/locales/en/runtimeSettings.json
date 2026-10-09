@@ -43,7 +43,7 @@
   "managedHint": "Use the verified version bundled with this Yuzora release.",
   "installedHint": "Detect HERDR on this host. Missing or incompatible versions block applying; another source is never silently substituted.",
   "customLocalHint": "Specify an absolute HERDR executable path on this computer.",
-  "customRemoteHint": "Specify an absolute Linux/macOS path inside the selected host. Do not use a Windows path for WSL.",
+  "customRemoteHint": "Specify an absolute path inside the selected host: /opt/herdr/herdr on Linux or macOS, C:\\Tools\\herdr.exe on Windows. Do not use a Windows path for WSL.",
   "customPath": "Custom executable path",
   "compatible": "Compatible",
   "incompatible": "Incompatible",
@@ -53,5 +53,12 @@
   "notRunning": "Not running",
   "server": "Server",
   "blocked": "Cannot apply this selection",
-  "preserveSessions": "Choose a client compatible with the existing server. If a server change is needed, save work and review the affected Sessions above first. Yuzora will not stop them automatically."
+  "preserveSessions": "Choose a client compatible with the existing server. If a server change is needed, save work and review the affected Sessions above first. Yuzora will not stop them automatically.",
+  "customLocalHintWindows": "Specify the full path of herdr.exe on this computer, for example C:\\Tools\\herdr.exe. Quotes around the path are removed automatically.",
+  "restartNow": "Restart Yuzora now",
+  "restartBlockedDirty": "Save or discard unsaved editor changes before restarting.",
+  "customMissingHint": "The saved custom HERDR can't be run. Switch back to the bundled version to keep working.",
+  "revertToBundled": "Switch back to bundled version",
+  "revertToBundledRestart": "Switch back to bundled version and restart",
+  "revertSavedManualRestart": "Switched to the bundled version. Save your work, then restart Yuzora manually."
 }

@@ -11,7 +11,9 @@ use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yuzora_host::herdr_limits::MAX_NDJSON_LINE_BYTES;
 use yuzora_host::herdr_runtime::{inspect_documents, session_names, RuntimeBinaryCheck};
-use yuzora_host::herdr_service::HerdrBinarySource;
+use yuzora_host::herdr_service::{
+    normalize_custom_path, require_exe_on_windows, HerdrBinarySource,
+};
 use yuzora_host::protocol::{Operation, PROTOCOL_VERSION};
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -362,10 +364,26 @@ fn resource_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub async fn host_probe(
+    app: tauri::AppHandle,
     ssh: tauri::State<'_, SshState>,
     target: HostTarget,
 ) -> Result<HostProbe, String> {
-    probe(&target, &ssh.0).await
+    probe_allowed(
+        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
+        &target,
+        &ssh.0,
+    )
+    .await
+}
+
+/// Probing honours the WSL opt-out like host_prepare and host_runtime_check.
+async fn probe_allowed(
+    preferences: &crate::runtime_preferences::RuntimePreferencesState,
+    target: &HostTarget,
+    ssh: &SshManager,
+) -> Result<HostProbe, String> {
+    crate::runtime_preferences::require_wsl_enabled(preferences, target)?;
+    probe(target, ssh).await
 }
 
 #[derive(Serialize)]
@@ -396,7 +414,13 @@ fn select_host_binary(
             .installed_herdr
             .clone()
             .ok_or("herdr-not-found-on-selected-host")?,
-        HerdrBinarySource::Custom => custom_path.ok_or("herdr-custom-path-required")?.to_string(),
+        HerdrBinarySource::Custom => {
+            let path = normalize_custom_path(custom_path.ok_or("herdr-custom-path-required")?);
+            if info.os == "windows" {
+                require_exe_on_windows(Path::new(&path), true)?;
+            }
+            path
+        }
     };
     if (if info.os == "windows" {
         !crate::host_windows::is_windows_path(&binary)
@@ -447,21 +471,32 @@ async fn runtime_metadata(
     serde_json::from_slice(&bytes).map_err(|error| format!("invalid-runtime-json: {error}"))
 }
 
+/// Runs one remote command per document; `allowed` is re-read before each, so
+/// turning WSL off mid-inspection stops at the next command.
 async fn inspect_host_binary(
     target: &HostTarget,
-    ssh: &SshManager,
+    ssh: Option<&SshManager>,
     binary: &str,
+    allowed: &(dyn Fn() -> Result<(), String> + Sync),
 ) -> Result<RuntimeBinaryCheck, String> {
-    let schema =
-        runtime_metadata(target, Some(ssh), binary, "default", "api schema --json").await?;
-    let sessions =
-        runtime_metadata(target, Some(ssh), binary, "default", "session list --json").await?;
+    allowed()?;
+    let schema = runtime_metadata(target, ssh, binary, "default", "api schema --json").await?;
+    allowed()?;
+    let sessions = runtime_metadata(target, ssh, binary, "default", "session list --json").await?;
     let mut statuses = Vec::new();
     for name in session_names(&sessions)? {
-        let status = runtime_metadata(target, Some(ssh), binary, &name, "status --json").await?;
+        allowed()?;
+        let status = runtime_metadata(target, ssh, binary, &name, "status --json").await?;
         statuses.push((name, status));
     }
     inspect_documents(binary.to_string(), schema, statuses)
+}
+
+fn wsl_still_allowed(app: &tauri::AppHandle, target: &HostTarget) -> Result<(), String> {
+    crate::runtime_preferences::require_wsl_enabled(
+        &app.state::<crate::runtime_preferences::RuntimePreferencesState>(),
+        target,
+    )
 }
 
 #[tauri::command]
@@ -473,9 +508,13 @@ pub async fn host_runtime_check(
     source: HerdrBinarySource,
     custom_path: Option<String>,
 ) -> Result<HostRuntimeCheck, String> {
+    // Re-read before every remote step: WSL may be turned off meanwhile.
+    let wsl_allowed = || wsl_still_allowed(&app, &target);
+    wsl_allowed()?;
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
     }
+    wsl_allowed()?;
     let info = probe(&target, &ssh.0).await?;
     let platform = format!("{}-{}", info.os, info.arch);
     let bytes = tokio::fs::read(resource_root(&app)?.join(format!("{platform}.json")))
@@ -489,6 +528,7 @@ pub async fn host_runtime_check(
     let artifact_identity = hash(&bytes);
     let directory = format!("{}-{platform}-{artifact_identity}", manifest.version);
     let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
+    wsl_allowed()?;
     let exists = if info.os == "windows" {
         crate::host_windows::execute(&target, Some(&ssh.0), &format!("if (Test-Path -LiteralPath {} -PathType Leaf) {{ [Console]::Write('yes') }} else {{ [Console]::Write('no') }}", crate::host_windows::quote(&binary)?), &[], MAX_PROBE_OUTPUT_BYTES).await? == b"yes"
     } else {
@@ -508,7 +548,7 @@ pub async fn host_runtime_check(
         return Err(format!("herdr-not-executable-on-selected-host: {binary}"));
     }
     let check = if exists {
-        Some(inspect_host_binary(&target, &ssh.0, &binary).await?)
+        Some(inspect_host_binary(&target, Some(&ssh.0), &binary, &wsl_allowed).await?)
     } else {
         None
     };
@@ -533,9 +573,14 @@ pub async fn host_prepare(
     source: HerdrBinarySource,
     custom_path: Option<String>,
 ) -> Result<PreparedHost, String> {
+    // Re-read before every remote step: WSL may be turned off while this
+    // probes, deploys and inspects the distribution.
+    let wsl_allowed = || wsl_still_allowed(&app, &target);
+    wsl_allowed()?;
     if let HostTarget::Wsl { distro } = &target {
         crate::host_wsl::verify_identity(&host_id, distro).await?;
     }
+    wsl_allowed()?;
     let info = probe(&target, &ssh.0).await?;
     let platform = format!("{}-{}", info.os, info.arch);
     let root = resource_root(&app)?;
@@ -555,6 +600,7 @@ pub async fn host_prepare(
         platform,
         hash(&manifest_bytes)
     );
+    wsl_allowed()?;
     let helper = deploy_file(
         &target,
         Some(&ssh.0),
@@ -571,6 +617,7 @@ pub async fn host_prepare(
     .await?;
     let binary = select_host_binary(&info, source, custom_path.as_deref(), &directory)?;
     if source == HerdrBinarySource::Default {
+        wsl_allowed()?;
         deploy_file(
             &target,
             Some(&ssh.0),
@@ -591,6 +638,7 @@ pub async fn host_prepare(
                 .path
                 .strip_prefix(&format!("{platform}/"))
                 .ok_or("invalid-runtime-file")?;
+            wsl_allowed()?;
             deploy_file(
                 &target,
                 Some(&ssh.0),
@@ -605,7 +653,7 @@ pub async fn host_prepare(
     }
     // Recheck the actual chosen binary and every running Session before replacing
     // the helper connection or allowing the frontend to persist new paths.
-    inspect_host_binary(&target, &ssh.0, &binary)
+    inspect_host_binary(&target, Some(&ssh.0), &binary, &wsl_allowed)
         .await?
         .require_compatible()?;
     let connection = state
@@ -673,6 +721,41 @@ mod tests {
             .unwrap();
             assert_eq!(schema["description"].as_str().unwrap().len(), size - 18);
         }
+    }
+
+    #[tokio::test]
+    async fn inspection_stops_at_the_next_command_once_wsl_is_turned_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls.log");
+        let binary = dir.path().join("herdr");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {}\nif [ \"$1\" = session ]; then printf '%s' '{{\"sessions\":[{{\"name\":\"work\",\"running\":true}}]}}'; else printf '{{}}'; fi\n",
+                shell_quote(log.to_str().unwrap()).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Allowed for the schema and the Session list, then WSL goes off.
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let allowed = || {
+            if checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2 {
+                Err(crate::runtime_preferences::WSL_DISABLED_ERROR.to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result =
+            inspect_host_binary(&HostTarget::Local, None, binary.to_str().unwrap(), &allowed).await;
+        assert_eq!(
+            result.unwrap_err(),
+            crate::runtime_preferences::WSL_DISABLED_ERROR
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "api schema --json\nsession list --json\n"
+        );
     }
 
     #[tokio::test]
@@ -814,5 +897,55 @@ mod tests {
         .await
         .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"user modification");
+    }
+}
+
+#[cfg(test)]
+mod custom_path_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn herdr_host_probe_refuses_wsl_when_disabled() {
+        let preferences = crate::runtime_preferences::RuntimePreferencesState::default();
+        let ssh = SshManager::with_log(Box::new(|_| {}));
+        let target = HostTarget::Wsl {
+            distro: "Ubuntu".into(),
+        };
+        let error = probe_allowed(&preferences, &target, &ssh)
+            .await
+            .unwrap_err();
+        assert_eq!(error, crate::runtime_preferences::WSL_DISABLED_ERROR);
+    }
+
+    fn probe(os: &str) -> HostProbe {
+        HostProbe {
+            os: os.into(),
+            arch: "x86_64".into(),
+            home: "/home/u".into(),
+            installed_herdr: None,
+        }
+    }
+
+    fn custom(os: &str, path: &str) -> Result<String, String> {
+        select_host_binary(
+            &probe(os),
+            HerdrBinarySource::Custom,
+            Some(path),
+            "candidate",
+        )
+    }
+
+    #[test]
+    fn herdr_remote_custom_path_is_normalized_and_exe_checked_on_windows_only() {
+        assert_eq!(
+            custom("windows", r#"  "C:\Program Files\herdr\herdr.exe"  "#).unwrap(),
+            r"C:\Program Files\herdr\herdr.exe"
+        );
+        let error = custom("windows", r"C:\tools\herdr.cmd").unwrap_err();
+        assert!(error.starts_with("herdr-custom-path-not-exe"), "{error}");
+        // Unix-like remotes keep extensionless binaries and quote stripping.
+        assert_eq!(custom("linux", "'/opt/herdr'").unwrap(), "/opt/herdr");
+        assert_eq!(custom("macos", "/opt/herdr").unwrap(), "/opt/herdr");
+        assert!(custom("linux", "relative/herdr").is_err());
     }
 }

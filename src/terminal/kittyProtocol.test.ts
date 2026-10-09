@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest"
 import { KittyGraphics, KittyStreamParser, MAX_KITTY_BYTES, type KittyToken } from "./kittyProtocol"
 
 function target() {
-  const reply = vi.fn(), dispose = vi.fn(), changed = vi.fn()
+  const reply = vi.fn(), dispose = vi.fn(), changed = vi.fn(), advance = vi.fn(async () => undefined)
   const load = vi.fn(async (bytes: Uint8Array, width: number, height: number) => ({ image: bytes, width, height }))
-  const graphics = new KittyGraphics({ load, dispose, changed, reply, cursor: () => ({ col: 4, row: 8 }) })
-  return { graphics, load, reply, dispose }
+  const graphics = new KittyGraphics({ load, dispose, changed, reply, advance, cursor: () => ({ col: 4, row: 8 }), cell: () => ({ width: 10, height: 20 }) })
+  return { graphics, load, reply, dispose, advance }
 }
 function command(control: Record<string, string>, payload = ""): Extract<KittyToken, { type: "graphics" }> {
   return { type: "graphics", control, payload }
@@ -45,6 +45,28 @@ describe("HERDR inline graphics", () => {
     expect(graphics.placements.size).toBe(1)
     expect(graphics.placements.get("9:4")?.cols).toBe(5)
     expect(reply).not.toHaveBeenCalled()
+  })
+  it("moves the cursor past each placement unless the client sends C=1", async () => {
+    const { graphics, advance } = target()
+    await graphics.accept(command({ a: "T", i: "9", f: "32", s: "1", v: "1", q: "2" }, pixel))
+    expect(advance).toHaveBeenLastCalledWith(1, 1)
+    await graphics.accept(command({ a: "p", i: "9", p: "2", X: "15", Y: "25", q: "2" }))
+    expect(advance).toHaveBeenLastCalledWith(2, 2)
+    await graphics.accept(command({ a: "p", i: "9", p: "3", c: "7", r: "3", X: "15", q: "2" }))
+    expect(advance).toHaveBeenLastCalledWith(7, 3)
+    advance.mockClear()
+    await graphics.accept(command({ a: "T", i: "10", f: "32", s: "1", v: "1", C: "1", q: "2" }, pixel))
+    await graphics.accept(command({ a: "p", i: "9", p: "4", c: "7", r: "3", C: "1", q: "2" }))
+    await graphics.accept(command({ a: "t", i: "11", f: "32", s: "1", v: "1", q: "2" }, pixel))
+    expect(advance).not.toHaveBeenCalled()
+    expect(graphics.placements.size).toBe(5)
+  })
+  it("advances once per chunked upload using the first chunk's controls", async () => {
+    const { graphics, advance } = target()
+    await graphics.accept(command({ a: "T", i: "9", f: "32", s: "1", v: "1", c: "4", r: "2", q: "2", m: "1" }, pixel.slice(0, 4)))
+    expect(advance).not.toHaveBeenCalled()
+    await graphics.accept(command({ m: "0", C: "1" }, pixel.slice(4)))
+    expect(advance).toHaveBeenCalledExactlyOnceWith(4, 2)
   })
   it("keeps anonymous uploads from replacing a client-numbered image", async () => {
     const { graphics, dispose } = target()
@@ -98,7 +120,7 @@ describe("HERDR inline graphics", () => {
   it("disposes decoded images arriving after the view has closed", async () => {
     const dispose = vi.fn()
     let complete!: (value: { image: string; width: number; height: number }) => void
-    const graphics = new KittyGraphics<string>({ load: () => new Promise(resolve => { complete = resolve }), dispose, reply: vi.fn(), changed: vi.fn(), cursor: () => ({ col: 0, row: 0 }) })
+    const graphics = new KittyGraphics<string>({ load: () => new Promise(resolve => { complete = resolve }), dispose, reply: vi.fn(), changed: vi.fn(), advance: vi.fn(), cursor: () => ({ col: 0, row: 0 }), cell: () => ({ width: 10, height: 20 }) })
     const upload = graphics.accept(command({ a: "T", i: "9", s: "1", v: "1", f: "32" }, pixel))
     graphics.dispose(); complete({ image: "bitmap", width: 1, height: 1 }); await upload
     expect(graphics.images.size).toBe(0)

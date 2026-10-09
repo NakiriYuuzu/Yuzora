@@ -5,7 +5,7 @@ vi.mock("@/lsp/lspManager", () => ({ restartWorkspace: vi.fn(async () => {}) }))
 vi.mock("@/state/sshStore", () => ({ useSshStore: { getState: vi.fn() } }))
 import { invoke, sftpListDir } from "./ipc"
 import { useSshStore } from "@/state/sshStore"
-import { createRemotePath, listRemoteDir, moveRemotePaths, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, renameRemotePath, saveRemoteFile } from "./remoteFiles"
+import { createRemotePath, listRemoteDir, moveRemotePaths, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, remoteWorkspaceCanMove, renameRemotePath, saveRemoteFile } from "./remoteFiles"
 import { remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
 import { canonicalPathKey, nativePathJoin, nativePathParent, relativePathWithin } from "./paths"
 
@@ -76,6 +76,17 @@ describe("remote documents", () => {
     expect(invoke).toHaveBeenLastCalledWith("host_request", { owner, operation: { method: "workspaceClose", params: { workspace: "redundant" } } })
     await saveRemoteFile(root + "/file", "dirty")
     expect(invoke).toHaveBeenLastCalledWith("host_request", { owner, operation: { method: "filesWrite", params: { workspace: "kept", path: "file", content: "dirty", revision: "original" } } })
+  })
+
+  it("reports in-place move support only for runtime-backed workspaces", async () => {
+    const owner = { hostId: "move-probe", generation: 1 }
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/runtime", capabilityId: "workspace" })
+    const runtime = await registerRuntimeWorkspace(owner, "/runtime", () => true)
+    vi.mocked(sftpListDir).mockResolvedValueOnce({ cwd: "/sftp", entries: [] })
+    const sftp = await registerSftpWorkspace("b", "/sftp")
+    expect(remoteWorkspaceCanMove(runtime)).toBe(true)
+    expect(remoteWorkspaceCanMove(sftp)).toBe(false)
+    expect(remoteWorkspaceCanMove(remoteFilePath("unknown-host", "/x"))).toBe(false)
   })
 
   it("discards an SFTP folder listing completed after disconnection", async () => {

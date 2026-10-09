@@ -59,20 +59,14 @@ function Assert-Payload([string]$Root) {
 }
 
 $msi = Get-OneFile (Join-Path $BundleDir 'msi\*.msi')
-$nsis = Get-OneFile (Join-Path $BundleDir 'nsis\*setup.exe')
-$sevenZip = Get-Command '7z.exe' -CommandType Application -ErrorAction Stop
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('yuzora-runtime-' + [Guid]::NewGuid().ToString('N'))
 $msiRoot = Join-Path $tempRoot 'msi'
-$nsisRoot = Join-Path $tempRoot 'nsis'
-New-Item -ItemType Directory -Path $msiRoot, $nsisRoot | Out-Null
+New-Item -ItemType Directory -Path $msiRoot | Out-Null
 try {
     $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/a', ('"{0}"' -f $msi.FullName), '/qn', ('TARGETDIR="{0}"' -f $msiRoot)) -Wait -PassThru
     if ($process.ExitCode -notin @(0, 3010)) { throw "MSI administrative extraction failed: $($process.ExitCode)" }
-    & $sevenZip.Source x -y ("-o{0}" -f $nsisRoot) $nsis.FullName | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "NSIS extraction failed: $LASTEXITCODE" }
     Assert-Payload $msiRoot
-    Assert-Payload $nsisRoot
-    Write-Output 'MSI and NSIS contain pinned native Windows HERDR and all five verified host payloads; no legacy WSL plugin'
+    Write-Output 'MSI contains pinned native Windows HERDR and all five verified host payloads; no legacy WSL plugin'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

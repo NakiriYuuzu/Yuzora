@@ -6,6 +6,7 @@ import {
   supportsHerdrApplicationWheel,
   supportsHerdrPaneScroll,
   supportsHerdrPaneScrollCandidate,
+  supportsHerdrTerminalMouse,
   supportsHerdrTerminalScroll
 } from "./herdrCapabilities"
 import type { HerdrCapabilities } from "./herdrTypes"
@@ -170,5 +171,20 @@ describe("HERDR capability adapter", () => {
     unknown.api.schemaProtocol = null
     unknown.server.protocol = null
     expect(supportsHerdrApplicationWheel(unknown, "wsl:Debian")).toBe(false)
+  })
+
+  it("sends terminal.mouse only to 0.9.2+ connectors that can take control", () => {
+    const at = (binaryVersion: string | null, overrides: Partial<HerdrCapabilities["terminal"]> = {}) =>
+      supportsHerdrTerminalMouse({ ...capabilities([], overrides), binaryVersion })
+    expect(at("0.9.1")).toBe(false)
+    expect(at("0.9.2")).toBe(true)
+    expect(at("v0.9.3")).toBe(true)
+    expect(at("0.10.0")).toBe(true)
+    expect(at("1.0.0")).toBe(true)
+    expect(at("0.8.9")).toBe(false)
+    expect(at(null)).toBe(false)
+    expect(at("unknown")).toBe(false)
+    expect(at("0.9.3", { control: false })).toBe(false)
+    expect(supportsHerdrTerminalMouse(null)).toBe(false)
   })
 })

@@ -1,5 +1,5 @@
 import { bindingLabel, useKeyboardSettingsStore } from "@/state/keyboardSettingsStore"
-import { lazy, Suspense, memo, useCallback, useEffect, useEffectEvent, useRef, useState } from "react"
+import { lazy, Suspense, memo, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Database, PanelLeft, PanelLeftOpen, PanelRight, PanelRightOpen, PanelsTopLeft, Search, Server, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -19,7 +19,7 @@ import { ProjectEditorPopover } from "@/app/workbench/ProjectEditorPopover"
 import { SpaceAgentSidebar } from "@/app/workbench/SpaceAgentSidebar"
 import { WorkspaceToolsPanel, type WorkspaceTool } from "@/app/workbench/WorkspaceToolsPanel"
 import type { ThemePreference } from "@/app/workbench/SettingsDialog"
-import { loadAppearanceSettings, saveAppearanceSettings } from "@/app/workbench/settingsStorage"
+import { loadAppearanceSettings, saveAppearanceSettings, type BackgroundAppearance } from "@/app/workbench/settingsStorage"
 import { StatusBar } from "@/app/workbench/StatusBar"
 import { useDiffModalStore } from "@/state/diffModalStore"
 import { useSftpStore } from "@/state/sftpStore"
@@ -31,6 +31,9 @@ import { useUpdateStore } from "@/state/updateStore"
 import { contextMenuHandler } from "@/state/contextMenuStore"
 import { useUiStore } from "@/state/uiStore"
 import { applyAccentPreference, type AccentPreference } from "@/theme/accent"
+import { applyBackgroundImage, applyBackgroundPreference } from "@/theme/background"
+import { loadBackgroundImage } from "@/theme/backgroundImage"
+import { applyGlassTint, applyWindowGlass } from "@/theme/windowGlass"
 import "./workbench/workbench-shell.css"
 
 const DatabasePanel = lazy(() => import("@/app/panels/DatabasePanel").then(m => ({ default: m.DatabasePanel })))
@@ -152,7 +155,10 @@ export function AppShell() {
   const toolsAutoCollapsed = useRef(initialLayout.toolsOpen && window.innerWidth < 1200)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appearance, setAppearance] = useState(loadAppearanceSettings)
-  const { theme, accent, leftSidebarBackground, rightSidebarBackground, botAnimations } = appearance
+  const { theme, accent, leftSidebarBackground, rightSidebarBackground, botAnimations, backgroundSource, backgroundGradient, savedGradients, backgroundImageIntensity, backgroundImageVersion, glass, glassTint } = appearance
+  // Object URL of the stored image while the image backdrop is active.
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState<string | null>(null)
+  const activeImageUrl = backgroundSource === "image" && backgroundImageVersion > 0 ? backgroundImageUrl : null
   const [navWidth, setNavWidth] = useState(initialLayout.navWidth)
   const navDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
   // Whether the current collapse was applied automatically (narrow window) vs.
@@ -169,6 +175,8 @@ export function AppShell() {
   // The window starts hidden (tauri.conf `visible: false`) so the native
   // chrome never paints the OS theme before the persisted preference applies.
   const windowShownRef = useRef(false)
+  // Pending vibrancy request; the first window show also waits for it.
+  const glassReadyRef = useRef<Promise<void>>(Promise.resolve())
   const toolsVisible = toolsOpen && mode !== "database"
 
   useEffect(() => {
@@ -266,6 +274,16 @@ export function AppShell() {
     return () => window.removeEventListener("resize", syncNav)
   }, [])
 
+  // Declared before the theme effect so the first show can await the
+  // vibrancy request instead of revealing an unblurred transparent window.
+  useEffect(() => {
+    glassReadyRef.current = applyWindowGlass(glass)
+  }, [glass])
+
+  useEffect(() => {
+    applyGlassTint(glassTint)
+  }, [glassTint])
+
   useEffect(() => {
     const root = document.documentElement
 
@@ -281,8 +299,7 @@ export function AppShell() {
       // never reaches this point; show even if setTheme rejected.
       if (!windowShownRef.current) {
         windowShownRef.current = true
-        void themed
-          .catch(() => {})
+        void Promise.all([themed.catch(() => {}), glassReadyRef.current])
           .then(() => getCurrentWindow().show())
           .then(() => useUpdateStore.getState().checkInBackgroundOnce())
           .catch(() => {})
@@ -305,6 +322,29 @@ export function AppShell() {
   useEffect(() => {
     applyAccentPreference(accent)
   }, [accent])
+
+  useEffect(() => {
+    // Until the stored image has loaded (or if it is missing) the accent backdrop shows.
+    applyBackgroundPreference(backgroundSource === "image" && !activeImageUrl ? "accent" : backgroundSource, backgroundGradient)
+  }, [backgroundSource, backgroundGradient, activeImageUrl])
+
+  // A replaced image keeps showing until its successor has loaded, so the
+  // backdrop never flashes back to the accent in between.
+  useEffect(() => {
+    if (backgroundSource !== "image" || backgroundImageVersion === 0) return
+    let live = true
+    void loadBackgroundImage()
+      .then(image => { if (live) setBackgroundImageUrl(image ? URL.createObjectURL(image) : null) })
+      .catch(() => { if (live) setBackgroundImageUrl(null) })
+    return () => { live = false }
+  }, [backgroundSource, backgroundImageVersion])
+
+  // Revoke each object URL once a newer one (or unmount) replaces it.
+  useEffect(() => () => { if (backgroundImageUrl) URL.revokeObjectURL(backgroundImageUrl) }, [backgroundImageUrl])
+
+  useEffect(() => {
+    applyBackgroundImage(activeImageUrl, backgroundImageIntensity)
+  }, [activeImageUrl, backgroundImageIntensity])
 
   useEffect(() => {
     saveAppearanceSettings(appearance)
@@ -445,6 +485,19 @@ export function AppShell() {
     setAppearance(current => ({ ...current, botAnimations: enabled }))
   }, [])
 
+  const handleBackgroundChange = useCallback((patch: Partial<BackgroundAppearance>) => {
+    // Out of image mode nothing shows the image: drop its URL so the revoke effect frees it.
+    if ((patch.backgroundSource !== undefined && patch.backgroundSource !== "image") || patch.backgroundImageVersion === 0) {
+      setBackgroundImageUrl(null)
+    }
+    setAppearance(current => ({ ...current, ...patch }))
+  }, [])
+  // Stable identity keeps the memoized settings dialog from re-rendering with the shell.
+  const backgroundAppearance = useMemo<BackgroundAppearance>(
+    () => ({ backgroundSource, backgroundGradient, savedGradients, backgroundImageIntensity, backgroundImageVersion, glass, glassTint }),
+    [backgroundSource, backgroundGradient, savedGradients, backgroundImageIntensity, backgroundImageVersion, glass, glassTint],
+  )
+
   const handleToolChange = useCallback((tool: WorkspaceTool) => {
     setCheckoutTool(tool)
     if (tool === "git") {
@@ -466,8 +519,7 @@ export function AppShell() {
   return (
     <div
       onContextMenu={contextMenuHandler({ kind: "general" })}
-      className="relative flex h-screen w-screen flex-col overflow-hidden font-sans text-[13px] text-(--ink-1)"
-      style={{ background: "var(--yz-bg)" }}
+      className="workbench-root relative flex h-screen w-screen flex-col overflow-hidden font-sans text-[13px] text-(--ink-1)"
     >
       <div className="workbench-window-grip" data-tauri-drag-region title={t("windowDragHint")} />
       <div className="workbench-body" data-resizing={resizingSidebar ?? undefined} data-native-lights={nativeTrafficLights} data-left-collapsed={navCollapsed} data-right-collapsed={!toolsVisible}>
@@ -563,6 +615,8 @@ export function AppShell() {
         onSidebarBackgroundChange={handleSidebarBackgroundChange}
         botAnimations={botAnimations}
         onBotAnimationsChange={handleBotAnimationsChange}
+        background={backgroundAppearance}
+        onBackgroundChange={handleBackgroundChange}
         initialSection={settingsSection ?? undefined}
         openNonce={settingsNonce}
       /></Suspense>}

@@ -22,6 +22,7 @@ it("backs off hidden health checks without suppressing event-driven reconciliati
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
   const reconcile = vi.fn()
   useHostStore.setState({ reconcile })
+  useRuntimePreferencesStore.setState({ hydrated: true })
   const view = render(<HostConnectionsBridge />)
   expect(reconcile).toHaveBeenCalledOnce()
   await act(async () => vi.advanceTimersByTimeAsync(4000))
@@ -47,4 +48,17 @@ it("backs off hidden health checks without suppressing event-driven reconciliati
   act(() => document.dispatchEvent(new Event("visibilitychange")))
   act(() => useSshStore.setState({ sessions: {} }))
   expect(reconcile).toHaveBeenCalledTimes(7)
+})
+
+it("waits for the WSL preference to hydrate before the first reconcile", async () => {
+  const reconcile = vi.fn()
+  let finish!: () => void
+  const hydrate = vi.fn(() => new Promise<void>(done => { finish = () => { useRuntimePreferencesStore.setState({ hydrated: true }); done() } }))
+  useHostStore.setState({ reconcile })
+  useRuntimePreferencesStore.setState({ hydrated: false, hydrate })
+  render(<HostConnectionsBridge />)
+  expect(hydrate).toHaveBeenCalledOnce()
+  expect(reconcile).not.toHaveBeenCalled()
+  await act(async () => finish())
+  expect(reconcile).toHaveBeenCalledOnce()
 })

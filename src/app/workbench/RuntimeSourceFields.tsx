@@ -6,7 +6,9 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { sanitizeCustomPath } from "@/lib/herdrPath"
 import type { HerdrRuntimeSelection, RuntimeBinaryCheck } from "@/lib/herdrTypes"
+import { isWindowsPlatform } from "@/lib/platform"
 
 export function RuntimeSourceFields({ value, onChange, disabled, local = false }: {
   value: HerdrRuntimeSelection
@@ -29,11 +31,11 @@ export function RuntimeSourceFields({ value, onChange, disabled, local = false }
           <SelectItem value="custom">{t("custom")}</SelectItem>
         </SelectGroup></SelectContent>
       </Select>
-      <FieldDescription>{t(value.source === "default" ? "managedHint" : value.source === "global" ? "installedHint" : local ? "customLocalHint" : "customRemoteHint")}</FieldDescription>
+      <FieldDescription>{t(value.source === "default" ? "managedHint" : value.source === "global" ? "installedHint" : local ? (isWindowsPlatform() ? "customLocalHintWindows" : "customLocalHint") : "customRemoteHint")}</FieldDescription>
     </Field>
     {value.source === "custom" && <Field data-disabled={disabled}>
       <FieldLabel htmlFor={`${id}-path`}>{t("customPath")}</FieldLabel>
-      <Input id={`${id}-path`} value={value.customPath ?? ""} disabled={disabled} onChange={event => onChange({ source: "custom", customPath: event.target.value })} />
+      <Input id={`${id}-path`} value={value.customPath ?? ""} disabled={disabled} onChange={event => onChange({ source: "custom", customPath: event.target.value })} onBlur={() => { const clean = sanitizeCustomPath(value.customPath ?? ""); if (clean !== (value.customPath ?? "")) onChange({ source: "custom", customPath: clean }) }} />
     </Field>}
   </FieldGroup>
 }

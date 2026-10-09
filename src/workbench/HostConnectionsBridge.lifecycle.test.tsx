@@ -27,6 +27,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
   vi.clearAllMocks()
+  useRuntimePreferencesStore.setState({ hydrated: true })
   ipc.check.mockResolvedValue({ artifactIdentity: "a".repeat(64), check: { canApply: true } })
   ipc.request.mockResolvedValue({})
   ipc.disconnect.mockResolvedValue(undefined)

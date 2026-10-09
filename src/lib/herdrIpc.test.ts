@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import {
+  herdrBinarySourceCheck,
   herdrBinarySourceGet,
   herdrBinarySourceSet,
   herdrEventsRelease,
@@ -72,6 +73,22 @@ describe("herdrIpc native interaction wrappers", () => {
       { cmd: "herdr_binary_source_get", args: {} },
       { cmd: "herdr_binary_source_set", args: { source: "default", customPath: null } },
       { cmd: "herdr_events_release", args: { subscriptionId: "sub-1" } }
+    ])
+  })
+
+  it("sends a quote-free custom path to the binary source commands", async () => {
+    const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args: args as Record<string, unknown> })
+      return {}
+    })
+
+    await herdrBinarySourceSet("custom", '"C:\\Program Files\\Herdr\\herdr.exe"')
+    await herdrBinarySourceCheck("custom", " 'D:\\a b\\herdr.exe' ")
+
+    expect(calls).toEqual([
+      { cmd: "herdr_binary_source_set", args: { source: "custom", customPath: "C:\\Program Files\\Herdr\\herdr.exe" } },
+      { cmd: "herdr_binary_source_check", args: { source: "custom", customPath: "D:\\a b\\herdr.exe" } }
     ])
   })
 

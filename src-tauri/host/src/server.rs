@@ -13,13 +13,21 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 pub use crate::wire::read_frame;
 
-async fn command_json(binary: &str, args: &[&str]) -> Result<Value, String> {
-    let mut child = tokio::process::Command::new(binary)
+/// Discovery asks the default runtime, not a HERDR pane that launched the helper.
+fn herdr_command(binary: &str, args: &[&str]) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(binary);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    crate::herdr_service::pin_herdr_session(command.as_std_mut(), None);
+    command
+}
+
+async fn command_json(binary: &str, args: &[&str]) -> Result<Value, String> {
+    let mut child = herdr_command(binary, args)
         .spawn()
         .map_err(|e| format!("herdr-unavailable: {e}"))?;
     let mut stdout = child
@@ -394,6 +402,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn herdr_discovery_ignores_the_launching_pane_environment() {
+        let command = herdr_command("/herdr", &["session", "list", "--json"]);
+        let removed: HashSet<_> = command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for key in crate::herdr_service::PARENT_PANE_HERDR_ENV
+            .into_iter()
+            .chain(["HERDR_SESSION"])
+        {
+            assert!(removed.contains(key), "{key} must not be inherited");
+        }
+    }
 
     #[cfg(unix)]
     #[allow(

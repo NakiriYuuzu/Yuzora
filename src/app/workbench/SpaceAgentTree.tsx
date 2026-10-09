@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  Folder,
   GitBranch,
   EllipsisVertical,
   Plus,
@@ -47,6 +48,9 @@ import { bindingLabel, effectiveBinding, useKeyboardSettingsStore, type AppComma
 import { Kbd } from "@/components/ui/kbd";
 import { isMacPlatform } from "@/lib/platform";
 import { AgentLogo } from "./AgentLogo";
+import { MachineAgentGroup } from "./machines/MachineAgentGroup";
+import { machineNavKeys } from "./machines/machineNavKeys";
+import { useMachinesStore } from "@/state/machinesStore";
 import { resolveAgentKind } from "./agentLogos";
 import type { SpaceCharacterConfig } from "./space-character";
 
@@ -61,6 +65,7 @@ interface TreeNode {
   label: string;
   space: HerdrSpaceInfo;
   identityKey?: string;
+  projectName?: string;
   agent?: HerdrAgentInfo;
   children: TreeNode[];
   count: number;
@@ -69,6 +74,11 @@ interface TreeNode {
   glyph?: string;
   avatarMode?: "character" | "glyph";
   character?: SpaceCharacterConfig;
+}
+
+/** Folder (project) then branch, for an Agent's accessible name and switcher subtitle. */
+function agentPlace(node: TreeNode): string {
+  return [node.projectName, node.space.branch].filter(Boolean).join(" · ");
 }
 
 /** WAI-ARIA `aria-keyshortcuts` form of an app binding (Mod resolves per platform). */
@@ -117,6 +127,8 @@ export function SpaceAgentTree() {
   const presentations = useRecentWorkspacesStore((s) => s.presentations);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  const machines = useMachinesStore((s) => s.machines);
+  const machineSnapshots = useMachinesStore((s) => s.snapshotById);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reorderError, setReorderError] = useState<string | null>(null);
@@ -439,6 +451,7 @@ export function SpaceAgentTree() {
                     label: agent.title ?? agent.name ?? agent.id,
                     space,
                     agent: { ...agent, sessionName },
+                    projectName: identity.name,
                     children: [],
                     count: 0,
                     pending: 0,
@@ -516,10 +529,15 @@ export function SpaceAgentTree() {
         node.sessionName === session &&
         node.space.id === selectedSpace,
     )?.key;
-  const tabKey = visible.some((node) => node.key === focusKey)
+  // Machine rows (Agents view) join the same roving tabindex after the local rows.
+  const machineKeys = useMemo(
+    () => (viewMode === "agents" ? machineNavKeys(machines, machineSnapshots) : []),
+    [viewMode, machines, machineSnapshots],
+  );
+  const navKeys = [...visible.map((node) => node.key), ...machineKeys];
+  const tabKey = navKeys.includes(focusKey ?? "")
     ? focusKey
-    : (visible.find((node) => node.key === selectedKey)?.key ??
-      visible[0]?.key);
+    : (visible.find((node) => node.key === selectedKey)?.key ?? navKeys[0]);
 
   // Breadcrumb/Session changes reveal their owning folder, without reopening a
   // folder the user deliberately collapses while staying on the same checkout.
@@ -642,6 +660,21 @@ export function SpaceAgentTree() {
     }
   }
 
+  function navTarget(key: string, from: string) {
+    const index = navKeys.indexOf(from);
+    if (key === "ArrowDown") return navKeys[Math.min(index + 1, navKeys.length - 1)];
+    if (key === "ArrowUp") return navKeys[Math.max(0, index - 1)];
+    if (key === "Home") return navKeys[0];
+    return navKeys.at(-1);
+  }
+  function onMachineKey(event: KeyboardEvent<HTMLButtonElement>, key: string) {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    const next = navTarget(event.key, key);
+    event.preventDefault();
+    event.stopPropagation();
+    if (next) focus(next);
+  }
+
   function onKey(event: KeyboardEvent<HTMLButtonElement>, node: TreeNode) {
     if (event.key === "F2" && node.kind === "project") {
       event.preventDefault();
@@ -650,15 +683,10 @@ export function SpaceAgentTree() {
       setEditingSpace(node);
       return;
     }
-    const index = visible.findIndex((item) => item.key === node.key);
     let next: string | undefined;
-    if (event.key === "ArrowDown")
-      next = visible[Math.min(index + 1, visible.length - 1)]?.key;
-    else if (event.key === "ArrowUp")
-      next = visible[Math.max(0, index - 1)]?.key;
-    else if (event.key === "Home") next = visible[0]?.key;
-    else if (event.key === "End") next = visible.at(-1)?.key;
-    else if (event.key === "ArrowRight") {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+      next = navTarget(event.key, node.key);
+    } else if (event.key === "ArrowRight") {
       if (node.kind === "agent") return;
       if (collapsed.has(node.key)) expand(node.key, true);
       else next = node.children[0]?.key;
@@ -841,7 +869,7 @@ export function SpaceAgentTree() {
                         tabIndex={node.key === tabKey ? 0 : -1}
                         aria-label={
                           node.kind === "agent"
-                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${node.space.branch ?? node.space.label} · ${node.sessionName}`
+                            ? `${node.label} · ${node.agent?.name} · ${t(`status.${node.agent?.status}`)} · ${agentPlace(node)} · ${node.sessionName}`
                             : node.kind === "project"
                               ? `${node.label} · ${t("agentCount", { count: node.count })} · ${node.sessionName}`
                               : `${node.label} · ${node.space.path} · ${node.sessionName}`
@@ -863,7 +891,7 @@ export function SpaceAgentTree() {
                             ? t("agentHint")
                             : (node.space.path ?? undefined)
                         }
-                        className={`space-tree-row tree-${node.kind}`}
+                        className={`space-tree-row tree-${node.kind}${node.kind === "agent" && viewMode === "agents" ? " tree-agent-tagged" : ""}`}
                         // Native HTML5 drag sessions suppress pointer events in WKWebView.
                         // Pointer Events own the gesture so macOS WebView and touch/pen
                         // input share the same reliable path into HERDR workspace.move.
@@ -936,7 +964,18 @@ export function SpaceAgentTree() {
                         <span className="tree-node-label">
                           <span>{node.label}</span>
                           {node.kind === "agent" && viewMode === "agents" && (
-                            <small>{node.space.branch ?? node.space.label}</small>
+                            <span className="tree-agent-tags">
+                              <span className="tree-agent-tag" data-tag="folder" title={node.projectName}>
+                                <Folder aria-hidden="true" />
+                                <span>{node.projectName}</span>
+                              </span>
+                              {node.space.branch && (
+                                <span className="tree-agent-tag" data-tag="branch" title={node.space.branch}>
+                                  <GitBranch aria-hidden="true" />
+                                  <span>{node.space.branch}</span>
+                                </span>
+                              )}
+                            </span>
                           )}
                           {node.kind === "project" && (
                             <small>
@@ -1059,8 +1098,17 @@ export function SpaceAgentTree() {
               </Fragment>
             );
           })}
+          {viewMode === "agents" && <MachineAgentGroup nav={{
+            tabKey,
+            register: (key, element) => {
+              if (element) refs.current.set(key, element);
+              else refs.current.delete(key);
+            },
+            onFocusKey: setFocusKey,
+            onKeyDown: onMachineKey,
+          }} />}
         </div>
-        {!shownSessions.length && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
+        {!shownSessions.length && !(viewMode === "agents" && machines.some((machine) => machine.enabled)) && <div className="space-tree-empty"><p>{t("noRunningSessions")}</p><Button variant="outline" size="sm" onClick={() => repairHost()}>{t("runtimeSettings")}</Button></div>}
         {visible.filter(
           (node) =>
             node.kind === "worktree" &&
@@ -1075,7 +1123,7 @@ export function SpaceAgentTree() {
           items={agentHotkeys.switcher.items.map((node): AgentSwitcherItem => ({
             key: node.key,
             title: node.label,
-            subtitle: `${node.space.branch ?? node.space.label} · ${sessionLabel(node.sessionName)}`,
+            subtitle: `${agentPlace(node)} · ${sessionLabel(node.sessionName)}`,
             status: node.agent?.status,
             statusLabel: t(`status.${node.agent?.status}`),
             logoKind: resolveAgentKind(node.agent?.displayAgent, node.agent?.name, node.label),

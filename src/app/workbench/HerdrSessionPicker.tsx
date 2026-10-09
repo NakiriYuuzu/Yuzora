@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { Laptop, RefreshCw, Server, SquareTerminal } from "lucide-react";
+import { Laptop, Network, RefreshCw, Server, SquareTerminal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
@@ -20,13 +20,17 @@ import { isHerdrStartupPending, useHerdrStore } from "@/state/herdrStore";
 import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 import { selectionForHost, useHostStore } from "@/state/hostStore";
 import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore";
-import { useSshStore } from "@/state/sshStore";
+import { useSshStore, type SshHost } from "@/state/sshStore";
+import { useMachinesInteractiveStore } from "@/state/machinesInteractiveStore";
+import { useMachinesStore } from "@/state/machinesStore";
 import { useUiStore } from "@/state/uiStore";
 import { HostList } from "./HostList";
 import { RuntimeSourceFields } from "./RuntimeSourceFields";
 import { runtimeSessionLabel } from "./spaceTreeIdentity";
+import { MachinesPanel } from "./machines/MachinesPanel";
+import { MigrateSshHostDialog } from "./machines/MigrateSshHostDialog";
 
-type SessionSource = "connected" | "ssh" | "wsl";
+type SessionSource = "connected" | "ssh" | "wsl" | "machines";
 
 /**
  * Join an existing Herdr Session (design A): sources on the left, the Session
@@ -41,6 +45,9 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
 }) {
   const { t } = useTranslation("spaceTree");
   const { t: th } = useTranslation("hosts");
+  const { t: tm } = useTranslation("machines");
+  const machineCount = useMachinesStore((state) => state.machines.length);
+  const [migrating, setMigrating] = useState<SshHost | null>(null);
   const sessions = useHerdrStore((state) => state.sessions);
   const herdrStartup = useHerdrStore((state) => state.herdrStartup);
   const currentSession = useHerdrStore((state) => state.selectedSessionName);
@@ -57,6 +64,8 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   const [distros, setDistros] = useState<WslDistribution[] | null>(null);
   const [wslError, setWslError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The running operation only refreshes Sessions: switching sources meanwhile is harmless. */
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const mounted = useRef(true);
@@ -64,19 +73,20 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  const run = useCallback(async (action: () => Promise<unknown>) => {
+  const run = useCallback(async (action: () => Promise<unknown>, refreshOnly = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
+    setRefreshing(refreshOnly);
     setError(null);
     try { await action(); }
     catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally {
       inFlight.current = false;
-      if (mounted.current) setBusy(false);
+      if (mounted.current) { setBusy(false); setRefreshing(false); }
     }
   }, []);
-  useEffect(() => { void run(() => useHerdrStore.getState().refreshSessions()); }, [run]);
+  useEffect(() => { void run(() => useHerdrStore.getState().refreshSessions(), true); }, [run]);
   useEffect(() => {
     if (!windows || !wslEnabled || source !== "wsl") return;
     let active = true;
@@ -105,6 +115,9 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
   const targetSession = runningSessions.some((session) => sessionScope(session) === requestedSession)
     ? requestedSession : sessionScope(runningSessions[0]) ?? "";
   const runningCount = sessions.filter((session) => session.running).length;
+  // Only Session loads and host setup lock the source; with every other tab disabled the
+  // tab list would hand its initial focus (and selection) to the always-enabled Machines tab.
+  const sourceLocked = busy && !refreshing;
 
   function manageHost() {
     onClose();
@@ -185,20 +198,24 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
         <DialogDescription>{t("sessionHostHint")}</DialogDescription>
       </DialogHeader>
       <Tabs orientation="vertical" value={source} className="herdr-session-picker-body" onValueChange={(value) => {
-        if (value === "connected" || value === "ssh" || value === "wsl") {
+        if (value === "connected" || value === "ssh" || value === "wsl" || value === "machines") {
           setSource(value); setRequestedSession(""); setError(null);
         }
       }}>
         <div className="herdr-session-picker-rail">
           <p className="herdr-session-picker-rail-title" aria-hidden="true">{t("sessionSource")}</p>
           <TabsList variant="line" aria-label={t("sessionSource")} className="w-full items-stretch gap-0.5 p-0">
-            <TabsTrigger value="connected" disabled={busy}>
+            <TabsTrigger value="connected" disabled={sourceLocked}>
               <Laptop data-icon="inline-start" />{t("connectedSessions")}<span className="herdr-session-picker-count" aria-hidden="true">{runningCount}</span>
             </TabsTrigger>
-            <TabsTrigger value="ssh" disabled={busy}>
+            <TabsTrigger value="ssh" disabled={sourceLocked}>
               <Server data-icon="inline-start" />{t("sshHosts")}<span className="herdr-session-picker-count" aria-hidden="true">{sshHosts.length}</span>
             </TabsTrigger>
-            {windows && <TabsTrigger value="wsl" disabled={busy}>
+            {/* Machines never depend on a Session operation. */}
+            <TabsTrigger value="machines">
+              <Network data-icon="inline-start" />{tm("tabs.machines")}<span className="herdr-session-picker-count" aria-hidden="true">{machineCount}</span>
+            </TabsTrigger>
+            {windows && <TabsTrigger value="wsl" disabled={sourceLocked}>
               <SquareTerminal data-icon="inline-start" />WSL<span className="herdr-session-picker-count" aria-hidden="true">{wslEnabled ? distros?.length ?? "—" : t("pickerOff")}</span>
             </TabsTrigger>}
           </TabsList>
@@ -215,6 +232,17 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
               {ssh?.error && <p role="alert">{ssh.error}</p>}
               {!target && <p className="herdr-session-picker-hint">{t("connectSshHostHint")}</p>}
             </FieldSet>
+            <section className="flex flex-col gap-2" aria-label={tm("legacy.badge")}>
+              <div className="flex items-center gap-2"><Badge variant="outline" data-legacy="true">{tm("legacy.badge")}</Badge></div>
+              <p className="herdr-session-picker-hint">{tm("legacy.description")}</p>
+              {sshHosts.map((item) => <div key={item.id} className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate" title={item.name}>{item.name}</span>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => setMigrating(item)}>{tm("legacy.migrate")}</Button>
+              </div>)}
+            </section>
+          </TabsContent>
+          <TabsContent value="machines" className="flex flex-col gap-3">
+            <MachinesPanel onClose={onClose} />
           </TabsContent>
           {windows && <TabsContent value="wsl" className="flex flex-col gap-3">
             {wslEnabled ? <FieldGroup>
@@ -250,13 +278,30 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
           {(error || (source !== "connected" && host?.error)) && <p role="alert" className="herdr-session-picker-error [overflow-wrap:anywhere]">{error ?? host?.error}</p>}
         </ScrollArea>
       </Tabs>
-      <DialogFooter className="herdr-session-picker-footer">
+      {/* The Machines tab has its own status and refresh; the Session footer does not apply there. */}
+      {source !== "machines" && <DialogFooter className="herdr-session-picker-footer">
         <p className="herdr-session-picker-footer-hint" aria-live="polite">{hint}</p>
-        <Button variant="ghost" disabled={busy} onClick={() => void run(() => useHerdrStore.getState().refreshSessions())}>
+        <Button variant="ghost" disabled={busy} onClick={() => void run(() => useHerdrStore.getState().refreshSessions(), true)}>
           <RefreshCw data-icon="inline-start" />{t("refreshSessions")}
         </Button>
         <Button disabled={busy || !hostReady || !targetSession} onClick={() => void loadSession()}>{t(busy ? "loading" : "loadSession")}</Button>
-      </DialogFooter>
+      </DialogFooter>}
+    {migrating && <MigrateSshHostDialog
+      host={migrating}
+      onCancel={() => setMigrating(null)}
+      onSubmit={(values) => {
+        setMigrating(null);
+        const opened = useMachinesInteractiveStore.getState().open({
+          spec: {
+            kind: "add",
+            target: values.target,
+            ...(values.remoteSession ? { remoteSession: values.remoteSession } : {}),
+            ...(values.label ? { label: values.label } : {}),
+          },
+        });
+        if (opened) onClose();
+      }}
+    />}
     </DialogContent>
   </Dialog>;
 }

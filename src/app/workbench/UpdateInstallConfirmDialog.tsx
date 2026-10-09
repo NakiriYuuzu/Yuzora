@@ -37,6 +37,12 @@ export function UpdateInstallConfirmDialog({
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState<string | null>(null)
   const herdrChecking = stopHerdr && herdr === null && !herdrCheckFailed
+  // No managed binary exists (only a user-installed HERDR): nothing bundled to stop. A managed binary with
+  // zero PIDs in the snapshot may still start after the dialog opened, so it is stopped again on confirm.
+  const externalOnly = stopHerdr && herdr !== null && herdr.path === null && !!herdr.external
+  const willStop = stopHerdr && !externalOnly
+  // A self-installed HERDR is in use: only the bundled one is stopped, so say so.
+  const bundledStop = willStop && !!herdr?.external
 
   useEffect(() => {
     if (!open || !stopHerdr) return
@@ -54,7 +60,7 @@ export function UpdateInstallConfirmDialog({
   }, [open, stopHerdr])
 
   const confirm = async () => {
-    if (stopHerdr) {
+    if (willStop) {
       setStopping(true)
       setStopError(null)
       try {
@@ -81,9 +87,9 @@ export function UpdateInstallConfirmDialog({
           <AlertDialogTitle>{tw("settings.installConfirmTitle")}</AlertDialogTitle>
           <AlertDialogDescription>{tw("settings.installConfirmDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
-        {stopHerdr && (
+        {willStop && (
           <div className="grid gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-[12px]">
-            <p className="font-medium text-destructive">{tw("settings.installConfirmHerdrWarning")}</p>
+            <p className="font-medium text-destructive">{tw(bundledStop ? "settings.installConfirmHerdrWarningBundled" : "settings.installConfirmHerdrWarning")}</p>
             {herdrChecking ? (
               <p className="text-muted-foreground">{tw("settings.installConfirmHerdrChecking")}</p>
             ) : herdrCheckFailed ? (
@@ -104,6 +110,18 @@ export function UpdateInstallConfirmDialog({
             )}
           </div>
         )}
+        {stopHerdr && herdr?.external && (
+          <div data-testid="herdr-external-note" className="grid gap-2 rounded-lg border bg-muted/40 p-3 text-[12px]">
+            <p className="font-medium">{tw("settings.installConfirmHerdrExternalTitle")}</p>
+            <p className="text-muted-foreground">{tw("settings.installConfirmHerdrExternalNote")}</p>
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+              <dt className="text-muted-foreground">{tw("settings.installConfirmHerdrPath")}</dt>
+              <dd className="font-mono break-all">{herdr.external.path}</dd>
+              <dt className="text-muted-foreground">{tw("settings.installConfirmHerdrExternalPids")}</dt>
+              <dd>{herdr.external.pids.length ? herdr.external.pids.join(", ") : tw("settings.installConfirmHerdrUnknown")}</dd>
+            </dl>
+          </div>
+        )}
         {stopError && (
           <p role="alert" className="text-[12px] text-destructive">
             {tw("settings.stopHerdrFailed", { error: stopError })}
@@ -112,14 +130,14 @@ export function UpdateInstallConfirmDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={stopping}>{tw("settings.cancelInstall")}</AlertDialogCancel>
           <Button
-            variant={stopHerdr ? "destructive" : "default"}
+            variant={willStop ? "destructive" : "default"}
             disabled={stopping || herdrChecking}
             onClick={() => void confirm()}
           >
             {stopping
               ? tw("settings.stoppingHerdr")
-              : stopHerdr
-                ? tw("settings.stopHerdrAndInstall")
+              : willStop
+                ? tw(bundledStop ? "settings.stopBundledHerdrAndInstall" : "settings.stopHerdrAndInstall")
                 : tw("settings.installAndRestart")}
           </Button>
         </AlertDialogFooter>
