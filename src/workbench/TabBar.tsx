@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { herdrTabMove } from "@/lib/herdrIpc"
+import { queueHerdrMutation } from "@/lib/herdrMutationQueue"
 import { closeHerdrTabIdempotently } from "@/lib/herdrTabActions"
 import { herdrInsertIndexForProjectedDrop } from "@/lib/workbenchTabReorder"
 import { showActionError } from "@/lib/actionFeedback"
@@ -155,15 +156,17 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
         return tab.kind !== "herdr-terminal" || canReorderHerdrTab(tab)
     }
 
-    async function moveHerdrTab(sessionName: string, tabId: string, insertIndex: number) {
-        try {
-            await herdrTabMove({ sessionName, tabId, insertIndex })
-            useHerdrStore.getState().bumpTopologyRevision()
-            await useHerdrStore.getState().refreshSnapshot(sessionName)
-            void logUserAction("reorder_tab", `move herdr ${sessionName}:${tabId}`)
-        } catch (error) {
-            await showActionError(t("tabBar.reorderHerdrFailed"), error)
-        }
+    function moveHerdrTab(sessionName: string, tabId: string, insertIndex: number) {
+        return queueHerdrMutation(sessionName, async () => {
+            try {
+                await herdrTabMove({ sessionName, tabId, insertIndex })
+                useHerdrStore.getState().bumpTopologyRevision()
+                await useHerdrStore.getState().refreshSnapshot(sessionName)
+                void logUserAction("reorder_tab", `move herdr ${sessionName}:${tabId}`)
+            } catch (error) {
+                await showActionError(t("tabBar.reorderHerdrFailed"), error)
+            }
+        })
     }
 
     function prepareTabReorder(

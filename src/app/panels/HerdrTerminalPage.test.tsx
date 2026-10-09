@@ -2022,6 +2022,26 @@ describe("HerdrTerminalPage pane swap drag", () => {
     await waitFor(() => expect(useHerdrStore.getState().topologyRevision).toBeGreaterThan(revision))
   })
 
+  it("sends a second swap only after the first one settles", async () => {
+    const { herdrPaneSwap } = await import("@/lib/herdrIpc")
+    let finish: () => void = () => undefined
+    vi.mocked(herdrPaneSwap).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+    await renderSplitPage()
+    hitTest.element = screen.getByTestId("herdr-terminal-leaf-term-2")
+    pointerDrag(handle("Agent"), [{ x: 20, y: 0 }, { x: 40, y: 0 }])
+    await waitFor(() => expect(herdrPaneSwap).toHaveBeenCalledTimes(1))
+    hitTest.element = screen.getByTestId("herdr-terminal-leaf-term-1")
+    pointerDrag(handle("Shell"), [{ x: 20, y: 0 }, { x: 40, y: 0 }])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // A slow runtime must not receive the second swap before the first.
+    expect(herdrPaneSwap).toHaveBeenCalledTimes(1)
+    finish()
+    await waitFor(() => expect(herdrPaneSwap).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(herdrPaneSwap).mock.calls[1]?.[0]).toEqual({
+      sessionName: "work", sourcePaneId: "pane-2", targetPaneId: "pane-1"
+    })
+  })
+
   it("starts no drag without pane.swap", async () => {
     const { herdrPaneSwap } = await import("@/lib/herdrIpc")
     await renderSplitPage(false)

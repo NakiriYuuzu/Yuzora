@@ -3,6 +3,7 @@ import { registerTerminalDropTarget } from "@/terminal/terminalDropTargets"
 import { beginPointerDrag, elementAtPoint } from "@/lib/pointerDrag"
 import { showActionError } from "@/lib/actionFeedback"
 import { herdrPaneSwap } from "@/lib/herdrIpc"
+import { queueHerdrMutation } from "@/lib/herdrMutationQueue"
 import { afterHerdrMutation, herdrMethodAvailability } from "@/app/workbench/contextMenuDefs"
 import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
 import { installHerdrDragSelection, type HerdrDragSelection } from "@/terminal/herdrDragSelection"
@@ -1609,7 +1610,7 @@ function HerdrTerminalLeaf({
         return { element: leaf, data: targetPaneId }
       },
       onDrop: (target) => {
-        void (async () => {
+        void queueHerdrMutation(contextSessionName, async () => {
           try {
             if (!herdrMethodAvailability(contextSessionName, "paneSwap", "pane.swap").enabled) return
             await herdrPaneSwap({ sessionName: contextSessionName, sourcePaneId, targetPaneId: target.data })
@@ -1617,7 +1618,7 @@ function HerdrTerminalLeaf({
           } catch (error) {
             await showActionError(t("swapPane.action", { ns: "terminal" }), error)
           }
-        })()
+        })
       }
     })
   }
