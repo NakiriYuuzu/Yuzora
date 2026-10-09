@@ -28,11 +28,11 @@ const KNOWN_ERRORS = [
     "clipboard-import-remote-unsupported"
 ]
 
-async function reportError(error: unknown): Promise<void> {
+async function reportError(error: unknown, title = t("fileClipboard.errorTitle")): Promise<void> {
     const message = String(error)
     const known = KNOWN_ERRORS.find((code) => message.includes(code))
     await showAppMessage({
-        title: t("fileClipboard.errorTitle"),
+        title,
         description: known ? t(`fileClipboard.error.${known}`) : message,
         kind: "error"
     })
@@ -126,6 +126,24 @@ export async function pasteFiles(
         const touched = useInternal && internal.mode === "cut" ? [targetDir, ...internal.paths] : [targetDir]
         await useFileTreeStore.getState().invalidatePaths(workspacePath, touched).catch(() => undefined)
         await reportError(error)
+        return []
+    }
+}
+
+/** Drag-and-drop move into `targetDir`. Unlike a cut-paste it never touches the clipboard store. */
+export async function moveFilesTo(workspacePath: string, paths: string[], targetDir: string): Promise<string[]> {
+    if (!paths.length || !currentWorkspace(workspacePath)) return []
+    try {
+        const moved = await fsMovePaths(workspacePath, paths, targetDir)
+        paths.forEach((from, index) => {
+            if (moved[index] && moved[index] !== from) retargetOpenDocuments(from, moved[index])
+        })
+        await landed(workspacePath, targetDir, [...paths, ...moved])
+        void logUserAction("file_move", `move ${moved.length} item(s)`)
+        return moved
+    } catch (error) {
+        await useFileTreeStore.getState().invalidatePaths(workspacePath, [targetDir, ...paths]).catch(() => undefined)
+        await reportError(error, t("fileClipboard.moveErrorTitle"))
         return []
     }
 }

@@ -28,7 +28,7 @@ vi.mock("@/lib/herdrIpc", async (importOriginal) => ({
 
 import { TabBar } from "./TabBar"
 import { TextInputDialogHost } from "./TextInputDialogHost"
-import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
+import { PREVIEW_TAB_PATH, useWorkspaceStore, type TabInfo } from "../state/workspaceStore"
 import { useAppDialogStore } from "../state/appDialogStore"
 import { useContextMenuStore } from "../state/contextMenuStore"
 import { useHerdrStore } from "../state/herdrStore"
@@ -36,6 +36,7 @@ import { useTextInputDialogStore } from "../state/textInputDialogStore"
 import { useSvgPreviewStore } from "../state/svgPreviewStore"
 import { useUiStore, uiInitialState } from "../state/uiStore"
 import { saveDirtyTab } from "../editor/saveDocument"
+import { pointerDrag, stubElementFromPoint } from "../test/pointerDrag"
 
 const initialHerdrState = useHerdrStore.getState()
 
@@ -49,7 +50,17 @@ beforeEach(() => {
     vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
 })
 
+let restoreElementFromPoint: (() => void) | null = null
+/** Every hit-test during a drag lands on `hit()`; jsdom has no layout. */
+function hoverOver(hit: () => Element | null) {
+    restoreElementFromPoint?.()
+    restoreElementFromPoint = stubElementFromPoint(() => hit())
+}
+const DRAG_PATH = [{ x: 10, y: 0 }, { x: 20, y: 0 }]
+
 afterEach(() => {
+    restoreElementFromPoint?.()
+    restoreElementFromPoint = null
     clearMocks()
     useContextMenuStore.setState({ request: null, x: 0, y: 0, availabilityRevision: 0 })
     useUiStore.setState(uiInitialState)
@@ -947,20 +958,15 @@ test("tab path tooltip 移除 extended prefix，但 context target 保留 raw pa
     })
 })
 
-test("ordinary file tabs reorder through HTML5 drag/drop", () => {
+test("ordinary file tabs reorder through a pointer drag", () => {
     mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
     seedTabs()
     render(<TabBar groupIndex={0} />)
     const source = screen.getByRole("button", { name: "a.ts" })
     const target = screen.getByText("b.ts").closest(".tab")
-    expect(source).toHaveAttribute("draggable", "true")
-    const dataTransfer = {
-        effectAllowed: "none",
-        setData: vi.fn(),
-        getData: () => "/w/a.ts"
-    }
-    fireEvent.dragStart(source, { dataTransfer })
-    fireEvent.drop(target!, { dataTransfer })
+    expect(source).toHaveAttribute("data-pointer-drag-handle")
+    hoverOver(() => target)
+    pointerDrag(source, DRAG_PATH)
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
         "/w/b.ts",
         "/w/a.ts"
@@ -1022,13 +1028,8 @@ test("ordinary drag permutes projected slots without displacing a hidden-Space p
     expect(screen.queryByText("Hidden Space")).not.toBeInTheDocument()
     const source = screen.getByRole("button", { name: "a.ts (unsaved)" })
     const target = screen.getByText("b.ts").closest(".tab")
-    const dataTransfer = {
-        effectAllowed: "none",
-        setData: vi.fn(),
-        getData: () => "/w/a.ts"
-    }
-    fireEvent.dragStart(source, { dataTransfer })
-    fireEvent.drop(target!, { dataTransfer })
+    hoverOver(() => target)
+    pointerDrag(source, DRAG_PATH)
 
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
         "/w/b.ts",
@@ -1097,7 +1098,7 @@ test("Alt+Arrow reorders ordinary projected slots without activation or hidden-S
     expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(3)
 })
 
-test("Herdr tabs stay undraggable without tab.move and do not local-reorder", () => {
+test("Herdr tabs stay unmovable without tab.move and do not local-reorder", () => {
     const firstPath = "yuzora://herdr/default/term-1"
     const secondPath = "yuzora://herdr/default/term-2"
     useWorkspaceStore.setState({
@@ -1157,14 +1158,10 @@ test("Herdr tabs stay undraggable without tab.move and do not local-reorder", ()
     })
     render(<TabBar groupIndex={0} />)
     const source = screen.getByRole("button", { name: "Space One" })
-    expect(source).toHaveAttribute("draggable", "false")
-    const dataTransfer = {
-        effectAllowed: "none",
-        setData: vi.fn(),
-        getData: () => firstPath
-    }
-    fireEvent.dragStart(source, { dataTransfer })
-    fireEvent.drop(screen.getByText("Space Two").closest(".tab")!, { dataTransfer })
+    const target = screen.getByText("Space Two").closest(".tab")!
+    hoverOver(() => target)
+    pointerDrag(source, DRAG_PATH)
+    expect(document.documentElement).not.toHaveAttribute("data-pointer-dragging")
     expect(herdrTabMove).not.toHaveBeenCalled()
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
         firstPath,
@@ -1295,14 +1292,9 @@ test("legacy Herdr tab without stored Space identity reorders from runtime owner
     })
     render(<TabBar groupIndex={0} />)
     const source = screen.getByRole("button", { name: "One" })
-    expect(source).toHaveAttribute("draggable", "true")
-    const dataTransfer = {
-        effectAllowed: "none",
-        setData: vi.fn(),
-        getData: () => firstPath
-    }
-    fireEvent.dragStart(source, { dataTransfer })
-    fireEvent.drop(screen.getByText("Two").closest(".tab")!, { dataTransfer })
+    const target = screen.getByText("Two").closest(".tab")!
+    hoverOver(() => target)
+    pointerDrag(source, DRAG_PATH)
     await waitFor(() => expect(herdrTabMove).toHaveBeenCalledWith({
         sessionName: "default",
         tabId: "tab-1",
@@ -1380,14 +1372,20 @@ test("Alt+Arrow uses schema-gated tab.move for Herdr tabs", async () => {
     render(<TabBar groupIndex={0} />)
     const source = screen.getByRole("button", { name: "Keyboard One" })
     expect(source).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+P")
-    expect(source).toHaveAttribute("draggable", "false")
     expect(fireEvent.keyDown(source, { key: "ArrowRight", altKey: true })).toBe(true)
     expect(herdrTabMove).not.toHaveBeenCalled()
+    hoverOver(() => source)
+    pointerDrag(source, DRAG_PATH, { release: false })
+    expect(document.documentElement).not.toHaveAttribute("data-pointer-dragging")
+    fireEvent.pointerUp(window, { pointerId: 1, buttons: 0 })
 
     act(() => {
         useHerdrStore.setState({ canMoveSelectedTab: () => true })
     })
-    expect(source).toHaveAttribute("draggable", "true")
+    pointerDrag(source, DRAG_PATH, { release: false })
+    expect(document.documentElement).toHaveAttribute("data-pointer-dragging")
+    fireEvent.keyDown(window, { key: "Escape" })
+    fireEvent.pointerUp(window, { pointerId: 1, buttons: 0 })
     expect(fireEvent.keyDown(source, { key: "ArrowLeft", altKey: true })).toBe(true)
     expect(fireEvent.keyDown(source, { key: "ArrowRight", altKey: true })).toBe(false)
 
@@ -1457,4 +1455,219 @@ test("middle-click closes a clean tab and marks unsaved tabs in the accessible n
     const clean = screen.getByRole("button", { name: "a.ts" }).closest(".tab")!
     fireEvent(clean, new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }))
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual(["/w/b.ts"])
+})
+
+function seedTwoGroups(overrides: { first?: TabInfo[]; second?: TabInfo[] } = {}) {
+    const file = (name: string, extra: object = {}): TabInfo => ({
+        path: `/w/${name}`, name, dirty: false, externallyModified: false, ...extra
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        activeGroupIndex: 0,
+        groups: [
+            { activePath: "/w/a.ts", tabs: overrides.first ?? [file("a.ts"), file("b.ts")] },
+            { activePath: "/w/x.ts", tabs: overrides.second ?? [file("x.ts"), file("y.ts")] }
+        ]
+    })
+}
+
+function renderTwoGroups() {
+    return render(
+        <>
+            <div data-editor-group-index={0} data-testid="group-0"><TabBar groupIndex={0} /></div>
+            <div data-editor-group-index={1} data-testid="group-1"><TabBar groupIndex={1} /></div>
+        </>
+    )
+}
+
+function slotOf(name: string) {
+    return screen.getByRole("button", { name }).closest("[data-tab-slot]") as HTMLElement
+}
+
+function mockSlotRect(slot: HTMLElement) {
+    vi.spyOn(slot, "getBoundingClientRect").mockReturnValue({ left: 0, right: 100, width: 100, top: 0, bottom: 30, height: 30 } as DOMRect)
+}
+
+test("a file tab dragged onto the other group lands after the hovered slot's right half", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTwoGroups()
+    renderTwoGroups()
+    const target = slotOf("x.ts")
+    mockSlotRect(target)
+    hoverOver(() => target)
+    pointerDrag(screen.getByRole("button", { name: "a.ts" }), [{ x: 10, y: 0 }, { x: 80, y: 0 }])
+    const groups = useWorkspaceStore.getState().groups
+    expect(groups[0].tabs.map((tab) => tab.path)).toEqual(["/w/b.ts"])
+    expect(groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/x.ts", "/w/a.ts", "/w/y.ts"])
+    expect(groups[1].activePath).toBe("/w/a.ts")
+    expect(useWorkspaceStore.getState().activeGroupIndex).toBe(1)
+})
+
+test("dropping on the left half of the first slot inserts at the front of the other group", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTwoGroups()
+    renderTwoGroups()
+    const target = slotOf("x.ts")
+    mockSlotRect(target)
+    hoverOver(() => target)
+    pointerDrag(screen.getByRole("button", { name: "b.ts" }), [{ x: 10, y: 0 }, { x: 20, y: 0 }])
+    expect(useWorkspaceStore.getState().groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/b.ts", "/w/x.ts", "/w/y.ts"])
+})
+
+test("hovering the other group's empty area or body drops at its end and marks the group", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTwoGroups()
+    renderTwoGroups()
+    const body = screen.getByTestId("group-1")
+    hoverOver(() => body)
+    const source = screen.getByRole("button", { name: "a.ts" })
+    pointerDrag(source, DRAG_PATH, { release: false })
+    expect(body).toHaveAttribute("data-pointer-drop-target", "inside")
+    fireEvent.pointerUp(window, { pointerId: 1, buttons: 0 })
+    expect(body).not.toHaveAttribute("data-pointer-drop-target")
+    expect(useWorkspaceStore.getState().groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/x.ts", "/w/y.ts", "/w/a.ts"])
+})
+
+test("a cross-group slot across the pinned boundary is not promised; the group end is", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTwoGroups({
+        second: [
+            { path: "/w/x.ts", name: "x.ts", dirty: false, externallyModified: false, pinned: true },
+            { path: "/w/y.ts", name: "y.ts", dirty: false, externallyModified: false }
+        ]
+    })
+    renderTwoGroups()
+    const pinned = slotOf("x.ts")
+    mockSlotRect(pinned)
+    hoverOver(() => pinned)
+    pointerDrag(screen.getByRole("button", { name: "a.ts" }), [{ x: 10, y: 0 }, { x: 20, y: 0 }], { release: false })
+    expect(pinned).not.toHaveAttribute("data-pointer-drop-target")
+    expect(screen.getByTestId("group-1")).toHaveAttribute("data-pointer-drop-target", "inside")
+    fireEvent.pointerUp(window, { pointerId: 1, buttons: 0, clientX: 20, clientY: 0 })
+    expect(useWorkspaceStore.getState().groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/x.ts", "/w/y.ts", "/w/a.ts"])
+})
+
+test("a cross-group slot inside the moved tab's pinned run is honoured", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTwoGroups({
+        second: [
+            { path: "/w/x.ts", name: "x.ts", dirty: false, externallyModified: false, pinned: true },
+            { path: "/w/y.ts", name: "y.ts", dirty: false, externallyModified: false }
+        ]
+    })
+    renderTwoGroups()
+    const pinned = slotOf("x.ts")
+    mockSlotRect(pinned)
+    hoverOver(() => pinned)
+    // Right half of the last pinned tab: the unpinned run starts right there.
+    pointerDrag(screen.getByRole("button", { name: "a.ts" }), [{ x: 10, y: 0 }, { x: 80, y: 0 }], { release: false })
+    expect(pinned).toHaveAttribute("data-pointer-drop-target", "after")
+    fireEvent.pointerUp(window, { pointerId: 1, buttons: 0, clientX: 80, clientY: 0 })
+    expect(useWorkspaceStore.getState().groups[1].tabs.map((tab) => tab.path)).toEqual(["/w/x.ts", "/w/a.ts", "/w/y.ts"])
+})
+
+test("a cross-group move keeps dirty state", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTwoGroups({
+        first: [
+            { path: "/w/a.ts", name: "a.ts", dirty: true, externallyModified: false },
+            { path: "/w/b.ts", name: "b.ts", dirty: false, externallyModified: false }
+        ]
+    })
+    renderTwoGroups()
+    hoverOver(() => screen.getByTestId("group-1"))
+    pointerDrag(screen.getByRole("button", { name: "a.ts (unsaved)" }), DRAG_PATH)
+    expect(useWorkspaceStore.getState().groups[1].tabs.at(-1)).toMatchObject({ path: "/w/a.ts", dirty: true })
+})
+
+test("a Herdr tab moves to the other group without tab.move", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    const path = "yuzora://herdr/default/term-1"
+    seedTwoGroups({
+        first: [{
+            path, name: "Space One", dirty: false, externallyModified: false, kind: "herdr-terminal",
+            herdrSessionId: "default", terminalId: "term-1", herdrTabId: "tab-1", herdrWorkspaceId: "ws-1"
+        }]
+    })
+    useWorkspaceStore.setState({ groups: useWorkspaceStore.getState().groups.map((g, i) => i === 0 ? { ...g, activePath: path } : g) })
+    useHerdrStore.setState({ canMoveSelectedTab: () => false })
+    renderTwoGroups()
+    const target = slotOf("x.ts")
+    mockSlotRect(target)
+    hoverOver(() => target)
+    pointerDrag(screen.getByRole("button", { name: "Space One" }), [{ x: 10, y: 0 }, { x: 20, y: 0 }], { release: false })
+    // Runtime order places HERDR tabs, so the group is the target, not the slot.
+    expect(target).not.toHaveAttribute("data-pointer-drop-target")
+    expect(screen.getByTestId("group-1")).toHaveAttribute("data-pointer-drop-target", "inside")
+    fireEvent.pointerUp(window, { pointerId: 1, buttons: 0, clientX: 20, clientY: 0 })
+    expect(herdrTabMove).not.toHaveBeenCalled()
+    const groups = useWorkspaceStore.getState().groups
+    expect(groups[0].tabs).toHaveLength(0)
+    expect(groups[1].tabs.map((tab) => tab.path)).toContain(path)
+    expect(groups[1].activePath).toBe(path)
+})
+
+test("Browser and markdown preview tabs cannot leave their group", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    const previewPath = "yuzora://markdown-preview/w/readme.md"
+    seedTwoGroups({
+        first: [
+            { path: PREVIEW_TAB_PATH, name: "Browser", dirty: false, externallyModified: false, kind: "preview" },
+            { path: previewPath, name: "readme.md", dirty: false, externallyModified: false, kind: "markdown-preview" }
+        ]
+    })
+    renderTwoGroups()
+    const body = screen.getByTestId("group-1")
+    hoverOver(() => body)
+    for (const name of ["Browser", "readme.md"]) {
+        pointerDrag(screen.getAllByRole("button", { name })[0], DRAG_PATH, { release: false })
+        expect(body).not.toHaveAttribute("data-pointer-drop-target")
+        fireEvent.pointerUp(window, { pointerId: 1, buttons: 0 })
+    }
+    expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(2)
+    expect(useWorkspaceStore.getState().groups[1].tabs).toHaveLength(2)
+})
+
+test("a single group offers no cross-group target", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    const outside = document.createElement("div")
+    outside.setAttribute("data-editor-group-index", "1")
+    document.body.appendChild(outside)
+    hoverOver(() => outside)
+    pointerDrag(screen.getByRole("button", { name: "a.ts" }), DRAG_PATH)
+    outside.remove()
+    expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(2)
+})
+
+test("releasing a drag over a tab does not activate the tab under it", () => {
+    vi.useFakeTimers()
+    try {
+        mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+        seedTabs()
+        render(<TabBar groupIndex={0} />)
+        const source = screen.getByRole("button", { name: "a.ts" })
+        const other = screen.getByRole("button", { name: "b.ts (unsaved)" })
+        hoverOver(() => other.closest(".tab"))
+        pointerDrag(source, DRAG_PATH)
+        // The browser synthesizes a click on the common ancestor/target after release.
+        fireEvent.click(other)
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/a.ts")
+        vi.runAllTimers()
+        fireEvent.click(other)
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
+    } finally {
+        vi.useRealTimers()
+    }
+})
+
+test("a press that stays under the drag threshold still activates the tab", () => {
+    mockIPC((cmd) => (cmd === "log_event" ? null : undefined))
+    seedTabs()
+    render(<TabBar groupIndex={0} />)
+    const other = screen.getByRole("button", { name: "b.ts (unsaved)" })
+    pointerDrag(other, [{ x: 1, y: 1 }])
+    fireEvent.click(other)
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
 })

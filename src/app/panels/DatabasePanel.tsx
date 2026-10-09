@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react"
-import type { ReactNode } from "react"
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react"
 import { EditorState } from "@codemirror/state"
 import { EditorView, keymap, lineNumbers } from "@codemirror/view"
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands"
@@ -26,6 +26,7 @@ import type {
   DbStatementResultPageState,
 } from "@/state/dbStore"
 import { shortcutLabel } from "@/lib/platform"
+import { beginPointerDrag, elementAtPoint } from "@/lib/pointerDrag"
 import { formatDbValue } from "@/lib/types"
 import type {
   DbColumn,
@@ -1112,7 +1113,26 @@ const ResultTable = memo(function ResultTable({
   const displayOrder = order.length === columns.length && order.every((index) => index < columns.length)
     ? order
     : columns.map((_, index) => index)
-  const [dragPos, setDragPos] = useState<number | null>(null)
+  const dragDispose = useRef<(() => void) | null>(null)
+  useEffect(() => () => dragDispose.current?.(), [])
+  const startColumnDrag = (event: ReactPointerEvent<HTMLButtonElement>, from: number, label: string) => {
+    const headerRow = event.currentTarget.closest("tr")
+    dragDispose.current = beginPointerDrag(event, {
+      label,
+      autoScroll: () => [viewport.current],
+      resolveTarget: (point) => {
+        if (!headerRow) return null
+        const rect = headerRow.getBoundingClientRect()
+        // Hit-test on the header row so drifting into the body still targets columns.
+        const th = elementAtPoint({ x: point.x, y: rect.top + rect.height / 2 })?.closest("th[data-column-pos]")
+        if (!(th instanceof HTMLElement) || !headerRow.contains(th)) return null
+        const to = Number(th.dataset.columnPos)
+        if (!Number.isInteger(to) || to === from) return null
+        return { element: th, position: to < from ? "before" : "after", data: to }
+      },
+      onDrop: (target) => setOrder((o) => reorderColumns(o, from, target.data)),
+    })
+  }
   // Right-align a column when its first non-NULL sampled value is numeric.
   const numericColumns = useMemo(() => columns.map((_, columnIndex) => {
     for (let rowIndex = 0; rowIndex < Math.min(rows.length, 50); rowIndex += 1) {
@@ -1146,26 +1166,15 @@ const ResultTable = memo(function ResultTable({
                     aria-sort={
                       active ? (sortBy!.dir === "asc" ? "ascending" : "descending") : "none"
                     }
-                    className={cn(
-                      "h-8 border-r border-b border-(--line-1) p-0 text-(--ink-2) last:border-r-0",
-                      dragPos === pos && "bg-(--yz-hover)"
-                    )}
+                    data-column-pos={pos}
+                    className="h-8 border-r border-b border-(--line-1) p-0 text-(--ink-2) last:border-r-0 data-[pointer-drop-target=after]:shadow-[inset_-2px_0_0_0_var(--yz-accent)] data-[pointer-drop-target=before]:shadow-[inset_2px_0_0_0_var(--yz-accent)]"
                   >
                     <Button
                       type="button"
                       variant="ghost"
-                      draggable
+                      data-pointer-drag-handle
                       onClick={() => onSort(origIdx)}
-                      onDragStart={() => setDragPos(pos)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault()
-                        if (dragPos !== null && dragPos !== pos) {
-                          setOrder((o) => reorderColumns(o, dragPos, pos))
-                        }
-                        setDragPos(null)
-                      }}
-                      onDragEnd={() => setDragPos(null)}
+                      onPointerDown={(event) => startColumnDrag(event, pos, columns[origIdx])}
                       aria-label={t("databasePanel.sortColumn", { column: columns[origIdx] })}
                       className={cn(
                         "w-full gap-1 rounded-none px-3 text-[12px] hover:text-(--ink-1)",

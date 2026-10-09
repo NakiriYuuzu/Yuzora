@@ -6,7 +6,10 @@ import { getDocument } from "@/editor/documentRegistry"
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
 import i18n from "@/lib/i18n"
+import { DROP_TARGET_ATTRIBUTE, elementAtPoint } from "@/lib/pointerDrag"
 import { isTauri } from "@/lib/platform"
+import { terminalDropTargetAt } from "@/terminal/terminalDropTargets"
+import { notifyTerminalPathPasteError, pastePathsIntoTerminal } from "@/terminal/terminalPathPaste"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -17,10 +20,13 @@ interface ForwardedFileDropPayload {
   paths: string[]
 }
 
-function dropIsOwnedByAnotherSurface(event: Extract<DragDropEvent, { type: "drop" }>): boolean {
+function logicalPoint(position: { x: number; y: number }): { x: number; y: number } {
   const dpr = window.devicePixelRatio || 1
-  const x = event.position.x / dpr
-  const y = event.position.y / dpr
+  return { x: position.x / dpr, y: position.y / dpr }
+}
+
+function dropIsOwnedByAnotherSurface(event: Extract<DragDropEvent, { type: "drop" }>): boolean {
+  const { x, y } = logicalPoint(event.position)
   return Array.from(document.querySelectorAll<HTMLElement>(OWNED_DROP_TARGET_SELECTOR)).some(
     (target) => {
       const rect = target.getBoundingClientRect()
@@ -55,6 +61,11 @@ async function openDroppedFiles(paths: string[]): Promise<void> {
   }
 }
 
+function terminalLeafAt(position: { x: number; y: number }): Element | null {
+  const element = elementAtPoint(logicalPoint(position))
+  return terminalDropTargetAt(element) ? element?.closest("[data-attachment-key]") ?? null : null
+}
+
 /** Opens Finder/Explorer file drops in Yuzora's existing editable file tabs. */
 export function FileDropBridge() {
   useEffect(() => {
@@ -63,10 +74,27 @@ export function FileDropBridge() {
     let disposed = false
     let unlistenWebview: (() => void) | undefined
     let unlistenPreview: (() => void) | undefined
+    let indicated: Element | null = null
+    const indicate = (leaf: Element | null) => {
+      if (leaf === indicated) return
+      indicated?.removeAttribute(DROP_TARGET_ATTRIBUTE)
+      indicated = leaf
+      indicated?.setAttribute(DROP_TARGET_ATTRIBUTE, "inside")
+    }
     void getCurrentWebview()
       .onDragDropEvent((event) => {
         const payload = event.payload
+        if (payload.type === "enter" || payload.type === "over") {
+          indicate(terminalLeafAt(payload.position))
+          return
+        }
+        indicate(null)
         if (payload.type !== "drop" || dropIsOwnedByAnotherSurface(payload)) return
+        const terminal = terminalDropTargetAt(elementAtPoint(logicalPoint(payload.position)))
+        if (terminal) {
+          void pastePathsIntoTerminal(terminal, payload.paths).catch(notifyTerminalPathPasteError)
+          return
+        }
         void openDroppedFiles(payload.paths)
       })
       .then((nextUnlisten) => {
@@ -85,6 +113,7 @@ export function FileDropBridge() {
 
     return () => {
       disposed = true
+      indicate(null)
       unlistenWebview?.()
       unlistenPreview?.()
     }

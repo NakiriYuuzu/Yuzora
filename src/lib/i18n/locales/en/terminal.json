@@ -21,5 +21,15 @@
   "copyOnSelect": "Copy on selection",
   "copyOnSelectDescription": "Automatically copy terminal text when you finish dragging a selection. Turn off to copy manually.",
   "clipboardPasteFailed": "Could not paste clipboard image: {{message}}",
-  "clipboardCopyFailed": "Could not copy the selected text. Please select it and copy again."
+  "clipboardCopyFailed": "Could not copy the selected text. Please select it and copy again.",
+  "pathDrop": {
+    "empty": "No files to paste.",
+    "not-writable": "This terminal is read-only, so the paths were not pasted.",
+    "remote-terminal": "Local files cannot be pasted into a remote terminal. Drag a file from this host instead.",
+    "host-mismatch": "These files belong to a different host than this terminal.",
+    "unsafe-name": "A file name contains characters that cannot be pasted safely into a shell, so nothing was pasted."
+  },
+  "swapPane": {
+    "action": "Swap terminal panes"
+  }
 }

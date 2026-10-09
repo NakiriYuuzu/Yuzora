@@ -144,6 +144,18 @@ const frameDecoder = typeof TextDecoder !== "undefined"
   : null
 const inputEncoder = new TextEncoder()
 
+// Strip until nothing changes: removing one delimiter can join its neighbours
+// into a new one ("\x1b[2" + delimiter + "01~"), which would end the paste
+// early and deliver the rest of the text as typed keystrokes.
+function stripPasteDelimiters(text: string): string {
+  let current = text
+  for (;;) {
+    const next = current.replaceAll("\x1b[200~", "").replaceAll("\x1b[201~", "")
+    if (next === current) return next
+    current = next
+  }
+}
+
 function decodeFrameBytes(bytesBase64: string): string {
   try {
     // Older WKWebView/WebView2 versions still need the atob path.
@@ -463,7 +475,7 @@ export function createHerdrTerminalTransport(
     },
     write: (data) => enqueueInput(data, false),
     paste: (text) => {
-      const payload = text.replace(/\r\n?/g, "\n").replaceAll("\x1b[200~", "").replaceAll("\x1b[201~", "")
+      const payload = stripPasteDelimiters(text.replace(/\r\n?/g, "\n"))
       return payload ? enqueueInput("\x1b[200~" + payload + "\x1b[201~", true) : Promise.resolve()
     },
     async resize(cols, rows) {

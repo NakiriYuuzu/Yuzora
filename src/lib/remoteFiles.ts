@@ -253,6 +253,15 @@ function assertBackend(uri: string, backend: Backend): void {
   if (resolve(uri).workspace.backend !== backend) throw new Error("Remote workspace connection changed; response discarded")
 }
 
+/** Whether a registered remote workspace can move files in place (SFTP cannot). */
+export function remoteWorkspaceCanMove(workspaceUri: string): boolean {
+  try {
+    return resolveWorkspace(workspaceUri).backend.kind === "runtime"
+  } catch {
+    return false
+  }
+}
+
 export function runtimeWorkspaceService(uri: string) {
   const { workspace } = resolve(uri)
   const backend = workspace.backend

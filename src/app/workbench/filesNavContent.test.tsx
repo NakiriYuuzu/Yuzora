@@ -37,6 +37,16 @@ describe("FilesNavContent", () => {
     expect(screen.queryByRole("button", { name: "Open workspace" })).not.toBeInTheDocument()
   })
 
+  it("wraps the tree and its blank space in the workspace-root drop zone", () => {
+    useWorkspaceStore.setState({ workspacePath: "/w" })
+    render(<FilesNavContent />)
+    const tree = screen.getByTestId("file-tree")
+    const zone = tree.closest("[data-file-tree-root]")
+    // FileTree's drag resolves blank space below the rows to this zone (move to the root).
+    expect(zone).not.toBeNull()
+    expect(zone?.contains(tree.closest('[data-slot="scroll-area"]'))).toBe(true)
+  })
+
   it("preserves the file tree DOM while entering and clearing a filename filter", () => {
     useWorkspaceStore.setState({ workspacePath: "/w" })
     const { rerender } = render(<FilesNavContent />)

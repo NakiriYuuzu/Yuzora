@@ -21,5 +21,15 @@
   "copyOnSelect": "選取後自動複製",
   "copyOnSelectDescription": "拖曳選取終端文字並放開滑鼠後，自動複製到剪貼簿。關閉後可手動複製。",
   "clipboardPasteFailed": "無法貼上剪貼簿圖片：{{message}}",
-  "clipboardCopyFailed": "無法複製選取的文字，請重新選取並複製。"
+  "clipboardCopyFailed": "無法複製選取的文字，請重新選取並複製。",
+  "pathDrop": {
+    "empty": "沒有可貼上的檔案。",
+    "not-writable": "此終端機為唯讀，未貼上路徑。",
+    "remote-terminal": "無法將本機檔案貼到遠端終端機，請改為拖曳此主機上的檔案。",
+    "host-mismatch": "這些檔案所屬的主機與此終端機不同。",
+    "unsafe-name": "檔名含有無法安全貼到 shell 的字元，因此沒有貼上任何內容。"
+  },
+  "swapPane": {
+    "action": "交換終端機窗格"
+  }
 }

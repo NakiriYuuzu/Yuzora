@@ -171,7 +171,12 @@
   },
   "fileTree": {
     "openDiffFile": "開啟差異 {{name}}",
-    "openDiffTitle": "開啟差異"
+    "openDiffTitle": "開啟差異",
+    "moveConfirm": {
+      "title": "要移動項目嗎？",
+      "description": "要把「{{name}}」移動到「{{target}}」嗎？",
+      "confirm": "移動"
+    }
   },
   "editorArea": {
     "splitRightAriaLabel": "向右分割",
@@ -610,6 +615,7 @@
   },
   "fileClipboard": {
     "errorTitle": "無法貼上",
+    "moveErrorTitle": "無法移動",
     "error": {
       "copy-into-itself": "無法把資料夾複製到它自己裡面。",
       "move-into-itself": "無法把資料夾移動到它自己裡面。",

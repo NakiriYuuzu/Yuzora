@@ -296,7 +296,7 @@ function spaceMoveCommand(direction: "up" | "down") {
   })
 }
 
-function herdrMethodAvailability(
+export function herdrMethodAvailability(
   sessionName: string,
   flag:
     | "workspaceRename"
@@ -321,7 +321,7 @@ function herdrMethodAvailability(
   return methodOk ? available() : disabled(DISABLED_HERDR_METHOD)
 }
 
-async function afterHerdrMutation(sessionName: string): Promise<void> {
+export async function afterHerdrMutation(sessionName: string): Promise<void> {
   useHerdrStore.getState().bumpTopologyRevision()
   await useHerdrStore.getState().refreshSnapshot(sessionName).catch(() => undefined)
 }

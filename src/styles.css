@@ -362,6 +362,41 @@
     background: rgba(var(--yz-accent-rgb), 0.3);
 }
 
+/* In-app drags are pointer-driven (src/lib/pointerDrag.ts); a native WebKit
+   drag would suppress the pointer events they rely on. */
+[data-pointer-drag-handle] {
+    -webkit-user-drag: none;
+    user-select: none;
+    touch-action: none;
+}
+html[data-pointer-dragging],
+html[data-pointer-dragging] * {
+    cursor: grabbing !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+[data-pointer-drag-source] {
+    opacity: 0.55;
+}
+.pointer-drag-preview {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 2147483647;
+    max-width: 280px;
+    overflow: hidden;
+    padding: 3px 8px;
+    border: 1px solid var(--line-1);
+    border-radius: 6px;
+    background: var(--paper-0);
+    color: var(--ink-1);
+    box-shadow: var(--shadow-md);
+    font-size: 12px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
 /* App-owned scrollbars use shadcn ScrollArea (src/components/ui/scroll-area.tsx). */
 [data-slot="scroll-area-scrollbar"] {
     -webkit-app-region: no-drag;

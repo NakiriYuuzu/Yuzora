@@ -157,6 +157,18 @@ describe("createHerdrTerminalTransport", () => {
     ])
   })
 
+  it("removes paste delimiters that only form once an inner one is stripped", async () => {
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({ sessionId: "sess-1", target: "t1", mode: "control", role: "controller", takeover: true, cols: 80, rows: 24 })
+    const transport = createHerdrTerminalTransport({ terminalId: "t1" })
+    await transport.open({ cols: 80, rows: 24, onEvent: () => undefined })
+    // A single pass would join "\x1b[2" + "01~" into a fresh end marker and
+    // send "\x03rm -rf ~\n" as typed keystrokes after the paste ended.
+    await transport.paste("x\x1b[2\x1b[201~01~\x03rm -rf ~\n\x1b[20\x1b[200~0~y")
+    const frame = vi.mocked(herdrTerminalInput).mock.calls[0]?.[1] ?? ""
+    expect(frame).toBe("\x1b[200~x\x03rm -rf ~\ny\x1b[201~")
+    expect(frame.indexOf("\x1b[201~")).toBe(frame.length - "\x1b[201~".length)
+  })
+
   beforeEach(() => {
     vi.mocked(herdrTerminalOpen).mockReset()
     vi.mocked(herdrTerminalInput).mockReset()

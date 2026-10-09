@@ -1,4 +1,9 @@
 import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
+import { registerTerminalDropTarget } from "@/terminal/terminalDropTargets"
+import { beginPointerDrag, elementAtPoint } from "@/lib/pointerDrag"
+import { showActionError } from "@/lib/actionFeedback"
+import { herdrPaneSwap } from "@/lib/herdrIpc"
+import { afterHerdrMutation, herdrMethodAvailability } from "@/app/workbench/contextMenuDefs"
 import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
 import { installHerdrDragSelection, type HerdrDragSelection } from "@/terminal/herdrDragSelection"
 import { installHerdrMouseInput } from "@/terminal/herdrMouseInput"
@@ -13,6 +18,7 @@ import {
   useState,
   useId,
   type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react"
 import { FitAddon } from "@xterm/addon-fit"
@@ -843,6 +849,7 @@ function HerdrTerminalLeaf({
   const activeRef = useRef(active)
   const visibleRef = useRef(visible)
   const tabIdRef = useRef(tabId)
+  const activatePaneRef = useRef<() => void>(() => undefined)
   const previousVisibleRef = useRef(visible)
   const transportRef = useRef<ReturnType<typeof createHerdrTerminalTransport> | null>(null)
   const targetOpenRef = useRef<ReturnType<typeof installTerminalTargetOpen> | null>(null)
@@ -872,6 +879,11 @@ function HerdrTerminalLeaf({
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [fontFamily, fontSize])
+
+  // Kept apart from the visibility effect: focus changes must not flush output.
+  useLayoutEffect(() => {
+    activatePaneRef.current = () => { if (paneId) onActivatePane?.(paneId) }
+  }, [onActivatePane, paneId])
 
   useLayoutEffect(() => {
     activeRef.current = active
@@ -1138,6 +1150,15 @@ function HerdrTerminalLeaf({
       }
     })
     transportRef.current = transport
+    const unregisterDropTarget = registerTerminalDropTarget(attachmentKey, {
+      scope: contextSessionName,
+      canWrite: () => !disposedRef.current && openReadyRef.current && transport.canWrite(),
+      paste: (text) => transport.paste(text),
+      focus: () => {
+        activatePaneRef.current()
+        if (termRef.current) safeFocus(termRef.current)
+      }
+    })
 
     let hasFrame = false
     let openStarted = false
@@ -1454,6 +1475,7 @@ function HerdrTerminalLeaf({
       outputQueueRef.current?.dispose()
       unregisterTerminalOutputQueue(attachmentKey)
       clearRetry()
+      unregisterDropTarget()
       // A gesture released by this teardown reaches HERDR before its connector goes.
       const mouseFlushed = transport.detach()
       recoverOutputRef.current = null
@@ -1571,6 +1593,34 @@ function HerdrTerminalLeaf({
 
   const paneActive = active && visible
   const paneTitle = label || title || t("herdrTerminal.defaultTitle")
+  const paneSwapDragRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => paneSwapDragRef.current?.(), [])
+  const startPaneSwapDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const sourcePaneId = paneId
+    const page = event.currentTarget.closest('[data-testid^="herdr-terminal-page-"]')
+    if (!sourcePaneId || !page) return
+    if (!herdrMethodAvailability(contextSessionName, "paneSwap", "pane.swap").enabled) return
+    paneSwapDragRef.current = beginPointerDrag<string>(event, {
+      label: paneTitle,
+      resolveTarget: (point) => {
+        const leaf = elementAtPoint(point)?.closest<HTMLElement>("[data-pane-id]")
+        const targetPaneId = leaf?.dataset.paneId
+        if (!leaf || !targetPaneId || targetPaneId === sourcePaneId || !page.contains(leaf)) return null
+        return { element: leaf, data: targetPaneId }
+      },
+      onDrop: (target) => {
+        void (async () => {
+          try {
+            if (!herdrMethodAvailability(contextSessionName, "paneSwap", "pane.swap").enabled) return
+            await herdrPaneSwap({ sessionName: contextSessionName, sourcePaneId, targetPaneId: target.data })
+            await afterHerdrMutation(contextSessionName)
+          } catch (error) {
+            await showActionError(t("swapPane.action", { ns: "terminal" }), error)
+          }
+        })()
+      }
+    })
+  }
   const takeControlButton = displayMode !== "control" && sessionCanConnect ? (
     <Button
       type="button"
@@ -1597,7 +1647,7 @@ function HerdrTerminalLeaf({
 
   return (
     <div
-      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden data-[pointer-drop-target=inside]:after:pointer-events-none data-[pointer-drop-target=inside]:after:absolute data-[pointer-drop-target=inside]:after:inset-0 data-[pointer-drop-target=inside]:after:z-20 data-[pointer-drop-target=inside]:after:shadow-[inset_0_0_0_2px_var(--yz-accent)] data-[pointer-drop-target=inside]:after:content-['']"
       data-testid={`herdr-terminal-leaf-${terminalId}`}
       data-pane-id={paneId ?? ""}
       data-terminal-id={terminalId}
@@ -1624,7 +1674,11 @@ function HerdrTerminalLeaf({
             className="h-full min-w-0 flex-1 justify-start"
             aria-label={t("herdrTerminal.focusPane", { name: paneTitle })}
             aria-pressed={paneActive}
-            onPointerDown={(event) => event.stopPropagation()}
+            data-pointer-drag-handle=""
+            onPointerDown={(event) => {
+              event.stopPropagation()
+              startPaneSwapDrag(event)
+            }}
             onClick={() => {
               if (paneActive && termRef.current) safeFocus(termRef.current)
               else if (paneId) onActivatePane?.(paneId)

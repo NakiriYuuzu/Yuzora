@@ -194,6 +194,7 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalScroll: herdrIpcMock.herdrTerminalScroll,
   herdrTerminalRelease: herdrIpcMock.herdrTerminalRelease,
   herdrPaneFocus: vi.fn().mockResolvedValue(undefined),
+  herdrPaneSwap: vi.fn().mockResolvedValue(undefined),
   herdrLayoutExport: vi.fn(async () => {
     throw new Error("layout unavailable in test")
   }),
@@ -220,8 +221,10 @@ vi.mock("@/lib/actionFeedback", () => ({
 
 import { HerdrTerminalPage } from "./HerdrTerminalPage"
 import { isMacPlatform } from "@/lib/platform"
+import { terminalDropTargetAt } from "@/terminal/terminalDropTargets"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { stubElementFromPoint, pointerDrag } from "@/test/pointerDrag"
 
 const terminalControlCapabilities = {
   binaryPath: "/bin/herdr",
@@ -1286,6 +1289,21 @@ describe("HerdrTerminalPage clipboard", () => {
     await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledExactlyOnceWith("sess-1", "\x1b[200~\n\x1b[201~", null))
     expect(clipboardMock.readText).not.toHaveBeenCalled()
   })
+
+  it("registers the leaf as a file-drop target until it unmounts", async () => {
+    const { unmount } = render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    const leaf = document.querySelector("[data-attachment-key]")
+    const target = terminalDropTargetAt(leaf)
+    expect(target).not.toBeNull()
+    await waitFor(() => expect(target!.canWrite()).toBe(true))
+
+    await target!.paste("/tmp/a ")
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledWith("sess-1", expect.stringContaining("/tmp/a "), null))
+
+    unmount()
+    expect(terminalDropTargetAt(leaf)).toBeNull()
+  })
 })
 
 describe("HerdrTerminalPage server-owned scrolling", () => {
@@ -1930,5 +1948,119 @@ describe("HerdrTerminalPage target opening", () => {
     unmount()
     expect(term.linkProviderDisposable.dispose).toHaveBeenCalledTimes(1)
     expect(term.writeParsedDisposable.dispose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("HerdrTerminalPage pane swap drag", () => {
+  let restoreHitTest: (() => void) | null = null
+  const hitTest = { element: null as Element | null }
+
+  async function renderSplitPage(paneSwap = true) {
+    const { herdrLayoutExport } = await import("@/lib/herdrIpc")
+    vi.mocked(herdrLayoutExport).mockResolvedValue({
+      workspaceId: "ws-1",
+      tabId: "tab-1",
+      focusedPaneId: "pane-1",
+      zoomed: false,
+      root: {
+        type: "split",
+        direction: "right",
+        ratio: 0.5,
+        first: { type: "pane", paneId: "pane-1", label: "Agent" },
+        second: { type: "pane", paneId: "pane-2", label: "Shell" }
+      }
+    })
+    seedSessions([{ name: "work", default: true, running: true }])
+    useHerdrStore.setState({
+      capabilities: { ...terminalControlCapabilities, api: { ...terminalControlCapabilities.api, paneSwap } },
+      snapshot: {
+        herdrSessionId: "work",
+        protocol: 19,
+        version: "0.8.0",
+        spaces: [],
+        agents: [],
+        tabs: [],
+        terminals: [
+          { terminalId: "term-1", paneId: "pane-1", tabId: "tab-1", workspaceId: "ws-1" },
+          { terminalId: "term-2", paneId: "pane-2", tabId: "tab-1", workspaceId: "ws-1" }
+        ],
+        raw: {}
+      }
+    })
+    render(<HerdrTerminalPage herdrSessionId="work" terminalId="term-1" herdrTabId="tab-1" active visible />)
+    await waitFor(() => expect(screen.getByTestId("herdr-terminal-leaf-term-2")).toBeInTheDocument())
+  }
+
+  const handle = (name: string) => screen.getByRole("button", { name: new RegExp(name) })
+
+  beforeEach(() => {
+    cleanup()
+    xtermMock.reset()
+    herdrIpcMock.reset()
+    hitTest.element = null
+    restoreHitTest = stubElementFromPoint(() => hitTest.element)
+  })
+  afterEach(async () => {
+    restoreHitTest?.()
+    const { herdrLayoutExport, herdrPaneSwap } = await import("@/lib/herdrIpc")
+    vi.mocked(herdrPaneSwap).mockClear()
+    vi.mocked(herdrLayoutExport).mockReset()
+    vi.mocked(herdrLayoutExport).mockImplementation(async () => { throw new Error("layout unavailable in test") })
+  })
+
+  it("swaps the dragged pane with the pane under the pointer", async () => {
+    const { herdrPaneSwap } = await import("@/lib/herdrIpc")
+    await renderSplitPage()
+    const target = screen.getByTestId("herdr-terminal-leaf-term-2")
+    hitTest.element = target
+    const revision = useHerdrStore.getState().topologyRevision
+    pointerDrag(handle("Agent"), [{ x: 20, y: 0 }, { x: 40, y: 0 }])
+    await waitFor(() => expect(herdrPaneSwap).toHaveBeenCalledWith({
+      sessionName: "work", sourcePaneId: "pane-1", targetPaneId: "pane-2"
+    }))
+    // The same refresh as the context-menu swap reloads the swapped layout.
+    await waitFor(() => expect(useHerdrStore.getState().topologyRevision).toBeGreaterThan(revision))
+  })
+
+  it("starts no drag without pane.swap", async () => {
+    const { herdrPaneSwap } = await import("@/lib/herdrIpc")
+    await renderSplitPage(false)
+    hitTest.element = screen.getByTestId("herdr-terminal-leaf-term-2")
+    pointerDrag(handle("Agent"), [{ x: 20, y: 0 }, { x: 40, y: 0 }])
+    expect(screen.getByTestId("herdr-terminal-leaf-term-2")).not.toHaveAttribute("data-pointer-drop-target")
+    expect(herdrPaneSwap).not.toHaveBeenCalled()
+  })
+
+  it("ignores drops on its own pane or outside the page", async () => {
+    const { herdrPaneSwap } = await import("@/lib/herdrIpc")
+    await renderSplitPage()
+    hitTest.element = screen.getByTestId("herdr-terminal-leaf-term-1")
+    pointerDrag(handle("Agent"), [{ x: 20, y: 0 }, { x: 40, y: 0 }])
+    const foreign = document.createElement("div")
+    foreign.setAttribute("data-pane-id", "pane-9")
+    document.body.appendChild(foreign)
+    hitTest.element = foreign
+    pointerDrag(handle("Agent"), [{ x: 20, y: 0 }, { x: 40, y: 0 }])
+    foreign.remove()
+    await Promise.resolve()
+    expect(herdrPaneSwap).not.toHaveBeenCalled()
+  })
+
+  it("marks the hovered pane as the drop target", async () => {
+    await renderSplitPage()
+    const target = screen.getByTestId("herdr-terminal-leaf-term-2")
+    hitTest.element = target
+    pointerDrag(handle("Agent"), [{ x: 20, y: 0 }, { x: 40, y: 0 }], { release: false })
+    expect(target).toHaveAttribute("data-pointer-drop-target", "inside")
+    fireEvent.pointerUp(window, { button: 0, buttons: 0, pointerId: 1, clientX: 40, clientY: 0 })
+  })
+
+  it("still focuses the pane on a plain click", async () => {
+    const { herdrPaneFocus } = await import("@/lib/herdrIpc")
+    const { herdrPaneSwap } = await import("@/lib/herdrIpc")
+    await renderSplitPage()
+    fireEvent.click(handle("Shell"))
+    await waitFor(() => expect(herdrPaneFocus).toHaveBeenCalled())
+    expect(herdrPaneSwap).not.toHaveBeenCalled()
   })
 })
