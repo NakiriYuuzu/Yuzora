@@ -150,6 +150,8 @@ pub async fn host_wsl_path(
         WslPathInput::Windows(path) => path,
     };
     let script = format!("wslpath -a -u {}", crate::host_service::shell_quote(&path)?);
+    // WSL may have been turned off while the identity check ran.
+    crate::runtime_preferences::require_wsl_flag(preferences.wsl_enabled(), true)?;
     let bytes = crate::host_bootstrap::execute(
         &crate::host_service::HostTarget::Wsl { distro },
         Some(&ssh.0),
