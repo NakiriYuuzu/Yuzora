@@ -74,9 +74,10 @@ export async function applyWindowGlass(enabled: boolean, root: HTMLElement = doc
     leaveGlass(root)
   }
   if (!platform) {
-    // Detection can fail later (a UA-CH query on Windows): an effect already on
-    // the window must still go, using the platform it was applied with.
-    if (desired?.active) {
+    // Detection can fail later (a UA-CH query on Windows): an effect still on
+    // the window, including one whose earlier clear failed, must still go,
+    // using the platform it was applied with.
+    if (desired && (desired.active || nativeActive)) {
       desired = { ...desired, active: false }
       await syncNative(root)
     }

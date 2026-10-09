@@ -162,6 +162,18 @@ describe("window glass", () => {
     expect(root.dataset.glass).toBeUndefined()
   })
 
+  it("retries a failed clear even when a later detection fails", async () => {
+    onWindows("15.0.0")
+    await applyWindowGlass(true, root)
+    native.clearEffects.mockRejectedValueOnce(new Error("busy"))
+    await applyWindowGlass(false, root)
+    expect(native.clearEffects).toHaveBeenCalledTimes(1)
+    onWindows(new Error("UA-CH unavailable"))
+    await applyWindowGlass(false, root)
+    expect(native.clearEffects).toHaveBeenCalledTimes(2)
+    expect(root.dataset.glass).toBeUndefined()
+  })
+
   it("applies native effect changes one at a time in request order", async () => {
     let finish: () => void = () => {}
     native.setEffects.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
