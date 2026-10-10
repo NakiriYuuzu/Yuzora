@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 pub struct WatcherHandle {
     _watcher: notify::RecommendedWatcher,
     wake: mpsc::SyncSender<Vec<PathBuf>>,
+    #[cfg(test)]
+    test_overflow: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -33,6 +35,27 @@ pub fn is_ignored_path(path: &Path) -> bool {
 }
 
 const CAPACITY: usize = 4096;
+const COALESCE_INTERVAL: Duration = Duration::from_millis(300);
+
+fn request_rescan(overflow: &AtomicBool, send: &mpsc::SyncSender<Vec<PathBuf>>) {
+    if !overflow.swap(true, Ordering::AcqRel) {
+        // A full queue already wakes the worker; one hint is enough until flush.
+        let _ = send.try_send(Vec::new());
+    }
+}
+
+fn advance_idle_deadline(deadline: Instant, now: Instant) -> Instant {
+    if now <= deadline {
+        return deadline;
+    }
+    // Keep the existing window phase without waking for missed idle slots.
+    let remainder = now.duration_since(deadline).as_nanos() % COALESCE_INTERVAL.as_nanos();
+    if remainder == 0 {
+        now
+    } else {
+        now + COALESCE_INTERVAL - Duration::from_nanos(remainder as u64)
+    }
+}
 
 // Root rules only: nested .gitignore files and global Git excludes are not
 // loaded. Keep file-only ignores observable so open editors still reload.
@@ -313,11 +336,13 @@ pub fn build_classified_watcher(
     let wake = send.clone();
     let overflow = Arc::new(AtomicBool::new(false));
     let overflow_callback = overflow.clone();
+    #[cfg(test)]
+    let test_overflow = overflow.clone();
     let callback_root = root.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if let Ok(event) = &event {
             if event.need_rescan() {
-                overflow_callback.store(true, Ordering::Release);
+                request_rescan(&overflow_callback, &send);
                 return;
             }
             // Linux inotify reports reads/opens/closes too. Forwarding those
@@ -333,12 +358,12 @@ pub fn build_classified_watcher(
                 .filter(|p| p.starts_with(&callback_root) && !is_ignored_path(p))
                 .collect::<Vec<_>>(),
             _ => {
-                overflow_callback.store(true, Ordering::Release);
+                request_rescan(&overflow_callback, &send);
                 return;
             }
         };
         if !paths.is_empty() && send.try_send(paths).is_err() {
-            overflow_callback.store(true, Ordering::Release);
+            request_rescan(&overflow_callback, &send);
         }
     })
     .map_err(|e| e.to_string())?;
@@ -349,29 +374,48 @@ pub fn build_classified_watcher(
     let stop = stopped.clone();
     let thread = std::thread::spawn(move || {
         let mut pending = PendingChanges::default();
-        let mut deadline = Instant::now() + Duration::from_millis(300);
+        let mut deadline = Instant::now() + COALESCE_INTERVAL;
         while !stop.load(Ordering::Acquire) {
-            match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            let received = if !pending.rescan && pending.paths.is_empty() {
+                let received = receive
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected);
+                deadline = advance_idle_deadline(deadline, Instant::now());
+                received
+            } else {
+                receive.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            };
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+            match received {
                 Ok(batch) => pending.extend(&root, &mut matcher, batch),
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if overflow.swap(false, Ordering::AcqRel) {
-                matcher = ignore_matcher(&root);
+            if overflow.load(Ordering::Acquire) {
                 pending.invalidate_root();
             }
             if Instant::now() < deadline {
                 continue;
             }
+            // Reload once per overflow window, before publishing its rescan.
+            // Clearing before the callback lets later errors queue a new hint.
+            if overflow.swap(false, Ordering::AcqRel) {
+                matcher = ignore_matcher(&root);
+                pending.invalidate_root();
+            }
             if !stop.load(Ordering::Acquire) {
                 deliver(&mut pending, &root, &stop, &on_change);
             }
-            deadline = Instant::now() + Duration::from_millis(300);
+            deadline = Instant::now() + COALESCE_INTERVAL;
         }
     });
     Ok(WatcherHandle {
         _watcher: watcher,
         wake,
+        #[cfg(test)]
+        test_overflow,
         stopped,
         thread: Some(thread),
     })
@@ -380,6 +424,65 @@ pub fn build_classified_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_deadline_preserves_window_phase_without_restarting_the_delay() {
+        let start = Instant::now();
+        let deadline = start + COALESCE_INTERVAL;
+        assert_eq!(advance_idle_deadline(deadline, start), deadline);
+        assert_eq!(
+            advance_idle_deadline(deadline, start + Duration::from_millis(1100)),
+            start + Duration::from_millis(1200)
+        );
+        let boundary = start + Duration::from_secs(24 * 60 * 60);
+        assert_eq!(advance_idle_deadline(deadline, boundary), boundary);
+        assert_eq!(
+            advance_idle_deadline(deadline, boundary + Duration::from_millis(1)),
+            boundary + COALESCE_INTERVAL
+        );
+    }
+
+    #[test]
+    fn overflow_wakes_an_idle_receiver_once_and_survives_a_full_queue() {
+        let (send, receive) = mpsc::sync_channel(1);
+        let overflow = AtomicBool::new(false);
+        for _ in 0..100 {
+            request_rescan(&overflow, &send);
+        }
+        assert!(overflow.load(Ordering::Acquire));
+        assert!(receive.try_recv().unwrap().is_empty());
+        assert!(receive.try_recv().is_err());
+        overflow.store(false, Ordering::Release);
+        send.try_send(vec![PathBuf::from("queued-change")]).unwrap();
+        request_rescan(&overflow, &send);
+        assert_eq!(
+            receive.try_recv().unwrap(),
+            vec![PathBuf::from("queued-change")]
+        );
+        assert!(overflow.swap(false, Ordering::AcqRel));
+        request_rescan(&overflow, &send);
+        assert!(receive.try_recv().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_overflow_without_paths_reaches_the_idle_watcher() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let (send, receive) = mpsc::channel();
+        let watcher = build_watcher(&root, move |paths| {
+            let _ = send.send(paths);
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(receive.try_recv().is_err());
+        request_rescan(&watcher.test_overflow, &watcher.wake);
+        assert_eq!(
+            receive.recv_timeout(Duration::from_secs(2)).unwrap(),
+            vec![root.to_string_lossy().into_owned()]
+        );
+        assert!(receive.recv_timeout(Duration::from_millis(350)).is_err());
+        drop(watcher);
+    }
 
     #[test]
     fn bounded_ignore_preserves_bom_precedence_and_skips_oversized_file() {
