@@ -69,6 +69,8 @@ struct ActiveRun {
 
 struct StoredSession {
     owner: ResultSessionOwner,
+    // The stored map key owns an immutable allocation separate from the owner ID.
+    map_key_capacity: usize,
     columns: Vec<String>,
     pages: Vec<Vec<Vec<DbValue>>>,
     ready_pages: usize,
@@ -148,6 +150,7 @@ impl ResultSessionRegistry {
         }
         let mut probe = StoredSession {
             owner,
+            map_key_capacity: 0,
             columns,
             pages: vec![Vec::new()],
             ready_pages: 0,
@@ -167,8 +170,10 @@ impl ResultSessionRegistry {
         if session_bytes > self.session_limit || projected_process > self.process_limit {
             return Err(SessionError::BudgetExceeded);
         }
+        let stored_key = key.clone();
+        probe.map_key_capacity = stored_key.capacity();
         probe.bytes = session_bytes;
-        self.sessions.insert(key.clone(), probe);
+        self.sessions.insert(stored_key, probe);
         self.refresh_accounting();
         debug_assert!(self
             .sessions
@@ -266,9 +271,9 @@ impl ResultSessionRegistry {
     ) -> Result<PushRowOutcome, SessionError> {
         self.validate_active_run(owner)?;
         let key = owner.result_session_id.0.as_str();
-        let (stored_key, session) = self
+        let session = self
             .sessions
-            .get_key_value(key)
+            .get_mut(key)
             .ok_or(SessionError::SessionNotFound)?;
         if session.owner != *owner {
             return Err(SessionError::OwnerMismatch);
@@ -282,30 +287,22 @@ impl ResultSessionRegistry {
         let row_bytes = match classify_converted_row(&row, self.field_limit, self.row_limit) {
             Ok(bytes) => bytes,
             Err(_) => {
-                let session = self
-                    .sessions
-                    .get_mut(key)
-                    .expect("the exact session was validated before classification");
                 session.value_too_large = true;
                 return Ok(PushRowOutcome::ValueTooLarge);
             }
         };
-        let projected_session =
-            estimate_session_after_push(&owner.result_session_id.0, stored_key, session, row_bytes);
+        let projected_session = estimate_session_after_push(
+            &owner.result_session_id.0,
+            session.map_key_capacity,
+            session,
+            row_bytes,
+        );
         let process_without_session = self.total_bytes.saturating_sub(session.bytes);
         let projected_process = process_without_session.saturating_add(projected_session);
         if projected_session > self.session_limit || projected_process > self.process_limit {
-            let session = self
-                .sessions
-                .get_mut(key)
-                .expect("the exact session was validated before reservation");
             session.result_limit_reached = true;
             return Ok(PushRowOutcome::LimitReached);
         }
-        let session = self
-            .sessions
-            .get_mut(key)
-            .expect("the exact session was validated before insertion");
         let new_page = session
             .pages
             .last()
@@ -825,7 +822,7 @@ fn map_insert_growth_bytes(len: usize, capacity: usize) -> usize {
 
 fn estimate_session_after_push(
     key: &String,
-    stored_key: &String,
+    stored_key_capacity: usize,
     session: &StoredSession,
     row_bytes: usize,
 ) -> usize {
@@ -837,7 +834,7 @@ fn estimate_session_after_push(
     } else {
         session
             .bytes
-            .saturating_sub(stored_key.capacity())
+            .saturating_sub(stored_key_capacity)
             .saturating_add(key.capacity())
     };
     let last_len = session.pages.last().map(Vec::len).unwrap_or(0);
@@ -1083,13 +1080,18 @@ mod tests {
             .unwrap();
         let full = estimate_session_retained_bytes(&caller.result_session_id.0, session);
         assert_eq!(
-            estimate_session_after_push(&caller.result_session_id.0, stored_key, session, bytes),
+            estimate_session_after_push(
+                &caller.result_session_id.0,
+                stored_key.capacity(),
+                session,
+                bytes,
+            ),
             full.saturating_add(estimate_row_heap_bytes(&row, row.capacity()))
         );
         assert_eq!(
             estimate_session_after_push(
                 &caller.result_session_id.0,
-                stored_key,
+                stored_key.capacity(),
                 session,
                 usize::MAX
             ),
@@ -1939,6 +1941,7 @@ mod membership_accounting_tests {
     fn assert_full_model(registry: &ResultSessionRegistry) {
         let mut occupied = 0usize;
         for (key, session) in &registry.sessions {
+            assert_eq!(session.map_key_capacity, key.capacity());
             let full = estimate_session_retained_bytes(key, session);
             assert_eq!(session.bytes, full);
             occupied = occupied.saturating_add(full);
