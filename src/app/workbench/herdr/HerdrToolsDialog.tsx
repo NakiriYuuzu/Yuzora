@@ -140,7 +140,7 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
         {operation.result && <Alert><AlertTitle>{t(agentStarting ? "agentStartSubmitted" : "operationComplete")}</AlertTitle>
           {resultText && <AlertDescription className="whitespace-pre-wrap break-all">{resultText}</AlertDescription>}
           {diagnostic && <Collapsible className="col-start-2 mt-1"><CollapsibleTrigger className="text-xs font-medium underline-offset-2 hover:underline">{t("showDetails")}</CollapsibleTrigger>
-            <CollapsibleContent><pre className="mt-2 max-h-64 overflow-auto rounded-md bg-muted p-2 font-mono text-[11px] whitespace-pre-wrap break-all">{JSON.stringify(operation.result, null, 2)}</pre></CollapsibleContent></Collapsible>}
+            <CollapsibleContent><ScrollArea className="mt-2 max-h-64 rounded-md bg-muted" viewportClassName="[&>div]:!block"><pre className="p-2 font-mono text-[11px] whitespace-pre-wrap break-all">{JSON.stringify(operation.result, null, 2)}</pre></ScrollArea></CollapsibleContent></Collapsible>}
         </Alert>}
       </ScrollArea>
     </DialogContent>

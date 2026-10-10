@@ -27,13 +27,13 @@ export function HerdrActionHome({ runtime, starting, busy, onTask, onNative, onN
     <div role="group" aria-label={t("homeQuestion")} className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {cards.map(({ id, icon: Icon }) => {
         const state = availability(id)
-        return <button key={id} type="button" data-task-card={id} disabled={busy || !state.ok} onClick={() => id === "native" ? onNative() : onTask(id)}
-          className="flex min-h-28 min-w-0 flex-col items-start gap-1.5 rounded-xl border bg-card p-3.5 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-card">
+        return <Button key={id} type="button" variant="outline" data-task-card={id} disabled={busy || !state.ok} onClick={() => id === "native" ? onNative() : onTask(id)}
+          className="h-auto min-h-28 min-w-0 flex-col items-start justify-start gap-1.5 rounded-xl bg-card p-3.5 text-left whitespace-normal hover:bg-muted/50 disabled:pointer-events-auto disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-card dark:bg-card dark:hover:bg-muted/50">
           <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Icon className="size-4" aria-hidden="true" /></span>
           <span className="text-sm font-medium">{t(`tasks.${id}.title`)}</span>
-          <span className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{t(`tasks.${id}.description`)}</span>
+          <span className="text-xs font-normal text-muted-foreground [overflow-wrap:anywhere]">{t(`tasks.${id}.description`)}</span>
           {!state.ok && <ReasonNote reason={state.reason} />}
-        </button>
+        </Button>
       })}
     </div>
     <div className="flex min-w-0 flex-wrap items-center gap-2 border-t pt-4">
