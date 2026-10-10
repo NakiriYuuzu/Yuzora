@@ -318,7 +318,9 @@ export class TerminalOutputQueue {
         this.scheduled = null
       }
       if (this.pendingTruncated) this.hiddenTruncated = true
-      for (const chunk of this.pendingChunks) this.appendHidden(chunk)
+      for (let index = 0; index < this.pendingChunks.length; index += 1) {
+        this.appendHidden(this.pendingChunks[index], this.pendingSizes[index])
+      }
       this.pendingChunks = []
       this.pendingSizes = []
       this.pendingSize = 0
@@ -328,7 +330,7 @@ export class TerminalOutputQueue {
 
     if (this.hiddenTruncated) this.appendPending(TERMINAL_OUTPUT_TRUNCATED_NOTICE)
     for (let index = this.hiddenHead; index < this.hiddenChunks.length; index += 1) {
-      this.appendPending(this.hiddenChunks[index])
+      this.appendPending(this.hiddenChunks[index], this.hiddenSizes[index])
     }
     this.hiddenChunks = []
     this.hiddenHead = 0
@@ -364,8 +366,7 @@ export class TerminalOutputQueue {
     this.pendingSize = 0
   }
 
-  private appendHidden(data: string): void {
-    const bytes = utf8Length(data)
+  private appendHidden(data: string, bytes = utf8Length(data)): void {
     if (bytes === 0) return
     this.hiddenChunks.push(data)
     this.hiddenSizes.push(bytes)
@@ -395,8 +396,7 @@ export class TerminalOutputQueue {
     }
   }
 
-  private appendPending(data: string): void {
-    const bytes = utf8Length(data)
+  private appendPending(data: string, bytes = utf8Length(data)): void {
     if (bytes === 0) return
     this.pendingChunks.push(data)
     this.pendingSizes.push(bytes)
