@@ -301,6 +301,8 @@ pub(crate) fn read_local_ndjson_line_with(
                 HerdrProtocolError::TimedOut,
             ));
         }
+        // Lazy on purpose: `get_or_insert` would zero the 8 KiB array on every call.
+        #[allow(clippy::unnecessary_lazy_evaluations)]
         let buffer = buffer.get_or_insert_with(|| [0u8; READ_CHUNK_BYTES]);
         match poll_local_stream_read(stream, buffer) {
             Ok(LocalStreamRead::Data(read)) => pending.extend_from_slice(&buffer[..read]),
