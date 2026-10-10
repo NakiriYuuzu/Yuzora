@@ -146,7 +146,15 @@ fn all_untracked(root: &Path, paths: &[&PathBuf], cancel: &Arc<AtomicBool>) -> b
     let Some(specs) = paths
         .iter()
         .map(|path| path.strip_prefix(root).ok()?.to_str())
-        .map(|relative| relative.map(|r| r.replace('\\', "/")))
+        .map(|relative| {
+            relative.map(|r| {
+                if cfg!(windows) {
+                    r.replace('\\', "/")
+                } else {
+                    r.to_owned()
+                }
+            })
+        })
         .collect::<Option<Vec<String>>>()
     else {
         return false;
@@ -805,6 +813,30 @@ mod tests {
         assert!(all_untracked(
             root,
             &[&root.join("good.o")],
+            &Arc::default()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_file_with_a_backslash_in_its_name_is_git_relevant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, ".gitignore", "foo*\n", "ignore");
+        std::fs::write(root.join("foo\\bar"), "x").unwrap();
+        crate::git_service::test_repo::git(root, &["add", "-f", "--", "foo\\bar"]);
+        crate::git_service::test_repo::git(root, &["commit", "-m", "track"]);
+        std::fs::write(root.join("foo\\bar"), "y").unwrap();
+        assert!(!all_untracked(
+            root,
+            &[&root.join("foo\\bar")],
+            &Arc::default()
+        ));
+        // Control: an untracked name matching the same rule is still skippable.
+        assert!(all_untracked(
+            root,
+            &[&root.join("foo.txt")],
             &Arc::default()
         ));
     }
