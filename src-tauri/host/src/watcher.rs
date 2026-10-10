@@ -302,7 +302,13 @@ impl PendingChanges {
                 .filter(|(_, ignored)| *ignored)
                 .map(|(path, _)| path)
                 .collect();
-            let relevant = ignored.len() != drained.len() || !all_untracked(root, &ignored, cancel);
+            // An ignore-file edit can expose or hide other files even when it ignores itself.
+            let ignore_rules_changed = drained
+                .iter()
+                .any(|(path, _)| path.file_name().is_some_and(|name| name == ".gitignore"));
+            let relevant = ignore_rules_changed
+                || ignored.len() != drained.len()
+                || !all_untracked(root, &ignored, cancel);
             (
                 drained
                     .iter()
@@ -864,6 +870,17 @@ mod tests {
         let mut pending = PendingChanges::default();
         pending.invalidate_root();
         assert!(pending.take_classified(root, &Arc::default()).unwrap().1);
+    }
+
+    #[test]
+    fn a_self_ignored_gitignore_edit_stays_git_relevant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, "src.txt", "x", "seed");
+        // Untracked and ignoring itself, yet editing it still changes what status lists.
+        std::fs::write(root.join(".gitignore"), ".gitignore\n*.log\n").unwrap();
+        assert!(classify(root, &[".gitignore"]));
     }
 
     #[test]
