@@ -214,6 +214,34 @@ describe("WSL host workspaces", () => {
         expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
     })
 
+    it("records a WSL copy at once, so a paste before the OS snapshot lands uses it", async () => {
+        const A = remoteFilePath("wsl-1", "/home/me/app/a.ts", "/home/me/app")
+        let snapshot!: (paths: string[]) => void
+        vi.mocked(ipc.clipboardReadFileList).mockReturnValueOnce(new Promise((resolve) => { snapshot = resolve }))
+        const copying = copyFilesToClipboard(WSL, [A], "copy")
+        expect(useFileClipboardStore.getState().clipboard?.paths).toEqual([A])
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
+        vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce([A])
+        await pasteFiles(WSL, null)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL)
+        expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
+        snapshot(["C:\\Users\\me\\old.png"])
+        await copying
+    })
+
+    it("keeps the later of two rapid WSL copies when their OS snapshots resolve out of order", async () => {
+        const A = remoteFilePath("wsl-1", "/home/me/app/a.ts", "/home/me/app")
+        const B = remoteFilePath("wsl-1", "/home/me/app/b.ts", "/home/me/app")
+        let first!: (paths: string[]) => void
+        vi.mocked(ipc.clipboardReadFileList).mockReturnValueOnce(new Promise((resolve) => { first = resolve }))
+        const copyingA = copyFilesToClipboard(WSL, [A], "copy")
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce([])
+        await copyFilesToClipboard(WSL, [B], "copy")
+        first([])
+        await copyingA
+        expect(useFileClipboardStore.getState().clipboard?.paths).toEqual([B])
+    })
+
     it("maps WSL backend refusals to readable messages", async () => {
         vi.mocked(ipc.wslImportOsFiles).mockRejectedValueOnce("wsl-helper-outdated")
         expect(await importDroppedFiles(WSL, WSL, ["C:\\a.png"])).toEqual([])

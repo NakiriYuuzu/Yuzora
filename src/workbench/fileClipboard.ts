@@ -75,8 +75,13 @@ function samePaths(a: readonly string[], b: readonly string[]): boolean {
  */
 export async function copyFilesToClipboard(workspacePath: string, paths: string[], mode: "copy" | "cut"): Promise<void> {
     if (!paths.length || !currentWorkspace(workspacePath)) return
-    const osSnapshot = wslDistroOf(workspacePath) ? await clipboardReadFileList().catch(() => [] as string[]) : undefined
-    useFileClipboardStore.getState().setClipboard({ workspacePath, paths, mode, osSnapshot })
+    const entry = { workspacePath, paths, mode }
+    useFileClipboardStore.getState().setClipboard(entry)
+    if (wslDistroOf(workspacePath)) {
+        const osSnapshot = await clipboardReadFileList().catch(() => [] as string[])
+        // A later copy owns the clipboard now; its own snapshot is on the way.
+        if (useFileClipboardStore.getState().clipboard === entry) useFileClipboardStore.getState().setClipboard({ ...entry, osSnapshot })
+    }
     void logUserAction(mode === "cut" ? "file_cut" : "file_copy", `${mode} ${paths.length} item(s)`)
     if (parseRemoteFilePath(workspacePath)) return
     await clipboardWriteWorkspaceFiles(workspacePath, paths).catch(() => undefined)
@@ -108,7 +113,10 @@ export async function pasteFiles(
     const internal = stored?.workspacePath === workspacePath ? stored : null
     // An SSH workspace reads the OS list only to say it cannot import it; local and WSL compare it.
     const osPaths = remote && !wslDistroOf(workspacePath) && internal ? [] : await clipboardReadFileList().catch(() => [] as string[])
-    const osUnchanged = internal?.osSnapshot !== undefined && samePaths(osPaths, internal.osSnapshot)
+    // A WSL copy whose snapshot is still pending is the newest clipboard action.
+    const osUnchanged = internal !== null && (internal.osSnapshot === undefined
+        ? !!wslDistroOf(workspacePath)
+        : samePaths(osPaths, internal.osSnapshot))
     const useInternal = internal !== null && (osPaths.length === 0 || samePaths(osPaths, internal.paths) || osUnchanged)
     try {
         if (useInternal) {
