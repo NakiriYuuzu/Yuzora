@@ -202,6 +202,7 @@ pub fn run() {
     let graceful_exit_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     tauri::Builder::default()
         .on_webview_event(preview_webview::forward_preview_file_drop)
+        .on_webview_event(file_clipboard::record_native_drop)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
@@ -357,6 +358,8 @@ pub fn run() {
             host_bootstrap::host_runtime_check,
             host_wsl::host_wsl_distributions,
             host_wsl::host_wsl_path,
+            host_wsl::host_import_dropped_paths,
+            host_wsl::host_paste_clipboard_files,
             runtime_preferences::runtime_preferences_get,
             runtime_preferences::runtime_preferences_set,
             host_reveal::host_reveal_in_explorer,
@@ -380,6 +383,7 @@ pub fn run() {
             file_clipboard::fs_copy_paths,
             file_clipboard::fs_move_paths,
             file_clipboard::fs_paste_clipboard_files,
+            file_clipboard::fs_import_dropped_paths,
             file_clipboard::clipboard_write_workspace_files,
             file_clipboard::clipboard_read_file_list,
             fs_service::read_file_base64,

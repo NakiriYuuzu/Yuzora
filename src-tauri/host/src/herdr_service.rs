@@ -19,10 +19,11 @@ use std::time::{Duration, Instant};
 
 use crate::herdr_backend::{HerdrMetadata, HerdrRemoteBackend};
 use crate::herdr_limits::{
-    bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout, read_bounded_bytes,
-    read_bounded_ndjson_line, validate_json_complexity, validate_snapshot_counts,
-    BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH, MAX_NDJSON_LINE_BYTES,
-    MAX_PANE_COUNT, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
+    bound_optional_json, bounded_ipc, ensure_ipc_bound, ensure_raw_ipc_bound,
+    parse_herdr_cli_stdout, read_bounded_bytes, read_bounded_ndjson_line, validate_json_complexity,
+    validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_IPC_BYTES,
+    MAX_JSON_ARRAY_LEN, MAX_JSON_DEPTH, MAX_JSON_OBJECT_KEYS, MAX_LAYOUT_DEPTH,
+    MAX_NDJSON_LINE_BYTES, MAX_PANE_COUNT, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
 };
 #[cfg(unix)]
 use crate::herdr_transport::LocalStream;
@@ -53,6 +54,12 @@ const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Explicit lists stay fresh; failures and lifecycle changes invalidate caches.
 /// Socket paths still come only from the authoritative session list.
 const RUNTIME_VALIDATION_TTL: Duration = Duration::from_secs(10);
+/// Background Session-list polls reuse the inventory this long; explicit
+/// refreshes and every failure/lifecycle invalidation still read the CLI.
+/// Worst-case latency to notice a Session started/stopped outside Yuzora.
+const SESSION_POLL_TTL: Duration = Duration::from_secs(12);
+/// Probe lock map size above which idle entries are pruned.
+const CAPABILITY_PROBE_LOCK_LIMIT: usize = 64;
 /// Cheap socket identity checks retain their faster restart-detection cadence.
 const SOCKET_IDENTITY_TTL: Duration = Duration::from_secs(1);
 /// Error code shown (translated by the UI) when no `herdr` is on PATH.
@@ -511,12 +518,14 @@ pub enum HerdrScrollDirection {
 }
 
 /// Left-button pointer action for the connector `terminal.mouse` (HERDR 0.9.2+).
+/// `Move` is hover without a button; HERDR forwards it only to children that enabled any-motion (1003).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HerdrMouseAction {
     Down,
     Up,
     Drag,
+    Move,
 }
 
 // ── Wire helpers (Herdr public NDJSON / connector frames) ───────────────────
@@ -532,6 +541,154 @@ pub struct HerdrWireFrame {
     height: Option<u32>,
     bytes: Option<String>,
     reason: Option<String>,
+}
+
+/// Single-pass parse of a connector line straight into [`HerdrWireFrame`]:
+/// no intermediate `Value`, and unknown fields are skipped under the same
+/// depth/array/key ceilings as `validate_json_complexity`. It only ever answers
+/// "clean frame"; any failure (syntax, types, a ceiling, duplicate keys) is
+/// re-judged by the legacy `Value` route so error kinds stay identical.
+struct FastWireFrame(HerdrWireFrame);
+
+struct BoundedSkip(usize);
+
+impl BoundedSkip {
+    fn leaf<E: serde::de::Error>(&self) -> Result<(), E> {
+        if self.0 > MAX_JSON_DEPTH {
+            return Err(E::custom("depth"));
+        }
+        Ok(())
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for BoundedSkip {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for BoundedSkip {
+    type Value = ();
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any JSON value within the complexity limits")
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<(), E> {
+        self.leaf()
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<(), E> {
+        self.leaf()
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<(), E> {
+        self.leaf()
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<(), E> {
+        self.leaf()
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<(), E> {
+        self.leaf()
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
+        self.leaf()
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        self.leaf()?;
+        let mut count = 0;
+        while seq.next_element_seed(BoundedSkip(self.0 + 1))?.is_some() {
+            count += 1;
+            if count > MAX_JSON_ARRAY_LEN {
+                return Err(serde::de::Error::custom("array"));
+            }
+        }
+        Ok(())
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        self.leaf()?;
+        let mut count = 0;
+        while map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+            count += 1;
+            if count > MAX_JSON_OBJECT_KEYS {
+                return Err(serde::de::Error::custom("object"));
+            }
+            map.next_value_seed(BoundedSkip(self.0 + 1))?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FastWireFrame {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FrameVisitor;
+        impl<'de> serde::de::Visitor<'de> for FrameVisitor {
+            type Value = FastWireFrame;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a connector frame object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<FastWireFrame, A::Error> {
+                use serde::de::Error;
+                fn once<T>(slot: &mut Option<T>, value: T) -> Result<(), &'static str> {
+                    match slot.replace(value) {
+                        Some(_) => Err("duplicate field"),
+                        None => Ok(()),
+                    }
+                }
+                let (mut kind, mut seq, mut full, mut encoding) = (None, None, None, None);
+                let (mut width, mut height, mut bytes, mut reason) = (None, None, None, None);
+                let mut keys = 0;
+                while let Some(key) = map.next_key::<std::borrow::Cow<str>>()? {
+                    keys += 1;
+                    if keys > MAX_JSON_OBJECT_KEYS {
+                        return Err(A::Error::custom("object"));
+                    }
+                    match &*key {
+                        "type" => once(&mut kind, map.next_value::<String>()?),
+                        "seq" => once(&mut seq, map.next_value::<Option<u64>>()?),
+                        "full" => once(&mut full, map.next_value::<Option<bool>>()?),
+                        "encoding" => once(&mut encoding, map.next_value::<Option<String>>()?),
+                        "width" => once(&mut width, map.next_value::<Option<u32>>()?),
+                        "height" => once(&mut height, map.next_value::<Option<u32>>()?),
+                        "bytes" => once(&mut bytes, map.next_value::<Option<String>>()?),
+                        "reason" => once(&mut reason, map.next_value::<Option<String>>()?),
+                        _ => {
+                            map.next_value_seed(BoundedSkip(1))?;
+                            Ok(())
+                        }
+                    }
+                    .map_err(A::Error::custom)?;
+                }
+                Ok(FastWireFrame(HerdrWireFrame {
+                    kind: kind.ok_or_else(|| A::Error::missing_field("type"))?,
+                    seq: seq.flatten(),
+                    full: full.flatten(),
+                    encoding: encoding.flatten(),
+                    width: width.flatten(),
+                    height: height.flatten(),
+                    bytes: bytes.flatten(),
+                    reason: reason.flatten(),
+                }))
+            }
+        }
+        deserializer.deserialize_map(FrameVisitor)
+    }
+}
+
+enum WireLineError {
+    Parse(String),
+    TooComplex(HerdrProtocolError),
+}
+
+fn parse_wire_line(line: &str) -> Result<HerdrWireFrame, WireLineError> {
+    if let Ok(FastWireFrame(wire)) = serde_json::from_str(line) {
+        return Ok(wire);
+    }
+    let parse =
+        |error: serde_json::Error| WireLineError::Parse(format!("invalid connector json: {error}"));
+    let value: serde_json::Value = serde_json::from_str(line).map_err(parse)?;
+    validate_json_complexity(&value).map_err(WireLineError::TooComplex)?;
+    serde_json::from_value(value).map_err(parse)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -576,16 +733,25 @@ impl FrameTracker {
     /// Frame rules: first accepted frame must be full; seq contiguous;
     /// duplicates ignored; gaps become typed resync.
     pub fn ingest_wire(&mut self, wire: &HerdrWireFrame) -> FrameDecision {
+        self.ingest_wire_owned(wire.clone())
+    }
+
+    pub fn ingest_frame(&mut self, wire: &HerdrWireFrame) -> FrameDecision {
+        self.ingest_frame_owned(wire.clone())
+    }
+
+    /// Same rules, moving the payload out of `wire` instead of cloning it.
+    pub fn ingest_wire_owned(&mut self, wire: HerdrWireFrame) -> FrameDecision {
         match wire.kind.as_str() {
             "terminal.closed" => FrameDecision::Closed {
-                reason: wire.reason.clone(),
+                reason: wire.reason,
             },
-            "terminal.frame" => self.ingest_frame(wire),
+            "terminal.frame" => self.ingest_frame_owned(wire),
             _ => FrameDecision::Ignore,
         }
     }
 
-    pub fn ingest_frame(&mut self, wire: &HerdrWireFrame) -> FrameDecision {
+    fn ingest_frame_owned(&mut self, wire: HerdrWireFrame) -> FrameDecision {
         let Some(seq) = wire.seq else {
             return FrameDecision::Resync {
                 expected_seq: self.next_expected(),
@@ -603,10 +769,10 @@ impl FrameTracker {
         if !valid_geometry {
             return FrameDecision::InvalidGeometry;
         }
-        let encoding = wire.encoding.clone().unwrap_or_else(|| "ansi".to_string());
+        let encoding = wire.encoding.unwrap_or_else(|| "ansi".to_string());
         let width = wire.width.unwrap_or(0);
         let height = wire.height.unwrap_or(0);
-        let Some(bytes_base64) = wire.bytes.clone() else {
+        let Some(bytes_base64) = wire.bytes else {
             return FrameDecision::Resync {
                 expected_seq: self.next_expected(),
                 received_seq: Some(seq),
@@ -764,7 +930,9 @@ pub struct HerdrManager {
     /// named-session socket, server protocol, and selected binary fingerprint
     /// still match. Session list + `ping` validate at their bounded cadences.
     capability_cache: Mutex<HashMap<String, CachedCapabilities>>,
-    capability_probe_lock: Mutex<()>,
+    /// One probe lock per cache key: probes of the same Session stay ordered,
+    /// while a slow Session never blocks another Session's discovery.
+    capability_probe_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Short-lived validation state for hot paths; see `RUNTIME_VALIDATION_TTL`.
     session_inventory: Mutex<Option<(Instant, Vec<HerdrNamedSession>)>>,
     /// CLI single-flight is separate so warm readers never wait for CLI I/O.
@@ -774,6 +942,7 @@ pub struct HerdrManager {
     socket_identity: Mutex<HashMap<String, (Instant, ServerIdentity)>>,
     binary_fingerprint_cache: Mutex<Option<(Instant, Option<String>)>>,
     validation_ttl: Mutex<Duration>,
+    session_poll_ttl: Mutex<Duration>,
 }
 
 /// Live server `(version, protocol)` reported by `ping`.
@@ -835,13 +1004,14 @@ impl HerdrManager {
             startup_lock: Mutex::new(()),
             binary_source_write_lock: Mutex::new(()),
             capability_cache: Mutex::new(HashMap::new()),
-            capability_probe_lock: Mutex::new(()),
+            capability_probe_locks: Mutex::new(HashMap::new()),
             session_inventory: Mutex::new(None),
             session_inventory_refresh_lock: Mutex::new(()),
             session_inventory_epoch: AtomicU64::new(0),
             socket_identity: Mutex::new(HashMap::new()),
             binary_fingerprint_cache: Mutex::new(None),
             validation_ttl: Mutex::new(RUNTIME_VALIDATION_TTL),
+            session_poll_ttl: Mutex::new(SESSION_POLL_TTL),
         }
     }
 
@@ -876,6 +1046,11 @@ impl HerdrManager {
     #[cfg(all(test, unix))]
     pub(crate) fn set_validation_ttl_for_test(&self, ttl: Duration) {
         *self.validation_ttl.lock().unwrap() = ttl;
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn set_session_poll_ttl_for_test(&self, ttl: Duration) {
+        *self.session_poll_ttl.lock().unwrap() = ttl;
     }
 
     fn validation_fresh(&self, at: Instant) -> bool {
@@ -1021,6 +1196,10 @@ impl HerdrManager {
             }
         })();
         *self.startup_error.lock().unwrap() = result.as_ref().err().cloned();
+        if matches!(result, Ok(true)) {
+            // Inventories read before the spawn list the Session as stopped.
+            self.invalidate_runtime_caches();
+        }
         result
     }
 
@@ -1314,6 +1493,15 @@ impl HerdrManager {
         session_name.unwrap_or("live").to_string()
     }
 
+    fn capability_probe_lock(&self, cache_key: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.capability_probe_locks.lock().unwrap();
+        if locks.len() > CAPABILITY_PROBE_LOCK_LIMIT {
+            // Only the map holds an unshared lock: nobody is probing with it.
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
+        locks.entry(cache_key.to_string()).or_default().clone()
+    }
+
     fn active_binary_fingerprint(&self) -> Option<String> {
         if let Some(remote) = &self.remote {
             return remote
@@ -1338,9 +1526,10 @@ impl HerdrManager {
     /// status/schema discovery, preventing a restart between probes from
     /// publishing a mixed-epoch capability document.
     pub fn capabilities_for_session(&self, session_name: Option<&str>) -> HerdrCapabilities {
-        let _probe_guard = self.capability_probe_lock.lock().unwrap();
-        let mut caps = self.discover_capabilities_for_session(session_name);
         let cache_key = Self::capability_cache_key(session_name);
+        let probe_lock = self.capability_probe_lock(&cache_key);
+        let _probe_guard = probe_lock.lock().unwrap();
+        let mut caps = self.discover_capabilities_for_session(session_name);
         let should_probe = caps.server.running
             && caps.server.socket_path.is_some()
             && caps.server.compatible != Some(false);
@@ -1707,6 +1896,26 @@ impl HerdrManager {
     pub fn list_sessions(&self) -> Result<Vec<HerdrNamedSession>, String> {
         let _refresh = self.session_inventory_refresh_lock.lock().unwrap();
         self.refresh_session_inventory()
+    }
+
+    /// Idle-poll variant of `list_sessions`: serves the inventory while it is
+    /// younger than `SESSION_POLL_TTL` instead of forking the CLI every tick.
+    pub fn list_sessions_polled(&self) -> Result<Vec<HerdrNamedSession>, String> {
+        if let Some(sessions) = self.polled_session_inventory() {
+            return Ok(sessions);
+        }
+        let _refresh = self.session_inventory_refresh_lock.lock().unwrap();
+        if let Some(sessions) = self.polled_session_inventory() {
+            return Ok(sessions);
+        }
+        self.refresh_session_inventory()
+    }
+
+    fn polled_session_inventory(&self) -> Option<Vec<HerdrNamedSession>> {
+        let ttl = *self.session_poll_ttl.lock().unwrap();
+        let inventory = self.session_inventory.lock().unwrap();
+        let (at, sessions) = inventory.as_ref()?;
+        (at.elapsed() < ttl).then(|| sessions.clone())
     }
 
     /// Caller holds only the refresh lock during CLI I/O, never the cache lock.
@@ -2876,11 +3085,42 @@ fn emit_subscription_event(
     on_event(event)
 }
 
+/// Serialized-size gate for a terminal event. A frame's base64 payload is
+/// accounted from its length (it dominates the size and serializes verbatim
+/// when no byte needs JSON escaping); anything else, or a payload that does
+/// need escaping, is measured by serializing as before.
+fn ensure_terminal_event_bound(event: &mut HerdrTerminalEvent) -> Result<(), HerdrProtocolError> {
+    if let HerdrTerminalEvent::Frame { bytes_base64, .. } = event {
+        let clean = bytes_base64.as_bytes().chunks(64).all(|chunk| {
+            !chunk.iter().fold(false, |bad, &b| {
+                bad | (b < 0x20) | (b == b'"') | (b == b'\\')
+            })
+        });
+        if clean {
+            let payload = std::mem::take(bytes_base64);
+            let shell = serde_json::to_vec(&*event).map_err(|_| HerdrProtocolError::InvalidJson);
+            if let HerdrTerminalEvent::Frame { bytes_base64, .. } = event {
+                *bytes_base64 = payload;
+            }
+            let shell = shell?;
+            let payload_len = match event {
+                HerdrTerminalEvent::Frame { bytes_base64, .. } => bytes_base64.len(),
+                _ => 0,
+            };
+            if shell.len().saturating_add(payload_len) > MAX_IPC_BYTES {
+                return Err(HerdrProtocolError::ResponseTooLarge);
+            }
+            return Ok(());
+        }
+    }
+    ensure_ipc_bound(event)
+}
+
 fn emit_terminal_event(
     on_event: &OnTerminalEvent,
-    event: HerdrTerminalEvent,
+    mut event: HerdrTerminalEvent,
 ) -> Result<(), String> {
-    if let Err(error) = ensure_ipc_bound(&event) {
+    if let Err(error) = ensure_terminal_event_bound(&mut event) {
         let session_id = match &event {
             HerdrTerminalEvent::Frame { session_id, .. }
             | HerdrTerminalEvent::Closed { session_id, .. }
@@ -2977,47 +3217,33 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
         if trimmed.is_empty() {
             continue;
         }
-        let value: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(value) => value,
-            Err(err) => {
+        let wire = match parse_wire_line(trimmed) {
+            Ok(wire) => wire,
+            Err(WireLineError::Parse(message)) => {
                 let _ = emit_terminal_event(
                     &on_event,
                     HerdrTerminalEvent::Error {
                         session_id: session.id.clone(),
                         code: "frame_parse".into(),
-                        message: format!("invalid connector json: {err}"),
+                        message,
                     },
                 );
                 continue;
             }
-        };
-        if let Err(error) = validate_json_complexity(&value) {
-            let _ = emit_terminal_event(
-                &on_event,
-                HerdrTerminalEvent::Error {
-                    session_id: session.id.clone(),
-                    code: error.code().into(),
-                    message: error.to_string(),
-                },
-            );
-            break;
-        }
-        let wire: HerdrWireFrame = match serde_json::from_value(value) {
-            Ok(v) => v,
-            Err(err) => {
+            Err(WireLineError::TooComplex(error)) => {
                 let _ = emit_terminal_event(
                     &on_event,
                     HerdrTerminalEvent::Error {
                         session_id: session.id.clone(),
-                        code: "frame_parse".into(),
-                        message: format!("invalid connector json: {err}"),
+                        code: error.code().into(),
+                        message: error.to_string(),
                     },
                 );
-                continue;
+                break;
             }
         };
 
-        match tracker.ingest_wire(&wire) {
+        match tracker.ingest_wire_owned(wire) {
             FrameDecision::InvalidGeometry => {
                 let _ = emit_terminal_event(
                     &on_event,
@@ -4428,11 +4654,25 @@ fn api_request_with_timeout(
     }
     let value: serde_json::Value =
         serde_json::from_str(response.trim()).map_err(|e| format!("invalid api json: {e}"))?;
-    validate_api_response(value)
+    validate_api_response_sized(value, response.len())
 }
 
 pub fn validate_api_response(value: serde_json::Value) -> Result<serde_json::Value, String> {
     ensure_ipc_bound(&value).map_err(String::from)?;
+    check_api_response(value)
+}
+
+/// `validate_api_response` for a value parsed from a line of `raw_len` bytes:
+/// the size gate uses the line already read instead of re-serializing.
+pub fn validate_api_response_sized(
+    value: serde_json::Value,
+    raw_len: usize,
+) -> Result<serde_json::Value, String> {
+    ensure_raw_ipc_bound(raw_len).map_err(String::from)?;
+    check_api_response(value)
+}
+
+fn check_api_response(value: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Err(error) = validate_json_complexity(&value) {
         return Err(error.into());
     }
@@ -4447,17 +4687,18 @@ pub fn validate_api_response(value: serde_json::Value) -> Result<serde_json::Val
     Ok(value)
 }
 
-fn parse_snapshot_response(response: serde_json::Value) -> Result<HerdrSnapshotResult, String> {
+fn parse_snapshot_response(mut response: serde_json::Value) -> Result<HerdrSnapshotResult, String> {
     let result = response
-        .get("result")
+        .get_mut("result")
         .ok_or_else(|| "snapshot response missing result".to_string())?;
     let result_type = result.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if result_type != "session_snapshot" && result.get("snapshot").is_none() {
         return Err(format!("unexpected snapshot result type: {result_type}"));
     }
+    // Move the (large) snapshot out of the response instead of deep-cloning it.
     let snapshot = result
-        .get("snapshot")
-        .cloned()
+        .get_mut("snapshot")
+        .map(serde_json::Value::take)
         .ok_or_else(|| "snapshot result missing snapshot".to_string())?;
     validate_json_complexity(&snapshot).map_err(String::from)?;
     validate_snapshot_counts(&snapshot).map_err(String::from)?;

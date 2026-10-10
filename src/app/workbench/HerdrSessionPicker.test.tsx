@@ -6,6 +6,7 @@ import { useHostStore } from "@/state/hostStore";
 import { useSshStore, type SshHost } from "@/state/sshStore";
 import { useRuntimePreferencesStore } from "@/state/runtimePreferencesStore";
 import { useUiStore } from "@/state/uiStore";
+import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 import type { HerdrSessionRuntime, HerdrSnapshot } from "@/lib/herdrTypes";
 import type { HostTarget } from "@/lib/hostIpc";
 import i18n from "@/lib/i18n";
@@ -260,8 +261,9 @@ it("explains why nothing can be loaded and offers the Session tools", async () =
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("目前沒有執行中的 Session。"));
   expect(screen.getByText("沒有可載入的 Session。")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "載入 Session" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "開啟 HERDR 工具" }));
+  fireEvent.click(screen.getByRole("button", { name: "管理 Session" }));
   expect(onClose).toHaveBeenCalledOnce();
+  expect(useHerdrToolsStore.getState().selection).toMatchObject({ task: "sessions" });
 });
 
 it("does not open Session tools for another host when the selected host has no Sessions", async () => {
@@ -271,5 +273,5 @@ it("does not open Session tools for another host when the selected host has no S
   await show();
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("目前沒有執行中的 Session。"));
   // The only Session belongs to a different host; tools would target the wrong machine.
-  expect(screen.queryByRole("button", { name: "開啟 HERDR 工具" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "管理 Session" })).not.toBeInTheDocument();
 });

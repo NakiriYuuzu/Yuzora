@@ -215,6 +215,22 @@ it("native file mutations send the active capability and relative paths", async 
     expect(calls).toHaveLength(2)
 })
 
+it("dropped-file import sends the dropped paths with a workspace-relative target, also for a WSL UNC workspace", async () => {
+    const calls: unknown[] = []
+    mockIPC((command, payload) => { calls.push([command, payload]); return ["src\\a.png"] })
+    useWorkspaceStore.setState({ workspacePath: "/work", workspaceCapabilityId: "ws-active" })
+    await expect(ipcModule.fsImportDroppedPaths("/work", ["/Users/me/a.png"], "/work/src")).resolves.toEqual(["/work/src\\a.png"])
+    const wsl = "\\\\wsl.localhost\\Ubuntu\\home\\me\\proj"
+    useWorkspaceStore.setState({ workspacePath: wsl, workspaceCapabilityId: "ws-wsl" })
+    await expect(ipcModule.fsImportDroppedPaths(wsl, ["C:\\Users\\me\\a.png"], `${wsl}\\src`)).resolves.toEqual([`${wsl}\\src\\a.png`])
+    await ipcModule.fsImportDroppedPaths(wsl, ["C:\\Users\\me\\a.png"], wsl)
+    expect(calls).toEqual([
+        ["fs_import_dropped_paths", { workspaceCapabilityId: "ws-active", paths: ["/Users/me/a.png"], targetDir: "src" }],
+        ["fs_import_dropped_paths", { workspaceCapabilityId: "ws-wsl", paths: ["C:\\Users\\me\\a.png"], targetDir: "src" }],
+        ["fs_import_dropped_paths", { workspaceCapabilityId: "ws-wsl", paths: ["C:\\Users\\me\\a.png"], targetDir: "" }],
+    ])
+})
+
 // #57 T3：git 面板首載單趟完成——bootstrap 一次回齊 environment＋status＋branches
 // （Ready 落地後快照失敗時 status/branches 為 null、錯誤走 snapshotError）。
 it("gitBootstrap forwards path and returns the one-trip snapshot", async () => {

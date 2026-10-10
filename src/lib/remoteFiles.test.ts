@@ -5,7 +5,7 @@ vi.mock("@/lsp/lspManager", () => ({ restartWorkspace: vi.fn(async () => {}) }))
 vi.mock("@/state/sshStore", () => ({ useSshStore: { getState: vi.fn() } }))
 import { invoke, sftpListDir } from "./ipc"
 import { useSshStore } from "@/state/sshStore"
-import { createRemotePath, listRemoteDir, moveRemotePaths, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, remoteWorkspaceCanMove, renameRemotePath, saveRemoteFile } from "./remoteFiles"
+import { createRemotePath, importOsFilesIntoWslWorkspace, listRemoteDir, moveRemotePaths, readRemoteFile, readRemoteFileSnapshot, reconnectRemoteWorkspaces, registerRuntimeWorkspace, registerSftpWorkspace, remoteWorkspaceCanMove, renameRemotePath, saveRemoteFile } from "./remoteFiles"
 import { remoteFilePath, parseRemoteFilePath } from "./runtimeIdentity"
 import { canonicalPathKey, nativePathJoin, nativePathParent, relativePathWithin } from "./paths"
 
@@ -14,6 +14,24 @@ beforeEach(() => {
   vi.mocked(useSshStore.getState).mockReturnValue({ sessions: { a: { sessionId: "a-1" }, b: { sessionId: "b-1" } } } as unknown as ReturnType<typeof useSshStore.getState>)
   vi.mocked(sftpListDir).mockResolvedValue({ cwd: "/project", entries: [] })
   vi.mocked(invoke).mockResolvedValue({ file: { kind: "full", content: "old", lineEnding: "lf", size: 3 }, revision: "original" })
+})
+
+describe("WSL OS file import", () => {
+  it("sends the drop form with paths and the clipboard form without, mapping created relatives to remote URIs", async () => {
+    const owner = { hostId: "wsl-import", generation: 3 }
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/home/me/project", capabilityId: "ws-cap" })
+    const root = await registerRuntimeWorkspace(owner, "/home/me/project", () => true)
+    const destination = { owner, distro: "Ubuntu", workspace: "ws-cap", targetDir: "docs" }
+    vi.mocked(invoke).mockClear()
+    vi.mocked(invoke).mockResolvedValueOnce(["docs/a.txt"])
+    const dropped = await importOsFilesIntoWslWorkspace(root, "Ubuntu", root + "/docs", ["C:\\Users\\me\\a.txt"])
+    expect(invoke).toHaveBeenLastCalledWith("host_import_dropped_paths", { destination, paths: ["C:\\Users\\me\\a.txt"] })
+    expect(dropped).toEqual([root + "/docs/a.txt"])
+    vi.mocked(invoke).mockResolvedValueOnce(["b.txt"])
+    const pasted = await importOsFilesIntoWslWorkspace(root, "Ubuntu", root, null)
+    expect(invoke).toHaveBeenLastCalledWith("host_paste_clipboard_files", { destination: { ...destination, targetDir: "" } })
+    expect(pasted).toEqual([root + "/b.txt"])
+  })
 })
 
 describe("remote documents", () => {

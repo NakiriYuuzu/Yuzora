@@ -28,9 +28,7 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<ParsedStatus, String> {
         head_oid: String::new(),
         ..Default::default()
     };
-    let mut records = bytes
-        .split(|b| *b == 0)
-        .map(|r| String::from_utf8_lossy(r).into_owned());
+    let mut records = bytes.split(|b| *b == 0).map(String::from_utf8_lossy);
     while let Some(rec) = records.next() {
         if rec.is_empty() {
             continue;
@@ -73,7 +71,12 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Result<ParsedStatus, String> {
                 let xy = fields[1];
                 let path = fields[field_count].to_string();
                 let orig = if kind == '2' {
-                    Some(records.next().ok_or("rename record missing orig path")?)
+                    Some(
+                        records
+                            .next()
+                            .ok_or("rename record missing orig path")?
+                            .into_owned(),
+                    )
                 } else {
                     None
                 };
@@ -213,6 +216,26 @@ mod tests {
     #[test]
     fn malformed_record_is_error_not_panic() {
         assert!(parse_porcelain_v2(&z(&["1 MM", ""])).is_err());
+    }
+
+    #[test]
+    fn lossy_record_paths_and_rename_orig_remain_owned() {
+        let parsed = {
+            let input = b"1 .M N... 100644 100644 100644 aaaa bbbb bad-\xff.txt\0\
+2 R. N... 100644 100644 100644 aaaa bbbb R100 new-\xff.txt\0old-\xfe.txt\0\
+? untracked-\xff.txt\0";
+            let mut input = input.to_vec();
+            let result = parse_porcelain_v2(&input).unwrap();
+            input.fill(0);
+            result
+        };
+        assert_eq!(parsed.unstaged[0].path, "bad-\u{fffd}.txt");
+        assert_eq!(parsed.staged[0].path, "new-\u{fffd}.txt");
+        assert_eq!(
+            parsed.staged[0].orig_path.as_deref(),
+            Some("old-\u{fffd}.txt")
+        );
+        assert_eq!(parsed.untracked, vec!["untracked-\u{fffd}.txt"]);
     }
 
     #[test]

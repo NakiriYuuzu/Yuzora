@@ -5,6 +5,8 @@ export interface FileClipboard {
     workspacePath: string
     paths: string[]
     mode: "copy" | "cut"
+    /** WSL copies never reach the OS clipboard; its file list at copy time tells a later Explorer copy apart. */
+    osSnapshot?: string[]
 }
 
 interface FileClipboardState {

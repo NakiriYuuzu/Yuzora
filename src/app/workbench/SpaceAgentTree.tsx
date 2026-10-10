@@ -149,6 +149,10 @@ export function SpaceAgentTree() {
   const [requestedScope, setScopeSession] = useState<string | null>(null);
   const scopeSession = sessions.some((item) => item.name === requestedScope) ? requestedScope : null;
   const toolsSession = scopeSession ?? (session || null);
+  useEffect(() => {
+    useHerdrToolsStore.getState().setSidebarScope(scopeSession);
+    return () => useHerdrToolsStore.getState().setSidebarScope(null);
+  }, [scopeSession]);
   const [editingSpace, setEditingSpace] = useState<TreeNode | null>(null);
   const editTrigger = useRef<HTMLButtonElement | null>(null);
   const refs = useRef(new Map<string, HTMLButtonElement>());
@@ -714,7 +718,7 @@ export function SpaceAgentTree() {
             </TabsList>
           </Tabs>
         }
-        onOpenTools={toolsSession ? () => useHerdrToolsStore.getState().open({ tool: "worktrees", sessionName: toolsSession, workspaceId: selectedSpace ?? undefined }) : undefined}
+        onOpenTools={toolsSession ? () => useHerdrToolsStore.getState().open({ sessionName: toolsSession, workspaceId: selectedSpace ?? undefined }) : undefined}
         scope={scopeSession}
         onCreateSpace={createSpace}
         creatingSpace={creatingSpace || creatingTerminal !== null}

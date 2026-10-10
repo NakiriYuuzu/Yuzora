@@ -119,7 +119,8 @@ export interface TrustedWorkspace {
 export type RemoteProbe = "yes" | "no" | "unknown"
 // #57 T3：watcher 事件 payload 帶 workspace 標識；listener 比對 live
 // workspacePath 後才處理，杜絕切換 gap 內舊 workspace 事件串場。
-export interface ExternalChangePayload { workspaceRoot: string; paths: string[] }
+// gitRelevant === false: every path is ignored and untracked, so git status is unchanged.
+export interface ExternalChangePayload { workspaceRoot: string; paths: string[]; gitRelevant?: boolean }
 export interface GitStateChangedPayload { workspaceRoot: string }
 export type GradedText =
     | { kind: "full"; content: string }

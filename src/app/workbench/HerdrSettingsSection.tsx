@@ -24,11 +24,16 @@ import { useSshStore } from "@/state/sshStore"
 import { useUiStore } from "@/state/uiStore"
 import { DescribedError } from "./DescribedError"
 import { RuntimeCheckView, RuntimeSourceFields } from "./RuntimeSourceFields"
+import { NotificationTools } from "./herdr/NotificationTools"
 
 export function HerdrSettingsSection() {
   const hostId = useUiStore(s => s.settingsHostId)
   const nonce = useUiStore(s => s.settingsNonce)
-  return <RuntimeSettings key={`${nonce}:${hostId ?? LOCAL_HOST_ID}`} initialHostId={hostId ?? LOCAL_HOST_ID} />
+  const { t } = useTranslation("herdrTools")
+  return <div className="flex min-w-0 flex-col gap-6">
+    <RuntimeSettings key={`${nonce}:${hostId ?? LOCAL_HOST_ID}`} initialHostId={hostId ?? LOCAL_HOST_ID} />
+    <Card size="sm"><CardHeader><CardTitle>{t("notificationSettings")}</CardTitle><CardDescription>{t("notificationSettingsHint")}</CardDescription></CardHeader><CardContent><NotificationTools /></CardContent></Card>
+  </div>
 }
 
 function RuntimeSettings({ initialHostId }: { initialHostId: string }) {

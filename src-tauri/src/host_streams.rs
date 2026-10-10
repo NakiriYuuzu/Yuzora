@@ -685,6 +685,7 @@ mod tests {
                     StreamPayload::Files {
                         workspace_root: "owned".into(),
                         paths: vec!["file.ts".into()],
+                        git_relevant: true,
                     },
                     StreamPayload::Reply {
                         id: request.id,

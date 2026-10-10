@@ -54,7 +54,7 @@ it("stops sending to closed frames whose postMessage does not throw and keeps li
     closed.closed = true
     for (let i = 0; i < 100; i++) b.api.poll([binding])
     expect(closed.postMessage).toHaveBeenCalledTimes(1)
-    expect(live.postMessage).toHaveBeenCalledTimes(101)
+    expect(live.postMessage).toHaveBeenCalledTimes(1)
     b.command(closed)
     b.command(live)
     expect(b.api.poll([binding]).commands).toEqual(["nextTab"])
@@ -83,7 +83,7 @@ it("retains the 64 live frame limit, accepts duplicates, and rejects unregistere
     b.command(live[0])
     expect(b.api.poll([binding]).commands).toEqual(["nextTab"])
     expect(overflow.postMessage).not.toHaveBeenCalled()
-    live.forEach(item => expect(item.postMessage).toHaveBeenCalledTimes(2))
+    live.forEach(item => expect(item.postMessage).toHaveBeenCalledTimes(1))
 })
 
 it("preserves queued commands across frame closure and the configured-command and eight-command limits", () => {
@@ -108,7 +108,7 @@ it("forgets inaccessible or throwing frames while allowing later live registrati
     b.api.poll([binding])
     expect(unreadable.postMessage).not.toHaveBeenCalled()
     expect(throwing.postMessage).toHaveBeenCalledTimes(1)
-    expect(live.postMessage).toHaveBeenCalledTimes(2)
+    expect(live.postMessage).toHaveBeenCalledTimes(1)
     expect(() => b.ready(unreadable)).not.toThrow()
     const late = frame()
     late.closed = true
@@ -148,7 +148,40 @@ it("keeps the order and command membership of interleaved survivors when compact
     b.command(replacements[31])
     b.command(overflow)
     expect(b.api.poll([binding]).commands).toEqual(["nextTab"])
-    children.forEach((child, index) => expect(child.postMessage).toHaveBeenCalledTimes(index % 2 === 0 ? 1 : 4))
+    children.forEach(child => expect(child.postMessage).toHaveBeenCalledTimes(1))
     replacements.forEach(child => expect(child.postMessage).toHaveBeenCalledTimes(1))
     expect(overflow.postMessage).not.toHaveBeenCalled()
+})
+
+it("resends unchanged bindings after ready and immediately sends changed or empty bindings", () => {
+    const b = bridge(), child = frame()
+    b.ready(child)
+    b.api.poll([binding])
+    for (let i = 0; i < 100; i++) b.api.poll([{ ...binding }])
+    expect(child.postMessage).toHaveBeenCalledTimes(1)
+    b.ready(child)
+    b.api.poll([{ ...binding }])
+    expect(child.postMessage).toHaveBeenCalledTimes(2)
+    const changed = { ...binding, key: "J" }
+    b.api.poll([changed])
+    expect(child.postMessage).toHaveBeenLastCalledWith({ type: "yuzora-tab-bindings", bindings: [changed] }, "*")
+    b.api.poll([])
+    expect(child.postMessage).toHaveBeenCalledTimes(4)
+    expect(child.postMessage).toHaveBeenLastCalledWith({ type: "yuzora-tab-bindings", bindings: [] }, "*")
+})
+
+it("requests current bindings when a child returns from the back-forward cache", () => {
+    const listeners = new Map<string, (event: { persisted: boolean }) => void>()
+    const top = { postMessage: vi.fn() }
+    const child = {
+        top,
+        addEventListener: (type: string, listener: (event: { persisted: boolean }) => void) => listeners.set(type, listener),
+    }
+    new Function("window", "document", script)(child, { addEventListener: vi.fn() })
+    expect(top.postMessage).toHaveBeenCalledTimes(1)
+    listeners.get("pageshow")!({ persisted: false })
+    expect(top.postMessage).toHaveBeenCalledTimes(1)
+    listeners.get("pageshow")!({ persisted: true })
+    expect(top.postMessage).toHaveBeenCalledTimes(2)
+    expect(top.postMessage).toHaveBeenLastCalledWith({ type: "yuzora-tab-ready" }, "*")
 })

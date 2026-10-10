@@ -94,6 +94,41 @@ fn git_read_paths_avoid_redundant_processes_without_changing_content() {
             working_commands,
             staged_commands
         ),
-        (2, 1, 1, 2)
+        (1, 1, 1, 2)
     );
+
+    // A linked worktree's `.git` is a file; its private git-dir still resolves
+    // without a `rev-parse` process and carries its own in-progress markers.
+    let linked = tempfile::tempdir().unwrap();
+    let linked_root = linked.path().join("wt");
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            linked_root.to_str().unwrap(),
+        ],
+    );
+    assert!(linked_root.join(".git").is_file());
+    let private = Command::new("git")
+        .arg("-C")
+        .arg(&linked_root)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .unwrap();
+    let private = linked_root.join(String::from_utf8(private.stdout).unwrap().trim());
+    std::fs::write(private.join("MERGE_HEAD"), "0".repeat(40) + "\n").unwrap();
+    COMMANDS.store(0, Ordering::Relaxed);
+    assert_eq!(
+        status_of(&linked_root, None)
+            .unwrap()
+            .in_progress
+            .as_deref(),
+        Some("merge")
+    );
+    assert_eq!(COMMANDS.swap(0, Ordering::Relaxed), 1);
+    assert!(status_of(root, None).unwrap().in_progress.is_none());
 }

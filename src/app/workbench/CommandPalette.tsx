@@ -6,14 +6,19 @@ import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import {
   BotIcon,
+  GitBranchIcon,
+  LayersIcon,
   MonitorPlayIcon,
+  MoveIcon,
   PanelLeftIcon,
   PanelRightIcon,
   SearchIcon,
+  SendIcon,
   ServerIcon,
   SettingsIcon,
   SquareTerminalIcon,
   WaypointsIcon,
+  WrenchIcon,
   type LucideIcon,
 } from "lucide-react"
 
@@ -40,6 +45,9 @@ import { useOverlayPresence } from "@/state/overlayStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { openCreatedHerdrTabAndRequestName } from "@/lib/herdrTabActions"
 import { showActionError } from "@/lib/actionFeedback"
+import { herdrNativeAvailability } from "@/lib/herdrActions"
+import { useHerdrNativeStore } from "@/state/herdrNativeStore"
+import { useHerdrToolsStore, type HerdrTask } from "@/state/herdrToolsStore"
 import i18n from "@/lib/i18n"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -98,6 +106,12 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   const activateHerdrSpace = useHerdrStore((s) => s.activateSpace)
   const activateHerdrTab = useHerdrStore((s) => s.activateTab)
   const activateHerdrAgent = useHerdrStore((s) => s.activateAgent)
+  const sidebarScope = useHerdrToolsStore((s) => s.sidebarScope)
+  const toolsSession = useHerdrStore((s) => (sidebarScope && s.runtimesBySession[sidebarScope] ? sidebarScope : s.selectedSessionName))
+  const toolsRuntime = useHerdrStore((s) => (toolsSession ? s.runtimesBySession[toolsSession] : undefined))
+  const toolsFollowsSelection = toolsSession === selectedHerdrSessionName
+  const toolsSpaceId = toolsFollowsSelection ? selectedHerdrSpaceId : (toolsRuntime?.snapshot?.focusedWorkspaceId ?? null)
+  const toolsPaneId = (toolsFollowsSelection ? herdrSnapshot : toolsRuntime?.snapshot)?.focusedPaneId ?? undefined
   const isCommandMode = search.startsWith(">")
   const commandFilter = (isCommandMode ? search.slice(1) : search).trim().toLowerCase()
   const matchesCommand = (...searchableValues: string[]) =>
@@ -256,6 +270,41 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
           },
           className: ITEM_CLASS
         }))
+      : []),
+    // Same Session the sidebar tools use; without one there is nothing to act on, so the commands are hidden.
+    ...(toolsSession
+      ? ([
+          { id: "home", icon: WrenchIcon, task: undefined },
+          { id: "worktree", icon: GitBranchIcon, task: "worktree" },
+          { id: "startAgent", icon: BotIcon, task: "startAgent" },
+          { id: "messageAgent", icon: SendIcon, task: "messageAgent" },
+          { id: "movePane", icon: MoveIcon, task: "movePane" },
+          { id: "sessions", icon: LayersIcon, task: "sessions" },
+        ] as { id: string; icon: LucideIcon; task: HerdrTask | undefined }[]).map(({ id, icon, task }) => {
+          const label = t(`commandPalette.herdrAction.${id}`)
+          return {
+            value: `${label} herdr`,
+            label,
+            icon,
+            onSelect: () => {
+              setPaletteOpen(false)
+              useHerdrToolsStore.getState().open({ task, sessionName: toolsSession, workspaceId: toolsSpaceId ?? undefined, paneId: toolsPaneId })
+            },
+            className: ITEM_CLASS,
+          }
+        })
+      : []),
+    ...(toolsSession && herdrNativeAvailability(toolsRuntime).ok
+      ? [{
+          value: `${t("commandPalette.herdrAction.native")} herdr`,
+          label: t("commandPalette.herdrAction.native"),
+          icon: SquareTerminalIcon,
+          onSelect: () => {
+            setPaletteOpen(false)
+            useHerdrNativeStore.getState().open({ sessionName: toolsSession, paneId: toolsPaneId })
+          },
+          className: ITEM_CLASS,
+        }]
       : []),
     ...herdrAgents.map((agent) => {
       const label = t("commandPalette.openHerdrAgent", {

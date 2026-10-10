@@ -250,6 +250,7 @@ async fn built_files_stream_delivers_owned_events_and_exits_on_eof() {
         if let StreamPayload::Files {
             workspace_root,
             paths,
+            ..
         } = event
         {
             assert_eq!(

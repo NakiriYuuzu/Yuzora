@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@xterm/xterm/css/xterm.css";
+import "./terminal/xtermBlockGlyphs.css";
 import "./lib/i18n";
 import { installTauriEventUnlistenGuard } from "./lib/tauriEventUnlistenGuard";
 import { initHerdrTerminalDiagnosticsFromLogLevel } from "./terminal/herdrTerminalDiagnostics";
