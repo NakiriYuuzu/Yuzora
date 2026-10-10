@@ -27,6 +27,7 @@
 
 - Claude Code 在預設（非 fullscreen）模式下不會開啟滑鼠回報，任何終端機都無法點擊 Clawd；需要在 Claude Code 中執行 `/tui fullscreen`。
 - 在 Yuzora 以外啟動或停止的 HERDR Session，最多約 16 秒後才會反映在側欄；在 Yuzora 內操作則立即更新。
+- macOS App 僅支援 Apple Silicon，未使用 Apple Developer ID 簽章或公證；首次開啟仍可能出現 Gatekeeper 提示。
 
 ## [0.0.18] - 2026-10-08
 
