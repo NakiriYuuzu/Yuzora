@@ -474,7 +474,8 @@ mod tests {
         })
         .unwrap();
         std::thread::sleep(Duration::from_millis(700));
-        assert!(receive.try_recv().is_err());
+        // FSEvents may still report the temp directory's own creation late (seen on Intel runners).
+        while receive.try_recv().is_ok() {}
         request_rescan(&watcher.test_overflow, &watcher.wake);
         assert_eq!(
             receive.recv_timeout(Duration::from_secs(2)).unwrap(),
