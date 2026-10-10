@@ -18,6 +18,7 @@ import { buildXtermTheme, xtermMinimumContrastRatio } from "@/terminal/xtermThem
 import { installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
 import { installKittyRenderer } from "@/terminal/kittyRenderer"
 import "@xterm/xterm/css/xterm.css"
+import "@/terminal/xtermBlockGlyphs.css"
 
 // A feature request belongs to one open() call; remounting the client must not replay it.
 const dispatchedRequests = new WeakSet<HerdrNativeSelection>()

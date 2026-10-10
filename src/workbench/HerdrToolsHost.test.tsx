@@ -16,7 +16,7 @@ it("registers HERDR dialogs with the overlay gate so native previews hide beneat
   render(<HerdrToolsHost />)
   const overlay = renderHook(() => useAnyOverlayOpen())
   expect(overlay.result.current).toBe(false)
-  act(() => useHerdrToolsStore.getState().open({ tool: "sessions", sessionName: "default" }))
+  act(() => useHerdrToolsStore.getState().open({ task: "sessions", sessionName: "default" }))
   expect(overlay.result.current).toBe(true)
   act(() => useHerdrToolsStore.getState().close())
   expect(overlay.result.current).toBe(false)

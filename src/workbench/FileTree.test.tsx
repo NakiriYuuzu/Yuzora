@@ -471,3 +471,52 @@ test("handles the clipboard events macOS sends through the Edit menu for the foc
         args: { workspaceCapabilityId: "ws-1", sources: ["a.ts"], targetDir: "src" }
     }))
 })
+
+test("pastes Finder files into the workspace root when blank tree space has focus", async () => {
+    const calls: Array<{ cmd: string; args: unknown }> = []
+    mockIPC((cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === "list_dir") {
+            const path = (args as { path: string }).path
+            return path === "/w" ? [{ name: "src", path: "/w/src", isDir: true }] : []
+        }
+        if (cmd === "clipboard_read_file_list") return ["/Users/me/photo.png"]
+        if (cmd === "fs_paste_clipboard_files") return ["photo.png"]
+        return null
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        workspaceCapabilityId: "ws-1",
+        groups: [{ tabs: [], activePath: null }],
+        activeGroupIndex: 0
+    })
+    const ctrl = !/Mac/.test(navigator.userAgent)
+    const { container } = render(<div data-file-tree-root tabIndex={-1}><FileTree /></div>)
+    await screen.findByText("src")
+    const zone = container.firstElementChild as HTMLElement
+    const fire = (type: string) => {
+        const event = new Event(type, { bubbles: true, cancelable: true })
+        document.body.dispatchEvent(event)
+        return event.defaultPrevented
+    }
+
+    // Nothing focused: leave the paste to the page.
+    expect(fire("paste")).toBe(false)
+
+    zone.focus()
+    expect(fire("beforepaste")).toBe(true)
+    expect(fire("beforecopy")).toBe(false)
+    expect(fire("paste")).toBe(true)
+    await waitFor(() => expect(calls).toContainEqual({
+        cmd: "fs_paste_clipboard_files",
+        args: { workspaceCapabilityId: "ws-1", targetDir: "" }
+    }))
+
+    // Windows / Linux deliver the chord as a keydown on the focused root.
+    calls.length = 0
+    fireEvent.keyDown(zone, { key: "v", ctrlKey: ctrl, metaKey: !ctrl })
+    await waitFor(() => expect(calls).toContainEqual({
+        cmd: "fs_paste_clipboard_files",
+        args: { workspaceCapabilityId: "ws-1", targetDir: "" }
+    }))
+})

@@ -4,6 +4,7 @@ import { SpaceAgentTree } from "./SpaceAgentTree";
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore";
 import type { HerdrCapabilities, HerdrSessionRuntime, HerdrSnapshot } from "@/lib/herdrTypes";
 import i18n from "@/lib/i18n";
+import { useHerdrToolsStore } from "@/state/herdrToolsStore";
 
 const mocks = vi.hoisted(() => ({ choose: vi.fn(), openTab: vi.fn() }));
 vi.mock("@/state/folderPickerStore", async (original) => ({
@@ -110,7 +111,7 @@ it("keeps view, tools, add actions and scope in one compact header, with scope s
   render(<SpaceAgentTree />);
   const card = screen.getByRole("group", { name: "Spaces 與 Agents" });
   expect(within(card).getByRole("tab", { name: "Spaces" })).toBeInTheDocument();
-  expect(within(card).getByRole("button", { name: "HERDR 工具" })).toBeEnabled();
+  expect(within(card).getByRole("button", { name: "HERDR 動作" })).toBeEnabled();
   expect(within(card).getByRole("button", { name: "Herdr Session：All" })).toHaveTextContent("全部 Herdr Sessions");
   expect(within(card).getByRole("button", { name: "新增 Space 或加入 Herdr Session" })).toBeEnabled();
   fireEvent.keyDown(within(card).getByRole("button", { name: "Herdr Session：All" }), { key: "Enter" });
@@ -314,4 +315,21 @@ it("does not create on another host if the Session changes while choosing a fold
   await act(async () => { await useHerdrStore.getState().selectSession(remote); resolve("C:\\Projects\\native"); });
   expect(createSpace).not.toHaveBeenCalled();
   expect(screen.getByRole("alert")).toHaveTextContent("Session 已變更");
+});
+
+it("opens the HERDR actions home for the sidebar Session from the wrench", () => {
+  useHerdrToolsStore.getState().close();
+  render(<SpaceAgentTree />);
+  fireEvent.click(screen.getByRole("button", { name: "HERDR 動作" }));
+  expect(useHerdrToolsStore.getState().selection).toEqual({ sessionName: "default", workspaceId: undefined });
+  expect(useHerdrToolsStore.getState().selection?.task).toBeUndefined();
+  useHerdrToolsStore.getState().close();
+});
+
+it("explains why the HERDR actions button is disabled without a Session", () => {
+  useHerdrStore.setState({ selectedSessionName: null, sessions: [] });
+  render(<SpaceAgentTree />);
+  const button = screen.getByRole("button", { name: "HERDR 動作" });
+  expect(button).toBeDisabled();
+  expect(button).toHaveAttribute("title", "HERDR 動作（請先在側欄選取 Session）");
 });

@@ -27,7 +27,8 @@ export function FilesNavContent({ filterQuery = "", active = true }: { filterQue
     <div
       onContextMenu={workspacePath ? contextMenuHandler({ kind: "explorer", workspacePath }) : undefined}
       data-file-tree-root
-      className="flex h-full min-w-0 flex-col data-[pointer-drop-target=inside]:shadow-[inset_0_0_0_2px_var(--yz-accent)]"
+      tabIndex={-1}
+      className="flex h-full min-w-0 flex-col outline-none data-[pointer-drop-target=inside]:shadow-[inset_0_0_0_2px_var(--yz-accent)]"
     >
       {workspacePath ? (
         <>

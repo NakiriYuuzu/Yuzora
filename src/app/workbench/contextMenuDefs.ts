@@ -32,6 +32,7 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { useHerdrToolsStore } from "@/state/herdrToolsStore"
 import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { hasHerdrMethod } from "@/lib/herdrCapabilities"
+import { agentTaskForPane } from "@/lib/herdrActions"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { useUiStore } from "@/state/uiStore"
 import { useSshStore } from "@/state/sshStore"
@@ -265,6 +266,12 @@ function herdrSessionRuntime(sessionName: string) {
     runtime?.capabilities ??
     (state.selectedSessionName === resolvedName ? state.capabilities : null)
   return { session, capabilities }
+}
+
+/** A pane that already runs an agent is messaged; any other pane starts one. */
+function herdrPaneAgentTask(request: ContextMenuRequestFor<"herdrPane">) {
+  const { session } = herdrSessionRuntime(request.sessionName)
+  return agentTaskForPane(useHerdrStore.getState().runtimesBySession[sessionScope(session) ?? request.sessionName]?.snapshot, request.paneId)
 }
 
 function spaceMoveTarget(request: ContextMenuRequestFor<"herdrSpace">, direction: "up" | "down") {
@@ -889,10 +896,10 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
   ],
   herdrSpace: [
     item<"herdrSpace">("cmHerdrWorktreeTools", {
-      label: () => i18n.t("herdrTools:tools.worktrees"),
+      label: () => i18n.t("herdrTools:menu.worktree"),
       availability: () => available(),
       danger: false,
-      executor: request => { useHerdrToolsStore.getState().open({ tool: "worktrees", sessionName: request.sessionName, workspaceId: request.workspaceId }); return CONTEXT_MENU_COMPLETED },
+      executor: request => { useHerdrToolsStore.getState().open({ task: "worktree", sessionName: request.sessionName, workspaceId: request.workspaceId }); return CONTEXT_MENU_COMPLETED },
     }),
     spaceMoveCommand("up"),
     spaceMoveCommand("down"),
@@ -1055,7 +1062,7 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
   ],
   herdrPane: [
     item<"herdrPane">("cmHerdrNativeSession", {
-      label: () => i18n.t("herdrTools:openNative"),
+      label: () => i18n.t("herdrTools:menu.native"),
       availability: request => {
         const runtime = herdrSessionRuntime(request.sessionName)
         return runtime.session?.running && runtime.capabilities?.api.snapshot && runtime.capabilities.server.compatible === true ? available() : disabled(DISABLED_HERDR_UNAVAILABLE)
@@ -1064,16 +1071,16 @@ export const CONTEXT_MENU_DEFS: ContextMenuRegistry = {
       executor: request => { useHerdrNativeStore.getState().open({ sessionName: request.sessionName, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
     }),
     item<"herdrPane">("cmHerdrMovePane", {
-      label: () => i18n.t("herdrTools:move"),
+      label: () => i18n.t("herdrTools:menu.movePane"),
       availability: request => request.paneId && hasHerdrMethod(herdrSessionRuntime(request.sessionName).capabilities, "pane.move") ? available() : disabled(DISABLED_TARGET),
       danger: false,
-      executor: request => { useHerdrToolsStore.getState().open({ tool: "panes", sessionName: request.sessionName, workspaceId: request.workspaceId ?? undefined, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
+      executor: request => { useHerdrToolsStore.getState().open({ task: "movePane", sessionName: request.sessionName, workspaceId: request.workspaceId ?? undefined, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
     }),
     item<"herdrPane">("cmHerdrAgentTools", {
-      label: () => i18n.t("herdrTools:tools.agents"),
+      label: request => i18n.t(`herdrTools:menu.${herdrPaneAgentTask(request)}`),
       availability: () => available(),
       danger: false,
-      executor: request => { useHerdrToolsStore.getState().open({ tool: "agents", sessionName: request.sessionName, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
+      executor: request => { useHerdrToolsStore.getState().open({ task: herdrPaneAgentTask(request), sessionName: request.sessionName, paneId: request.paneId ?? undefined }); return CONTEXT_MENU_COMPLETED },
     }),
     "separator",
     item<"herdrPane">("cmHerdrRenamePane", {

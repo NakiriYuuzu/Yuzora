@@ -74,6 +74,29 @@ describe("host runtime routing", () => {
     await click()
     expect(operations).toEqual([{ command: "mouse", action: "down", column: 10, row: 5, modifiers: 2 }])
   })
+  it("sends hover move only to helpers that advertise it, leaving down and up alone", async () => {
+    // v0.0.18 helpers advertise herdrTerminalMouse but cannot parse `move`.
+    const mouse = { ...host("b"), hello: { ...host("b").hello, methods: ["herdrTerminalMouse"] } }
+    const withMove = { ...host("b"), hello: { ...host("b").hello, methods: ["herdrTerminalMouse", "herdrTerminalMouseMove"] } }
+    const operations: Array<{ action: string }> = []
+    mockIPC((command, args) => {
+      if (command === "host_stream_open") return { streamId: "term", value: { sessionId: "herdr-term-1", target: "same" } }
+      if (command === "host_stream_command") operations.push((args as { operation: { action: string } }).operation)
+      return null
+    })
+    const send = async () => {
+      const opened = await invokeHerdr<{ sessionId: string }>("herdr_terminal_open", { target: "same", cols: 80, rows: 24, sessionName: runtimeKey({ hostId: "b", sessionName: "same" }), onEvent: () => undefined })
+      for (const action of ["down", "move", "up"]) await invokeHerdr("herdr_terminal_mouse", { sessionId: opened.sessionId, action, column: 1, row: 2, modifiers: 0 })
+    }
+    registerRuntimeHost(mouse, "/herdr", "B")
+    await send()
+    expect(operations.map((operation) => operation.action)).toEqual(["down", "up"])
+    operations.length = 0
+    registerRuntimeHost(withMove, "/herdr", "B")
+    await send()
+    expect(operations.map((operation) => operation.action)).toEqual(["down", "move", "up"])
+  })
+
   it("resolves same-name remote Sessions and keeps legacy live pages local", () => {
     const scope = runtimeKey({ hostId: "a", sessionName: "same" })
     const remote = { ...session, hostId: "a", runtimeId: scope }
@@ -100,6 +123,25 @@ describe("host runtime routing", () => {
       operation: { method: "herdrCall", params: { call: { command: "herdr_workspace_create", args: { sessionName: "same", cwd: "/repo 中文" } } } }
     })
     await expect(invokeHerdr("herdr_workspace_create", { sessionName: scope, cwd: remoteFilePath("a", "/repo") })).rejects.toThrow("different runtime host")
+  })
+
+  it("routes cached idle polls to the polled commands and leaves explicit lists authoritative", async () => {
+    registerRuntimeHost({ ...host("b"), hello: { ...host("b").hello, methods: ["herdrSessionsPolled"] } }, "/herdr", "B")
+    const seen: Array<{ command: string; args: unknown }> = []
+    mockIPC((command, args) => {
+      if (command === "herdr_sessions") { seen.push({ command, args }); return [session] }
+      const call = (args as { operation: { params: { call: { command: string } } } }).operation.params.call
+      seen.push({ command: call.command, args })
+      return [session]
+    })
+    await invokeHerdr("herdr_sessions", { cached: true })
+    expect(seen[0]).toEqual({ command: "herdr_sessions", args: { cached: true } })
+    // Host a lacks the flag and falls back to the plain command; b is polled.
+    expect(seen.slice(1).map((entry) => entry.command).sort()).toEqual(["herdr_sessions", "herdr_sessions_polled"])
+    seen.length = 0
+    await invokeHerdr("herdr_sessions")
+    expect(seen[0].args).not.toMatchObject({ cached: true })
+    expect(seen.slice(1).every((entry) => entry.command === "herdr_sessions")).toBe(true)
   })
 
   it("discards an old generation's mutation response without replaying it", async () => {

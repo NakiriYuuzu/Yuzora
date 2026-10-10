@@ -19,6 +19,8 @@ import { CommandPalette } from "@/app/workbench/CommandPalette"
 import { getDocument } from "@/editor/documentRegistry"
 import { showActionError } from "@/lib/actionFeedback"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
+import { useHerdrToolsStore } from "@/state/herdrToolsStore"
+import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { uiInitialState, useUiStore } from "@/state/uiStore"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "@/state/workspaceStore"
 
@@ -471,4 +473,58 @@ it("opens from Ctrl+K while a Windows terminal has focus", async () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument()
     expect(terminalKey).not.toHaveBeenCalled()
     terminal.remove()
+})
+
+it("hides HERDR action commands until a Session is selected", async () => {
+    render(<Harness />)
+    await screen.findByRole("option", { name: /toggle browser/i })
+    expect(screen.queryByRole("option", { name: /HERDR: All actions/ })).not.toBeInTheDocument()
+})
+
+it("offers a HERDR command for every task scoped to the selected Session and focused pane", async () => {
+    useHerdrToolsStore.getState().close()
+    useHerdrStore.setState({
+        selectedSessionName: "work",
+        selectedSpaceId: "w1",
+        snapshot: { focusedPaneId: "p9", spaces: [], tabs: [], agents: [], terminals: [] } as never,
+    })
+    render(<Harness />)
+    const tasks = [["HERDR: All actions…", undefined], ["HERDR: Open isolated branch…", "worktree"], ["HERDR: Start agent…", "startAgent"], ["HERDR: Message agent…", "messageAgent"], ["HERDR: Move Pane…", "movePane"], ["HERDR: Manage Sessions…", "sessions"]] as const
+    for (const [name, task] of tasks) {
+        fireEvent.click(await screen.findByRole("option", { name }))
+        expect(useHerdrToolsStore.getState().selection).toEqual({ task, sessionName: "work", workspaceId: "w1", paneId: "p9" })
+        act(() => useHerdrToolsStore.getState().close())
+        cleanup()
+        render(<Harness />)
+    }
+})
+
+it("targets the sidebar scope Session, not the selected one, when they diverge", async () => {
+    useHerdrToolsStore.getState().close()
+    const runtime = (focusedWorkspaceId: string, focusedPaneId: string) => ({ connectionState: "ready", errorMessage: null, worktreeInventory: null, capabilities: null, snapshot: { focusedWorkspaceId, focusedPaneId, spaces: [], tabs: [], agents: [], terminals: [] } }) as never
+    useHerdrStore.setState({
+        selectedSessionName: "work",
+        selectedSpaceId: "w1",
+        snapshot: { focusedPaneId: "p9", spaces: [], tabs: [], agents: [], terminals: [] } as never,
+        runtimesBySession: { work: runtime("w1", "p9"), other: runtime("o2", "q4") },
+    })
+    useHerdrToolsStore.getState().setSidebarScope("other")
+    render(<Harness />)
+    fireEvent.click(await screen.findByRole("option", { name: "HERDR: Start agent…" }))
+    expect(useHerdrToolsStore.getState().selection).toEqual({ task: "startAgent", sessionName: "other", workspaceId: "o2", paneId: "q4" })
+    act(() => { useHerdrToolsStore.getState().close(); useHerdrToolsStore.getState().setSidebarScope(null) })
+})
+
+it("shows the full Session view command only when the Session can open it", async () => {
+    useHerdrNativeStore.setState({ selection: null })
+    useHerdrStore.setState({ selectedSessionName: "work", runtimesBySession: {} })
+    const view = render(<Harness />)
+    await screen.findByRole("option", { name: "HERDR: All actions…" })
+    expect(screen.queryByRole("option", { name: "HERDR: Open full Session view" })).not.toBeInTheDocument()
+    view.unmount()
+    useHerdrStore.setState({ runtimesBySession: { work: { connectionState: "ready", errorMessage: null, snapshot: null, worktreeInventory: null, capabilities: { server: { running: true, compatible: true }, api: { snapshot: true, methods: [] } } } as never } })
+    render(<Harness />)
+    fireEvent.click(await screen.findByRole("option", { name: "HERDR: Open full Session view" }))
+    expect(useHerdrNativeStore.getState().selection).toMatchObject({ sessionName: "work" })
+    useHerdrNativeStore.setState({ selection: null })
 })

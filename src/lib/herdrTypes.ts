@@ -43,7 +43,7 @@ export type HerdrTerminalRole = "observer" | "controller"
 
 export type HerdrScrollDirection = "up" | "down"
 /** Left-button pointer action for the connector `terminal.mouse` (HERDR 0.9.2+). */
-export type HerdrMouseAction = "down" | "up" | "drag"
+export type HerdrMouseAction = "down" | "up" | "drag" | "move"
 
 export type HerdrAgentStatus = "idle" | "working" | "blocked" | "done" | "unknown"
 

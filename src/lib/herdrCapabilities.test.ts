@@ -7,6 +7,7 @@ import {
   supportsHerdrPaneScroll,
   supportsHerdrPaneScrollCandidate,
   supportsHerdrTerminalMouse,
+  supportsHerdrTerminalMouseMove,
   supportsHerdrTerminalScroll
 } from "./herdrCapabilities"
 import type { HerdrCapabilities } from "./herdrTypes"
@@ -186,5 +187,14 @@ describe("HERDR capability adapter", () => {
     expect(at("unknown")).toBe(false)
     expect(at("0.9.3", { control: false })).toBe(false)
     expect(supportsHerdrTerminalMouse(null)).toBe(false)
+  })
+
+  it("sends hover move only to the verified 0.9.3+ connectors", () => {
+    const at = (binaryVersion: string | null) => supportsHerdrTerminalMouseMove({ ...capabilities([]), binaryVersion })
+    expect(at("0.9.2")).toBe(false)
+    expect(at("0.9.3")).toBe(true)
+    expect(at("0.10.0")).toBe(true)
+    expect(at(null)).toBe(false)
+    expect(supportsHerdrTerminalMouseMove({ ...capabilities([], { control: false }), binaryVersion: "0.9.3" })).toBe(false)
   })
 })

@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Yuzora 五項改善結案報告 · 2026-10-10</title>
+<style>
+body{font:16px/1.7 system-ui,-apple-system,"PingFang TC",sans-serif;color:#20252b;background:#f7f8fa;max-width:1080px;margin:40px auto;padding:0 24px}
+h1{font-size:30px;line-height:1.3;margin-bottom:4px}h2{margin-top:40px;font-size:22px;border-bottom:1px solid #d9dfe5;padding-bottom:6px}h3{font-size:18px;margin-top:26px}
+.muted{color:#58636f}.tldr{padding:16px 20px;border-left:4px solid #376da4;background:#eaf0f5;border-radius:4px}
+table{width:100%;border-collapse:collapse;background:#fff;font-size:14px;margin:12px 0}th,td{padding:9px 12px;text-align:left;vertical-align:top;border-bottom:1px solid #d9dfe5}th{background:#eaf0f5}
+code{font-size:.9em;background:#eef1f4;padding:1px 4px;border-radius:3px}figure{margin:16px 0}figure img{max-width:100%;border:1px solid #d9dfe5;border-radius:6px}figcaption{font-size:13px;color:#58636f}
+.ok{color:#2f7d32;font-weight:600}.warn{color:#a15c00;font-weight:600}li{margin-bottom:6px}
+@media print{body{background:#fff;margin:0}}
+</style>
+</head>
+<body>
+<h1>Yuzora 五項改善結案報告</h1>
+<p class="muted">2026-10-10 · 分支 <code>feat/ux-perf-batch</code>（基於 <code>origin/main</code> 36bafc91，v0.0.18）· 未 commit</p>
+
+<div class="tldr">
+<strong>TL;DR</strong>：五項都已實作並通過全套驗證。前四項另外在隔離的驗收版做了實機 GUI 驗收；第五項 HERDR 效能以 release-mode micro-benchmark 與計數測試量測，未做實機 profiling。
+<ol>
+<li><strong>Claude Code 人偶</strong>：已修好。方塊字元改由 Yuzora 自繪。另外查明點擊在 Claude Code fullscreen 模式下可觸發動畫；預設模式本身不開滑鼠回報，任何終端機都無法點擊。</li>
+<li><strong>從 Finder／檔案總管拖檔到側邊欄</strong>：本機與 WSL 工作區都可以複製進檔案樹，檔案樹空白處也能貼上到根目錄。</li>
+<li><strong>HERDR 工具</strong>：重新設計為任務導向的「HERDR 動作」，採方案 A，並加入 ⌘K 入口。</li>
+<li><strong>Git 效能</strong>：ignored 目錄的寫入風暴不再觸發 Git 重新整理，每次取 status 少一個子程序。</li>
+<li><strong>HERDR 效能</strong>：閒置 fork 降到約 1/3，frame 吞吐約 2 倍，snapshot 處理 −36%，無關分頁重繪歸零。</li>
+</ol>
+</div>
+
+<h2>流程與隔離</h2>
+<ul>
+<li>主工作樹 <code>release/v0.0.18</code> 上同時有 Codex 的自主效能實驗在跑基準，並且會核對檔案雜湊。所有工作都在 repo 外的 <code>.yuzora-lanes/</code> 進行：integration worktree 加上每條 lane 的 clonefile 副本。主工作樹從頭到尾沒有被改動。</li>
+<li>流程分四步：
+<ol>
+<li>唯讀調查（7 個 scout）</li>
+<li>6 條實作 lane 平行開發</li>
+<li>兩輪對抗式審查：第一輪 6 位 reviewer，0 blocker、3 major；第二輪 3 位 reviewer，針對修正與安全性</li>
+<li>兩輪修正，每輪結束都在 integration 重跑全套驗證</li>
+</ol></li>
+<li>依使用者決定：不引入 <code>@xterm/addon-webgl</code>、不開 GitHub issue、不 commit/push；實機 GUI 驗收已獲授權。</li>
+</ul>
+
+<h2>1. Claude Code 人偶（Clawd）</h2>
+<h3>根因</h3>
+<ul>
+<li>內嵌的 <code>@fontsource-variable/jetbrains-mono</code> 子集不含 U+2580–U+259F，本機也沒有安裝 JetBrains Mono，所以 <code>▐▛███▜▌</code> 這類字元會落到 PingFang TC 等 CJK 字型，字寬和字高都對不上 cell。</li>
+<li>xterm 6 只有 DOM renderer，<code>customGlyphs</code>（xterm 自繪方塊字元）在 DOM renderer 下不生效。</li>
+<li>過去沒有任何針對這個問題的修復；bb54e559 只處理 Windows 的字寬。</li>
+</ul>
+<h3>修法</h3>
+<ul>
+<li>擴充既有的 bun patch <code>patches/@xterm%2Fxterm@6.0.0.patch</code>，同時改 TS 原始碼與兩個 minified bundle：U+2580–U+259F 的 cell 各自輸出成一個 span，文字是空白，寬度剛好一格，並帶 <code>xterm-block-&lt;hex&gt;</code> class。</li>
+<li>新增 <code>src/terminal/xtermBlockGlyphs.css</code>，以 <code>currentColor</code> 漸層圖層畫出全部 32 個字元：八分之幾高寬的條塊、象限與陰影；不覆蓋 cell 背景色。SGR 8 隱藏的 cell 維持不畫。</li>
+<li>fixture <code>fixtures/xterm-block-glyphs.html</code> 可用於日後升級 xterm 時複驗；<code>patches/README.md</code> 已記錄做法。</li>
+</ul>
+<h3>點擊</h3>
+<ul>
+<li>以 PTY 實測 Claude Code 2.1.295：
+<ul>
+<li>預設模式（使用者設定 <code>"tui": "default"</code>）完全不開啟 <code>?1000/?1002/?1003/?1006</code>，所以 Clawd 在任何終端機都點不動，這是 Claude 本身的限制。</li>
+<li>fullscreen 模式（<code>/tui fullscreen</code> 或 <code>CLAUDE_CODE_NO_FLICKER=1</code>）會開啟這些滑鼠回報。</li>
+</ul></li>
+<li>Clawd 的 <code>onClick</code> 會隨機播放 14 種動畫之一，已在 binary 中確認。</li>
+<li>Yuzora 0.0.18 的點擊轉送本來就正確。這次新增的是 hover 轉送：
+<ul>
+<li>只對偵測到 Agent 的 pane 生效，需要 HERDR 0.9.3 以上。</li>
+<li>遠端 helper 以新的 hello 旗標 <code>herdrTerminalMouseMove</code> 協商，舊版 helper 不會收到 <code>move</code>，避免整條串流被中斷。</li>
+</ul></li>
+</ul>
+<figure><img src="ux-perf-batch-2026-10-10-assets/glyph-mascot-zoom.png" alt="放大後的 Clawd 各影格"><figcaption>驗收版終端機中的 Clawd 影格（放大）：無縫、眼睛與手腳正確。第二隻的配色是測試腳本自己套錯，不是渲染問題。</figcaption></figure>
+<figure><img src="ux-perf-batch-2026-10-10-assets/claude-welcome.jpg" alt="真實 Claude Code 歡迎畫面"><figcaption>真實的 Claude Code v2.1.296 歡迎畫面；側欄同時偵測到「Claude Code 待命」。</figcaption></figure>
+<p>實機點擊證據：以隔離 HERDR 的 <code>pane read</code> 當 oracle，每 120 ms 取樣一次。點擊前 30 次取樣都是靜止影格；點擊後連續兩次點擊都出現多個動畫影格，包括 <code>▗▟▛███▛█▄</code>（舉手）、<code>▐▂███▂█</code>（閉眼）與 <code>·</code>／<code>~</code> boop 粒子。假 TUI 記錄到每次點擊都完整收到 <code>ESC[&lt;0;16;4M</code> 和 <code>ESC[&lt;0;16;4m</code>。</p>
+
+<h2>2. Finder／檔案總管 → 側邊欄</h2>
+<ul>
+<li>原本 Finder 複製、檔案樹貼上已在 v0.0.17 出貨，但只在焦點位於樹的某一列時生效。真正缺的是 OS 拖放：Tauri 原生拖放層會吞掉 HTML5 drop。</li>
+<li>拖放的落點規則：
+<ul>
+<li>落在資料夾：複製到該資料夾</li>
+<li>落在檔案：複製到該檔案所在的資料夾</li>
+<li>落在空白處：複製到工作區根目錄</li>
+</ul>
+拖曳時會標示目標，完成後展開資料夾並選取匯入的項目，同名檔案自動改名。</li>
+<li><strong>信任模型</strong>：
+<ul>
+<li>Rust 只記錄 <code>main</code> webview 最近 3 次原生 Drop 的路徑，有效期 120 秒。</li>
+<li>匯入時，renderer 傳來的路徑必須完全符合其中一次 drop，成功後該次授權即作廢，無法重放。</li>
+<li>renderer 無法讓 Rust 讀取任意檔案。</li>
+</ul></li>
+<li><strong>WSL</strong>：
+<ul>
+<li>新增 host 操作 <code>FilesImport</code>，帶 hello 旗標，只能由 Rust 指令發送，renderer 的 <code>host_request</code> 會拒絕。</li>
+<li>授權與前置檢查（WSL 開關、連線目標、helper 版本）都在消耗授權之前完成。</li>
+<li>路徑轉換：<code>wslpath</code> 會把 <code>C:\x</code> 轉成 <code>/mnt/c/x</code>；同一發行版的 <code>\\wsl.localhost\…</code> 直接對應。其他發行版、其他 UNC share，以及只拖發行版根目錄，都會回報明確錯誤。</li>
+</ul></li>
+<li>SSH 工作區：拖放維持原本的「在編輯器開啟」；貼上 OS 檔案時顯示「暫不支援」。</li>
+<li>檔案樹空白處按 ⌘／Ctrl＋V 會貼到根目錄。</li>
+</ul>
+<p class="warn">未實機驗證：跨 app 的 Finder 拖放無法由 CUA 自動化，需要使用者手動驗收；Windows 與 WSL 只有單元測試覆蓋。</p>
+
+<h2>3. HERDR 動作（方案 A）</h2>
+<ul>
+<li>首頁先問「你想做什麼？」，列出 6 張任務卡，下方是進階列（整合、外掛、通知設定）；不可用時直接寫出原因。</li>
+<li>頂端固定顯示「作用於：主機 › Session」，符合 ADR 要求的明確選取。</li>
+<li>Agent 分成兩個任務：
+<ul>
+<li>「啟動 Agent」：名稱自動產生，常用 6 種 Agent 排在前面，其餘收在「更多…」，名稱與參數收在「進階」。</li>
+<li>「傳訊息給 Agent」：送出按鍵、等待狀態與診斷都收在「進階」。</li>
+</ul></li>
+<li>入口：
+<ul>
+<li>側欄扳手開啟首頁</li>
+<li>Space 右鍵進入 Worktree</li>
+<li>Pane 右鍵依是否已有 Agent，進入「啟動」或「傳訊息」</li>
+<li>⌘K 新增 7 個命令，作用的 Session 與側欄一致</li>
+</ul></li>
+<li>通知開關移到「設定 → HERDR」。</li>
+<li>型別化操作與參數完全不變，Rust 與 <code>herdrFeatures.ts</code> 都沒有改動，舊有的每個功能都仍可到達。</li>
+</ul>
+<figure><img src="ux-perf-batch-2026-10-10-assets/herdr-actions-home.jpg" alt="HERDR 動作首頁"><figcaption>HERDR 動作首頁（實機）</figcaption></figure>
+<figure><img src="ux-perf-batch-2026-10-10-assets/herdr-start-agent.jpg" alt="啟動 Agent 表單"><figcaption>啟動 Agent 表單：Pane 卡片標示「目前焦點」與「執行中：claude」</figcaption></figure>
+<figure><img src="ux-perf-batch-2026-10-10-assets/herdr-palette.jpg" alt="命令面板中的 HERDR 命令"><figcaption>⌘K 搜尋「HERDR」會列出 7 個動作命令；完整 Session 畫面也已實機開啟成功</figcaption></figure>
+
+<h2>4. Git 效能</h2>
+<table>
+<tr><th>項目</th><th>前</th><th>後</th><th>方法</th></tr>
+<tr><td>每次 <code>status_of</code> 的 git 子程序數</td><td>2</td><td>1</td><td><code>git_read_efficiency.rs</code> 固定斷言；被省掉的 <code>rev-parse</code> 約 17 ms（fixture p50）</td></tr>
+<tr><td>ignored 目錄寫入 5,000 檔觸發的 status 次數</td><td>每批都觸發；佇列溢出時改成整個工作區重新掃描</td><td>0</td><td>真實 watcher 加上 30k／3k／20k fixture（<code>git_perf_fixture.rs</code>，需 <code>--ignored</code>）</td></tr>
+<tr><td>watcher 佇列</td><td>16（500 檔寫入時溢出 523 次）</td><td>1024</td><td>同上</td></tr>
+<tr><td><code>core.untrackedCache</code>／<code>--no-renames</code></td><td colspan="2">都在雜訊範圍內（未達 ≥10% 門檻），不採用</td><td>A/B 交錯量測，n=25</td></tr>
+</table>
+<p>正確性保護：
+<ul>
+<li>ignored-only 的判定先經 <code>git ls-files --cached</code>（追蹤中的檔案一律算相關），再由 <code>git check-ignore</code> 確認（巢狀 <code>!negation</code> 也正確）。</li>
+<li>以 <code>:</code> 開頭或非 UTF-8 的路徑一律視為相關。</li>
+<li>watcher 停止時會取消執行中的 git，停止後也不再觸發 callback。</li>
+<li>舊版 helper 沒有這個旗標時，一律視為相關。</li>
+</ul></p>
+<figure><img src="ux-perf-batch-2026-10-10-assets/repo-panel-after-storm.jpg" alt="Git 面板"><figcaption>實機驗收：<code>new.ts</code> 與巢狀 negation 的 <code>keep.log</code> 立即出現；<code>target/</code> 裡 500 個 ignored 檔案沒有被誤列</figcaption></figure>
+
+<h2>5. HERDR 整合效能</h2>
+<table>
+<tr><th>項目</th><th>前</th><th>後</th><th>方法</th></tr>
+<tr><td>閒置時背景 <code>herdr session list</code> fork 次數</td><td>約 15／分鐘／主機</td><td>約 5／分鐘</td><td>12 秒 TTL；以計數測試證明（依計算，未在實機計次）</td></tr>
+<tr><td>Snapshot 管線（58.5 KB）</td><td>478 µs</td><td>307 µs（−36%）</td><td>release micro-benchmark；配置記憶體的整份序列化 2 → 0</td></tr>
+<tr><td>終端機 frame（64 KiB）</td><td>41.0 µs，1525 MB/s</td><td>20.6 µs，3038 MB/s</td><td>release micro-benchmark（單趟 typed 解析、以 base64 長度估算大小、move 取代 clone）</td></tr>
+<tr><td>終端機 frame（4 B）</td><td>0.78 µs</td><td>0.51 µs</td><td>同上</td></tr>
+<tr><td>其他 pane 的 Agent 狀態改變時，無關分頁的重繪次數</td><td>1</td><td>0</td><td>React Profiler（structural sharing 加上 selector 改為比較基本型別）</td></tr>
+</table>
+<p>其他改動：
+<ul>
+<li>能力探測改為每個 Session 各自一把鎖，閒置的鎖會修剪。</li>
+<li>Snapshot 更新進行中收到新事件時，完成後補跑一次。</li>
+<li>HERDR server 啟動後立即讓快取失效，啟動事件會觸發權威刷新。</li>
+<li>遠端 helper 以 hello 旗標 <code>herdrSessionsPolled</code> 協商，舊版 helper 會退回原本的指令。</li>
+</ul></p>
+
+<h2>驗證</h2>
+<table>
+<tr><th>檢查</th><th>結果</th></tr>
+<tr><td>vitest（全部）</td><td class="ok">328 檔、4,110 通過、34 skipped、0 失敗</td></tr>
+<tr><td>host crate：test／clippy <code>-D warnings</code>／fmt</td><td class="ok">661 通過、0 失敗、0 警告、通過</td></tr>
+<tr><td>app crate：test／clippy exact baseline／fmt</td><td class="ok">501 通過、0 失敗、baseline 吻合 19 筆、通過</td></tr>
+<tr><td>typecheck（tsgo ×2）／lint</td><td class="ok">通過／0 errors（49 個既有 warnings）</td></tr>
+<tr><td>Pages：site:companions／site:seo／demo:build</td><td class="ok">通過</td></tr>
+<tr><td>實機 GUI（隔離 HOME、隔離 HERDR server、guard wrapper）</td><td class="ok">人偶渲染、fullscreen 點擊、HERDR 動作首頁／表單／⌘K／完整 Session 畫面、Git 風暴與 negation</td></tr>
+</table>
+
+<h2>風險與後續</h2>
+<ul>
+<li>Finder 拖放需要使用者手動實機驗收；Windows／WSL 的拖放與貼上只有單元測試，需要在 Windows 實機或 CI 驗證，而且要重新部署同版本的 helper。</li>
+<li>在 Yuzora 外啟動或停止的 Session，最多約 16 秒才會反映到側欄（原本約 4 秒）。</li>
+<li>HERDR 不保留 SGR 8（隱藏文字），隱藏的字元會照常顯示。這是既有行為，不是本次造成的。</li>
+<li>未完成或延後：
+<ul>
+<li>Git：S3（相同 status 不更新 store），因為 diff reload 依賴 <code>statusRevision</code>；index-only 事件不重載分支</li>
+<li>HERDR：隱藏分頁暫停解碼、HerdrScrollbar 只在有活動時更新、bootstrap 時不清空 capabilities</li>
+</ul></li>
+<li>CHANGELOG 新增了 <code>[Unreleased]</code> 段落。repo 過去沒有用過這種段落，release 時要改成版本號。</li>
+</ul>
+</body>
+</html>

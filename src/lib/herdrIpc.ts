@@ -55,8 +55,9 @@ export async function herdrStartupStatus(): Promise<HerdrStartupStatus> {
   }
 }
 
-export function herdrSessions(): Promise<HerdrNamedSession[]> {
-  return invoke("herdr_sessions")
+/** `cached` lets idle polls reuse the host's recent Session inventory; omit it for an authoritative read. */
+export function herdrSessions(cached = false): Promise<HerdrNamedSession[]> {
+  return invoke("herdr_sessions", cached ? { cached: true } : undefined)
 }
 
 export function herdrCapabilities(

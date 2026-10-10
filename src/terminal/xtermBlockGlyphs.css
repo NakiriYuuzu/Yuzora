@@ -1,0 +1,200 @@
+/* Cell-filling block elements U+2580-U+259F for xterm's DOM renderer (see patches/README.md).
+ * The patched row factory emits one span per glyph with a space as text, so the span box is exactly
+ * the cell box; the glyph is painted from currentColor. Never set background-color: the cell
+ * background belongs to xterm. */
+
+.xterm .xterm-rows .xterm-block-glyph {
+  background-repeat: no-repeat;
+}
+
+.xterm .xterm-rows .xterm-block-2580 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 50%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2581 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 12.5%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2582 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 25%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2583 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 37.5%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2584 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 50%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2585 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 62.5%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2586 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 75%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2587 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 87.5%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2588 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2589 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 87.5% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-258a {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 75% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-258b {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 62.5% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-258c {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 50% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-258d {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 37.5% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-258e {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 25% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-258f {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 12.5% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2590 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 50% 100%;
+  background-position: 100% 0;
+}
+
+.xterm .xterm-rows .xterm-block-2591 {
+  background-image: linear-gradient(color-mix(in srgb, currentColor 25%, transparent), color-mix(in srgb, currentColor 25%, transparent));
+  background-size: 100% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2592 {
+  background-image: linear-gradient(color-mix(in srgb, currentColor 50%, transparent), color-mix(in srgb, currentColor 50%, transparent));
+  background-size: 100% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2593 {
+  background-image: linear-gradient(color-mix(in srgb, currentColor 75%, transparent), color-mix(in srgb, currentColor 75%, transparent));
+  background-size: 100% 100%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2594 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 12.5%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2595 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 12.5% 100%;
+  background-position: 100% 0;
+}
+
+.xterm .xterm-rows .xterm-block-2596 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%;
+  background-position: 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2597 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%;
+  background-position: 100% 100%;
+}
+
+.xterm .xterm-rows .xterm-block-2598 {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%;
+  background-position: 0 0;
+}
+
+.xterm .xterm-rows .xterm-block-2599 {
+  background-image: linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%, 50% 50%, 50% 50%;
+  background-position: 0 0, 0 100%, 100% 100%;
+}
+
+.xterm .xterm-rows .xterm-block-259a {
+  background-image: linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%, 50% 50%;
+  background-position: 0 0, 100% 100%;
+}
+
+.xterm .xterm-rows .xterm-block-259b {
+  background-image: linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%, 50% 50%, 50% 50%;
+  background-position: 0 0, 100% 0, 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-259c {
+  background-image: linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%, 50% 50%, 50% 50%;
+  background-position: 0 0, 100% 0, 100% 100%;
+}
+
+.xterm .xterm-rows .xterm-block-259d {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%;
+  background-position: 100% 0;
+}
+
+.xterm .xterm-rows .xterm-block-259e {
+  background-image: linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%, 50% 50%;
+  background-position: 100% 0, 0 100%;
+}
+
+.xterm .xterm-rows .xterm-block-259f {
+  background-image: linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+  background-size: 50% 50%, 50% 50%, 50% 50%;
+  background-position: 100% 0, 0 100%, 100% 100%;
+}

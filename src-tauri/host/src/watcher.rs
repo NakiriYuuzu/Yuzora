@@ -1,7 +1,7 @@
 //! Shared bounded filesystem notifications for desktop and host helpers.
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{EventKind, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -109,7 +109,8 @@ fn warn_ignored_file_once(path: &Path) {
     }
 }
 
-fn coalesce_path(root: &Path, matcher: &Gitignore, path: PathBuf) -> PathBuf {
+/// Returns the (possibly coalesced) path and whether root rules ignore it.
+fn coalesce_path(root: &Path, matcher: &Gitignore, path: PathBuf) -> (PathBuf, bool) {
     let mut directories: Vec<_> = path
         .ancestors()
         .skip(1)
@@ -118,19 +119,110 @@ fn coalesce_path(root: &Path, matcher: &Gitignore, path: PathBuf) -> PathBuf {
     directories.reverse();
     for directory in directories {
         if matcher.matched(directory, true).is_ignore() {
-            return directory.to_owned();
+            return (directory.to_owned(), true);
         }
     }
     // Only stat the leaf if no ancestor matched; build storms usually exit above.
     if path != root && matcher.matched(&path, true).is_ignore() && path.is_dir() {
-        return path;
+        return (path, true);
     }
-    path
+    let ignored = path != root && matcher.matched(&path, false).is_ignore();
+    (path, ignored)
+}
+
+/// Most ignored paths a single batch may verify; larger batches just refresh.
+const TRACKED_CHECK_LIMIT: usize = 256;
+
+/// True only when Git confirms every path is really ignored and nothing tracked
+/// lives at or under it. An ignore rule never hides edits to force-added files,
+/// and the root-only matcher can over-ignore (nested `.gitignore` negations), so
+/// ignored-only batches must still prove they cannot change `git status`. Any
+/// doubt (including `cancel`, set while the watcher is being dropped) means
+/// "relevant".
+fn all_untracked(root: &Path, paths: &[&PathBuf], cancel: &Arc<AtomicBool>) -> bool {
+    if paths.is_empty() || paths.len() > TRACKED_CHECK_LIMIT || cancel.load(Ordering::Acquire) {
+        return false;
+    }
+    let Some(specs) = paths
+        .iter()
+        .map(|path| path.strip_prefix(root).ok()?.to_str())
+        .map(|relative| {
+            relative.map(|r| {
+                if cfg!(windows) {
+                    r.replace('\\', "/")
+                } else {
+                    r.to_owned()
+                }
+            })
+        })
+        .collect::<Option<Vec<String>>>()
+    else {
+        return false;
+    };
+    if specs
+        .iter()
+        .any(|spec| spec.is_empty() || spec.starts_with(':'))
+    {
+        return false;
+    }
+    crate::cancellation::with_cancellation(cancel.clone(), || {
+        let mut args = vec!["ls-files", "-z", "--cached", "--"];
+        args.extend(specs.iter().map(String::as_str));
+        let tracked = crate::git_service::run_git(root, &args, Duration::from_secs(10), &[]);
+        if !matches!(&tracked, Ok(out) if out.code == 0 && out.stdout.is_empty()) {
+            return false;
+        }
+        let mut input = Vec::new();
+        for spec in &specs {
+            input.extend_from_slice(spec.as_bytes());
+            input.push(0);
+        }
+        // Exit 1 = nothing ignored; both that and a short answer mean "relevant".
+        // check-ignore rejects literal pathspecs, so magic parsing is enabled; a
+        // spec starting with ':' would be read as magic and is refused above.
+        let magic = [(
+            crate::git_service::ALLOW_PATHSPEC_MAGIC_ENV.to_string(),
+            "1".to_string(),
+        )];
+        let r = crate::git_service::run_git_with_stdin(
+            root,
+            &["check-ignore", "-z", "--stdin"],
+            Duration::from_secs(10),
+            &magic,
+            &input,
+        );
+        let Ok(out) = r else {
+            return false;
+        };
+        out.code == 0
+            && out
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|item| !item.is_empty())
+                .count()
+                == specs.len()
+    })
+}
+
+/// Classify and hand over the pending batch. Stop is re-checked afterwards: a
+/// cancelled classification reports "relevant", which must not reach the callback.
+fn deliver(
+    pending: &mut PendingChanges,
+    root: &Path,
+    stop: &Arc<AtomicBool>,
+    on_change: &impl Fn(Vec<String>, bool),
+) {
+    if let Some((changes, git_relevant)) = pending.take_classified(root, stop) {
+        if !stop.load(Ordering::Acquire) {
+            on_change(changes, git_relevant);
+        }
+    }
 }
 
 #[derive(Default)]
 struct PendingChanges {
-    paths: HashSet<PathBuf>,
+    /// Coalesced path -> whether root ignore rules cover it.
+    paths: HashMap<PathBuf, bool>,
     rescan: bool,
 }
 
@@ -153,8 +245,9 @@ impl PendingChanges {
             return;
         }
         for path in batch {
-            let path = coalesce_path(root, matcher, path);
-            self.paths.insert(path);
+            let (path, ignored) = coalesce_path(root, matcher, path);
+            let known = self.paths.entry(path).or_insert(ignored);
+            *known &= ignored;
             if self.paths.len() > CAPACITY {
                 self.invalidate_root();
                 break;
@@ -162,20 +255,41 @@ impl PendingChanges {
         }
     }
 
+    #[cfg(test)]
     fn take(&mut self, root: &Path) -> Option<Vec<String>> {
+        self.take_classified(root, &Arc::default())
+            .map(|(changes, _)| changes)
+    }
+
+    /// Changed paths plus whether the batch can affect `git status`.
+    fn take_classified(
+        &mut self,
+        root: &Path,
+        cancel: &Arc<AtomicBool>,
+    ) -> Option<(Vec<String>, bool)> {
         if !self.rescan && self.paths.is_empty() {
             return None;
         }
-        let changes = if self.rescan {
-            vec![root.to_string_lossy().into_owned()]
+        let (changes, git_relevant) = if self.rescan {
+            (vec![root.to_string_lossy().into_owned()], true)
         } else {
-            self.paths
-                .drain()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect()
+            let drained: Vec<_> = self.paths.drain().collect();
+            let ignored: Vec<_> = drained
+                .iter()
+                .filter(|(_, ignored)| *ignored)
+                .map(|(path, _)| path)
+                .collect();
+            let relevant = ignored.len() != drained.len() || !all_untracked(root, &ignored, cancel);
+            (
+                drained
+                    .iter()
+                    .map(|(p, _)| p.to_string_lossy().into_owned())
+                    .collect(),
+                relevant,
+            )
         };
         self.rescan = false;
-        Some(changes)
+        Some((changes, git_relevant))
     }
 }
 
@@ -184,9 +298,18 @@ pub fn build_watcher(
     root: &Path,
     on_change: impl Fn(Vec<String>) + Send + 'static,
 ) -> Result<WatcherHandle, String> {
+    build_classified_watcher(root, move |paths, _| on_change(paths))
+}
+
+/// Like `build_watcher`, plus `git_relevant`: false when every path is ignored
+/// by root rules and Git confirms they are ignored and nothing tracked there (safe to skip a status).
+pub fn build_classified_watcher(
+    root: &Path,
+    on_change: impl Fn(Vec<String>, bool) + Send + 'static,
+) -> Result<WatcherHandle, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let mut matcher = ignore_matcher(&root);
-    let (send, receive) = mpsc::sync_channel::<Vec<PathBuf>>(16);
+    let (send, receive) = mpsc::sync_channel::<Vec<PathBuf>>(1024);
     let wake = send.clone();
     let overflow = Arc::new(AtomicBool::new(false));
     let overflow_callback = overflow.clone();
@@ -241,9 +364,7 @@ pub fn build_watcher(
                 continue;
             }
             if !stop.load(Ordering::Acquire) {
-                if let Some(changes) = pending.take(&root) {
-                    on_change(changes);
-                }
+                deliver(&mut pending, &root, &stop, &on_change);
             }
             deadline = Instant::now() + Duration::from_millis(300);
         }
@@ -608,6 +729,185 @@ mod tests {
         assert!(pending.take(root).is_none());
     }
 
+    fn classify(root: &Path, changed: &[&str]) -> bool {
+        let mut matcher = ignore_matcher(root);
+        let mut pending = PendingChanges::default();
+        pending.extend(
+            root,
+            &mut matcher,
+            changed.iter().map(|p| root.join(p)).collect(),
+        );
+        pending.take_classified(root, &Arc::default()).unwrap().1
+    }
+
+    #[test]
+    fn ignored_only_batches_are_not_git_relevant_but_mixed_or_unverifiable_are() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // Not a repository: Git cannot vouch for the ignored paths, so refresh.
+        std::fs::write(root.join(".gitignore"), "target/\n.env\n").unwrap();
+        assert!(classify(root, &["target/debug/a.o"]));
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, "src.txt", "x", "seed");
+        // Git only vouches for ignored directories that still exist.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        assert!(!classify(root, &["target/debug/a.o", "target/b.o"]));
+        assert!(!classify(root, &[".env"]));
+        assert!(classify(root, &["target/debug/a.o", "src.txt"]));
+        assert!(classify(root, &["src.txt"]));
+        assert!(classify(root, &[".gitignore"]));
+        let mut pending = PendingChanges::default();
+        pending.invalidate_root();
+        assert!(pending.take_classified(root, &Arc::default()).unwrap().1);
+    }
+
+    #[test]
+    fn nested_gitignore_negation_keeps_untracked_file_git_relevant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, "src.txt", "x", "seed");
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/.gitignore"), "!keep.log\n").unwrap();
+        std::fs::write(root.join("sub/keep.log"), "k").unwrap();
+        std::fs::write(root.join("sub/drop.log"), "d").unwrap();
+        // The root-only matcher calls both ignored; only Git knows `keep.log` is not.
+        assert!(classify(root, &["sub/keep.log"]));
+        assert!(!classify(root, &["sub/drop.log"]));
+        assert!(classify(root, &["sub/drop.log", "sub/keep.log"]));
+        // A deleted untracked non-ignored file also changes `git status`.
+        std::fs::remove_file(root.join("sub/keep.log")).unwrap();
+        assert!(classify(root, &["sub/keep.log"]));
+    }
+
+    #[test]
+    fn cancelled_watcher_skips_git_and_reports_relevant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, "src.txt", "x", "seed");
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        let mut matcher = ignore_matcher(root);
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![root.join(".env")]);
+        let cancel = Arc::new(AtomicBool::new(true));
+        assert!(pending.take_classified(root, &cancel).unwrap().1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_relative_paths_are_git_relevant() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // A repository whose rules ignore the lossy spelling `bad\u{fffd}.o`: a
+        // lossy conversion would call the batch ignored-and-untracked.
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, ".gitignore", "*.o\n", "ignore");
+        let path = root.join(std::ffi::OsStr::from_bytes(b"bad\xff.o"));
+        assert!(!all_untracked(root, &[&path], &Arc::default()));
+        // Sanity: the same rule does confirm a valid name.
+        assert!(all_untracked(
+            root,
+            &[&root.join("good.o")],
+            &Arc::default()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_file_with_a_backslash_in_its_name_is_git_relevant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, ".gitignore", "foo*\n", "ignore");
+        std::fs::write(root.join("foo\\bar"), "x").unwrap();
+        crate::git_service::test_repo::git(root, &["add", "-f", "--", "foo\\bar"]);
+        crate::git_service::test_repo::git(root, &["commit", "-m", "track"]);
+        std::fs::write(root.join("foo\\bar"), "y").unwrap();
+        assert!(!all_untracked(
+            root,
+            &[&root.join("foo\\bar")],
+            &Arc::default()
+        ));
+        // Control: an untracked name matching the same rule is still skippable.
+        assert!(all_untracked(
+            root,
+            &[&root.join("foo.txt")],
+            &Arc::default()
+        ));
+    }
+
+    #[test]
+    fn colon_specs_are_git_relevant_without_running_git() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, ".gitignore", "*.o\n", "ignore");
+        assert!(all_untracked(root, &[&root.join("a.o")], &Arc::default()));
+        for name in [":(icase)A.o", ":x.o"] {
+            assert!(!all_untracked(root, &[&root.join(name)], &Arc::default()));
+        }
+        assert!(!all_untracked(
+            root,
+            &[&root.join("a.o"), &root.join(":(literal)b.o")],
+            &Arc::default()
+        ));
+    }
+
+    #[test]
+    fn no_callback_is_delivered_after_stop() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, "src.txt", "x", "seed");
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        let mut matcher = ignore_matcher(root);
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![root.join(".env")]);
+        let calls = std::cell::Cell::new(0);
+        let stop = Arc::new(AtomicBool::new(true));
+        deliver(&mut pending, root, &stop, &|_, _| {
+            calls.set(calls.get() + 1)
+        });
+        assert_eq!(calls.get(), 0);
+        // Control: the same batch is delivered while running.
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![root.join(".env")]);
+        deliver(&mut pending, root, &Arc::default(), &|_, _| {
+            calls.set(calls.get() + 1)
+        });
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn tracked_files_inside_ignored_locations_stay_git_relevant() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        std::fs::create_dir(root.join("generated")).unwrap();
+        crate::git_service::test_repo::write_and_commit(
+            root,
+            "generated/config.json",
+            "{}",
+            "track config",
+        );
+        crate::git_service::test_repo::write_and_commit(root, ".env", "A=1", "track env");
+        std::fs::write(root.join(".gitignore"), "generated/\n.env\n").unwrap();
+        assert!(classify(root, &["generated/config.json"]));
+        assert!(classify(
+            root,
+            &["generated/new.json", "generated/config.json"]
+        ));
+        assert!(classify(root, &[".env"]));
+        // Untracked siblings in the same ignored directory do not change that.
+        std::fs::write(root.join("generated/untracked.txt"), "u").unwrap();
+        assert!(classify(root, &["generated/untracked.txt"]));
+    }
+
     #[test]
     fn watcher_preserves_ignored_files_in_mixed_batches() {
         let temp = tempfile::tempdir().unwrap();
@@ -661,7 +961,7 @@ mod tests {
             &mut matcher,
             vec![root.join(".gitignore"), root.join("dist/out")],
         );
-        assert!(pending.paths.contains(&root.join("dist/out")));
+        assert!(pending.paths.contains_key(&root.join("dist/out")));
     }
 
     #[test]
@@ -674,23 +974,23 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "!keep/\n").unwrap();
         let matcher = ignore_matcher(root);
         assert_eq!(
-            coalesce_path(root, &matcher, root.join("dist")),
+            coalesce_path(root, &matcher, root.join("dist")).0,
             root.join("dist")
         );
         assert_eq!(
-            coalesce_path(root, &matcher, root.join("dist/sub/a")),
+            coalesce_path(root, &matcher, root.join("dist/sub/a")).0,
             root.join("dist")
         );
         assert_eq!(
-            coalesce_path(root, &matcher, root.join("keep/a")),
+            coalesce_path(root, &matcher, root.join("keep/a")).0,
             root.join("keep/a")
         );
         assert_eq!(
-            coalesce_path(root, &matcher, root.join(".env")),
+            coalesce_path(root, &matcher, root.join(".env")).0,
             root.join(".env")
         );
         assert_eq!(
-            coalesce_path(root, &matcher, root.to_owned()),
+            coalesce_path(root, &matcher, root.to_owned()).0,
             root.to_owned()
         );
     }

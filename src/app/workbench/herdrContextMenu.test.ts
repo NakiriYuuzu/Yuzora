@@ -35,6 +35,9 @@ import {
 import { useAppDialogStore } from "@/state/appDialogStore"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
+import { useHerdrToolsStore } from "@/state/herdrToolsStore"
+import { useHerdrNativeStore } from "@/state/herdrNativeStore"
+import type { HerdrSnapshot } from "@/lib/herdrTypes"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 
 const fullApi = {
@@ -458,5 +461,45 @@ describe("Herdr context menu registry", () => {
       workspaceId: "ws-1",
       focus: true
     })
+  })
+})
+
+describe("HERDR action entry points in context menus", () => {
+  const snapshot = { agents: [{ id: "a", name: "codex", status: "idle", workspaceId: "ws-1", paneId: "p-agent" }], spaces: [], tabs: [], terminals: [] } as unknown as HerdrSnapshot
+  beforeEach(() => {
+    useHerdrToolsStore.getState().close()
+    useHerdrNativeStore.setState({ selection: null })
+    useHerdrStore.setState(state => ({ runtimesBySession: { default: { capabilities: state.capabilities, snapshot, worktreeInventory: null, connectionState: "ready", errorMessage: null } } }))
+  })
+  const entry = (request: Parameters<typeof resolveContextMenuEntries>[0], id: string) => {
+    const found = resolveContextMenuEntries(request).find(item => item.type === "command" && item.command.id === id)
+    if (found?.type !== "command") throw new Error(`missing ${id}`)
+    return found.command
+  }
+
+  it("opens the Worktree task from the Space menu", () => {
+    const request = { kind: "herdrSpace", sessionName: "default", workspaceId: "ws-1", label: "Yuzora" } as const
+    expect(entry(request, "cmHerdrWorktreeTools").label(request)).toBe("Open isolated branch (Worktree)…")
+    void entry(request, "cmHerdrWorktreeTools").executor(request)
+    expect(useHerdrToolsStore.getState().selection).toEqual({ task: "worktree", sessionName: "default", workspaceId: "ws-1" })
+  })
+
+  it("routes the pane menu to message or start by agent presence", () => {
+    const free = { kind: "herdrPane", sessionName: "default", paneId: "p-free" } as const
+    const busy = { kind: "herdrPane", sessionName: "default", paneId: "p-agent" } as const
+    expect(entry(free, "cmHerdrAgentTools").label(free)).toBe("Start agent…")
+    void entry(free, "cmHerdrAgentTools").executor(free)
+    expect(useHerdrToolsStore.getState().selection).toMatchObject({ task: "startAgent", paneId: "p-free" })
+    expect(entry(busy, "cmHerdrAgentTools").label(busy)).toBe("Message agent…")
+    void entry(busy, "cmHerdrAgentTools").executor(busy)
+    expect(useHerdrToolsStore.getState().selection).toMatchObject({ task: "messageAgent", paneId: "p-agent" })
+  })
+
+  it("opens move-pane and the full Session view from the pane menu", () => {
+    const request = { kind: "herdrPane", sessionName: "default", paneId: "p1", workspaceId: "ws-1" } as const
+    expect(entry(request, "cmHerdrMovePane").label(request)).toBe("Move Pane…")
+    void entry(request, "cmHerdrMovePane").executor(request)
+    expect(useHerdrToolsStore.getState().selection).toEqual({ task: "movePane", sessionName: "default", workspaceId: "ws-1", paneId: "p1" })
+    expect(entry(request, "cmHerdrNativeSession").label(request)).toBe("Open full Session view")
   })
 })

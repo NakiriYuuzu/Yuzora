@@ -1,5 +1,7 @@
 use std::path::Path;
-pub use yuzora_host::watcher::{build_watcher, is_ignored_path, WatcherHandle};
+pub use yuzora_host::watcher::{
+    build_classified_watcher, build_watcher, is_ignored_path, WatcherHandle,
+};
 #[derive(Default)]
 pub struct WatcherState(pub std::sync::Mutex<WatcherSlot>);
 
@@ -49,6 +51,8 @@ impl WatcherSlot {
 pub struct ExternalChangeEvent {
     pub workspace_root: String,
     pub paths: Vec<String>,
+    /// False when every path is ignored and untracked: Git status is unchanged.
+    pub git_relevant: bool,
 }
 
 /// T2（#56）：同步 command 在 main thread 執行（Tauri 2），notify 遞迴掛載在
@@ -73,12 +77,13 @@ pub async fn start_watch(
     drop(stale);
     let workspace_root = path.clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        build_watcher(Path::new(&path), move |paths| {
+        build_classified_watcher(Path::new(&path), move |paths, git_relevant| {
             let _ = app.emit(
                 "fs:external-change",
                 ExternalChangeEvent {
                     workspace_root: workspace_root.clone(),
                     paths,
+                    git_relevant,
                 },
             );
         })
@@ -246,11 +251,13 @@ mod tests {
         let v = serde_json::to_value(ExternalChangeEvent {
             workspace_root: "/w".to_string(),
             paths: vec!["/w/a.txt".to_string()],
+            git_relevant: false,
         })
         .unwrap();
         assert_eq!(v["workspaceRoot"], "/w");
         assert_eq!(v["paths"][0], "/w/a.txt");
-        assert_eq!(v.as_object().unwrap().len(), 2);
+        assert_eq!(v["gitRelevant"], false);
+        assert_eq!(v.as_object().unwrap().len(), 3);
     }
 
     #[test]

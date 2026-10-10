@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### 新增與改善
+
+- 「HERDR 工具」重新設計為「HERDR 動作」：開啟後先問「你想做什麼？」，以任務卡列出開隔離分支（Worktree）、啟動 Agent、傳訊息給 Agent、搬移 Pane、管理 Session 與開啟完整 Session 畫面，每張卡進入單一目的的表單；暫時無法使用的動作會直接寫出原因（例如 Session 尚未連線、HERDR 版本不支援、沒有 Pane 或 Agent）。頂端固定顯示「作用於：主機 › Session」。啟動 Agent 時名稱會自動產生，參數與送出按鍵收進「進階」。所有動作也可從 ⌘K 命令面板執行（輸入「HERDR」），並與側欄選取的 Session 一致；Pane 右鍵會依是否已有 Agent 提供「啟動 Agent」或「傳訊息給 Agent」。通知開關移到「設定 → HERDR」。
+- 從 Finder／檔案總管把檔案拖到側邊欄檔案樹，會複製到游標下的資料夾（落在檔案上則複製到該檔案所在的資料夾，落在空白處則複製到工作區根目錄），拖曳時會標示目標資料夾；同名檔案自動改名。本機與 WSL 工作區都支援，WSL 需要同版本的 Yuzora helper。檔案樹空白處也能按 ⌘／Ctrl＋V 把 Finder 複製的檔案貼到根目錄。SSH 工作區暫不支援匯入，拖放到檔案樹時仍在編輯器開啟。
+- Claude Code 等 Agent 在 HERDR 終端機以 fullscreen 模式執行時，滑鼠移動也會轉送給程式，hover 效果可正常顯示（需要 HERDR 0.9.3 以上；遠端需搭配同版本的 Yuzora helper）。
+
+### 效能
+
+- Git：被 `.gitignore` 忽略的目錄（例如 `target/`、`dist/`）在建置時大量寫入，不再觸發 Git 狀態重新整理；每次取得 Git 狀態少執行一個 `git` 子程序；檔案監看佇列加大，建置期間不再因佇列溢出而整個工作區重新掃描。
+- HERDR：閒置時的 Session 清單改用 12 秒快取，背景 `herdr` 子程序由每分鐘約 15 次降到約 5 次；終端機輸出的 frame 處理量約為原本 2 倍；Session 快照處理時間減少約三分之一；某個 Agent 狀態改變時，其他終端機分頁不再跟著重繪；不同 Session 的能力檢查不再互相等待。
+
+### 修正
+
+- Claude Code 的吉祥物 Clawd 與其他方塊字元（U+2580–U+259F）在 HERDR 終端機中不再破碎或出現縫隙：這些字元改由 Yuzora 依格子大小直接繪製，不再依賴字型。
+- HERDR 快照更新進行中又收到新事件時，會在完成後立即補一次更新，不必等到下一個事件或 12 秒後的定期同步。
+
+### 已知限制
+
+- Claude Code 在預設（非 fullscreen）模式下不會開啟滑鼠回報，任何終端機都無法點擊 Clawd；需要在 Claude Code 中執行 `/tui fullscreen`。
+- 在 Yuzora 以外啟動或停止的 HERDR Session，最多約 16 秒後才會反映在側欄；在 Yuzora 內操作則立即更新。
+
 ## [0.0.18] - 2026-10-08
 
 ### 新增與改善

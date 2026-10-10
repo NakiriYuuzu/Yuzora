@@ -76,7 +76,7 @@ export function HerdrLauncher({
       <div className="herdr-launcher" role="group" aria-label={t("spacesAndAgents", { ns: "workbenchShell" })}>
         <div className="herdr-launcher-row">
           {viewSwitcher}
-          <Button variant="ghost" size="icon-sm" aria-label={t("title", { ns: "herdrTools" })} title={t("title", { ns: "herdrTools" })} disabled={!onOpenTools} onClick={onOpenTools}>
+          <Button variant="ghost" size="icon-sm" aria-label={t("title", { ns: "herdrTools" })} title={t(onOpenTools ? "title" : "titleNoSession", { ns: "herdrTools" })} disabled={!onOpenTools} onClick={onOpenTools}>
             <Wrench aria-hidden="true" />
           </Button>
           <DropdownMenu>

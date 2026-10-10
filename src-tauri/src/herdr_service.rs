@@ -45,8 +45,16 @@ pub async fn herdr_feature(
 #[tauri::command]
 pub async fn herdr_sessions(
     state: tauri::State<'_, HerdrState>,
+    cached: Option<bool>,
 ) -> Result<Vec<HerdrNamedSession>, String> {
-    with_herdr_manager(&state, move |manager| manager.list_sessions()).await
+    with_herdr_manager(&state, move |manager| {
+        if cached == Some(true) {
+            manager.list_sessions_polled()
+        } else {
+            manager.list_sessions()
+        }
+    })
+    .await
 }
 
 #[tauri::command]
