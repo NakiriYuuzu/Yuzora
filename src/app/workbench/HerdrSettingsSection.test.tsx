@@ -43,9 +43,9 @@ it("shows the active Windows client and saved target, and discovers WSL only aft
   expect(await screen.findByText("C:\\installed\\herdr.exe")).toBeInTheDocument()
   expect(screen.getByText("0.8.2 · protocol 20")).toBeInTheDocument()
   expect(screen.getByText("C:\\Yuzora\\herdr.exe")).toBeInTheDocument()
-  expect(screen.getByRole("switch")).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Enable WSL HERDR" })).not.toBeChecked()
   expect(ipc.distros).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole("switch"))
+  fireEvent.click(screen.getByRole("switch", { name: "Enable WSL HERDR" }))
   await waitFor(() => expect(ipc.distros).toHaveBeenCalledOnce())
 })
 it("blocks applying a mismatched client without changing the saved source", async () => {
@@ -180,7 +180,12 @@ it("does not offer the revert for unrelated errors", async () => {
 it("keeps the WSL switch off and reports the error when the backend refuses to save", async () => {
   ipc.prefsSet.mockRejectedValue("runtime-preferences-write-failed")
   render(<HerdrSettingsSection />)
-  fireEvent.click(await screen.findByRole("switch"))
+  fireEvent.click(await screen.findByRole("switch", { name: "Enable WSL HERDR" }))
   expect(await screen.findByText("runtime-preferences-write-failed")).toBeInTheDocument()
-  expect(screen.getByRole("switch")).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Enable WSL HERDR" })).not.toBeChecked()
+})
+it("hosts the HERDR notification preferences that used to live in the tools dialog", () => {
+  render(<HerdrSettingsSection />)
+  expect(screen.getByText("Notification settings")).toBeInTheDocument()
+  for (const name of ["In-app notifications", "System notifications", "Notification sound", "Agent completed", "Agent needs input"]) expect(screen.getByRole("switch", { name })).toBeInTheDocument()
 })

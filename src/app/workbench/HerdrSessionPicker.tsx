@@ -128,7 +128,7 @@ export function HerdrSessionPicker({ initialSession, onSelect, onClose, returnFo
     const scope = sessionScope(availableSessions[0]);
     if (!scope) return;
     onClose();
-    useHerdrToolsStore.getState().open({ tool: "sessions", sessionName: scope });
+    useHerdrToolsStore.getState().open({ task: "sessions", sessionName: scope });
   }
   async function connectRuntime(selection: HerdrRuntimeSelection) {
     if (!hostId || !target) return;

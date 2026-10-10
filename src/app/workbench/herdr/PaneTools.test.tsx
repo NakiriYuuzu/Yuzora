@@ -26,20 +26,20 @@ describe("PaneTools move flow", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Existing tab/ }))
     fireEvent.click(screen.getByRole("radio", { name: /server/ }))
     fireEvent.click(screen.getByRole("radio", { name: /Down/ }))
-    fireEvent.click(screen.getByRole("button", { name: "Move pane" }))
+    fireEvent.click(screen.getByRole("button", { name: "Move Pane" }))
     expect(run).toHaveBeenCalledWith({ method: "pane.move", params: { pane_id: "p1", destination: { type: "tab", tab_id: "t2", split: "down" }, focus: false } })
   })
 
   it("opens the pane as a new tab in the chosen Space", () => {
     const run = setup()
     fireEvent.click(screen.getByRole("radio", { name: "docs" }))
-    fireEvent.click(screen.getByRole("button", { name: "Move pane" }))
+    fireEvent.click(screen.getByRole("button", { name: "Move Pane" }))
     expect(run).toHaveBeenCalledWith({ method: "pane.move", params: { pane_id: "p1", destination: { type: "new_tab", workspace_id: "w2", label: undefined }, focus: false } })
   })
 
   it("keeps the move button disabled until an existing tab is picked", () => {
     setup()
     fireEvent.click(screen.getByRole("radio", { name: /Existing tab/ }))
-    expect((screen.getByRole("button", { name: "Move pane" }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole("button", { name: "Move Pane" }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
