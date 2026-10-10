@@ -4,8 +4,10 @@ vi.mock("@/lib/ipc", () => ({
     clipboardReadFileList: vi.fn(async () => [] as string[]),
     clipboardWriteWorkspaceFiles: vi.fn(async () => undefined),
     fsCopyPaths: vi.fn(async () => [] as string[]),
+    fsImportDroppedPaths: vi.fn(async () => [] as string[]),
     fsMovePaths: vi.fn(async () => [] as string[]),
-    fsPasteClipboardFiles: vi.fn(async () => [] as string[])
+    fsPasteClipboardFiles: vi.fn(async () => [] as string[]),
+    wslImportOsFiles: vi.fn(async () => [] as string[])
 }))
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn(async () => undefined) }))
 vi.mock("@/state/appDialogStore", () => ({ showAppMessage: vi.fn(async () => undefined) }))
@@ -22,8 +24,9 @@ import { showAppMessage } from "@/state/appDialogStore"
 import { retargetOpenDocuments } from "@/state/contextMenuStore"
 import { useFileClipboardStore } from "@/state/fileClipboardStore"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
+import { useHostStore } from "@/state/hostStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
-import { copyFilesToClipboard, duplicatePath, moveFilesTo, pasteFiles, pasteTargetDir } from "./fileClipboard"
+import { copyFilesToClipboard, duplicatePath, importDroppedFiles, moveFilesTo, pasteFiles, pasteTargetDir } from "./fileClipboard"
 
 const W = "/w"
 
@@ -131,6 +134,124 @@ describe("remote workspaces", () => {
         await pasteFiles(R, null)
         expect(ipc.clipboardReadFileList).not.toHaveBeenCalled()
         expect(ipc.fsCopyPaths).toHaveBeenCalledWith(R, [A], R)
+    })
+
+    it("explains that Finder files cannot be pasted instead of silently ignoring them", async () => {
+        useWorkspaceStore.setState({ workspacePath: R })
+        tree.trees = { [R]: { expandedDirs: new Set() } }
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["/Users/me/a.png"])
+        expect(await pasteFiles(R, null)).toEqual([])
+        expect(ipc.fsPasteClipboardFiles).not.toHaveBeenCalled()
+        expect(showAppMessage).toHaveBeenCalledWith(expect.objectContaining({
+            description: expect.stringContaining("not supported yet")
+        }))
+    })
+
+    it("stays quiet when a remote paste has nothing on either clipboard", async () => {
+        useWorkspaceStore.setState({ workspacePath: R })
+        expect(await pasteFiles(R, null)).toEqual([])
+        expect(showAppMessage).not.toHaveBeenCalled()
+    })
+
+    it("refuses a Finder drop with the same explanation", async () => {
+        useWorkspaceStore.setState({ workspacePath: R })
+        expect(await importDroppedFiles(R, R, ["/Users/me/a.png"])).toEqual([])
+        expect(ipc.fsImportDroppedPaths).not.toHaveBeenCalled()
+        expect(showAppMessage).toHaveBeenCalledWith(expect.objectContaining({
+            title: "Could not import",
+            description: expect.stringContaining("not supported yet")
+        }))
+    })
+})
+
+describe("WSL host workspaces", () => {
+    const WSL = remoteFilePath("wsl-1", "/home/me/app")
+    const config = { hostId: "wsl-1", label: "Ubuntu", kind: "wsl" as const, distro: "Ubuntu", helper: "h", binary: "b" }
+    beforeEach(() => {
+        useHostStore.setState({ configs: { "wsl-1": config } })
+        useWorkspaceStore.setState({ workspacePath: WSL })
+        tree.trees = { [WSL]: { expandedDirs: new Set() } }
+    })
+    afterEach(() => useHostStore.setState({ configs: {} }))
+
+    it("imports a Finder drop through the WSL command and selects the first new item", async () => {
+        const created = [remoteFilePath("wsl-1", "/home/me/app/a.png", "/home/me/app")]
+        vi.mocked(ipc.wslImportOsFiles).mockResolvedValueOnce(created)
+        expect(await importDroppedFiles(WSL, WSL, ["C:\\Users\\me\\a.png"])).toEqual(created)
+        expect(ipc.wslImportOsFiles).toHaveBeenCalledWith(WSL, "Ubuntu", WSL, ["C:\\Users\\me\\a.png"])
+        expect(ipc.fsImportDroppedPaths).not.toHaveBeenCalled()
+        expect(tree.invalidatePaths).toHaveBeenCalledWith(WSL, created)
+        expect(useFileClipboardStore.getState().selection).toEqual({ workspacePath: WSL, path: created[0] })
+    })
+
+    it("pastes the OS clipboard through the WSL command, with a null path list", async () => {
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\a.png"])
+        vi.mocked(ipc.wslImportOsFiles).mockResolvedValueOnce(["x"])
+        expect(await pasteFiles(WSL, null)).toEqual(["x"])
+        expect(ipc.wslImportOsFiles).toHaveBeenCalledWith(WSL, "Ubuntu", WSL, null)
+        expect(ipc.fsPasteClipboardFiles).not.toHaveBeenCalled()
+        expect(showAppMessage).not.toHaveBeenCalled()
+    })
+
+    it("maps WSL backend refusals to readable messages", async () => {
+        vi.mocked(ipc.wslImportOsFiles).mockRejectedValueOnce("wsl-helper-outdated")
+        expect(await importDroppedFiles(WSL, WSL, ["C:\\a.png"])).toEqual([])
+        expect(showAppMessage).toHaveBeenCalledWith(expect.objectContaining({
+            description: expect.stringContaining("helper is out of date")
+        }))
+    })
+
+    it("maps the other WSL import refusals to readable messages, not raw codes", async () => {
+        for (const code of ["wsl-runtime-disabled-open-settings", "import-source-invalid", "wsl-path-conversion-failed", "wsl-identity-changed-or-not-wsl2", "host-not-wsl-distribution"]) {
+            vi.mocked(showAppMessage).mockClear()
+            vi.mocked(ipc.wslImportOsFiles).mockRejectedValueOnce(`Error: ${code}`)
+            expect(await importDroppedFiles(WSL, WSL, ["C:\\a.png"])).toEqual([])
+            const description = vi.mocked(showAppMessage).mock.calls[0][0].description as string
+            expect(description).not.toContain(code)
+            expect(description).not.toBe("")
+        }
+    })
+
+    it("still refuses SSH hosts that merely share the remote URI scheme", async () => {
+        const SSH = remoteFilePath("ssh-1", "/srv/app")
+        useHostStore.setState({ configs: { "ssh-1": { ...config, hostId: "ssh-1", kind: "ssh", distro: undefined } } })
+        useWorkspaceStore.setState({ workspacePath: SSH })
+        expect(await importDroppedFiles(SSH, SSH, ["/Users/me/a.png"])).toEqual([])
+        expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
+        expect(showAppMessage).toHaveBeenCalledWith(expect.objectContaining({
+            description: expect.stringContaining("SSH remote workspace")
+        }))
+    })
+})
+
+describe("importDroppedFiles", () => {
+    it("imports into the target folder, expands it and selects the first new item", async () => {
+        vi.mocked(ipc.fsImportDroppedPaths).mockResolvedValueOnce(["/w/src/a.png", "/w/src/b.png"])
+        expect(await importDroppedFiles(W, "/w/src", ["/Users/me/a.png", "/Users/me/b.png"])).toEqual(["/w/src/a.png", "/w/src/b.png"])
+        expect(ipc.fsImportDroppedPaths).toHaveBeenCalledWith(W, ["/Users/me/a.png", "/Users/me/b.png"], "/w/src")
+        expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/src/a.png", "/w/src/b.png"])
+        expect(tree.toggleDir).toHaveBeenCalledWith(W, "/w/src")
+        expect(useFileClipboardStore.getState().selection).toEqual({ workspacePath: W, path: "/w/src/a.png" })
+    })
+
+    it("does not toggle the workspace root and ignores empty or stale requests", async () => {
+        vi.mocked(ipc.fsImportDroppedPaths).mockResolvedValueOnce(["/w/a.png"])
+        await importDroppedFiles(W, W, ["/Users/me/a.png"])
+        expect(tree.toggleDir).not.toHaveBeenCalled()
+        expect(await importDroppedFiles(W, W, [])).toEqual([])
+        useWorkspaceStore.setState({ workspacePath: "/other" })
+        expect(await importDroppedFiles(W, W, ["/Users/me/a.png"])).toEqual([])
+        expect(ipc.fsImportDroppedPaths).toHaveBeenCalledTimes(1)
+    })
+
+    it("reports backend refusals and refreshes the target", async () => {
+        vi.mocked(ipc.fsImportDroppedPaths).mockRejectedValueOnce("dropped-paths-stale")
+        expect(await importDroppedFiles(W, "/w/src", ["/Users/me/a.png"])).toEqual([])
+        expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/src"])
+        expect(showAppMessage).toHaveBeenCalledWith(expect.objectContaining({
+            title: "Could not import",
+            description: "The dropped files expired. Drag them in again."
+        }))
     })
 })
 

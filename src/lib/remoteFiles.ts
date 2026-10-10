@@ -349,6 +349,22 @@ async function transferRemotePaths(method: "filesCopy" | "filesMove", workspaceU
   } finally { await release() }
 }
 
+/** WSL host workspaces only: the native side picks and authorises the sources (`paths` = the latest drop, null = OS clipboard). */
+export async function importOsFilesIntoWslWorkspace(workspaceUri: string, distro: string, targetDir: string, paths: string[] | null): Promise<string[]> {
+  const release = retainRemoteWorkspace(workspaceUri)
+  try {
+    const target = remoteTargetDir(workspaceUri, targetDir)
+    const backend = target.workspace.backend
+    if (backend.kind !== "runtime") throw new Error("clipboard-import-remote-unsupported")
+    const destination = { owner: backend.owner, distro, workspace: backend.capabilityId, targetDir: target.relative }
+    const created = paths
+      ? await invoke<string[]>("host_import_dropped_paths", { destination, paths })
+      : await invoke<string[]>("host_paste_clipboard_files", { destination })
+    assertBackend(workspaceUri, backend)
+    return created.map((relative) => remoteFilePath(target.workspace.hostId, joinRemoteHostPath(target.workspace.root, relative), target.workspace.root))
+  } finally { await release() }
+}
+
 function moveRevisions(from: string, to: string | undefined, backend: Backend): void {
   if (!to || to === from) return
   for (const [uri, opened] of [...revisions]) {

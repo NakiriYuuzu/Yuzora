@@ -4,8 +4,10 @@ import {
     clipboardReadFileList,
     clipboardWriteWorkspaceFiles,
     fsCopyPaths,
+    fsImportDroppedPaths,
     fsMovePaths,
-    fsPasteClipboardFiles
+    fsPasteClipboardFiles,
+    wslImportOsFiles
 } from "@/lib/ipc"
 import { canonicalPathKey, isSameOrDescendantPath, nativePathParent } from "@/lib/paths"
 import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
@@ -14,6 +16,7 @@ import { retargetOpenDocuments } from "@/state/contextMenuStore"
 import { useFileClipboardStore } from "@/state/fileClipboardStore"
 import { useFileTreeStore } from "@/state/fileTreeStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
+import { wslDistroOf } from "./fileImportTarget"
 
 const t = (key: string, options?: Record<string, unknown>) => i18n.t(key, { ns: "menus", ...options })
 
@@ -25,7 +28,17 @@ const KNOWN_ERRORS = [
     "copy-unsupported-sftp",
     "move-unsupported-sftp",
     "clipboard-files-unsupported",
-    "clipboard-import-remote-unsupported"
+    "clipboard-import-remote-unsupported",
+    "dropped-paths-stale",
+    "dropped-paths-unknown",
+    "windows-folder-belongs-to-another-wsl-distribution",
+    "wsl-import-unsupported-source",
+    "wsl-helper-outdated",
+    "wsl-runtime-disabled-open-settings",
+    "import-source-invalid",
+    "wsl-path-conversion-failed",
+    "wsl-identity-changed-or-not-wsl2",
+    "host-not-wsl-distribution"
 ]
 
 async function reportError(error: unknown, title = t("fileClipboard.errorTitle")): Promise<void> {
@@ -92,7 +105,8 @@ export async function pasteFiles(
     const remote = !!parseRemoteFilePath(workspacePath)
     const stored = useFileClipboardStore.getState().clipboard
     const internal = stored?.workspacePath === workspacePath ? stored : null
-    const osPaths = remote ? [] : await clipboardReadFileList().catch(() => [] as string[])
+    // A remote workspace reads the OS list only to say it cannot import it.
+    const osPaths = remote && internal ? [] : await clipboardReadFileList().catch(() => [] as string[])
     const useInternal = internal !== null && (osPaths.length === 0 || samePaths(osPaths, internal.paths))
     try {
         if (useInternal) {
@@ -113,8 +127,11 @@ export async function pasteFiles(
             return created
         }
         if (osPaths.length) {
-            if (remote) throw new Error("clipboard-import-remote-unsupported")
-            const created = await fsPasteClipboardFiles(workspacePath, targetDir)
+            const distro = wslDistroOf(workspacePath)
+            if (remote && !distro) throw new Error("clipboard-import-remote-unsupported")
+            const created = distro
+                ? await wslImportOsFiles(workspacePath, distro, targetDir, null)
+                : await fsPasteClipboardFiles(workspacePath, targetDir)
             await landed(workspacePath, targetDir, created)
             void logUserAction("file_paste", `import ${created.length} item(s)`)
             return created
@@ -126,6 +143,30 @@ export async function pasteFiles(
         const touched = useInternal && internal.mode === "cut" ? [targetDir, ...internal.paths] : [targetDir]
         await useFileTreeStore.getState().invalidatePaths(workspacePath, touched).catch(() => undefined)
         await reportError(error)
+        return []
+    }
+}
+
+/**
+ * Copy files dropped from Finder / Explorer into `targetDir`. The backend only
+ * accepts paths from the native drop it just saw, so `paths` is a request, not
+ * an authorisation.
+ */
+export async function importDroppedFiles(workspacePath: string, targetDir: string, paths: string[]): Promise<string[]> {
+    if (!paths.length || !currentWorkspace(workspacePath)) return []
+    try {
+        const distro = wslDistroOf(workspacePath)
+        if (parseRemoteFilePath(workspacePath) && !distro) throw new Error("clipboard-import-remote-unsupported")
+        const created = distro
+            ? await wslImportOsFiles(workspacePath, distro, targetDir, paths)
+            : await fsImportDroppedPaths(workspacePath, paths, targetDir)
+        await landed(workspacePath, targetDir, created)
+        if (created[0] && currentWorkspace(workspacePath)) useFileClipboardStore.getState().select(workspacePath, created[0])
+        void logUserAction("file_drop_import", `import ${created.length} item(s)`)
+        return created
+    } catch (error) {
+        await useFileTreeStore.getState().invalidatePaths(workspacePath, [targetDir]).catch(() => undefined)
+        await reportError(error, t("fileClipboard.importErrorTitle"))
         return []
     }
 }

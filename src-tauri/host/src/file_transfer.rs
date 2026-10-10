@@ -416,6 +416,28 @@ pub fn move_into(
     Ok(results)
 }
 
+const MAX_IMPORT_SOURCES: usize = 4096;
+
+/// Absolute host paths for `import_into`; relative or `..` spellings never name a source.
+pub fn import_sources(sources: &[String]) -> Result<Vec<PathBuf>, String> {
+    if sources.is_empty() || sources.len() > MAX_IMPORT_SOURCES {
+        return Err("import-source-invalid".into());
+    }
+    sources
+        .iter()
+        .map(|source| {
+            let path = PathBuf::from(source);
+            let escapes = path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir));
+            if source.contains('\0') || !path.is_absolute() || escapes {
+                return Err("import-source-invalid".to_string());
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
 pub fn import_into(
     root: &PinnedDir,
     sources: &[PathBuf],
@@ -475,6 +497,25 @@ mod tests {
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_sources_must_be_absolute_and_free_of_parent_components() {
+        let ok = import_sources(&s(&["/mnt/c/a b", "/home/u/x"])).unwrap();
+        assert_eq!(
+            ok,
+            vec![PathBuf::from("/mnt/c/a b"), PathBuf::from("/home/u/x")]
+        );
+        for bad in ["", "rel/a", "./a", "/a/../b", "/mnt/c/..", "/a\0b"] {
+            assert_eq!(
+                import_sources(&s(&[bad])).unwrap_err(),
+                "import-source-invalid",
+                "{bad:?}"
+            );
+        }
+        assert!(import_sources(&[]).is_err());
+        assert!(import_sources(&vec!["/a".to_string(); MAX_IMPORT_SOURCES + 1]).is_err());
     }
 
     #[test]

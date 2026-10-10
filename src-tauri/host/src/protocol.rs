@@ -98,6 +98,13 @@ pub enum Operation {
         sources: Vec<String>,
         target_dir: String,
     },
+    /// Copies absolute host paths into the workspace. Only the desktop app's
+    /// WSL drop/paste commands send it, after authorising `sources` itself.
+    FilesImport {
+        workspace: String,
+        sources: Vec<String>,
+        target_dir: String,
+    },
     FilesReadBase64 {
         workspace: String,
         path: String,
@@ -172,6 +179,7 @@ pub fn methods() -> Vec<String> {
         "filesDelete",
         "filesCopy",
         "filesMove",
+        "filesImport",
         "filesReadBase64",
         "herdrDiscover",
         "herdrRequest",
@@ -236,5 +244,17 @@ mod tests {
             "params": {"workspace": "w", "sources": [], "targetDir": "d"}
         }))
         .is_err());
+    }
+
+    #[test]
+    fn files_import_is_advertised_and_uses_the_copy_wire_shape() {
+        let wire = json!({
+            "method": "filesImport",
+            "params": {"workspace": "w", "sources": ["/mnt/c/a"], "target_dir": "d"}
+        });
+        let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+        assert!(matches!(operation, Operation::FilesImport { .. }));
+        assert_eq!(serde_json::to_value(&operation).unwrap(), wire);
+        assert!(methods().iter().any(|name| name == "filesImport"));
     }
 }
