@@ -50,8 +50,12 @@ pub fn fix_gui_path() {
         }
     };
 
-    // Timeout 防呆：try_wait 輪詢（50ms 間隔，上限 5s），避免 rc 檔卡住（例如互動
-    // prompt、等 stdin）時永久 block。用 `.output()` 會無限等待，所以手動輪詢。
+    // Keep the bounded wait, but let a macOS child exit wake it immediately.
+    // Unsupported platforms or a failed registration retain the 50ms fallback.
+    #[cfg(target_os = "macos")]
+    let mut exit_notification = shell_exit_notification(child.id());
+
+    // Timeout 防呆：每次等待上限 50ms、總上限 5s，避免 rc 檔卡住時永久 block。
     let deadline = Instant::now() + Duration::from_secs(5);
     let exited = loop {
         match child.try_wait() {
@@ -60,6 +64,9 @@ pub fn fix_gui_path() {
                 if Instant::now() >= deadline {
                     break false;
                 }
+                #[cfg(target_os = "macos")]
+                wait_for_shell_exit(&mut exit_notification, Duration::from_millis(50));
+                #[cfg(not(target_os = "macos"))]
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
@@ -161,6 +168,66 @@ pub fn fix_gui_path() {
             metadata: serde_json::json!({ "count": imported.len(), "keys": imported }),
         });
     }
+}
+
+#[cfg(target_os = "macos")]
+fn shell_exit_notification(pid: u32) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    // The queue is private to this wait and OwnedFd closes it on every return.
+    let fd = unsafe { libc::kqueue() };
+    if fd < 0 {
+        return None;
+    }
+    let queue = unsafe { OwnedFd::from_raw_fd(fd) };
+    let event = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // Register only the child owned by fix_gui_path. A child that has already
+    // exited can reject registration; the following try_wait still reaps it.
+    let registered = unsafe {
+        libc::kevent(
+            queue.as_raw_fd(),
+            &event,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    (registered == 0).then_some(queue)
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_shell_exit(queue: &mut Option<std::os::fd::OwnedFd>, duration: std::time::Duration) {
+    use std::os::fd::AsRawFd;
+    if let Some(notification) = queue.as_ref() {
+        let timeout = libc::timespec {
+            tv_sec: duration.as_secs() as libc::time_t,
+            tv_nsec: duration.subsec_nanos() as libc::c_long,
+        };
+        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
+        // The descriptor remains owned and the output buffer has one full slot.
+        let result = unsafe {
+            libc::kevent(
+                notification.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                event.as_mut_ptr(),
+                1,
+                &timeout,
+            )
+        };
+        if result >= 0 {
+            return;
+        }
+        *queue = None;
+    }
+    std::thread::sleep(duration);
 }
 
 /// PATH 修正結果寫入 log 系統（source: env）——歷史上 exit 127（bunx not found）
@@ -339,5 +406,44 @@ mod tests {
         ] {
             assert!(should_import_env(k), "{k} 應可匯入");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shell_exit_notification_observes_exit_and_keeps_child_reapable() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("0.05")
+            .spawn()
+            .unwrap();
+        let mut queue = shell_exit_notification(child.id());
+        assert!(queue.is_some());
+        let start = std::time::Instant::now();
+        wait_for_shell_exit(&mut queue, std::time::Duration::from_secs(1));
+        assert!(start.elapsed() < std::time::Duration::from_millis(900));
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shell_exit_notification_preserves_timeout_then_observes_later_exit() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("0.15")
+            .spawn()
+            .unwrap();
+        let mut queue = shell_exit_notification(child.id());
+        assert!(queue.is_some());
+        wait_for_shell_exit(&mut queue, std::time::Duration::from_millis(10));
+        assert!(child.try_wait().unwrap().is_none());
+        wait_for_shell_exit(&mut queue, std::time::Duration::from_secs(1));
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shell_exit_notification_failure_keeps_the_polling_fallback() {
+        assert!(shell_exit_notification(u32::MAX).is_none());
+        let start = std::time::Instant::now();
+        wait_for_shell_exit(&mut None, std::time::Duration::from_millis(10));
+        assert!(start.elapsed() >= std::time::Duration::from_millis(10));
     }
 }
