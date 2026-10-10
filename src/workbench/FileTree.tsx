@@ -57,7 +57,6 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
     )
     const openTab = useWorkspaceStore((s) => s.openTab)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-    const sourceGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
     const active = useWorkspaceStore(
         (s) => !node.isDir && s.groups[s.activeGroupIndex]?.activePath === node.path
     )
@@ -193,7 +192,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                             workspacePath,
                             path: node.path,
                             isDirectory: node.isDir,
-                            sourceGroupIndex
+                            sourceGroupIndex: useWorkspaceStore.getState().activeGroupIndex
                         })(event)
                     } : undefined}
                     style={{ paddingLeft: `${14 + depth * 15}px` }}

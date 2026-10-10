@@ -23,10 +23,19 @@ const witness = vi.hoisted(() => {
 const subscriptions = vi.hoisted(() => {
   const enabled = (globalThis as unknown as { process?: { env: Record<string, string | undefined> } }).process?.env.YUZORA_FILE_TREE_GIT_LIFECYCLE === "1"
   let active = 0, peak = 0
+  let workspaceActive = 0, workspacePeak = 0
   return {
     enabled,
     active: () => active,
     peak: () => peak,
+    workspaceActive: () => workspaceActive,
+    workspacePeak: () => workspacePeak,
+    beginWorkspace() {
+      workspaceActive += 1
+      workspacePeak = Math.max(workspacePeak, workspaceActive)
+      let live = true
+      return () => { if (live) { live = false; workspaceActive -= 1 } }
+    },
     resetPeak() { peak = active },
     begin() {
       active += 1
@@ -52,6 +61,23 @@ vi.mock("@/state/gitStore", async importOriginal => {
   }
   const useObserved = (selector: (state: State) => unknown = state => state) => useStore(observedApi, selector)
   return { ...actual, useGitStore: Object.assign(useObserved, observedApi) as typeof actual.useGitStore }
+})
+
+vi.mock("@/state/workspaceStore", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/state/workspaceStore")>()
+  if (!subscriptions.enabled) return actual
+  const { useStore } = await import("zustand")
+  type State = ReturnType<typeof actual.useWorkspaceStore.getState>
+  const observedApi = {
+    ...actual.useWorkspaceStore,
+    subscribe(listener: (state: State, previous: State) => void) {
+      const finish = subscriptions.beginWorkspace()
+      const stop = actual.useWorkspaceStore.subscribe(listener)
+      return () => { stop(); finish() }
+    }
+  }
+  const useObserved = (selector: (state: State) => unknown = state => state) => useStore(observedApi, selector)
+  return { ...actual, useWorkspaceStore: Object.assign(useObserved, observedApi) as typeof actual.useWorkspaceStore }
 })
 
 const processApi = (globalThis as unknown as {
@@ -248,6 +274,26 @@ it.runIf(witness.enabled)("counts actual file-tree row work during Git status pu
   } finally { f.view.unmount() }
 }, 120_000)
 
+it.runIf(witness.enabled)("counts tree row work when editor groups change", async () => {
+  const f = await fixture(128)
+  act(() => {
+    useWorkspaceStore.setState({ groups: f.files.slice(0, 2).map(file => ({ tabs: [], activePath: file.path })) })
+  })
+  witness.reset()
+  for (let index = 0; index < 100; index++) {
+    const group = (index + 1) % 2
+    act(() => { useWorkspaceStore.getState().setActiveGroup(group) })
+    expect(f.view.getByText(`file-${group}.ts`).closest("button")!.className).toContain("bg-(--yz-active)")
+    expect(f.view.getByText(`file-${1 - group}.ts`).closest("button")!.className).not.toContain("bg-(--yz-active)")
+  }
+  console.log("TREE_GROUP_RENDERS", JSON.stringify({
+    count: 128, switches: 100,
+    rowRenders: [...witness.renders.values()].reduce((sum, n) => sum + n, 0),
+    directoryRenders: witness.renders.get("folder") ?? 0,
+    unrelatedFileRenders: witness.renders.get("file-2.ts") ?? 0
+  }))
+})
+
 type Scenario = "equal" | "one" | "all" | "unrelated" | "selection" | "root"
 const scenarios: Scenario[] = ["equal", "one", "all", "unrelated", "selection", "root"]
 
@@ -331,6 +377,8 @@ it.runIf(subscriptions.enabled)("releases Git subscriptions and scroll listeners
   })
   try {
     const count = 64, baseline = subscriptions.active()
+    const workspaceBaseline = subscriptions.workspaceActive()
+    const workspaceSubscriptionsPerRow = processApi?.env.YUZORA_FILE_TREE_GROUP_BASELINE === "1" ? 4 : 3
     const subscriptionsPerRow = role === "baseline" ? 2 : 1
     subscriptions.resetPeak()
     const resources = Array.from({ length: 10 }, () => ({ cycle: 0, subscriptions: 0, scrollListeners: 0, domChildren: 0, rss: 0, heapUsed: 0 }))
@@ -344,6 +392,7 @@ it.runIf(subscriptions.enabled)("releases Git subscriptions and scroll listeners
         await act(async () => { await useFileTreeStore.getState().ensureTree(f.root) })
       }
       expect(subscriptions.active() - baseline).toBe(subscriptionsPerRow * (count + 1))
+      expect(subscriptions.workspaceActive() - workspaceBaseline).toBe(workspaceSubscriptionsPerRow * (count + 1) + 2)
       expect(listeners.size).toBe(1)
       const reads = f.reads(), revision = useGitStore.getState().statusRevision
       for (let index = 0; index < 4; index++) await update(f, index < 2 ? "equal" : "one", index)
@@ -352,6 +401,7 @@ it.runIf(subscriptions.enabled)("releases Git subscriptions and scroll listeners
       view.unmount()
       cleanup()
       expect(subscriptions.active()).toBe(baseline)
+      expect(subscriptions.workspaceActive()).toBe(workspaceBaseline)
       expect(listeners.size).toBe(0)
       expect(view.container.childElementCount).toBe(0)
       // Let ordinary event-loop cleanup run; this neither requests nor forces GC.
@@ -363,7 +413,7 @@ it.runIf(subscriptions.enabled)("releases Git subscriptions and scroll listeners
     }
     expect(subscriptions.peak() - baseline).toBe(subscriptionsPerRow * (count + 1))
     expect(f.reads()).toBe(440)
-    console.log("TREE_GIT_LIFECYCLE", JSON.stringify({ role, count, warmup: 10, cycles: 100, publications: f.reads(), persistentStores: true, peakSubscriptions: subscriptions.peak() - baseline, remainingSubscriptions: subscriptions.active() - baseline, resources }))
+    console.log("TREE_GIT_LIFECYCLE", JSON.stringify({ role, count, warmup: 10, cycles: 100, publications: f.reads(), persistentStores: true, peakSubscriptions: subscriptions.peak() - baseline, remainingSubscriptions: subscriptions.active() - baseline, peakWorkspaceSubscriptions: subscriptions.workspacePeak() - workspaceBaseline, remainingWorkspaceSubscriptions: subscriptions.workspaceActive() - workspaceBaseline, resources }))
   } finally {
     cleanup()
     if (addDescriptor) Object.defineProperty(HTMLElement.prototype, "addEventListener", addDescriptor)

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -63,7 +63,7 @@ describe("FilesNavContent", () => {
   })
 
   it("opens a matching file and offers its precise file context menu", () => {
-    useWorkspaceStore.setState({ workspacePath: "/w", activeGroupIndex: 0 })
+    useWorkspaceStore.setState({ workspacePath: "/w", activeGroupIndex: 0, groups: [{ tabs: [], activePath: null }, { tabs: [], activePath: null }] })
     const openTab = vi.spyOn(useWorkspaceStore.getState(), "openTab").mockImplementation(() => {})
     search.files = [{ name: "readme.md", path: "/w/docs/readme.md", isDir: false }]
     render(<FilesNavContent filterQuery="readme" />)
@@ -72,6 +72,11 @@ describe("FilesNavContent", () => {
     expect(openTab).toHaveBeenCalledWith("/w/docs/readme.md")
     fireEvent.contextMenu(result)
     expect(useContextMenuStore.getState().request).toMatchObject({ kind: "file", workspacePath: "/w", path: "/w/docs/readme.md", isDirectory: false, sourceGroupIndex: 0 })
+    for (const sourceGroupIndex of [1, 0]) {
+      act(() => { useWorkspaceStore.getState().setActiveGroup(sourceGroupIndex) })
+      fireEvent.contextMenu(result)
+      expect(useContextMenuStore.getState().request).toMatchObject({ kind: "file", path: "/w/docs/readme.md", sourceGroupIndex })
+    }
   })
 
   it("passes active scope/revision to search and distinguishes incomplete results from no matches", () => {

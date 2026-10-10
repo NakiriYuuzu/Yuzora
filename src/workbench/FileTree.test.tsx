@@ -125,6 +125,32 @@ test("右鍵檔案列開啟 file 選單並帶 path payload", async () => {
     })
 })
 
+test("檔案與目錄選單使用最新的編輯器群組", async () => {
+    mockIPC((cmd) => {
+        if (cmd === "list_dir") return [
+            { name: "readme.md", path: "/w/readme.md", isDir: false },
+            { name: "src", path: "/w/src", isDir: true }
+        ]
+        if (cmd === "log_event") return null
+    })
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        groups: [{ tabs: [], activePath: null }, { tabs: [], activePath: null }],
+        activeGroupIndex: 0
+    })
+    render(<FileTree />)
+    await waitFor(() => expect(screen.getByText("readme.md")).toBeTruthy())
+    for (const sourceGroupIndex of [1, 0, 1]) {
+        act(() => { useWorkspaceStore.getState().setActiveGroup(sourceGroupIndex) })
+        for (const [name, isDirectory] of [["readme.md", false], ["src", true]] as const) {
+            fireEvent.contextMenu(screen.getByText(name))
+            expect(useContextMenuStore.getState().request).toMatchObject({
+                kind: "file", workspacePath: "/w", path: `/w/${name}`, isDirectory, sourceGroupIndex
+            })
+        }
+    }
+})
+
 test("workspace 為 repo 子目錄時 rel 以 repo root 為基準（changed 標記/Open diff 生效）", async () => {
     // workspace = /repo/sub，repo root = /repo。git status 回報的 path 相對 repo root
     // （sub/readme.md），節點絕對路徑 /repo/sub/readme.md 須以 root 去前綴才對得上。
