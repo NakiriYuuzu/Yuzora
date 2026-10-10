@@ -193,6 +193,27 @@ describe("WSL host workspaces", () => {
         expect(showAppMessage).not.toHaveBeenCalled()
     })
 
+    it("lets a different OS clipboard win over an internal WSL copy", async () => {
+        const A = remoteFilePath("wsl-1", "/home/me/app/a.ts", "/home/me/app")
+        await copyFilesToClipboard(WSL, [A], "copy")
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\b.png"])
+        vi.mocked(ipc.wslImportOsFiles).mockResolvedValueOnce(["x"])
+        expect(await pasteFiles(WSL, null)).toEqual(["x"])
+        expect(ipc.wslImportOsFiles).toHaveBeenCalledWith(WSL, "Ubuntu", WSL, null)
+        expect(ipc.fsCopyPaths).not.toHaveBeenCalled()
+    })
+
+    it("keeps an internal WSL copy over an Explorer list that was already on the clipboard", async () => {
+        const A = remoteFilePath("wsl-1", "/home/me/app/a.ts", "/home/me/app")
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
+        await copyFilesToClipboard(WSL, [A], "copy")
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
+        vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce([A])
+        await pasteFiles(WSL, null)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL)
+        expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
+    })
+
     it("maps WSL backend refusals to readable messages", async () => {
         vi.mocked(ipc.wslImportOsFiles).mockRejectedValueOnce("wsl-helper-outdated")
         expect(await importDroppedFiles(WSL, WSL, ["C:\\a.png"])).toEqual([])

@@ -290,8 +290,9 @@ impl HostServer {
             } => {
                 let sources = crate::file_transfer::import_sources(&sources)?;
                 let root = self.files.pinned_root(&workspace)?;
+                let canonical = std::path::PathBuf::from(self.files.canonical_root(&workspace)?);
                 tokio::task::spawn_blocking(move || {
-                    crate::file_transfer::import_into(&root, &sources, &target_dir)
+                    crate::file_transfer::import_into(&root, &canonical, &sources, &target_dir)
                         .map(|created| json!(created))
                 })
                 .await

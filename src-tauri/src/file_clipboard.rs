@@ -87,14 +87,7 @@ fn paste_paths(
     if clipboard.is_empty() {
         return Ok(Vec::new());
     }
-    // A folder that contains the workspace (e.g. the home folder pasted into a
-    // project) would copy the copy into itself; refuse before walking it.
-    for source in &clipboard {
-        if std::fs::canonicalize(source).is_ok_and(|source| canonical.starts_with(&source)) {
-            return Err("copy-into-itself".into());
-        }
-    }
-    yuzora_host::file_transfer::import_into(root, &clipboard, target_dir)
+    yuzora_host::file_transfer::import_into(root, canonical, &clipboard, target_dir)
 }
 
 /// A drop older than this no longer authorises an import.

@@ -75,7 +75,8 @@ function samePaths(a: readonly string[], b: readonly string[]): boolean {
  */
 export async function copyFilesToClipboard(workspacePath: string, paths: string[], mode: "copy" | "cut"): Promise<void> {
     if (!paths.length || !currentWorkspace(workspacePath)) return
-    useFileClipboardStore.getState().setClipboard({ workspacePath, paths, mode })
+    const osSnapshot = wslDistroOf(workspacePath) ? await clipboardReadFileList().catch(() => [] as string[]) : undefined
+    useFileClipboardStore.getState().setClipboard({ workspacePath, paths, mode, osSnapshot })
     void logUserAction(mode === "cut" ? "file_cut" : "file_copy", `${mode} ${paths.length} item(s)`)
     if (parseRemoteFilePath(workspacePath)) return
     await clipboardWriteWorkspaceFiles(workspacePath, paths).catch(() => undefined)
@@ -105,9 +106,10 @@ export async function pasteFiles(
     const remote = !!parseRemoteFilePath(workspacePath)
     const stored = useFileClipboardStore.getState().clipboard
     const internal = stored?.workspacePath === workspacePath ? stored : null
-    // A remote workspace reads the OS list only to say it cannot import it.
-    const osPaths = remote && internal ? [] : await clipboardReadFileList().catch(() => [] as string[])
-    const useInternal = internal !== null && (osPaths.length === 0 || samePaths(osPaths, internal.paths))
+    // An SSH workspace reads the OS list only to say it cannot import it; local and WSL compare it.
+    const osPaths = remote && !wslDistroOf(workspacePath) && internal ? [] : await clipboardReadFileList().catch(() => [] as string[])
+    const osUnchanged = internal?.osSnapshot !== undefined && samePaths(osPaths, internal.osSnapshot)
+    const useInternal = internal !== null && (osPaths.length === 0 || samePaths(osPaths, internal.paths) || osUnchanged)
     try {
         if (useInternal) {
             if (internal.mode === "cut") {

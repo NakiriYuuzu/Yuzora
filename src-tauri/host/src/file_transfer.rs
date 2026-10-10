@@ -12,15 +12,11 @@
 //! `archive.tar copy.gz`); a leading dot is not an extension (`.env` ->
 //! `.env copy`). Directories are never split (`src` -> `src copy`,
 //! `v1.2` -> `v1.2 copy`).
-//!
-//! Known limit: `import_into` of an external directory that is an ancestor of
-//! the workspace root is bounded only by the budgets (and cleaned up on
-//! failure), not detected up front.
 
 use crate::path_capability::{NodeKind, PinnedDir, SafeLeafName, SafeRelativePath};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -438,21 +434,26 @@ pub fn import_sources(sources: &[String]) -> Result<Vec<PathBuf>, String> {
         .collect()
 }
 
+/// `workspace` is the path `root` was opened from; a source directory that
+/// contains it would copy itself into itself, so it is refused before any copy.
 pub fn import_into(
     root: &PinnedDir,
+    workspace: &Path,
     sources: &[PathBuf],
     target_dir: &str,
 ) -> Result<Vec<String>, String> {
-    import_into_with(root, sources, target_dir, DEFAULT_LIMITS)
+    import_into_with(root, workspace, sources, target_dir, DEFAULT_LIMITS)
 }
 
 fn import_into_with(
     root: &PinnedDir,
+    workspace: &Path,
     sources: &[PathBuf],
     target_dir: &str,
     limits: Limits,
 ) -> Result<Vec<String>, String> {
     let target = open_target(root, target_dir)?;
+    let workspace = std::fs::canonicalize(workspace).map_err(|e| e.to_string())?;
     let mut planned = Vec::with_capacity(sources.len());
     for source in sources {
         let name = source
@@ -463,6 +464,9 @@ fn import_into_with(
         let metadata = std::fs::metadata(source).map_err(|e| e.to_string())?;
         let kind = if metadata.is_dir() {
             let canonical = std::fs::canonicalize(source).map_err(|e| e.to_string())?;
+            if workspace.starts_with(&canonical) {
+                return Err("copy-into-itself".into());
+            }
             let id = PinnedDir::open_dir(&canonical)?.id_key();
             if target_within(root, target_dir, &id)? {
                 return Err("copy-into-itself".into());
@@ -783,6 +787,7 @@ mod tests {
         fs::create_dir(tmp.path().join("dest")).unwrap();
         let out = import_into(
             &root,
+            tmp.path(),
             &[tree.clone(), external.path().join("note.txt")],
             "dest",
         )
@@ -792,9 +797,9 @@ mod tests {
             fs::read(tmp.path().join("dest/photos/2026/a.jpg")).unwrap(),
             b"jpg"
         );
-        let again = import_into(&root, &[tree], "dest").unwrap();
+        let again = import_into(&root, tmp.path(), &[tree], "dest").unwrap();
         assert_eq!(again, s(&["dest/photos copy"]));
-        assert!(import_into(&root, &[external.path().join("missing")], "").is_err());
+        assert!(import_into(&root, tmp.path(), &[external.path().join("missing")], "").is_err());
     }
 
     #[cfg(unix)]
@@ -815,6 +820,7 @@ mod tests {
         std::os::unix::fs::symlink(secret.path(), external.path().join("dir/escape")).unwrap();
         let out = import_into(
             &root,
+            tmp.path(),
             &[
                 external.path().join("link.txt"),
                 external.path().join("dir"),
@@ -837,13 +843,37 @@ mod tests {
         let (tmp, root) = setup();
         fs::create_dir(tmp.path().join("sub")).unwrap();
         assert_eq!(
-            import_into(&root, &[tmp.path().to_path_buf()], "sub").unwrap_err(),
+            import_into(&root, tmp.path(), &[tmp.path().to_path_buf()], "sub").unwrap_err(),
             "copy-into-itself"
         );
         assert_eq!(
-            import_into(&root, &[tmp.path().join("sub")], "sub").unwrap_err(),
+            import_into(&root, tmp.path(), &[tmp.path().join("sub")], "sub").unwrap_err(),
             "copy-into-itself"
         );
+    }
+
+    #[test]
+    fn importing_a_folder_that_contains_the_workspace_copies_nothing() {
+        let outer = tempfile::tempdir().unwrap();
+        let project = outer.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let sibling = outer.path().join("sibling");
+        fs::create_dir(&sibling).unwrap();
+        fs::write(sibling.join("a.txt"), b"a").unwrap();
+        let root = PinnedDir::open_dir(&project).unwrap();
+        assert_eq!(
+            import_into(
+                &root,
+                &project,
+                &[sibling.clone(), outer.path().to_path_buf()],
+                ""
+            )
+            .unwrap_err(),
+            "copy-into-itself"
+        );
+        assert_eq!(fs::read_dir(&project).unwrap().count(), 0);
+        let out = import_into(&root, &project, &[sibling], "").unwrap();
+        assert_eq!(out, s(&["sibling"]));
     }
 
     #[test]
