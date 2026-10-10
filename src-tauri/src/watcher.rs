@@ -51,7 +51,7 @@ impl WatcherSlot {
 pub struct ExternalChangeEvent {
     pub workspace_root: String,
     pub paths: Vec<String>,
-    /// False when every path is ignored and untracked: Git status is unchanged.
+    /// False when paths are ignored/untracked in the workspace-root repository only.
     pub git_relevant: bool,
 }
 
