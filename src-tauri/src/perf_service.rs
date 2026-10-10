@@ -168,20 +168,113 @@ fn aggregate_tree(rows: &[ProcessRow], root: Pid) -> Option<PerfSnapshot> {
     })
 }
 
-/// Refresh 整張 process table 並映射成 `ProcessRow`。
+#[cfg(target_os = "macos")]
+struct ProcessSelection {
+    live: HashSet<Pid>,
+    owned: HashSet<Pid>,
+}
+
+/// libproc returns PID counts for both list helpers. The size query may include
+/// unrelated processes, so reserve its full answer and reject a filled buffer.
+#[cfg(target_os = "macos")]
+fn macos_pid_list(parent: Option<Pid>) -> Option<Vec<Pid>> {
+    let read = |buffer: *mut libc::c_void, size| unsafe {
+        match parent {
+            Some(parent) => libc::proc_listchildpids(parent.as_u32() as libc::pid_t, buffer, size),
+            None => libc::proc_listallpids(buffer, size),
+        }
+    };
+    let capacity = read(std::ptr::null_mut(), 0);
+    if capacity <= 0 {
+        return None;
+    }
+    let mut pids = vec![0 as libc::pid_t; (capacity as usize).checked_add(32)?];
+    let bytes = pids.len().checked_mul(std::mem::size_of::<libc::pid_t>())?;
+    let count = read(pids.as_mut_ptr().cast(), i32::try_from(bytes).ok()?);
+    if count < 0 || count as usize >= pids.len() {
+        return None;
+    }
+    pids.truncate(count as usize);
+    Some(
+        pids.into_iter()
+            .filter(|pid| *pid > 0)
+            .map(|pid| Pid::from_u32(pid as u32))
+            .collect(),
+    )
+}
+
+/// Discover ancestry through the kernel's child-PID filter. Reading BSD info
+/// for every unrelated process can be denied even when PID listing is allowed.
+#[cfg(target_os = "macos")]
+fn macos_process_tree(root: Pid) -> Option<ProcessSelection> {
+    let mut live: HashSet<_> = macos_pid_list(None)?.into_iter().collect();
+    if !live.contains(&root) {
+        return None;
+    }
+    let mut owned = HashSet::from([root]);
+    let mut queue = VecDeque::from([root]);
+    while let Some(parent) = queue.pop_front() {
+        for child in macos_pid_list(Some(parent))? {
+            live.insert(child);
+            if owned.insert(child) {
+                queue.push_back(child);
+            }
+        }
+    }
+    Some(ProcessSelection { live, owned })
+}
+
+/// Refresh the current tree on macOS; other platforms keep the full table.
 ///
-/// `ProcessesToUpdate::All` 比單一 PID 昂貴，但只在 2 秒一次的 poll 執行，而且
-/// refresh kind 僅要 cpu + memory（不取 cmdline/env）。第二個參數 `true` 會把已
-/// 結束的 process 移出 table，因此 process exit 後下一次 sample 自然不再計入。
-fn collect_rows(system: &mut System) -> Vec<ProcessRow> {
+/// Cached PIDs missing from the OS list must also be refreshed so sysinfo removes
+/// their entries. Live former descendants may stay cached but are never emitted
+/// as owned rows unless the current ancestry includes them again.
+fn collect_rows(system: &mut System, _root: Pid) -> Vec<ProcessRow> {
+    #[cfg(target_os = "macos")]
+    let selection = macos_process_tree(_root);
+    #[cfg(target_os = "macos")]
+    let refresh_pids = selection.as_ref().map(|selection| {
+        selection
+            .owned
+            .iter()
+            .copied()
+            .chain(
+                system
+                    .processes()
+                    .keys()
+                    .filter(|pid| !selection.live.contains(pid))
+                    .copied(),
+            )
+            .collect::<Vec<_>>()
+    });
+    #[cfg(target_os = "macos")]
+    let update = refresh_pids
+        .as_deref()
+        .map(ProcessesToUpdate::Some)
+        .unwrap_or(ProcessesToUpdate::All);
+    #[cfg(not(target_os = "macos"))]
+    let update = ProcessesToUpdate::All;
     system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
+        update,
         true,
         ProcessRefreshKind::nothing().with_cpu().with_memory(),
     );
     system
         .processes()
         .iter()
+        .filter(|(pid, _)| {
+            #[cfg(target_os = "macos")]
+            {
+                selection
+                    .as_ref()
+                    .is_none_or(|selection| selection.owned.contains(pid))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = pid;
+                true
+            }
+        })
         .map(|(pid, process)| ProcessRow {
             pid: *pid,
             parent: process.parent(),
@@ -193,15 +286,15 @@ fn collect_rows(system: &mut System) -> Vec<ProcessRow> {
 }
 
 fn sample(system: &mut System, pid: Pid) -> Option<PerfSnapshot> {
-    let rows = collect_rows(system);
+    let rows = collect_rows(system, pid);
     aggregate_tree(&rows, pid)
 }
 
-/// 必須是 `async`：sysinfo 在 macOS 上對每個 process 無條件執行
+/// 保持 `async`：fallback 的整表 refresh 仍會讓 sysinfo 對每個 process 執行
 /// `sysctl(KERN_PROCARGS2)`（把完整 argv + environ 複製進 userspace），
 /// `ProcessRefreshKind` 只決定「要不要留下來」、擋不住「讀取」，所以
 /// `ProcessesToUpdate::All` 一次約 10 ms（本機 652 個 process 實測 8.2–10.4 ms，
-/// 單一 PID 版本只要 0.15–0.23 ms）。同步 command 走 tauri 的 Blocking
+/// 正常路徑只 refresh 目前的程序樹）。同步 command 走 tauri 的 Blocking
 /// execution context，在 macOS/wry 下 inline 跑在主執行緒，等於每 2 秒吃掉超過
 /// 半個 60 fps frame budget 並全程持有 `PerfState` 的 Mutex；標成 async 才會被
 /// 丟到 async runtime 的執行緒上。
@@ -506,7 +599,7 @@ mod tests {
         // 分類完全依賴 name；若 refresh kind 沒帶回 name，整個 §3.3 就是死碼。
         let pid = get_current_pid().unwrap();
         let mut system = System::new();
-        let rows = collect_rows(&mut system);
+        let rows = collect_rows(&mut system, pid);
         let own = rows
             .iter()
             .find(|row| row.pid == pid)
@@ -528,7 +621,7 @@ mod tests {
         let child_pid = Pid::from_u32(child.id());
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        let rows_alive = collect_rows(&mut system);
+        let rows_alive = collect_rows(&mut system, pid);
         let sampled = sample(&mut system, pid);
 
         // 先收掉子行程再斷言：`Child` 的 Drop 不會 kill，任何 panic 都會讓
@@ -536,7 +629,7 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let rows_after = collect_rows(&mut system);
+        let rows_after = collect_rows(&mut system, pid);
 
         let snapshot = sampled.expect("own process is alive");
 
@@ -563,6 +656,10 @@ mod tests {
         assert!(
             !rows_after.iter().any(|r| r.pid == child_pid),
             "exited child should be gone from the next refresh"
+        );
+        assert!(
+            system.process(child_pid).is_none(),
+            "exited child must leave the sysinfo cache"
         );
     }
 }
