@@ -54,6 +54,8 @@ export function GitBridge() {
         })
         const unlistenFs = listen<ExternalChangePayload>("fs:external-change", (e) => {
             if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
+            // 忽略且未追蹤的路徑（target/、dist/ 的 build storm）不會改變 status。
+            if (e.payload.gitRelevant === false) return
             void useGitStore.getState().refresh()
         })
         window.addEventListener("focus", onFocus)

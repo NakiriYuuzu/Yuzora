@@ -71,7 +71,7 @@ async function closeActiveWatch(): Promise<void> {
   if (previous?.streamId) await invoke("host_stream_close", { owner: previous.backend.owner, streamId: previous.streamId }).catch(() => undefined)
 }
 
-async function notifyChanges(workspace: RemoteWorkspace, paths: string[]): Promise<void> {
+async function notifyChanges(workspace: RemoteWorkspace, paths: string[], gitRelevant = true): Promise<void> {
   const root = remoteFilePath(workspace.hostId, workspace.root)
   const changed = new Set(paths.map((path) => remoteFilePath(workspace.hostId, path, workspace.root)))
   // Directory/coalesced notifications must also reach dirty documents.
@@ -82,7 +82,7 @@ async function notifyChanges(workspace: RemoteWorkspace, paths: string[]): Promi
       if (!changed.has(uri) && parents.some((parent) => uri.startsWith(parent))) changed.add(uri)
     }
   }
-  await emit("fs:external-change", { workspaceRoot: root, paths: [...changed] })
+  await emit("fs:external-change", { workspaceRoot: root, paths: [...changed], ...(gitRelevant ? {} : { gitRelevant }) })
 }
 
 export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> {
@@ -101,7 +101,7 @@ export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> 
     }, Math.min(30000, 1000 * 2 ** Math.min(attempt, 5)))
   }
   type Message =
-    | { type: "frame"; frame: { version: number; owner: ConnectionOwner; payload: { type: string; workspaceRoot?: string; paths?: string[] } } }
+    | { type: "frame"; frame: { version: number; owner: ConnectionOwner; payload: { type: string; workspaceRoot?: string; paths?: string[]; gitRelevant?: boolean } } }
     | { type: "closed"; owner: ConnectionOwner }
   const channel = new Channel<Message>()
   let closed = false
@@ -114,7 +114,7 @@ export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> 
     const payload = message.frame.payload
     if (message.frame.version !== 1 || payload.type !== "files" || payload.workspaceRoot !== workspace.root || !payload.paths) return
     const paths = payload.paths.filter((path) => relativeRemoteHostPath(workspace.root, path) !== null)
-    void notifyChanges(workspace, paths).catch((error) => console.warn("remote file notification failed", error))
+    void notifyChanges(workspace, paths, payload.gitRelevant !== false).catch((error) => console.warn("remote file notification failed", error))
   }
   let opened: { streamId: string }
   try {
