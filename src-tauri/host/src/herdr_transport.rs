@@ -275,7 +275,7 @@ pub(crate) fn read_local_ndjson_line_with(
     max_bytes: usize,
     profile: LocalWaitProfile,
 ) -> Result<Option<String>, BoundedNdjsonReadError> {
-    let mut buffer = [0u8; READ_CHUNK_BYTES];
+    let mut buffer = None;
     let mut attempt = 0u32;
     let mut scanned = 0;
     loop {
@@ -301,7 +301,8 @@ pub(crate) fn read_local_ndjson_line_with(
                 HerdrProtocolError::TimedOut,
             ));
         }
-        match poll_local_stream_read(stream, &mut buffer) {
+        let buffer = buffer.get_or_insert_with(|| [0u8; READ_CHUNK_BYTES]);
+        match poll_local_stream_read(stream, buffer) {
             Ok(LocalStreamRead::Data(read)) => pending.extend_from_slice(&buffer[..read]),
             Ok(LocalStreamRead::Pending) => {
                 wait_local_ready(stream, false, deadline, profile, attempt)
