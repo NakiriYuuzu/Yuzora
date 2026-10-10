@@ -20,6 +20,7 @@ import { buildXtermTheme, xtermMinimumContrastRatio } from "@/terminal/xtermThem
 import { installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
 import { installKittyRenderer } from "@/terminal/kittyRenderer"
 import "@xterm/xterm/css/xterm.css"
+import "@/terminal/xtermBlockGlyphs.css"
 
 /**
  * Hosts an official `herdr machine add|reconnect` or `herdr client` PTY. It never touches
