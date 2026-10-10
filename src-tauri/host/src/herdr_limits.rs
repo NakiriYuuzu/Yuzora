@@ -159,8 +159,7 @@ pub fn read_bounded_ndjson_line<R: BufRead>(
     }
     let text = String::from_utf8(bytes)
         .map_err(|_| BoundedNdjsonReadError::Protocol(HerdrProtocolError::InvalidUtf8))?;
-    output.clear();
-    output.push_str(&text);
+    *output = text;
     Ok(read)
 }
 
@@ -261,9 +260,37 @@ pub fn validate_snapshot_counts(snapshot: &serde_json::Value) -> Result<(), Herd
     Ok(())
 }
 
+/// Counts serialized bytes without buffering them and aborts as soon as the
+/// IPC ceiling is crossed, so an oversized value is rejected after at most
+/// `MAX_IPC_BYTES` of work instead of a full `to_vec`.
+struct IpcByteCounter(usize);
+
+impl std::io::Write for IpcByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        if self.0 > MAX_IPC_BYTES {
+            return Err(std::io::Error::other("ipc bound"));
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub fn ensure_ipc_bound<T: Serialize>(value: &T) -> Result<(), HerdrProtocolError> {
-    let bytes = serde_json::to_vec(value).map_err(|_| HerdrProtocolError::InvalidJson)?;
-    if bytes.len() > MAX_IPC_BYTES {
+    let mut counter = IpcByteCounter(0);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => Ok(()),
+        Err(_) if counter.0 > MAX_IPC_BYTES => Err(HerdrProtocolError::ResponseTooLarge),
+        Err(_) => Err(HerdrProtocolError::InvalidJson),
+    }
+}
+
+/// Size gate for a payload whose serialized form is already in hand (a bounded
+/// NDJSON line): no re-serialization needed.
+pub fn ensure_raw_ipc_bound(raw_len: usize) -> Result<(), HerdrProtocolError> {
+    if raw_len > MAX_IPC_BYTES {
         return Err(HerdrProtocolError::ResponseTooLarge);
     }
     Ok(())
@@ -382,6 +409,30 @@ mod tests {
             ensure_ipc_bound(&above),
             Err(HerdrProtocolError::ResponseTooLarge)
         );
+    }
+
+    #[test]
+    fn raw_ipc_bound_matches_the_serialized_limit() {
+        assert!(ensure_raw_ipc_bound(MAX_IPC_BYTES).is_ok());
+        assert_eq!(
+            ensure_raw_ipc_bound(MAX_IPC_BYTES + 1),
+            Err(HerdrProtocolError::ResponseTooLarge)
+        );
+    }
+
+    #[test]
+    fn counting_bound_agrees_with_to_vec_for_structured_values() {
+        for len in [
+            0,
+            1,
+            MAX_IPC_BYTES - 40,
+            MAX_IPC_BYTES - 20,
+            MAX_IPC_BYTES + 5,
+        ] {
+            let value = serde_json::json!({ "k": "x".repeat(len) });
+            let expected = serde_json::to_vec(&value).unwrap().len() <= MAX_IPC_BYTES;
+            assert_eq!(ensure_ipc_bound(&value).is_ok(), expected, "len {len}");
+        }
     }
 
     #[test]

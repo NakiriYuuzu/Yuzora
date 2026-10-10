@@ -15,6 +15,8 @@ interface RuntimeSubscription {
   identity: string
   needsBootstrap: boolean
   inFlight: boolean
+  /** A forced refresh arrived mid-flight; run once more when it settles. */
+  rerun: boolean
   connecting: boolean
   subscriptionId: string | null
   subscriptionGeneration: number
@@ -39,6 +41,7 @@ export function HerdrBridge() {
     const active = new Map<string, RuntimeSubscription>()
     let listing = false
     let pollQueued = false
+    let queuedFresh = false
     let disposed = false
     const current = (entry: RuntimeSubscription) => !cancelledRef.current && active.get(entry.scope) === entry
     const release = (entry: RuntimeSubscription) => {
@@ -178,7 +181,9 @@ export function HerdrBridge() {
     }
 
     const refresh = async (entry: RuntimeSubscription, force = false) => {
-      if (!current(entry) || entry.inFlight || (!force && Date.now() < entry.nextAttempt)) return
+      if (!current(entry)) return
+      if (entry.inFlight) { if (force) entry.rerun = true; return }
+      if (!force && Date.now() < entry.nextAttempt) return
       entry.inFlight = true
       try {
         const state = useHerdrStore.getState()
@@ -206,7 +211,15 @@ export function HerdrBridge() {
         }
         void subscribe(entry)
         await maybeRestoreFocusedView(entry.scope)
-      } finally { entry.inFlight = false }
+      } finally {
+        entry.inFlight = false
+        // Events that arrived while this refresh ran may postdate its snapshot.
+        // A failed run keeps its backoff instead of retrying immediately.
+        if (entry.rerun) {
+          entry.rerun = false
+          if (current(entry) && entry.nextAttempt === 0) void refresh(entry, true).catch(() => undefined)
+        }
+      }
     }
 
     const reconcileRuntimes = (refreshExisting = true) => {
@@ -226,26 +239,26 @@ export function HerdrBridge() {
         let entry = active.get(scope)
         const shouldRefresh = refreshExisting || !entry
         if (!entry) {
-          entry = {scope, identity, needsBootstrap:runtimeOwner(scope) !== null, inFlight:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
+          entry = {scope, identity, needsBootstrap:runtimeOwner(scope) !== null, inFlight:false, rerun:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
           active.set(scope, entry)
         }
         if (shouldRefresh) void refresh(entry).catch(() => undefined)
       }
     }
-    const poll = async (refreshExisting = true) => {
+    const poll = async (refreshExisting = true, cached = true) => {
       if (disposed) return
       // A slow Host's discovery must not stall known runtimes' fallback snapshots.
       // Queued discovery has already served its tick, so only start new identities.
       reconcileRuntimes(refreshExisting)
-      if (listing) { pollQueued = true; return }
+      if (listing) { pollQueued = true; queuedFresh ||= !cached; return }
       listing = true
       try {
-        await useHerdrStore.getState().refreshSessions()
+        await useHerdrStore.getState().refreshSessions({ cached })
         // Existing runtimes already refreshed on the tick; start only new identities.
         if (!disposed) reconcileRuntimes(false)
       } finally {
         listing = false
-        if (pollQueued && !disposed) { pollQueued = false; void poll(false) }
+        if (pollQueued && !disposed) { const fresh = queuedFresh; pollQueued = queuedFresh = false; void poll(false, !fresh) }
       }
     }
     // Listen before discovery so a fast startup cannot be missed. Discovery also
@@ -259,7 +272,8 @@ export function HerdrBridge() {
           entry.nextAttempt = 0
         }
       }
-      void poll()
+      // A server just spawned: the cached inventory predates it.
+      void poll(true, false)
     }).catch(() => undefined)
     void poll()
     const stopPolling = startHerdrVisibilityPolling(() => void poll())

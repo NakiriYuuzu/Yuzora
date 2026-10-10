@@ -193,6 +193,11 @@ pub fn methods() -> Vec<String> {
         // Not an operation: terminal streams accept `mouse`. An older helper
         // cannot parse it and ends the stream, so clients gate on this.
         "herdrTerminalMouse",
+        // Not an operation: `mouse` accepts action `move` (hover). An older
+        // helper's action enum lacks it and the stream ends on parse failure.
+        "herdrTerminalMouseMove",
+        // `herdr_sessions_polled` is a distinct command an older helper lacks.
+        "herdrSessionsPolled",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -203,6 +208,13 @@ pub fn methods() -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hello_advertises_capability_flags_older_helpers_lack() {
+        for flag in ["herdrTerminalMouseMove", "herdrSessionsPolled"] {
+            assert!(methods().iter().any(|name| name == flag), "{flag}");
+        }
+    }
 
     #[test]
     fn file_copy_and_move_use_the_documented_wire_shape() {

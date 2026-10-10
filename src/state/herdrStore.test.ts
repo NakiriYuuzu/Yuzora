@@ -507,6 +507,29 @@ describe("herdrStore", () => {
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
   })
 
+  it("reads Sessions authoritatively unless an idle poll asks for the cached inventory", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    expect(herdrSessions).toHaveBeenLastCalledWith(false)
+    await useHerdrStore.getState().refreshSessions({ cached: true })
+    expect(herdrSessions).toHaveBeenLastCalledWith(true)
+  })
+
+  it("an explicit refresh waits for an in-flight cached poll and then reads authoritatively", async () => {
+    let release: (() => void) | undefined
+    vi.mocked(herdrSessions).mockReset()
+      .mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(sessions) }))
+      .mockResolvedValue(sessions)
+    const poll = useHerdrStore.getState().refreshSessions({ cached: true })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    const sharedPoll = useHerdrStore.getState().refreshSessions({ cached: true })
+    const explicit = useHerdrStore.getState().refreshSessions()
+    expect(herdrSessions).toHaveBeenCalledTimes(1)
+    release?.()
+    await Promise.all([poll, sharedPoll, explicit])
+    expect(herdrSessions).toHaveBeenCalledTimes(2)
+    expect(herdrSessions).toHaveBeenLastCalledWith(false)
+  })
+
   it("re-bootstrap settles a ready runtime after its Session stops or is deleted", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("work")
