@@ -59,6 +59,7 @@ vi.mock("./fileClipboard", () => ({
 
 import { FileDropBridge } from "./FileDropBridge"
 import { stubElementFromPoint } from "@/test/pointerDrag"
+import { DROP_TARGET_ATTRIBUTE } from "@/lib/pointerDrag"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
 import { registerTerminalDropTarget } from "@/terminal/terminalDropTargets"
 import { useHostStore } from "@/state/hostStore"
@@ -331,6 +332,24 @@ it("imports a drop on a file row into the folder that holds it", async () => {
   act(() => dropAt(30, 30))
   expect(importMock.importDroppedFiles).toHaveBeenLastCalledWith("/w", "/w", ["/outside/a.txt"])
   tree.cleanup()
+})
+
+it("imports a drop on a filtered file result into the folder that holds it", async () => {
+  useWorkspaceStore.setState({ workspacePath: "/w" })
+  const zone = document.createElement("div")
+  zone.dataset.fileTreeRoot = ""
+  zone.innerHTML = '<ul><li><button data-file-result-path="/w/src/deep/a.ts"><span id="label"></span></button></li></ul>'
+  document.body.append(zone)
+  const result = zone.querySelector("[data-file-result-path]")!
+  restoreElementFromPoint = stubElementFromPoint(() => zone.querySelector("#label"))
+  render(<FileDropBridge />)
+  await waitFor(() => expect(dragMock.handler).not.toBeNull())
+
+  act(() => { dragMock.handler!({ payload: { type: "over", position: { x: 5, y: 5 } } }) })
+  expect(result.hasAttribute(DROP_TARGET_ATTRIBUTE)).toBe(true)
+  act(() => dropAt(5, 5))
+  expect(importMock.importDroppedFiles).toHaveBeenCalledWith("/w", "/w/src/deep", ["/outside/a.txt"])
+  zone.remove()
 })
 
 it("imports a drop on blank tree space into the workspace root", async () => {

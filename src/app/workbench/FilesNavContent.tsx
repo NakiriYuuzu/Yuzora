@@ -48,7 +48,7 @@ export function FilesNavContent({ filterQuery = "", active = true }: { filterQue
                     return (
                       <li key={file.path} className="min-w-0">
                         <Button variant="ghost" className="h-auto w-full min-w-0 justify-start py-2" title={relativePath}
-                          aria-label={relativePath} onClick={() => openTab(file.path)}
+                          aria-label={relativePath} data-file-result-path={file.path} onClick={() => openTab(file.path)}
                           onContextMenu={(event) => contextMenuHandler({ kind: "file", workspacePath, path: file.path, isDirectory: false, sourceGroupIndex: useWorkspaceStore.getState().activeGroupIndex })(event)}>
                           <FileIcon fileName={file.name} className="size-4 shrink-0" />
                           <span className="flex min-w-0 flex-col items-start gap-0.5">
