@@ -39,8 +39,11 @@ with neighbours or joiners), its text is a single space (so the span is exactly
 bold/dim, cursor, selection, decorations and minimum contrast (already skipped by xterm
 for box/block glyphs) are unchanged. `src/terminal/xtermBlockGlyphs.css` paints each
 class with `linear-gradient(currentColor, ...)` background layers (never
-`background-color`, which belongs to xterm). It is imported next to every `xterm.css`
-import (`main.tsx`, `Demo.tsx`, `HerdrNativeDialog.tsx`, `MachineInteractiveDialog.tsx`).
+`background-color`, which belongs to xterm). Without it block cells render blank, so it
+must be imported next to every `xterm.css` import, including fixtures (`main.tsx`,
+`Demo.tsx`, `HerdrNativeDialog.tsx`, `MachineInteractiveDialog.tsx`,
+`fixtures/herdr-render-e2e.tsx`, `fixtures/xterm-font-regression.tsx`,
+`fixtures/xterm-block-glyphs.tsx`).
 
 Files changed by the patch: `src/browser/renderer/dom/DomRendererRowFactory.ts` and both
 minified bundles `lib/xterm.js` / `lib/xterm.mjs` (search for `XBg` / `blockCode`).

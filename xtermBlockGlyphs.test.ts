@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { readdirSync, readFileSync } from "node:fs"
+import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
 const css = readFileSync(resolve(__dirname, "src/terminal/xtermBlockGlyphs.css"), "utf8")
@@ -23,6 +23,14 @@ describe("xterm block glyph stylesheet", () => {
     expect(rules.length).toBe(33)
     for (const rule of rules) for (const prop of rule.props) expect(ALLOWED.has(prop), `${rule.selector} ${prop}`).toBe(true)
     expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/background-color|background:/)
+  })
+
+  it("is loaded by every entrypoint that loads xterm.css, since block cells render blank without it", () => {
+    const sources = (dir: string): string[] => readdirSync(resolve(__dirname, dir), { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? sources(join(dir, entry.name)) : /\.tsx?$/.test(entry.name) ? [join(dir, entry.name)] : [])
+    const entrypoints = [...sources("src"), ...sources("fixtures")].filter((file) => readFileSync(resolve(__dirname, file), "utf8").includes("@xterm/xterm/css/xterm.css"))
+    expect(entrypoints.length).toBeGreaterThan(4)
+    for (const file of entrypoints) expect(readFileSync(resolve(__dirname, file), "utf8"), file).toContain("terminal/xtermBlockGlyphs.css")
   })
 
   it("keeps image/size/position layer counts aligned for multi-quadrant glyphs", () => {
