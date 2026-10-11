@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import type { HerdrSnapshot } from "@/lib/herdrTypes"
 import type { PaneMoveDestination } from "@/lib/herdrFeatures"
-import { ChoiceCards, PaneChoices, TextField, ToolStep } from "./controls"
+import { ChoiceCards, PaneChoices, ReasonNote, TextField, ToolStep } from "./controls"
 import type { HerdrOperation } from "./useHerdrOperation"
 
 type Destination = "tab" | "new_tab" | "new_workspace"
 
-export function PaneTools({ snapshot, paneId, workspaceId, operation, can }: {
-  snapshot: HerdrSnapshot | null; paneId: string; workspaceId: string; operation: HerdrOperation; can: (method: string) => boolean
+export function PaneTools({ snapshot, paneId, workspaceId, preferredPane, operation, can, reasonFor }: {
+  snapshot: HerdrSnapshot | null; paneId: string; workspaceId: string; preferredPane?: string; operation: HerdrOperation
+  can: (method: string) => boolean; reasonFor?: (method: string) => string | null
 }) {
   const { t } = useTranslation("herdrTools")
   const [source, setSource] = useState(paneId)
@@ -29,9 +30,10 @@ export function PaneTools({ snapshot, paneId, workspaceId, operation, can }: {
   const targetLabel = destination === "tab" ? snapshot?.tabs.find(tab => tab.id === targetTab)?.label ?? "—"
     : destination === "new_tab" ? t("summaryNewTab", { space: spaceLabel(targetWorkspace) || "—" })
       : t("summaryNewSpace", { name: label || t("destination.new_workspace") })
+  const blocked = reasonFor?.("pane.move") ?? (!sourcePane ? t("reason.noPane") : !validTarget ? t("moveTargetRequired") : null)
   return <div className="flex min-w-0 flex-col gap-5">
     <ToolStep index={1} title={t("moveSource")}>
-      <PaneChoices snapshot={snapshot} value={source} onChange={setSource} disabled={operation.busy} />
+      <PaneChoices snapshot={snapshot} value={source} onChange={setSource} disabled={operation.busy} preferred={preferredPane} />
     </ToolStep>
     <ToolStep index={2} title={t("moveDestination")}>
       <ChoiceCards label={t("moveDestination")} value={destination} onChange={value => setDestination(value as Destination)} disabled={operation.busy} columns={3} options={[
@@ -66,7 +68,8 @@ export function PaneTools({ snapshot, paneId, workspaceId, operation, can }: {
         <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate font-medium text-foreground">{targetLabel}</span>
       </p>
-      <Button disabled={operation.busy || !can("pane.move") || !sourcePane || !validTarget} onClick={async () => {
+      <ReasonNote reason={blocked} className="basis-full" />
+      <Button disabled={operation.busy || !can("pane.move") || !sourcePane || !validTarget} title={blocked ?? undefined} onClick={async () => {
         const target: PaneMoveDestination = destination === "tab" ? { type: "tab", tab_id: targetTab, split: direction }
           : destination === "new_tab" ? { type: "new_tab", workspace_id: targetWorkspace, label: label || undefined }
             : { type: "new_workspace", label: label || undefined }

@@ -13,7 +13,7 @@ export function NotificationTools() {
   const prefix = useId()
   const options: (keyof HerdrNotificationSettings)[] = ["toast", "system", "sound", "done", "blocked"]
   return <FieldGroup>
-    {options.map(key => <Field key={key} orientation="horizontal"><div className="flex flex-1 flex-col gap-1"><FieldLabel htmlFor={`${prefix}-${key}`}>{t(`notification.${key}`)}</FieldLabel><FieldDescription>{t(`notification.${key}Hint`)}</FieldDescription></div><Switch id={`${prefix}-${key}`} checked={settings[key]} onCheckedChange={async enabled => {
+    {options.map(key => <Field key={key} orientation="horizontal"><div className="flex flex-1 flex-col gap-1"><FieldLabel htmlFor={`${prefix}-${key}`}>{t(`notification.${key}`)}</FieldLabel><FieldDescription>{t(`notification.${key}Hint`)}</FieldDescription></div><Switch className="yz-switch" id={`${prefix}-${key}`} checked={settings[key]} onCheckedChange={async enabled => {
       setError(null)
       try {
         if (key === "system" && enabled && !await isPermissionGranted() && await requestPermission() !== "granted") throw new Error(t("notification.permissionDenied"))

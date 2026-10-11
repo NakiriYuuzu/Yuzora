@@ -78,3 +78,16 @@ it("closes a stream opened against a backend that was replaced during the await"
   expect(invoke).toHaveBeenLastCalledWith("host_stream_close", { owner, streamId: "old" })
   expect(emit).not.toHaveBeenCalled()
 })
+
+it("forwards the relevance flag only for ignored-only remote batches", async () => {
+  const { owner, uri } = await workspace()
+  await startRemoteWatch(uri)
+  vi.mocked(emit).mockClear()
+  const frame = (flag?: boolean) => ({ type: "frame", frame: { version: 1, owner, payload: { type: "files", workspaceRoot: "/project", paths: ["/project/target"], gitRelevant: flag } } })
+  channel().onmessage(frame(false))
+  await settle()
+  expect(emit).toHaveBeenLastCalledWith("fs:external-change", expect.objectContaining({ gitRelevant: false }))
+  channel().onmessage(frame(undefined))
+  await settle()
+  expect(vi.mocked(emit).mock.lastCall?.[1]).not.toHaveProperty("gitRelevant")
+})

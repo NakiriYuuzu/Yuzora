@@ -91,6 +91,7 @@
     "searchPlaceholder": "搜尋檔案、執行命令…",
     "noCommandsMatch": "沒有符合的命令",
     "goToHeading": "前往",
+    "herdrAction": { "home": "HERDR：所有動作…", "worktree": "HERDR：開隔離分支…", "startAgent": "HERDR：啟動 Agent…", "messageAgent": "HERDR：傳訊息給 Agent…", "movePane": "HERDR：搬移 Pane…", "sessions": "HERDR：管理 Session…", "native": "HERDR：開啟完整 Session 畫面" },
     "togglePreview": "切換瀏覽器",
     "remoteTools": "SSH / SFTP 遠端工具",
     "newHerdrTab": "新增 Herdr 終端分頁",

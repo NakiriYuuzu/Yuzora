@@ -618,6 +618,7 @@
   "fileClipboard": {
     "errorTitle": "Could not paste",
     "moveErrorTitle": "Could not move",
+    "importErrorTitle": "Could not import",
     "error": {
       "copy-into-itself": "A folder cannot be copied into itself.",
       "move-into-itself": "A folder cannot be moved into itself.",
@@ -626,7 +627,17 @@
       "copy-unsupported-sftp": "Copying inside an SFTP workspace is not supported; connect through the Yuzora runtime host instead.",
       "move-unsupported-sftp": "Moving files inside an SFTP workspace is not supported here.",
       "clipboard-files-unsupported": "This system's clipboard does not support file lists.",
-      "clipboard-import-remote-unsupported": "Pasting files from Finder or Explorer into a remote workspace is not supported yet."
+      "clipboard-import-remote-unsupported": "Importing files from Finder or Explorer into an SSH remote workspace is not supported yet.",
+      "dropped-paths-stale": "The dropped files expired. Drag them in again.",
+      "dropped-paths-unknown": "The dropped files could not be found. Drag them in again.",
+      "windows-folder-belongs-to-another-wsl-distribution": "These files belong to a different WSL distribution and cannot be imported into this workspace.",
+      "wsl-import-unsupported-source": "Only files on local drives or inside the same WSL distribution can be imported, not other network locations.",
+      "wsl-runtime-disabled-open-settings": "WSL is turned off. Enable WSL in Settings and then import.",
+      "import-source-invalid": "These files cannot be imported (invalid or unsupported source, such as a whole WSL distribution root).",
+      "wsl-path-conversion-failed": "Could not convert the file paths for WSL. Try importing again.",
+      "wsl-identity-changed-or-not-wsl2": "This WSL distribution changed or is not WSL 2. Set up the WSL host again.",
+      "host-not-wsl-distribution": "This workspace is not on the selected WSL distribution.",
+      "wsl-helper-outdated": "This WSL workspace's helper is out of date. Update the WSL helper (set up the WSL host again) and then import."
     }
   },
   "deleteProgress": {

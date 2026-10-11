@@ -36,46 +36,46 @@ function languageKey(path: string): string {
     return ext
 }
 
-async function importLanguage(ext: string): Promise<Extension | null> {
+function importLanguage(ext: string): Promise<Extension> | null {
     switch (ext) {
         case "mts":
         case "cts":
         case "ts":
         case "tsx":
-            return (await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx: ext === "tsx" })
+            return import("@codemirror/lang-javascript").then(module => module.javascript({ typescript: true, jsx: ext === "tsx" }))
         case "mjs":
         case "cjs":
         case "js":
         case "jsx":
-            return (await import("@codemirror/lang-javascript")).javascript({ jsx: ext === "jsx" })
+            return import("@codemirror/lang-javascript").then(module => module.javascript({ jsx: ext === "jsx" }))
         case "pyi":
         case "pyw":
         case "py":
-            return (await import("@codemirror/lang-python")).python()
+            return import("@codemirror/lang-python").then(module => module.python())
         case "rs":
-            return (await import("@codemirror/lang-rust")).rust()
+            return import("@codemirror/lang-rust").then(module => module.rust())
         case "markdown":
         case "md":
-            return (await import("@codemirror/lang-markdown")).markdown()
+            return import("@codemirror/lang-markdown").then(module => module.markdown())
         case "json":
-            return (await import("@codemirror/lang-json")).json()
+            return import("@codemirror/lang-json").then(module => module.json())
         case "htm":
         case "html":
-            return (await import("@codemirror/lang-html")).html()
+            return import("@codemirror/lang-html").then(module => module.html())
         case "css":
-            return stylesheet((await import("@codemirror/lang-css")).css())
+            return import("@codemirror/lang-css").then(module => stylesheet(module.css()))
         case "yml":
         case "yaml":
-            return (await import("@codemirror/lang-yaml")).yaml()
+            return import("@codemirror/lang-yaml").then(module => module.yaml())
         case "sql":
-            return (await import("@codemirror/lang-sql")).sql()
+            return import("@codemirror/lang-sql").then(module => module.sql())
         case "svg":
         case "xsd":
         case "xsl":
         case "csproj":
         case "fsproj":
         case "xml":
-            return (await import("@codemirror/lang-xml")).xml()
+            return import("@codemirror/lang-xml").then(module => module.xml())
         case "c":
         case "h":
         case "cc":
@@ -84,85 +84,86 @@ async function importLanguage(ext: string): Promise<Extension | null> {
         case "hh":
         case "hxx":
         case "hpp":
-            return withSyntaxTags((await import("@codemirror/lang-cpp")).cpp(), { "FunctionDeclarator/FieldIdentifier": tags.function(tags.definition(tags.propertyName)) })
+            return import("@codemirror/lang-cpp").then(module => withSyntaxTags(module.cpp(), { "FunctionDeclarator/FieldIdentifier": tags.function(tags.definition(tags.propertyName)) }))
         case "java":
-            return (await import("@codemirror/lang-java")).java()
+            return import("@codemirror/lang-java").then(module => module.java())
         case "go":
-            return (await import("@codemirror/lang-go")).go()
+            return import("@codemirror/lang-go").then(module => module.go())
         case "php":
-            return (await import("@codemirror/lang-php")).php()
+            return import("@codemirror/lang-php").then(module => module.php())
         case "scss":
-            return stylesheet((await import("@codemirror/lang-sass")).sass())
+            return import("@codemirror/lang-sass").then(module => stylesheet(module.sass()))
         case "sass":
-            return stylesheet((await import("@codemirror/lang-sass")).sass({ indented: true }))
+            return import("@codemirror/lang-sass").then(module => stylesheet(module.sass({ indented: true })))
         case "less":
-            return stylesheet((await import("@codemirror/lang-less")).less())
+            return import("@codemirror/lang-less").then(module => stylesheet(module.less()))
         case "vue": {
-            const [{ vue }, { html }, { javascript }, { sass }, { less }] = await Promise.all([
+            return Promise.all([
                 import("@codemirror/lang-vue"),
                 import("@codemirror/lang-html"),
                 import("@codemirror/lang-javascript"),
                 import("@codemirror/lang-sass"),
                 import("@codemirror/lang-less"),
-            ])
-            return vue({ base: html({ nestedLanguages: [
+            ]).then(([{ vue }, { html }, { javascript }, { sass }, { less }]) => vue({ base: html({ nestedLanguages: [
                 { tag: "script", attrs: attrs => attrs.lang === "tsx", parser: javascript({ typescript: true, jsx: true }).language.parser },
                 { tag: "script", attrs: attrs => attrs.lang === "jsx", parser: javascript({ jsx: true }).language.parser },
                 { tag: "script", attrs: attrs => attrs.lang === "typescript", parser: javascript({ typescript: true }).language.parser },
                 { tag: "style", attrs: attrs => attrs.lang === "scss", parser: stylesheet(sass()).language.parser },
                 { tag: "style", attrs: attrs => attrs.lang === "sass", parser: stylesheet(sass({ indented: true })).language.parser },
                 { tag: "style", attrs: attrs => attrs.lang === "less", parser: stylesheet(less()).language.parser },
-            ] }) })
+            ] }) }))
         }
         case "svelte":
-            return (await import("@replit/codemirror-lang-svelte")).svelte()
+            return import("@replit/codemirror-lang-svelte").then(module => module.svelte())
         case "sh":
         case "bash":
         case "zsh":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/shell")).shell)
+            return import("@codemirror/legacy-modes/mode/shell").then(module => StreamLanguage.define(module.shell))
         case "toml":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/toml")).toml)
+            return import("@codemirror/legacy-modes/mode/toml").then(module => StreamLanguage.define(module.toml))
         case "rb":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/ruby")).ruby)
+            return import("@codemirror/legacy-modes/mode/ruby").then(module => StreamLanguage.define(module.ruby))
         case "cs":
         case "csx":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).csharp)
+            return import("@codemirror/legacy-modes/mode/clike").then(module => StreamLanguage.define(module.csharp))
         case "kt":
         case "kts":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).kotlin)
+            return import("@codemirror/legacy-modes/mode/clike").then(module => StreamLanguage.define(module.kotlin))
         case "dart":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).dart)
+            return import("@codemirror/legacy-modes/mode/clike").then(module => StreamLanguage.define(module.dart))
         case "scala":
         case "sc":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).scala)
+            return import("@codemirror/legacy-modes/mode/clike").then(module => StreamLanguage.define(module.scala))
         case "ps1":
         case "psm1":
         case "psd1":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/powershell")).powerShell)
+            return import("@codemirror/legacy-modes/mode/powershell").then(module => StreamLanguage.define(module.powerShell))
         case "swift":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/swift")).swift)
+            return import("@codemirror/legacy-modes/mode/swift").then(module => StreamLanguage.define(module.swift))
         case "lua":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/lua")).lua)
+            return import("@codemirror/legacy-modes/mode/lua").then(module => StreamLanguage.define(module.lua))
         case "pm":
         case "pl":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/perl")).perl)
+            return import("@codemirror/legacy-modes/mode/perl").then(module => StreamLanguage.define(module.perl))
         case "r":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/r")).r)
+            return import("@codemirror/legacy-modes/mode/r").then(module => StreamLanguage.define(module.r))
         case "dockerfile":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/dockerfile")).dockerFile)
+            return import("@codemirror/legacy-modes/mode/dockerfile").then(module => StreamLanguage.define(module.dockerFile))
         case "diff":
         case "patch":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/diff")).diff)
+            return import("@codemirror/legacy-modes/mode/diff").then(module => StreamLanguage.define(module.diff))
         case "properties":
         case "ini":
-            return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/properties")).properties)
+            return import("@codemirror/legacy-modes/mode/properties").then(module => StreamLanguage.define(module.properties))
         default:
             return null
     }
 }
 
 // Cache by language/dialect, not document path; concurrent panes share one load.
-const languages = new Map<string, Extension | null>()
+const languages = new Map<string, Extension>()
+// Unsupported suffixes are unbounded input and do not need a retained cache key.
+const missingLanguage = Promise.resolve(null)
 const pendingLanguages = new Map<string, Promise<Extension | null>>()
 
 export function languageExtensionFromPath(path: string): Extension | null {
@@ -174,7 +175,9 @@ export function loadLanguageExtension(path: string): Promise<Extension | null> {
     if (languages.has(key)) return Promise.resolve(languages.get(key) ?? null)
     const pending = pendingLanguages.get(key)
     if (pending) return pending
-    const load = importLanguage(key).then(extension => {
+    const imported = importLanguage(key)
+    if (!imported) return missingLanguage
+    const load = imported.then(extension => {
         languages.set(key, extension)
         pendingLanguages.delete(key)
         return extension

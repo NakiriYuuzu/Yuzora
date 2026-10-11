@@ -164,7 +164,6 @@ export function dispatchAppShortcut(event: KeyboardEvent, id: AppCommandId, run:
     if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState("AltGraph")) return false
     const target = event.target instanceof Element ? event.target : null
     if (target?.closest('[role="dialog"], [role="alertdialog"], dialog[open], [data-shortcut-capture]')) return false
-    if (document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open]')) return false
     const mac = isMacPlatform()
     const binding = useKeyboardSettingsStore.getState().overrides[id] ?? defaultBindingFor(id, mac)
     const parts = binding.split("+")
@@ -172,6 +171,7 @@ export function dispatchAppShortcut(event: KeyboardEvent, id: AppCommandId, run:
     const meta = parts.includes("Mod") && mac
     const ctrl = parts.includes("Ctrl") || (parts.includes("Mod") && !mac)
     if (event.metaKey !== meta || event.ctrlKey !== ctrl || event.altKey !== parts.includes("Alt") || event.shiftKey !== parts.includes("Shift") || (event.key.toUpperCase() !== key && !((parts.includes("Shift") || parts.includes("Alt")) && event.code === physicalKeyCode(key)))) return false
+    if (document.querySelector('[aria-modal="true"]:not([data-state="closed"]), dialog[open]')) return false
     // Plain Ctrl chords are terminal protocol input. Only terminal-safe app
     // commands intercept them; the terminal no longer receives those keys.
     const tabNavigation = id === "nextTab" || id === "previousTab" || /^tab[1-9]$/.test(id)

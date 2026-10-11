@@ -216,7 +216,7 @@ const INHERITED_REPOSITORY_ENV: &[&str] = &[
 /// Reviewed escape hatch for `GIT_LITERAL_PATHSPECS`: `git stash push` builds
 /// the `:/` pathspec internally (`-u`, `--keep-index`) and fails under literal
 /// pathspecs. Only callers that pass no renderer-supplied pathspec may set it.
-const ALLOW_PATHSPEC_MAGIC_ENV: &str = "YUZORA_ALLOW_GIT_PATHSPEC_MAGIC";
+pub(crate) const ALLOW_PATHSPEC_MAGIC_ENV: &str = "YUZORA_ALLOW_GIT_PATHSPEC_MAGIC";
 
 fn git_command(
     root: &Path,
@@ -329,11 +329,38 @@ pub fn status_of(root: &Path, pathspec: Option<Vec<String>>) -> Result<GitStatus
         return Err(format!("git status failed: {}", out.stderr.trim()));
     }
     let parsed = crate::git_status::parse_porcelain_v2(&out.stdout)?;
-    let in_progress = detect_in_progress(&resolve_metadata_dir(root, "--git-dir")?);
+    let git_dir = match git_dir_from_dot_git(root) {
+        Some(dir) => dir,
+        None => resolve_metadata_dir(root, "--git-dir")?,
+    };
+    let in_progress = detect_in_progress(&git_dir);
     Ok(GitStatusDto {
         parsed,
         in_progress,
     })
+}
+
+/// Resolves the git-dir of a repository root straight from `root/.git` (a
+/// directory, or a worktree/submodule `gitdir:` file), saving a `rev-parse`
+/// process per status. Anything unusual (subdirectory roots, bare/invalid
+/// `.git`, odd files) returns None so the caller asks Git itself.
+fn git_dir_from_dot_git(root: &Path) -> Option<std::path::PathBuf> {
+    let dot_git = root.join(".git");
+    let metadata = std::fs::metadata(&dot_git).ok()?;
+    let candidate = if metadata.is_dir() {
+        dot_git
+    } else if metadata.is_file() && metadata.len() <= 4096 {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let target = text.lines().next()?.strip_prefix("gitdir: ")?.trim_end();
+        if target.is_empty() {
+            return None;
+        }
+        root.join(target)
+    } else {
+        return None;
+    };
+    candidate.join("HEAD").is_file().then_some(())?;
+    candidate.canonicalize().ok()
 }
 
 #[derive(Debug)]

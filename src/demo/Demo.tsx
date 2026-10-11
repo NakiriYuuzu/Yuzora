@@ -5,6 +5,7 @@ import "@/lib/i18n";
 import "@/styles.css";
 import "@/theme/system-tone.css";
 import "@xterm/xterm/css/xterm.css";
+import "@/terminal/xtermBlockGlyphs.css";
 import { AppShell } from "@/app/AppShell";
 import { AppDialogHost } from "@/workbench/AppDialogHost";
 import { ConfirmDialogHost } from "@/workbench/ConfirmDialogHost";

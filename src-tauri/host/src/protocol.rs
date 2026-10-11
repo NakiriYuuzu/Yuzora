@@ -98,6 +98,13 @@ pub enum Operation {
         sources: Vec<String>,
         target_dir: String,
     },
+    /// Copies absolute host paths into the workspace. Only the desktop app's
+    /// WSL drop/paste commands send it, after authorising `sources` itself.
+    FilesImport {
+        workspace: String,
+        sources: Vec<String>,
+        target_dir: String,
+    },
     FilesReadBase64 {
         workspace: String,
         path: String,
@@ -172,6 +179,7 @@ pub fn methods() -> Vec<String> {
         "filesDelete",
         "filesCopy",
         "filesMove",
+        "filesImport",
         "filesReadBase64",
         "herdrDiscover",
         "herdrRequest",
@@ -185,6 +193,11 @@ pub fn methods() -> Vec<String> {
         // Not an operation: terminal streams accept `mouse`. An older helper
         // cannot parse it and ends the stream, so clients gate on this.
         "herdrTerminalMouse",
+        // Not an operation: `mouse` accepts action `move` (hover). An older
+        // helper's action enum lacks it and the stream ends on parse failure.
+        "herdrTerminalMouseMove",
+        // `herdr_sessions_polled` is a distinct command an older helper lacks.
+        "herdrSessionsPolled",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -195,6 +208,13 @@ pub fn methods() -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hello_advertises_capability_flags_older_helpers_lack() {
+        for flag in ["herdrTerminalMouseMove", "herdrSessionsPolled"] {
+            assert!(methods().iter().any(|name| name == flag), "{flag}");
+        }
+    }
 
     #[test]
     fn file_copy_and_move_use_the_documented_wire_shape() {
@@ -236,5 +256,17 @@ mod tests {
             "params": {"workspace": "w", "sources": [], "targetDir": "d"}
         }))
         .is_err());
+    }
+
+    #[test]
+    fn files_import_is_advertised_and_uses_the_copy_wire_shape() {
+        let wire = json!({
+            "method": "filesImport",
+            "params": {"workspace": "w", "sources": ["/mnt/c/a"], "target_dir": "d"}
+        });
+        let operation: Operation = serde_json::from_value(wire.clone()).unwrap();
+        assert!(matches!(operation, Operation::FilesImport { .. }));
+        assert_eq!(serde_json::to_value(&operation).unwrap(), wire);
+        assert!(methods().iter().any(|name| name == "filesImport"));
     }
 }

@@ -213,6 +213,22 @@ export async function fsPasteClipboardFiles(workspace: string, targetDir: string
     return absoluteInWorkspace(workspace, created)
 }
 
+/** Copies paths from the latest native Finder / Explorer drop into `targetDir`; the backend rejects any path that drop did not deliver. Local workspaces only. */
+export async function fsImportDroppedPaths(workspace: string, paths: string[], targetDir: string): Promise<string[]> {
+    if (parseRemoteFilePath(workspace)) throw new Error("clipboard-import-remote-unsupported")
+    const { workspaceCapabilityId } = await localMutation(workspace, [])
+    const created = await invoke<string[]>("fs_import_dropped_paths", { workspaceCapabilityId, paths, targetDir: await localTargetDir(workspace, targetDir) })
+    return absoluteInWorkspace(workspace, created)
+}
+
+/**
+ * Copies Finder / Explorer files into a WSL host workspace: `paths` from the latest native drop, or the OS clipboard when null.
+ * The backend authorises the source itself (drop set / clipboard) and converts Windows paths for the distro.
+ */
+export async function wslImportOsFiles(workspace: string, distro: string, targetDir: string, paths: string[] | null): Promise<string[]> {
+    return import("./remoteFiles").then((remote) => remote.importOsFilesIntoWslWorkspace(workspace, distro, targetDir, paths))
+}
+
 /** Puts workspace files on the OS clipboard so Finder / Explorer can paste them. Local workspaces only. */
 export async function clipboardWriteWorkspaceFiles(workspace: string, paths: string[]): Promise<void> {
     if (parseRemoteFilePath(workspace)) throw new Error("clipboard-export-remote-unsupported")

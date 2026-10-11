@@ -16,6 +16,9 @@ vi.mock("@codemirror/lang-rust", async importOriginal => {
     await grammar.ready
     return importOriginal()
 })
+vi.mock("@codemirror/lang-java", () => {
+    throw new Error("Optional grammar unavailable")
+})
 
 const views: EditorView[] = []
 afterEach(() => { views.forEach(view => view.destroy()) })
@@ -129,4 +132,31 @@ it("does not notify a view destroyed before its cached grammar callback", async 
     await Promise.resolve()
     await Promise.resolve()
     expect(loaded).not.toHaveBeenCalled()
+})
+
+it("does not retain cache or pending entries for arbitrary unsupported suffixes", async () => {
+    const writes = vi.spyOn(Map.prototype, "set")
+    try {
+        for (let index = 0; index < 200; index++) {
+            const path = `entry.unsupported_lifecycle_${index}`
+            expect(await loadLanguageExtension(path)).toBeNull()
+            expect(languageExtensionFromPath(path)).toBeNull()
+        }
+        expect(writes.mock.calls.filter(([key]) =>
+            typeof key === "string" && key.startsWith("unsupported_lifecycle_")
+        )).toHaveLength(0)
+    } finally {
+        writes.mockRestore()
+    }
+})
+
+it("retires the pending load after an optional grammar rejects", async () => {
+    const first = loadLanguageExtension("first.java")
+    expect(loadLanguageExtension("concurrent.java")).toBe(first)
+    // Vitest wraps a failed module factory; the original rejection is its cause.
+    await expect(first).rejects.toMatchObject({ cause: { message: "Optional grammar unavailable" } })
+    const retry = loadLanguageExtension("retry.java")
+    expect(retry).not.toBe(first)
+    await expect(retry).rejects.toMatchObject({ cause: { message: "Optional grammar unavailable" } })
+    expect(languageExtensionFromPath("failed.java")).toBeNull()
 })

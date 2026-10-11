@@ -64,6 +64,19 @@ it("updates startup status and immediately polls even while hidden", async () =>
   await act(async () => startupEvent({ payload: { state: "failed", error: "cannot start" } }))
   expect(useHerdrStore.getState().herdrStartup).toEqual({ state: "failed", error: "cannot start" })
   expect(poll).toHaveBeenCalledTimes(2)
+  // The startup poll is authoritative; idle ticks stay cached.
+  expect(poll).toHaveBeenNthCalledWith(1, { cached: true })
+  expect(poll).toHaveBeenNthCalledWith(2, { cached: false })
+})
+
+it("keeps a queued startup poll authoritative when a listing is in flight", async () => {
+  let resolve!: () => void
+  const poll = vi.fn().mockImplementationOnce(() => new Promise<void>(done => { resolve = done })).mockResolvedValue(undefined)
+  useHerdrStore.setState({ refreshSessions: poll })
+  render(<HerdrBridge />)
+  await act(async () => startupEvent({ payload: { state: "ready", error: null } }))
+  await act(async () => resolve())
+  expect(poll).toHaveBeenNthCalledWith(2, { cached: false })
 })
 
 it("queues startup discovery if a session listing is already in flight", async () => {

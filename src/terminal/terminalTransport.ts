@@ -649,8 +649,8 @@ export function createHerdrTerminalTransport(
     },
     mouse(action, cell, modifiers) {
       if (disposed || !sessionId || mode !== "control" || mouseEnabled?.() !== true) return Promise.resolve()
-      // Only the latest position of a queued drag matters.
-      if (action === "drag" && mouseQueue.at(-1)?.action === "drag") mouseQueue.pop()
+      // Only the latest position of a queued drag or hover matters.
+      if ((action === "drag" || action === "move") && mouseQueue.at(-1)?.action === action) mouseQueue.pop()
       mouseQueue.push({ action, cell, modifiers })
       mouseDrain ??= (async () => {
         await Promise.resolve()

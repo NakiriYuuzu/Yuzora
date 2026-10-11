@@ -168,6 +168,7 @@ pub fn run_search(
         }
     };
 
+    let mut searcher = None;
     for entry in WalkBuilder::new(root).require_git(false).build() {
         if gen_source.load(Ordering::Relaxed) != generation {
             return;
@@ -208,9 +209,11 @@ pub fn run_search(
             continue;
         }
         scanned += size;
-        let mut searcher = SearcherBuilder::new()
-            .binary_detection(BinaryDetection::quit(0))
-            .build();
+        let searcher = searcher.get_or_insert_with(|| {
+            SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(0))
+                .build()
+        });
         // Cap this file at the per-file ceiling but never past the remaining
         // global budget, so the total never overshoots TOTAL_MATCH_CAP.
         let budget = ((TOTAL_MATCH_CAP - total_matches) as usize).min(PER_FILE_MATCH_CAP);
@@ -491,6 +494,55 @@ mod tests {
             assert_eq!(matches.len(), 1);
             assert_eq!((matches[0].line, matches[0].col), (1, 1));
         }
+    }
+
+    #[test]
+    fn searcher_resets_encoding_binary_detection_and_line_numbers_between_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut utf16 = vec![0xff, 0xfe];
+        for unit in "ordinary\nneedle\n".encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(tmp.path().join("a-utf16.txt"), utf16).unwrap();
+        std::fs::write(tmp.path().join("b-binary.dat"), b"needle\0binary\n").unwrap();
+        std::fs::write(tmp.path().join("c-utf8.txt"), "😀 needle\n").unwrap();
+        std::fs::write(tmp.path().join("d-long.txt"), "ordinary\n".repeat(10_000)).unwrap();
+        std::fs::write(tmp.path().join("e-last.txt"), "needle\n").unwrap();
+
+        let events = collect(tmp.path(), "needle", true);
+        let mut matches = events
+            .iter()
+            .filter_map(|event| match event {
+                SearchEvent::Match { path, matches } => Some((
+                    std::path::Path::new(path)
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                    matches,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|(name, _)| *name);
+        assert_eq!(matches.len(), 3);
+        for ((name, found), (expected_name, line, col, range)) in matches.iter().zip([
+            ("a-utf16.txt", 2, 0, [0, 6]),
+            ("c-utf8.txt", 1, 2, [3, 9]),
+            ("e-last.txt", 1, 0, [0, 6]),
+        ]) {
+            assert_eq!(*name, expected_name);
+            assert_eq!(found.len(), 1);
+            assert_eq!((found[0].line, found[0].col), (line, col));
+            assert_eq!(found[0].ranges.as_deref(), Some([range].as_slice()));
+        }
+        assert!(matches!(
+            events.last(),
+            Some(SearchEvent::Done {
+                truncated: false,
+                file_count: 3,
+            })
+        ));
     }
 
     #[test]

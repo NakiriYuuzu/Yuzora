@@ -113,5 +113,6 @@
   "src/workbench/git/graphLayout.test.ts",
   "src/workbench/herdrBridgePolicy.test.ts",
   "src/workbench/stallTelemetry.test.ts",
-  "tauriCsp.test.ts"
+  "tauriCsp.test.ts",
+  "xtermBlockGlyphs.test.ts"
 ]

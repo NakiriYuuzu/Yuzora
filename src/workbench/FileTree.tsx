@@ -20,6 +20,7 @@ import { useWorkspaceStore } from "../state/workspaceStore"
 import { useFileClipboardStore } from "../state/fileClipboardStore"
 import { isMacPlatform } from "@/lib/platform"
 import { copyFilesToClipboard, duplicatePath, moveFilesTo, pasteFiles } from "./fileClipboard"
+import { containingFolderRow } from "./fileTreeDom"
 
 // Repo-relative form of an absolute node path, matched against the git status
 // (which reports paths relative to the repo root). Uses forward slashes.
@@ -43,12 +44,6 @@ function canMoveInto(source: string, dir: string) {
     }
 }
 
-// The folder row whose expanded list holds `row`; null at the workspace root.
-function containingFolderRow(row: HTMLElement): HTMLElement | null {
-    return row.closest("li")?.parentElement?.closest("li")
-        ?.querySelector<HTMLElement>(':scope > div > [data-tree-dir="true"]') ?? null
-}
-
 // Controlled node (#59 T4b): expansion + children live in fileTreeStore's
 // per-workspace bucket instead of component state, so they survive workspace
 // switches and precise invalidations never remount the tree.
@@ -62,7 +57,6 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
     )
     const openTab = useWorkspaceStore((s) => s.openTab)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
-    const sourceGroupIndex = useWorkspaceStore((s) => s.activeGroupIndex)
     const active = useWorkspaceStore(
         (s) => !node.isDir && s.groups[s.activeGroupIndex]?.activePath === node.path
     )
@@ -198,7 +192,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                             workspacePath,
                             path: node.path,
                             isDirectory: node.isDir,
-                            sourceGroupIndex
+                            sourceGroupIndex: useWorkspaceStore.getState().activeGroupIndex
                         })(event)
                     } : undefined}
                     style={{ paddingLeft: `${14 + depth * 15}px` }}
@@ -343,20 +337,37 @@ export function FileTree() {
                 ? active.closest<HTMLElement>("[data-tree-path]")
                 : null
         }
+        // Blank tree space focuses the tree root (FilesNavContent); a paste there lands in the workspace root.
+        const zone = listRef.current?.closest<HTMLElement>("[data-file-tree-root]") ?? null
+        const blankFocused = () => zone !== null && document.activeElement === zone
         const claim = (event: Event) => {
-            if (focusedRow()) event.preventDefault()
+            if (focusedRow() || (event.type === "beforepaste" && blankFocused())) event.preventDefault()
         }
         const act = (event: Event) => {
             const row = focusedRow()
-            if (!row) return
+            if (!row) {
+                if (event.type === "paste" && blankFocused()) {
+                    event.preventDefault()
+                    void pasteFiles(workspacePath, null)
+                }
+                return
+            }
             event.preventDefault()
             runClipboardKey(workspacePath, event.type === "copy" ? "c" : event.type === "cut" ? "x" : "v", row)
         }
         const claims = ["beforecopy", "beforecut", "beforepaste"]
         const actions = ["copy", "cut", "paste"]
+        const onZoneKeyDown = (event: globalThis.KeyboardEvent) => {
+            const mod = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
+            if (event.target !== zone || !mod || event.altKey || event.shiftKey || event.key.toLowerCase() !== "v") return
+            event.preventDefault()
+            void pasteFiles(workspacePath, null)
+        }
         claims.forEach((type) => document.addEventListener(type, claim))
         actions.forEach((type) => document.addEventListener(type, act))
+        zone?.addEventListener("keydown", onZoneKeyDown)
         return () => {
+            zone?.removeEventListener("keydown", onZoneKeyDown)
             claims.forEach((type) => document.removeEventListener(type, claim))
             actions.forEach((type) => document.removeEventListener(type, act))
         }

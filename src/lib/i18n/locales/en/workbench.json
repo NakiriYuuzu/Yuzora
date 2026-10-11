@@ -92,6 +92,7 @@
     "noCommandsMatch": "No commands match",
     "goToHeading": "Go to",
     "togglePreview": "Toggle browser",
+    "herdrAction": { "home": "HERDR: All actions…", "worktree": "HERDR: Open isolated branch…", "startAgent": "HERDR: Start agent…", "messageAgent": "HERDR: Message agent…", "movePane": "HERDR: Move Pane…", "sessions": "HERDR: Manage Sessions…", "native": "HERDR: Open full Session view" },
     "remoteTools": "SSH / SFTP remote tools",
     "newHerdrTab": "New Herdr terminal tab",
     "openHerdrTab": "Open Herdr tab: {{name}}",

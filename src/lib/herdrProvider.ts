@@ -18,6 +18,10 @@ interface RuntimeHost {
   scrollCell: boolean
   /** The helper accepts stream `mouse`; older helpers end the stream on it. */
   terminalMouse: boolean
+  /** The helper accepts mouse action `move`; older helpers end the stream on it. */
+  terminalMouseMove: boolean
+  /** The helper has `herdr_sessions_polled`; older helpers reject the command. */
+  sessionsPolled: boolean
 }
 const hosts = new Map<string, RuntimeHost>()
 const streams = new Map<string, { host: RuntimeHost; streamId: string }>()
@@ -53,12 +57,14 @@ export function registerRuntimeHost(host: ConnectedHost, binary: string, label: 
   const previous = hosts.get(host.owner.hostId)
   const scrollCell = host.hello.methods.includes("herdrScrollCell")
   const terminalMouse = host.hello.methods.includes("herdrTerminalMouse")
+  const terminalMouseMove = host.hello.methods.includes("herdrTerminalMouseMove")
+  const sessionsPolled = host.hello.methods.includes("herdrSessionsPolled")
   if (previous && sameConnection(previous.owner, host.owner)) {
-    Object.assign(previous, { binary, label, kind, scrollCell, terminalMouse })
+    Object.assign(previous, { binary, label, kind, scrollCell, terminalMouse, terminalMouseMove, sessionsPolled })
     return
   }
   if (previous) unregisterRuntimeHost(previous.owner)
-  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [], scrollCell, terminalMouse })
+  hosts.set(host.owner.hostId, { owner: host.owner, binary, label, kind, sessions: previous?.sessions ?? [], scrollCell, terminalMouse, terminalMouseMove, sessionsPolled })
 }
 
 export function unregisterRuntimeHost(owner: ConnectionOwner): void {
@@ -168,11 +174,12 @@ async function openStream<T>(host: RuntimeHost, sessionName: string, command: st
 /** Central routing boundary shared by every typed HERDR wrapper. */
 export async function invokeHerdr<T>(command: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
   if (command === "herdr_sessions") {
+    const polled = args.cached === true
     const remote = [...hosts.values()].filter(host => host.kind !== "wsl" || useRuntimePreferencesStore.getState().wslEnabled)
     const results = await Promise.allSettled([
-      nativeInvoke<HerdrNamedSession[]>(command),
+      nativeInvoke<HerdrNamedSession[]>(command, polled ? { cached: true } : undefined),
       ...remote.map(async (host) => {
-        const sessions = await hostCall<HerdrNamedSession[]>(host, command)
+        const sessions = await hostCall<HerdrNamedSession[]>(host, polled && host.sessionsPolled ? "herdr_sessions_polled" : command)
         host.sessions = sessions.map((session) => ({ ...session, hostId: host.owner.hostId, hostLabel: host.label, runtimeId: runtimeKey({ hostId: host.owner.hostId, sessionName: session.name }) }))
         return host.sessions
       })
@@ -200,7 +207,7 @@ export async function invokeHerdr<T>(command: string, args: Record<string, unkno
     }
     ensureCurrent(stream.host)
     if (command === "herdr_terminal_mouse") {
-      if (!stream.host.terminalMouse) return undefined as T
+      if (!stream.host.terminalMouse || (args.action === "move" && !stream.host.terminalMouseMove)) return undefined as T
       const operation = { command: "mouse", action: args.action, column: args.column, row: args.row, modifiers: args.modifiers }
       return nativeInvoke<T>("host_stream_command", { owner: stream.host.owner, streamId: stream.streamId, operation })
     }

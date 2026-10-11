@@ -71,7 +71,7 @@ async function closeActiveWatch(): Promise<void> {
   if (previous?.streamId) await invoke("host_stream_close", { owner: previous.backend.owner, streamId: previous.streamId }).catch(() => undefined)
 }
 
-async function notifyChanges(workspace: RemoteWorkspace, paths: string[]): Promise<void> {
+async function notifyChanges(workspace: RemoteWorkspace, paths: string[], gitRelevant = true): Promise<void> {
   const root = remoteFilePath(workspace.hostId, workspace.root)
   const changed = new Set(paths.map((path) => remoteFilePath(workspace.hostId, path, workspace.root)))
   // Directory/coalesced notifications must also reach dirty documents.
@@ -82,7 +82,7 @@ async function notifyChanges(workspace: RemoteWorkspace, paths: string[]): Promi
       if (!changed.has(uri) && parents.some((parent) => uri.startsWith(parent))) changed.add(uri)
     }
   }
-  await emit("fs:external-change", { workspaceRoot: root, paths: [...changed] })
+  await emit("fs:external-change", { workspaceRoot: root, paths: [...changed], ...(gitRelevant ? {} : { gitRelevant }) })
 }
 
 export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> {
@@ -101,7 +101,7 @@ export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> 
     }, Math.min(30000, 1000 * 2 ** Math.min(attempt, 5)))
   }
   type Message =
-    | { type: "frame"; frame: { version: number; owner: ConnectionOwner; payload: { type: string; workspaceRoot?: string; paths?: string[] } } }
+    | { type: "frame"; frame: { version: number; owner: ConnectionOwner; payload: { type: string; workspaceRoot?: string; paths?: string[]; gitRelevant?: boolean } } }
     | { type: "closed"; owner: ConnectionOwner }
   const channel = new Channel<Message>()
   let closed = false
@@ -114,7 +114,7 @@ export async function startRemoteWatch(uri: string, attempt = 0): Promise<void> 
     const payload = message.frame.payload
     if (message.frame.version !== 1 || payload.type !== "files" || payload.workspaceRoot !== workspace.root || !payload.paths) return
     const paths = payload.paths.filter((path) => relativeRemoteHostPath(workspace.root, path) !== null)
-    void notifyChanges(workspace, paths).catch((error) => console.warn("remote file notification failed", error))
+    void notifyChanges(workspace, paths, payload.gitRelevant !== false).catch((error) => console.warn("remote file notification failed", error))
   }
   let opened: { streamId: string }
   try {
@@ -346,6 +346,22 @@ async function transferRemotePaths(method: "filesCopy" | "filesMove", workspaceU
     // new path is not treated as an unknown remote file.
     if (method === "filesMove") sources.forEach((from, index) => moveRevisions(from, paths[index], backend))
     return paths
+  } finally { await release() }
+}
+
+/** WSL host workspaces only: the native side picks and authorises the sources (`paths` = the latest drop, null = OS clipboard). */
+export async function importOsFilesIntoWslWorkspace(workspaceUri: string, distro: string, targetDir: string, paths: string[] | null): Promise<string[]> {
+  const release = retainRemoteWorkspace(workspaceUri)
+  try {
+    const target = remoteTargetDir(workspaceUri, targetDir)
+    const backend = target.workspace.backend
+    if (backend.kind !== "runtime") throw new Error("clipboard-import-remote-unsupported")
+    const destination = { owner: backend.owner, distro, workspace: backend.capabilityId, targetDir: target.relative }
+    const created = paths
+      ? await invoke<string[]>("host_import_dropped_paths", { destination, paths })
+      : await invoke<string[]>("host_paste_clipboard_files", { destination })
+    assertBackend(workspaceUri, backend)
+    return created.map((relative) => remoteFilePath(target.workspace.hostId, joinRemoteHostPath(target.workspace.root, relative), target.workspace.root))
   } finally { await release() }
 }
 

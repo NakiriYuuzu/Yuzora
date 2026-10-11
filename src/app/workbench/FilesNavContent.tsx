@@ -18,7 +18,6 @@ export function FilesNavContent({ filterQuery = "", active = true }: { filterQue
   const { t } = useTranslation("workbench")
   const workspacePath = useWorkspaceStore((state) => state.workspacePath)
   const treeRevision = useWorkspaceStore((state) => state.treeRevision)
-  const sourceGroupIndex = useWorkspaceStore((state) => state.activeGroupIndex)
   const openTab = useWorkspaceStore((state) => state.openTab)
   const filtering = filterQuery.trim().length > 0
   const { files, loading, incomplete, error } = useFileNameSearch(workspacePath, filterQuery, treeRevision, active)
@@ -27,7 +26,8 @@ export function FilesNavContent({ filterQuery = "", active = true }: { filterQue
     <div
       onContextMenu={workspacePath ? contextMenuHandler({ kind: "explorer", workspacePath }) : undefined}
       data-file-tree-root
-      className="flex h-full min-w-0 flex-col data-[pointer-drop-target=inside]:shadow-[inset_0_0_0_2px_var(--yz-accent)]"
+      tabIndex={-1}
+      className="flex h-full min-w-0 flex-col outline-none data-[pointer-drop-target=inside]:shadow-[inset_0_0_0_2px_var(--yz-accent)]"
     >
       {workspacePath ? (
         <>
@@ -48,8 +48,8 @@ export function FilesNavContent({ filterQuery = "", active = true }: { filterQue
                     return (
                       <li key={file.path} className="min-w-0">
                         <Button variant="ghost" className="h-auto w-full min-w-0 justify-start py-2" title={relativePath}
-                          aria-label={relativePath} onClick={() => openTab(file.path)}
-                          onContextMenu={contextMenuHandler({ kind: "file", workspacePath, path: file.path, isDirectory: false, sourceGroupIndex })}>
+                          aria-label={relativePath} data-file-result-path={file.path} onClick={() => openTab(file.path)}
+                          onContextMenu={(event) => contextMenuHandler({ kind: "file", workspacePath, path: file.path, isDirectory: false, sourceGroupIndex: useWorkspaceStore.getState().activeGroupIndex })(event)}>
                           <FileIcon fileName={file.name} className="size-4 shrink-0" />
                           <span className="flex min-w-0 flex-col items-start gap-0.5">
                             <span className="max-w-full truncate">{file.name}</span>

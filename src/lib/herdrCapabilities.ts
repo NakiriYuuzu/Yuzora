@@ -119,12 +119,23 @@ export function supportsHerdrApplicationWheel(
 export function supportsHerdrTerminalMouse(
   capabilities: HerdrCapabilities | null | undefined
 ): boolean {
+  return mouseVersionAtLeast(capabilities, 2)
+}
+
+/** Button-less `move` was only verified against 0.9.3 connectors. */
+export function supportsHerdrTerminalMouseMove(
+  capabilities: HerdrCapabilities | null | undefined
+): boolean {
+  return mouseVersionAtLeast(capabilities, 3)
+}
+
+function mouseVersionAtLeast(capabilities: HerdrCapabilities | null | undefined, patchFloor: number): boolean {
   if (!capabilities?.terminal.control || !capabilities.terminal.input) return false
   const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(capabilities.binaryVersion?.trim() ?? "")
   if (!match) return false
   const [major, minor, patch] = match.slice(1).map(Number)
   if (major !== 0) return major > 0
-  return minor > 9 || (minor === 9 && patch >= 2)
+  return minor > 9 || (minor === 9 && patch >= patchFloor)
 }
 
 export function herdrScrollStrategy(

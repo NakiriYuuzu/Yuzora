@@ -1352,6 +1352,25 @@ describe("terminal mouse", () => {
     ])
   })
 
+  it("keeps only the latest queued hover and never merges it into a press", async () => {
+    let release!: () => void
+    vi.mocked(herdrTerminalMouse).mockReturnValueOnce(new Promise<void>((done) => { release = done }))
+    const transport = await open(() => true)
+    const first = transport.mouse?.("move", { column: 1, row: 2 }, 0)
+    await vi.waitFor(() => expect(herdrTerminalMouse).toHaveBeenCalledOnce())
+    void transport.mouse?.("move", { column: 2, row: 2 }, 0)
+    void transport.mouse?.("move", { column: 3, row: 2 }, 0)
+    void transport.mouse?.("down", { column: 3, row: 2 }, 0)
+    release()
+    await first
+
+    expect(vi.mocked(herdrTerminalMouse).mock.calls).toEqual([
+      ["sess-mouse", "move", { column: 1, row: 2 }, 0],
+      ["sess-mouse", "move", { column: 3, row: 2 }, 0],
+      ["sess-mouse", "down", { column: 3, row: 2 }, 0]
+    ])
+  })
+
   it("hands a gesture release queued during teardown to HERDR before detaching", async () => {
     const transport = await open(() => true)
     void transport.mouse?.("up", { column: 2, row: 3 }, 0)

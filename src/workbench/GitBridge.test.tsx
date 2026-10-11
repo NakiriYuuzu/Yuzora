@@ -75,11 +75,20 @@ it("fs:external-change refreshes only when the event matches the live workspace 
     expect(refresh).toHaveBeenCalledTimes(1)
 })
 
-it("fs:external-change refreshes coalesced directories even with a legacy ignored hint", async () => {
+it("fs:external-change with gitRelevant=false (ignored, untracked paths only) does not refresh", async () => {
     const { refresh } = await mountBridge()
 
     listeners.get("fs:external-change")!({
         payload: { workspaceRoot: "/w", paths: ["/w/target"], gitRelevant: false }
+    })
+    expect(refresh).not.toHaveBeenCalled()
+})
+
+it.each([true, undefined])("fs:external-change with gitRelevant=%s still refreshes (mixed batch, tracked-but-ignored, older helper)", async (gitRelevant) => {
+    const { refresh } = await mountBridge()
+
+    listeners.get("fs:external-change")!({
+        payload: { workspaceRoot: "/w", paths: ["/w/target", "/w/a.ts"], gitRelevant }
     })
     expect(refresh).toHaveBeenCalledExactlyOnceWith()
 })
@@ -91,4 +100,43 @@ it.each(["/w/a.ts", "/w/generated"])("fs:external-change refreshes file or coale
         payload: { workspaceRoot: "/w", paths: [path] }
     })
     expect(refresh).toHaveBeenCalledExactlyOnceWith()
+})
+
+it("refreshes an ignored outer path when the active repository is nested", async () => {
+    useGitStore.setState({
+        repositoryPath: "vendor/nested",
+        environment: { status: "ready", root: "/w/vendor/nested", version: "git version 2.50.0" }
+    })
+    const { refresh } = await mountBridge()
+
+    // The watcher classified this coalesced path against /w, where vendor/ is
+    // ignored. The nested repository still tracks the externally edited file.
+    listeners.get("fs:external-change")!({
+        payload: { workspaceRoot: "/w", paths: ["/w/vendor"], gitRelevant: false }
+    })
+    expect(refresh).toHaveBeenCalledExactlyOnceWith()
+})
+
+it("uses the current repository selection for ignored events without remounting", async () => {
+    const { refresh } = await mountBridge()
+    const event = { payload: { workspaceRoot: "/w", paths: ["/w/vendor"], gitRelevant: false } }
+    listeners.get("fs:external-change")!(event)
+    expect(refresh).not.toHaveBeenCalled()
+
+    useGitStore.setState({ repositoryPath: "vendor/nested" })
+    listeners.get("fs:external-change")!(event)
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    useGitStore.setState({ repositoryPath: null })
+    listeners.get("fs:external-change")!(event)
+    expect(refresh).toHaveBeenCalledTimes(1)
+})
+
+it("still drops stale workspace events while a nested repository is active", async () => {
+    useGitStore.setState({ repositoryPath: "vendor/nested" })
+    const { refresh } = await mountBridge()
+    listeners.get("fs:external-change")!({
+        payload: { workspaceRoot: "/old", paths: ["/old/vendor"], gitRelevant: false }
+    })
+    expect(refresh).not.toHaveBeenCalled()
 })

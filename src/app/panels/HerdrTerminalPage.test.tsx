@@ -177,6 +177,7 @@ const herdrIpcMock = vi.hoisted(() => {
     herdrTerminalInput: vi.fn(),
     herdrTerminalResize: vi.fn(),
     herdrTerminalScroll: vi.fn(),
+    herdrTerminalMouse: vi.fn().mockResolvedValue(undefined),
     herdrTerminalRelease: vi.fn().mockResolvedValue(undefined),
     emit(event: HerdrTerminalEvent) {
       onEvent?.(event)
@@ -192,6 +193,7 @@ vi.mock("@/lib/herdrIpc", () => ({
   herdrTerminalInput: herdrIpcMock.herdrTerminalInput,
   herdrTerminalResize: herdrIpcMock.herdrTerminalResize,
   herdrTerminalScroll: herdrIpcMock.herdrTerminalScroll,
+  herdrTerminalMouse: herdrIpcMock.herdrTerminalMouse,
   herdrTerminalRelease: herdrIpcMock.herdrTerminalRelease,
   herdrPaneFocus: vi.fn().mockResolvedValue(undefined),
   herdrPaneSwap: vi.fn().mockResolvedValue(undefined),
@@ -405,6 +407,34 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
       const focused = { ...snapshot, focusedTabId: "other-tab", tabs: snapshot.tabs.map(tab => ({ ...tab, focused: false })) }
       useHerdrStore.setState({ snapshot: focused, runtimesBySession: { default: { ...runtime, snapshot: focused } } })
     })
+    expect(renderCommit).not.toHaveBeenCalled()
+    expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not re-render a page when only another pane's agent status changes, and shares unchanged snapshot items", async () => {
+    const wire = (status: string) => normalizeHerdrSnapshot({ protocol: 22, version: "0.9.0", snapshot: {
+      tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "term-1", pane_id: "pane-1" },
+        { tab_id: "tab-2", workspace_id: "space-1", terminal_id: "term-2", pane_id: "pane-2" }],
+      panes: [{ pane_id: "pane-1", terminal_id: "term-1", tab_id: "tab-1", workspace_id: "space-1", cwd: "/demo" },
+        { pane_id: "pane-2", terminal_id: "term-2", tab_id: "tab-2", workspace_id: "space-1", cwd: "/demo" }],
+      agents: [{ agent_id: "a1", pane_id: "pane-1", terminal_id: "term-1", tab_id: "tab-1", workspace_id: "space-1", agent: "pi", agent_status: "idle" },
+        { agent_id: "a2", pane_id: "pane-2", terminal_id: "term-2", tab_id: "tab-2", workspace_id: "space-1", agent: "pi", agent_status: status }]
+    } }, "default")
+    const first = wire("idle")
+    const runtime = { connectionState: "ready" as const, capabilities: terminalControlCapabilities, snapshot: first, baseSnapshot: first, worktreeInventory: null, errorMessage: null }
+    useHerdrStore.setState({ snapshot: first, runtimesBySession: { default: runtime } })
+    const renderCommit = vi.fn()
+    render(<Profiler id="terminal" onRender={renderCommit}><HerdrTerminalPage herdrSessionId="default" terminalId="term-1" herdrTabId="tab-1" active visible /></Profiler>)
+    await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+    await act(async () => {})
+    renderCommit.mockClear()
+    act(() => useHerdrStore.getState().applySnapshot("default", wire("working")))
+    const next = useHerdrStore.getState().runtimesBySession.default!.snapshot!
+    expect(next.agents.find((agent) => agent.terminalId === "term-2")?.status).toBe("working")
+    // Unchanged items keep their identity; the changed one is replaced.
+    expect(next.agents.find((agent) => agent.terminalId === "term-1")).toBe(first.agents.find((agent) => agent.terminalId === "term-1"))
+    expect(next.terminals).toBe(first.terminals)
+    expect(next.tabs).toBe(first.tabs)
     expect(renderCommit).not.toHaveBeenCalled()
     expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1)
   })
@@ -1406,6 +1436,75 @@ describe("HerdrTerminalPage server-owned scrolling", () => {
     const handleWheel = xtermMock.state.terminals[0]?.customWheelEventHandler
     expect(handleWheel?.({ deltaY: -80, deltaMode: WheelEvent.DOM_DELTA_PIXEL } as WheelEvent)).toBe(true)
     expect(herdrIpcMock.herdrTerminalScroll).not.toHaveBeenCalled()
+  })
+})
+
+describe("HerdrTerminalPage hover forwarding", () => {
+  const snapshotWith = (withAgent: boolean) => normalizeHerdrSnapshot({ protocol: 22, version: "0.9.3", snapshot: {
+    tabs: [{ tab_id: "tab-1", workspace_id: "space-1", terminal_id: "term-1", pane_id: "pane-1" }],
+    panes: [{ pane_id: "pane-1", terminal_id: "term-1", tab_id: "tab-1", workspace_id: "space-1", cwd: "/demo" }],
+    agents: withAgent ? [{ agent_id: "a1", pane_id: "pane-1", terminal_id: "term-1", tab_id: "tab-1", workspace_id: "space-1", agent: "pi", agent_status: "idle" }] : []
+  } }, "default")
+  const seedRuntime = (binaryVersion: string, withAgent: boolean) => {
+    const snapshot = snapshotWith(withAgent)
+    useHerdrStore.setState({
+      snapshot,
+      runtimesBySession: { default: { connectionState: "ready" as const, capabilities: { ...terminalControlCapabilities, binaryVersion }, snapshot, baseSnapshot: snapshot, worktreeInventory: null, errorMessage: null } }
+    })
+  }
+  const hoverAt = async (term: (typeof xtermMock.state.terminals)[number], x: number, y: number) => {
+    fireEvent.mouseMove(term.element, { clientX: x, clientY: y })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  }
+
+  beforeEach(() => {
+    cleanup()
+    xtermMock.reset()
+    herdrIpcMock.reset()
+    herdrIpcMock.herdrTerminalOpen.mockClear()
+    herdrIpcMock.herdrTerminalMouse.mockClear()
+    seedSessions([{ name: "default", default: true, running: true }])
+  })
+  afterEach(() => cleanup())
+
+  async function mountPage() {
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const term = xtermMock.state.terminals[0]
+    const screen = document.createElement("div")
+    screen.className = "xterm-screen"
+    screen.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 } as DOMRect)
+    term.element.appendChild(screen)
+    await waitFor(() => expect(document.querySelector("[data-attachment-key]")).not.toBeNull())
+    await act(async () => {})
+    return term
+  }
+
+  it("forwards a hover as move for a 0.9.3 pane with an agent", async () => {
+    seedRuntime("0.9.3", true)
+    const term = await mountPage()
+    await hoverAt(term, 25, 30)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalMouse).toHaveBeenCalledWith("sess-1", "move", { column: 2, row: 1 }, 0))
+  })
+
+  it("sends no move without an agent for the pane, until one appears", async () => {
+    seedRuntime("0.9.3", false)
+    const term = await mountPage()
+    await hoverAt(term, 25, 30)
+    expect(herdrIpcMock.herdrTerminalMouse).not.toHaveBeenCalled()
+    act(() => seedRuntime("0.9.3", true))
+    await hoverAt(term, 125, 80)
+    expect(herdrIpcMock.herdrTerminalMouse).toHaveBeenCalledWith("sess-1", "move", { column: 12, row: 3 }, 0)
+  })
+
+  it("sends no move on HERDR 0.9.2 even with an agent", async () => {
+    seedRuntime("0.9.2", true)
+    const term = await mountPage()
+    await hoverAt(term, 25, 30)
+    expect(herdrIpcMock.herdrTerminalMouse).not.toHaveBeenCalled()
+    act(() => seedRuntime("0.9.3", true))
+    await hoverAt(term, 125, 80)
+    expect(herdrIpcMock.herdrTerminalMouse).toHaveBeenCalledWith("sess-1", "move", { column: 12, row: 3 }, 0)
   })
 })
 

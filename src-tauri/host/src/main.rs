@@ -22,13 +22,16 @@ fn main() {
             std::process::exit(2);
         }
     }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        // Each terminal/watch/tunnel lane is a separate helper. Do not create
-        // one executor thread per host CPU for every idle pipe.
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("host runtime");
+    let mut runtime_builder = if std::env::args().nth(1).as_deref() == Some("--tcp") {
+        // The raw TCP lane awaits one async relay; it needs no executor workers.
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        // Other helper modes keep their existing bounded worker pool.
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(2);
+        builder
+    };
+    let runtime = runtime_builder.enable_all().build().expect("host runtime");
     runtime.block_on(run());
     // Windows stdin uses Tokio's blocking worker; shutdown must not wait for
     // another read after a one-shot lane has completed.

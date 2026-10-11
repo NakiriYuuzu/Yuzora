@@ -339,3 +339,39 @@ describe("DialogContent resizable sizing", () => {
     expect(reopened.style.height).toBe("180px")
   })
 })
+
+describe("DialogContent content-sized centering", () => {
+  afterEach(() => {
+    cleanup()
+  })
+
+  // translate(-50%) of a fractional content height lands the composited
+  // dialog on a half device pixel, and WebKit resamples its text blurry.
+  it("centers with layout margins instead of a percentage translate", () => {
+    render(
+      <Dialog open>
+        <DialogContent showCloseButton={false}>
+          <DialogTitle>Plain</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    )
+    const content = document.querySelector('[data-slot="dialog-content"]') as HTMLElement
+    const classes = content.className.split(/\s+/)
+    expect(classes).toEqual(expect.arrayContaining(["inset-0", "m-auto", "h-fit"]))
+    expect(content.className).not.toMatch(/translate|top-1\/2|left-1\/2/)
+  })
+
+  it("lets an explicit height replace the fit-content height", () => {
+    render(
+      <Dialog open>
+        <DialogContent className="h-[min(85vh,720px)]" showCloseButton={false}>
+          <DialogTitle>Tall</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    )
+    const content = document.querySelector('[data-slot="dialog-content"]') as HTMLElement
+    const classes = content.className.split(/\s+/)
+    expect(classes).toContain("h-[min(85vh,720px)]")
+    expect(classes).not.toContain("h-fit")
+  })
+})

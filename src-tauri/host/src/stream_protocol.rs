@@ -111,6 +111,10 @@ impl StreamRequest {
     }
 }
 
+fn default_git_relevant() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum StreamPayload {
@@ -125,6 +129,9 @@ pub enum StreamPayload {
     Files {
         workspace_root: String,
         paths: Vec<String>,
+        /// Older helpers omit it; absent means "may affect Git".
+        #[serde(default = "default_git_relevant")]
+        git_relevant: bool,
     },
     Reply {
         id: String,

@@ -14,6 +14,9 @@ use std::time::Instant;
 #[path = "event_idle_tests.rs"]
 mod event_idle_tests;
 
+#[path = "perf_tests.rs"]
+mod perf_tests;
+
 fn frame(seq: u64, full: bool) -> HerdrWireFrame {
     HerdrWireFrame {
         kind: "terminal.frame".into(),
@@ -25,6 +28,148 @@ fn frame(seq: u64, full: bool) -> HerdrWireFrame {
         bytes: Some("AAA=".into()),
         reason: None,
     }
+}
+
+/// The pre-optimisation route: `Value`, complexity walk, `from_value`.
+fn legacy_wire_parse(line: &str) -> Result<HerdrWireFrame, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| format!("parse:invalid connector json: {e}"))?;
+    validate_json_complexity(&value).map_err(|e| format!("complex:{}", e.message()))?;
+    serde_json::from_value(value).map_err(|e| format!("parse:invalid connector json: {e}"))
+}
+
+#[test]
+fn single_pass_wire_parse_matches_the_legacy_value_route() {
+    use crate::herdr_limits::{MAX_JSON_ARRAY_LEN, MAX_JSON_DEPTH, MAX_JSON_OBJECT_KEYS};
+    let nest = |depth: usize| format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+    let mut lines: Vec<String> = vec![
+        r#"{"type":"terminal.frame","seq":1,"full":true,"encoding":"ansi","width":80,"height":24,"bytes":"AAA="}"#.into(),
+        r#"{"type":"terminal.frame","seq":2,"bytes":"a\"b\\cé"}"#.into(),
+        r#"{"type":"terminal.closed","reason":"gone"}"#.into(),
+        r#"{"type":"terminal.closed","reason":null,"seq":null}"#.into(),
+        r#"{"type":"x","unknown":{"a":[1,2,{"b":null}],"c":"d"}}"#.into(),
+        r#"{"type":"x","type":"y"}"#.into(),
+        r#"{"seq":1}"#.into(),
+        r#"{"type":"terminal.frame","seq":"1"}"#.into(),
+        r#"{"type":"terminal.frame","seq":1.5}"#.into(),
+        r#"{"type":"terminal.frame","width":70000}"#.into(),
+        r#"{"type":"terminal.frame","bytes":7}"#.into(),
+        r#"{"type":"terminal.frame","seq":1} trailing"#.into(),
+        r#"{"type":"terminal.frame","seq":"#.into(),
+        r#"["not","an","object"]"#.into(),
+        "7".into(),
+        "null".into(),
+        // A type error and a complexity violation together: the legacy order
+        // reports the ceiling first.
+        format!(r#"{{"type":"terminal.frame","seq":"bad","extra":{}}}"#, nest(MAX_JSON_DEPTH + 1)),
+        // Ceilings on skipped (unknown) fields.
+        format!(r#"{{"type":"x","extra":{}}}"#, nest(MAX_JSON_DEPTH - 1)),
+        format!(r#"{{"type":"x","extra":{}}}"#, nest(MAX_JSON_DEPTH)),
+        format!(r#"{{"type":"x","extra":{}}}"#, nest(MAX_JSON_DEPTH + 1)),
+        format!(r#"{{"type":"x","extra":{}}}"#, nest(200)),
+        format!(r#"{{"type":"x","extra":[{}]}}"#, vec!["0"; MAX_JSON_ARRAY_LEN].join(",")),
+        format!(r#"{{"type":"x","extra":[{}]}}"#, vec!["0"; MAX_JSON_ARRAY_LEN + 1].join(",")),
+    ];
+    let keys = |count: usize| {
+        (0..count)
+            .map(|i| format!(r#""k{i}":0"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    lines.push(format!(
+        r#"{{"type":"x","extra":{{{}}}}}"#,
+        keys(MAX_JSON_OBJECT_KEYS)
+    ));
+    lines.push(format!(
+        r#"{{"type":"x","extra":{{{}}}}}"#,
+        keys(MAX_JSON_OBJECT_KEYS + 1)
+    ));
+    // 2048 keys total at the root, then 2049.
+    lines.push(format!(
+        r#"{{"type":"x",{}}}"#,
+        keys(MAX_JSON_OBJECT_KEYS - 1)
+    ));
+    lines.push(format!(r#"{{"type":"x",{}}}"#, keys(MAX_JSON_OBJECT_KEYS)));
+    // Duplicate unknown keys collapse in a `Value` map but are counted raw.
+    lines.push(format!(
+        r#"{{"type":"x","extra":{{{}}}}}"#,
+        (0..=MAX_JSON_OBJECT_KEYS)
+            .map(|_| r#""k":0"#)
+            .collect::<Vec<_>>()
+            .join(",")
+    ));
+    for line in &lines {
+        let fast = match parse_wire_line(line) {
+            Ok(wire) => Ok(wire),
+            Err(WireLineError::Parse(message)) => Err(format!("parse:{message}")),
+            Err(WireLineError::TooComplex(error)) => Err(format!("complex:{}", error.message())),
+        };
+        assert_eq!(
+            fast,
+            legacy_wire_parse(line),
+            "line prefix: {}",
+            &line[..line.len().min(80)]
+        );
+    }
+}
+
+#[test]
+fn terminal_frame_size_accounting_matches_serialization() {
+    use crate::herdr_limits::MAX_IPC_BYTES;
+    let frame_event = |payload: String| HerdrTerminalEvent::Frame {
+        session_id: "herdr-term-1".into(),
+        seq: 7,
+        full: false,
+        encoding: "ansi".into(),
+        width: 120,
+        height: 40,
+        bytes_base64: payload,
+    };
+    let shell = serde_json::to_vec(&frame_event(String::new()))
+        .unwrap()
+        .len();
+    let capacity = MAX_IPC_BYTES - shell;
+    for (payload, fits) in [
+        ("A".repeat(capacity), true),
+        ("A".repeat(capacity + 1), false),
+        // Characters needing JSON escapes grow past their raw length.
+        (format!("{}\"", "A".repeat(capacity - 1)), false),
+        ("\\".repeat(capacity / 2 + 1), false),
+        (String::new(), true),
+    ] {
+        let mut event = frame_event(payload.clone());
+        let exact = serde_json::to_vec(&event).unwrap().len() <= MAX_IPC_BYTES;
+        assert_eq!(exact, fits);
+        assert_eq!(ensure_terminal_event_bound(&mut event).is_ok(), exact);
+        // The payload is restored untouched after accounting.
+        assert_eq!(event, frame_event(payload));
+    }
+}
+
+#[test]
+fn oversized_terminal_frame_is_replaced_by_an_error_event() {
+    use crate::herdr_limits::MAX_IPC_BYTES;
+    let (tx, rx) = mpsc::channel();
+    let on_event: OnTerminalEvent =
+        Arc::new(move |event| tx.send(event).map_err(|error| error.to_string()));
+    let result = emit_terminal_event(
+        &on_event,
+        HerdrTerminalEvent::Frame {
+            session_id: "s".into(),
+            seq: 1,
+            full: true,
+            encoding: "ansi".into(),
+            width: 80,
+            height: 24,
+            bytes_base64: "A".repeat(MAX_IPC_BYTES),
+        },
+    );
+    assert!(result.is_err());
+    match rx.try_recv().unwrap() {
+        HerdrTerminalEvent::Error { code, .. } => assert_eq!(code, "tooLarge"),
+        other => panic!("expected tooLarge, got {other:?}"),
+    }
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]
@@ -163,6 +308,16 @@ fn control_command_json_matches_herdr_wire() {
         serde_json::to_string(&mouse).unwrap(),
         r#"{"type":"terminal.mouse","action":"down","column":12,"row":5,"modifiers":4}"#
     );
+    let hover = TerminalControlCommand::Mouse {
+        action: HerdrMouseAction::Move,
+        column: 7,
+        row: 2,
+        modifiers: 0,
+    };
+    assert_eq!(
+        serde_json::to_string(&hover).unwrap(),
+        r#"{"type":"terminal.mouse","action":"move","column":7,"row":2,"modifiers":0}"#
+    );
     assert_eq!(
         serde_json::to_string(&TerminalControlCommand::Release).unwrap(),
         r#"{"type":"terminal.release"}"#
@@ -246,6 +401,51 @@ fn parse_snapshot_response_reads_protocol_from_payload() {
     assert_eq!(parsed.protocol, 19);
     assert_eq!(parsed.version, "0.8.0");
     assert_eq!(parsed.snapshot["protocol"], 19);
+}
+
+#[test]
+fn sized_api_validation_keeps_size_complexity_and_error_semantics() {
+    use crate::herdr_limits::{MAX_IPC_BYTES, MAX_JSON_DEPTH};
+    let ok = serde_json::json!({"id": "1", "result": {"type": "pong"}});
+    assert!(validate_api_response_sized(ok.clone(), 64).is_ok());
+    assert!(validate_api_response_sized(ok.clone(), MAX_IPC_BYTES).is_ok());
+    assert_eq!(
+        validate_api_response_sized(ok, MAX_IPC_BYTES + 1).unwrap_err(),
+        String::from(HerdrProtocolError::ResponseTooLarge)
+    );
+    let mut deep = serde_json::json!(1);
+    for _ in 0..=MAX_JSON_DEPTH {
+        deep = serde_json::json!([deep]);
+    }
+    assert_eq!(
+        validate_api_response_sized(serde_json::json!({"result": deep}), 64).unwrap_err(),
+        String::from(HerdrProtocolError::TooComplex("depth"))
+    );
+    assert_eq!(
+        validate_api_response_sized(
+            serde_json::json!({"error": {"code": "pane_not_found", "message": "gone"}}),
+            64
+        )
+        .unwrap_err(),
+        "pane_not_found: gone"
+    );
+    // The value-based gate still rejects an oversized serialization.
+    let big = serde_json::json!({"result": "x".repeat(MAX_IPC_BYTES)});
+    assert!(validate_api_response(big).is_err());
+}
+
+#[test]
+fn parse_snapshot_response_moves_the_snapshot_and_keeps_count_limits() {
+    let panes = vec![serde_json::json!({"pane_id": "p"}); MAX_PANE_COUNT + 1];
+    let response = serde_json::json!({"result": {"type": "session_snapshot", "snapshot": {
+        "version": "0.9.1", "protocol": 22, "panes": panes
+    }}});
+    assert!(parse_snapshot_response(response).is_err());
+    let missing = serde_json::json!({"result": {"type": "session_snapshot"}});
+    assert_eq!(
+        parse_snapshot_response(missing).unwrap_err(),
+        "snapshot result missing snapshot"
+    );
 }
 
 #[test]
@@ -1450,6 +1650,21 @@ fn startup_and_named_session_start_share_one_launch_lock() {
 
 #[test]
 #[cfg(unix)]
+fn startup_spawn_drops_the_pre_start_session_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = HerdrManager::with_binary(write_fake_herdr_startup(dir.path()));
+    *manager.session_inventory.lock().unwrap() = Some((Instant::now(), Vec::new()));
+    assert!(manager.ensure_server_running_on_startup().unwrap());
+    assert!(manager.session_inventory.lock().unwrap().is_none());
+
+    // Reusing a running server changes nothing, so the cache stays.
+    *manager.session_inventory.lock().unwrap() = Some((Instant::now(), Vec::new()));
+    assert!(!manager.ensure_server_running_on_startup().unwrap());
+    assert!(manager.session_inventory.lock().unwrap().is_some());
+}
+
+#[test]
+#[cfg(unix)]
 fn startup_keeps_an_existing_herdr_server() {
     let dir = tempfile::tempdir().unwrap();
     let binary = write_fake_herdr_startup(dir.path());
@@ -2122,6 +2337,89 @@ fn hot_pane_requests_reuse_session_list_and_ping_within_the_validation_window() 
     // An explicit refresh always reads the authoritative list.
     fixture.mgr.list_sessions().unwrap();
     assert_eq!(spawn_count(&fixture.list_count), 1);
+}
+
+#[test]
+fn capability_probe_locks_are_per_session() {
+    let mgr = HerdrManager::new();
+    let slow = mgr.capability_probe_lock("slow");
+    let held = slow.lock().unwrap();
+    // Another Session's probe is not blocked by the held one.
+    let (tx, rx) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let other = mgr.capability_probe_lock("other");
+            let _guard = other.lock().unwrap();
+            tx.send("other").unwrap();
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok("other"));
+        // The same Session still serializes: its lock is the same mutex.
+        assert!(Arc::ptr_eq(&slow, &mgr.capability_probe_lock("slow")));
+        assert!(mgr.capability_probe_lock("slow").try_lock().is_err());
+    });
+    drop(held);
+    assert!(slow.try_lock().is_ok());
+}
+
+#[test]
+fn capability_probe_lock_map_prunes_idle_entries_beyond_the_bound() {
+    let mgr = HerdrManager::new();
+    let held = mgr.capability_probe_lock("held");
+    for index in 0..=CAPABILITY_PROBE_LOCK_LIMIT {
+        drop(mgr.capability_probe_lock(&format!("idle-{index}")));
+    }
+    // The next insert prunes unshared entries but keeps one in use.
+    drop(mgr.capability_probe_lock("trigger"));
+    let locks = mgr.capability_probe_locks.lock().unwrap();
+    assert!(locks.len() <= 3, "len {}", locks.len());
+    assert!(Arc::ptr_eq(&held, &locks["held"]));
+}
+
+#[cfg(unix)]
+#[test]
+fn idle_session_polls_fork_the_cli_once_per_poll_window() {
+    assert_eq!(SESSION_POLL_TTL, Duration::from_secs(12));
+    let fixture = validation_fixture();
+    // Baseline behaviour (explicit list): one fork per call.
+    for _ in 0..5 {
+        fixture.mgr.list_sessions().unwrap();
+    }
+    assert_eq!(spawn_count(&fixture.list_count), 5);
+    fs::write(&fixture.list_count, "").unwrap();
+    // 100 idle polls (~7 minutes at the 4 s visible cadence) share the inventory
+    // that the last explicit list just published.
+    for _ in 0..100 {
+        assert!(fixture.mgr.list_sessions_polled().unwrap()[0].running);
+    }
+    assert_eq!(spawn_count(&fixture.list_count), 0);
+    // Past the poll window the next poll refreshes exactly once.
+    fixture
+        .mgr
+        .set_session_poll_ttl_for_test(Duration::from_millis(40));
+    std::thread::sleep(Duration::from_millis(60));
+    fixture
+        .mgr
+        .set_session_poll_ttl_for_test(Duration::from_millis(40));
+    for _ in 0..20 {
+        fixture.mgr.list_sessions_polled().unwrap();
+    }
+    assert_eq!(spawn_count(&fixture.list_count), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn polled_session_list_sees_lifecycle_invalidation_and_explicit_refresh() {
+    let fixture = validation_fixture();
+    fixture.mgr.list_sessions().unwrap();
+    assert!(fixture.mgr.list_sessions_polled().unwrap()[0].running);
+    fs::write(&fixture.stopped_flag, "").unwrap();
+    // Still cached until something invalidates or an explicit refresh happens.
+    assert!(fixture.mgr.list_sessions_polled().unwrap()[0].running);
+    fixture.mgr.invalidate_runtime_caches();
+    assert!(!fixture.mgr.list_sessions_polled().unwrap()[0].running);
+    fs::remove_file(&fixture.stopped_flag).unwrap();
+    assert!(fixture.mgr.list_sessions().unwrap()[0].running);
+    assert!(fixture.mgr.list_sessions_polled().unwrap()[0].running);
 }
 
 #[cfg(unix)]

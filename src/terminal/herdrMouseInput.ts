@@ -7,6 +7,8 @@ import { terminalWheelCell, type TerminalCell } from "./terminalTransport"
 interface HerdrMouseInputOptions {
   /** Page active and visible with a writable connector. */
   enabled: () => boolean
+  /** Hover `move` is forwarded only where it is useful (the pane has a detected agent). */
+  hoverEnabled?: () => boolean
   send: (action: HerdrMouseAction, cell: TerminalCell, modifiers: number) => void
 }
 
@@ -22,7 +24,9 @@ const modifiersOf = (event: MouseEvent) => (event.ctrlKey ? CONTROL : 0) | (even
  * drags and releases as `terminal.mouse`: HERDR encodes them for the child's
  * mode and drops them when the child did not ask for mouse reporting, so
  * plain shells keep xterm's local selection. Shift keeps a press local, and
- * the link-open gesture stays with the target opener.
+ * the link-open gesture stays with the target opener. Button-less movement is
+ * forwarded as `move` on cell changes (one per frame): HERDR only passes it to
+ * children that enabled any-motion tracking, such as Claude Code fullscreen.
  */
 export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputOptions): IDisposable {
   const element = term.element
@@ -35,6 +39,47 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
   const cellAt = (event: MouseEvent) => {
     const screen = screenRect()
     return screen ? terminalWheelCell(screen, term.cols, term.rows, event.clientX, event.clientY) : undefined
+  }
+
+  /** Last hover cell sent, and the pointer position awaiting the next frame. */
+  let hovered: TerminalCell | null = null
+  let hoverFrame = 0
+  let hoverEvent: { x: number; y: number; modifiers: number } | null = null
+
+  const cancelHover = () => {
+    if (hoverFrame) cancelAnimationFrame(hoverFrame)
+    hoverFrame = 0
+    hoverEvent = null
+  }
+
+  const flushHover = () => {
+    hoverFrame = 0
+    const pending = hoverEvent
+    hoverEvent = null
+    if (!pending || pressed || (term.modes?.mouseTrackingMode ?? "none") !== "none" || !options.enabled() || options.hoverEnabled?.() === false) return
+    const screen = screenRect()
+    if (
+      !screen
+      || pending.x < screen.left || pending.x >= screen.right
+      || pending.y < screen.top || pending.y >= screen.bottom
+    ) return
+    const cell = terminalWheelCell(screen, term.cols, term.rows, pending.x, pending.y)
+    if (!cell || (hovered && cell.column === hovered.column && cell.row === hovered.row)) return
+    hovered = cell
+    options.send("move", cell, pending.modifiers)
+  }
+
+  const onHover = (event: MouseEvent) => {
+    if (pressed || event.buttons !== 0) return
+    hoverEvent = { x: event.clientX, y: event.clientY, modifiers: modifiersOf(event) }
+    hoverFrame ||= requestAnimationFrame(flushHover)
+  }
+
+  // Leaving the pane is not signalled: HERDR has no leave event, so the child
+  // keeps its last hover highlight until the pointer returns.
+  const onLeave = () => {
+    cancelHover()
+    hovered = null
   }
 
   const release = () => {
@@ -86,6 +131,7 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
     const cell = terminalWheelCell(screen, term.cols, term.rows, event.clientX, event.clientY)
     if (!cell) return
     release()
+    onLeave()
     pressed = cell
     window.addEventListener("mousemove", onMouseMove, true)
     window.addEventListener("mouseup", onMouseUp, true)
@@ -94,9 +140,14 @@ export function installHerdrMouseInput(term: Terminal, options: HerdrMouseInputO
   }
 
   element.addEventListener("mousedown", onMouseDown, true)
+  element.addEventListener("mousemove", onHover, true)
+  element.addEventListener("mouseleave", onLeave)
   return {
     dispose: () => {
       element.removeEventListener("mousedown", onMouseDown, true)
+      element.removeEventListener("mousemove", onHover, true)
+      element.removeEventListener("mouseleave", onLeave)
+      cancelHover()
       endGesture()
       release()
     }

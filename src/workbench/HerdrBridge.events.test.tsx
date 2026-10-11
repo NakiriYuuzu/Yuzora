@@ -172,6 +172,39 @@ describe("HerdrBridge event ownership", () => {
     expect(useHerdrStore.getState().topologyRevision).toBe(revision)
   })
 
+  it("runs a coalesced refresh after the in-flight one when an event arrives mid-flight", async () => {
+    let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
+    let releaseGate: (() => void) | undefined
+    let calls = 0
+    const refreshSnapshot = vi.fn(async () => {
+      calls += 1
+      if (calls === 2) await new Promise<void>((resolve) => { releaseGate = resolve })
+      return true
+    })
+    eventIpc.subscribe.mockImplementation(
+      async ({ onEvent }: { onEvent: (event: HerdrSubscriptionEvent) => void }) => {
+        callback = onEvent
+        onEvent({ type: "subscribed", subscriptionId: "sub-default" })
+        return "sub-default"
+      }
+    )
+    useHerdrStore.setState({ refreshSnapshot })
+
+    render(<HerdrBridge />)
+    // Call 2 is the post-acknowledgement reconcile and stays in flight.
+    await waitFor(() => expect(releaseGate).toBeDefined(), { timeout: 1500 })
+    act(() => {
+      callback?.({ type: "pane_exited", subscriptionId: "sub-default", paneId: "w1:p2", workspaceId: "w1" })
+    })
+    // Let the throttled refresh for the event fire and be dropped by the guard.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(refreshSnapshot).toHaveBeenCalledTimes(2)
+    await act(async () => { releaseGate?.() })
+    await waitFor(() => expect(refreshSnapshot).toHaveBeenCalledTimes(3), { timeout: 1000 })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(refreshSnapshot).toHaveBeenCalledTimes(3)
+  })
+
   it("refreshes snapshot and BSP topology when Herdr reports pane exit", async () => {
     let callback: ((event: HerdrSubscriptionEvent) => void) | undefined
     const refreshSnapshot = vi.fn(async () => true)

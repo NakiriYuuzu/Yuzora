@@ -200,6 +200,8 @@ pub(crate) struct HostConnection {
     pub(crate) target: HostTarget,
     pub(crate) helper: String,
     pub(crate) platform: std::sync::OnceLock<String>,
+    /// Whether the helper advertised `filesImport` (an older WSL helper cannot import).
+    pub(crate) files_import: std::sync::OnceLock<bool>,
     pub(crate) cancelled: tokio::sync::watch::Sender<bool>,
     pub(crate) streams: Arc<Mutex<HashMap<String, Arc<crate::host_streams::HostStreamSession>>>>,
     pub(crate) runtimes: Mutex<HashMap<String, Arc<yuzora_host::herdr_service::HerdrManager>>>,
@@ -229,6 +231,7 @@ impl HostConnection {
             target,
             helper,
             platform: std::sync::OnceLock::new(),
+            files_import: std::sync::OnceLock::new(),
             cancelled: tokio::sync::watch::channel(false).0,
             streams: Arc::default(),
             runtimes: Mutex::default(),
@@ -482,6 +485,9 @@ impl HostManager {
             return Err("unsupported-host-platform-or-protocol".into());
         }
         let _ = connection.platform.set(hello.os.clone());
+        let _ = connection
+            .files_import
+            .set(hello.methods.iter().any(|method| method == "filesImport"));
         self.admit(host_id, connection)?;
         Ok(ConnectedHost { owner, hello })
     }
@@ -635,6 +641,12 @@ pub async fn host_connect(
     crate::runtime_preferences::require_wsl_enabled(&preferences, &target)?;
     state.0.connect(host_id, target, helper, &ssh.0).await
 }
+/// `FilesImport` names absolute host paths, so only the app's own WSL
+/// drop/paste commands (which authorise the sources) may send it.
+fn renderer_may_send(operation: &Operation) -> bool {
+    !matches!(operation, Operation::FilesImport { .. })
+}
+
 #[tauri::command]
 pub async fn host_request(
     state: tauri::State<'_, HostState>,
@@ -642,6 +654,9 @@ pub async fn host_request(
     owner: ConnectionOwner,
     operation: Operation,
 ) -> Result<serde_json::Value, String> {
+    if !renderer_may_send(&operation) {
+        return Err("host-operation-not-allowed".into());
+    }
     if let Operation::Git {
         workspace,
         repository_root,
@@ -697,6 +712,24 @@ pub async fn host_disconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_renderer_cannot_send_the_absolute_path_import_operation() {
+        let import = Operation::FilesImport {
+            workspace: "w".into(),
+            sources: vec!["/etc/passwd".into()],
+            target_dir: String::new(),
+        };
+        assert!(!renderer_may_send(&import));
+        assert!(renderer_may_send(&Operation::Hello));
+        let copy = Operation::FilesCopy {
+            workspace: "w".into(),
+            sources: vec!["a".into()],
+            target_dir: String::new(),
+        };
+        assert!(renderer_may_send(&copy));
+    }
+
     struct RuntimeDropStream(tokio::io::DuplexStream);
     impl Drop for RuntimeDropStream {
         fn drop(&mut self) {

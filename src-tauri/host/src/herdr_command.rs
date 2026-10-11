@@ -18,6 +18,9 @@ pub enum HerdrCommand {
     },
     #[serde(rename = "herdr_sessions")]
     Sessions,
+    /// Idle poll: may be served from the short-lived inventory cache.
+    #[serde(rename = "herdr_sessions_polled")]
+    SessionsPolled,
     #[serde(rename = "herdr_capabilities")]
     Capabilities { session_name: Option<String> },
     #[serde(rename = "herdr_snapshot")]
@@ -182,6 +185,9 @@ impl HerdrCommand {
             } => manager.feature(&session_name, request),
             Self::Sessions => {
                 serde_json::to_value(manager.list_sessions()?).map_err(|e| e.to_string())
+            }
+            Self::SessionsPolled => {
+                serde_json::to_value(manager.list_sessions_polled()?).map_err(|e| e.to_string())
             }
             Self::Capabilities { session_name } => {
                 serde_json::to_value(manager.capabilities_for_session(session_name.as_deref()))

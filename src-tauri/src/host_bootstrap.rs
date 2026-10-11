@@ -73,7 +73,7 @@ pub(crate) async fn execute(
     execute_with_output_limit(target, ssh, script, input, MAX_PROBE_OUTPUT_BYTES).await
 }
 
-async fn execute_with_output_limit(
+pub(crate) async fn execute_with_output_limit(
     target: &HostTarget,
     ssh: Option<&SshManager>,
     script: &str,
@@ -81,7 +81,7 @@ async fn execute_with_output_limit(
     max_output_bytes: usize,
 ) -> Result<Vec<u8>, String> {
     let script = format!("set -eu\n{script}\nprintf '\\000YUZORA_OK\\000'\n");
-    let mut stream = match target {
+    let stream = match target {
         HostTarget::Ssh { session_id } => {
             ssh.ok_or("ssh-connection-required")?
                 .open_host_exec(session_id, &format!("sh -c {}", shell_quote(&script)?))
@@ -111,17 +111,38 @@ async fn execute_with_output_limit(
         }
     };
     tokio::time::timeout(Duration::from_secs(60), async {
-        stream.write_all(input).await.map_err(|e| e.to_string())?;
-        stream.shutdown().await.map_err(|e| e.to_string())?;
-        let mut output = Vec::new();
-        (&mut stream)
-            .take((max_output_bytes + 1) as u64)
-            .read_to_end(&mut output)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Feed stdin while draining stdout: a script that answers each input
+        // line would otherwise fill the stdout pipe and stop reading its input.
+        let (mut reader, mut writer) = tokio::io::split(stream);
+        let write = async {
+            writer.write_all(input).await?;
+            writer.shutdown().await
+        };
+        let read = async {
+            let mut output = Vec::new();
+            (&mut reader)
+                .take((max_output_bytes + 1) as u64)
+                .read_to_end(&mut output)
+                .await
+                .map(|_| output)
+        };
+        tokio::pin!(write, read);
+        let mut written = None;
+        let output = loop {
+            tokio::select! {
+                result = &mut write, if written.is_none() => written = Some(result),
+                result = &mut read => break result,
+            }
+        };
+        let mut output = output.map_err(|e| e.to_string())?;
         if output.len() > max_output_bytes {
             return Err("host-probe-output-too-large".into());
         }
+        match written {
+            Some(result) => result,
+            None => write.await,
+        }
+        .map_err(|e| e.to_string())?;
         if !output.ends_with(SUCCESS) {
             return Err("host-setup-command-failed".into());
         }

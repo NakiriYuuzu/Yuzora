@@ -41,6 +41,11 @@ describe("AlertDialogContent compact contract", () => {
     expect(content.style.height).toBe("")
     expect(content.className).toMatch(/sm:max-w-\[420px\]/)
     expect(content.className).not.toMatch(/max-w-none/)
+    // Layout centering keeps a fractional content height on the pixel grid.
+    expect(content.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["inset-0", "m-auto", "h-fit"]),
+    )
+    expect(content.className).not.toMatch(/translate|top-1\/2|left-1\/2/)
     expect(
       content.querySelectorAll('[data-slot="dialog-resize-handle"]').length,
     ).toBe(0)

@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
 import { isRetryableHerdrConnectError } from "@/lib/herdrErrors"
-import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate, supportsHerdrTerminalMouse } from "@/lib/herdrCapabilities"
+import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate, supportsHerdrTerminalMouse, supportsHerdrTerminalMouseMove } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
 import { useHostStore } from "@/state/hostStore"
 import {
@@ -198,9 +198,11 @@ export function HerdrTerminalPage({
     Array.from(s.attachments.values()).filter((record) => record.pagePath === pagePath)
   ))
   const targetSessionName = useHerdrStore((s) => resolveSessionName(s.sessions, herdrSessionId))
-  const { terminals, agents, resolvedTabId, focusedPaneId: snapshotFocusedPaneId, focusedTerminalId: snapshotFocusedTerminalId } = useHerdrStore(useShallow((s) => {
-    const snapshot = (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
+  const snapshotOf = (s: ReturnType<typeof useHerdrStore.getState>) =>
+    (targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot : null)
       ?? (targetSessionName === s.selectedSessionName ? s.snapshot : null)
+  const { snapshotPaneId, resolvedTabId, focusedPaneId: snapshotFocusedPaneId, focusedTerminalId: snapshotFocusedTerminalId } = useHerdrStore(useShallow((s) => {
+    const snapshot = snapshotOf(s)
     // Focus updates replace the snapshot and tab flags. A mounted page only
     // needs its owning tab identity and terminal topology, not those flags.
     const knownTab = herdrTabId && (snapshot?.tabs.some((tab) => tab.id === herdrTabId)
@@ -210,12 +212,25 @@ export function HerdrTerminalPage({
     const fromAgent = snapshot?.agents.find((item) =>
       item.terminalId === terminalId || (paneId && item.paneId === paneId))
     return {
-      terminals: snapshot?.terminals,
-      agents: snapshot?.agents,
+      snapshotPaneId: snapshot?.terminals.find((item) => item.terminalId === terminalId)?.paneId
+        ?? snapshot?.agents.find((item) => item.terminalId === terminalId)?.paneId ?? null,
       resolvedTabId: knownTab ? herdrTabId : fromTerminal?.tabId ?? fromAgent?.tabId ?? herdrTabId,
       focusedPaneId: snapshot?.focusedPaneId ?? null,
       focusedTerminalId: snapshot?.focusedTerminalId ?? null
     }
+  }))
+  // Flat [paneId, terminalId, ...] pairs compare by value, so an agent status
+  // change elsewhere (new array identity, same pairs) does not re-render this page.
+  const paneTerminalPairs = useHerdrStore(useShallow((s) => {
+    const snapshot = snapshotOf(s)
+    const pairs: string[] = []
+    for (const term of snapshot?.terminals ?? []) {
+      if (term.paneId) pairs.push(term.paneId, term.terminalId)
+    }
+    for (const agent of snapshot?.agents ?? []) {
+      if (agent.paneId && agent.terminalId) pairs.push(agent.paneId, agent.terminalId)
+    }
+    return pairs
   }))
   const targetCapabilities = useHerdrStore((s) => (targetSessionName ? s.runtimesBySession[targetSessionName]?.capabilities : null)
     ?? (targetSessionName === s.selectedSessionName ? s.capabilities : null))
@@ -382,21 +397,15 @@ export function HerdrTerminalPage({
 
   const paneToTerminal = useMemo(() => {
     const map = new Map<string, string>()
-    for (const term of terminals ?? []) {
-      if (term.paneId) map.set(term.paneId, term.terminalId)
-    }
-    for (const agent of agents ?? []) {
-      if (agent.paneId && agent.terminalId) map.set(agent.paneId, agent.terminalId)
-    }
+    for (let i = 0; i < paneTerminalPairs.length; i += 2) map.set(paneTerminalPairs[i], paneTerminalPairs[i + 1])
     return map
-  }, [terminals, agents])
+  }, [paneTerminalPairs])
   // WSL projections can arrive with the page's original paneId unset while
   // the authoritative snapshot already carries it. Resolve that identity once
   // here so the legacy single-pane path can mount the same scrollbar as BSP.
   const resolvedPaneId = useMemo(
     () => paneId
-      ?? terminals?.find((item) => item.terminalId === terminalId)?.paneId
-      ?? agents?.find((item) => item.terminalId === terminalId)?.paneId
+      ?? snapshotPaneId
       // Legacy WSL pages can be restored before their scoped `panes[]`
       // projection arrives. If this is the focused terminal, the snapshot's
       // focused pane is still an authoritative identity for the probe.
@@ -405,7 +414,7 @@ export function HerdrTerminalPage({
         ? snapshotFocusedPaneId
         : null)
       ?? null,
-    [agents, paneId, snapshotFocusedPaneId, snapshotFocusedTerminalId, terminalId, terminals]
+    [paneId, snapshotPaneId, snapshotFocusedPaneId, snapshotFocusedTerminalId, terminalId]
   )
 
   const onSplitRatioChanged = useCallback(
@@ -965,6 +974,14 @@ function HerdrTerminalLeaf({
       enabled: () =>
         !disposedRef.current && activeRef.current && visibleRef.current
         && Boolean(transportRef.current?.canWrite()),
+      hoverEnabled: () => {
+        const state = useHerdrStore.getState()
+        const runtime = targetSessionName ? state.runtimesBySession[targetSessionName] : null
+        const capabilities = runtime?.capabilities ?? (targetSessionName === state.selectedSessionName ? state.capabilities : null)
+        const snapshot = runtime?.snapshot ?? (targetSessionName === state.selectedSessionName ? state.snapshot : null)
+        return supportsHerdrTerminalMouseMove(capabilities)
+          && Boolean(snapshot?.agents.some((agent) => agent.terminalId === terminalId || (scrollPaneId && agent.paneId === scrollPaneId)))
+      },
       send: (action, cell, modifiers) => { void transportRef.current?.mouse?.(action, cell, modifiers) }
     })
     term.attachCustomWheelEventHandler((event) => {

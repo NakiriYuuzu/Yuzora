@@ -616,6 +616,7 @@
   "fileClipboard": {
     "errorTitle": "無法貼上",
     "moveErrorTitle": "無法移動",
+    "importErrorTitle": "無法匯入",
     "error": {
       "copy-into-itself": "無法把資料夾複製到它自己裡面。",
       "move-into-itself": "無法把資料夾移動到它自己裡面。",
@@ -624,7 +625,17 @@
       "copy-unsupported-sftp": "SFTP 工作區不支援在遠端內複製；請改用 Yuzora runtime host 連線。",
       "move-unsupported-sftp": "SFTP 工作區不支援在此移動檔案。",
       "clipboard-files-unsupported": "這個系統的剪貼簿不支援檔案清單。",
-      "clipboard-import-remote-unsupported": "尚不支援把 Finder 或檔案總管的檔案貼到遠端工作區。"
+      "clipboard-import-remote-unsupported": "SSH 遠端工作區暫不支援從 Finder／Explorer 匯入檔案。",
+      "dropped-paths-stale": "拖入的檔案已逾時，請重新拖曳一次。",
+      "dropped-paths-unknown": "找不到拖入的檔案，請重新拖曳一次。",
+      "windows-folder-belongs-to-another-wsl-distribution": "這些檔案位於另一個 WSL 發行版，無法匯入此工作區。",
+      "wsl-import-unsupported-source": "只能匯入本機磁碟機或同一個 WSL 發行版內的檔案，不支援其他網路位置。",
+      "wsl-runtime-disabled-open-settings": "WSL 已關閉，請先到設定啟用 WSL 後再匯入。",
+      "import-source-invalid": "無法匯入這些檔案（來源無效或不支援，例如整個 WSL 發行版根目錄）。",
+      "wsl-path-conversion-failed": "無法將檔案路徑轉換為 WSL 路徑，請重新匯入一次。",
+      "wsl-identity-changed-or-not-wsl2": "這個 WSL 發行版已變更或不是 WSL 2，請重新設定該 WSL 主機。",
+      "host-not-wsl-distribution": "此工作區不在所選的 WSL 發行版上。",
+      "wsl-helper-outdated": "這個 WSL 工作區的 helper 版本過舊，請先更新 WSL helper（重新設定該 WSL 主機）後再匯入。"
     }
   },
   "deleteProgress": {

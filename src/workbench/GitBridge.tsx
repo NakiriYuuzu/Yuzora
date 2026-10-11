@@ -54,6 +54,10 @@ export function GitBridge() {
         })
         const unlistenFs = listen<ExternalChangePayload>("fs:external-change", (e) => {
             if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
+            // The hint is classified against the workspace's repository. An
+            // ignored outer path can still contain tracked files in the selected
+            // nested repository. Read the live selection, not an effect snapshot.
+            if (e.payload.gitRelevant === false && !useGitStore.getState().repositoryPath) return
             void useGitStore.getState().refresh()
         })
         window.addEventListener("focus", onFocus)

@@ -116,7 +116,8 @@ interface HerdrState {
   /** Live event subscription health for the selected session. */
   eventsHealthy: boolean
   eventsSubscriptionId: string | null
-  refreshSessions: () => Promise<void>
+  /** `cached` is for idle polls; user actions and lifecycle changes read authoritatively. */
+  refreshSessions: (options?: { cached?: boolean }) => Promise<void>
   selectSession: (sessionName: string) => Promise<void>
   bootstrap: (sessionName?: string | null) => Promise<void>
   refreshSnapshot: (sessionName?: string | null) => Promise<boolean>
@@ -195,6 +196,29 @@ function equalHerdrData(a: unknown, b: unknown): boolean {
   const keys = Object.keys(left)
   return keys.length === Object.keys(right).length && keys.every(key =>
     Object.prototype.hasOwnProperty.call(right, key) && equalHerdrData(left[key], right[key]))
+}
+
+function shareById<T>(previous: T[], next: T[], key: (item: T) => string): T[] {
+  if (!Array.isArray(previous) || !Array.isArray(next)) return next
+  const byKey = new Map(previous.map(item => [key(item), item]))
+  const shared = next.map(item => {
+    const old = byKey.get(key(item))
+    return old !== undefined && equalHerdrData(old, item) ? old : item
+  })
+  return shared.length === previous.length && shared.every((item, index) => item === previous[index])
+    ? previous : shared
+}
+
+/** Keep identities of unchanged spaces/agents/tabs/terminals so consumers re-render only for what changed. */
+function shareSnapshot(previous: HerdrSnapshot, next: HerdrSnapshot): HerdrSnapshot {
+  if (equalHerdrData(previous, next)) return previous
+  return {
+    ...next,
+    spaces: shareById(previous.spaces, next.spaces, item => item.id),
+    agents: shareById(previous.agents, next.agents, item => item.id),
+    tabs: shareById(previous.tabs, next.tabs, item => item.id),
+    terminals: shareById(previous.terminals, next.terminals, item => item.terminalId)
+  }
 }
 
 function sameFields<T extends object>(state: T, patch: Partial<T>): boolean {
@@ -421,6 +445,7 @@ export const herdrInitialState = {
 
 /** Module-level in-flight guards — not part of reactive state. */
 let sessionsInFlight: Promise<void> | null = null
+let sessionsInFlightCached = false
 let startupGeneration = 0
 const bootstrapInFlight = new Map<string, Promise<void>>()
 const refreshInFlight = new Map<string, Promise<boolean>>()
@@ -466,14 +491,21 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     return get().sessions.find((s) => sessionScope(s) === name) ?? null
   },
 
-  async refreshSessions() {
-    if (sessionsInFlight) return sessionsInFlight
+  async refreshSessions(options) {
+    const cached = options?.cached === true
+    if (sessionsInFlight) {
+      // An explicit refresh must not settle for an idle poll's cached inventory.
+      if (cached || !sessionsInFlightCached) return sessionsInFlight
+      await sessionsInFlight
+      return get().refreshSessions(options)
+    }
+    sessionsInFlightCached = cached
     sessionsInFlight = (async () => {
       try {
         const generation = startupGeneration
         const startup = await herdrStartupStatus()
         if (generation === startupGeneration) get().setHerdrStartup(startup)
-        const fetched = await herdrSessions()
+        const fetched = await herdrSessions(cached)
         const state = get()
         const sessions = shareSessions(state.sessions, fetched)
         let selectedSessionName = state.selectedSessionName
@@ -846,7 +878,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
             : null
           return withRuntime(state, resolved, {
             worktreeInventory: inventory,
-            snapshot: equalHerdrData(latest.snapshot, projectedSnapshot) ? latest.snapshot : projectedSnapshot
+            snapshot: latest.snapshot && projectedSnapshot ? shareSnapshot(latest.snapshot, projectedSnapshot) : projectedSnapshot
           })
         })
         if (
@@ -894,8 +926,8 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       inventory !== null && sameWorktreeProjectionScope(previousRuntime?.baseSnapshot, snapshot)
     const reusableInventory = canReuseInventory ? inventory : null
     const projectedSnapshot = withInventoryOnSnapshot(snapshot, reusableInventory)
-    const mergedSnapshot = previousRuntime?.snapshot && equalHerdrData(previousRuntime.snapshot, projectedSnapshot)
-      ? previousRuntime.snapshot : projectedSnapshot
+    const mergedSnapshot = previousRuntime?.snapshot
+      ? shareSnapshot(previousRuntime.snapshot, projectedSnapshot) : projectedSnapshot
     set((state) => {
       const selectedStillExists = mergedSnapshot.spaces.some(
         (s) => s.id === state.selectedSpaceBySession[sessionName]

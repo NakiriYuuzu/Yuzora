@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import { Button } from "../src/components/ui/button"
 import { terminalFontStack } from "../src/terminal/terminalFonts"
 import "@xterm/xterm/css/xterm.css"
+import "../src/terminal/xtermBlockGlyphs.css"
 import "../src/styles.css"
 
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 120))
