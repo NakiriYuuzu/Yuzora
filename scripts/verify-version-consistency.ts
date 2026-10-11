@@ -12,9 +12,9 @@ export function verifyVersionConsistency(root = process.cwd(), tag = process.env
   const hostCargoToml = readFileSync(resolve(root, "src-tauri/host/Cargo.toml"), "utf8")
   const hostCargoLock = readFileSync(resolve(root, "src-tauri/host/Cargo.lock"), "utf8")
   const cargoVersion = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
-  const cargoLockVersion = cargoLock.match(/\[\[package\]\]\nname = "yuzora"\nversion = "([^"]+)"/)?.[1]
+  const cargoLockVersion = cargoLock.match(/\[\[package\]\]\r?\nname = "yuzora"\r?\nversion = "([^"]+)"/)?.[1]
   const hostCargoVersion = hostCargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
-  const hostCargoLockVersion = hostCargoLock.match(/\[\[package\]\]\nname = "yuzora-host"\nversion = "([^"]+)"/)?.[1]
+  const hostCargoLockVersion = hostCargoLock.match(/\[\[package\]\]\r?\nname = "yuzora-host"\r?\nversion = "([^"]+)"/)?.[1]
 
   if (typeof tauriVersion !== "string" || !tauriVersion) {
     throw new Error("tauri.conf.json must define a non-empty product version")
