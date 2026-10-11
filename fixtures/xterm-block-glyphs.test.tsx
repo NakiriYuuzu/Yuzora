@@ -16,6 +16,9 @@ vi.mock("@xterm/xterm", () => ({
     dispose() {}
   },
 }))
+// Through @tailwindcss/vite this import costs ~30 s on macOS (one watch file per scanned
+// source), past the 5 s timeout. The asserted ANSI palette does not come from CSS.
+vi.mock("../src/styles.css", () => ({}))
 vi.mock("react-dom/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("react-dom/client")>()
   return { ...original, createRoot: (...args: Parameters<typeof original.createRoot>) => {
