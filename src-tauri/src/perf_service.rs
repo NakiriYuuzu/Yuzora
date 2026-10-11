@@ -662,4 +662,26 @@ mod tests {
             "exited child must leave the sysinfo cache"
         );
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_tree_walks_past_a_childless_leaf() {
+        // proc_listchildpids 的 NULL buffer 查詢回報的是全系統估計值，沒有子行程的
+        // 葉節點只會得到空清單；若誤判成失敗，collect_rows 每次都會退回全表 refresh。
+        let pid = get_current_pid().unwrap();
+        let mut child = spawn_child();
+        let child_pid = Pid::from_u32(child.id());
+        let leaf = macos_pid_list(Some(child_pid));
+        let selection = macos_process_tree(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(
+            leaf,
+            Some(Vec::new()),
+            "a childless process lists no children"
+        );
+        let selection = selection.expect("a tree ending in a childless leaf is discovered");
+        assert!(selection.owned.contains(&child_pid));
+    }
 }
