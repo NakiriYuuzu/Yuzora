@@ -1,7 +1,8 @@
 /** Real DOM renderer acceptance page for block elements (U+2580-U+259F). No IPC, sessions or external data. */
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
 import { Terminal } from "@xterm/xterm"
+import { Button } from "../src/components/ui/button"
 import { TERMINAL_FONTS, terminalFontStack, type TerminalFontFamily } from "../src/terminal/terminalFonts"
 import { buildXtermTheme, xtermMinimumContrastRatio } from "../src/terminal/xtermTheme"
 import "@xterm/xterm/css/xterm.css"
@@ -52,11 +53,12 @@ function Cell({ font, size, label }: { font: TerminalFontFamily; size: number; l
 
 function Page() {
   const [dark, setDark] = useState(true)
-  useEffect(() => { document.documentElement.classList.toggle("dark", dark) }, [dark])
+  // Resolve theme tokens before child passive effects construct their terminals.
+  useLayoutEffect(() => { document.documentElement.classList.toggle("dark", dark) }, [dark])
   const key = dark ? "dark" : "light"
   return <main style={{ padding: 12 }}>
     <h1>xterm block glyphs ({key})</h1>
-    <button onClick={() => setDark(!dark)}>Toggle light/dark</button>
+    <Button variant="outline" onClick={() => setDark(!dark)}>Toggle light/dark</Button>
     <p>Every glyph must fill its cell: no gaps between adjacent cells, mascot body and eyes tile seamlessly.</p>
     <div style={{ display: "flex", flexWrap: "wrap" }}>
       {[12, 13, 16, 20].map((size) => <Cell key={`${key}-jb-${size}`} font="jetbrains" size={size} label={`JetBrains Mono ${size}px`} />)}
