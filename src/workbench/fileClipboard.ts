@@ -78,9 +78,11 @@ export async function copyFilesToClipboard(workspacePath: string, paths: string[
     const entry = { workspacePath, paths, mode }
     useFileClipboardStore.getState().setClipboard(entry)
     if (wslDistroOf(workspacePath)) {
-        const osSnapshot = await clipboardReadFileList().catch(() => [] as string[])
+        // An unreadable clipboard leaves the snapshot unknown: an empty list would
+        // let the Explorer files still on it replace this copy at paste time.
+        const osSnapshot = await clipboardReadFileList().catch(() => undefined)
         // A later copy owns the clipboard now; its own snapshot is on the way.
-        if (useFileClipboardStore.getState().clipboard === entry) useFileClipboardStore.getState().setClipboard({ ...entry, osSnapshot })
+        if (osSnapshot && useFileClipboardStore.getState().clipboard === entry) useFileClipboardStore.getState().setClipboard({ ...entry, osSnapshot })
     }
     void logUserAction(mode === "cut" ? "file_cut" : "file_copy", `${mode} ${paths.length} item(s)`)
     if (parseRemoteFilePath(workspacePath)) return
@@ -113,7 +115,7 @@ export async function pasteFiles(
     const internal = stored?.workspacePath === workspacePath ? stored : null
     // An SSH workspace reads the OS list only to say it cannot import it; local and WSL compare it.
     const osPaths = remote && !wslDistroOf(workspacePath) && internal ? [] : await clipboardReadFileList().catch(() => [] as string[])
-    // A WSL copy whose snapshot is still pending is the newest clipboard action.
+    // A WSL copy whose snapshot is pending or unreadable is the newest clipboard action.
     const osUnchanged = internal !== null && (internal.osSnapshot === undefined
         ? !!wslDistroOf(workspacePath)
         : samePaths(osPaths, internal.osSnapshot))

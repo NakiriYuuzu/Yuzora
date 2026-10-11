@@ -229,6 +229,17 @@ describe("WSL host workspaces", () => {
         await copying
     })
 
+    it("keeps a WSL copy whose OS snapshot could not be read over the older Explorer list", async () => {
+        const A = remoteFilePath("wsl-1", "/home/me/app/a.ts", "/home/me/app")
+        vi.mocked(ipc.clipboardReadFileList).mockRejectedValueOnce("clipboard-busy")
+        await copyFilesToClipboard(WSL, [A], "copy")
+        vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
+        vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce([A])
+        await pasteFiles(WSL, null)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL)
+        expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
+    })
+
     it("keeps the later of two rapid WSL copies when their OS snapshots resolve out of order", async () => {
         const A = remoteFilePath("wsl-1", "/home/me/app/a.ts", "/home/me/app")
         const B = remoteFilePath("wsl-1", "/home/me/app/b.ts", "/home/me/app")
