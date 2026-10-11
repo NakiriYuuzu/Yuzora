@@ -330,8 +330,8 @@ pub fn build_watcher(
     build_classified_watcher(root, move |paths, _| on_change(paths))
 }
 
-/// Like `build_watcher`, plus `git_relevant`: false when every path is ignored
-/// by root rules and Git confirms they are ignored and nothing tracked there (safe to skip a status).
+/// Like `build_watcher`, plus `git_relevant`: false when Git confirms paths are
+/// ignored/untracked in the workspace-root repository, not independent nested repositories.
 pub fn build_classified_watcher(
     root: &Path,
     on_change: impl Fn(Vec<String>, bool) + Send + 'static,
