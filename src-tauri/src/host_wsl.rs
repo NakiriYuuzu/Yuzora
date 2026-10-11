@@ -200,18 +200,32 @@ fn authorise_and_plan(
     plan_sources(&recent.take(requested, now)?, distro)
 }
 
-/// One `wslpath` call per drive path; None when nothing needs converting.
-fn conversion_script(planned: &[WslPathInput]) -> Result<Option<String>, String> {
-    let mut script = String::new();
-    for input in planned {
-        if let WslPathInput::Windows(path) = input {
-            script.push_str(&format!(
-                "wslpath -a -u {}\n",
-                crate::host_service::shell_quote(path)?
-            ));
+/// Converts the drive paths on stdin, one per line. Stdin keeps a large
+/// selection off the `wsl.exe` command line, which Windows caps at 32,767
+/// characters; `wslpath` must not read the remaining paths itself.
+const CONVERSION_SCRIPT: &str =
+    r#"while IFS= read -r path; do wslpath -a -u "$path" </dev/null; done"#;
+
+/// The drive paths to convert, one per line; None when nothing needs converting.
+/// Windows file names cannot contain line breaks, so each line is one path.
+fn conversion_input(planned: &[WslPathInput]) -> Result<Option<Vec<u8>>, String> {
+    let mut input = Vec::new();
+    for planned in planned {
+        if let WslPathInput::Windows(path) = planned {
+            if path.contains(['\n', '\r', '\0']) {
+                return Err("import-source-invalid".into());
+            }
+            input.extend_from_slice(path.as_bytes());
+            input.push(b'\n');
         }
     }
-    Ok((!script.is_empty()).then_some(script))
+    Ok((!input.is_empty()).then_some(input))
+}
+
+/// Room for the converted lines: each is its drive path with the automount
+/// prefix in place of `X:`, so twice the input plus the usual probe allowance.
+fn conversion_output_limit(input: &[u8]) -> usize {
+    64 * 1024 + input.len() * 2
 }
 
 /// Linux paths in request order: direct ones kept, converted ones taken from
@@ -301,11 +315,18 @@ async fn import_into_wsl(
     let target = HostTarget::Wsl {
         distro: distro.clone(),
     };
-    let converted = match conversion_script(&planned)? {
-        Some(script) => {
+    let converted = match conversion_input(&planned)? {
+        Some(input) => {
             // WSL may have been turned off while the identity check ran.
             crate::runtime_preferences::require_wsl_flag(preferences.wsl_enabled(), true)?;
-            crate::host_bootstrap::execute(&target, Some(&ssh.0), &script, &[]).await?
+            crate::host_bootstrap::execute_with_output_limit(
+                &target,
+                Some(&ssh.0),
+                CONVERSION_SCRIPT,
+                &input,
+                conversion_output_limit(&input),
+            )
+            .await?
         }
         None => Vec::new(),
     };
@@ -415,19 +436,55 @@ mod tests {
     }
 
     #[test]
-    fn builds_one_quoted_wslpath_call_per_drive_path_only() {
+    fn feeds_only_drive_paths_to_wslpath_one_per_line() {
         let planned = vec![
             WslPathInput::Windows(r"C:\it's a dir\f.txt".into()),
             WslPathInput::Linux("/home/me/x".into()),
             WslPathInput::Windows(r"D:\b".into()),
         ];
         assert_eq!(
-            conversion_script(&planned).unwrap().unwrap(),
-            "wslpath -a -u 'C:\\it'\\''s a dir\\f.txt'\nwslpath -a -u 'D:\\b'\n"
+            conversion_input(&planned).unwrap().unwrap(),
+            b"C:\\it's a dir\\f.txt\nD:\\b\n"
         );
         assert_eq!(
-            conversion_script(&[WslPathInput::Linux("/x".into())]).unwrap(),
+            conversion_input(&[WslPathInput::Linux("/x".into())]).unwrap(),
             None
+        );
+        for bad in ["C:\\a\nb", "C:\\a\rb", "C:\\a\0b"] {
+            assert_eq!(
+                conversion_input(&[WslPathInput::Windows(bad.into())]).unwrap_err(),
+                "import-source-invalid"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn converts_a_selection_too_large_for_one_command_line() {
+        // The import cap of 4,096 sources at ~200 characters each: far past the
+        // 32,767-character Windows command line and the 64 KiB probe output.
+        let planned: Vec<_> = (0..4096)
+            .map(|i| {
+                WslPathInput::Windows(format!(r"C:\it's a dir\{}\{i:04}.txt", "x".repeat(180)))
+            })
+            .collect();
+        let input = conversion_input(&planned).unwrap().unwrap();
+        // Stand-in wslpath echoing its path argument, so quoting is checked too.
+        let script = format!("wslpath() {{ printf '/%s\\n' \"$3\"; }}\n{CONVERSION_SCRIPT}");
+        let output = crate::host_bootstrap::execute_with_output_limit(
+            &crate::host_service::HostTarget::Local,
+            None,
+            &script,
+            &input,
+            conversion_output_limit(&input),
+        )
+        .await
+        .unwrap();
+        let converted = merge_converted(planned, &output).unwrap();
+        assert_eq!(converted.len(), 4096);
+        assert_eq!(
+            converted[4095],
+            format!(r"/C:\it's a dir\{}\4095.txt", "x".repeat(180))
         );
     }
 
