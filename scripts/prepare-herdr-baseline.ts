@@ -19,6 +19,11 @@ const baselines: Record<string, Record<string, [string, string]>> = {
     'linux-x64': ['herdr-linux-x86_64', '2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7'],
     'win32-x64': ['herdr-windows-x86_64.zip', '04ce380cac5af27bfcf75d0951ac49b7afe4c984aee8852985806d4f71f93a6e'],
   },
+  '0.9.3': {
+    'darwin-arm64': ['herdr-macos-aarch64', '5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157'],
+    'linux-x64': ['herdr-linux-x86_64', '18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7'],
+    'win32-x64': ['herdr-windows-x86_64.zip', 'c75b1fa49f7a3ba4b8b11789912a6147e4214a3b6fd3556d0f80076c8887d795'],
+  },
 }
 const version = process.argv[2] ?? '0.8.2'
 const targets = baselines[version]

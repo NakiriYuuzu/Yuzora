@@ -1106,6 +1106,7 @@ fn implemented_methods_exist_in_official_protocol22_schema() {
         include_str!("../../tests/fixtures/herdr-0.9.0-methods.json"),
         include_str!("../../tests/fixtures/herdr-0.9.1-methods.json"),
         include_str!("../../tests/fixtures/herdr-0.9.3-methods.json"),
+        include_str!("../../tests/fixtures/herdr-0.9.5-methods.json"),
     ] {
         let schema: serde_json::Value = serde_json::from_str(fixture).unwrap();
         assert_eq!(schema["protocol"], 22);
