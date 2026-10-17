@@ -1,0 +1,20 @@
+{
+  "Services": {
+    "svc:docs": {
+      "TCP": {
+        "8443": {
+          "HTTPS": true
+        }
+      },
+      "Web": {
+        "docs.tail1234.ts.net:8443": {
+          "Handlers": {
+            "/": {
+              "Proxy": "http://127.0.0.1:4000"
+            }
+          }
+        }
+      }
+    }
+  }
+}
