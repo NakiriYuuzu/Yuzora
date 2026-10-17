@@ -142,7 +142,12 @@ done"#
     let created = h.manager.pairing_create(None).await.unwrap();
     assert_eq!(created["pairingId"], "P1");
     assert!(created["url"].as_str().unwrap().contains("SECRET"));
-    h.manager.pairing_decide("pairing.approve", "P1").unwrap();
+    let decided = h
+        .manager
+        .pairing_decide("pairing.approve", "P1")
+        .await
+        .unwrap();
+    assert_eq!(decided["state"], "approved");
     h.until("pairing state", |h| {
         h.events
             .lock()
@@ -153,6 +158,39 @@ done"#
     .await;
     let emitted = serde_json::to_string(&*h.events.lock().unwrap()).unwrap();
     assert!(!emitted.contains("SECRET") && !emitted.contains("pairing.created"));
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_pairing_decisions_queue_with_other_commands() {
+    // The rejection's error belongs to the decision, never to the pairing
+    // request queued behind it.
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in
+    *'"pairing.reject"'*) sleep 0.2; echo '{{"v":1,"type":"error","code":"admin-command-rejected","message":"Companion request rejected"}}';;
+    *'"pairing.cancel"'*) echo '{{"v":1,"type":"command.deferred","command":"pairing.cancel","target":"P2","committed":true}}';;
+    *'"pairing.create"'*) echo '{{"v":1,"type":"pairing.created","pairingId":"P3","url":"https://h/pair#p=P3.S","expiresAt":"2030-01-01T00:05:00Z"}}';;
+    *'"shutdown"'*) exit 0;;
+  esac
+done"#
+    ));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    let (rejected, created) =
+        tokio::join!(h.manager.pairing_decide("pairing.reject", "P1"), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            h.manager.pairing_create(None).await
+        });
+    assert_eq!(rejected.unwrap_err(), "admin-command-rejected");
+    assert_eq!(created.unwrap()["pairingId"], "P3");
+    let deferred = h
+        .manager
+        .pairing_decide("pairing.cancel", "P2")
+        .await
+        .unwrap();
+    assert_eq!(deferred["type"], "command.deferred");
     h.manager.stop().await;
 }
 

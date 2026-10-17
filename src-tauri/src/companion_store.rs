@@ -372,7 +372,13 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     crate::ssh_service::retry_transient(crate::ssh_service::windows_scanner_held, || {
         std::fs::rename(&tmp, path)
     })
-    .map_err(failed)
+    .map_err(failed)?;
+    // The rename survives a power loss only once the directory is synced.
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(failed)?;
+    Ok(())
 }
 
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {

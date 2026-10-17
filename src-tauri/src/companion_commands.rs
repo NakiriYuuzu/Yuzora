@@ -62,11 +62,12 @@ impl CompanionState {
         let _ = current.set(Arc::downgrade(&manager));
         // No handler may outlive its gateway: one left by a crash or a quit
         // points at a loopback port anyone can bind. Enable re-applies it.
-        let stale = (dir.clone(), ops.clone());
+        // The lock is taken here, before any command can apply or enable.
+        let turn = ops.clone().try_lock_owned().expect("unshared at startup");
+        let stale = dir.clone();
         tauri::async_runtime::spawn(async move {
-            let (dir, ops) = stale;
-            let _turn = ops.lock().await;
-            if let Err(code) = remove_applied_serve(&dir).await {
+            let _turn = turn;
+            if let Err(code) = remove_applied_serve(&stale).await {
                 log_warning("companion_serve_cleanup", &code);
             }
         });
@@ -309,7 +310,7 @@ pub enum PairingDecision {
 }
 
 #[tauri::command]
-pub fn companion_pairing_decide(
+pub async fn companion_pairing_decide(
     state: tauri::State<'_, CompanionState>,
     pairing_id: String,
     decision: PairingDecision,
@@ -319,7 +320,11 @@ pub fn companion_pairing_decide(
         PairingDecision::Reject => "pairing.reject",
         PairingDecision::Cancel => "pairing.cancel",
     };
-    state.manager.pairing_decide(kind, &pairing_id)
+    state
+        .manager
+        .pairing_decide(kind, &pairing_id)
+        .await
+        .map(drop)
 }
 
 #[tauri::command]

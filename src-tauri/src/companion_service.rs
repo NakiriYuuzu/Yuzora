@@ -122,6 +122,8 @@ struct Pending {
 
 enum Want {
     Pairing,
+    /// Approve, reject or cancel of this pairing.
+    Decision(String),
     /// Resolved by the event that reports this command's own change.
     Device {
         id: String,
@@ -398,6 +400,13 @@ impl CompanionManager {
                             Ok(event.clone()),
                         ),
                     }
+                } else {
+                    // A reject or cancel the gateway applied but could not report yet.
+                    resolve(
+                        &mut self.inner.lock().unwrap(),
+                        |want| matches!(want, Want::Decision(id) if *id == target),
+                        Ok(event.clone()),
+                    );
                 }
                 outgoing.push(event);
             }
@@ -412,6 +421,15 @@ impl CompanionManager {
                     }
                     "pairing.created" => {
                         resolve(&mut inner, |want| matches!(want, Want::Pairing), Ok(event))
+                    }
+                    "pairing.state" => {
+                        let id = event["pairingId"].as_str().unwrap_or_default();
+                        resolve(
+                            &mut inner,
+                            |want| matches!(want, Want::Decision(wanted) if wanted == id),
+                            Ok(event.clone()),
+                        );
+                        outgoing.push(event);
                     }
                     // Errors carry no request id; one arriving while a command
                     // waits is reported to that command. State never depends on it.
@@ -567,21 +585,15 @@ impl CompanionManager {
         .await
     }
 
-    /// Approve, reject and cancel report back through `pairing.state` events.
-    pub fn pairing_decide(&self, kind: &str, pairing_id: &str) -> Result<(), String> {
-        let inner = self.inner.lock().unwrap();
-        let process = inner
-            .process
-            .as_ref()
-            .filter(|_| inner.ready)
-            .ok_or("companion-not-running")?;
-        let frame = json!({"v": 1, "type": kind, "pairingId": pairing_id});
-        let mut bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
-        bytes.push(b'\n');
-        process
-            .input
-            .send(bytes)
-            .map_err(|_| "companion-not-running".to_string())
+    /// Approve, reject and cancel answer with `pairing.state`, a deferral or an
+    /// error. They queue like every admin command, so that error can never be
+    /// taken for another command's reply.
+    pub async fn pairing_decide(&self, kind: &str, pairing_id: &str) -> Result<Value, String> {
+        self.request(
+            json!({"v": 1, "type": kind, "pairingId": pairing_id}),
+            Want::Decision(pairing_id.to_owned()),
+        )
+        .await
     }
 
     /// `device.update`, `device.revoke` and `device.unlock`; resolves once the

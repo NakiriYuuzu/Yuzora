@@ -1366,6 +1366,13 @@ GET  /ws                          WebSocket（cookie + Origin，首 frame {bindi
             <li>被 kill 的行程晚到的輸出蓋掉離線編輯：行程結束時讓 generation 失效，離線編輯也要拿 store 鎖。</li>
             <li>啟用被拒時仍寫入期限：改為先檢查。</li>
           </ul>
+          Codex 複審 30a9a2c7 再提 4 項，3 項修正、1 項說明：
+          <ul>
+            <li>啟動時的殘留清理可能刪掉剛套用的 handler：在建構時就先拿到 ops 鎖，讓清理一定排在任何 apply／enable 之前。</li>
+            <li>pairing 決定繞過指令序列，invalid 或過期的決定產生的 error 會被當成其他指令的回覆：approve／reject／cancel 改為與其他 admin 指令一起排隊，並等自己的 <code>pairing.state</code>、deferral 或 error。</li>
+            <li>rename 後沒有 fsync 目錄，斷電可能讓舊檔回來：Unix 上改為 rename 後 fsync 所在目錄。</li>
+            <li>同 hostname 有其他 port 時應拒絕：不改。依 P1-3 裁決，cookie 不分 port，但光有 cookie 永遠不足以授權，每個請求都要帶只存在 per-origin sessionStorage 的 binding；所以其他 port 只列為警告（<code>otherPorts</code>，T3 顯示）。</li>
+          </ul>
           另查證 gateway 的 <code>device.update</code> 只檢查格式：until 不受 elevationMaxMin 限制，full 只在使用時受 fullSessionEnabled 限制。所以離線允許放寬 grants 不會繞過任何 policy；只同步了 gateway 的兩條規則：update 至少要有一個欄位，grants 不可同時收緊又放寬（<code>companion-grants-mixed</code>）。
         </li>
       </ul>
@@ -1373,7 +1380,7 @@ GET  /ws                          WebSocket（cookie + Origin，首 frame {bindi
       <ul>
         <li>companion 相關測試共 29 項，連跑三次都通過，另有一項預設略過的真 gateway smoke。review 修正後增加到 35 項，連跑四次都通過。新增的測試涵蓋延後通知寫入磁碟、回覆等待自己的事件、停止取消排程中的重啟、Starting 時拒絕離線編輯、保留 Serve 紀錄的判斷，以及 gateway 驗證規則的邊界案例。</li>
         <li>真 gateway smoke：用真的 <code>yuzora-companion</code>，搭配 port 0、暫時的 web root 與 gateway 自己的 device fixture，確認 ready、未帶身分 header 時 guard 回 403、<code>pairing.create</code> 拿到 URL 並轉成 SVG、revoke 已寫入磁碟、2 秒內停止，且事件中沒有 pairing URL。</li>
-        <li>app <code>cargo test --lib</code> 533 項通過；<code>cargo fmt --package yuzora -- --check</code> 通過；clippy exact baseline 19 筆吻合。修正後重跑：539 項通過、fmt 通過、baseline 19 筆吻合、真 gateway smoke 通過。延後通知的指令類型比對做過 mutation 檢查，拿掉比對後測試會失敗。Codex review 修正後：companion 測試 38 項，連跑三次都通過；lib 542 項通過；fmt 通過；baseline 19 筆吻合；smoke 通過。行程結束時讓 generation 失效、以及快照比對，兩處都做過 mutation 檢查，拿掉後對應的測試會失敗。</li>
+        <li>app <code>cargo test --lib</code> 533 項通過；<code>cargo fmt --package yuzora -- --check</code> 通過；clippy exact baseline 19 筆吻合。修正後重跑：539 項通過、fmt 通過、baseline 19 筆吻合、真 gateway smoke 通過。延後通知的指令類型比對做過 mutation 檢查，拿掉比對後測試會失敗。Codex review 修正後：companion 測試 38 項，連跑三次都通過；lib 542 項通過；fmt 通過；baseline 19 筆吻合；smoke 通過。行程結束時讓 generation 失效、以及快照比對，兩處都做過 mutation 檢查，拿掉後對應的測試會失敗。第二輪修正後：companion 測試 39 項，連跑三次都通過；lib 543 項通過；fmt、baseline、smoke 都通過。pairing 決定的排隊做過 mutation 檢查：不排隊時，reject 的 error 會被當成 <code>pairing_create</code> 的回覆。</li>
       </ul>
       <p><strong>未做：</strong></p>
       <ul>
