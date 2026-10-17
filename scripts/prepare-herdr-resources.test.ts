@@ -82,11 +82,13 @@ describe("prepare Herdr resources", () => {
       await readFile(resolve(repositoryRoot, "src-tauri/tauri.windows.conf.json"), "utf8")
     )
     expect(macos.bundle.resources).toEqual({
+      "resources/companion-web/": "companion-web/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     })
     expect(windows.bundle.resources).toEqual({
+      "resources/companion-web/": "companion-web/",
       "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",

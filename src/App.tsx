@@ -25,6 +25,8 @@ import { ConfirmDialogHost } from "@/workbench/ConfirmDialogHost";
 import { TextInputDialogHost } from "@/workbench/TextInputDialogHost";
 import { GitRollbackDialog } from "@/workbench/git/GitRollbackDialog";
 import { GitConflictHost } from "@/workbench/git/GitConflictHost";
+import { CompanionBridge } from "@/workbench/CompanionBridge";
+import { CompanionApprovalHost } from "@/workbench/CompanionApprovalHost";
 
 function App() {
   return (
@@ -57,6 +59,8 @@ function App() {
       <TextInputDialogHost />
       <GitRollbackDialog />
       <GitConflictHost />
+      <CompanionBridge />
+      <CompanionApprovalHost />
     </>
   );
 }
