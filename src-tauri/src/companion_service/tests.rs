@@ -40,6 +40,7 @@ impl Harness {
             timing: Timing {
                 command: Duration::from_millis(500),
                 stop: Duration::from_millis(500),
+                ready: Duration::from_millis(1000),
             },
         });
         Self {
@@ -490,6 +491,61 @@ async fn companion_service_startup_errors_and_expiry_never_restart() {
         assert_eq!(h.manager.status(), status);
         assert_eq!(h.stops(), 1, "{status:?}");
     }
+}
+
+#[tokio::test]
+async fn companion_service_ready_must_come_in_time_on_the_configured_port() {
+    // Hangs after init: stopped as failed, and the stop hook removes Serve.
+    let h = Harness::new("read init; while read line; do :; done");
+    h.manager.start(h.launch()).unwrap();
+    h.until("start timeout", |h| {
+        h.manager.status()
+            == Status::Failed {
+                code: "companion-start-timeout".into(),
+            }
+    })
+    .await;
+    h.until("stop hook", |h| h.stops() == 1).await;
+    // Ready on another port than Serve proxies to.
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'; while read line; do :; done"#
+    ));
+    let mut launch = h.launch();
+    launch.init["listeners"] = json!({"loopback": {"port": 47111}});
+    h.manager.start(launch).unwrap();
+    h.until("port mismatch", |h| {
+        h.manager.status()
+            == Status::Failed {
+                code: "companion-port-mismatch".into(),
+            }
+    })
+    .await;
+    h.until("stop hook", |h| h.stops() == 1).await;
+    // Port 0 asks for any port.
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'; while read line; do case "$line" in *shutdown*) exit 0;; esac; done"#
+    ));
+    let mut launch = h.launch();
+    launch.init["listeners"] = json!({"loopback": {"port": 0}});
+    h.manager.start(launch).unwrap();
+    h.until("ready", running).await;
+    h.manager.stop().await;
+}
+
+#[test]
+fn companion_service_halted_gateway_writes_nothing_more() {
+    let h = Harness::new("exit 0");
+    *h.manager.store.lock().unwrap() = Some(Devices::load(&h.dir).unwrap());
+    let generation = {
+        let mut inner = h.manager.inner.lock().unwrap();
+        halt(&mut inner, "companion-store-write-failed");
+        inner.generation
+    };
+    h.manager.on_event(
+        generation,
+        json!({"type": "device.registered", "device": serde_json::from_str::<Value>(DEVICE).unwrap()}),
+    );
+    assert!(Devices::load(&h.dir).unwrap().all().is_empty());
 }
 
 #[tokio::test]

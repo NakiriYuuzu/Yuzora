@@ -21,10 +21,13 @@ use tokio::{
 struct Timing {
     command: Duration,
     stop: Duration,
+    /// From spawn to `ready`; past it the gateway is stopped as failed.
+    ready: Duration,
 }
 const TIMING: Timing = Timing {
     command: Duration::from_secs(5),
     stop: Duration::from_secs(2),
+    ready: Duration::from_secs(15),
 };
 /// HERDR finds its sessions through HOME (and XDG on Linux); nothing else
 /// from the desktop environment, such as imported API keys, reaches the gateway.
@@ -101,6 +104,8 @@ struct Inner {
     status: Status,
     generation: u64,
     process: Option<Process>,
+    /// The loopback port Serve proxies to, when init fixes one.
+    port: Option<u64>,
     ready: bool,
     expired: bool,
     last_error: Option<String>,
@@ -253,11 +258,30 @@ impl CompanionManager {
                 kill: Some(kill),
                 exited,
             });
+            inner.port = launch.init["listeners"]["loopback"]["port"]
+                .as_u64()
+                .filter(|port| *port != 0);
             inner.ready = false;
             inner.last_error = None;
             inner.terminal = None;
             inner.generation
         };
+        // A gateway that hangs before `ready` would leave Serve forwarding to
+        // a port nothing listens on.
+        let watchdog = self.clone();
+        let deadline = self.timing.ready;
+        tokio::spawn(async move {
+            tokio::time::sleep(deadline).await;
+            let status = {
+                let mut inner = watchdog.inner.lock().unwrap();
+                if inner.generation != generation || inner.ready || inner.terminal.is_some() {
+                    return;
+                }
+                halt(&mut inner, "companion-start-timeout");
+                inner.status.clone()
+            };
+            (watchdog.emit)(status_event(&status));
+        });
         // The gateway gives up without init after five seconds.
         let _ = input.send(init);
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -330,8 +354,14 @@ impl CompanionManager {
         // Held for the whole event so a newer process cannot swap the list
         // between the generation check and the write.
         let mut store = self.store.lock().unwrap();
-        if self.inner.lock().unwrap().generation != generation {
-            return;
+        {
+            let inner = self.inner.lock().unwrap();
+            // Once halted, nothing more this process says is acted on.
+            if inner.generation != generation
+                || matches!(inner.terminal, Some(Status::Failed { .. }))
+            {
+                return;
+            }
         }
         let kind = event["type"].as_str().unwrap_or_default().to_owned();
         let mut outgoing = Vec::new();
@@ -417,9 +447,14 @@ impl CompanionManager {
                 let mut inner = self.inner.lock().unwrap();
                 match kind.as_str() {
                     "ready" if inner.process.is_some() && inner.terminal.is_none() => {
-                        let port = event["ports"]["loopback"].as_u64().unwrap_or_default() as u16;
-                        inner.ready = true;
-                        inner.status = Status::Running { port };
+                        let port = event["ports"]["loopback"].as_u64().unwrap_or_default();
+                        // Serve proxies to the configured port and nowhere else.
+                        if inner.port.is_some_and(|expected| expected != port) {
+                            halt(&mut inner, "companion-port-mismatch");
+                        } else {
+                            inner.ready = true;
+                            inner.status = Status::Running { port: port as u16 };
+                        }
                         outgoing.push(status_event(&inner.status));
                     }
                     "pairing.created" => {
