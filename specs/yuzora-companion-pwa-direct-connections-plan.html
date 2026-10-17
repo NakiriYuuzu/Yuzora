@@ -663,7 +663,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
         <tr><td>audit.dropped{lost,lostTightening,rejectedOmitted,since}</td><td>lost＝本稽核管線實際未送出的事件數（含stalled/cancelled/open.failed）；lostTightening＝其中release/expiry/revoke/state(false)收緊／生命週期bundle的事件數子集，&gt;0必須醒目提示安全相關稽核缺口，不再與lost相加。rejectedOmitted＝刻意count-only的拒絕，不當作實際loss；write.rejected summary也不可重複累加。since為本批最早累計時間，成功入列後三計數重置；不是所有admin事件的可靠投遞保證。</td></tr>
         <tr><td>audit action=open.failed</td><td>從未announced／leased的open終止，不代表control/full曾啟用或完成release；不會送state(false)、進deferred或擋同device重開。</td></tr>
       </tbody></table>
-      <p>stream.closed{stream,reason}只發WS，沒有admin同名事件；desktop從audit reason/outcome＋state(false)得知失效，斷線不補送WS。新事件shape/排序已在本輪修正，獨立複審尚待通過；Phase4 blocker仍含Host無timeout pipe/PTY input/release、四筆Host TLS advisories、GPUI/Spike A gate、Windows/Linux native與手機/Tailscale/LAN/connector restore實機驗收；stderr reader無join仍為已知殘留。</p>
+      <p>stream.closed{stream,reason}只發WS，沒有admin同名事件；desktop從audit reason/outcome＋state(false)得知失效，斷線不補送WS。新事件shape/排序已在本輪修正，獨立複審尚待通過；Phase4 blocker仍含Host無timeout pipe/PTY input/release、六筆Host TLS advisories（2026-10-17 由四筆增為六筆）、GPUI/Spike A gate、Windows/Linux native與手機/Tailscale/LAN/connector restore實機驗收；stderr reader無join仍為已知殘留。</p>
       <ul class="checklist">
         <li><code class="status">[]</code> <code>CompanionStatusIndicator</code>：停用時隱藏；啟用時顯示剩餘期限；有檢視中裝置顯示數量；有 control 提權時以紅色顯示「控制中」，Popover 列出裝置並提供「全部撤銷」。</li>
         <li><code class="status">[]</code> <code>CompanionBridge</code>：<code>audit</code> → <code>logUserAction</code>（category <code>companion</code>）＋寫入類動作 toast（例如「iPhone 對 agent X 送出輸入」）；<code>control.state</code> takeover → 視窗未聚焦時送系統通知；<code>pairing.claimed</code> → 開啟核准對話框。</li>
