@@ -15,9 +15,6 @@ struct Harness {
 }
 impl Harness {
     fn new(script: &str) -> Self {
-        Self::with_backoff(script, Duration::from_millis(20))
-    }
-    fn with_backoff(script: &str, backoff: Duration) -> Self {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("companion");
         let bin = root.path().join("sidecar");
@@ -43,7 +40,6 @@ impl Harness {
             timing: Timing {
                 command: Duration::from_millis(500),
                 stop: Duration::from_millis(500),
-                backoff,
             },
         });
         Self {
@@ -277,6 +273,96 @@ done"#,
 }
 
 #[tokio::test]
+async fn companion_service_update_reply_carries_the_requested_change() {
+    // A lastSeen touch queued before the rename must not complete it.
+    let mut renamed: Value = serde_json::from_str(DEVICE).unwrap();
+    renamed["label"] = json!("Renamed");
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in
+    *'"device.update"'*) echo '{{"v":1,"type":"device.updated","device":{touched}}}'; sleep 0.2
+      echo '{{"v":1,"type":"device.updated","device":{renamed}}}';;
+    *'"shutdown"'*) exit 0;;
+  esac
+done"#,
+        touched = DEVICE.trim()
+    ));
+    Devices::load(&h.dir)
+        .unwrap()
+        .upsert(serde_json::from_str(DEVICE).unwrap())
+        .unwrap();
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    let reply = h
+        .manager
+        .device_command(json!({"type": "device.update", "deviceId": "AAAAAAAAAAAAAAAAAAAAAA", "label": "Renamed", "grants": null}))
+        .await
+        .unwrap();
+    assert_eq!(reply["device"]["label"], "Renamed");
+    assert_eq!(Devices::load(&h.dir).unwrap().all()[0]["label"], "Renamed");
+    h.manager.stop().await;
+}
+
+#[test]
+fn companion_service_snapshots_match_requests_by_value() {
+    let device: Value = serde_json::from_str(DEVICE).unwrap();
+    let update = |grants: Value| json!({"type": "device.update", "deviceId": "x", "label": null, "grants": grants});
+    // The gateway re-serializes timestamps; the instant is what counts.
+    assert!(reflects(
+        &update(json!({"control": {"until": "2030-01-02T00:00:00+00:00"}, "full": true})),
+        &device
+    ));
+    assert!(!reflects(
+        &update(json!({"control": {"until": "2030-01-02T00:00:01Z"}, "full": true})),
+        &device
+    ));
+    assert!(!reflects(
+        &update(json!({"control": null, "full": true})),
+        &device
+    ));
+    assert!(!reflects(
+        &update(json!({"control": {"until": "2030-01-02T00:00:00Z"}, "full": false})),
+        &device
+    ));
+    assert!(reflects(
+        &json!({"type": "device.unlock", "deviceId": "x"}),
+        &device
+    ));
+    let mut locked = device.clone();
+    locked["locked"] = json!(true);
+    assert!(!reflects(
+        &json!({"type": "device.unlock", "deviceId": "x"}),
+        &locked
+    ));
+}
+
+#[tokio::test]
+async fn companion_service_killed_gateway_output_cannot_undo_offline_edits() {
+    // A child outlives the kill and still holds stdout; what it writes
+    // afterwards must not bring back a device revoked while stopped.
+    let h = Harness::new(&format!(
+        r#"trap '' TERM; read init; echo '{READY}'
+( sleep 1.5; echo '{{"v":1,"type":"device.updated","device":{device}}}' ) &
+while :; do sleep 1; done"#,
+        device = DEVICE.trim()
+    ));
+    Devices::load(&h.dir)
+        .unwrap()
+        .upsert(serde_json::from_str(DEVICE).unwrap())
+        .unwrap();
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    h.manager.stop().await;
+    assert!(h.manager.idle());
+    h.manager
+        .edit_stopped(&json!({"type": "device.revoke", "deviceId": "AAAAAAAAAAAAAAAAAAAAAA"}))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    assert!(Devices::load(&h.dir).unwrap().all().is_empty());
+}
+
+#[tokio::test]
 async fn companion_service_unpersisted_device_change_halts_the_gateway() {
     let h = Harness::new(&format!(
         r#"read init; echo '{READY}'
@@ -306,7 +392,8 @@ done"#
 }
 
 #[tokio::test]
-async fn companion_service_restarts_a_crash_three_times_then_fails() {
+async fn companion_service_crash_fails_without_restarting() {
+    // A restart would leave Serve forwarding to an unbound port meanwhile.
     let h = Harness::new(&format!(
         r#"read init; echo start >> "$0.starts"; echo '{READY}'; exit 1"#
     ));
@@ -318,34 +405,10 @@ async fn companion_service_restarts_a_crash_three_times_then_fails() {
             }
     })
     .await;
-    assert_eq!(h.sidecar_file("starts").lines().count(), 4);
     h.until("stop hook", |h| h.stops() == 1).await;
-}
-
-#[tokio::test]
-async fn companion_service_stop_cancels_a_scheduled_restart() {
-    let h = Harness::with_backoff(
-        &format!(r#"read init; echo start >> "$0.starts"; echo '{READY}'; exit 1"#),
-        Duration::from_millis(300),
-    );
-    h.manager.start(h.launch()).unwrap();
-    h.until("restart scheduled", |h| {
-        h.sidecar_file("starts").lines().count() == 1 && h.manager.status() == Status::Starting
-    })
-    .await;
-    h.manager.stop().await;
-    assert_eq!(h.manager.status(), Status::Disabled);
-    assert_eq!(
-        h.manager.start(h.launch()).map(drop),
-        Ok(()),
-        "a fresh start is allowed"
-    );
-    h.manager.stop().await;
-    let starts = h.sidecar_file("starts").lines().count();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(h.sidecar_file("starts").lines().count(), starts);
-    assert_eq!(h.manager.status(), Status::Disabled);
-    assert_eq!(h.stops(), 0, "requested stops do their own cleanup");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(h.sidecar_file("starts").lines().count(), 1);
+    assert!(h.manager.idle());
 }
 
 #[tokio::test]

@@ -4,7 +4,9 @@
 
 use crate::{
     companion_service::{device_summary, CompanionManager, Launch, Status},
-    companion_store::{device_id, AppliedServe, Devices, EnableFor, Settings},
+    companion_store::{
+        device_id, valid_grants, valid_label, AppliedServe, Devices, EnableFor, Settings,
+    },
     companion_tailscale as tailscale,
     herdr_service::HerdrState,
 };
@@ -12,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 
@@ -30,7 +32,8 @@ impl CompanionState {
         use tauri::Emitter;
         let ops = Arc::new(tokio::sync::Mutex::new(()));
         let emitter = app.clone();
-        let cleanup = (dir.clone(), ops.clone());
+        let current: Arc<OnceLock<Weak<CompanionManager>>> = Arc::default();
+        let cleanup = (dir.clone(), ops.clone(), current.clone());
         let manager = CompanionManager::new(
             dir.clone(),
             Arc::new(move |event| {
@@ -38,15 +41,25 @@ impl CompanionState {
             }),
             // Expiry, a crash or a halted gateway: nothing serves the port any more.
             Arc::new(move || {
-                let (dir, ops) = cleanup.clone();
+                let (dir, ops, current) = cleanup.clone();
                 tauri::async_runtime::spawn(async move {
                     let _turn = ops.lock().await;
+                    // An enable that took the lock first runs a new gateway
+                    // behind the same handler.
+                    if current
+                        .get()
+                        .and_then(Weak::upgrade)
+                        .is_some_and(|manager| !manager.idle())
+                    {
+                        return;
+                    }
                     if let Err(code) = remove_applied_serve(&dir).await {
                         log_warning("companion_serve_cleanup", &code);
                     }
                 });
             }),
         );
+        let _ = current.set(Arc::downgrade(&manager));
         // No handler may outlive its gateway: one left by a crash or a quit
         // points at a loopback port anyone can bind. Enable re-applies it.
         let stale = (dir.clone(), ops.clone());
@@ -129,17 +142,19 @@ pub async fn companion_tailscale_apply(
     }
     let _turn = state.ops.lock().await;
     let mut settings = Settings::load(&state.dir)?;
-    // Applying elsewhere would drop the only record of the older handler.
-    if settings.applied.as_ref().is_some_and(|applied| {
-        (applied.https_port, applied.gateway_port) != (settings.https_port, settings.gateway_port)
-    }) {
-        return Err("companion-tailscale-remove-first".into());
-    }
     // Re-check right before running: the user confirmed an earlier probe.
     let before = probe(&settings).await?;
     let (Some(cli), Some(node), Some(serve)) = (&before.cli, &before.node, &before.serve) else {
         return Err("companion-tailscale-unavailable".into());
     };
+    // A record for another port or node is the only handle on a handler that
+    // may still exist there; applying here would overwrite it.
+    if settings.applied.as_ref().is_some_and(|applied| {
+        (applied.https_port, applied.gateway_port) != (settings.https_port, settings.gateway_port)
+            || node.dns_name.as_deref() != Some(applied.host.as_str())
+    }) {
+        return Err("companion-tailscale-remove-first".into());
+    }
     if let Some(refusal) = before.refusal {
         return Err(format!(
             "companion-tailscale-refused: {}",
@@ -164,7 +179,7 @@ pub async fn companion_tailscale_apply(
             .await?;
         }
         // Without the https capability the CLI can exit 0 having applied nothing.
-        settle(&settings, tailscale::PortState::Ours).await
+        settle(&settings, |port| port == tailscale::PortState::Ours).await
     }
     .await;
     if applied.is_err() {
@@ -192,6 +207,26 @@ pub async fn companion_enable(
     window: EnableFor,
 ) -> Result<Status, String> {
     let _turn = state.ops.lock().await;
+    // Before anything changes: a running gateway keeps its own enableUntil
+    // and the handler it is serving behind.
+    if !state.manager.idle() {
+        return Err("companion-already-running".into());
+    }
+    let started = enable(&state, &herdr, window).await;
+    if started.is_err() {
+        // Nothing may stay behind the handler. Enable applies it again.
+        if let Err(code) = remove_applied_serve(&state.dir).await {
+            log_warning("companion_serve_cleanup", &code);
+        }
+    }
+    started
+}
+
+async fn enable(
+    state: &CompanionState,
+    herdr: &HerdrState,
+    window: EnableFor,
+) -> Result<Status, String> {
     let mut settings = Settings::load(&state.dir)?;
     let applied = settings
         .applied
@@ -378,14 +413,7 @@ async fn change_device(state: &CompanionState, frame: Value) -> Result<(), Strin
     }
     // Enable and disable change the status only while holding this.
     let _turn = state.ops.lock().await;
-    edit_stopped(&state.manager, &state.dir, &frame)
-}
-
-fn edit_stopped(manager: &CompanionManager, dir: &Path, frame: &Value) -> Result<(), String> {
-    if !manager.idle() {
-        return Err("companion-busy".into());
-    }
-    Devices::load(dir)?.apply(frame)
+    state.manager.edit_stopped(&frame)
 }
 
 fn stored_device(dir: &Path, id: &str) -> Result<Value, String> {
@@ -438,10 +466,13 @@ async fn probe(settings: &Settings) -> Result<TailscaleProbe, String> {
 }
 
 /// Serve changes land asynchronously in tailscaled; re-read until they show.
-async fn settle(settings: &Settings, want: tailscale::PortState) -> Result<TailscaleProbe, String> {
+async fn settle(
+    settings: &Settings,
+    done: impl Fn(tailscale::PortState) -> bool,
+) -> Result<TailscaleProbe, String> {
     for attempt in 0..5 {
         let current = probe(settings).await?;
-        if current.serve.as_ref().map(|s| s.port) == Some(want) {
+        if current.serve.as_ref().is_some_and(|serve| done(serve.port)) {
             return Ok(current);
         }
         tokio::time::sleep(Duration::from_millis(200 << attempt)).await;
@@ -476,7 +507,14 @@ async fn remove_serve(dir: &Path, forget_absent: bool) -> Result<(), String> {
     match removal(current.serve.as_ref(), host, &applied)? {
         Some(off) => {
             tailscale::run(&cli.path, &off).await?;
-            settle(&at_applied, tailscale::PortState::Free).await?;
+            // A port the user also mounted something on stays, without our root.
+            settle(&at_applied, |port| {
+                !matches!(
+                    port,
+                    tailscale::PortState::Ours | tailscale::PortState::Shared
+                )
+            })
+            .await?;
         }
         None if !forget_absent => return Err("companion-tailscale-unverified".into()),
         None => {}
@@ -486,7 +524,7 @@ async fn remove_serve(dir: &Path, forget_absent: bool) -> Result<(), String> {
 }
 
 /// The `serve … off` arguments, or `None` once nothing of ours is left on
-/// the node it was applied to (free, or replaced). Logged out, or another
+/// the node it was applied to (free, or our root replaced). Logged out, or another
 /// profile or node name: ours may still be configured there, so keep the record.
 fn removal(
     serve: Option<&tailscale::Serve>,
@@ -586,79 +624,6 @@ fn qr_svg(url: &str) -> Result<String, String> {
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(240, 240)
         .build())
-}
-
-/// The gateway's own label rule (`companion/src/devices.rs`): a label it
-/// rejects would make init fail at the next start.
-fn valid_label(label: &str) -> Result<(), String> {
-    if !label.is_empty()
-        && label.len() <= 80
-        && label.trim() == label
-        && label.chars().all(|c| !c.is_control() && !label_format(c))
-    {
-        Ok(())
-    } else {
-        Err("companion-label-invalid".into())
-    }
-}
-
-// Mirrors the gateway's explicit Unicode Cf list.
-fn label_format(c: char) -> bool {
-    matches!(c as u32,
-        0x00ad | 0x0600..=0x0605 | 0x061c | 0x06dd | 0x070f | 0x0890..=0x0891 |
-        0x08e2 | 0x180e | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x2064 |
-        0x2066..=0x206f | 0xfeff | 0xfff9..=0xfffb | 0x110bd | 0x110cd |
-        0x13430..=0x1343f | 0x1bca0..=0x1bca3 | 0x1d173..=0x1d17a |
-        0xe0001 | 0xe0020..=0xe007f)
-}
-
-/// The gateway's timestamp rule (`companion/src/clock.rs`): chrono alone
-/// accepts more RFC 3339 variants than the admin protocol.
-fn valid_until(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    let Some(core) = bytes
-        .strip_suffix(b"Z")
-        .or_else(|| bytes.strip_suffix(b"+00:00"))
-    else {
-        return false;
-    };
-    let shape = core.len() >= 19
-        && core[..19].iter().enumerate().all(|(i, byte)| match i {
-            4 | 7 => *byte == b'-',
-            10 => *byte == b'T',
-            13 | 16 => *byte == b':',
-            _ => byte.is_ascii_digit(),
-        })
-        && (core.len() == 19
-            || ((21..=29).contains(&core.len())
-                && core[19] == b'.'
-                && core[20..].iter().all(u8::is_ascii_digit)));
-    shape
-        && chrono::DateTime::parse_from_rfc3339(value)
-            .is_ok_and(|parsed| parsed.timestamp_subsec_nanos() < 1_000_000_000)
-}
-
-/// `{control: {until} | null, full: bool}`, exactly; init rejects anything else.
-fn valid_grants(grants: &Value) -> Result<(), String> {
-    let Some(object) = grants.as_object() else {
-        return Err("companion-grants-invalid".into());
-    };
-    let control_ok = match object.get("control") {
-        Some(Value::Null) => true,
-        Some(Value::Object(control)) => {
-            control.len() == 1
-                && control
-                    .get("until")
-                    .and_then(Value::as_str)
-                    .is_some_and(valid_until)
-        }
-        _ => false,
-    };
-    if object.len() == 2 && control_ok && object.get("full").is_some_and(Value::is_boolean) {
-        Ok(())
-    } else {
-        Err("companion-grants-invalid".into())
-    }
 }
 
 fn log_warning(event: &str, message: &str) {

@@ -3,9 +3,11 @@
 //! No secrets live here. Files are written atomically and owner-only; a
 //! corrupt file is backed up and kept, and Companion stays off until resolved.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::HashSet,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -33,7 +35,7 @@ impl Devices {
             Some(file) => file.devices,
             None => Vec::new(),
         };
-        if devices.iter().any(|device| device_id(device).is_none()) {
+        if !valid_devices(&devices) {
             return Err(corrupt(&path));
         }
         Ok(Self { path, devices })
@@ -128,6 +130,129 @@ fn mixed(old: &Value, new: &Value) -> bool {
     let tightening = new_until < old_until || (!full(new) && full(old));
     let widening = new_until > old_until || (full(new) && !full(old));
     tightening && widening
+}
+
+/// The gateway's init rules for stored devices (`companion/src/devices.rs`),
+/// except credential key state, which only the gateway parses. Checked on load
+/// only: a file that fails them would fail every start, so it is backed up as
+/// corrupt instead. Never stricter than the gateway, or a good file is lost.
+fn valid_devices(devices: &[Value]) -> bool {
+    const FIELDS: [&str; 7] = [
+        "deviceId",
+        "label",
+        "credentials",
+        "grants",
+        "locked",
+        "createdAt",
+        "lastSeen",
+    ];
+    let timestamp = |value: &Value| {
+        value
+            .as_str()
+            .filter(|value| valid_until(value))
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+    };
+    let mut ids = HashSet::new();
+    let mut credentials = HashSet::new();
+    devices.len() <= 64
+        && devices.iter().all(|device| {
+            device
+                .as_object()
+                .is_some_and(|d| d.len() == FIELDS.len() && FIELDS.iter().all(|f| d.contains_key(*f)))
+                && device["deviceId"].as_str().is_some_and(|id| {
+                    id.len() == 22
+                        && URL_SAFE_NO_PAD.decode(id).is_ok_and(|bytes| bytes.len() == 16)
+                        && ids.insert(id.to_owned())
+                })
+                && device["label"].as_str().is_some_and(|label| valid_label(label).is_ok())
+                && valid_grants(&device["grants"]).is_ok()
+                && device["locked"].is_boolean()
+                && matches!(
+                    (timestamp(&device["createdAt"]), timestamp(&device["lastSeen"])),
+                    (Some(created), Some(seen)) if seen >= created
+                )
+                // Credential ids are unique per relying party across all devices.
+                && device["credentials"].as_array().is_some_and(|list| {
+                    (1..=8).contains(&list.len())
+                        && list.iter().all(|c| match (c["rpId"].as_str(), c["id"].as_str()) {
+                            (Some(rp), Some(id)) => credentials.insert((rp.to_owned(), id.to_owned())),
+                            _ => false,
+                        })
+                })
+        })
+}
+
+/// The gateway's own label rule (`companion/src/devices.rs`): a label it
+/// rejects would make init fail at the next start.
+pub(crate) fn valid_label(label: &str) -> Result<(), String> {
+    if !label.is_empty()
+        && label.len() <= 80
+        && label.trim() == label
+        && label.chars().all(|c| !c.is_control() && !label_format(c))
+    {
+        Ok(())
+    } else {
+        Err("companion-label-invalid".into())
+    }
+}
+
+// Mirrors the gateway's explicit Unicode Cf list.
+fn label_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00ad | 0x0600..=0x0605 | 0x061c | 0x06dd | 0x070f | 0x0890..=0x0891 |
+        0x08e2 | 0x180e | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x2064 |
+        0x2066..=0x206f | 0xfeff | 0xfff9..=0xfffb | 0x110bd | 0x110cd |
+        0x13430..=0x1343f | 0x1bca0..=0x1bca3 | 0x1d173..=0x1d17a |
+        0xe0001 | 0xe0020..=0xe007f)
+}
+
+/// The gateway's timestamp rule (`companion/src/clock.rs`): chrono alone
+/// accepts more RFC 3339 variants than the admin protocol.
+pub(crate) fn valid_until(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let Some(core) = bytes
+        .strip_suffix(b"Z")
+        .or_else(|| bytes.strip_suffix(b"+00:00"))
+    else {
+        return false;
+    };
+    let shape = core.len() >= 19
+        && core[..19].iter().enumerate().all(|(i, byte)| match i {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 => *byte == b':',
+            _ => byte.is_ascii_digit(),
+        })
+        && (core.len() == 19
+            || ((21..=29).contains(&core.len())
+                && core[19] == b'.'
+                && core[20..].iter().all(u8::is_ascii_digit)));
+    shape
+        && chrono::DateTime::parse_from_rfc3339(value)
+            .is_ok_and(|parsed| parsed.timestamp_subsec_nanos() < 1_000_000_000)
+}
+
+/// `{control: {until} | null, full: bool}`, exactly; init rejects anything else.
+pub(crate) fn valid_grants(grants: &Value) -> Result<(), String> {
+    let Some(object) = grants.as_object() else {
+        return Err("companion-grants-invalid".into());
+    };
+    let control_ok = match object.get("control") {
+        Some(Value::Null) => true,
+        Some(Value::Object(control)) => {
+            control.len() == 1
+                && control
+                    .get("until")
+                    .and_then(Value::as_str)
+                    .is_some_and(valid_until)
+        }
+        _ => false,
+    };
+    if object.len() == 2 && control_ok && object.get("full").is_some_and(Value::is_boolean) {
+        Ok(())
+    } else {
+        Err("companion-grants-invalid".into())
+    }
 }
 
 pub fn device_id(device: &Value) -> Option<&str> {
@@ -244,7 +369,10 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     file.write_all(&bytes).map_err(failed)?;
     file.sync_all().map_err(failed)?;
     drop(file);
-    std::fs::rename(&tmp, path).map_err(failed)
+    crate::ssh_service::retry_transient(crate::ssh_service::windows_scanner_held, || {
+        std::fs::rename(&tmp, path)
+    })
+    .map_err(failed)
 }
 
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {

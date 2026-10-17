@@ -71,68 +71,6 @@ fn companion_public_host_omits_the_default_port() {
 }
 
 #[test]
-fn companion_device_edits_are_validated_before_they_reach_init() {
-    assert!(valid_grants(&json!({"control": null, "full": false})).is_ok());
-    assert!(
-        valid_grants(&json!({"control": {"until": "2030-01-01T00:15:00Z"}, "full": true})).is_ok()
-    );
-    for bad in [
-        json!(null),
-        json!({"control": null}),
-        json!({"control": null, "full": "yes"}),
-        json!({"control": {"until": "soon"}, "full": false}),
-        json!({"control": {"until": "2030-01-01T08:15:00+08:00"}, "full": false}),
-        json!({"control": {"until": "2030-01-01T00:15:00Z", "extra": 1}, "full": false}),
-        json!({"control": null, "full": false, "admin": true}),
-    ] {
-        assert_eq!(
-            valid_grants(&bad).unwrap_err(),
-            "companion-grants-invalid",
-            "{bad}"
-        );
-    }
-    for good in ["iPhone", "📱 Yuuzu の iPhone", &"x".repeat(80)] {
-        assert!(valid_label(good).is_ok(), "{good}");
-    }
-    // The gateway's rules: 80 bytes, trimmed, no controls or format characters.
-    for bad in [
-        "",
-        "line\nbreak",
-        " leading",
-        "trailing ",
-        "zero\u{200b}width",
-        "bidi\u{202e}override",
-        "soft\u{ad}hyphen",
-        &"x".repeat(81),
-        &"é".repeat(41),
-    ] {
-        assert_eq!(
-            valid_label(bad).unwrap_err(),
-            "companion-label-invalid",
-            "{bad:?}"
-        );
-    }
-    for good in [
-        "2030-01-01T00:15:00Z",
-        "2030-01-01T00:15:00+00:00",
-        "2030-01-01T00:15:00.123456789Z",
-    ] {
-        assert!(valid_until(good), "{good}");
-    }
-    for bad in [
-        "2030-01-01t00:15:00Z",
-        "2030-01-01 00:15:00Z",
-        "2030-01-01T00:15:00.Z",
-        "2030-01-01T00:15:00.1234567890Z",
-        "2030-01-01T00:15:60Z",
-        "2030-01-01T00:15:00-00:00",
-        "2030-02-30T00:15:00Z",
-    ] {
-        assert!(!valid_until(bad), "{bad}");
-    }
-}
-
-#[test]
 fn companion_serve_record_is_kept_while_ours_may_still_serve() {
     let check = |file: &str| {
         let json = std::fs::read_to_string(
@@ -147,10 +85,20 @@ fn companion_serve_record_is_kept_while_ours_may_still_serve() {
     let host = Some("desktop.tail1234.ts.net");
     let ours = check("serve-ours.json");
     assert_eq!(ours.port, tailscale::PortState::Ours);
-    assert_eq!(
-        removal(Some(&ours), host, &applied()).unwrap(),
-        Some(vec!["serve".into(), "--https=8443".into(), "off".into()])
-    );
+    // Ours, alone or next to a mount the user added: only our root goes.
+    let shared = check("serve-extra-mount.json");
+    assert_eq!(shared.port, tailscale::PortState::Shared);
+    for serve in [&ours, &shared] {
+        assert_eq!(
+            removal(Some(serve), host, &applied()).unwrap(),
+            Some(vec![
+                "serve".into(),
+                "--https=8443".into(),
+                "--set-path=/".into(),
+                "off".into()
+            ])
+        );
+    }
     // Nothing of ours left on that node: the record can go.
     let free = tailscale::check_serve("null", "desktop.tail1234.ts.net", 8443, 47110).unwrap();
     let taken = check("serve-taken.json");
@@ -197,17 +145,14 @@ async fn companion_offline_device_edits_wait_for_a_stopped_gateway() {
         })
         .unwrap();
     assert_eq!(manager.status(), Status::Starting);
-    assert_eq!(
-        edit_stopped(&manager, &dir, &rename).unwrap_err(),
-        "companion-busy"
-    );
+    assert_eq!(manager.edit_stopped(&rename).unwrap_err(), "companion-busy");
     assert_eq!(
         stored_device(&dir, "AAAAAAAAAAAAAAAAAAAAAA").unwrap()["label"],
         "Test phone"
     );
     manager.stop().await;
     assert_eq!(manager.status(), Status::Disabled);
-    edit_stopped(&manager, &dir, &rename).unwrap();
+    manager.edit_stopped(&rename).unwrap();
     assert_eq!(
         stored_device(&dir, "AAAAAAAAAAAAAAAAAAAAAA").unwrap()["label"],
         "Renamed"
@@ -219,12 +164,9 @@ async fn companion_offline_device_edits_wait_for_a_stopped_gateway() {
     };
     assert!(manager.start(missing).is_err());
     assert!(matches!(manager.status(), Status::Failed { .. }));
-    edit_stopped(
-        &manager,
-        &dir,
-        &json!({"type": "device.revoke", "deviceId": "AAAAAAAAAAAAAAAAAAAAAA"}),
-    )
-    .unwrap();
+    manager
+        .edit_stopped(&json!({"type": "device.revoke", "deviceId": "AAAAAAAAAAAAAAAAAAAAAA"}))
+        .unwrap();
     assert!(Devices::load(&dir).unwrap().all().is_empty());
 }
 

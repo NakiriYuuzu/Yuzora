@@ -198,6 +198,8 @@ pub enum PortState {
     Free,
     /// Exactly the handler `serve_args` creates for this gateway port.
     Ours,
+    /// Our `/` proxy, plus mounts someone added on the same origin.
+    Shared,
     Taken,
 }
 
@@ -231,12 +233,20 @@ pub fn check_serve(
         .foreground
         .values()
         .any(|fg| fg.tcp.contains_key(&port_key) || fg.web.contains_key(&web_key));
-    let ours_web = json!({"Handlers": {"/": {"Proxy": proxy_target(gateway_port)}}});
+    let ours_root = json!({"Proxy": proxy_target(gateway_port)});
     let port = match (config.tcp.get(&port_key), config.web.get(&web_key)) {
         _ if foreground_uses_port => PortState::Taken,
         (None, None) => PortState::Free,
-        (Some(tcp), Some(web)) if *tcp == json!({"HTTPS": true}) && *web == ours_web => {
-            PortState::Ours
+        (Some(tcp), Some(web))
+            if *tcp == json!({"HTTPS": true})
+                && web.as_object().is_some_and(|web| web.len() == 1)
+                && web["Handlers"]["/"] == ours_root =>
+        {
+            if web["Handlers"].as_object().is_some_and(|h| h.len() == 1) {
+                PortState::Ours
+            } else {
+                PortState::Shared
+            }
         }
         _ => PortState::Taken,
     };
@@ -278,7 +288,8 @@ pub fn refusal(node: &Node, serve: &Serve) -> Option<Refusal> {
         Some(Refusal::HttpsNotReady)
     } else if serve.funnel {
         Some(Refusal::Funnel)
-    } else if serve.port == PortState::Taken {
+    } else if matches!(serve.port, PortState::Taken | PortState::Shared) {
+        // Another mount on the same origin can read the Companion's cookies.
         Some(Refusal::PortTaken)
     } else {
         None
@@ -299,13 +310,15 @@ pub fn serve_args(https_port: u16, gateway_port: u16) -> Vec<String> {
     ]
 }
 
-/// Only a handler that is exactly ours may be turned off; anything else on the
-/// port belongs to the user.
+/// Removes only our `/` mount. Mounts someone added on the port stay, and so
+/// does the port while it has any; without `--set-path` the CLI would remove
+/// every mount (after a prompt).
 pub fn off_args(serve: &Serve, https_port: u16) -> Option<Vec<String>> {
-    (serve.port == PortState::Ours).then(|| {
+    matches!(serve.port, PortState::Ours | PortState::Shared).then(|| {
         vec![
             "serve".into(),
             format!("--https={https_port}"),
+            "--set-path=/".into(),
             "off".into(),
         ]
     })

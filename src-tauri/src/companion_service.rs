@@ -17,19 +17,14 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 
-const MAX_RESTARTS: u32 = 3;
-
 #[derive(Clone, Copy)]
 struct Timing {
     command: Duration,
     stop: Duration,
-    /// Doubled for each restart.
-    backoff: Duration,
 }
 const TIMING: Timing = Timing {
     command: Duration::from_secs(5),
     stop: Duration::from_secs(2),
-    backoff: Duration::from_secs(1),
 };
 /// HERDR finds its sessions through HOME (and XDG on Linux); nothing else
 /// from the desktop environment, such as imported API keys, reaches the gateway.
@@ -78,7 +73,6 @@ pub enum Status {
     },
 }
 
-#[derive(Clone)]
 pub struct Launch {
     pub program: PathBuf,
     /// The init frame without `devices`; they are read from disk at every start.
@@ -107,12 +101,10 @@ struct Inner {
     status: Status,
     generation: u64,
     process: Option<Process>,
-    launch: Option<Launch>,
-    restarts: u32,
     ready: bool,
     expired: bool,
     last_error: Option<String>,
-    /// Set when this side ends the process; `on_exit` applies it instead of restarting.
+    /// Set when this side ends the process; `on_exit` applies it as the outcome.
     terminal: Option<Status>,
     pending: Option<Pending>,
 }
@@ -161,6 +153,16 @@ impl CompanionManager {
         inner.process.is_none() && matches!(inner.status, Status::Disabled | Status::Failed { .. })
     }
 
+    /// Applies a device command to devices.json while no gateway can write
+    /// it. The store lock orders this after an event still being persisted.
+    pub fn edit_stopped(&self, frame: &Value) -> Result<(), String> {
+        let _store = self.store.lock().unwrap();
+        if !self.idle() {
+            return Err("companion-busy".into());
+        }
+        Devices::load(&self.dir)?.apply(frame)
+    }
+
     pub fn devices(&self) -> Result<Vec<Value>, String> {
         Ok(Devices::load(&self.dir)?
             .all()
@@ -177,7 +179,6 @@ impl CompanionManager {
             {
                 return Err("companion-already-running".into());
             }
-            inner.restarts = 0;
             inner.expired = false;
             inner.status = Status::Starting;
             inner.generation
@@ -247,7 +248,6 @@ impl CompanionManager {
                 kill: Some(kill),
                 exited,
             });
-            inner.launch = Some(launch);
             inner.ready = false;
             inner.last_error = None;
             inner.terminal = None;
@@ -354,7 +354,10 @@ impl CompanionManager {
                         let id = id.unwrap_or_default();
                         resolve(
                             &mut inner,
-                            |want| matches!(want, Want::Device { id: wanted, done, .. } if *wanted == id && *done == kind),
+                            |want| {
+                                matches!(want, Want::Device { id: wanted, done, frame } if *wanted == id && *done == kind
+                                && (kind != "device.updated" || reflects(frame, &event["device"])))
+                            },
                             Ok(event.clone()),
                         );
                         outgoing.push(match kind.as_str() {
@@ -436,67 +439,44 @@ impl CompanionManager {
         }
     }
 
+    /// No automatic restart: while a replacement would back off, Serve would
+    /// forward the tailnet to a loopback port any local process could bind.
     fn on_exit(self: &Arc<Self>, generation: u64) {
-        let (status, restart, stopped) = {
+        let (status, stopped) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.generation != generation {
                 return;
             }
+            // Output still buffered from this process, or from a child that
+            // outlived a kill, must not reach devices.json after this.
+            inner.generation += 1;
             inner.process = None;
             if let Some(pending) = inner.pending.take() {
                 let _ = pending.reply.send(Err("companion-exited".into()));
             }
             let requested = inner.terminal == Some(Status::Disabled);
-            let (status, restart) = if let Some(terminal) = inner.terminal.take() {
-                (terminal, false)
+            let status = if let Some(terminal) = inner.terminal.take() {
+                terminal
             } else if inner.expired {
-                (Status::Disabled, false)
+                Status::Disabled
             } else if !inner.ready {
-                // Configuration errors (port in use, web root) do not heal by retrying.
-                let code = inner
-                    .last_error
-                    .clone()
-                    .unwrap_or_else(|| "companion-exited".into());
-                (Status::Failed { code }, false)
-            } else if inner.restarts < MAX_RESTARTS {
-                inner.restarts += 1;
-                (Status::Starting, true)
+                Status::Failed {
+                    code: inner
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "companion-exited".into()),
+                }
             } else {
-                (
-                    Status::Failed {
-                        code: "companion-crashed".into(),
-                    },
-                    false,
-                )
+                Status::Failed {
+                    code: "companion-crashed".into(),
+                }
             };
             inner.status = status.clone();
-            let restart = restart.then(|| (inner.launch.clone(), inner.restarts));
-            let stopped = !requested && !matches!(status, Status::Starting);
-            (status, restart, stopped)
+            (status, !requested)
         };
         (self.emit)(status_event(&status));
         if stopped {
             (self.stopped)();
-        }
-        if let Some((Some(launch), attempt)) = restart {
-            let manager = self.clone();
-            let delay = self.timing.backoff * (1 << (attempt - 1));
-            tokio::spawn(async move {
-                tokio::time::sleep(delay).await;
-                let expected = {
-                    let inner = manager.inner.lock().unwrap();
-                    (inner.generation == generation && inner.status == Status::Starting)
-                        .then_some(inner.generation)
-                };
-                // A restart keeps the original enableUntil from the same init.
-                if let Some(expected) = expected {
-                    if manager.spawn(launch, expected).is_err()
-                        && matches!(manager.status(), Status::Failed { .. })
-                    {
-                        (manager.stopped)();
-                    }
-                }
-            });
         }
     }
 
@@ -629,6 +609,28 @@ impl CompanionManager {
 fn resolve(inner: &mut Inner, matches: impl Fn(&Want) -> bool, result: Result<Value, String>) {
     if inner.pending.as_ref().is_some_and(|p| matches(&p.want)) {
         let _ = inner.pending.take().unwrap().reply.send(result);
+    }
+}
+
+/// Whether a `device.updated` snapshot carries this command's change. The
+/// gateway also reports background changes such as `lastSeen`, and it
+/// re-serializes timestamps, so `until` compares as an instant.
+fn reflects(frame: &Value, device: &Value) -> bool {
+    let until = |grants: &Value| {
+        grants["control"]["until"]
+            .as_str()
+            .map(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+    };
+    match frame["type"].as_str() {
+        Some("device.unlock") => device["locked"] == false,
+        Some("device.update") => {
+            let (label, grants) = (&frame["label"], &frame["grants"]);
+            (label.is_null() || device["label"] == *label)
+                && (grants.is_null()
+                    || (device["grants"]["full"] == grants["full"]
+                        && until(&device["grants"]) == until(grants)))
+        }
+        _ => false,
     }
 }
 

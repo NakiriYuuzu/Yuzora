@@ -89,7 +89,7 @@ fn companion_tailscale_serve_port_states() {
         ("ours", PortState::Ours),
         ("ours-and-other-port", PortState::Ours),
         ("taken", PortState::Taken),
-        ("extra-mount", PortState::Taken),
+        ("extra-mount", PortState::Shared),
         ("tcp-forward", PortState::Taken),
         ("funnel", PortState::Free),
         ("foreground", PortState::Taken),
@@ -145,6 +145,10 @@ fn companion_tailscale_refusals_in_order() {
     assert_eq!(refusal(&ready, &serve("funnel")), Some(Refusal::Funnel));
     assert_eq!(refusal(&ready, &serve("taken")), Some(Refusal::PortTaken));
     assert_eq!(
+        refusal(&ready, &serve("extra-mount")),
+        Some(Refusal::PortTaken)
+    );
+    assert_eq!(
         refusal(&ready, &serve("foreground")),
         Some(Refusal::PortTaken)
     );
@@ -159,11 +163,15 @@ fn companion_tailscale_commands_add_and_remove_only_ours() {
         serve_args(8443, GATEWAY),
         ["serve", "--bg", "--https=8443", "http://127.0.0.1:43123"]
     );
-    assert_eq!(
-        off_args(&serve("ours"), 8443).unwrap(),
-        ["serve", "--https=8443", "off"]
-    );
-    for name in ["null", "taken", "extra-mount", "tcp-forward", "foreground"] {
+    // Only our root mount goes; a mount the user added keeps the port.
+    for name in ["ours", "extra-mount"] {
+        assert_eq!(
+            off_args(&serve(name), 8443).unwrap(),
+            ["serve", "--https=8443", "--set-path=/", "off"],
+            "{name}"
+        );
+    }
+    for name in ["null", "taken", "tcp-forward", "foreground"] {
         assert_eq!(off_args(&serve(name), 8443), None, "{name}");
     }
 }

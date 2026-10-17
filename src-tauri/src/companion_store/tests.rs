@@ -195,3 +195,132 @@ fn companion_store_files_are_owner_only() {
     assert_eq!(mode(&dir.join("devices.json")), 0o600);
     assert_eq!(mode(&dir.join("settings.json")), 0o600);
 }
+
+#[test]
+fn companion_store_validation_matches_the_gateway() {
+    assert!(valid_grants(&json!({"control": null, "full": false})).is_ok());
+    assert!(
+        valid_grants(&json!({"control": {"until": "2030-01-01T00:15:00Z"}, "full": true})).is_ok()
+    );
+    for bad in [
+        json!(null),
+        json!({"control": null}),
+        json!({"control": null, "full": "yes"}),
+        json!({"control": {"until": "soon"}, "full": false}),
+        json!({"control": {"until": "2030-01-01T08:15:00+08:00"}, "full": false}),
+        json!({"control": {"until": "2030-01-01T00:15:00Z", "extra": 1}, "full": false}),
+        json!({"control": null, "full": false, "admin": true}),
+    ] {
+        assert_eq!(
+            valid_grants(&bad).unwrap_err(),
+            "companion-grants-invalid",
+            "{bad}"
+        );
+    }
+    for good in ["iPhone", "📱 Yuuzu の iPhone", &"x".repeat(80)] {
+        assert!(valid_label(good).is_ok(), "{good}");
+    }
+    // The gateway's rules: 80 bytes, trimmed, no controls or format characters.
+    for bad in [
+        "",
+        "line\nbreak",
+        " leading",
+        "trailing ",
+        "zero\u{200b}width",
+        "bidi\u{202e}override",
+        "soft\u{ad}hyphen",
+        &"x".repeat(81),
+        &"é".repeat(41),
+    ] {
+        assert_eq!(
+            valid_label(bad).unwrap_err(),
+            "companion-label-invalid",
+            "{bad:?}"
+        );
+    }
+    for good in [
+        "2030-01-01T00:15:00Z",
+        "2030-01-01T00:15:00+00:00",
+        "2030-01-01T00:15:00.123456789Z",
+    ] {
+        assert!(valid_until(good), "{good}");
+    }
+    for bad in [
+        "2030-01-01t00:15:00Z",
+        "2030-01-01 00:15:00Z",
+        "2030-01-01T00:15:00.Z",
+        "2030-01-01T00:15:00.1234567890Z",
+        "2030-01-01T00:15:60Z",
+        "2030-01-01T00:15:00-00:00",
+        "2030-02-30T00:15:00Z",
+    ] {
+        assert!(!valid_until(bad), "{bad}");
+    }
+}
+
+#[test]
+fn companion_store_load_rejects_what_gateway_init_would() {
+    let load = |devices: Vec<Value>| {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("devices.json"),
+            json!({"version": 1, "devices": devices}).to_string(),
+        )
+        .unwrap();
+        Devices::load(dir.path()).map(|d| d.all().len())
+    };
+    // Distinct ids and credentials, as the gateway would emit them.
+    let numbered = |n: u8| {
+        let mut device = device();
+        device["deviceId"] = json!(URL_SAFE_NO_PAD.encode([n; 16]));
+        device["credentials"][0]["id"] = json!(URL_SAFE_NO_PAD.encode([n]));
+        device
+    };
+    // Good files load, up to the gateway's limit.
+    assert_eq!(load(vec![device()]), Ok(1));
+    let mut offset = device();
+    offset["createdAt"] = json!("2030-01-01T00:00:00+00:00");
+    offset["lastSeen"] = json!("2030-01-01T00:00:00.5Z");
+    assert_eq!(load(vec![offset]), Ok(1));
+    assert_eq!(load((0..64).map(numbered).collect()), Ok(64));
+    let mut cases: Vec<(&str, Vec<Value>)> = vec![
+        ("65 devices", (0..65).map(numbered).collect()),
+        ("duplicate deviceId", vec![device(), device()]),
+    ];
+    let mut shared = numbered(1);
+    shared["credentials"] = device()["credentials"].clone();
+    cases.push(("credential on two devices", vec![device(), shared]));
+    let mut broken = |name: &'static str, change: fn(&mut Value)| {
+        let mut device = device();
+        change(&mut device);
+        cases.push((name, vec![device]));
+    };
+    broken("unknown field", |d| d["extra"] = json!(1));
+    broken("missing field", |d| {
+        d.as_object_mut().unwrap().remove("locked");
+    });
+    broken("non-canonical id", |d| {
+        d["deviceId"] = json!("AAAAAAAAAAAAAAAAAAAAAB")
+    });
+    broken("short id", |d| d["deviceId"] = json!("AAAA"));
+    broken("label", |d| d["label"] = json!(" padded"));
+    broken("grants", |d| d["grants"] = json!({"control": null}));
+    broken("locked", |d| d["locked"] = json!("no"));
+    broken("timestamp shape", |d| {
+        d["createdAt"] = json!("2030-01-01 00:00:00Z")
+    });
+    broken("seen before created", |d| {
+        d["lastSeen"] = json!("2029-12-31T23:59:59Z")
+    });
+    broken("no credentials", |d| d["credentials"] = json!([]));
+    broken("credential without rpId", |d| {
+        d["credentials"][0].as_object_mut().unwrap().remove("rpId");
+    });
+    for (name, devices) in cases {
+        assert_eq!(
+            load(devices),
+            Err("companion-store-corrupt".into()),
+            "{name}"
+        );
+    }
+}
