@@ -647,7 +647,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
         <li><code class="status">[x]</code> <code>SettingsDialog.tsx</code> 新增 SectionId <code>companion</code>（lucide <code>Smartphone</code>，放在 <code>safety</code> 附近），僅在 Experimental 旗標開啟時顯示；<code>settings-search.ts</code> 加入索引。（2026-10-18 T3：本項與 8.3「關閉時不顯示設定頁以外的任何 UI」互相牴觸：分類若只在旗標開啟時出現，旗標就沒有地方可以打開。裁決為分類一律列出，最上方是 Experimental 開關，關閉時其他內容全部隱藏。索引涵蓋開關、Tailscale、Session 與裝置，並加上「手機、遠端、配對」等別名。）</li>
         <li><code class="status">[x]</code> <code>CompanionSettingsSection</code>：Experimental Badge；紅色警語「開啟後，已授權的手機可遠端操作 AI Agent，等同授予此電腦帳號的 shell 權限」；啟用 Switch＋期限 Select；Tailscale 卡片（狀態、DNS 名稱、登入者、HTTPS、Funnel、port、套用／移除）；LAN 卡片（Phase 6；2026-10-17 延後，本期不顯示）；Session 範圍；裝置 Table（名稱、路徑、最後連線、control 期限 15 分／1 小時／8 小時、full 開關、解鎖、撤銷）。清單使用 <code>ScrollArea</code>。（2026-10-18 T3：<code>src/app/workbench/CompanionSettingsSection.tsx</code>。由上而下：另一個 instance 擁有時的提示、Experimental 開關、紅色警語、Tailscale 卡片、Session 範圍、裝置。Tailscale 卡片顯示 CLI、版本、狀態、DNS 名稱、登入者、HTTPS、Funnel 與 port 狀態；拒絕原因與「找不到 CLI」各有指引；同 hostname 的其他 port 列為 cookie 警告。啟用時選擇期限，確認對話框原樣顯示 probe 回傳的指令，確認後才呼叫 <code>companion_enable</code>；剩餘時間依 <code>enableUntil</code> 計算，untilExit 則顯示「直到結束 Yuzora」，不顯示一年後的備援期限。停用中仍有 <code>settings.applied</code> 時提供「移除」。Session 只列本機原生 HERDR Session；allowlist 為空時手機什麼都看不到（gateway 的實際行為），畫面會說明；執行中修改會提示需要重新啟用。裝置列可改名、授予 control 15 分／1 小時／8 小時或改回僅檢視、解鎖，撤銷要先確認。每次只改一個欄位，另一個 grant 照原值帶回，所以不會同時收緊又放寬。和原規劃不同的地方：沒有「路徑」欄，因為本期只有 Tailscale；沒有 full 開關，因為目前沒有任何 UI 能開啟 <code>fullSessionEnabled</code>，full grant 單獨存在沒有作用，留給 Full Session 一起做；設定對話框本身會捲動，所以裝置清單沒有另外包 ScrollArea；替既有裝置加 passkey（<code>addToDevice</code>）沒有入口。）</li>
         <li><code class="status">[x]</code> <code>CompanionPairingDialog</code>：選擇路徑 → 顯示 QR SVG 與倒數，逾時自動作廢。（2026-10-18 T3：路徑固定為 tailscale，不需要選。每次開啟建立一個 pairing；SVG 只在 component 內包成 blob URL 交給 <code>&lt;img&gt;</code>，不進 zustand、不寫 log，關閉時 revoke。關閉時盡力送 cancel，錯誤忽略；已被手機領取時改由核准對話框接手，不送 cancel；收到 pairing.state 或倒數結束就關閉。）</li>
-        <li><code class="status">[x]</code> <code>CompanionApprovalDialog</code>（AlertDialog）：大字 SAS、裝置名稱、路徑、來源位址、Tailscale 登入者、User-Agent；核准／拒絕；視窗未聚焦時要求注意。（2026-10-18 T3：實作為全域的 <code>src/workbench/CompanionApprovalHost.tsx</code>，和 <code>CompanionBridge</code> 一起掛在 <code>App.tsx</code>：手機可能在設定對話框關掉之後才領取，放在設定頁裡就看不到。內容為大字 SAS、裝置名稱、Tailscale 登入者與 User-Agent，全部當純文字顯示。預設焦點在「拒絕」，按 Esc 或關閉一律視為拒絕，只有「核准」按鈕會核准。沒有來源位址，因為 Serve 不提供；也沒有要求視窗注意，因為主視窗沒有 <code>request-user-attention</code> 權限，這次不為它新增 capability。疊在設定對話框上方的實際效果要等 GUI 驗收。）</li>
+        <li><code class="status">[x]</code> <code>CompanionApprovalDialog</code>（AlertDialog）：大字 SAS、裝置名稱、路徑、來源位址、Tailscale 登入者、User-Agent；核准／拒絕；視窗未聚焦時要求注意。（2026-10-18 T3：實作為全域的 <code>src/workbench/CompanionApprovalHost.tsx</code>，和 <code>CompanionBridge</code> 一起掛在 <code>App.tsx</code>。（GUI 檢查後更正：原本寫的理由「手機可能在設定關掉後才領取」不成立，因為關閉配對對話框就會取消配對。放在全域沒有壞處，只是理由不對。）內容為大字 SAS、裝置名稱、Tailscale 登入者與 User-Agent，全部當純文字顯示。預設焦點在「拒絕」，按 Esc 或關閉一律視為拒絕，只有「核准」按鈕會核准。沒有來源位址，因為 Serve 不提供；也沒有要求視窗注意，因為主視窗沒有 <code>request-user-attention</code> 權限，這次不為它新增 capability。疊在設定對話框上方的實際效果要等 GUI 驗收。）</li>
         <li><code class="status">[x]</code> i18n：<code>companion.json</code>（zh-TW／en）。（2026-10-18 T3：兩個語系都有，錯誤碼依第一個 <code>: </code> 切開後對照翻譯，未知的碼或自由文字原樣顯示。）</li>
         <li><code class="status">[]</code> （2026-10-17）Tailscale 卡片加註兩點：啟用 HTTPS 憑證後，<code>&lt;device&gt;.&lt;tailnet&gt;.ts.net</code> 會寫進公開的 Certificate Transparency log（kb/1153），可以改用隨機的 tailnet DNS 名稱；手機必須以使用者帳號登入 tailnet、不能打 tag，因為 tagged 節點不會收到 identity header，會被拒。（2026-10-18 T3：兩則都放在 Tailscale 卡片底部。）</li>
       </ul>
@@ -1445,9 +1445,25 @@ GET  /ws                          WebSocket（cookie + Origin，首 frame {bindi
         </li>
         <li><strong>真 gateway 核准流程：</strong>暫時掛進一個 ignored 測試，用 4.1 打包出的 release sidecar 執行。手機的 claim 經 loopback 帶 Tailscale 身分 header 送出，回 200。收到的 <code>pairing.claimed</code> 欄位和 TS 型別完全一致；approve 得到 approved，reject 得到 rejected，取消未被領取的 pairing 也成功。對已結束的 pairing 再送 cancel 會回 <code>admin-command-rejected</code>，並轉送一則 error 事件；UI 本來就忽略這類錯誤。事件中沒有 pairing URL。這個測試沒有 commit。</li>
       </ul>
+      <p><strong>GUI 實機檢查（2026-10-18，CI 通過後依使用者指示執行）：</strong></p>
+      <ul>
+        <li><strong>環境：</strong>從本 lane 建出隔離的「Yuzora Acceptance」debug bundle，bundle 裡確實有 arm64 的 <code>Contents/MacOS/yuzora-companion</code> 與 <code>companion-web</code>，這是 4.1 第一次在真正的 .app 裡得到驗證。啟動時使用隔離 HOME、清掉 HERDR_*，假 tailscale CLI 放在 PATH 最前面；managed HERDR 0.9.5 前面加 guard，不在隔離環境就拒絕執行。已確認 Companion 資料目錄與 HERDR server 都在隔離 HOME 下。</li>
+        <li><strong>通過的項目：</strong>
+          <ul>
+            <li>旗標關閉時只顯示開關，打開後才出現警語、Tailscale 探測、Session 與裝置。</li>
+            <li>確認對話框原樣顯示指令。確認後，打包進去的 sidecar 在 127.0.0.1:47110 監聽，假 CLI 收到 <code>serve --bg</code> 並驗證成 Ours，狀態顯示「執行中、剩餘 7h 57m」，Port 顯示「正在提供 Companion」。</li>
+            <li>執行中修改 Session 會出現「需重新啟用」提示，且寫入磁碟。</li>
+            <li>配對 QR 正確疊在設定對話框上。截圖的 QR 解碼後，模擬手機經 loopback 帶 Serve 身分 header 領取，回 200。配對對話框隨即交接關閉，核准對話框疊在設定上：確認碼大字、裝置、登入者與 UA 都正確，「拒絕」有焦點框。這則 claim 只能經由 <code>companion://event</code> 送達，所以主視窗的 <code>listen</code> 路徑也實證了。</li>
+            <li>按核准後對話框關閉；第二次配對按 Esc 只關掉核准對話框（等同拒絕），設定仍開著。</li>
+            <li>執行中撤銷要先確認，確認後清單清空、<code>devices.json</code> 為空。</li>
+            <li>停用時假 CLI 收到 <code>serve --https=8443 --set-path=/ off</code>，47110 不再監聽，<code>applied</code> 清除。</li>
+          </ul>
+        </li>
+        <li><strong>發現（非本次引入）：</strong>深色主題下，共用的 <code>src/components/ui/checkbox.tsx</code> 勾選後幾乎看不出來。打包的 CSS 裡 <code>.dark:bg-input/30</code> 與 <code>data-[state=checked]:bg-primary</code> 特異度相同，前者排在後面，所以背景被蓋掉，變成深底配深色勾。Logs 等其他頁面的 Checkbox 也受影響。AX 與資料都正確，只是畫面看不出勾選。使用者同意後已修正：補上 <code>dark:data-[state=checked]:bg-primary</code> 與 <code>dark:data-[state=indeterminate]:bg-primary</code>。打包後的新規則是 <code>:is(.dark *)[data-state=checked]</code>，特異度 (0,3,0)，高於原本的 (0,2,0)，而且排在後面。這只在 CSS 層驗證，沒有重跑畫面。</li>
+        <li><strong>環境限制：</strong>驗收視窗被全螢幕的 Windows App 完全遮住時，WebKit 會暫停動畫：Radix 對話框的進場停在透明，離場等不到 <code>animationend</code> 而無法卸載。所以需要畫面的步驟必須在前景執行，已徵得使用者同意讓出螢幕。</li>
+      </ul>
       <p><strong>未做：</strong></p>
       <ul>
-        <li>GUI 實機檢查（使用者已允許本工作的 E2E；執行時要做 HERDR 隔離，且需要 fake tailscale 與 debug 覆寫才能在沒有 Tailscale 的機器上產生 claim）。待確認：核准對話框疊在設定對話框上的效果，以及 Tauri 的 <code>listen</code> 在主視窗確實收得到 <code>emit_to("main")</code>，目前只從原始碼與 capability 推論。</li>
         <li>真 tailnet 上的 enable／disable 與 Simulator 驗證，要等使用者安裝並登入 Tailscale。</li>
         <li>4.6 狀態列與稽核橋接；full 開關；替既有裝置加 passkey 的入口。</li>
         <li>Windows 與 Linux 安裝包中 sidecar 是否存在的檢查。</li>
