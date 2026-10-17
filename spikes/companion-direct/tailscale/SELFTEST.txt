@@ -1,0 +1,12 @@
+Loopback-only Bun + curl /whoami
+HTTP/1.1 200 OK
+Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Cache-Control: no-store
+Content-Type: application/json
+Date: Sun, 27 Sep 2026 17:26:22 GMT
+Content-Length: 113
+
+{"Tailscale-User-Login":"test@example.invalid","Tailscale-User-Name":null,"Host":"127.0.0.1:47110","Origin":null}
+Server terminated in finally.

@@ -1,0 +1,66 @@
+[
+  {
+    "name": "webauthn_rp",
+    "newest_version": "0.3.0",
+    "updated_at": "2025-04-03T18:19:34.448008Z",
+    "repository": "https://git.philomathiclife.com/repos/webauthn_rp/",
+    "downloads": 28113,
+    "latest_license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "passkey-auth",
+    "newest_version": "0.1.3",
+    "updated_at": "2026-05-18T12:40:56.877748Z",
+    "repository": "https://github.com/marirs/passkey-auth-rs",
+    "downloads": 47788,
+    "latest_license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "webauthn-rs",
+    "newest_version": "0.6.1-dev",
+    "updated_at": "2026-04-30T02:03:55.653656Z",
+    "repository": "https://github.com/kanidm/webauthn-rs",
+    "downloads": 7162481,
+    "latest_license": "MPL-2.0"
+  },
+  {
+    "name": "axum",
+    "newest_version": "0.8.9",
+    "updated_at": "2026-04-14T07:55:20.258398Z",
+    "repository": "https://github.com/tokio-rs/axum",
+    "downloads": 488882381,
+    "latest_license": "MIT"
+  },
+  {
+    "name": "tokio-rustls",
+    "newest_version": "0.26.5",
+    "updated_at": "2026-09-04T08:52:06.163215Z",
+    "repository": "https://github.com/rustls/tokio-rustls",
+    "downloads": 793061189,
+    "latest_license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "rcgen",
+    "newest_version": "0.14.10",
+    "updated_at": "2026-08-28T21:30:01.600392Z",
+    "repository": "https://github.com/rustls/rcgen",
+    "downloads": 106049529,
+    "latest_license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "qrcode",
+    "newest_version": "0.14.1",
+    "updated_at": "2024-07-05T18:14:40.515096Z",
+    "repository": "https://github.com/kennytm/qrcode-rust",
+    "downloads": 20810795,
+    "latest_license": "MIT OR Apache-2.0"
+  },
+  {
+    "name": "web-push-native",
+    "newest_version": "0.5.0",
+    "updated_at": "2026-07-26T10:58:34.799520Z",
+    "repository": "https://github.com/leotaku/web-push-native",
+    "downloads": 143852,
+    "latest_license": "MIT OR Apache-2.0"
+  }
+]

@@ -1,0 +1,8 @@
+[advisories]
+# RUSTSEC-2023-0071; rsa 0.9.10 (see Cargo.lock).
+# Owner: Yuzora maintainers; review-by: 2027-03-31.
+# Production only verifies WebAuthn RS256 signatures; VAPID uses ES256.
+# No production RSA private-key operations. Test authenticators are test-only.
+# Reassess immediately if private-key operations are added. The contract test
+# supply_chain_exception_is_version_pinned_and_not_expired enforces the deadline.
+ignore = ["RUSTSEC-2023-0071"]

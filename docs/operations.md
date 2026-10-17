@@ -172,6 +172,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - `src-tauri/Cargo.toml` version。
 - 更新後的 `src-tauri/Cargo.lock`。
 - `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新 helper 的 `Cargo.lock` 及桌面 lockfile 內的 path dependency entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
+- `src-tauri/companion/Cargo.toml` 版本與桌面一致，並更新 `src-tauri/companion/Cargo.lock`（含其中的 `yuzora-companion` 與 `yuzora-host` entry）；`verify-version-consistency.ts` 會拒絕不一致。
 - `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。
 - 必要的 release／updater contract 修改與測試。
 

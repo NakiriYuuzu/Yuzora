@@ -1,0 +1,15 @@
+rustls v0.23.45
+├── rustls feature "ring"
+│   └── yzc-dependency-spike v0.0.0 (/tmp/yzc-deps)
+│       └── yzc-dependency-spike feature "default" (command-line)
+│   └── tokio-rustls feature "ring"
+│       └── yzc-dependency-spike v0.0.0 (/tmp/yzc-deps) (*)
+├── rustls feature "std"
+│   ├── tokio-rustls v0.26.5
+│   │   ├── tokio-rustls feature "ring" (*)
+│   │   └── tokio-rustls feature "tls12"
+│   │       └── yzc-dependency-spike v0.0.0 (/tmp/yzc-deps) (*)
+│   └── yzc-dependency-spike v0.0.0 (/tmp/yzc-deps) (*)
+└── rustls feature "tls12"
+    └── yzc-dependency-spike v0.0.0 (/tmp/yzc-deps) (*)
+    └── tokio-rustls feature "tls12" (*)

@@ -21,6 +21,7 @@ build/
 .scaffold/
 src-tauri/target/
 src-tauri/host/target/
+src-tauri/companion/target/
 src-tauri/resources/host/
 src-tauri/resources/herdr/linux-aarch64/
 src-tauri/resources/herdr/linux-x86_64/
