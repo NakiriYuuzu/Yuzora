@@ -34,6 +34,8 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/companion/Cargo.toml -- --check
       - run: cargo clippy --locked --all-targets --manifest-path src-tauri/companion/Cargo.toml -- -D warnings
       - run: cargo test --locked --manifest-path src-tauri/companion/Cargo.toml
+        env:
+          RUST_BACKTRACE: 1
       - name: Reject native TLS dependencies
         shell: bash
         run: |

@@ -107,7 +107,7 @@
       <summary>Metadata</summary>
       <dl>
         <dt>created</dt>      <dd>2026-09-27T04:12:39Z</dd>
-        <dt>modified</dt>     <dd>2026-09-27T04:12:39Z；2026-09-27T17:47:26Z（Phase 0 自動化收尾）；2026-09-27T18:09:00Z（Phase 1 安全外殼）；2026-09-27T18:28:00Z（Phase 0 review 計畫同步）；2026-09-27T18:51:36Z（Phase 1 review fixes 計畫同步）；2026-09-27T19:11:43Z（Phase 1 N1–N6 follow-up fixes）；2026-09-27T19:46:22Z（Phase 2A）；2026-09-27T20:26:38Z（Phase 2A review fixes）；2026-09-27T21:11:22Z（Phase 2B：auth 完成／供應鏈閘門未過）；2026-09-27T21:55:10Z（Phase 3A：WS infrastructure）；2026-09-27T22:32:56Z（Phase 2B review fixes）；2026-09-27T23:02:09Z（Phase 3A review fixes＋2B P2-N1）；2026-09-28T00:04:34Z（Phase 3B-1 read path＋P2-A contract）；2026-09-28T01:31:54Z（Phase 3B-2 write path＋3B-1 review fixes）；2026-09-28T03:29:39Z（Phase 3B-2 review fixes P1-1／P2-1…P2-5）；2026-09-28（P2-N1…N3收尾／ADR-0007同步）；2026-09-28（P2-F1保守leased旗標）；2026-10-17（使用者裁決：範圍加 Git 唯讀／Spaces 瀏覽、LAN 延後、GPUI 暫停；delta 研究修訂；ADR 改號 0008；新增 Phase 3C／3D）</dd>
+        <dt>modified</dt>     <dd>2026-09-27T04:12:39Z；2026-09-27T17:47:26Z（Phase 0 自動化收尾）；2026-09-27T18:09:00Z（Phase 1 安全外殼）；2026-09-27T18:28:00Z（Phase 0 review 計畫同步）；2026-09-27T18:51:36Z（Phase 1 review fixes 計畫同步）；2026-09-27T19:11:43Z（Phase 1 N1–N6 follow-up fixes）；2026-09-27T19:46:22Z（Phase 2A）；2026-09-27T20:26:38Z（Phase 2A review fixes）；2026-09-27T21:11:22Z（Phase 2B：auth 完成／供應鏈閘門未過）；2026-09-27T21:55:10Z（Phase 3A：WS infrastructure）；2026-09-27T22:32:56Z（Phase 2B review fixes）；2026-09-27T23:02:09Z（Phase 3A review fixes＋2B P2-N1）；2026-09-28T00:04:34Z（Phase 3B-1 read path＋P2-A contract）；2026-09-28T01:31:54Z（Phase 3B-2 write path＋3B-1 review fixes）；2026-09-28T03:29:39Z（Phase 3B-2 review fixes P1-1／P2-1…P2-5）；2026-09-28（P2-N1…N3收尾／ADR-0007同步）；2026-09-28（P2-F1保守leased旗標）；2026-10-17（使用者裁決：範圍加 Git 唯讀／Spaces 瀏覽、LAN 延後、GPUI 暫停；delta 研究修訂；ADR 改號 0008；新增 Phase 3C／3D）；2026-10-17（Phase 3C 執行、PR #141 review 與 Windows CI 修正）</dd>
         <dt>commits</dt>      <dd>9f4592e (plan authored against main after PR #110 / v0.0.16)；2026-10-17 修訂對照 origin/main f790d1c3（v0.0.19），lane 仍以 9f4592e 為基底、未 commit</dd>
         <dt>agent name</dt>        <dd>pi · yuuzu-router/claude-opus-5-5 (planner), worker · yuuzu-router/gpt-6-astra (writer)；worker（Phase 0 implementation／收尾）；worker（Phase 1 implementation／companion-p1）；worker（companion-plan-sync）；worker（companion-plan-sync2）；worker（companion-p1-fix2）；worker（companion-p2a）；worker（companion-p2a-fix）；worker（companion-p2b）；worker（companion-p3a）；worker（companion-p2b-fix）；worker（companion-p3a-fix）；worker（companion-p3b1）；worker（companion-p3b2）；worker（companion-p3b2-fix）；worker（companion-final-fix）；worker（companion-f1-fix）</dd>
         <dt>session id</dt>      <dd>01a0debc-f4da-74bd-a330-2b913db2e0a6</dd>
@@ -257,7 +257,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
         <li><strong>GPUI：</strong>使用者裁決「GPUI 計畫先暫停，但不是不做」，原 ADR-0006 blocker 解除。Phase 4 沿用 Tauri＋React，Phase 5 PWA 可以用 React＋Vite；共用模組維持純 TS（D14）。</li>
         <li><strong>照預設推進（使用者未逐項裁決）：</strong>HERDR 最低 0.9.2（D15）；tagged 手機一律拒絕；O2 維持 provisional；O4 維持 none／self；CT log 警語納入 Phase 4／8。</li>
         <li><strong>研究修訂：</strong>D8 改為「強制的縱深防線，不是 peer 驗證」；whois 在 serve 架構下不可用；Phase 4.3 區分 Tailscale 版本；<code>terminalImeInput.ts</code> 更正；ADR 改號 0008。依據主樹 <code>.yuuzu/specs/remote-control-orca-tailscale-delta-2026-10-17.html</code>。</li>
-        <li><strong>仍未解除的 blockers：</strong>Host pipe／PTY input/release 沒有 timeout；四筆 Host TLS advisory（origin/main f790d1c3 仍為 rustls 0.21.12、rustls-webpki 0.101.7、rustls-pemfile 1.0.4，來源是 vendored tiberius）；Spike A 手機實機（Tailscale）；原生 Windows／Linux 與桌面實機驗收；獨立 reviewer gate。新增前置工作：Phase 3C 移植到 v0.0.19。</li>
+        <li><strong>仍未解除的 blockers：</strong>Host pipe／PTY input/release 沒有 timeout；六筆 Host TLS advisory（origin/main f790d1c3 仍為 rustls 0.21.12、rustls-webpki 0.101.7、rustls-pemfile 1.0.4，來源是 vendored tiberius；2026-10-17 新公告的 RUSTSEC-2026-0346／0349 也命中 rustls 0.21.12，0.21 沒有修補版，所以從四筆變成六筆）；Spike A 手機實機（Tailscale）；原生 Windows／Linux 與桌面實機驗收；獨立 reviewer gate。新增前置工作：Phase 3C 移植到 v0.0.19。</li>
       </ul>
     </div>
 
@@ -503,7 +503,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
       <p><strong>自然到期：</strong>不移除login session的提權到期也必須主動release control／full streams；control timer以min(control_until, grant)為界，full timer依open-stream Full validity／上述min期限，不能只等下一筆input被拒。Full grant目前是boolean、撤銷即失效，沒有持久化until欄位；不得假造既有grant deadline，3B依有效grant與已核准stream期限落實。</p>
       <h4>3.3. 接管、背壓與上限</h4>
       <ul class="checklist">
-        <li><code class="status">[x]</code> Phase 3A：ping20秒／pong20秒、無client frames 5分鐘idle，shutdown1001；identity鎖內有界live peers（session/device索引資料＋watch），revoke／降權／unlock／lockout／addToDevice清session／logout／第5session淘汰皆主動4401；maintenance≤1秒推送idle／absolute expiry，enableUntil關listener前失效並4401。close最多250ms、server join最多500ms後abort；RAII清registry／獨立WS permits。經parent核准只有已授權Text/Binary應用活動延長登入idle TTL，Ping/Pong只維持WS liveness，避免browser自動pong使登入永不idle。client Close改在250ms內close/flush queued reply；None原樣回None（browser code1005），1000原樣回1000，測乾淨EOF；admin只記client-closed reason、無code欄位。invalid UTF-8 Text→1007，client Ping只用library自動Pong。main以測試專用YZC_TEST_TIMING=1輸出server join／writer join／total durations到stderr，EOF/shutdown測試失敗輸出診斷，不放寬期限。</li>
+        <li><code class="status">[x]</code> Phase 3A：ping20秒／pong20秒、<s>無client frames 5分鐘idle</s>（2026-10-17 PR #141 review 移除：合規 peer 每 20 秒回的 Pong 也算 client frame，不回 Pong 的 peer 40 秒內就 pong-timeout，這個分支永遠不會觸發；應用層閒置由登入 idle TTL（viewIdleMin ≤ 30）負責，Ping/Pong 只維持 liveness），shutdown1001；identity鎖內有界live peers（session/device索引資料＋watch），revoke／降權／unlock／lockout／addToDevice清session／logout／第5session淘汰皆主動4401；maintenance≤1秒推送idle／absolute expiry，enableUntil關listener前失效並4401。close最多250ms、server join最多500ms後abort；RAII清registry／獨立WS permits。經parent核准只有已授權Text/Binary應用活動延長登入idle TTL，Ping/Pong只維持WS liveness，避免browser自動pong使登入永不idle。client Close改在250ms內close/flush queued reply；None原樣回None（browser code1005），1000原樣回1000，測乾淨EOF；admin只記client-closed reason、無code欄位。invalid UTF-8 Text→1007，client Ping只用library自動Pong。main以測試專用YZC_TEST_TIMING=1輸出server join／writer join／total durations到stderr，EOF/shutdown測試失敗輸出診斷，不放寬期限。</li>
         <li><code class="status">[x]</code> 3B-1 view 的寫入由 gateway 在送往 Herdr 前擋下；Herdr 會靜默忽略 observer input／resize，不能依賴 Herdr 回錯誤。</li>
         <li><code class="status">[x]</code> <code>terminal.closed</code> reason 映射 pin 至 Herdr 0.9.1 fixtures：<code>…already has an attached client; retry with --takeover</code> → <code>owned-elsewhere</code>；<code>terminal attach taken over</code> → <code>taken-over</code>；<code>server is shutting down</code> → <code>session-stopped</code>。attach 前先以 <code>session list</code> 的 <code>running</code> 判斷 session-stopped，區別已連線 shutdown 與停止後 attach 的 stderr；絕不把「Start it with <code>herdr server</code>」變成可操作按鈕。</li>
         <li><code class="status">[x]</code> 無 takeover 的 control 遇到既有 owner → 回 <code>owned-elsewhere</code>；<code>takeover:true</code> 需 2 分鐘內的新鮮提權，並送 <code>control.state{deviceId,peerId,stream,seq,session,target,takeover:true,open:true}</code>（Host open成功後才enqueue，target為resolved pane ID） 給桌面。</li>
@@ -571,6 +571,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
         <li><code class="status">[wip]</code> 吸收 0.9.2 以後的變化：收到 <code>events_lost</code> 時 gateway 重抓 snapshot 並通知 PWA；<code>terminal.mouse</code> 先在 closed mapping 列為 deny 或 control-only（是否開放見 Phase 5 註記）；0.9.4 起 Windows 上以系統管理員權限執行的 server 只接受 administrator client，記入 Windows sidecar 風險。（2026-10-17 查證：<code>events_lost</code> 是訂閱串流上的錯誤，不在 schema 文字內，main 的 host 目前沒有區分處理，gateway 只能走既有的訂閱錯誤路徑，「重抓 snapshot」需要 host 先提供可辨識的訊號，未實作；<code>terminal.mouse</code> 是 terminal session control 指令而不是 API method，gateway 目前不轉送，是否開放見 Phase 5；closed mapping 另把 0.9.2+ 新增的 <code>pane.clear</code> 加入明確 deny。）</li>
         <li><code class="status">[x]</code> 文件參照更正：<code>src/terminal/terminalImeInput.ts</code> 不存在，改成 <code>terminalImeHandling.ts</code>＋<code>terminalImePositioning.ts</code>；companion 的 Rust 註解如果引用 ADR-0007，一律改成 ADR-0008（2026-10-17 掃描 lane 內的 .rs，沒有這類引用）。</li>
         <li><code class="status">[x]</code> <code>cargo test --locked --manifest-path src-tauri/companion/Cargo.toml</code>、<code>cargo clippy --locked --manifest-path src-tauri/companion/Cargo.toml --all-targets -- -D warnings</code>、<code>cargo fmt --manifest-path src-tauri/companion/Cargo.toml -- --check</code> 全部通過（基準：v0.0.16 時 218 項）。（2026-10-17：218 項全過；唯一的編譯錯誤是 main 的 <code>terminal_scroll</code> 多了游標座標參數，傳 <code>None, None</code> 保留原行為。）</li>
+        <li><code class="status">[x]</code> PR #141 的 CI 與 Codex review 修正（2026-10-17）：Windows 上三個 WebSocket 測試因 RST 失敗，改成 server 送出 close frame 後半關閉並在 250ms 內排空輸入；Codex 三則 P2（時鐘回撥後重新放行已過期授權、Pong 讓 idle 分支不可達、full.open 被拒時已先拆掉 control streams）全部修正或處理；companion lock 的 rustls 0.23 升到 0.23.46。細節見執行紀錄。</li>
         <li><code class="status">[x]</code> <code>cargo test --locked --manifest-path src-tauri/host/Cargo.toml</code>：host 測試不受影響。（2026-10-17：669 項全過，含新增的 0.9.5 fixture；host clippy <code>-D warnings</code>、fmt 通過。）</li>
       </ul>
       <div class="loop">
@@ -603,7 +604,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
     <!-- ===== Phase 4 ===== -->
     <div class="phase">
       <h3><code class="status">[]</code> Phase 4: 桌面整合（sidecar、Tailscale 設定、設定頁、狀態列、稽核）</h3>
-      <p class="callout warn"><strong>blocked：</strong><s>待 ADR-0006（GPUI）裁決</s>（2026-10-17 解除：GPUI 暫停，沿用 Tauri＋React）；仍需 Phase 3C 移植完成、Host timeout 與四筆 TLS advisory 解除；Phase 4+ 另需 Spike A 手機閘門通過。</p>
+      <p class="callout warn"><strong>blocked：</strong><s>待 ADR-0006（GPUI）裁決</s>（2026-10-17 解除：GPUI 暫停，沿用 Tauri＋React）；仍需 Phase 3C 移植完成、Host timeout 與六筆 TLS advisory 解除；Phase 4+ 另需 Spike A 手機閘門通過。</p>
       <p>由 Yuzora 桌面以 Tauri sidecar 啟動並管理 gateway，提供設定頁（啟用期限、路徑、Session 範圍、裝置與授權）、配對與 SAS 核准對話框、狀態列指示與撤銷，並把稽核事件轉成桌面通知與 Logs。所有指令沿用 main-window-only 閘門，不新增任何 webview 權限。</p>
       <figure>
         <img src="yuzora-companion-pwa-direct-connections-plan/phase-4.png" alt="桌面集中管理啟用、配對核准、授權與撤銷" loading="lazy">
@@ -686,7 +687,7 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
     <!-- ===== Phase 5 ===== -->
     <div class="phase">
       <h3><code class="status">[]</code> Phase 5: PWA 前端</h3>
-      <p class="callout warn"><strong>blocked：</strong><s>待 ADR-0006（GPUI）裁決</s>（2026-10-17 解除：GPUI 暫停，沿用 Tauri＋React）；仍需 Phase 3C 移植完成、Host timeout 與四筆 TLS advisory 解除；Phase 4+ 另需 Spike A 手機閘門通過。</p>
+      <p class="callout warn"><strong>blocked：</strong><s>待 ADR-0006（GPUI）裁決</s>（2026-10-17 解除：GPUI 暫停，沿用 Tauri＋React）；仍需 Phase 3C 移植完成、Host timeout 與六筆 TLS advisory 解除；Phase 4+ 另需 Spike A 手機閘門通過。</p>
       <p>以獨立 Vite entry 建置手機優先的 PWA：配對、passkey 登入、Agent 清單、pane 檢視、提權後的控制與快速回覆、（可選）完整 Herdr。重用桌面的 Herdr 正規化、xterm 主題與 shadcn 元件，不引入外部 CDN。</p>
       <figure>
         <img src="yuzora-companion-pwa-direct-connections-plan/phase-5.png" alt="Agent 清單、pane 檢視與 passkey 提權控制" loading="lazy">
@@ -1300,6 +1301,19 @@ GET  /ws                          WebSocket（cookie + Origin，首 frame {bindi
         <li>CHANGELOG 等發版時再寫。</li>
         <li>使用者本機的 <code>~/.local/bin/herdr</code> 仍是 0.9.1，沒有動。</li>
       </ul>
+    </details>
+    <details>
+      <summary>2026-10-17 — PR #141：Codex review 三則 P2、Windows CI 與新 rustls advisory</summary>
+      <p><strong>範圍：</strong>使用者授權 commit 並開 PR（#141），本機 <code>~/.local/bin/herdr</code> 升到 0.9.5（舊版備份在 <code>~/.local/share/herdr-backup/herdr-0.9.1</code>），兩支 HERDR E2E 腳本在隔離 temp root 跑過並貼在 PR。companion workflow 的 Windows test 與 supply-chain 失敗，Codex 留下三則 P2。</p>
+      <ul>
+        <li><strong>Windows RST：</strong>server 送出 close frame 後直接丟掉 socket。如果 client 的輸入和 close frame 交錯（晚到的 Pong、超大訊息剩下的 payload、超過速率的訊息），Windows 會送 RST 並丟掉 client 還沒讀的 close frame。現在 server 先釋放 peer 與 WS permit，再半關閉寫入端，並在 250ms 內排空輸入；shutdown（stop 已設定）不做這段，維持既有的 500ms 上限。測試新增 opt-in 的 <code>close_clean</code>（Close 之後必須是乾淨 EOF），修正前在 macOS 上也是紅的。真正的 Windows 修正只能靠 CI 驗證。</li>
+        <li><strong>enableUntil 案例：</strong>Windows 對拒絕連線的 loopback connect 會重試約兩秒，超過 <code>io()</code> 的 yield 預算；server 已結束，改成直接 await。companion workflow 的 test 步驟加上 <code>RUST_BACKTRACE=1</code>，下次失敗能直接看到是哪個案例。</li>
+        <li><strong>P2 時鐘：</strong>系統時鐘往前跳又被校正回來時，<code>now()</code> 會倒退，已過期的授權可能再被接受。改成所有 clone 共用、只增不減的「牆鐘領先量」：<code>now = 單調估計 + 曾觀察到的最大領先量</code>。不採用「回傳值高水位」，因為那會讓時鐘凍結一段跳躍長度，期間核發的授權反而被延長。新增 seam 測試（跳躍、校正、再前進 10 秒），修正前是紅的。</li>
+        <li><strong>P2 idle：</strong>依上面 3A 項目的說明移除不可達的 5 分鐘 WS idle 分支，行為不變。改成只計 Text/Binary 會讓被動觀看超過 5 分鐘的 PWA 斷線，也會讓 880 秒、760 秒的既有提權到期測試失效；PWA 心跳的設計留給 Phase 5。</li>
+        <li><strong>P2 full.open：</strong>以前在 <code>submit_device</code> 之前就拆掉同 session 的 control streams；device 或全域寫入槽忙碌時，full client 沒有啟動，control streams 卻已經沒了。現在先把 lease 移到交接區，送件成功才關閉 streams，被拒時把 lease 放回原 stream。新增忙碌測試，修正前是紅的；修正後 control stream 仍可輸入。</li>
+        <li><strong>供應鏈：</strong>RUSTSEC-2026-0346～0349 命中 rustls 0.23.45，companion lock 升到 0.23.46（只動 rustls）。其中 0346、0349 也命中 rustls 0.21.12，沒有修補版，blocker 從四筆變成六筆，不加 ignore。主程式 <code>src-tauri/Cargo.lock</code> 也還是 0.23.45，這次沒有一起改，已告知使用者。</li>
+      </ul>
+      <p><strong>本機驗證：</strong>companion 220 項測試（新增 2 項）、clippy <code>-D warnings</code>、fmt 全部通過。</p>
     </details>
   </section>
 

@@ -774,8 +774,8 @@ impl Reads {
         let Ok(work) = self.writes.receiver.try_recv() else {
             return Vec::new();
         };
-        let mut leases = Vec::new();
         let mut closed = Vec::new();
+        let mut displaced = Vec::new();
         if let Some(full) = work
             .stream
             .and_then(|id| self.streams.get(&id))
@@ -787,7 +787,7 @@ impl Reads {
             })
         {
             let session = full.session.clone();
-            let ids: Vec<_> = self
+            displaced = self
                 .streams
                 .iter()
                 .filter(|(_, s)| {
@@ -798,18 +798,17 @@ impl Reads {
                 })
                 .map(|(id, _)| *id)
                 .collect();
-            for id in ids {
-                let mut s = self.streams.remove(&id).unwrap();
-                s.state.close("full-opened");
-                self.discard_write_stream(id);
-                if let Some(lease) = s.lease.take() {
-                    leases.push(lease);
-                }
-                closed.push(
-                    json!({"event":"stream.closed","data":{"stream":id,"reason":"full-opened"}}),
-                );
-            }
         }
+        // Same-session control streams yield only to an admitted full.open. The
+        // job releases their leases before the full client starts; a refused
+        // submission drops the job unrun and the leases go back to their streams.
+        let leases: Arc<Mutex<Vec<(u32, Lease)>>> = Arc::new(Mutex::new(
+            displaced
+                .iter()
+                .filter_map(|id| Some((*id, self.streams.get_mut(id)?.lease.take()?)))
+                .collect(),
+        ));
+        let handoff = leases.clone();
         let id = work.id.clone();
         let stream = work.stream;
         let input = work.input;
@@ -832,7 +831,7 @@ impl Reads {
         match gateway
             .herdr_jobs
             .submit_device(&work.device, true, move || {
-                for lease in leases {
+                for (_, lease) in std::mem::take(&mut *handoff.lock().unwrap()) {
                     lease.release_now();
                 }
                 let result = run().map_err(|code| {
@@ -853,6 +852,14 @@ impl Reads {
                 result
             }) {
             Ok(receiver) => {
+                for id in displaced {
+                    let s = self.streams.remove(&id).unwrap();
+                    s.state.close("full-opened");
+                    self.discard_write_stream(id);
+                    closed.push(
+                        json!({"event":"stream.closed","data":{"stream":id,"reason":"full-opened"}}),
+                    );
+                }
                 self.writes.active = true;
                 self.writes.watchdog = Some(watchdog);
                 self.writes.active_write = pending_write;
@@ -866,6 +873,9 @@ impl Reads {
                 }));
             }
             Err(code) => {
+                for (id, lease) in std::mem::take(&mut *leases.lock().unwrap()) {
+                    self.streams.get_mut(&id).unwrap().lease = Some(lease);
+                }
                 if let Some(stream) = stream {
                     if self.streams.get(&stream).is_some_and(|s| s.lease.is_none()) {
                         self.streams.remove(&stream);

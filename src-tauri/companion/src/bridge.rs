@@ -17,7 +17,10 @@ use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::VecDeque, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore},
+};
 use tokio_tungstenite::{
     tungstenite::{
         self,
@@ -35,7 +38,6 @@ const REPLY_HEADROOM: usize = 128 * 1024;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const PONG_TIMEOUT: Duration = Duration::from_secs(20);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 type Socket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
@@ -126,6 +128,30 @@ fn close_frame(close: Close) -> Message {
         reason: "".into(),
     }))
 }
+/// Windows resets a socket closed with unread input and discards a close frame
+/// the peer has not read yet. Half-close, then drain within the close budget.
+/// Callers free the peer's slots first; shutdown keeps its own bounded close.
+async fn linger<S: AsyncRead + AsyncWrite + Unpin>(
+    mut socket: WebSocketStream<S>,
+    stop: &mut watch::Receiver<u16>,
+) {
+    if *stop.borrow() != 0 {
+        return;
+    }
+    let io = socket.get_mut();
+    let drain = async {
+        if io.shutdown().await.is_err() {
+            return;
+        }
+        let mut buffer = [0; 4096];
+        while matches!(io.read(&mut buffer).await, Ok(n) if n > 0) {}
+    };
+    tokio::select! {
+        biased;
+        _ = stop.changed() => {},
+        _ = tokio::time::timeout(CLOSE_TIMEOUT, drain) => {},
+    }
+}
 fn stop_reason(stop: &watch::Receiver<u16>) -> Close {
     if *stop.borrow() == 4401 {
         INVALID
@@ -182,7 +208,7 @@ pub(crate) async fn run(job: Upgrade, gateway: Arc<Gateway>, mut stop: watch::Re
     let Upgrade {
         upgraded,
         mut headers,
-        _permit,
+        _permit: permit,
     } = job;
     let io = tokio::select! {
         biased;
@@ -213,6 +239,8 @@ pub(crate) async fn run(job: Upgrade, gateway: Arc<Gateway>, mut stop: watch::Re
         Ok(ctx) => ctx,
         Err(close) => {
             let _ = tokio::time::timeout(CLOSE_TIMEOUT, socket.send(close_frame(close))).await;
+            drop(permit);
+            linger(socket, &mut stop).await;
             return;
         }
     };
@@ -230,6 +258,8 @@ pub(crate) async fn run(job: Upgrade, gateway: Arc<Gateway>, mut stop: watch::Re
                 }
             };
             let _ = tokio::time::timeout(CLOSE_TIMEOUT, socket.send(close_frame(close))).await;
+            drop(permit);
+            linger(socket, &mut stop).await;
             return;
         }
     };
@@ -242,8 +272,11 @@ pub(crate) async fn run(job: Upgrade, gateway: Arc<Gateway>, mut stop: watch::Re
     gateway
         .events
         .try_emit(Event::session_opened(id, peer.device.clone()));
-    let close = serve(socket, &gateway, &ctx, id, stop, invalidated).await;
+    let (close, socket) = serve(socket, &gateway, &ctx, id, stop.clone(), invalidated).await;
     peer.reason = close.reason;
+    drop(peer);
+    drop(permit);
+    linger(socket, &mut stop).await;
 }
 
 // Includes queued AND in-flight message bytes (+ conservative frame overhead).
@@ -386,7 +419,7 @@ async fn serve(
     peer_id: u64,
     mut stop: watch::Receiver<u16>,
     mut invalidated: watch::Receiver<bool>,
-) -> Close {
+) -> (Close, Socket) {
     let (outbound, pending) = Outbound::new();
     drive(
         socket,
@@ -410,7 +443,7 @@ async fn drive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     invalidated: &mut watch::Receiver<bool>,
     outbound: Outbound,
     mut pending: mpsc::Receiver<Queued>,
-) -> Close {
+) -> (Close, WebSocketStream<S>) {
     let (mut writer, mut reader) = socket.split();
     #[cfg(not(test))]
     let (mut reads, mut frames) =
@@ -441,8 +474,7 @@ async fn drive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             );
             ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut pong_due = None;
-            let mut last_frame = tokio::time::Instant::now();
-            let mut messages = VecDeque::from([last_frame]);
+            let mut messages = VecDeque::from([tokio::time::Instant::now()]);
             loop {
                 // subscribe + validation were atomic; retain covers invalidation
                 // that arrived before this task first polled changed().
@@ -464,7 +496,6 @@ async fn drive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                     _ = stop.changed() => return Ok(stop_reason(stop)),
                     _ = invalidated.changed() => return Ok(INVALID),
                     _ = tokio::time::sleep_until(pong_deadline), if pong_due.is_some() => return Ok(Close { code: 1001, reason: "pong-timeout" }),
-                    _ = tokio::time::sleep_until(last_frame + IDLE_TIMEOUT) => return Ok(Close { code: 1001, reason: "idle-timeout" }),
                     frame = reader.next() => {
                         let frame = match frame {
                             Some(Ok(frame)) => frame,
@@ -477,7 +508,6 @@ async fn drive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                         // frames: this rate cap does NOT bound fragment parsing CPU.
                         // Fragmented payload memory remains bounded by 64 KiB.
                         let now = tokio::time::Instant::now();
-                        last_frame = now;
                         while messages.front().is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(1)) {
                             messages.pop_front();
                         }
@@ -591,7 +621,8 @@ async fn drive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     } else {
         let _ = tokio::time::timeout(CLOSE_TIMEOUT, writer.send(close_frame(close))).await;
     }
-    close
+    let socket = reader.reunite(writer).expect("halves of one socket");
+    (close, socket)
 }
 
 #[derive(Deserialize)]
@@ -752,6 +783,7 @@ pub(crate) async fn drive_for_test<S: tokio::io::AsyncRead + tokio::io::AsyncWri
         pending,
     )
     .await
+    .0
     .code
 }
 

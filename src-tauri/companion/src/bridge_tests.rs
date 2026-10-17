@@ -173,7 +173,7 @@ async fn ws_slow_consumer_byte_budget_reclaimed_and_loopback_close_1013() {
         while outbound.send(Message::text("small")).is_ok() {}
         let (_stop, mut stop) = watch::channel(0u16);
         let (_invalid, mut invalid) = watch::channel(false);
-        let close = drive(
+        let (close, _) = drive(
             ws,
             &f.gateway,
             &ctx,
@@ -312,7 +312,7 @@ async fn ws_write_stall_twenty_seconds_closes_1013_and_emits_slow_consumer() {
             "only the in-flight frame, never queued frames, may drain"
         );
     };
-    let (close, ()) = tokio::join!(driving, draining);
+    let ((close, _), ()) = tokio::join!(driving, draining);
     assert_eq!(close.code, 1013);
     assert_eq!(close.reason, "slow-consumer");
     assert_eq!(started.elapsed(), Duration::from_secs(20));

@@ -1,7 +1,10 @@
 //! Wall-clock deadlines with a monotonic floor: clock rollback cannot extend grants.
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,6 +68,10 @@ pub struct Clock {
     wall: Timestamp,
     start: Instant,
     system: bool,
+    // Largest wall-clock lead over the monotonic estimate seen by any clone. A
+    // corrected forward jump keeps the lead, so now() never rewinds into an
+    // expired deadline and still advances at the monotonic rate.
+    skew: Arc<Mutex<chrono::Duration>>,
 }
 impl Default for Clock {
     fn default() -> Self {
@@ -72,6 +79,7 @@ impl Default for Clock {
             wall: Timestamp(Utc::now()),
             start: Instant::now(),
             system: true,
+            skew: Arc::default(),
         }
     }
 }
@@ -82,15 +90,19 @@ impl Clock {
             wall,
             start: Instant::now(),
             system: false,
+            skew: Arc::default(),
         }
     }
     pub fn now(&self) -> Timestamp {
+        self.observe(self.system.then(Utc::now))
+    }
+    fn observe(&self, system: Option<DateTime<Utc>>) -> Timestamp {
         let monotonic = self.wall.after(self.start.elapsed());
-        if self.system {
-            monotonic.max(Timestamp(Utc::now()))
-        } else {
-            monotonic
+        let mut skew = self.skew.lock().unwrap();
+        if let Some(system) = system {
+            *skew = (*skew).max(system - monotonic.0);
         }
+        Timestamp(monotonic.0 + *skew)
     }
     pub async fn until(&self, deadline: Timestamp) {
         loop {
@@ -101,5 +113,25 @@ impl Clock {
             // Recheck wall-clock jumps as well as the monotonic deadline.
             tokio::time::sleep(remaining.min(Duration::from_secs(1))).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn corrected_forward_jump_neither_rewinds_nor_freezes() {
+        let clock = Clock::at(serde_json::from_str("\"2030-01-01T00:00:00Z\"").unwrap());
+        let base = clock.now();
+        let hour = Duration::from_secs(3600);
+        let jumped = clock.observe(Some(base.after(hour).0));
+        assert_eq!(jumped, base.after(hour));
+        // A correction back to the true time must not revive expired deadlines.
+        assert!(clock.clone().observe(Some(base.0)) >= jumped);
+        // Nor may it stall: deadlines issued after the correction keep their length.
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let later = clock.observe(Some(base.after(Duration::from_secs(10)).0));
+        assert!(later >= jumped.after(Duration::from_secs(10)));
     }
 }

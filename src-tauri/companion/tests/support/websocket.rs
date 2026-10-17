@@ -80,6 +80,16 @@ async fn close(ws: &mut Ws, code: u16) {
         }
     }
 }
+// The server half-closes and drains after its close frame, so a peer whose
+// input crossed that frame still reads it. Windows would otherwise reset the
+// socket and discard the unread close frame.
+async fn close_clean(ws: &mut Ws, code: u16) {
+    close(ws, code).await;
+    assert!(
+        io(ws.next()).await.is_none(),
+        "close must end in a clean EOF, not a reset"
+    );
+}
 async fn authenticated(f: &Fixture, login: &Login) -> Ws {
     let mut ws = connect(f, Some(login)).await.unwrap();
     send(&mut ws, json!({"type":"auth","binding":login.binding})).await;
@@ -347,11 +357,11 @@ async fn ws_active_idle_absolute_and_enable_until_expiry() {
         if case == "enable" {
             settle().await;
             assert!(f.server.is_finished());
-            assert!(
-                io(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, f.port)))
-                    .await
-                    .is_err()
-            );
+            // Not io(): Windows retries a refused loopback connect for about
+            // two seconds, beyond the yield budget. The server has finished.
+            assert!(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, f.port))
+                .await
+                .is_err());
         }
     }
 }
@@ -406,7 +416,7 @@ async fn ws_ping_pong_timeout_oversize_rate_abuse_and_binary_reserved() {
                 1003
             }
         };
-        close(&mut ws, code).await;
+        close_clean(&mut ws, code).await;
     }
 }
 #[tokio::test(start_paused = true)]
@@ -418,7 +428,7 @@ async fn ws_per_device_permits_release_after_close_error_timeout_and_revoke() {
     let second = authenticated(&f, &other_login).await;
     let mut third = connect(&f, Some(&login)).await.unwrap();
     send(&mut third, json!({"type":"auth","binding":login.binding})).await;
-    close(&mut third, 1008).await;
+    close_clean(&mut third, 1008).await;
     io(first.close(None)).await.unwrap();
     settle().await;
     let replacement = authenticated(&f, &login).await;
@@ -430,7 +440,7 @@ async fn ws_per_device_permits_release_after_close_error_timeout_and_revoke() {
     tokio::time::advance(Duration::from_secs(20)).await;
     settle().await;
     tokio::time::advance(Duration::from_secs(20)).await;
-    close(&mut replacement2, 1001).await;
+    close_clean(&mut replacement2, 1001).await;
     settle().await;
     let _after_timeout = authenticated(&f, &login).await;
 }

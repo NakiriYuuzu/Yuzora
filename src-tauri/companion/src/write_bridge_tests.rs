@@ -1688,6 +1688,64 @@ async fn review_async_busy_error_has_stream_and_keeps_stream() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn review_busy_full_open_keeps_same_session_control_streams() {
+    let mut f = Fixture::new().await;
+    f.elevate("control").await;
+    f.elevate("full").await;
+    let mut reads = direct_control(&f).await;
+    f.fake.blocked.store(true, Ordering::SeqCst);
+    let fake = f.fake.clone();
+    let blocking = f
+        .gateway
+        .herdr_jobs
+        .submit_device(DEVICE, true, move || {
+            while fake.blocked.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+        .unwrap();
+    assert!(reads
+        .write_call(
+            &f.gateway,
+            &f.ctx,
+            json!(2),
+            "full.open",
+            json!({"session":"work","cols":44,"rows":30,"confirmResize":true})
+        )
+        .unwrap()
+        .is_none());
+    let result = reads.pump_writes(&f.gateway);
+    assert_eq!(
+        result.len(),
+        1,
+        "no full-opened close before admission: {result:?}"
+    );
+    assert_eq!(result[0]["id"], 2);
+    assert_eq!(result[0]["error"]["code"], "busy");
+    assert!(reads.streams[&1].lease.is_some());
+    assert!(reads.closed().is_empty());
+    assert!(!f.fake.has("release:"));
+    f.fake.blocked.store(false, Ordering::SeqCst);
+    io(blocking).await.unwrap();
+    // The surviving control stream still accepts input.
+    reads
+        .write_call(
+            &f.gateway,
+            &f.ctx,
+            json!(3),
+            "terminal.input",
+            json!({"stream":1,"text":"kept"}),
+        )
+        .unwrap();
+    assert!(reads.pump_writes(&f.gateway).is_empty());
+    let completed = io(reads.completed.next()).await.unwrap();
+    assert!(reads.finish(completed)[0]["result"].is_object());
+    assert!(f.fake.has("input:"));
+    drop(reads);
+    f.released().await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn review_reserved_open_announces_even_if_queue_fills_during_host_call() {
     for later_bundle in [false, true] {
         let mut f = Fixture::new().await;
