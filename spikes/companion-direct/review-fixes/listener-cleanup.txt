@@ -1,0 +1,5 @@
+curl: (7) Failed to connect to 127.0.0.1 port 47110 after 0 ms: Couldn't connect to server
+PASS: 127.0.0.1:47110 refused connection after cleanup (curl exit 7)
+curl: (7) Failed to connect to 127.0.0.1 port 47443 after 0 ms: Couldn't connect to server
+PASS: 127.0.0.1:47443 refused connection after cleanup (curl exit 7)
+PASS: ps -axo pid=,comm=,args= found no kit Bun server

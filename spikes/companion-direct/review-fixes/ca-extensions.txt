@@ -1,0 +1,17 @@
+Throwaway CA only; NOT FOR INSTALL
+CA SHA-256: FF:2D:99:BC:CC:10:A5:06:19:92:79:39:3A:E5:EB:03:41:DA:7C:6D:BB:21:64:CE:37:1A:92:74:E8:A2:E0:77
+<Extension(oid=<ObjectIdentifier(oid=2.5.29.19, name=basicConstraints)>, critical=True, value=<BasicConstraints(ca=True, path_length=0)>)>
+<Extension(oid=<ObjectIdentifier(oid=2.5.29.15, name=keyUsage)>, critical=True, value=<KeyUsage(digital_signature=False, content_commitment=False, key_encipherment=False, data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False)>)>
+<Extension(oid=<ObjectIdentifier(oid=2.5.29.30, name=nameConstraints)>, critical=True, value=<NameConstraints(permitted_subtrees=[<DNSName(value='yuzora-spike.local')>], excluded_subtrees=[<IPAddress(value=0.0.0.0/0)>, <IPAddress(value=::/0)>])>)>
+<Extension(oid=<ObjectIdentifier(oid=2.5.29.14, name=subjectKeyIdentifier)>, critical=False, value=<SubjectKeyIdentifier(digest=b'\x8c\xe7)\x065\xe8\x8c\xc3\xab\xa9\xba#\xe96\xed\x00\xb6GG|')>)>
+ca.crt: mode=600
+ca.mobileconfig: mode=600
+ca.pem: mode=600
+hostname.txt: mode=600
+ip.key: mode=600
+ip.pem: mode=600
+leaf.key: mode=600
+leaf.pem: mode=600
+other.key: mode=600
+other.pem: mode=600
+PASS: critical; one permitted DNS; all IPv4/IPv6 excluded; ca.key absent; artifact permissions 0600

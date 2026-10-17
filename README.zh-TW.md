@@ -160,7 +160,7 @@ macOS 安裝檔**未經 Apple Developer ID 簽章或公證**，首次開啟可�
 | Terminal | xterm.js ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-Yuzora 隨附 HERDR 0.9.3，透過 private protocol 22 與 schema 檢查保留 0.9.0、0.9.1 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
+Yuzora 隨附 HERDR 0.9.5，透過 private protocol 22 與 schema 檢查保留 0.9.0、0.9.1、0.9.3 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
 
 Apple Silicon macOS App 的受管 HERDR 共用 `Contents/Resources/host/macos-aarch64/herdr`，不再額外隨附 `herdr/macos-*` binary。五平台遠端 Host payload 全數保留，包含 Intel macOS；Windows 維持獨立的原生 HERDR 路徑。
 

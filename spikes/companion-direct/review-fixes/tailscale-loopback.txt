@@ -1,0 +1,9 @@
+$ curl --noproxy * --fail --silent --show-error --max-time 5 -D - http://127.0.0.1:47110/
+exit=0; HTTP 200; strict CSP present; expected content verified
+$ curl --noproxy * --fail --silent --show-error --max-time 5 -D - http://127.0.0.1:47110/app.js
+exit=0; HTTP 200; strict CSP present; expected content verified
+$ curl --noproxy * --fail --silent --show-error --max-time 5 -D - http://127.0.0.1:47110/whoami
+exit=0; HTTP 200; strict CSP present; expected content verified
+Capability spike only: http://127.0.0.1:47110/
+  Server stopped; exit=0
+PASS: port 47110 no longer accepting connections; no Tailscale command executed

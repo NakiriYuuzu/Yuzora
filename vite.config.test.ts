@@ -25,7 +25,7 @@ describe("Vitest environment projects", () => {
     const config = await (typeof viteConfig === "function"
       ? viteConfig({ command: "serve", mode: "test" })
       : viteConfig);
-    const excluded = [...configDefaults.exclude, "**/.superpowers/**", "output/**"];
+    const excluded = [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**"];
     expect(config.test?.globals).toBe(true);
     expect(config.test?.exclude).toEqual(excluded);
     expect(config.test?.projects).toEqual([

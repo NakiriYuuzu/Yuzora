@@ -1,0 +1,22 @@
+   Compiling yzc-dependency-spike v0.0.0 (/tmp/yzc-deps)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.61s
+     Running `/tmp/yzc-deps/target/debug/yzc-dependency-spike`
+registration valid: Ok(())
+registration wrong-origin: Err(OriginMismatch)
+registration wrong-rp: Err(RpIdHashMismatch)
+registration no-uv: Err(UserNotVerified)
+registration no-up: Err(UserNotPresent)
+registration wrong-challenge: Err(ChallengeMismatch)
+registration bs-without-be: rejected parse Error("backup state bit was 1 despite backup eligibility being 0", line: 0, column: 0)
+registered flags/state: DynamicState { user_verified: true, backup: NotEligible, sign_count: 10, authenticator_attachment: Platform }
+authentication valid: Ok(true)
+authentication wrong-origin: Err(OriginMismatch)
+authentication wrong-rp: Err(RpIdHashMismatch)
+authentication no-uv: Err(UserNotVerified)
+authentication no-up: Err(AuthenticatorData(UserNotPresent))
+authentication wrong-challenge: Err(ChallengeMismatch)
+authentication counter-rollback: Err(SignatureCounter)
+authentication bad-signature: Err(AssertionSignature)
+authentication be-change: Err(BackupEligible)
+authentication bs-without-be: Err(AuthenticatorData(BackupWithoutEligibility))
+PASS: ES256 software registration/authentication and negative checks; ring provider installed

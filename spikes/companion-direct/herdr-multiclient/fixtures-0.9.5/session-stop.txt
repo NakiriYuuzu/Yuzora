@@ -1,0 +1,3 @@
+$ isolated-herdr.sh session stop companion-spike --json
+exit=0
+{"session":{"default":false,"name":"companion-spike","running":false,"session_dir":"/tmp/yzc-spike/config/herdr/sessions/companion-spike","socket_path":"/tmp/yzc-spike/config/herdr/sessions/companion-spike/herdr.sock"},"stopped":true}

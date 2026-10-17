@@ -1,0 +1,60 @@
+$ curl --version
+exit=0
+curl 8.7.1 (x86_64-apple-darwin26.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.69.0
+Release-Date: 2024-03-27
+Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt pop3 pop3s rtsp smb smbs smtp smtps telnet tftp
+Features: alt-svc AsynchDNS GSS-API HSTS HTTP2 HTTPS-proxy IPv6 Kerberos Largefile libz MultiSSL NTLM SPNEGO SSL threadsafe UnixSockets
+
+$ openssl version
+exit=0
+OpenSSL 3.6.1 27 Jan 2026 (Library: OpenSSL 3.6.1 27 Jan 2026)
+
+$ openssl verify -CAfile /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ca.pem -verify_hostname yuzora-spike.local /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/leaf.pem
+exit=0
+/Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/leaf.pem: OK
+
+$ curl --noproxy * --fail --silent --show-error --max-time 5 --cacert /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ca.pem --resolve yuzora-spike.local:47443:127.0.0.1 https://yuzora-spike.local:47443/
+exit=0
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="/manifest.webmanifest"><title>Companion Phase 0</title></head>
+<body><h1>Companion capability spike</h1><p>僅測瀏覽器能力，未做伺服器 WebAuthn 驗證。請勿輸入真實資料。</p>
+<button id="secure">Secure context</button> <button id="sw">Register SW</button>
+<button id="create">Create platform passkey</button> <button id="get">Get platform passkey</button>
+<button id="create-key">Create security key (NFC / USB-C)</button> <button id="get-key">Get security key</button>
+<button id="notification">Notification permission</button> <button id="whoami">Who am I</button>
+<pre id="result" aria-live="polite"></pre><script src="/app.js"></script></body></html>
+leaf loopback server stopped; exit=0
+$ openssl verify -CAfile /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ca.pem -verify_hostname other.local /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/other.pem
+exit=2
+CN=other.local
+error 47 at 0 depth lookup: permitted subtree violation
+error /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/other.pem: verification failed
+
+$ curl --noproxy * --fail --silent --show-error --max-time 5 --cacert /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ca.pem --resolve other.local:47443:127.0.0.1 https://other.local:47443/
+exit=60
+curl: (60) SSL certificate problem: permitted subtree violation
+More details here: https://curl.se/docs/sslcerts.html
+
+curl failed to verify the legitimacy of the server and therefore could not
+establish a secure connection to it. To learn more about this situation and
+how to fix it, please visit the web page mentioned above.
+
+other loopback server stopped; exit=0
+$ openssl verify -CAfile /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ca.pem -verify_ip 127.0.0.1 /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ip.pem
+exit=2
+CN=127.0.0.1
+error 48 at 0 depth lookup: excluded subtree violation
+error /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ip.pem: verification failed
+
+$ curl --noproxy * --fail --silent --show-error --max-time 5 --cacert /Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/companion-pwa/spikes/companion-direct/lan/out/ca.pem --resolve 127.0.0.1:47443:127.0.0.1 https://127.0.0.1:47443/
+exit=60
+curl: (60) SSL certificate problem: excluded subtree violation
+More details here: https://curl.se/docs/sslcerts.html
+
+curl failed to verify the legitimacy of the server and therefore could not
+establish a secure connection to it. To learn more about this situation and
+how to fix it, please visit the web page mentioned above.
+
+ip loopback server stopped; exit=0
+PASS: OpenSSL verify and this curl TLS backend both accept the permitted DNS leaf, reject other.local (permitted subtree violation), and reject matching IP SAN 127.0.0.1 (excluded subtree violation). Versions/backends above; no phone verifier tested. All loopback servers stopped. ca.key absent.
