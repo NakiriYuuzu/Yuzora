@@ -171,6 +171,22 @@ async fn companion_offline_device_edits_wait_for_a_stopped_gateway() {
 }
 
 #[test]
+fn companion_one_instance_owns_the_companion() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("companion");
+    let first = instance_lock(&dir).expect("first instance");
+    assert!(instance_lock(&dir).is_none(), "second instance");
+    drop(first);
+    assert!(instance_lock(&dir).is_some(), "after the first quits");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+}
+
+#[test]
 fn companion_pairing_qr_is_an_svg() {
     let svg = qr_svg("https://desktop.tail1234.ts.net:8443/pair#p=ID.SECRET").unwrap();
     assert!(svg.starts_with("<?xml") || svg.starts_with("<svg"));

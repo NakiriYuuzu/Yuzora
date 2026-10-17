@@ -93,7 +93,7 @@ done"#
         .upsert(serde_json::from_str(DEVICE).unwrap())
         .unwrap();
     h.manager.start(h.launch()).unwrap();
-    h.until("ready", running).await;
+    assert_eq!(h.manager.until_ready().await, Ok(47110));
     assert_eq!(h.manager.status(), Status::Running { port: 47110 });
     let init: Value = serde_json::from_str(&h.sidecar_file("init")).unwrap();
     assert_eq!(init["marker"], "init-frame");
@@ -498,13 +498,10 @@ async fn companion_service_ready_must_come_in_time_on_the_configured_port() {
     // Hangs after init: stopped as failed, and the stop hook removes Serve.
     let h = Harness::new("read init; while read line; do :; done");
     h.manager.start(h.launch()).unwrap();
-    h.until("start timeout", |h| {
-        h.manager.status()
-            == Status::Failed {
-                code: "companion-start-timeout".into(),
-            }
-    })
-    .await;
+    assert_eq!(
+        h.manager.until_ready().await.unwrap_err(),
+        "companion-start-timeout"
+    );
     h.until("stop hook", |h| h.stops() == 1).await;
     // Ready on another port than Serve proxies to.
     let h = Harness::new(&format!(
@@ -580,7 +577,19 @@ async fn companion_service_commands_need_a_running_gateway_and_time_out() {
         h.manager.pairing_create(None).await.unwrap_err(),
         "companion-timeout"
     );
-    h.manager.stop().await;
+    // A late reply could answer the next command: the gateway is stopped as
+    // failed, nothing more is sent to it, and the stop hook removes Serve.
+    assert_eq!(
+        h.manager.status(),
+        Status::Failed {
+            code: "companion-timeout".into()
+        }
+    );
+    assert_eq!(
+        h.manager.pairing_create(None).await.unwrap_err(),
+        "companion-not-running"
+    );
+    h.until("stop hook", |h| h.stops() == 1).await;
 }
 
 #[tokio::test]

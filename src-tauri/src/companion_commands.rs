@@ -26,10 +26,14 @@ pub struct CompanionState {
     resource_dir: Option<PathBuf>,
     /// Serialises Serve changes and settings writes.
     ops: Arc<tokio::sync::Mutex<()>>,
+    /// Held for the life of the process by the one Yuzora instance that owns
+    /// the Companion; another instance only reads.
+    owner: Option<std::fs::File>,
 }
 impl CompanionState {
     pub fn new(app: &tauri::AppHandle, dir: PathBuf, resource_dir: Option<PathBuf>) -> Self {
         use tauri::Emitter;
+        let owner = instance_lock(&dir);
         let ops = Arc::new(tokio::sync::Mutex::new(()));
         let emitter = app.clone();
         let current: Arc<OnceLock<Weak<CompanionManager>>> = Arc::default();
@@ -62,26 +66,40 @@ impl CompanionState {
         let _ = current.set(Arc::downgrade(&manager));
         // No handler may outlive its gateway: one left by a crash or a quit
         // points at a loopback port anyone can bind. Enable re-applies it.
-        // The lock is taken here, before any command can apply or enable.
-        let turn = ops.clone().try_lock_owned().expect("unshared at startup");
-        let stale = dir.clone();
-        tauri::async_runtime::spawn(async move {
-            let _turn = turn;
-            if let Err(code) = remove_applied_serve(&stale).await {
-                log_warning("companion_serve_cleanup", &code);
-            }
-        });
+        // The lock is taken here, before any command can enable.
+        if owner.is_some() {
+            let turn = ops.clone().try_lock_owned().expect("unshared at startup");
+            let stale = dir.clone();
+            tauri::async_runtime::spawn(async move {
+                let _turn = turn;
+                if let Err(code) = remove_applied_serve(&stale).await {
+                    log_warning("companion_serve_cleanup", &code);
+                }
+            });
+        }
         Self {
             manager,
             dir,
             resource_dir,
             ops,
+            owner,
         }
     }
-    /// App exit: bounded, and a no-op once stopped. A handler this cannot
-    /// remove in time (or a killed process) is removed at the next start.
+    /// Another running instance owns the Companion. Ownership is decided at
+    /// startup: this one needs a restart after that one quits.
+    fn owner(&self) -> Result<(), String> {
+        self.owner
+            .as_ref()
+            .map(drop)
+            .ok_or_else(|| "companion-other-instance".into())
+    }
+    /// App exit, bounded: the handler goes first (at most 5 s), so nothing
+    /// forwards to a port the gateway is leaving, then the gateway. A handler
+    /// left behind (or a killed process) is removed at the next start.
     pub fn shutdown(&self) {
-        self.manager.stop_blocking();
+        if self.owner.is_none() {
+            return;
+        }
         let (dir, ops) = (self.dir.clone(), self.ops.clone());
         let (done, wait) = std::sync::mpsc::sync_channel(1);
         tauri::async_runtime::spawn(async move {
@@ -92,7 +110,21 @@ impl CompanionState {
             let _ = done.send(());
         });
         let _ = wait.recv_timeout(Duration::from_secs(5));
+        self.manager.stop_blocking();
     }
+}
+
+/// An advisory lock on `<dir>/instance.lock`; released when the process ends.
+fn instance_lock(dir: &Path) -> Option<std::fs::File> {
+    crate::companion_store::create_private_dir(dir).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("instance.lock"))
+        .ok()?;
+    file.try_lock().ok()?;
+    Some(file)
 }
 
 #[derive(Serialize)]
@@ -134,79 +166,28 @@ pub async fn companion_tailscale_probe(
 }
 
 #[tauri::command]
-pub async fn companion_tailscale_apply(
-    state: tauri::State<'_, CompanionState>,
-    confirm: bool,
-) -> Result<TailscaleProbe, String> {
-    if !confirm {
-        return Err("companion-confirmation-required".into());
-    }
-    let _turn = state.ops.lock().await;
-    let mut settings = Settings::load(&state.dir)?;
-    // Re-check right before running: the user confirmed an earlier probe.
-    let before = probe(&settings).await?;
-    let (Some(cli), Some(node), Some(serve)) = (&before.cli, &before.node, &before.serve) else {
-        return Err("companion-tailscale-unavailable".into());
-    };
-    // A record for another port or node is the only handle on a handler that
-    // may still exist there; applying here would overwrite it.
-    if settings.applied.as_ref().is_some_and(|applied| {
-        (applied.https_port, applied.gateway_port) != (settings.https_port, settings.gateway_port)
-            || node.dns_name.as_deref() != Some(applied.host.as_str())
-    }) {
-        return Err("companion-tailscale-remove-first".into());
-    }
-    if let Some(refusal) = before.refusal {
-        return Err(format!(
-            "companion-tailscale-refused: {}",
-            refusal_code(refusal)
-        ));
-    }
-    // Recorded before the CLI runs: whatever it leaves behind, even after a
-    // crash, cleanup can find and remove.
-    settings.applied = Some(AppliedServe {
-        https_port: settings.https_port,
-        gateway_port: settings.gateway_port,
-        host: node.dns_name.clone().unwrap_or_default(),
-        login: node.login.clone().unwrap_or_default(),
-    });
-    settings.save(&state.dir)?;
-    let applied = async {
-        if serve.port == tailscale::PortState::Free {
-            tailscale::run(
-                &cli.path,
-                &tailscale::serve_args(settings.https_port, settings.gateway_port),
-            )
-            .await?;
-        }
-        // Without the https capability the CLI can exit 0 having applied nothing.
-        settle(&settings, |port| port == tailscale::PortState::Ours).await
-    }
-    .await;
-    if applied.is_err() {
-        // The handler may still land after a timeout: keep the record unless
-        // ours was seen and turned off.
-        if let Err(code) = remove_serve(&state.dir, false).await {
-            log_warning("companion_serve_cleanup", &code);
-        }
-    }
-    applied
-}
-
-#[tauri::command]
 pub async fn companion_tailscale_remove(
     state: tauri::State<'_, CompanionState>,
 ) -> Result<(), String> {
+    state.owner()?;
     let _turn = state.ops.lock().await;
     remove_applied_serve(&state.dir).await
 }
 
+/// Starts the gateway, and only once it listens applies the Serve handler
+/// in front of it: the handler never points at a port nothing has bound.
+/// Runs `tailscale serve`, so the user confirms the command shown by the probe.
 #[tauri::command]
 pub async fn companion_enable(
     state: tauri::State<'_, CompanionState>,
     herdr: tauri::State<'_, HerdrState>,
     window: EnableFor,
+    confirm: bool,
 ) -> Result<Status, String> {
+    if !confirm {
+        return Err("companion-confirmation-required".into());
+    }
+    state.owner()?;
     let _turn = state.ops.lock().await;
     // Before anything changes: a running gateway keeps its own enableUntil
     // and the handler it is serving behind.
@@ -215,10 +196,12 @@ pub async fn companion_enable(
     }
     let started = enable(&state, &herdr, window).await;
     if started.is_err() {
-        // Nothing may stay behind the handler. Enable applies it again.
-        if let Err(code) = remove_applied_serve(&state.dir).await {
+        // Handler first, then the gateway behind it. A handler that may
+        // still land after a CLI timeout keeps its record.
+        if let Err(code) = remove_serve(&state.dir, false).await {
             log_warning("companion_serve_cleanup", &code);
         }
+        state.manager.stop().await;
     }
     started
 }
@@ -229,30 +212,36 @@ async fn enable(
     window: EnableFor,
 ) -> Result<Status, String> {
     let mut settings = Settings::load(&state.dir)?;
-    let applied = settings
-        .applied
-        .clone()
-        .ok_or("companion-tailscale-not-applied")?;
-    // The handler and tailnet identity must still be the ones applied.
-    let current = probe(&settings).await?;
-    let still_ours = current.serve.as_ref().map(|s| s.port) == Some(tailscale::PortState::Ours)
-        && settings.https_port == applied.https_port
-        && settings.gateway_port == applied.gateway_port;
-    // init pins publicHost to the applied name; another name would be refused.
-    let same_node = current.node.as_ref().is_some_and(|node| {
-        node.login.as_deref() == Some(applied.login.as_str())
-            && node.dns_name.as_deref() == Some(applied.host.as_str())
-    });
-    if !still_ours || !same_node || current.refusal.is_some() {
-        return Err("companion-tailscale-changed".into());
+    // Re-check right before running: the user confirmed an earlier probe.
+    let before = probe(&settings).await?;
+    let (Some(cli), Some(node), Some(serve)) = (&before.cli, &before.node, &before.serve) else {
+        return Err("companion-tailscale-unavailable".into());
+    };
+    if let Some(refusal) = before.refusal {
+        return Err(format!(
+            "companion-tailscale-refused: {}",
+            refusal_code(refusal)
+        ));
     }
+    // A record for another port or node is the only handle on a handler that
+    // may still exist there; applying here would overwrite it.
+    if settings.applied.as_ref().is_some_and(|applied| {
+        (applied.https_port, applied.gateway_port) != (settings.https_port, settings.gateway_port)
+            || node.dns_name.as_deref() != Some(applied.host.as_str())
+    }) {
+        return Err("companion-tailscale-remove-first".into());
+    }
+    let applied = AppliedServe {
+        https_port: settings.https_port,
+        gateway_port: settings.gateway_port,
+        host: node.dns_name.clone().unwrap_or_default(),
+        login: node.login.clone().unwrap_or_default(),
+    };
     let manager = herdr.0.clone();
     let herdr_binary = tauri::async_runtime::spawn_blocking(move || manager.resolve_binary())
         .await
         .map_err(|e| e.to_string())?
         .ok_or("companion-herdr-unavailable")?;
-    settings.duration = window;
-    settings.save(&state.dir)?;
     let until = chrono::Utc::now()
         + chrono::Duration::from_std(window.as_std()).map_err(|e| e.to_string())?;
     let launch = Launch {
@@ -265,16 +254,35 @@ async fn enable(
             &until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         )?,
     };
+    // Recorded before the gateway or the CLI runs: whatever is left behind,
+    // even after a crash, cleanup can find and remove.
+    settings.duration = window;
+    settings.applied = Some(applied);
+    settings.save(&state.dir)?;
     state.manager.start(launch)?;
+    state.manager.until_ready().await?;
+    if serve.port == tailscale::PortState::Free {
+        tailscale::run(
+            &cli.path,
+            &tailscale::serve_args(settings.https_port, settings.gateway_port),
+        )
+        .await?;
+    }
+    // Without the https capability the CLI can exit 0 having applied nothing.
+    settle(&settings, |port| port == tailscale::PortState::Ours).await?;
     Ok(state.manager.status())
 }
 
 #[tauri::command]
 pub async fn companion_disable(state: tauri::State<'_, CompanionState>) -> Result<(), String> {
-    // Taken first so an enable cannot start between the stop and the removal.
+    state.owner()?;
+    // Taken first so an enable cannot start in between.
     let _turn = state.ops.lock().await;
+    // Handler first: nothing may forward to a port the gateway is leaving.
+    // The gateway stops even if that fails; the record stays for a retry.
+    let removed = remove_applied_serve(&state.dir).await;
     state.manager.stop().await;
-    remove_applied_serve(&state.dir).await
+    removed
 }
 
 #[derive(Serialize)]
@@ -292,6 +300,7 @@ pub async fn companion_pairing_create(
     path: String,
     add_to_device: Option<String>,
 ) -> Result<PairingQr, String> {
+    state.owner()?;
     if path != "tailscale" {
         return Err("companion-path-unsupported".into());
     }
@@ -318,6 +327,7 @@ pub async fn companion_pairing_decide(
     pairing_id: String,
     decision: PairingDecision,
 ) -> Result<(), String> {
+    state.owner()?;
     let kind = match decision {
         PairingDecision::Approve => "pairing.approve",
         PairingDecision::Reject => "pairing.reject",
@@ -342,6 +352,7 @@ pub async fn companion_device_update(
     label: Option<String>,
     grants: Option<Value>,
 ) -> Result<Value, String> {
+    state.owner()?;
     if let Some(label) = &label {
         valid_label(label)?;
     }
@@ -399,6 +410,7 @@ pub async fn companion_sessions_set(
     {
         return Err("companion-session-invalid".into());
     }
+    state.owner()?;
     let _turn = state.ops.lock().await;
     let mut settings = Settings::load(&state.dir)?;
     settings.session_allowlist = sessions;
@@ -416,6 +428,7 @@ pub async fn companion_sessions_set(
 /// between, a starting gateway has already read the file and a stopping one
 /// may still write it, so neither may be edited around.
 async fn change_device(state: &CompanionState, frame: Value) -> Result<(), String> {
+    state.owner()?;
     if is_running(&state.manager) {
         return state.manager.device_command(frame).await.map(drop);
     }

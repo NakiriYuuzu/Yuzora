@@ -396,7 +396,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     Ok(())
 }
 
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

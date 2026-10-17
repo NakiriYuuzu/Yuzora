@@ -562,7 +562,6 @@ pub fn run() {
             companion_commands::companion_device_revoke,
             companion_commands::companion_sessions_set,
             companion_commands::companion_tailscale_probe,
-            companion_commands::companion_tailscale_apply,
             companion_commands::companion_tailscale_remove
         ]))
         .build(tauri::generate_context!())

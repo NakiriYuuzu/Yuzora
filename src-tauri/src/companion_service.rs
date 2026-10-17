@@ -588,9 +588,11 @@ impl CompanionManager {
     /// reply by its event type and device, or take the next error.
     async fn request(&self, frame: Value, want: Want) -> Result<Value, String> {
         let _turn = self.commands.lock().await;
-        let reply = {
+        let (reply, generation) = {
             let mut inner = self.inner.lock().unwrap();
-            let Some(process) = inner.process.as_ref().filter(|_| inner.ready) else {
+            // Not while starting, stopping or halted, even with a live process.
+            let running = matches!(inner.status, Status::Running { .. });
+            let Some(process) = inner.process.as_ref().filter(|_| running) else {
                 return Err("companion-not-running".into());
             };
             let mut bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
@@ -601,14 +603,43 @@ impl CompanionManager {
                 .map_err(|_| "companion-not-running".to_string())?;
             let (reply, wait) = oneshot::channel();
             inner.pending = Some(Pending { want, reply });
-            wait
+            (wait, inner.generation)
         };
         match tokio::time::timeout(self.timing.command, reply).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("companion-exited".into()),
             Err(_) => {
-                self.inner.lock().unwrap().pending = None;
+                // Its late reply could be taken for the next command's, so
+                // this gateway is done.
+                let status = {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.pending = None;
+                    (inner.generation == generation).then(|| {
+                        halt(&mut inner, "companion-timeout");
+                        inner.status.clone()
+                    })
+                };
+                if let Some(status) = status {
+                    (self.emit)(status_event(&status));
+                }
                 Err("companion-timeout".into())
+            }
+        }
+    }
+
+    /// Waits for the current start to reach `ready`, or to fail. The ready
+    /// deadline bounds it.
+    pub async fn until_ready(&self) -> Result<u16, String> {
+        let limit = tokio::time::Instant::now() + self.timing.ready + Duration::from_secs(5);
+        loop {
+            match self.status() {
+                Status::Running { port } => return Ok(port),
+                Status::Failed { code } => return Err(code),
+                Status::Disabled | Status::Stopping => return Err("companion-stopped".into()),
+                Status::Starting if tokio::time::Instant::now() >= limit => {
+                    return Err("companion-start-timeout".into())
+                }
+                Status::Starting => tokio::time::sleep(Duration::from_millis(50)).await,
             }
         }
     }
