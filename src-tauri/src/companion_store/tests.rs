@@ -135,11 +135,11 @@ fn companion_store_corrupt_files_are_kept_and_backed_up() {
         ("settings.json", r#"{"version":1}"#),
         (
             "settings.json",
-            r#"{"version":1,"httpsPort":8443,"gatewayPort":0,"duration":"eightHours","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
+            r#"{"version":1,"httpsPort":8443,"gatewayPort":0,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
         ),
         (
             "settings.json",
-            r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"eightHours","sessionAllowlist":[],"fullSessionEnabled":false,"applied":{"httpsPort":0,"gatewayPort":47110,"host":"h","login":"l"}}"#,
+            r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":{"httpsPort":0,"gatewayPort":47110,"host":"h","login":"l"}}"#,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -173,8 +173,18 @@ fn companion_store_settings_defaults_and_round_trip() {
     assert_eq!(defaults, Settings::default());
     assert_eq!((defaults.https_port, defaults.gateway_port), (8443, 47110));
     assert_eq!(defaults.duration, EnableFor::EightHours);
+    assert!(!defaults.experimental, "the Experimental opt-in starts off");
+    // Files written before the opt-in existed still load, with it off.
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
+    )
+    .unwrap();
+    assert!(!Settings::load(dir.path()).unwrap().experimental);
+    std::fs::remove_file(dir.path().join("settings.json")).unwrap();
     let mut settings = defaults;
     settings.duration = EnableFor::UntilExit;
+    settings.experimental = true;
     settings.session_allowlist = vec!["default".into()];
     settings.applied = Some(AppliedServe {
         https_port: 8443,

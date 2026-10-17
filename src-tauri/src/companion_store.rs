@@ -302,6 +302,9 @@ pub struct Settings {
     pub session_allowlist: Vec<String>,
     pub full_session_enabled: bool,
     pub applied: Option<AppliedServe>,
+    /// The Experimental opt-in: off, the Companion cannot be enabled.
+    #[serde(default)]
+    pub experimental: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -313,6 +316,7 @@ impl Default for Settings {
             session_allowlist: Vec::new(),
             full_session_enabled: false,
             applied: None,
+            experimental: false,
         }
     }
 }

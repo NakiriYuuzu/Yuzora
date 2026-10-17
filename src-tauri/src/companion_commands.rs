@@ -1,6 +1,8 @@
 //! Tauri commands for the Companion (plan 4.2): settings, the Tailscale Serve
 //! handler, the gateway sidecar, pairing and devices. Main window only, like
-//! every command; events go to the main webview, never the Browser child.
+//! every command. Events are emitted to the main webview, and only it holds
+//! the event capability (`capabilities/default.json`), so the Browser child
+//! webview cannot listen to them.
 
 use crate::{
     companion_service::{device_summary, CompanionManager, Launch, Status},
@@ -132,16 +134,45 @@ fn instance_lock(dir: &Path) -> Option<std::fs::File> {
 pub struct CompanionOverview {
     status: Status,
     settings: Settings,
+    /// `policy.enableUntil` while a gateway runs. For `untilExit` it is a
+    /// far-off backstop the UI does not show.
+    enable_until: Option<String>,
+    /// False when another Yuzora instance owns the Companion.
+    owner: bool,
 }
 
 #[tauri::command]
 pub fn companion_status(
     state: tauri::State<'_, CompanionState>,
 ) -> Result<CompanionOverview, String> {
+    overview(&state)
+}
+
+fn overview(state: &CompanionState) -> Result<CompanionOverview, String> {
     Ok(CompanionOverview {
         status: state.manager.status(),
         settings: Settings::load(&state.dir)?,
+        enable_until: state.manager.enable_until(),
+        owner: state.owner.is_some(),
     })
+}
+
+/// The Experimental opt-in. Turning it off disables a running Companion the
+/// same way `companion_disable` does.
+#[tauri::command]
+pub async fn companion_experimental_set(
+    state: tauri::State<'_, CompanionState>,
+    enabled: bool,
+) -> Result<CompanionOverview, String> {
+    state.owner()?;
+    let _turn = state.ops.lock().await;
+    let mut settings = Settings::load(&state.dir)?;
+    settings.experimental = enabled;
+    settings.save(&state.dir)?;
+    if !enabled {
+        disable(&state).await?;
+    }
+    overview(&state)
 }
 
 #[derive(Serialize)]
@@ -212,6 +243,9 @@ async fn enable(
     window: EnableFor,
 ) -> Result<Status, String> {
     let mut settings = Settings::load(&state.dir)?;
+    if !settings.experimental {
+        return Err("companion-experimental-off".into());
+    }
     // Re-check right before running: the user confirmed an earlier probe.
     let before = probe(&settings).await?;
     let (Some(cli), Some(node), Some(serve)) = (&before.cli, &before.node, &before.serve) else {
@@ -278,8 +312,13 @@ pub async fn companion_disable(state: tauri::State<'_, CompanionState>) -> Resul
     state.owner()?;
     // Taken first so an enable cannot start in between.
     let _turn = state.ops.lock().await;
-    // Handler first: nothing may forward to a port the gateway is leaving.
-    // The gateway stops even if that fails; the record stays for a retry.
+    disable(&state).await
+}
+
+/// Handler first: nothing may forward to a port the gateway is leaving. The
+/// gateway stops even if that fails; the record stays for a retry. Callers
+/// hold `ops`.
+async fn disable(state: &CompanionState) -> Result<(), String> {
     let removed = remove_applied_serve(&state.dir).await;
     state.manager.stop().await;
     removed

@@ -552,6 +552,7 @@ pub fn run() {
             herdr_service::herdr_events_subscribe,
             herdr_service::herdr_events_release,
             companion_commands::companion_status,
+            companion_commands::companion_experimental_set,
             companion_commands::companion_enable,
             companion_commands::companion_disable,
             companion_commands::companion_pairing_create,

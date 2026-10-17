@@ -106,6 +106,8 @@ struct Inner {
     process: Option<Process>,
     /// The loopback port Serve proxies to, when init fixes one.
     port: Option<u64>,
+    /// `policy.enableUntil` of the running gateway.
+    until: Option<String>,
     ready: bool,
     expired: bool,
     last_error: Option<String>,
@@ -155,6 +157,11 @@ impl CompanionManager {
 
     pub fn status(&self) -> Status {
         self.inner.lock().unwrap().status.clone()
+    }
+
+    /// When the running gateway stops itself, if one runs.
+    pub fn enable_until(&self) -> Option<String> {
+        self.inner.lock().unwrap().until.clone()
     }
 
     /// Nothing can write devices.json: stopped, and a halted process is gone.
@@ -261,6 +268,9 @@ impl CompanionManager {
             inner.port = launch.init["listeners"]["loopback"]["port"]
                 .as_u64()
                 .filter(|port| *port != 0);
+            inner.until = launch.init["policy"]["enableUntil"]
+                .as_str()
+                .map(str::to_owned);
             inner.ready = false;
             inner.last_error = None;
             inner.terminal = None;
@@ -507,6 +517,7 @@ impl CompanionManager {
             // outlived a kill, must not reach devices.json after this.
             inner.generation += 1;
             inner.process = None;
+            inner.until = None;
             if let Some(pending) = inner.pending.take() {
                 let _ = pending.reply.send(Err("companion-exited".into()));
             }

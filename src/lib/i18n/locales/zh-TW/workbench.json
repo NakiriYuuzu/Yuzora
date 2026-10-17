@@ -361,6 +361,10 @@
         "label": "安全性",
         "sub": "檔案與 git 的防護機制"
       },
+      "companion": {
+        "label": "Companion",
+        "sub": "透過 Tailscale 用手機遠端控制"
+      },
       "git": {
         "label": "Git",
         "sub": "版本控制整合"

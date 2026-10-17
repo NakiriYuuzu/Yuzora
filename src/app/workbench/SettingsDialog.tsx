@@ -13,6 +13,7 @@ import {
   GitBranch,
   Info,
   Shield,
+  Smartphone,
   TerminalSquare,
   Bot,
   X,
@@ -59,6 +60,7 @@ import { useWorkspaceTrustStore } from "@/state/workspaceTrustStore"
 import { SettingCard, SettingsRowGroup, Segmented, ToggleRow } from "./settingsPrimitives"
 import { BrandMark } from "@/components/BrandMark"
 import { HerdrSettingsSection } from "@/app/workbench/HerdrSettingsSection"
+import { CompanionSettingsSection } from "@/app/workbench/CompanionSettingsSection"
 import { GitSection } from "./GitSection"
 import { TerminalSection } from "./TerminalSection"
 import { LogsSection } from "./LogsSection"
@@ -144,6 +146,7 @@ const SECTIONS: { id: SectionId; icon: LucideIcon }[] = [
   { id: "terminal", icon: TerminalSquare },
   { id: "herdr", icon: Bot },
   { id: "safety", icon: Shield },
+  { id: "companion", icon: Smartphone },
   { id: "git", icon: GitBranch },
   { id: "about", icon: Info },
 ]
@@ -455,6 +458,8 @@ export function SettingsDialog({
                 onRevokeWorkspace={revokeWorkspace}
               />
             )}
+
+            {section === "companion" && <CompanionSettingsSection />}
 
             {section === "logs" && (
               <LogsSection initialSource={settingsLogSource ?? undefined} openNonce={openNonce} />

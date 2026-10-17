@@ -288,3 +288,90 @@ async fn companion_real_gateway_smoke() {
         "pairing URL leaked to events"
     );
 }
+
+// The settings UI is tested against this file; it must be what serde emits.
+const UI_FIXTURES: &str = include_str!("../../../src/test/companionFixtures.json");
+
+#[test]
+fn companion_ui_fixtures_match_the_serialized_shapes() {
+    let cli = || {
+        Some(tailscale::Cli {
+            path: "/usr/local/bin/tailscale".into(),
+            variant: tailscale::Variant::Cli,
+        })
+    };
+    let node = |login: Option<&str>, tagged: bool| tailscale::Node {
+        version: "1.104.1".into(),
+        backend_state: "Running".into(),
+        dns_name: login.map(|_| "desktop.tail1234.ts.net".into()),
+        login: login.map(str::to_owned),
+        tagged,
+        magic_dns: true,
+        https_ready: true,
+    };
+    let serve = |port| tailscale::Serve {
+        port,
+        foreground: false,
+        funnel: false,
+        other_ports: vec![],
+    };
+    let probe = |cli, node, serve, refusal| TailscaleProbe {
+        cli,
+        node,
+        serve,
+        refusal,
+        https_port: 8443,
+        gateway_port: 47110,
+        command: "tailscale serve --bg --https=8443 http://127.0.0.1:47110".into(),
+    };
+    let device = json!({
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "label": "iPhone",
+        "credentials": [{"rpId": "desktop.tail1234.ts.net"}],
+        "grants": {"control": {"until": "2026-10-18T13:00:00Z"}, "full": false},
+        "locked": false,
+        "createdAt": "2026-10-18T10:00:00Z",
+        "lastSeen": "2026-10-18T12:00:00Z",
+    });
+    let actual = json!({
+        "overviewOff": CompanionOverview {
+            status: Status::Disabled,
+            settings: Settings::default(),
+            enable_until: None,
+            owner: true,
+        },
+        "overviewRunning": CompanionOverview {
+            status: Status::Running { port: 47110 },
+            settings: Settings {
+                experimental: true,
+                session_allowlist: vec!["default".into()],
+                applied: Some(applied()),
+                ..Settings::default()
+            },
+            enable_until: Some("2026-10-18T20:00:00Z".into()),
+            owner: true,
+        },
+        "statusFailed": Status::Failed { code: "companion-crashed".into() },
+        "statusStarting": Status::Starting,
+        "statusStopping": Status::Stopping,
+        "probeReady": probe(cli(), Some(node(Some("user@example.com"), false)), Some(serve(tailscale::PortState::Free)), None),
+        "probeNoCli": probe(None, None, None, None),
+        "probeLoggedOut": probe(cli(), Some(node(None, false)), None, Some(tailscale::Refusal::NoLogin)),
+        "probeTagged": probe(cli(), Some(node(Some("tagged-devices"), true)), Some(serve(tailscale::PortState::Free)), Some(tailscale::Refusal::Tagged)),
+        "probePortTaken": probe(cli(), Some(node(Some("user@example.com"), false)), Some(serve(tailscale::PortState::Taken)), Some(tailscale::Refusal::PortTaken)),
+        "device": device_summary(&device),
+        "pairingQr": PairingQr {
+            pairing_id: "pairing-1".into(),
+            qr_svg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
+            expires_at: "2026-10-18T12:05:00Z".into(),
+        },
+        "sessionsSet": SessionsSet { restart_required: true },
+    });
+    let expected: Value = serde_json::from_str(UI_FIXTURES).unwrap();
+    assert_eq!(
+        actual,
+        expected,
+        "regenerate src/test/companionFixtures.json:\n{}",
+        serde_json::to_string_pretty(&actual).unwrap()
+    );
+}

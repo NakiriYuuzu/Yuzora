@@ -613,8 +613,8 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
 
       <h4>4.1. Sidecar 打包與啟動</h4>
       <ul class="checklist">
-        <li><code class="status">[]</code> <code>scripts/build-companion.ts</code>：以目前 target 建置 companion crate，輸出 <code>src-tauri/binaries/yuzora-companion-&lt;target-triple&gt;[.exe]</code>（gitignore），並建置 PWA（Phase 5）。</li>
-        <li><code class="status">[]</code> <code>tauri.conf.json</code> 加入 <code>bundle.externalBin: ["binaries/yuzora-companion"]</code>；<code>beforeBuildCommand</code> 加入 <code>bun run companion:build</code>；各平台 conf 的 <code>resources</code> 加入 <code>resources/companion-web/</code>。macOS 只建 <code>aarch64-apple-darwin</code>（AGENTS.md）。</li>
+        <li><code class="status">[x]</code> <code>scripts/build-companion.ts</code>：以目前 target 建置 companion crate，輸出 <code>src-tauri/binaries/yuzora-companion-&lt;target-triple&gt;[.exe]</code>（gitignore），並建置 PWA（Phase 5）。（2026-10-18 4.1：實作為 <code>scripts/prepare-companion.ts</code>（<code>bun run companion:prepare</code>）。target 取 Tauri 給 before* hook 的 <code>TAURI_ENV_TARGET_TRIPLE</code>，沒有時用 <code>rustc -vV</code> 的 host；<code>TAURI_ENV_DEBUG</code> 不是 true 時建 release。先比對 companion 與桌面版號，再用獨立的 <code>src-tauri/target/companion</code> 建置，以 tmp＋rename 複製成 0755；內容相同時不寫入，因為 tauri-build 2.7.0 對 externalBin 與 resources 都會發出 <code>rerun-if-changed</code>，重寫一次就會讓 app crate 重編（實測 touch sidecar 會觸發 <code>Compiling yuzora</code>，第二次 prepare 後則不會）。PWA 還沒有（Phase 5），web root 先放一頁說明「這個版本尚未包含 Companion app」。companion 的 release profile 加上 <code>strip = "symbols"</code> 與 thin LTO，macOS release binary 約 4.4 MB。）</li>
+        <li><code class="status">[x]</code> <code>tauri.conf.json</code> 加入 <code>bundle.externalBin: ["binaries/yuzora-companion"]</code>；<code>beforeBuildCommand</code> 加入 <code>bun run companion:build</code>；各平台 conf 的 <code>resources</code> 加入 <code>resources/companion-web/</code>。macOS 只建 <code>aarch64-apple-darwin</code>（AGENTS.md）。（2026-10-18 4.1：<code>beforeDevCommand</code> 與 <code>beforeBuildCommand</code> 都會先跑 <code>companion:prepare</code>，三個平台 conf 都加了 <code>resources/companion-web/</code>。只編譯不打包的 CI job 原本用 <code>TAURI_CONFIG</code> 清空 resources，現在一併清空 <code>externalBin</code>，否則缺 binary 時 build 會失敗；<code>release-contract.test.ts</code> 與 <code>prepare-herdr-resources.test.ts</code> 已同步。macOS 候選 job 新增檢查：<code>Contents/MacOS/yuzora-companion</code> 必須是 arm64，<code>Contents/Resources/companion-web/index.html</code> 必須存在。本機證明：宣告 externalBin 後，app crate 的 build 會把 sidecar 複製到執行檔旁、命名為 <code>yuzora-companion</code>，內容逐位元組相同，正是 <code>sidecar_program()</code> 找的位置；binary 不存在時 build 會失敗。本機無法跑完整的 <code>tauri build</code>，因為 <code>runtime:verify</code> 需要五個 host target，所以第一次真正的打包驗證是 release candidate job。Windows 安裝包的 payload 驗證只禁止 herdr／OpenConsole／conpty 出現在核准目錄外，不會擋 <code>yuzora-companion.exe</code>，但也沒有檢查它存在。）</li>
         <li><code class="status">[wip]</code> Rust 端由目前執行檔同目錄解析 sidecar 路徑，以 <code>tokio::process</code> 啟動（stdin／stdout piped、stderr 轉 Yuzora logs、<code>kill_on_drop</code>）；以最小白名單環境啟動並排除繼承HERDR_*（defence in depth；3B-1 sidecar自身亦清除），不引入 <code>tauri-plugin-shell</code>。（2026-10-17 T2：<code>companion_commands.rs</code> 的 <code>sidecar_program</code> 從目前執行檔同目錄找 <code>yuzora-companion[.exe]</code>；debug build 可用 <code>YUZORA_COMPANION_BIN</code>／<code>YUZORA_COMPANION_WEB</code> 覆寫，release build 沒有這個覆寫。啟動方式：<code>tokio::process</code>、stdin／stdout piped、stderr 寫入 Yuzora logs、kill_on_drop、<code>env_clear</code> 加 allowlist。實測 HERDR 在 macOS 要靠 <code>HOME</code> 才找得到使用者的 session；只給 PATH／TMPDIR 時只看得到 default。allowlist 只保留 PATH、HOME、TMPDIR、USER、LANG／LC_*、XDG_* 與 Windows 的系統、profile 變數，env_path 匯入的 API key 不會傳給 gateway；Windows 部分尚未實測。<code>externalBin</code> 與 build script 留在 4.1 另做：一旦宣告，缺 binary 的每一次 build 與 CI 都會失敗。）</li>
       </ul>
 
@@ -644,15 +644,16 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
 
       <h4>4.5. 設定頁與對話框（shadcn）</h4>
       <ul class="checklist">
-        <li><code class="status">[]</code> <code>SettingsDialog.tsx</code> 新增 SectionId <code>companion</code>（lucide <code>Smartphone</code>，放在 <code>safety</code> 附近），僅在 Experimental 旗標開啟時顯示；<code>settings-search.ts</code> 加入索引。</li>
-        <li><code class="status">[]</code> <code>CompanionSettingsSection</code>：Experimental Badge；紅色警語「開啟後，已授權的手機可遠端操作 AI Agent，等同授予此電腦帳號的 shell 權限」；啟用 Switch＋期限 Select；Tailscale 卡片（狀態、DNS 名稱、登入者、HTTPS、Funnel、port、套用／移除）；LAN 卡片（Phase 6；2026-10-17 延後，本期不顯示）；Session 範圍；裝置 Table（名稱、路徑、最後連線、control 期限 15 分／1 小時／8 小時、full 開關、解鎖、撤銷）。清單使用 <code>ScrollArea</code>。</li>
-        <li><code class="status">[]</code> <code>CompanionPairingDialog</code>：選擇路徑 → 顯示 QR SVG 與倒數，逾時自動作廢。</li>
-        <li><code class="status">[]</code> <code>CompanionApprovalDialog</code>（AlertDialog）：大字 SAS、裝置名稱、路徑、來源位址、Tailscale 登入者、User-Agent；核准／拒絕；視窗未聚焦時要求注意。</li>
-        <li><code class="status">[]</code> i18n：<code>companion.json</code>（zh-TW／en）。</li>
-        <li><code class="status">[]</code> （2026-10-17）Tailscale 卡片加註兩點：啟用 HTTPS 憑證後，<code>&lt;device&gt;.&lt;tailnet&gt;.ts.net</code> 會寫進公開的 Certificate Transparency log（kb/1153），可以改用隨機的 tailnet DNS 名稱；手機必須以使用者帳號登入 tailnet、不能打 tag，因為 tagged 節點不會收到 identity header，會被拒。</li>
+        <li><code class="status">[x]</code> <code>SettingsDialog.tsx</code> 新增 SectionId <code>companion</code>（lucide <code>Smartphone</code>，放在 <code>safety</code> 附近），僅在 Experimental 旗標開啟時顯示；<code>settings-search.ts</code> 加入索引。（2026-10-18 T3：本項與 8.3「關閉時不顯示設定頁以外的任何 UI」互相牴觸：分類若只在旗標開啟時出現，旗標就沒有地方可以打開。裁決為分類一律列出，最上方是 Experimental 開關，關閉時其他內容全部隱藏。索引涵蓋開關、Tailscale、Session 與裝置，並加上「手機、遠端、配對」等別名。）</li>
+        <li><code class="status">[x]</code> <code>CompanionSettingsSection</code>：Experimental Badge；紅色警語「開啟後，已授權的手機可遠端操作 AI Agent，等同授予此電腦帳號的 shell 權限」；啟用 Switch＋期限 Select；Tailscale 卡片（狀態、DNS 名稱、登入者、HTTPS、Funnel、port、套用／移除）；LAN 卡片（Phase 6；2026-10-17 延後，本期不顯示）；Session 範圍；裝置 Table（名稱、路徑、最後連線、control 期限 15 分／1 小時／8 小時、full 開關、解鎖、撤銷）。清單使用 <code>ScrollArea</code>。（2026-10-18 T3：<code>src/app/workbench/CompanionSettingsSection.tsx</code>。由上而下：另一個 instance 擁有時的提示、Experimental 開關、紅色警語、Tailscale 卡片、Session 範圍、裝置。Tailscale 卡片顯示 CLI、版本、狀態、DNS 名稱、登入者、HTTPS、Funnel 與 port 狀態；拒絕原因與「找不到 CLI」各有指引；同 hostname 的其他 port 列為 cookie 警告。啟用時選擇期限，確認對話框原樣顯示 probe 回傳的指令，確認後才呼叫 <code>companion_enable</code>；剩餘時間依 <code>enableUntil</code> 計算，untilExit 則顯示「直到結束 Yuzora」，不顯示一年後的備援期限。停用中仍有 <code>settings.applied</code> 時提供「移除」。Session 只列本機原生 HERDR Session；allowlist 為空時手機什麼都看不到（gateway 的實際行為），畫面會說明；執行中修改會提示需要重新啟用。裝置列可改名、授予 control 15 分／1 小時／8 小時或改回僅檢視、解鎖，撤銷要先確認。每次只改一個欄位，另一個 grant 照原值帶回，所以不會同時收緊又放寬。和原規劃不同的地方：沒有「路徑」欄，因為本期只有 Tailscale；沒有 full 開關，因為目前沒有任何 UI 能開啟 <code>fullSessionEnabled</code>，full grant 單獨存在沒有作用，留給 Full Session 一起做；設定對話框本身會捲動，所以裝置清單沒有另外包 ScrollArea；替既有裝置加 passkey（<code>addToDevice</code>）沒有入口。）</li>
+        <li><code class="status">[x]</code> <code>CompanionPairingDialog</code>：選擇路徑 → 顯示 QR SVG 與倒數，逾時自動作廢。（2026-10-18 T3：路徑固定為 tailscale，不需要選。每次開啟建立一個 pairing；SVG 只在 component 內包成 blob URL 交給 <code>&lt;img&gt;</code>，不進 zustand、不寫 log，關閉時 revoke。關閉時盡力送 cancel，錯誤忽略；已被手機領取時改由核准對話框接手，不送 cancel；收到 pairing.state 或倒數結束就關閉。）</li>
+        <li><code class="status">[x]</code> <code>CompanionApprovalDialog</code>（AlertDialog）：大字 SAS、裝置名稱、路徑、來源位址、Tailscale 登入者、User-Agent；核准／拒絕；視窗未聚焦時要求注意。（2026-10-18 T3：實作為全域的 <code>src/workbench/CompanionApprovalHost.tsx</code>，和 <code>CompanionBridge</code> 一起掛在 <code>App.tsx</code>：手機可能在設定對話框關掉之後才領取，放在設定頁裡就看不到。內容為大字 SAS、裝置名稱、Tailscale 登入者與 User-Agent，全部當純文字顯示。預設焦點在「拒絕」，按 Esc 或關閉一律視為拒絕，只有「核准」按鈕會核准。沒有來源位址，因為 Serve 不提供；也沒有要求視窗注意，因為主視窗沒有 <code>request-user-attention</code> 權限，這次不為它新增 capability。疊在設定對話框上方的實際效果要等 GUI 驗收。）</li>
+        <li><code class="status">[x]</code> i18n：<code>companion.json</code>（zh-TW／en）。（2026-10-18 T3：兩個語系都有，錯誤碼依第一個 <code>: </code> 切開後對照翻譯，未知的碼或自由文字原樣顯示。）</li>
+        <li><code class="status">[]</code> （2026-10-17）Tailscale 卡片加註兩點：啟用 HTTPS 憑證後，<code>&lt;device&gt;.&lt;tailnet&gt;.ts.net</code> 會寫進公開的 Certificate Transparency log（kb/1153），可以改用隨機的 tailnet DNS 名稱；手機必須以使用者帳號登入 tailnet、不能打 tag，因為 tagged 節點不會收到 identity header，會被拒。（2026-10-18 T3：兩則都放在 Tailscale 卡片底部。）</li>
       </ul>
 
       <h4>4.6. 狀態列與稽核橋接</h4>
+      <p>（2026-10-18 T3：本節延後。control／full 要等 PWA（T4／Phase 5）才可能發生，T3 只處理 status、device.*、pairing.* 與 command.deferred；audit、control.state、full.state、session.* 事件目前由 store 直接忽略。狀態列指示器也一起延後。）</p>
       <p>3B-2 review-fix handoff（parent核准）：desktop以<strong>(peerId, stream)</strong>追蹤control/full，只接受該stream更新的seq，再按session聚合所有仍開啟的peers；禁止device/session單值覆蓋。stream是gateway lifetime不重用的opaque字串，與WS-local u32不同；open:true seq=1，open:false seq=2。Host open成功且state(true)成功入列才announced，失敗open無state(false)。state(false)仍不是Host物理cleanup ACK；Full成功通知後才可暫停／警告connectors，沒有開啟前desktop握手。所有mutation不得自動重試；prompt摘要視為可能含secret的未信任文字，Logs/通知不得執行ANSI/HTML。</p>
       <table><thead><tr><th>Admin event</th><th>桌面責任</th></tr></thead><tbody>
         <tr><td>control.state{deviceId,peerId,stream,seq,session,target,takeover,open}</td><td>以(peerId,stream)+seq追蹤；target為resolved pane ID；takeover可見通知，不自動reclaim。</td></tr>
@@ -849,8 +850,8 @@ Yuzora desktop (Tauri) ── companion_service: spawn / init / pairing approve 
       <h4>8.3. 發佈與 CI</h4>
       <ul class="checklist">
         <li><code class="status">[]</code> <code>.github/workflows/companion.yml</code>：companion crate 的 fmt、clippy <code>-D warnings</code>、test（macOS、Windows、Linux）；驗收 workflow 已納入的原生 Windows／Linux build（不能以 target dependency tree 代替），並保留 Phase 2 加入的 <code>cargo audit</code>／<code>cargo deny check</code> 與具版本、理由、負責人、到期日的 RUSTSEC-2023-0071 例外。</li>
-        <li><code class="status">[]</code> <code>scripts/verify-host-resources.ts</code>（或新增驗證）與 <code>scripts/release-contract.ts</code> 涵蓋 sidecar 與 <code>companion-web</code>；安裝包解包驗證包含兩者。</li>
-        <li><code class="status">[]</code> Experimental 旗標：預設關閉；關閉時不啟動 sidecar、不顯示設定頁以外的任何 UI。</li>
+        <li><code class="status">[wip]</code> <code>scripts/verify-host-resources.ts</code>（或新增驗證）與 <code>scripts/release-contract.ts</code> 涵蓋 sidecar 與 <code>companion-web</code>；安裝包解包驗證包含兩者。（2026-10-18 4.1：release contract 涵蓋只編譯 job 的 externalBin 清空；macOS 候選 job 檢查 sidecar 與 companion-web。Windows 與 Linux 安裝包尚未檢查兩者是否存在。）</li>
+        <li><code class="status">[x]</code> Experimental 旗標：預設關閉；關閉時不啟動 sidecar、不顯示設定頁以外的任何 UI。（2026-10-18 T3：<code>settings.json</code> 的 <code>experimental</code>，舊檔沒有這個欄位時視為關閉。旗標關閉時 <code>companion_enable</code> 回 <code>companion-experimental-off</code>；從開切到關會照停用的順序先移除 Serve、再停 gateway。Bridge 與核准對話框一律掛載，但只是監聽事件，沒有 gateway 就不會有事件。）</li>
       </ul>
 
       <h4>8.4. 實機驗收矩陣（使用者執行）</h4>
@@ -1405,10 +1406,52 @@ GET  /ws                          WebSocket（cookie + Origin，首 frame {bindi
       <p><strong>未做：</strong></p>
       <ul>
         <li>Tailscale 的 apply／remove 尚未實機驗證，本機沒有安裝 Tailscale。</li>
-        <li>4.1 打包（externalBin、build script）。</li>
-        <li>T3 的 UI：設定頁、QR／SAS 對話框、狀態列。</li>
+        <li>4.1 打包（externalBin、build script）。（2026-10-18 已完成，見下一則。）</li>
+        <li>T3 的 UI：設定頁、QR／SAS 對話框、狀態列。（2026-10-18 除狀態列外已完成，見下一則。）</li>
         <li>Windows／Linux 編譯，要等 push 之後由 CI 驗證。</li>
         <li>Phase 3D 的 trust store 與 spaces.roots。</li>
+      </ul>
+    </details>
+    <details>
+      <summary>2026-10-18 — Phase 4 4.1 打包與 T3 設定頁（未 commit）</summary>
+      <p><strong>範圍：</strong>使用者指示「繼續做 4.1 打包跟 T3 設定頁」。同一個 worktree <code>.yuzora-lanes/companion-tailscale</code>，疊在 PR #142 的 12bf2e8e 上。要放進 #142 還是另開疊加的 PR，commit 前要先問使用者。</p>
+      <ul>
+        <li><strong>4.1：</strong>細節記在 4.1 的前兩項與 8.3。CI 中所有直接編譯 app crate 的 job（<code>rust-compile</code> 的 check／fmt／clippy／test、<code>database-integration</code>）都在 job 層級設定了清空 externalBin 的 <code>TAURI_CONFIG</code>；release 與候選 job 走 <code>tauri build</code>，<code>--config</code> 只覆寫 updater 與 WiX 版號，不影響 before-build hook，所以會先跑 <code>companion:prepare</code>。</li>
+        <li><strong>Rust：</strong>
+          <ul>
+            <li>Settings 新增 <code>experimental</code>（預設 false，舊檔相容），並新增 <code>companion_experimental_set</code>，共 13 個指令。</li>
+            <li><code>companion_status</code> 改回傳 <code>{status, settings, enableUntil, owner}</code>。<code>enableUntil</code> 取自執行中 gateway 的 init，結束後清除。</li>
+            <li>新增 <code>companion_ui_fixtures_match_the_serialized_shapes</code>：把 overview、probe、status、device 摘要、pairing QR 的 serde 輸出和 <code>src/test/companionFixtures.json</code> 逐字比對，前端測試直接使用這份 fixture。任一邊改了欄位，兩邊的測試都會失敗。</li>
+          </ul>
+        </li>
+        <li><strong>前端：</strong>
+          <ul>
+            <li><code>companionIpc.ts</code>：typed wrappers。</li>
+            <li><code>companionErrors.ts</code>：錯誤碼翻譯。</li>
+            <li><code>companionStore.ts</code>：裝置、核准佇列、已結束的 pairing。refresh 期間若有事件進來會重讀。狀態變成 disabled 或 failed 時清空核准佇列，因為停止的 gateway 不會再送 pairing.state；同時重讀 overview，因為 stop hook 可能已清掉 Serve 紀錄。</li>
+            <li><code>CompanionBridge</code>、<code>CompanionApprovalHost</code>、<code>CompanionPairingDialog</code>、<code>CompanionSettingsSection</code>，以及設定分類、搜尋與 i18n。</li>
+          </ul>
+        </li>
+        <li><strong>假綠修正：</strong>T2 的 settings fixture 寫成 <code>"duration":"eightHours"</code>，但 serde 名稱是 <code>"8h"</code>。所以 port 0 損毀測試其實是因為別的欄位不合法才通過。已改正，並做了 mutation 檢查：拿掉 port 檢查後測試會失敗。前端 fixture 改從 Rust 產生，也是為了避免同類問題。</li>
+      </ul>
+      <p><strong>本機驗證：</strong></p>
+      <ul>
+        <li><strong>Rust：</strong>companion 測試 44 項，連跑三次都通過；lib 548 項通過；fmt 通過；clippy baseline 19 筆吻合。<code>host_tunnels</code> 曾在平行負載下失敗一次，單獨重跑通過。</li>
+        <li><strong>前端：</strong>
+          <ul>
+            <li>新增 30 項測試，涵蓋設定頁各狀態、確認對話框、裝置操作、配對對話框、核准對話框、Bridge、store 與錯誤翻譯。15 個 mutation 全部被抓到，包括：gateway 停止後沒清空核准佇列、grant 沒照原值帶回、跳過確認直接啟用、owner 為 false 時沒鎖住、列出遠端 Session、交接後仍送 cancel、blob 未 revoke、refresh 忽略競態、拒絕鍵沒有預設焦點、關閉時誤核准。</li>
+            <li>全套 vitest：第一次只有 site 的兩個測試失敗，原因是缺 Pages 產物；照 CI 的步驟產生之後全套 335 個檔案、4165 項通過，產生過程動到的 <code>site/index.html</code> 已還原。lint 0 error；typecheck 與 <code>bun run build</code> 通過。<code>invoke</code> 是 Tauri 原生函式的直接 re-export，app 內沒有任何攔截或記錄，QR SVG 只存在於回傳值與 component 內。</li>
+          </ul>
+        </li>
+        <li><strong>真 gateway 核准流程：</strong>暫時掛進一個 ignored 測試，用 4.1 打包出的 release sidecar 執行。手機的 claim 經 loopback 帶 Tailscale 身分 header 送出，回 200。收到的 <code>pairing.claimed</code> 欄位和 TS 型別完全一致；approve 得到 approved，reject 得到 rejected，取消未被領取的 pairing 也成功。對已結束的 pairing 再送 cancel 會回 <code>admin-command-rejected</code>，並轉送一則 error 事件；UI 本來就忽略這類錯誤。事件中沒有 pairing URL。這個測試沒有 commit。</li>
+      </ul>
+      <p><strong>未做：</strong></p>
+      <ul>
+        <li>GUI 實機檢查（使用者已允許本工作的 E2E；執行時要做 HERDR 隔離，且需要 fake tailscale 與 debug 覆寫才能在沒有 Tailscale 的機器上產生 claim）。待確認：核准對話框疊在設定對話框上的效果，以及 Tauri 的 <code>listen</code> 在主視窗確實收得到 <code>emit_to("main")</code>，目前只從原始碼與 capability 推論。</li>
+        <li>真 tailnet 上的 enable／disable 與 Simulator 驗證，要等使用者安裝並登入 Tailscale。</li>
+        <li>4.6 狀態列與稽核橋接；full 開關；替既有裝置加 passkey 的入口。</li>
+        <li>Windows 與 Linux 安裝包中 sidecar 是否存在的檢查。</li>
+        <li>完整的 <code>tauri build</code>，第一次會在 release candidate job 執行。</li>
       </ul>
     </details>
   </section>
