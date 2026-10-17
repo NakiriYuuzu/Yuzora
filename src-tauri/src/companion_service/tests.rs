@@ -171,6 +171,8 @@ while read line; do
   case "$line" in
     *'"pairing.reject"'*) sleep 0.2; echo '{{"v":1,"type":"error","code":"admin-command-rejected","message":"Companion request rejected"}}';;
     *'"pairing.cancel"'*) echo '{{"v":1,"type":"command.deferred","command":"pairing.cancel","target":"P2","committed":true}}';;
+    *'"pairing.approve"'*) echo '{{"v":1,"type":"pairing.state","pairingId":"P4","state":"expired","reason":"ttl"}}'
+      echo '{{"v":1,"type":"error","code":"admin-command-rejected","message":"Companion request rejected"}}';;
     *'"pairing.create"'*) echo '{{"v":1,"type":"pairing.created","pairingId":"P3","url":"https://h/pair#p=P3.S","expiresAt":"2030-01-01T00:05:00Z"}}';;
     *'"shutdown"'*) exit 0;;
   esac
@@ -191,6 +193,20 @@ done"#
         .await
         .unwrap();
     assert_eq!(deferred["type"], "command.deferred");
+    // Expired while it was being decided: the approve failed.
+    assert_eq!(
+        h.manager
+            .pairing_decide("pairing.approve", "P4")
+            .await
+            .unwrap_err(),
+        "admin-command-rejected"
+    );
+    assert!(h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e["type"] == "pairing.state" && e["state"] == "expired"));
     h.manager.stop().await;
 }
 

@@ -238,9 +238,12 @@ async fn enable(
     let still_ours = current.serve.as_ref().map(|s| s.port) == Some(tailscale::PortState::Ours)
         && settings.https_port == applied.https_port
         && settings.gateway_port == applied.gateway_port;
-    let same_login =
-        current.node.as_ref().and_then(|n| n.login.as_deref()) == Some(applied.login.as_str());
-    if !still_ours || !same_login || current.refusal.is_some() {
+    // init pins publicHost to the applied name; another name would be refused.
+    let same_node = current.node.as_ref().is_some_and(|node| {
+        node.login.as_deref() == Some(applied.login.as_str())
+            && node.dns_name.as_deref() == Some(applied.host.as_str())
+    });
+    if !still_ours || !same_node || current.refusal.is_some() {
         return Err("companion-tailscale-changed".into());
     }
     let manager = herdr.0.clone();

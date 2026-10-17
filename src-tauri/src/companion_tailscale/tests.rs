@@ -92,7 +92,7 @@ fn companion_tailscale_serve_port_states() {
         ("extra-mount", PortState::Shared),
         ("tcp-forward", PortState::Taken),
         ("funnel", PortState::Free),
-        ("foreground", PortState::Taken),
+        ("foreground", PortState::Free),
         ("service", PortState::Free),
     ] {
         assert_eq!(serve(name).port, port, "{name}");
@@ -103,6 +103,25 @@ fn companion_tailscale_serve_port_states() {
     assert!(check_serve(r#"{"TCP":"8443"}"#, HOST, 8443, GATEWAY)
         .unwrap_err()
         .starts_with("tailscale-invalid-serve"));
+}
+
+#[test]
+fn companion_tailscale_foreground_override_keeps_our_background_root() {
+    assert!(serve("foreground").foreground);
+    assert!(!serve("ours").foreground);
+    // Ours in the background, a foreground `tailscale serve` on top: still
+    // ours to remove, since it comes back when the foreground one exits.
+    let mut json: Value = serde_json::from_str(include_str!("fixtures/serve-ours.json")).unwrap();
+    let fg: Value = serde_json::from_str(include_str!("fixtures/serve-foreground.json")).unwrap();
+    json["Foreground"] = fg["Foreground"].clone();
+    let overridden = check_serve(&json.to_string(), HOST, 8443, GATEWAY).unwrap();
+    assert_eq!(overridden.port, PortState::Ours);
+    assert!(overridden.foreground);
+    assert_eq!(
+        refusal(&status("running"), &overridden),
+        Some(Refusal::PortTaken)
+    );
+    assert!(off_args(&overridden, 8443).is_some());
 }
 
 #[test]

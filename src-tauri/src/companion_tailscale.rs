@@ -206,7 +206,10 @@ pub enum PortState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Serve {
+    /// The background config: the only one `serve --bg` writes and `off` edits.
     pub port: PortState,
+    /// A running foreground `tailscale serve` overrides this port for now.
+    pub foreground: bool,
     /// Some handler on this node is public on the internet.
     pub funnel: bool,
     /// Other handlers on this hostname can read the Companion's cookies.
@@ -229,13 +232,13 @@ pub fn check_serve(
         .chain(config.foreground.values())
         .collect();
     // A foreground handler belongs to a running `tailscale serve`, never to us.
-    let foreground_uses_port = config
+    // It hides the background one only until it exits, so both are reported.
+    let foreground = config
         .foreground
         .values()
         .any(|fg| fg.tcp.contains_key(&port_key) || fg.web.contains_key(&web_key));
     let ours_root = json!({"Proxy": proxy_target(gateway_port)});
     let port = match (config.tcp.get(&port_key), config.web.get(&web_key)) {
-        _ if foreground_uses_port => PortState::Taken,
         (None, None) => PortState::Free,
         (Some(tcp), Some(web))
             if *tcp == json!({"HTTPS": true})
@@ -260,6 +263,7 @@ pub fn check_serve(
     other_ports.dedup();
     Ok(Serve {
         port,
+        foreground,
         funnel: all.iter().any(|sc| sc.allow_funnel.values().any(|on| *on)),
         other_ports,
     })
@@ -288,7 +292,7 @@ pub fn refusal(node: &Node, serve: &Serve) -> Option<Refusal> {
         Some(Refusal::HttpsNotReady)
     } else if serve.funnel {
         Some(Refusal::Funnel)
-    } else if matches!(serve.port, PortState::Taken | PortState::Shared) {
+    } else if serve.foreground || matches!(serve.port, PortState::Taken | PortState::Shared) {
         // Another mount on the same origin can read the Companion's cookies.
         Some(Refusal::PortTaken)
     } else {

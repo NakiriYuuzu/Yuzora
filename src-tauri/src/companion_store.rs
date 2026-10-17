@@ -318,7 +318,22 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn load(dir: &Path) -> Result<Self, String> {
-        Ok(read_versioned::<Self>(&dir.join(SETTINGS_FILE), |s| s.version)?.unwrap_or_default())
+        let path = dir.join(SETTINGS_FILE);
+        let settings = read_versioned::<Self>(&path, |s| s.version)?.unwrap_or_default();
+        // Port 0 would have Serve proxy to nothing while the gateway binds an
+        // ephemeral port.
+        let mut ports = [settings.https_port, settings.gateway_port]
+            .into_iter()
+            .chain(
+                settings
+                    .applied
+                    .iter()
+                    .flat_map(|a| [a.https_port, a.gateway_port]),
+            );
+        if ports.any(|port| port == 0) {
+            return Err(corrupt(&path));
+        }
+        Ok(settings)
     }
     pub fn save(&self, dir: &Path) -> Result<(), String> {
         write_json(&dir.join(SETTINGS_FILE), self)

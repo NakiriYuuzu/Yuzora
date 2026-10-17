@@ -122,8 +122,11 @@ struct Pending {
 
 enum Want {
     Pairing,
-    /// Approve, reject or cancel of this pairing.
-    Decision(String),
+    /// Approve, reject or cancel (`kind`) of this pairing.
+    Decision {
+        id: String,
+        kind: String,
+    },
     /// Resolved by the event that reports this command's own change.
     Device {
         id: String,
@@ -404,7 +407,7 @@ impl CompanionManager {
                     // A reject or cancel the gateway applied but could not report yet.
                     resolve(
                         &mut self.inner.lock().unwrap(),
-                        |want| matches!(want, Want::Decision(id) if *id == target),
+                        |want| matches!(want, Want::Decision { id, kind } if *id == target && event["command"] == kind.as_str()),
                         Ok(event.clone()),
                     );
                 }
@@ -426,7 +429,7 @@ impl CompanionManager {
                         let id = event["pairingId"].as_str().unwrap_or_default();
                         resolve(
                             &mut inner,
-                            |want| matches!(want, Want::Decision(wanted) if wanted == id),
+                            |want| matches!(want, Want::Decision { id: wanted, kind } if wanted == id && decided(kind, &event)),
                             Ok(event.clone()),
                         );
                         outgoing.push(event);
@@ -591,7 +594,10 @@ impl CompanionManager {
     pub async fn pairing_decide(&self, kind: &str, pairing_id: &str) -> Result<Value, String> {
         self.request(
             json!({"v": 1, "type": kind, "pairingId": pairing_id}),
-            Want::Decision(pairing_id.to_owned()),
+            Want::Decision {
+                id: pairing_id.to_owned(),
+                kind: kind.to_owned(),
+            },
         )
         .await
     }
@@ -621,6 +627,17 @@ impl CompanionManager {
 fn resolve(inner: &mut Inner, matches: impl Fn(&Want) -> bool, result: Result<Value, String>) {
     if inner.pending.as_ref().is_some_and(|p| matches(&p.want)) {
         let _ = inner.pending.take().unwrap().reply.send(result);
+    }
+}
+
+/// Whether a `pairing.state` is this decision's outcome. An expiry noticed
+/// while handling the decision comes first and is followed by its error.
+fn decided(kind: &str, event: &Value) -> bool {
+    match kind {
+        "pairing.approve" => event["state"] == "approved",
+        "pairing.reject" => event["state"] == "rejected" && event["reason"] == "rejected",
+        "pairing.cancel" => event["state"] == "rejected" && event["reason"] == "cancelled",
+        _ => false,
     }
 }
 
