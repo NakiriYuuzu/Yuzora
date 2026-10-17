@@ -770,7 +770,13 @@ macOS App 僅支援 Apple Silicon，受管 HERDR 共用 `Contents/Resources/host
 
 本機 `herdr:prepare` 在 macOS 只準備 Apple Silicon source-tree binary，保留 `src-tauri/resources/herdr/macos-aarch64/herdr` 供開發與 compatibility gate 使用；`host:prepare macos-x86_64` 仍獨立準備 Intel 遠端 payload，不依賴桌面準備清單。
 
-App 與獨立 Host 的 Cargo release profile 使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。
+### Companion sidecar
+
+Companion gateway 以 Tauri `externalBin` 隨桌面 App 出貨，只建置 bundle 自己的 target。`bun run companion:prepare` 依 Tauri 提供的 `TAURI_ENV_TARGET_TRIPLE` 建置 `src-tauri/companion`（未提供時用 `rustc -vV` 的 host triple；`TAURI_ENV_DEBUG=true` 時建 debug），輸出 `src-tauri/binaries/yuzora-companion-<triple>`，並寫入 `src-tauri/resources/companion-web/`。在 PWA 建置（plan Phase 5）加入前，web root 只有占位頁。兩者都由 gitignore 排除。`beforeBuildCommand` 與 `beforeDevCommand` 都會先執行它，所以 `tauri dev` 第一次會多一次 companion 建置。
+
+宣告 `externalBin` 後，缺 binary 的 app crate 建置會失敗，所以 CI 只做編譯與測試的 job 以 `TAURI_CONFIG` 同時清空 `resources` 與 `externalBin`；candidate 與 Release 不覆寫。macOS candidate 會確認 `Contents/MacOS/yuzora-companion` 是 arm64，且 `Contents/Resources/companion-web/index.html` 存在。
+
+App、獨立 Host 與 Companion 的 Cargo release profile 都使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。
 
 Windows 安裝包建置後，在具備 verifier 所需解包工具的 Windows 環境驗證：
 

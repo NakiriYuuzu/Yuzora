@@ -470,7 +470,7 @@ describe("release workflow contracts", () => {
       console.log(JSON.stringify(parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text())));
     `], { encoding: "utf8" })) as ParsedReleaseWorkflow
     for (const name of ["rust-compile", "database-integration"]) {
-      expect(JSON.parse(ci.jobs[name].env!.TAURI_CONFIG)).toEqual({ bundle: { resources: [] } })
+      expect(JSON.parse(ci.jobs[name].env!.TAURI_CONFIG)).toEqual({ bundle: { resources: [], externalBin: [] } })
     }
     for (const job of [ci.jobs["release-candidate"], releaseWorkflow().jobs.build]) {
       expect(job.env?.TAURI_CONFIG).toBeUndefined()
