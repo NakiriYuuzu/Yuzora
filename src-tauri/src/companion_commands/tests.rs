@@ -177,7 +177,15 @@ fn companion_one_instance_owns_the_companion() {
     let first = instance_lock(&dir).expect("first instance");
     assert!(instance_lock(&dir).is_none(), "second instance");
     drop(first);
-    assert!(instance_lock(&dir).is_some(), "after the first quits");
+    // A child another test forks meanwhile shares the open lock file until
+    // its exec closes it, so the lock may free a moment after the drop.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut again = instance_lock(&dir);
+    while again.is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        again = instance_lock(&dir);
+    }
+    assert!(again.is_some(), "after the first quits");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
