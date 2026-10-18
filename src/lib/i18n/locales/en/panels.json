@@ -184,6 +184,7 @@
     "binary": "Binary file — cannot open in the text editor",
     "revealInSystem": "Reveal in system",
     "openExternally": "Open with external program",
+    "remoteOpenUnsupported": "Remote files cannot be opened with a program on this computer.",
     "copyPath": "Copy path"
   },
   "imageViewer": {

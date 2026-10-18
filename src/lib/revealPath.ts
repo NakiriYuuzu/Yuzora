@@ -1,4 +1,4 @@
-import { openWorkspace, openWorkspaceDirectory } from "./ipc"
+import { openWorkspace, openWorkspaceDirectory, openWorkspaceFile } from "./ipc"
 import { canonicalPathKey, isSameOrDescendantPath } from "./paths"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { revealHostPath } from "./hostIpc"
@@ -39,6 +39,34 @@ function renewDirectoryCapability(root: string, previousCapability: string | nul
   return request
 }
 
+/** Hand a path to the native side under the workspace grant, renewing an expired grant once. */
+async function openThroughWorkspaceGrant(
+  root: string,
+  capability: string | null,
+  nativePath: string,
+  open: (capability: string, path: string) => Promise<void>
+): Promise<void> {
+  if (capability) {
+    try {
+      await open(capability, nativePath)
+      return
+    } catch (error) {
+      // Retry only an expired process-local grant, never an ordinary I/O or
+      // containment failure. Native validation remains the authority.
+      if ((error instanceof Error ? error.message : String(error)) !== "workspace-capability-missing") throw error
+    }
+  }
+  const current = useWorkspaceStore.getState()
+  if (current.workspacePath !== root) throw new Error("Workspace changed before opening its path")
+  const renewed = current.workspaceCapabilityId && current.workspaceCapabilityId !== capability
+    ? current.workspaceCapabilityId
+    : await renewDirectoryCapability(root, capability)
+  if (useWorkspaceStore.getState().workspacePath !== root || useWorkspaceStore.getState().workspaceCapabilityId !== renewed) {
+    throw new Error("Workspace changed before opening its path")
+  }
+  await open(renewed, nativePath)
+}
+
 export async function revealPathInSystem(path: string, isDirectory = false): Promise<void> {
   const nativePath = systemRevealPath(path)
   if (!nativePath) throw new Error("File manager is unavailable for this remote host")
@@ -54,26 +82,18 @@ export async function revealPathInSystem(path: string, isDirectory = false): Pro
     if (!root || parseRemoteFilePath(root) || !isSameOrDescendantPath(root, nativePath)) {
       throw new Error("Current workspace directory capability is unavailable")
     }
-    if (capability) {
-      try {
-        await openWorkspaceDirectory(capability, nativePath)
-        return
-      } catch (error) {
-        // Retry only an expired process-local grant, never an ordinary I/O or
-        // containment failure. Native validation remains the authority.
-        if ((error instanceof Error ? error.message : String(error)) !== "workspace-capability-missing") throw error
-      }
-    }
-    const current = useWorkspaceStore.getState()
-    if (current.workspacePath !== root) throw new Error("Workspace changed before opening its directory")
-    const renewed = current.workspaceCapabilityId && current.workspaceCapabilityId !== capability
-      ? current.workspaceCapabilityId
-      : await renewDirectoryCapability(root, capability)
-    if (useWorkspaceStore.getState().workspacePath !== root || useWorkspaceStore.getState().workspaceCapabilityId !== renewed) {
-      throw new Error("Workspace changed before opening its directory")
-    }
-    await openWorkspaceDirectory(renewed, nativePath)
+    await openThroughWorkspaceGrant(root, capability, nativePath, openWorkspaceDirectory)
   } else {
     await revealItemInDir(nativePath)
   }
+}
+
+/** Open a workspace file in the system's default program. The native side validates the
+ * path against the workspace grant; the generic opener plugin scope is never involved. */
+export async function openFileExternally(path: string): Promise<void> {
+  const { workspacePath: root, workspaceCapabilityId: capability } = useWorkspaceStore.getState()
+  if (!root || parseRemoteFilePath(root) || parseRemoteFilePath(path) || !isSameOrDescendantPath(root, path)) {
+    throw new Error("Only files in the current local workspace can be opened")
+  }
+  await openThroughWorkspaceGrant(root, capability, path, openWorkspaceFile)
 }

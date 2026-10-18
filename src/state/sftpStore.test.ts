@@ -187,6 +187,13 @@ describe("sftpStore remote browsing", () => {
     })
 })
 
+// The next `count` revision probes find an existing remote file, so each upload must confirm.
+function existingRemoteFiles(count: number): void {
+    for (let index = 0; index < count; index++) {
+        vi.mocked(sftpFileRevision).mockImplementationOnce(async (_session, path) => `rev:${path}`)
+    }
+}
+
 describe("sftpStore transfers", () => {
     it("drops a late listing from a previous session or a superseded navigation", async () => {
         connectHost()
@@ -228,6 +235,57 @@ describe("sftpStore transfers", () => {
         const [id, transfer] = Object.entries(useSftpStore.getState().transfers)[0]
         expect(transfer).toMatchObject({ done: true, error: "sftp-transfer-cancelled" })
         expect(sftpTransferCancel).toHaveBeenCalledWith("sess-1", id)
+    })
+
+    it("asks about parallel overwrites one at a time instead of cancelling the earlier ones", async () => {
+        connectHost()
+        existingRemoteFiles(3)
+        const source = (name: string) => ({ kind: "selected" as const, capabilityId: `picked-${name}`, name })
+        const uploads = ["a.txt", "b.txt", "c.txt"].map((name) => useSftpStore.getState().upload(HOST, source(name)))
+        for (const name of ["a.txt", "b.txt", "c.txt"]) {
+            await vi.waitFor(() => expect(useAppDialogStore.getState().pending).toMatchObject({ type: "confirm" }))
+            expect(useAppDialogStore.getState().pending?.description).toContain(name)
+            useAppDialogStore.getState().respond(true)
+        }
+        await Promise.all(uploads)
+        expect(mockUpload.mock.calls.map((call) => [(call[2] as { name: string }).name, call[4]])).toEqual([
+            ["a.txt", "rev:/home/u/a.txt"],
+            ["b.txt", "rev:/home/u/b.txt"],
+            ["c.txt", "rev:/home/u/c.txt"]
+        ])
+        expect(Object.values(useSftpStore.getState().transfers).map((transfer) => transfer.error ?? null)).toEqual([null, null, null])
+    })
+
+    it("a declined overwrite only stops its own file", async () => {
+        connectHost()
+        existingRemoteFiles(2)
+        const source = (name: string) => ({ kind: "selected" as const, capabilityId: `picked-${name}`, name })
+        const uploads = ["a.txt", "b.txt"].map((name) => useSftpStore.getState().upload(HOST, source(name)))
+        await vi.waitFor(() => expect(useAppDialogStore.getState().pending).not.toBeNull())
+        useAppDialogStore.getState().respond(false)
+        await vi.waitFor(() => expect(useAppDialogStore.getState().pending?.description).toContain("b.txt"))
+        useAppDialogStore.getState().respond(true)
+        await Promise.all(uploads)
+        expect(mockUpload).toHaveBeenCalledTimes(1)
+        expect((mockUpload.mock.calls[0][2] as { name: string }).name).toBe("b.txt")
+        const errors = Object.values(useSftpStore.getState().transfers).map((transfer) => transfer.error ?? null)
+        expect(errors).toEqual(["sftp-transfer-cancelled", null])
+    })
+
+    it("does not prompt for a queued overwrite whose transfer was cancelled while waiting", async () => {
+        connectHost()
+        existingRemoteFiles(2)
+        const source = (name: string) => ({ kind: "selected" as const, capabilityId: `picked-${name}`, name })
+        const first = useSftpStore.getState().upload(HOST, source("a.txt"))
+        const second = useSftpStore.getState().upload(HOST, source("b.txt"))
+        await vi.waitFor(() => expect(useAppDialogStore.getState().pending?.description).toContain("a.txt"))
+        await vi.waitFor(() => expect(Object.keys(useSftpStore.getState().transfers)).toHaveLength(2))
+        await useSftpStore.getState().cancelTransfer(Object.keys(useSftpStore.getState().transfers)[1])
+        useAppDialogStore.getState().respond(true)
+        await Promise.all([first, second])
+        expect(useAppDialogStore.getState().pending).toBeNull()
+        expect(mockUpload).toHaveBeenCalledTimes(1)
+        expect(Object.values(useSftpStore.getState().transfers).map((transfer) => transfer.error ?? null)).toEqual([null, "sftp-transfer-cancelled"])
     })
 
     it("cancels the owning session and ignores late or cross-session progress", async () => {

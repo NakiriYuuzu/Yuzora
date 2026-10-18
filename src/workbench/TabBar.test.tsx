@@ -36,6 +36,9 @@ import { useTextInputDialogStore } from "../state/textInputDialogStore"
 import { useSvgPreviewStore } from "../state/svgPreviewStore"
 import { useUiStore, uiInitialState } from "../state/uiStore"
 import { saveDirtyTab } from "../editor/saveDocument"
+import { registerView, unregisterView } from "../editor/viewRegistry"
+import { EditorState } from "@codemirror/state"
+import { EditorView } from "@codemirror/view"
 import { pointerDrag, stubElementFromPoint } from "../test/pointerDrag"
 
 const initialHerdrState = useHerdrStore.getState()
@@ -224,6 +227,80 @@ test("externallyModified tab 點 ⟳ 主動開啟解決器（spec 入口 b）", 
     render(<TabBar groupIndex={0} />)
     fireEvent.click(screen.getByRole("button", { name: "Resolve external changes a.ts" }))
     expect(useUiStore.getState().resolverPath).toBe("/w/a.ts")
+})
+
+// A07-F4：只有 active tab 掛載編輯器。↻ 在背景 tab 上只設 resolverPath 的話，
+// ResolverBody 找不到 EditorView 會立刻關閉，使用者看到的是「按了沒反應」。
+function seedBackgroundExternalChange() {
+    useWorkspaceStore.setState({
+        workspacePath: "/w",
+        activeGroupIndex: 0,
+        groups: [
+            {
+                activePath: "/w/b.ts",
+                tabs: [
+                    { path: "/w/a.ts", name: "a.ts", dirty: true, externallyModified: true },
+                    { path: "/w/b.ts", name: "b.ts", dirty: false, externallyModified: false },
+                    { path: "/w/c.ts", name: "c.ts", dirty: false, externallyModified: false }
+                ]
+            }
+        ]
+    })
+}
+
+/** Stands in for the EditorPane mounting after its tab becomes active. */
+function mountEditor(path: string): () => void {
+    const view = new EditorView({ state: EditorState.create({ doc: "mine" }), parent: document.body })
+    registerView(path, view)
+    return () => {
+        unregisterView(path, view)
+        view.destroy()
+    }
+}
+
+test("背景 tab 上的 ⟳：先切到該 tab，編輯器掛載後才開啟解決器", async () => {
+    seedBackgroundExternalChange()
+    render(<TabBar groupIndex={0} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Resolve external changes a.ts" }))
+
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/a.ts")
+    // 此刻沒有 view：現在開解決器只會被它自己立刻關掉。
+    expect(useUiStore.getState().resolverPath).toBeNull()
+    const unmount = mountEditor("/w/a.ts")
+    try {
+        await waitFor(() => expect(useUiStore.getState().resolverPath).toBe("/w/a.ts"))
+    } finally {
+        unmount()
+    }
+})
+
+test("背景 tab 上的 ⟳：編輯器掛載前使用者已切去別的 tab → 放棄，不彈出遲來的解決器", async () => {
+    seedBackgroundExternalChange()
+    render(<TabBar groupIndex={0} />)
+    fireEvent.click(screen.getByRole("button", { name: "Resolve external changes a.ts" }))
+
+    act(() => useWorkspaceStore.getState().setActiveTab(0, "/w/c.ts"))
+    const unmount = mountEditor("/w/a.ts")
+    try {
+        await act(async () => { await Promise.resolve() })
+        expect(useUiStore.getState().resolverPath).toBeNull()
+    } finally {
+        unmount()
+    }
+})
+
+test("背景 tab 上的 ⟳：另一個 group 已顯示同檔案（view 存在）→ 直接開啟、不切 tab", () => {
+    seedBackgroundExternalChange()
+    const unmount = mountEditor("/w/a.ts")
+    try {
+        render(<TabBar groupIndex={0} />)
+        fireEvent.click(screen.getByRole("button", { name: "Resolve external changes a.ts" }))
+        expect(useUiStore.getState().resolverPath).toBe("/w/a.ts")
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
+    } finally {
+        unmount()
+    }
 })
 
 function seedMdTab() {
@@ -1298,7 +1375,7 @@ test("legacy Herdr tab without stored Space identity reorders from runtime owner
     await waitFor(() => expect(herdrTabMove).toHaveBeenCalledWith({
         sessionName: "default",
         tabId: "tab-1",
-        insertIndex: 1
+        insertIndex: 2
     }))
     expect(refreshSnapshot).toHaveBeenCalledWith("default")
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([
@@ -1392,7 +1469,7 @@ test("Alt+Arrow uses schema-gated tab.move for Herdr tabs", async () => {
     await waitFor(() => expect(herdrTabMove).toHaveBeenCalledWith({
         sessionName: "default",
         tabId: "keyboard-tab-1",
-        insertIndex: 1
+        insertIndex: 2
     }))
     expect(refreshSnapshot).toHaveBeenCalledWith("default")
     expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toEqual([

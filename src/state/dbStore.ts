@@ -212,6 +212,10 @@ export interface DbQueryState {
     sql: string
     table?: DbTable | null
     editUnconfirmed?: boolean
+    /** Sticky connection-level flag from the last run that published a result. A run
+     * that never publishes (rejected, stale) leaves it alone, because the backend keeps
+     * the transaction open regardless. Cleared when the connection goes away. */
+    transactionMayBeOpen?: boolean
     running: boolean
     result: DbQueryResult | null
     error: DbQueryErrorState | null
@@ -998,6 +1002,22 @@ const EMPTY_DB_QUERY: DbQueryState = {
     runGroup: null
 }
 
+/** The sticky flag and the retained last run report the connection-level open-transaction
+ *  state. Once that connection is gone the server has rolled the transaction back, so the
+ *  stale flag must not warn about it or block table edits on a later reconnect. */
+function withoutOpenTransaction(query: DbQueryState): DbQueryState {
+    const run = query.runGroup?.run
+    if (!query.transactionMayBeOpen && !run?.transactionMayBeOpen) return query
+    return {
+        ...query,
+        transactionMayBeOpen: false,
+        runGroup:
+            query.runGroup && run?.transactionMayBeOpen
+                ? { ...query.runGroup, run: { ...run, transactionMayBeOpen: false } }
+                : query.runGroup
+    }
+}
+
 /** Resolve the descriptor-owned bucket, with a legacy connId projection fallback. */
 export function queryFor(
     s: {
@@ -1398,7 +1418,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                     ? {
                           ...current.queryBuckets,
                           [descriptorId]: {
-                              ...existingQuery,
+                              ...withoutOpenTransaction(existingQuery),
                               running: false,
                               error: queryError ?? existingQuery.error
                           }
@@ -1959,7 +1979,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                 queryBuckets: existingQuery
                     ? {
                           ...s.queryBuckets,
-                          [id]: { ...existingQuery, running: false }
+                          [id]: { ...withoutOpenTransaction(existingQuery), running: false }
                       }
                     : s.queryBuckets,
                 sessions: prev
@@ -2578,6 +2598,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                 const existing = queryFor(snapshot, descriptorId)
                 const next: DbQueryState = {
                     ...existing,
+                    transactionMayBeOpen: run.transactionMayBeOpen,
                     running: false,
                     result: projection.result,
                     error: projection.error,
@@ -2913,7 +2934,7 @@ export const useDbStore = create<DbState>()((set, get) => {
         const mssqlCellEdit = connection.kind === "mssql" && expectedRows !== undefined
         const statementSql = mssqlCellEdit ? `${sql}; SELECT ROWCOUNT_BIG() AS [__yuzora_affected_rows]` : sql
         const current = queryFor(initial, descriptorId)
-        if (current.running || current.runGroup?.run?.transactionMayBeOpen) throw new Error("connectionBusy")
+        if (current.running || current.transactionMayBeOpen) throw new Error("connectionBusy")
         const configGeneration = savedConfigGeneration(initial.saved.find(profile => profile.id === descriptorId))
         if (configGeneration === null) throw new Error("staleConnection")
         const token = beginOperation(descriptorId, "query", ["page"])

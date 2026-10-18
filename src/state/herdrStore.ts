@@ -44,7 +44,7 @@ import {
   mergeSpaceWorktreeProvenance
 } from "@/lib/herdrWorktree"
 import i18n from "@/lib/i18n"
-import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
+import { confirmDiscardingUnsaved, snapshotDirtyTabs, type DirtyTabsSnapshot } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { useAgentMruStore } from "./agentMruStore"
 import { useUiStore } from "@/state/uiStore"
@@ -1232,12 +1232,17 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
     spaceCreationInFlight.add(sessionName)
+    // Join the shared selection generation: choosing another Space, Agent or
+    // Session while workspace.create is in flight supersedes this create.
+    const creationGeneration = ++sessionSelectionGeneration
+    const isLatestCreation = () => sessionSelectionGeneration === creationGeneration
     try {
       const previousSpace = stateBefore.selectedSpaceBySession[sessionName] ?? null
       const currentWorkspace = useWorkspaceStore.getState().workspacePath
       const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
 
       // Do not mutate Herdr before resolving potentially unsaved local edits.
+      let unsavedBaseline: DirtyTabsSnapshot | undefined
       if (needsWorkspaceSwitch) {
         const proceed = await confirmDiscardingUnsaved({
           title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
@@ -1245,11 +1250,13 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
         })
         if (!proceed) return { ok: false, cancelled: true }
+        unsavedBaseline = snapshotDirtyTabs()
       }
 
       let created
       try {
         cwd = await canonicalRuntimeWorkspace(sessionName, cwd)
+        if (!isLatestCreation()) return { ok: false, cancelled: true }
         created = await herdrWorkspaceCreate({
           sessionName,
           cwd,
@@ -1267,20 +1274,28 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         if (!previousSpace) return
         await herdrWorkspaceFocus({ sessionName, workspaceId: previousSpace }).catch(() => undefined)
       }
+      // A superseded create keeps its Space (Herdr already made it) but leaves
+      // Files, Herdr focus and the selection to the newer choice.
       if (needsWorkspaceSwitch) {
         try {
-          const opened = await openWorkspaceAtPath(cwd, { skipUnsavedGuard: true })
-          if (opened === false) {
+          const opened = await openWorkspaceAtPath(cwd, {
+            skipUnsavedGuard: true,
+            unsavedBaseline,
+            shouldOpen: isLatestCreation
+          })
+          if (opened === false && isLatestCreation()) {
             await rollbackFocus()
             void get().refreshSnapshot(sessionName)
             return { ok: false, cancelled: true }
           }
         } catch (error) {
-          await rollbackFocus()
-          void get().refreshSnapshot(sessionName)
-          const message = error instanceof Error ? error.message : String(error)
-          set((state) => withRuntime(state, sessionName, { errorMessage: message }))
-          return { ok: false, error: message }
+          if (isLatestCreation()) {
+            await rollbackFocus()
+            void get().refreshSnapshot(sessionName)
+            const message = error instanceof Error ? error.message : String(error)
+            set((state) => withRuntime(state, sessionName, { errorMessage: message }))
+            return { ok: false, error: message }
+          }
         }
       }
 
@@ -1307,6 +1322,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         set((state) => withRuntime(state, sessionName, { errorMessage: message }))
         return { ok: false, error: message }
       }
+      if (!isLatestCreation()) return { ok: false, cancelled: true }
       get().setSelectedSpaceId(created.workspaceId)
       set((state) => withRuntime(state, sessionName, { errorMessage: null }))
       return { ok: true, space }
@@ -1368,6 +1384,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const isLatestActivation = () => sessionSelectionGeneration === activationGeneration
 
     // 1) Unsaved guard BEFORE any Herdr/Yuzora mutation.
+    let unsavedBaseline: DirtyTabsSnapshot | undefined
     if (needsWorkspaceSwitch) {
       const proceed = await confirmDiscardingUnsaved({
         title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
@@ -1377,6 +1394,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       if (!proceed) {
         return { ok: false, cancelled: true }
       }
+      unsavedBaseline = snapshotDirtyTabs()
     }
 
     const releaseActivation = await acquireSelection()
@@ -1406,6 +1424,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         try {
           const opened = await openWorkspaceAtPath(path, {
             skipUnsavedGuard: true,
+            unsavedBaseline,
             shouldOpen: isLatestActivation
           })
           if (!isLatestActivation()) return { ok: false, cancelled: true }
@@ -1538,6 +1557,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const focusPaneId = options?.focusPane ? tab.paneId ?? null : null
 
     // Unsaved preflight must complete before workspace.focus or tab.focus.
+    let unsavedBaseline: DirtyTabsSnapshot | undefined
     if (needsWorkspaceSwitch) {
       const proceed = await confirmDiscardingUnsaved({
         title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
@@ -1545,6 +1565,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
       })
       if (!proceed) return { ok: false, cancelled: true }
+      unsavedBaseline = snapshotDirtyTabs()
     }
 
     const releaseActivation = await acquireSelection()
@@ -1606,7 +1627,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
 
       if (space?.path && !pathsMatch(space.path, useWorkspaceStore.getState().workspacePath)) {
         try {
-          const opened = await openWorkspaceAtPath(space.path, { skipUnsavedGuard: true, shouldOpen: isLatestActivation })
+          const opened = await openWorkspaceAtPath(space.path, { skipUnsavedGuard: true, unsavedBaseline, shouldOpen: isLatestActivation })
           if (!isLatestActivation()) return { ok: false, cancelled: true }
           if (opened === false) {
             await rollbackFocus()
@@ -1780,11 +1801,13 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
       })
       if (!proceed) return { ok: false, cancelled: true }
+      const unsavedBaseline = snapshotDirtyTabs()
       const afterConfirm = adoptLatestOrCancel()
       if (afterConfirm) return afterConfirm
       try {
         const opened = await openWorkspaceAtPath(target.space.path!, {
           skipUnsavedGuard: true,
+          unsavedBaseline,
           shouldOpen: () => adoptLatestOrCancel() === null
         })
         if (opened === false) return { ok: false, cancelled: true }

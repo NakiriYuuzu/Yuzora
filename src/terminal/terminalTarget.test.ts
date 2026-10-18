@@ -23,6 +23,7 @@ vi.mock("../lib/actionFeedback", () => ({
 import { Terminal } from "@xterm/xterm"
 
 import type { HerdrSnapshot } from "../lib/herdrTypes"
+import { remoteFilePath } from "../lib/runtimeIdentity"
 import { previewInitialState, usePreviewStore } from "../state/previewStore"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import {
@@ -306,6 +307,34 @@ describe("createTerminalTargetLinkProvider", () => {
             pointerCursor: false,
             underline: true
         })
+    })
+
+    it("never stats UNC or device paths named by pane output on hover", async () => {
+        const { links } = await provide(
+            fakeHost([{ text: "\\\\evil\\share\\a.ts //evil/share/b.ts file://evil/share/c.ts \\\\.\\pipe\\p /tmp/ok.ts" }]),
+            1,
+            null
+        )
+        expect(ipcMock.isOpenableFile.mock.calls.map(([path]) => path)).toEqual(["/tmp/ok.ts"])
+        expect(links?.map((link) => link.text)).toEqual(["/tmp/ok.ts"])
+    })
+
+    it("still probes WSL paths and the host the open workspace lives on", async () => {
+        useWorkspaceStore.setState({ workspacePath: "\\\\?\\UNC\\fileserver\\team\\repo" })
+        try {
+            const { links } = await provide(
+                fakeHost([{ text: "\\\\FileServer\\team\\repo\\a.ts \\\\wsl.localhost\\Ubuntu\\b.ts \\\\other\\team\\c.ts" }]),
+                1,
+                null
+            )
+            expect(ipcMock.isOpenableFile.mock.calls.map(([path]) => path)).toEqual([
+                "\\\\FileServer\\team\\repo\\a.ts",
+                "\\\\wsl.localhost\\Ubuntu\\b.ts"
+            ])
+            expect(links).toHaveLength(2)
+        } finally {
+            useWorkspaceStore.setState(initialWorkspace, true)
+        }
     })
 
     it("drops stale async file validation after terminal output changes", async () => {
@@ -716,5 +745,182 @@ describe("createTerminalTargetContextGate", () => {
         const next = event()
         expect(gate.handleContextMenu(next, activate, { mac: true })).toBe(false)
         expect(activate).not.toHaveBeenCalled()
+    })
+})
+
+describe("Sessions owned by a remote host", () => {
+    const HOST = "wsl:ubuntu"
+    const repo = "/home/me/repo"
+    const repoRoot = remoteFilePath(HOST, repo)
+    const cwd = remoteFilePath(HOST, `${repo}/pkg`, repo)
+    const remote = (path: string) => remoteFilePath(HOST, path, repo)
+
+    beforeEach(() => {
+        documentMock.getDocument.mockReset()
+        ipcMock.isOpenableFile.mockReset()
+    })
+
+    describe("resolveHerdrTerminalBaseCwd", () => {
+        const snapshot = {
+            herdrSessionId: JSON.stringify([HOST, "default"]),
+            protocol: 22,
+            version: "0.9.0",
+            spaces: [{ id: "space-a", label: "A", order: 0, focused: true, path: repoRoot }],
+            agents: [],
+            tabs: [],
+            terminals: [
+                { terminalId: "term-1", paneId: "pane-1", workspaceId: "space-a", cwd: `${repo}/pkg` },
+                { terminalId: "term-2", paneId: "pane-2", workspaceId: "space-a", cwd: "/var/elsewhere" },
+                { terminalId: "term-3", paneId: "pane-3", workspaceId: "space-a" }
+            ],
+            raw: {}
+        } satisfies HerdrSnapshot
+
+        it("projects the host's pane cwd into that host's file identity under the owning Space root", () => {
+            expect(resolveHerdrTerminalBaseCwd({
+                snapshot, terminalId: "term-1", paneId: "pane-1", hostId: HOST
+            })).toBe(cwd)
+        })
+
+        it("scopes a cwd outside the Space root to itself instead of borrowing the root", () => {
+            expect(resolveHerdrTerminalBaseCwd({
+                snapshot, terminalId: "term-2", paneId: "pane-2", hostId: HOST
+            })).toBe(remoteFilePath(HOST, "/var/elsewhere"))
+        })
+
+        it("never falls back to a raw host path or a local path when the host path is unknown", () => {
+            expect(resolveHerdrTerminalBaseCwd({
+                snapshot, terminalId: "term-3", paneId: "pane-3", hostId: HOST
+            })).toBeNull()
+        })
+
+        it("keeps the local path for the local host", () => {
+            expect(resolveHerdrTerminalBaseCwd({
+                snapshot, terminalId: "term-1", paneId: "pane-1", hostId: "local"
+            })).toBe(`${repo}/pkg`)
+            expect(resolveHerdrTerminalBaseCwd({
+                snapshot, terminalId: "term-1", paneId: "pane-1", hostId: null
+            })).toBe(`${repo}/pkg`)
+        })
+    })
+
+    describe("file targets", () => {
+        it("turns relative output into the owning host's file identity", () => {
+            expect(findTerminalTargetsInText("src/main.ts:12", cwd, HOST)[0]?.target).toEqual({
+                kind: "file",
+                path: remote(`${repo}/pkg/src/main.ts`),
+                line: 12
+            })
+            expect(findTerminalTargetsInText("./src/main.ts", cwd, HOST)[0]?.target).toEqual({
+                kind: "file",
+                path: remote(`${repo}/pkg/src/main.ts`)
+            })
+        })
+
+        it("turns absolute output inside the workspace into the owning host's file identity", () => {
+            expect(findTerminalTargetsInText(`${repo}/src/main.ts:12:3`, cwd, HOST)[0]?.target).toEqual({
+                kind: "file",
+                path: remote(`${repo}/src/main.ts`),
+                line: 12,
+                column: 3
+            })
+            expect(classifyTerminalTargetToken(`file://${repo}/src/main.ts`, cwd, HOST)).toEqual({
+                kind: "file",
+                path: remote(`${repo}/src/main.ts`)
+            })
+        })
+
+        it("fails closed instead of producing a local path", () => {
+            // Outside the workspace the host's file service cannot serve it either.
+            expect(classifyTerminalTargetToken("/etc/hosts", cwd, HOST)).toBeNull()
+            expect(classifyTerminalTargetToken("../outside.ts", cwd, HOST)).toBeNull()
+            expect(classifyTerminalTargetToken("file://other-host/share/a.ts", cwd, HOST)).toBeNull()
+            // Unknown or foreign cwd: nothing may fall back to this computer's filesystem.
+            expect(classifyTerminalTargetToken(`${repo}/src/main.ts`, null, HOST)).toBeNull()
+            expect(classifyTerminalTargetToken("src/main.ts", null, HOST)).toBeNull()
+            expect(classifyTerminalTargetToken(`${repo}/src/main.ts`, `${repo}/pkg`, HOST)).toBeNull()
+            expect(classifyTerminalTargetToken(`${repo}/src/main.ts`, remoteFilePath("other", repo), HOST)).toBeNull()
+        })
+
+        it("keeps a Windows host's drive paths in that host's file identity", () => {
+            const winRoot = "C:\\work\\repo"
+            const winCwd = remoteFilePath("ssh-win", `${winRoot}\\pkg`, winRoot)
+            expect(findTerminalTargetsInText("src\\main.ts:3", winCwd, "ssh-win")[0]?.target).toEqual({
+                kind: "file",
+                path: remoteFilePath("ssh-win", `${winRoot}\\pkg\\src\\main.ts`, winRoot),
+                line: 3
+            })
+            expect(classifyTerminalTargetToken(`${winRoot}\\src\\main.ts`, winCwd, "ssh-win")).toEqual({
+                kind: "file",
+                path: remoteFilePath("ssh-win", `${winRoot}\\src\\main.ts`, winRoot)
+            })
+            expect(classifyTerminalTargetToken("D:\\other\\main.ts", winCwd, "ssh-win")).toBeNull()
+        })
+
+        it("still allows URLs", () => {
+            expect(classifyTerminalTargetToken("https://example.com/a", cwd, HOST)).toEqual({
+                kind: "url",
+                url: "https://example.com/a"
+            })
+        })
+
+        it("keeps local classification for the local host", () => {
+            expect(classifyTerminalTargetToken("src/main.ts", "/ws", "local")).toEqual({
+                kind: "file",
+                path: "/ws/src/main.ts"
+            })
+            expect(classifyTerminalTargetToken("/tmp/a.ts", null, null)).toEqual({
+                kind: "file",
+                path: "/tmp/a.ts"
+            })
+        })
+    })
+
+    describe("link provider", () => {
+        it("probes only the owning host's identity, never a same-named local file", async () => {
+            // The mirrored local path exists; the remote identity does not.
+            ipcMock.isOpenableFile.mockImplementation(async (path: string) => path === `${repo}/pkg/src/main.ts`)
+            const host = fakeHost([{ text: "src/main.ts" }, { text: `${repo}/src/main.ts:12` }])
+            const provider = createTerminalTargetLinkProvider(host, {
+                getCwd: () => cwd,
+                getHostId: () => HOST,
+                onActivate: vi.fn(),
+                isMac: () => true
+            })
+            for (const line of [1, 2]) {
+                const links = await new Promise<TerminalTargetLink[] | undefined>((resolve) => {
+                    provider.provideLinks(line, resolve)
+                })
+                expect(links).toBeUndefined()
+            }
+            expect(ipcMock.isOpenableFile.mock.calls.map(([path]) => path)).toEqual([
+                remote(`${repo}/pkg/src/main.ts`),
+                remote(`${repo}/src/main.ts`)
+            ])
+        })
+
+        it("offers a link when the owning host can open the file and opens that identity", async () => {
+            ipcMock.isOpenableFile.mockResolvedValue(true)
+            documentMock.getDocument.mockResolvedValue({ result: { kind: "full", content: "", size: 0, lineEnding: "lf" } })
+            useWorkspaceStore.setState({ workspacePath: "/ws", groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 })
+            const host = fakeHost([{ text: `${repo}/src/main.ts:12` }])
+            const onActivate = vi.fn()
+            const provider = createTerminalTargetLinkProvider(host, {
+                getCwd: () => cwd,
+                getHostId: () => HOST,
+                onActivate,
+                isMac: () => true
+            })
+            const links = await new Promise<TerminalTargetLink[] | undefined>((resolve) => {
+                provider.provideLinks(1, resolve)
+            })
+            expect(links).toHaveLength(1)
+            links?.[0].activate({ button: 0, metaKey: true, ctrlKey: false, altKey: false } as MouseEvent, "")
+            expect(onActivate).toHaveBeenCalledWith(expect.anything(), {
+                kind: "file",
+                path: remote(`${repo}/src/main.ts`),
+                line: 12
+            })
+        })
     })
 })

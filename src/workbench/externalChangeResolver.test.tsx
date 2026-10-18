@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import * as ipc from "../lib/ipc"
-import { registerView } from "../editor/viewRegistry"
+import { registerView, unregisterView } from "../editor/viewRegistry"
 import { documentGeneration } from "../editor/documentRegistry"
 import { useUiStore } from "../state/uiStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
-import { ExternalChangeResolver, maybeInterceptSave } from "./ExternalChangeResolver"
+import { ExternalChangeResolver, maybeInterceptSave, openResolverForTab } from "./ExternalChangeResolver"
 
 const showActionError = vi.fn(async (_action: string, _error: unknown) => undefined)
 
@@ -67,6 +67,48 @@ describe("maybeInterceptSave", () => {
         useWorkspaceStore.getState().markExternallyModified(PATH, false)
         expect(maybeInterceptSave(PATH)).toBe(false)
         expect(useUiStore.getState().resolverPath).toBe(null)
+    })
+})
+
+// A07-F4：背景 tab 的 ⟳ 入口。與真正的 ResolverBody 串起來，確認它等到編輯器掛載後
+// 才開啟，且開啟後不會被「找不到 view」的防衛關掉。
+describe("openResolverForTab", () => {
+    const seed = (activePath: string) => {
+        const store = useWorkspaceStore.getState()
+        store.openTab(PATH)
+        store.openTab("/w/b.ts")
+        store.setActiveTab(0, activePath)
+        store.markDirty(PATH, true)
+        store.markExternallyModified(PATH, true)
+        unregisterView(PATH)
+    }
+
+    it("brings a background tab forward and opens the dialog once its editor mounts", async () => {
+        seed("/w/b.ts")
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "full", content: "disk", size: 4, lineEnding: "lf" })
+        render(<ExternalChangeResolver />)
+
+        openResolverForTab(0, PATH)
+
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe(PATH)
+        expect(useUiStore.getState().resolverPath).toBeNull()
+        mountMainView("mine")
+        expect(await screen.findByRole("button", { name: "解決並存檔" })).toBeInTheDocument()
+        expect(useUiStore.getState().resolverPath).toBe(PATH)
+    })
+
+    it("opens immediately for the active tab", () => {
+        seed(PATH)
+        openResolverForTab(0, PATH)
+        expect(useUiStore.getState().resolverPath).toBe(PATH)
+    })
+
+    it("ignores a path that is not a tab of that group", () => {
+        seed("/w/b.ts")
+        openResolverForTab(0, "/w/missing.ts")
+        openResolverForTab(5, PATH)
+        expect(useUiStore.getState().resolverPath).toBeNull()
+        expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/w/b.ts")
     })
 })
 
