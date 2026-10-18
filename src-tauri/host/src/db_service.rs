@@ -4833,6 +4833,77 @@ fn settle_transaction_flag(
     transaction_may_be_open
 }
 
+/// MSSQL: whether a transaction is still open on the connection (`@@TRANCOUNT`).
+/// `None` when the server could not be asked.
+async fn mssql_transaction_still_open(worker: &NetworkQueryWorker) -> Option<bool> {
+    let NetworkQueryStart::Rows { .. } = worker.start_query("SELECT @@TRANCOUNT").await.ok()?
+    else {
+        return None;
+    };
+    let mut open = None;
+    loop {
+        match worker.next_row().await.ok()? {
+            NetworkRow::Value(values) => {
+                open = match values.first() {
+                    Some(DbValue::Integer { value }) => {
+                        value.parse::<u64>().ok().map(|count| count > 0)
+                    }
+                    _ => None,
+                };
+            }
+            NetworkRow::End { .. } => return open,
+            NetworkRow::ValueTooLarge | NetworkRow::Cancelled => return None,
+        }
+    }
+}
+
+/// Whether a unit is an MSSQL COMMIT or ROLLBACK, whose effect on the open
+/// transaction the statement alone does not tell: COMMIT only closes the outermost
+/// of nested BEGIN TRANs and ROLLBACK TRAN to a savepoint closes nothing.
+fn is_mssql_transaction_end(
+    actor: &ProductionConnectionActor,
+    boundary: TransactionBoundary,
+) -> bool {
+    matches!(actor.handle(), DbHandle::Mssql(_))
+        && matches!(
+            boundary,
+            TransactionBoundary::Commit | TransactionBoundary::Rollback
+        )
+}
+
+/// `settle_transaction_flag` for a unit that ran to completion. After an MSSQL
+/// COMMIT or ROLLBACK the server accepted, the server is asked whether a
+/// transaction is still open instead of trusting the boundary.
+async fn settle_unit_transaction_flag(
+    actor: &ProductionConnectionActor,
+    boundary: TransactionBoundary,
+    outcome: &P6UnitOutcome,
+) -> bool {
+    let accepted = matches!(
+        outcome.result,
+        StatementExecutionResult::Rows { .. }
+            | StatementExecutionResult::Execute { .. }
+            | StatementExecutionResult::ResultLimitReached { .. }
+    );
+    match actor.handle() {
+        DbHandle::Mssql(worker)
+            if accepted
+                && !outcome.connection_terminated
+                && is_mssql_transaction_end(actor, boundary) =>
+        {
+            match mssql_transaction_still_open(worker).await {
+                Some(open) => {
+                    actor.set_transaction_may_be_open(open);
+                    open
+                }
+                // Unanswered: keep the current flag rather than guess it closed.
+                None => actor.transaction_may_be_open(),
+            }
+        }
+        _ => settle_transaction_flag(actor, boundary, &outcome.result),
+    }
+}
+
 fn mssql_cancelled_connection_error() -> DatabaseError {
     DatabaseError {
         engine: DatabaseErrorEngine::Mssql,
@@ -6323,7 +6394,14 @@ pub async fn query_run_in_state(
             )
         })?;
 
-    if request.mode == QueryRunMode::Primary {
+    // An MSSQL COMMIT or ROLLBACK runs to completion so the server can be asked
+    // afterwards whether a transaction is still open (`settle_unit_transaction_flag`).
+    let primary = request.mode == QueryRunMode::Primary
+        && !request
+            .statements
+            .iter()
+            .any(|unit| is_mssql_transaction_end(&actor, unit.transaction_boundary));
+    if primary {
         let unit = request
             .statements
             .iter()
@@ -6551,7 +6629,7 @@ pub async fn query_run_in_state(
         match result {
             Ok(outcome) => {
                 transaction_may_be_open =
-                    settle_transaction_flag(&actor, unit.transaction_boundary, &outcome.result);
+                    settle_unit_transaction_flag(&actor, unit.transaction_boundary, &outcome).await;
                 stopped = outcome.stop;
                 connection_terminated |= outcome.connection_terminated;
                 statements.push(StatementExecution {
@@ -7069,6 +7147,19 @@ pub mod integration_harness {
                     sql: sql.into(),
                     transaction_boundary: TransactionBoundary::None,
                 }],
+            )
+            .await
+        }
+
+        pub async fn run_primary_unit(
+            &self,
+            query_run_id: impl Into<String>,
+            unit: QueryExecutionUnit,
+        ) -> Result<QueryRun, DatabaseOperationalError> {
+            self.run(
+                QueryRunId(query_run_id.into()),
+                QueryRunMode::Primary,
+                vec![unit],
             )
             .await
         }

@@ -107,6 +107,8 @@ fn is_launchable(path: &Path) -> std::io::Result<bool> {
             [0xFE, 0xED, 0xFA, 0xCE | 0xCF, ..]
                 | [0xCE | 0xCF, 0xFA, 0xED, 0xFE, ..]
                 | [0xCA, 0xFE, 0xBA, 0xBF, ..]
+                // Byte-swapped universal headers (FAT_CIGAM, FAT_CIGAM_64).
+                | [0xBE | 0xBF, 0xBA, 0xFE, 0xCA, ..]
         )
         || match head[..] {
             // Universal Mach-O shares 0xCAFEBABE with Java class files; its
@@ -289,6 +291,14 @@ mod tests {
             ("mac-binary", &[0xCF, 0xFA, 0xED, 0xFE, 0x07]),
             ("mac-universal", &[0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 2, 0x01]),
             ("mac-universal-64", &[0xCA, 0xFE, 0xBA, 0xBF, 0, 0, 0, 2]),
+            (
+                "mac-universal-swapped",
+                &[0xBE, 0xBA, 0xFE, 0xCA, 2, 0, 0, 0],
+            ),
+            (
+                "mac-universal-64-swapped",
+                &[0xBF, 0xBA, 0xFE, 0xCA, 2, 0, 0, 0],
+            ),
             ("truncated-universal", &[0xCA, 0xFE, 0xBA, 0xBE, 0]),
         ]);
         for name in [
@@ -302,6 +312,8 @@ mod tests {
             "mac-binary",
             "mac-universal",
             "mac-universal-64",
+            "mac-universal-swapped",
+            "mac-universal-64-swapped",
             "truncated-universal",
         ] {
             let error = open_check(&root, &registry, &id, name).unwrap_err();

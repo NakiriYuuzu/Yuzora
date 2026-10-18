@@ -36,7 +36,11 @@ const tab = (path: string, dirty: boolean, kind?: "file" | "preview" | "markdown
 })
 
 beforeEach(() => {
-    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
+    // 跟真正的存檔一樣：寫入後分頁變回乾淨。
+    vi.mocked(saveDirtyTab).mockReset().mockImplementation(async (path) => {
+        useWorkspaceStore.getState().markDirty(path, false)
+        return { kind: "saved" }
+    })
     vi.mocked(bufferContent).mockReset()
     useConfirmDialogStore.setState({ pending: null })
     useWorkspaceStore.setState({
@@ -182,6 +186,42 @@ test("confirmClosingSplit：只存會跟右側 group 一起消失的檔案", asy
     expect(await pending).toBe(true)
     expect(saveDirtyTab).toHaveBeenCalledTimes(1)
     expect(saveDirtyTab).toHaveBeenCalledWith("/w/right.ts")
+})
+
+// Save All 會 await 每個檔案，期間編輯器仍可輸入。存完才出現的未存編輯還沒寫入，
+// 破壞性動作不能放行。
+test("confirmClosingSplit：儲存期間右側又有新編輯時不放行", async () => {
+    useWorkspaceStore.setState({
+        activeGroupIndex: 1,
+        groups: [
+            { activePath: null, tabs: [tab("/w/left.ts", false)] },
+            { activePath: null, tabs: [tab("/w/right.ts", true), tab("/w/other.ts", false)] }
+        ]
+    })
+    vi.mocked(saveDirtyTab).mockImplementationOnce(async (path) => {
+        useWorkspaceStore.getState().markDirty(path, false)
+        useWorkspaceStore.getState().markDirty("/w/other.ts", true)
+        return { kind: "saved" }
+    })
+
+    const pending = confirmClosingSplit(LABELS)
+    useConfirmDialogStore.getState().respond("save")
+
+    expect(await pending).toBe(false)
+    expect(useConfirmDialogStore.getState().pending).toBeNull()
+})
+
+test("save：檔案在寫入期間被編輯（editedDuringSave）時不放行", async () => {
+    useWorkspaceStore.setState({
+        activeGroupIndex: 0,
+        groups: [{ activePath: null, tabs: [tab("/w/a.ts", true)] }]
+    })
+    vi.mocked(saveDirtyTab).mockResolvedValueOnce({ kind: "editedDuringSave" })
+
+    const pending = confirmDiscardingUnsaved(LABELS)
+    useConfirmDialogStore.getState().respond("save")
+
+    expect(await pending).toBe(false)
 })
 
 // preflight 之後的編輯偵測（A11b-F4）。node 環境沒有 DOM，用只帶 state.doc 的假 view

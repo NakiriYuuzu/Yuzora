@@ -62,7 +62,11 @@ beforeEach(() => {
     })
     vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
     vi.mocked(startWatch).mockReset().mockResolvedValue(undefined)
-    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
+    // Like the real save: a written tab is clean again.
+    vi.mocked(saveDirtyTab).mockReset().mockImplementation(async (path) => {
+        useWorkspaceStore.getState().markDirty(path, false)
+        return { kind: "saved" }
+    })
     openPicker.mockReset().mockResolvedValue(null)
     useConfirmDialogStore.setState({ pending: null })
     useRecentWorkspacesStore.setState({ list: [] })

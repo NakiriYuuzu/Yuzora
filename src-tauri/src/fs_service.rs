@@ -312,6 +312,15 @@ enum SwapError {
     Failed(std::io::Error),
 }
 
+/// The watcher ignores exactly this name shape (see `is_save_scratch_name`).
+fn scratch_name() -> String {
+    format!(
+        "{}{}",
+        crate::watcher::SAVE_SCRATCH_PREFIX,
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
 fn swap_in_scratch_file(
     target: &Path,
     metadata: &std::fs::Metadata,
@@ -322,7 +331,8 @@ fn swap_in_scratch_file(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut scratch = tempfile::Builder::new()
-        .prefix(crate::watcher::SAVE_SCRATCH_PREFIX)
+        .prefix(&scratch_name())
+        .rand_bytes(0)
         .tempfile_in(dir)
         .map_err(|_| SwapError::Unavailable)?;
     scratch
@@ -951,6 +961,11 @@ mod tests {
         let mtime = write_file(p.to_str().unwrap(), "hello").unwrap();
         assert!(mtime > 0);
         assert_eq!(fs::read_to_string(&p).unwrap(), "hello");
+    }
+
+    #[test]
+    fn scratch_names_are_the_shape_the_watcher_ignores() {
+        assert!(yuzora_host::watcher::is_save_scratch_name(&scratch_name()));
     }
 
     #[test]

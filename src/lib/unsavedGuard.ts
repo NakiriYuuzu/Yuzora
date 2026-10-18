@@ -51,11 +51,11 @@ type UnsavedLabels = {
  * handler 註解。
  *
  * 回傳 true 代表「可以繼續進行破壞性動作」；false 代表使用者取消，或選了儲存
- * 但其中一個檔案寫入失敗（例如 mixed-EOL 被擋下）——此時內容仍留在記憶體，
- * 呼叫端必須中止動作，否則使用者的編輯會永久消失。
+ * 但其中一個檔案寫入失敗（例如 mixed-EOL 被擋下）、或儲存期間又有新的編輯——
+ * 此時內容仍留在記憶體，呼叫端必須中止動作，否則使用者的編輯會永久消失。
  */
 export function confirmDiscardingUnsaved(labels: UnsavedLabels): Promise<boolean> {
-    return confirmDiscardingPaths(dirtyTabPaths(), labels)
+    return confirmDiscardingPaths(dirtyTabPaths, labels)
 }
 
 /**
@@ -86,15 +86,16 @@ export function confirmDiscardingUnsavedSince(
     snapshot: DirtyTabsSnapshot,
     labels: UnsavedLabels
 ): Promise<boolean> {
-    return confirmDiscardingPaths(dirtyPathsSince(snapshot), labels)
+    return confirmDiscardingPaths(() => dirtyPathsSince(snapshot), labels)
 }
 
 /** 關閉分割前的 dirty gate：只詢問會跟右側 group 一起消失的檔案。 */
 export function confirmClosingSplit(labels: UnsavedLabels): Promise<boolean> {
-    return confirmDiscardingPaths(dirtyPathsLostByClosingSplit(), labels)
+    return confirmDiscardingPaths(dirtyPathsLostByClosingSplit, labels)
 }
 
-async function confirmDiscardingPaths(dirtyPaths: string[], labels: UnsavedLabels): Promise<boolean> {
+async function confirmDiscardingPaths(pendingPaths: () => string[], labels: UnsavedLabels): Promise<boolean> {
+    const dirtyPaths = pendingPaths()
     if (dirtyPaths.length === 0) return true
 
     const decision = await useConfirmDialogStore.getState().requestUnsavedDecision(labels)
@@ -104,6 +105,8 @@ async function confirmDiscardingPaths(dirtyPaths: string[], labels: UnsavedLabel
             const outcome = await saveDirtyTab(dirtyPath)
             if (outcome.kind !== "saved") return false
         }
+        // 儲存期間編輯器仍可輸入：之後才變 dirty 的檔案還沒寫入，不能放行。
+        if (pendingPaths().length > 0) return false
     }
     return true
 }

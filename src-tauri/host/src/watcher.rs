@@ -29,9 +29,22 @@ impl Drop for WatcherHandle {
     }
 }
 
-/// Name prefix of the scratch file a local save renames over its target (see the
-/// app's `fs_service`); it only exists while that save runs.
+/// Name prefix of the scratch file a save renames over its target (the app's
+/// `fs_service` and this crate's `files` write); it only exists while that save runs.
 pub const SAVE_SCRATCH_PREFIX: &str = ".yuzora-save-";
+
+/// A save's scratch file: the prefix followed by exactly 32 lowercase hex digits.
+/// Only that exact shape is ignored, so user files that merely share the prefix
+/// stay visible to the watcher.
+pub fn is_save_scratch_name(name: &str) -> bool {
+    name.strip_prefix(SAVE_SCRATCH_PREFIX)
+        .is_some_and(|random| {
+            random.len() == 32
+                && random
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
 
 pub fn is_ignored_path(path: &Path) -> bool {
     path.components()
@@ -39,7 +52,7 @@ pub fn is_ignored_path(path: &Path) -> bool {
         || path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(SAVE_SCRATCH_PREFIX))
+            .is_some_and(is_save_scratch_name)
 }
 
 const CAPACITY: usize = 4096;

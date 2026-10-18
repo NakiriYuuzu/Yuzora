@@ -2272,6 +2272,50 @@ async fn run_mssql() {
     );
     assert!(!stray_commit.transaction_may_be_open);
 
+    scenario(Engine::Mssql, "nested-and-savepoint-transactions-stay-open");
+    // COMMIT only closes the outermost of nested BEGIN TRANs and ROLLBACK TRAN to a
+    // savepoint closes nothing, so the server is asked what is still open.
+    let unit = |sql: &str, transaction_boundary: TransactionBoundary| QueryExecutionUnit {
+        sql: sql.to_string(),
+        transaction_boundary,
+    };
+    let nested = connection
+        .run_script(
+            "mssql-nested-commit",
+            vec![
+                unit("BEGIN TRAN", TransactionBoundary::Begin),
+                unit("BEGIN TRAN", TransactionBoundary::Begin),
+                unit("COMMIT", TransactionBoundary::Commit),
+            ],
+        )
+        .await
+        .expect("run nested MSSQL transactions");
+    assert!(nested.transaction_may_be_open);
+    let savepoint = connection
+        .run_script(
+            "mssql-savepoint-rollback",
+            vec![
+                unit("SAVE TRAN yuzora_probe", TransactionBoundary::None),
+                unit("ROLLBACK TRAN yuzora_probe", TransactionBoundary::Rollback),
+            ],
+        )
+        .await
+        .expect("roll back to an MSSQL savepoint");
+    assert!(savepoint.transaction_may_be_open);
+    // A primary-mode COMMIT is settled the same way.
+    let outer = connection
+        .run_primary_unit(
+            "mssql-outer-commit",
+            unit("COMMIT", TransactionBoundary::Commit),
+        )
+        .await
+        .expect("commit the outer MSSQL transaction");
+    assert!(matches!(
+        outer.statements[0].result,
+        StatementExecutionResult::Execute { .. }
+    ));
+    assert!(!outer.transaction_may_be_open);
+
     scenario(Engine::Mssql, "q6-select-1201-then-update");
     assert_select_1201_then_update(
         &connection,

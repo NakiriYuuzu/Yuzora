@@ -276,7 +276,18 @@ mod tests {
         assert!(!is_ignored_path(Path::new("/w/src/git_helpers.rs")));
         assert!(!is_ignored_path(Path::new("/w/my.gitignore.txt")));
         // A save's scratch file is renamed over its target within the same save.
-        assert!(is_ignored_path(Path::new("/w/src/.yuzora-save-Ab12Cd")));
+        assert!(is_ignored_path(Path::new(
+            "/w/src/.yuzora-save-0123456789abcdef0123456789abcdef"
+        )));
         assert!(!is_ignored_path(Path::new("/w/src/yuzora-save-notes.txt")));
+        // User files that only share the prefix stay visible.
+        assert!(!is_ignored_path(Path::new("/w/src/.yuzora-save-notes.txt")));
+        assert!(!is_ignored_path(Path::new("/w/src/.yuzora-save-Ab12Cd")));
+        assert!(!is_ignored_path(Path::new(
+            "/w/src/.yuzora-save-0123456789ABCDEF0123456789abcdef"
+        )));
+        assert!(!is_ignored_path(Path::new(
+            "/w/src/.yuzora-save-0123456789abcdef0123456789abcdef.txt"
+        )));
     }
 }
