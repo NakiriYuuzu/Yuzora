@@ -36,7 +36,7 @@ impl HerdrPort for Fake {
     fn observe(&self, _: &str, _: &str, _: u16, _: u16, _: OnTerminalEvent) -> Result<String> {
         panic!("unexpected attach")
     }
-    fn subscribe(&self, _: &str, _: OnSubscriptionEvent) -> Result<String> {
+    fn subscribe(&self, _: &str, _: Vec<String>, _: OnSubscriptionEvent) -> Result<String> {
         panic!("unexpected subscribe")
     }
     fn release(&self, _: Resource) {
@@ -132,5 +132,22 @@ fn review_local_herdr_manager_method_allowlist_tripwire() {
             "terminal_release",
             "events_release",
         ])
+    );
+}
+
+#[test]
+fn herdr_host_errors_map_to_fixed_codes_without_backend_text() {
+    assert_eq!(host_error("tooLarge: raw".into()), "payload-too-large");
+    assert_eq!(
+        host_error("agent_blocked: agent w1:p2 is blocked and requires interactive input".into()),
+        "agent-blocked"
+    );
+    assert_eq!(
+        host_error("agent_not_found: SECRET".into()),
+        "herdr-unavailable"
+    );
+    assert_eq!(
+        host_error("prefix agent_blocked: SECRET".into()),
+        "herdr-unavailable"
     );
 }
