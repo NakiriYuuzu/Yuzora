@@ -1,6 +1,6 @@
 use std::path::Path;
 pub use yuzora_host::watcher::{
-    build_classified_watcher, build_watcher, is_ignored_path, WatcherHandle,
+    build_classified_watcher, build_watcher, is_ignored_path, WatcherHandle, SAVE_SCRATCH_PREFIX,
 };
 #[derive(Default)]
 pub struct WatcherState(pub std::sync::Mutex<WatcherSlot>);
@@ -70,23 +70,31 @@ pub struct ExternalChangeEvent {
 pub async fn start_watch(
     app: tauri::AppHandle,
     state: tauri::State<'_, WatcherState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     path: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
     let (generation, stale) = state.0.lock().map_err(|e| e.to_string())?.begin();
     drop(stale);
     let workspace_root = path.clone();
+    // Git classification is gated per batch on workspace trust (see
+    // `take_classified`); an untrusted workspace never spawns Git here.
+    let trust = trust.inner().clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        build_classified_watcher(Path::new(&path), move |paths, git_relevant| {
-            let _ = app.emit(
-                "fs:external-change",
-                ExternalChangeEvent {
-                    workspace_root: workspace_root.clone(),
-                    paths,
-                    git_relevant,
-                },
-            );
-        })
+        build_classified_watcher(
+            Path::new(&path),
+            move |root: &Path| root.to_str().is_some_and(|root| trust.is_trusted(root)),
+            move |paths, git_relevant| {
+                let _ = app.emit(
+                    "fs:external-change",
+                    ExternalChangeEvent {
+                        workspace_root: workspace_root.clone(),
+                        paths,
+                        git_relevant,
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|e| format!("watcher blocking task failed: {e}"))??;
@@ -267,5 +275,8 @@ mod tests {
         assert!(is_ignored_path(Path::new("/w/node_modules/a/b.js")));
         assert!(!is_ignored_path(Path::new("/w/src/git_helpers.rs")));
         assert!(!is_ignored_path(Path::new("/w/my.gitignore.txt")));
+        // A save's scratch file is renamed over its target within the same save.
+        assert!(is_ignored_path(Path::new("/w/src/.yuzora-save-Ab12Cd")));
+        assert!(!is_ignored_path(Path::new("/w/src/yuzora-save-notes.txt")));
     }
 }

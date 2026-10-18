@@ -83,8 +83,12 @@ export function resolveSpaceTabCount(
 }
 
 /**
- * Destination among same-Space Herdr tabs for protocol `tab.move.insert_index`.
- * Ordinary/hidden tabs only affect the nearest same-Space Herdr slot.
+ * Destination among same-Space Herdr tabs for protocol `tab.move.insert_index`,
+ * which is the insertion boundary BEFORE the source is removed (herdr
+ * Workspace::move_tab subtracts one when the source sits left of it), so a
+ * rightward move sends the slot after the destination. Ordinary/hidden tabs
+ * only affect the nearest same-Space Herdr slot; null when the Herdr order
+ * would not change.
  */
 export function herdrInsertIndexForProjectedDrop(
     projected: readonly TabInfo[],
@@ -100,24 +104,16 @@ export function herdrInsertIndexForProjectedDrop(
             tab.herdrWorkspaceId ??
                 (tab.herdrTabId ? runtimeWorkspaceByTabId?.get(tab.herdrTabId) : null)
         )
-    const herdrTabs = projected.filter(isOwnedHerdrTab)
-    const sourceIndex = herdrTabs.findIndex((tab) => tab.path === sourcePath)
+    const sourceIndex = projected.filter(isOwnedHerdrTab).findIndex((tab) => tab.path === sourcePath)
     if (sourceIndex < 0) return null
 
-    const destTab = projected[destProjectedIndex]
-    let destIndex: number
-    if (destTab && isOwnedHerdrTab(destTab)) {
-        destIndex = herdrTabs.findIndex((tab) => tab.path === destTab.path)
-    } else {
-        destIndex = projected
-            .slice(0, Math.max(0, destProjectedIndex))
-            .filter(isOwnedHerdrTab).length
-        if (destIndex >= herdrTabs.length) destIndex = herdrTabs.length - 1
-    }
-    if (destIndex < 0) return null
-    const clamped = Math.max(0, Math.min(herdrTabs.length - 1, destIndex))
-    if (sourceIndex === clamped) return null
-    return clamped
+    // Herdr tabs the source ends up after: those before the destination slot, and
+    // for a rightward move the destination slot itself (the source is counted too).
+    const dest = Math.max(0, destProjectedIndex)
+    const rightward = dest > projected.findIndex((tab) => tab.path === sourcePath)
+    const boundary = projected.slice(0, dest + Number(rightward)).filter(isOwnedHerdrTab).length
+    // A boundary touching the source leaves the Herdr order unchanged.
+    return boundary === sourceIndex || boundary === sourceIndex + 1 ? null : boundary
 }
 
 function usableFocusedSpaceTabs(snapshot: HerdrSnapshot): HerdrTabInfo[] {

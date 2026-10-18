@@ -803,7 +803,8 @@ function HerdrTerminalLeaf({
     snapshot: targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null,
     terminalId,
     paneId,
-    workspaceId
+    workspaceId,
+    hostId: targetHostId
   }))
   const sessionRunning = sessionRunningOverride ?? inventorySessionRunning
   const startupPending = useHerdrStore((s) => isHerdrStartupPending(s, findRuntimeSession(s.sessions, herdrSessionId)))
@@ -864,6 +865,7 @@ function HerdrTerminalLeaf({
   const transportRef = useRef<ReturnType<typeof createHerdrTerminalTransport> | null>(null)
   const targetOpenRef = useRef<ReturnType<typeof installTerminalTargetOpen> | null>(null)
   const cwdRef = useRef<string | null>(baseCwd)
+  const hostIdRef = useRef<string | null>(targetHostId)
   const [controlMode, setControlMode] = useState<HerdrTerminalMode>(() =>
     useHerdrStore.getState().attachments.get(attachmentKey)?.mode ?? "control"
   )
@@ -900,6 +902,7 @@ function HerdrTerminalLeaf({
     visibleRef.current = visible
     tabIdRef.current = tabId
     cwdRef.current = baseCwd
+    hostIdRef.current = targetHostId
     const queue = outputQueueRef.current
     if (visible && !previousVisibleRef.current) repaintAfterWriteRef.current = true
     if (visible && queue?.needsResync) {
@@ -908,7 +911,7 @@ function HerdrTerminalLeaf({
       queue?.setVisible(visible)
       if (visible) queue?.flushNow()
     }
-  }, [active, baseCwd, tabId, visible])
+  }, [active, baseCwd, tabId, targetHostId, visible])
 
   useEffect(() => {
     disposedRef.current = false
@@ -1017,7 +1020,8 @@ function HerdrTerminalLeaf({
     })
     fitRef.current = fitAddon
     targetOpenRef.current = installTerminalTargetOpen(term, {
-      getCwd: () => cwdRef.current
+      getCwd: () => cwdRef.current,
+      getHostId: () => hostIdRef.current
     })
     const parsedDisposable = term.onWriteParsed?.(() => {
       targetOpenRef.current?.resetHover()

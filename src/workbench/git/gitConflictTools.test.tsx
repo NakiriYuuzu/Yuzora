@@ -105,6 +105,7 @@ describe("GitMergeTool", () => {
     it("merges non-conflicting changes, resolves a conflict per region and saves the result", async () => {
         vi.mocked(ipc.gitConflictSides).mockResolvedValue({
             code: "UU",
+            lossyEncoding: false, symlink: false,
             base: { kind: "full", content: "1\n2\n3\n4\n5\n" },
             ours: { kind: "full", content: "1\nO2\n3\nO4\n5\n" },
             theirs: { kind: "full", content: "1\n2\n3\nT4\n5\n" },
@@ -130,6 +131,7 @@ describe("GitMergeTool", () => {
     it("keeps CRLF line endings of the working file", async () => {
         vi.mocked(ipc.gitConflictSides).mockResolvedValue({
             code: "UU",
+            lossyEncoding: false, symlink: false,
             base: { kind: "full", content: "a\nb\n" },
             ours: { kind: "full", content: "a\nB\n" },
             theirs: { kind: "full", content: "a\nb\n" },
@@ -144,9 +146,85 @@ describe("GitMergeTool", () => {
         await waitFor(() => expect(ipc.saveFile).toHaveBeenCalledWith("/w/w.txt", "a\r\nB\r\n"))
     })
 
+    it("refuses to merge text whose encoding a UTF-8 rewrite would corrupt", async () => {
+        // Big5 / Latin-1 bytes decode to U+FFFD; UTF-16 decodes cleanly but would be rewritten as UTF-8.
+        vi.mocked(ipc.gitConflictSides).mockResolvedValue({
+            code: "UU",
+            lossyEncoding: true, symlink: false,
+            base: { kind: "full", content: "a\nb\n" },
+            ours: { kind: "full", content: "a\n\uFFFD\n" },
+            theirs: { kind: "full", content: "a\nt\n" },
+            worktree: { kind: "full", content: "<<<<<<<\n" }
+        })
+        useGitConflictStore.setState({ mergePath: "big5.txt" })
+        render(<GitMergeTool />)
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(/not UTF-8 text/)
+        expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument()
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+        expect(ipc.gitStage).not.toHaveBeenCalled()
+    })
+
+    it("refuses to merge a symlink conflict, whose result would be written through the link", async () => {
+        vi.mocked(ipc.gitConflictSides).mockResolvedValue({
+            code: "UU",
+            lossyEncoding: false, symlink: true,
+            base: { kind: "full", content: "base" },
+            ours: { kind: "full", content: "/tmp/ours-target" },
+            theirs: { kind: "full", content: "theirs" },
+            worktree: { kind: "full", content: "/tmp/ours-target" }
+        })
+        useGitConflictStore.setState({ mergePath: "l" })
+        render(<GitMergeTool />)
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(/symbolic links/)
+        expect(screen.queryByRole("button", { name: "Apply" })).not.toBeInTheDocument()
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+        expect(ipc.gitStage).not.toHaveBeenCalled()
+    })
+
+    it("re-checks for a symlink at Apply and never writes through one", async () => {
+        const sides = {
+            code: "UU",
+            lossyEncoding: false, symlink: false,
+            base: { kind: "full", content: "1\n2\n" },
+            ours: { kind: "full", content: "1\nO\n" },
+            theirs: { kind: "full", content: "1\nT\n" },
+            worktree: { kind: "full", content: "1\n<<<<<<< ours\nO\n=======\nT\n>>>>>>> theirs\n" }
+        } as const
+        vi.mocked(ipc.gitConflictSides)
+            .mockResolvedValueOnce(sides)
+            .mockResolvedValueOnce({ ...sides, symlink: true })
+        // Like the real runOp, report a failed operation instead of rethrowing it.
+        let failure: unknown = null
+        runOp.mockImplementationOnce(async (_name, fn) => {
+            try {
+                await fn()
+                return true
+            } catch (error) {
+                failure = error
+                return false
+            }
+        })
+        useGitConflictStore.setState({ mergePath: "m.txt" })
+        render(<GitMergeTool />)
+        await screen.findByText("1 changes, 1 conflicts left")
+        const result = document.querySelector<HTMLElement>("[data-merge-pane='result']")!
+        fireEvent.click(within(result).getByRole("button", { name: "Theirs »" }))
+        await screen.findByText("0 changes, 0 conflicts left")
+        fireEvent.click(screen.getByRole("button", { name: "Apply" }))
+
+        await waitFor(() => expect(String(failure)).toMatch(/symbolic links/))
+        expect(runOp).toHaveBeenCalledWith("conflict-merge", expect.any(Function))
+        expect(useAppDialogStore.getState().pending).toBeNull()
+        expect(ipc.saveFile).not.toHaveBeenCalled()
+        expect(ipc.gitStage).not.toHaveBeenCalled()
+    })
+
     async function resolveAndApply(worktree: string) {
         vi.mocked(ipc.gitConflictSides).mockResolvedValue({
             code: "UU",
+            lossyEncoding: false, symlink: false,
             base: { kind: "full", content: "1\n2\n" },
             ours: { kind: "full", content: "1\nO\n" },
             theirs: { kind: "full", content: "1\nT\n" },
@@ -194,6 +272,7 @@ describe("GitMergeTool", () => {
         useGitStore.setState({ status: { ...status([{ path: "r.txt", origPath: null, status: "UU" }]), inProgress: "rebase" } })
         vi.mocked(ipc.gitConflictSides).mockResolvedValue({
             code: "UU",
+            lossyEncoding: false, symlink: false,
             base: { kind: "full", content: "1\n2\n" },
             ours: { kind: "full", content: "1\nupstream\n" },
             theirs: { kind: "full", content: "1\nmine\n" },
@@ -208,7 +287,7 @@ describe("GitMergeTool", () => {
 
     it("explains why a deleted side cannot be merged", async () => {
         vi.mocked(ipc.gitConflictSides).mockResolvedValue({
-            code: "UD", base: { kind: "full", content: "x\n" }, ours: { kind: "full", content: "y\n" }, theirs: null, worktree: null
+            code: "UD", lossyEncoding: false, symlink: false, base: { kind: "full", content: "x\n" }, ours: { kind: "full", content: "y\n" }, theirs: null, worktree: null
         })
         useGitConflictStore.setState({ mergePath: "d.txt" })
         render(<GitMergeTool />)

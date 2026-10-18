@@ -17,6 +17,7 @@ import i18n from "@/lib/i18n"
 import {
     isSameOrDescendantPath,
     nativePathJoin,
+    nativePathParent,
     rebasePath,
     relativePathWithin,
     workspacePathBasename,
@@ -363,9 +364,8 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
         confirmLabel: i18n.t("textInputDialog.rename", { ns: "menus" })
     })
     if (!name || name === currentName) return CONTEXT_MENU_CANCELLED
-    const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
-    const target = path.slice(0, slash + 1) + name
     try {
+        const target = nativePathJoin(nativePathParent(path), name)
         await fsRename(workspace, path, target)
         retargetOpenDocuments(path, target)
         // 舊、新路徑一起失效：同層 re-list 反映改名；資料夾改名時 relist 的

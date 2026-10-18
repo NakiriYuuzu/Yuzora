@@ -4,7 +4,13 @@ import { clearAll } from "@/editor/documentRegistry"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
 import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
-import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
+import {
+    confirmDiscardingUnsaved,
+    confirmDiscardingUnsavedSince,
+    dirtyPathsSince,
+    snapshotDirtyTabs,
+    type DirtyTabsSnapshot
+} from "@/lib/unsavedGuard"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { loadWorkspaceSessionEntry } from "@/state/workspaceSession"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -22,7 +28,20 @@ export interface OpenWorkspaceOptions {
      * already completed an unsaved preflight in the same transaction.
      */
     skipUnsavedGuard?: boolean
+    /**
+     * With `skipUnsavedGuard`: the unsaved state the caller's preflight settled
+     * (`snapshotDirtyTabs()` right after it passed). Edits made after it are
+     * asked about again before the old workspace is dropped. Defaults to the
+     * state when this function is entered.
+     */
+    unsavedBaseline?: DirtyTabsSnapshot
 }
+
+const switchWorkspaceLabels = () => ({
+    title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
+    description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
+    saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
+})
 
 /**
  * Opens `path` as the active workspace: canonicalizes it through the backend,
@@ -42,14 +61,13 @@ async function openWorkspaceAtPathWithOutcome(
     // Restore-on-launch runs with no workspace and no tabs open (SessionRestore
     // only fires when workspacePath is null), so there are never dirty tabs then
     // and this is naturally skipped — no modal on auto-restore.
+    let unsavedBaseline = options?.unsavedBaseline
     if (!options?.skipUnsavedGuard) {
-        const proceed = await confirmDiscardingUnsaved({
-            title: i18n.t("unsavedDialog.switchWorkspaceTitle", { ns: "menus" }),
-            description: i18n.t("unsavedDialog.switchWorkspaceDescription", { ns: "menus" }),
-            saveLabel: i18n.t("unsavedDialog.saveAll", { ns: "menus" })
-        })
+        const proceed = await confirmDiscardingUnsaved(switchWorkspaceLabels())
         if (!proceed) return false
+        unsavedBaseline = snapshotDirtyTabs()
     }
+    unsavedBaseline ??= snapshotDirtyTabs()
 
     const opened = await openWorkspace(path)
     if (options?.shouldOpen && !options.shouldOpen()) return false
@@ -68,6 +86,13 @@ async function openWorkspaceAtPathWithOutcome(
         await assetScopeGrant
     }
     if (options?.shouldOpen && !options.shouldOpen()) return false
+    // The preflight is a snapshot: edits typed while the workspace was opening
+    // (remote I/O, queued Herdr focus) would be dropped by clearAll() below.
+    while (dirtyPathsSince(unsavedBaseline).length > 0) {
+        if (!(await confirmDiscardingUnsavedSince(unsavedBaseline, switchWorkspaceLabels()))) return false
+        unsavedBaseline = snapshotDirtyTabs()
+        if (options?.shouldOpen && !options.shouldOpen()) return false
+    }
     clearAll()
     const workspace = useWorkspaceStore.getState()
     workspace.setWorkspace(canonical, opened.capabilityId)

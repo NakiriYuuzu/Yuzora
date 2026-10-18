@@ -129,3 +129,26 @@ it("displays verbatim Windows trusted paths without changing revoke identity", a
     )
     await waitFor(() => expect(ipcMocks.workspaceTrustRevoke).toHaveBeenCalledWith(canonicalPath))
 })
+
+it("shows the always-on external-change and git-confirmation policies as fixed, not as live switches", async () => {
+    render(
+        <SettingsDialog
+            open
+            onOpenChange={() => {}}
+            theme="light"
+            onThemeChange={() => {}}
+            initialSection="safety"
+        />,
+    )
+
+    for (const key of ["settings.reconcileExternalChanges", "settings.confirmDestructiveGitActions"]) {
+        const policy = await screen.findByRole("switch", { name: i18n.t(key, { ns: "workbench" }) })
+        expect(policy).toBeChecked()
+        expect(policy).toBeDisabled()
+        fireEvent.click(policy)
+        expect(policy).toBeChecked()
+    }
+    // Discard and reset use an ordinary confirmation dialog, not hold-to-confirm.
+    expect(screen.queryByText(/hold/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/按住/)).not.toBeInTheDocument()
+})

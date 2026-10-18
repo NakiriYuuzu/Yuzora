@@ -7,10 +7,11 @@ vi.mock("@/lib/ipc", () => ({
 }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }))
 
-import { sshDisconnect } from "@/lib/ipc"
-import { HostList } from "@/app/workbench/HostList"
+import { sshConnect, sshDisconnect } from "@/lib/ipc"
+import { HostList, PasswordPromptDialog } from "@/app/workbench/HostList"
 import { useSshStore, type NewSshHost } from "@/state/sshStore"
 
+const mockConnect = vi.mocked(sshConnect)
 const mockDisconnect = vi.mocked(sshDisconnect)
 
 // The Bun-hosted test runtime injects an empty `localStorage` global with no
@@ -61,6 +62,37 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+})
+
+describe("SSH auth prompt", () => {
+  function secretInput(): HTMLInputElement {
+    return screen.getByTestId("ssh-password-dialog").querySelector("input")!
+  }
+
+  it("asks a key host for its passphrase, not a password, and connects with it", () => {
+    mockConnect.mockResolvedValue({ sessionId: "sess-1", fingerprint: "SHA256:abc" })
+    const host = useSshStore.getState().addHost(keyHost)
+    useSshStore.setState({ pendingAuthHostId: host.id })
+    render(<PasswordPromptDialog host={host} />)
+
+    expect(secretInput()).toHaveAttribute("aria-label", "SSH key passphrase")
+    fireEvent.change(secretInput(), { target: { value: "keypass" } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+
+    expect(mockConnect).toHaveBeenCalledWith("10.0.0.5", 2222, "deploy", {
+      kind: "key",
+      keyPath: "/home/u/.ssh/id_ed25519",
+      passphrase: "keypass"
+    })
+  })
+
+  it("still asks a password host for its password", () => {
+    const host = useSshStore.getState().addHost(passwordHost)
+    useSshStore.setState({ pendingAuthHostId: host.id })
+    render(<PasswordPromptDialog host={host} />)
+
+    expect(secretInput()).toHaveAttribute("aria-label", "SSH password")
+  })
 })
 
 describe("HostList edit host", () => {

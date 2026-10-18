@@ -768,6 +768,8 @@ pub struct QueryRun {
     pub connection_generation: ConnectionGeneration,
     pub query_run_id: QueryRunId,
     pub statements: NonEmptyVec<StatementExecution>,
+    /// Connection-level: a transaction may still be open after this run, even if
+    /// an earlier run opened it.
     pub transaction_may_be_open: bool,
     pub connection_terminated: bool,
 }
@@ -3162,6 +3164,58 @@ fn helper_mssql_terminal_response(
     }
 }
 
+/// Streaming counterpart of `MssqlDrainState` for the helper. The helper cannot
+/// hold rows back, so it forwards the first result set as it arrives and applies
+/// the same single-result-index and column-count checks to everything after it.
+#[derive(Default)]
+struct MssqlHelperShape {
+    state: MssqlDrainState,
+    columns_sent: bool,
+}
+
+impl MssqlHelperShape {
+    fn columns_sent(&self) -> bool {
+        self.columns_sent
+    }
+
+    /// Returns the columns to announce when this metadata opens the one result
+    /// set the legacy contract can represent.
+    fn observe_metadata(
+        &mut self,
+        result_index: usize,
+        columns: Vec<String>,
+    ) -> Option<Vec<String>> {
+        let announce = (!self.columns_sent).then(|| columns.clone());
+        self.state.observe_metadata(result_index, columns);
+        self.columns_sent = true;
+        announce
+    }
+
+    /// Whether this row may be forwarded; `false` means keep draining it.
+    fn accepts_row(&mut self, result_index: usize, column_count: usize) -> bool {
+        self.state
+            .prepare_row(result_index, column_count, usize::MAX)
+            == MssqlRowAction::Decode
+    }
+
+    /// Reports the first shape error once the stream has been drained to EOF.
+    fn finish(self) -> Result<(), DatabaseError> {
+        self.state.deferred_error.map_or(Ok(()), Err)
+    }
+}
+
+/// Closes the helper stream at EOF: the first deferred shape error wins over the
+/// terminal frame, so a rejected second result set is never reported as success.
+fn helper_mssql_stream_end(
+    shape: MssqlHelperShape,
+    rows_affected: &[u64],
+) -> Result<WorkerResponse, DatabaseError> {
+    let columns_sent = shape.columns_sent();
+    shape.finish()?;
+    let affected_rows = aggregate_mssql_affected_rows(rows_affected)?;
+    Ok(helper_mssql_terminal_response(columns_sent, affected_rows))
+}
+
 async fn helper_mssql_query(
     client: &mut MssqlClient,
     sql: &str,
@@ -3205,7 +3259,7 @@ async fn helper_mssql_query(
             stream.map_err(|error| mssql_database_error(&MssqlInternalError::Driver(error)))?
         }
     };
-    let mut columns_sent = false;
+    let mut shape = MssqlHelperShape::default();
     let mut stop = false;
     loop {
         tokio::select! {
@@ -3231,32 +3285,24 @@ async fn helper_mssql_query(
                     mssql_database_error(&MssqlInternalError::Driver(error))
                 })?;
                 let Some(item) = item else {
-                    let affected_rows = aggregate_mssql_affected_rows(stream.rows_affected())?;
-                    return write_frame(
-                        stdout,
-                        &helper_mssql_terminal_response(columns_sent, affected_rows),
-                    )
-                    .await;
+                    let response = helper_mssql_stream_end(shape, stream.rows_affected())?;
+                    return write_frame(stdout, &response).await;
                 };
                 match item {
                     QueryItem::Metadata(metadata) => {
-                        if !columns_sent {
-                            write_frame(
-                                stdout,
-                                &WorkerResponse::RowMeta {
-                                    columns: metadata
-                                        .columns()
-                                        .iter()
-                                        .map(|column| column.name().to_string())
-                                        .collect(),
-                                },
-                            )
-                            .await?;
-                            columns_sent = true;
+                        let columns = metadata
+                            .columns()
+                            .iter()
+                            .map(|column| column.name().to_string())
+                            .collect();
+                        if let Some(columns) =
+                            shape.observe_metadata(metadata.result_index(), columns)
+                        {
+                            write_frame(stdout, &WorkerResponse::RowMeta { columns }).await?;
                         }
                     }
                     QueryItem::Row(row) => {
-                        if stop {
+                        if stop || !shape.accepts_row(row.result_index(), row.columns().len()) {
                             continue;
                         }
                         let mut values = Vec::new();
@@ -4735,26 +4781,56 @@ struct P6UnitOutcome {
     connection_terminated: bool,
 }
 
-fn apply_successful_transaction_boundary(
+/// MSSQL answers a COMMIT/ROLLBACK without a transaction with error 3902/3903. That is
+/// the connection itself saying nothing is open: a single batch that already committed,
+/// XACT_ABORT and a deadlock victim all leave the flag set with nothing left to close.
+fn is_no_active_transaction_error(error: &DatabaseError) -> bool {
+    error.engine == DatabaseErrorEngine::Mssql
+        && matches!(error.code.as_deref(), Some("3902" | "3903"))
+}
+
+fn apply_transaction_boundary(
     transaction_may_be_open: &mut bool,
     boundary: TransactionBoundary,
     result: &StatementExecutionResult,
 ) {
-    if !matches!(
-        result,
+    match result {
         StatementExecutionResult::Rows { .. }
-            | StatementExecutionResult::Execute { .. }
-            | StatementExecutionResult::ResultLimitReached { .. }
-    ) {
-        return;
-    }
-    match boundary {
-        TransactionBoundary::Begin => *transaction_may_be_open = true,
-        TransactionBoundary::Commit | TransactionBoundary::Rollback => {
+        | StatementExecutionResult::Execute { .. }
+        | StatementExecutionResult::ResultLimitReached { .. } => match boundary {
+            TransactionBoundary::Begin => *transaction_may_be_open = true,
+            TransactionBoundary::Commit | TransactionBoundary::Rollback => {
+                *transaction_may_be_open = false
+            }
+            TransactionBoundary::None => {}
+        },
+        StatementExecutionResult::Error { error }
+            if matches!(
+                boundary,
+                TransactionBoundary::Commit | TransactionBoundary::Rollback
+            ) && is_no_active_transaction_error(error) =>
+        {
             *transaction_may_be_open = false
         }
-        TransactionBoundary::None => {}
+        _ => {}
     }
+}
+
+/// Updates the connection-level flag after one unit and returns it. SQLite reports its
+/// real state (`is_autocommit`) from the worker that holds the connection, so a rollback
+/// the engine did by itself is seen too. The network engines cannot be asked cheaply
+/// while a result streams, so they follow the unit's static boundary.
+fn settle_transaction_flag(
+    actor: &ProductionConnectionActor,
+    boundary: TransactionBoundary,
+    result: &StatementExecutionResult,
+) -> bool {
+    let mut transaction_may_be_open = actor.transaction_may_be_open();
+    if !matches!(actor.handle(), DbHandle::Sqlite(_)) {
+        apply_transaction_boundary(&mut transaction_may_be_open, boundary, result);
+        actor.set_transaction_may_be_open(transaction_may_be_open);
+    }
+    transaction_may_be_open
 }
 
 fn mssql_cancelled_connection_error() -> DatabaseError {
@@ -5039,6 +5115,9 @@ fn sqlite_run_primary_worker(
         }));
         return;
     }
+    // This worker holds the connection lock for as long as its result streams, so it is
+    // the only place that can read the real transaction state before the run is published.
+    let sync_transaction_state = || actor.set_transaction_may_be_open(!connection.is_autocommit());
     let mut probe = SqliteCompletionProbe::install(&connection);
     let mut statement = match connection.prepare(&sql) {
         Ok(statement) => statement,
@@ -5077,6 +5156,7 @@ fn sqlite_run_primary_worker(
                 connection_terminated: false,
             })
             .or_else(|error| sqlite_primary_failure(&actor, &lease, error));
+        sync_transaction_state();
         let _ = settle_primary_guard(&mut settlement_guard);
         let _ = initial_sender.send(outcome);
         return;
@@ -5143,6 +5223,7 @@ fn sqlite_run_primary_worker(
     let initial_read = read_page(0);
     match initial_read {
         Ok(PrimaryPageRead::Streaming) => {
+            sync_transaction_state();
             let session = sessions
                 .lock()
                 .map_err(result_session_database_error)
@@ -5197,6 +5278,7 @@ fn sqlite_run_primary_worker(
         }
         Ok(terminal) => {
             drop(rows);
+            sync_transaction_state();
             let completed = terminal == PrimaryPageRead::End;
             let effect_outcome = probe.take().map_or_else(
                 || {
@@ -5233,6 +5315,7 @@ fn sqlite_run_primary_worker(
         }
         Err(error) => {
             drop(rows);
+            sync_transaction_state();
             let cancelled = actor.cancel_requested(&lease).unwrap_or(false);
             if let Ok(mut sessions) = sessions.lock() {
                 let _ = sessions.discard(&session_owner);
@@ -6337,12 +6420,8 @@ pub async fn query_run_in_state(
                 connection_terminated: false,
             },
         };
-        let mut transaction_may_be_open = false;
-        apply_successful_transaction_boundary(
-            &mut transaction_may_be_open,
-            unit.transaction_boundary,
-            &outcome.result,
-        );
+        let transaction_may_be_open =
+            settle_transaction_flag(&actor, unit.transaction_boundary, &outcome.result);
         let run = QueryRun {
             descriptor_id: owner.descriptor_id,
             connection_id: owner.connection_id,
@@ -6370,7 +6449,7 @@ pub async fn query_run_in_state(
 
     let mut statements = Vec::with_capacity(request.statements.len());
     let mut stopped = false;
-    let mut transaction_may_be_open = false;
+    let mut transaction_may_be_open = actor.transaction_may_be_open();
     let mut connection_terminated = false;
     for (statement_index, unit) in request.statements.iter().enumerate() {
         let statement_execution_id =
@@ -6415,7 +6494,14 @@ pub async fn query_run_in_state(
                         {
                             return Err(cancelled_error());
                         }
-                        sqlite_run_materialized_unit(&connection, &sql, &sessions, session_owner)
+                        let outcome = sqlite_run_materialized_unit(
+                            &connection,
+                            &sql,
+                            &sessions,
+                            session_owner,
+                        );
+                        actor_for_worker.set_transaction_may_be_open(!connection.is_autocommit());
+                        outcome
                     }
                     _ => Err(sqlite_worker_error("database connection engine mismatch")),
                 })
@@ -6464,11 +6550,8 @@ pub async fn query_run_in_state(
         };
         match result {
             Ok(outcome) => {
-                apply_successful_transaction_boundary(
-                    &mut transaction_may_be_open,
-                    unit.transaction_boundary,
-                    &outcome.result,
-                );
+                transaction_may_be_open =
+                    settle_transaction_flag(&actor, unit.transaction_boundary, &outcome.result);
                 stopped = outcome.stop;
                 connection_terminated |= outcome.connection_terminated;
                 statements.push(StatementExecution {
@@ -6486,6 +6569,8 @@ pub async fn query_run_in_state(
                 } else {
                     StatementExecutionResult::Error { error }
                 };
+                transaction_may_be_open =
+                    settle_transaction_flag(&actor, unit.transaction_boundary, &result);
                 statements.push(StatementExecution {
                     statement_execution_id,
                     statement_index,

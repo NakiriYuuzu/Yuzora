@@ -1,11 +1,13 @@
-import { render, waitFor } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import * as ipc from "../lib/ipc"
 import { documentGeneration } from "../editor/documentRegistry"
 import { useFileTreeStore } from "../state/fileTreeStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { handleExternalChange } from "../lib/externalChange"
 import { ExternalChangeBridge } from "./ExternalChangeBridge"
+import { ImageView } from "./ImageView"
 
 const PATH = "/w/a.ts"
 
@@ -19,6 +21,11 @@ vi.mock("@tauri-apps/api/event", () => ({
         capturedFsListener = cb as typeof capturedFsListener
         return () => {}
     })
+}))
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+    convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}`
 }))
 
 // Force a reload plan for PATH regardless of the planner's dirty/saveSuppress
@@ -139,5 +146,24 @@ describe("ExternalChangeBridge reload settling", () => {
         // R3-F1: a failed reload must NOT bump the generation, so the keyed
         // EditorArea pane (and its unsaved buffer) is never remounted away.
         expect(documentGeneration(PATH)).toBe(gen0)
+    })
+
+    // A07-F3：圖片沒有編輯器 buffer，但 reload 照樣 bump generation；已掛載的
+    // ImageView 要據此換新的 asset URL，否則外部重產的圖會一直顯示舊畫面。
+    it("an open image view re-fetches once the bridge reloads its document", async () => {
+        const IMAGE = "/w/pic.png"
+        useWorkspaceStore.getState().openTab(IMAGE)
+        vi.mocked(handleExternalChange).mockReturnValueOnce({ markModified: [], reload: [IMAGE] })
+        vi.mocked(ipc.openFile).mockResolvedValue({ kind: "binary", size: 3 })
+        function Probe() {
+            useWorkspaceStore((state) => state.groups)
+            return <ImageView path={IMAGE} generation={documentGeneration(IMAGE)} />
+        }
+        render(<><ExternalChangeBridge /><Probe /></>)
+        const before = screen.getByTestId("image-view-img").getAttribute("src")
+
+        capturedFsListener({ payload: { workspaceRoot: "/w", paths: [IMAGE] } })
+
+        await waitFor(() => expect(screen.getByTestId("image-view-img").getAttribute("src")).not.toBe(before))
     })
 })

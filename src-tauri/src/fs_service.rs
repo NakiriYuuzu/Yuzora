@@ -3,7 +3,7 @@ use crate::file_content::{
 };
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -266,8 +266,101 @@ fn read_rest(file: &mut std::fs::File, mut prefix: Vec<u8>, size: u64) -> Result
     Ok(prefix)
 }
 
+/// Saves over an existing regular file without truncating it: the bytes go to a
+/// fsynced scratch file in the target's own directory and are then renamed over
+/// the target (replace-existing on Windows too), so a failed or interrupted save
+/// leaves the previous content intact. A symlink is resolved first so the link
+/// survives, and the original's mode (and owner on Unix) carry over.
+///
+/// Some places cannot host that swap — a read-only directory around a writable
+/// file, a single-file bind mount, a file owned by someone else. The original is
+/// still untouched at that point, so the save falls back to the in-place write
+/// it always used. A failure while writing the scratch bytes (for example a
+/// full disk) is returned instead, because an in-place write would truncate.
+/// A path with no existing file has nothing to lose.
+fn replace_file_atomically(path: &Path, content: &[u8]) -> Result<(), String> {
+    let write_err = |e: std::io::Error| format!("write failed: {e}");
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        _ => return std::fs::write(path, content).map_err(write_err),
+    };
+    let target = if std::fs::symlink_metadata(path)
+        .map_err(write_err)?
+        .file_type()
+        .is_symlink()
+    {
+        std::fs::canonicalize(path).map_err(write_err)?
+    } else {
+        path.to_path_buf()
+    };
+    // Renaming only needs a writable directory, so honour the file's own write bit.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .map_err(write_err)?;
+    match swap_in_scratch_file(&target, &metadata, content) {
+        Ok(()) => Ok(()),
+        Err(SwapError::Unavailable) => std::fs::write(&target, content).map_err(write_err),
+        Err(SwapError::Failed(error)) => Err(write_err(error)),
+    }
+}
+
+enum SwapError {
+    /// Nothing was written and the original is untouched.
+    Unavailable,
+    /// Writing the new bytes failed; an in-place retry could truncate.
+    Failed(std::io::Error),
+}
+
+fn swap_in_scratch_file(
+    target: &Path,
+    metadata: &std::fs::Metadata,
+    content: &[u8],
+) -> Result<(), SwapError> {
+    let dir = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut scratch = tempfile::Builder::new()
+        .prefix(crate::watcher::SAVE_SCRATCH_PREFIX)
+        .tempfile_in(dir)
+        .map_err(|_| SwapError::Unavailable)?;
+    scratch
+        .write_all(content)
+        .and_then(|_| scratch.flush())
+        .and_then(|_| scratch.as_file().sync_all())
+        .map_err(SwapError::Failed)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{fchown, MetadataExt};
+        let staged = scratch
+            .as_file()
+            .metadata()
+            .map_err(|_| SwapError::Unavailable)?;
+        if (staged.uid(), staged.gid()) != (metadata.uid(), metadata.gid()) {
+            fchown(
+                scratch.as_file(),
+                Some(metadata.uid()),
+                Some(metadata.gid()),
+            )
+            .map_err(|_| SwapError::Unavailable)?;
+        }
+    }
+    scratch
+        .as_file()
+        .set_permissions(metadata.permissions())
+        .map_err(|_| SwapError::Unavailable)?;
+    scratch
+        .persist(target)
+        .map_err(|_| SwapError::Unavailable)?;
+    // The new content is already in place; syncing the directory only hardens the rename.
+    #[cfg(unix)]
+    let _ = std::fs::File::open(dir).and_then(|directory| directory.sync_all());
+    Ok(())
+}
+
 pub fn write_file(path: &str, content: &str) -> Result<u64, String> {
-    std::fs::write(path, content).map_err(|e| format!("write failed: {e}"))?;
+    replace_file_atomically(Path::new(path), content.as_bytes())?;
     let meta = std::fs::metadata(path).map_err(|e| format!("stat failed: {e}"))?;
     let mtime = meta
         .modified()
@@ -858,6 +951,162 @@ mod tests {
         let mtime = write_file(p.to_str().unwrap(), "hello").unwrap();
         assert!(mtime > 0);
         assert_eq!(fs::read_to_string(&p).unwrap(), "hello");
+    }
+
+    #[test]
+    fn save_file_creates_a_missing_file_and_leaves_no_scratch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("new.txt");
+        write_file(p.to_str().unwrap(), "fresh").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "fresh");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn save_file_replaces_existing_content_and_leaves_no_scratch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("s.txt");
+        fs::write(&p, "a much longer previous body").unwrap();
+        write_file(p.to_str().unwrap(), "short").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "short");
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_file_swaps_in_a_new_inode_instead_of_truncating() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("s.txt");
+        fs::write(&p, "old").unwrap();
+        let before = fs::metadata(&p).unwrap().ino();
+        write_file(p.to_str().unwrap(), "new").unwrap();
+        assert_ne!(
+            fs::metadata(&p).unwrap().ino(),
+            before,
+            "an in-place write truncates the original before the new bytes land"
+        );
+    }
+
+    // 寫入途中的讀者只能看到完整舊檔或完整新檔；就地 truncate 會讓它讀到空檔或半檔。
+    #[test]
+    fn save_file_never_exposes_a_truncated_file_to_readers() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("big.txt");
+        let old = "o".repeat(4 << 20);
+        let new = "n".repeat(8 << 20);
+        fs::write(&p, &old).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let (p, done) = (p.clone(), done.clone());
+            let (old_len, new_len) = (old.len(), new.len());
+            std::thread::spawn(move || {
+                let mut torn = Vec::new();
+                while !done.load(Ordering::Relaxed) {
+                    if let Ok(bytes) = fs::read(&p) {
+                        if bytes.len() != old_len && bytes.len() != new_len {
+                            torn.push(bytes.len());
+                        }
+                    }
+                }
+                torn
+            })
+        };
+        for _ in 0..8 {
+            write_file(p.to_str().unwrap(), &new).unwrap();
+            write_file(p.to_str().unwrap(), &old).unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        let torn = reader.join().unwrap();
+        assert!(torn.is_empty(), "reader saw partial file sizes {torn:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_file_preserves_the_mode_of_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for mode in [0o755, 0o640, 0o644] {
+            let p = tmp.path().join(format!("m{mode:o}"));
+            fs::write(&p, "old").unwrap();
+            fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+            write_file(p.to_str().unwrap(), "new").unwrap();
+            assert_eq!(
+                fs::metadata(&p).unwrap().permissions().mode() & 0o7777,
+                mode
+            );
+            assert_eq!(fs::read_to_string(&p).unwrap(), "new");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_file_through_a_symlink_updates_the_target_and_keeps_the_link() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let real_dir = tmp.path().join("real");
+        let link_dir = tmp.path().join("links");
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::create_dir_all(&link_dir).unwrap();
+        let target = real_dir.join("target.txt");
+        fs::write(&target, "old").unwrap();
+        let link = link_dir.join("link.txt");
+        symlink(&target, &link).unwrap();
+
+        write_file(link.to_str().unwrap(), "new").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        // The scratch file belongs next to the real file, not next to the link.
+        assert_eq!(fs::read_dir(&link_dir).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&real_dir).unwrap().count(), 1);
+    }
+
+    // Renaming over a file only needs the directory to be writable, so the original
+    // must be checked separately or a read-only file would silently become writable.
+    #[cfg(unix)]
+    #[test]
+    fn save_file_still_refuses_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("ro.txt");
+        fs::write(&p, "old").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o444)).unwrap();
+        let can_write = fs::OpenOptions::new().write(true).open(&p).is_ok(); // root ignores the mode
+        let result = write_file(p.to_str().unwrap(), "new");
+        if can_write {
+            return;
+        }
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), "old");
+    }
+
+    // Fail closed: when an atomic replace cannot be set up, the save errors and the
+    // original stays untouched instead of degrading to a truncating in-place write.
+    #[cfg(unix)]
+    #[test]
+    fn save_file_writes_in_place_when_the_directory_cannot_hold_a_scratch_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("locked");
+        fs::create_dir(&dir).unwrap();
+        let p = dir.join("s.txt");
+        fs::write(&p, "old").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let can_create = fs::File::create(dir.join("probe")).is_ok(); // root ignores the mode
+        let result = write_file(p.to_str().unwrap(), "new");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        if can_create {
+            return;
+        }
+        // A writable file in a read-only directory saved in place before; it still must.
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "new");
     }
 
     #[test]

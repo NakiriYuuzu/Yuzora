@@ -29,9 +29,17 @@ impl Drop for WatcherHandle {
     }
 }
 
+/// Name prefix of the scratch file a local save renames over its target (see the
+/// app's `fs_service`); it only exists while that save runs.
+pub const SAVE_SCRATCH_PREFIX: &str = ".yuzora-save-";
+
 pub fn is_ignored_path(path: &Path) -> bool {
     path.components()
         .any(|c| matches!(c.as_os_str().to_str(), Some(".git" | "node_modules")))
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(SAVE_SCRATCH_PREFIX))
 }
 
 const CAPACITY: usize = 4096;
@@ -233,9 +241,10 @@ fn deliver(
     pending: &mut PendingChanges,
     root: &Path,
     stop: &Arc<AtomicBool>,
+    git_allowed: &impl Fn(&Path) -> bool,
     on_change: &impl Fn(Vec<String>, bool),
 ) {
-    if let Some((changes, git_relevant)) = pending.take_classified(root, stop) {
+    if let Some((changes, git_relevant)) = pending.take_classified(root, stop, git_allowed) {
         if !stop.load(Ordering::Acquire) {
             on_change(changes, git_relevant);
         }
@@ -280,15 +289,20 @@ impl PendingChanges {
 
     #[cfg(test)]
     fn take(&mut self, root: &Path) -> Option<Vec<String>> {
-        self.take_classified(root, &Arc::default())
+        self.take_classified(root, &Arc::default(), &|_| true)
             .map(|(changes, _)| changes)
     }
 
     /// Changed paths plus whether the batch can affect `git status`.
+    /// `git_allowed` is the workspace trust gate, asked about the canonical
+    /// `root`: Git reads repository config (for example `core.fsmonitor`) and may
+    /// run its commands, so an untrusted workspace never spawns Git here and its
+    /// batches simply count as relevant.
     fn take_classified(
         &mut self,
         root: &Path,
         cancel: &Arc<AtomicBool>,
+        git_allowed: &impl Fn(&Path) -> bool,
     ) -> Option<(Vec<String>, bool)> {
         if !self.rescan && self.paths.is_empty() {
             return None;
@@ -308,6 +322,7 @@ impl PendingChanges {
                 .any(|(path, _)| path.file_name().is_some_and(|name| name == ".gitignore"));
             let relevant = ignore_rules_changed
                 || ignored.len() != drained.len()
+                || !git_allowed(root)
                 || !all_untracked(root, &ignored, cancel);
             (
                 drained
@@ -327,13 +342,14 @@ pub fn build_watcher(
     root: &Path,
     on_change: impl Fn(Vec<String>) + Send + 'static,
 ) -> Result<WatcherHandle, String> {
-    build_classified_watcher(root, move |paths, _| on_change(paths))
+    build_classified_watcher(root, |_| false, move |paths, _| on_change(paths))
 }
 
 /// Like `build_watcher`, plus `git_relevant`: false when Git confirms paths are
 /// ignored/untracked in the workspace-root repository, not independent nested repositories.
 pub fn build_classified_watcher(
     root: &Path,
+    git_allowed: impl Fn(&Path) -> bool + Send + 'static,
     on_change: impl Fn(Vec<String>, bool) + Send + 'static,
 ) -> Result<WatcherHandle, String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
@@ -412,7 +428,7 @@ pub fn build_classified_watcher(
                 pending.invalidate_root();
             }
             if !stop.load(Ordering::Acquire) {
-                deliver(&mut pending, &root, &stop, &on_change);
+                deliver(&mut pending, &root, &stop, &git_allowed, &on_change);
             }
             deadline = Instant::now() + COALESCE_INTERVAL;
         }
@@ -847,7 +863,10 @@ mod tests {
             &mut matcher,
             changed.iter().map(|p| root.join(p)).collect(),
         );
-        pending.take_classified(root, &Arc::default()).unwrap().1
+        pending
+            .take_classified(root, &Arc::default(), &|_| true)
+            .unwrap()
+            .1
     }
 
     #[test]
@@ -869,7 +888,12 @@ mod tests {
         assert!(classify(root, &[".gitignore"]));
         let mut pending = PendingChanges::default();
         pending.invalidate_root();
-        assert!(pending.take_classified(root, &Arc::default()).unwrap().1);
+        assert!(
+            pending
+                .take_classified(root, &Arc::default(), &|_| true)
+                .unwrap()
+                .1
+        );
     }
 
     #[test]
@@ -915,7 +939,97 @@ mod tests {
         let mut pending = PendingChanges::default();
         pending.extend(root, &mut matcher, vec![root.join(".env")]);
         let cancel = Arc::new(AtomicBool::new(true));
-        assert!(pending.take_classified(root, &cancel).unwrap().1);
+        assert!(pending.take_classified(root, &cancel, &|_| true).unwrap().1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untrusted_workspace_never_runs_git_or_its_fsmonitor_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        crate::git_service::test_repo::init(root);
+        crate::git_service::test_repo::write_and_commit(root, "src.txt", "x", "seed");
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        let marker = root.join("hook-ran");
+        let hook = root.join("fsmonitor-hook.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::git_service::test_repo::git(
+            root,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        );
+        let mut matcher = ignore_matcher(root);
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![root.join(".env")]);
+        assert!(
+            pending
+                .take_classified(root, &Arc::default(), &|_| false)
+                .unwrap()
+                .1
+        );
+        assert!(
+            !marker.exists(),
+            "the untrusted repository's fsmonitor hook ran"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_watcher_asks_the_trust_gate_about_its_canonical_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::git_service::test_repo::init(&root);
+        crate::git_service::test_repo::write_and_commit(&root, "src.txt", "x", "seed");
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        let marker = root.join("hook-ran");
+        let hook = root.join("fsmonitor-hook.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::git_service::test_repo::git(
+            &root,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        );
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        let (send, receive) = mpsc::channel();
+        // Watch through a symlink: the gate must still hear the canonical root.
+        let link = temp.path().with_extension("link");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let _watcher = build_classified_watcher(
+            &link,
+            move |gate_root| {
+                seen.lock().unwrap().push(gate_root.to_path_buf());
+                false
+            },
+            move |paths, relevant| {
+                let _ = send.send((paths, relevant));
+            },
+        )
+        .unwrap();
+        std::fs::write(root.join(".env"), "A=1").unwrap();
+        let env = root.join(".env").to_string_lossy().into_owned();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (paths, relevant) = receive
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if paths == [env.clone()] {
+                assert!(relevant);
+                break;
+            }
+        }
+        let _ = std::fs::remove_file(&link);
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            std::slice::from_ref(&root)
+        );
+        assert!(
+            !marker.exists(),
+            "the untrusted repository's fsmonitor hook ran"
+        );
     }
 
     #[cfg(unix)]
@@ -991,14 +1105,14 @@ mod tests {
         pending.extend(root, &mut matcher, vec![root.join(".env")]);
         let calls = std::cell::Cell::new(0);
         let stop = Arc::new(AtomicBool::new(true));
-        deliver(&mut pending, root, &stop, &|_, _| {
+        deliver(&mut pending, root, &stop, &|_| true, &|_, _| {
             calls.set(calls.get() + 1)
         });
         assert_eq!(calls.get(), 0);
         // Control: the same batch is delivered while running.
         let mut pending = PendingChanges::default();
         pending.extend(root, &mut matcher, vec![root.join(".env")]);
-        deliver(&mut pending, root, &Arc::default(), &|_, _| {
+        deliver(&mut pending, root, &Arc::default(), &|_| true, &|_, _| {
             calls.set(calls.get() + 1)
         });
         assert_eq!(calls.get(), 1);

@@ -317,6 +317,101 @@ fn mssql_helper_terminal_response_distinguishes_execute_from_row_stream() {
     ));
 }
 
+#[test]
+fn mssql_helper_stream_fails_closed_on_a_second_result_set() {
+    let mut shape = MssqlHelperShape::default();
+    assert_eq!(
+        shape.observe_metadata(0, vec!["a".to_string()]),
+        Some(vec!["a".to_string()])
+    );
+    assert!(shape.accepts_row(0, 1));
+    assert_eq!(
+        shape.observe_metadata(1, vec!["b".to_string(), "c".to_string()]),
+        None,
+        "a later result set must not announce its own columns"
+    );
+    assert!(
+        !shape.accepts_row(1, 2),
+        "rows of a later result set must be drained, never forwarded under the first columns"
+    );
+    assert!(
+        !shape.accepts_row(0, 1),
+        "after a shape error every remaining row is drained"
+    );
+    assert!(shape.columns_sent());
+    let error = shape.finish().unwrap_err();
+    assert_eq!(error.code.as_deref(), Some("resultShape"));
+    assert!(error
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("cannot represent result set 1"));
+}
+
+#[test]
+fn mssql_helper_stream_rejects_a_row_wider_than_its_metadata() {
+    let mut shape = MssqlHelperShape::default();
+    assert!(shape
+        .observe_metadata(0, vec!["only".to_string()])
+        .is_some());
+    assert!(!shape.accepts_row(0, 2));
+    let error = shape.finish().unwrap_err();
+    assert_eq!(error.code.as_deref(), Some("resultShape"));
+    assert!(error.detail.as_deref().unwrap().contains("contains 2"));
+}
+
+#[test]
+fn mssql_helper_stream_keeps_a_single_result_set_and_execute_only_batches() {
+    let mut rows = MssqlHelperShape::default();
+    assert_eq!(
+        rows.observe_metadata(0, vec!["a".to_string(), "b".to_string()]),
+        Some(vec!["a".to_string(), "b".to_string()])
+    );
+    assert!(rows.accepts_row(0, 2));
+    assert!(rows.accepts_row(0, 2));
+    assert!(rows.columns_sent());
+    rows.finish().unwrap();
+
+    let execute = MssqlHelperShape::default();
+    assert!(!execute.columns_sent());
+    execute.finish().unwrap();
+}
+
+#[test]
+fn mssql_helper_stream_end_turns_a_deferred_shape_error_into_the_failure() {
+    // The same item sequence helper_mssql_query feeds for `SELECT 1 AS a; SELECT 2 AS b, 3 AS c`.
+    let mut shape = MssqlHelperShape::default();
+    assert!(shape.observe_metadata(0, vec!["a".to_string()]).is_some());
+    assert!(shape.accepts_row(0, 1));
+    assert!(shape
+        .observe_metadata(1, vec!["b".to_string(), "c".to_string()])
+        .is_none());
+    assert!(!shape.accepts_row(1, 2));
+
+    let error = helper_mssql_stream_end(shape, &[1, 1]).unwrap_err();
+    assert_eq!(error.engine, DatabaseErrorEngine::Mssql);
+    assert_eq!(error.code.as_deref(), Some("resultShape"));
+}
+
+#[test]
+fn mssql_helper_stream_end_reports_the_terminal_frame_of_a_coherent_stream() {
+    let mut rows = MssqlHelperShape::default();
+    rows.observe_metadata(0, vec!["a".to_string()]);
+    assert!(rows.accepts_row(0, 1));
+    assert!(matches!(
+        helper_mssql_stream_end(rows, &[1]).unwrap(),
+        WorkerResponse::End {
+            affected_rows: Some(value)
+        } if value == "1"
+    ));
+    assert!(matches!(
+        helper_mssql_stream_end(MssqlHelperShape::default(), &[3, 4]).unwrap(),
+        WorkerResponse::Execute {
+            affected_rows: Some(value)
+        } if value == "7"
+    ));
+}
+
 #[tokio::test]
 async fn worker_request_pump_preserves_fragmented_control_frames() {
     use tokio::io::AsyncWriteExt;
@@ -1117,26 +1212,396 @@ fn cancelled_transaction_boundaries_do_not_change_the_open_transaction_warning()
         error: mssql_cancelled_connection_error(),
     };
     let mut before_begin = false;
-    apply_successful_transaction_boundary(
-        &mut before_begin,
-        TransactionBoundary::Begin,
-        &cancelled,
-    );
+    apply_transaction_boundary(&mut before_begin, TransactionBoundary::Begin, &cancelled);
     assert!(
         !before_begin,
         "a cancelled BEGIN never opened a transaction"
     );
 
     let mut before_commit = true;
-    apply_successful_transaction_boundary(
-        &mut before_commit,
-        TransactionBoundary::Commit,
-        &cancelled,
-    );
+    apply_transaction_boundary(&mut before_commit, TransactionBoundary::Commit, &cancelled);
     assert!(
         before_commit,
         "a cancelled COMMIT did not prove the transaction closed"
     );
+}
+
+fn mssql_no_transaction_error(code: &str) -> DatabaseError {
+    DatabaseError {
+        engine: DatabaseErrorEngine::Mssql,
+        message: "The request has no corresponding BEGIN TRANSACTION.".to_string(),
+        code: Some(code.to_string()),
+        position: None,
+        detail: None,
+        hint: None,
+        retryability: Retryability::NotRetryable,
+    }
+}
+
+#[test]
+fn a_commit_or_rollback_the_server_says_has_no_transaction_clears_the_open_flag() {
+    // MSSQL answers COMMIT/ROLLBACK without a transaction with 3902/3903, e.g. after a
+    // single batch already committed or after XACT_ABORT/deadlock rolled it back.
+    for (boundary, code) in [
+        (TransactionBoundary::Commit, "3902"),
+        (TransactionBoundary::Rollback, "3903"),
+    ] {
+        let mut open = true;
+        apply_transaction_boundary(
+            &mut open,
+            boundary,
+            &StatementExecutionResult::Error {
+                error: mssql_no_transaction_error(code),
+            },
+        );
+        assert!(!open, "{code} proves no transaction is open");
+    }
+}
+
+#[test]
+fn other_failed_boundaries_keep_the_open_flag() {
+    let mut open = true;
+    // An unrelated failure of COMMIT proves nothing about the transaction.
+    apply_transaction_boundary(
+        &mut open,
+        TransactionBoundary::Commit,
+        &StatementExecutionResult::Error {
+            error: mssql_no_transaction_error("1205"),
+        },
+    );
+    assert!(open);
+    // The "no transaction" code only clears on a COMMIT/ROLLBACK unit.
+    apply_transaction_boundary(
+        &mut open,
+        TransactionBoundary::None,
+        &StatementExecutionResult::Error {
+            error: mssql_no_transaction_error("3902"),
+        },
+    );
+    assert!(open);
+    // Another engine's error code that happens to be 3902 is not MSSQL's answer.
+    let mut error = mssql_no_transaction_error("3902");
+    error.engine = DatabaseErrorEngine::Postgres;
+    apply_transaction_boundary(
+        &mut open,
+        TransactionBoundary::Commit,
+        &StatementExecutionResult::Error { error },
+    );
+    assert!(open);
+}
+
+#[tokio::test]
+async fn sqlite_implicit_rollback_clears_the_open_flag_in_both_run_modes() {
+    // A statement without result columns fails on execute; one with RETURNING fails
+    // while its first row is read. Both make SQLite roll the transaction back itself.
+    for (suffix, mode, failing_sql) in [
+        (
+            "primary-execute",
+            QueryRunMode::Primary,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1)",
+        ),
+        (
+            "primary-returning",
+            QueryRunMode::Primary,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1) RETURNING id",
+        ),
+        (
+            "script-execute",
+            QueryRunMode::Script,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1)",
+        ),
+        (
+            "script-returning",
+            QueryRunMode::Script,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1) RETURNING id",
+        ),
+    ] {
+        let state = DbState::default();
+        let sessions = ResultSessionState::default();
+        let actor = registered_sqlite_actor(
+            &state,
+            &format!("descriptor-implicit-{suffix}"),
+            &format!("connection-implicit-{suffix}"),
+        );
+        let identity = actor.identity().clone();
+        macro_rules! run {
+            ($id:expr, $sql:expr, $boundary:expr) => {
+                run_unit_with_boundary(&state, &sessions, &identity, $id, mode, $sql, $boundary)
+                    .await
+            };
+        }
+
+        run!(
+            "create",
+            "CREATE TABLE implicit_rollback (id INTEGER PRIMARY KEY)",
+            TransactionBoundary::None
+        );
+        assert!(run!("begin", "BEGIN", TransactionBoundary::Begin).transaction_may_be_open);
+        assert!(
+            run!(
+                "insert",
+                "INSERT INTO implicit_rollback VALUES (1)",
+                TransactionBoundary::None
+            )
+            .transaction_may_be_open
+        );
+
+        let failed = run!("implicit-rollback", failing_sql, TransactionBoundary::None);
+        assert!(matches!(
+            failed.statements[0].result,
+            StatementExecutionResult::Error { .. }
+        ));
+        assert!(
+            !failed.transaction_may_be_open,
+            "{suffix}: SQLite already rolled the transaction back"
+        );
+        assert!(!actor.transaction_may_be_open());
+    }
+}
+
+#[tokio::test]
+async fn sqlite_runs_reconcile_a_stale_open_flag_with_the_connection() {
+    for (suffix, mode, sql, boundary) in [
+        (
+            "rollback-primary",
+            QueryRunMode::Primary,
+            "ROLLBACK",
+            TransactionBoundary::Rollback,
+        ),
+        (
+            "commit-script",
+            QueryRunMode::Script,
+            "COMMIT",
+            TransactionBoundary::Commit,
+        ),
+        (
+            "select-primary",
+            QueryRunMode::Primary,
+            "SELECT 1",
+            TransactionBoundary::None,
+        ),
+        (
+            "select-script",
+            QueryRunMode::Script,
+            "SELECT 1",
+            TransactionBoundary::None,
+        ),
+        (
+            // More rows than one page keeps the worker streaming after it publishes.
+            "streaming-primary",
+            QueryRunMode::Primary,
+            "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 1200) SELECT n FROM c",
+            TransactionBoundary::None,
+        ),
+    ] {
+        let state = DbState::default();
+        let sessions = ResultSessionState::default();
+        let actor = registered_sqlite_actor(
+            &state,
+            &format!("descriptor-stale-{suffix}"),
+            &format!("connection-stale-{suffix}"),
+        );
+        let identity = actor.identity().clone();
+        // The connection is in autocommit mode, but the flag claims a transaction.
+        actor.set_transaction_may_be_open(true);
+
+        let run =
+            run_unit_with_boundary(&state, &sessions, &identity, "stale", mode, sql, boundary)
+                .await;
+        // A still-streaming result keeps its worker (and the connection) alive until
+        // released, so release before asserting to fail cleanly instead of hanging.
+        if let StatementExecutionResult::Rows {
+            result_session: Some(session),
+            ..
+        } = &run.statements[0].result
+        {
+            result_session_release_in_state(&state, &sessions, session.owner.clone())
+                .await
+                .unwrap();
+        }
+        assert!(
+            !run.transaction_may_be_open,
+            "{suffix}: no transaction is open on the connection"
+        );
+        assert!(!actor.transaction_may_be_open(), "{suffix}");
+    }
+}
+
+async fn run_unit_with_boundary(
+    state: &DbState,
+    sessions: &ResultSessionState,
+    identity: &ConnectionIdentity,
+    run: &str,
+    mode: QueryRunMode,
+    sql: &str,
+    transaction_boundary: TransactionBoundary,
+) -> QueryRun {
+    query_run_in_state(
+        state,
+        sessions,
+        QueryRunRequest {
+            descriptor_id: identity.descriptor_id.clone(),
+            connection_id: identity.connection_id.clone(),
+            connection_generation: identity.connection_generation.clone(),
+            query_run_id: QueryRunId(run.to_string()),
+            mode,
+            statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
+                sql: sql.to_string(),
+                transaction_boundary,
+            }])
+            .unwrap(),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn transaction_may_be_open_is_connection_level_across_separate_runs() {
+    let state = DbState::default();
+    let sessions = ResultSessionState::default();
+    let actor = registered_sqlite_actor(&state, "descriptor-tx-level", "connection-tx-level");
+    let identity = actor.identity().clone();
+    let other = registered_sqlite_actor(&state, "descriptor-tx-other", "connection-tx-other");
+    let other_identity = other.identity().clone();
+
+    let begin = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-begin",
+        QueryRunMode::Primary,
+        "BEGIN",
+        TransactionBoundary::Begin,
+    )
+    .await;
+    assert!(begin.transaction_may_be_open);
+
+    // Statements without a boundary must inherit the connection's open
+    // transaction instead of reporting a fresh `false` for every run.
+    let write = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-write",
+        QueryRunMode::Primary,
+        "INSERT INTO descriptor_tx_level_table VALUES (1)",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(
+        write.transaction_may_be_open,
+        "a primary run inside an open transaction must keep reporting it"
+    );
+    let read = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-read",
+        QueryRunMode::Script,
+        "SELECT id FROM descriptor_tx_level_table",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(
+        read.transaction_may_be_open,
+        "a script run inside an open transaction must keep reporting it"
+    );
+    let failed = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-failed",
+        QueryRunMode::Primary,
+        "SELECT * FROM missing_inside_transaction",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(matches!(
+        failed.statements[0].result,
+        StatementExecutionResult::Error { .. }
+    ));
+    assert!(
+        failed.transaction_may_be_open,
+        "a failed statement does not close the transaction"
+    );
+
+    // The flag belongs to one connection, not to the process.
+    let other_read = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &other_identity,
+        "run-other",
+        QueryRunMode::Primary,
+        "SELECT 1",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(!other_read.transaction_may_be_open);
+
+    let commit = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-commit",
+        QueryRunMode::Primary,
+        "COMMIT",
+        TransactionBoundary::Commit,
+    )
+    .await;
+    assert!(!commit.transaction_may_be_open);
+    let after = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-after",
+        QueryRunMode::Primary,
+        "SELECT id FROM descriptor_tx_level_table",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(!after.transaction_may_be_open);
+}
+
+#[tokio::test]
+async fn script_runs_save_and_clear_the_connection_transaction_flag() {
+    let state = DbState::default();
+    let sessions = ResultSessionState::default();
+    let actor = registered_sqlite_actor(&state, "descriptor-tx-script", "connection-tx-script");
+    let identity = actor.identity().clone();
+
+    run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-begin",
+        QueryRunMode::Script,
+        "BEGIN",
+        TransactionBoundary::Begin,
+    )
+    .await;
+    let still_open = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-select",
+        QueryRunMode::Script,
+        "SELECT 1",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(still_open.transaction_may_be_open);
+    let rollback = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-rollback",
+        QueryRunMode::Script,
+        "ROLLBACK",
+        TransactionBoundary::Rollback,
+    )
+    .await;
+    assert!(!rollback.transaction_may_be_open);
 }
 
 #[tokio::test]

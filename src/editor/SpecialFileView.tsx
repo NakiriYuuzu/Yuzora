@@ -1,5 +1,8 @@
-import { revealItemInDir, openPath } from "@tauri-apps/plugin-opener"
+import { revealItemInDir } from "@tauri-apps/plugin-opener"
+import { showActionError } from "@/lib/actionFeedback"
 import { copyTextInBackground } from "@/lib/clipboardFeedback"
+import { openFileExternally } from "@/lib/revealPath"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { useTranslation } from "react-i18next"
 import type { OpenFileResult } from "../lib/types"
 
@@ -15,6 +18,15 @@ export function SpecialFileView({
     result: Extract<OpenFileResult, { kind: "tooLarge" | "binary" }>
 }) {
     const { t } = useTranslation("panels")
+    // The generic opener scope only covers ~/.yuzora; the native workspace grant decides here.
+    const openExternally = async () => {
+        try {
+            if (parseRemoteFilePath(path)) throw new Error(t("specialFileView.remoteOpenUnsupported"))
+            await openFileExternally(path)
+        } catch (error) {
+            await showActionError(t("specialFileView.openExternally"), error)
+        }
+    }
     return (
         <div className="special-file">
             <p>
@@ -24,7 +36,7 @@ export function SpecialFileView({
             </p>
             <div className="special-actions">
                 <button onClick={() => void revealItemInDir(path)}>{t("specialFileView.revealInSystem")}</button>
-                <button onClick={() => void openPath(path)}>{t("specialFileView.openExternally")}</button>
+                <button onClick={() => void openExternally()}>{t("specialFileView.openExternally")}</button>
                 <button onClick={() => copyTextInBackground(path)}>{t("specialFileView.copyPath")}</button>
             </div>
         </div>
