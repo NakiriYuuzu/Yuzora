@@ -146,7 +146,6 @@
     "elevateBody": "在一段時間內，這支手機可以送文字與按鍵給這台桌面的 Agent。每個操作都會記錄在桌面。",
     "elevateButton": "使用 passkey 確認",
     "elevateRejected": "這個 passkey 無法用來控制。",
-    "hardwareKeyRequired": "控制需要硬體安全金鑰。這支手機的 passkey 會同步（iCloud 鑰匙圈、Google 密碼管理工具等），Companion 只允許可同步的 passkey 檢視。若要控制 pane，請改用硬體安全金鑰重新配對這支手機。",
     "until": "控制剩餘 {{time}}",
     "directUntil": "直接控制剩餘 {{time}}",
     "direct": "直接控制",

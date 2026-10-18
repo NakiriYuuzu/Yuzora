@@ -10,12 +10,7 @@ import { Message } from "./Page"
 
 /** Why a phone cannot elevate, from the options request's refusal. */
 function refusalKey(error: unknown): string {
-  if (error instanceof ApiError && error.status === 403) {
-    // Policy O2: control needs a credential that cannot sync (backup-eligible
-    // passkeys are view-only), so the gateway offers none of this phone's.
-    if (error.body === "WebAuthn request rejected") return "control.hardwareKeyRequired"
-    if (error.body === "Scope not granted") return "rpc.scope-not-granted"
-  }
+  if (error instanceof ApiError && error.status === 403 && error.body === "Scope not granted") return "rpc.scope-not-granted"
   return failureKey(error)
 }
 
@@ -75,7 +70,7 @@ export function ElevateDialog({ title, description, confirmLabel, onElevated, on
 
   return (
     <ConfirmDialog title={title} description={description} confirmLabel={confirmLabel} busy={busy} disabled={!options} onConfirm={() => void confirm()} onCancel={onCancel}>
-      {error && <Message tone={error === "control.hardwareKeyRequired" ? "warning" : "error"}>{t(error)}</Message>}
+      {error && <Message tone="error">{t(error)}</Message>}
     </ConfirmDialog>
   )
 }

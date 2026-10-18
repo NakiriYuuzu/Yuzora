@@ -146,7 +146,6 @@
     "elevateBody": "For a limited time, this phone can send text and keys to agents on this desktop. Every action is recorded on the desktop.",
     "elevateButton": "Confirm with passkey",
     "elevateRejected": "The passkey was not accepted for control.",
-    "hardwareKeyRequired": "Control needs a hardware security key. This phone's passkey can sync (iCloud Keychain, Google Password Manager…), and Companion only lets synced passkeys view. To control panes, pair this phone again with a hardware security key.",
     "until": "Control ends in {{time}}",
     "directUntil": "Direct control ends in {{time}}",
     "direct": "Direct control",

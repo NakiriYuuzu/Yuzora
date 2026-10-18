@@ -638,7 +638,7 @@ async fn webauthn_login_negative_origin_uv_up_rp_type_cross_and_expiry() {
     }
 }
 #[tokio::test(start_paused = true)]
-async fn webauthn_o2_elevation_filters_backup_credentials_and_scopes_independent() {
+async fn webauthn_o2_full_filters_backup_credentials_and_scopes_independent() {
     let f = Fixture::new("o2", 5).await;
     let synced = Authenticator::new("ES256", 7, true);
     let hardware = Authenticator::new("EdDSA", 8, false);
@@ -646,10 +646,23 @@ async fn webauthn_o2_elevation_filters_backup_credentials_and_scopes_independent
     f.register(&hardware, Some(&device)).await;
     f.grant(&device);
     let login = f.login(&synced, &device, 11).await;
-    let mut options = f
+    let control = f
         .post(
             &format!("{AUTH}elevate/options"),
             json!({"scope":"control"}),
+            Some(&login),
+        )
+        .await;
+    assert_eq!(control.status, 200);
+    assert_eq!(
+        control.body["allowCredentials"].as_array().unwrap().len(),
+        2,
+        "synced passkeys may control"
+    );
+    let mut options = f
+        .post(
+            &format!("{AUTH}elevate/options"),
+            json!({"scope":"full"}),
             Some(&login),
         )
         .await;
@@ -664,18 +677,15 @@ async fn webauthn_o2_elevation_filters_backup_credentials_and_scopes_independent
     assert_eq!(
         f.post(
             &format!("{AUTH}elevate/finish"),
-            json!({"scope":"control","credential":credential}),
+            json!({"scope":"full","credential":credential}),
             Some(&login)
         )
         .await
         .status,
         403
     );
-    assert_eq!(
-        f.elevate(&hardware, &login, "control", 11).await.status,
-        200
-    );
-    let full = f.elevate(&hardware, &login, "full", 12).await;
+    assert_eq!(f.elevate(&synced, &login, "control", 13).await.status, 200);
+    let full = f.elevate(&hardware, &login, "full", 11).await;
     assert_eq!(full.status, 200);
     let headers = {
         let mut h = axum::http::HeaderMap::new();
@@ -958,7 +968,7 @@ async fn webauthn_add_finish_rechecks_device_revoke_and_duplicate_credentials() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn webauthn_o2_control_rejects_synced_assertion() {
+async fn webauthn_o2_full_rejects_synced_assertion() {
     let f = Fixture::new("o2", 5).await;
     let synced = Authenticator::new("ES256", 7, true);
     let hardware = Authenticator::new("EdDSA", 8, false);
@@ -969,7 +979,7 @@ async fn webauthn_o2_control_rejects_synced_assertion() {
     let mut options = f
         .post(
             &format!("{AUTH}elevate/options"),
-            json!({"scope":"control"}),
+            json!({"scope":"full"}),
             Some(&login),
         )
         .await;
@@ -979,14 +989,66 @@ async fn webauthn_o2_control_rejects_synced_assertion() {
     let finish = f
         .post(
             &format!("{AUTH}elevate/finish"),
+            json!({"scope":"full","credential":credential}),
+            Some(&login),
+        )
+        .await;
+    assert_eq!(
+        finish.status, 403,
+        "a valid synced signature cannot authorize full"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn webauthn_o2_synced_control_needs_user_verification_every_time() {
+    let f = Fixture::new("o2", 5).await;
+    let synced = Authenticator::new("ES256", 7, true);
+    let device = f.register(&synced, None).await;
+    f.grant(&device);
+    let login = f.login(&synced, &device, 11).await;
+    assert_eq!(f.elevate(&synced, &login, "control", 12).await.status, 200);
+    let headers = {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("cookie", login.cookie.parse().unwrap());
+        h.insert("x-yzc-binding", login.binding.parse().unwrap());
+        h
+    };
+    let ctx = f
+        .gateway
+        .authenticate(&headers, admin::Scope::View)
+        .unwrap();
+    assert!(f
+        .gateway
+        .with_authorized(&ctx, admin::Scope::Control, |_| ())
+        .is_ok());
+    // Control ends with the elevation; taking it again is a new ceremony.
+    tokio::time::advance(Duration::from_secs(15 * 60 + 1)).await;
+    assert!(f
+        .gateway
+        .with_authorized(&ctx, admin::Scope::Control, |_| ())
+        .is_err());
+    let mut options = f
+        .post(
+            &format!("{AUTH}elevate/options"),
+            json!({"scope":"control"}),
+            Some(&login),
+        )
+        .await;
+    assert_eq!(options.status, 200);
+    options.body["user"] = json!({"id":device});
+    let credential = synced.response(&options.body, false, 13, "uv");
+    let finish = f
+        .post(
+            &format!("{AUTH}elevate/finish"),
             json!({"scope":"control","credential":credential}),
             Some(&login),
         )
         .await;
     assert_eq!(
         finish.status, 403,
-        "a valid synced signature cannot authorize control"
+        "a synced passkey controls only after user verification"
     );
+    assert_eq!(f.elevate(&synced, &login, "control", 14).await.status, 200);
 }
 
 #[path = "support/websocket.rs"]
