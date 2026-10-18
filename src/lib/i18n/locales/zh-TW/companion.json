@@ -157,5 +157,24 @@
     "tailscale-unavailable": "無法啟動 Tailscale CLI。",
     "tailscale-failed": "Tailscale 指令執行失敗。",
     "policy-expired": "啟用期限已到。"
+  },
+  "audit": {
+    "unknownDevice": "一支手機",
+    "write": {
+      "agent": {
+        "prompt": "{{device}} 送出提示給 {{pane}}"
+      },
+      "pane": {
+        "sendKeys": "{{device}} 送出按鍵給 {{pane}}"
+      },
+      "terminal": {
+        "input": "{{device}} 在 {{pane}} 輸入文字"
+      }
+    },
+    "control": "{{device}} 正在控制 {{pane}}",
+    "takeover": "{{device}} 接管了 {{pane}}",
+    "stalled": "{{device}} 對 {{pane}} 的寫入停滯，可能尚未清理完成。",
+    "dropped": "部分 Companion 稽核紀錄遺失（{{count}} 筆）。",
+    "droppedTightening": "與釋放或撤銷控制有關的 Companion 稽核紀錄遺失（{{count}} 筆），請到設定檢查裝置。"
   }
 }

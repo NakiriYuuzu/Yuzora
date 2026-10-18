@@ -157,5 +157,24 @@
     "tailscale-unavailable": "The Tailscale CLI could not be started.",
     "tailscale-failed": "The Tailscale command failed.",
     "policy-expired": "The enable period ended."
+  },
+  "audit": {
+    "unknownDevice": "A phone",
+    "write": {
+      "agent": {
+        "prompt": "{{device}} sent a prompt to {{pane}}"
+      },
+      "pane": {
+        "sendKeys": "{{device}} sent keys to {{pane}}"
+      },
+      "terminal": {
+        "input": "{{device}} typed into {{pane}}"
+      }
+    },
+    "control": "{{device}} is controlling {{pane}}",
+    "takeover": "{{device}} took over {{pane}}",
+    "stalled": "A write from {{device}} to {{pane}} has stalled and may not be cleaned up yet.",
+    "dropped": "Some Companion audit records were lost ({{count}}).",
+    "droppedTightening": "Companion audit records about releasing or revoking control were lost ({{count}}). Check the devices in Settings."
   }
 }

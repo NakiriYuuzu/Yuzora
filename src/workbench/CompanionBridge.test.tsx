@@ -5,6 +5,8 @@ import { companionFixtures as fx } from "@/test/companionFixtures"
 
 const events = vi.hoisted(() => ({ listen: vi.fn(), unlisten: vi.fn() }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: events.listen }))
+const audit = vi.hoisted(() => ({ report: vi.fn() }))
+vi.mock("./companionAudit", () => ({ reportCompanionEvent: audit.report }))
 import { CompanionBridge } from "./CompanionBridge"
 
 beforeEach(() => {
@@ -19,6 +21,7 @@ it("feeds companion events into the store and stops listening on unmount", async
   const deliver = events.listen.mock.calls[0][1] as (event: { payload: unknown }) => void
   deliver({ payload: { type: "device.registered", device: fx.device } })
   expect(useCompanionStore.getState().devices).toEqual([fx.device])
+  expect(audit.report).toHaveBeenCalledWith({ type: "device.registered", device: fx.device })
   view.unmount()
   await vi.waitFor(() => expect(events.unlisten).toHaveBeenCalled())
 })

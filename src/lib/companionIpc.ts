@@ -85,6 +85,32 @@ export interface CompanionClaim {
   userAgent: string
 }
 
+/** One action a phone took. `summary` may carry the start of a prompt: never log it whole. */
+export interface CompanionAudit {
+  deviceId: string
+  peerId: number
+  scope: "view" | "control" | "full"
+  action: string
+  session: string
+  target: string | null
+  summary: Record<string, unknown>
+  at: string
+  reason?: string
+  outcome?: string
+}
+
+/** A phone's control stream opened (seq 1) or closed (seq 2); `stream` is unique per gateway run. */
+export interface CompanionControlState {
+  deviceId: string
+  peerId: number
+  stream: string
+  seq: number
+  session: string
+  target: string
+  takeover: boolean
+  open: boolean
+}
+
 /** The `companion://event` payloads the UI acts on; others are ignored. */
 export type CompanionEvent =
   | { type: "status"; status: CompanionStatus }
@@ -94,6 +120,9 @@ export type CompanionEvent =
   | { type: "pairing.state"; pairingId: string; state: "approved" | "rejected" | "expired"; reason: string }
   | { type: "command.deferred"; command: string; target: string }
   | { type: "error"; code: string }
+  | ({ type: "audit" } & CompanionAudit)
+  | ({ type: "control.state" } & CompanionControlState)
+  | { type: "audit.dropped"; lost: number; lostTightening: number; rejectedOmitted: number; since: string }
 
 export function companionStatus(): Promise<CompanionOverview> {
   return invoke("companion_status")
