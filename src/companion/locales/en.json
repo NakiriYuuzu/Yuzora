@@ -1,0 +1,189 @@
+{
+  "app": {
+    "title": "Yuzora"
+  },
+  "common": {
+    "dismiss": "Dismiss",
+    "cancel": "Cancel"
+  },
+  "status": {
+    "idle": "Idle",
+    "working": "Working",
+    "blocked": "Needs you",
+    "done": "Done",
+    "unknown": "Unknown"
+  },
+  "connection": {
+    "idle": "Offline",
+    "connecting": "Connecting…",
+    "ready": "Connected",
+    "waiting": "Reconnecting…",
+    "invalid": "Signed out"
+  },
+  "pair": {
+    "title": "Pair this phone",
+    "noLink": "On your desktop, open Yuzora Settings → Companion and scan the pairing QR code with this phone's camera.",
+    "toLogin": "Already paired? Sign in with a passkey",
+    "labelTitle": "Name this phone",
+    "labelHint": "The desktop shows this name when it asks you to approve the pairing.",
+    "labelProblem": {
+      "empty": "Enter a name.",
+      "too-long": "The name is too long (80 bytes at most).",
+      "edge-space": "Remove the spaces at the start or end.",
+      "hidden-character": "The name contains a hidden or control character. Retype it without them."
+    },
+    "claim": "Pair",
+    "claiming": "Pairing…",
+    "sasTitle": "Check the pairing code",
+    "sasHint": "Make sure the desktop shows the same six digits, then approve there.",
+    "approvedHint": "Approved on the desktop.",
+    "waiting": "Waiting for the desktop to approve…",
+    "preparing": "Preparing the passkey…",
+    "registering": "Registering the passkey…",
+    "createPasskey": "Create a passkey",
+    "failure": {
+      "invalid-link": "This pairing link is incomplete or damaged.",
+      "rejected": "The desktop rejected this pairing.",
+      "expired": "This pairing expired.",
+      "voided": "This pairing is no longer valid.",
+      "sas-mismatch": "The pairing code did not match. Someone else may have this link, so it was not used.",
+      "claim-failed": "Pairing failed.",
+      "register-failed": "The passkey could not be registered.",
+      "policy-expired": "Companion is off on the desktop, or its time window has ended."
+    },
+    "rescan": "Create a new pairing QR code on the desktop and scan it again."
+  },
+  "passkey": {
+    "cancelled": "The passkey request was cancelled or timed out.",
+    "unsupported": "This browser does not support passkeys.",
+    "exists": "This authenticator is already registered for this phone.",
+    "security": "The browser refused passkeys for this address.",
+    "failed": "The passkey request failed."
+  },
+  "login": {
+    "title": "Sign in",
+    "hint": "Use the passkey you created when you paired this phone.",
+    "button": "Sign in with a passkey",
+    "pairAgain": "Pair this phone again",
+    "rejected": "This passkey can't sign in. The phone may have been removed on the desktop.",
+    "reason": {
+      "expired": "Your sign-in ended. Sign in again.",
+      "registered": "Passkey created. Sign in to continue.",
+      "logged-out": "You signed out."
+    }
+  },
+  "errors": {
+    "policyExpired": "Companion is off on the desktop, or its time window has ended.",
+    "network": "Can't reach the desktop. Check Tailscale on both devices.",
+    "loginEnded": "Your sign-in ended. Sign in again.",
+    "refused": "The desktop refused the request.",
+    "tooMany": "Too many attempts. Wait a moment and try again.",
+    "unavailable": "The desktop could not handle the request. Try again shortly."
+  },
+  "rpc": {
+    "busy": "The desktop is busy. Try again shortly.",
+    "session-not-allowed": "This session is not shared with this phone.",
+    "session-stopped": "This session has stopped.",
+    "geometry-unavailable": "The pane's size is not available yet.",
+    "payload-too-large": "Too much data to show on the phone.",
+    "target-not-found": "That pane no longer exists.",
+    "herdr-unavailable": "HERDR is not responding on the desktop.",
+    "herdr-environment": "HERDR could not start on the desktop.",
+    "stream-limit": "Too many open views. Close one and try again.",
+    "disconnected": "The connection dropped.",
+    "not-connected": "Not connected to the desktop.",
+    "rate-limited": "Slow down: too many requests in a second.",
+    "outcome-unknown": "The connection dropped before the desktop answered. Check the pane before sending again.",
+    "input-dropped": "Not sent: the input was dropped before it reached the pane.",
+    "input-outcome-unknown": "Unknown whether the input reached the pane. Check the pane before sending again.",
+    "write-dropped": "Not sent: the request was dropped before it reached the pane.",
+    "write-outcome-unknown": "Unknown whether the request reached the pane. Check the pane before sending again.",
+    "elevation-required": "Confirm with your passkey to control this pane.",
+    "elevation-expired": "Control time ran out.",
+    "fresh-elevation-required": "Confirm with your passkey again to take over.",
+    "scope-not-granted": "This phone is not allowed to control panes. Grant it on the desktop.",
+    "owned-elsewhere": "Someone else controls this pane.",
+    "taken-over": "Another device took over this pane.",
+    "no-agent": "This pane has no agent.",
+    "audit-unavailable": "The desktop can't record this action right now, so it was not sent.",
+    "stream-stalled": "The pane stopped responding.",
+    "slow-consumer": "The view fell behind and was closed.",
+    "stream-closed": "The view was closed.",
+    "full-limit": "Another full session is already open.",
+    "key-not-allowed": "That key can't be sent.",
+    "invalid-params": "The request was not valid.",
+    "stream-not-found": "That view is already closed.",
+    "unknown": "Something went wrong.",
+    "agent-blocked": "The agent is waiting for interactive input and can't take a new prompt. Answer with the keys or direct control."
+  },
+  "home": {
+    "refresh": "Refresh",
+    "logout": "Sign out",
+    "loading": "Loading…",
+    "noSessions": "No HERDR sessions are running on the desktop.",
+    "default": "default",
+    "noAgents": "No agents in this session.",
+    "unnamedSpace": "Untitled Space"
+  },
+  "pane": {
+    "back": "Back",
+    "closed": "The view closed: {{reason}}",
+    "reopen": "Watch again",
+    "loading": "Opening the pane…",
+    "actualSize": "Actual size",
+    "fitWidth": "Fit width",
+    "openLink": "Open this link?\n{{url}}"
+  },
+  "update": {
+    "ready": "A new version of Yuzora Companion is ready.",
+    "reload": "Reload"
+  },
+  "control": {
+    "title": "Control",
+    "take": "Take control",
+    "takeHint": "Confirm with your passkey to send prompts and keys. Every action is recorded on the desktop.",
+    "elevateTitle": "Confirm control with your passkey",
+    "elevateBody": "For a limited time, this phone can send text and keys to agents on this desktop. Every action is recorded on the desktop.",
+    "elevateButton": "Confirm with passkey",
+    "elevateRejected": "The passkey was not accepted for control.",
+    "hardwareKeyRequired": "Control needs a hardware security key. This phone's passkey can sync (iCloud Keychain, Google Password Manager…), and Companion only lets synced passkeys view. To control panes, pair this phone again with a hardware security key.",
+    "until": "Control ends in {{time}}",
+    "directUntil": "Direct control ends in {{time}}",
+    "direct": "Direct control",
+    "directTitle": "Take direct control of this pane",
+    "directBody": "Direct control attaches to this pane. The desktop pane may reflow, and its size is not restored when you release it.",
+    "release": "Release",
+    "takeoverTitle": "Take over this pane",
+    "takeoverBody": "Another device or the desktop is controlling this pane. The desktop is notified if you take over. Confirm with your passkey again.",
+    "takeoverButton": "Take over with passkey",
+    "keys": "Keys",
+    "key": {
+      "Enter": "Enter",
+      "Escape": "Escape",
+      "Tab": "Tab",
+      "BackTab": "Shift Tab",
+      "ArrowUp": "Up arrow",
+      "ArrowDown": "Down arrow",
+      "ArrowLeft": "Left arrow",
+      "ArrowRight": "Right arrow",
+      "Ctrl-C": "Control C",
+      "Ctrl-D": "Control D"
+    },
+    "target": "Send to",
+    "toAgent": "Agent",
+    "toTerminal": "Terminal",
+    "promptPlaceholder": "Message the agent",
+    "inputPlaceholder": "Type into the terminal",
+    "appendEnter": "Press Enter after",
+    "sendToAgent": "Send to agent",
+    "send": "Send",
+    "sent": "Sent.",
+    "tooLong": "Too long to send at once ({{bytes}} bytes at most).",
+    "approveTitle": "The agent is waiting for approval",
+    "approveBody": "Check what the agent is asking on the screen below before you answer.",
+    "approveButton": "Send anyway",
+    "approveEmpty": "(The screen is empty.)",
+    "approveNoCwd": "Companion does not share the working directory. Judge from the screen.",
+    "blockedHint": "The agent is waiting for interactive input. Answer with the keys above, or use direct control to type."
+  }
+}

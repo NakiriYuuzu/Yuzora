@@ -1,18 +1,9 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { COMPANION_WEB_STAGING, verifyCompanionBundle } from "./verify-companion-bundle"
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-
-/** Served at `/` until the Companion PWA build (plan Phase 5) fills the web root. */
-export const PLACEHOLDER_PAGE = `<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yuzora Companion</title>
-<p>The Yuzora Companion app is not included in this build yet.</p>
-</html>
-`
 
 async function hostTriple(): Promise<string> {
   const rustc = Bun.spawn(["rustc", "-vV"], { stdout: "pipe", stderr: "inherit" })
@@ -38,9 +29,40 @@ async function replace(destination: string, content: Buffer, mode?: number): Pro
   return true
 }
 
+/** Mirrors `from` into `to` file by file, leaving identical files untouched. */
+async function sync(from: string, to: string, files: string[]): Promise<boolean> {
+  let changed = false
+  for (const name of files) {
+    if (await replace(resolve(to, name), await readFile(resolve(from, name)))) changed = true
+  }
+  const keep = new Set(files)
+  const prune = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const name = `${prefix}${entry.name}`
+      if (entry.isDirectory()) {
+        await prune(resolve(dir, entry.name), `${name}/`)
+        await rmdir(resolve(dir, entry.name)).catch(() => undefined)
+      } else if (!keep.has(name)) {
+        await rm(resolve(dir, entry.name))
+        changed = true
+      }
+    }
+  }
+  await prune(to, "")
+  return changed
+}
+
+/** Builds the Companion PWA into staging and checks it before the web root sees it. */
+async function buildCompanionWeb(): Promise<string[]> {
+  const build = Bun.spawn([process.execPath, "x", "vite", "build", "--config", "vite.companion.config.ts", "--logLevel", "warn"], { cwd: repo, stdout: "inherit", stderr: "inherit" })
+  if (await build.exited !== 0) throw new Error("Companion PWA build failed")
+  return (await verifyCompanionBundle(COMPANION_WEB_STAGING)).files
+}
+
 /**
  * Builds the gateway for the bundle's own target as the `externalBin` Tauri
- * expects (`binaries/yuzora-companion-<triple>`), and fills the web root.
+ * expects (`binaries/yuzora-companion-<triple>`), and fills the web root with
+ * the Companion PWA.
  * Its own target dir keeps it apart from the app crate's build.
  */
 export async function prepareCompanion(triple: string, release: boolean): Promise<{ binary: string; webRoot: string; changed: boolean }> {
@@ -59,7 +81,7 @@ export async function prepareCompanion(triple: string, release: boolean): Promis
   const built = resolve(targetDir, triple, release ? "release" : "debug", `yuzora-companion${suffix}`)
   const binaryChanged = await replace(binary, await readFile(built), 0o755)
   const webRoot = resolve(repo, "src-tauri/resources/companion-web")
-  const webChanged = await replace(resolve(webRoot, "index.html"), Buffer.from(PLACEHOLDER_PAGE))
+  const webChanged = await sync(COMPANION_WEB_STAGING, webRoot, await buildCompanionWeb())
   return { binary, webRoot, changed: binaryChanged || webChanged }
 }
 

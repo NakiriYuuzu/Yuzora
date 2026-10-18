@@ -1,0 +1,189 @@
+{
+  "app": {
+    "title": "Yuzora"
+  },
+  "common": {
+    "dismiss": "關閉",
+    "cancel": "取消"
+  },
+  "status": {
+    "idle": "閒置",
+    "working": "執行中",
+    "blocked": "等你回應",
+    "done": "完成",
+    "unknown": "未知"
+  },
+  "connection": {
+    "idle": "離線",
+    "connecting": "連線中…",
+    "ready": "已連線",
+    "waiting": "重新連線中…",
+    "invalid": "已登出"
+  },
+  "pair": {
+    "title": "配對這支手機",
+    "noLink": "在桌面開啟 Yuzora 的「設定 → Companion」，再用這支手機的相機掃描配對 QR Code。",
+    "toLogin": "已經配對過？使用 passkey 登入",
+    "labelTitle": "替這支手機命名",
+    "labelHint": "桌面請你核准配對時會顯示這個名稱。",
+    "labelProblem": {
+      "empty": "請輸入名稱。",
+      "too-long": "名稱太長（最多 80 bytes）。",
+      "edge-space": "請刪除開頭或結尾的空白。",
+      "hidden-character": "名稱含有隱藏或控制字元，請重新輸入。"
+    },
+    "claim": "配對",
+    "claiming": "配對中…",
+    "sasTitle": "核對配對碼",
+    "sasHint": "確認桌面顯示相同的 6 位數字，再到桌面按「核准」。",
+    "approvedHint": "桌面已核准。",
+    "waiting": "等待桌面核准…",
+    "preparing": "準備 passkey…",
+    "registering": "註冊 passkey…",
+    "createPasskey": "建立 passkey",
+    "failure": {
+      "invalid-link": "這個配對連結不完整或已損壞。",
+      "rejected": "桌面拒絕了這次配對。",
+      "expired": "這次配對已過期。",
+      "voided": "這次配對已失效。",
+      "sas-mismatch": "配對碼不相符，可能有別人拿到這個連結，所以沒有使用。",
+      "claim-failed": "配對失敗。",
+      "register-failed": "passkey 註冊失敗。",
+      "policy-expired": "桌面已關閉 Companion，或允許的時段已結束。"
+    },
+    "rescan": "請在桌面重新產生配對 QR Code 後再掃描。"
+  },
+  "passkey": {
+    "cancelled": "passkey 要求已取消或逾時。",
+    "unsupported": "這個瀏覽器不支援 passkey。",
+    "exists": "這個驗證器已經為這支手機註冊過。",
+    "security": "瀏覽器拒絕在這個網址使用 passkey。",
+    "failed": "passkey 要求失敗。"
+  },
+  "login": {
+    "title": "登入",
+    "hint": "使用配對時在這支手機建立的 passkey。",
+    "button": "使用 passkey 登入",
+    "pairAgain": "重新配對這支手機",
+    "rejected": "這個 passkey 無法登入，這支手機可能已在桌面移除。",
+    "reason": {
+      "expired": "登入已結束，請重新登入。",
+      "registered": "passkey 已建立，請登入繼續。",
+      "logged-out": "已登出。"
+    }
+  },
+  "errors": {
+    "policyExpired": "桌面已關閉 Companion，或允許的時段已結束。",
+    "network": "連不到桌面。請確認兩台裝置的 Tailscale。",
+    "loginEnded": "登入已結束，請重新登入。",
+    "refused": "桌面拒絕了這個要求。",
+    "tooMany": "嘗試次數過多，請稍候再試。",
+    "unavailable": "桌面無法處理這個要求，請稍後再試。"
+  },
+  "rpc": {
+    "busy": "桌面忙碌中，請稍後再試。",
+    "session-not-allowed": "這個 Session 沒有分享給這支手機。",
+    "session-stopped": "這個 Session 已停止。",
+    "geometry-unavailable": "目前還拿不到這個 pane 的尺寸。",
+    "payload-too-large": "資料量太大，手機無法顯示。",
+    "target-not-found": "這個 pane 已不存在。",
+    "herdr-unavailable": "桌面的 HERDR 沒有回應。",
+    "herdr-environment": "桌面的 HERDR 無法啟動。",
+    "stream-limit": "開啟的檢視太多，請先關閉一個。",
+    "disconnected": "連線中斷。",
+    "not-connected": "尚未連到桌面。",
+    "rate-limited": "請放慢：一秒內的要求太多。",
+    "outcome-unknown": "桌面回覆前連線就中斷了。再送一次前，請先檢查 pane。",
+    "input-dropped": "沒有送出：輸入在到達 pane 前被丟棄。",
+    "input-outcome-unknown": "無法確定輸入是否已到達 pane。再送一次前，請先檢查 pane。",
+    "write-dropped": "沒有送出：要求在到達 pane 前被丟棄。",
+    "write-outcome-unknown": "無法確定要求是否已到達 pane。再送一次前，請先檢查 pane。",
+    "elevation-required": "請先用 passkey 確認，才能控制這個 pane。",
+    "elevation-expired": "控制時間已到。",
+    "fresh-elevation-required": "接管前請再用 passkey 確認一次。",
+    "scope-not-granted": "這支手機沒有控制 pane 的權限，請在桌面授予。",
+    "owned-elsewhere": "這個 pane 正由別處控制。",
+    "taken-over": "另一台裝置接管了這個 pane。",
+    "no-agent": "這個 pane 沒有 Agent。",
+    "audit-unavailable": "桌面目前無法記錄這個操作，所以沒有送出。",
+    "stream-stalled": "這個 pane 停止回應。",
+    "slow-consumer": "檢視跟不上輸出，已關閉。",
+    "stream-closed": "檢視已關閉。",
+    "full-limit": "已經有另一個完整 Session 開著。",
+    "key-not-allowed": "不能送出這個按鍵。",
+    "invalid-params": "要求內容無效。",
+    "stream-not-found": "這個檢視已經關閉。",
+    "unknown": "發生錯誤。",
+    "agent-blocked": "Agent 正在等待互動輸入，不能送新的提示。請用按鍵或直接控制回答。"
+  },
+  "home": {
+    "refresh": "重新整理",
+    "logout": "登出",
+    "loading": "載入中…",
+    "noSessions": "桌面沒有執行中的 HERDR Session。",
+    "default": "預設",
+    "noAgents": "這個 Session 沒有 Agent。",
+    "unnamedSpace": "未命名的 Space"
+  },
+  "pane": {
+    "back": "返回",
+    "closed": "檢視已關閉：{{reason}}",
+    "reopen": "重新檢視",
+    "loading": "開啟 pane…",
+    "actualSize": "原始大小",
+    "fitWidth": "符合寬度",
+    "openLink": "要開啟這個連結嗎？\n{{url}}"
+  },
+  "update": {
+    "ready": "Yuzora Companion 有新版本。",
+    "reload": "重新載入"
+  },
+  "control": {
+    "title": "控制",
+    "take": "取得控制",
+    "takeHint": "用 passkey 確認後才能送出提示與按鍵。每個操作都會記錄在桌面。",
+    "elevateTitle": "用 passkey 確認控制",
+    "elevateBody": "在一段時間內，這支手機可以送文字與按鍵給這台桌面的 Agent。每個操作都會記錄在桌面。",
+    "elevateButton": "使用 passkey 確認",
+    "elevateRejected": "這個 passkey 無法用來控制。",
+    "hardwareKeyRequired": "控制需要硬體安全金鑰。這支手機的 passkey 會同步（iCloud 鑰匙圈、Google 密碼管理工具等），Companion 只允許可同步的 passkey 檢視。若要控制 pane，請改用硬體安全金鑰重新配對這支手機。",
+    "until": "控制剩餘 {{time}}",
+    "directUntil": "直接控制剩餘 {{time}}",
+    "direct": "直接控制",
+    "directTitle": "直接控制這個 pane",
+    "directBody": "直接控制會連上這個 pane。桌面上的 pane 可能重新排版（reflow），釋放後不會恢復原本的尺寸。",
+    "release": "釋放",
+    "takeoverTitle": "接管這個 pane",
+    "takeoverBody": "這個 pane 正由其他裝置或桌面控制。接管後桌面會收到通知。請再用 passkey 確認一次。",
+    "takeoverButton": "使用 passkey 接管",
+    "keys": "按鍵",
+    "key": {
+      "Enter": "Enter",
+      "Escape": "Escape",
+      "Tab": "Tab",
+      "BackTab": "Shift Tab",
+      "ArrowUp": "向上鍵",
+      "ArrowDown": "向下鍵",
+      "ArrowLeft": "向左鍵",
+      "ArrowRight": "向右鍵",
+      "Ctrl-C": "Control C",
+      "Ctrl-D": "Control D"
+    },
+    "target": "送到",
+    "toAgent": "Agent",
+    "toTerminal": "終端機",
+    "promptPlaceholder": "傳訊息給 Agent",
+    "inputPlaceholder": "輸入到終端機",
+    "appendEnter": "送出後按 Enter",
+    "sendToAgent": "送給 Agent",
+    "send": "送出",
+    "sent": "已送出。",
+    "tooLong": "內容太長，無法一次送出（最多 {{bytes}} bytes）。",
+    "approveTitle": "Agent 正在等你核准",
+    "approveBody": "回覆前，請先確認下方畫面中 Agent 要求的內容。",
+    "approveButton": "仍要送出",
+    "approveEmpty": "（畫面是空的。）",
+    "approveNoCwd": "Companion 不會傳送工作目錄，請依畫面內容判斷。",
+    "blockedHint": "Agent 正在等待互動輸入。請用上方按鍵回答，或開啟直接控制來輸入文字。"
+  }
+}

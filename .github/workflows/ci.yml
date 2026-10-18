@@ -54,6 +54,8 @@ jobs:
           bun run demo:build
       - name: Build
         run: bun run build
+      - name: Build and verify the Companion PWA
+        run: bun run companion:web
 
   frontend-tests:
     name: Frontend tests (${{ matrix.shard }}/3)

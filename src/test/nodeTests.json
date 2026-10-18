@@ -15,6 +15,7 @@
   "scripts/release-state.test.ts",
   "scripts/release-version.test.ts",
   "scripts/runtime-fixture-cleanup.test.ts",
+  "scripts/verify-companion-bundle.test.ts",
   "scripts/verify-host-resources.test.ts",
   "src/app/modes.test.ts",
   "src/app/workbench/agentLogos.test.ts",
