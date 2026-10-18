@@ -59,6 +59,10 @@
     "pairingId": "pairing-1",
     "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"
   },
+  "phoneLink": {
+    "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+    "url": "https://desktop.tail1234.ts.net:8443/"
+  },
   "probeLoggedOut": {
     "cli": {
       "path": "/usr/local/bin/tailscale",

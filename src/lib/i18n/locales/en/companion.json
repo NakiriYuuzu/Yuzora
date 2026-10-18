@@ -64,7 +64,12 @@
   "leftover": {
     "title": "A Serve handler may be left over",
     "description": "Yuzora applied a handler on {{host}}:{{port}} and has not confirmed it is gone.",
-    "remove": "Remove it"
+    "remove": "Remove it",
+    "elsewhere": "The current Tailscale node is not the one the handler was applied on, so it cannot be removed from here.",
+    "forget": "Forget this record",
+    "forgetTitle": "Forget this Serve record?",
+    "forgetDescription": "Yuzora will no longer look after the handler on {{host}}. If it is still there, run the command below on the node it was applied on to remove it.",
+    "forgetConfirm": "Forget"
   },
   "enable": {
     "duration": "Enable for",
@@ -81,10 +86,20 @@
   "pairing": {
     "open": "Pair a phone",
     "title": "Pair a phone",
-    "description": "Scan this code with the phone's camera. The phone then shows a code, and Yuzora asks you to approve the same code.",
+    "description": "Scan this code with the phone's camera. The phone then shows a code, and Yuzora asks you to approve the same code. A phone that is already paired does not need this: use Open on phone instead.",
     "qrAlt": "Pairing QR code",
     "expiresIn": "Expires in {{time}}",
     "creating": "Creating a pairing code…"
+  },
+  "phoneLink": {
+    "open": "Open on phone",
+    "title": "Open on a paired phone",
+    "description": "On a phone that is already paired, scan this QR code or open this address, then log in with its passkey. No new pairing needed.",
+    "qrAlt": "QR code for the Companion address",
+    "copy": "Copy address",
+    "copied": "Copied",
+    "homeScreen": "On iPhone, tap Share → Add to Home Screen in Safari; on Android, use Add to Home screen in the Chrome menu. Then open it from the home screen.",
+    "loading": "Getting the address…"
   },
   "sessions": {
     "title": "HERDR Sessions",
@@ -148,8 +163,9 @@
     "companion-store-unreadable": "The Companion files could not be read.",
     "companion-store-write-failed": "The Companion files could not be saved.",
     "companion-tailscale-unavailable": "Tailscale is not available.",
-    "companion-tailscale-changed": "Tailscale is signed in to another node or account than when the handler was applied. Switch back to remove it.",
-    "companion-tailscale-remove-first": "Remove the handler Yuzora applied earlier first.",
+    "companion-tailscale-changed": "Tailscale is signed in to another node or account than when the handler was applied. Switch back to remove it, or use Forget this record.",
+    "companion-tailscale-remove-first": "Remove the handler Yuzora applied earlier first. If its node is no longer reachable, use Forget this record.",
+    "companion-tailscale-remove-instead": "This record is for the current node: use Remove instead.",
     "companion-tailscale-unverified": "Tailscale did not confirm the change.",
     "companion-unavailable": "The Companion is not included in this build.",
     "companion-web-unavailable": "The Companion web files are missing from this build.",

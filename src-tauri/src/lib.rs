@@ -556,6 +556,7 @@ pub fn run() {
             companion_commands::companion_enable,
             companion_commands::companion_disable,
             companion_commands::companion_pairing_create,
+            companion_commands::companion_phone_link,
             companion_commands::companion_pairing_decide,
             companion_commands::companion_devices,
             companion_commands::companion_device_update,
@@ -563,7 +564,8 @@ pub fn run() {
             companion_commands::companion_device_revoke,
             companion_commands::companion_sessions_set,
             companion_commands::companion_tailscale_probe,
-            companion_commands::companion_tailscale_remove
+            companion_commands::companion_tailscale_remove,
+            companion_commands::companion_tailscale_forget
         ]))
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")

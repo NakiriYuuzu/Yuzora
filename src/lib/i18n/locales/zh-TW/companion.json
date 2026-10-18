@@ -64,7 +64,12 @@
   "leftover": {
     "title": "可能殘留 Serve handler",
     "description": "Yuzora 曾在 {{host}}:{{port}} 套用 handler，尚未確認已移除。",
-    "remove": "移除"
+    "remove": "移除",
+    "elsewhere": "目前的 Tailscale 不是當初套用 handler 的節點，所以無法從這裡移除。",
+    "forget": "忘記這筆紀錄",
+    "forgetTitle": "忘記這筆 Serve 紀錄？",
+    "forgetDescription": "Yuzora 之後不會再處理 {{host}} 上的 handler。如果它還在，請在當初套用的那台節點上執行下面的指令移除。",
+    "forgetConfirm": "忘記"
   },
   "enable": {
     "duration": "啟用期限",
@@ -81,10 +86,20 @@
   "pairing": {
     "open": "配對手機",
     "title": "配對手機",
-    "description": "用手機相機掃描這個 QR code。手機會顯示一組確認碼，Yuzora 也會請你核准同一組碼。",
+    "description": "用手機相機掃描這個 QR code。手機會顯示一組確認碼，Yuzora 也會請你核准同一組碼。已經配對過的手機不用重新配對，請改用「在手機開啟」。",
     "qrAlt": "配對用 QR code",
     "expiresIn": "{{time}} 後失效",
     "creating": "正在產生配對碼…"
+  },
+  "phoneLink": {
+    "open": "在手機開啟",
+    "title": "在已配對的手機開啟",
+    "description": "已經配對過的手機掃這個 QR code，或在手機打開這個網址，再用 passkey 登入，不需要重新配對。",
+    "qrAlt": "Companion 網址的 QR code",
+    "copy": "複製網址",
+    "copied": "已複製",
+    "homeScreen": "iPhone 在 Safari 按「分享」→「加入主畫面」，Android 在 Chrome 選單按「加到主畫面」，之後就能從主畫面直接打開。",
+    "loading": "正在取得網址…"
   },
   "sessions": {
     "title": "HERDR Session",
@@ -148,8 +163,9 @@
     "companion-store-unreadable": "無法讀取 Companion 的檔案。",
     "companion-store-write-failed": "無法儲存 Companion 的檔案。",
     "companion-tailscale-unavailable": "無法使用 Tailscale。",
-    "companion-tailscale-changed": "Tailscale 目前登入的節點或帳號與套用 handler 時不同。請切換回去再移除。",
-    "companion-tailscale-remove-first": "請先移除 Yuzora 之前套用的 handler。",
+    "companion-tailscale-changed": "Tailscale 目前登入的節點或帳號與套用 handler 時不同。請切換回去再移除，或改用「忘記這筆紀錄」。",
+    "companion-tailscale-remove-first": "請先移除 Yuzora 之前套用的 handler。如果當初的節點已經連不到，請改用「忘記這筆紀錄」。",
+    "companion-tailscale-remove-instead": "這筆紀錄的節點就是目前這台，請改按「移除」。",
     "companion-tailscale-unverified": "Tailscale 沒有確認這項變更。",
     "companion-unavailable": "這個版本沒有包含 Companion。",
     "companion-web-unavailable": "這個版本缺少 Companion 網頁檔案。",

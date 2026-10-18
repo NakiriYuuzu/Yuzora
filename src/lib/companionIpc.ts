@@ -76,6 +76,9 @@ export interface CompanionPairingQr {
   expiresAt: string
 }
 
+/** The address an already paired phone opens; no secret in it. */
+export interface CompanionPhoneLink { url: string; qrSvg: string }
+
 export interface CompanionClaim {
   pairingId: string
   deviceLabel: string
@@ -149,8 +152,17 @@ export function companionTailscaleRemove(): Promise<void> {
   return invoke("companion_tailscale_remove")
 }
 
+/** Only for a record whose node this desktop no longer reaches; the handler may remain there. */
+export function companionTailscaleForget(): Promise<void> {
+  return invoke("companion_tailscale_forget")
+}
+
 export function companionPairingCreate(): Promise<CompanionPairingQr> {
   return invoke("companion_pairing_create", { path: "tailscale" })
+}
+
+export function companionPhoneLink(): Promise<CompanionPhoneLink> {
+  return invoke("companion_phone_link")
 }
 
 export function companionPairingDecide(pairingId: string, decision: "approve" | "reject" | "cancel"): Promise<void> {

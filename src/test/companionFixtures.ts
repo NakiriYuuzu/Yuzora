@@ -1,5 +1,5 @@
 import fixtures from "./companionFixtures.json"
-import type { CompanionDevice, CompanionOverview, CompanionPairingQr, CompanionStatus, TailscaleProbe } from "@/lib/companionIpc"
+import type { CompanionDevice, CompanionOverview, CompanionPairingQr, CompanionPhoneLink, CompanionStatus, TailscaleProbe } from "@/lib/companionIpc"
 
 /** What the Rust commands serialize, pinned by `companion_ui_fixtures_match_the_serialized_shapes`. */
 export const companionFixtures = fixtures as unknown as {
@@ -15,6 +15,7 @@ export const companionFixtures = fixtures as unknown as {
   probePortTaken: TailscaleProbe
   device: CompanionDevice
   pairingQr: CompanionPairingQr
+  phoneLink: CompanionPhoneLink
   sessionsSet: { restartRequired: boolean }
 }
 

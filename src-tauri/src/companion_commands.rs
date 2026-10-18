@@ -205,6 +205,41 @@ pub async fn companion_tailscale_remove(
     remove_applied_serve(&state.dir).await
 }
 
+/// Drops the record of a handler on a node this desktop no longer reaches:
+/// renamed, another account or profile, logged out, or no CLI. The handler
+/// may still be there; only someone on that node can turn it off.
+#[tauri::command]
+pub async fn companion_tailscale_forget(
+    state: tauri::State<'_, CompanionState>,
+) -> Result<(), String> {
+    state.owner()?;
+    let _turn = state.ops.lock().await;
+    if !state.manager.idle() {
+        return Err("companion-already-running".into());
+    }
+    let mut settings = Settings::load(&state.dir)?;
+    let Some(applied) = settings.applied.clone() else {
+        return Ok(());
+    };
+    // A probe that fails cannot reach the node either.
+    let host = probe(&settings)
+        .await
+        .ok()
+        .and_then(|current| current.node)
+        .and_then(|node| node.dns_name);
+    if !may_forget(host.as_deref(), &applied) {
+        return Err("companion-tailscale-remove-instead".into());
+    }
+    settings.applied = None;
+    settings.save(&state.dir)
+}
+
+/// On the node it was applied to, `serve … off` can still remove the
+/// handler, so its record is never just dropped there.
+fn may_forget(host: Option<&str>, applied: &AppliedServe) -> bool {
+    host != Some(applied.host.as_str())
+}
+
 /// Starts the gateway, and only once it listens applies the Serve handler
 /// in front of it: the handler never points at a port nothing has bound.
 /// Runs `tailscale serve`, so the user confirms the command shown by the probe.
@@ -349,6 +384,37 @@ pub async fn companion_pairing_create(
         pairing_id: created["pairingId"].as_str().unwrap_or_default().into(),
         qr_svg: qr_svg(url)?,
         expires_at: created["expiresAt"].as_str().unwrap_or_default().into(),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneLink {
+    /// The address the gateway serves. Holds no secret: a phone still logs
+    /// in with its passkey.
+    url: String,
+    qr_svg: String,
+}
+
+/// Where a phone that is already paired opens the Companion again, without
+/// a new pairing.
+#[tauri::command]
+pub fn companion_phone_link(state: tauri::State<'_, CompanionState>) -> Result<PhoneLink, String> {
+    let applied = Settings::load(&state.dir)?.applied;
+    match (state.manager.status(), applied) {
+        (Status::Running { .. }, Some(applied)) => phone_link(&applied),
+        _ => Err("companion-not-running".into()),
+    }
+}
+
+fn phone_link(applied: &AppliedServe) -> Result<PhoneLink, String> {
+    let url = format!(
+        "https://{}/",
+        public_host(&applied.host, applied.https_port)
+    );
+    Ok(PhoneLink {
+        qr_svg: qr_svg(&url)?,
+        url,
     })
 }
 

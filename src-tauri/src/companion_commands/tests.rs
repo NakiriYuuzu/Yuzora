@@ -71,6 +71,31 @@ fn companion_public_host_omits_the_default_port() {
 }
 
 #[test]
+fn companion_phone_link_is_the_served_address_without_a_secret() {
+    let link = phone_link(&applied()).unwrap();
+    assert_eq!(link.url, "https://desktop.tail1234.ts.net:8443/");
+    assert!(link.qr_svg.contains("<svg"));
+    let default_port = AppliedServe {
+        https_port: 443,
+        ..applied()
+    };
+    assert_eq!(
+        phone_link(&default_port).unwrap().url,
+        "https://desktop.tail1234.ts.net/"
+    );
+}
+
+#[test]
+fn companion_serve_record_is_forgotten_only_off_its_node() {
+    let applied = applied();
+    assert!(!may_forget(Some("desktop.tail1234.ts.net"), &applied));
+    assert!(may_forget(Some("renamed.tail1234.ts.net"), &applied));
+    assert!(may_forget(Some("desktop.other.ts.net"), &applied));
+    // Logged out, no CLI, or a probe that failed.
+    assert!(may_forget(None, &applied));
+}
+
+#[test]
 fn companion_serve_record_is_kept_while_ours_may_still_serve() {
     let check = |file: &str| {
         let json = std::fs::read_to_string(
@@ -372,6 +397,10 @@ fn companion_ui_fixtures_match_the_serialized_shapes() {
             pairing_id: "pairing-1".into(),
             qr_svg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
             expires_at: "2026-10-18T12:05:00Z".into(),
+        },
+        "phoneLink": PhoneLink {
+            url: "https://desktop.tail1234.ts.net:8443/".into(),
+            qr_svg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
         },
         "sessionsSet": SessionsSet { restart_required: true },
     });

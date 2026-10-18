@@ -90,14 +90,49 @@ it("shows the time left, or until exit, while running, and disables", async () =
   }
 })
 
+it("opens the address for an already paired phone while running", async () => {
+  replies.companion_status = fx.overviewRunning
+  replies.companion_phone_link = fx.phoneLink
+  Object.assign(URL, { createObjectURL: () => "blob:tauri://localhost/link", revokeObjectURL: () => undefined })
+  render(<CompanionSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Open on phone" }))
+  const dialog = await screen.findByTestId("companion-phone-link-dialog")
+  expect(await within(dialog).findByText(fx.phoneLink.url)).toBeInTheDocument()
+  expect(calls("companion_phone_link")).toHaveLength(1)
+})
+
 it("offers to remove a leftover Serve handler and explains a failed start", async () => {
   replies.companion_status = { ...on({ applied: fx.overviewRunning.settings.applied }), status: fx.statusFailed }
   replies.companion_tailscale_remove = undefined
   render(<CompanionSettingsSection />)
   expect(await screen.findByText("Yuzora applied a handler on desktop.tail1234.ts.net:8443 and has not confirmed it is gone.")).toBeInTheDocument()
   expect(screen.getByText("The Companion stopped unexpectedly.")).toBeInTheDocument()
+  // On the node it was applied on, removing works: the record is never just forgotten.
+  expect(await screen.findByText("desktop.tail1234.ts.net")).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Forget this record" })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Remove it" }))
   await waitFor(() => expect(calls("companion_tailscale_remove")).toHaveLength(1))
+})
+
+it("forgets a Serve record only after confirming, once its node is out of reach", async () => {
+  const applied = { ...fx.overviewRunning.settings.applied!, host: "old-name.tail1234.ts.net" }
+  replies.companion_status = on({ applied })
+  replies.companion_tailscale_forget = undefined
+  const view = render(<CompanionSettingsSection />)
+  expect(await screen.findByText("The current Tailscale node is not the one the handler was applied on, so it cannot be removed from here.")).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Forget this record" }))
+  expect(await screen.findByTestId("companion-serve-off-command")).toHaveTextContent("tailscale serve --https=8443 --set-path=/ off")
+  expect(calls("companion_tailscale_forget")).toHaveLength(0)
+  fireEvent.click(screen.getByRole("button", { name: "Forget" }))
+  await waitFor(() => expect(calls("companion_tailscale_forget")).toHaveLength(1))
+  view.unmount()
+
+  // A probe that fails cannot reach the node either.
+  useCompanionStore.setState({ overview: null })
+  replies.companion_status = on({ applied: fx.overviewRunning.settings.applied })
+  replies.companion_tailscale_probe = { reject: "tailscale-unavailable" }
+  render(<CompanionSettingsSection />)
+  expect(await screen.findByRole("button", { name: "Forget this record" })).toBeInTheDocument()
 })
 
 it("maps an enable failure with a detail to its guidance", async () => {

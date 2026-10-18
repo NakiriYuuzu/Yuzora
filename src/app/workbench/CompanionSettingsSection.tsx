@@ -26,6 +26,7 @@ import {
   companionEnable,
   companionExperimentalSet,
   companionSessionsSet,
+  companionTailscaleForget,
   companionTailscaleProbe,
   companionTailscaleRemove,
   type CompanionDevice,
@@ -38,6 +39,7 @@ import { useNow } from "@/lib/useNow"
 import { useCompanionStore } from "@/state/companionStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { CompanionPairingDialog } from "./CompanionPairingDialog"
+import { CompanionPhoneLinkDialog } from "./CompanionPhoneLinkDialog"
 
 const WINDOWS: CompanionWindow[] = ["1h", "8h", "untilExit"]
 const CONTROL_GRANTS = [["15m", 15], ["1h", 60], ["8h", 480]] as const
@@ -120,8 +122,11 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
   const [probeError, setProbeError] = useState<string | null>(null)
   const [duration, setDuration] = useState<CompanionWindow>(settings.duration)
   const [confirming, setConfirming] = useState(false)
+  const [forgetting, setForgetting] = useState(false)
   const [pairing, setPairing] = useState(false)
   const closePairing = useCallback(() => setPairing(false), [])
+  const [linking, setLinking] = useState(false)
+  const closeLinking = useCallback(() => setLinking(false), [])
   const { busy, run, message } = useAction()
   const now = useNow(30_000)
 
@@ -137,6 +142,8 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
 
   const ready = probe?.cli && probe.node && probe.serve && !probe.refusal
   const stopped = idle(overview)
+  // Off the node a handler was applied on, `serve … off` cannot reach it: the record can only be forgotten.
+  const elsewhere = !!settings.applied && (probeError !== null || (probe !== null && probe.node?.dnsName !== settings.applied.host))
   const minutes = overview.enableUntil ? Math.max(0, Math.ceil((Date.parse(overview.enableUntil) - now) / 60_000)) : null
   const remaining = minutes === null ? null : minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`
   return <Card size="sm">
@@ -164,7 +171,11 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
         <AlertTitle>{t("leftover.title")}</AlertTitle>
         <AlertDescription className="flex flex-col items-start gap-2">
           <span>{t("leftover.description", { host: settings.applied.host, port: settings.applied.httpsPort })}</span>
-          <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionTailscaleRemove)}>{t("leftover.remove")}</Button>
+          {elsewhere && <span>{t("leftover.elsewhere")}</span>}
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionTailscaleRemove)}>{t("leftover.remove")}</Button>
+            {elsewhere && <Button size="sm" variant="ghost" disabled={busy || !owner} onClick={() => setForgetting(true)}>{t("leftover.forget")}</Button>}
+          </div>
         </AlertDescription>
       </Alert>}
       {message}
@@ -179,6 +190,7 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
       </> : <>
         <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionDisable)}>{t("disable")}</Button>
         <Button size="sm" disabled={busy || !owner || status.state !== "running"} onClick={() => setPairing(true)}>{t("pairing.open")}</Button>
+        <Button size="sm" variant="outline" disabled={status.state !== "running"} onClick={() => setLinking(true)}>{t("phoneLink.open")}</Button>
       </>}
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setProbe(null); void reprobe() }}>{t("tailscale.recheck")}</Button>
     </CardFooter>
@@ -195,7 +207,22 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+    <AlertDialog open={forgetting} onOpenChange={setForgetting}>
+      <AlertDialogContent className="sm:max-w-[480px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("leftover.forgetTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("leftover.forgetDescription", { host: settings.applied?.host })}</AlertDialogDescription>
+        </AlertDialogHeader>
+        {/* The same arguments Yuzora runs to remove its handler (tailscale::off_args). */}
+        <pre data-testid="companion-serve-off-command" className="whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-[12px]">{`tailscale serve --https=${settings.applied?.httpsPort} --set-path=/ off`}</pre>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+          <Button variant="destructive" onClick={() => { setForgetting(false); void after(companionTailscaleForget) }}>{t("leftover.forgetConfirm")}</Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     {pairing && <CompanionPairingDialog onClose={closePairing} />}
+    {linking && <CompanionPhoneLinkDialog onClose={closeLinking} />}
   </Card>
 }
 
