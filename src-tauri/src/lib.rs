@@ -1,6 +1,10 @@
 pub mod askpass;
 pub mod asset_scope;
 mod brand_icon;
+pub mod companion_commands;
+pub mod companion_service;
+pub mod companion_store;
+pub mod companion_tailscale;
 pub mod db_connection_actor;
 pub mod db_credentials;
 pub mod db_profiles;
@@ -317,6 +321,14 @@ pub fn run() {
                     .inner()
                     .clone(),
             );
+            app.manage(companion_commands::CompanionState::new(
+                app.handle(),
+                app.path().app_data_dir()?.join("companion"),
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .or_else(packaged_resource_dir_from_current_exe),
+            ));
             // The main window starts hidden (tauri.conf `visible: false`) so the
             // native chrome never flashes the OS theme before the persisted
             // preference applies; the frontend shows it on its first themed
@@ -538,7 +550,22 @@ pub fn run() {
             herdr_machines::herdr_machines_remove,
             herdr_machines::herdr_machine_interactive_open,
             herdr_service::herdr_events_subscribe,
-            herdr_service::herdr_events_release
+            herdr_service::herdr_events_release,
+            companion_commands::companion_status,
+            companion_commands::companion_experimental_set,
+            companion_commands::companion_enable,
+            companion_commands::companion_disable,
+            companion_commands::companion_pairing_create,
+            companion_commands::companion_phone_link,
+            companion_commands::companion_pairing_decide,
+            companion_commands::companion_devices,
+            companion_commands::companion_device_update,
+            companion_commands::companion_device_unlock,
+            companion_commands::companion_device_revoke,
+            companion_commands::companion_sessions_set,
+            companion_commands::companion_tailscale_probe,
+            companion_commands::companion_tailscale_remove,
+            companion_commands::companion_tailscale_forget
         ]))
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")
@@ -568,6 +595,8 @@ pub fn run() {
                 app.state::<herdr_service::HerdrState>()
                     .0
                     .release_all_connectors();
+                // Bounded, and a no-op once stopped: both exit events reach here.
+                app.state::<companion_commands::CompanionState>().shutdown();
                 if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let database_profiles = app
                         .state::<db_profiles::DatabaseProfileState>()
@@ -657,6 +686,7 @@ mod command_inventory_tests {
             "app.state::<path_capability::SelectedPathState>().clear()",
             "app.state::<herdr_service::HerdrState>()",
             "release_all_connectors()",
+            "app.state::<companion_commands::CompanionState>().shutdown()",
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
             "recv_timeout(DATABASE_SHUTDOWN_THREAD_TIMEOUT)",

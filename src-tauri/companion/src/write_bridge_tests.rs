@@ -140,7 +140,7 @@ impl HerdrPort for Fake {
     ) -> herdr::Result<String> {
         self.open("observe", s)
     }
-    fn subscribe(&self, _: &str, _: OnSubscriptionEvent) -> herdr::Result<String> {
+    fn subscribe(&self, _: &str, _: Vec<String>, _: OnSubscriptionEvent) -> herdr::Result<String> {
         panic!("unexpected subscribe")
     }
     fn release(&self, r: Resource) {

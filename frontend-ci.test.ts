@@ -54,6 +54,7 @@ describe("frontend CI", () => {
     expect(checks).toContain("bun run lint");
     expect(checks).toContain("bun run typecheck");
     expect(checks).toContain("bun run build");
+    expect(checks).toContain("bun run companion:web");
     expect(checks).toContain(tests.steps[fixtures].run);
   });
 });

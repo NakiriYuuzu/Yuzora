@@ -361,6 +361,10 @@
         "label": "Safety",
         "sub": "Guardrails for files and git"
       },
+      "companion": {
+        "label": "Companion",
+        "sub": "Phone remote control over Tailscale"
+      },
       "git": {
         "label": "Git",
         "sub": "Repository integration"

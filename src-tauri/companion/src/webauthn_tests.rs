@@ -77,7 +77,11 @@ async fn server(
 
 // Only bypasses option filtering: verification still uses the O2 gateway policy.
 // This entire file is loaded solely by webauthn.rs's #[cfg(test)] module.
-fn unfiltered_elevation_for_test(f: &Fixture, ctx: &crate::session::AuthContext) -> Value {
+fn unfiltered_elevation_for_test(
+    f: &Fixture,
+    ctx: &crate::session::AuthContext,
+    scope: Scope,
+) -> Value {
     let device = f
         .gateway
         .identity
@@ -89,7 +93,7 @@ fn unfiltered_elevation_for_test(f: &Fixture, ctx: &crate::session::AuthContext)
     let (state, options) = f
         .gateway
         .rp
-        .elevation(&device.credentials, PasskeyBinding::O3, Scope::Control)
+        .elevation(&device.credentials, PasskeyBinding::O3, scope)
         .unwrap();
     let now = f.gateway.clock.now();
     f.gateway
@@ -101,7 +105,7 @@ fn unfiltered_elevation_for_test(f: &Fixture, ctx: &crate::session::AuthContext)
                 until: now.after(Duration::from_secs(120)),
                 kind: CeremonyKind::Elevation {
                     session: *ctx.session_id(),
-                    scope: Scope::Control,
+                    scope,
                     state,
                 },
             },
@@ -111,47 +115,52 @@ fn unfiltered_elevation_for_test(f: &Fixture, ctx: &crate::session::AuthContext)
     options
 }
 #[tokio::test(start_paused = true)]
-async fn webauthn_o2_independent_verifier_layers_loopback() {
-    let auth = Authenticator::new("ES256", 7, true);
-    let rp = RelyingParty::new("desktop.tailnet.ts.net:8443").unwrap();
-    let (state, options) = rp.registration(DEVICE, "Phone", &[], true).unwrap();
-    let (_, record) = rp
-        .verify_registration(
-            state,
-            auth.response(&options, true, 10, "eligible"),
-            PasskeyBinding::O2,
+async fn webauthn_o2_full_independent_verifier_layers_loopback() {
+    // A credential that cannot sync passes the same path: the 403 is the BE check.
+    for (backup_eligible, expected) in [(true, 403), (false, 200)] {
+        let auth = Authenticator::new("ES256", 7, backup_eligible);
+        let rp = RelyingParty::new("desktop.tailnet.ts.net:8443").unwrap();
+        let (state, options) = rp.registration(DEVICE, "Phone", &[], true).unwrap();
+        let (_, record) = rp
+            .verify_registration(
+                state,
+                auth.response(&options, true, 10, "eligible"),
+                PasskeyBinding::O2,
+            )
+            .unwrap()
+            .into_parts();
+        let mut init = Fixture::init();
+        let mut device: crate::devices::Device =
+            serde_json::from_str(include_str!("../tests/fixtures/device.json")).unwrap();
+        device.credentials = vec![record];
+        init.devices = vec![device];
+        init.policy.full_session_enabled = true;
+        let f = Fixture::with_init(init);
+        let (ctx, headers) = session(&f);
+        let (_root, port, task, stop) = server(&f).await;
+        let mut options = unfiltered_elevation_for_test(&f, &ctx, Scope::Full);
+        assert_eq!(options["allowCredentials"][0]["id"], auth.id);
+        options["user"] = json!({"id":DEVICE});
+        let credential = auth.response(&options, false, 11, "eligible");
+        let reply = post(
+            port,
+            "/api/auth/elevate/finish",
+            json!({"scope":"full","credential":credential}),
+            &headers,
         )
-        .unwrap()
-        .into_parts();
-    let mut init = Fixture::init();
-    let mut device: crate::devices::Device =
-        serde_json::from_str(include_str!("../tests/fixtures/device.json")).unwrap();
-    device.credentials = vec![record];
-    init.devices = vec![device];
-    let f = Fixture::with_init(init);
-    let (ctx, headers) = session(&f);
-    let (_root, port, task, stop) = server(&f).await;
-    let mut options = unfiltered_elevation_for_test(&f, &ctx);
-    assert_eq!(options["allowCredentials"][0]["id"], auth.id);
-    options["user"] = json!({"id":DEVICE});
-    let credential = auth.response(&options, false, 11, "eligible");
-    let reply = post(
-        port,
-        "/api/auth/elevate/finish",
-        json!({"scope":"control","credential":credential}),
-        &headers,
-    )
-    .await;
-    assert_eq!(
-        reply.0, 403,
-        "each O2 verifier layer must independently reject BE=1"
-    );
-    assert!(f
-        .gateway
-        .with_authorized(&ctx, Scope::Control, |_| ())
-        .is_err());
-    stop.send(()).unwrap();
-    task.await.unwrap();
+        .await;
+        assert_eq!(
+            reply.0, expected,
+            "each O2 verifier layer must independently reject BE=1 for full: {}",
+            reply.2
+        );
+        assert_eq!(
+            f.gateway.with_authorized(&ctx, Scope::Full, |_| ()).is_ok(),
+            !backup_eligible
+        );
+        stop.send(()).unwrap();
+        task.await.unwrap();
+    }
 }
 
 #[tokio::test(start_paused = true)]

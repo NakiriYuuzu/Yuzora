@@ -120,7 +120,10 @@ impl Policy {
             && (1..=64).contains(&self.max_devices)
     }
 }
-/// Provisional O2 default; 2B applies this during actual WebAuthn verification.
+/// Which passkeys may authorize each scope; every login and elevation also
+/// requires user verification (Face ID, device passcode). O1: all scopes need
+/// a credential that cannot sync. O2 (default): synced passkeys may view and
+/// control, full needs one that cannot sync. O3: any passkey, every scope.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PasskeyBinding {

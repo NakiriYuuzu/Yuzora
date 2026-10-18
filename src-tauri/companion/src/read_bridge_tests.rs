@@ -25,10 +25,19 @@ struct Fake {
     next: AtomicUsize,
     snapshot_label: Mutex<String>,
     attach_blocked: AtomicBool,
+    /// A pane appears while the subscription is being set up.
+    create_on_subscribe: AtomicBool,
+    created: AtomicBool,
 }
 impl Fake {
     fn snapshot_value(&self) -> Value {
-        json!({"workspaces":[{"workspace_id":"w","label":*self.snapshot_label.lock().unwrap(),"path":"SECRET"}],"tabs":[],"agents":[],"panes":[{"pane_id":"w:p","terminal_id":"term","workspace_id":"w","tab_id":"w:t","agent_status":"working","cwd":"SECRET"}],"layouts":[{"panes":[{"pane_id":"w:p","rect":{"width":120,"height":40}}]}]})
+        let mut panes = vec![
+            json!({"pane_id":"w:p","terminal_id":"term","workspace_id":"w","tab_id":"w:t","agent_status":"working","cwd":"SECRET"}),
+        ];
+        if self.created.load(Ordering::SeqCst) {
+            panes.push(json!({"pane_id":"w:q","terminal_id":"term-q","workspace_id":"w","tab_id":"w:t","agent_status":"idle","cwd":"SECRET"}));
+        }
+        json!({"workspaces":[{"workspace_id":"w","label":*self.snapshot_label.lock().unwrap(),"path":"SECRET"}],"tabs":[],"agents":[],"panes":panes,"layouts":[{"panes":[{"pane_id":"w:p","rect":{"width":120,"height":40}}]}]})
     }
     fn emit(&self, text: &str) {
         for (id, sink) in self.terminals.lock().unwrap().iter() {
@@ -107,11 +116,19 @@ impl HerdrPort for Fake {
         }
         Ok(id)
     }
-    fn subscribe(&self, session: &str, sink: OnSubscriptionEvent) -> Result<String> {
+    fn subscribe(
+        &self,
+        session: &str,
+        panes: Vec<String>,
+        sink: OnSubscriptionEvent,
+    ) -> Result<String> {
         self.calls
             .lock()
             .unwrap()
-            .push(format!("subscribe:{session}"));
+            .push(format!("subscribe:{session}:{}", panes.join(",")));
+        if self.create_on_subscribe.load(Ordering::SeqCst) {
+            self.created.store(true, Ordering::SeqCst);
+        }
         let id = format!("events-{}", self.next.fetch_add(1, Ordering::SeqCst));
         self.subscriptions.lock().unwrap().insert(id.clone(), sink);
         Ok(id)
@@ -391,12 +408,38 @@ async fn bridge_events_filter_one_subscription_and_bounded_overflow() {
         .next()
         .unwrap()
         .clone();
+    // Agent-status selectors are scoped to the snapshot's panes.
+    assert!(f
+        .fake
+        .calls
+        .lock()
+        .unwrap()
+        .contains(&"subscribe:work:w:p".to_string()));
     sink(HerdrSubscriptionEvent::WorktreeChanged {
         subscription_id: "backend-secret".into(),
         kind: "private".into(),
         workspace_id: None,
     })
     .unwrap();
+    sink(HerdrSubscriptionEvent::TopologyChanged {
+        subscription_id: "backend-secret".into(),
+        kind: "pane.updated".into(),
+        workspace_id: Some("SECRET".into()),
+        tab_id: None,
+    })
+    .unwrap();
+    sink(HerdrSubscriptionEvent::TopologyChanged {
+        subscription_id: "backend-secret".into(),
+        kind: "pane.created".into(),
+        workspace_id: Some("SECRET".into()),
+        tab_id: Some("SECRET".into()),
+    })
+    .unwrap();
+    let stale = value(&mut ws).await;
+    assert_eq!(
+        stale,
+        json!({"event":"snapshot.stale","data":{"session":"work"},"stream":subscription["result"]["stream"]})
+    );
     sink(HerdrSubscriptionEvent::AgentStatusChanged {
         subscription_id: "backend-secret".into(),
         pane_id: "w:p".into(),
@@ -425,6 +468,24 @@ async fn bridge_events_filter_one_subscription_and_bounded_overflow() {
     assert_eq!(closed["data"]["reason"], "slow-consumer");
     f.released().await;
     assert!(rpc(&mut ws, "session.ping", json!({})).await["result"].is_object());
+}
+#[tokio::test]
+async fn bridge_events_report_a_pane_created_while_subscribing() {
+    let f = Fixture::new().await;
+    f.fake.create_on_subscribe.store(true, Ordering::SeqCst);
+    let mut ws = f.connect().await;
+    let subscription = rpc(&mut ws, "events.subscribe", json!({"session":"work"})).await;
+    // Subscribed to the panes it saw; the one created meanwhile is not covered.
+    assert!(f
+        .fake
+        .calls
+        .lock()
+        .unwrap()
+        .contains(&"subscribe:work:w:p".to_string()));
+    assert_eq!(
+        value(&mut ws).await,
+        json!({"event":"snapshot.stale","data":{"session":"work"},"stream":subscription["result"]["stream"]})
+    );
 }
 #[tokio::test]
 async fn bridge_stream_revoke_stops_all_production_no_frames_after_4401() {
@@ -597,8 +658,13 @@ impl HerdrPort for DelayedLocal {
         }
         Ok(resource)
     }
-    fn subscribe(&self, session: &str, sink: OnSubscriptionEvent) -> Result<String> {
-        self.local.subscribe(session, sink)
+    fn subscribe(
+        &self,
+        session: &str,
+        panes: Vec<String>,
+        sink: OnSubscriptionEvent,
+    ) -> Result<String> {
+        self.local.subscribe(session, panes, sink)
     }
     fn release(&self, resource: Resource) {
         self.local.release(resource)

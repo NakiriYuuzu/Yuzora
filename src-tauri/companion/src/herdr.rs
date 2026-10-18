@@ -65,7 +65,13 @@ pub(crate) trait HerdrPort: Send + Sync {
         rows: u16,
         sink: OnTerminalEvent,
     ) -> Result<String>;
-    fn subscribe(&self, session: &str, sink: OnSubscriptionEvent) -> Result<String>;
+    /// Protocol 22 has no wildcard agent-status selector: `panes` scopes them.
+    fn subscribe(
+        &self,
+        session: &str,
+        panes: Vec<String>,
+        sink: OnSubscriptionEvent,
+    ) -> Result<String>;
     fn release(&self, resource: Resource);
     fn control(
         &self,
@@ -114,6 +120,9 @@ fn host_error(error: String) -> &'static str {
     // Match its stable size code only; never forward backend messages/paths.
     if error.starts_with("tooLarge:") {
         "payload-too-large"
+    } else if error.starts_with("agent_blocked:") {
+        // A blocked agent takes keys or terminal input, not a new prompt.
+        "agent-blocked"
     } else {
         "herdr-unavailable"
     }
@@ -149,10 +158,15 @@ impl HerdrPort for LocalHerdr {
             .map(|opened| opened.session_id)
             .map_err(host_error)
     }
-    fn subscribe(&self, session: &str, sink: OnSubscriptionEvent) -> Result<String> {
+    fn subscribe(
+        &self,
+        session: &str,
+        panes: Vec<String>,
+        sink: OnSubscriptionEvent,
+    ) -> Result<String> {
         clean_environment()?;
         self.0
-            .events_subscribe(Some(session.into()), Vec::new(), sink)
+            .events_subscribe(Some(session.into()), panes, sink)
             .map_err(host_error)
     }
     fn control(
@@ -358,6 +372,14 @@ fn rect_for(snapshot: &Value, pane: &str) -> Option<(u16, u16)> {
 /// Layout rect is NOT the PTY size. Herdr 0.9.1's schema has viewport_rows,
 /// graphics grid placement and layout rectangles, but no actual PTY cols/rows.
 /// Observe frames are fixed at these requested dimensions (small ones crop).
+/// Pane IDs of an official snapshot, for scoping agent-status subscriptions.
+pub(crate) fn pane_ids(snapshot: &Value) -> Vec<String> {
+    array(snapshot, "panes")
+        .filter_map(|p| p["pane_id"].as_str())
+        .filter(|id| valid_id(id))
+        .map(str::to_owned)
+        .collect()
+}
 pub(crate) fn observe_geometry(snapshot: &Value, target: &str) -> Result<(String, u16, u16)> {
     let pane = array(snapshot, "panes")
         .find(|p| p["pane_id"] == target || p["terminal_id"] == target)

@@ -18,6 +18,8 @@
     "runtime:verify": "bun scripts/verify-host-resources.ts",
     "host:prepare": "bun scripts/prepare-host-resources.ts",
     "herdr:prepare": "bun scripts/prepare-herdr-resources.ts",
+    "companion:prepare": "bun scripts/prepare-companion.ts",
+    "companion:web": "vite build --config vite.companion.config.ts && bun scripts/verify-companion-bundle.ts",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

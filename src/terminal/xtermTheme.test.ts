@@ -4,7 +4,7 @@ import { buildXtermTheme, xtermMinimumContrastRatio } from "./xtermTheme"
 // @ts-expect-error Node types are excluded from the browser tsconfig; Vitest runs this test in Node.
 import { readFileSync } from "node:fs"
 
-const styles = readFileSync("src/styles.css", "utf8")
+const styles = readFileSync("src/styles/tokens.css", "utf8")
 
 function relativeLuminance(hex: string): number {
     const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
@@ -20,7 +20,7 @@ function contrastRatio(a: string, b: string): number {
 function lightTerminalBackground(): string {
     const lightTokens = styles.slice(styles.indexOf(":root {"), styles.indexOf(".dark {"))
     const match = /--term-bg:\s*(#[0-9a-f]{6})/i.exec(lightTokens)
-    if (!match) throw new Error("light --term-bg not found in styles.css")
+    if (!match) throw new Error("light --term-bg not found in styles/tokens.css")
     return match[1]
 }
 

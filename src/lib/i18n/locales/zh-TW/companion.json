@@ -1,0 +1,196 @@
+{
+  "loading": "正在載入 Companion 設定…",
+  "cancel": "取消",
+  "disable": "停用",
+  "otherInstance": {
+    "title": "Companion 由另一個 Yuzora 管理",
+    "description": "另一個執行中的 Yuzora 正在控制 Companion。請先結束它，再重新啟動這個 Yuzora，才能在這裡管理。"
+  },
+  "warning": {
+    "title": "這會開放遠端操作這台電腦",
+    "description": "開啟後，已核准的手機可以遠端操作 AI Agent，等同授予這台電腦帳號的 shell 權限。"
+  },
+  "experimental": {
+    "label": "Companion（手機遠端控制）",
+    "badge": "實驗性",
+    "description": "讓 tailnet 上已配對的手機檢視 HERDR Agent，取得授權後也能操作。關閉時會一併停止執行中的 Companion。"
+  },
+  "tailscale": {
+    "title": "Tailscale",
+    "description": "Companion 只透過 tailnet 上的 Tailscale Serve 連線，本身不會在網路上監聽。",
+    "checking": "正在檢查 Tailscale…",
+    "noCli": "尚未安裝 Tailscale",
+    "install": "請到 tailscale.com/download 安裝 Tailscale，並以個人帳號登入，然後重新檢查。",
+    "otherPorts": "這個主機名稱上的其他 Serve handler（port {{ports}}）可以讀取 Companion 的 cookie。不信任的話請移除。",
+    "certificateNote": "HTTPS 會使用這台電腦 tailnet 名稱的憑證，這個名稱會公開記錄在 Certificate Transparency log。",
+    "taggedNote": "手機必須以個人身分登入 tailnet；tagged 裝置不帶身分資訊，無法配對。",
+    "recheck": "重新檢查",
+    "cli": "CLI",
+    "version": "版本",
+    "state": "狀態",
+    "dnsName": "名稱",
+    "login": "登入帳號",
+    "https": "HTTPS 憑證",
+    "funnel": "使用 Funnel",
+    "port": "Port {{port}}",
+    "yes": "是",
+    "no": "否",
+    "portState": {
+      "free": "未使用",
+      "ours": "正在提供 Companion",
+      "shared": "與其他 handler 共用",
+      "taken": "已被其他 handler 使用",
+      "foreground": "被前景執行的 tailscale serve 接管"
+    }
+  },
+  "refusal": {
+    "notRunning": "Tailscale 沒有在執行。請啟動並連上你的 tailnet。",
+    "noLogin": "這台電腦沒有登入啟用 MagicDNS 的 tailnet。請先登入 Tailscale。",
+    "tagged": "這台電腦是 tagged 裝置，Serve 不會帶身分資訊。請改用個人帳號登入。",
+    "httpsNotReady": "這個 tailnet 尚未啟用 HTTPS 憑證。請到 Tailscale 管理後台的 DNS 頁面啟用 HTTPS。",
+    "funnel": "Tailscale Funnel 正把這台電腦的服務公開到網際網路。請先關閉 Funnel。",
+    "portTaken": "Companion 的 port 已被其他 Serve handler 使用。請移除該 handler 或更換 port。"
+  },
+  "status": {
+    "label": "狀態",
+    "disabled": "關閉",
+    "starting": "啟動中",
+    "running": "執行中",
+    "stopping": "停止中",
+    "failed": "因錯誤停止",
+    "untilExit": "直到結束 Yuzora",
+    "remaining": "剩餘 {{time}}"
+  },
+  "leftover": {
+    "title": "可能殘留 Serve handler",
+    "description": "Yuzora 曾在 {{host}}:{{port}} 套用 handler，尚未確認已移除。",
+    "remove": "移除",
+    "elsewhere": "目前的 Tailscale 不是當初套用 handler 的節點，所以無法從這裡移除。",
+    "forget": "忘記這筆紀錄",
+    "forgetTitle": "忘記這筆 Serve 紀錄？",
+    "forgetDescription": "Yuzora 之後不會再處理 {{host}} 上的 handler。如果它還在，請在當初套用的那台節點上執行下面的指令移除。",
+    "forgetConfirm": "忘記"
+  },
+  "enable": {
+    "duration": "啟用期限",
+    "window": {
+      "1h": "1 小時",
+      "8h": "8 小時",
+      "untilExit": "直到結束 Yuzora"
+    },
+    "button": "啟用",
+    "confirmTitle": "要啟用 Companion 嗎？",
+    "confirmDescription": "Companion 就緒後，Yuzora 會執行下列指令，讓你的 tailnet 可以連到它。停用或結束 Yuzora 時會再移除。",
+    "confirm": "執行並啟用"
+  },
+  "pairing": {
+    "open": "配對手機",
+    "title": "配對手機",
+    "description": "用手機相機掃描這個 QR code。手機會顯示一組確認碼，Yuzora 也會請你核准同一組碼。已經配對過的手機不用重新配對，請改用「在手機開啟」。",
+    "qrAlt": "配對用 QR code",
+    "expiresIn": "{{time}} 後失效",
+    "creating": "正在產生配對碼…"
+  },
+  "phoneLink": {
+    "open": "在手機開啟",
+    "title": "在已配對的手機開啟",
+    "description": "已經配對過的手機掃這個 QR code，或在手機打開這個網址，再用 passkey 登入，不需要重新配對。",
+    "qrAlt": "Companion 網址的 QR code",
+    "copy": "複製網址",
+    "copied": "已複製",
+    "homeScreen": "iPhone 在 Safari 按「分享」→「加入主畫面」，Android 在 Chrome 選單按「加到主畫面」，之後就能從主畫面直接打開。",
+    "loading": "正在取得網址…"
+  },
+  "sessions": {
+    "title": "HERDR Session",
+    "description": "手機只看得到勾選的本機 HERDR Session。",
+    "none": "找不到本機 HERDR Session。",
+    "notFound": "（找不到）",
+    "emptyAllowlist": "尚未勾選任何 Session：手機看不到任何內容。",
+    "restartRequired": "Companion 正在執行：請停用後重新啟用才會套用。"
+  },
+  "devices": {
+    "title": "裝置",
+    "description": "已用 passkey 註冊的手機。取得 control 授權的手機，用 passkey 確認後即可送出輸入。",
+    "none": "尚未配對任何手機。",
+    "label": "裝置名稱",
+    "saveLabel": "儲存名稱",
+    "locked": "已鎖定",
+    "lastSeen": "最後連線 {{time}}",
+    "controlUntil": "可操作至 {{time}}",
+    "controlNone": "僅檢視",
+    "grant": {
+      "15m": "可操作 15 分鐘",
+      "1h": "可操作 1 小時",
+      "8h": "可操作 8 小時",
+      "none": "改為僅檢視"
+    },
+    "unlock": "解鎖",
+    "revoke": "撤銷",
+    "revokeTitle": "要撤銷 {{label}} 嗎？",
+    "revokeDescription": "手機會立即斷線，之後必須重新配對。"
+  },
+  "approval": {
+    "title": "要核准這支手機嗎？",
+    "description": "只有在手機顯示的確認碼與下方完全相同時才核准。",
+    "device": "裝置",
+    "login": "Tailscale 使用者",
+    "browser": "瀏覽器",
+    "warning": "核准後，這支手機可以註冊 passkey 並檢視你的 Agent。",
+    "reject": "拒絕",
+    "approve": "核准"
+  },
+  "errors": {
+    "companion-already-running": "Companion 已在執行。",
+    "companion-busy": "Companion 正在啟動或停止，請稍後再試。",
+    "companion-confirmation-required": "請先確認 Tailscale 指令。",
+    "companion-crashed": "Companion 意外停止。",
+    "companion-exited": "Companion 在回覆前就停止了。",
+    "companion-stopped": "Companion 已停止。",
+    "companion-not-running": "Companion 沒有在執行。",
+    "companion-experimental-off": "請先開啟實驗性的 Companion。",
+    "companion-other-instance": "Companion 由另一個執行中的 Yuzora 管理。",
+    "companion-grants-invalid": "這個授權無效。",
+    "companion-grants-mixed": "一次只能變更一項授權。",
+    "companion-label-invalid": "名稱最多 80 bytes，前後不可有空白。",
+    "companion-device-unknown": "這個裝置已不在註冊清單中。",
+    "companion-herdr-unavailable": "找不到 HERDR。",
+    "companion-port-mismatch": "Companion 監聽了非預期的 port，已停止。",
+    "companion-session-invalid": "Session 名稱無效。",
+    "companion-start-timeout": "Companion 未能及時啟動。",
+    "companion-timeout": "Companion 未及時回應，已停止。",
+    "companion-store-corrupt": "Companion 的檔案已損毀，已保留備份。",
+    "companion-store-unreadable": "無法讀取 Companion 的檔案。",
+    "companion-store-write-failed": "無法儲存 Companion 的檔案。",
+    "companion-tailscale-unavailable": "無法使用 Tailscale。",
+    "companion-tailscale-changed": "Tailscale 目前登入的節點或帳號與套用 handler 時不同。請切換回去再移除，或改用「忘記這筆紀錄」。",
+    "companion-tailscale-remove-first": "請先移除 Yuzora 之前套用的 handler。如果當初的節點已經連不到，請改用「忘記這筆紀錄」。",
+    "companion-tailscale-remove-instead": "這筆紀錄的節點就是目前這台，請改按「移除」。",
+    "companion-tailscale-unverified": "Tailscale 沒有確認這項變更。",
+    "companion-unavailable": "這個版本沒有包含 Companion。",
+    "companion-web-unavailable": "這個版本缺少 Companion 網頁檔案。",
+    "tailscale-timeout": "Tailscale 未及時回應。",
+    "tailscale-unavailable": "無法啟動 Tailscale CLI。",
+    "tailscale-failed": "Tailscale 指令執行失敗。",
+    "policy-expired": "啟用期限已到。"
+  },
+  "audit": {
+    "unknownDevice": "一支手機",
+    "write": {
+      "agent": {
+        "prompt": "{{device}} 送出提示給 {{pane}}"
+      },
+      "pane": {
+        "sendKeys": "{{device}} 送出按鍵給 {{pane}}"
+      },
+      "terminal": {
+        "input": "{{device}} 在 {{pane}} 輸入文字"
+      }
+    },
+    "control": "{{device}} 正在控制 {{pane}}",
+    "takeover": "{{device}} 接管了 {{pane}}",
+    "stalled": "{{device}} 對 {{pane}} 的寫入停滯，可能尚未清理完成。",
+    "dropped": "部分 Companion 稽核紀錄遺失（{{count}} 筆）。",
+    "droppedTightening": "與釋放或撤銷控制有關的 Companion 稽核紀錄遺失（{{count}} 筆），請到設定檢查裝置。"
+  }
+}

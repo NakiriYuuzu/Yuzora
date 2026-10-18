@@ -17,6 +17,7 @@
 {"id":3,"result":{"stream":1,"subscribed":true}}
 {"event":"agent.status","data":{"session":"work","pane":"w:p","workspaceId":"w","status":"blocked"},"stream":1}
 {"event":"pane.exited","data":{"session":"work","pane":"w:p","workspaceId":"w"},"stream":1}
+{"event":"snapshot.stale","data":{"session":"work"},"stream":1}
 
 {"id":4,"method":"terminal.observe","params":{"session":"work","target":"w:p","cols":1,"rows":1}}
 {"id":4,"result":{"stream":2,"cols":120,"rows":40}}
@@ -28,6 +29,7 @@
 - Sessions 是 `init.sessionAllowlist ∩ list_sessions.running`。不在 allowlist：`session-not-allowed`；已停止／不存在：`session-stopped`。錯誤不含 raw stderr、socket path 或啟動建議。Host 的 `live` alias 不得越過 exact named-session allowlist。
 - Snapshot 是封閉 camelCase projection；不轉發 cwd/path、commands、tokens、state labels、raw terminal titles 或任意後端欄位。未識別狀態為 `unknown`；缺欄位為 null／空陣列。
 - 每 peer／session 僅一個 events subscription；重複成功訂閱回同一 stream（尚在 opening 時回 `busy`）。只傳 agent status change 與 pane exited，其他 Herdr event kinds 一律不轉發。
+- HERDR protocol 22 的 `pane.agent_status_changed` 沒有萬用訂閱，必須逐 pane 指定；gateway 在訂閱當下取 snapshot，以其中所有 pane id 訂閱。之後新增的 pane 不在訂閱內：pane／tab／workspace 的建立、關閉、移動、改名與 agent 偵測（`pane.updated` 除外）只送內容無關的 `snapshot.stale{session}`，不含 pane id、label 或任何後端欄位。訂閱生效前新增的 pane 不會再有拓樸事件，所以訂閱後會再取一次 snapshot，pane 清單不同就立即補送一則 `snapshot.stale`（排在訂閱回覆之後）。Client 收到後重新 `snapshot.get`，並以 `stream.close`＋`events.subscribe` 重訂閱，才能收到新 pane 的狀態事件；PWA 以 500ms debounce（5秒內第二次改為5秒）避免拓樸連續變動時反覆重訂閱。
 - Events、observe、control、full 共用每 WS **8 streams**。stream ID 是該 WS 的非零 u32；跨 peer 不可使用，重連失效、不重播。`stream.close` 可關閉兩種 stream；未知 ID 回 `stream-not-found`。
 - `hello.result.capabilities` 宣告17個已實作方法與limits（不含push.subscribe）；授權仍以各方法scope即時判定。Client binary只接受本peer已開Control/Full stream，見下節，不是View輸入通道。
 
@@ -88,7 +90,7 @@ Server binary message：`u32 BE streamId ‖ ANSI bytes`。每個 Herdr ANSI fra
 
 Open回`{stream,cols,rows,until,target}`（Full target=null）；streamId是WS-local不可跨peer／重連使用的token。`stream.close`只關observe/events；write stream請用對應release/close。release/close是收緊，僅需仍有效的View登入＋本peer正確stream type，不依賴已過期elevation或audit queue空間。
 
-**Host API裁決：**Host無pane.send_keys封閉feature，經parent核准RPC `pane.sendKeys`映射到`HerdrFeatureRequest::AgentSendKeys`／Herdr `agent.send_keys`。0.9.1只接受有agent的pane，因此兩個agent methods都檢查snapshot agents membership，否則`no-agent`；非snapshot target回`target-not-found`。keys映射為enter/esc/tab/shift+tab/up/down/left/right/ctrl+c/ctrl+d；Herdr pane.send_keys／pane.send_input／pane.send_text仍不可達。明確mapping見`herdr.rs::METHOD_MAPPING`，測試逐項走102個schema request methods（HERDR 0.9.5；0.9.2–0.9.5 相同，2026-10-17 由 0.9.1 的103個換成）；額外API只有Host compatibility ping、session.snapshot、events.subscribe、agent.prompt、agent.send_keys。完整client是高權限互動PTY，不把schema deny list誤當成PTY內所有shell動作的限制。
+**Host API裁決：**Host無pane.send_keys封閉feature，經parent核准RPC `pane.sendKeys`映射到`HerdrFeatureRequest::AgentSendKeys`／Herdr `agent.send_keys`。0.9.1只接受有agent的pane，因此兩個agent methods都檢查snapshot agents membership，否則`no-agent`；非snapshot target回`target-not-found`。Agent等待互動輸入（blocked）時HERDR拒收`agent.prompt`（`agent_blocked:`），gateway映射為固定code `agent-blocked`，不轉發後端訊息；此時只能用`pane.sendKeys`或direct control回應。keys映射為enter/esc/tab/shift+tab/up/down/left/right/ctrl+c/ctrl+d；Herdr pane.send_keys／pane.send_input／pane.send_text仍不可達。明確mapping見`herdr.rs::METHOD_MAPPING`，測試逐項走102個schema request methods（HERDR 0.9.5；0.9.2–0.9.5 相同，2026-10-17 由 0.9.1 的103個換成）；額外API只有Host compatibility ping、session.snapshot、events.subscribe、agent.prompt、agent.send_keys。完整client是高權限互動PTY，不把schema deny list誤當成PTY內所有shell動作的限制。
 
 ### 授權、queue與期限
 

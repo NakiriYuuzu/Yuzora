@@ -217,6 +217,14 @@ impl Sink {
             }
         }
     }
+    /// Content-free hint that panes, tabs or Spaces changed: the client
+    /// fetches a snapshot and subscribes again.
+    fn stale(&self, session: &str) -> std::result::Result<(), String> {
+        self.send(Message::text(
+            json!({"event":"snapshot.stale","data":{"session":session},"stream":self.id})
+                .to_string(),
+        ))
+    }
     fn event(
         &self,
         session: &str,
@@ -240,6 +248,10 @@ impl Sink {
                 "pane.exited",
                 json!({"session":session,"pane":pane_id,"workspaceId":workspace_id}),
             ),
+            // Title/cwd updates are not topology and would only cause refetch storms.
+            HerdrSubscriptionEvent::TopologyChanged { kind, .. } if kind != "pane.updated" => {
+                return self.stale(session)
+            }
             HerdrSubscriptionEvent::Disconnected { .. } | HerdrSubscriptionEvent::Error { .. } => {
                 self.state.close("stream-closed");
                 return Ok(());
@@ -504,11 +516,33 @@ impl Reads {
                     json!({"stream":stream_id,"cols":cols,"rows":rows}),
                 )
             } else {
+                // Agent-status events need the current pane IDs; the client
+                // subscribes again after `snapshot.stale` to cover new panes.
+                let snapshot = reads
+                    .port
+                    .snapshot(&session)
+                    .map_err(|e| reads.after_error(&session, e))?;
+                active()?;
+                let panes = herdr::pane_ids(&snapshot.snapshot);
                 let name = session.clone();
+                let check = sink.clone();
                 let subscription = reads
                     .port
-                    .subscribe(&session, Arc::new(move |event| sink.event(&name, event)))
+                    .subscribe(
+                        &session,
+                        panes.clone(),
+                        Arc::new(move |event| sink.event(&name, event)),
+                    )
                     .map_err(|e| reads.after_error(&session, e))?;
+                // A pane created before the subscription took effect is not
+                // covered, and its creation event is gone: say so once.
+                if reads
+                    .port
+                    .snapshot(&session)
+                    .is_ok_and(|now| herdr::pane_ids(&now.snapshot) != panes)
+                {
+                    let _ = check.stale(&session);
+                }
                 (
                     Resource::Events(subscription),
                     json!({"stream":stream_id,"subscribed":true}),

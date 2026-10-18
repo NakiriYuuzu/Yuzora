@@ -57,7 +57,7 @@ impl HerdrPort for Releasing {
     fn observe(&self, _: &str, _: &str, _: u16, _: u16, _: OnTerminalEvent) -> Result<String> {
         unreachable!()
     }
-    fn subscribe(&self, _: &str, _: OnSubscriptionEvent) -> Result<String> {
+    fn subscribe(&self, _: &str, _: Vec<String>, _: OnSubscriptionEvent) -> Result<String> {
         unreachable!()
     }
     fn release(&self, _: Resource) {

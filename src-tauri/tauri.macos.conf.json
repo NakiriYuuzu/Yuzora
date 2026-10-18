@@ -24,6 +24,7 @@
     },
     "resources": {
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
+      "resources/companion-web/": "companion-web/",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     }
