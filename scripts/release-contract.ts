@@ -139,6 +139,22 @@ export function isPinnedReleaseActionRef(value: unknown): value is string {
   return typeof value === "string" && /^[^@\s]+@[a-f0-9]{40}$/.test(value)
 }
 
+// companion:prepare compiles the Go network sidecar inside `tauri build`, so Go
+// must be installed from the sidecar's own go.mod before the first build step.
+function verifyCompanionNetGoSetup(job: UnknownRecord, label: string): void {
+  const items = steps(job, label)
+  const setup = items.findIndex((step) => typeof step.uses === "string" && step.uses.startsWith("actions/setup-go@"))
+  assert(setup >= 0, `${label} must install Go with actions/setup-go to build the Companion network sidecar`)
+  const step = items[setup]!
+  assert(isPinnedReleaseActionRef(step.uses), `${label} setup-go must be pinned to a full 40-character commit SHA`)
+  assert(
+    record(step.with, `${label} setup-go.with`)["go-version-file"] === "src-tauri/companion-net/go.mod",
+    `${label} setup-go must read the Go version from src-tauri/companion-net/go.mod`
+  )
+  const build = items.findIndex((item) => includes(item.run, "tauri build"))
+  assert(build < 0 || setup < build, `${label} must install Go before the first tauri build`)
+}
+
 function verifyReleaseActionPins(workflow: Workflow): void {
   for (const [jobName, rawJob] of Object.entries(jobsFor(workflow))) {
     const job = record(rawJob, `jobs.${jobName}`)
@@ -411,6 +427,7 @@ function verifyStableMacOsDistributionContract(workflow: Workflow): void {
 
 function verifyReleaseWorkflowHardening(workflow: Workflow): void {
   verifyReleaseActionPins(workflow)
+  verifyCompanionNetGoSetup(jobFor(workflow, "build"), "jobs.build")
   verifyReleaseLeastPrivilege(workflow)
   verifyReleaseLookupFailureHandling(workflow)
   verifyReleaseStateNormalization(workflow)
@@ -620,6 +637,7 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
     "release candidates must run only for release pull requests"
   )
   const candidateSteps = steps(candidate, "release candidate")
+  verifyCompanionNetGoSetup(candidate, "release candidate")
   const candidateMatrix = record(record(candidate.strategy, "candidate strategy").matrix, "candidate matrix")
   assert(Array.isArray(candidateMatrix.include), "candidate matrix is required")
   const macCandidates = candidateMatrix.include.map((row) => record(row, "candidate matrix row")).filter((row) => String(row.os).startsWith("macos"))

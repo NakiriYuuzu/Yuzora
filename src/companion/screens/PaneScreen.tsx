@@ -12,7 +12,7 @@ import { findAgent } from "../lib/agents"
 import { rpcErrorKey } from "../lib/errors"
 import type { ControlOpen } from "../lib/protocol"
 import { RpcError } from "../lib/rpc"
-import { navigate, notify, useCompanion } from "../store"
+import { goBack, notify, useCompanion } from "../store"
 import { ControlPanel } from "./ControlPanel"
 
 type View = { stream: number; cols: number; rows: number }
@@ -84,7 +84,7 @@ export function PaneScreen({ session, pane }: { session: string; pane: string })
     <Page
       title={agent?.name ?? pane}
       leading={
-        <Button variant="ghost" size="icon" className="size-11" aria-label={t("pane.back")} onClick={() => navigate({ name: "home" })}>
+        <Button variant="ghost" size="icon" className="size-11" aria-label={t("pane.back")} onClick={goBack}>
           <ArrowLeft aria-hidden />
         </Button>
       }

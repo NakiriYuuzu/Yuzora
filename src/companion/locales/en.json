@@ -4,7 +4,8 @@
   },
   "common": {
     "dismiss": "Dismiss",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "back": "Back"
   },
   "status": {
     "idle": "Idle",
@@ -114,7 +115,13 @@
     "invalid-params": "The request was not valid.",
     "stream-not-found": "That view is already closed.",
     "unknown": "Something went wrong.",
-    "agent-blocked": "The agent is waiting for interactive input and can't take a new prompt. Answer with the keys or direct control."
+    "agent-blocked": "The agent is waiting for interactive input and can't take a new prompt. Answer with the keys or direct control.",
+    "git-untrusted": "Trust this workspace on the desktop first.",
+    "git-unavailable": "The desktop does not share this Space's folder, so its Git can't be shown. Only local Spaces with a folder are shared.",
+    "git-not-repository": "This Space's folder is not a Git repository.",
+    "git-cursor-invalid": "The history changed, so it needs to load again.",
+    "git-failed": "Git could not read this repository. Try again shortly.",
+    "push-unavailable": "The desktop can't send notifications right now."
   },
   "home": {
     "refresh": "Refresh",
@@ -123,7 +130,8 @@
     "noSessions": "No HERDR sessions are running on the desktop.",
     "default": "default",
     "noAgents": "No agents in this session.",
-    "unnamedSpace": "Untitled Space"
+    "unnamedSpace": "Untitled Space",
+    "otherSpaces": "Other Spaces"
   },
   "pane": {
     "back": "Back",
@@ -184,5 +192,95 @@
     "approveEmpty": "(The screen is empty.)",
     "approveNoCwd": "Companion does not share the working directory. Judge from the screen.",
     "blockedHint": "The agent is waiting for interactive input. Answer with the keys above, or use direct control to type."
+  },
+  "space": {
+    "tabs": {
+      "agents": "Agents",
+      "git": "Git"
+    },
+    "gone": "This Space is no longer open on the desktop.",
+    "noAgents": "No agents in this Space."
+  },
+  "git": {
+    "refresh": "Refresh Git",
+    "retry": "Try again",
+    "loadMore": "Load more",
+    "loadingMore": "Loading…",
+    "historyReloaded": "The history changed on the desktop, so it was loaded again from the top.",
+    "noCommits": "No commits yet.",
+    "listTruncated": "Only the first part of the list is shown.",
+    "clean": "No changes. The working tree is clean.",
+    "detached": "Detached HEAD at {{oid}}",
+    "noBranch": "No branch yet",
+    "nestedRepo": "Nested repository",
+    "inProgress": {
+      "rebase": "Rebase in progress",
+      "merge": "Merge in progress",
+      "cherry-pick": "Cherry-pick in progress",
+      "revert": "Revert in progress"
+    },
+    "group": {
+      "conflicted": "Conflicts",
+      "staged": "Staged",
+      "unstaged": "Not staged",
+      "untracked": "Untracked"
+    },
+    "views": {
+      "changes": "Changes",
+      "history": "History",
+      "branches": "Branches"
+    },
+    "branches": {
+      "local": "Local branches",
+      "remote": "Remote branches",
+      "tags": "Tags",
+      "none": "No local branches.",
+      "current": "Current branch",
+      "gone": "Upstream {{upstream}} is gone",
+      "noUpstream": "No upstream"
+    },
+    "commit": {
+      "parents": "Parents",
+      "files": "Changed files: {{count}}",
+      "binary": "binary"
+    },
+    "diff": {
+      "source": {
+        "worktree": "Working tree changes",
+        "untracked": "Untracked file",
+        "staged": "Staged changes",
+        "commit": "Commit {{hash}}"
+      },
+      "change": {
+        "added": "New file",
+        "deleted": "Deleted",
+        "renamed": "Renamed",
+        "copied": "Copied"
+      },
+      "mode": "Mode {{from}} → {{to}}",
+      "truncated": "Truncated: this diff is large, so only the beginning is shown.",
+      "binary": "Binary file: there is no text diff to show.",
+      "empty": "No differences to show.",
+      "noContentChange": "No content changes.",
+      "unmerged": "Unresolved conflict: one side deleted or added this file, so there is no combined diff to show. Resolve it on the desktop.",
+      "unmergedMatched": "Unresolved conflict: this file is still unmerged and the working tree may already match one side, so there is no combined diff to show. Finish it on the desktop.",
+      "resolved": "This file is no longer in conflict. Go back to refresh the list."
+    }
+  },
+  "push": {
+    "title": "Notifications",
+    "checking": "Checking…",
+    "state": {
+      "unavailable": "This browser can't receive notifications from Yuzora right now. Try again in a moment, or use a browser that supports them.",
+      "home-screen": "On iPhone and iPad, add Yuzora to your Home Screen first (Share, then Add to Home Screen), then open it from there to turn on notifications.",
+      "denied": "Notifications are blocked for Yuzora. Allow them in your phone's settings, then come back.",
+      "off": "Get a notification when an agent needs your input or finishes. Notifications are sent while Companion is on at the desktop.",
+      "update-first": "A new version of Yuzora Companion is ready. Reload first, then turn on notifications, so the new version is the one that receives them.",
+      "updating": "Downloading a new version of Yuzora Companion… Reload when it is ready, then turn on notifications.",
+      "on": "Notifications are on for this phone."
+    },
+    "enable": "Turn on",
+    "disable": "Turn off",
+    "failed": "Notifications could not be changed. Try again."
   }
 }

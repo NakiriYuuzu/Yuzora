@@ -188,6 +188,20 @@ pub fn run_git_with_stdout_limit(
     crate::git_process::execute_with_stdout_limit(cmd, args, timeout, None, None, stdout_limit)
 }
 
+/// Same process policy as `run_git`, but output beyond `stdout_cap` bytes is
+/// dropped and the process killed rather than failing with `git-output-limit`.
+/// The flag reports that output was cut; the exit code of a cut process is -1.
+fn run_git_capped_stdout(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    extra_env: &[(String, String)],
+    stdout_cap: usize,
+) -> Result<(GitOutput, bool), String> {
+    let cmd = git_command(root, args, extra_env, false);
+    crate::git_process::execute_capped_stdout(cmd, args, timeout, stdout_cap)
+}
+
 pub fn run_git_inner(
     root: &Path,
     args: &[&str],
@@ -2535,6 +2549,326 @@ pub fn diff_content(
     Ok(DiffContent { original, modified })
 }
 
+pub enum UnifiedDiffTarget<'a> {
+    Worktree {
+        path: &'a str,
+        untracked: bool,
+    },
+    Staged {
+        path: &'a str,
+        orig_path: Option<&'a str>,
+    },
+    /// Diff against the first parent (the empty tree for a root commit).
+    /// `orig_path` is the old name of a renamed file, so `-M` can pair them.
+    Commit {
+        hash: &'a str,
+        path: &'a str,
+        orig_path: Option<&'a str>,
+    },
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedDiff {
+    pub text: String,
+    pub truncated: bool,
+    pub binary: bool,
+}
+
+const UNIFIED_DIFF_FLAGS: [&str; 6] = [
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "-U3",
+];
+
+/// A tracked diff is asked about a name as `status_of` and the commit listing
+/// report it: the spelling of the index or the tree. Where git precomposes
+/// (`core.precomposeunicode`, macOS) it turns the literal pathspec into NFC,
+/// which no longer matches an NFD index entry and leaves the diff empty, so
+/// these diffs ask git not to. The untracked (`--no-index`) path keeps its own
+/// spelling rules (`ensure_untracked`) and does not take this.
+const TRACKED_NAMES_AS_STORED: [&str; 2] = ["-c", "core.precomposeunicode=false"];
+
+/// Fixed answers, free of paths, that the caller maps to its own codes.
+pub const DIFF_NOT_UNTRACKED: &str = "git-diff-not-untracked";
+pub const DIFF_GIT_PATH: &str = "git-diff-git-path";
+
+/// Code points an HFS+ volume ignores when it compares names (git's `next_hfs_char`).
+fn is_hfs_ignorable(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}'
+    )
+}
+
+/// `.git` under any spelling git itself refuses as a path component (mirrors
+/// `is_hfs_dotgit` and `is_ntfs_dotgit`): on a volume that folds names it is
+/// the same directory. Case-insensitive, with HFS+-ignorable code points
+/// dropped, or the NTFS forms: `.git` or the short name `git~1` followed only
+/// by dots and spaces, or by `:` (an alternate data stream).
+fn is_dotgit_lookalike(part: &str) -> bool {
+    let hfs: String = part.chars().filter(|c| !is_hfs_ignorable(*c)).collect();
+    if hfs.eq_ignore_ascii_case(".git") {
+        return true;
+    }
+    let bytes = part.as_bytes();
+    let rest = if bytes.len() >= 4 && bytes[..4].eq_ignore_ascii_case(b".git") {
+        &bytes[4..]
+    } else if bytes.len() >= 5 && bytes[..5].eq_ignore_ascii_case(b"git~1") {
+        &bytes[5..]
+    } else {
+        return false;
+    };
+    for byte in rest {
+        match byte {
+            b' ' | b'.' => {}
+            b':' => return true,
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// A path inside `.git`, however spelled (see `is_dotgit_lookalike`; either
+/// separator), is never a file of the work tree.
+fn reject_git_dir(value: &str) -> Result<(), String> {
+    if value.split(['/', '\\']).any(is_dotgit_lookalike) {
+        return Err(DIFF_GIT_PATH.into());
+    }
+    Ok(())
+}
+
+/// Whether git reports this repository's names precomposed (NFC) although the
+/// volume stores them decomposed: `core.precomposeunicode`, which `git init`
+/// turns on for macOS volumes (APFS included: Foundation creates NFD names).
+/// Only macOS does that. Unset or unreadable counts as off, the strict side.
+fn git_precomposes_names(root: &Path, extra_env: &[(String, String)]) -> bool {
+    cfg!(target_os = "macos")
+        && run_git(
+            root,
+            &["config", "--type=bool", "--get", "core.precomposeunicode"],
+            DEFAULT_TIMEOUT,
+            extra_env,
+        )
+        .is_ok_and(|out| out.code == 0 && out.stdout.trim_ascii() == b"true")
+}
+
+/// Whether the directory entry `name` may be the component `part`: byte for
+/// byte, or, when git precomposes, canonically equivalent to it (the same NFD).
+/// The first is the name as git reports it when it leaves the name alone
+/// (U+2126, CJK compatibility ideographs: NFC would change those); the second
+/// covers a name it precomposes, including one that mixes a compatibility
+/// character it keeps (U+F900) with a decomposed sequence it composes, which
+/// is neither the entry itself nor its NFC. Which spelling git really prints
+/// is its own listing's call (`ensure_untracked`), so a request is not turned
+/// away because NFC changes it.
+fn entry_is_spelled_as(name: &std::ffi::OsStr, part: &str, precomposed: bool) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    name == std::ffi::OsStr::new(part)
+        || (precomposed && name.to_str().is_some_and(|name| name.nfd().eq(part.nfd())))
+}
+
+/// The entry for the component `part`: the one named exactly like it, and only
+/// when there is none the first `entry_is_spelled_as` accepts. A case-sensitive
+/// HFS+ volume holds two names that differ only in normalisation side by side,
+/// and each must reach its own file.
+fn pick_spelled_entry<T>(
+    entries: Vec<T>,
+    name_of: impl Fn(&T) -> std::ffi::OsString,
+    part: &str,
+    precomposed: bool,
+) -> Option<T> {
+    let exact = entries
+        .iter()
+        .position(|entry| name_of(entry) == std::ffi::OsStr::new(part));
+    let index = exact.or_else(|| {
+        entries
+            .iter()
+            .position(|entry| entry_is_spelled_as(&name_of(entry), part, precomposed))
+    })?;
+    entries.into_iter().nth(index)
+}
+
+/// Git matches ignore rules and its own `.git` skip against the spelling of the
+/// request, while a case- or normalisation-insensitive filesystem opens the same
+/// file under another spelling. So every component must be a name `read_dir`
+/// lists in its parent (see `entry_is_spelled_as`), and each directory on the
+/// way a real directory (a link there may lead anywhere); only the last may be
+/// a link, which `--no-index` diffs as its link text.
+///
+/// A volume may store another normalisation than git reports (macOS stores the
+/// NFD that Foundation writes, git prints NFC). Where git precomposes
+/// (`git_precomposes_names`) a name canonically equivalent to a listed one is
+/// accepted too, an exact match first (`pick_spelled_entry`); elsewhere such a
+/// name never matches, which fails closed.
+///
+/// Returns the path with every component as the volume stores it. That is the
+/// spelling to ask git about: git names the folders of what it lists the way it
+/// was asked, so only a path it was given as stored makes its answer the
+/// spelling it reports.
+fn ensure_spelled_as_on_disk(root: &Path, path: &str) -> Result<String, String> {
+    let not_untracked = || String::from(DIFF_NOT_UNTRACKED);
+    let precomposed = git_precomposes_names(root, &[]);
+    let mut dir = root.to_path_buf();
+    let mut stored = Vec::new();
+    let mut parts = path.split('/').peekable();
+    while let Some(part) = parts.next() {
+        if matches!(part, "" | "." | "..") {
+            return Err(not_untracked());
+        }
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|_| not_untracked())?
+            .filter_map(Result::ok)
+            .collect();
+        let entry = pick_spelled_entry(entries, |entry| entry.file_name(), part, precomposed)
+            .ok_or_else(not_untracked)?;
+        stored.push(
+            entry
+                .file_name()
+                .into_string()
+                .map_err(|_| not_untracked())?,
+        );
+        if parts.peek().is_some() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                return Err(not_untracked());
+            }
+            dir = entry.path();
+        }
+    }
+    Ok(stored.join("/"))
+}
+
+/// `--no-index` reads any file under the root, ignored ones and `.git` included,
+/// so only a path Git itself lists as untracked and not ignored may use it, and
+/// only under the spelling the filesystem stores and git reports.
+fn ensure_untracked(root: &Path, path: &str) -> Result<(), String> {
+    let stored = ensure_spelled_as_on_disk(root, path)?;
+    let out = run_git(
+        root,
+        &[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            &stored,
+        ],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    if out.code != 0 {
+        return Err(git_err("ls-files", &out.stderr));
+    }
+    let listed: Vec<&[u8]> = out
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .collect();
+    if listed != [path.as_bytes()] {
+        return Err(DIFF_NOT_UNTRACKED.into());
+    }
+    Ok(())
+}
+
+/// Unified diff (-U3) of one path, never longer than `max_bytes`: a larger diff
+/// is cut after its last complete line (`truncated`) instead of failing.
+pub fn unified_diff(
+    root: &Path,
+    target: UnifiedDiffTarget<'_>,
+    max_bytes: usize,
+) -> Result<UnifiedDiff, String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("git could not resolve repository root: {error}"))?;
+    let check = |value: &str| {
+        reject_git_dir(value)?;
+        validate_diff_relative_path(root, &canonical_root, value)
+    };
+    let mut args = vec!["-c", "core.quotePath=false"];
+    let oid;
+    let mut env = Vec::new();
+    let mut no_index = false;
+    let sub = match target {
+        UnifiedDiffTarget::Worktree { path, untracked } => {
+            check(path)?;
+            no_index = untracked;
+            if no_index {
+                ensure_untracked(root, path)?;
+            } else {
+                args.extend(TRACKED_NAMES_AS_STORED);
+            }
+            args.push("diff");
+            if no_index {
+                args.push("--no-index");
+            }
+            args.extend(UNIFIED_DIFF_FLAGS);
+            args.push("--");
+            if no_index {
+                args.push("/dev/null");
+            }
+            args.push(path);
+            "diff"
+        }
+        UnifiedDiffTarget::Staged { path, orig_path } => {
+            check(path)?;
+            args.extend(TRACKED_NAMES_AS_STORED);
+            args.extend(["diff", "--cached", "-M"]);
+            args.extend(UNIFIED_DIFF_FLAGS);
+            args.extend(["--", path]);
+            if let Some(value) = orig_path {
+                check(value)?;
+                args.push(value);
+            }
+            "diff"
+        }
+        UnifiedDiffTarget::Commit {
+            hash,
+            path,
+            orig_path,
+        } => {
+            check(path)?;
+            if let Some(value) = orig_path {
+                check(value)?;
+            }
+            oid = crate::git_oid::resolve_commit_oid(root, hash)?;
+            // The commit was resolved ignoring `refs/replace/*`; showing it must too.
+            env.push(("GIT_NO_REPLACE_OBJECTS".to_string(), "1".to_string()));
+            args.extend(TRACKED_NAMES_AS_STORED);
+            args.extend(["show", "--format=", "--first-parent", "-M"]);
+            args.extend(UNIFIED_DIFF_FLAGS);
+            args.extend([oid.as_str(), "--", path]);
+            args.extend(orig_path);
+            "show"
+        }
+    };
+    let (out, cut) = run_git_capped_stdout(root, &args, DEFAULT_TIMEOUT, &env, max_bytes)?;
+    // `git diff --no-index` exits 1 when the files differ.
+    if !cut && out.code != 0 && !(no_index && out.code == 1) {
+        return Err(git_err(sub, &out.stderr));
+    }
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    // Lossy decoding can turn invalid bytes into longer replacement characters.
+    let truncated = cut || text.len() > max_bytes;
+    if truncated {
+        let end = text.len().min(max_bytes);
+        let keep = text.as_bytes()[..end]
+            .iter()
+            .rposition(|byte| *byte == b'\n');
+        text.truncate(keep.map_or(0, |index| index + 1));
+    }
+    let binary = text
+        .lines()
+        .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch");
+    Ok(UnifiedDiff {
+        text,
+        truncated,
+        binary,
+    })
+}
+
 /// remote_probe：無 upstream→"unknown"；本地=遠端→"no"；不等→"yes"；任何遠端存取失敗→"unknown"。
 /// askpass env 一律 background=1（背景鐵律）；timeout 30s。
 pub fn remote_probe(root: &Path, env: &[(String, String)]) -> Result<String, String> {
@@ -3706,5 +4040,1407 @@ mod tests {
             pull_args(root).unwrap()
         );
         assert!(pull_args_with_mode(root, Some("--upload-pack=x")).is_err());
+    }
+
+    const DIFF_CAP: usize = 1 << 20;
+
+    fn worktree(path: &str) -> UnifiedDiffTarget<'_> {
+        UnifiedDiffTarget::Worktree {
+            path,
+            untracked: false,
+        }
+    }
+
+    fn head(root: &Path) -> String {
+        let out = run_git(root, &["rev-parse", "HEAD"], DEFAULT_TIMEOUT, &[]).unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn unified_diff_reads_worktree_changes_and_untracked_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::write_and_commit(root, "a.txt", "one\ntwo\nthree\n", "c1");
+        test_repo::write_and_commit(root, "文件.txt", "x\n", "c2");
+
+        let clean = unified_diff(root, worktree("a.txt"), DIFF_CAP).unwrap();
+        assert_eq!(clean.text, "");
+        assert!(!clean.truncated && !clean.binary);
+
+        std::fs::write(root.join("a.txt"), "one\n2\nthree\n").unwrap();
+        let changed = unified_diff(root, worktree("a.txt"), DIFF_CAP).unwrap();
+        assert!(changed.text.starts_with("diff --git a/a.txt b/a.txt\n"));
+        assert!(changed.text.contains("@@ -1,3 +1,3 @@"));
+        assert!(changed.text.contains("\n-two\n+2\n three\n"));
+        assert!(!changed.truncated && !changed.binary);
+
+        // `core.quotePath=false` keeps non-ASCII names readable.
+        std::fs::write(root.join("文件.txt"), "y\n").unwrap();
+        let unicode = unified_diff(root, worktree("文件.txt"), DIFF_CAP).unwrap();
+        assert!(unicode.text.contains("diff --git a/文件.txt b/文件.txt"));
+
+        std::fs::write(root.join("new.txt"), "hello\n").unwrap();
+        let untracked = unified_diff(
+            root,
+            UnifiedDiffTarget::Worktree {
+                path: "new.txt",
+                untracked: true,
+            },
+            DIFF_CAP,
+        )
+        .unwrap();
+        assert!(untracked.text.contains("new file mode"));
+        assert!(untracked.text.contains("--- /dev/null\n+++ b/new.txt\n"));
+        assert!(untracked.text.contains("\n+hello\n"));
+        assert!(!untracked.truncated && !untracked.binary);
+    }
+
+    #[test]
+    fn unified_diff_staged_pairs_a_rename_through_orig_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        let body: String = (0..20).map(|n| format!("line {n}\n")).collect();
+        test_repo::write_and_commit(root, "old.txt", &body, "c1");
+        test_repo::git(root, &["mv", "old.txt", "new.txt"]);
+        std::fs::write(
+            root.join("new.txt"),
+            body.replace("line 3\n", "line three\n"),
+        )
+        .unwrap();
+        test_repo::git(root, &["add", "new.txt"]);
+
+        let renamed = unified_diff(
+            root,
+            UnifiedDiffTarget::Staged {
+                path: "new.txt",
+                orig_path: Some("old.txt"),
+            },
+            DIFF_CAP,
+        )
+        .unwrap();
+        assert!(renamed
+            .text
+            .contains("rename from old.txt\nrename to new.txt\n"));
+        assert!(renamed.text.contains("-line 3\n+line three\n"));
+        assert!(!renamed.text.contains("new file mode"));
+
+        let added = unified_diff(
+            root,
+            UnifiedDiffTarget::Staged {
+                path: "new.txt",
+                orig_path: None,
+            },
+            DIFF_CAP,
+        )
+        .unwrap();
+        assert!(added.text.contains("new file mode"));
+        assert!(!added.text.contains("rename from"));
+    }
+
+    #[test]
+    fn unified_diff_commit_covers_normal_root_and_merge_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::write_and_commit(root, "a.txt", "one\ntwo\n", "root");
+        let root_commit = head(root);
+        test_repo::write_and_commit(root, "a.txt", "one\n2\n", "normal");
+        let normal_commit = head(root);
+        test_repo::git(root, &["checkout", "-b", "side"]);
+        test_repo::write_and_commit(root, "s.txt", "side\n", "side");
+        test_repo::git(root, &["checkout", "main"]);
+        test_repo::write_and_commit(root, "m.txt", "main\n", "main");
+        test_repo::git(root, &["merge", "--no-ff", "side", "-m", "merge"]);
+        let merge_commit = head(root);
+        let commit = |hash: &str, path: &str| {
+            let target = UnifiedDiffTarget::Commit {
+                hash,
+                path,
+                orig_path: None,
+            };
+            unified_diff(root, target, DIFF_CAP).unwrap()
+        };
+
+        let first = commit(&root_commit, "a.txt");
+        assert!(first.text.contains("new file mode"));
+        assert!(first.text.contains("\n+one\n+two\n"));
+        let normal = commit(&normal_commit, "a.txt");
+        assert!(normal.text.contains("\n one\n-two\n+2\n"));
+        assert!(!normal.text.contains("new file mode"));
+        // Another path of the same commit is not part of this diff.
+        assert_eq!(commit(&normal_commit, "s.txt").text, "");
+        // A merge commit is compared with its first parent: the side branch's
+        // file is added, the first parent's own file is not.
+        let merged = commit(&merge_commit, "s.txt");
+        assert!(merged.text.contains("new file mode"));
+        assert!(merged.text.contains("\n+side\n"));
+        assert_eq!(commit(&merge_commit, "m.txt").text, "");
+        // A revision name resolves to the same commit.
+        assert_eq!(commit("HEAD", "s.txt").text, merged.text);
+
+        for hash in ["--output=/tmp/unified-diff-pwned", "", "no-such-rev"] {
+            assert!(unified_diff(
+                root,
+                UnifiedDiffTarget::Commit {
+                    hash,
+                    path: "a.txt",
+                    orig_path: None
+                },
+                DIFF_CAP
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn unified_diff_truncates_at_a_line_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        let before: String = (0..2000).map(|n| format!("line {n}\n")).collect();
+        test_repo::write_and_commit(root, "big.txt", &before, "c1");
+        std::fs::write(root.join("big.txt"), before.replace("line", "LINE")).unwrap();
+        let full = unified_diff(root, worktree("big.txt"), DIFF_CAP).unwrap();
+        assert!(!full.truncated);
+        assert!(full.text.len() > 1000);
+
+        let capped = unified_diff(root, worktree("big.txt"), 1000).unwrap();
+        assert!(capped.truncated);
+        assert!(full.text.starts_with(&capped.text));
+        assert!(capped.text.ends_with('\n'));
+        let last_newline = full.text.as_bytes()[..1000]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .unwrap();
+        assert_eq!(capped.text.len(), last_newline + 1);
+
+        // The cap itself is allowed; one byte less cuts the last line.
+        let exact = unified_diff(root, worktree("big.txt"), full.text.len()).unwrap();
+        assert!(!exact.truncated);
+        assert_eq!(exact.text, full.text);
+        let short = unified_diff(root, worktree("big.txt"), full.text.len() - 1).unwrap();
+        assert!(short.truncated);
+        assert!(full.text.starts_with(&short.text));
+        assert!(short.text.len() < full.text.len());
+
+        // Without a newline inside the cap nothing complete is left.
+        let none = unified_diff(root, worktree("big.txt"), 5).unwrap();
+        assert!(none.truncated);
+        assert_eq!(none.text, "");
+    }
+
+    #[test]
+    fn unified_diff_cuts_output_beyond_the_process_limit_instead_of_failing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::write_and_commit(root, "a.txt", "1\n", "c1");
+        // Well past the 8 MiB default stdout limit of the shared runner.
+        let line = format!("{}\n", "x".repeat(79));
+        std::fs::write(root.join("huge.txt"), line.repeat(160_000)).unwrap();
+        let huge = unified_diff(
+            root,
+            UnifiedDiffTarget::Worktree {
+                path: "huge.txt",
+                untracked: true,
+            },
+            262_144,
+        )
+        .unwrap();
+        assert!(huge.truncated);
+        assert!(huge.text.len() <= 262_144);
+        assert!(huge.text.len() > 262_144 - 100);
+        assert!(huge.text.ends_with('\n'));
+        assert!(huge.text.starts_with("diff --git a/huge.txt b/huge.txt\n"));
+    }
+
+    #[test]
+    fn unified_diff_reports_binary_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        std::fs::write(root.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+        test_repo::git(root, &["add", "bin.dat"]);
+        test_repo::git(root, &["commit", "-m", "c1"]);
+        std::fs::write(root.join("bin.dat"), [0u8, 9, 9, 9, 9]).unwrap();
+        let changed = unified_diff(root, worktree("bin.dat"), DIFF_CAP).unwrap();
+        assert!(changed.binary);
+        assert!(changed
+            .text
+            .contains("Binary files a/bin.dat and b/bin.dat differ"));
+        assert!(!changed.truncated);
+
+        std::fs::write(root.join("other.dat"), [0u8, 1]).unwrap();
+        let untracked = unified_diff(
+            root,
+            UnifiedDiffTarget::Worktree {
+                path: "other.dat",
+                untracked: true,
+            },
+            DIFF_CAP,
+        )
+        .unwrap();
+        assert!(untracked.binary);
+
+        std::fs::write(root.join("text.txt"), "Binary files are fun\n").unwrap();
+        let text = unified_diff(
+            root,
+            UnifiedDiffTarget::Worktree {
+                path: "text.txt",
+                untracked: true,
+            },
+            DIFF_CAP,
+        )
+        .unwrap();
+        assert!(!text.binary);
+    }
+
+    #[test]
+    fn unified_diff_rejects_paths_outside_the_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        test_repo::init(&root);
+        test_repo::write_and_commit(&root, "a.txt", "1\n", "c1");
+        let hash = head(&root);
+        let secret = tmp.path().join("secret.txt");
+        std::fs::write(&secret, "TOPSECRET\n").unwrap();
+        let absolute = secret.to_str().unwrap();
+
+        for path in [absolute, "../secret.txt", "a/../../secret.txt", "", "a\0b"] {
+            for untracked in [false, true] {
+                let target = UnifiedDiffTarget::Worktree { path, untracked };
+                assert!(unified_diff(&root, target, DIFF_CAP).is_err(), "{path:?}");
+            }
+            let staged = UnifiedDiffTarget::Staged {
+                path,
+                orig_path: None,
+            };
+            assert!(unified_diff(&root, staged, DIFF_CAP).is_err(), "{path:?}");
+            let renamed = UnifiedDiffTarget::Staged {
+                path: "a.txt",
+                orig_path: Some(path),
+            };
+            assert!(unified_diff(&root, renamed, DIFF_CAP).is_err(), "{path:?}");
+            let commit = UnifiedDiffTarget::Commit {
+                hash: &hash,
+                path,
+                orig_path: None,
+            };
+            assert!(unified_diff(&root, commit, DIFF_CAP).is_err(), "{path:?}");
+            let renamed = UnifiedDiffTarget::Commit {
+                hash: &hash,
+                path: "a.txt",
+                orig_path: Some(path),
+            };
+            assert!(unified_diff(&root, renamed, DIFF_CAP).is_err(), "{path:?}");
+        }
+
+        // A link may not lead out of the repository, and a final symlink is
+        // diffed as a link (its target path), never as the file it points to.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(tmp.path(), root.join("dir-link")).unwrap();
+            let through = UnifiedDiffTarget::Worktree {
+                path: "dir-link/secret.txt",
+                untracked: true,
+            };
+            assert!(unified_diff(&root, through, DIFF_CAP).is_err());
+            std::os::unix::fs::symlink(&secret, root.join("file-link")).unwrap();
+            let link = UnifiedDiffTarget::Worktree {
+                path: "file-link",
+                untracked: true,
+            };
+            let diff = unified_diff(&root, link, DIFF_CAP).unwrap();
+            assert!(diff.text.contains("new file mode 120000"));
+            assert!(!diff.text.contains("TOPSECRET"));
+        }
+    }
+
+    #[test]
+    fn unified_diff_commit_pairs_a_rename_through_orig_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        let body: String = (0..20).map(|n| format!("line {n}\n")).collect();
+        test_repo::write_and_commit(root, "old.txt", &body, "c1");
+        test_repo::git(root, &["mv", "old.txt", "new.txt"]);
+        std::fs::write(
+            root.join("new.txt"),
+            body.replace("line 3\n", "line three\n"),
+        )
+        .unwrap();
+        test_repo::git(root, &["add", "new.txt"]);
+        test_repo::git(root, &["commit", "-m", "rename"]);
+        let hash = head(root);
+        let commit = |orig_path| UnifiedDiffTarget::Commit {
+            hash: &hash,
+            path: "new.txt",
+            orig_path,
+        };
+
+        // Without the old name the new path looks like a whole new file.
+        let added = unified_diff(root, commit(None), DIFF_CAP).unwrap();
+        assert!(added.text.contains("new file mode"));
+        let renamed = unified_diff(root, commit(Some("old.txt")), DIFF_CAP).unwrap();
+        assert!(renamed
+            .text
+            .contains("rename from old.txt\nrename to new.txt\n"));
+        assert!(renamed.text.contains("-line 3\n+line three\n"));
+        assert!(!renamed.text.contains("new file mode"));
+    }
+
+    #[test]
+    fn unified_diff_untracked_only_reads_what_git_lists_as_untracked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        std::fs::write(root.join(".gitignore"), ".env\nsecrets/\n").unwrap();
+        test_repo::git(root, &["add", ".gitignore"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED-CONTENT\n", "c1");
+        let secrets = ["API_KEY=sk-live-123", "ID-RSA-PRIVATE", "EXCLUDED-CONTENT"];
+        std::fs::write(root.join(".env"), format!("{}\n", secrets[0])).unwrap();
+        std::fs::create_dir(root.join("secrets")).unwrap();
+        std::fs::write(root.join("secrets/id_rsa"), format!("{}\n", secrets[1])).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "local.txt\n").unwrap();
+        std::fs::write(root.join("local.txt"), format!("{}\n", secrets[2])).unwrap();
+        // Credentials a remote URL keeps in the repository's own config.
+        test_repo::git(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://user:tok3n@example.com/x.git",
+            ],
+        );
+        std::fs::write(root.join("staged.txt"), "STAGED-CONTENT\n").unwrap();
+        test_repo::git(root, &["add", "staged.txt"]);
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir/inner.txt"), "inner\n").unwrap();
+        std::fs::write(root.join("new.txt"), "hello\n").unwrap();
+
+        let untracked = |path| {
+            unified_diff(
+                root,
+                UnifiedDiffTarget::Worktree {
+                    path,
+                    untracked: true,
+                },
+                DIFF_CAP,
+            )
+        };
+        for path in [
+            ".env",
+            "secrets/id_rsa",
+            "local.txt",
+            "tracked.txt",
+            "staged.txt",
+            "missing.txt",
+            // A directory is not one untracked file.
+            "dir",
+            "dir/",
+            "secrets",
+        ] {
+            assert_eq!(
+                untracked(path).err().as_deref(),
+                Some(DIFF_NOT_UNTRACKED),
+                "{path}"
+            );
+        }
+        // Without the flag Git itself diffs only tracked paths: nothing of an ignored file.
+        let ignored = unified_diff(root, worktree(".env"), DIFF_CAP).unwrap();
+        assert_eq!(ignored.text, "");
+
+        // `.git` is refused for every kind, in any case and with either separator.
+        let hash = head(root);
+        for path in [
+            ".git/config",
+            ".GIT/config",
+            ".Git/config",
+            "sub/.git/config",
+            ".git",
+            ".git\\config",
+        ] {
+            let targets = [
+                UnifiedDiffTarget::Worktree {
+                    path,
+                    untracked: true,
+                },
+                UnifiedDiffTarget::Worktree {
+                    path,
+                    untracked: false,
+                },
+                UnifiedDiffTarget::Staged {
+                    path,
+                    orig_path: None,
+                },
+                UnifiedDiffTarget::Staged {
+                    path: "tracked.txt",
+                    orig_path: Some(path),
+                },
+                UnifiedDiffTarget::Commit {
+                    hash: &hash,
+                    path,
+                    orig_path: None,
+                },
+                UnifiedDiffTarget::Commit {
+                    hash: &hash,
+                    path: "tracked.txt",
+                    orig_path: Some(path),
+                },
+            ];
+            for target in targets {
+                let error = unified_diff(root, target, DIFF_CAP).err();
+                assert_eq!(error.as_deref(), Some(DIFF_GIT_PATH), "{path}");
+            }
+        }
+
+        // What is really untracked still diffs, in a subfolder too.
+        for (path, text) in [("new.txt", "+hello\n"), ("dir/inner.txt", "+inner\n")] {
+            let diff = untracked(path).unwrap();
+            assert!(diff.text.contains("new file mode"), "{path}");
+            assert!(diff.text.contains(text), "{path}");
+        }
+        // Names that merely contain ".git" are ordinary files.
+        std::fs::write(root.join(".gitkeep"), "keep\n").unwrap();
+        std::fs::write(root.join("a.git"), "dot\n").unwrap();
+        assert!(untracked(".gitkeep").unwrap().text.contains("+keep\n"));
+        assert!(untracked("a.git").unwrap().text.contains("+dot\n"));
+    }
+
+    /// A repository whose `secrets/`, `données/` (NFC) and `.env` are ignored,
+    /// each holding a secret the diff must never show.
+    fn ignored_secrets_repo(ignorecase: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        std::fs::write(root.join(".gitignore"), ".env\nsecrets/\ndonn\u{e9}es/\n").unwrap();
+        test_repo::git(root, &["add", ".gitignore"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::write(root.join(".env"), "API_KEY=sk-live-123\n").unwrap();
+        std::fs::create_dir(root.join("secrets")).unwrap();
+        std::fs::write(root.join("secrets/id_rsa"), "ID-RSA-PRIVATE\n").unwrap();
+        std::fs::create_dir(root.join("donn\u{e9}es")).unwrap();
+        std::fs::write(root.join("donn\u{e9}es/k"), "NFC-SECRET\n").unwrap();
+        // A repository copied from another filesystem keeps its own idea of case
+        // and normalisation, whatever this one does.
+        test_repo::git(root, &["config", "core.ignorecase", ignorecase]);
+        test_repo::git(root, &["config", "core.precomposeunicode", "false"]);
+        tmp
+    }
+
+    fn untracked_diff(root: &Path, path: &str) -> Result<UnifiedDiff, String> {
+        unified_diff(
+            root,
+            UnifiedDiffTarget::Worktree {
+                path,
+                untracked: true,
+            },
+            DIFF_CAP,
+        )
+    }
+
+    #[test]
+    fn unified_diff_untracked_refuses_another_spelling_of_an_ignored_file() {
+        for ignorecase in ["false", "true"] {
+            let tmp = ignored_secrets_repo(ignorecase);
+            let root = tmp.path();
+            // HFS+ stores names decomposed: there that spelling is the stored one.
+            let stores_nfd = std::fs::read_dir(root)
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name() == "donne\u{301}es");
+            // Another case, a zero-width character and the decomposed form of an
+            // ignored name reach the same file on a folding filesystem; git then
+            // matches its ignore rules against the spelling it was given.
+            for path in [
+                "secrets/id_rsa",
+                "SECRETS/id_rsa",
+                "Secrets/id_rsa",
+                "secrets\u{200c}/id_rsa",
+                "secrets/ID_RSA",
+                ".env",
+                ".ENV",
+                ".env\u{200c}",
+                "donn\u{e9}es/k",
+                "donne\u{301}es/k",
+                "DONN\u{c9}ES/k",
+            ] {
+                if stores_nfd && path == "donne\u{301}es/k" {
+                    continue;
+                }
+                let error = untracked_diff(root, path).err();
+                assert_eq!(
+                    error.as_deref(),
+                    Some(DIFF_NOT_UNTRACKED),
+                    "{path:?} ignorecase={ignorecase}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unified_diff_untracked_needs_every_component_spelled_as_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::create_dir_all(root.join("newdir/deeper")).unwrap();
+        std::fs::write(root.join("newdir/deeper/f.txt"), "deep\n").unwrap();
+        std::fs::write(root.join("plain.txt"), "plain\n").unwrap();
+
+        // The same file under another case, an empty or `.` component, or below a
+        // file is not the name the filesystem lists.
+        for path in [
+            "PLAIN.txt",
+            "Plain.TXT",
+            "NEWDIR/deeper/f.txt",
+            "newdir/DEEPER/f.txt",
+            "newdir/deeper/F.txt",
+            "newdir//deeper/f.txt",
+            "newdir/./deeper/f.txt",
+            "plain.txt/x",
+        ] {
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+        }
+
+        // What is spelled as stored and untracked still diffs, in a new folder too.
+        for (path, text) in [
+            ("plain.txt", "+plain\n"),
+            ("newdir/deeper/f.txt", "+deep\n"),
+        ] {
+            let diff = untracked_diff(root, path).unwrap();
+            assert!(diff.text.contains("new file mode"), "{path}");
+            assert!(diff.text.contains(text), "{path}");
+        }
+    }
+
+    #[test]
+    fn entry_spelling_is_exact_or_canonically_equivalent_where_git_precomposes() {
+        let nfc = "caf\u{e9}.md";
+        let nfd = "cafe\u{301}.md";
+        // Exact bytes, whichever normalisation either side has.
+        assert!(entry_is_spelled_as(nfc.as_ref(), nfc, false));
+        assert!(entry_is_spelled_as(nfd.as_ref(), nfd, false));
+        assert!(!entry_is_spelled_as(nfd.as_ref(), nfc, false));
+        assert!(!entry_is_spelled_as(nfc.as_ref(), nfd, false));
+        // Precomposing: the exact name still counts, and so does any spelling
+        // canonically equivalent to the entry. Which of them git lists is
+        // decided by its own listing.
+        assert!(entry_is_spelled_as(nfd.as_ref(), nfc, true));
+        assert!(entry_is_spelled_as(nfc.as_ref(), nfc, true));
+        assert!(entry_is_spelled_as(nfd.as_ref(), nfd, true));
+        assert!(entry_is_spelled_as(nfc.as_ref(), nfd, true));
+        assert!(!entry_is_spelled_as(nfd.as_ref(), "CAF\u{c9}.md", true));
+        // A name NFC would change (U+2126 OHM SIGN, which git lists as stored).
+        let ohm = "10k\u{2126}.txt";
+        let ohm_nfc = "10k\u{3a9}.txt";
+        for precomposed in [false, true] {
+            assert!(entry_is_spelled_as(ohm.as_ref(), ohm, precomposed));
+        }
+        for (entry, part) in [(ohm_nfc, ohm), (ohm, ohm_nfc)] {
+            assert!(entry_is_spelled_as(entry.as_ref(), part, true));
+            assert!(!entry_is_spelled_as(entry.as_ref(), part, false));
+        }
+        // A component that mixes a compatibility character (U+F900, which NFC
+        // maps to U+8C48) with a decomposed sequence: it is neither the request
+        // nor the NFC of it, yet canonically equivalent.
+        let mixed = "\u{f900}\u{1112}\u{1161}\u{11ab}.txt";
+        let request = "\u{f900}\u{d55c}.txt";
+        for (entry, part, precomposed, expected) in [
+            (mixed, request, true, true),
+            (request, mixed, true, true),
+            (mixed, request, false, false),
+            // Equivalence is not a loose match: another syllable stays another name.
+            (mixed, "\u{f900}\u{d55d}.txt", true, false),
+        ] {
+            assert_eq!(
+                entry_is_spelled_as(entry.as_ref(), part, precomposed),
+                expected,
+                "{entry:?} {part:?} precomposed={precomposed}"
+            );
+        }
+        assert!(!entry_is_spelled_as(ohm.as_ref(), "10kA.txt", true));
+    }
+
+    #[test]
+    fn pick_spelled_entry_prefers_the_exact_name_over_an_equivalent_one() {
+        // U+2000 EN QUAD is canonically U+2002 EN SPACE, and HFS+ keeps both
+        // untouched: two names for one NFC, side by side on a case-sensitive volume.
+        let quad = "a\u{2000}b.txt";
+        let space = "a\u{2002}b.txt";
+        let names = |list: &[&str]| -> Vec<std::ffi::OsString> {
+            list.iter().map(std::ffi::OsString::from).collect()
+        };
+        let pick = |list: &[&str], part: &str, precomposed: bool| {
+            pick_spelled_entry(names(list), |name| name.clone(), part, precomposed)
+        };
+        for order in [[quad, space], [space, quad]] {
+            for precomposed in [false, true] {
+                for part in [quad, space] {
+                    assert_eq!(
+                        pick(&order, part, precomposed),
+                        Some(std::ffi::OsString::from(part)),
+                        "{order:?} {part:?} precomposed={precomposed}"
+                    );
+                }
+            }
+        }
+        // Without an exact name the first equivalent one is taken, and only
+        // where git precomposes.
+        assert_eq!(
+            pick(&["other.txt", quad], space, true),
+            Some(std::ffi::OsString::from(quad))
+        );
+        assert_eq!(pick(&["other.txt", quad], space, false), None);
+        assert_eq!(pick(&["other.txt"], space, true), None);
+        assert_eq!(pick(&[], space, true), None);
+    }
+
+    // The same names as Foundation stores them (NFD) and as git reports them (NFC).
+    #[cfg(target_os = "macos")]
+    const NFD_FILE: &str = "cafe\u{301}.md";
+    #[cfg(target_os = "macos")]
+    const NFC_FILE: &str = "caf\u{e9}.md";
+    #[cfg(target_os = "macos")]
+    const NFD_DIR: &str = "\u{30d5}\u{30a9}\u{30eb}\u{30bf}\u{3099}";
+    #[cfg(target_os = "macos")]
+    const NFC_DIR: &str = "\u{30d5}\u{30a9}\u{30eb}\u{30c0}";
+
+    /// A repository with an untracked file and an untracked folder holding an
+    /// ASCII-named file, both written under their NFD names: a macOS volume
+    /// keeps the bytes it is given, as it does for Foundation's own writes.
+    #[cfg(target_os = "macos")]
+    fn nfd_stored_repo(precompose: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::git(root, &["config", "core.precomposeunicode", precompose]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::write(root.join(NFD_FILE), "file\n").unwrap();
+        std::fs::create_dir(root.join(NFD_DIR)).unwrap();
+        std::fs::write(root.join(NFD_DIR).join("readme.txt"), "inner\n").unwrap();
+        let stored: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(stored.iter().any(|name| name == NFD_FILE), "{stored:?}");
+        assert!(stored.iter().any(|name| name == NFD_DIR), "{stored:?}");
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn git_precomposes_names_follows_the_effective_config_and_is_strict_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        let env = test_repo::isolated_env();
+        let key = "core.precomposeunicode";
+        // `git init` may have written the key; start from none.
+        let _ = run_git(root, &["config", "--unset", key], DEFAULT_TIMEOUT, &env);
+        assert!(!git_precomposes_names(root, &env));
+        for (value, expected) in [
+            ("true", true),
+            ("yes", true),
+            ("false", false),
+            ("0", false),
+        ] {
+            test_repo::git(root, &["config", key, value]);
+            assert_eq!(git_precomposes_names(root, &env), expected, "{value}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_diffs_a_decomposed_name_by_the_nfc_git_reports() {
+        let tmp = nfd_stored_repo("true");
+        let root = tmp.path();
+        // What `git status` lists for them.
+        for (path, text) in [
+            (NFC_FILE.to_string(), "+file\n"),
+            (format!("{NFC_DIR}/readme.txt"), "+inner\n"),
+        ] {
+            assert!(ensure_spelled_as_on_disk(root, &path).is_ok(), "{path}");
+            let diff = untracked_diff(root, &path).unwrap();
+            assert!(diff.text.contains("new file mode"), "{path}");
+            assert!(diff.text.contains(text), "{path}: {}", diff.text);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_keeps_the_exact_spelling_where_git_does_not_precompose() {
+        let tmp = nfd_stored_repo("false");
+        let root = tmp.path();
+        // Git then reports the stored NFD names; the NFC form is another spelling.
+        for path in [NFC_FILE.to_string(), format!("{NFC_DIR}/readme.txt")] {
+            let error = ensure_spelled_as_on_disk(root, &path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+            let error = untracked_diff(root, &path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+        }
+        for (path, text) in [
+            (NFD_FILE.to_string(), "+file\n"),
+            (format!("{NFD_DIR}/readme.txt"), "+inner\n"),
+        ] {
+            let diff = untracked_diff(root, &path).unwrap();
+            assert!(diff.text.contains(text), "{path}: {}", diff.text);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_refuses_a_decomposed_request_even_where_git_precomposes() {
+        let tmp = nfd_stored_repo("true");
+        let root = tmp.path();
+        for path in [NFD_FILE.to_string(), format!("{NFD_DIR}/readme.txt")] {
+            // It is the name as stored, so the spelling check lets it by; git
+            // precomposes it and lists the NFC name, which is not the request.
+            assert!(ensure_spelled_as_on_disk(root, &path).is_ok(), "{path}");
+            let error = untracked_diff(root, &path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+        }
+    }
+
+    // Names git lists exactly as stored (its precomposition leaves them alone)
+    // although Unicode NFC changes them: U+2126 OHM SIGN, U+212B ANGSTROM SIGN,
+    // U+212A KELVIN SIGN and the CJK compatibility ideographs U+F900 and U+FA10.
+    #[cfg(target_os = "macos")]
+    const NFC_CHANGES: [&str; 5] = [
+        "10k\u{2126}.txt",
+        "\u{212b}ngstrom.txt",
+        "\u{212a}.txt",
+        "\u{f900}.txt",
+        "\u{fa10}x.txt",
+    ];
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_diffs_a_name_git_lists_as_stored_although_nfc_changes_it() {
+        for precompose in ["true", "false"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            test_repo::init(root);
+            test_repo::git(root, &["config", "core.precomposeunicode", precompose]);
+            test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+            let mut paths: Vec<String> = NFC_CHANGES.iter().map(|name| name.to_string()).collect();
+            std::fs::create_dir(root.join("\u{212b}dir")).unwrap();
+            paths.push("\u{212b}dir/\u{fa10}x.txt".into());
+            for path in &paths {
+                std::fs::write(root.join(path), "file\n").unwrap();
+            }
+            // What `git status` lists (what the phone sends back) is what is stored.
+            let untracked = status_of(root, None).unwrap().parsed.untracked;
+            for path in &paths {
+                assert!(untracked.contains(path), "{path:?} {untracked:?}");
+            }
+            for path in &paths {
+                let diff = untracked_diff(root, path)
+                    .unwrap_or_else(|error| panic!("{path:?} precompose={precompose}: {error}"));
+                assert!(diff.text.contains("new file mode"), "{path:?}");
+                assert!(diff.text.contains("+file\n"), "{path:?}: {}", diff.text);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_refuses_the_nfc_of_a_name_git_lists_as_stored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::git(root, &["config", "core.precomposeunicode", "true"]);
+        // The rules are spelled as the names are stored: git does not precompose them.
+        std::fs::write(
+            root.join(".gitignore"),
+            "secret-\u{2126}.txt\n\u{212b}secrets/\n",
+        )
+        .unwrap();
+        test_repo::git(root, &["add", ".gitignore"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::write(root.join("10k\u{2126}.txt"), "file\n").unwrap();
+        std::fs::create_dir(root.join("\u{212b}dir")).unwrap();
+        std::fs::write(root.join("\u{212b}dir/f.txt"), "inner\n").unwrap();
+        std::fs::write(root.join("secret-\u{2126}.txt"), "SECRET\n").unwrap();
+        std::fs::create_dir(root.join("\u{212b}secrets")).unwrap();
+        std::fs::write(root.join("\u{212b}secrets/key"), "SECRET\n").unwrap();
+        // The NFC of a stored name is not what git lists, though a volume that
+        // folds names opens the same file under it. Git names a folder the way it
+        // was asked for, so the folder's ignore rule must not be dodged either.
+        for path in [
+            "10k\u{3a9}.txt",
+            "\u{c5}dir/f.txt",
+            "secret-\u{3a9}.txt",
+            "\u{c5}secrets/key",
+        ] {
+            assert!(ensure_spelled_as_on_disk(root, path).is_ok(), "{path:?}");
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path:?}");
+        }
+        // The ignored files stay ignored under the names they are stored by.
+        for path in ["secret-\u{2126}.txt", "\u{212b}secrets/key"] {
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path:?}");
+        }
+        // The stored names themselves diff.
+        for path in ["10k\u{2126}.txt", "\u{212b}dir/f.txt"] {
+            let diff = untracked_diff(root, path).unwrap();
+            assert!(diff.text.contains("new file mode"), "{path:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_keeps_an_ignored_decomposed_name_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::git(root, &["config", "core.precomposeunicode", "true"]);
+        // The rules are NFC; git matches them against the precomposed names.
+        std::fs::write(
+            root.join(".gitignore"),
+            "donn\u{e9}es/\ncaf\u{e9}-secret.txt\n",
+        )
+        .unwrap();
+        test_repo::git(root, &["add", ".gitignore"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::create_dir(root.join("donne\u{301}es")).unwrap();
+        std::fs::write(root.join("donne\u{301}es/k"), "NFD-SECRET\n").unwrap();
+        std::fs::write(root.join("cafe\u{301}-secret.txt"), "NFD-SECRET\n").unwrap();
+        for path in ["donn\u{e9}es/k", "caf\u{e9}-secret.txt"] {
+            // The NFC request reaches the stored name, so git's answer must stop it.
+            assert!(ensure_spelled_as_on_disk(root, path).is_ok(), "{path}");
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+        }
+        for path in ["donne\u{301}es/k", "cafe\u{301}-secret.txt"] {
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+        }
+    }
+
+    // Names as Foundation stores them: a compatibility character kept (U+F900,
+    // U+2126 OHM SIGN, U+212B ANGSTROM SIGN), the rest of the component
+    // decomposed. Git lists them half composed, so they are neither the
+    // request nor the NFC of it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_diffs_a_name_mixing_a_compatibility_character_with_a_decomposed_sequence(
+    ) {
+        use unicode_normalization::UnicodeNormalization;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::git(root, &["config", "core.precomposeunicode", "true"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        let hangul_nfd: String = "\u{d55c}\u{ae00}".nfd().collect();
+        let stored = [
+            format!("\u{f900}{hangul_nfd}.txt"),
+            "\u{2126}cafe\u{301}.md".to_string(),
+            "\u{212b}ngstro\u{308}m.txt".to_string(),
+            format!("\u{f900}{hangul_nfd}/readme.txt"),
+        ];
+        std::fs::create_dir(root.join(format!("\u{f900}{hangul_nfd}"))).unwrap();
+        for name in &stored {
+            std::fs::write(root.join(name), "file\n").unwrap();
+        }
+        let on_disk: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(
+            on_disk
+                .iter()
+                .any(|name| name == std::ffi::OsStr::new(&stored[0])),
+            "{on_disk:?}"
+        );
+        // What `git status` lists, and what the phone sends back.
+        let listed = [
+            "\u{f900}\u{d55c}\u{ae00}.txt",
+            "\u{2126}caf\u{e9}.md",
+            "\u{212b}ngstr\u{f6}m.txt",
+            "\u{f900}\u{d55c}\u{ae00}/readme.txt",
+        ];
+        let untracked = status_of(root, None).unwrap().parsed.untracked;
+        for path in listed {
+            assert!(
+                untracked.iter().any(|name| name == path),
+                "{path:?} {untracked:?}"
+            );
+        }
+        for path in listed {
+            assert!(ensure_spelled_as_on_disk(root, path).is_ok(), "{path:?}");
+            let diff =
+                untracked_diff(root, path).unwrap_or_else(|error| panic!("{path:?}: {error}"));
+            assert!(diff.text.contains("new file mode"), "{path:?}");
+            assert!(diff.text.contains("+file\n"), "{path:?}: {}", diff.text);
+        }
+        // Another spelling of the same name stays another name: the stored one,
+        // and the NFC of the compatibility character.
+        for path in [
+            stored[0].as_str(),
+            stored[3].as_str(),
+            "\u{8c48}\u{d55c}\u{ae00}.txt",
+            "\u{3a9}caf\u{e9}.md",
+        ] {
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_keeps_an_ignored_mixed_name_ignored_under_every_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::git(root, &["config", "core.precomposeunicode", "true"]);
+        // Rules git matches against the precomposed names.
+        std::fs::write(
+            root.join(".gitignore"),
+            "mix-\u{2126}caf\u{e9}.md\n\u{f900}k/\n",
+        )
+        .unwrap();
+        test_repo::git(root, &["add", ".gitignore"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::write(root.join("mix-\u{2126}cafe\u{301}.md"), "SECRET\n").unwrap();
+        std::fs::create_dir(root.join("\u{f900}k")).unwrap();
+        std::fs::write(root.join("\u{f900}k/key"), "SECRET\n").unwrap();
+        let untracked = status_of(root, None).unwrap().parsed.untracked;
+        assert!(untracked.is_empty(), "{untracked:?}");
+        // The stored name, git's own spelling and the canonically equivalent
+        // ones the spelling layer now lets through all end at git's answer.
+        for path in [
+            "mix-\u{2126}cafe\u{301}.md",
+            "mix-\u{2126}caf\u{e9}.md",
+            "mix-\u{3a9}caf\u{e9}.md",
+            "mix-\u{3a9}cafe\u{301}.md",
+            "\u{f900}k/key",
+            "\u{8c48}k/key",
+        ] {
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn unified_diff_untracked_refuses_a_decomposed_request_of_an_ignored_name_with_precompose() {
+        for ignorecase in ["false", "true"] {
+            let tmp = ignored_secrets_repo(ignorecase);
+            let root = tmp.path();
+            test_repo::git(root, &["config", "core.precomposeunicode", "true"]);
+            // `données/` is stored NFC here; the NFD request is another spelling of it.
+            for path in ["donn\u{e9}es/k", "donne\u{301}es/k"] {
+                let error = untracked_diff(root, path).err();
+                assert_eq!(
+                    error.as_deref(),
+                    Some(DIFF_NOT_UNTRACKED),
+                    "{path:?} ignorecase={ignorecase}"
+                );
+            }
+            // Where git precomposes, the spelling layer takes the equivalent name
+            // (git's own answer above is what stops it); elsewhere it never matches.
+            let spelling = ensure_spelled_as_on_disk(root, "donne\u{301}es/k");
+            if cfg!(target_os = "macos") {
+                assert_eq!(
+                    spelling.as_deref(),
+                    Ok("donn\u{e9}es/k"),
+                    "ignorecase={ignorecase}"
+                );
+            } else {
+                assert_eq!(
+                    spelling.err().as_deref(),
+                    Some(DIFF_NOT_UNTRACKED),
+                    "ignorecase={ignorecase}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unified_diff_untracked_follows_no_link_but_the_last_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        std::fs::write(root.join(".gitignore"), "secrets/\n").unwrap();
+        test_repo::git(root, &["add", ".gitignore"]);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        std::fs::create_dir(root.join("secrets")).unwrap();
+        std::fs::write(root.join("secrets/id_rsa"), "ID-RSA-PRIVATE\n").unwrap();
+        std::fs::create_dir(root.join("newdir")).unwrap();
+        std::fs::write(root.join("newdir/f.txt"), "untracked\n").unwrap();
+        // Links inside the repository: one to an ignored folder, one to a folder
+        // whose files are untracked.
+        std::os::unix::fs::symlink("secrets", root.join("lnk_secrets")).unwrap();
+        std::os::unix::fs::symlink("newdir", root.join("lnk_newdir")).unwrap();
+        for path in ["lnk_secrets/id_rsa", "lnk_newdir/f.txt"] {
+            let error = untracked_diff(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+            // Refused by the spelling check itself, not left to git's own answer.
+            let error = ensure_spelled_as_on_disk(root, path).err();
+            assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED), "{path}");
+        }
+        assert!(ensure_spelled_as_on_disk(root, "lnk_newdir").is_ok());
+
+        // A link as the last component is diffed as its link text, not followed.
+        std::os::unix::fs::symlink("link-text-target", root.join("lnk_text")).unwrap();
+        let diff = untracked_diff(root, "lnk_text").unwrap();
+        assert!(diff.text.contains("new file mode 120000"), "{}", diff.text);
+        assert!(diff.text.contains("+link-text-target"), "{}", diff.text);
+        std::os::unix::fs::symlink("secrets/id_rsa", root.join("lnk_file")).unwrap();
+        let diff = untracked_diff(root, "lnk_file").unwrap();
+        assert!(diff.text.contains("+secrets/id_rsa"), "{}", diff.text);
+        assert!(!diff.text.contains("ID-RSA-PRIVATE"));
+    }
+
+    #[test]
+    fn dotgit_lookalikes_are_the_names_git_itself_refuses() {
+        for name in [
+            ".git",
+            ".GIT",
+            ".Git",
+            // HFS+ drops these code points when it compares names.
+            ".git\u{200c}",
+            ".g\u{200d}it",
+            "\u{feff}.git",
+            ".gi\u{202e}t",
+            ".git\u{206f}",
+            // NTFS drops trailing dots and spaces, and reads `:` as a stream.
+            ".git.",
+            ".git ",
+            ".git. . ",
+            ".GIT...",
+            ".git::$INDEX_ALLOCATION",
+            ".git:stream",
+            "git~1",
+            "GIT~1",
+            "Git~1 ",
+            "git~1.",
+            "git~1:x",
+        ] {
+            assert!(is_dotgit_lookalike(name), "{name:?}");
+            assert_eq!(reject_git_dir(name).err().as_deref(), Some(DIFF_GIT_PATH));
+            assert_eq!(
+                reject_git_dir(&format!("sub/{name}/config"))
+                    .err()
+                    .as_deref(),
+                Some(DIFF_GIT_PATH),
+                "{name:?}"
+            );
+        }
+        for name in [
+            "",
+            ".gitkeep",
+            ".gitignore",
+            ".github",
+            "a.git",
+            "git",
+            ".gi",
+            "git~",
+            "git~2",
+            "git~10",
+            ".git~1",
+            ".git\u{e9}",
+            ".gitx.",
+            "gitx~1",
+        ] {
+            assert!(!is_dotgit_lookalike(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn unified_diff_refuses_a_lookalike_of_the_git_directory_for_every_kind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::write_and_commit(root, "tracked.txt", "TRACKED\n", "c1");
+        let hash = head(root);
+        for path in [
+            ".git\u{200c}/config",
+            ".g\u{200d}it/config",
+            "sub/\u{feff}.git/config",
+            ".git./config",
+            ".git /config",
+            ".git::$INDEX_ALLOCATION/config",
+            "GIT~1/config",
+            "git~1\\config",
+        ] {
+            let targets = [
+                UnifiedDiffTarget::Worktree {
+                    path,
+                    untracked: true,
+                },
+                UnifiedDiffTarget::Worktree {
+                    path,
+                    untracked: false,
+                },
+                UnifiedDiffTarget::Staged {
+                    path,
+                    orig_path: None,
+                },
+                UnifiedDiffTarget::Staged {
+                    path: "tracked.txt",
+                    orig_path: Some(path),
+                },
+                UnifiedDiffTarget::Commit {
+                    hash: &hash,
+                    path,
+                    orig_path: None,
+                },
+                UnifiedDiffTarget::Commit {
+                    hash: &hash,
+                    path: "tracked.txt",
+                    orig_path: Some(path),
+                },
+            ];
+            for target in targets {
+                let error = unified_diff(root, target, DIFF_CAP).err();
+                assert_eq!(error.as_deref(), Some(DIFF_GIT_PATH), "{path:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unified_diff_commit_shows_the_commit_itself_despite_a_replace_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        test_repo::write_and_commit(root, "a.txt", "base\n", "base");
+        let base = head(root);
+        test_repo::write_and_commit(root, "a.txt", "from-A\n", "A");
+        let a = head(root);
+        test_repo::git(root, &["checkout", "-q", "-b", "other", &base]);
+        test_repo::write_and_commit(root, "a.txt", "from-B\n", "B");
+        let b = head(root);
+        // Without `GIT_NO_REPLACE_OBJECTS`, `git show A` prints B.
+        test_repo::git(root, &["replace", &a, &b]);
+
+        let target = UnifiedDiffTarget::Commit {
+            hash: &a,
+            path: "a.txt",
+            orig_path: None,
+        };
+        let diff = unified_diff(root, target, DIFF_CAP).unwrap();
+        assert!(diff.text.contains("+from-A\n"), "{}", diff.text);
+        assert!(!diff.text.contains("from-B"), "{}", diff.text);
+    }
+
+    // A tracked name whose index spelling is NFD (committed while git did not
+    // precompose), read where git precomposes argv: status and the commit
+    // listing report the index/tree bytes, so the diff must match them.
+    #[cfg(target_os = "macos")]
+    fn set_precompose(root: &Path, value: &str) {
+        test_repo::git(root, &["config", "core.precomposeunicode", value]);
+    }
+
+    /// A repository whose only tracked file is `NFD_FILE` under its NFD index
+    /// name, with git precomposing again afterwards.
+    #[cfg(target_os = "macos")]
+    fn nfd_tracked_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "false");
+        std::fs::write(root.join(NFD_FILE), "a\nb\nc\n").unwrap();
+        test_repo::git(root, &["add", NFD_FILE]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        let listed = run_git(root, &["ls-files", "-z"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(listed.stdout, format!("{NFD_FILE}\0").into_bytes());
+        set_precompose(root, "true");
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    fn paths(entries: &[crate::git_status::GitFileEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.path.as_str()).collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_worktree_of_a_tracked_decomposed_name_matches_the_index() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        // status lists the index bytes; the diff takes them back as its pathspec.
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.unstaged), [NFD_FILE], "{status:?}");
+        let diff = unified_diff(root, worktree(NFD_FILE), DIFF_CAP).unwrap();
+        let header = format!("diff --git a/{NFD_FILE} b/{NFD_FILE}\n");
+        assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+        assert!(diff.text.contains("\n-b\n+B\n"), "{:?}", diff.text);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_staged_of_a_tracked_decomposed_name_matches_the_index() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        // Staging it as git precomposes would add a second (NFC) index entry.
+        set_precompose(root, "false");
+        test_repo::git(root, &["add", NFD_FILE]);
+        set_precompose(root, "true");
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [NFD_FILE], "{status:?}");
+        let staged = |orig_path| UnifiedDiffTarget::Staged {
+            path: NFD_FILE,
+            orig_path,
+        };
+        for orig_path in [None, Some(NFD_FILE)] {
+            let diff = unified_diff(root, staged(orig_path), DIFF_CAP).unwrap();
+            let header = format!("diff --git a/{NFD_FILE} b/{NFD_FILE}\n");
+            assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+            assert!(diff.text.contains("\n-b\n+B\n"), "{:?}", diff.text);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_commit_of_a_tracked_decomposed_name_matches_the_tree() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let base = head(root);
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        set_precompose(root, "false");
+        test_repo::git(root, &["add", NFD_FILE]);
+        test_repo::git(root, &["commit", "-m", "change"]);
+        set_precompose(root, "true");
+        let change = head(root);
+        for (hash, expected) in [(&base, "\n+a\n+b\n+c\n"), (&change, "\n-b\n+B\n")] {
+            // The commit listing reports the tree bytes, which is what the diff gets.
+            let detail = crate::git_log::commit_detail(root, hash).unwrap();
+            let listed: Vec<&str> = detail.files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(listed, [NFD_FILE]);
+            let target = UnifiedDiffTarget::Commit {
+                hash,
+                path: listed[0],
+                orig_path: None,
+            };
+            let diff = unified_diff(root, target, DIFF_CAP).unwrap();
+            let header = format!("diff --git a/{NFD_FILE} b/{NFD_FILE}\n");
+            assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+            assert!(diff.text.contains(expected), "{:?}", diff.text);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_worktree_of_a_conflicted_decomposed_name_shows_the_markers() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        set_precompose(root, "false");
+        let change = |branch_content: &str, message: &str| {
+            std::fs::write(root.join(NFD_FILE), branch_content).unwrap();
+            test_repo::git(root, &["add", NFD_FILE]);
+            test_repo::git(root, &["commit", "-m", message]);
+        };
+        test_repo::git(root, &["checkout", "-b", "side"]);
+        change("a\nTHEIRS\nc\n", "side");
+        test_repo::git(root, &["checkout", "main"]);
+        change("a\nOURS\nc\n", "ours");
+        let merge = run_git(root, &["merge", "side"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(merge.code, 1, "{}", merge.stderr);
+        set_precompose(root, "true");
+
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.conflicted), [NFD_FILE], "{status:?}");
+        let on_disk = std::fs::read_to_string(root.join(NFD_FILE)).unwrap();
+        assert!(on_disk.contains("<<<<<<<"), "{on_disk}");
+        let diff = unified_diff(root, worktree(NFD_FILE), DIFF_CAP).unwrap();
+        let header = format!("diff --cc {NFD_FILE}\n");
+        assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+        for marker in ["<<<<<<<", "OURS", "THEIRS", ">>>>>>>"] {
+            assert!(diff.text.contains(marker), "{marker}: {:?}", diff.text);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_of_a_tracked_precomposed_name_keeps_working() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        test_repo::write_and_commit(root, NFC_FILE, "a\nb\nc\n", "base");
+        let listed = run_git(root, &["ls-files", "-z"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(listed.stdout, format!("{NFC_FILE}\0").into_bytes());
+        let header = format!("diff --git a/{NFC_FILE} b/{NFC_FILE}\n");
+
+        std::fs::write(root.join(NFC_FILE), "a\nB\nc\n").unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.unstaged), [NFC_FILE], "{status:?}");
+        let diff = unified_diff(root, worktree(NFC_FILE), DIFF_CAP).unwrap();
+        assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+        assert!(diff.text.contains("\n-b\n+B\n"), "{:?}", diff.text);
+
+        test_repo::git(root, &["add", NFC_FILE]);
+        let staged = UnifiedDiffTarget::Staged {
+            path: NFC_FILE,
+            orig_path: None,
+        };
+        let diff = unified_diff(root, staged, DIFF_CAP).unwrap();
+        assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+        assert!(diff.text.contains("\n-b\n+B\n"), "{:?}", diff.text);
+
+        test_repo::git(root, &["commit", "-m", "change"]);
+        let commit = UnifiedDiffTarget::Commit {
+            hash: &head(root),
+            path: NFC_FILE,
+            orig_path: None,
+        };
+        let diff = unified_diff(root, commit, DIFF_CAP).unwrap();
+        assert!(diff.text.starts_with(&header), "{:?}", diff.text);
+        assert!(diff.text.contains("\n-b\n+B\n"), "{:?}", diff.text);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_diff_untracked_rules_and_refusals_hold_beside_a_tracked_decomposed_name() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        let untracked_nfd = "ume\u{301}.md";
+        let untracked_nfc = "um\u{e9}.md";
+        std::fs::write(root.join(untracked_nfd), "new\n").unwrap();
+        // The tracked name diffs, while the untracked one keeps its rules: the
+        // name git lists (NFC) diffs, the stored spelling of it is refused.
+        assert!(unified_diff(root, worktree(NFD_FILE), DIFF_CAP)
+            .unwrap()
+            .text
+            .contains("\n-b\n+B\n"));
+        let diff = untracked_diff(root, untracked_nfc).unwrap();
+        assert!(diff.text.contains("new file mode"), "{:?}", diff.text);
+        let error = untracked_diff(root, untracked_nfd).err();
+        assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED));
+        // The tracked name is no untracked file; the git directory stays shut.
+        let error = untracked_diff(root, NFD_FILE).err();
+        assert_eq!(error.as_deref(), Some(DIFF_NOT_UNTRACKED));
+        let hash = head(root);
+        for path in [".git\u{200c}/config", "GIT~1/config"] {
+            let targets = [
+                worktree(path),
+                UnifiedDiffTarget::Staged {
+                    path,
+                    orig_path: None,
+                },
+                UnifiedDiffTarget::Commit {
+                    hash: &hash,
+                    path,
+                    orig_path: Some(NFD_FILE),
+                },
+            ];
+            for target in targets {
+                let error = unified_diff(root, target, DIFF_CAP).err();
+                assert_eq!(error.as_deref(), Some(DIFF_GIT_PATH), "{path:?}");
+            }
+        }
     }
 }

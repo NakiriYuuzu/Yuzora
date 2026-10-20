@@ -7,5 +7,9 @@ pub fn json() -> String {
     assert!(sentinel.is_absolute());
     assert!(!sentinel.exists());
     init["herdrBinary"] = serde_json::json!(sentinel);
+    // Nothing is trusted: the file is never created, which reads as an empty store.
+    init["trustStore"] = serde_json::json!(std::env::temp_dir()
+        .join("yzc-nonexistent-trust")
+        .join("workspace-trust.json"));
     init.to_string()
 }

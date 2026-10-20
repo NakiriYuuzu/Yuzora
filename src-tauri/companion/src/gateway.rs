@@ -19,6 +19,8 @@ pub struct Gateway {
     pub(crate) events: EventSender,
     pub(crate) herdr: Arc<crate::herdr::Reads>,
     pub(crate) herdr_jobs: Arc<crate::herdr_jobs::Jobs>,
+    pub(crate) spaces: Arc<crate::git_bridge::Spaces>,
+    pub(crate) push: crate::push::Push,
     pub(crate) deferred_audit: Arc<Mutex<crate::audit::Deferred>>,
     pub(crate) full_devices:
         Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Semaphore>>>,
@@ -74,6 +76,12 @@ impl Gateway {
             events,
             herdr: Arc::new(crate::herdr::Reads::new(port, &init.session_allowlist)),
             herdr_jobs: crate::herdr_jobs::Jobs::new(),
+            spaces: Arc::new(crate::git_bridge::Spaces::new(
+                &init.trust_store,
+                &init.session_allowlist,
+                &init.space_roots,
+            )?),
+            push: crate::push::Push::new(init)?,
             deferred_audit: Arc::new(Mutex::new(crate::audit::Deferred::default())),
             full_devices: Mutex::new(std::collections::HashMap::new()),
         }))
@@ -96,11 +104,44 @@ impl Gateway {
                 }
                 self.pairings.command(command)
             }
-            CommandBody::Device(command) => self
-                .identity
-                .lock()
-                .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Device unavailable"))?
-                .command(command, &self.events),
+            CommandBody::Device(command) => {
+                let revoked = match &command {
+                    crate::admin::DeviceCommand::Revoke { device_id, .. } => {
+                        Some(device_id.clone())
+                    }
+                    _ => None,
+                };
+                let result = self
+                    .identity
+                    .lock()
+                    .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Device unavailable"))?
+                    .command(command, &self.events)?;
+                // A revoked device gets no more pushes, whatever the desktop's
+                // next `push.devices` says.
+                if let Some(id) = revoked {
+                    self.push.remove(&id);
+                }
+                Ok(result)
+            }
+            CommandBody::Spaces(command) => {
+                if !self.spaces.replace(&command.roots) {
+                    return Err((StatusCode::BAD_REQUEST, "Invalid spaces"));
+                }
+                Ok(AdminResult::Applied)
+            }
+            CommandBody::Push(command) => {
+                let identity = self
+                    .identity
+                    .lock()
+                    .map_err(|_| crate::webauthn::UNAVAILABLE)?;
+                if !self
+                    .push
+                    .replace(&command.devices, |id| identity.device(id).is_some())
+                {
+                    return Err((StatusCode::BAD_REQUEST, "Invalid push devices"));
+                }
+                Ok(AdminResult::Applied)
+            }
             _ => Err((StatusCode::BAD_REQUEST, "Invalid admin command")),
         }
     }

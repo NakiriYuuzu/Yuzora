@@ -3,13 +3,18 @@
 //! device changes before they count, and stops the process on disable or exit.
 //! Never log or emit the init frame, the pairing URL or its QR code.
 
-use crate::companion_store::{device_id, Devices};
+use crate::{
+    companion_push::Push,
+    companion_store::{device_id, Devices},
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use tokio::{
@@ -31,7 +36,7 @@ const TIMING: Timing = Timing {
 };
 /// HERDR finds its sessions through HOME (and XDG on Linux); nothing else
 /// from the desktop environment, such as imported API keys, reaches the gateway.
-const ENV_ALLOWLIST: &[&str] = &[
+pub(crate) const ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
     "TMPDIR",
@@ -61,6 +66,14 @@ const ENV_ALLOWLIST: &[&str] = &[
     "ComSpec",
 ];
 
+/// What only the gateway is given: a phone's read of a partial clone must not
+/// fetch objects from its remote. `GIT_NO_LAZY_FETCH` says so since git 2.44;
+/// older gits (Ubuntu 22.04 has 2.34) ignore it, but an empty
+/// `GIT_ALLOW_PROTOCOL` refuses every transport there too. The gateway runs
+/// git and HERDR clients only, so no terminal of the user inherits these.
+pub(crate) const GATEWAY_GIT_ENV: &[(&str, &str)] =
+    &[("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "")];
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum Status {
@@ -84,6 +97,11 @@ pub struct Launch {
 
 type Emit = Arc<dyn Fn(Value) + Send + Sync>;
 type Stopped = Arc<dyn Fn() + Send + Sync>;
+/// Resolves once nothing forwards to the gateway's port any more: the node's
+/// listener is closed, or the node is stopped when it would not confirm.
+pub type Closing = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+const SHUTDOWN_FRAME: &[u8] = b"{\"v\":1,\"type\":\"shutdown\"}\n";
 
 pub struct CompanionManager {
     dir: PathBuf,
@@ -91,6 +109,11 @@ pub struct CompanionManager {
     /// Runs after the gateway ends on its own (expiry, failure), not on a
     /// requested stop, whose caller does its own cleanup.
     stopped: Stopped,
+    /// Runs before a gateway lets go of its port or is killed for a failure:
+    /// until then the node forwards the tailnet to that port, and any local
+    /// process could bind it once it is free.
+    closing: OnceLock<Closing>,
+    push: Arc<Push>,
     inner: Mutex<Inner>,
     /// The running gateway's device list. Separate from `inner` so a slow
     /// fsync never blocks status reads; always locked before `inner`.
@@ -104,7 +127,7 @@ struct Inner {
     status: Status,
     generation: u64,
     process: Option<Process>,
-    /// The loopback port Serve proxies to, when init fixes one.
+    /// The loopback port the node proxies to, when init fixes one.
     port: Option<u64>,
     /// `policy.enableUntil` of the running gateway.
     until: Option<String>,
@@ -143,11 +166,13 @@ enum Want {
 }
 
 impl CompanionManager {
-    pub fn new(dir: PathBuf, emit: Emit, stopped: Stopped) -> Arc<Self> {
+    pub fn new(dir: PathBuf, emit: Emit, stopped: Stopped, push: Arc<Push>) -> Arc<Self> {
         Arc::new(Self {
             dir,
             emit,
             stopped,
+            closing: OnceLock::new(),
+            push,
             inner: Mutex::default(),
             store: Mutex::new(None),
             commands: tokio::sync::Mutex::new(()),
@@ -155,8 +180,17 @@ impl CompanionManager {
         })
     }
 
+    /// Set once, by whoever owns the node in front of the gateway.
+    pub fn on_closing(&self, closing: Closing) {
+        let _ = self.closing.set(closing);
+    }
+
     pub fn status(&self) -> Status {
         self.inner.lock().unwrap().status.clone()
+    }
+
+    pub fn push(&self) -> &Arc<Push> {
+        &self.push
     }
 
     /// When the running gateway stops itself, if one runs.
@@ -177,7 +211,14 @@ impl CompanionManager {
         if !self.idle() {
             return Err("companion-busy".into());
         }
-        Devices::load(&self.dir)?.apply(frame)
+        Devices::load(&self.dir)?.apply(frame)?;
+        if frame["type"] == "device.revoke" {
+            let revoked = frame["deviceId"].as_str().unwrap_or_default();
+            if self.push.forget(revoked) {
+                (self.emit)(self.push.event());
+            }
+        }
+        Ok(())
     }
 
     pub fn devices(&self) -> Result<Vec<Value>, String> {
@@ -220,6 +261,8 @@ impl CompanionManager {
                         .iter()
                         .filter_map(|key| std::env::var_os(key).map(|value| (*key, value))),
                 )
+                // Set here, not inherited: only the gateway runs git for a phone.
+                .envs(GATEWAY_GIT_ENV.iter().copied())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -276,21 +319,22 @@ impl CompanionManager {
             inner.terminal = None;
             inner.generation
         };
-        // A gateway that hangs before `ready` would leave Serve forwarding to
+        // A gateway that hangs before `ready` would leave the node forwarding to
         // a port nothing listens on.
         let watchdog = self.clone();
         let deadline = self.timing.ready;
         tokio::spawn(async move {
             tokio::time::sleep(deadline).await;
-            let status = {
+            let (status, kill) = {
                 let mut inner = watchdog.inner.lock().unwrap();
                 if inner.generation != generation || inner.ready || inner.terminal.is_some() {
                     return;
                 }
-                halt(&mut inner, "companion-start-timeout");
-                inner.status.clone()
+                let kill = halt(&mut inner, "companion-start-timeout");
+                (inner.status.clone(), kill)
             };
             (watchdog.emit)(status_event(&status));
+            watchdog.kill_after_closing(kill);
         });
         // The gateway gives up without init after five seconds.
         let _ = input.send(init);
@@ -375,6 +419,9 @@ impl CompanionManager {
         }
         let kind = event["type"].as_str().unwrap_or_default().to_owned();
         let mut outgoing = Vec::new();
+        // Taken from a gateway that halts; used once its events are out.
+        let mut kill = None;
+        let mut expiring = false;
         match kind.as_str() {
             "device.registered" | "device.updated" | "device.revoked" => {
                 let id = if kind == "device.revoked" {
@@ -387,12 +434,16 @@ impl CompanionManager {
                     (Some(devices), Some(_)) => devices.upsert(event["device"].clone()),
                     _ => Err("companion-device-invalid".into()),
                 };
+                // Like the device list, off `inner`: it is a disk write.
+                let unsubscribed = kind == "device.revoked"
+                    && saved.is_ok()
+                    && id.as_deref().is_some_and(|id| self.push.forget(id));
                 let mut inner = self.inner.lock().unwrap();
                 match saved {
                     // A device change that is not on disk would come back at
                     // the next start. Stop the gateway rather than drift.
                     Err(code) => {
-                        halt(&mut inner, &code);
+                        kill = halt(&mut inner, &code);
                         outgoing.push(status_event(&inner.status));
                     }
                     Ok(()) => {
@@ -409,6 +460,9 @@ impl CompanionManager {
                             "device.revoked" => event.clone(),
                             _ => json!({"type": kind, "device": device_summary(&event["device"])}),
                         });
+                        if unsubscribed {
+                            outgoing.push(self.push.event());
+                        }
                     }
                 }
             }
@@ -434,7 +488,7 @@ impl CompanionManager {
                     let mut inner = self.inner.lock().unwrap();
                     match saved {
                         Err(code) => {
-                            halt(&mut inner, &code);
+                            kill = halt(&mut inner, &code);
                             outgoing.push(status_event(&inner.status));
                         }
                         Ok(()) => resolve(
@@ -453,14 +507,46 @@ impl CompanionManager {
                 }
                 outgoing.push(event);
             }
+            // A subscription is a credential: kept here, never forwarded.
+            "push.subscription" => {
+                let id = event["deviceId"].as_str().unwrap_or_default();
+                let known = store
+                    .as_ref()
+                    .is_some_and(|devices| devices.all().iter().any(|d| device_id(d) == Some(id)));
+                let changed = known
+                    && if event["subscription"].is_null() {
+                        // One browser's: the device's other endpoints stay.
+                        event["endpointId"]
+                            .as_str()
+                            .is_some_and(|endpoint| self.push.unsubscribe(id, endpoint))
+                    } else {
+                        self.push.subscription(id, &event["subscription"])
+                    };
+                if changed {
+                    self.push_devices();
+                    outgoing.push(self.push.event());
+                }
+            }
+            "push.request" => {
+                if let Some(job) = self.push.request(&event["deviceIds"], &event["payload"]) {
+                    let manager = self.clone();
+                    tokio::spawn(async move {
+                        // A subscription its push service dropped leaves the set.
+                        if manager.push.deliver(job).await {
+                            manager.push_devices();
+                            (manager.emit)(manager.push.event());
+                        }
+                    });
+                }
+            }
             _ => {
                 let mut inner = self.inner.lock().unwrap();
                 match kind.as_str() {
                     "ready" if inner.process.is_some() && inner.terminal.is_none() => {
                         let port = event["ports"]["loopback"].as_u64().unwrap_or_default();
-                        // Serve proxies to the configured port and nowhere else.
+                        // The node proxies to the configured port and nowhere else.
                         if inner.port.is_some_and(|expected| expected != port) {
-                            halt(&mut inner, "companion-port-mismatch");
+                            kill = halt(&mut inner, "companion-port-mismatch");
                         } else {
                             inner.ready = true;
                             inner.status = Status::Running { port: port as u16 };
@@ -488,6 +574,7 @@ impl CompanionManager {
                             .to_owned();
                         if code == "policy-expired" {
                             inner.expired = true;
+                            expiring = true;
                         }
                         if let Some(pending) = inner.pending.take() {
                             let _ = pending.reply.send(Err(code.clone()));
@@ -503,9 +590,46 @@ impl CompanionManager {
         for event in outgoing {
             (self.emit)(event);
         }
+        self.kill_after_closing(kill);
+        if expiring {
+            self.shutdown_after_closing(generation);
+        }
     }
 
-    /// No automatic restart: while a replacement would back off, Serve would
+    /// A halted gateway is killed only once the node no longer forwards to its
+    /// port, so the failure is already published when the listener closes.
+    fn kill_after_closing(&self, kill: Option<oneshot::Sender<()>>) {
+        let Some(kill) = kill else { return };
+        let closing = self.closing.get().cloned();
+        tokio::spawn(async move {
+            if let Some(closing) = closing {
+                closing().await;
+            }
+            let _ = kill.send(());
+        });
+    }
+
+    /// A gateway whose policy expired keeps its port bound until it is told to
+    /// go. It is told once the node no longer forwards to it; the exit is then
+    /// handled as any expiry (not as a requested stop).
+    fn shutdown_after_closing(self: &Arc<Self>, generation: u64) {
+        let (manager, closing) = (self.clone(), self.closing.get().cloned());
+        tokio::spawn(async move {
+            if let Some(closing) = closing {
+                closing().await;
+            }
+            let inner = manager.inner.lock().unwrap();
+            if let Some(process) = inner
+                .process
+                .as_ref()
+                .filter(|_| inner.generation == generation)
+            {
+                let _ = process.input.send(SHUTDOWN_FRAME.to_vec());
+            }
+        });
+    }
+
+    /// No automatic restart: while a replacement would back off, the node would
     /// forward the tailnet to a loopback port any local process could bind.
     fn on_exit(self: &Arc<Self>, generation: u64) {
         let (status, stopped) = {
@@ -559,9 +683,7 @@ impl CompanionManager {
                 (self.emit)(status_event(&Status::Disabled));
                 return;
             };
-            let _ = process
-                .input
-                .send(b"{\"v\":1,\"type\":\"shutdown\"}\n".to_vec());
+            let _ = process.input.send(SHUTDOWN_FRAME.to_vec());
             let kill = process.kill.take();
             let exited = process.exited.clone();
             inner.terminal = Some(Status::Disabled);
@@ -581,18 +703,73 @@ impl CompanionManager {
         }
     }
 
-    /// For the app-exit branch, which runs outside any async context.
-    pub fn stop_blocking(self: &Arc<Self>) {
-        if self.inner.lock().unwrap().status == Status::Disabled {
-            return;
+    /// Stops the gateway as failed from outside, when the node in front of it
+    /// is gone. Nothing is done unless a gateway runs.
+    pub fn fail(&self, code: &str) {
+        let (status, kill) = {
+            let mut inner = self.inner.lock().unwrap();
+            let live = matches!(inner.status, Status::Starting | Status::Running { .. });
+            if inner.process.is_none() || !live {
+                return;
+            }
+            let kill = halt(&mut inner, code);
+            (inner.status.clone(), kill)
+        };
+        (self.emit)(status_event(&status));
+        self.kill_after_closing(kill);
+    }
+
+    /// A failure that ended a gateway stays until something new starts. Called
+    /// as a sign-in or an enable begins, so neither sits beside the old one.
+    pub fn clear_failure(&self) {
+        let cleared = {
+            let mut inner = self.inner.lock().unwrap();
+            let stale = inner.process.is_none() && matches!(inner.status, Status::Failed { .. });
+            if stale {
+                inner.status = Status::Disabled;
+            }
+            stale
+        };
+        if cleared {
+            (self.emit)(status_event(&Status::Disabled));
         }
-        let (done, wait) = std::sync::mpsc::sync_channel(1);
-        let manager = self.clone();
-        tauri::async_runtime::spawn(async move {
-            manager.stop().await;
-            let _ = done.send(());
-        });
-        let _ = wait.recv_timeout(self.timing.stop * 2 + Duration::from_millis(500));
+    }
+
+    /// Sends a command the gateway does not answer (`spaces.roots`,
+    /// `push.devices`). Only a gateway that runs gets it; the next start is
+    /// given the same state in its init frame.
+    pub fn notify(&self, frame: &Value) {
+        let inner = self.inner.lock().unwrap();
+        let Some(process) = inner
+            .process
+            .as_ref()
+            .filter(|_| matches!(inner.status, Status::Running { .. }))
+        else {
+            return;
+        };
+        if let Ok(mut bytes) = serde_json::to_vec(frame) {
+            bytes.push(b'\n');
+            let _ = process.input.send(bytes);
+        }
+    }
+
+    /// The gateway's `push` init field. A key made anew drops every
+    /// subscription: the UI and a gateway that runs are told, like for any
+    /// other change. Blocks on the OS credential store.
+    pub fn push_init(&self) -> Value {
+        let before = self.push.listing();
+        let init = self.push.init();
+        if self.push.listing() != before {
+            self.push_devices();
+            (self.emit)(self.push.event());
+        }
+        init
+    }
+
+    /// Tells the gateway which devices get notifications, and at which of
+    /// their endpoints (by id).
+    fn push_devices(&self) {
+        self.notify(&json!({"v": 1, "type": "push.devices", "devices": self.push.listing()}));
     }
 
     /// Admin commands carry no request id: run one at a time and match the
@@ -622,16 +799,17 @@ impl CompanionManager {
             Err(_) => {
                 // Its late reply could be taken for the next command's, so
                 // this gateway is done.
-                let status = {
+                let halted = {
                     let mut inner = self.inner.lock().unwrap();
                     inner.pending = None;
                     (inner.generation == generation).then(|| {
-                        halt(&mut inner, "companion-timeout");
-                        inner.status.clone()
+                        let kill = halt(&mut inner, "companion-timeout");
+                        (inner.status.clone(), kill)
                     })
                 };
-                if let Some(status) = status {
+                if let Some((status, kill)) = halted {
                     (self.emit)(status_event(&status));
+                    self.kill_after_closing(kill);
                 }
                 Err("companion-timeout".into())
             }
@@ -740,16 +918,17 @@ fn reflects(frame: &Value, device: &Value) -> bool {
     }
 }
 
-fn halt(inner: &mut Inner, code: &str) {
+/// Marks the gateway failed and returns its kill handle: dropping it unsent
+/// kills the process, so the caller hands it to `kill_after_closing`.
+#[must_use]
+fn halt(inner: &mut Inner, code: &str) -> Option<oneshot::Sender<()>> {
     if let Some(pending) = inner.pending.take() {
         let _ = pending.reply.send(Err(code.into()));
     }
     let status = Status::Failed { code: code.into() };
     inner.terminal = Some(status.clone());
     inner.status = status;
-    if let Some(kill) = inner.process.as_mut().and_then(|p| p.kill.take()) {
-        let _ = kill.send(());
-    }
+    inner.process.as_mut().and_then(|p| p.kill.take())
 }
 
 fn status_event(status: &Status) -> Value {

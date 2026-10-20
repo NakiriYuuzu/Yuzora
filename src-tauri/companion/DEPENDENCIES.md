@@ -3,10 +3,26 @@
 ## Selected verifier and persistence
 
 - Exact `webauthn_rp =0.3.0`, default bin/serde plus `serde_relaxed`; all browser registration/assertion JSON uses Relaxed parsers. No custom cryptographic verifier.
-- ES256, EdDSA and RS256 software-authenticator registration/login run through real loopback HTTP. Production performs RSA signature **verification only**. RSA signing exists only in test fixtures; future VAPID uses ES256.
+- ES256, EdDSA and RS256 software-authenticator registration/login run through real loopback HTTP. Production performs RSA signature **verification only**. RSA signing exists only in test fixtures; VAPID uses ES256 and is signed by the desktop app, never by this crate.
 - Credential persistence is **not COSE**: `publicKeyState` is canonical base64url of library `StaticState::encode`, paired with mandatory `stateFormat: "webauthn_rp-0.3.0-static"`. Library Decode and key validation reject malformed data; decoded maximum 2058 bytes. Upgrading the verifier requires migration or re-registration, not silently decoding another version.
 - Device ID is also the random 16-byte userHandle. First credential requires residentKey; additional credentials use preferred and exclude existing credentials for the RP. BE=0 is a backup policy signal, not attested hardware provenance.
 - `rand08 =0.8.6` is test-only; this also resolves RSA's compatible rand 0.8 dependency. Initial 0.8.5 triggered RUSTSEC-2026-0097 and was narrowly upgraded, not ignored.
+
+## Transport identity
+
+- Peer identity comes from the embedded tsnet node (Go sidecar `yuzora-companion-net`) through a secret-authenticated loopback hop, not from the system `tailscale serve`. The sidecar sets `Yzc-Proxy-Secret` (init `proxySecret`: 32 random bytes, 43-char unpadded base64url) and `Yzc-Peer-Login` on every proxied request. The gateway keeps only a SHA-256 digest of the secret, compares it in constant time, and never reads `Tailscale-User-Login`.
+- No new Rust dependency: `base64`, `sha2`, `subtle` and `zeroize` are existing direct dependencies. The secret type has no Debug or Serialize.
+
+## Phase 3D read-only Git
+
+- No new Rust dependency: Git and trust come from the existing `yuzora-host` path dependency (`HostGit::read_root`, `git_service`, `git_log`, `workspace_trust`). The gateway only reads the desktop's trust file; a text tripwire in `tests/contracts.rs` keeps grant/revoke, remote commands and `FileAtRev` out of the Git module.
+- Runtime dependency: the user's own `git` executable, found through the `PATH` the desktop passes on. Host runs it with a sanitized environment, a 30 s timeout and capped output. A missing or too old Git surfaces as `git-failed`, never as its error text.
+- Host now depends directly on `unicode-normalization 0.1.25` (NFC comparison of untracked names on macOS, where Foundation stores NFD and git prints NFC). It was already in the lock through `webauthn_rp` (precis) and `tokio-postgres` (stringprep); the lock gained only the new `yuzora-host` edge, no version change.
+
+## Phase 7 Web Push
+
+- No new Rust dependency, and none may be added for push: the gateway only watches agent status through the existing Host facade and tells the desktop (`push.request` admin event). The desktop holds the VAPID key, encrypts (RFC 8291) and sends (RFC 8292). A text tripwire in `tests/contracts.rs` keeps network types and the `p256`, `ecdsa`, `aes_gcm` and `hkdf` crates out of `push.rs` and out of production `[dependencies]` (the `p256` dev-dependency is test-only, for the WebAuthn authenticator).
+- Subscription validation (endpoint host allowlist, key lengths) reuses `devices::decode` and `devices::valid_rp_id`; the allowlist is in `push.rs` (`PUSH_SERVICES`).
 
 ## Pinned CI tools and exceptions
 

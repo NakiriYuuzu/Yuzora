@@ -31,6 +31,59 @@ self.addEventListener("message", (event) => {
   if (event.data === "yzc-skip-waiting") self.skipWaiting()
 })
 
+// A push carries only labels and ids; the words around them come from here.
+const WORDS = {
+  en: { blocked: "Waiting for input", done: "Finished", other: "New activity" },
+  "zh-TW": { blocked: "等待輸入", done: "已完成", other: "有新的動態" },
+}
+
+// A push that can't be read still shows something: a browser drops the
+// subscription of a worker that receives pushes without showing them.
+self.addEventListener("push", (event) => {
+  let payload = null
+  try {
+    payload = event.data ? event.data.json() : null
+  } catch {
+    // Not JSON: it is shown as generic activity below.
+  }
+  const [title, options] = notification(payload)
+  event.waitUntil(self.registration.showNotification(title, options))
+})
+
+function notification(payload) {
+  const words = WORDS[/^zh\b/i.test(self.navigator.language) ? "zh-TW" : "en"]
+  const text = (value) => (typeof value === "string" ? value : "")
+  const kind = payload?.kind
+  if ((kind !== "blocked" && kind !== "done") || !text(payload.session) || !text(payload.pane)) return ["Yuzora", { body: words.other }]
+  const space = text(payload.space)
+  return [text(payload.title) || "Yuzora", {
+    body: space ? `${space} · ${words[kind]}` : words[kind],
+    // One notification per pane; a new push for it alerts again.
+    tag: `${payload.session}\u0000${payload.pane}`,
+    renotify: true,
+    data: { session: payload.session, pane: payload.pane },
+  }]
+}
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close()
+  const { session, pane } = event.notification.data ?? {}
+  event.waitUntil(openPane(session, pane))
+})
+
+// Brings the app forward and has it open the pane. A closed app starts on a
+// link that does the same.
+async function openPane(session, pane) {
+  const known = typeof session === "string" && typeof pane === "string"
+  const [client] = await clients.matchAll({ type: "window", includeUncontrolled: true })
+  if (!client) {
+    await clients.openWindow(known ? `/#pane=${encodeURIComponent(JSON.stringify([session, pane]))}` : "/")
+    return
+  }
+  if (known) client.postMessage({ type: "yzc-open-pane", session, pane })
+  await client.focus().catch(() => undefined)
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request
   const url = new URL(request.url)

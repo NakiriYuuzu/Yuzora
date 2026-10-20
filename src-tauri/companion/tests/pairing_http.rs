@@ -1,5 +1,8 @@
+#[path = "support/identity.rs"]
+mod identity;
 #[path = "support/init.rs"]
 mod init_fixture;
+use identity::PROXY_SECRET;
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -79,7 +82,7 @@ impl Fixture {
     }
     async fn post_ua(&self, path: &str, body: Value, ua: &str) -> (u16, String) {
         let text = body.to_string();
-        let request = format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Type: application/json\r\nUser-Agent: {ua}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
+        let request = format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Type: application/json\r\nUser-Agent: {ua}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
         let mut socket = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, self.port))
             .await
             .unwrap();

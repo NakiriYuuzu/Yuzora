@@ -47,6 +47,10 @@ grep-searcher = "0.1"
 grep-regex = "0.1"
 rand = "0.10.3"
 sha2 = "0.11.0"
+# companion_push: RFC 8291 payload encryption and the VAPID (RFC 8292) signature.
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "ecdsa"] }
+hkdf = "0.13"
+aes-gcm = "0.11"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 libc = "0.2"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }

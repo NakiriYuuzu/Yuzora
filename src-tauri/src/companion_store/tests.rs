@@ -135,11 +135,7 @@ fn companion_store_corrupt_files_are_kept_and_backed_up() {
         ("settings.json", r#"{"version":1}"#),
         (
             "settings.json",
-            r#"{"version":1,"httpsPort":8443,"gatewayPort":0,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
-        ),
-        (
-            "settings.json",
-            r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":{"httpsPort":0,"gatewayPort":47110,"host":"h","login":"l"}}"#,
+            r#"{"version":1,"gatewayPort":0,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false}"#,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -171,25 +167,27 @@ fn companion_store_settings_defaults_and_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let defaults = Settings::load(dir.path()).unwrap();
     assert_eq!(defaults, Settings::default());
-    assert_eq!((defaults.https_port, defaults.gateway_port), (8443, 47110));
+    assert_eq!(defaults.gateway_port, 47110);
     assert_eq!(defaults.duration, EnableFor::EightHours);
     assert!(!defaults.experimental, "the Experimental opt-in starts off");
-    // Files written before the opt-in existed still load, with it off.
+    assert_eq!(defaults.net, None);
+    // Files written before the opt-in or the node existed still load, with
+    // them off; so do the fields of the Serve handler this replaced.
     std::fs::write(
         dir.path().join("settings.json"),
-        r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
+        r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":{"httpsPort":0,"gatewayPort":47110,"host":"h","login":"l"}}"#,
     )
     .unwrap();
-    assert!(!Settings::load(dir.path()).unwrap().experimental);
+    let old = Settings::load(dir.path()).unwrap();
+    assert!(!old.experimental);
+    assert_eq!(old.net, None);
     std::fs::remove_file(dir.path().join("settings.json")).unwrap();
     let mut settings = defaults;
     settings.duration = EnableFor::UntilExit;
     settings.experimental = true;
     settings.session_allowlist = vec!["default".into()];
-    settings.applied = Some(AppliedServe {
-        https_port: 8443,
-        gateway_port: 47110,
-        host: "desktop.tail1234.ts.net".into(),
+    settings.net = Some(NetIdentity {
+        dns_name: "desktop.tail1234.ts.net".into(),
         login: "user@example.com".into(),
     });
     settings.save(dir.path()).unwrap();
@@ -197,7 +195,8 @@ fn companion_store_settings_defaults_and_round_trip() {
     let raw: Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap()).unwrap();
     assert_eq!(raw["duration"], "untilExit");
-    assert_eq!(raw["applied"]["httpsPort"], 8443);
+    assert_eq!(raw["net"]["dnsName"], "desktop.tail1234.ts.net");
+    assert!(raw.get("applied").is_none() && raw.get("httpsPort").is_none());
 }
 
 #[cfg(unix)]

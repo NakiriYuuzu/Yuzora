@@ -1,9 +1,12 @@
 #![cfg(unix)]
 //! Actual gateway process + isolated fake Herdr. Never browser automation.
+#[path = "support/identity.rs"]
+mod identity;
 #[path = "support/init.rs"]
 mod init_fixture;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use futures_util::{SinkExt, StreamExt};
+use identity::PROXY_SECRET;
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -135,7 +138,7 @@ async fn post(port: u16, path: &str, body: Value) -> (Value, String) {
     let mut socket = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
-    socket.write_all(format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.to_string().len()).as_bytes()).await.unwrap();
+    socket.write_all(format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.to_string().len()).as_bytes()).await.unwrap();
     let mut text = String::new();
     tokio::time::timeout(Duration::from_secs(3), socket.read_to_string(&mut text))
         .await
@@ -207,7 +210,8 @@ async fn herdr_process_clears_inherited_routing_env_and_shutdown_reaps_fake_chil
         .unwrap();
     for (key, value) in [
         ("origin", "https://desktop.tailnet.ts.net:8443"),
-        ("tailscale-user-login", "user@example.com"),
+        ("yzc-proxy-secret", PROXY_SECRET),
+        ("yzc-peer-login", "user@example.com"),
         ("cookie", cookie),
     ] {
         request.headers_mut().insert(key, value.parse().unwrap());

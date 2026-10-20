@@ -2,7 +2,14 @@ use super::*;
 use crate::test_support::Fixture;
 
 fn authenticated_fixture() -> (Fixture, AuthContext) {
+    authenticated_fixture_with(|_| {})
+}
+
+fn authenticated_fixture_with(
+    configure: impl FnOnce(&mut crate::admin::Init),
+) -> (Fixture, AuthContext) {
     let mut init = Fixture::init();
+    configure(&mut init);
     init.devices =
         vec![serde_json::from_str(include_str!("../tests/fixtures/device.json")).unwrap()];
     let f = Fixture::with_init(init);
@@ -117,6 +124,13 @@ async fn bridge_allowlist_schema_request_methods_and_explicit_deny_list() {
         ("terminal.observe", Scope::View),
         ("stream.close", Scope::View),
         ("push.subscribe", Scope::View),
+        ("push.unsubscribe", Scope::View),
+        ("push.status", Scope::View),
+        ("git.status", Scope::View),
+        ("git.branches", Scope::View),
+        ("git.log", Scope::View),
+        ("git.commit", Scope::View),
+        ("git.diff", Scope::View),
         ("terminal.control", Scope::Control),
         ("terminal.input", Scope::Control),
         ("terminal.scroll", Scope::Control),
@@ -135,6 +149,122 @@ async fn bridge_allowlist_schema_request_methods_and_explicit_deny_list() {
             .collect::<Vec<_>>(),
         expected
     );
+}
+
+#[tokio::test]
+async fn bridge_hello_advertises_push_and_push_methods_answer_and_notify_the_desktop() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let key = URL_SAFE_NO_PAD.encode([&[4u8][..], &[7u8; 64]].concat());
+    let (mut f, ctx) = authenticated_fixture_with(|init| {
+        init.push = Some(crate::admin::PushInit {
+            vapid_public_key: key.clone(),
+            devices: Vec::new(),
+        });
+    });
+    let gateway = f.gateway.clone();
+    let call = |method: &str, params: Value| {
+        rpc(
+            &gateway,
+            &ctx,
+            &json!({"id":5,"method":method,"params":params}).to_string(),
+        )
+        .unwrap_or_else(|_| panic!("valid view context"))
+    };
+    assert_eq!(
+        call("hello", json!({}))["result"]["push"],
+        json!({"vapidPublicKey":key})
+    );
+    let keys = json!({"p256dh":key,"auth":URL_SAFE_NO_PAD.encode([9u8; 16])});
+    let endpoint = "https://updates.push.services.mozilla.com/wpush/v2/abc";
+    let status = json!({"endpoint":endpoint});
+    assert_eq!(
+        call("push.status", status.clone()),
+        json!({"id":5,"result":{"available":true,"subscribed":false}})
+    );
+    assert_eq!(
+        call("push.subscribe", json!({"endpoint":endpoint,"keys":keys})),
+        json!({"id":5,"result":{"subscribed":true}})
+    );
+    assert_eq!(
+        f.event().await,
+        json!({"v":1,"type":"push.subscription","deviceId":"AAAAAAAAAAAAAAAAAAAAAA",
+            "subscription":{"endpoint":endpoint,"p256dh":keys["p256dh"],"auth":keys["auth"]}})
+    );
+    // The desktop stored it and says so: on for this browser, off for another.
+    let id = crate::secrets::encode(&crate::secrets::hash(endpoint.as_bytes()));
+    let stored = serde_json::from_value(json!({"v":1,"type":"push.devices","devices":[
+        {"deviceId":"AAAAAAAAAAAAAAAAAAAAAA","endpoints":[id]}]}))
+    .unwrap();
+    gateway
+        .command(crate::admin::CommandBody::Push(stored))
+        .unwrap();
+    assert_eq!(
+        call("push.status", status.clone()),
+        json!({"id":5,"result":{"available":true,"subscribed":true}})
+    );
+    assert_eq!(
+        call(
+            "push.status",
+            json!({"endpoint":"https://fcm.googleapis.com/x"})
+        ),
+        json!({"id":5,"result":{"available":true,"subscribed":false}})
+    );
+    assert_eq!(
+        call("push.status", json!({})),
+        json!({"id":5,"result":{"available":true,"subscribed":false}})
+    );
+    assert_eq!(
+        call("push.unsubscribe", status),
+        json!({"id":5,"result":{"subscribed":false}})
+    );
+    assert_eq!(
+        f.event().await,
+        json!({"v":1,"type":"push.subscription","deviceId":"AAAAAAAAAAAAAAAAAAAAAA",
+            "subscription":null,"endpointId":id})
+    );
+    for (method, params) in [
+        ("push.subscribe", json!({})),
+        (
+            "push.subscribe",
+            json!({"endpoint":"https://evil.com/x","keys":keys}),
+        ),
+        ("push.unsubscribe", Value::Null),
+        ("push.unsubscribe", json!({})),
+        ("push.unsubscribe", json!({"endpoint":null})),
+        ("push.status", json!({"x":1})),
+        ("push.status", json!({"endpoint":5})),
+    ] {
+        assert_eq!(
+            call(method, params)["error"]["code"],
+            "invalid-params",
+            "{method}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn bridge_push_methods_are_unavailable_when_init_has_no_push() {
+    let (f, ctx) = authenticated_fixture();
+    let call = |method: &str, params: Value| {
+        rpc(
+            &f.gateway,
+            &ctx,
+            &json!({"id":6,"method":method,"params":params}).to_string(),
+        )
+        .unwrap_or_else(|_| panic!("valid view context"))
+    };
+    assert_eq!(call("hello", json!({}))["result"]["push"], Value::Null);
+    assert_eq!(
+        call("push.status", json!({})),
+        json!({"id":6,"result":{"available":false,"subscribed":false}})
+    );
+    for method in ["push.subscribe", "push.unsubscribe"] {
+        assert_eq!(
+            call(method, json!({}))["error"]["code"],
+            "push-unavailable",
+            "{method}"
+        );
+    }
 }
 
 #[tokio::test]

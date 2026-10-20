@@ -14,7 +14,7 @@ use std::{
 
 const DEVICES_FILE: &str = "devices.json";
 const SETTINGS_FILE: &str = "settings.json";
-const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 1;
 
 #[derive(Deserialize, Serialize)]
 struct DevicesFile {
@@ -281,14 +281,11 @@ impl EnableFor {
     }
 }
 
-/// The Serve handler this desktop added. Kept apart from the current ports:
-/// removal must target what was applied, even after the settings change.
+/// The node this desktop last saw logged in; shown while the sidecar is stopped.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppliedServe {
-    pub https_port: u16,
-    pub gateway_port: u16,
-    pub host: String,
+pub struct NetIdentity {
+    pub dns_name: String,
     pub login: String,
 }
 
@@ -296,12 +293,12 @@ pub struct AppliedServe {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub version: u32,
-    pub https_port: u16,
     pub gateway_port: u16,
     pub duration: EnableFor,
     pub session_allowlist: Vec<String>,
     pub full_session_enabled: bool,
-    pub applied: Option<AppliedServe>,
+    #[serde(default)]
+    pub net: Option<NetIdentity>,
     /// The Experimental opt-in: off, the Companion cannot be enabled.
     #[serde(default)]
     pub experimental: bool,
@@ -310,12 +307,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             version: VERSION,
-            https_port: 8443,
             gateway_port: 47110,
             duration: EnableFor::default(),
             session_allowlist: Vec::new(),
             full_session_enabled: false,
-            applied: None,
+            net: None,
             experimental: false,
         }
     }
@@ -324,17 +320,9 @@ impl Settings {
     pub fn load(dir: &Path) -> Result<Self, String> {
         let path = dir.join(SETTINGS_FILE);
         let settings = read_versioned::<Self>(&path, |s| s.version)?.unwrap_or_default();
-        // Port 0 would have Serve proxy to nothing while the gateway binds an
-        // ephemeral port.
-        let mut ports = [settings.https_port, settings.gateway_port]
-            .into_iter()
-            .chain(
-                settings
-                    .applied
-                    .iter()
-                    .flat_map(|a| [a.https_port, a.gateway_port]),
-            );
-        if ports.any(|port| port == 0) {
+        // Port 0 would have the node proxy to nothing while the gateway binds
+        // an ephemeral port.
+        if settings.gateway_port == 0 {
             return Err(corrupt(&path));
         }
         Ok(settings)
@@ -344,7 +332,7 @@ impl Settings {
     }
 }
 
-fn read_versioned<T: for<'de> Deserialize<'de>>(
+pub(crate) fn read_versioned<T: for<'de> Deserialize<'de>>(
     path: &Path,
     version: impl Fn(&T) -> u32,
 ) -> Result<Option<T>, String> {
@@ -371,7 +359,7 @@ fn corrupt(path: &Path) -> String {
     "companion-store-corrupt".to_string()
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("companion-store-write-failed: {e}");
     let dir = path.parent().ok_or("companion-store-write-failed")?;
     create_private_dir(dir).map_err(failed)?;

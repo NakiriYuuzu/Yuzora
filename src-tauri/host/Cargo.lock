@@ -2334,6 +2334,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-util",
+ "unicode-normalization",
  "uuid",
  "webpki-roots",
  "windows-sys 0.61.2",

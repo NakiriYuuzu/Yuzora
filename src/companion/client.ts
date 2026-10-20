@@ -1,9 +1,10 @@
 import { withAgentStatus, withoutPane } from "./lib/agents"
 import { api } from "./lib/api"
+import type { PaneTarget } from "./lib/deepLink"
 import type { AgentStatus, Hello, SessionInfo, Snapshot, StreamOpen } from "./lib/protocol"
 import { CompanionSocket, RpcError } from "./lib/rpc"
 import { clockOffset } from "./lib/time"
-import { navigate, storage, useCompanion } from "./store"
+import { navigate, open, storage, useCompanion } from "./store"
 
 type StreamHandlers = { data: (bytes: Uint8Array) => void; closed: (reason: string) => void }
 
@@ -132,6 +133,28 @@ export async function refresh(): Promise<void> {
     snapshots: Object.fromEntries(Object.entries(state.snapshots).filter(([name]) => sessions.some((item) => item.name === name))),
   }))
   await Promise.all(sessions.map((session) => loadSession(session.name, false)))
+  openPendingPane()
+}
+
+/**
+ * Takes the user to the pane a notification pointed at. A pane the snapshots
+ * don't show yet waits for the next refresh (started now when connected); one
+ * that is gone then is dropped.
+ */
+export function showPane(target: PaneTarget): void {
+  useCompanion.setState({ pendingPane: target })
+  if (paneKnown(target)) openPendingPane()
+  else if (useCompanion.getState().socket === "ready") void refresh()
+}
+
+const paneKnown = ({ session, pane }: PaneTarget) => useCompanion.getState().snapshots[session]?.panes.some((item) => item.id === pane) ?? false
+
+function openPendingPane(): void {
+  const { pendingPane: target, screen } = useCompanion.getState()
+  if (!target) return
+  useCompanion.setState({ pendingPane: null })
+  const showing = screen.name === "pane" && screen.session === target.session && screen.pane === target.pane
+  if (paneKnown(target) && !showing) open({ name: "pane", session: target.session, pane: target.pane })
 }
 
 // The gateway scopes agent-status events to the panes that existed when the
@@ -205,7 +228,7 @@ export function noteActivity(): void {
 export function endSession(reason: "expired" | "logged-out"): void {
   disconnect()
   storage.setBinding(null)
-  useCompanion.setState({ hello: null, sessions: null, snapshots: {}, sessionErrors: {}, elevation: null })
+  useCompanion.setState({ hello: null, sessions: null, snapshots: {}, sessionErrors: {}, git: {}, spaceView: {}, elevation: null })
   navigate({ name: "login", reason })
 }
 

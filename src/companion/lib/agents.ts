@@ -57,6 +57,16 @@ export function projectSpaces(snapshot: Snapshot): SpaceGroup[] {
   })
 }
 
+export type OtherSpace = { session: string; workspaceId: string; label: string | null }
+
+/** Spaces without an agent, which `projectSpaces` leaves out. Their repositories stay reachable. */
+export function otherSpaces(snapshot: Snapshot): OtherSpace[] {
+  const busy = new Set(projectSpaces(snapshot).map((group) => group.workspaceId))
+  return snapshot.workspaces.flatMap((workspace) =>
+    workspace.id === null || busy.has(workspace.id) ? [] : [{ session: snapshot.session, workspaceId: workspace.id, label: workspace.label }],
+  )
+}
+
 /**
  * Applies `agent.status`. Returns null for a pane the snapshot does not know:
  * events never announce new agents, so the caller fetches a fresh snapshot.

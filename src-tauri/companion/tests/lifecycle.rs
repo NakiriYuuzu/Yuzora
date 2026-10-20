@@ -1,3 +1,6 @@
+#[path = "support/identity.rs"]
+mod identity;
+use identity::PROXY_SECRET;
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -15,6 +18,8 @@ struct Process {
     stderr: Option<thread::JoinHandle<String>>,
     root: TempDir,
     timing: bool,
+    /// The shutdown timing lines of an exited timing process.
+    stages: String,
 }
 impl Process {
     fn new() -> Self {
@@ -63,12 +68,14 @@ impl Process {
             stderr,
             root,
             timing,
+            stages: String::new(),
         }
     }
     fn init_value(&self) -> Value {
         json!({"v":1,"type":"init","herdrBinary":self.root.path().join("DO-NOT-EXECUTE-HERDR"),"sessionAllowlist":["stopped-session"],"webRoot":self.root.path(),
-            "listeners":{"loopback":{"port":0,"publicHost":"desktop.tailnet.ts.net:8443","requiredTailscaleLogin":"user@example.com"},"lan":null},
-            "devices":[],"policy":{"enableUntil":"2099-01-01T00:00:00Z","viewIdleMin":30,"viewAbsoluteHours":12,"elevationMaxMin":15,"fullSessionEnabled":false,"maxDevices":5}})
+            "listeners":{"loopback":{"port":0,"publicHost":"desktop.tailnet.ts.net:8443","requiredTailscaleLogin":"user@example.com","proxySecret":PROXY_SECRET},"lan":null},
+            "devices":[],"policy":{"enableUntil":"2099-01-01T00:00:00Z","viewIdleMin":30,"viewAbsoluteHours":12,"elevationMaxMin":15,"fullSessionEnabled":false,"maxDevices":5},
+            "trustStore":self.root.path().join("workspace-trust.json"),"spaceRoots":[]})
     }
     fn send(&mut self, value: &Value) {
         self.raw(&(serde_json::to_string(value).unwrap() + "\n"));
@@ -114,6 +121,7 @@ impl Process {
                             "missing {stage}: {stderr}"
                         );
                     }
+                    self.stages = stderr;
                 }
                 return status;
             }
@@ -128,6 +136,17 @@ impl Process {
     }
     fn stderr(&mut self) -> String {
         self.stderr.take().unwrap().join().unwrap()
+    }
+    /// How long main waited for the server task after the stop request.
+    fn server_join(&self) -> Duration {
+        let micros = self
+            .stages
+            .split("stage=server-join elapsed_us=")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .and_then(|value| value.parse().ok())
+            .expect("server-join timing");
+        Duration::from_micros(micros)
     }
 }
 impl Drop for Process {
@@ -147,8 +166,8 @@ impl Drop for Process {
 fn address(port: u16) -> SocketAddr {
     ([127, 0, 0, 1], port).into()
 }
-fn closed(port: u16, mut connection: TcpStream) {
-    assert!(TcpStream::connect_timeout(&address(port), Duration::from_millis(200)).is_err());
+/// The peer's side of a connection the gateway closed: end of stream or a reset.
+fn ended(mut connection: TcpStream) {
     let mut b = [0];
     match connection.read(&mut b) {
         Ok(0) => {}
@@ -159,6 +178,10 @@ fn closed(port: u16, mut connection: TcpStream) {
             ) => {}
         result => panic!("connection survived shutdown: {result:?}"),
     }
+}
+fn closed(port: u16, connection: TcpStream) {
+    assert!(TcpStream::connect_timeout(&address(port), Duration::from_millis(200)).is_err());
+    ended(connection);
 }
 
 #[test]
@@ -252,6 +275,214 @@ fn admin_pem_fields_rejected_without_logging_or_files() {
 }
 
 #[test]
+fn lifecycle_invalid_proxy_secret_is_a_fixed_fatal_admin_error() {
+    let mut other_bit = PROXY_SECRET.to_owned();
+    other_bit.replace_range(42.., "B");
+    for secret in [
+        "".to_owned(),
+        PROXY_SECRET[..42].to_owned(),
+        format!("{PROXY_SECRET}A"),
+        PROXY_SECRET.replace('Q', "+"),
+        format!("{PROXY_SECRET}="),
+        other_bit,
+    ] {
+        let mut p = Process::new();
+        let mut init = p.init_value();
+        init["listeners"]["loopback"]["proxySecret"] = json!(secret);
+        p.send(&init);
+        // Fixed event body: the rejected value is never echoed.
+        assert_eq!(
+            p.event(),
+            json!({"v":1,"type":"error","code":"invalid-proxy-secret","message":"Companion request rejected"})
+        );
+        assert!(!p.exited(Duration::from_secs(2)).success());
+        assert!(p.stderr().is_empty());
+    }
+}
+
+#[test]
+fn lifecycle_init_without_proxy_secret_is_rejected_then_recovers() {
+    let mut p = Process::new();
+    let mut init = p.init_value();
+    init["listeners"]["loopback"]
+        .as_object_mut()
+        .unwrap()
+        .remove("proxySecret");
+    p.send(&init);
+    assert_eq!(p.event()["code"], "invalid-command");
+    // Same recovery as any other malformed init: the process keeps waiting.
+    p.init();
+    p.send(&json!({"v":1,"type":"shutdown"}));
+    assert!(p.exited(Duration::from_secs(2)).success());
+}
+
+#[test]
+fn lifecycle_invalid_trust_store_or_space_roots_are_fixed_fatal_admin_errors() {
+    let space = |session: &str, workspace: &str, root: &str| json!({"session":session,"workspaceId":workspace,"root":root});
+    let absolute = std::env::temp_dir().to_string_lossy().into_owned();
+    for (field, value, code) in [
+        (
+            "trustStore",
+            json!("relative/workspace-trust.json"),
+            "invalid-trust-store",
+        ),
+        (
+            "spaceRoots",
+            json!([space("work", "w", "relative")]),
+            "invalid-space-roots",
+        ),
+        (
+            "spaceRoots",
+            json!([
+                space("stopped-session", "w", &absolute),
+                space("stopped-session", "w", &absolute)
+            ]),
+            "invalid-space-roots",
+        ),
+    ] {
+        let mut p = Process::new();
+        let mut init = p.init_value();
+        init[field] = value;
+        p.send(&init);
+        // Fixed event body: no path or entry is echoed.
+        assert_eq!(
+            p.event(),
+            json!({"v":1,"type":"error","code":code,"message":"Companion request rejected"})
+        );
+        assert!(!p.exited(Duration::from_secs(2)).success());
+        assert!(p.stderr().is_empty());
+    }
+}
+
+#[test]
+fn lifecycle_init_without_trust_store_or_space_roots_is_rejected_then_recovers() {
+    let mut p = Process::new();
+    for field in ["trustStore", "spaceRoots"] {
+        let mut init = p.init_value();
+        init.as_object_mut().unwrap().remove(field);
+        p.send(&init);
+        assert_eq!(p.event()["code"], "invalid-command", "{field}");
+    }
+    // Same recovery as any other malformed init: the process keeps waiting.
+    p.init();
+    p.send(&json!({"v":1,"type":"shutdown"}));
+    assert!(p.exited(Duration::from_secs(2)).success());
+}
+
+#[test]
+fn lifecycle_spaces_roots_applies_silently_and_a_rejected_one_keeps_the_process_up() {
+    let mut p = Process::new();
+    let mut init = p.init_value();
+    let root = p.root.path().to_string_lossy().into_owned();
+    // Entries outside the allowlist are dropped silently, also at init.
+    init["spaceRoots"] = json!([
+        {"session":"stopped-session","workspaceId":"w","root":root},
+        {"session":"unlisted","workspaceId":"w","root":root},
+    ]);
+    p.send(&init);
+    assert_eq!(p.event()["type"], "ready");
+    p.send(&json!({"v":1,"type":"spaces.roots","roots":[
+        {"session":"stopped-session","workspaceId":"x","root":root},
+        {"session":"unlisted","workspaceId":"x","root":root},
+    ]}));
+    p.send(&json!({"v":1,"type":"spaces.roots","roots":[
+        {"session":"stopped-session","workspaceId":"x","root":"relative/SECRET-ROOT"},
+    ]}));
+    // The applied command said nothing: the first event is the refusal.
+    assert_eq!(
+        p.event(),
+        json!({"v":1,"type":"error","code":"admin-command-rejected","message":"Companion request rejected"})
+    );
+    p.send(&json!({"v":1,"type":"spaces.roots","roots":[{"extra":1}]}));
+    assert_eq!(p.event()["code"], "invalid-command");
+    p.send(&json!({"v":1,"type":"shutdown"}));
+    assert!(p.exited(Duration::from_secs(2)).success());
+    assert!(p.stdout.try_iter().next().is_none());
+    assert!(!p.stderr().contains("SECRET"));
+}
+
+fn vapid() -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.encode([&[4u8][..], &[1u8; 64]].concat())
+}
+
+/// A valid endpoint id (any 32 bytes, unpadded base64url).
+fn endpoint_id(n: u8) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD.encode([n; 32])
+}
+fn holding(device: &str, endpoints: &[u8]) -> Value {
+    json!({"deviceId":device,"endpoints":endpoints.iter().map(|n| endpoint_id(*n)).collect::<Vec<_>>()})
+}
+
+#[test]
+fn lifecycle_invalid_push_init_is_a_fixed_fatal_admin_error() {
+    let many: Vec<_> = (0..65)
+        .map(|n| holding(&format!("device-{n}"), &[1]))
+        .collect();
+    for push in [
+        json!({"vapidPublicKey":"","devices":[]}),
+        json!({"vapidPublicKey":"SECRET-KEY","devices":[]}),
+        json!({"vapidPublicKey":vapid().replacen('B', "C", 1),"devices":[]}),
+        json!({"vapidPublicKey":format!("{}=", vapid()),"devices":[]}),
+        json!({"vapidPublicKey":vapid(),"devices":many}),
+        json!({"vapidPublicKey":vapid(),"devices":[holding("device", &[])]}),
+        json!({"vapidPublicKey":vapid(),"devices":[holding("device", &[1, 2, 3, 4, 5])]}),
+        json!({"vapidPublicKey":vapid(),"devices":[holding("device", &[1]), holding("device", &[2])]}),
+        json!({"vapidPublicKey":vapid(),"devices":[{"deviceId":"device","endpoints":["https://fcm.googleapis.com/SECRET-ENDPOINT"]}]}),
+    ] {
+        let mut p = Process::new();
+        let mut init = p.init_value();
+        init["push"] = push;
+        p.send(&init);
+        // Fixed event body: the rejected value is never echoed.
+        assert_eq!(
+            p.event(),
+            json!({"v":1,"type":"error","code":"invalid-push","message":"Companion request rejected"})
+        );
+        assert!(!p.exited(Duration::from_secs(2)).success());
+        assert!(p.stderr().is_empty());
+    }
+}
+
+#[test]
+fn lifecycle_push_devices_applies_silently_and_is_refused_without_push() {
+    let mut p = Process::new();
+    let mut init = p.init_value();
+    init["push"] = json!({"vapidPublicKey":vapid(),"devices":[holding("unknown", &[1, 2])]});
+    p.send(&init);
+    assert_eq!(p.event()["type"], "ready");
+    p.send(&json!({"v":1,"type":"push.devices","devices":[holding("unknown", &[3])]}));
+    p.send(&json!({"v":1,"type":"push.devices","devices":[]}));
+    // The applied commands said nothing: the first event is the later one.
+    p.send(&json!({"v":1,"type":"future.command"}));
+    assert_eq!(p.event()["code"], "unknown-type");
+    // Over a limit: refused, and the process carries on.
+    p.send(&json!({"v":1,"type":"push.devices","devices":[holding("unknown", &[1, 2, 3, 4, 5])]}));
+    assert_eq!(
+        p.event(),
+        json!({"v":1,"type":"error","code":"admin-command-rejected","message":"Companion request rejected"})
+    );
+    p.send(&json!({"v":1,"type":"push.devices","deviceIds":[]}));
+    assert_eq!(p.event()["code"], "invalid-command");
+    p.send(&json!({"v":1,"type":"push.devices","devices":[1]}));
+    assert_eq!(p.event()["code"], "invalid-command");
+    p.send(&json!({"v":1,"type":"shutdown"}));
+    assert!(p.exited(Duration::from_secs(2)).success());
+    assert!(p.stdout.try_iter().next().is_none());
+
+    let mut p = Process::new();
+    p.init();
+    p.send(&json!({"v":1,"type":"push.devices","devices":[]}));
+    assert_eq!(
+        p.event(),
+        json!({"v":1,"type":"error","code":"admin-command-rejected","message":"Companion request rejected"})
+    );
+    p.send(&json!({"v":1,"type":"shutdown"}));
+    assert!(p.exited(Duration::from_secs(2)).success());
+}
+
+#[test]
 fn lifecycle_port_in_use_is_admin_error_without_fallback() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let mut p = Process::new();
@@ -286,9 +517,9 @@ fn lifecycle_broken_stdout_exits_and_closes_listener_with_fixed_stderr() {
     assert_eq!(p.stderr(), "Companion admin stdout unavailable\n");
 }
 
-#[test]
-fn policy_expiry_closes_listener_connections_emits_error_exits_nonzero() {
-    let mut p = Process::new();
+/// A gateway whose policy ends in two seconds, with one peer connected.
+fn expiring(timing: bool) -> (Process, u16, TcpStream) {
+    let mut p = Process::with_options(true, timing);
     let mut init = p.init_value();
     init["policy"]["enableUntil"] = json!((chrono::Utc::now() + chrono::Duration::seconds(2))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
@@ -300,10 +531,84 @@ fn policy_expiry_closes_listener_connections_emits_error_exits_nonzero() {
     connection
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
+    (p, port, connection)
+}
+fn bind(port: u16) -> std::io::Result<std::net::TcpListener> {
+    std::net::TcpListener::bind(address(port))
+}
+/// The held port: bound (nobody else can take it), and a new connection is
+/// accepted and closed at once, never left waiting and never refused.
+fn held(port: u16) {
+    assert_eq!(
+        bind(port).err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::AddrInUse),
+        "the port was released"
+    );
+    let fresh = TcpStream::connect_timeout(&address(port), Duration::from_millis(500))
+        .expect("a held port accepts");
+    fresh
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    ended(fresh);
+}
+fn released(port: u16) {
+    for _ in 0..50 {
+        if bind(port).is_ok() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the port was never released");
+}
+
+#[test]
+fn policy_expiry_announces_first_keeps_the_port_bound_and_exits_at_shutdown() {
+    let (mut p, port, connection) = expiring(true);
     assert_eq!(p.event()["code"], "policy-expired");
-    assert!(!p.exited(Duration::from_secs(2)).success());
-    closed(port, connection);
+    let announced = Instant::now();
+    // The event is the desktop's first signal: the port is still ours, and the
+    // peers that were connected are gone.
+    held(port);
+    ended(connection);
+    p.send(&json!({"v":1,"type":"shutdown"}));
+    assert!(!p.exited(Duration::from_secs(3)).success());
+    // Ended by the command, not by the five second hold, and the server task
+    // stopped by itself rather than at main's one second abort.
+    assert!(announced.elapsed() < Duration::from_millis(4500));
+    assert!(p.server_join() < Duration::from_millis(900));
+    released(port);
+}
+
+#[test]
+fn policy_expiry_hold_ends_by_itself_after_five_seconds() {
+    let (mut p, port, connection) = expiring(false);
+    assert_eq!(p.event()["code"], "policy-expired");
+    let announced = Instant::now();
+    held(port);
+    thread::sleep(Duration::from_secs(2));
+    held(port);
+    assert!(!p.exited(Duration::from_secs(6)).success());
+    let held_for = announced.elapsed();
+    assert!(
+        held_for >= Duration::from_secs(4),
+        "released after {held_for:?}"
+    );
+    released(port);
+    ended(connection);
     assert!(p.stderr().is_empty());
+}
+
+#[test]
+fn policy_expiry_hold_ends_at_stdin_eof() {
+    let (mut p, port, _connection) = expiring(true);
+    assert_eq!(p.event()["code"], "policy-expired");
+    let announced = Instant::now();
+    held(port);
+    drop(p.child.stdin.take());
+    assert!(!p.exited(Duration::from_secs(3)).success());
+    assert!(announced.elapsed() < Duration::from_millis(4500));
+    assert!(p.server_join() < Duration::from_millis(900));
+    released(port);
 }
 
 #[test]
@@ -354,7 +659,7 @@ fn pairing_complete_protocol_never_leaks_tokens_tickets_or_sas_to_stderr() {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let text = body.to_string();
-        write!(connection, "POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).unwrap();
+        write!(connection, "POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).unwrap();
         let mut response = String::new();
         connection.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 200"));

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::Fixture;
+use crate::test_support::{identity::PROXY_SECRET, Fixture};
 
 const DEVICE: &str = "AAAAAAAAAAAAAAAAAAAAAA";
 const RP: &str = "desktop.tailnet.ts.net";
@@ -258,7 +258,7 @@ async fn session_logout_real_loopback_validates_and_clears_cookie() {
         let mut client = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
             .await
             .unwrap();
-        client.write_all(format!("POST /api/auth/logout HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nCookie: __Host-yzc={}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n", crate::secrets::encode(&id)).as_bytes()).await.unwrap();
+        client.write_all(format!("POST /api/auth/logout HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nCookie: __Host-yzc={}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n", crate::secrets::encode(&id)).as_bytes()).await.unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).await.unwrap();
         assert!(response.starts_with(&format!("HTTP/1.1 {expected}")));
@@ -273,14 +273,24 @@ async fn session_logout_real_loopback_validates_and_clears_cookie() {
     task.await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn policy_injected_clock_closes_listener_and_all_connections() {
-    use tokio::{io::AsyncReadExt, net::TcpStream, sync::oneshot};
+/// A server on a policy that ends ten seconds into the injected clock, one
+/// peer connected. Time is paused.
+struct Expiring {
+    f: Fixture,
+    port: u16,
+    client: tokio::net::TcpStream,
+    expiry: tokio::sync::oneshot::Receiver<()>,
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<bool>,
+    remaining: Duration,
+}
+async fn expiring_server() -> Expiring {
+    use tokio::{net::TcpStream, sync::oneshot};
     let mut init = Fixture::init();
     init.policy.enable_until = serde_json::from_str("\"2030-01-01T00:00:10Z\"").unwrap();
     let f = Fixture::with_init(init);
     let root = tempfile::tempdir().unwrap();
-    let server = crate::http::Server::bind(
+    let mut server = crate::http::Server::bind(
         &Fixture::init().listeners.loopback,
         root.path(),
         f.gateway.clone(),
@@ -288,7 +298,8 @@ async fn policy_injected_clock_closes_listener_and_all_connections() {
     .await
     .unwrap();
     let port = server.port().unwrap();
-    let (_stop, stopped) = oneshot::channel();
+    let expiry = server.on_expiry();
+    let (stop, stopped) = oneshot::channel();
     let task = tokio::spawn(server.run(stopped));
     let connecting = tokio::spawn(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)));
     for _ in 0..10000 {
@@ -298,35 +309,107 @@ async fn policy_injected_clock_closes_listener_and_all_connections() {
         tokio::task::yield_now().await;
     }
     assert!(connecting.is_finished());
-    let mut client = connecting.await.unwrap().unwrap();
+    let client = connecting.await.unwrap().unwrap();
     let remaining = (f.gateway.policy.enable_until.0 - f.gateway.clock.now().0)
         .to_std()
         .unwrap();
-    tokio::time::advance(remaining).await;
+    Expiring {
+        f,
+        port,
+        client,
+        expiry,
+        stop,
+        task,
+        remaining,
+    }
+}
+/// Time is paused, so nothing may wait on the network: look until the runtime
+/// has had its turns.
+async fn ended(connection: &mut tokio::net::TcpStream) {
+    let mut byte = [0];
     for _ in 0..10000 {
-        if task.is_finished() {
-            break;
+        match connection.try_read(&mut byte) {
+            Ok(0) => return,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("not closed: {other:?}"),
         }
         tokio::task::yield_now().await;
     }
+    panic!("never closed");
+}
+/// A connection that is accepted at once (it is made before the server runs).
+fn connect(port: u16) -> tokio::net::TcpStream {
+    let stream = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
+    stream.set_nonblocking(true).unwrap();
+    tokio::net::TcpStream::from_std(stream).unwrap()
+}
+async fn finished(task: &tokio::task::JoinHandle<bool>) -> bool {
+    for _ in 0..10000 {
+        if task.is_finished() {
+            return true;
+        }
+        tokio::task::yield_now().await;
+    }
+    false
+}
+
+#[tokio::test(start_paused = true)]
+async fn policy_injected_clock_closes_connections_then_holds_the_port_until_the_hold_ends() {
+    let Expiring {
+        f,
+        port,
+        mut client,
+        mut expiry,
+        task,
+        remaining,
+        // Dropped, it would stop the server.
+        stop: _stop,
+    } = expiring_server().await;
+    tokio::time::advance(remaining).await;
+    // Expiry does not await another tick: the peer is closed and the desktop told.
+    ended(&mut client).await;
     assert!(
-        task.is_finished(),
-        "policy expiry must not await another tick"
+        expiry.try_recv().is_ok(),
+        "the notice comes with the expiry"
     );
-    assert!(task.await.unwrap());
     assert_eq!(f.gateway.clock.now(), f.gateway.policy.enable_until);
-    assert!(TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
-        .await
-        .is_err());
-    let mut byte = [0];
-    let read = client.read(&mut byte).await;
-    assert!(
-        matches!(read, Ok(0))
-            || read.is_err_and(|e| matches!(
-                e.kind(),
-                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
-            ))
-    );
+    // The node may still forward the tailnet to this port: it stays bound, and
+    // whoever connects is accepted and closed.
+    assert!(!finished(&task).await);
+    for _ in 0..3 {
+        ended(&mut connect(port)).await;
+    }
+    assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
+    tokio::time::advance(crate::http::EXPIRY_HOLD - Duration::from_millis(100)).await;
+    assert!(!finished(&task).await, "held for the whole hold");
+    tokio::time::advance(Duration::from_millis(100)).await;
+    assert!(finished(&task).await);
+    assert!(task.await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn policy_expiry_hold_ends_at_shutdown_and_still_reports_the_expiry() {
+    let Expiring {
+        mut expiry,
+        stop,
+        task,
+        remaining,
+        ..
+    } = expiring_server().await;
+    tokio::time::advance(remaining).await;
+    assert!(!finished(&task).await);
+    assert!(expiry.try_recv().is_ok());
+    stop.send(()).unwrap();
+    assert!(finished(&task).await, "shutdown ends the hold at once");
+    assert!(task.await.unwrap(), "still the expiry, not a plain stop");
 }
 
 #[test]
@@ -834,7 +917,7 @@ async fn webauthn_global_session_cap_fixed_503_and_expired_purge() {
     }
     async fn post(port: u16, path: &str, body: serde_json::Value) -> (u16, String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let request = format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.to_string().len());
+        let request = format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.to_string().len());
         let task = tokio::spawn(async move {
             let mut socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
                 .await

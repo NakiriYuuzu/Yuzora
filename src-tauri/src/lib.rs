@@ -2,9 +2,10 @@ pub mod askpass;
 pub mod asset_scope;
 mod brand_icon;
 pub mod companion_commands;
+pub mod companion_net;
+pub mod companion_push;
 pub mod companion_service;
 pub mod companion_store;
-pub mod companion_tailscale;
 pub mod db_connection_actor;
 pub mod db_credentials;
 pub mod db_profiles;
@@ -563,9 +564,10 @@ pub fn run() {
             companion_commands::companion_device_unlock,
             companion_commands::companion_device_revoke,
             companion_commands::companion_sessions_set,
-            companion_commands::companion_tailscale_probe,
-            companion_commands::companion_tailscale_remove,
-            companion_commands::companion_tailscale_forget
+            companion_commands::companion_net_login,
+            companion_commands::companion_net_cancel,
+            companion_commands::companion_net_logout,
+            companion_commands::companion_space_roots_set
         ]))
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")
