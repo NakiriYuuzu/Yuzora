@@ -1,4 +1,6 @@
 import { create } from "zustand"
+import { showPane } from "./client"
+import { paneFromMessage } from "./lib/deepLink"
 
 /** A waiting service worker with a new build; the user decides when to reload. */
 export const useUpdate = create<{ waiting: ServiceWorker | null }>(() => ({ waiting: null }))
@@ -18,6 +20,11 @@ export function registerServiceWorker(): void {
       })
     })
   }, () => undefined)
+  // A tapped notification asks the running app to open its pane.
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    const target = paneFromMessage(event.data)
+    if (target) showPane(target)
+  })
   let reloading = false
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (reloading || !useUpdate.getState().waiting) return

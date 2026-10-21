@@ -1,5 +1,8 @@
+#[path = "support/identity.rs"]
+mod identity;
 #[path = "support/init.rs"]
 mod init_fixture;
+use identity::PROXY_SECRET;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::{
@@ -8,7 +11,7 @@ use tokio::{
     sync::oneshot,
 };
 use yuzora_companion::{
-    admin::Loopback,
+    admin::{Loopback, ProxySecret},
     guard::{BODY_LIMIT, RATE_BURST},
     http::{Server, SECURITY_HEADERS},
 };
@@ -22,6 +25,10 @@ fn gateway() -> std::sync::Arc<yuzora_companion::gateway::Gateway> {
         yuzora_companion::clock::Clock::default(),
     )
     .unwrap()
+}
+
+fn proxy_secret() -> ProxySecret {
+    ProxySecret(zeroize::Zeroizing::new(PROXY_SECRET.into()))
 }
 
 struct Fixture {
@@ -49,6 +56,7 @@ impl Fixture {
             port: 0,
             public_host: "desktop.tailnet.ts.net:8443".into(),
             required_tailscale_login: "user@example.com".into(),
+            proxy_secret: proxy_secret(),
         };
         let server = Server::bind(&config, root.path(), gateway()).await.unwrap();
         let port = server.port().unwrap();
@@ -88,11 +96,19 @@ impl Drop for Fixture {
         self.task.abort();
     }
 }
+fn raw_request(method: &str, path: &str, headers: &str) -> String {
+    format!("{method} {path} HTTP/1.1\r\n{headers}Connection: close\r\n\r\n")
+}
+// The sidecar's secret rides along; `login` varies only the peer identity.
 fn request(method: &str, path: &str, host: &str, login: &str, extra: &str) -> String {
-    format!("{method} {path} HTTP/1.1\r\n{host}{login}{extra}Connection: close\r\n\r\n")
+    raw_request(
+        method,
+        path,
+        &format!("{host}Yzc-Proxy-Secret: {PROXY_SECRET}\r\n{login}{extra}"),
+    )
 }
 const HOST: &str = "Host: desktop.tailnet.ts.net:8443\r\n";
-const LOGIN: &str = "Tailscale-User-Login: user@example.com\r\n";
+const LOGIN: &str = "Yzc-Peer-Login: user@example.com\r\n";
 const ORIGIN: &str = "Origin: https://desktop.tailnet.ts.net:8443\r\n";
 fn status(response: &str) -> u16 {
     response.split_whitespace().nth(1).unwrap().parse().unwrap()
@@ -162,7 +178,7 @@ async fn guard_malicious_request_table() {
             "GET",
             "/",
             HOST,
-            "Tailscale-User-Login: other@example.com\r\n",
+            "Yzc-Peer-Login: other@example.com\r\n",
             "",
             403,
         ),
@@ -170,7 +186,7 @@ async fn guard_malicious_request_table() {
             "GET",
             "/",
             HOST,
-            "Tailscale-User-Login: User@example.com\r\n",
+            "Yzc-Peer-Login: User@example.com\r\n",
             "",
             403,
         ),
@@ -178,7 +194,7 @@ async fn guard_malicious_request_table() {
             "GET",
             "/",
             HOST,
-            "tailscale-user-login: =?utf-8?q?user=40example.com?=\r\n",
+            "yzc-peer-login: =?utf-8?q?user=40example.com?=\r\n",
             "",
             200,
         ),
@@ -186,7 +202,7 @@ async fn guard_malicious_request_table() {
             "GET",
             "/",
             HOST,
-            "Tailscale-User-Login: =?UTF-8?B?dXNlckBleGFtcGxlLmNvbQ==?=\r\n",
+            "Yzc-Peer-Login: =?UTF-8?B?dXNlckBleGFtcGxlLmNvbQ==?=\r\n",
             "",
             200,
         ),
@@ -194,7 +210,7 @@ async fn guard_malicious_request_table() {
             "GET",
             "/",
             HOST,
-            "Tailscale-User-Login: =?UTF-8?Q?User=40example.com?=\r\n",
+            "Yzc-Peer-Login: =?UTF-8?Q?User=40example.com?=\r\n",
             "",
             403,
         ),
@@ -202,7 +218,7 @@ async fn guard_malicious_request_table() {
             "GET",
             "/",
             HOST,
-            "Tailscale-User-Login: =?UTF-8?Q?=GG?=\r\n",
+            "Yzc-Peer-Login: =?UTF-8?Q?=GG?=\r\n",
             "",
             403,
         ),
@@ -255,6 +271,77 @@ async fn guard_malicious_request_table() {
         .await;
     assert_eq!(status(&response), 403);
     secured(&response);
+}
+
+#[tokio::test]
+async fn guard_proxy_secret_is_the_only_identity_channel() {
+    let f = Fixture::start().await;
+    let mut same_length = PROXY_SECRET.to_owned();
+    same_length.replace_range(..1, "B");
+    let secret = format!("Yzc-Proxy-Secret: {PROXY_SECRET}\r\n");
+    let wrong = format!("Yzc-Proxy-Secret: {same_length}\r\n");
+    let shorter = format!("Yzc-Proxy-Secret: {}\r\n", &PROXY_SECRET[..42]);
+    let longer = format!("Yzc-Proxy-Secret: {PROXY_SECRET}A\r\n");
+    let cases = [
+        ("valid", format!("{secret}{LOGIN}"), 200),
+        (
+            "header names are case-insensitive",
+            format!("yzc-proxy-secret: {PROXY_SECRET}\r\nyzc-peer-login: user@example.com\r\n"),
+            200,
+        ),
+        ("missing secret", LOGIN.to_owned(), 403),
+        ("empty secret", format!("Yzc-Proxy-Secret: \r\n{LOGIN}"), 403),
+        ("wrong secret, same length", format!("{wrong}{LOGIN}"), 403),
+        ("shorter secret", format!("{shorter}{LOGIN}"), 403),
+        ("longer secret", format!("{longer}{LOGIN}"), 403),
+        (
+            "non-ASCII secret",
+            format!("Yzc-Proxy-Secret: {}\u{e9}\r\n{LOGIN}", &PROXY_SECRET[..42]),
+            403,
+        ),
+        ("duplicate secret", format!("{secret}{secret}{LOGIN}"), 403),
+        ("correct then wrong secret", format!("{secret}{wrong}{LOGIN}"), 403),
+        ("wrong then correct secret", format!("{wrong}{secret}{LOGIN}"), 403),
+        ("missing login", secret.clone(), 403),
+        (
+            "wrong login",
+            format!("{secret}Yzc-Peer-Login: other@example.com\r\n"),
+            403,
+        ),
+        ("duplicate login", format!("{secret}{LOGIN}{LOGIN}"), 403),
+        (
+            "RFC 2047 login",
+            format!("{secret}Yzc-Peer-Login: =?UTF-8?Q?user=40example.com?=\r\n"),
+            200,
+        ),
+        (
+            "old header alone",
+            "Tailscale-User-Login: user@example.com\r\n".to_owned(),
+            403,
+        ),
+        (
+            "old header instead of the peer login",
+            format!("{secret}Tailscale-User-Login: user@example.com\r\n"),
+            403,
+        ),
+        (
+            "old header cannot replace a wrong peer login",
+            format!(
+                "{secret}Yzc-Peer-Login: other@example.com\r\nTailscale-User-Login: user@example.com\r\n"
+            ),
+            403,
+        ),
+    ];
+    for (name, identity, expected) in cases {
+        let response = f
+            .request(&raw_request("GET", "/", &format!("{HOST}{identity}")))
+            .await;
+        assert_eq!(status(&response), expected, "{name}: {response}");
+        secured(&response);
+        if expected >= 400 {
+            assert!(!response.contains(PROXY_SECRET), "{name}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -444,6 +531,7 @@ async fn lifecycle_listener_port_in_use() {
         port: f.port,
         public_host: "desktop.tailnet.ts.net:8443".into(),
         required_tailscale_login: "user@example.com".into(),
+        proxy_secret: proxy_secret(),
     };
     assert!(matches!(
         Server::bind(&config, f.root.path(), gateway()).await,
@@ -573,6 +661,16 @@ async fn guard_every_registered_route_rejects_missing_identity() {
             assert_eq!(status(&response), expected, "{method} {path}");
             secured(&response);
         }
+        // A peer login without the sidecar's secret is no identity on any route.
+        let response = f
+            .request(&raw_request(
+                route.method.as_str(),
+                &path,
+                &format!("{HOST}{LOGIN}{ORIGIN}"),
+            ))
+            .await;
+        assert_eq!(status(&response), 403, "{path}");
+        secured(&response);
         if route.method != axum::http::Method::GET {
             assert_eq!(
                 status(
@@ -623,7 +721,10 @@ async fn guard_keep_alive_idle_uses_header_deadline() {
     let mut stream = TcpStream::connect(("127.0.0.1", f.port)).await.unwrap();
     let started = tokio::time::Instant::now();
     stream
-        .write_all(format!("GET / HTTP/1.1\r\n{HOST}{LOGIN}\r\n").as_bytes())
+        .write_all(
+            format!("GET / HTTP/1.1\r\n{HOST}Yzc-Proxy-Secret: {PROXY_SECRET}\r\n{LOGIN}\r\n")
+                .as_bytes(),
+        )
         .await
         .unwrap();
     let mut reader = BufReader::new(stream);

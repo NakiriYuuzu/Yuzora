@@ -308,6 +308,13 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # actions/setup-go@v7.0.0; companion:prepare builds the Companion network
+      # sidecar. No Go module or build cache is restored for release builds.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: src-tauri/companion-net/go.mod
+          cache: false
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 

@@ -14,19 +14,41 @@ export type CompanionStatus =
   | { state: "stopping" }
   | { state: "failed"; code: string }
 
-export interface CompanionAppliedServe { httpsPort: number; gatewayPort: number; host: string; login: string }
+/** The tailnet node this desktop last saw: its name and the account that owns it. */
+export interface NetIdentity { dnsName: string; login: string }
 
 export interface CompanionSettings {
   version: number
-  httpsPort: number
   gatewayPort: number
   duration: CompanionWindow
   sessionAllowlist: string[]
   fullSessionEnabled: boolean
-  /** A Serve handler this desktop applied and has not confirmed removed. */
-  applied: CompanionAppliedServe | null
+  net: NetIdentity | null
   experimental: boolean
 }
+
+/** The embedded Tailscale node (`yuzora-companion-net`). `dnsName` and `login` are the last seen ones while it is stopped. In `needsApproval`, `dnsName` carries the name of the machine that waits for approval (what the node reported; a remembered name only when it reported none). */
+export interface NetOverview {
+  /** `needsApproval`: signed in, but a tailnet admin has not approved this device yet. */
+  state: "stopped" | "starting" | "needsLogin" | "needsApproval" | "running" | "failed"
+  /** Why the node runs: sign-in, serving the Companion, or signing out. Null while it does not. */
+  mode: "login" | "enable" | "logout" | null
+  /** The page to sign in on, while `needsLogin`. */
+  authUrl: string | null
+  dnsName: string | null
+  login: string | null
+  /** Unknown until the node runs; false when the tailnet has no HTTPS certificates. */
+  httpsCapable: boolean | null
+  cert: { state: "pending" | "ready" | "error"; notAfter: string | null; error: string | null } | null
+  serving: boolean
+  /** The node was seen running and has not been asked to sign in again since. */
+  loggedIn: boolean
+  /** A closed set of codes, resolved like command errors. */
+  error: string | null
+}
+
+/** Web Push: devices with a stored subscription. */
+export interface PushOverview { available: boolean; subscribed: string[] }
 
 export interface CompanionOverview {
   status: CompanionStatus
@@ -35,27 +57,8 @@ export interface CompanionOverview {
   enableUntil: string | null
   /** False when another Yuzora instance owns the Companion. */
   owner: boolean
-}
-
-export type TailscaleRefusal = "notRunning" | "noLogin" | "tagged" | "httpsNotReady" | "funnel" | "portTaken"
-
-export interface TailscaleProbe {
-  cli: { path: string; variant: "macAppStore" | "macStandalone" | "cli" } | null
-  node: {
-    version: string
-    backendState: string
-    dnsName: string | null
-    login: string | null
-    tagged: boolean
-    magicDns: boolean
-    httpsReady: boolean
-  } | null
-  serve: { port: "free" | "ours" | "shared" | "taken"; foreground: boolean; funnel: boolean; otherPorts: number[] } | null
-  refusal: TailscaleRefusal | null
-  httpsPort: number
-  gatewayPort: number
-  /** The exact command enable runs; shown verbatim before confirming. */
-  command: string
+  net: NetOverview
+  push: PushOverview
 }
 
 export interface CompanionGrants { control: { until: string } | null; full: boolean }
@@ -114,6 +117,16 @@ export interface CompanionControlState {
   open: boolean
 }
 
+/** A full-session stream (scope `full`) opened (seq 1) or closed (seq 2); it has no pane. */
+export interface CompanionFullState {
+  deviceId: string
+  peerId: number
+  stream: string
+  seq: number
+  session: string
+  open: boolean
+}
+
 /** The `companion://event` payloads the UI acts on; others are ignored. */
 export type CompanionEvent =
   | { type: "status"; status: CompanionStatus }
@@ -125,6 +138,11 @@ export type CompanionEvent =
   | { type: "error"; code: string }
   | ({ type: "audit" } & CompanionAudit)
   | ({ type: "control.state" } & CompanionControlState)
+  | ({ type: "full.state" } & CompanionFullState)
+  | { type: "session.opened"; peerId: number; deviceId: string }
+  | { type: "session.closed"; peerId: number; deviceId: string; reason: string }
+  | { type: "net"; net: NetOverview }
+  | { type: "push"; push: PushOverview }
   | { type: "audit.dropped"; lost: number; lostTightening: number; rejectedOmitted: number; since: string }
 
 export function companionStatus(): Promise<CompanionOverview> {
@@ -135,7 +153,7 @@ export function companionExperimentalSet(enabled: boolean): Promise<CompanionOve
   return invoke("companion_experimental_set", { enabled })
 }
 
-/** Runs `tailscale serve`: call only after the user confirmed `probe.command`. */
+/** Starts the node and the gateway behind it; resolves once both serve. Call only after the user confirmed. */
 export function companionEnable(window: CompanionWindow): Promise<CompanionStatus> {
   return invoke("companion_enable", { window, confirm: true })
 }
@@ -144,17 +162,19 @@ export function companionDisable(): Promise<void> {
   return invoke("companion_disable")
 }
 
-export function companionTailscaleProbe(): Promise<TailscaleProbe> {
-  return invoke("companion_tailscale_probe")
+/** Starts the node to sign in; follow it through `net` events. */
+export function companionNetLogin(): Promise<NetOverview> {
+  return invoke("companion_net_login")
 }
 
-export function companionTailscaleRemove(): Promise<void> {
-  return invoke("companion_tailscale_remove")
+/** Gives up a sign-in in progress. */
+export function companionNetCancel(): Promise<NetOverview> {
+  return invoke("companion_net_cancel")
 }
 
-/** Only for a record whose node this desktop no longer reaches; the handler may remain there. */
-export function companionTailscaleForget(): Promise<void> {
-  return invoke("companion_tailscale_forget")
+/** Signs the node out of the tailnet and forgets it. */
+export function companionNetLogout(): Promise<NetOverview> {
+  return invoke("companion_net_logout")
 }
 
 export function companionPairingCreate(): Promise<CompanionPairingQr> {
@@ -188,4 +208,11 @@ export function companionDeviceRevoke(deviceId: string): Promise<void> {
 /** The gateway reads the allowlist at start: `restartRequired` while one runs. */
 export function companionSessionsSet(sessions: string[]): Promise<{ restartRequired: boolean }> {
   return invoke("companion_sessions_set", { sessions })
+}
+
+/** A local Space the gateway may read git from: its Session, its id, and its folder. */
+export interface CompanionSpaceRoot { session: string; workspaceId: string; root: string }
+
+export function companionSpaceRootsSet(roots: CompanionSpaceRoot[]): Promise<void> {
+  return invoke("companion_space_roots_set", { roots })
 }

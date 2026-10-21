@@ -121,10 +121,169 @@ fn workflow_tracks_vendor_and_checks_each_forbidden_tls_package() {
 }
 
 #[test]
+fn go_sidecar_pins_a_patched_toolchain_and_a_failing_pinned_govulncheck() {
+    // setup-go installs the toolchain line of go.mod, else its go line.
+    let go_mod = normalize(include_str!("../../companion-net/go.mod"));
+    let toolchain = go_mod
+        .lines()
+        .find_map(|line| line.strip_prefix("toolchain go"))
+        .expect("go.mod must name the toolchain the sidecar is built with");
+    let version: Vec<u32> = toolchain
+        .split('.')
+        .map(|part| part.parse().expect("numeric toolchain version"))
+        .collect();
+    // 1.27.2 and 1.27.3 carry the crypto/tls, net/http and crypto/x509 fixes.
+    assert!(version >= vec![1, 27, 3], "toolchain go{toolchain}");
+
+    let workflow = normalize(include_str!("../../../.github/workflows/companion.yml"));
+    let net = workflow
+        .split("\n  net:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  supply-chain:\n").next())
+        .expect("net job");
+    let step = net
+        .split("- name: govulncheck\n")
+        .nth(1)
+        .expect("the net job has a govulncheck step");
+    let install = step
+        .lines()
+        .find(|line| line.contains("go install golang.org/x/vuln/cmd/govulncheck@"))
+        .expect("the step installs govulncheck");
+    assert!(
+        install.contains("govulncheck@v") && !install.contains("@latest"),
+        "govulncheck must be pinned: {install}"
+    );
+    // The shipped binary is built with these tags (scripts/prepare-companion.ts);
+    // govulncheck exits 3 for a reachable advisory and nothing may swallow that.
+    assert!(step.contains("/govulncheck\" -tags ts_omit_webclient ./..."));
+    assert!(step.contains("set -euo pipefail"));
+    assert!(!step.contains("|| true") && !step.contains("continue-on-error"));
+}
+
+#[test]
 fn companion_build_output_is_ignored() {
     assert!(normalize(include_str!("../../../.gitignore"))
         .lines()
         .any(|line| line == "src-tauri/companion/target/"));
+}
+
+#[test]
+fn proxy_secret_is_never_debug_or_serialize_and_guard_ignores_the_old_header() {
+    let admin = normalize(include_str!("../src/admin.rs"));
+    let before = admin.split("pub struct ProxySecret").next().unwrap();
+    assert_eq!(
+        before
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("#[derive")),
+        Some("#[derive(Clone)]")
+    );
+    for forbidden in ["Debug for ProxySecret", "Serialize for ProxySecret"] {
+        assert!(!admin.contains(forbidden));
+    }
+    // Production code only; the guard tests name the old header on purpose.
+    let guard = normalize(include_str!("../src/guard.rs"));
+    let production = guard.split("#[cfg(test)]").next().unwrap();
+    assert!(!production
+        .to_ascii_lowercase()
+        .contains("tailscale-user-login"));
+    assert!(
+        production.contains("\"yzc-proxy-secret\"") && production.contains("\"yzc-peer-login\"")
+    );
+}
+
+#[test]
+fn git_bridge_only_detects_and_reads_and_never_touches_trust_grants() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let code = |source: &str| {
+        normalize(source)
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let bridge = code(&std::fs::read_to_string(root.join("git_bridge.rs")).unwrap());
+    // Git is reached through typed read functions; the one command named is Detect.
+    let commands: Vec<_> = bridge
+        .match_indices("GitCommand::")
+        .map(|(at, _)| {
+            bridge[at..]
+                .split(|c: char| !(c.is_alphanumeric() || c == ':'))
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(commands, ["GitCommand::Detect"]);
+    for forbidden in [
+        "grant",
+        "revoke",
+        "challenge",
+        "mutate",
+        "FileAtRev",
+        "RemoteProbe",
+        "Bootstrap",
+        ".execute(",
+        "files::",
+    ] {
+        assert!(
+            !bridge.contains(forbidden),
+            "git_bridge.rs names {forbidden}"
+        );
+    }
+    // No other module reaches the trust store.
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        if path.extension().is_some_and(|ext| ext == "rs") && name != "git_bridge.rs" {
+            let source = code(&std::fs::read_to_string(&path).unwrap());
+            assert!(
+                !source.contains("workspace_trust"),
+                "{name} reaches the workspace trust store"
+            );
+        }
+    }
+}
+
+#[test]
+fn push_module_never_touches_the_network_or_key_material() {
+    // The desktop holds the VAPID key and sends every push; the gateway only
+    // decides that one is due.
+    let push = normalize(include_str!("../src/push.rs"));
+    let code = push
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for forbidden in [
+        "TcpStream",
+        "TcpListener",
+        "UdpSocket",
+        "reqwest",
+        "hyper::client",
+        "hyper_util::client",
+        "p256::",
+        "ecdsa::",
+        "aes_gcm::",
+        "hkdf::",
+        "SigningKey",
+        "private",
+    ] {
+        assert!(!code.contains(forbidden), "push.rs names {forbidden}");
+    }
+    let manifest = normalize(include_str!("../Cargo.toml"));
+    let dependencies = manifest.split("[dev-dependencies]").next().unwrap();
+    for crate_name in ["reqwest", "p256", "hkdf", "aes-gcm"] {
+        assert!(
+            !dependencies.contains(&format!("\n{crate_name} =")),
+            "{crate_name} is a production dependency"
+        );
+    }
 }
 
 #[test]

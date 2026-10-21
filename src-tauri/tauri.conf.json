@@ -70,7 +70,8 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "externalBin": [
-      "binaries/yuzora-companion"
+      "binaries/yuzora-companion",
+      "binaries/yuzora-companion-net"
     ],
     "icon": [
       "icons/32x32.png",

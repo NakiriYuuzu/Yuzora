@@ -1,18 +1,27 @@
-import { useEffect } from "react"
+import { useEffect, useLayoutEffect } from "react"
 import { I18nextProvider, useTranslation } from "react-i18next"
 import { X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { noteActivity, refresh, retryNow } from "./client"
 import { i18n } from "./i18n"
+import { spaceKey } from "./lib/git"
+import { CommitScreen } from "./screens/CommitScreen"
+import { DiffScreen } from "./screens/DiffScreen"
 import { HomeScreen } from "./screens/HomeScreen"
 import { LoginScreen } from "./screens/LoginScreen"
 import { PairScreen } from "./screens/PairScreen"
 import { PaneScreen } from "./screens/PaneScreen"
+import { SpaceScreen } from "./screens/SpaceScreen"
 import { applyUpdate, useUpdate } from "./serviceWorker"
-import { notify, useCompanion } from "./store"
+import { notify, restoreScreen, savedScroll, useCompanion } from "./store"
 
 export function App() {
   const screen = useCompanion((state) => state.screen)
+
+  // A new screen starts at the top; coming back finds the list where it was left.
+  useLayoutEffect(() => {
+    window.scrollTo(0, savedScroll())
+  }, [screen])
 
   useEffect(() => {
     // Back in the foreground: reconnect now and catch up on what events missed.
@@ -24,10 +33,12 @@ export function App() {
     document.addEventListener("visibilitychange", visible)
     document.addEventListener("pointerdown", noteActivity, { passive: true })
     document.addEventListener("keydown", noteActivity)
+    window.addEventListener("popstate", restoreScreen)
     return () => {
       document.removeEventListener("visibilitychange", visible)
       document.removeEventListener("pointerdown", noteActivity)
       document.removeEventListener("keydown", noteActivity)
+      window.removeEventListener("popstate", restoreScreen)
     }
   }, [])
 
@@ -38,6 +49,9 @@ export function App() {
         {screen.name === "login" && <LoginScreen reason={screen.reason} />}
         {screen.name === "home" && <HomeScreen />}
         {screen.name === "pane" && <PaneScreen key={`${screen.session}\0${screen.pane}`} session={screen.session} pane={screen.pane} />}
+        {screen.name === "space" && <SpaceScreen key={spaceKey(screen.session, screen.workspaceId)} session={screen.session} workspaceId={screen.workspaceId} />}
+        {screen.name === "diff" && <DiffScreen key={`${spaceKey(screen.session, screen.workspaceId)}\0${JSON.stringify(screen.source)}`} session={screen.session} workspaceId={screen.workspaceId} source={screen.source} />}
+        {screen.name === "commit" && <CommitScreen key={`${spaceKey(screen.session, screen.workspaceId)}\0${screen.hash}`} session={screen.session} workspaceId={screen.workspaceId} hash={screen.hash} />}
       </div>
       <Notices />
     </I18nextProvider>

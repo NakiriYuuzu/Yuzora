@@ -44,7 +44,7 @@ pub(crate) fn is_read(method: &str) -> bool {
     matches!(
         method,
         "sessions.list" | "snapshot.get" | "events.subscribe" | "terminal.observe" | "stream.close"
-    )
+    ) || crate::git_bridge::is_git(method)
 }
 fn error(id: Value, code: &'static str) -> Value {
     json!({"id":id,"error":{"code":code,"message":code}})
@@ -291,6 +291,7 @@ pub(crate) struct Reads {
     next_id: u32,
     writes: writes::Queue,
     pending: Arc<Semaphore>,
+    git_reads: crate::git_bridge::AuditWindow,
     pub(crate) completed: FuturesUnordered<BoxFuture<'static, Completion>>,
     pub(crate) changed: Arc<Notify>,
 }
@@ -341,6 +342,7 @@ impl Reads {
                 next_id: 1,
                 writes: writes::Queue::new(),
                 pending: Arc::new(Semaphore::new(2)),
+                git_reads: Default::default(),
                 completed: FuturesUnordered::new(),
                 changed: Arc::new(Notify::new()),
             },
@@ -389,6 +391,9 @@ impl Reads {
             };
             stream.state.close("client-closed");
             return Some(reply(id, json!({"stream":p.stream,"closed":true})));
+        }
+        if crate::git_bridge::is_git(method) {
+            return self.git(gateway, device, id, method, params);
         }
         let (session, target) = match method {
             "sessions.list"
@@ -473,6 +478,7 @@ impl Reads {
         };
         let reads = gateway.herdr.clone();
         let jobs = gateway.herdr_jobs.clone();
+        let spaces = gateway.spaces.clone();
         let method = method.to_owned();
         let work = move || {
             let active = || {
@@ -489,7 +495,10 @@ impl Reads {
             reads.running(&session)?;
             active()?;
             if method == "snapshot.get" {
-                return reads.snapshot(&session).map(Output::Snapshot);
+                return reads.snapshot(&session).map(|mut snapshot| {
+                    spaces.mark(&session, &mut snapshot);
+                    Output::Snapshot(snapshot)
+                });
             }
             let (resource, value) = if let Some(target) = target {
                 let snapshot = reads
@@ -578,6 +587,60 @@ impl Reads {
                 }
                 Some(error(id, code))
             }
+        }
+    }
+    /// Read-only Git of a mapped Space. Shares the read executor and the peer's
+    /// pending slots; replies take the snapshot path, so large ones are chunked.
+    fn git(
+        &mut self,
+        gateway: &Gateway,
+        device: &str,
+        id: Value,
+        method: &str,
+        params: Value,
+    ) -> Option<Value> {
+        let request = match crate::git_bridge::parse(method, params) {
+            Ok(request) => request,
+            Err(code) => return Some(error(id, code)),
+        };
+        let space = match gateway.spaces.get(&request.session, &request.workspace_id) {
+            Ok(space) => space,
+            Err(code) => return Some(error(id, code)),
+        };
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Some(error(id, "busy"));
+        };
+        let (session, workspace_id) = (request.session.clone(), request.workspace_id.clone());
+        let tokens = gateway.spaces.tokens(device, gateway.clock.now());
+        match gateway.herdr_jobs.submit_device(device, false, move || {
+            request.run(&space, &tokens).map(Output::Snapshot)
+        }) {
+            Ok(receive) => {
+                if self
+                    .git_reads
+                    .due(&session, &workspace_id, gateway.clock.now())
+                {
+                    crate::audit::git_read(
+                        gateway,
+                        device,
+                        self.peer_id,
+                        &session,
+                        &workspace_id,
+                        method,
+                    );
+                }
+                self.completed.push(Box::pin(async move {
+                    let _pending = pending;
+                    Completion {
+                        id,
+                        stream: None,
+                        result: receive.await.unwrap_or(Err("herdr-unavailable")),
+                        write: false,
+                    }
+                }));
+                None
+            }
+            Err(code) => Some(error(id, code)),
         }
     }
     pub(crate) fn finish(&mut self, completion: Completion) -> Vec<Value> {

@@ -1,5 +1,5 @@
 import fixtures from "./companionFixtures.json"
-import type { CompanionDevice, CompanionOverview, CompanionPairingQr, CompanionPhoneLink, CompanionStatus, TailscaleProbe } from "@/lib/companionIpc"
+import type { CompanionDevice, CompanionEvent, CompanionOverview, CompanionPairingQr, CompanionPhoneLink, CompanionStatus, NetOverview, PushOverview } from "@/lib/companionIpc"
 
 /** What the Rust commands serialize, pinned by `companion_ui_fixtures_match_the_serialized_shapes`. */
 export const companionFixtures = fixtures as unknown as {
@@ -8,11 +8,16 @@ export const companionFixtures = fixtures as unknown as {
   statusFailed: CompanionStatus
   statusStarting: CompanionStatus
   statusStopping: CompanionStatus
-  probeReady: TailscaleProbe
-  probeNoCli: TailscaleProbe
-  probeLoggedOut: TailscaleProbe
-  probeTagged: TailscaleProbe
-  probePortTaken: TailscaleProbe
+  netStopped: NetOverview
+  netLoggedOut: NetOverview
+  netEnabling: NetOverview
+  netSigningOut: NetOverview
+  netNeedsLogin: NetOverview
+  netNeedsApproval: NetOverview
+  netCertPending: NetOverview
+  netRunning: NetOverview
+  pushOverview: PushOverview
+  pushEvent: Extract<CompanionEvent, { type: "push" }>
   device: CompanionDevice
   pairingQr: CompanionPairingQr
   phoneLink: CompanionPhoneLink

@@ -8,6 +8,8 @@ import { markdownPreviewPath } from "@/lib/markdownPreviewTab";
 import { useWorkspaceStore } from "@/state/workspaceStore";
 import { SAMPLING_WINDOW, usePerfStore } from "@/state/perfStore";
 import { useUiStore } from "@/state/uiStore";
+import { useCompanionStore } from "@/state/companionStore";
+import { companionFixtures } from "@/test/companionFixtures";
 import { documentGeneration, getDocument } from "@/editor/documentRegistry";
 import type { DocumentLineEnding, GitStatus } from "@/lib/types";
 
@@ -61,6 +63,7 @@ describe("StatusBar", () => {
     // resets every data field the branch segment reads.
     useGitStore.setState(initialGitState);
     usePerfStore.getState().reset();
+    useCompanionStore.setState({ overview: null, devices: [], peers: {}, streams: {} });
     // Replace with the captured snapshot so a spied openSettings never leaks.
     useUiStore.setState(initialUiState, true);
     vi.mocked(getDocument).mockResolvedValue({
@@ -553,6 +556,21 @@ describe("StatusBar", () => {
     render(<StatusBar />);
 
     expect(screen.queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("Companion chip 只在 Companion 執行中才出現，且排在 perf chip 之前", () => {
+    usePerfStore.getState().setSnapshot({
+      cpuPercent: 12, memoryBytes: 370_000_000, appCpuPercent: 4, appMemoryBytes: 102_000_000, descendantCount: 3,
+      webviewCpuPercent: 0, webviewMemoryBytes: 0, webviewCount: 0,
+      managedToolsCpuPercent: 0, managedToolsMemoryBytes: 0, managedToolsCount: 0,
+    });
+    useCompanionStore.setState({ overview: companionFixtures.overviewOff });
+    render(<StatusBar />);
+    expect(screen.queryByTestId("status-companion-chip")).not.toBeInTheDocument();
+
+    act(() => useCompanionStore.setState({ overview: companionFixtures.overviewRunning }));
+    const chip = screen.getByTestId("status-companion-chip");
+    expect(chip.compareDocumentPosition(screen.getByTestId("status-perf-chip")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("active markdown preview tab does not read the synthetic path as a file", () => {

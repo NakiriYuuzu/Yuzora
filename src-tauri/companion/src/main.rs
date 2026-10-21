@@ -120,31 +120,40 @@ async fn run(
             return false;
         }
     };
-    let server = match Server::bind(&init.listeners.loopback, &init.web_root, gateway.clone()).await
-    {
-        Ok(server) => server,
-        Err(code) => {
-            events.emit(Event::error(code)).await;
-            return false;
-        }
-    };
+    let mut server =
+        match Server::bind(&init.listeners.loopback, &init.web_root, gateway.clone()).await {
+            Ok(server) => server,
+            Err(code) => {
+                events.emit(Event::error(code)).await;
+                return false;
+            }
+        };
     let Ok(port) = server.port() else {
         return false;
     };
     // Construction pins the selected binary but performs no Herdr IO. Only an
     // authorized read RPC can request discovery; nothing starts a server.
     drop(init);
+    let mut expiry = server.on_expiry();
     let (stop, stopped) = oneshot::channel();
     let mut tasks = JoinSet::new();
     tasks.spawn(server.run(stopped));
     let mut success = events.emit(Event::ready(port)).await;
+    let mut expiry_announced = false;
     while success {
         tokio::select! {
+            biased;
             _ = events.closed() => success = false,
+            // From here the server only holds its port, for the desktop to unserve
+            // the node: it ends at `shutdown`, stdin EOF or its own hold deadline.
+            notice = &mut expiry, if !expiry_announced => {
+                expiry_announced = true;
+                if notice.is_ok() {
+                    success = events.emit(Event::error("policy-expired")).await;
+                }
+            }
             result = tasks.join_next() => {
-                if matches!(result, Some(Ok(true))) {
-                    events.emit(Event::error("policy-expired")).await;
-                } else {
+                if !matches!(result, Some(Ok(true))) {
                     eprintln!("Companion listener stopped unexpectedly");
                 }
                 return false;
@@ -198,8 +207,9 @@ mod tests {
         serde_json::json!({
             "v":1, "type":"init", "herdrBinary":root.join("DO-NOT-EXECUTE-HERDR"),
             "sessionAllowlist":[], "webRoot":root, "devices":[],
-            "listeners":{"loopback":{"port":0,"publicHost":"desktop.tailnet.ts.net:8443","requiredTailscaleLogin":"user@example.com"},"lan":null},
-            "policy":{"enableUntil":"2099-01-01T00:00:00Z","viewIdleMin":30,"viewAbsoluteHours":12,"elevationMaxMin":15,"fullSessionEnabled":false,"maxDevices":5}
+            "listeners":{"loopback":{"port":0,"publicHost":"desktop.tailnet.ts.net:8443","requiredTailscaleLogin":"user@example.com","proxySecret":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"},"lan":null},
+            "policy":{"enableUntil":"2099-01-01T00:00:00Z","viewIdleMin":30,"viewAbsoluteHours":12,"elevationMaxMin":15,"fullSessionEnabled":false,"maxDevices":5},
+            "trustStore":root.join("workspace-trust.json"), "spaceRoots":[]
         })
     }
 

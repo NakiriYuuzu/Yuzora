@@ -12,16 +12,135 @@
     "lastSeen": "2026-10-18T12:00:00Z",
     "locked": false
   },
+  "netCertPending": {
+    "authUrl": null,
+    "cert": {
+      "error": null,
+      "notAfter": null,
+      "state": "pending"
+    },
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": true,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "enable",
+    "serving": false,
+    "state": "running"
+  },
+  "netEnabling": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "enable",
+    "serving": false,
+    "state": "starting"
+  },
+  "netLoggedOut": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": null,
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": false,
+    "login": null,
+    "mode": null,
+    "serving": false,
+    "state": "stopped"
+  },
+  "netNeedsApproval": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "yuzora-1.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": false,
+    "login": null,
+    "mode": "login",
+    "serving": false,
+    "state": "needsApproval"
+  },
+  "netNeedsLogin": {
+    "authUrl": "https://login.tailscale.com/a/abc123",
+    "cert": null,
+    "dnsName": null,
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": false,
+    "login": null,
+    "mode": "login",
+    "serving": false,
+    "state": "needsLogin"
+  },
+  "netRunning": {
+    "authUrl": null,
+    "cert": {
+      "error": null,
+      "notAfter": "2026-12-31T10:00:00Z",
+      "state": "ready"
+    },
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": true,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "enable",
+    "serving": true,
+    "state": "running"
+  },
+  "netSigningOut": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "logout",
+    "serving": false,
+    "state": "starting"
+  },
+  "netStopped": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": null,
+    "serving": false,
+    "state": "stopped"
+  },
   "overviewOff": {
     "enableUntil": null,
+    "net": {
+      "authUrl": null,
+      "cert": null,
+      "dnsName": null,
+      "error": null,
+      "httpsCapable": null,
+      "loggedIn": false,
+      "login": null,
+      "mode": null,
+      "serving": false,
+      "state": "stopped"
+    },
     "owner": true,
+    "push": {
+      "available": false,
+      "subscribed": []
+    },
     "settings": {
-      "applied": null,
       "duration": "8h",
       "experimental": false,
       "fullSessionEnabled": false,
       "gatewayPort": 47110,
-      "httpsPort": 8443,
+      "net": null,
       "sessionAllowlist": [],
       "version": 1
     },
@@ -31,19 +150,36 @@
   },
   "overviewRunning": {
     "enableUntil": "2026-10-18T20:00:00Z",
-    "owner": true,
-    "settings": {
-      "applied": {
-        "gatewayPort": 47110,
-        "host": "desktop.tail1234.ts.net",
-        "httpsPort": 8443,
-        "login": "user@example.com"
+    "net": {
+      "authUrl": null,
+      "cert": {
+        "error": null,
+        "notAfter": "2026-12-31T10:00:00Z",
+        "state": "ready"
       },
+      "dnsName": "desktop.tail1234.ts.net",
+      "error": null,
+      "httpsCapable": true,
+      "loggedIn": true,
+      "login": "user@example.com",
+      "mode": "enable",
+      "serving": true,
+      "state": "running"
+    },
+    "owner": true,
+    "push": {
+      "available": false,
+      "subscribed": []
+    },
+    "settings": {
       "duration": "8h",
       "experimental": true,
       "fullSessionEnabled": false,
       "gatewayPort": 47110,
-      "httpsPort": 8443,
+      "net": {
+        "dnsName": "desktop.tail1234.ts.net",
+        "login": "user@example.com"
+      },
       "sessionAllowlist": [
         "default"
       ],
@@ -61,111 +197,22 @@
   },
   "phoneLink": {
     "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
-    "url": "https://desktop.tail1234.ts.net:8443/"
+    "url": "https://desktop.tail1234.ts.net/"
   },
-  "probeLoggedOut": {
-    "cli": {
-      "path": "/usr/local/bin/tailscale",
-      "variant": "cli"
+  "pushEvent": {
+    "push": {
+      "available": true,
+      "subscribed": [
+        "AAAAAAAAAAAAAAAAAAAAAA"
+      ]
     },
-    "command": "tailscale serve --bg --https=8443 http://127.0.0.1:47110",
-    "gatewayPort": 47110,
-    "httpsPort": 8443,
-    "node": {
-      "backendState": "Running",
-      "dnsName": null,
-      "httpsReady": true,
-      "login": null,
-      "magicDns": true,
-      "tagged": false,
-      "version": "1.104.1"
-    },
-    "refusal": "noLogin",
-    "serve": null
+    "type": "push"
   },
-  "probeNoCli": {
-    "cli": null,
-    "command": "tailscale serve --bg --https=8443 http://127.0.0.1:47110",
-    "gatewayPort": 47110,
-    "httpsPort": 8443,
-    "node": null,
-    "refusal": null,
-    "serve": null
-  },
-  "probePortTaken": {
-    "cli": {
-      "path": "/usr/local/bin/tailscale",
-      "variant": "cli"
-    },
-    "command": "tailscale serve --bg --https=8443 http://127.0.0.1:47110",
-    "gatewayPort": 47110,
-    "httpsPort": 8443,
-    "node": {
-      "backendState": "Running",
-      "dnsName": "desktop.tail1234.ts.net",
-      "httpsReady": true,
-      "login": "user@example.com",
-      "magicDns": true,
-      "tagged": false,
-      "version": "1.104.1"
-    },
-    "refusal": "portTaken",
-    "serve": {
-      "foreground": false,
-      "funnel": false,
-      "otherPorts": [],
-      "port": "taken"
-    }
-  },
-  "probeReady": {
-    "cli": {
-      "path": "/usr/local/bin/tailscale",
-      "variant": "cli"
-    },
-    "command": "tailscale serve --bg --https=8443 http://127.0.0.1:47110",
-    "gatewayPort": 47110,
-    "httpsPort": 8443,
-    "node": {
-      "backendState": "Running",
-      "dnsName": "desktop.tail1234.ts.net",
-      "httpsReady": true,
-      "login": "user@example.com",
-      "magicDns": true,
-      "tagged": false,
-      "version": "1.104.1"
-    },
-    "refusal": null,
-    "serve": {
-      "foreground": false,
-      "funnel": false,
-      "otherPorts": [],
-      "port": "free"
-    }
-  },
-  "probeTagged": {
-    "cli": {
-      "path": "/usr/local/bin/tailscale",
-      "variant": "cli"
-    },
-    "command": "tailscale serve --bg --https=8443 http://127.0.0.1:47110",
-    "gatewayPort": 47110,
-    "httpsPort": 8443,
-    "node": {
-      "backendState": "Running",
-      "dnsName": "desktop.tail1234.ts.net",
-      "httpsReady": true,
-      "login": "tagged-devices",
-      "magicDns": true,
-      "tagged": true,
-      "version": "1.104.1"
-    },
-    "refusal": "tagged",
-    "serve": {
-      "foreground": false,
-      "funnel": false,
-      "otherPorts": [],
-      "port": "free"
-    }
+  "pushOverview": {
+    "available": true,
+    "subscribed": [
+      "AAAAAAAAAAAAAAAAAAAAAA"
+    ]
   },
   "sessionsSet": {
     "restartRequired": true

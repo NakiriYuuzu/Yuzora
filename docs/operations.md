@@ -70,6 +70,7 @@ Required CI checks：
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend checks 與 3 個 test shards 平行、固定名稱 aggregator 守門；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR（`release/*` PR 只由 CI 呼叫，不重複觸發）、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
+| Companion gateway | `.github/workflows/companion.yml` | 手動 dispatch；`src-tauri/companion/**`、`src-tauri/companion-net/**`、`src-tauri/host/**`、tiberius vendor 或自身變更的 pull request（無 push 觸發，也不是 required check） | Gateway 三平台 fmt、clippy `-D warnings`、tests 與原生 TLS 依賴拒絕檢查；cargo-deny／cargo-audit；Companion 網路 sidecar 三平台 `gofmt -l`（須無輸出）、`go vet`、`go test`、固定版本的 `govulncheck`（fail-closed） |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -735,7 +736,7 @@ Agent 通知預設僅 toast；系統通知與聲音分別選配。首次快照�
 
 ### CI 編譯與測試隔離
 
-一般 Rust compile／database integration jobs 使用 `TAURI_CONFIG={"bundle":{"resources":[]}}`，讓乾淨 checkout 不依賴未下載的 installer payload。此設定只屬編譯／測試 jobs；candidate／Release 必須保留實際 resources 與 `runtime:verify`、installer payload gate，不得沿用空資源設定。
+一般 Rust compile／database integration jobs 使用 `TAURI_CONFIG={"bundle":{"resources":[],"externalBin":[]}}`，讓乾淨 checkout 不依賴未下載的 installer payload，也不依賴尚未建置的 Companion sidecar。此設定只屬編譯／測試 jobs；candidate／Release 必須保留實際 resources、`externalBin` 與 `runtime:verify`、installer payload gate，不得沿用空設定。
 
 `upload-artifact` 會把 `host-*` artifact 內的檔案一律存成 0644，而 macOS App 從 `host/macos-aarch64/herdr` 執行內建 HERDR。candidate／Release 在下載後、`runtime:verify` 前，以「Restore Unix host runtime execute bits」步驟恢復執行權限；`runtime:verify` 在非 Windows runner 上遇到不可執行的 Unix helper／HERDR 會直接失敗，release contract 也檢查這個步驟的存在與順序。
 
@@ -772,9 +773,25 @@ macOS App 僅支援 Apple Silicon，受管 HERDR 共用 `Contents/Resources/host
 
 ### Companion sidecar
 
-Companion gateway 以 Tauri `externalBin` 隨桌面 App 出貨，只建置 bundle 自己的 target。`bun run companion:prepare` 依 Tauri 提供的 `TAURI_ENV_TARGET_TRIPLE` 建置 `src-tauri/companion`（未提供時用 `rustc -vV` 的 host triple；`TAURI_ENV_DEBUG=true` 時建 debug），輸出 `src-tauri/binaries/yuzora-companion-<triple>`，並寫入 `src-tauri/resources/companion-web/`。在 PWA 建置（plan Phase 5）加入前，web root 只有占位頁。兩者都由 gitignore 排除。`beforeBuildCommand` 與 `beforeDevCommand` 都會先執行它，所以 `tauri dev` 第一次會多一次 companion 建置。
+Companion 以兩個 Tauri `externalBin` sidecar 隨桌面 App 出貨，都只建置 bundle 自己的 target：Rust gateway `yuzora-companion`（`src-tauri/companion`），以及內嵌 tsnet 節點的 Go 網路 sidecar `yuzora-companion-net`（`src-tauri/companion-net`，Companion 的 Tailscale 連線由它提供，不依賴系統 Tailscale）。`bun run companion:prepare` 依 Tauri 提供的 `TAURI_ENV_TARGET_TRIPLE` 建置（未提供時用 `rustc -vV` 的 host triple；`TAURI_ENV_DEBUG=true` 時 gateway 建 debug），輸出：
 
-宣告 `externalBin` 後，缺 binary 的 app crate 建置會失敗，所以 CI 只做編譯與測試的 job 以 `TAURI_CONFIG` 同時清空 `resources` 與 `externalBin`；candidate 與 Release 不覆寫。macOS candidate 會確認 `Contents/MacOS/yuzora-companion` 是 arm64，且 `Contents/Resources/companion-web/index.html` 存在。
+- `src-tauri/binaries/yuzora-companion-<triple>`：gateway。
+- `src-tauri/binaries/yuzora-companion-net-<triple>`：Go sidecar，以 `CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags=ts_omit_webclient -ldflags "-s -w -X main.version=<App 版本>"` 建置。`GOOS`／`GOARCH` 由 triple 對應（`aarch64`／`x86_64` 的 apple-darwin、pc-windows-msvc、unknown-linux-gnu 六種），其他 triple 直接報錯。`ts_omit_webclient` 不連結 tsnet 的 web client：sidecar 用不到它，且它內嵌的預建前端資產含第三方字型，其授權不在任何 `LICENSE*` 檔內。版本字串必須等於桌面 App 版本，否則 sidecar 啟動時回報 `net-version-mismatch`；Go 對不存在的 `-X` 變數不會報錯（變數名打錯會得到版本 `dev`），所以 host 能執行該 binary 時（OS 與架構相同；交叉建置的不執行），`companion:prepare` 會在安裝前以一個不存在的版本送 `init`，要求回覆的 `net-version-mismatch` 指名 App 版本，否則失敗。
+- `src-tauri/resources/companion-net/THIRD_PARTY_NOTICES.txt`：Go 標準庫 LICENSE，加上 `go list -deps`（與建置同一組 tags）列出的每個 module 的授權檔，依 module path 排序。授權檔掃描的是每個實際連結的 package 目錄一路到其 module 根目錄的 `LICENSE*`／`COPYING*`／`NOTICE*`，所以巢狀授權（例如 `klauspost/compress` 的 `zstd/internal/xxhash/LICENSE.txt`）也在內，同一 module 內內容相同者只列一次。任何 module 掃不到授權檔時 `companion:prepare` 失敗。範圍限於授權檔：以 `go:embed` 內嵌的第三方資產不在掃描內，這是移除 web client 的原因；之後若新增這類依賴須另行檢查。內容會隨 target 而異（Windows 另含 Windows-only 依賴）。
+- `src-tauri/resources/companion-web/`：Companion PWA（先建置到 staging 並驗證，再同步）。
+
+以上輸出都由 gitignore 排除。為避免重編 app crate，內容相同時不覆寫既有檔案（gateway、Go sidecar 與 notices 皆然），所以 Go 建置須可重現（固定 `-trimpath`、`-buildvcs=false`，不嵌入 VCS 資訊）。`beforeBuildCommand` 與 `beforeDevCommand` 都會先執行它，所以 `tauri dev`／`tauri build` 需要 **Go 1.27 以上**：`src-tauri/companion-net/go.mod` 目前要求 `go 1.27.1`，並以 `toolchain go1.27.3` 固定出貨 sidecar 的 Go 版本；缺少 Go 時 `companion:prepare` 會報出安裝指引。第一次 `tauri dev` 會多一次 gateway 與 Go 建置。
+
+Go sidecar 預設不上傳任何 log：`main` 一開始就設定 `TS_NO_LOGS_NO_SUPPORT`（`envknob.SetNoLogsNoSupport()`），tsnet 不會把節點 log（含 peer 名稱、tailnet 名稱與登入網址）送到 `log.tailscale.com`；這是無條件設定，不依賴桌面端傳入的環境變數（allowlist 本來就不含它），環境變數也無法改回上傳。tsnet 的 log 與標準 `log` 套件的輸出（tshttpproxy 會印出含帳密的 proxy URL）只寫入 `<stateDir>/tsnet.log`（0600，每次啟動截斷；目錄建立前直接丟棄），不寫 stderr，因此桌面 log 不會出現登入網址或 proxy 帳密。stderr 只留 sidecar 自己的診斷訊息；其中每個 peer 動作各一行的 log（`http.Server` 與 reverse proxy 的 `ErrorLog`，例如每次失敗的 TLS 握手）經過限流，每分鐘最多 10 行進 stderr，其餘只計數，視窗結束或服務停止時以 `… N similar lines suppressed` 摘要一行，避免 tailnet 上的非擁有者灌爆桌面 log。
+
+宣告 `externalBin` 後，缺 binary 的 app crate 建置會失敗，所以 CI 只做編譯與測試的 job 以 `TAURI_CONFIG` 同時清空 `resources` 與 `externalBin`；candidate 與 Release 不覆寫。
+
+CI 檢查：
+
+- macOS／Windows candidate 與 Release `build` 在建置前以 `actions/setup-go` 讀取 `src-tauri/companion-net/go.mod` 安裝 Go；Release 的 action 以完整 SHA 固定且不還原 Go 快取。release contract（`bun run check:beta-release`、`check:updater-release`）要求這兩處都有以完整 SHA 固定、讀取該 `go.mod`、且位於第一個 `tauri build` 之前的 `setup-go` 步驟；`scripts/prepare-herdr-resources.test.ts` 鎖定兩個 `externalBin` 與 Linux resource map（含 `companion-net/`）。升級 Go 時只改 `go.mod`（`setup-go` 優先讀 `toolchain` 行，沒有才讀 `go` 行），並確認 `companion.yml` 與 candidate 仍以同一版本通過。
+- macOS candidate 會確認 `Contents/MacOS/yuzora-companion` 與 `Contents/MacOS/yuzora-companion-net` 都是 arm64，且 `Contents/Resources/companion-web/index.html`、`Contents/Resources/companion-net/THIRD_PARTY_NOTICES.txt` 存在。Windows MSI verifier 目前不檢查 Companion sidecar 或 notices 是否在安裝包內。
+- `companion.yml` 的 `net` job 在 macOS、Windows、Linux 以 `CGO_ENABLED=0`（等同出貨設定）執行 `gofmt -l`（須無輸出）、`go vet ./...`、`go test ./...`，再以固定版本（`golang.org/x/vuln/cmd/govulncheck@v1.9.0`）、與出貨相同的 `-tags ts_omit_webclient` 執行 `govulncheck ./...`；可達的標準庫或依賴弱點使 job 失敗（exit 3，不得以 `|| true` 吞掉；`contracts.rs` 檢查版本已固定、tags 與 `toolchain` 下限）。Windows job 先設定 `core.autocrlf=false`，避免 CRLF checkout 使 gofmt 誤報；Go 測試以 `t.TempDir()` 建立 state 目錄，因為 sidecar 要求絕對路徑，而 `/tmp/...` 這類字面路徑在 Windows 沒有磁碟代號、不算絕對路徑。此 workflow 只在相關路徑的 pull request 觸發，不是 required check。
+- 本機 `go test` 若因 cgo 無法連結 Xcode SDK 而失敗，改用 `CGO_ENABLED=0 go test ./...`（與出貨及 CI 設定相同）。
 
 App、獨立 Host 與 Companion 的 Cargo release profile 都使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。
 

@@ -8069,6 +8069,7 @@ dependencies = [
 name = "yuzora"
 version = "0.0.19"
 dependencies = [
+ "aes-gcm",
  "arboard",
  "base64 0.23.1",
  "chrono",
@@ -8077,6 +8078,7 @@ dependencies = [
  "futures-util",
  "grep-regex",
  "grep-searcher",
+ "hkdf",
  "ignore",
  "interprocess",
  "keyring",
@@ -8087,6 +8089,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "p256",
  "percent-encoding",
  "qrcode",
  "rand 0.10.3",
@@ -8156,6 +8159,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-util",
+ "unicode-normalization",
  "uuid",
  "webpki-roots",
  "windows-sys 0.61.2",

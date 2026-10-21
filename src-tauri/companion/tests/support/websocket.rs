@@ -38,7 +38,10 @@ async fn connect(
         .insert("origin", ORIGIN.parse().unwrap());
     request
         .headers_mut()
-        .insert("tailscale-user-login", "user@example.com".parse().unwrap());
+        .insert("yzc-proxy-secret", PROXY_SECRET.parse().unwrap());
+    request
+        .headers_mut()
+        .insert("yzc-peer-login", "user@example.com".parse().unwrap());
     if let Some(login) = login {
         request
             .headers_mut()
@@ -132,7 +135,9 @@ async fn ws_guarded_upgrade_and_query_rejection() {
             headers.push_str("Host: desktop.tailnet.ts.net:8443\r\n");
         }
         if omit != "login" {
-            headers.push_str("Tailscale-User-Login: user@example.com\r\n");
+            headers.push_str(&format!(
+                "Yzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\n"
+            ));
         }
         if omit != "origin" {
             headers.push_str(&format!("Origin: {ORIGIN}\r\n"));
@@ -356,6 +361,12 @@ async fn ws_active_idle_absolute_and_enable_until_expiry() {
         close(&mut ws, 4401).await;
         if case == "enable" {
             settle().await;
+            // The peers are gone but the port stays bound until the hold ends:
+            // the node forwards the tailnet to it until the desktop unserves.
+            assert!(!f.server.is_finished());
+            assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, f.port)).is_err());
+            tokio::time::advance(yuzora_companion::http::EXPIRY_HOLD).await;
+            settle().await;
             assert!(f.server.is_finished());
             // Not io(): Windows retries a refused loopback connect for about
             // two seconds, beyond the yield budget. The server has finished.
@@ -475,7 +486,7 @@ async fn ws_global_permits_include_preauth_release_and_http_separate() {
         http.push(connection);
     }
     let mut last = http.pop().unwrap();
-    io(last.write_all(b"Host: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nConnection: close\r\n\r\n")).await.unwrap();
+    io(last.write_all(format!("Host: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nConnection: close\r\n\r\n").as_bytes())).await.unwrap();
     let mut response = String::new();
     io(last.read_to_string(&mut response)).await.unwrap();
     assert!(

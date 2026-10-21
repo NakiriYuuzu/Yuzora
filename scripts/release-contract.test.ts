@@ -528,6 +528,36 @@ describe("release workflow contracts", () => {
     expect(noUpdaterSigning.stderr).toContain("must retain updater signing and artifacts")
   })
 
+  it("requires a pinned setup-go step before the Companion sidecar is built by candidates and releases", () => {
+    const run = (contract: string, mutation: string) => spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, ${contract} } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+        const setupGo = (job) => job.steps.findIndex((step) => step.uses?.startsWith("actions/setup-go@"));
+        ${mutation}
+        ${contract === "verifyBetaReleaseContract" ? "verifyBetaReleaseContract(release, ci)" : "verifyStableReleaseContract(release)"};
+      `],
+      { encoding: "utf8" }
+    )
+    const cases: [string, string, string][] = [
+      ["verifyStableReleaseContract", `release.jobs.build.steps.splice(setupGo(release.jobs.build), 1);`, "jobs.build must install Go with actions/setup-go"],
+      ["verifyBetaReleaseContract", `release.jobs.build.steps.splice(setupGo(release.jobs.build), 1);`, "jobs.build must install Go with actions/setup-go"],
+      ["verifyStableReleaseContract", `release.jobs.build.steps[setupGo(release.jobs.build)].uses = "actions/setup-go@v7";`, "action must be pinned to a full 40-character commit SHA"],
+      ["verifyStableReleaseContract", `release.jobs.build.steps[setupGo(release.jobs.build)].with["go-version-file"] = "go.mod";`, "must read the Go version from src-tauri/companion-net/go.mod"],
+      ["verifyStableReleaseContract", `const job = release.jobs.build; job.steps.push(...job.steps.splice(setupGo(job), 1));`, "must install Go before the first tauri build"],
+      ["verifyBetaReleaseContract", `ci.jobs["release-candidate"].steps.splice(setupGo(ci.jobs["release-candidate"]), 1);`, "release candidate must install Go with actions/setup-go"],
+      ["verifyBetaReleaseContract", `ci.jobs["release-candidate"].steps[setupGo(ci.jobs["release-candidate"])].uses = "actions/setup-go@v7";`, "release candidate setup-go must be pinned to a full 40-character commit SHA"],
+      ["verifyBetaReleaseContract", `const job = ci.jobs["release-candidate"]; job.steps.push(...job.steps.splice(setupGo(job), 1));`, "release candidate must install Go before the first tauri build"],
+    ]
+    for (const [contract, mutation, message] of cases) {
+      const result = run(contract, mutation)
+      expect(result.status, mutation).not.toBe(0)
+      expect(result.stderr, mutation).toContain(message)
+    }
+  })
+
   it("uses one bounded canonical-mirror installer for both Linux CI jobs", () => {
     const installer = readFileSync(".github/scripts/install-linux-system-dependencies.sh", "utf8")
     expect(installer).toContain("https://archive.ubuntu.com/ubuntu/")

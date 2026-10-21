@@ -351,7 +351,11 @@ impl Fixture {
             .unwrap();
         for (k, v) in [
             ("origin", "https://desktop.tailnet.ts.net:8443"),
-            ("tailscale-user-login", "user@example.com"),
+            (
+                "yzc-proxy-secret",
+                crate::test_support::identity::PROXY_SECRET,
+            ),
+            ("yzc-peer-login", "user@example.com"),
             ("cookie", &self.cookie),
         ] {
             request.headers_mut().insert(k, v.parse().unwrap());

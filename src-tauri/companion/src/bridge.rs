@@ -671,6 +671,34 @@ const METHODS: &[Method] = &[
         scope: Scope::View,
     },
     Method {
+        name: "push.unsubscribe",
+        scope: Scope::View,
+    },
+    Method {
+        name: "push.status",
+        scope: Scope::View,
+    },
+    Method {
+        name: "git.status",
+        scope: Scope::View,
+    },
+    Method {
+        name: "git.branches",
+        scope: Scope::View,
+    },
+    Method {
+        name: "git.log",
+        scope: Scope::View,
+    },
+    Method {
+        name: "git.commit",
+        scope: Scope::View,
+    },
+    Method {
+        name: "git.diff",
+        scope: Scope::View,
+    },
+    Method {
         name: "terminal.control",
         scope: Scope::Control,
     },
@@ -731,6 +759,12 @@ fn rpc(gateway: &Gateway, ctx: &AuthContext, text: &str) -> Result<Value, Close>
             None => rpc_error(call.id.clone(), "unknown-method", "Unknown method"),
             Some("hello") => json!({"id":call.id,"result":{"protocolVersion":1,"serverTime":gateway.clock.now()}}),
             Some("session.ping") => json!({"id":call.id,"result":{"serverTime":gateway.clock.now()}}),
+            Some(name @ ("push.subscribe" | "push.unsubscribe" | "push.status")) => {
+                match gateway.push.call(gateway, ctx.device_id(), name, &call.params) {
+                    Ok(result) => json!({"id":call.id,"result":result}),
+                    Err(code) => rpc_error(call.id.clone(), code, code),
+                }
+            }
             _ => rpc_error(call.id.clone(), "not-implemented", "Not implemented"),
         }
     });
@@ -747,6 +781,7 @@ fn rpc(gateway: &Gateway, ctx: &AuthContext, text: &str) -> Result<Value, Close>
                 }
                 reply["result"]["scopes"] = json!(scopes);
                 reply["result"]["capabilities"] = crate::read_bridge::capabilities();
+                reply["result"]["push"] = gateway.push.hello();
             }
             Ok(reply)
         }

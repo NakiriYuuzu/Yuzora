@@ -1312,10 +1312,30 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
 
     let full = resolve_commit_oid(root, rev)?.into_string();
 
+    // A tree lists a name decomposed that git, precomposing the one it is given,
+    // would not find: the path is asked as stored first, then as git respells it.
+    let mut read = FileAtRevResult::Missing;
+    for spelling in crate::git_service::name_spellings(path) {
+        read = file_at_rev_spelled(root, &full, path, spelling)?;
+        if !matches!(read, FileAtRevResult::Missing) {
+            break;
+        }
+    }
+    Ok(read)
+}
+
+fn file_at_rev_spelled(
+    root: &Path,
+    full: &str,
+    path: &str,
+    spelling: &[&str],
+) -> Result<FileAtRevResult, String> {
     let spec = format!("{full}:{path}");
+    let mut args = spelling.to_vec();
+    args.extend(["show", "--end-of-options", &spec, "--"]);
     let out = match crate::git_service::run_git_with_stdout_limit(
         root,
-        &["show", "--end-of-options", &spec, "--"],
+        &args,
         DEFAULT_TIMEOUT,
         &no_replace_env(),
         crate::git_service::BLOB_READ_LIMIT,
@@ -1328,7 +1348,7 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
         // Most history reads succeed. Only pay for an existence query after a
         // failed read, retaining the distinction between an absent path and a
         // damaged/unreadable object (which must remain retryable errors).
-        if !path_exists_at_rev(root, &full, path)? {
+        if !path_exists_at_rev(root, full, path, spelling)? {
             return Ok(FileAtRevResult::Missing);
         }
         return Err(git_err("show", &out.stderr));
@@ -1338,19 +1358,23 @@ pub fn file_at_rev(root: &Path, rev: &str, path: &str) -> Result<FileAtRevResult
 
 /// Exact path existence at `commit` via NUL-delimited `ls-tree` + literal pathspec.
 /// Returns Ok(false) only when the path is verified absent; other failures are Err.
-fn path_exists_at_rev(root: &Path, commit: &str, path: &str) -> Result<bool, String> {
-    let out = run_git_no_replace(
-        root,
-        &[
-            "ls-tree",
-            "-z",
-            "--full-name",
-            "--end-of-options",
-            commit,
-            "--",
-            path,
-        ],
-    )?;
+fn path_exists_at_rev(
+    root: &Path,
+    commit: &str,
+    path: &str,
+    spelling: &[&str],
+) -> Result<bool, String> {
+    let mut args = spelling.to_vec();
+    args.extend([
+        "ls-tree",
+        "-z",
+        "--full-name",
+        "--end-of-options",
+        commit,
+        "--",
+        path,
+    ]);
+    let out = run_git_no_replace(root, &args)?;
     if out.code != 0 {
         return Err(git_err("ls-tree", &out.stderr));
     }
@@ -2565,6 +2589,120 @@ mod tests {
         match file_at_rev(r, "HEAD", "dir/f.txt").unwrap() {
             FileAtRevResult::Full { content } => assert_eq!(content, "historical\n"),
             other => panic!("expected historical content, got {other:?}"),
+        }
+    }
+
+    // A tree can store a name decomposed (committed while git did not precompose).
+    // Where git precomposes argv again (macOS), the path as the commit listing
+    // reports it must still be found, and a precomposed entry still by either
+    // spelling.
+    #[cfg(target_os = "macos")]
+    const NFD_NAME: &str = "cafe\u{301}.md";
+    #[cfg(target_os = "macos")]
+    const NFC_NAME: &str = "caf\u{e9}.md";
+    #[cfg(target_os = "macos")]
+    const NFD_NESTED: &str = "\u{30d5}\u{30a9}\u{30eb}\u{30bf}\u{3099}/inner.md";
+
+    #[cfg(target_os = "macos")]
+    fn precompose(r: &Path, value: &str) {
+        test_repo::git(r, &["config", "core.precomposeunicode", value]);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn full(content: &str) -> FileAtRevResult {
+        FileAtRevResult::Full {
+            content: content.to_string(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn file_at_rev_reads_a_decomposed_name_the_tree_stores() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        precompose(r, "false");
+        std::fs::create_dir_all(r.join("\u{30d5}\u{30a9}\u{30eb}\u{30bf}\u{3099}")).unwrap();
+        for (version, message) in [("v1\n", "c1"), ("v2\n", "c2")] {
+            for name in [NFD_NAME, NFD_NESTED] {
+                std::fs::write(r.join(name), version).unwrap();
+                test_repo::git(r, &["add", name]);
+            }
+            test_repo::git(r, &["commit", "-m", message]);
+        }
+        let first = run_git(r, &["rev-parse", "HEAD~1"], T, &iso()).unwrap();
+        let first = String::from_utf8_lossy(&first.stdout).trim().to_string();
+        precompose(r, "true");
+        for name in [NFD_NAME, NFD_NESTED] {
+            assert_eq!(
+                file_at_rev(r, "HEAD", name).unwrap(),
+                full("v2\n"),
+                "{name}"
+            );
+            assert_eq!(
+                file_at_rev(r, &first, name).unwrap(),
+                full("v1\n"),
+                "{name}"
+            );
+        }
+        // A name no tree holds stays a missing path, not an error.
+        for name in ["gone\u{301}.md", "gone\u{e9}.md", "d\u{301}/none.md"] {
+            assert_eq!(
+                file_at_rev(r, "HEAD", name).unwrap(),
+                FileAtRevResult::Missing,
+                "{name}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn file_at_rev_prefers_the_exact_decomposed_entry_beside_a_precomposed_twin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        precompose(r, "false");
+        std::fs::write(r.join(NFD_NAME), "own\n").unwrap();
+        test_repo::git(r, &["add", NFD_NAME]);
+        test_repo::git(r, &["commit", "-m", "c1"]);
+        let twin = crate::git_service::run_git_with_stdin(
+            r,
+            &["hash-object", "-w", "--stdin"],
+            T,
+            &iso(),
+            b"twin\n",
+        )
+        .unwrap();
+        let entry = format!(
+            "100644,{},{NFC_NAME}",
+            String::from_utf8_lossy(&twin.stdout).trim()
+        );
+        test_repo::git(r, &["update-index", "--add", "--cacheinfo", &entry]);
+        test_repo::git(r, &["commit", "-m", "twin"]);
+        precompose(r, "true");
+        assert_eq!(file_at_rev(r, "HEAD", NFD_NAME).unwrap(), full("own\n"));
+        assert_eq!(file_at_rev(r, "HEAD", NFC_NAME).unwrap(), full("twin\n"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn file_at_rev_reads_a_precomposed_entry_by_either_spelling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        test_repo::init(r);
+        precompose(r, "true");
+        // Finder stores the file NFD; git precomposes the name it indexes.
+        std::fs::write(r.join(NFD_NAME), "kept\n").unwrap();
+        test_repo::git(r, &["add", NFC_NAME]);
+        test_repo::git(r, &["commit", "-m", "c1"]);
+        let listed = run_git(r, &["ls-tree", "--name-only", "-z", "HEAD"], T, &iso()).unwrap();
+        assert_eq!(listed.stdout, format!("{NFC_NAME}\0").into_bytes());
+        for name in [NFC_NAME, NFD_NAME] {
+            assert_eq!(
+                file_at_rev(r, "HEAD", name).unwrap(),
+                full("kept\n"),
+                "{name}"
+            );
         }
     }
 

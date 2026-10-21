@@ -1,89 +1,203 @@
-//! Tauri commands for the Companion (plan 4.2): settings, the Tailscale Serve
-//! handler, the gateway sidecar, pairing and devices. Main window only, like
-//! every command. Events are emitted to the main webview, and only it holds
-//! the event capability (`capabilities/default.json`), so the Browser child
-//! webview cannot listen to them.
+//! Tauri commands for the Companion (plan 4.2): settings, the embedded
+//! Tailscale node, the gateway sidecar, pairing, devices, the Spaces the
+//! gateway may read Git in and Web Push. Main window only,
+//! like every command. Events are emitted to the main webview, and only it
+//! holds the event capability (`capabilities/default.json`), so the Browser
+//! child webview cannot listen to them.
 
 use crate::{
+    companion_net::{self as net, NetManager, NetOverview, Notice},
+    companion_push::{Push, PushOverview},
     companion_service::{device_summary, CompanionManager, Launch, Status},
     companion_store::{
-        device_id, valid_grants, valid_label, AppliedServe, Devices, EnableFor, Settings,
+        device_id, valid_grants, valid_label, Devices, EnableFor, NetIdentity, Settings,
     },
-    companion_tailscale as tailscale,
     herdr_service::HerdrState,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock, Weak},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+    },
     time::Duration,
 };
 
 pub const EVENT: &str = "companion://event";
 
+type Emit = Arc<dyn Fn(Value) + Send + Sync>;
+
 pub struct CompanionState {
     manager: Arc<CompanionManager>,
+    net: Arc<NetManager>,
     dir: PathBuf,
     resource_dir: Option<PathBuf>,
-    /// Serialises Serve changes and settings writes.
+    /// Serialises enable, disable, login and logout, and settings writes.
     ops: Arc<tokio::sync::Mutex<()>>,
+    /// Where the Spaces' Git is read. Held while the running gateway is told,
+    /// so a change cannot slip between an enable's init frame and its start.
+    roots: Mutex<Vec<SpaceRoot>>,
+    /// Orders the node being told to serve against a gateway leaving.
+    forwarding: Arc<Forwarding>,
     /// Held for the life of the process by the one Yuzora instance that owns
     /// the Companion; another instance only reads.
     owner: Option<std::fs::File>,
 }
+
+/// The node may forward to the gateway's port from the moment it is told to
+/// serve. A gateway that leaves (a halt, an expiry) holds that port until the
+/// node has stopped forwarding, so the node must not be told to serve a
+/// gateway that has begun to leave, nor miss one that is being told.
+#[derive(Default)]
+struct Forwarding {
+    /// Held from the check that the gateway is still there, through the serve
+    /// command and the node's answer: a gateway that leaves meanwhile waits
+    /// for it, and its `unserve` follows the `serve`.
+    serving: tokio::sync::Mutex<()>,
+    /// How many gateways began to leave. Counted before the wait for `serving`,
+    /// so an enable that takes it afterwards sees it. An expiry leaves the
+    /// status running until the gateway exits, so the status alone cannot say.
+    leaving: AtomicUsize,
+}
+
 impl CompanionState {
     pub fn new(app: &tauri::AppHandle, dir: PathBuf, resource_dir: Option<PathBuf>) -> Self {
         use tauri::Emitter;
-        let owner = instance_lock(&dir);
-        let ops = Arc::new(tokio::sync::Mutex::new(()));
         let emitter = app.clone();
-        let current: Arc<OnceLock<Weak<CompanionManager>>> = Arc::default();
-        let cleanup = (dir.clone(), ops.clone(), current.clone());
-        let manager = CompanionManager::new(
-            dir.clone(),
+        Self::with_emit(
             Arc::new(move |event| {
                 let _ = emitter.emit_to("main", EVENT, event);
             }),
-            // Expiry, a crash or a halted gateway: nothing serves the port any more.
+            app.package_info().version.to_string(),
+            net::TIMING,
+            dir.clone(),
+            resource_dir,
+            Push::system(dir),
+        )
+    }
+
+    fn with_emit(
+        emit: Emit,
+        version: String,
+        timing: net::Timing,
+        dir: PathBuf,
+        resource_dir: Option<PathBuf>,
+        push: Arc<Push>,
+    ) -> Self {
+        let owner = instance_lock(&dir);
+        let ops = Arc::new(tokio::sync::Mutex::new(()));
+        let gateway: Arc<OnceLock<Weak<CompanionManager>>> = Arc::default();
+        let node: Arc<OnceLock<Weak<NetManager>>> = Arc::default();
+        let cleanup = (ops.clone(), gateway.clone(), node.clone());
+        let manager = CompanionManager::new(
+            dir.clone(),
+            leaving_first(emit.clone(), node.clone()),
+            // Expiry, a crash or a halted gateway: nothing is left behind the
+            // node, so it stops serving.
             Arc::new(move || {
-                let (dir, ops, current) = cleanup.clone();
+                let (ops, gateway, node) = cleanup.clone();
                 tauri::async_runtime::spawn(async move {
                     let _turn = ops.lock().await;
                     // An enable that took the lock first runs a new gateway
-                    // behind the same handler.
-                    if current
+                    // behind the same node.
+                    if gateway
                         .get()
                         .and_then(Weak::upgrade)
                         .is_some_and(|manager| !manager.idle())
                     {
                         return;
                     }
-                    if let Err(code) = remove_applied_serve(&dir).await {
-                        log_warning("companion_serve_cleanup", &code);
+                    if let Some(net) = node.get().and_then(Weak::upgrade) {
+                        net.unserve().await;
+                        net.stop().await;
                     }
                 });
             }),
+            push,
         );
-        let _ = current.set(Arc::downgrade(&manager));
-        // No handler may outlive its gateway: one left by a crash or a quit
-        // points at a loopback port anyone can bind. Enable re-applies it.
-        // The lock is taken here, before any command can enable.
-        if owner.is_some() {
-            let turn = ops.clone().try_lock_owned().expect("unshared at startup");
-            let stale = dir.clone();
-            tauri::async_runtime::spawn(async move {
-                let _turn = turn;
-                if let Err(code) = remove_applied_serve(&stale).await {
-                    log_warning("companion_serve_cleanup", &code);
+        let _ = gateway.set(Arc::downgrade(&manager));
+        // Before a gateway lets go of its port (expiry) or is killed (a halt),
+        // the node stops forwarding to it: its listener is closed, and when it
+        // does not say so within its bound the node itself is stopped.
+        let forwarding = Arc::new(Forwarding::default());
+        let closing = (node.clone(), forwarding.clone());
+        manager.on_closing(Arc::new(move || {
+            let (node, forwarding) = closing.clone();
+            Box::pin(async move {
+                forwarding.leaving.fetch_add(1, Ordering::SeqCst);
+                // A serve that is under way is answered first: this `unserve`
+                // then follows it, and an enable that has not told the node
+                // yet sees the gateway leaving.
+                let _serving = forwarding.serving.lock().await;
+                if let Some(net) = node.get().and_then(Weak::upgrade) {
+                    if !net.unserve().await {
+                        net.stop().await;
+                    }
                 }
-            });
-        }
+            })
+        }));
+        let identity = Settings::load(&dir).ok().and_then(|settings| settings.net);
+        let notices = (ops.clone(), dir.clone(), gateway, node.clone());
+        let net = NetManager::with_timing(
+            dir.join("net"),
+            version,
+            identity,
+            emit,
+            Arc::new(move |notice| {
+                let (ops, dir, gateway, node) = notices.clone();
+                match notice {
+                    // The gateway is only reachable through the node.
+                    Notice::Exited { requested: false } => {
+                        if let Some(manager) = gateway.get().and_then(Weak::upgrade) {
+                            manager.fail("companion-net-crashed");
+                        }
+                    }
+                    Notice::Exited { requested: true } => {}
+                    // The node ran, or has to log in: settings keep what it last
+                    // said. Whatever the mode, so a node that logged in during
+                    // an enable that then failed is still remembered.
+                    Notice::Running | Notice::LoginRequired => {
+                        let running = matches!(notice, Notice::Running);
+                        // A gateway behind a node whose key expired cannot be
+                        // reached: it is halted, and its halt stops the node.
+                        // An enable that has not started one fails by itself.
+                        if !running {
+                            if let Some(manager) = gateway.get().and_then(Weak::upgrade) {
+                                manager.fail("companion-net-login-required");
+                            }
+                        }
+                        tauri::async_runtime::spawn(async move {
+                            let _turn = ops.lock().await;
+                            let Some(net) = node.get().and_then(Weak::upgrade) else {
+                                return;
+                            };
+                            if let Err(code) = remember_node(&dir, net.identity()) {
+                                log_warning("companion_net_remember", &code);
+                            }
+                            // A login is done once the node runs; an enable
+                            // that took the node over keeps it running.
+                            if running && net.mode() == Some(net::Mode::Login) {
+                                net.stop().await;
+                            }
+                        });
+                    }
+                }
+            }),
+            timing,
+        );
+        let _ = node.set(Arc::downgrade(&net));
         Self {
             manager,
+            net,
             dir,
             resource_dir,
             ops,
+            roots: Mutex::default(),
+            forwarding,
             owner,
         }
     }
@@ -95,24 +209,27 @@ impl CompanionState {
             .map(drop)
             .ok_or_else(|| "companion-other-instance".into())
     }
-    /// App exit, bounded: the handler goes first (at most 5 s), so nothing
-    /// forwards to a port the gateway is leaving, then the gateway. A handler
-    /// left behind (or a killed process) is removed at the next start.
+    /// App exit, bounded: the listener closes first, so nothing forwards to a
+    /// gateway that is leaving (a node that does not say it has is stopped),
+    /// then the gateway, then the node. A process that outlives this one sees
+    /// its stdin close and stops itself.
     pub fn shutdown(&self) {
         if self.owner.is_none() {
             return;
         }
-        let (dir, ops) = (self.dir.clone(), self.ops.clone());
+        let (manager, net) = (self.manager.clone(), self.net.clone());
         let (done, wait) = std::sync::mpsc::sync_channel(1);
         tauri::async_runtime::spawn(async move {
-            let _turn = ops.lock().await;
-            if let Err(code) = remove_applied_serve(&dir).await {
-                log_warning("companion_serve_cleanup", &code);
+            if !net.unserve().await {
+                net.stop().await;
             }
+            if !manager.idle() {
+                manager.stop().await;
+            }
+            net.stop().await;
             let _ = done.send(());
         });
         let _ = wait.recv_timeout(Duration::from_secs(5));
-        self.manager.stop_blocking();
     }
 }
 
@@ -129,6 +246,26 @@ fn instance_lock(dir: &Path) -> Option<std::fs::File> {
     Some(file)
 }
 
+/// The gateway's events, with one change: a status that says the gateway is
+/// going or gone (disable, expiry, a halt) first tells the node, which goes
+/// next, that it is leaving. Otherwise the overview still says the node runs
+/// for an enable while the status already reads disabled.
+fn leaving_first(emit: Emit, node: Arc<OnceLock<Weak<NetManager>>>) -> Emit {
+    Arc::new(move |event| {
+        let ends = event["type"] == "status"
+            && matches!(
+                event["status"]["state"].as_str(),
+                Some("stopping" | "disabled" | "failed")
+            );
+        if ends {
+            if let Some(net) = node.get().and_then(Weak::upgrade) {
+                net.leaving();
+            }
+        }
+        emit(event)
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanionOverview {
@@ -139,6 +276,8 @@ pub struct CompanionOverview {
     enable_until: Option<String>,
     /// False when another Yuzora instance owns the Companion.
     owner: bool,
+    net: NetOverview,
+    push: PushOverview,
 }
 
 #[tauri::command]
@@ -154,6 +293,8 @@ fn overview(state: &CompanionState) -> Result<CompanionOverview, String> {
         settings: Settings::load(&state.dir)?,
         enable_until: state.manager.enable_until(),
         owner: state.owner.is_some(),
+        net: state.net.overview(),
+        push: state.manager.push().overview(),
     })
 }
 
@@ -170,79 +311,85 @@ pub async fn companion_experimental_set(
     settings.experimental = enabled;
     settings.save(&state.dir)?;
     if !enabled {
-        disable(&state).await?;
+        disable(&state).await;
     }
     overview(&state)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TailscaleProbe {
-    cli: Option<tailscale::Cli>,
-    node: Option<tailscale::Node>,
-    serve: Option<tailscale::Serve>,
-    refusal: Option<tailscale::Refusal>,
-    https_port: u16,
-    gateway_port: u16,
-    /// Shown verbatim in the confirmation dialog.
-    command: String,
-}
-
+/// Starts the node to log it in to a tailnet. When it runs, the node is
+/// remembered and the sidecar stops: it stays registered, offline.
 #[tauri::command]
-pub async fn companion_tailscale_probe(
+pub async fn companion_net_login(
     state: tauri::State<'_, CompanionState>,
-) -> Result<TailscaleProbe, String> {
-    let settings = Settings::load(&state.dir)?;
-    probe(&settings).await
-}
-
-#[tauri::command]
-pub async fn companion_tailscale_remove(
-    state: tauri::State<'_, CompanionState>,
-) -> Result<(), String> {
+) -> Result<NetOverview, String> {
     state.owner()?;
     let _turn = state.ops.lock().await;
-    remove_applied_serve(&state.dir).await
+    net_login(&state, &net::program()?)
 }
 
-/// Drops the record of a handler on a node this desktop no longer reaches:
-/// renamed, another account or profile, logged out, or no CLI. The handler
-/// may still be there; only someone on that node can turn it off.
-#[tauri::command]
-pub async fn companion_tailscale_forget(
-    state: tauri::State<'_, CompanionState>,
-) -> Result<(), String> {
-    state.owner()?;
-    let _turn = state.ops.lock().await;
+fn net_login(state: &CompanionState, program: &Path) -> Result<NetOverview, String> {
     if !state.manager.idle() {
-        return Err("companion-already-running".into());
+        return Err("companion-busy".into());
     }
+    // A failure the gateway ended with is not about this sign-in.
+    state.manager.clear_failure();
+    state.net.start(program, net::Mode::Login)?;
+    Ok(state.net.overview())
+}
+
+/// Gives up a login in progress.
+#[tauri::command]
+pub async fn companion_net_cancel(
+    state: tauri::State<'_, CompanionState>,
+) -> Result<NetOverview, String> {
+    state.owner()?;
+    let _turn = state.ops.lock().await;
+    net_cancel(&state).await
+}
+
+async fn net_cancel(state: &CompanionState) -> Result<NetOverview, String> {
+    if state.net.mode() == Some(net::Mode::Login) {
+        state.net.stop().await;
+    }
+    Ok(state.net.overview())
+}
+
+/// Logs the node out of the tailnet and forgets it.
+#[tauri::command]
+pub async fn companion_net_logout(
+    state: tauri::State<'_, CompanionState>,
+) -> Result<NetOverview, String> {
+    state.owner()?;
+    let _turn = state.ops.lock().await;
+    net_logout(&state, net::program).await
+}
+
+/// `program` is only looked for when the node has to be asked to log out.
+async fn net_logout(
+    state: &CompanionState,
+    program: impl FnOnce() -> Result<PathBuf, String> + Send,
+) -> Result<NetOverview, String> {
+    if !state.manager.idle() {
+        return Err("companion-busy".into());
+    }
+    state.net.logout(program).await?;
     let mut settings = Settings::load(&state.dir)?;
-    let Some(applied) = settings.applied.clone() else {
-        return Ok(());
-    };
-    // A probe that fails cannot reach the node either.
-    let host = probe(&settings)
-        .await
-        .ok()
-        .and_then(|current| current.node)
-        .and_then(|node| node.dns_name);
-    if !may_forget(host.as_deref(), &applied) {
-        return Err("companion-tailscale-remove-instead".into());
-    }
-    settings.applied = None;
-    settings.save(&state.dir)
+    settings.net = None;
+    settings.save(&state.dir)?;
+    Ok(state.net.overview())
 }
 
-/// On the node it was applied to, `serve … off` can still remove the
-/// handler, so its record is never just dropped there.
-fn may_forget(host: Option<&str>, applied: &AppliedServe) -> bool {
-    host != Some(applied.host.as_str())
+/// What enable runs and hands to the gateway, resolved before anything starts.
+struct Inputs {
+    net_program: PathBuf,
+    gateway_program: PathBuf,
+    herdr_binary: PathBuf,
+    web_root: PathBuf,
 }
 
-/// Starts the gateway, and only once it listens applies the Serve handler
-/// in front of it: the handler never points at a port nothing has bound.
-/// Runs `tailscale serve`, so the user confirms the command shown by the probe.
+/// Brings the node up, then starts the gateway behind it, and only once it
+/// listens opens the node's listener in front of it: the node never forwards
+/// to a port nothing has bound.
 #[tauri::command]
 pub async fn companion_enable(
     state: tauri::State<'_, CompanionState>,
@@ -256,20 +403,11 @@ pub async fn companion_enable(
     state.owner()?;
     let _turn = state.ops.lock().await;
     // Before anything changes: a running gateway keeps its own enableUntil
-    // and the handler it is serving behind.
+    // and the listener it is served behind.
     if !state.manager.idle() {
         return Err("companion-already-running".into());
     }
-    let started = enable(&state, &herdr, window).await;
-    if started.is_err() {
-        // Handler first, then the gateway behind it. A handler that may
-        // still land after a CLI timeout keeps its record.
-        if let Err(code) = remove_serve(&state.dir, false).await {
-            log_warning("companion_serve_cleanup", &code);
-        }
-        state.manager.stop().await;
-    }
-    started
+    enable(&state, &herdr, window).await
 }
 
 async fn enable(
@@ -277,68 +415,117 @@ async fn enable(
     herdr: &HerdrState,
     window: EnableFor,
 ) -> Result<Status, String> {
-    let mut settings = Settings::load(&state.dir)?;
+    let settings = Settings::load(&state.dir)?;
     if !settings.experimental {
         return Err("companion-experimental-off".into());
     }
-    // Re-check right before running: the user confirmed an earlier probe.
-    let before = probe(&settings).await?;
-    let (Some(cli), Some(node), Some(serve)) = (&before.cli, &before.node, &before.serve) else {
-        return Err("companion-tailscale-unavailable".into());
-    };
-    if let Some(refusal) = before.refusal {
-        return Err(format!(
-            "companion-tailscale-refused: {}",
-            refusal_code(refusal)
-        ));
-    }
-    // A record for another port or node is the only handle on a handler that
-    // may still exist there; applying here would overwrite it.
-    if settings.applied.as_ref().is_some_and(|applied| {
-        (applied.https_port, applied.gateway_port) != (settings.https_port, settings.gateway_port)
-            || node.dns_name.as_deref() != Some(applied.host.as_str())
-    }) {
-        return Err("companion-tailscale-remove-first".into());
-    }
-    let applied = AppliedServe {
-        https_port: settings.https_port,
-        gateway_port: settings.gateway_port,
-        host: node.dns_name.clone().unwrap_or_default(),
-        login: node.login.clone().unwrap_or_default(),
-    };
     let manager = herdr.0.clone();
     let herdr_binary = tauri::async_runtime::spawn_blocking(move || manager.resolve_binary())
         .await
         .map_err(|e| e.to_string())?
         .ok_or("companion-herdr-unavailable")?;
+    let inputs = Inputs {
+        net_program: net::program()?,
+        gateway_program: sidecar_program()?,
+        herdr_binary,
+        web_root: web_root(state.resource_dir.as_deref())?,
+    };
+    run_enable(state, &inputs, settings, window).await
+}
+
+/// Each step needs the one before it; when one fails, everything started is
+/// stopped again.
+async fn run_enable(
+    state: &CompanionState,
+    inputs: &Inputs,
+    settings: Settings,
+    window: EnableFor,
+) -> Result<Status, String> {
+    // The card reads a stale failure beside a running enable as no enable.
+    state.manager.clear_failure();
+    let started = bring_up(state, inputs, settings, window).await;
+    if started.is_err() {
+        disable(state).await;
+    }
+    started
+}
+
+async fn bring_up(
+    state: &CompanionState,
+    inputs: &Inputs,
+    mut settings: Settings,
+    window: EnableFor,
+) -> Result<Status, String> {
+    state.net.start(&inputs.net_program, net::Mode::Enable)?;
+    let node = state.net.wait_running().await?;
+    if !node.https_capable {
+        return Err("companion-net-https-disabled".into());
+    }
+    state.net.wait_cert().await?;
     let until = chrono::Utc::now()
         + chrono::Duration::from_std(window.as_std()).map_err(|e| e.to_string())?;
-    let launch = Launch {
-        program: sidecar_program()?,
-        init: build_init(
-            &settings,
-            &applied,
-            &herdr_binary,
-            &web_root(state.resource_dir.as_deref())?,
-            &until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        )?,
-    };
-    // Recorded before the gateway or the CLI runs: whatever is left behind,
-    // even after a crash, cleanup can find and remove.
+    // Shared by the gateway and the node: the gateway only serves requests
+    // that come through the node.
+    let proxy_secret = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
+    let roots = state.roots.lock().unwrap().clone();
+    // The OS credential store may ask the user.
+    let manager = state.manager.clone();
+    let push = tauri::async_runtime::spawn_blocking(move || manager.push_init())
+        .await
+        .map_err(|e| e.to_string())?;
+    let init = build_init(
+        &settings,
+        &GatewayInit {
+            identity: &node.identity,
+            herdr_binary: &inputs.herdr_binary,
+            web_root: &inputs.web_root,
+            enable_until: &until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            proxy_secret: &proxy_secret,
+            space_roots: &roots,
+            push: &push,
+        },
+    );
     settings.duration = window;
-    settings.applied = Some(applied);
+    settings.net = Some(node.identity.clone());
     settings.save(&state.dir)?;
-    state.manager.start(launch)?;
-    state.manager.until_ready().await?;
-    if serve.port == tailscale::PortState::Free {
-        tailscale::run(
-            &cli.path,
-            &tailscale::serve_args(settings.https_port, settings.gateway_port),
+    // Gateways that leave from here on are this one.
+    let leaving_before = state.forwarding.leaving.load(Ordering::SeqCst);
+    state.manager.start(Launch {
+        program: inputs.gateway_program.clone(),
+        init,
+    })?;
+    let port = state.manager.until_ready().await?;
+    // Roots set since the init frame was built reach the running gateway.
+    {
+        let current = state.roots.lock().unwrap();
+        if *current != roots {
+            state.manager.notify(&roots_frame(&current));
+        }
+    }
+    // The gateway may have been halted, or its policy may have expired, since
+    // it was ready: its port is free or about to be, and nothing it does
+    // waits for a node it was never told about. So the node is not told.
+    // Checked under the lock a leaving gateway takes before it unserves: it
+    // either finds the serve command sent, or this finds it leaving.
+    let _serving = state.forwarding.serving.lock().await;
+    let status = state.manager.status();
+    let leaving = state.forwarding.leaving.load(Ordering::SeqCst) != leaving_before;
+    if leaving || status != (Status::Running { port }) {
+        return Err(match status {
+            Status::Failed { code } => code,
+            // An expiry leaves the status running until the gateway exits.
+            _ if leaving => "policy-expired".into(),
+            _ => "companion-stopped".into(),
+        });
+    }
+    state
+        .net
+        .serve(
+            &format!("http://127.0.0.1:{port}"),
+            &proxy_secret,
+            &node.identity.login,
         )
         .await?;
-    }
-    // Without the https capability the CLI can exit 0 having applied nothing.
-    settle(&settings, |port| port == tailscale::PortState::Ours).await?;
     Ok(state.manager.status())
 }
 
@@ -347,16 +534,19 @@ pub async fn companion_disable(state: tauri::State<'_, CompanionState>) -> Resul
     state.owner()?;
     // Taken first so an enable cannot start in between.
     let _turn = state.ops.lock().await;
-    disable(&state).await
+    disable(&state).await;
+    Ok(())
 }
 
-/// Handler first: nothing may forward to a port the gateway is leaving. The
-/// gateway stops even if that fails; the record stays for a retry. Callers
-/// hold `ops`.
-async fn disable(state: &CompanionState) -> Result<(), String> {
-    let removed = remove_applied_serve(&state.dir).await;
+/// The listener first: nothing may forward to a gateway that is leaving, so a
+/// node that does not say its listener is closed is stopped before the gateway
+/// lets go of its port. Then the gateway, then the node. Callers hold `ops`.
+async fn disable(state: &CompanionState) {
+    if !state.net.unserve().await {
+        state.net.stop().await;
+    }
     state.manager.stop().await;
-    removed
+    state.net.stop().await;
 }
 
 #[derive(Serialize)]
@@ -400,18 +590,15 @@ pub struct PhoneLink {
 /// a new pairing.
 #[tauri::command]
 pub fn companion_phone_link(state: tauri::State<'_, CompanionState>) -> Result<PhoneLink, String> {
-    let applied = Settings::load(&state.dir)?.applied;
-    match (state.manager.status(), applied) {
-        (Status::Running { .. }, Some(applied)) => phone_link(&applied),
+    let identity = Settings::load(&state.dir)?.net;
+    match (state.manager.status(), identity) {
+        (Status::Running { .. }, Some(identity)) => phone_link(&identity),
         _ => Err("companion-not-running".into()),
     }
 }
 
-fn phone_link(applied: &AppliedServe) -> Result<PhoneLink, String> {
-    let url = format!(
-        "https://{}/",
-        public_host(&applied.host, applied.https_port)
-    );
+fn phone_link(identity: &NetIdentity) -> Result<PhoneLink, String> {
+    let url = format!("https://{}/", identity.dns_name.to_ascii_lowercase());
     Ok(PhoneLink {
         qr_svg: qr_svg(&url)?,
         url,
@@ -528,6 +715,60 @@ pub async fn companion_sessions_set(
     })
 }
 
+/// Where a HERDR Space lives on this machine, for the gateway's read-only Git.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpaceRoot {
+    session: String,
+    workspace_id: String,
+    root: String,
+}
+
+/// The gateway's own limits (`companion/src/git_bridge.rs`): init refuses to
+/// start on roots it rejects, so none may pass here that it would not accept.
+fn valid_space_roots(roots: &[SpaceRoot]) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    let valid = roots.len() <= 512
+        && roots.iter().all(|entry| {
+            (1..=256).contains(&entry.session.len())
+                && (1..=256).contains(&entry.workspace_id.len())
+                && (1..=4096).contains(&entry.root.len())
+                && Path::new(&entry.root).is_absolute()
+                && seen.insert((&entry.session, &entry.workspace_id))
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("companion-space-roots-invalid".into())
+    }
+}
+
+fn roots_frame(roots: &[SpaceRoot]) -> Value {
+    json!({"v": 1, "type": "spaces.roots", "roots": roots})
+}
+
+/// The folder behind each HERDR Space, as the desktop sees it. Replaces the
+/// whole mapping; the running gateway is told, and the next start gets it in
+/// its init frame. Another instance's gateway is not ours to tell.
+#[tauri::command]
+pub fn companion_space_roots_set(
+    state: tauri::State<'_, CompanionState>,
+    roots: Vec<SpaceRoot>,
+) -> Result<(), String> {
+    space_roots_set(&state, roots)
+}
+
+fn space_roots_set(state: &CompanionState, roots: Vec<SpaceRoot>) -> Result<(), String> {
+    if state.owner.is_none() {
+        return Ok(());
+    }
+    valid_space_roots(&roots)?;
+    let mut current = state.roots.lock().unwrap();
+    state.manager.notify(&roots_frame(&roots));
+    *current = roots;
+    Ok(())
+}
+
 /// While the gateway runs it owns device state and reports the change back;
 /// once it is stopped the desktop edits the stored device directly. In
 /// between, a starting gateway has already read the file and a stopping one
@@ -555,165 +796,57 @@ fn is_running(manager: &CompanionManager) -> bool {
     matches!(manager.status(), Status::Running { .. })
 }
 
-async fn probe(settings: &Settings) -> Result<TailscaleProbe, String> {
-    let command = std::iter::once("tailscale".to_string())
-        .chain(tailscale::serve_args(
-            settings.https_port,
-            settings.gateway_port,
-        ))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut result = TailscaleProbe {
-        cli: tailscale::discover(),
-        node: None,
-        serve: None,
-        refusal: None,
-        https_port: settings.https_port,
-        gateway_port: settings.gateway_port,
-        command,
-    };
-    let Some(cli) = &result.cli else {
-        return Ok(result);
-    };
-    let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let node =
-        tailscale::parse_status(&tailscale::run(&cli.path, &args(&["status", "--json"])).await?)?;
-    if let Some(host) = node.dns_name.clone() {
-        let json = tailscale::run(&cli.path, &args(&["serve", "status", "--json"])).await?;
-        let serve =
-            tailscale::check_serve(&json, &host, settings.https_port, settings.gateway_port)?;
-        result.refusal = tailscale::refusal(&node, &serve);
-        result.serve = Some(serve);
-    } else {
-        result.refusal = Some(tailscale::Refusal::NoLogin);
-    }
-    result.node = Some(node);
-    Ok(result)
-}
-
-/// Serve changes land asynchronously in tailscaled; re-read until they show.
-async fn settle(
-    settings: &Settings,
-    done: impl Fn(tailscale::PortState) -> bool,
-) -> Result<TailscaleProbe, String> {
-    for attempt in 0..5 {
-        let current = probe(settings).await?;
-        if current.serve.as_ref().is_some_and(|serve| done(serve.port)) {
-            return Ok(current);
-        }
-        tokio::time::sleep(Duration::from_millis(200 << attempt)).await;
-    }
-    Err("companion-tailscale-unverified".into())
-}
-
-/// Turns off only the handler this desktop applied, and only while it is
-/// still exactly ours. A handler someone replaced is no longer ours to touch.
-/// The record is kept whenever ours might still be serving somewhere.
-async fn remove_applied_serve(dir: &Path) -> Result<(), String> {
-    remove_serve(dir, true).await
-}
-
-/// `forget_absent`: also drop the record when nothing of ours is found.
-async fn remove_serve(dir: &Path, forget_absent: bool) -> Result<(), String> {
+fn remember_node(dir: &Path, identity: Option<NetIdentity>) -> Result<(), String> {
     let mut settings = Settings::load(dir)?;
-    let Some(applied) = settings.applied.clone() else {
+    if settings.net == identity {
         return Ok(());
-    };
-    let at_applied = Settings {
-        https_port: applied.https_port,
-        gateway_port: applied.gateway_port,
-        ..settings.clone()
-    };
-    let current = probe(&at_applied).await?;
-    let cli = current
-        .cli
-        .as_ref()
-        .ok_or("companion-tailscale-unavailable")?;
-    let host = current.node.as_ref().and_then(|n| n.dns_name.as_deref());
-    match removal(current.serve.as_ref(), host, &applied)? {
-        Some(off) => {
-            tailscale::run(&cli.path, &off).await?;
-            // A port the user also mounted something on stays, without our root.
-            settle(&at_applied, |port| {
-                !matches!(
-                    port,
-                    tailscale::PortState::Ours | tailscale::PortState::Shared
-                )
-            })
-            .await?;
-        }
-        None if !forget_absent => return Err("companion-tailscale-unverified".into()),
-        None => {}
     }
-    settings.applied = None;
+    settings.net = identity;
     settings.save(dir)
 }
 
-/// The `serve … off` arguments, or `None` once nothing of ours is left on
-/// the node it was applied to (free, or our root replaced). Logged out, or another
-/// profile or node name: ours may still be configured there, so keep the record.
-fn removal(
-    serve: Option<&tailscale::Serve>,
-    host: Option<&str>,
-    applied: &AppliedServe,
-) -> Result<Option<Vec<String>>, String> {
-    let serve = serve.ok_or("companion-tailscale-unavailable")?;
-    if host != Some(applied.host.as_str()) {
-        return Err("companion-tailscale-changed".into());
-    }
-    Ok(tailscale::off_args(serve, applied.https_port))
+/// What the gateway's init frame holds besides the settings.
+struct GatewayInit<'a> {
+    identity: &'a NetIdentity,
+    herdr_binary: &'a Path,
+    web_root: &'a Path,
+    enable_until: &'a str,
+    /// Shared with the node, which presents it on every forwarded request.
+    proxy_secret: &'a str,
+    space_roots: &'a [SpaceRoot],
+    /// `null`, or the VAPID key and the devices with a subscription.
+    push: &'a Value,
 }
 
-fn refusal_code(refusal: tailscale::Refusal) -> String {
-    serde_json::to_value(refusal)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
-fn public_host(host: &str, https_port: u16) -> String {
-    let host = host.to_ascii_lowercase();
-    // Browsers omit the default port from Origin; the gateway rejects ":443".
-    if https_port == 443 {
-        host
-    } else {
-        format!("{host}:{https_port}")
-    }
-}
-
-fn build_init(
-    settings: &Settings,
-    applied: &AppliedServe,
-    herdr_binary: &Path,
-    web_root: &Path,
-    enable_until: &str,
-) -> Result<Value, String> {
-    if applied.host.is_empty() || applied.login.is_empty() {
-        return Err("companion-tailscale-not-applied".into());
-    }
-    Ok(json!({
+fn build_init(settings: &Settings, init: &GatewayInit<'_>) -> Value {
+    json!({
         "v": 1,
         "type": "init",
-        "herdrBinary": herdr_binary,
+        "herdrBinary": init.herdr_binary,
         "sessionAllowlist": settings.session_allowlist,
-        "webRoot": web_root,
+        "webRoot": init.web_root,
+        "trustStore": yuzora_host::workspace_trust::default_store_path(),
+        "spaceRoots": init.space_roots,
+        "push": init.push,
         "listeners": {
             "loopback": {
-                "port": applied.gateway_port,
-                "publicHost": public_host(&applied.host, applied.https_port),
-                "requiredTailscaleLogin": applied.login,
+                "port": settings.gateway_port,
+                // The node serves port 443, which the Origin leaves out.
+                "publicHost": init.identity.dns_name.to_ascii_lowercase(),
+                "requiredTailscaleLogin": init.identity.login,
+                "proxySecret": init.proxy_secret,
             },
             "lan": null,
         },
         "policy": {
-            "enableUntil": enable_until,
+            "enableUntil": init.enable_until,
             "viewIdleMin": 30,
             "viewAbsoluteHours": 12,
             "elevationMaxMin": 15,
             "fullSessionEnabled": settings.full_session_enabled,
             "maxDevices": 5,
         },
-    }))
+    })
 }
 
 fn sidecar_program() -> Result<PathBuf, String> {

@@ -228,6 +228,12 @@ jobs:
           key: release-candidate-${{ runner.os }}
           cache-on-failure: true
 
+      # The Companion network sidecar is built by companion:prepare inside tauri build.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src-tauri/companion-net/go.mod
+          cache-dependency-path: src-tauri/companion-net/go.sum
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -282,14 +288,16 @@ jobs:
         shell: bash
         run: test "$(lipo -archs src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app/Contents/MacOS/yuzora)" = "arm64"
 
-      # externalBin lands next to the app executable; the web root is a resource.
+      # externalBin lands next to the app executable; the web root and notices are resources.
       - name: Verify bundled Companion sidecar
         if: runner.os == 'macOS'
         shell: bash
         run: |
           APP=src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app/Contents
           test "$(lipo -archs "$APP/MacOS/yuzora-companion")" = "arm64"
+          test "$(lipo -archs "$APP/MacOS/yuzora-companion-net")" = "arm64"
           test -f "$APP/Resources/companion-web/index.html"
+          test -f "$APP/Resources/companion-net/THIRD_PARTY_NOTICES.txt"
 
       - name: Verify macOS app bundle seal
         if: runner.os == 'macOS'

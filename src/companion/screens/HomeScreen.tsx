@@ -3,13 +3,15 @@ import { useTranslation } from "react-i18next"
 import { ChevronRight, LogOut, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { logout, refresh } from "../client"
+import { AgentList } from "../components/AgentList"
 import { ConnectionPill } from "../components/ConnectionPill"
+import { Disclosure } from "../components/Disclosure"
 import { Message, Page, Progress } from "../components/Page"
-import { StatusBadge } from "../components/StatusBadge"
-import { projectSpaces } from "../lib/agents"
+import { PushControl } from "../components/PushControl"
+import { otherSpaces, projectSpaces } from "../lib/agents"
 import { rpcErrorKey } from "../lib/errors"
 import type { Snapshot } from "../lib/protocol"
-import { navigate, useCompanion } from "../store"
+import { open, useCompanion } from "../store"
 
 export function HomeScreen() {
   const { t } = useTranslation()
@@ -17,6 +19,7 @@ export function HomeScreen() {
   const snapshots = useCompanion((state) => state.snapshots)
   const errors = useCompanion((state) => state.sessionErrors)
   const socket = useCompanion((state) => state.socket)
+  const push = useCompanion((state) => state.hello?.push ?? null)
 
   return (
     <Page
@@ -24,6 +27,7 @@ export function HomeScreen() {
       trailing={
         <>
           <ConnectionPill />
+          {push && <PushControl vapidPublicKey={push.vapidPublicKey} />}
           <Button variant="ghost" size="icon" className="size-11" aria-label={t("home.refresh")} disabled={socket !== "ready"} onClick={() => void refresh()}>
             <RefreshCw aria-hidden />
           </Button>
@@ -54,28 +58,48 @@ export function HomeScreen() {
 function SessionAgents({ snapshot }: { snapshot: Snapshot }) {
   const { t } = useTranslation()
   const spaces = useMemo(() => projectSpaces(snapshot), [snapshot])
-  if (spaces.length === 0) return <Message>{t("home.noAgents")}</Message>
-  return spaces.map((space) => (
-    <div key={space.workspaceId ?? ""} className="overflow-hidden rounded-xl border bg-card">
-      <h3 className="border-b px-3 py-2 text-sm font-semibold">{space.label ?? t("home.unnamedSpace")}</h3>
-      <ul>
-        {space.agents.map((agent) => (
-          <li key={agent.paneId} className="border-b last:border-b-0">
-            <button
-              type="button"
-              className="flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left active:bg-muted"
-              onClick={() => navigate({ name: "pane", session: agent.session, pane: agent.paneId })}
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-base font-medium">{agent.name}</span>
-                <span className="block truncate text-xs text-muted-foreground">{[agent.kind, agent.tabLabel, agent.hint ?? agent.paneLabel].filter(Boolean).join(" · ")}</span>
-              </span>
-              <StatusBadge status={agent.status} />
-              <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  ))
+  const others = useMemo(() => otherSpaces(snapshot), [snapshot])
+  return (
+    <>
+      {spaces.length === 0 && <Message>{t("home.noAgents")}</Message>}
+      {spaces.map((space) => (
+        <div key={space.workspaceId ?? ""} className="overflow-hidden rounded-xl border bg-card">
+          <h3 className="border-b text-sm font-semibold">
+            {space.workspaceId === null ? (
+              <span className="block px-3 py-2">{space.label ?? t("home.unnamedSpace")}</span>
+            ) : (
+              <SpaceLink session={space.session} workspaceId={space.workspaceId} label={space.label} />
+            )}
+          </h3>
+          <AgentList agents={space.agents} />
+        </div>
+      ))}
+      {others.length > 0 && (
+        <Disclosure title={t("home.otherSpaces")} count={others.length}>
+          <ul className="divide-y">
+            {others.map((space) => (
+              <li key={space.workspaceId}>
+                <SpaceLink session={space.session} workspaceId={space.workspaceId} label={space.label} />
+              </li>
+            ))}
+          </ul>
+        </Disclosure>
+      )}
+    </>
+  )
+}
+
+/** A Space's name as a button into its own screen. */
+function SpaceLink({ session, workspaceId, label }: { session: string; workspaceId: string; label: string | null }) {
+  const { t } = useTranslation()
+  return (
+    <button
+      type="button"
+      className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left active:bg-muted"
+      onClick={() => open({ name: "space", session, workspaceId })}
+    >
+      <span className="min-w-0 flex-1 truncate">{label ?? t("home.unnamedSpace")}</span>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+    </button>
+  )
 }

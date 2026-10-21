@@ -81,6 +81,37 @@ impl Deferred {
         }
     }
 }
+/// A view-scope Git read. Ordinary class: a full queue drops it, counted as lost.
+pub(crate) fn git_read(
+    gateway: &crate::gateway::Gateway,
+    device: &str,
+    peer_id: u64,
+    session: &str,
+    workspace_id: &str,
+    method: &str,
+) {
+    let now = gateway.clock.now();
+    let event = Event::audit(
+        device.into(),
+        peer_id,
+        Scope::View,
+        "git.read".into(),
+        session.into(),
+        Some(workspace_id.into()),
+        json!({"method":method}),
+        now,
+    );
+    if !gateway.events.try_emit(event) {
+        gateway.deferred_audit.lock().unwrap().lost(1, now);
+    }
+}
+
+/// An ordinary admin event that found the queue full: counted, never retried.
+pub(crate) fn event_lost(gateway: &crate::gateway::Gateway) {
+    let now = gateway.clock.now();
+    gateway.deferred_audit.lock().unwrap().lost(1, now);
+}
+
 #[derive(Default)]
 pub(crate) struct Rejections {
     count: u64,
