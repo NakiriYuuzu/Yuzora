@@ -229,7 +229,9 @@ async fn admin_init_frame_requires_trust_store_and_space_roots() {
 #[tokio::test]
 async fn admin_spaces_roots_frame_is_versioned_closed_and_unacknowledged() {
     use yuzora_companion::{clock::Clock, gateway::Gateway};
-    let entry = serde_json::json!({"session":"work","workspaceId":"w","root":"/space"});
+    // Absolute on every platform ("/space" is relative on Windows).
+    let root = std::env::temp_dir().to_string_lossy().into_owned();
+    let entry = serde_json::json!({"session":"work","workspaceId":"w","root":root});
     let frame = |value: serde_json::Value| (value.to_string() + "\n").into_bytes();
     let read = |bytes: Vec<u8>| async move { admin::read(&mut bytes.as_slice()).await };
     let Ok(Some(command)) = read(frame(

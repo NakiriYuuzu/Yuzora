@@ -1,5 +1,7 @@
 #[path = "support/identity.rs"]
 mod identity;
+#[path = "support/spawn.rs"]
+mod spawn;
 use identity::PROXY_SECRET;
 use serde_json::{json, Value};
 use std::{
@@ -39,12 +41,13 @@ impl Process {
         if timing {
             command.env("YZC_TEST_TIMING", "1");
         }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = spawn::serialized(
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .unwrap();
         let (tx, stdout) = mpsc::channel();
         if read_stdout {
             let output = child.stdout.take().unwrap();
@@ -509,7 +512,7 @@ fn lifecycle_broken_stdout_exits_and_closes_listener_with_fixed_stderr() {
     connection
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
-    drop(p.child.stdout.take());
+    spawn::close(p.child.stdout.take());
     p.send(&json!({"v":1,"type":"future"}));
     // Leave stdin open: writer failure alone must shut down the gateway.
     assert!(!p.exited(Duration::from_secs(2)).success());

@@ -43,7 +43,8 @@ impl Harness {
             store: Mutex::new(None),
             commands: tokio::sync::Mutex::new(()),
             timing: Timing {
-                command: Duration::from_millis(500),
+                // Fake replies sleep up to 0.2 s; loaded CI runners need slack.
+                command: Duration::from_millis(2000),
                 stop: Duration::from_millis(500),
                 ready: Duration::from_millis(1000),
             },

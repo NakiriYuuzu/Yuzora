@@ -67,7 +67,9 @@ fn git_init_and_admin_roots_are_validated_and_filtered_by_the_allowlist() {
         Spaces::new(Path::new("workspace-trust.json"), &allow, &[]).err(),
         Some("invalid-trust-store")
     );
-    let long_root = format!("/{}", "a".repeat(ROOT_BYTES));
+    // Absolute on every platform ("/a" is relative on Windows), `len` bytes long.
+    let padded = |len: usize| format!("{dir}{}", "a".repeat(len - dir.len()));
+    let long_root = padded(ROOT_BYTES + 1);
     let unique: Vec<_> = (0..=MAX_ROOTS)
         .map(|n| root("work", &n.to_string(), &dir))
         .collect();
@@ -98,7 +100,7 @@ fn git_init_and_admin_roots_are_validated_and_filtered_by_the_allowlist() {
         assert_eq!(build(&roots), Some("invalid-space-roots"), "{name}");
     }
     // Exactly at every bound is fine.
-    let longest = format!("/{}", "a".repeat(ROOT_BYTES - 1));
+    let longest = padded(ROOT_BYTES);
     assert_eq!(
         build(&[root(&"s".repeat(ID_BYTES), &"w".repeat(ID_BYTES), &longest)]),
         None
