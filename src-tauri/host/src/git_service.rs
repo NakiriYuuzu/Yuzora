@@ -321,17 +321,35 @@ pub fn detect_in_progress(git_dir: &Path) -> Option<String> {
 
 /// 純函式核心：跑 status --porcelain=v2 並解析。commands 是薄包裝。
 pub fn status_of(root: &Path, pathspec: Option<Vec<String>>) -> Result<GitStatusDto, String> {
+    let spec = pathspec.unwrap_or_default();
+    // A path as the index spells it (decomposed) matches nothing once git
+    // precomposes it; a path the filesystem spelled does, for the precomposed
+    // entry and the untracked file status lists. One call cannot serve both,
+    // so a mix of the two keeps git's own spelling. An ASCII path reads the same
+    // either way. A folder never goes as stored, however it is spelled: asked
+    // as stored, git lists what is in it by the spelling of the directory, not
+    // the precomposed one an index entry has, and each such file shows up
+    // untracked. (A folder `stored_names` finds is a tree of HEAD.)
+    let stored = stored_names(root, &spec)?;
+    let as_stored = !stored.is_empty()
+        && spec.iter().all(|path| {
+            (stored.contains(path.as_str()) || path.is_ascii()) && !root.join(path).is_dir()
+        });
+    let mut args: Vec<&str> = if as_stored {
+        TRACKED_NAMES_AS_STORED.to_vec()
+    } else {
+        Vec::new()
+    };
     // `all` is safety-critical for path-scoped rollback: the default `normal`
     // mode collapses an untracked tree to `scratch/`, which would hide dirty
     // editor descendants while `git clean -fd -- scratch/` deletes them all.
-    let mut args: Vec<&str> = vec![
+    args.extend([
         "status",
         "--porcelain=v2",
         "--branch",
         "--untracked-files=all",
         "-z",
-    ];
-    let spec = pathspec.unwrap_or_default();
+    ]);
     if !spec.is_empty() {
         args.push("--");
         for p in &spec {
@@ -342,7 +360,8 @@ pub fn status_of(root: &Path, pathspec: Option<Vec<String>>) -> Result<GitStatus
     if out.code != 0 {
         return Err(format!("git status failed: {}", out.stderr.trim()));
     }
-    let parsed = crate::git_status::parse_porcelain_v2(&out.stdout)?;
+    let mut parsed = crate::git_status::parse_porcelain_v2(&out.stdout)?;
+    drop_untracked_twins(root, &mut parsed);
     let git_dir = match git_dir_from_dot_git(root) {
         Some(dir) => dir,
         None => resolve_metadata_dir(root, "--git-dir")?,
@@ -760,9 +779,14 @@ pub fn mutated_status_paths(
     mutated
 }
 
+/// Whether the rows that changed are the requested paths' own. `as_stored` is
+/// the part of `requested` that went to git as the index spells it
+/// (`run_ok_paths`), the rest went in git's own respelling.
 pub fn ensure_literal_path_scope(
+    root: &Path,
     operation: &str,
     requested: &[String],
+    as_stored: &HashSet<String>,
     before: &crate::git_status::ParsedStatus,
     after: &crate::git_status::ParsedStatus,
 ) -> Result<(), String> {
@@ -772,10 +796,14 @@ pub fn ensure_literal_path_scope(
         ));
     }
     let allowed: HashSet<&str> = requested.iter().map(String::as_str).collect();
-    let extra: Vec<String> = mutated_status_paths(before, after)
+    let mut extra: Vec<String> = mutated_status_paths(before, after)
         .into_iter()
         .filter(|path| !allowed.contains(path.as_str()))
         .collect();
+    if !extra.is_empty() {
+        let respelled = respelled_requests(root, requested, as_stored, before, after);
+        extra.retain(|path| !respelled.contains(path));
+    }
     if extra.is_empty() {
         return Ok(());
     }
@@ -785,23 +813,73 @@ pub fn ensure_literal_path_scope(
     ))
 }
 
+/// The names besides the requested ones whose rows are a request's own. Where
+/// git precomposes (macOS) it takes a decomposed request to another name, and
+/// the rows of that name belong to the request: unstaging a decomposed entry
+/// leaves the file untracked under the name status lists, `add` of a decomposed
+/// file stages the name git composes it to. That name is what git says it is
+/// (`git_spellings`), not what NFC would give, so the tracked file a request for
+/// its twin changed is outside the request however either is spelled.
+///
+/// A request that went to git as stored (`as_stored`) was not respelled: only
+/// the untracked file its unstaged entry leaves is its own, a row that was
+/// untracked or absent before and is untracked or absent after. A row that was
+/// or is a tracked entry's is not, whichever way it changed (the index of a
+/// repository made where names are not normalized holds two entries for one
+/// file, and restoring one of them can flip the other from modified to clean as
+/// well as from clean to modified).
+fn respelled_requests(
+    root: &Path,
+    requested: &[String],
+    as_stored: &HashSet<String>,
+    before: &crate::git_status::ParsedStatus,
+    after: &crate::git_status::ParsedStatus,
+) -> HashSet<String> {
+    let asked: Vec<&str> = requested
+        .iter()
+        .map(String::as_str)
+        .filter(|path| git_respells(path))
+        .collect();
+    let spelled = git_spellings(root, &asked);
+    let before = status_path_fingerprint(before);
+    let after = status_path_fingerprint(after);
+    let untracked_or_absent = |rows: &std::collections::BTreeMap<String, String>, name: &String| {
+        rows.get(name).is_none_or(|sig| sig.as_str() == "?:")
+    };
+    spelled
+        .into_iter()
+        .filter(|(request, name)| {
+            !as_stored.contains(*request)
+                || (untracked_or_absent(&before, name) && untracked_or_absent(&after, name))
+        })
+        .map(|(_, name)| name)
+        .collect()
+}
+
 pub fn mutate_then_assert_literal_scope(
     root: &Path,
     operation: &str,
+    prefix: &[&str],
     requested: &[String],
-    args: &[&str],
 ) -> Result<(), String> {
     let before = status_of(root, None)?;
-    run_ok(root, args, DEFAULT_TIMEOUT, &[])?;
+    let as_stored = run_ok_paths(root, prefix, requested)?;
     let after = status_of(root, None)?;
-    ensure_literal_path_scope(operation, requested, &before.parsed, &after.parsed)
+    ensure_literal_path_scope(
+        root,
+        operation,
+        requested,
+        &as_stored,
+        &before.parsed,
+        &after.parsed,
+    )
 }
 
 pub fn stage(root: &Path, paths: &[String]) -> Result<(), String> {
+    let requested: Vec<&str> = paths.iter().map(String::as_str).collect();
+    refuse_tracked_twins(root, "add", &requested)?;
     reject_unresolved_conflicts(root, paths)?;
-    let mut args: Vec<&str> = vec!["add", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    mutate_then_assert_literal_scope(root, "add", paths, &args)
+    mutate_then_assert_literal_scope(root, "add", &["add", "--"], paths)
 }
 
 /// Staging an unmerged path marks its conflict resolved (JetBrains "Mark as
@@ -861,15 +939,21 @@ pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     let before = status_of(root, None)?;
     // An unborn branch has no HEAD for `restore --staged`. Remove only the
     // index entries; --cached preserves working files, including later edits.
-    let mut args: Vec<&str> = if before.parsed.head_oid == "(initial)" {
-        vec!["rm", "--cached", "-f", "--"]
+    let prefix: &[&str] = if before.parsed.head_oid == "(initial)" {
+        &["rm", "--cached", "-f", "--"]
     } else {
-        vec!["restore", "--staged", "--"]
+        &["restore", "--staged", "--"]
     };
-    args.extend(paths.iter().map(String::as_str));
-    run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
+    let as_stored = run_ok_paths(root, prefix, paths)?;
     let after = status_of(root, None)?;
-    ensure_literal_path_scope("unstage", paths, &before.parsed, &after.parsed)
+    ensure_literal_path_scope(
+        root,
+        "unstage",
+        paths,
+        &as_stored,
+        &before.parsed,
+        &after.parsed,
+    )
 }
 
 /// Status paths are decoded lossily, so U+FFFD may stand for undecodable bytes and
@@ -888,15 +972,13 @@ pub fn discard(root: &Path, paths: &[String], untracked: &[String]) -> Result<()
     for path in paths.iter().chain(untracked) {
         reject_lossy_path("discard", path)?;
     }
+    let untracked_names: Vec<&str> = untracked.iter().map(String::as_str).collect();
+    refuse_tracked_twins(root, "clean", &untracked_names)?;
     if !paths.is_empty() {
-        let mut args: Vec<&str> = vec!["restore", "--"];
-        args.extend(paths.iter().map(String::as_str));
-        mutate_then_assert_literal_scope(root, "restore", paths, &args)?;
+        mutate_then_assert_literal_scope(root, "restore", &["restore", "--"], paths)?;
     }
     if !untracked.is_empty() {
-        let mut args: Vec<&str> = vec!["clean", "-f", "--"];
-        args.extend(untracked.iter().map(String::as_str));
-        mutate_then_assert_literal_scope(root, "clean", untracked, &args)?;
+        mutate_then_assert_literal_scope(root, "clean", &["clean", "-f", "--"], untracked)?;
     }
     Ok(())
 }
@@ -1104,6 +1186,7 @@ pub fn rollback_paths(
     let has_head = latest.parsed.head_oid != "(initial)";
     let mut seen = std::collections::HashSet::new();
     let mut plans = Vec::with_capacity(targets.len());
+    let mut cleaned: Vec<&str> = Vec::new();
 
     for target in targets {
         reject_lossy_path("rollback", &target.path)?;
@@ -1170,14 +1253,19 @@ pub fn rollback_paths(
                 plans.push(GitRollbackPlan::Added {
                     path: target.path.clone(),
                 });
+                cleaned.push(&target.path);
             }
             GitRollbackClassification::Untracked => {
                 plans.push(GitRollbackPlan::Untracked {
                     path: target.path.clone(),
                 });
+                cleaned.push(&target.path);
             }
             GitRollbackClassification::Conflicted => unreachable!("rejected above"),
         }
+    }
+    if delete_untracked_or_added {
+        refuse_tracked_twins(root, "clean", &cleaned)?;
     }
 
     let mut result = GitRollbackResult {
@@ -1194,18 +1282,18 @@ pub fn rollback_paths(
                 path,
                 restore_paths,
             } => {
-                let mut args: Vec<&str> =
-                    vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"];
-                args.extend(restore_paths.iter().map(String::as_str));
-                run_ok(root, &args, DEFAULT_TIMEOUT, &[]).map_err(|error| {
+                let prefix = ["restore", "--source=HEAD", "--staged", "--worktree", "--"];
+                let as_stored = run_ok_paths(root, &prefix, &restore_paths).map_err(|error| {
                     rollback_failure(&path, "restore tracked path", &completed, error)
                 })?;
                 let after = status_of(root, None).map_err(|error| {
                     rollback_failure(&path, "verify restore scope", &completed, error)
                 })?;
                 ensure_literal_path_scope(
+                    root,
                     "rollback",
                     &restore_paths,
+                    &as_stored,
                     &previous.parsed,
                     &after.parsed,
                 )
@@ -1217,11 +1305,10 @@ pub fn rollback_paths(
                 result.restored.push(path);
             }
             GitRollbackPlan::Added { path } => {
-                run_ok(
+                let as_stored = run_ok_paths(
                     root,
-                    &["rm", "--cached", "-f", "--", path.as_str()],
-                    DEFAULT_TIMEOUT,
-                    &[],
+                    &["rm", "--cached", "-f", "--"],
+                    std::slice::from_ref(&path),
                 )
                 .map_err(|error| {
                     rollback_failure(&path, "unstage added path", &completed, error)
@@ -1230,8 +1317,10 @@ pub fn rollback_paths(
                     rollback_failure(&path, "verify unstage scope", &completed, error)
                 })?;
                 ensure_literal_path_scope(
+                    root,
                     "rollback",
                     std::slice::from_ref(&path),
+                    &as_stored,
                     &previous.parsed,
                     &after_unstage.parsed,
                 )
@@ -1255,8 +1344,10 @@ pub fn rollback_paths(
                         rollback_failure(&path, "verify delete scope", &completed, error)
                     })?;
                     ensure_literal_path_scope(
+                        root,
                         "rollback",
                         std::slice::from_ref(&path),
+                        &HashSet::new(),
                         &previous.parsed,
                         &after_clean.parsed,
                     )
@@ -1295,8 +1386,10 @@ pub fn rollback_paths(
                         rollback_failure(&path, "verify delete scope", &completed, error)
                     })?;
                     ensure_literal_path_scope(
+                        root,
                         "rollback",
                         std::slice::from_ref(&path),
+                        &HashSet::new(),
                         &previous.parsed,
                         &after_clean.parsed,
                     )
@@ -2115,22 +2208,29 @@ pub fn conflict_sides(root: &Path, path: &str) -> Result<GitConflictSides, Strin
 
 /// Index stages present for an unmerged path (`git ls-files --stage`).
 fn conflict_stages(root: &Path, path: &str) -> Result<Vec<u8>, String> {
-    let out = run_ok(
-        root,
-        &["ls-files", "--stage", "-z", "--", path],
-        DEFAULT_TIMEOUT,
-        &[],
-    )?;
-    Ok(out
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter_map(|record| {
-            // "<mode> <oid> <stage>\t<path>"
-            let head = record.split(|byte| *byte == b'\t').next()?;
-            let stage = head.rsplit(|byte| *byte == b' ').next()?;
-            (stage.len() == 1).then(|| stage[0].wrapping_sub(b'0'))
-        })
-        .collect())
+    let mut stages = Vec::new();
+    for spelling in name_spellings(path) {
+        let mut args = spelling.to_vec();
+        args.extend(["ls-files", "--stage", "-z", "--", path]);
+        let out = run_git(root, &args, DEFAULT_TIMEOUT, &[])?;
+        if out.code != 0 {
+            return Err(git_err("ls-files", &out.stderr));
+        }
+        stages = out
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter_map(|record| {
+                // "<mode> <oid> <stage>\t<path>"
+                let head = record.split(|byte| *byte == b'\t').next()?;
+                let stage = head.rsplit(|byte| *byte == b' ').next()?;
+                (stage.len() == 1).then(|| stage[0].wrapping_sub(b'0'))
+            })
+            .collect();
+        if !stages.is_empty() {
+            break;
+        }
+    }
+    Ok(stages)
 }
 
 /// JetBrains "Accept Yours / Accept Theirs" for whole files: take one side of
@@ -2162,11 +2262,12 @@ pub fn conflict_resolve(root: &Path, paths: &[String], side: &str) -> Result<(),
         }
     }
     for path in paths {
+        let only = std::slice::from_ref(path);
         if conflict_stages(root, path)?.contains(&stage) {
-            run_ok(root, &["checkout", flag, "--", path], DEFAULT_TIMEOUT, &[])?;
-            run_ok(root, &["add", "--", path], DEFAULT_TIMEOUT, &[])?;
+            run_ok_paths(root, &["checkout", flag, "--"], only)?;
+            run_ok_paths(root, &["add", "--"], only)?;
         } else {
-            run_ok(root, &["rm", "--quiet", "--", path], DEFAULT_TIMEOUT, &[])?;
+            run_ok_paths(root, &["rm", "--quiet", "--"], only)?;
         }
     }
     Ok(())
@@ -2246,15 +2347,26 @@ pub fn grade_bytes(bytes: &[u8]) -> GradedText {
 /// Read and grade an object when it exists. Operational `git show` failures
 /// must reach the UI; a normal missing side is `None`.
 pub fn show_object(root: &Path, spec: &str) -> Result<Option<GradedText>, String> {
+    let mut shown = None;
+    for spelling in name_spellings(spec) {
+        shown = show_object_spelled(root, spec, spelling)?;
+        if shown.is_some() {
+            break;
+        }
+    }
+    Ok(shown)
+}
+
+fn show_object_spelled(
+    root: &Path,
+    spec: &str,
+    spelling: &[&str],
+) -> Result<Option<GradedText>, String> {
     // `show` already distinguishes a missing object from other failures. A
     // separate existence probe doubles process startup on every diff side.
-    let out = match run_git_with_stdout_limit(
-        root,
-        &["show", "--end-of-options", spec],
-        DEFAULT_TIMEOUT,
-        &[],
-        BLOB_READ_LIMIT,
-    ) {
+    let mut args = spelling.to_vec();
+    args.extend(["show", "--end-of-options", spec]);
+    let out = match run_git_with_stdout_limit(root, &args, DEFAULT_TIMEOUT, &[], BLOB_READ_LIMIT) {
         Err(error) if error == "git-output-limit" => return Ok(Some(GradedText::TooLarge)),
         other => other?,
     };
@@ -2589,8 +2701,300 @@ const UNIFIED_DIFF_FLAGS: [&str; 6] = [
 /// (`core.precomposeunicode`, macOS) it turns the literal pathspec into NFC,
 /// which no longer matches an NFD index entry and leaves the diff empty, so
 /// these diffs ask git not to. The untracked (`--no-index`) path keeps its own
-/// spelling rules (`ensure_untracked`) and does not take this.
-const TRACKED_NAMES_AS_STORED: [&str; 2] = ["-c", "core.precomposeunicode=false"];
+/// spelling rules (`ensure_untracked`) and does not take this. Object reads
+/// (`name_spellings`) and index writes (`run_ok_paths`) take it for the names
+/// they know as stored.
+pub(crate) const TRACKED_NAMES_AS_STORED: &[&str] = &["-c", "core.precomposeunicode=false"];
+
+/// Whether git may respell `value` when it arrives as an argument: where it
+/// precomposes (macOS) it composes a decomposed name (`git_spellings`). A name
+/// that is NFC already reads the same either way.
+pub(crate) fn git_respells(value: &str) -> bool {
+    cfg!(target_os = "macos") && !unicode_normalization::is_nfc(value)
+}
+
+/// What git turns each of `paths` into as an argument, asked of git itself:
+/// where it precomposes names (macOS) it composes a decomposed name pair by
+/// pair, which is not NFC (it does not reorder marks, does not compose past a
+/// mark that does not combine, and leaves a singleton such as U+212A KELVIN
+/// SIGN or a CJK compatibility ideograph alone while it composes the rest of
+/// the name). Any rule written down here would be a model of that; `check-attr`
+/// prints the path it was given as git has it. A path git does not answer for,
+/// or answers with another path, has no entry.
+fn git_spellings<'a>(root: &Path, paths: &[&'a str]) -> std::collections::HashMap<&'a str, String> {
+    if paths.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let mut args = vec!["check-attr", "-z", "yuzora-spelling", "--"];
+    args.extend(paths);
+    match run_git(root, &args, DEFAULT_TIMEOUT, &[]) {
+        Ok(out) if out.code == 0 => parse_git_spellings(paths, &out.stdout),
+        _ => std::collections::HashMap::new(),
+    }
+}
+
+/// The `check-attr -z` records (path, attribute, value, each NUL-ended), one
+/// per path in the order asked. The path git prints must be the one asked for
+/// in another spelling (canonically equivalent): a request git normalized to
+/// another path (`a/../b`) is not taken as a spelling of it.
+fn parse_git_spellings<'a>(
+    paths: &[&'a str],
+    stdout: &[u8],
+) -> std::collections::HashMap<&'a str, String> {
+    use unicode_normalization::UnicodeNormalization;
+
+    stdout
+        .split(|byte| *byte == 0)
+        .step_by(3)
+        .zip(paths)
+        .filter_map(|(spelled, path)| {
+            let spelled = std::str::from_utf8(spelled).ok()?;
+            spelled
+                .nfd()
+                .eq(path.nfd())
+                .then(|| (*path, spelled.to_string()))
+        })
+        .collect()
+}
+
+/// The spellings in which a read asks git about the path or `<rev>:<path>` in
+/// `value`, in order. A name git listed is the bytes of the index or of a tree,
+/// so it is asked as stored first; a name the filesystem spelled (a decomposed
+/// Finder name whose index entry is precomposed) is not found that way and is
+/// then asked the way git respells it, as it always was. Only a name git would
+/// respell has the second try; any other name reads the same either way.
+pub(crate) fn name_spellings(value: &str) -> Vec<&'static [&'static str]> {
+    if git_respells(value) {
+        vec![TRACKED_NAMES_AS_STORED, &[]]
+    } else {
+        vec![&[]]
+    }
+}
+
+/// Of `paths`, the ones git would respell that are an entry of the index or of
+/// HEAD under exactly that spelling, which is how `status` and a commit listing
+/// report them. A path no entry has is a name the filesystem gave (an untracked
+/// file Finder stored decomposed, which `status` lists precomposed) and is best
+/// left to git's own respelling, or the pathspec stops matching what it reads
+/// from the directory. A failing query counts as no entry: the paths then go
+/// to git as they always did (an unborn HEAD fails `ls-tree` this way).
+fn stored_names<'a>(root: &Path, paths: &'a [String]) -> Result<HashSet<&'a str>, String> {
+    let candidates: Vec<&str> = paths
+        .iter()
+        .map(String::as_str)
+        .filter(|path| git_respells(path))
+        .collect();
+    let mut stored = HashSet::new();
+    if candidates.is_empty() {
+        return Ok(stored);
+    }
+    for query in [
+        &["ls-files", "-z", "--"][..],
+        &["ls-tree", "-z", "--name-only", "--full-name", "HEAD", "--"][..],
+    ] {
+        let mut args = TRACKED_NAMES_AS_STORED.to_vec();
+        args.extend(query);
+        args.extend(&candidates);
+        let out = run_git(root, &args, DEFAULT_TIMEOUT, &[])?;
+        if out.code != 0 {
+            continue;
+        }
+        for listed in out.stdout.split(|byte| *byte == 0) {
+            if let Some(path) = candidates.iter().find(|path| path.as_bytes() == listed) {
+                stored.insert(*path);
+            }
+        }
+    }
+    Ok(stored)
+}
+
+/// `git <prefix> <paths>` with every path reaching git in the spelling it was
+/// listed: the entries `stored_names` finds in one call that does not
+/// precompose, all other paths in one that does. Git precomposing the first
+/// kind would stage a second (NFC) entry beside the decomposed one, or match
+/// nothing; not precomposing the second kind would stop an untracked Finder
+/// name, listed precomposed, from matching the decomposed directory entry.
+/// Returns the paths that went as stored.
+fn run_ok_paths(root: &Path, prefix: &[&str], paths: &[String]) -> Result<HashSet<String>, String> {
+    let stored = stored_names(root, paths)?;
+    let (as_stored, rest): (Vec<&str>, Vec<&str>) = paths
+        .iter()
+        .map(String::as_str)
+        .partition(|path| stored.contains(path));
+    let mut calls: Vec<(&[&str], Vec<&str>)> = Vec::new();
+    if !as_stored.is_empty() {
+        calls.push((TRACKED_NAMES_AS_STORED, as_stored));
+    }
+    // With no path at all git still gets its say, as it did before.
+    if !rest.is_empty() || calls.is_empty() {
+        calls.push((&[], rest));
+    }
+    for (spelling, group) in calls {
+        let mut args = spelling.to_vec();
+        args.extend(prefix);
+        args.extend(group);
+        let out = run_git(root, &args, DEFAULT_TIMEOUT, &[])?;
+        if out.code != 0 {
+            return Err(git_err(prefix.first().unwrap_or(&""), &out.stderr));
+        }
+    }
+    Ok(stored.into_iter().map(String::from).collect())
+}
+
+/// Most bytes of an index listing `tracked_twins` reads; the default output
+/// limit would fail it for a repository of a few hundred thousand files.
+#[cfg(target_os = "macos")]
+const INDEX_LISTING_LIMIT: usize = 256 * 1024 * 1024;
+
+/// Whether both paths are one file (device and inode), links not followed.
+#[cfg(target_os = "macos")]
+fn is_same_file(first: &Path, second: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (
+        std::fs::symlink_metadata(first),
+        std::fs::symlink_metadata(second),
+    ) {
+        (Ok(first), Ok(second)) => first.dev() == second.dev() && first.ino() == second.ino(),
+        _ => false,
+    }
+}
+
+/// Where git precomposes names (macOS), a tracked file whose directory entry
+/// is spelled another way than its index entry (an entry stored decomposed, or
+/// one stored precomposed whose file a save rewrote in a canonical form git
+/// leaves as it is) is listed twice: as its index entry, and as an "untracked"
+/// file, which is the same directory entry read under the other spelling. The
+/// volume knows the two names as one file, so the second is no file of its own:
+/// cleaning, adding or discarding it acts on the tracked one.
+///
+/// Of `paths`, the ones that are such a twin, each with the entry it is the
+/// file of: a name of the index (as stored) that differs from the path, is
+/// canonically equivalent to it as a whole path (so a decomposed folder name
+/// counts) and is the same file on disk. Only a name that is not both NFC and
+/// NFD can be spelled another way (an NFC name has a decomposed spelling, an NFD
+/// one a composed one, git composes some names to neither: see `git_spellings`),
+/// so any other (ASCII, plain CJK) answers without a process; otherwise one
+/// as-stored listing of the index serves every path, whichever form the entry
+/// has. The entry may be ASCII (a path spelled with U+212A KELVIN SIGN is the
+/// file of `K.txt`).
+///
+/// A path that is an entry of the index itself (`own_entry_is_no_twin`) can be
+/// left out: the index of a repository made where names are not normalized
+/// holds two entries for one file, and `git add` of either updates that entry
+/// and never makes a second one. `git clean` of it still deletes the file the
+/// other entry names, so the callers that clean keep it.
+///
+/// Not found: a path no character of which decomposes (`K.txt`, a unified
+/// ideograph) whose entry is spelled with the singleton (U+212A, U+F900). Only
+/// a listing of the index for every such name could tell, and that would cost
+/// a process on each status of a repository with a new ASCII file.
+#[cfg(target_os = "macos")]
+fn tracked_twins<'a>(
+    root: &Path,
+    paths: &[&'a str],
+    own_entry_is_no_twin: bool,
+) -> Result<Vec<(&'a str, String)>, String> {
+    use std::collections::HashMap;
+    use unicode_normalization::UnicodeNormalization;
+
+    let mut candidates: HashMap<String, Vec<&'a str>> = HashMap::new();
+    for path in paths.iter().copied().filter(|path| {
+        !(unicode_normalization::is_nfc(path) && unicode_normalization::is_nfd(path))
+    }) {
+        candidates
+            .entry(path.nfd().collect())
+            .or_default()
+            .push(path);
+    }
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = TRACKED_NAMES_AS_STORED.to_vec();
+    args.extend(["ls-files", "-z"]);
+    let listing =
+        run_git_with_stdout_limit(root, &args, DEFAULT_TIMEOUT, &[], INDEX_LISTING_LIMIT)?;
+    if listing.code != 0 {
+        return Err(git_err("ls-files", &listing.stderr));
+    }
+    let mut twins = Vec::new();
+    let mut own_entries: HashSet<&str> = HashSet::new();
+    for entry in listing.stdout.split(|byte| *byte == 0) {
+        let Ok(entry) = std::str::from_utf8(entry) else {
+            continue;
+        };
+        // An ASCII entry is its own decomposed form, and a name spelled with
+        // a singleton character (U+212A for K) decomposes to it.
+        let spelled = if entry.is_ascii() {
+            candidates.get(entry)
+        } else {
+            candidates.get(&entry.nfd().collect::<String>())
+        };
+        let Some(spelled) = spelled else {
+            continue;
+        };
+        for path in spelled {
+            if *path == entry {
+                own_entries.insert(*path);
+            } else if is_same_file(&root.join(path), &root.join(entry)) {
+                twins.push((*path, entry.to_string()));
+            }
+        }
+    }
+    if own_entry_is_no_twin {
+        twins.retain(|(path, _)| !own_entries.contains(path));
+    }
+    Ok(twins)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tracked_twins<'a>(
+    _root: &Path,
+    _paths: &[&'a str],
+    _own_entry_is_no_twin: bool,
+) -> Result<Vec<(&'a str, String)>, String> {
+    Ok(Vec::new())
+}
+
+/// Takes the twin rows out of the untracked list: the file is listed once, as
+/// its index entry. A new file Finder stored decomposed has no entry and
+/// stays. When the index cannot be listed the rows stay, and every write
+/// refuses them anyway (`refuse_tracked_twins`).
+fn drop_untracked_twins(root: &Path, parsed: &mut crate::git_status::ParsedStatus) {
+    let untracked: Vec<&str> = parsed.untracked.iter().map(String::as_str).collect();
+    let Ok(twins) = tracked_twins(root, &untracked, false) else {
+        return;
+    };
+    let twins: HashSet<String> = twins
+        .into_iter()
+        .map(|(path, _)| path.to_string())
+        .collect();
+    parsed.untracked.retain(|path| !twins.contains(path));
+}
+
+/// Refuses, before anything changes, a request for a path that is a twin (see
+/// `tracked_twins`): `git clean` would delete the tracked file and `git add`
+/// would give it a second entry. A request git itself takes to the entry (a
+/// decomposed spelling of a precomposed entry, a Finder file) is no twin, which
+/// only git can say (`git_spellings`); when it cannot, the request is refused.
+/// `add` of a path that is an entry itself is never refused (it updates that
+/// entry, see `tracked_twins`); `clean` of it is.
+fn refuse_tracked_twins(root: &Path, operation: &str, paths: &[&str]) -> Result<(), String> {
+    let twins = tracked_twins(root, paths, operation == "add")?;
+    if twins.is_empty() {
+        return Ok(());
+    }
+    let asked: Vec<&str> = twins.iter().map(|(path, _)| *path).collect();
+    let spelled = git_spellings(root, &asked);
+    for (path, tracked) in twins {
+        if spelled.get(path) == Some(&tracked) {
+            continue;
+        }
+        return Err(format!(
+            "git {operation} refused: {path} is the tracked file {tracked}"
+        ));
+    }
+    Ok(())
+}
 
 /// Fixed answers, free of paths, that the caller maps to its own codes.
 pub const DIFF_NOT_UNTRACKED: &str = "git-diff-not-untracked";
@@ -5442,5 +5846,1693 @@ mod tests {
                 assert_eq!(error.as_deref(), Some(DIFF_GIT_PATH), "{path:?}");
             }
         }
+    }
+
+    // Names git listed, handed back to git, where it precomposes argv: reads
+    // find the NFD index/tree entries, and writes act on the entry instead of
+    // adding a second NFC one, while an NFC entry of a file Finder stored NFD
+    // and a new Finder file (listed NFC, stored NFD) keep working.
+
+    /// The names of the index, as git stores them.
+    #[cfg(target_os = "macos")]
+    fn index_names(root: &Path) -> Vec<String> {
+        let listed = run_git(root, &["ls-files", "-z"], DEFAULT_TIMEOUT, &[]).unwrap();
+        listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8(name.to_vec()).unwrap())
+            .collect()
+    }
+
+    /// A git command that keeps names as they are, to set up a decomposed index entry.
+    #[cfg(target_os = "macos")]
+    fn git_as_stored(root: &Path, args: &[&str]) {
+        let mut full = TRACKED_NAMES_AS_STORED.to_vec();
+        full.extend(args);
+        test_repo::git(root, &full);
+    }
+
+    /// `NFD_FILE` modified and staged under its NFD index name.
+    #[cfg(target_os = "macos")]
+    fn nfd_staged_repo() -> tempfile::TempDir {
+        let tmp = nfd_tracked_repo();
+        std::fs::write(tmp.path().join(NFD_FILE), "a\nB\nc\n").unwrap();
+        git_as_stored(tmp.path(), &["add", NFD_FILE]);
+        tmp
+    }
+
+    /// What Finder leaves: the file is stored under its NFD name, git precomposes
+    /// and indexes it as `NFC_FILE`.
+    #[cfg(target_os = "macos")]
+    fn finder_tracked_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        std::fs::write(root.join(NFD_FILE), "a\nb\nc\n").unwrap();
+        test_repo::git(root, &["add", NFC_FILE]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        assert_eq!(index_names(root), [NFC_FILE]);
+        let on_disk: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .collect();
+        assert!(on_disk.iter().any(|name| name == NFD_FILE), "{on_disk:?}");
+        tmp
+    }
+
+    /// A merge of `NFD_FILE` that conflicts: ours rewrites it, theirs rewrites
+    /// it differently (`theirs` None: deletes it).
+    #[cfg(target_os = "macos")]
+    fn nfd_conflicted_repo(theirs: Option<&str>) -> tempfile::TempDir {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        set_precompose(root, "false");
+        test_repo::git(root, &["checkout", "-b", "side"]);
+        match theirs {
+            Some(content) => {
+                std::fs::write(root.join(NFD_FILE), content).unwrap();
+                test_repo::git(root, &["add", NFD_FILE]);
+            }
+            None => test_repo::git(root, &["rm", "-q", "--", NFD_FILE]),
+        }
+        test_repo::git(root, &["commit", "-m", "side"]);
+        test_repo::git(root, &["checkout", "main"]);
+        std::fs::write(root.join(NFD_FILE), "a\nOURS\nc\n").unwrap();
+        test_repo::git(root, &["add", NFD_FILE]);
+        test_repo::git(root, &["commit", "-m", "ours"]);
+        let merge = run_git(root, &["merge", "side"], DEFAULT_TIMEOUT, &[]).unwrap();
+        assert_eq!(merge.code, 1, "{}", merge.stderr);
+        set_precompose(root, "true");
+        assert!(index_names(root).iter().all(|name| name == NFD_FILE));
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn show_object_reads_a_decomposed_name_from_head_and_the_index() {
+        let tmp = nfd_staged_repo();
+        let root = tmp.path();
+        let head = show_object(root, &format!("HEAD:{NFD_FILE}")).unwrap();
+        assert_eq!(text(&head).as_deref(), Some("a\nb\nc\n"));
+        let staged = show_object(root, &format!(":0:{NFD_FILE}")).unwrap();
+        assert_eq!(text(&staged).as_deref(), Some("a\nB\nc\n"));
+        // A name nothing holds is still a missing side, not an error.
+        assert!(show_object(root, "HEAD:nobody\u{301}.md")
+            .unwrap()
+            .is_none());
+        assert!(show_object(root, ":0:nobody.md").unwrap().is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn show_object_still_reads_a_precomposed_entry_asked_for_by_either_spelling() {
+        let tmp = finder_tracked_repo();
+        let root = tmp.path();
+        // The index holds NFC. The listing spells it so; the file the editor
+        // opened from the directory is spelled NFD, which git precomposes.
+        for name in [NFC_FILE, NFD_FILE] {
+            for spec in [format!("HEAD:{name}"), format!(":0:{name}")] {
+                let shown = show_object(root, &spec).unwrap();
+                assert_eq!(text(&shown).as_deref(), Some("a\nb\nc\n"), "{spec}");
+            }
+        }
+    }
+
+    /// Adds `NFC_FILE` to the index beside the NFD entry of `NFD_FILE`, with
+    /// other content: a tree that holds both spellings, which only the index can.
+    #[cfg(target_os = "macos")]
+    fn add_precomposed_twin(root: &Path) {
+        let written = run_git_with_stdin(
+            root,
+            &["hash-object", "-w", "--stdin"],
+            DEFAULT_TIMEOUT,
+            &[],
+            b"twin\n",
+        )
+        .unwrap();
+        let oid = String::from_utf8(written.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        let entry = format!("100644,{oid},{NFC_FILE}");
+        git_as_stored(root, &["update-index", "--add", "--cacheinfo", &entry]);
+        test_repo::git(root, &["commit", "-m", "twin"]);
+        assert_eq!(index_names(root), [NFD_FILE, NFC_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn show_object_prefers_the_exact_decomposed_entry_beside_a_precomposed_twin() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        add_precomposed_twin(root);
+        for (name, expected) in [(NFD_FILE, "a\nb\nc\n"), (NFC_FILE, "twin\n")] {
+            let shown = show_object(root, &format!("HEAD:{name}")).unwrap();
+            assert_eq!(text(&shown).as_deref(), Some(expected), "{name}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn diff_content_of_a_decomposed_name_has_both_sides() {
+        let tmp = nfd_staged_repo();
+        let root = tmp.path();
+        let staged = diff_content(root, NFD_FILE, true, None).unwrap();
+        assert_eq!(text(&Some(staged.original)).as_deref(), Some("a\nb\nc\n"));
+        assert_eq!(text(&Some(staged.modified)).as_deref(), Some("a\nB\nc\n"));
+
+        std::fs::write(root.join(NFD_FILE), "a\nB\nC\n").unwrap();
+        let unstaged = diff_content(root, NFD_FILE, false, None).unwrap();
+        assert_eq!(text(&Some(unstaged.original)).as_deref(), Some("a\nB\nc\n"));
+        assert_eq!(text(&Some(unstaged.modified)).as_deref(), Some("a\nB\nC\n"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn diff_content_of_a_renamed_decomposed_source_reads_its_head_side() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        git_as_stored(root, &["mv", "--", NFD_FILE, "plain.md"]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(status.staged[0].orig_path.as_deref(), Some(NFD_FILE));
+        let diff = diff_content(root, "plain.md", true, Some(NFD_FILE)).unwrap();
+        assert_eq!(text(&Some(diff.original)).as_deref(), Some("a\nb\nc\n"));
+        assert_eq!(text(&Some(diff.modified)).as_deref(), Some("a\nb\nc\n"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn conflict_sides_of_a_decomposed_name_have_every_stage() {
+        let tmp = nfd_conflicted_repo(Some("a\nTHEIRS\nc\n"));
+        let root = tmp.path();
+        let sides = conflict_sides(root, NFD_FILE).unwrap();
+        assert_eq!(sides.code, "UU");
+        assert_eq!(text(&sides.base).as_deref(), Some("a\nb\nc\n"));
+        assert_eq!(text(&sides.ours).as_deref(), Some("a\nOURS\nc\n"));
+        assert_eq!(text(&sides.theirs).as_deref(), Some("a\nTHEIRS\nc\n"));
+        assert!(text(&sides.worktree).unwrap().contains("<<<<<<<"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn conflict_resolve_takes_a_side_of_a_decomposed_name() {
+        for (side, expected) in [("ours", "a\nOURS\nc\n"), ("theirs", "a\nTHEIRS\nc\n")] {
+            let tmp = nfd_conflicted_repo(Some("a\nTHEIRS\nc\n"));
+            let root = tmp.path();
+            conflict_resolve(root, &[NFD_FILE.to_string()], side).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+                expected
+            );
+            let status = status_of(root, None).unwrap().parsed;
+            assert!(status.conflicted.is_empty(), "{side}: {status:?}");
+            // Marked resolved on the index entry itself, not on an NFC twin.
+            assert_eq!(index_names(root), [NFD_FILE], "{side}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn conflict_resolve_to_a_deletion_removes_a_decomposed_name() {
+        let tmp = nfd_conflicted_repo(None);
+        let root = tmp.path();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.conflicted), [NFD_FILE], "{status:?}");
+        conflict_resolve(root, &[NFD_FILE.to_string()], "theirs").unwrap();
+        assert!(index_names(root).is_empty());
+        assert!(!root.join(NFD_FILE).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_marks_a_tracked_decomposed_entry_without_a_second_one() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        stage(root, &[NFD_FILE.to_string()]).unwrap();
+        assert_eq!(index_names(root), [NFD_FILE]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [NFD_FILE], "{status:?}");
+        assert!(status.unstaged.is_empty(), "{status:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_adds_a_new_finder_file_once_under_the_name_status_lists() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let untracked_nfd = "ume\u{301}.md";
+        let untracked_nfc = "um\u{e9}.md";
+        // Finder stores the new file NFD; status, precomposing, lists it NFC.
+        std::fs::write(root.join(untracked_nfd), "new\n").unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(
+            status.untracked.iter().any(|name| name == untracked_nfc),
+            "{status:?}"
+        );
+        stage(root, &[untracked_nfc.to_string()]).unwrap();
+        assert_eq!(index_names(root), [NFD_FILE, untracked_nfc]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(
+            status
+                .staged
+                .iter()
+                .any(|entry| entry.path == untracked_nfc),
+            "{status:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_takes_a_decomposed_entry_and_a_new_finder_file_in_one_call() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        std::fs::write(root.join("ume\u{301}.md"), "new\n").unwrap();
+        let requested = [
+            NFD_FILE.to_string(),
+            "um\u{e9}.md".to_string(),
+            "plain.md".to_string(),
+        ];
+        std::fs::write(root.join("plain.md"), "plain\n").unwrap();
+        stage(root, &requested).unwrap();
+        assert_eq!(index_names(root), [NFD_FILE, "plain.md", "um\u{e9}.md"]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(status.unstaged.is_empty(), "{status:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_unstage_and_discard_keep_working_for_a_precomposed_entry_of_a_finder_file() {
+        let tmp = finder_tracked_repo();
+        let root = tmp.path();
+        let modify = || std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        // By the name status lists, the index entry's own.
+        let requested = [NFC_FILE.to_string()];
+        modify();
+        stage(root, &requested).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [NFC_FILE], "{status:?}");
+        unstage(root, &requested).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(status.staged.is_empty(), "{status:?}");
+        assert_eq!(paths(&status.unstaged), [NFC_FILE], "{status:?}");
+        discard(root, &requested, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "a\nb\nc\n"
+        );
+        assert_eq!(index_names(root), [NFC_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unstage_restores_a_staged_decomposed_entry() {
+        let tmp = nfd_staged_repo();
+        let root = tmp.path();
+        unstage(root, &[NFD_FILE.to_string()]).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(status.staged.is_empty(), "{status:?}");
+        assert_eq!(paths(&status.unstaged), [NFD_FILE], "{status:?}");
+        assert_eq!(index_names(root), [NFD_FILE]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "a\nB\nc\n"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unstage_of_a_rename_restores_its_decomposed_source_from_head() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        git_as_stored(root, &["mv", "--", NFD_FILE, "plain.md"]);
+        assert!(!index_names(root).iter().any(|name| name == NFD_FILE));
+        unstage(root, &["plain.md".to_string(), NFD_FILE.to_string()]).unwrap();
+        // The source is an index entry again, under its own name and only that.
+        assert_eq!(index_names(root), [NFD_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unstage_on_an_unborn_branch_drops_a_decomposed_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        std::fs::write(root.join(NFD_FILE), "a\n").unwrap();
+        git_as_stored(root, &["add", NFD_FILE]);
+        assert_eq!(index_names(root), [NFD_FILE]);
+        unstage(root, &[NFD_FILE.to_string()]).unwrap();
+        assert!(index_names(root).is_empty());
+        assert!(root.join(NFD_FILE).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discard_restores_a_modified_decomposed_entry() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        discard(root, &[NFD_FILE.to_string()], &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "a\nb\nc\n"
+        );
+        assert_eq!(index_names(root), [NFD_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_of_a_pathspec_lists_a_decomposed_entry_as_modified() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        // Alone, or beside a plain path.
+        for spec in [vec![NFD_FILE], vec![NFD_FILE, "plain.md"]] {
+            let spec = spec.into_iter().map(String::from).collect();
+            let status = status_of(root, Some(spec)).unwrap().parsed;
+            assert_eq!(paths(&status.unstaged), [NFD_FILE], "{status:?}");
+            assert!(status.untracked.is_empty(), "{status:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_of_a_pathspec_keeps_working_for_finder_names() {
+        let tmp = finder_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        std::fs::write(root.join("ume\u{301}.md"), "new\n").unwrap();
+        // The listed name and the directory's spelling reach the NFC entry, and
+        // the NFC name status lists reaches the new file.
+        for name in [NFC_FILE, NFD_FILE] {
+            let status = status_of(root, Some(vec![name.to_string()]))
+                .unwrap()
+                .parsed;
+            assert_eq!(paths(&status.unstaged), [NFC_FILE], "{name}: {status:?}");
+        }
+        let status = status_of(root, Some(vec!["um\u{e9}.md".to_string()]))
+            .unwrap()
+            .parsed;
+        assert_eq!(status.untracked, ["um\u{e9}.md"], "{status:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_of_a_pathspec_with_a_new_finder_file_beside_a_decomposed_entry_lists_the_file() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join("ume\u{301}.md"), "new\n").unwrap();
+        let spec = vec![NFD_FILE.to_string(), "um\u{e9}.md".to_string()];
+        let status = status_of(root, Some(spec)).unwrap().parsed;
+        assert!(
+            status.untracked.iter().any(|name| name == "um\u{e9}.md"),
+            "{status:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discard_brings_back_a_deleted_decomposed_entry() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::remove_file(root.join(NFD_FILE)).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.unstaged), [NFD_FILE], "{status:?}");
+        discard(root, &[NFD_FILE.to_string()], &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "a\nb\nc\n"
+        );
+        assert_eq!(index_names(root), [NFD_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_records_the_deletion_of_a_decomposed_entry() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::remove_file(root.join(NFD_FILE)).unwrap();
+        stage(root, &[NFD_FILE.to_string()]).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [NFD_FILE], "{status:?}");
+        assert!(index_names(root).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rollback_target(path: &str, classification: GitRollbackClassification) -> GitRollbackTarget {
+        GitRollbackTarget {
+            path: path.to_string(),
+            classification,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_paths_restores_a_modified_and_unstages_an_added_decomposed_entry() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        let added = "ume\u{301}.md";
+        std::fs::write(root.join(added), "new\n").unwrap();
+        git_as_stored(root, &["add", added]);
+        let targets = [
+            rollback_target(
+                NFD_FILE,
+                GitRollbackClassification::Tracked {
+                    staged_status: None,
+                    unstaged_status: Some("M".into()),
+                    orig_path: None,
+                },
+            ),
+            rollback_target(
+                added,
+                GitRollbackClassification::Added {
+                    staged_status: Some("A".into()),
+                    unstaged_status: None,
+                },
+            ),
+        ];
+        let result = rollback_paths(root, &targets, true).unwrap();
+        assert_eq!(result.restored, [NFD_FILE]);
+        assert_eq!(result.deleted, [added]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "a\nb\nc\n"
+        );
+        assert!(!root.join(added).exists());
+        assert_eq!(index_names(root), [NFD_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_paths_restores_a_renamed_decomposed_source() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        git_as_stored(root, &["mv", "--", NFD_FILE, "plain.md"]);
+        let target = rollback_target(
+            "plain.md",
+            GitRollbackClassification::Tracked {
+                staged_status: Some("R".into()),
+                unstaged_status: None,
+                orig_path: Some(NFD_FILE.to_string()),
+            },
+        );
+        let result = rollback_paths(root, &[target], false).unwrap();
+        assert_eq!(result.restored, ["plain.md"]);
+        assert_eq!(index_names(root), [NFD_FILE]);
+        assert!(root.join(NFD_FILE).exists());
+        assert!(!root.join("plain.md").exists());
+    }
+
+    // The twin. Where git precomposes names, a tracked file stored under a
+    // decomposed name is listed twice: as its index entry and, precomposed, as an
+    // "untracked" file the same directory entry reads as. The volume knows both
+    // spellings as one file, so the second row is not a file of its own and acting
+    // on it (clean, add, discard, rollback) would hit the tracked file.
+
+    #[cfg(target_os = "macos")]
+    const NFD_NESTED: &str = "de\u{301}/in.md";
+    #[cfg(target_os = "macos")]
+    const NFC_NESTED: &str = "d\u{e9}/in.md";
+
+    /// `nfd_tracked_repo` plus `NFD_NESTED`, tracked under a decomposed folder name.
+    #[cfg(target_os = "macos")]
+    fn nfd_nested_tracked_repo() -> tempfile::TempDir {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        set_precompose(root, "false");
+        std::fs::create_dir(root.join("de\u{301}")).unwrap();
+        std::fs::write(root.join(NFD_NESTED), "n\n").unwrap();
+        test_repo::git(root, &["add", NFD_NESTED]);
+        test_repo::git(root, &["commit", "-m", "nested"]);
+        set_precompose(root, "true");
+        assert_eq!(index_names(root), [NFD_FILE, NFD_NESTED]);
+        tmp
+    }
+
+    /// The rows the Git panel offers for "all": every changed path under the
+    /// name status lists, tracked or untracked, as the rollback dialog classifies it.
+    #[cfg(target_os = "macos")]
+    fn every_listed_target(parsed: &crate::git_status::ParsedStatus) -> Vec<GitRollbackTarget> {
+        let mut listed: Vec<&str> = parsed
+            .staged
+            .iter()
+            .chain(&parsed.unstaged)
+            .map(|entry| entry.path.as_str())
+            .chain(parsed.untracked.iter().map(String::as_str))
+            .collect();
+        listed.dedup();
+        listed
+            .into_iter()
+            .map(|path| {
+                let classification = actual_rollback_classification(parsed, path)
+                    .unwrap()
+                    .unwrap();
+                rollback_target(path, classification)
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_lists_no_twin_of_a_tracked_decomposed_file() {
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        // Unchanged, the files are no untracked ones either.
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(status.untracked.is_empty(), "{status:?}");
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        std::fs::write(root.join(NFD_NESTED), "N\n").unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(
+            paths(&status.unstaged),
+            [NFD_FILE, NFD_NESTED],
+            "{status:?}"
+        );
+        assert!(status.untracked.is_empty(), "{status:?}");
+        // The same when scoped, by the name as the index stores it (asked as
+        // stored) and by the precomposed name git matches the directory entry by.
+        for spec in [
+            vec![NFD_FILE],
+            vec![NFD_NESTED],
+            vec![NFD_NESTED, NFD_FILE],
+            vec![NFC_FILE],
+            vec![NFC_NESTED],
+            vec![NFC_NESTED, NFC_FILE],
+        ] {
+            let status = status_of(root, Some(spec.iter().map(|s| s.to_string()).collect()))
+                .unwrap()
+                .parsed;
+            assert!(status.untracked.is_empty(), "{spec:?}: {status:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_still_lists_a_new_finder_file_beside_a_decomposed_entry_once() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join("ume\u{301}.md"), "new\n").unwrap();
+        let listed = ["um\u{e9}.md".to_string()];
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(status.untracked, listed, "{status:?}");
+        for spec in [vec!["um\u{e9}.md", NFC_FILE], vec!["um\u{e9}.md", NFD_FILE]] {
+            let spec = spec.into_iter().map(String::from).collect();
+            let status = status_of(root, Some(spec)).unwrap().parsed;
+            assert_eq!(status.untracked, listed, "{status:?}");
+        }
+        // It stages once, under the name status lists.
+        stage(root, &listed).unwrap();
+        assert_eq!(index_names(root), [NFD_FILE, "um\u{e9}.md"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_lists_a_finder_file_with_a_precomposed_entry_as_before() {
+        let tmp = finder_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        std::fs::write(root.join("ume\u{301}.md"), "new\n").unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.unstaged), [NFC_FILE], "{status:?}");
+        assert_eq!(status.untracked, ["um\u{e9}.md"], "{status:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discard_all_of_a_decomposed_entry_keeps_the_file_and_leaves_a_clean_status() {
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        std::fs::write(root.join(NFD_NESTED), "N\n").unwrap();
+        // "Discard all", as the panel sends it: every tracked row, every untracked row.
+        let status = status_of(root, None).unwrap().parsed;
+        let tracked: Vec<String> = status.unstaged.iter().map(|e| e.path.clone()).collect();
+        discard(root, &tracked, &status.untracked).unwrap();
+        for (name, content) in [(NFD_FILE, "a\nb\nc\n"), (NFD_NESTED, "n\n")] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                content,
+                "{name}"
+            );
+        }
+        assert_eq!(index_names(root), [NFD_FILE, NFD_NESTED]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(
+            status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty(),
+            "{status:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discard_refuses_the_twin_of_a_tracked_decomposed_file_and_deletes_nothing() {
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "local edit\n").unwrap();
+        std::fs::write(root.join(NFD_NESTED), "local nested\n").unwrap();
+        // A list from before the twin was hidden: the twin alone, or with its entry.
+        for (tracked, untracked) in [
+            (vec![], vec![NFC_FILE]),
+            (vec![], vec![NFC_NESTED]),
+            (vec![NFD_FILE], vec![NFC_FILE]),
+        ] {
+            let tracked: Vec<String> = tracked.into_iter().map(String::from).collect();
+            let untracked: Vec<String> = untracked.into_iter().map(String::from).collect();
+            let error = discard(root, &tracked, &untracked).unwrap_err();
+            assert!(error.contains("refused"), "{untracked:?}: {error}");
+            // Nothing happened, not even the restore of the tracked part.
+            for (name, content) in [(NFD_FILE, "local edit\n"), (NFD_NESTED, "local nested\n")] {
+                assert_eq!(
+                    std::fs::read_to_string(root.join(name)).unwrap(),
+                    content,
+                    "{untracked:?}: {name}"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_of_every_listed_row_keeps_a_decomposed_file() {
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        std::fs::write(root.join(NFD_NESTED), "N\n").unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        let targets = every_listed_target(&status);
+        let result = rollback_paths(root, &targets, true).unwrap();
+        assert_eq!(result.restored, [NFD_FILE, NFD_NESTED]);
+        assert!(result.deleted.is_empty(), "{result:?}");
+        for (name, content) in [(NFD_FILE, "a\nb\nc\n"), (NFD_NESTED, "n\n")] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                content,
+                "{name}"
+            );
+        }
+        let status = status_of(root, None).unwrap().parsed;
+        assert!(
+            status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty(),
+            "{status:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_of_the_twin_of_a_decomposed_file_is_refused_and_deletes_nothing() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "local edit\n").unwrap();
+        let twin = rollback_target(NFC_FILE, GitRollbackClassification::Untracked);
+        assert!(rollback_paths(root, &[twin], true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "local edit\n"
+        );
+        assert_eq!(index_names(root), [NFD_FILE]);
+    }
+
+    /// `nfd_tracked_repo` changed and added under its precomposed name too: the
+    /// second index entry beside the NFD one that "stage all" used to create.
+    #[cfg(target_os = "macos")]
+    fn nfd_tracked_with_a_second_entry_repo() -> tempfile::TempDir {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "local edit\n").unwrap();
+        test_repo::git(root, &["add", NFC_FILE]);
+        assert_eq!(index_names(root), [NFD_FILE, NFC_FILE]);
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_that_deletes_an_added_second_entry_of_a_tracked_file_is_refused_first() {
+        let tmp = nfd_tracked_with_a_second_entry_repo();
+        let root = tmp.path();
+        let status = status_of(root, None).unwrap().parsed;
+        let added = actual_rollback_classification(&status, NFC_FILE)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(added, GitRollbackClassification::Added { .. }));
+        let target = rollback_target(NFC_FILE, added);
+        let error = rollback_paths(root, &[target], true).unwrap_err();
+        assert!(error.contains("refused"), "{error}");
+        // Neither the index nor the file was touched.
+        assert_eq!(index_names(root), [NFD_FILE, NFC_FILE]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "local edit\n"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_that_keeps_files_can_still_unstage_a_second_entry() {
+        let tmp = nfd_tracked_with_a_second_entry_repo();
+        let root = tmp.path();
+        let status = status_of(root, None).unwrap().parsed;
+        let added = actual_rollback_classification(&status, NFC_FILE)
+            .unwrap()
+            .unwrap();
+        let result = rollback_paths(root, &[rollback_target(NFC_FILE, added)], false).unwrap();
+        assert_eq!(result.preserved_untracked, [NFC_FILE]);
+        // Only the duplicate entry went; the tracked file and its entry stay.
+        assert_eq!(index_names(root), [NFD_FILE]);
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "local edit\n"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_all_with_the_twin_row_adds_no_second_entry() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        // The rows as the panel lists them now: the entry alone.
+        let status = status_of(root, None).unwrap().parsed;
+        let listed: Vec<String> = status
+            .unstaged
+            .iter()
+            .map(|entry| entry.path.clone())
+            .chain(status.untracked.iter().cloned())
+            .collect();
+        stage(root, &listed).unwrap();
+        assert_eq!(index_names(root), [NFD_FILE]);
+        // A list that still carries the twin row is refused before anything is added.
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        for requested in [vec![NFD_FILE, NFC_FILE], vec![NFC_FILE]] {
+            let requested: Vec<String> = requested.into_iter().map(String::from).collect();
+            let error = stage(root, &requested).unwrap_err();
+            assert!(error.contains("refused"), "{requested:?}: {error}");
+            assert_eq!(index_names(root), [NFD_FILE], "{requested:?}");
+            let status = status_of(root, None).unwrap().parsed;
+            assert!(status.staged.is_empty(), "{status:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_by_the_disk_spelling_still_adds_a_new_finder_file_once() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join("ne\u{301}w.md"), "n\n").unwrap();
+        stage(root, &["ne\u{301}w.md".to_string()]).unwrap();
+        assert_eq!(index_names(root), [NFD_FILE, "n\u{e9}w.md"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_unstage_and_discard_by_the_disk_spelling_keep_working_for_a_finder_entry() {
+        let tmp = finder_tracked_repo();
+        let root = tmp.path();
+        // The directory spells the name NFD; git takes it to the precomposed entry.
+        let requested = [NFD_FILE.to_string()];
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        stage(root, &requested).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [NFC_FILE], "{status:?}");
+        unstage(root, &requested).unwrap();
+        discard(root, &requested, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NFD_FILE)).unwrap(),
+            "a\nb\nc\n"
+        );
+        assert_eq!(index_names(root), [NFC_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_takes_a_mixed_spelling_of_a_finder_entry_without_a_second_entry() {
+        // Neither NFC nor NFD: git precomposes it onto the NFC entry, which is no twin.
+        let mixed = "cafe\u{301}-\u{f1}.md";
+        let entry = "caf\u{e9}-\u{f1}.md";
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        std::fs::write(root.join(mixed), "a\n").unwrap();
+        test_repo::git(root, &["add", entry]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        assert_eq!(index_names(root), [entry]);
+        std::fs::write(root.join(mixed), "b\n").unwrap();
+        stage(root, &[mixed.to_string()]).unwrap();
+        assert_eq!(index_names(root), [entry]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [entry], "{status:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_of_an_entry_stored_in_a_mixed_form_is_no_twin_of_itself() {
+        // Neither NFC nor NFD, stored as it is: the request is the entry.
+        let mixed = "cafe\u{301}-\u{f1}.md";
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "false");
+        std::fs::write(root.join(mixed), "a\n").unwrap();
+        test_repo::git(root, &["add", mixed]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        set_precompose(root, "true");
+        assert_eq!(index_names(root), [mixed]);
+        std::fs::write(root.join(mixed), "b\n").unwrap();
+        stage(root, &[mixed.to_string()]).unwrap();
+        assert_eq!(index_names(root), [mixed]);
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [mixed], "{status:?}");
+        assert!(status.untracked.is_empty(), "{status:?}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scoped_status_with_an_ascii_directory_and_a_decomposed_name_lists_no_phantom() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        // A Finder file in `sub` whose index entry is precomposed, and a new one.
+        std::fs::write(root.join("sub/ne\u{301}e.md"), "x\n").unwrap();
+        test_repo::git(root, &["add", "sub/n\u{e9}e.md"]);
+        test_repo::git(root, &["commit", "-m", "finder"]);
+        std::fs::write(root.join("sub/fre\u{301}sh.md"), "y\n").unwrap();
+        std::fs::write(root.join(NFD_FILE), "a\nB\nc\n").unwrap();
+        let full = status_of(root, None).unwrap().parsed;
+        let in_sub = |parsed: &crate::git_status::ParsedStatus| -> Vec<String> {
+            parsed
+                .untracked
+                .iter()
+                .chain(parsed.unstaged.iter().map(|entry| &entry.path))
+                .filter(|path| path.starts_with("sub/"))
+                .cloned()
+                .collect()
+        };
+        for spec in [vec!["sub", NFD_FILE], vec![NFD_FILE, "sub"]] {
+            let spec = spec.into_iter().map(String::from).collect();
+            let scoped = status_of(root, Some(spec)).unwrap().parsed;
+            assert_eq!(in_sub(&scoped), in_sub(&full), "{scoped:?}");
+            // A phantom is a decomposed name no entry holds listed untracked.
+            assert!(
+                scoped
+                    .untracked
+                    .iter()
+                    .all(|path| unicode_normalization::is_nfc(path)),
+                "{scoped:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scoped_status_of_a_decomposed_folder_lists_no_phantom_row() {
+        // `de\u{301}/` is a folder of HEAD's tree under its decomposed name, so
+        // the spec is a stored name that is no file.
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_NESTED), "N\n").unwrap();
+        // New files Finder stored decomposed: in the folder, and beside it.
+        std::fs::write(root.join("de\u{301}/ne\u{301}w.md"), "n\n").unwrap();
+        std::fs::write(root.join("de\u{301}/plain.md"), "p\n").unwrap();
+        std::fs::write(root.join("fre\u{301}sh.md"), "f\n").unwrap();
+        std::fs::write(root.join("plain.txt"), "t\n").unwrap();
+        let full = status_of(root, None).unwrap().parsed;
+        let in_folder = ["d\u{e9}/n\u{e9}w.md", "d\u{e9}/plain.md"];
+        let mut every = in_folder.to_vec();
+        every.extend(["fr\u{e9}sh.md", "plain.txt"]);
+        assert_eq!(full.untracked, every, "{full:?}");
+        let folder = "de\u{301}";
+        for (spec, untracked) in [
+            (vec![folder], in_folder.to_vec()),
+            (
+                vec![folder, "plain.txt"],
+                vec![in_folder[0], in_folder[1], "plain.txt"],
+            ),
+            (vec![folder, NFD_FILE], in_folder.to_vec()),
+            (vec!["d\u{e9}"], in_folder.to_vec()),
+        ] {
+            let owned = spec.iter().map(|path| path.to_string()).collect();
+            let scoped = status_of(root, Some(owned)).unwrap().parsed;
+            // The untracked rows are the full status's, not the directory's
+            // decomposed spelling of them.
+            assert_eq!(scoped.untracked, untracked, "{spec:?}: {scoped:?}");
+            // Every tracked row is one the full status has too (an entry under a
+            // decomposed folder spec can be missing, as it is when git precomposes).
+            for entry in scoped.staged.iter().chain(&scoped.unstaged) {
+                assert!(
+                    full.staged
+                        .iter()
+                        .chain(&full.unstaged)
+                        .any(|row| row.path == entry.path),
+                    "{spec:?}: {scoped:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tracked_twins_asks_the_index_only_for_a_name_that_can_be_spelled_another_way() {
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        // A corrupt index fails every listing, which tells a listing from none.
+        std::fs::write(root.join(".git/index"), "not an index").unwrap();
+        // ASCII and plain CJK ideographs cannot have a twin (they are NFC and
+        // NFD both): no process runs, so nothing fails.
+        let free = ["a.md", "sub/b.txt", "\u{65e5}\u{672c}.md"];
+        assert!(tracked_twins(root, &free, false).unwrap().is_empty());
+        assert!(tracked_twins(root, &[], false).unwrap().is_empty());
+        // Anything else asks: Hiragana with a voiced mark, Hangul syllables,
+        // precomposed Latin, and a decomposed name too, which git may keep as it
+        // is (a canonical NFD spelling it composes to nothing) beside an entry
+        // that is precomposed.
+        for name in [
+            "\u{304c}.md",
+            "\u{d55c}.md",
+            NFC_FILE,
+            NFC_NESTED,
+            NFD_FILE,
+            NFD_NESTED,
+            "a\u{330}\u{301}.txt",
+        ] {
+            assert!(tracked_twins(root, &[name], false).is_err(), "{name}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tracked_twins_finds_the_entry_whatever_the_folder_and_file_spelling() {
+        let tmp = nfd_nested_tracked_repo();
+        let root = tmp.path();
+        let twins = tracked_twins(
+            root,
+            &[NFC_FILE, NFC_NESTED, "um\u{e9}.md", "plain.md"],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            twins,
+            [
+                (NFC_FILE, NFD_FILE.to_string()),
+                (NFC_NESTED, NFD_NESTED.to_string())
+            ]
+        );
+        // A new file has no entry to be the twin of; an entry that is gone from
+        // the directory leaves nothing to be one either.
+        std::fs::remove_file(root.join(NFD_FILE)).unwrap();
+        assert!(tracked_twins(root, &[NFC_FILE], false).unwrap().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tracked_twins_can_leave_out_a_name_that_is_an_entry_itself() {
+        // Two entries for the one file: each is the twin of the other, and an
+        // entry itself.
+        let tmp = colliding_entries_repo("A\n", "B\n", "C\n");
+        let root = tmp.path();
+        let both = [NFC_FILE, NFD_FILE];
+        let twins = tracked_twins(root, &both, false).unwrap();
+        assert_eq!(
+            twins,
+            [
+                (NFC_FILE, NFD_FILE.to_string()),
+                (NFD_FILE, NFC_FILE.to_string())
+            ]
+        );
+        for path in both {
+            assert!(tracked_twins(root, &[path], true).unwrap().is_empty());
+        }
+        // A name that is no entry is a twin however it is asked.
+        let tmp = nfd_tracked_repo();
+        let twins = tracked_twins(tmp.path(), &[NFC_FILE], true).unwrap();
+        assert_eq!(twins, [(NFC_FILE, NFD_FILE.to_string())]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn is_same_file_compares_device_and_inode_not_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join(NFD_FILE), "one\n").unwrap();
+        std::fs::write(root.join("other.md"), "one\n").unwrap();
+        // The volume reads both spellings as one directory entry.
+        assert!(is_same_file(&root.join(NFD_FILE), &root.join(NFC_FILE)));
+        assert!(is_same_file(&root.join("other.md"), &root.join("other.md")));
+        std::fs::hard_link(root.join("other.md"), root.join("linked.md")).unwrap();
+        assert!(is_same_file(
+            &root.join("other.md"),
+            &root.join("linked.md")
+        ));
+        // Equal content and size are another file; a missing one is no file.
+        assert!(!is_same_file(&root.join(NFD_FILE), &root.join("other.md")));
+        assert!(!is_same_file(&root.join("none.md"), &root.join("none.md")));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn status_rows(
+        staged: &[(&str, &str)],
+        unstaged: &[(&str, &str)],
+        untracked: &[&str],
+    ) -> crate::git_status::ParsedStatus {
+        let entries = |rows: &[(&str, &str)]| {
+            rows.iter()
+                .map(|(path, status)| crate::git_status::GitFileEntry {
+                    path: path.to_string(),
+                    orig_path: None,
+                    status: status.to_string(),
+                })
+                .collect()
+        };
+        crate::git_status::ParsedStatus {
+            head_oid: "head".into(),
+            staged: entries(staged),
+            unstaged: entries(unstaged),
+            untracked: untracked.iter().map(|path| path.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scope_check_rejects_the_tracked_file_that_a_request_for_its_twin_deleted() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let none = HashSet::new();
+        let check = |requested: &str, before, after| {
+            ensure_literal_path_scope(
+                root,
+                "clean",
+                &[requested.to_string()],
+                &none,
+                before,
+                after,
+            )
+        };
+        // `clean` of the twin took the decomposed tracked file with it.
+        let before = status_rows(&[], &[(NFD_FILE, "M")], &[]);
+        let after = status_rows(&[], &[(NFD_FILE, "D")], &[]);
+        let error = check(NFC_FILE, &before, &after).unwrap_err();
+        assert!(error.contains(NFD_FILE), "{error}");
+        // Alone, with nothing listed before: the same file, gone.
+        let before = status_rows(&[], &[], &[]);
+        assert!(check(NFC_FILE, &before, &after).is_err());
+        // The twin whose spelling git keeps is no other name for git either: the
+        // entry is precomposed, git takes the request to itself, not to the entry.
+        let (entry, twin) = KEPT_SPELLINGS[0];
+        let before = status_rows(&[], &[(entry, "M")], &[]);
+        let after = status_rows(&[], &[(entry, "D")], &[]);
+        let error = check(twin, &before, &after).unwrap_err();
+        assert!(error.contains(entry), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scope_check_accepts_the_row_of_the_name_git_took_a_request_to() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let none = HashSet::new();
+        let stored = HashSet::from([NFD_FILE.to_string()]);
+        let request = [NFD_FILE.to_string()];
+        // Unstaging a decomposed entry (it went as stored) leaves the file
+        // untracked, listed precomposed.
+        let before = status_rows(&[(NFD_FILE, "A")], &[], &[]);
+        let after = status_rows(&[], &[], &[NFC_FILE]);
+        ensure_literal_path_scope(root, "unstage", &request, &stored, &before, &after).unwrap();
+        // Staging one (git took it to the precomposed name): the entry it adds.
+        let before = status_rows(&[], &[], &[NFC_FILE]);
+        let after = status_rows(&[(NFC_FILE, "A")], &[], &[]);
+        ensure_literal_path_scope(root, "add", &request, &none, &before, &after).unwrap();
+        // A precomposed entry staged under a decomposed name: its own row changes.
+        let before = status_rows(&[], &[(NFC_FILE, "M")], &[]);
+        let after = status_rows(&[(NFC_FILE, "M")], &[], &[]);
+        ensure_literal_path_scope(root, "add", &request, &none, &before, &after).unwrap();
+        // Another file's row is still outside the request.
+        let before = status_rows(&[], &[], &[NFC_FILE]);
+        let after = status_rows(&[(NFC_FILE, "A"), ("other.md", "A")], &[], &[]);
+        assert!(ensure_literal_path_scope(root, "add", &request, &none, &before, &after).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scope_check_does_not_let_a_request_sent_as_stored_change_another_entry() {
+        // Two entries for the one file: the decomposed one was restored as
+        // stored, and the precomposed entry's row, clean before, now differs.
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let request = [NFD_FILE.to_string()];
+        let before = status_rows(&[], &[(NFD_FILE, "M")], &[]);
+        let after = status_rows(&[], &[(NFC_FILE, "M")], &[]);
+        let stored = HashSet::from([NFD_FILE.to_string()]);
+        let error = ensure_literal_path_scope(root, "restore", &request, &stored, &before, &after)
+            .unwrap_err();
+        assert!(error.contains(NFC_FILE), "{error}");
+        // Sent for git to respell, the same change is the request's own row.
+        let none = HashSet::new();
+        ensure_literal_path_scope(root, "restore", &request, &none, &before, &after).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scope_check_reports_another_entry_that_a_request_sent_as_stored_turned_clean() {
+        // Two entries for the one file, both modified: restoring the decomposed
+        // one as stored rewrites the file, and the precomposed entry's row is gone.
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let request = [NFD_FILE.to_string()];
+        let stored = HashSet::from([NFD_FILE.to_string()]);
+        let before = status_rows(&[], &[(NFC_FILE, "M"), (NFD_FILE, "M")], &[]);
+        let after = status_rows(&[], &[], &[]);
+        let error = ensure_literal_path_scope(root, "restore", &request, &stored, &before, &after)
+            .unwrap_err();
+        assert!(error.contains(NFC_FILE), "{error}");
+        // The same when the row turns untracked instead of going: it was a tracked
+        // entry's before.
+        let before = status_rows(&[(NFC_FILE, "A")], &[(NFD_FILE, "M")], &[]);
+        let after = status_rows(&[], &[(NFD_FILE, "M")], &[NFC_FILE]);
+        assert!(
+            ensure_literal_path_scope(root, "restore", &request, &stored, &before, &after).is_err()
+        );
+        // Sent for git to respell, a row of the name git took the request to is the request's own.
+        let none = HashSet::new();
+        let before = status_rows(&[], &[(NFC_FILE, "M")], &[]);
+        let after = status_rows(&[], &[], &[]);
+        ensure_literal_path_scope(root, "restore", &request, &none, &before, &after).unwrap();
+    }
+
+    // The twin of a name git does not respell. Git turns a decomposed argument
+    // into NFC but leaves a character NFC rewrites on its own (a singleton such
+    // as U+212A KELVIN SIGN or U+2126 OHM SIGN, a CJK compatibility ideograph)
+    // as it is, while the volume reads it as the plain character: the file is
+    // another spelling of its tracked entry, yet the NFC form of that spelling
+    // is not what git takes it to.
+
+    /// `(index entry, the spelling the directory entry carries)`.
+    #[cfg(target_os = "macos")]
+    const SINGLETON_TWINS: [(&str, &str); 3] = [
+        ("K.txt", "\u{212a}.txt"),
+        ("\u{3a9}.txt", "\u{2126}.txt"),
+        ("\u{8c48}.txt", "\u{f900}.txt"),
+    ];
+
+    /// `entry` tracked and modified, its directory entry recreated under
+    /// `spelling` the way a tool that saves by replacing the file does.
+    #[cfg(target_os = "macos")]
+    fn singleton_twin_repo(entry: &str, spelling: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        std::fs::write(root.join(entry), "base\n").unwrap();
+        std::fs::write(root.join("other.txt"), "o\n").unwrap();
+        test_repo::git(root, &["add", entry, "other.txt"]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        std::fs::remove_file(root.join(entry)).unwrap();
+        std::fs::write(root.join(spelling), "local edit\n").unwrap();
+        // One file under both names, as on the volumes that fold them.
+        assert_eq!(
+            std::fs::read_to_string(root.join(entry)).unwrap(),
+            "local edit\n"
+        );
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_lists_no_twin_of_a_tracked_file_spelled_with_a_singleton_character() {
+        for (entry, spelling) in SINGLETON_TWINS {
+            let tmp = singleton_twin_repo(entry, spelling);
+            let root = tmp.path();
+            let status = status_of(root, None).unwrap().parsed;
+            assert_eq!(paths(&status.unstaged), [entry], "{entry}: {status:?}");
+            assert!(status.untracked.is_empty(), "{entry}: {status:?}");
+            for spec in [entry, spelling] {
+                let spec = vec![spec.to_string()];
+                let status = status_of(root, Some(spec.clone())).unwrap().parsed;
+                assert!(status.untracked.is_empty(), "{spec:?}: {status:?}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tracked_twins_finds_the_entry_of_a_name_spelled_with_a_singleton_character() {
+        for (entry, spelling) in SINGLETON_TWINS {
+            let tmp = singleton_twin_repo(entry, spelling);
+            let root = tmp.path();
+            let twins = tracked_twins(root, &[spelling, "other.txt", entry], false).unwrap();
+            assert_eq!(twins, [(spelling, entry.to_string())], "{entry}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discard_stage_and_rollback_refuse_the_twin_spelled_with_a_singleton_character() {
+        for (entry, spelling) in SINGLETON_TWINS {
+            let tmp = singleton_twin_repo(entry, spelling);
+            let root = tmp.path();
+            let entries = index_names(root);
+            let intact = |what: &str| {
+                assert_eq!(index_names(root), entries, "{entry}: {what}");
+                assert_eq!(
+                    std::fs::read_to_string(root.join(entry)).unwrap(),
+                    "local edit\n",
+                    "{entry}: {what}"
+                );
+                let status = status_of(root, None).unwrap().parsed;
+                assert!(status.staged.is_empty(), "{entry}: {what}: {status:?}");
+            };
+            let tracked = [entry.to_string()];
+            let twin = [spelling.to_string()];
+            // Discard of the twin alone, or after its entry (the "discard all" list).
+            for (restore, clean) in [(&[][..], &twin), (&tracked[..], &twin)] {
+                let error = discard(root, restore, clean).unwrap_err();
+                assert!(error.contains("refused"), "{entry}: {error}");
+                intact("discard");
+            }
+            // Stage of the twin alone, or with its entry.
+            for requested in [
+                vec![spelling.to_string()],
+                vec![entry.to_string(), spelling.to_string()],
+            ] {
+                let error = stage(root, &requested).unwrap_err();
+                assert!(error.contains("refused"), "{entry}: {error}");
+                intact("stage");
+            }
+            // A list that still carries the twin as an untracked row.
+            let stale = rollback_target(spelling, GitRollbackClassification::Untracked);
+            assert!(rollback_paths(root, &[stale], true).is_err(), "{entry}");
+            intact("rollback");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scope_check_rejects_the_tracked_file_that_a_request_for_its_singleton_twin_deleted() {
+        for (entry, spelling) in SINGLETON_TWINS {
+            // `clean` of the twin took the tracked file under its other spelling with it.
+            let tmp = singleton_twin_repo(entry, spelling);
+            let before = status_rows(&[], &[(entry, "M")], &[]);
+            let after = status_rows(&[], &[(entry, "D")], &[]);
+            let error = ensure_literal_path_scope(
+                tmp.path(),
+                "clean",
+                &[spelling.to_string()],
+                &HashSet::new(),
+                &before,
+                &after,
+            )
+            .unwrap_err();
+            assert!(error.contains(entry), "{error}");
+        }
+    }
+
+    // Names git does not compose the way NFC does. Git turns an argument or a
+    // directory entry into its precomposed form pair by pair (macOS iconv
+    // UTF-8-MAC): it does not reorder marks and it does not compose past a mark
+    // that does not combine. So the canonical NFD name a Cocoa save leaves,
+    // `a` U+0330 U+0301, is listed as it is, while its NFC form is U+00E1 U+0330.
+    // A tracked entry committed in that NFC form (on Linux or Windows) is then the
+    // file of a name that is NFD, and `ẹ́` (U+1EB9 U+0301), whose disk name git
+    // composes only to U+00E9 U+0323, the file of a name that is neither NFC
+    // nor NFD. Git takes neither spelling to the entry.
+
+    /// `(index entry as git lists it, the spelling of the directory entry)`.
+    #[cfg(target_os = "macos")]
+    const KEPT_SPELLINGS: [(&str, &str); 2] = [
+        ("\u{e1}\u{330}.txt", "a\u{330}\u{301}.txt"),
+        ("\u{1eb9}\u{301}.txt", "\u{e9}\u{323}.txt"),
+    ];
+
+    /// `entry` tracked, its directory entry recreated under `disk` (the way a
+    /// save that replaces the file does) with `content`: one file under both names.
+    #[cfg(target_os = "macos")]
+    fn kept_spelling_repo(entry: &str, disk: &str, content: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        std::fs::write(root.join(entry), "base\n").unwrap();
+        std::fs::write(root.join("other.txt"), "o\n").unwrap();
+        test_repo::git(root, &["add", "--", entry, "other.txt"]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        let mut entries = vec![entry.to_string(), "other.txt".to_string()];
+        entries.sort();
+        assert_eq!(index_names(root), entries);
+        std::fs::remove_file(root.join(entry)).unwrap();
+        std::fs::write(root.join(disk), content).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(entry)).unwrap(),
+            content,
+            "{entry}"
+        );
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    fn is_clean(root: &Path) -> bool {
+        let status = status_of(root, None).unwrap().parsed;
+        status.staged.is_empty() && status.unstaged.is_empty() && status.untracked.is_empty()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_lists_no_twin_of_an_entry_whose_disk_spelling_git_keeps() {
+        for (entry, disk) in KEPT_SPELLINGS {
+            let tmp = kept_spelling_repo(entry, disk, "local edit\n");
+            let root = tmp.path();
+            let status = status_of(root, None).unwrap().parsed;
+            assert_eq!(paths(&status.unstaged), [entry], "{entry}: {status:?}");
+            assert!(status.untracked.is_empty(), "{entry}: {status:?}");
+            for spec in [entry, disk] {
+                let spec = vec![spec.to_string()];
+                let status = status_of(root, Some(spec.clone())).unwrap().parsed;
+                assert!(status.untracked.is_empty(), "{entry}: {spec:?}: {status:?}");
+            }
+            // Unchanged, the file is no untracked one either.
+            let tmp = kept_spelling_repo(entry, disk, "base\n");
+            assert!(is_clean(tmp.path()), "{entry}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discard_all_of_an_entry_whose_disk_spelling_git_keeps_restores_it_and_leaves_a_clean_status()
+    {
+        for (entry, disk) in KEPT_SPELLINGS {
+            let tmp = kept_spelling_repo(entry, disk, "local edit\n");
+            let root = tmp.path();
+            // "Discard all", as the panel sends it: every tracked row, every untracked row.
+            let status = status_of(root, None).unwrap().parsed;
+            let tracked: Vec<String> = status.unstaged.iter().map(|e| e.path.clone()).collect();
+            discard(root, &tracked, &status.untracked).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join(entry)).unwrap(),
+                "base\n",
+                "{entry}"
+            );
+            assert!(is_clean(root), "{entry}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rollback_and_stage_of_every_row_of_an_entry_whose_disk_spelling_git_keeps_touch_one_file() {
+        for (entry, disk) in KEPT_SPELLINGS {
+            let tmp = kept_spelling_repo(entry, disk, "local edit\n");
+            let root = tmp.path();
+            let entries = index_names(root);
+            let status = status_of(root, None).unwrap().parsed;
+            // Stage all: the entry alone, no second index entry for the same file.
+            let listed: Vec<String> = status
+                .unstaged
+                .iter()
+                .map(|e| e.path.clone())
+                .chain(status.untracked.iter().cloned())
+                .collect();
+            stage(root, &listed).unwrap();
+            assert_eq!(index_names(root), entries, "{entry}");
+            let staged = status_of(root, None).unwrap().parsed;
+            assert_eq!(paths(&staged.staged), [entry], "{entry}: {staged:?}");
+            assert!(staged.untracked.is_empty(), "{entry}: {staged:?}");
+            // Rollback all, deleting what is untracked: the file is restored, not deleted.
+            let targets = every_listed_target(&staged);
+            let result = rollback_paths(root, &targets, true).unwrap();
+            assert!(result.deleted.is_empty(), "{entry}: {result:?}");
+            assert_eq!(
+                std::fs::read_to_string(root.join(entry)).unwrap(),
+                "base\n",
+                "{entry}"
+            );
+            assert!(is_clean(root), "{entry}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn requests_for_the_twin_whose_spelling_git_keeps_are_refused_before_anything_changes() {
+        for (entry, disk) in KEPT_SPELLINGS {
+            let tmp = kept_spelling_repo(entry, disk, "local edit\n");
+            let root = tmp.path();
+            let entries = index_names(root);
+            let intact = |what: &str| {
+                assert_eq!(index_names(root), entries, "{entry}: {what}");
+                assert_eq!(
+                    std::fs::read_to_string(root.join(entry)).unwrap(),
+                    "local edit\n",
+                    "{entry}: {what}"
+                );
+                let status = status_of(root, None).unwrap().parsed;
+                assert!(status.staged.is_empty(), "{entry}: {what}: {status:?}");
+            };
+            let tracked = [entry.to_string()];
+            let twin = [disk.to_string()];
+            // A list from before the twin was hidden: the twin alone, or after its entry.
+            for (restore, clean) in [(&[][..], &twin), (&tracked[..], &twin)] {
+                let error = discard(root, restore, clean).unwrap_err();
+                assert!(error.contains("refused"), "{entry}: {error}");
+                intact("discard");
+            }
+            for requested in [
+                vec![disk.to_string()],
+                vec![entry.to_string(), disk.to_string()],
+            ] {
+                let error = stage(root, &requested).unwrap_err();
+                assert!(error.contains("refused"), "{entry}: {error}");
+                intact("stage");
+            }
+            let stale = rollback_target(disk, GitRollbackClassification::Untracked);
+            assert!(rollback_paths(root, &[stale], true).is_err(), "{entry}");
+            intact("rollback");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn requests_by_a_disk_spelling_git_composes_to_the_name_it_lists_are_no_twin() {
+        // A compatibility ideograph git keeps, then Hangul jamo it composes.
+        let disk = "\u{f900}\u{1100}\u{1161}.txt";
+        let listed = "\u{f900}\u{ac00}.txt";
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "true");
+        std::fs::write(root.join("other.txt"), "o\n").unwrap();
+        test_repo::git(root, &["add", "other.txt"]);
+        test_repo::git(root, &["commit", "-m", "base"]);
+        // A new file, staged by the name the directory has: one entry, as git lists it.
+        std::fs::write(root.join(disk), "n\n").unwrap();
+        stage(root, &[disk.to_string()]).unwrap();
+        let mut entries = vec!["other.txt".to_string(), listed.to_string()];
+        entries.sort();
+        assert_eq!(index_names(root), entries);
+        test_repo::git(root, &["commit", "-m", "add"]);
+        // The tracked file: staged, unstaged and discarded by the same name.
+        std::fs::write(root.join(disk), "edit\n").unwrap();
+        stage(root, &[disk.to_string()]).unwrap();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.staged), [listed], "{status:?}");
+        unstage(root, &[disk.to_string()]).unwrap();
+        discard(root, &[disk.to_string()], &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join(listed)).unwrap(), "n\n");
+        assert_eq!(index_names(root), entries);
+        assert!(is_clean(root));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn colliding_tracked_entries_keep_the_scope_check_strict() {
+        // The repository was authored where names are not normalized: the index
+        // holds `café.md` precomposed and decomposed, two entries and two blobs for
+        // the one file APFS keeps under either name.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "false");
+        std::fs::write(root.join(NFC_FILE), "nfc blob\n").unwrap();
+        test_repo::git(root, &["add", "--", NFC_FILE]);
+        std::fs::write(root.join(".git/nfd-blob"), "nfd blob\n").unwrap();
+        let blob = run_git(
+            root,
+            &["hash-object", "-w", ".git/nfd-blob"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        let blob = String::from_utf8(blob.stdout).unwrap().trim().to_string();
+        let cacheinfo = format!("100644,{blob},{NFD_FILE}");
+        test_repo::git(root, &["update-index", "--add", "--cacheinfo", &cacheinfo]);
+        test_repo::git(root, &["commit", "-m", "two entries"]);
+        set_precompose(root, "true");
+        assert_eq!(index_names(root), [NFD_FILE, NFC_FILE]);
+        // Restoring the decomposed entry rewrites the file the precomposed entry
+        // reads too, and that entry's row changes without being asked for.
+        let error = discard(root, &[NFD_FILE.to_string()], &[]).unwrap_err();
+        assert!(error.contains("outside the requested set"), "{error}");
+        assert!(error.contains(NFC_FILE), "{error}");
+    }
+
+    /// The index of a repository made where names are not normalized holds
+    /// `NFD_FILE` and `NFC_FILE` as two entries, one blob each, for the one file
+    /// APFS keeps under either name. HEAD has both; the directory entry holds `disk`.
+    #[cfg(target_os = "macos")]
+    fn colliding_entries_repo(nfd_blob: &str, nfc_blob: &str, disk: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        test_repo::init(root);
+        set_precompose(root, "false");
+        for (name, content) in [(NFD_FILE, nfd_blob), (NFC_FILE, nfc_blob)] {
+            std::fs::write(root.join(".git/blob"), content).unwrap();
+            let blob = run_git(
+                root,
+                &["hash-object", "-w", ".git/blob"],
+                DEFAULT_TIMEOUT,
+                &[],
+            )
+            .unwrap();
+            let blob = String::from_utf8(blob.stdout).unwrap().trim().to_string();
+            let cacheinfo = format!("100644,{blob},{name}");
+            test_repo::git(root, &["update-index", "--add", "--cacheinfo", &cacheinfo]);
+        }
+        test_repo::git(root, &["commit", "-m", "two entries"]);
+        std::fs::write(root.join(NFD_FILE), disk).unwrap();
+        set_precompose(root, "true");
+        assert_eq!(index_names(root), [NFD_FILE, NFC_FILE]);
+        tmp
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn colliding_entries_restored_as_stored_report_the_row_that_went_clean() {
+        // Both entries hold "A" and the file "C": both rows are modified. The
+        // decomposed entry restored as stored writes "A", and the precomposed
+        // entry's row goes without being asked for.
+        let tmp = colliding_entries_repo("A\n", "A\n", "C\n");
+        let root = tmp.path();
+        let status = status_of(root, None).unwrap().parsed;
+        assert_eq!(paths(&status.unstaged), [NFD_FILE, NFC_FILE], "{status:?}");
+        let error = discard(root, &[NFD_FILE.to_string()], &[]).unwrap_err();
+        assert!(error.contains("outside the requested set"), "{error}");
+        assert!(error.contains(NFC_FILE), "{error}");
+        let tmp = colliding_entries_repo("A\n", "A\n", "C\n");
+        let root = tmp.path();
+        let status = status_of(root, None).unwrap().parsed;
+        let classification = actual_rollback_classification(&status, NFD_FILE)
+            .unwrap()
+            .unwrap();
+        let target = rollback_target(NFD_FILE, classification);
+        let error = rollback_paths(root, &[target], false).unwrap_err();
+        assert!(error.contains("outside the requested set"), "{error}");
+        assert!(error.contains(NFC_FILE), "{error}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stage_of_an_entry_is_not_refused_for_a_second_entry_of_the_same_file() {
+        // Two entries for the one file, both modified: staging the listed row of
+        // either updates that entry and adds no third.
+        for staged in [NFC_FILE, NFD_FILE] {
+            let tmp = colliding_entries_repo("A\n", "B\n", "C\n");
+            let root = tmp.path();
+            stage(root, &[staged.to_string()]).unwrap();
+            assert_eq!(index_names(root), [NFD_FILE, NFC_FILE], "{staged}");
+            let status = status_of(root, None).unwrap().parsed;
+            assert_eq!(paths(&status.staged), [staged], "{staged}: {status:?}");
+            assert_eq!(status.unstaged.len(), 1, "{staged}: {status:?}");
+            assert!(status.untracked.is_empty(), "{staged}: {status:?}");
+        }
+        // The state the old "stage all" left: the decomposed entry, and the
+        // precomposed one added beside it.
+        for requested in [vec![NFD_FILE, NFC_FILE], vec![NFC_FILE]] {
+            let tmp = nfd_tracked_with_a_second_entry_repo();
+            let root = tmp.path();
+            let requested: Vec<String> = requested.into_iter().map(String::from).collect();
+            stage(root, &requested).unwrap();
+            assert_eq!(index_names(root), [NFD_FILE, NFC_FILE], "{requested:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clean_of_an_entry_that_is_a_second_entry_of_the_same_file_is_refused() {
+        // `git clean` of the precomposed name deletes the file the decomposed
+        // entry names, however much it is an entry itself.
+        let tmp = colliding_entries_repo("A\n", "B\n", "C\n");
+        let root = tmp.path();
+        let error = discard(root, &[], &[NFC_FILE.to_string()]).unwrap_err();
+        assert!(error.contains("refused"), "{error}");
+        assert_eq!(std::fs::read_to_string(root.join(NFD_FILE)).unwrap(), "C\n");
+        assert_eq!(index_names(root), [NFD_FILE, NFC_FILE]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn git_spellings_are_what_git_takes_a_request_to() {
+        let tmp = nfd_tracked_repo();
+        let root = tmp.path();
+        let nested = "de\u{301}/a\u{330}\u{301}.txt";
+        let asked = [
+            NFD_FILE,
+            NFC_FILE,
+            "a\u{330}\u{301}.txt",
+            "e\u{301}\u{323}.txt",
+            "\u{f900}\u{1100}\u{1161}.txt",
+            "\u{212a}.txt",
+            nested,
+        ];
+        let spelled = git_spellings(root, &asked);
+        let expect = [
+            (NFD_FILE, NFC_FILE),
+            (NFC_FILE, NFC_FILE),
+            // Kept: the mark order is canonical already and nothing combines.
+            ("a\u{330}\u{301}.txt", "a\u{330}\u{301}.txt"),
+            ("e\u{301}\u{323}.txt", "\u{e9}\u{323}.txt"),
+            ("\u{f900}\u{1100}\u{1161}.txt", "\u{f900}\u{ac00}.txt"),
+            ("\u{212a}.txt", "\u{212a}.txt"),
+            (nested, "d\u{e9}/a\u{330}\u{301}.txt"),
+        ];
+        for (request, git) in expect {
+            assert_eq!(
+                spelled.get(request).map(String::as_str),
+                Some(git),
+                "{request}"
+            );
+        }
+        assert_eq!(spelled.len(), expect.len());
+        // Where git precomposes nothing, a request stays as it is.
+        set_precompose(root, "false");
+        assert_eq!(
+            git_spellings(root, &[NFD_FILE])
+                .get(NFD_FILE)
+                .map(String::as_str),
+            Some(NFD_FILE)
+        );
+        // A git that cannot answer (a corrupt index) takes no request to anything.
+        std::fs::write(root.join(".git/index"), "not an index").unwrap();
+        assert!(git_spellings(root, &[NFD_FILE]).is_empty());
+        assert!(git_spellings(root, &[]).is_empty());
+    }
+
+    #[test]
+    fn parsed_spellings_are_kept_only_when_they_name_the_same_path() {
+        let paths = ["cafe\u{301}.md", "e\u{301}/../victim.md", "other.md"];
+        // `check-attr -z`: the path, the attribute and its value, each NUL-ended.
+        let output =
+            "caf\u{e9}.md\0a\0unspecified\0victim.md\0a\0unspecified\0other.md\0a\0unspecified\0";
+        let spelled = parse_git_spellings(&paths, output.as_bytes());
+        assert_eq!(spelled.len(), 2, "{spelled:?}");
+        assert_eq!(spelled["cafe\u{301}.md"], "caf\u{e9}.md");
+        assert_eq!(spelled["other.md"], "other.md");
+        // A path that came back as another one (git normalized it) is no spelling of the request.
+        assert!(!spelled.contains_key("e\u{301}/../victim.md"));
+        // Fewer records than paths: what is not answered is not taken.
+        let spelled = parse_git_spellings(&paths, "caf\u{e9}.md\0a\0unspecified\0".as_bytes());
+        assert_eq!(spelled.len(), 1, "{spelled:?}");
+        assert!(parse_git_spellings(&paths, b"").is_empty());
     }
 }
