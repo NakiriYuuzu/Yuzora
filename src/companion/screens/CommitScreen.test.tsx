@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { I18nextProvider } from "react-i18next"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { i18n } from "../i18n"
@@ -85,4 +85,16 @@ it("explains a commit that could not be read", async () => {
   client.call.mockRejectedValue(new RpcError("git-untrusted"))
   renderCommit()
   expect(await screen.findByText("Trust this workspace on the desktop first.")).toBeInTheDocument()
+})
+
+it("keeps the commit on screen across a reconnect", async () => {
+  client.call.mockResolvedValue(detail)
+  renderCommit()
+  await screen.findByRole("heading", { name: "Fix the sidebar" })
+  client.call.mockImplementation(() => new Promise(() => {}))
+  for (const change of [{ socket: "waiting" as const }, { socket: "ready" as const }, { epoch: 2 }]) {
+    await act(async () => useCompanion.setState(change))
+    expect(screen.getByRole("heading", { name: "Fix the sidebar" })).toBeInTheDocument()
+    expect(screen.queryByText("Loading…")).toBeNull()
+  }
 })

@@ -378,6 +378,70 @@ it("keeps a file's diff on screen while its reload is in flight when it is not a
   expect(screen.queryByText("Loading…")).toBeNull()
 })
 
+// What rpc.ts does on a real reconnect: "waiting", then "ready" while hello is still out (the epoch is the old one), then the epoch bump.
+const dropSocket = () => act(async () => useCompanion.setState({ socket: "waiting" }))
+const socketReady = () => act(async () => useCompanion.setState({ socket: "ready" }))
+const helloAnswered = () => act(async () => useCompanion.setState({ epoch: 2 }))
+
+it.each([
+  ["a bare `--cc` header", takenWhole, MATCHED],
+  ["an `* Unmerged path` line", unmergedPath, /Unresolved conflict: one side deleted or added this file/],
+  ["a blank diff of a file still conflicted", "", MATCHED],
+])("shows no verdict of the earlier read from the moment the socket drops until the reconnect's result lands after %s", async (_name, first, message) => {
+  client.call.mockImplementation(async (method: string) => (method === "git.status" ? statusOf("f.txt") : { text: first, truncated: false, binary: false }))
+  render(<I18nextProvider i18n={i18n}><DiffScreen session="work" workspaceId="w1" source={conflicted("f.txt")} /></I18nextProvider>)
+  expect(await screen.findByText(message)).toBeInTheDocument()
+  // The desktop stages the file while the phone is offline; every diff read now stays out until the test answers it.
+  const answers: ((diff: GitDiff) => void)[] = []
+  client.call.mockImplementation((method: string) => (method === "git.status" ? Promise.resolve(statusOf()) : new Promise<GitDiff>((resolve) => answers.push(resolve))))
+  await dropSocket()
+  expect(screen.getByText("Loading…")).toBeInTheDocument()
+  noVerdict()
+  await socketReady()
+  await waitFor(() => expect(answers).toHaveLength(1))
+  expect(screen.getByText("Loading…")).toBeInTheDocument()
+  noVerdict()
+  await helloAnswered()
+  await waitFor(() => expect(answers).toHaveLength(2))
+  expect(screen.getByText("Loading…")).toBeInTheDocument()
+  noVerdict()
+  await act(async () => answers.forEach((answer) => answer({ text: "", truncated: false, binary: false })))
+  expect(await screen.findByText(RESOLVED)).toBeInTheDocument()
+  expect(screen.queryByText("Loading…")).toBeNull()
+  expect(screen.queryByText(MATCHED)).toBeNull()
+})
+
+it.each([
+  ["a bare `--cc` header", takenWhole],
+  ["an `* Unmerged path` line", unmergedPath],
+])("shows only the load error when the reconnect's reads fail after %s was shown", async (_name, first) => {
+  client.call.mockImplementation(async (method: string) => (method === "git.status" ? statusOf("f.txt") : { text: first, truncated: false, binary: false }))
+  render(<I18nextProvider i18n={i18n}><DiffScreen session="work" workspaceId="w1" source={conflicted("f.txt")} /></I18nextProvider>)
+  await screen.findByText(/Unresolved conflict/)
+  client.call.mockImplementation(async (method: string) => {
+    if (method === "git.status") throw new RpcError("git-failed")
+    return blankDiff
+  })
+  await dropSocket()
+  await socketReady()
+  expect(await screen.findByText(ERROR)).toBeInTheDocument()
+  noVerdict()
+  await helloAnswered()
+  expect(await screen.findByText(ERROR)).toBeInTheDocument()
+  noVerdict()
+})
+
+it("keeps a file's diff on screen across a reconnect when it is not a Conflicted row", async () => {
+  renderDiff({ text, truncated: false, binary: false })
+  expect(await screen.findByText("const next = 2")).toBeInTheDocument()
+  client.call.mockImplementation(() => new Promise(() => {}))
+  for (const step of [dropSocket, socketReady, helloAnswered]) {
+    await step()
+    expect(screen.getByText("const next = 2")).toBeInTheDocument()
+    expect(screen.queryByText("Loading…")).toBeNull()
+  }
+})
+
 it("does not read git.status unless a Conflicted row's diff is blank", async () => {
   const sources: [string, GitDiff, DiffSource][] = [
     ["a blank diff of an unstaged row", blankDiff, worktree],
