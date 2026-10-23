@@ -332,7 +332,7 @@ mod unix_impl {
             }
         }
 
-        fn handle_connection(&self, mut stream: UnixStream) {
+        pub(super) fn handle_connection(&self, mut stream: UnixStream) {
             let peer = peer_identity(&stream);
             let reader = match stream.try_clone() {
                 Ok(cloned) => cloned,
@@ -341,12 +341,16 @@ mod unix_impl {
             let Some(line) = read_bounded_line(reader) else {
                 let _ = stream.write_all(b"\n");
                 let _ = stream.flush();
+                // EOF for the client must not depend on every copy of this fd closing.
+                let _ = stream.shutdown(std::net::Shutdown::Write);
                 return;
             };
             let secret = self.resolve(&line, peer);
             let _ = stream.write_all(secret.as_bytes());
             let _ = stream.write_all(b"\n");
             let _ = stream.flush();
+            // EOF for the client must not depend on every copy of this fd closing.
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
 
         /// 協定核心：吃一行 request JSON，回覆 secret（空＝取消/拒絕）。
@@ -1249,6 +1253,61 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(result.0, 1);
+    }
+
+    /// Serve one request on a real accepted connection while a second copy of
+    /// that fd stays open, as one captured by a concurrently spawned child
+    /// would, and return what the client reads until EOF.
+    fn reply_while_the_accepted_fd_is_copied(oversized: bool) -> String {
+        let server = start_with_reply(Some("s3cret"));
+        let op = server.begin_operation(sample_ctx(false, AskpassOperationKind::Fetch));
+        bind_self(&op);
+        let env = op.env();
+        let request = if oversized {
+            "x".repeat(16 * 1024 + 32)
+        } else {
+            serde_json::json!({
+                "token": value_of(env, "YUZORA_ASKPASS_TOKEN"),
+                "operationId": value_of(env, "YUZORA_ASKPASS_OPERATION"),
+                "prompt": "Password: ",
+            })
+            .to_string()
+        };
+        let path = std::env::temp_dir().join(format!(
+            "yz-ap-eof-{}-{:x}.sock",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let mut client = UnixStream::connect(&path).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let captured = accepted.try_clone().unwrap();
+        let handler = {
+            let server = server.clone();
+            std::thread::spawn(move || server.handle_connection(accepted))
+        };
+        let _ = client.write_all(request.as_bytes());
+        let _ = client.write_all(b"\n");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut response = String::new();
+        std::io::Read::read_to_string(&mut client, &mut response)
+            .expect("the client must see EOF while another copy of the fd is open");
+        handler.join().unwrap();
+        drop(captured);
+        let _ = std::fs::remove_file(&path);
+        response
+    }
+
+    #[test]
+    fn reply_reaches_the_client_with_eof_while_the_accepted_fd_is_copied() {
+        assert_eq!(reply_while_the_accepted_fd_is_copied(false), "s3cret\n");
+    }
+
+    #[test]
+    fn denial_reaches_the_client_with_eof_while_the_accepted_fd_is_copied() {
+        assert_eq!(reply_while_the_accepted_fd_is_copied(true), "\n");
     }
 }
 

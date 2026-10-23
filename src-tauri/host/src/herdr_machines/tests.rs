@@ -682,6 +682,17 @@ mod fake {
     }
 
     #[test]
+    fn a_machine_cli_run_spawns_through_the_spawn_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_herdr(dir.path(), "0.9.3", "exit 0");
+        let (output, spawns) = crate::process_kill::trace_spawns(|| {
+            run_machine_cli(&binary, &strs(&["machine", "list"]), Duration::from_secs(5))
+        });
+        output.unwrap();
+        assert_eq!(spawns, [format!("{} machine list", binary.display())]);
+    }
+
+    #[test]
     fn herdr_machine_detection_failure_is_not_cached() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("herdr");

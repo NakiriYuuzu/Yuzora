@@ -119,6 +119,188 @@ pub fn configure_hidden_process(cmd: &mut Command) {
 #[cfg(not(windows))]
 pub fn configure_hidden_process(_cmd: &mut Command) {}
 
+/// Longest a spawn waits for the process-wide spawn lock before it goes ahead
+/// without it, so one stalled exec cannot freeze every other spawn forever.
+const SPAWN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serializes process creation inside one process. macOS std creates every
+/// `Stdio::piped()` with `pipe()` and only then marks both ends close-on-exec,
+/// and `openpty` does the same for a PTY; a spawn on another thread inside
+/// that gap hands the child those descriptors for its whole life, and the
+/// fork path can even stall `spawn()` itself on the exec-status pipe. Holding
+/// this lock across each synchronous spawn keeps the gaps from overlapping.
+/// It does not cover descriptors created outside a spawn (sockets, `accept`,
+/// `socketpair`) or spawns made by third-party code.
+///
+/// A held flag plus a condition variable rather than a bare `Mutex<()>`, so
+/// the wait can be bounded.
+struct SpawnLock {
+    held: std::sync::Mutex<bool>,
+    released: std::sync::Condvar,
+}
+
+/// Dropping it releases the lock when this guard actually owns it.
+struct SpawnGuard<'a> {
+    lock: &'a SpawnLock,
+    owned: bool,
+}
+
+impl SpawnLock {
+    const fn new() -> Self {
+        Self {
+            held: std::sync::Mutex::new(false),
+            released: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Wait up to `wait` for the lock. On timeout the guard owns nothing and
+    /// the caller proceeds unserialized after one diagnostic line.
+    fn acquire(&self, wait: std::time::Duration) -> SpawnGuard<'_> {
+        self.acquire_logging(wait, |wait| {
+            use std::io::Write as _;
+            // No command, path or argument here: this line may reach shared
+            // logs. A write error (closed stderr) must not panic the spawner.
+            let _ = writeln!(
+                io::stderr(),
+                "process spawn lock still busy after {wait:?}; spawning without it"
+            );
+        })
+    }
+
+    /// `acquire` with the timeout report handed in. It runs after the state
+    /// mutex is released, so a report that blocks (a full stderr pipe) can
+    /// only hold up its own thread, never another acquire or a release.
+    fn acquire_logging(
+        &self,
+        wait: std::time::Duration,
+        on_timeout: impl FnOnce(std::time::Duration),
+    ) -> SpawnGuard<'_> {
+        let held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut held, _) = self
+            .released
+            .wait_timeout_while(held, wait, |held| *held)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owned = !*held;
+        if owned {
+            *held = true;
+        }
+        drop(held);
+        if !owned {
+            on_timeout(wait);
+        }
+        SpawnGuard { lock: self, owned }
+    }
+}
+
+impl Drop for SpawnGuard<'_> {
+    fn drop(&mut self) {
+        if self.owned {
+            *self
+                .lock
+                .held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+            self.lock.released.notify_one();
+        }
+    }
+}
+
+static SPAWN_LOCK: SpawnLock = SpawnLock::new();
+
+thread_local! {
+    /// Set while this thread is inside `with_spawn_lock`.
+    static IN_SPAWN_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The spawns this thread makes through the lock while `trace_spawns` runs.
+    static SPAWN_TRACE: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+struct InSpawnLock;
+
+impl InSpawnLock {
+    fn enter() -> Self {
+        IN_SPAWN_LOCK.with(|inside| inside.set(true));
+        Self
+    }
+}
+
+impl Drop for InSpawnLock {
+    fn drop(&mut self) {
+        IN_SPAWN_LOCK.with(|inside| inside.set(false));
+    }
+}
+
+/// Run `f` while holding the process-wide spawn lock. Every production spawn
+/// goes through this (or `spawn_std` / `spawn_tokio`), so no spawn can overlap
+/// another's pipe or PTY setup.
+///
+/// The lock is not reentrant: `f` may only create descriptors and spawn
+/// (`openpty`, `try_clone_reader`, `take_writer`, `spawn_command`, dropping the
+/// slave). It must not wait, `.await`, take another lock or spawn through the
+/// helpers again; failure cleanup and kills belong after this returns. A nested
+/// call trips a `debug_assert!`; in release it runs `f` under the outer hold.
+pub fn with_spawn_lock<R>(f: impl FnOnce() -> R) -> R {
+    trace_spawn(|| "with_spawn_lock".to_owned());
+    locked(f)
+}
+
+fn locked<R>(f: impl FnOnce() -> R) -> R {
+    let nested = IN_SPAWN_LOCK.with(std::cell::Cell::get);
+    debug_assert!(!nested, "the process spawn lock is not reentrant");
+    if nested {
+        return f();
+    }
+    let _inside = InSpawnLock::enter();
+    let _guard = SPAWN_LOCK.acquire(SPAWN_LOCK_WAIT);
+    f()
+}
+
+/// `Command::spawn` under the process-wide spawn lock. The lock covers only the
+/// synchronous spawn, never the child's runtime.
+pub fn spawn_std(command: &mut Command) -> io::Result<Child> {
+    trace_spawn(|| command_line(command));
+    locked(|| command.spawn())
+}
+
+/// `tokio::process::Command::spawn` under the process-wide spawn lock. The call
+/// is synchronous, so no `.await` is held across the lock.
+pub fn spawn_tokio(command: &mut tokio::process::Command) -> io::Result<tokio::process::Child> {
+    trace_spawn(|| command_line(command.as_std()));
+    locked(|| command.spawn())
+}
+
+fn command_line(command: &Command) -> String {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn trace_spawn(describe: impl FnOnce() -> String) {
+    SPAWN_TRACE.with(|trace| {
+        if let Some(spawns) = trace.borrow_mut().as_mut() {
+            spawns.push(describe());
+        }
+    });
+}
+
+/// Test support: run `f` and return what the calling thread spawned through
+/// the lock meanwhile, as `program args` for `spawn_std` / `spawn_tokio` and
+/// `with_spawn_lock` for a custom closure. A spawn site proves it takes the
+/// lock by appearing here, without racing any other thread. Nothing is
+/// recorded outside this call.
+#[doc(hidden)]
+pub fn trace_spawns<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    SPAWN_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+    let result = f();
+    let spawns = SPAWN_TRACE.with(|trace| trace.borrow_mut().take());
+    (result, spawns.unwrap_or_default())
+}
+
 /// Retained process-tree containment for a spawned child. On Windows this owns
 /// the configured Job Object for the child's entire lifetime; other platforms
 /// already contain children through the launch-time process group.
@@ -484,7 +666,7 @@ pub fn kill_tree_pid(pid: u32) -> io::Result<()> {
     let mut command = Command::new("taskkill");
     command.args(["/PID", &pid.to_string(), "/T", "/F"]);
     configure_hidden_process(&mut command);
-    let mut child = command.spawn()?;
+    let mut child = spawn_std(&mut command)?;
     match wait_for_child_status_bounded(
         &mut child,
         WINDOWS_TASKKILL_TIMEOUT,
@@ -888,6 +1070,170 @@ mod tests {
             "direct child should be reaped by kill_tree"
         );
         wait_until_gone(grandchild_pid);
+    }
+
+    #[test]
+    fn spawn_lock_admits_one_holder_and_hands_over_on_release() {
+        let lock = super::SpawnLock::new();
+        let first = lock.acquire(Duration::from_secs(5));
+        assert!(first.owned);
+        let entered = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                let second = lock.acquire(Duration::from_secs(5));
+                entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                second.owned
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(
+                !entered.load(std::sync::atomic::Ordering::SeqCst),
+                "a second holder entered while the first still held the lock"
+            );
+            drop(first);
+            assert!(waiter.join().unwrap());
+        });
+    }
+
+    #[test]
+    fn spawn_lock_wait_is_bounded_and_a_timed_out_guard_frees_nothing() {
+        let lock = super::SpawnLock::new();
+        let (held, wait_until_held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let lock = &lock;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let guard = lock.acquire(Duration::from_secs(5));
+                held.send(()).unwrap();
+                // Bounded so an unbounded wait fails the test instead of hanging it.
+                let _ = released.recv_timeout(Duration::from_secs(5));
+                drop(guard);
+            });
+            wait_until_held.recv().unwrap();
+            let started = Instant::now();
+            let timed_out = lock.acquire_logging(Duration::from_millis(100), |_| ());
+            let waited = started.elapsed();
+            assert!(!timed_out.owned);
+            assert!(
+                waited >= Duration::from_millis(100) && waited < Duration::from_secs(2),
+                "waited {waited:?}"
+            );
+            drop(timed_out);
+            // The timed-out guard must not have freed the lock under its real holder.
+            assert!(
+                !lock
+                    .acquire_logging(Duration::from_millis(50), |_| ())
+                    .owned
+            );
+            release.send(()).unwrap();
+            assert!(lock.acquire(Duration::from_secs(5)).owned);
+        });
+    }
+
+    #[test]
+    fn a_blocked_timeout_report_does_not_stall_other_acquires_or_the_release() {
+        let lock = super::SpawnLock::new();
+        let (held, wait_until_held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (reporting, wait_until_reporting) = std::sync::mpsc::channel();
+        let (unblock_report, report_unblocked) = std::sync::mpsc::channel::<()>();
+        let (holder_done, wait_for_holder) = std::sync::mpsc::channel();
+        let lock = &lock;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let guard = lock.acquire(Duration::from_secs(5));
+                held.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(10));
+                drop(guard);
+                holder_done.send(()).unwrap();
+            });
+            wait_until_held.recv().unwrap();
+            // The stand-in for a stderr that blocks: this waiter times out and
+            // then stays inside its report until the test lets it go.
+            scope.spawn(move || {
+                let guard = lock.acquire_logging(Duration::from_millis(50), |_| {
+                    reporting.send(()).unwrap();
+                    let _ = report_unblocked.recv_timeout(Duration::from_secs(10));
+                });
+                assert!(!guard.owned);
+            });
+            wait_until_reporting.recv().unwrap();
+            release.send(()).unwrap();
+            let released_in_time = wait_for_holder.recv_timeout(Duration::from_secs(3));
+            // Let the stuck report go whatever happened, so the scope can end.
+            unblock_report.send(()).unwrap();
+            assert!(
+                released_in_time.is_ok(),
+                "the holder's release stalled behind a blocked timeout report"
+            );
+            assert!(lock.acquire(Duration::from_secs(5)).owned);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_spawns_reports_only_what_this_thread_spawns_through_the_lock() {
+        let (_, none) = super::trace_spawns(|| ());
+        assert!(none.is_empty());
+        let (_, spawns) = super::trace_spawns(|| {
+            let mut std_command = std::process::Command::new("/usr/bin/true");
+            std_command.arg("std-arg");
+            super::spawn_std(&mut std_command).unwrap().wait().unwrap();
+            let mut tokio_command = tokio::process::Command::new("/usr/bin/true");
+            tokio_command.arg("tokio-arg");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                super::spawn_tokio(&mut tokio_command)
+                    .unwrap()
+                    .wait()
+                    .await
+                    .unwrap()
+            });
+            super::with_spawn_lock(|| ());
+            // A raw spawn bypasses the lock, so it must not show up.
+            std::process::Command::new("/usr/bin/true")
+                .spawn()
+                .unwrap()
+                .wait()
+                .unwrap();
+            // Another thread's spawn is not this thread's.
+            std::thread::spawn(|| {
+                super::spawn_std(&mut std::process::Command::new("/usr/bin/true"))
+                    .unwrap()
+                    .wait()
+                    .unwrap()
+            })
+            .join()
+            .unwrap();
+        });
+        assert_eq!(
+            spawns,
+            [
+                "/usr/bin/true std-arg",
+                "/usr/bin/true tokio-arg",
+                "with_spawn_lock"
+            ]
+        );
+        let (_, after) = super::trace_spawns(|| ());
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn a_panic_inside_with_spawn_lock_frees_the_lock_and_the_nesting_mark() {
+        let outcome =
+            std::panic::catch_unwind(|| super::with_spawn_lock(|| panic!("spawn failed")));
+        assert!(outcome.is_err());
+        assert!(super::SPAWN_LOCK.acquire(Duration::from_secs(5)).owned);
+        assert_eq!(super::with_spawn_lock(|| 7), 7);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "not reentrant")]
+    fn nesting_with_spawn_lock_fails_a_debug_assertion() {
+        super::with_spawn_lock(|| super::with_spawn_lock(|| ()));
     }
 
     #[cfg(unix)]

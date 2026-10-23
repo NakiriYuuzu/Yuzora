@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>macOS 子行程 pipe 繼承強化：HERDR 等待卡住與 Companion 存活</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#17202a}
+h1,h2,h3{line-height:1.25} table{border-collapse:collapse;width:100%;margin:1rem 0} th,td{border:1px solid #ccd4dd;padding:.55rem;text-align:left;vertical-align:top} th{background:#eef3f7}.pass{color:#087f5b;font-weight:700}.blocked{color:#b45309;font-weight:700}.fail{color:#b42318;font-weight:700}.note{background:#fff8e6;padding:.8rem;border-left:4px solid #d69e2e}
+code{background:#f1f3f5;padding:.1rem .25rem}
+</style>
+</head>
+<body>
+<h1>macOS 子行程 pipe 繼承強化：HERDR 等待卡住與 Companion 存活</h1>
+<p>日期：2026-10-22（Asia/Taipei）。分支：<code>fix/macos-pipe-hardening</code>，基底 <code>66202bd8</code>（PR #144 的 head），<strong>尚未 commit</strong>。範圍：PR #144 修 CI flake 時發現、列為後續工作的兩項正式程式風險。</p>
+
+<h2>要解決的問題</h2>
+<table>
+<thead><tr><th>項目</th><th>症狀</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td>P2：HERDR 等待卡住</td><td>HERDR connector release、HERDR CLI 呼叫（<code>wait_bounded_child</code>）、native client release 與 app 結束時的 <code>release_all_connectors</code> 以沒有時限的 join 等 stdout reader；若 pipe 的 write end 被別的長壽子行程繼承，reader 永遠等不到 EOF，桌面跟著卡住。</td><td class="pass">macOS 已實測關閉（Linux 尚未執行，要等 PR 的 CI；Windows 僅編譯檢查）</td></tr>
+<tr><td>P3：Companion 存活</td><td>gateway 與 tsnet sidecar 只靠 stdin EOF 得知桌面結束；若別的行程繼承了 stdin write end，桌面崩潰後它們繼續服務。</td><td class="pass">macOS 已實測關閉：gateway 的真行程孤兒測試在 init 之後、serve 期間成為孤兒；sidecar 的真行程孤兒測試執行真正的 <code>main()</code>，但在 init 之前（handshake 階段）就結束，serve 中的收尾（<code>stopServing</code>、<code>closeWithin</code>）只由注入檢查加假 tailnet 的 <code>run()</code> 測試驗證。兩邊都讓 stdin 保持開啟（Linux 規則以單元測試與模擬建置驗證，實際執行要等 PR 的 CI；Windows 仍靠 EOF）</td></tr>
+</tbody>
+</table>
+
+<h2>根因</h2>
+<p>Rust std 在 macOS 上不使用 <code>pipe2</code>（macOS 27 之前沒有這個 API；std 的 cfg 不含 Apple 平台，目前用的工具鏈也一樣）：<code>Stdio::piped()</code> 先 <code>pipe()</code>，再分兩次設定 close-on-exec；而進行中的 <code>posix_spawn</code> 在 exec 完成前持有父行程所有 fd 的複本。另一個執行緒剛好在這個空窗 spawn，子行程就會在整個生命期間留著別人的 pipe 端。帶 <code>pre_exec</code> 的 spawn 走 fork 路徑，std 自己的 exec 狀態 pipe 也有同樣問題，甚至能讓 <code>spawn()</code> 本身卡住；portable-pty 的 <code>openpty</code> 同樣分兩步設定。Linux 的 std 用 <code>pipe2</code>、Windows 的 std 有 <code>CREATE_PROCESS_LOCK</code>，所以 std pipe 的部分只在 macOS 出現；portable-pty 的 <code>openpty</code> 則是所有 Unix 都有這個空窗，所以 spawn 鎖對所有平台生效。</p>
+
+<h2>修正內容</h2>
+<table>
+<thead><tr><th>決策</th><th>內容</th><th>主要位置</th></tr></thead>
+<tbody>
+<tr><td>D1／A1 行程內 spawn 鎖</td><td>全行程一把鎖，只包住同步的 spawn 呼叫；取得有 10 秒上限，逾時記一行 log 後不加鎖照樣 spawn；不可重入（debug assertion）；PTY 啟動（openpty、spawn_command、釋放 slave）整段在鎖內。桌面、host helper 與 gateway 的每個正式 spawn 都經過它。<code>env_path.rs</code>、<code>host_wsl</code>、<code>nsis_migration</code> 只靠原始碼掃描守衛；只在 Windows 的 taskkill 位於 <code>process_kill.rs</code>，該檔被掃描整個排除，既沒有掃描守衛也沒有行為測試，只靠程式碼審閱（Windows 的 std 本身已用 <code>CREATE_PROCESS_LOCK</code> 讓 spawn 互斥，鎖在 Windows 上主要是為了一致）；其餘 spawn 點各有一個 <code>trace_spawns</code> 行為測試。</td><td><code>host/src/process_kill.rs</code>；各 spawn 點</td></tr>
+<tr><td>D2／A3 <code>wait_bounded_child</code></td><td>Unix 上兩條 pipe 改為非阻塞、以 poll 等待；子行程被 reap 後最後讀到 EAGAIN 為止就結束。直接子行程在被 reap 之前寫出的每個位元組都不會遺失，回傳值與錯誤優先順序與原本相同；行為上唯一的改變是，子行程被 reap 之後、仍存活的後代才寫出的輸出不再收集（以前可能因此卡住）。Windows 不變。</td><td><code>herdr_service.rs</code>、<code>herdr_limits.rs</code></td></tr>
+<tr><td>D2／A2 release</td><td>release 在終止子行程前不會等 writer：writer 只用 <code>try_lock</code>（被占用就跳過 goodbye；native client 仍以阻塞方式取 child 鎖，持有者只會是正在終止同一個 client 的 reader 收尾，最多約 2 秒）、Unix 的 goodbye 以非阻塞寫入、PTY writer 在送出終止之後才於獨立執行緒 drop（client 不一定已經結束）；接著有 1 秒上限地等 reader。<code>release_all_connectors</code> 先對全部送出終止訊號，共用一個 1 秒期限，再 SIGKILL、0.5 秒後放手——任何數量的 session 合計約 1.5 秒，之後才釋放事件訂閱。</td><td><code>herdr_service.rs</code>、<code>herdr_native_client.rs</code></td></tr>
+<tr><td>D2／A4 事件守門</td><td>每個 session 的事件 callback 包一層，release 之後不再送出事件（除了短於 grace 的檢查到呼叫空窗）。</td><td>同上</td></tr>
+<tr><td>R pid 安全</td><td>native client 只在 <code>try_wait</code> 確認子行程仍存活時、於同一把鎖內送訊號，不會打到已 reap 而被重用的 pid。</td><td><code>herdr_native_client.rs</code></td></tr>
+<tr><td>D3／A5–A7 父行程存活</td><td>gateway：啟動第一行記下父行程，1 秒輪詢；判定消失後再服務 500 毫秒，然後走與 stdin EOF 完全相同的收尾。sidecar：250 毫秒輪詢，取消 context 等同 EOF；handshake 期間就已取消時不啟動 tsnet。規則：macOS 為 <code>getppid()==1</code>（啟動時就是 1 也算消失；debugger 接管不算）；Linux 為父行程與基準不同；Windows 不檢查。</td><td><code>companion/src/parent.rs</code>、<code>main.rs</code>；<code>companion-net/parent.go</code>、<code>main.go</code></td></tr>
+<tr><td>D4</td><td><code>UntilExit</code> 維持「直到 Yuzora 結束」，不加上限；Unix 上的崩潰情況由 D3 涵蓋，Windows 沒有父行程檢查、仍只靠 stdin EOF；365 天的後備保留。</td><td>—</td></tr>
+<tr><td>A8 askpass</td><td>回覆送出後 <code>shutdown(Write)</code>，client 的 EOF 不再依賴被複製的 fd。</td><td><code>src/askpass.rs</code></td></tr>
+</tbody>
+</table>
+<p>規模（只計 <code>src-tauri/</code> 的程式與測試）：既有的 26 個檔案 +2373／−143，另有 6 個新檔（<code>parent.rs</code>、<code>parent.go</code>、<code>parent_test.go</code>（346 行）、<code>bounded_wait_tests.rs</code>、<code>spawn_lock_tests.rs</code>、<code>tests/spawn_lock.rs</code>），大部分是測試。</p>
+
+<h2>流程</h2>
+<ol>
+<li>三份 scout 地圖 → 設計契約（D1–D5）→ opus 設計批判 → 契約修正 A1–A8。</li>
+<li>三條實作 lane：S（spawn 鎖＋askpass）、J（有時限的等待與 release）、P（父行程存活，獨立 clone），各自由 opus 驗證並修到通過；另修一項殘餘 R（pid 安全）。</li>
+<li>整合閘門 → 最終整體審查：7 個 opus 視角（鎖互動、等待正確性、release、父行程存活、完整性盤點、測試品質、跨平台與範圍），每個發現由兩位 opus 驗證者嘗試推翻，再由完整性 critic 追跨 lane 缺口。</li>
+<li>審查結果：<strong>0 個正式程式缺陷</strong>；9 項測試層面的發現（其中 3 項有一位驗證者認為不成立，仍一併修正）→ 三條修復 lane 修正，各由 opus 驗證者接受（host lane 三輪）。其中會讓 Windows CI 變紅的 portability-1，只以在 macOS 上模擬 Windows 規則與交叉編譯驗證；Go 測試的 Windows 分支也只編譯過，實際結果要等 PR 的 Windows CI。</li>
+<li>合併回工作樹 → 再跑一次整合閘門。</li>
+<li>文件與本報告經多輪 opus 事實核對（文件 lane 三輪、報告與文件整體三輪，再加一輪更正確認）；核對中發現 sidecar <code>main()</code> 把父行程檢查接進 <code>run</code> 的那一行沒有測試（改成 <code>nil</code> 的 mutation 存活），補上真行程孤兒測試 <code>TestMainStopsAnOrphanWhoseStdinIsStillOpen</code>，opus 以 mutation 驗證後第一輪接受。</li>
+</ol>
+
+<h2>最終驗證（合併修復後）</h2>
+<table>
+<thead><tr><th>項目</th><th>指令／方式</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td>host</td><td><code>cargo test --locked</code>（lib＋integration）、<code>clippy --all-targets -D warnings</code>、<code>fmt --check</code></td><td class="pass">842 passed、0 failed、15 ignored；clippy／fmt 0</td></tr>
+<tr><td>gateway</td><td><code>cargo test --locked</code>、clippy <code>-D warnings</code>、fmt</td><td class="pass">323 passed；clippy／fmt 0</td></tr>
+<tr><td>desktop</td><td><code>cargo test --locked</code>、fmt、clippy baseline 腳本</td><td class="pass">656 passed、23 ignored；「matched 19 diagnostics」</td></tr>
+<tr><td>Go sidecar</td><td>gofmt；<code>go vet</code>（darwin／windows／linux）；<code>go test</code>（新測試另連跑 20 次）；<code>SDKROOT=$(xcrun --sdk macosx --show-sdk-path) CC=$(xcrun -f clang) go test -race -count=3 -skip TestServiceFloodOfFailedHandshakesIsRateLimited ./...</code></td><td class="pass">全部 0；0 個 data race（略過的測試是既有問題，見下方註記；閘門腳本內未帶 SDK 變數的 <code>-race</code> 步驟因連結失敗，改為手動重跑）</td></tr>
+<tr><td>重複執行</td><td>gateway lifecycle 15 輪；host bounded-wait／spawn_lock／native_client／release 篩選 10 輪；host spawn_lock 整合測試 10 輪</td><td class="pass">全部 0 失敗</td></tr>
+<tr><td>Mutation</td><td>在隔離副本對行為改動做 mutation，確認有測試轉紅（各 lane 的 mutation 表格保存在本機 lane 報告，未納入 repo；修復輪最後一次驗證中 host 的 19 個 mutation 全被抓到、無 hang）。</td><td class="blocked">大多有測試轉紅。例外：<code>env_path.rs</code>、<code>host_wsl</code>、<code>nsis_migration</code> 只有原始碼掃描守衛，Windows 的 taskkill（<code>process_kill.rs</code>）不在掃描範圍內、也沒有行為測試；「PTY writer 在獨立執行緒 drop」與「放開 child 鎖之後才送訊號」設計上觀察不到，只靠程式結構保證；gateway 的「規則固定為 true」與 sidecar 的「寫死 darwin」「baseline 改用 <code>os.Getppid()</code>」「<code>main()</code> 延後記錄 baseline」在 macOS 主機上是等價變異，只在模擬 Linux 的建置中被抓到，要等 Linux CI 才會實際驗證；「偵測到後再服務 500 ms」只以下界加程式結構證明。</td></tr>
+<tr><td>Windows／Linux</td><td>host 與 gateway 以 x86_64-pc-windows-msvc、x86_64-unknown-linux-gnu 做 check／clippy（C 工具鏈以 stub 取代，只編譯）。本機沒有在 Linux／Windows 上執行。</td><td class="blocked">Linux：還沒有執行過；新的 release／等待測試多為 <code>cfg(unix)</code>，開 PR（或推到已開 PR 的分支）後，會在 CI host.yml 的 ubuntu job 執行（native client 的部分測試只限 macOS）。Windows：release 路徑沒有在 Windows 上執行過——goodbye thread 與 <code>TerminateNow</code> 的邏輯只以 <code>cfg(test)</code> 在 macOS 上測過，Job 終止與卡住的寫入完全沒有執行期測試；Windows CI 也不會跑這些 <code>cfg(unix)</code> 測試。</td></tr>
+</tbody>
+</table>
+<p class="note">驗證期間觀察到、判定與本次改動無關或無法歸因的失敗：（1）第一次閘門裡 desktop 的 <code>companion_service_a_failed_gateway_is_killed_only_after_the_node_stopped_forwarding</code> 逾時一次，當時機器正在刪除數百 GB 暫存；空閒時單獨 30/30、完整 3/3、companion 篩選 10/10 全過，合併後的閘門也一次通過。（2）<code>TestServiceFloodOfFailedHandshakesIsRateLimited</code> 在 <code>-race</code> 下會不穩定失敗（這次的樹上 3 次失敗 2 次，<code>connection reset by peer</code>）；另在基底 66202bd8 的副本上單獨跑 <code>-race -count=5</code>，5 次都以同樣錯誤失敗（未留 log），屬既有問題。（3）lane S 最初 10 次執行中，桌面的 <code>companion_net_waits_end_with_what_the_node_reports</code> 失敗 2 次（一次在完整測試中、同時有其他 cargo 在建置，一次是單一測試迴圈的第一次），之後完整測試、交替執行、加 CPU 負載的單獨執行都沒再重現，沒找到根因；這個測試經過本次改成 <code>spawn_tokio</code> 的 sidecar spawn 點。（4）（5）高負載的平行迴圈中，<code>git_service</code> 的 <code>unstage_restores_a_staged_decomposed_entry</code>（5 次中 1 次）與 <code>db_query_worker</code> 的 <code>native_rss_matches_legacy_reader_with_owned_resident_pages</code>（7 次中 1 次）各失敗 1 次，單獨執行都通過。本機 <code>go test -race</code> 需帶 <code>SDKROOT=$(xcrun --sdk macosx --show-sdk-path) CC=$(xcrun -f clang)</code>，否則 Command Line Tools 的 SDK 連結失敗。</p>
+
+<h2>殘餘與範圍外</h2>
+<ul>
+<li>在 spawn 以外建立的 fd（socket、accept、socketpair 等）仍可能被任何 spawn 帶走。</li>
+<li>release 的有限等待只是放手：等不到 EOF 的 reader thread 會被 detach，連同它持有的 pipe 讀端留到占住 pipe 的行程結束為止（之後不再送出事件）；connector 的 stderr thread 本來就是 detached。每發生一次這種 release，就多留下一個 thread 與一個 fd。</li>
+<li>第三方 spawn 不經過鎖：tauri opener 的 <code>open</code>、updater 的 <code>touch</code>、tauri restart；Linux 上 dialog／notification 的 helper。</li>
+<li>單一卡在 exec 的 spawn 最多讓其他 spawn 延遲 10 秒，被擋住的取鎖會占住一個 tokio worker thread 最多 10 秒；<code>NetManager::start</code> 在 spawn 期間持有 <code>inner</code>（既有）。</li>
+<li>Linux：父行程在記下基準之前就死時，不論有沒有 subreaper 都退回靠 stdin EOF（Linux 的規則不把一開始就是 pid 1 視為父行程消失，因為 pid namespace 裡活著的桌面也可能是 pid 1）；Windows 沒有父行程檢查。</li>
+<li>父行程消失時，gateway 與 sidecar 的 unserve 先後只靠時間差（sidecar 每 250 ms、gateway 每 1 秒再加 0.5 秒），沒有握手；sidecar 在 <code>ts.Start()</code> 期間的取消要等 Start 返回才看得到，gateway 的 init 階段不看父行程，只受 5 秒 init 期限約束。</li>
+<li>契約 D5 明列不處理：<code>env_path.rs</code> 啟動時的 <code>read_to_end</code>；孫行程占住 stdout 時 <code>git_process</code> 把成功變成逾時；DB worker／SQLite lane／host helper 的父行程存活。</li>
+<li>同類既有、未改（lane J 發現）：<code>server.rs</code> 的 <code>command_json</code>（15 秒）與 host_bootstrap 的 <code>execute_with_output_limit</code>（60 秒）都讀到 EOF，別的行程占住 pipe 時，成功會變成逾時、已讀的資料被丟棄；<code>host_sqlite</code> 的第一個 frame（30 秒）讀到換行就結束，成功不受影響，只有 worker 沒回覆就結束時，失敗會從立即回報延後到 30 秒。三者都有上限，不會卡死。</li>
+<li>既有行為（不在這次 diff 內）：Unix 的 <code>kill_tree</code>（<code>host/src/process_kill.rs</code>）對 process group 送 SIGTERM 後，若 leader 在 <code>TERM_GRACE</code>（300 ms）內結束，只等待 group、不檢查結果就回傳 <code>Ok</code>，不會再對 group 送 SIGKILL。因此忽略 SIGTERM 的同組成員在單一 <code>terminal_release</code> 之後仍會存活；<code>release_all_connectors</code> 期限到時會對 group 送 SIGKILL，app 結束不受影響。建議另案處理。</li>
+<li>新的時間斷言（小於 grace 的一半）假設在 macOS 微秒級空窗內沒有其他未加鎖的長壽 spawn 帶走 pipe——與 A1 同一類，累計 50 次以上未觀察到。</li>
+</ul>
+
+<h2>對既有 Phase 4 blocker 的影響（待裁決）</h2>
+<p>計畫與 ADR 0008 記載的 blocker「Host pipe／PTY input/release 沒有 timeout」：<strong>release 那一半現在有上限</strong>（單一 <code>terminal_release</code> 是既有的終止時限（connector 用 <code>kill_tree</code>，native client 用 <code>terminate_native_client</code>）加上 reader 1 秒，依常數推算 connector 最壞約 7.3 秒、native client 約 3.2 秒，Windows 另含 Job 與 taskkill 的時限；<code>release_all_connectors</code> 約 1.5 秒；不再阻塞等 writer 鎖，先終止再有限等待；以程式結構保證，實際測試只在 macOS 執行過：Unix connector 的 <code>release_does_not_wait_behind_a_blocked_control_write</code>，以及只限 macOS 的 native client 測試 <code>release_does_not_wait_behind_a_blocked_input_write</code>；Linux 要等 PR 的 CI；Windows 的 release 與卡住的寫入沒有在 Windows 上執行過）；Companion 的 10 秒卡住觀測會關閉 stream，經 Lease 走到 Host release：cleanup slot 與 resource／full permit 在 release 返回時歸還，但 write slot 與 device permit 要等卡住的寫入本身返回才歸還。<strong>input write 本身仍沒有 timeout</strong>：connector 的寫入要等 release 終止子行程、stdin 的讀端全部關閉才會出錯結束；native client 的 PTY 寫入要等 slave 端關閉或被撤銷（macOS 在 session leader 結束時會撤銷 PTY，依據是 lane J 的 pty 實驗，沒有專門的測試）。若另有行程持有 connector stdin 的讀端，寫入在 release 之後仍會卡住，Companion 的 write slot 與 permit 也就不會歸還。持有讀端的可能是忽略 SIGTERM 的同組成員，見上方「殘餘與範圍外」中既有的 <code>kill_tree</code> 行為；也可能是未加鎖的第三方 spawn 帶走的複本。native client 方面，後代若在別的 process group 或 session 裡仍持有 PTY slave，Linux 上卡住的寫入可能不會結束，未驗證。另外，目前沒有「gateway＋真實 HerdrManager＋永不讀取的行程」的端對端測試；永遠不讀、又忽略 SIGTERM 的 leader 在單一 <code>terminal_release</code> 下也沒有測試（<code>kill_tree</code> 升級到 SIGKILL 只由 <code>kill_tree_escalates_to_sigkill_after_grace</code> 另外證明）。文件只加了查證過的註記，blocker 是否解除由使用者決定。</p>
+
+<h2>文件同步</h2>
+<p>計畫 <code>specs/yuzora-companion-pwa-direct-connections-plan.html</code>：後續工作那一條劃線加日期更正、Amendments 新增 2026-10-22 條目、blocker 相關段落加註記；ADR 0008（主工作樹，git-ignored）同步。皆經 opus 事實核對。桌面 <code>companion_service.rs</code> 與 <code>companion_net.rs</code> 的註解原本只寫「EOF 是 gateway／sidecar 得知 Yuzora 崩潰的方式」，已補上 Unix 的父行程檢查（純註解，clippy baseline 重跑仍為 matched 19）。</p>
+</body>
+</html>

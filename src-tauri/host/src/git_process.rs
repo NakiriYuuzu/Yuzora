@@ -128,7 +128,8 @@ fn run(
         return Err("git-input-limit".into());
     }
     let deadline = Instant::now() + timeout;
-    let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
+    let mut child =
+        process_kill::spawn_std(&mut cmd).map_err(|e| format!("git spawn failed: {e}"))?;
     let tree = process_kill::attach_process_tree(&mut child).map_err(|e| e.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     let mut owned = OwnedChild {
@@ -418,6 +419,22 @@ mod tests {
         .unwrap();
         assert_eq!(next.code, 0);
         assert_eq!(next.stdout, b"ok");
+    }
+
+    #[test]
+    fn git_runs_spawn_through_the_process_spawn_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let (result, spawns) = process_kill::trace_spawns(|| {
+            execute(
+                fixture_command(root.path(), "/usr/bin/printf", &["ok"], false),
+                &["spawn-lock"],
+                Duration::from_secs(2),
+                None,
+                None,
+            )
+        });
+        assert_eq!(result.unwrap().stdout, b"ok");
+        assert_eq!(spawns, ["/usr/bin/printf ok"]);
     }
 
     #[test]
