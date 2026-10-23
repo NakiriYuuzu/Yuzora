@@ -322,7 +322,7 @@ impl HerdrManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         process_kill::configure_background_process(&mut command);
-        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let mut child = process_kill::spawn_std(&mut command).map_err(|e| e.to_string())?;
         let mut tree = process_kill::attach_process_tree(&mut child).map_err(|e| e.to_string())?;
         let (stdout, stderr, status) = wait_bounded_child(
             &mut child,
@@ -368,7 +368,7 @@ impl HerdrManager {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         process_kill::configure_background_process(&mut command);
-        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let mut child = process_kill::spawn_std(&mut command).map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if let Ok(status) = run_herdr_json_with_session_timeout(

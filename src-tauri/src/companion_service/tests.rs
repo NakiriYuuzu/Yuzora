@@ -149,6 +149,22 @@ done"#
     h.manager.stop().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn companion_service_gateway_spawns_through_the_spawn_lock() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in *'"shutdown"'*) exit 0;; esac
+done"#
+    ));
+    let (started, spawns) = crate::process_kill::trace_spawns(|| h.manager.start(h.launch()));
+    started.unwrap();
+    assert_eq!(spawns, [h.bin.display().to_string()]);
+    h.until("ready", running).await;
+    h.manager.stop().await;
+}
+
 #[tokio::test]
 async fn companion_service_pairing_reply_is_returned_not_emitted() {
     let h = Harness::new(&format!(

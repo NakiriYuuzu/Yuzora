@@ -727,6 +727,23 @@ async fn companion_net_stop_kills_a_node_that_ignores_shutdown() {
     assert_eq!(h.notices(), ["running", "exited:true"]);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn companion_net_sidecar_spawns_through_the_spawn_lock() {
+    let h = Harness::new(
+        r#"read init
+while read line; do
+  case "$line" in *'"shutdown"'*) exit 0;; esac
+done"#,
+    );
+    let (started, spawns) =
+        crate::process_kill::trace_spawns(|| h.manager.start(&h.bin, Mode::Enable));
+    started.unwrap();
+    assert_eq!(spawns, [h.bin.display().to_string()]);
+    h.manager.stop().await;
+    assert_eq!(h.manager.overview().state, State::Stopped);
+}
+
 #[tokio::test]
 async fn companion_net_missing_binary_fails_to_start() {
     let h = Harness::new("exit 0");

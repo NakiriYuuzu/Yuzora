@@ -269,8 +269,7 @@ impl CompanionManager {
                 .kill_on_drop(true);
             #[cfg(windows)]
             command.creation_flags(0x0800_0000);
-            let child = command
-                .spawn()
+            let child = crate::process_kill::spawn_tokio(&mut command)
                 .map_err(|e| format!("companion-unavailable: {e}"))?;
             Ok((devices, bytes, child))
         });
@@ -342,7 +341,8 @@ impl CompanionManager {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         // Stdin stays open while the process lives: EOF is how the gateway
-        // learns that Yuzora crashed.
+        // learns that Yuzora crashed (on Unix it also watches its parent pid,
+        // for when another process kept a copy of this pipe).
         tokio::spawn(async move {
             while let Some(frame) = frames.recv().await {
                 if stdin.write_all(&frame).await.is_err() || stdin.flush().await.is_err() {
