@@ -33,6 +33,14 @@ impl Jobs {
             tasks: Mutex::new(JoinSet::new()),
         })
     }
+    /// Every slot and permit is free again.
+    #[cfg(test)]
+    pub(crate) fn idle(&self) -> bool {
+        self.slots.available_permits() == MAX_CALLS
+            && self.write_slots.available_permits() == 2
+            && self.cleanup_slots.available_permits() == 2
+            && self.resources.available_permits() == MAX_RESOURCES
+    }
     pub(crate) fn reap(&self) {
         let mut tasks = self.tasks.lock().unwrap();
         while tasks.try_join_next().is_some() {}

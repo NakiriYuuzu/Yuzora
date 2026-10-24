@@ -211,6 +211,14 @@ impl Sink {
                 self.state.close("payload-too-large");
                 Err("payload-too-large".into())
             }
+            // The Host tore a stalled connector down and said so, for the
+            // desktop. Here the command that stalled is a gateway call of this
+            // stream: its failure reply closes the stream as `stream-stalled`
+            // (`finish`), and closing it from here would only win the race and
+            // turn that reply into `stream-not-found`.
+            HerdrTerminalEvent::Resync { message, .. } if message.starts_with("ioTimeout:") => {
+                Ok(())
+            }
             HerdrTerminalEvent::Error { .. } | HerdrTerminalEvent::Resync { .. } => {
                 self.state.close("stream-closed");
                 Err("stream-closed".into())
@@ -612,7 +620,12 @@ impl Reads {
         };
         let (session, workspace_id) = (request.session.clone(), request.workspace_id.clone());
         let tokens = gateway.spaces.tokens(device, gateway.clock.now());
+        let reads = gateway.herdr.clone();
+        let running_session = session.clone();
         match gateway.herdr_jobs.submit_device(device, false, move || {
+            // The mapped roots outlive a stopped session; check right before
+            // reading them, as the snapshot and terminal reads do.
+            reads.running(&running_session)?;
             request.run(&space, &tokens).map(Output::Snapshot)
         }) {
             Ok(receive) => {
@@ -705,6 +718,12 @@ impl Reads {
                         .is_some_and(|s| !write || s.lease.is_none())
                     {
                         if let Some(stream) = self.streams.remove(&s) {
+                            stream.state.close(code);
+                        }
+                    } else if write && code == "stream-stalled" {
+                        // Host gave up on the input and released the session:
+                        // close the stream, so closed() drops its Lease.
+                        if let Some(stream) = self.streams.get(&s) {
                             stream.state.close(code);
                         }
                     }

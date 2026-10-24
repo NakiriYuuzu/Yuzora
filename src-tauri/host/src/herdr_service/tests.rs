@@ -2862,6 +2862,7 @@ fn connector_reader_rejects_oversized_line_and_does_not_emit_frame() {
         reader: Mutex::new(None),
         closed: Mutex::new(false),
         released: AtomicBool::new(false),
+        on_event: None,
     });
     let (tx, rx) = mpsc::channel();
     let on_event: OnTerminalEvent =

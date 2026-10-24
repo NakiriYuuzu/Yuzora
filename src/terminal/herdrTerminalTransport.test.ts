@@ -1424,3 +1424,111 @@ describe("terminal mouse", () => {
     expect(vi.mocked(herdrTerminalMouse).mock.calls.at(-1)).toEqual(["sess-mouse", "down", { column: 4, row: 4 }, 0])
   })
 })
+
+describe("a Host teardown during a scroll, pointer or resize command", () => {
+  const stalled = () => new Error("ioTimeout: herdr terminal connector stopped accepting input")
+
+  beforeEach(() => {
+    vi.mocked(herdrTerminalOpen).mockReset().mockResolvedValue({
+      sessionId: "stall-session", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    vi.mocked(herdrTerminalScroll).mockReset()
+    vi.mocked(herdrTerminalMouse).mockReset()
+    vi.mocked(herdrTerminalResize).mockReset()
+    vi.mocked(herdrTerminalInput).mockReset().mockResolvedValue(undefined)
+    vi.mocked(herdrTerminalRelease).mockReset().mockResolvedValue(undefined)
+  })
+
+  async function open() {
+    const transport = createHerdrTerminalTransport({ terminalId: "t1", mouseEnabled: () => true })
+    const onEvent = vi.fn()
+    await transport.open({ cols: 80, rows: 24, onEvent })
+    return { transport, onEvent }
+  }
+  // The page reopens the attachment (recoverOutput) on exactly this event.
+  const recovery = { type: "error", message: "terminal-input-failed" }
+
+  it("asks the page to recover when a scroll stalls", async () => {
+    vi.mocked(herdrTerminalScroll).mockRejectedValue(stalled())
+    const { transport, onEvent } = await open()
+    await transport.scroll?.(-3)
+    expect(onEvent).toHaveBeenCalledWith(recovery)
+    expect(transport.canWrite()).toBe(false)
+  })
+
+  it("asks the page to recover when a pointer event stalls", async () => {
+    vi.mocked(herdrTerminalMouse).mockRejectedValue(stalled())
+    const { transport, onEvent } = await open()
+    await transport.mouse?.("move", { column: 1, row: 2 }, 0)
+    expect(onEvent).toHaveBeenCalledWith(recovery)
+  })
+
+  it("asks the page to recover when a resize stalls, and still rejects it", async () => {
+    vi.mocked(herdrTerminalResize).mockRejectedValue(stalled())
+    const { transport, onEvent } = await open()
+    await expect(transport.resize(100, 40)).rejects.toThrow("ioTimeout:")
+    expect(onEvent).toHaveBeenCalledWith(recovery)
+  })
+
+  it("ignores a late stall that arrives after the page already reopened (Resync first)", async () => {
+    let rejectScroll!: (error: Error) => void
+    vi.mocked(herdrTerminalScroll).mockReset()
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectScroll = reject }))
+      .mockResolvedValue(undefined)
+    const { transport } = await open()
+    const stuck = transport.scroll?.(-3)
+    await Promise.resolve()
+    // The page handles the Resync: detach the old session, open the new one.
+    transport.detachSession()
+    vi.mocked(herdrTerminalOpen).mockResolvedValue({
+      sessionId: "stall-session-2", target: "t1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true
+    })
+    await transport.open({ cols: 80, rows: 24, onEvent: vi.fn() })
+    rejectScroll(stalled())
+    await stuck?.catch(() => undefined)
+    await transport.scroll?.(-3)
+    expect(vi.mocked(herdrTerminalScroll).mock.calls.at(-1)?.slice(0, 2)).toEqual(["stall-session-2", "up"])
+  })
+
+  it("resends a button release that only waited behind a busy writer", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(herdrTerminalMouse).mockRejectedValueOnce(new Error("host-call-wait-timeout")).mockResolvedValue(undefined)
+      const { transport, onEvent } = await open()
+      await transport.mouse?.("up", { column: 3, row: 4 }, 0)
+      expect(herdrTerminalMouse).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(300)
+      expect(herdrTerminalMouse).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(herdrTerminalMouse).mock.calls.at(-1)).toEqual(["stall-session", "up", { column: 3, row: 4 }, 0])
+      expect(onEvent).not.toHaveBeenCalledWith(recovery)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(herdrTerminalMouse).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it("bounds the busy release retries and never replays a busy drag", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(herdrTerminalMouse).mockRejectedValue(new Error("host-call-wait-timeout"))
+      const { transport } = await open()
+      await transport.mouse?.("drag", { column: 1, row: 1 }, 0)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(herdrTerminalMouse).toHaveBeenCalledTimes(1)
+      await transport.mouse?.("up", { column: 1, row: 1 }, 0)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(herdrTerminalMouse).toHaveBeenCalledTimes(1 + 1 + 4)
+    } finally { vi.useRealTimers() }
+  })
+
+  it("leaves the session alone when a command only waited behind a busy writer", async () => {
+    const busy = new Error("host-call-wait-timeout")
+    vi.mocked(herdrTerminalScroll).mockRejectedValue(busy)
+    vi.mocked(herdrTerminalMouse).mockRejectedValue(busy)
+    vi.mocked(herdrTerminalResize).mockRejectedValue(busy)
+    const { transport, onEvent } = await open()
+    await transport.scroll?.(-3)
+    await transport.mouse?.("move", { column: 1, row: 2 }, 0)
+    await expect(transport.resize(100, 40)).rejects.toThrow("host-call-wait-timeout")
+    expect(onEvent).not.toHaveBeenCalledWith(recovery)
+  })
+})

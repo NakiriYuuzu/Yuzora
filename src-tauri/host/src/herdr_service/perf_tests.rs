@@ -80,6 +80,7 @@ fn run_reader(input: Vec<u8>, frames: usize) -> f64 {
         reader: Mutex::new(None),
         closed: Mutex::new(false),
         released: AtomicBool::new(false),
+        on_event: None,
     });
     let emitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = emitted.clone();

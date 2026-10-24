@@ -1366,6 +1366,40 @@ fn git_params(extra: Value) -> Value {
     params
 }
 
+/// The mapped roots outlive a stopped Session; every git method must still
+/// check that the Session runs, right before it reads.
+#[tokio::test]
+async fn bridge_git_is_refused_for_a_stopped_session_and_served_for_a_running_one() {
+    let f = Fixture::new().await;
+    let mut repo = Repo::new();
+    repo.trust_store = f.trust_store.clone();
+    let head = repo.commit("a.txt", "one\ntwo\n", "first");
+    repo.trust();
+    f.map_spaces(json!([repo.root("work", "w"), repo.root("stopped", "w")]));
+    let mut ws = f.connect().await;
+    for (method, extra) in [
+        ("git.status", json!({})),
+        ("git.branches", json!({})),
+        ("git.log", json!({"limit":10})),
+        ("git.commit", json!({"hash":head})),
+        (
+            "git.diff",
+            json!({"kind":"commit","commit":head,"path":"a.txt"}),
+        ),
+    ] {
+        let mut params = git_params(extra);
+        let reply = rpc(&mut ws, method, params.clone()).await;
+        assert!(reply.get("error").is_none(), "{method}: {reply}");
+        params["session"] = json!("stopped");
+        let reply = rpc(&mut ws, method, params).await;
+        assert_eq!(
+            reply["error"]["code"], "session-stopped",
+            "{method}: {reply}"
+        );
+        assert!(reply.get("result").is_none(), "{method}: {reply}");
+    }
+}
+
 #[tokio::test]
 async fn bridge_git_diff_reads_only_what_git_lists_as_untracked() {
     let (f, repo) = git_fixture().await;

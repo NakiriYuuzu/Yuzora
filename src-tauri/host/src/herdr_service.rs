@@ -52,6 +52,20 @@ const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a terminal input write (or the wait for the writer lock) may go
+/// without moving a byte before the session is given up. Below the Companion
+/// gateway's ten second write watchdog, so the Host answers first.
+#[cfg(not(test))]
+const INPUT_WRITE_TIMEOUT: Duration = LOCAL_IO_TIMEOUT;
+#[cfg(test)]
+const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Stable prefix of the error for a stalled input write; the Companion gateway
+/// matches it.
+const INPUT_TIMEOUT_PREFIX: &str = "ioTimeout:";
+/// A control command gave up waiting for the connector's stdin, which another
+/// writer holds. The session is untouched (the holder is bounded and tears it
+/// down itself if it is stuck); the text is the frontend's `busy` error kind.
+const CONTROL_BUSY_ERROR: &str = "host-call-wait-timeout";
 /// Reuse expensive CLI inventory and binary fingerprint checks on hot paths.
 /// Explicit lists stay fresh; failures and lifecycle changes invalidate caches.
 /// Socket paths still come only from the authoritative session list.
@@ -972,6 +986,10 @@ struct ConnectorSession {
     /// even if it outlived the release's bounded wait. `closed` also turns true
     /// when the connector ends by itself, and its last stderr lines still count.
     released: AtomicBool,
+    /// Where the Host itself reports a teardown it started (a stalled input
+    /// write): the reader is silenced by `released` first, so only this path
+    /// can tell the frontend. None for a session nobody listens to.
+    on_event: Option<OnTerminalEvent>,
 }
 
 struct EventSubscription {
@@ -2871,6 +2889,7 @@ impl HerdrManager {
             reader: Mutex::new(None),
             closed: Mutex::new(false),
             released: AtomicBool::new(false),
+            on_event: Some(on_event.clone()),
         });
 
         let reader_session = session.clone();
@@ -3026,17 +3045,235 @@ impl HerdrManager {
             return Err(format!("herdr terminal session {session_id} is closed"));
         }
         let line = cmd.to_json_line()?;
-        let mut stdin_guard = session.stdin.lock().unwrap();
-        let stdin = stdin_guard
-            .as_mut()
-            .ok_or_else(|| format!("herdr terminal session {session_id} has no stdin"))?;
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("failed to write control command: {e}"))?;
-        stdin
-            .flush()
-            .map_err(|e| format!("failed to flush control command: {e}"))?;
+        // A wait that ran out says nothing about the holder: it may be a large
+        // paste into a slow reader that is still moving. The holder is bounded
+        // by its own stall timer and tears the session down if it is truly
+        // stuck, so this caller only reports busy (the frontend's existing
+        // `busy` kind: queued wheels are dropped, the route is kept).
+        let Some(mut stdin_guard) =
+            lock_within(&session.stdin, Instant::now() + INPUT_WRITE_TIMEOUT)
+        else {
+            return Err(CONTROL_BUSY_ERROR.into());
+        };
+        if stdin_guard.is_none() {
+            return Err(format!("herdr terminal session {session_id} has no stdin"));
+        }
+        if write_connector_input(&mut stdin_guard, line.into_bytes(), &session.released)? {
+            // The guard goes first: the release below only tries this lock.
+            drop(stdin_guard);
+            return Err(self.abandon_stalled_connector(session_id, &session));
+        }
         Ok(())
+    }
+
+    /// A write that stopped moving may have left half a line in the pipe, so
+    /// the connector is never reused: out of the map, a `Resync` for the
+    /// frontend (sent before the release silences the reader, and with the
+    /// timeout text so the gateway names the stall), then the bounded release
+    /// (its kill ends a write that is still stuck).
+    fn abandon_stalled_connector(
+        &self,
+        session_id: &str,
+        session: &Arc<ConnectorSession>,
+    ) -> String {
+        {
+            let mut map = self.sessions.lock().unwrap();
+            if map
+                .get(session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, session))
+            {
+                map.remove(session_id);
+            }
+        }
+        let error = input_timeout_error("herdr terminal connector");
+        if let Some(on_event) = &session.on_event {
+            if !session.released.load(Ordering::Acquire) {
+                let _ = on_event(HerdrTerminalEvent::Resync {
+                    session_id: session.id.clone(),
+                    expected_seq: None,
+                    received_seq: None,
+                    message: error.clone(),
+                });
+            }
+        }
+        let _ = release_connector(session);
+        error
+    }
+}
+
+// ── Bounded input ───────────────────────────────────────────────────────────
+//
+// An input write goes into a pipe or PTY whose reader may have stopped, and a
+// blocking write then never returns while holding the writer's lock. Every
+// write therefore gives up once it has moved no byte for `INPUT_WRITE_TIMEOUT`
+// (forward progress restarts the clock, so a large paste into a slow reader is
+// not cut off), and so does the wait for the lock behind a stuck writer. The
+// caller then treats the session as poisoned: a partial line may be written.
+
+fn input_timeout_error(what: &str) -> String {
+    format!("{INPUT_TIMEOUT_PREFIX} {what} stopped accepting input")
+}
+
+/// Locks `mutex`, giving up at `deadline`.
+fn lock_within<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<std::sync::MutexGuard<'_, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(1).min(deadline - now));
+    }
+}
+
+/// Writes `bytes` to a control connector's stdin; true when it stalled.
+#[cfg(unix)]
+fn write_connector_input(
+    stdin: &mut Option<ChildStdin>,
+    bytes: Vec<u8>,
+    released: &AtomicBool,
+) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    let Some(stdin) = stdin.as_mut() else {
+        return Err("herdr terminal connector has no stdin".into());
+    };
+    let fd = stdin.as_raw_fd();
+    // The flag lives on this end's description only; the connector's own read
+    // end is untouched.
+    set_nonblocking(fd).map_err(|e| format!("failed to write control command: {e}"))?;
+    let mut rest = bytes.as_slice();
+    let mut deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+    while !rest.is_empty() {
+        match stdin.write(rest) {
+            Ok(0) => return Err("failed to write control command: write zero".into()),
+            Ok(written) => {
+                rest = &rest[written..];
+                deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if released.load(Ordering::Acquire) {
+                    return Err("herdr terminal session was released".into());
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(true);
+                }
+                wait_for_pipe_room(fd, RELEASE_POLL_INTERVAL.min(deadline - now));
+            }
+            Err(error) => return Err(format!("failed to write control command: {error}")),
+        }
+    }
+    Ok(false)
+}
+
+/// Waits up to `limit` for `fd` to take more bytes (or fail).
+#[cfg(unix)]
+fn wait_for_pipe_room(fd: std::os::fd::RawFd, limit: Duration) {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut poll, 1, limit.as_millis().max(1) as libc::c_int) };
+    if ready < 0 || poll.revents & libc::POLLNVAL != 0 {
+        std::thread::sleep(RELEASE_POLL_INTERVAL.min(limit));
+    }
+}
+
+/// For a pipe whose write cannot be made non-blocking (Windows): see
+/// `write_on_thread`.
+#[cfg(not(unix))]
+fn write_connector_input(
+    stdin: &mut Option<ChildStdin>,
+    bytes: Vec<u8>,
+    _released: &AtomicBool,
+) -> Result<bool, String> {
+    let Some(owned) = stdin.take() else {
+        return Err("herdr terminal connector has no stdin".into());
+    };
+    match write_on_thread(owned, bytes, INPUT_WRITE_TIMEOUT, "herdr-connector-input") {
+        Ok(owned) => {
+            *stdin = Some(owned);
+            Ok(false)
+        }
+        Err(ThreadWrite::Stalled) => Ok(true),
+        Err(ThreadWrite::Failed(owned, error)) => {
+            *stdin = owned;
+            Err(format!("failed to write control command: {error}"))
+        }
+    }
+}
+
+/// Progress is counted per chunk, so a chunk must be small enough for a slow
+/// reader to take it whole inside the stall limit: `PIPE_BUF`.
+const THREAD_WRITE_CHUNK: usize = 512;
+
+pub(super) enum ThreadWrite<W> {
+    /// No byte moved for the whole stall limit; the thread still owns the writer.
+    Stalled,
+    /// The write failed. The writer is handed back unless the thread is gone.
+    Failed(Option<W>, String),
+}
+
+/// Writes `bytes` on a thread of its own, for a writer that cannot be made
+/// non-blocking (a PTY master shares its description with the reader; a
+/// Windows pipe has no such mode). The caller waits at most `stall` for
+/// progress, chunk by chunk. On a stall the thread keeps the writer and ends
+/// with the kill the caller issues next, which breaks the pipe or PTY and
+/// drops the writer there instead of in the caller.
+pub(super) fn write_on_thread<W: Write + Send + 'static>(
+    mut writer: W,
+    bytes: Vec<u8>,
+    stall: Duration,
+    name: &str,
+) -> Result<W, ThreadWrite<W>> {
+    let (done, finished) = std::sync::mpsc::channel();
+    let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let moved = Arc::clone(&progress);
+    let spawned = std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let mut result = Ok(());
+            for chunk in bytes.chunks(THREAD_WRITE_CHUNK) {
+                if let Err(error) = writer.write_all(chunk) {
+                    result = Err(error);
+                    break;
+                }
+                moved.fetch_add(1, Ordering::AcqRel);
+            }
+            let result = result.and_then(|()| writer.flush());
+            // Nobody waiting any more: the writer is dropped here, off the caller.
+            let _ = done.send((writer, result));
+        });
+    if let Err(error) = spawned {
+        return Err(ThreadWrite::Failed(None, error.to_string()));
+    }
+    let mut seen = 0;
+    let mut deadline = Instant::now() + stall;
+    loop {
+        match finished.recv_timeout(RELEASE_POLL_INTERVAL) {
+            Ok((writer, Ok(()))) => return Ok(writer),
+            Ok((writer, Err(error))) => {
+                return Err(ThreadWrite::Failed(Some(writer), error.to_string()))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let now = progress.load(Ordering::Acquire);
+                if now != seen {
+                    seen = now;
+                    deadline = Instant::now() + stall;
+                } else if Instant::now() >= deadline {
+                    return Err(ThreadWrite::Stalled);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ThreadWrite::Failed(None, "input thread ended".into()))
+            }
+        }
     }
 }
 
@@ -3304,10 +3541,10 @@ fn begin_connector_release(session: &ConnectorSession) {
 /// Closes the connector's stdin, after a `terminal.release` line for a control
 /// connector (observe has no release wire command).
 fn release_connector_stdin(session: &ConnectorSession) {
-    // `send_control` holds this lock for the whole of a blocking write, and a
-    // connector that stopped reading never ends it. Waiting here would wait on
-    // the process this release is about to kill, so a busy writer means no
-    // goodbye; the kill ends its write.
+    // `send_control` holds this lock for the whole of a write, which ends only
+    // when it moved everything or stalled (or this release's flag or kill
+    // reaches it). Waiting here would wait on the process this release is
+    // about to kill, so a busy writer means no goodbye.
     let Ok(mut guard) = session.stdin.try_lock() else {
         return;
     };

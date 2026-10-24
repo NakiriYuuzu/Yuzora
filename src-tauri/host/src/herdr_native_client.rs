@@ -467,12 +467,37 @@ impl HerdrManager {
             .get(id)
             .cloned()
             .ok_or("herdr-client-closed")?;
-        let mut input = client.input.lock().unwrap();
-        let input = input.as_mut().ok_or("herdr-client-closed")?;
-        input
-            .write_all(&bytes)
-            .and_then(|()| input.flush())
-            .map_err(|e| e.to_string())
+        // The holder is bounded and releases the client itself if it is stuck;
+        // a wait that ran out only reports busy (see `CONTROL_BUSY_ERROR`).
+        let Some(mut input) = lock_within(&client.input, Instant::now() + INPUT_WRITE_TIMEOUT)
+        else {
+            return Err(CONTROL_BUSY_ERROR.into());
+        };
+        let writer = input.take().ok_or("herdr-client-closed")?;
+        // On a thread, with the writer moved in: the PTY master shares one open
+        // file description with the reader, so it cannot be made non-blocking.
+        match write_on_thread(writer, bytes, INPUT_WRITE_TIMEOUT, "herdr-client-input") {
+            Ok(writer) => {
+                *input = Some(writer);
+                Ok(())
+            }
+            Err(ThreadWrite::Stalled) => {
+                // The guard goes first: the release below only tries this lock.
+                drop(input);
+                Err(self.abandon_stalled_client(id))
+            }
+            Err(ThreadWrite::Failed(writer, error)) => {
+                *input = writer;
+                Err(error)
+            }
+        }
+    }
+
+    /// A paste that stopped moving may be half written, so the client is never
+    /// reused: the bounded release kills it, which also ends the stuck write.
+    fn abandon_stalled_client(&self, id: &str) -> String {
+        let _ = self.release_native_client(id);
+        input_timeout_error("herdr client")
     }
 
     pub(super) fn native_client_resize(
@@ -1221,6 +1246,107 @@ mod tests {
             writer.is_finished()
         }));
         writer.join().unwrap();
+    }
+
+    /// The same PTY, but nobody releases: the stuck input ends by itself with
+    /// the typed timeout, and the client is killed, reaped and gone.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn input_to_a_client_that_never_reads_times_out_and_kills_it() {
+        let manager = Arc::new(HerdrManager::with_binary("/bin/sh".into()));
+        let mut cleanup = KillClients::default();
+        let (on_event, events) = channel_events();
+        let id = open_tracked(&mut cleanup, &manager, "printf R; sleep 60", on_event);
+        wait_for_r(&events, std::slice::from_ref(&id));
+        let client = client_of(&manager, &id);
+        let pid = pid_of(&client);
+
+        let (error, took) = within(Duration::from_secs(20), {
+            let manager = manager.clone();
+            let id = id.clone();
+            move || {
+                let line = format!("{}\n", "x".repeat(100));
+                loop {
+                    let started = Instant::now();
+                    if let Err(error) = manager.native_client_input(&id, Some(line.clone()), None) {
+                        return (error, started.elapsed());
+                    }
+                }
+            }
+        })
+        .expect("the input write never returned");
+        assert!(error.starts_with("ioTimeout:"), "{error}");
+        assert!(
+            took < INPUT_WRITE_TIMEOUT + Duration::from_secs(4),
+            "{took:?}"
+        );
+        assert!(!manager.native_clients.lock().unwrap().contains_key(&id));
+        assert!(
+            wait_until(Instant::now() + Duration::from_secs(5), || {
+                !process_exists(pid)
+            }),
+            "the client survived"
+        );
+        // Released already, and idempotently so.
+        manager.release_native_client(&id).unwrap();
+        assert_eq!(
+            manager
+                .native_client_input(&id, Some("x".into()), None)
+                .unwrap_err(),
+            "herdr-client-closed"
+        );
+    }
+
+    /// A second input queued behind a paste that is still moving only reports
+    /// busy; the client stays, and the paste is not cut off.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_input_waiting_behind_a_progressing_paste_leaves_the_client_alone() {
+        let manager = Arc::new(HerdrManager::with_binary("/bin/sh".into()));
+        let mut cleanup = KillClients::default();
+        let (on_event, events) = channel_events();
+        let id = open_tracked(
+            &mut cleanup,
+            &manager,
+            "stty raw -echo; printf R; while dd bs=512 count=1 of=/dev/null 2>/dev/null; do sleep 0.05; done",
+            on_event,
+        );
+        wait_for_r(&events, std::slice::from_ref(&id));
+        let client = client_of(&manager, &id);
+
+        let paste = {
+            let manager = manager.clone();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let result = manager.native_client_input(&id, Some("x".repeat(48 * 1024)), None);
+                (result, started.elapsed())
+            })
+        };
+        assert!(
+            wait_until(Instant::now() + Duration::from_secs(10), || {
+                client.input.try_lock().is_err()
+            }),
+            "the paste never started"
+        );
+        let error = within(Duration::from_secs(20), {
+            let manager = manager.clone();
+            let id = id.clone();
+            move || manager.native_client_input(&id, Some("y".into()), None)
+        })
+        .expect("the waiting input never returned")
+        .unwrap_err();
+        assert_eq!(error, CONTROL_BUSY_ERROR);
+        assert!(manager.native_clients.lock().unwrap().contains_key(&id));
+
+        let (result, took) = within(Duration::from_secs(60), move || paste.join().unwrap())
+            .expect("the paste never returned");
+        result.expect("the paste was cut off by a waiter");
+        assert!(
+            took > INPUT_WRITE_TIMEOUT,
+            "too fast to prove anything: {took:?}"
+        );
+        manager.release_native_client(&id).unwrap();
     }
 
     /// Dropping the PTY writer writes a newline and EOF into the PTY, which
