@@ -187,6 +187,20 @@ describe("a stream that closes before anyone listens", () => {
     expect(closed).toHaveBeenCalledWith("owned-elsewhere")
   })
 
+  it("forgets the early frames of a closure it evicts", () => {
+    connect()
+    const { onEvent, onFrame } = fake.sockets.at(-1)!.options
+    onFrame(100, new Uint8Array([1]))
+    onEvent("stream.closed", { stream: 100, reason: "stream-closed" })
+    // Sixteen more abandoned streams evict the oldest closure.
+    for (let stream = 101; stream <= 116; stream++) onEvent("stream.closed", { stream, reason: "stream-closed" })
+    const data = vi.fn()
+    const closed = vi.fn()
+    listen(100, { data, closed })
+    expect(data).not.toHaveBeenCalled()
+    expect(closed).not.toHaveBeenCalled()
+  })
+
   it("ignores the closure of a stream it already stopped listening to", () => {
     connect()
     const { onEvent } = fake.sockets.at(-1)!.options

@@ -71,7 +71,12 @@ export function connect(): void {
         const watched = [...eventStreams.values()].includes(stream)
         if (!handlers && !watched && !ended.has(stream)) {
           // Nobody listens yet: keep the closure (and any early frames) for `listen`.
-          if (closedEarly.size >= EARLY_CLOSURES) closedEarly.delete(closedEarly.keys().next().value!)
+          if (closedEarly.size >= EARLY_CLOSURES) {
+            // The evicted closure's frames go with it: nobody can replay them now.
+            const oldest = closedEarly.keys().next().value!
+            closedEarly.delete(oldest)
+            early.delete(oldest)
+          }
           closedEarly.set(stream, String(data.reason))
         } else early.delete(stream)
         handlers?.closed(String(data.reason))
