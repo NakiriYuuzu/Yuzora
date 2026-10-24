@@ -45,6 +45,7 @@ import {
   herdrWorktreeList
 } from "@/lib/herdrIpc"
 import { runtimeOwner } from "@/lib/herdrProvider"
+import i18n from "@/lib/i18n"
 import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { herdrInitialState, isHerdrStartupPending, useHerdrStore } from "./herdrStore"
@@ -505,6 +506,34 @@ describe("herdrStore", () => {
     expect(state.canCreateTerminal()).toBe(false)
     expect(herdrSnapshot).not.toHaveBeenCalled()
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+  })
+
+  it("explains why HERDR cannot reach a Session instead of asking to start it", async () => {
+    const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)"
+    vi.mocked(herdrSessions).mockResolvedValue([
+      ...sessions,
+      { name: "admin", default: false, running: false, connectionError: reason, sessionDir: "/tmp/admin", socketPath: "/tmp/admin.sock" }
+    ])
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().selectSession("admin")
+    const unreachable = i18n.t("herdrNav.sessionUnreachable", { ns: "workbench", name: "admin", reason })
+    expect(unreachable).toContain(reason)
+    expect(useHerdrStore.getState()).toMatchObject({ connectionState: "stopped", errorMessage: unreachable })
+    expect(useHerdrStore.getState().mutationBlockedReason()).toBe(unreachable)
+    await useHerdrStore.getState().bootstrap("admin")
+    expect(useHerdrStore.getState().runtimesBySession.admin).toMatchObject({ connectionState: "stopped", errorMessage: unreachable })
+    await useHerdrStore.getState().selectSession("stopped")
+    expect(useHerdrStore.getState().errorMessage).toBe(i18n.t("herdrNav.sessionStopped", { ns: "workbench", name: "stopped" }))
+    expect(herdrCapabilities).not.toHaveBeenCalledWith("admin")
+    expect(herdrSnapshot).not.toHaveBeenCalled()
+  })
+
+  it("settles a Session that turns unreachable during bootstrap as stopped", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    const message = "herdr session 'work' is unreachable: Access is denied. (os error 5)"
+    vi.mocked(herdrSnapshot).mockRejectedValueOnce(new Error(message))
+    await useHerdrStore.getState().bootstrap("work")
+    expect(useHerdrStore.getState().runtimesBySession.work).toMatchObject({ connectionState: "stopped", errorMessage: message })
   })
 
   it("reads Sessions authoritatively unless an idle poll asks for the cached inventory", async () => {

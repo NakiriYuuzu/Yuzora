@@ -250,4 +250,20 @@ describe("HERDR worktree and session tasks", () => {
     expect(screen.getByRole("button", { name: i18n.t("herdrTools:switchToSession") })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: i18n.t("herdrTools:stopKeepLayout") })).toBeInTheDocument()
   })
+
+  it("explains a Session HERDR cannot reach and offers no start or delete for it", async () => {
+    const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)"
+    useHerdrStore.setState(state => ({ sessions: [...state.sessions, { name: "admin", default: false, running: false, connectionError: reason, sessionDir: "/tmp/admin", socketPath: "/tmp/admin.sock" }] }))
+    render(<HerdrToolsDialog selection={{ task: "sessions", sessionName: "work" }} />)
+    expect(screen.getByText(i18n.t("workbench:herdrNav.sessionUnreachable", { name: "admin", reason }))).toBeInTheDocument()
+    expect(screen.getByText(i18n.t("herdrTools:unreachable"))).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: i18n.t("herdrTools:start") })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: i18n.t("herdrTools:deleteSavedLayout") })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: i18n.t("herdrTools:stopKeepLayout") })).toBeInTheDocument()
+    cleanup()
+    render(<HerdrToolsDialog selection={{ sessionName: "work" }} />)
+    fireEvent.pointerDown(screen.getByRole("button", { name: i18n.t("herdrTools:session") }), { button: 0, ctrlKey: false })
+    expect(await screen.findByRole("menuitemradio", { name: new RegExp(`admin.*${i18n.t("herdrTools:unreachable")}`) })).toBeInTheDocument()
+    expect(herdrFeature).not.toHaveBeenCalledWith("admin", expect.anything())
+  })
 })

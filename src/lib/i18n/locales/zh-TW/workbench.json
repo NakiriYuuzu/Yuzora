@@ -572,6 +572,7 @@
     "stoppedBadge": "已停止",
     "sessionStoppedTitle": "Session {{name}} 未運行",
     "sessionStopped": "Session「{{name}}」未運行。請用 `herdr session attach {{name}}` 啟動。",
+    "sessionUnreachable": "無法連線到 Session「{{name}}」，它可能仍在執行。若是以系統管理員身分執行的 Windows server，請改用系統管理員終端機，或在該處以 `--allow-unelevated-clients` 重新啟動 `herdr server`（會關閉它的 panes）。HERDR 回報：{{reason}}",
     "stoppedNoAgents": "此 session 已停止，尚無 agent",
     "attentionHeading": "需要注意",
     "globalRuntime": "全域 Herdr{{version}}",

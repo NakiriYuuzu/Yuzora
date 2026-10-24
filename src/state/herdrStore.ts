@@ -1,4 +1,4 @@
-import { canonicalRuntimeWorkspace, parseRuntimeScope, runtimeOwner, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
+import { canonicalRuntimeWorkspace, parseRuntimeScope, runtimeOwner, sessionConnectionError, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
 import { LOCAL_HOST_ID } from "@/lib/runtimeIdentity"
 import { bindWorkspaceRoot, directoryForSelection, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
 import { create } from "zustand"
@@ -393,7 +393,15 @@ function unsupportedReason(caps: HerdrCapabilities): string | null {
 }
 
 function isStoppedReason(message: string | null | undefined): boolean {
-  return Boolean(message && message.includes("not running"))
+  return Boolean(message && (message.includes("not running") || message.includes("is unreachable")))
+}
+
+/** Guidance for a listed Session that cannot be connected; an unreachable one may still run. */
+function stoppedSessionMessage(session: HerdrNamedSession | undefined, name: string): string {
+  const reason = sessionConnectionError(session)
+  return reason
+    ? i18n.t("herdrNav.sessionUnreachable", { ns: "workbench", name, reason })
+    : i18n.t("herdrNav.sessionStopped", { ns: "workbench", name })
 }
 
 function pathsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -571,11 +579,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       set((state) =>
         withRuntime(state, sessionName, {
           connectionState: "stopped",
-          errorMessage:
-            i18n.t("herdrNav.sessionStopped", {
-              name: sessionName,
-              defaultValue: `Session "${sessionName}" is not running. Start it with \`herdr session attach ${sessionName}\`.`
-            }) ?? null
+          errorMessage: stoppedSessionMessage(session, sessionName)
         })
       )
     }
@@ -609,7 +613,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           set((state) =>
             withRuntime(state, resolved, {
               connectionState: "stopped",
-              errorMessage: i18n.t("herdrNav.sessionStopped", { name: resolved })
+              errorMessage: stoppedSessionMessage(named, resolved)
             })
           )
           return
@@ -623,8 +627,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
               capabilities,
               connectionState: "stopped",
               errorMessage:
-                capabilities.api.reason ??
-                i18n.t("herdrNav.sessionStopped", { name: resolved })
+                capabilities.api.reason ?? stoppedSessionMessage(named, resolved)
             })
           )
           return
@@ -707,7 +710,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       set((state) =>
         withRuntime(state, resolved, {
           connectionState: "stopped",
-          errorMessage: i18n.t("herdrNav.sessionStopped", { name: resolved })
+          errorMessage: stoppedSessionMessage(named, resolved)
         })
       )
       return false
@@ -1145,7 +1148,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
   mutationBlockedReason() {
     const session = get().selectedSession()
     if (session && !session.running) {
-      return i18n.t("herdrNav.sessionStopped", { name: session.name })
+      return stoppedSessionMessage(session, session.name)
     }
     const caps = get().capabilities
     return caps?.api.reason ?? caps?.terminal.reason ?? null
@@ -1169,7 +1172,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       return i18n.t("herdrNav.selectSessionFirst", { ns: "workbench" })
     }
     if (session && !session.running) {
-      return i18n.t("herdrNav.sessionStopped", { ns: "workbench", name: session.name })
+      return stoppedSessionMessage(session, session.name)
     }
     const caps = state.capabilities
     const previousSpace = state.selectedSpaceBySession[state.selectedSessionName] ?? null
@@ -1347,7 +1350,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     if (session && !session.running) {
       return {
         ok: false,
-        error: i18n.t("herdrNav.sessionStopped", { name: sessionName })
+        error: stoppedSessionMessage(session, sessionName)
       }
     }
     const targetCaps = stateBefore.runtimesBySession[sessionName]?.capabilities
@@ -1513,7 +1516,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     if (session && !session.running) {
       return {
         ok: false,
-        error: i18n.t("herdrNav.sessionStopped", { name: sessionName })
+        error: stoppedSessionMessage(session, sessionName)
       }
     }
     if (
@@ -1735,7 +1738,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         return {
           kind: "error" as const,
           error: session && !session.running
-            ? i18n.t("herdrNav.sessionStopped", { name: sessionName })
+            ? stoppedSessionMessage(session, sessionName)
             : "Herdr snapshot unavailable"
         }
       }

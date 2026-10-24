@@ -10,7 +10,7 @@ import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { Button } from "@/components/ui/button"
 import { useHerdrToolsStore, type HerdrTask, type HerdrToolsSelection } from "@/state/herdrToolsStore"
 import { useUiStore } from "@/state/uiStore"
-import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
+import { parseRuntimeScope, sessionConnectionError, sessionScope } from "@/lib/herdrProvider"
 import { herdrActionAvailability } from "@/lib/herdrActions"
 import { LOCAL_HOST_ID, runtimeKey } from "@/lib/runtimeIdentity"
 import { useHostStore } from "@/state/hostStore"
@@ -74,7 +74,7 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
   const hostOptions = [{ value: LOCAL_HOST_ID, label: t("local") }, ...Object.values(hostConfigs).map(host => ({ value: host.hostId, label: host.label, disabled: !hosts[host.hostId]?.connection }))]
   const currentSession = hostSessions.find(session => sessionScope(session) === scope)
   const sessionOptions = [
-    ...hostSessions.map(session => ({ value: sessionScope(session)!, label: <>{session.name}{(isHerdrStartupPending({ herdrStartup }, session) || !session.running) && <span className="text-muted-foreground"> · {t(isHerdrStartupPending({ herdrStartup }, session) ? "workbench:herdrNav.connecting" : "stopped")}</span>}</> })),
+    ...hostSessions.map(session => ({ value: sessionScope(session)!, label: <>{session.name}{(isHerdrStartupPending({ herdrStartup }, session) || !session.running) && <span className="text-muted-foreground"> · {t(isHerdrStartupPending({ herdrStartup }, session) ? "workbench:herdrNav.connecting" : sessionConnectionError(session) ? "unreachable" : "stopped")}</span>}</> })),
     ...(currentSession ? [] : [{ value: scope, label: t("sessionNone") }]),
   ]
   const spaceOptions = snapshot?.spaces.map(space => ({ value: space.id, label: space.label })) ?? []

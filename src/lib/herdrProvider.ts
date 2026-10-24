@@ -43,6 +43,11 @@ export function findRuntimeSession(sessions: HerdrNamedSession[], scope: string)
   return local.find((session) => session.default) ?? local[0] ?? null
 }
 
+/** Why HERDR could not reach a listed Session; such a Session may still be running. */
+export function sessionConnectionError(session: HerdrNamedSession | null | undefined): string | null {
+  return session && !session.running ? session.connectionError ?? null : null
+}
+
 export function parseRuntimeScope(scope: string): RuntimeKey {
   if (!scope.startsWith("[")) return { hostId: LOCAL_HOST_ID, sessionName: scope }
   const parsed: unknown = JSON.parse(scope)

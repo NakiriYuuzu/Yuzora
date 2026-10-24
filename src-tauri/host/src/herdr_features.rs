@@ -223,8 +223,14 @@ impl HerdrManager {
             HerdrFeatureRequest::SessionStop {} | HerdrFeatureRequest::SessionDelete {} => {
                 // Require the exact advertised name; do not let an inherited
                 // caller or a case-insensitive filesystem select another Session.
-                if !self.list_sessions()?.iter().any(|s| s.name == session_name) {
+                let sessions = self.list_sessions()?;
+                let Some(session) = sessions.iter().find(|s| s.name == session_name) else {
                     return Err("unknown-herdr-session".into());
+                };
+                // HERDR deletes the saved layout of a Session it cannot reach
+                // as if it were stopped, even while that server still runs.
+                if session.connection_error.is_some() {
+                    return Err(session_not_running_message(session));
                 }
                 let binary = self.resolve_binary().ok_or("herdr-unavailable")?;
                 let action = if method == "session.stop" {

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next"
 import { Button } from "@/components/ui/button"
 import { FieldGroup } from "@/components/ui/field"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card"
-import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
+import { parseRuntimeScope, sessionConnectionError, sessionScope } from "@/lib/herdrProvider"
 import { LOCAL_HOST_ID, runtimeKey } from "@/lib/runtimeIdentity"
 import { SESSION_NAME_PATTERN } from "@/lib/herdrActions"
 import { requestAppConfirmation } from "@/state/appDialogStore"
@@ -25,7 +25,9 @@ export function SessionTools({ sessionName, operation, onSelect }: { sessionName
         if (await operation.run({ method: "session.start", params: {} }, scope)) { setName(""); onSelect(scope) }
       }}>{t("createAndStart")}</Button>
     </CardFooter></Card>
-    {sameHost.map(session => <Card key={sessionScope(session)} size="sm"><CardHeader><CardTitle>{session.name}</CardTitle><CardDescription>{t(session.running ? "running" : "stopped")}</CardDescription></CardHeader><CardFooter className="flex flex-wrap gap-2">
+    {sameHost.map(session => { const unreachable = sessionConnectionError(session); return <Card key={sessionScope(session)} size="sm"><CardHeader><CardTitle>{session.name}</CardTitle><CardDescription>{t(session.running ? "running" : unreachable ? "unreachable" : "stopped")}</CardDescription></CardHeader>
+    {/* No actions: none can reach it, and HERDR would delete the saved layout of a server that may still run. */}
+    {unreachable ? <CardContent><p className="text-xs text-muted-foreground">{t("workbench:herdrNav.sessionUnreachable", { name: session.name, reason: unreachable })}</p></CardContent> : <CardFooter className="flex flex-wrap gap-2">
       <Button variant="outline" disabled={operation.busy} onClick={async () => {
         const scope = sessionScope(session)!
         if (session.running || await operation.run({ method: "session.start", params: {} }, scope)) { onSelect(scope); await useHerdrStore.getState().selectSession(scope) }
@@ -34,6 +36,6 @@ export function SessionTools({ sessionName, operation, onSelect }: { sessionName
         const action = session.running ? "session.stop" : "session.delete"
         if (await requestAppConfirmation({ title: t(session.running ? "stopSession" : "deleteSession"), description: t(session.running ? "stopSessionWarning" : "deleteSessionWarning", { name: session.name }), destructive: true })) await operation.run({ method: action, params: {} }, sessionScope(session)!)
       }}>{t(session.running ? "stopKeepLayout" : "deleteSavedLayout")}</Button>
-    </CardFooter></Card>)}
+    </CardFooter>}</Card> })}
   </FieldGroup>
 }
