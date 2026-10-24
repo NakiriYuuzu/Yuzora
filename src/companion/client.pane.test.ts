@@ -55,7 +55,7 @@ beforeEach(() => {
   fake.calls = []
   fake.answer = undefined
   navigate({ name: "home" })
-  useCompanion.setState({ socket: "idle", snapshots: {}, sessionErrors: {}, pendingPane: null })
+  useCompanion.setState({ socket: "idle", snapshots: {}, sessionErrors: {}, git: {}, pendingPane: null })
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -227,5 +227,55 @@ describe("refresh", () => {
     await vi.waitFor(() => expect(useCompanion.getState().snapshots.other).toBeDefined())
     expect(fake.calls).toContain("stream.close")
     expect(useCompanion.getState().sessionErrors.old).toBeUndefined()
+  })
+})
+
+describe("the Git caches follow the snapshots", () => {
+  const spaces = (...workspaces: { id: string; git: boolean; gitGeneration?: string }[]): Snapshot => ({
+    ...snapshot(),
+    workspaces: workspaces.map((space) => ({ label: null, status: "idle" as const, ...space })),
+  })
+  const cached = (generation: string | undefined) => ({ generation, commits: {} })
+  const key = (session: string, workspace: string) => `${session}\0${workspace}`
+  const reload = async (session: string, snapshots: Record<string, Snapshot>) => {
+    fake.snapshots = snapshots
+    fake.sockets.at(-1)!.options.onReady({ serverTime: "2026-10-20T00:00:00Z" }, 1)
+    await vi.waitFor(() => expect(useCompanion.getState().snapshots[session]).toBe(snapshots[session]))
+  }
+  const seeded = () => {
+    useCompanion.setState({
+      socket: "ready",
+      git: {
+        [key("work", "w1")]: cached("g1"),
+        [key("work", "w2")]: cached("g1"),
+        [key("work", "w3")]: cached("g1"),
+        [key("work", "w4")]: cached("g1"),
+        [key("other", "w1")]: cached("o1"),
+      },
+    })
+    connect()
+  }
+
+  it("drops a Space's reads when the desktop maps it to another repository, and only then", async () => {
+    seeded()
+    await reload("work", { work: spaces({ id: "w1", git: true, gitGeneration: "g2" }, { id: "w2", git: true, gitGeneration: "g1" }, { id: "w3", git: true, gitGeneration: "g1" }, { id: "w4", git: true, gitGeneration: "g1" }), other: spaces({ id: "w1", git: true, gitGeneration: "o1" }) })
+    const keys = Object.keys(useCompanion.getState().git)
+    expect(keys).not.toContain(key("work", "w1"))
+    expect(keys).toContain(key("work", "w2"))
+    // Another session's Spaces are not this snapshot's business.
+    expect(keys).toContain(key("other", "w1"))
+  })
+
+  it("drops the reads of a Space that disappeared or stopped sharing its repository", async () => {
+    seeded()
+    await reload("work", { work: spaces({ id: "w1", git: true, gitGeneration: "g1" }, { id: "w2", git: false }, { id: "w3", git: true, gitGeneration: "g1" }), other: spaces({ id: "w1", git: true, gitGeneration: "o1" }) })
+    expect(Object.keys(useCompanion.getState().git).sort()).toEqual([key("other", "w1"), key("work", "w1"), key("work", "w3")].sort())
+  })
+
+  it("drops the reads of a session that is gone", async () => {
+    seeded()
+    await reload("other", { other: spaces({ id: "w1", git: true, gitGeneration: "o1" }) })
+    expect(Object.keys(useCompanion.getState().git).every((entry) => entry.startsWith("other\0"))).toBe(true)
+    expect(Object.keys(useCompanion.getState().git)).toEqual([key("other", "w1")])
   })
 })

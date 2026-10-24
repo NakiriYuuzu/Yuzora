@@ -43,7 +43,12 @@ pub(crate) fn capabilities() -> Value {
 pub(crate) fn is_read(method: &str) -> bool {
     matches!(
         method,
-        "sessions.list" | "snapshot.get" | "events.subscribe" | "terminal.observe" | "stream.close"
+        "sessions.list"
+            | "snapshot.get"
+            | "events.subscribe"
+            | "terminal.observe"
+            | "stream.close"
+            | "push.subscribe"
     ) || crate::git_bridge::is_git(method)
 }
 fn error(id: Value, code: &'static str) -> Value {
@@ -400,6 +405,9 @@ impl Reads {
             stream.state.close("client-closed");
             return Some(reply(id, json!({"stream":p.stream,"closed":true})));
         }
+        if method == "push.subscribe" {
+            return self.push_subscribe(gateway, device, id, &params);
+        }
         if crate::git_bridge::is_git(method) {
             return self.git(gateway, device, id, method, params);
         }
@@ -597,6 +605,34 @@ impl Reads {
             }
         }
     }
+    /// Replies once the desktop confirms it stored the subscription; the wait
+    /// holds one of the peer's pending slots.
+    fn push_subscribe(
+        &mut self,
+        gateway: &Gateway,
+        device: &str,
+        id: Value,
+        params: &Value,
+    ) -> Option<Value> {
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Some(error(id, "busy"));
+        };
+        match gateway.push.subscribe(gateway, device, params) {
+            Err(code) => Some(error(id, code)),
+            Ok(stored) => {
+                self.completed.push(Box::pin(async move {
+                    let _pending = pending;
+                    Completion {
+                        id,
+                        stream: None,
+                        result: stored.await.map(Output::Value),
+                        write: false,
+                    }
+                }));
+                None
+            }
+        }
+    }
     /// Read-only Git of a mapped Space. Shares the read executor and the peer's
     /// pending slots; replies take the snapshot path, so large ones are chunked.
     fn git(
@@ -689,9 +725,10 @@ impl Reads {
                     write.audit.target = value["target"].as_str().map(str::to_owned);
                     // Host has succeeded. Capacity was reserved before that call;
                     // a newly deferred DIFFERENT stream cannot reverse this key.
-                    announcement
-                        .expect("write open reservation")
-                        .emit(write.audit.state(true, write.takeover));
+                    write.audit.announce(
+                        announcement.expect("write open reservation"),
+                        write.takeover,
+                    );
                     write.announced = true;
                 }
                 // Caller enqueues these replies synchronously before the writer

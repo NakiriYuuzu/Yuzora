@@ -531,6 +531,72 @@ async fn bridge_write_control_confirmation_conflict_takeover_freshness_taken_ove
         .any(|a| a["type"] == "control.state" && a["takeover"] == true));
 }
 #[tokio::test(start_paused = true)]
+async fn bridge_peers_list_names_open_control_and_full_streams_until_they_end() {
+    let list = |f: &Fixture| {
+        let command =
+            serde_json::from_value(json!({"v":1,"type":"peers.list","requestId":1})).unwrap();
+        match f
+            .gateway
+            .command(admin::CommandBody::Peers(command))
+            .unwrap()
+        {
+            admin::AdminResult::Peers { peers, streams, .. } => (peers, streams),
+            other => panic!("{other:?}"),
+        }
+    };
+    let mut f = Fixture::new().await;
+    f.elevate("control").await;
+    f.elevate("full").await;
+    let mut ws = f.connect().await;
+    assert!(list(&f).1.is_empty());
+    let stream = control(&mut ws).await;
+    let (peers, streams) = list(&f);
+    assert_eq!(peers.len(), 1);
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].device_id, DEVICE);
+    assert_eq!(streams[0].peer_id, peers[0].peer_id);
+    assert_eq!(streams[0].session, "work");
+    assert_eq!(streams[0].scope, Scope::Control);
+    assert_eq!(streams[0].target.as_deref(), Some("w:p"));
+    assert_eq!(
+        rpc(&mut ws, "terminal.release", json!({"stream":stream})).await["result"]["closed"],
+        true
+    );
+    f.released().await;
+    // The key is the one `control.state` announced.
+    let key = f
+        .audits()
+        .iter()
+        .find(|a| a["type"] == "control.state" && a["open"] == true)
+        .map(|a| a["stream"].as_str().unwrap().to_owned())
+        .unwrap();
+    assert_eq!(streams[0].stream, key);
+    assert!(list(&f).1.is_empty(), "a released stream is not listed");
+    // A full stream is listed without a pane, and goes with its socket.
+    let opened = full(&mut ws).await;
+    assert!(opened["result"].is_object(), "{opened}");
+    let streams = list(&f).1;
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].scope, Scope::Full);
+    assert_eq!(streams[0].target, None);
+    let full_stream = opened["result"]["stream"].clone();
+    assert_eq!(
+        rpc(&mut ws, "full.close", json!({"stream":full_stream})).await["result"]["closed"],
+        true
+    );
+    f.released().await;
+    assert!(list(&f).1.is_empty());
+    // Closing the socket ends the peer, whether or not anyone saw the event.
+    drop(ws);
+    for _ in 0..200 {
+        if list(&f).0.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(list(&f).0.is_empty());
+}
+#[tokio::test(start_paused = true)]
 async fn bridge_write_rpc_binary_ownership_and_scope() {
     let mut f = Fixture::new().await;
     f.elevate("control").await;

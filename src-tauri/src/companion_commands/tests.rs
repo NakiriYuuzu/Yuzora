@@ -429,6 +429,30 @@ fn companion_ui_fixtures_match_the_serialized_shapes() {
             qr_svg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
         },
         "sessionsSet": SessionsSet { restart_required: true },
+        "peersSnapshot": crate::companion_service::PeersSnapshot {
+            peers: vec![crate::companion_service::PeerRow {
+                peer_id: 3,
+                device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+            }],
+            streams: vec![
+                crate::companion_service::StreamRow {
+                    stream: "12".into(),
+                    device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    peer_id: 3,
+                    session: "work".into(),
+                    scope: "control".into(),
+                    target: Some("w:p".into()),
+                },
+                crate::companion_service::StreamRow {
+                    stream: "13".into(),
+                    device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+                    peer_id: 3,
+                    session: "work".into(),
+                    scope: "full".into(),
+                    target: None,
+                },
+            ],
+        },
     });
     let expected: Value = serde_json::from_str(UI_FIXTURES).unwrap();
     assert_eq!(

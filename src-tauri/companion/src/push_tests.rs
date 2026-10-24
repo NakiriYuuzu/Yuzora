@@ -368,9 +368,9 @@ fn push_subscription_event_shapes_and_no_reserved_names() {
         auth: "a".into(),
     };
     assert_eq!(
-        serde_json::to_value(Event::push_subscription(D1.into(), subscription)).unwrap(),
+        serde_json::to_value(Event::push_subscription(D1.into(), subscription, 7)).unwrap(),
         json!({"v":1,"type":"push.subscription","deviceId":D1,"subscription":{
-            "endpoint":"https://fcm.googleapis.com/x","p256dh":vapid(),"auth":"a"}})
+            "endpoint":"https://fcm.googleapis.com/x","p256dh":vapid(),"auth":"a"},"requestId":7})
     );
     // A removal names the one endpoint, by id, and carries no URL.
     assert_eq!(
@@ -625,31 +625,19 @@ const FCM: &str = "https://fcm.googleapis.com/fcm/send/";
 
 #[tokio::test]
 async fn push_methods_emit_the_subscription_and_never_touch_the_set_themselves() {
+    // `push.subscribe` has its own tests below: it waits for the desktop's ack.
     let (output, input) = tokio::io::duplex(1 << 16);
     let (events, _writer) = admin::spawn_writer(output);
     let clock = Clock::at(serde_json::from_str("\"2030-01-01T00:00:00Z\"").unwrap());
     let init = init_with(push_init(&[]), vec![device(D1, "AQ", false)], &[]);
     let gateway = Gateway::new(&init, events, clock).unwrap();
     let mut reader = tokio::io::BufReader::new(input);
-    let (p256dh, auth) = (point(0x04, 65), URL_SAFE_NO_PAD.encode([9u8; 16]));
     let call = |method: &str, params: Value| gateway.push.call(&gateway, D1, method, &params);
     let own = format!("{FCM}abc");
 
     assert_eq!(
         call("push.status", json!({"endpoint":own})),
         Ok(json!({"available":true,"subscribed":false}))
-    );
-    assert_eq!(
-        call(
-            "push.subscribe",
-            json!({"endpoint":own,"keys":{"p256dh":p256dh,"auth":auth}})
-        ),
-        Ok(json!({"subscribed":true}))
-    );
-    assert_eq!(
-        read_event(&mut reader).await,
-        json!({"v":1,"type":"push.subscription","deviceId":D1,"subscription":{
-            "endpoint":own,"p256dh":p256dh,"auth":auth}})
     );
     // Only that endpoint goes, named by its id: the URL is not sent back.
     assert_eq!(
@@ -663,11 +651,15 @@ async fn push_methods_emit_the_subscription_and_never_touch_the_set_themselves()
     );
     // Rejected input emits nothing: the next event read is the one after.
     assert_eq!(
-        call(
-            "push.subscribe",
-            json!({"endpoint":"http://fcm.googleapis.com/x"})
-        ),
-        Err("invalid-params")
+        gateway
+            .push
+            .subscribe(
+                &gateway,
+                D1,
+                &json!({"endpoint":"http://fcm.googleapis.com/x"})
+            )
+            .err(),
+        Some("invalid-params")
     );
     let long = "x".repeat(2049);
     for params in [
@@ -813,8 +805,9 @@ async fn push_is_unavailable_without_the_init_key() {
     let (p256dh, auth) = (point(0x04, 65), URL_SAFE_NO_PAD.encode([9u8; 16]));
     let valid = json!({"endpoint":format!("{FCM}x"),"keys":{"p256dh":p256dh,"auth":auth}});
     // Availability is decided before the params are looked at.
-    assert_eq!(call("push.subscribe", valid), Err("push-unavailable"));
-    assert_eq!(call("push.subscribe", Value::Null), Err("push-unavailable"));
+    let subscribe = |params: &Value| gateway.push.subscribe(&gateway, D1, params).err();
+    assert_eq!(subscribe(&valid), Some("push-unavailable"));
+    assert_eq!(subscribe(&Value::Null), Some("push-unavailable"));
     assert_eq!(call("push.unsubscribe", json!({})), Err("push-unavailable"));
     assert_eq!(
         call("push.unsubscribe", json!({"endpoint":format!("{FCM}x")})),
@@ -1571,4 +1564,102 @@ async fn push_watcher_retries_quickly_when_a_long_healthy_stretch_ends_in_a_fail
     })
     .await;
     patiently("recovered", || fake.active() == 1).await;
+}
+
+/// A gateway with push whose admin events can be read, and a valid `push.subscribe` params object.
+fn subscribing() -> (
+    Arc<Gateway>,
+    tokio::io::BufReader<tokio::io::DuplexStream>,
+    Value,
+) {
+    let (output, input) = tokio::io::duplex(1 << 16);
+    let (events, _writer) = admin::spawn_writer(output);
+    let clock = Clock::at(serde_json::from_str("\"2030-01-01T00:00:00Z\"").unwrap());
+    let init = init_with(push_init(&[]), vec![device(D1, "AQ", false)], &[]);
+    let params = json!({"endpoint":format!("{FCM}abc"),"keys":{
+        "p256dh":vapid(),"auth":URL_SAFE_NO_PAD.encode([9u8; 16])}});
+    (
+        Gateway::new(&init, events, clock).unwrap(),
+        tokio::io::BufReader::new(input),
+        params,
+    )
+}
+fn ack(request: u64, stored: bool) -> CommandBody {
+    CommandBody::PushAck(
+        serde_json::from_value(
+            json!({"v":1,"type":"push.ack","requestId":request,"stored":stored}),
+        )
+        .unwrap(),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn push_subscribe_replies_on_only_after_the_desktop_acks_that_it_stored_it() {
+    let (gateway, mut reader, params) = subscribing();
+    let mut reply = gateway.push.subscribe(&gateway, D1, &params).ok().unwrap();
+    let event = read_event(&mut reader).await;
+    assert_eq!(event["type"], "push.subscription");
+    let request = event["requestId"].as_u64().unwrap();
+    // Queued is not stored: the phone hears nothing yet.
+    assert!(tokio::time::timeout(Duration::from_secs(1), &mut reply)
+        .await
+        .is_err());
+    // Another request's ack does not release it.
+    gateway.command(ack(request + 1, true)).unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(1), &mut reply)
+        .await
+        .is_err());
+    assert_eq!(
+        gateway.command(ack(request, true)),
+        Ok(admin::AdminResult::Applied)
+    );
+    assert_eq!(reply.await, Ok(json!({"subscribed":true})));
+    assert!(gateway.push.acks.lock().unwrap().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn push_subscribe_fails_when_the_desktop_could_not_store_it() {
+    let (gateway, mut reader, params) = subscribing();
+    let reply = gateway.push.subscribe(&gateway, D1, &params).ok().unwrap();
+    let request = read_event(&mut reader).await["requestId"].as_u64().unwrap();
+    gateway.command(ack(request, false)).unwrap();
+    assert_eq!(reply.await, Err("push-store-failed"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn push_subscribe_gives_up_without_an_ack_and_ignores_a_late_one() {
+    let (gateway, mut reader, params) = subscribing();
+    let reply = gateway.push.subscribe(&gateway, D1, &params).ok().unwrap();
+    let request = read_event(&mut reader).await["requestId"].as_u64().unwrap();
+    // Nobody answers: bounded, and a failure the phone can show.
+    assert_eq!(reply.await, Err("push-unconfirmed"));
+    assert!(gateway.push.acks.lock().unwrap().is_empty());
+    assert_eq!(
+        gateway.command(ack(request, true)),
+        Ok(admin::AdminResult::Applied)
+    );
+    // Two phones never share a request id.
+    let again = gateway.push.subscribe(&gateway, D1, &params).ok().unwrap();
+    assert_ne!(
+        read_event(&mut reader).await["requestId"].as_u64().unwrap(),
+        request
+    );
+    drop(again);
+}
+
+#[tokio::test]
+async fn push_subscribe_with_a_full_admin_queue_is_busy_and_leaves_nothing_waiting() {
+    let (output, _input) = tokio::io::duplex(1);
+    let (events, _writer) = admin::spawn_writer(output);
+    let clock = Clock::at(serde_json::from_str("\"2030-01-01T00:00:00Z\"").unwrap());
+    let init = init_with(push_init(&[]), vec![device(D1, "AQ", false)], &[]);
+    let gateway = Gateway::new(&init, events.clone(), clock).unwrap();
+    while events.try_emit(Event::push_unsubscription(D1.into(), eid("a"))) {}
+    let params = json!({"endpoint":format!("{FCM}abc"),"keys":{
+        "p256dh":vapid(),"auth":URL_SAFE_NO_PAD.encode([9u8; 16])}});
+    assert_eq!(
+        gateway.push.subscribe(&gateway, D1, &params).err(),
+        Some("busy")
+    );
+    assert!(gateway.push.acks.lock().unwrap().is_empty());
 }

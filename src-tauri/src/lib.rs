@@ -560,6 +560,7 @@ pub fn run() {
             companion_commands::companion_phone_link,
             companion_commands::companion_pairing_decide,
             companion_commands::companion_devices,
+            companion_commands::companion_peers,
             companion_commands::companion_device_update,
             companion_commands::companion_device_unlock,
             companion_commands::companion_device_revoke,

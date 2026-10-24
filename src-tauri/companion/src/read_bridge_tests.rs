@@ -169,8 +169,29 @@ impl Fixture {
         Self::with_port(fake.clone(), fake).await
     }
     async fn with_port(port: Arc<dyn HerdrPort>, fake: Arc<Fake>) -> Self {
+        Self::build(port, fake, |_| {}).await
+    }
+    /// A gateway that offers Web Push, with no stored subscription.
+    async fn with_push() -> Self {
+        let fake = Arc::new(Fake::default());
+        Self::build(fake.clone(), fake, |init| {
+            let mut key = vec![4u8];
+            key.extend([7u8; 64]);
+            init.push = Some(admin::PushInit {
+                vapid_public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key),
+                devices: Vec::new(),
+            });
+        })
+        .await
+    }
+    async fn build(
+        port: Arc<dyn HerdrPort>,
+        fake: Arc<Fake>,
+        configure: impl FnOnce(&mut Init),
+    ) -> Self {
         let mut init: Init = serde_json::from_str(&crate::test_support::init::json()).unwrap();
         init.session_allowlist = vec!["work".into(), "stopped".into()];
+        configure(&mut init);
         let phone = include_str!("../tests/fixtures/device.json");
         let tablet = phone
             .replace("AAAAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAAAQ")
@@ -1549,4 +1570,163 @@ async fn bridge_git_log_cursor_lives_thirty_minutes_on_the_gateway_clock() {
         page["result"]["commits"][0]["subject"], "commit 2",
         "{page}"
     );
+}
+
+/// The next admin event of `kind` the gateway wrote, polled for.
+async fn admin_event(f: &Fixture, kind: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(event) = f.events.lock().unwrap().iter().find(|e| e["type"] == kind) {
+                return event.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+fn push_ack(f: &Fixture, request: u64, stored: bool) {
+    let ack = serde_json::from_value(
+        json!({"v":1,"type":"push.ack","requestId":request,"stored":stored}),
+    )
+    .unwrap();
+    f.gateway.command(admin::CommandBody::PushAck(ack)).unwrap();
+}
+fn subscribe_params(f: &Fixture) -> Value {
+    let key = f.gateway.push.hello()["vapidPublicKey"].clone();
+    json!({"endpoint":"https://updates.push.services.mozilla.com/wpush/v2/abc","keys":{
+        "p256dh":key,"auth":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([9u8; 16])}})
+}
+
+#[tokio::test]
+async fn bridge_push_subscribe_answers_on_only_after_the_desktop_acks() {
+    let f = Fixture::with_push().await;
+    let mut ws = f.connect().await;
+    send(
+        &mut ws,
+        json!({"id":1,"method":"push.subscribe","params":subscribe_params(&f)}),
+    )
+    .await;
+    let event = admin_event(&f, "push.subscription").await;
+    assert_eq!(event["deviceId"], "AAAAAAAAAAAAAAAAAAAAAA");
+    // Queued at the desktop is not stored: the phone has no answer yet, and the
+    // socket is not stuck behind the wait.
+    assert!(rpc(&mut ws, "session.ping", json!({})).await["result"].is_object());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), value(&mut ws))
+            .await
+            .is_err()
+    );
+    push_ack(&f, event["requestId"].as_u64().unwrap(), true);
+    let reply = value(&mut ws).await;
+    assert_eq!(reply, json!({"id":1,"result":{"subscribed":true}}));
+}
+
+#[tokio::test]
+async fn bridge_push_subscribe_reports_a_desktop_that_could_not_store_it() {
+    let f = Fixture::with_push().await;
+    let mut ws = f.connect().await;
+    send(
+        &mut ws,
+        json!({"id":4,"method":"push.subscribe","params":subscribe_params(&f)}),
+    )
+    .await;
+    let event = admin_event(&f, "push.subscription").await;
+    push_ack(&f, event["requestId"].as_u64().unwrap(), false);
+    let reply = value(&mut ws).await;
+    assert_eq!(reply["id"], 4);
+    assert_eq!(reply["error"]["code"], "push-store-failed");
+    assert!(rpc(&mut ws, "session.ping", json!({})).await["result"].is_object());
+    // Invalid parameters and an unavailable push never reach the desktop.
+    let bad = rpc(
+        &mut ws,
+        "push.subscribe",
+        json!({"endpoint":"https://evil.com/x"}),
+    )
+    .await;
+    assert_eq!(bad["error"]["code"], "invalid-params");
+    let plain = Fixture::new().await;
+    let mut ws = plain.connect().await;
+    let reply = rpc(&mut ws, "push.subscribe", subscribe_params(&f)).await;
+    assert_eq!(reply["error"]["code"], "push-unavailable");
+}
+
+fn peers(f: &Fixture) -> (Vec<admin::PeerInfo>, Vec<admin::StreamInfo>) {
+    let list = serde_json::from_value(json!({"v":1,"type":"peers.list","requestId":3})).unwrap();
+    match f.gateway.command(admin::CommandBody::Peers(list)).unwrap() {
+        admin::AdminResult::Peers {
+            request_id,
+            peers,
+            streams,
+        } => {
+            assert_eq!(request_id, 3);
+            (peers, streams)
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn bridge_peers_list_reports_the_connected_phones_whatever_events_were_lost() {
+    let f = Fixture::new().await;
+    assert!(peers(&f).0.is_empty());
+    let phone = f.connect().await;
+    let tablet = f.connect_tablet().await;
+    let listed = peers(&f).0;
+    assert_eq!(
+        listed
+            .iter()
+            .map(|peer| peer.device_id.as_str())
+            .collect::<Vec<_>>(),
+        ["AAAAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAAAQ"]
+    );
+    assert!(listed[0].peer_id < listed[1].peer_id);
+    // Nothing reads the admin events here: the list is the gateway's own state.
+    drop(phone);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while peers(&f).0.len() != 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(peers(&f).0[0].device_id, "AAAAAAAAAAAAAAAAAAAAAQ");
+    drop(tablet);
+}
+
+#[tokio::test]
+async fn bridge_snapshot_generation_changes_with_the_space_mapping_and_never_names_a_path() {
+    let (f, repo) = git_fixture().await;
+    let mut other = Repo::new();
+    other.trust_store = f.trust_store.clone();
+    other.commit("b.txt", "x\n", "other");
+    other.trust();
+    let mut ws = f.connect().await;
+    let generation =
+        |snapshot: &Value| snapshot["result"]["workspaces"][0]["gitGeneration"].clone();
+    let first = rpc(&mut ws, "snapshot.get", json!({"session":"work"})).await;
+    let g1 = generation(&first);
+    assert!(g1.as_str().is_some_and(|g| !g.is_empty()), "{first}");
+    assert!(!first.to_string().contains(SENTINEL));
+    // The same mapping again is the same repository.
+    f.map_spaces(json!([repo.root("work", "w")]));
+    let same = rpc(&mut ws, "snapshot.get", json!({"session":"work"})).await;
+    assert_eq!(generation(&same), g1);
+    // The desktop points the same Space at another repository.
+    f.map_spaces(json!([other.root("work", "w")]));
+    let remapped = rpc(&mut ws, "snapshot.get", json!({"session":"work"})).await;
+    let g2 = generation(&remapped);
+    assert!(g2.is_string());
+    assert_ne!(g2, g1);
+    assert_eq!(remapped["result"]["workspaces"][0]["git"], true);
+    // Unmapped: no Git and no generation; mapped again: a new one, not the old.
+    f.map_spaces(json!([]));
+    let gone = rpc(&mut ws, "snapshot.get", json!({"session":"work"})).await;
+    assert_eq!(gone["result"]["workspaces"][0]["git"], false);
+    assert!(gone["result"]["workspaces"][0]
+        .get("gitGeneration")
+        .is_none());
+    f.map_spaces(json!([other.root("work", "w")]));
+    let back = rpc(&mut ws, "snapshot.get", json!({"session":"work"})).await;
+    assert_ne!(generation(&back), g2);
 }

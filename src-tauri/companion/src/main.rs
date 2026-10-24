@@ -424,6 +424,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn peers_list_is_answered_over_the_admin_channel_with_its_request_id() {
+        let mut running = Running::start(std::future::pending()).await;
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"peers.list\",\"requestId\":41}\n")
+            .await
+            .unwrap();
+        let snapshot = running.event().await;
+        assert_eq!(
+            snapshot,
+            serde_json::json!({"v":1,"type":"peers.snapshot","requestId":41,"peers":[],"streams":[]})
+        );
+        // An ack nobody waits for gets no reply and does not stop the gateway.
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"push.ack\",\"requestId\":1,\"stored\":true}\n{\"v\":1,\"type\":\"peers.list\",\"requestId\":42}\n")
+            .await
+            .unwrap();
+        assert_eq!(running.event().await["requestId"], 42);
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"shutdown\"}\n")
+            .await
+            .unwrap();
+        assert!(timeout(Duration::from_secs(2), running.task)
+            .await
+            .unwrap()
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn gone_parent_stops_the_gateway_after_a_grace_while_stdin_stays_open() {
         let gone = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen = gone.clone();

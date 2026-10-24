@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import {
   companionDevices,
+  companionPeers,
   companionStatus,
   type CompanionClaim,
   type CompanionDevice,
@@ -37,6 +38,8 @@ interface CompanionState {
   /** Why the last enable failed. Kept here so a card opened after it still shows it; cleared when the next enable starts or the Companion runs. */
   enableError: string | null
   refresh: () => Promise<void>
+  /** Replaces `peers` and `streams` with the gateway's own list; events keep them current in between. */
+  reconcilePeers: () => Promise<void>
   setOverview: (overview: CompanionOverview) => void
   applyEvent: (event: CompanionEvent) => void
   dropClaim: (pairingId: string) => void
@@ -53,6 +56,10 @@ const RETRY_MS = 1000
 const MAX_RETRIES = 3
 let retries = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
+// Bumped by every event that moves a phone or a stream: a peers read that raced one reads again.
+let peerSeq = 0
+let reconciling: Promise<void> | null = null
+const RECONCILE_ATTEMPTS = 3
 
 /** A running Companion has no enable failure left to explain. */
 const settledEnable = (overview: CompanionOverview) => overview.status.state === "running" ? { enableError: null } : {}
@@ -77,6 +84,8 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
           if (seq === eventSeq) {
             retries = 0
             set({ overview, devices, ...settledEnable(overview) })
+            // A reloaded UI never saw the phones that connected before it.
+            if (overview.status.state === "running") void get().reconcilePeers()
             return
           }
           // Never commit a read an event overtook: it would undo that event.
@@ -96,6 +105,31 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
     })()
     return refreshing
   },
+  reconcilePeers() {
+    if (get().overview?.status.state !== "running") return Promise.resolve()
+    reconciling ??= (async () => {
+      try {
+        for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt++) {
+          const seq = peerSeq
+          const snapshot = await companionPeers()
+          // An event overtook the read: it would be undone, so read again.
+          if (seq !== peerSeq) continue
+          if (get().overview?.status.state !== "running") return
+          const streams: Record<string, CompanionStream> = Object.fromEntries(snapshot.streams.map(({ stream, ...rest }) => [stream, rest]))
+          // A stream the events never announced counts as opened; one gone from the list keeps its seq, so its late open stays ignored.
+          const streamSeq = { ...get().streamSeq }
+          for (const key of Object.keys(streams)) streamSeq[key] = Math.max(streamSeq[key] ?? 0, 1)
+          set({ peers: Object.fromEntries(snapshot.peers.map(peer => [peer.peerId, peer.deviceId])), streams, streamSeq })
+          return
+        }
+      } catch {
+        // The gateway is busy, going away or answered nonsense: what the events built stays, and the next tick asks again.
+      } finally {
+        reconciling = null
+      }
+    })()
+    return reconciling
+  },
   setOverview(overview) {
     eventSeq++
     set({ overview, ...settledEnable(overview) })
@@ -104,6 +138,7 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
     switch (event.type) {
       case "status": {
         eventSeq++
+        peerSeq++
         const overview = get().overview
         if (overview) set({ overview: { ...overview, status: event.status } })
         if (event.status.state === "running") set({ enableError: null })
@@ -130,9 +165,11 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
         return
       }
       case "session.opened":
+        peerSeq++
         set({ peers: { ...get().peers, [event.peerId]: event.deviceId } })
         return
       case "session.closed": {
+        peerSeq++
         const { [event.peerId]: _closed, ...peers } = get().peers
         const streams = Object.fromEntries(Object.entries(get().streams).filter(([, stream]) => stream.peerId !== event.peerId))
         set({ peers, streams })
@@ -140,6 +177,7 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
       }
       case "control.state":
       case "full.state": {
+        peerSeq++
         if (event.seq <= (get().streamSeq[event.stream] ?? 0)) return
         const { [event.stream]: _closed, ...streams } = get().streams
         const stream: CompanionStream = event.type === "control.state"

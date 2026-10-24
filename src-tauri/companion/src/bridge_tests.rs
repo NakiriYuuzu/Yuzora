@@ -174,23 +174,15 @@ async fn bridge_hello_advertises_push_and_push_methods_answer_and_notify_the_des
         call("hello", json!({}))["result"]["push"],
         json!({"vapidPublicKey":key})
     );
-    let keys = json!({"p256dh":key,"auth":URL_SAFE_NO_PAD.encode([9u8; 16])});
     let endpoint = "https://updates.push.services.mozilla.com/wpush/v2/abc";
     let status = json!({"endpoint":endpoint});
     assert_eq!(
         call("push.status", status.clone()),
         json!({"id":5,"result":{"available":true,"subscribed":false}})
     );
-    assert_eq!(
-        call("push.subscribe", json!({"endpoint":endpoint,"keys":keys})),
-        json!({"id":5,"result":{"subscribed":true}})
-    );
-    assert_eq!(
-        f.event().await,
-        json!({"v":1,"type":"push.subscription","deviceId":"AAAAAAAAAAAAAAAAAAAAAA",
-            "subscription":{"endpoint":endpoint,"p256dh":keys["p256dh"],"auth":keys["auth"]}})
-    );
-    // The desktop stored it and says so: on for this browser, off for another.
+    // `push.subscribe` waits for the desktop's ack, so the read loop answers it
+    // (see the push tests in read_bridge_tests). Here: the desktop stored it
+    // and says so: on for this browser, off for another.
     let id = crate::secrets::encode(&crate::secrets::hash(endpoint.as_bytes()));
     let stored = serde_json::from_value(json!({"v":1,"type":"push.devices","devices":[
         {"deviceId":"AAAAAAAAAAAAAAAAAAAAAA","endpoints":[id]}]}))
@@ -223,11 +215,6 @@ async fn bridge_hello_advertises_push_and_push_methods_answer_and_notify_the_des
             "subscription":null,"endpointId":id})
     );
     for (method, params) in [
-        ("push.subscribe", json!({})),
-        (
-            "push.subscribe",
-            json!({"endpoint":"https://evil.com/x","keys":keys}),
-        ),
         ("push.unsubscribe", Value::Null),
         ("push.unsubscribe", json!({})),
         ("push.unsubscribe", json!({"endpoint":null})),
@@ -258,13 +245,10 @@ async fn bridge_push_methods_are_unavailable_when_init_has_no_push() {
         call("push.status", json!({})),
         json!({"id":6,"result":{"available":false,"subscribed":false}})
     );
-    for method in ["push.subscribe", "push.unsubscribe"] {
-        assert_eq!(
-            call(method, json!({}))["error"]["code"],
-            "push-unavailable",
-            "{method}"
-        );
-    }
+    assert_eq!(
+        call("push.unsubscribe", json!({}))["error"]["code"],
+        "push-unavailable"
+    );
 }
 
 #[tokio::test]

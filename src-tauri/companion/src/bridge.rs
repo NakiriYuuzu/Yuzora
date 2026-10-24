@@ -767,7 +767,7 @@ fn rpc(gateway: &Gateway, ctx: &AuthContext, text: &str) -> Result<Value, Close>
             None => rpc_error(call.id.clone(), "unknown-method", "Unknown method"),
             Some("hello") => json!({"id":call.id,"result":{"protocolVersion":1,"serverTime":gateway.clock.now()}}),
             Some("session.ping") => json!({"id":call.id,"result":{"serverTime":gateway.clock.now()}}),
-            Some(name @ ("push.subscribe" | "push.unsubscribe" | "push.status")) => {
+            Some(name @ ("push.unsubscribe" | "push.status")) => {
                 match gateway.push.call(gateway, ctx.device_id(), name, &call.params) {
                     Ok(result) => json!({"id":call.id,"result":result}),
                     Err(code) => rpc_error(call.id.clone(), code, code),

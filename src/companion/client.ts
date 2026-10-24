@@ -4,7 +4,7 @@ import type { PaneTarget } from "./lib/deepLink"
 import type { AgentStatus, Hello, SessionInfo, Snapshot, StreamOpen } from "./lib/protocol"
 import { CompanionSocket, RpcError } from "./lib/rpc"
 import { clockOffset } from "./lib/time"
-import { navigate, open, storage, useCompanion } from "./store"
+import { navigate, open, pruneGit, storage, useCompanion } from "./store"
 
 type StreamHandlers = { data: (bytes: Uint8Array) => void; closed: (reason: string) => void }
 
@@ -166,6 +166,8 @@ export async function refresh(): Promise<void> {
   useCompanion.setState((state) => ({
     sessions,
     snapshots: Object.fromEntries(Object.entries(state.snapshots).filter(([name]) => listed(name))),
+    // A vanished session's repositories go with it.
+    git: Object.fromEntries(Object.entries(state.git).filter(([key]) => listed(key.slice(0, key.indexOf("\0"))))),
     sessionErrors: Object.fromEntries(Object.entries(state.sessionErrors).filter(([name]) => listed(name))),
   }))
   const loaded = await Promise.all(sessions.map(async (session) => [session.name, await loadSession(session.name, false)] as const))
@@ -229,7 +231,8 @@ async function loadSession(name: string, resubscribe: boolean): Promise<boolean>
       raced = touched.get(name) !== mark
       if (!raced || retry === SNAPSHOT_RETRIES) break
     }
-    useCompanion.setState((state) => ({ snapshots: { ...state.snapshots, [name]: snapshot }, sessionErrors: withoutKey(state.sessionErrors, name) }))
+    // The desktop may have pointed a Space at another folder since the last snapshot.
+    useCompanion.setState((state) => ({ snapshots: { ...state.snapshots, [name]: snapshot }, git: pruneGit(state.git, name, snapshot), sessionErrors: withoutKey(state.sessionErrors, name) }))
     if (raced) scheduleReload(name)
     return true
   } catch (error) {

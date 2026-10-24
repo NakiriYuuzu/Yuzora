@@ -459,6 +459,103 @@ async fn admin_push_devices_frame_is_versioned_closed_and_unacknowledged() {
 }
 
 #[tokio::test]
+async fn admin_push_ack_and_peers_list_frames_are_versioned_and_closed() {
+    let frame = |value: serde_json::Value| (value.to_string() + "\n").into_bytes();
+    let read = |bytes: Vec<u8>| async move { admin::read(&mut bytes.as_slice()).await };
+    let Ok(Some(command)) = read(frame(
+        serde_json::json!({"v":1,"type":"push.ack","requestId":7,"stored":false}),
+    ))
+    .await
+    else {
+        panic!("valid command")
+    };
+    let CommandBody::PushAck(ack) = command.body else {
+        panic!("push.ack")
+    };
+    assert_eq!((ack.request_id, ack.stored), (7, false));
+    let Ok(Some(command)) = read(frame(
+        serde_json::json!({"v":1,"type":"peers.list","requestId":3}),
+    ))
+    .await
+    else {
+        panic!("valid command")
+    };
+    let CommandBody::Peers(list) = command.body else {
+        panic!("peers.list")
+    };
+    assert_eq!(list.request_id, 3);
+    for (kind, body) in [
+        ("push.ack", serde_json::json!({"requestId":1,"stored":true})),
+        ("peers.list", serde_json::json!({"requestId":1})),
+    ] {
+        let mut versioned = body.clone();
+        versioned["v"] = serde_json::json!(2);
+        versioned["type"] = serde_json::json!(kind);
+        assert!(matches!(
+            read(frame(versioned)).await,
+            Err("unsupported-version")
+        ));
+    }
+    for invalid in [
+        serde_json::json!({"v":1,"type":"push.ack"}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":1}),
+        serde_json::json!({"v":1,"type":"push.ack","stored":true}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":"1","stored":true}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":-1,"stored":true}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":1,"stored":"yes"}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":1,"stored":true,"x":1}),
+        serde_json::json!({"v":1,"type":"peers.list"}),
+        serde_json::json!({"v":1,"type":"peers.list","requestId":null}),
+        serde_json::json!({"v":1,"type":"peers.list","requestId":1,"x":1}),
+    ] {
+        assert!(matches!(read(frame(invalid)).await, Err("invalid-command")));
+    }
+}
+
+#[tokio::test]
+async fn admin_peers_snapshot_event_is_a_closed_reply_with_its_request_id() {
+    use yuzora_companion::{admin::AdminResult, clock::Clock, gateway::Gateway};
+    let init: yuzora_companion::admin::Init = serde_json::from_str(&init_fixture::json()).unwrap();
+    let (events, _writer) = admin::spawn_writer(tokio::io::sink());
+    let gateway = Gateway::new(&init, events, Clock::default()).unwrap();
+    let list = CommandBody::Peers(
+        serde_json::from_value(serde_json::json!({"v":1,"type":"peers.list","requestId":9}))
+            .unwrap(),
+    );
+    let result = gateway.command(list).unwrap();
+    assert!(
+        matches!(&result, AdminResult::Peers { request_id: 9, peers, streams } if peers.is_empty() && streams.is_empty())
+    );
+    let event = serde_json::to_value(result.deferred_event().unwrap()).unwrap();
+    assert_eq!(
+        event,
+        serde_json::json!({"v":1,"type":"peers.snapshot","requestId":9,"peers":[],"streams":[]})
+    );
+    let filled = AdminResult::Peers {
+        request_id: 1,
+        peers: vec![admin::PeerInfo {
+            peer_id: 4,
+            device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+        }],
+        streams: vec![admin::StreamInfo {
+            stream: "12".into(),
+            device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+            peer_id: 4,
+            session: "work".into(),
+            scope: admin::Scope::Control,
+            target: Some("w:p".into()),
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(filled.deferred_event().unwrap()).unwrap(),
+        serde_json::json!({"v":1,"type":"peers.snapshot","requestId":1,
+            "peers":[{"peerId":4,"deviceId":"AAAAAAAAAAAAAAAAAAAAAA"}],
+            "streams":[{"stream":"12","deviceId":"AAAAAAAAAAAAAAAAAAAAAA","peerId":4,
+                "session":"work","scope":"control","target":"w:p"}]})
+    );
+}
+
+#[tokio::test]
 async fn admin_concurrent_emits_are_ordered_complete_lines() {
     use tokio::io::AsyncReadExt;
     // Tiny transport forces each line to span multiple writes.

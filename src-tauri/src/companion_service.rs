@@ -7,7 +7,7 @@ use crate::{
     companion_push::Push,
     companion_store::{device_id, Devices},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     future::Future,
@@ -197,6 +197,36 @@ struct Inner {
     /// Set when this side ends the process; `on_exit` applies it as the outcome.
     terminal: Option<Status>,
     pending: Option<Pending>,
+    /// `peers()` callers waiting for their `peers.snapshot`, by request id.
+    /// Unlike `pending` these carry an id, so a late answer is never mistaken.
+    peer_waits: std::collections::HashMap<u64, oneshot::Sender<PeersSnapshot>>,
+    peer_seq: u64,
+}
+
+/// The phones connected to the running gateway, as it reported them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersSnapshot {
+    pub peers: Vec<PeerRow>,
+    pub streams: Vec<StreamRow>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerRow {
+    pub peer_id: u64,
+    pub device_id: String,
+}
+/// An open control or full stream; `target` is the pane a control stream drives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamRow {
+    pub stream: String,
+    pub device_id: String,
+    pub peer_id: u64,
+    pub session: String,
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 struct Process {
@@ -586,6 +616,13 @@ impl CompanionManager {
                     self.push_devices();
                     outgoing.push(self.push.event());
                 }
+                // A subscribe the phone waits for: tell the gateway whether it
+                // is on disk, after the set it can answer `push.status` from.
+                if let Some(request) = event["requestId"].as_u64() {
+                    self.notify(
+                        &json!({"v": 1, "type": "push.ack", "requestId": request, "stored": changed}),
+                    );
+                }
             }
             "push.request" => {
                 if let Some(job) = self.push.request(&event["deviceIds"], &event["payload"]) {
@@ -612,6 +649,16 @@ impl CompanionManager {
                             inner.status = Status::Running { port: port as u16 };
                         }
                         outgoing.push(status_event(&inner.status));
+                    }
+                    "peers.snapshot" => {
+                        let wait = event["requestId"]
+                            .as_u64()
+                            .and_then(|id| inner.peer_waits.remove(&id));
+                        if let (Some(wait), Ok(snapshot)) =
+                            (wait, serde_json::from_value::<PeersSnapshot>(event))
+                        {
+                            let _ = wait.send(snapshot);
+                        }
                     }
                     "pairing.created" => {
                         resolve(&mut inner, |want| matches!(want, Want::Pairing), Ok(event))
@@ -705,6 +752,7 @@ impl CompanionManager {
             if let Some(pending) = inner.pending.take() {
                 let _ = pending.reply.send(Err("companion-exited".into()));
             }
+            inner.peer_waits.clear();
             let requested = inner.terminal == Some(Status::Disabled);
             let status = if let Some(terminal) = inner.terminal.take() {
                 terminal
@@ -873,6 +921,40 @@ impl CompanionManager {
                 }
                 Err("companion-timeout".into())
             }
+        }
+    }
+
+    /// The phones connected now and their open streams, from the gateway
+    /// itself: `session.*` events are best effort and a reloaded UI never saw
+    /// the earlier ones. Does not queue with the other commands (its answer
+    /// carries its own id) and a missing answer fails only this call.
+    pub async fn peers(&self) -> Result<PeersSnapshot, String> {
+        let (reply, wait) = oneshot::channel();
+        let id = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.peer_seq += 1;
+            let id = inner.peer_seq;
+            let running = matches!(inner.status, Status::Running { .. });
+            let Some(process) = inner.process.as_ref().filter(|_| running) else {
+                return Err("companion-not-running".into());
+            };
+            let mut bytes =
+                serde_json::to_vec(&json!({"v": 1, "type": "peers.list", "requestId": id}))
+                    .map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            process
+                .input
+                .send(bytes)
+                .map_err(|_| "companion-not-running".to_string())?;
+            inner.peer_waits.insert(id, reply);
+            id
+        };
+        let answer = tokio::time::timeout(self.timing.command, wait).await;
+        self.inner.lock().unwrap().peer_waits.remove(&id);
+        match answer {
+            Ok(Ok(snapshot)) => Ok(snapshot),
+            Ok(Err(_)) => Err("companion-exited".into()),
+            Err(_) => Err("companion-timeout".into()),
         }
     }
 

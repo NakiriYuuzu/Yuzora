@@ -669,6 +669,15 @@ pub fn companion_devices(state: tauri::State<'_, CompanionState>) -> Result<Vec<
     state.manager.devices()
 }
 
+/// The phones the gateway has connected right now. The UI keeps events for
+/// immediacy and corrects them with this.
+#[tauri::command]
+pub async fn companion_peers(
+    state: tauri::State<'_, CompanionState>,
+) -> Result<crate::companion_service::PeersSnapshot, String> {
+    state.manager.peers().await
+}
+
 #[tauri::command]
 pub async fn companion_device_update(
     state: tauri::State<'_, CompanionState>,

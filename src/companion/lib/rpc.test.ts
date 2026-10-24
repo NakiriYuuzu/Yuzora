@@ -147,6 +147,35 @@ describe("CompanionSocket", () => {
     expect(socket.calls().filter((frame) => frame.method === "pane.sendKeys")).toHaveLength(1)
   })
 
+  it("gives push.subscribe a read slot and retries its busy, but its lost outcome stays unknown", async () => {
+    vi.useFakeTimers()
+    const ready = connected()
+    await vi.advanceTimersByTimeAsync(0)
+    const [client, socket] = await ready
+    const reads = ["a", "b"].map((session) => client.call("snapshot.get", { session }))
+    const subscribe = client.call("push.subscribe", { endpoint: "https://push.example/x" })
+    await vi.advanceTimersByTimeAsync(0)
+    // The gateway holds a pending slot while it waits for the desktop: queue behind the reads.
+    expect(socket.calls().map((frame) => frame.method)).not.toContain("push.subscribe")
+    socket.reply("snapshot.get", { ok: "a" })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = socket.calls().find((frame) => frame.method === "push.subscribe")!
+    expect(first).toBeDefined()
+    // `busy` means the gateway sent nothing to the desktop: asking again is safe.
+    socket.server({ id: first.id, error: { code: "busy", message: "busy" } })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(socket.calls().filter((frame) => frame.method === "push.subscribe")).toHaveLength(2)
+    // While it waits for the desktop it still holds the slot: a third read queues.
+    const third = client.call("snapshot.get", { session: "c" })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.calls().filter((frame) => frame.method === "snapshot.get")).toHaveLength(2)
+    socket.close(1006)
+    await expect(subscribe).rejects.toMatchObject({ code: "outcome-unknown" })
+    await expect(reads[1]).rejects.toMatchObject({ code: "disconnected" })
+    await expect(reads[0]).resolves.toEqual({ ok: "a" })
+    await expect(third).rejects.toMatchObject({ code: "not-connected" })
+  })
+
   it("never resends a write the socket lost and marks its outcome unknown", async () => {
     vi.useFakeTimers()
     const ready = connected()

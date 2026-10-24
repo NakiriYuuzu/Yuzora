@@ -23,7 +23,7 @@ const KNOWN = new Set([
   "fresh-elevation-required", "scope-not-granted", "owned-elsewhere", "taken-over", "no-agent", "audit-unavailable",
   "stream-stalled", "slow-consumer", "stream-closed", "full-limit", "key-not-allowed", "invalid-params", "stream-not-found",
   "agent-blocked", "git-untrusted", "git-unavailable", "git-not-repository", "git-cursor-invalid", "git-failed",
-  "push-unavailable",
+  "push-unavailable", "push-store-failed", "push-unconfirmed",
 ])
 
 export function rpcErrorKey(code: string): string {

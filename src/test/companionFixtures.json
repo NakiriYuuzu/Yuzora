@@ -195,6 +195,31 @@
     "pairingId": "pairing-1",
     "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"
   },
+  "peersSnapshot": {
+    "peers": [
+      {
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "peerId": 3
+      }
+    ],
+    "streams": [
+      {
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "peerId": 3,
+        "scope": "control",
+        "session": "work",
+        "stream": "12",
+        "target": "w:p"
+      },
+      {
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "peerId": 3,
+        "scope": "full",
+        "session": "work",
+        "stream": "13"
+      }
+    ]
+  },
   "phoneLink": {
     "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
     "url": "https://desktop.tail1234.ts.net/"
