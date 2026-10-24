@@ -46,6 +46,14 @@ const (
 // there is none) and when the proxy hijacks the connection. A variable for tests.
 var readTimeout = 15 * time.Second
 
+// writeTimeout bounds a response from the end of its request's headers; it
+// matches the gateway's per-connection budget (body, the 26 s long poll and a
+// margin). Without it a peer that never reads its responses holds the
+// connection, and its slot, for as long as it likes. A hijacked WebSocket is
+// not bounded: the server clears both deadlines when the proxy hijacks the
+// connection. A variable for tests.
+var writeTimeout = 60 * time.Second
+
 // runningInfo is what the running event reports; a change in any field re-emits it.
 type runningInfo struct {
 	dnsName      string
@@ -407,6 +415,7 @@ func startService(ln net.Listener, lc localAPI, currentName func() string, targe
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          connLog,

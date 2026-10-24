@@ -253,6 +253,13 @@ func shortReadTimeout(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { readTimeout = old })
 }
 
+// shortWriteTimeout shortens writeTimeout for one test, like shortReadTimeout.
+func shortWriteTimeout(t *testing.T, d time.Duration) {
+	old := writeTimeout
+	writeTimeout = d
+	t.Cleanup(func() { writeTimeout = old })
+}
+
 // startServiceFor serves the owner over TLS in front of a gateway handler.
 func startServiceFor(t *testing.T, gateway http.Handler) (*service, string) {
 	t.Helper()
@@ -304,10 +311,39 @@ func TestServiceReleasesTheSlotOfABodyThatNeverArrives(t *testing.T) {
 	})
 }
 
-// The read timeout ends at the request: a long poll, with or without a body,
-// may answer after it, and an upgraded connection outlives it.
-func TestServiceReadTimeoutSparesLongPollsAndWebSockets(t *testing.T) {
+// A peer that never reads its responses must not keep the connection, and
+// with it an admission slot, after the write timeout. Closing then takes up to
+// 5 s more: crypto/tls gives its close_notify alert that long on a full socket.
+func TestServiceReleasesTheSlotOfAPeerThatNeverReads(t *testing.T) {
+	shortWriteTimeout(t, 500*time.Millisecond)
+	svc, addr := startServiceFor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, 64<<20)) // far more than the socket buffers hold
+	}))
+	conn := dialOwner(t, addr)
+	if _, err := io.WriteString(conn, "GET /assets/index.js HTTP/1.1\r\nHost: "+testDNSName+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for {
+		svc.conns.mu.Lock()
+		held := len(svc.conns.conns)
+		svc.conns.mu.Unlock()
+		if held == 0 {
+			break
+		}
+		if time.Since(start) > 15*time.Second {
+			t.Fatal("the connection still holds its slot 15 s after the write timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The read timeout ends at the request and the write timeout at the response:
+// a long poll, with or without a body, may answer after the read timeout, and
+// an upgraded connection outlives both.
+func TestServiceTimeoutsSpareLongPollsAndWebSockets(t *testing.T) {
 	shortReadTimeout(t, 200*time.Millisecond)
+	shortWriteTimeout(t, 1500*time.Millisecond)
 	echo := newUpstream(t).Config.Handler
 	_, addr := startServiceFor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ws" {
@@ -344,12 +380,12 @@ func TestServiceReadTimeoutSparesLongPollsAndWebSockets(t *testing.T) {
 	if resp, err := http.ReadResponse(reader, nil); err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade: %v %v", resp, err)
 	}
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 	if _, err := io.WriteString(conn, "ping"); err != nil {
 		t.Fatal(err)
 	}
 	got := make([]byte, 4)
 	if _, err := io.ReadFull(reader, got); err != nil || string(got) != "ping" {
-		t.Fatalf("echo after the read timeout: %q %v", got, err)
+		t.Fatalf("echo after both timeouts: %q %v", got, err)
 	}
 }
