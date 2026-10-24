@@ -558,6 +558,89 @@ describe("release workflow contracts", () => {
     }
   })
 
+  it("requires the Companion bundle checks in candidates, releases and the Windows payload verifier", () => {
+    const run = (contract: string, mutation: string) => spawnSync(
+      "bun",
+      ["-e", `
+        import { parseReleaseWorkflow, ${contract} } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        const ci = parseReleaseWorkflow(await Bun.file(".github/workflows/ci.yml").text());
+        const step = (job) => job.steps.find((item) => item.name === "Verify bundled Companion sidecar");
+        ${mutation}
+        ${contract === "verifyBetaReleaseContract" ? "verifyBetaReleaseContract(release, ci)" : "verifyStableReleaseContract(release)"};
+      `],
+      { encoding: "utf8" }
+    )
+    const stableMissing = "macOS installers must verify the bundled Companion sidecars"
+    const cases: [string, string, string][] = [
+      ["verifyStableReleaseContract", `release.jobs.build.steps.splice(release.jobs.build.steps.indexOf(step(release.jobs.build)), 1);`, "missing workflow step: Verify bundled Companion sidecar"],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run = step(release.jobs.build).run.replace('test -f "$APP/Resources/companion-web/index.html"', "true");`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run = step(release.jobs.build).run.replace('lipo -archs "$APP/MacOS/yuzora-companion-net")" = "arm64"', "true");`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).if = "matrix.artifact_name == 'windows'";`, stableMissing],
+      ["verifyBetaReleaseContract", `ci.jobs["release-candidate"].steps.splice(ci.jobs["release-candidate"].steps.indexOf(step(ci.jobs["release-candidate"])), 1);`, "missing workflow step: Verify bundled Companion sidecar"],
+      ["verifyBetaReleaseContract", `step(ci.jobs["release-candidate"]).run = step(ci.jobs["release-candidate"]).run.replace('test -f "$APP/Resources/companion-net/THIRD_PARTY_NOTICES.txt"', "true");`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run = step(release.jobs.build).run.replace('test -f "$APP/Resources/companion-web/index.html"', 'test -f "$APP/Resources/companion-web/index.html" || true');`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build)["continue-on-error"] = true;`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run = step(release.jobs.build).run.replace("APP=", "exit 0\\nAPP=");`, stableMissing],
+      ["verifyBetaReleaseContract", `step(ci.jobs["release-candidate"])["continue-on-error"] = "true";`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run += '\\ntrue || true';`, stableMissing],
+      ["verifyBetaReleaseContract", `step(ci.jobs["release-candidate"]).run += '\\nset +e';`, stableMissing],
+      ["verifyBetaReleaseContract", `step(ci.jobs["release-candidate"]).run = step(ci.jobs["release-candidate"]).run.replace('test -f "$APP/Resources/companion-web/index.html"', 'test -f "$APP/Resources/companion-web/index.html" || true');`, stableMissing],
+      ["verifyBetaReleaseContract", `step(ci.jobs["release-candidate"]).run = step(ci.jobs["release-candidate"]).run.replace("APP=", "exit 0\\nAPP=");`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run += '\\ntrue; set +e';`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run += '\\ntrue; exit;';`, stableMissing],
+      ["verifyStableReleaseContract", `step(release.jobs.build).run += '\\nexec true';`, stableMissing],
+    ]
+    for (const [contract, mutation, message] of cases) {
+      const result = run(contract, mutation)
+      expect(result.status, mutation).not.toBe(0)
+      expect(result.stderr, mutation).toContain(message)
+    }
+
+    const script = readFileSync("scripts/verify-windows-runtime-payload.ps1", "utf8")
+    const windowsMutations = [
+      script.replace("'yuzora-companion.exe', 'yuzora-companion-net.exe'", "'yuzora-companion.exe'"),
+      script.replace("Expected exactly one Companion sidecar", "Expected sidecar"),
+      script.replace("'companion-net\\THIRD_PARTY_NOTICES.txt'", "'companion-net'"),
+      script.replace("Expected exactly one Companion resource", "Expected resource"),
+      script.replace("$_.Name -ceq $sidecar }).Count -ne 1", "$_.Name -ceq $sidecar }).Count -gt 1"),
+      script.replace("        if (@($files | Where-Object { $_.FullName.EndsWith", "        # if (@($files | Where-Object { $_.FullName.EndsWith"),
+    ]
+    windowsMutations.push(
+      script.replace("function Assert-Payload([string]$Root) {\n", "function Assert-Payload([string]$Root) {\n    return\n"),
+      script.replace("    foreach ($sidecar", "    if ($false) { }\n    foreach ($sidecar")
+    )
+    for (const mutated of windowsMutations) {
+      expect(mutated).not.toBe(script)
+      const result = spawnSync("bun", ["-e", `
+        import { verifyWindowsPayloadScriptCompanion } from "./scripts/release-contract.ts";
+        verifyWindowsPayloadScriptCompanion(process.env.PS1);
+      `], { encoding: "utf8", env: { ...process.env, PS1: mutated } })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("the Windows payload verifier must require the Companion")
+    }
+    const clean = spawnSync("bun", ["-e", `
+      import { verifyWindowsPayloadScriptCompanion } from "./scripts/release-contract.ts";
+      verifyWindowsPayloadScriptCompanion(process.env.PS1);
+    `], { encoding: "utf8", env: { ...process.env, PS1: script } })
+    expect(clean.status).toBe(0)
+
+    // Comment lines are ignored: they neither satisfy a check nor trip the escape-hatch guards.
+    const annotated = spawnSync("bun", ["-e", `
+      import { parseReleaseWorkflow, verifyStableReleaseContract } from "./scripts/release-contract.ts";
+      const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+      const step = release.jobs.build.steps.find((item) => item.name === "Verify bundled Companion sidecar");
+      step.run = "# never || true, never exit 0\\n" + step.run;
+      verifyStableReleaseContract(release);
+    `], { encoding: "utf8" })
+    expect(annotated.status).toBe(0)
+    const commented = spawnSync("bun", ["-e", `
+      import { verifyWindowsPayloadScriptCompanion } from "./scripts/release-contract.ts";
+      verifyWindowsPayloadScriptCompanion(process.env.PS1);
+    `], { encoding: "utf8", env: { ...process.env, PS1: script.replace("\n    foreach ($sidecar", "\n    # foreach ($sidecar") } })
+    expect(commented.status).not.toBe(0)
+  })
+
   it("uses one bounded canonical-mirror installer for both Linux CI jobs", () => {
     const installer = readFileSync(".github/scripts/install-linux-system-dependencies.sh", "utf8")
     expect(installer).toContain("https://archive.ubuntu.com/ubuntu/")

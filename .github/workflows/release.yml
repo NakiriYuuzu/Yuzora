@@ -400,6 +400,18 @@ jobs:
           APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
+      # externalBin lands next to the app executable; the web root and notices are resources.
+      - name: Verify bundled Companion sidecar
+        if: matrix.artifact_name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app/Contents
+          test "$(lipo -archs "$APP/MacOS/yuzora-companion")" = "arm64"
+          test "$(lipo -archs "$APP/MacOS/yuzora-companion-net")" = "arm64"
+          test -f "$APP/Resources/companion-web/index.html"
+          test -f "$APP/Resources/companion-net/THIRD_PARTY_NOTICES.txt"
+
       - name: Verify Windows native and Unix runtime payloads
         if: matrix.artifact_name == 'windows'
         shell: powershell

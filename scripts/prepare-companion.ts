@@ -22,7 +22,11 @@ async function hostTriple(): Promise<string> {
  */
 export async function replace(destination: string, content: Buffer, mode?: number): Promise<boolean> {
   const current = await readFile(destination).catch(() => null)
-  if (current?.equals(content)) return false
+  if (current?.equals(content)) {
+    // A copy that lost its execute bit would not launch; chmod changes only the inode's ctime, not the content or mtime tauri-build tracks.
+    if (mode !== undefined && process.platform !== "win32") await chmod(destination, mode)
+    return false
+  }
   await mkdir(dirname(destination), { recursive: true })
   await writeFile(`${destination}.tmp`, content)
   if (mode !== undefined) await chmod(`${destination}.tmp`, mode)
