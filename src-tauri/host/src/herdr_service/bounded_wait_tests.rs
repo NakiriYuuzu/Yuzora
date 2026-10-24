@@ -1401,7 +1401,10 @@ fn a_stalled_scroll_tears_down_and_tells_the_frontend() {
 }
 
 /// A reader that takes 512 bytes per 250 ms is slow, not stalled, even though a
-/// 4 KiB chunk would need two seconds against the one second limit.
+/// 4 KiB chunk would need two seconds against the one second limit. macOS only:
+/// a full Linux pipe wakes its writer only once a whole 4 KiB page is free, so
+/// there the kernel, not the chunk size, sets the granularity of progress.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_thread_write_counts_progress_per_byte_not_per_large_chunk() {
     use std::os::fd::AsRawFd;

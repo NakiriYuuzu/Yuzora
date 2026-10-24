@@ -203,6 +203,10 @@ fn valid_credential(credential: &Value) -> bool {
     let Some(object) = credential.as_object() else {
         return false;
     };
+    // Indexing a Map panics on a missing key, so the closed field set comes first.
+    if object.len() != FIELDS.len() || !FIELDS.iter().all(|f| object.contains_key(*f)) {
+        return false;
+    }
     let id_ok = object["id"].as_str().is_some_and(|id| {
         !id.is_empty()
             && id.len() <= 1024usize.div_ceil(3) * 4
@@ -218,9 +222,7 @@ fn valid_credential(credential: &Value) -> bool {
                     .is_some_and(|t| TRANSPORTS.contains(&t) && seen.insert(t))
             })
     });
-    object.len() == FIELDS.len()
-        && FIELDS.iter().all(|f| object.contains_key(*f))
-        && id_ok
+    id_ok
         && object["rpId"].as_str().is_some_and(valid_rp_id)
         && object["publicKeyState"].is_string()
         && object["stateFormat"] == "webauthn_rp-0.3.0-static"

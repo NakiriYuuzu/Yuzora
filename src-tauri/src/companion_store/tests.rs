@@ -405,6 +405,19 @@ fn companion_store_credentials_follow_the_gateways_rules() {
             with(|c| c["transports"] = json!("usb")),
         ),
         ("credential not an object", with(|c| *c = Value::Null)),
+        ("empty credential object", with(|c| *c = json!({}))),
+        (
+            "missing id",
+            with(|c| {
+                c.as_object_mut().unwrap().remove("id");
+            }),
+        ),
+        (
+            "missing transports",
+            with(|c| {
+                c.as_object_mut().unwrap().remove("transports");
+            }),
+        ),
     ];
     for (name, bad) in rejected {
         let dir = tempfile::tempdir().unwrap();
