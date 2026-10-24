@@ -526,7 +526,14 @@ async fn bring_up(
             &node.identity.login,
         )
         .await?;
-    Ok(state.manager.status())
+    // A gateway that ended by itself while the node was told to serve is not
+    // an enabled Companion: an error makes the caller unserve and stop now,
+    // and carries the failure code to the UI.
+    match state.manager.status() {
+        running @ Status::Running { .. } => Ok(running),
+        Status::Failed { code } => Err(code),
+        _ => Err("companion-stopped".into()),
+    }
 }
 
 #[tauri::command]
@@ -569,11 +576,36 @@ pub async fn companion_pairing_create(
         return Err("companion-path-unsupported".into());
     }
     let created = state.manager.pairing_create(add_to_device).await?;
-    let url = created["url"].as_str().ok_or("companion-invalid-reply")?;
+    pairing_qr(&created, chrono::Utc::now())
+}
+
+/// The gateway's pairing lives five minutes; an hour is generous slack.
+const PAIRING_MAX_AHEAD: i64 = 3600;
+
+/// A reply that cannot be cancelled or timed is never shown as a QR: the
+/// cancel id and the deadline come from the gateway or the pairing is invalid.
+fn pairing_qr(created: &Value, now: chrono::DateTime<chrono::Utc>) -> Result<PairingQr, String> {
+    let invalid = || "companion-invalid-reply".to_string();
+    let url = created["url"].as_str().ok_or_else(invalid)?;
+    let pairing_id = created["pairingId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(invalid)?;
+    let expires_at = created["expiresAt"]
+        .as_str()
+        .filter(|at| crate::companion_store::valid_until(at))
+        .ok_or_else(invalid)?;
+    let ahead = chrono::DateTime::parse_from_rfc3339(expires_at)
+        .map_err(|_| invalid())?
+        .signed_duration_since(now)
+        .num_seconds();
+    if !(1..=PAIRING_MAX_AHEAD).contains(&ahead) {
+        return Err(invalid());
+    }
     Ok(PairingQr {
-        pairing_id: created["pairingId"].as_str().unwrap_or_default().into(),
+        pairing_id: pairing_id.into(),
         qr_svg: qr_svg(url)?,
-        expires_at: created["expiresAt"].as_str().unwrap_or_default().into(),
+        expires_at: expires_at.into(),
     })
 }
 

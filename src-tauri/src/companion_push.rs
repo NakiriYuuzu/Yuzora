@@ -466,13 +466,21 @@ impl Push {
     /// turned notifications off. The device's other browsers keep theirs.
     /// False when it had none such.
     pub fn unsubscribe(&self, device: &str, endpoint: &str) -> bool {
+        self.remove(device, |subscription| {
+            endpoint_id(&subscription.endpoint) == endpoint
+        })
+    }
+
+    /// Removes the device's subscriptions that `gone` picks, deciding and
+    /// writing under one lock.
+    fn remove(&self, device: &str, gone: impl Fn(&Subscription) -> bool) -> bool {
         let mut state = self.state.lock().unwrap();
         let mut next = state.subscriptions.clone();
         let Some(list) = next.get_mut(device) else {
             return false;
         };
         let before = list.len();
-        list.retain(|subscription| endpoint_id(&subscription.endpoint) != endpoint);
+        list.retain(|subscription| !gone(subscription));
         if list.len() == before {
             return false;
         }
@@ -598,7 +606,7 @@ impl Push {
             .map(|(device, subscription, request)| async move {
                 match (self.sender)(request).await {
                     Ok(200..=299) => false,
-                    Ok(404 | 410) => self.expire(&device, &subscription.endpoint),
+                    Ok(404 | 410) => self.expire(&device, &subscription),
                     Ok(status) => {
                         log_warning("companion_push_rejected", &format!("status {status}"));
                         false
@@ -616,9 +624,15 @@ impl Push {
     }
 
     /// Deletes the subscription the push service reported as gone, unless the
-    /// phone has since made a new one (another endpoint is another browser's).
-    fn expire(&self, device: &str, endpoint: &str) -> bool {
-        self.unsubscribe(device, &endpoint_id(endpoint))
+    /// phone has since made a new one (another endpoint is another browser's;
+    /// the same endpoint with other keys is a renewal, and the gone answer was
+    /// for the keys it replaced).
+    fn expire(&self, device: &str, sent: &Subscription) -> bool {
+        self.remove(device, |stored| {
+            stored.endpoint == sent.endpoint
+                && stored.p256dh == sent.p256dh
+                && stored.auth == sent.auth
+        })
     }
 }
 

@@ -167,6 +167,37 @@ fn companion_pairing_qr_is_an_svg() {
     assert!(!svg.contains("SECRET"));
 }
 
+#[test]
+fn companion_pairing_qr_needs_the_cancel_id_and_a_near_future_deadline() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-25T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let reply = |id: Value, at: Value| json!({"url": "https://desktop.tail1234.ts.net/pair#p=P1.S", "pairingId": id, "expiresAt": at});
+    let good = pairing_qr(&reply(json!("P1"), json!("2026-10-25T10:05:00Z")), now).unwrap();
+    assert_eq!(good.pairing_id, "P1");
+    assert_eq!(good.expires_at, "2026-10-25T10:05:00Z");
+    for (id, at) in [
+        (Value::Null, json!("2026-10-25T10:05:00Z")),
+        (json!(""), json!("2026-10-25T10:05:00Z")),
+        (json!("P1"), Value::Null),
+        (json!("P1"), json!("")),
+        (json!("P1"), json!("soon")),
+        (json!("P1"), json!("2026-10-25T10:05:00+02:00")),
+        (json!("P1"), json!("2026-10-25T09:59:00Z")),
+        (json!("P1"), json!("2026-10-25T10:00:00Z")),
+        (json!("P1"), json!("2026-10-25T12:00:01Z")),
+        (json!("P1"), json!("2030-01-01T00:05:00Z")),
+    ] {
+        assert_eq!(
+            pairing_qr(&reply(id.clone(), at.clone()), now)
+                .err()
+                .as_deref(),
+            Some("companion-invalid-reply"),
+            "{id} {at}"
+        );
+    }
+}
+
 /// Real sidecar smoke: `YUZORA_COMPANION_SMOKE_BIN=<yuzora-companion> cargo test
 /// --lib companion_real_gateway_smoke -- --ignored`. Never executes HERDR.
 #[tokio::test]
@@ -1497,6 +1528,35 @@ async fn companion_an_enable_does_not_serve_a_gateway_that_crashed_since_it_was_
     );
 }
 
+// Ready, and gone while the node is still answering the serve command.
+const GATEWAY_CRASHES_DURING_SERVE: &str = r#"echo gw:ready >> @LOG@
+echo '{"v":1,"type":"ready","ports":{"loopback":47110,"lan":null}}'
+sleep 0.25
+exit 1"#;
+
+#[tokio::test]
+async fn companion_an_enable_whose_gateway_crashes_while_serving_fails_and_tears_down_at_once() {
+    let flow = Flow::new(
+        &[
+            NET_GATEWAY_STATE,
+            NET_INIT,
+            NET_RUNNING,
+            NET_CERT,
+            NET_COMMANDS_SLOW_TO_SERVE,
+        ],
+        &[GATEWAY_INIT_LOG, GATEWAY_PID, GATEWAY_CRASHES_DURING_SERVE],
+    );
+    let enabled = flow.enable().await;
+    // Not `Ok(Failed)`: by the time the enable returned, the listener had
+    // already been closed.
+    assert_eq!(enabled.unwrap_err(), "companion-crashed");
+    let order = flow.order();
+    assert!(order.contains(&"net:serve".to_string()), "{order:?}");
+    assert!(order.contains(&"net:unserve".to_string()), "{order:?}");
+    flow.until("node gone", |f| f.state.net.mode().is_none())
+        .await;
+}
+
 /// Whatever the order of events: when the node was told to serve, the
 /// gateway's port was not let go before the node said its listener is closed.
 fn never_forwards_to_a_free_port(order: &[String]) {
@@ -1559,19 +1619,22 @@ async fn companion_a_halt_while_the_node_is_told_to_serve_waits_for_the_answer()
         flow.state.manager.fail("companion-timeout");
     };
     let (enabled, ()) = tokio::join!(flow.enable(), halting);
-    assert_eq!(
-        enabled.unwrap(),
-        Status::Failed {
-            code: "companion-timeout".into()
-        }
-    );
-    let order = settled(&flow, "gw:dead-at-node-shutdown").await;
+    // The halt ended the gateway while the node was serving: not an enabled
+    // Companion, and the caller's own teardown follows the halt's.
+    assert_eq!(enabled.unwrap_err(), "companion-timeout");
+    let mut order = settled(&flow, "gw:dead-at-node-shutdown").await;
+    order[10] = "<gateway>".into();
     assert_eq!(
         order[5..],
         [
             "net:serve",
             "net:unserve",
             "gw:alive-at-unserve",
+            "net:unserved",
+            // The enable's own teardown asks again; the halt may or may not
+            // have stopped the gateway by then.
+            "net:unserve",
+            "<gateway>",
             "net:unserved",
             "net:shutdown",
             "gw:dead-at-node-shutdown",

@@ -18,9 +18,69 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{mpsc, oneshot, watch},
 };
+
+/// The longest stderr record kept; what follows it in the same record is dropped.
+pub(crate) const STDERR_RECORD_BYTES: usize = 4096;
+
+/// A child's stderr one record at a time with bounded memory: a record without
+/// a newline cannot grow the buffer past `cap`, and bytes that are not UTF-8
+/// are replaced instead of ending the read (a stalled drain would block a
+/// chatty child on a full pipe). All state lives in the struct, so `next` is
+/// safe to use as a `select!` branch.
+pub(crate) struct RecordReader<R> {
+    reader: R,
+    record: Vec<u8>,
+    cap: usize,
+    /// The current record already hit `cap`; skip to its newline.
+    skipping: bool,
+}
+
+impl<R: AsyncBufRead + Unpin> RecordReader<R> {
+    pub(crate) fn new(reader: R, cap: usize) -> Self {
+        Self {
+            reader,
+            record: Vec::new(),
+            cap,
+            skipping: false,
+        }
+    }
+
+    /// `None` at EOF or on a read error.
+    pub(crate) async fn next(&mut self) -> Option<String> {
+        loop {
+            let Ok(chunk) = self.reader.fill_buf().await else {
+                return None;
+            };
+            if chunk.is_empty() {
+                // EOF: a last record without a newline still counts.
+                self.skipping = false;
+                return (!self.record.is_empty()).then(|| self.take());
+            }
+            let newline = chunk.iter().position(|b| *b == b'\n');
+            let body = &chunk[..newline.unwrap_or(chunk.len())];
+            let used = newline.map_or(chunk.len(), |at| at + 1);
+            if !self.skipping {
+                let kept = body.len().min(self.cap - self.record.len());
+                self.record.extend_from_slice(&body[..kept]);
+                self.skipping = kept < body.len();
+            }
+            self.reader.consume(used);
+            if newline.is_some() {
+                self.skipping = false;
+                return Some(self.take());
+            }
+        }
+    }
+
+    fn take(&mut self) -> String {
+        let line = String::from_utf8_lossy(&self.record).into_owned();
+        self.record.clear();
+        line.trim_end_matches('\r').to_string()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Timing {
@@ -378,8 +438,8 @@ impl CompanionManager {
             let _ = read_done.send(());
         });
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut lines = RecordReader::new(BufReader::new(stderr), STDERR_RECORD_BYTES);
+            while let Some(line) = lines.next().await {
                 log_stderr(&line);
             }
         });

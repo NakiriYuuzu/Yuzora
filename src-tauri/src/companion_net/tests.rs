@@ -1091,6 +1091,27 @@ impl Relayed {
 }
 
 #[tokio::test]
+async fn companion_net_stderr_survives_an_oversized_record_and_invalid_utf8() {
+    let mut relay = Relayed::new(10, Duration::from_secs(60));
+    use tokio::io::AsyncWriteExt;
+    relay
+        .writer
+        .write_all(&vec![b'y'; STDERR_RECORD_BYTES * 3])
+        .await
+        .unwrap();
+    relay
+        .writer
+        .write_all(b"\nbad \xff\nafter\n")
+        .await
+        .unwrap();
+    relay.until(3).await;
+    let logged = relay.end().await;
+    assert_eq!(logged[0], "y".repeat(500));
+    assert_eq!(logged[1], "bad \u{fffd}");
+    assert_eq!(logged[2], "after");
+}
+
+#[tokio::test]
 async fn companion_net_stderr_passes_a_limited_number_of_lines_per_window_and_counts_the_rest() {
     let window = Duration::from_millis(400);
     let mut relay = Relayed::new(3, window);

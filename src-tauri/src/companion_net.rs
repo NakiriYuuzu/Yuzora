@@ -5,7 +5,7 @@
 //! and stops it on disable or exit. Never log or emit the proxy secret.
 
 use crate::{
-    companion_service::ENV_ALLOWLIST,
+    companion_service::{RecordReader, ENV_ALLOWLIST, STDERR_RECORD_BYTES},
     companion_store::{create_private_dir, NetIdentity},
 };
 use serde::Serialize;
@@ -773,13 +773,13 @@ async fn relay_stderr(
     window: Duration,
     log: impl Fn(&str),
 ) {
-    let mut lines = BufReader::new(stderr).lines();
+    let mut lines = RecordReader::new(BufReader::new(stderr), STDERR_RECORD_BYTES);
     let (mut opened, mut written, mut dropped) = (tokio::time::Instant::now(), 0, 0usize);
     let summary = |dropped: usize| log(&format!("… {dropped} similar lines suppressed"));
     loop {
         let next = if dropped > 0 {
             tokio::select! {
-                line = lines.next_line() => line,
+                line = lines.next() => line,
                 _ = tokio::time::sleep_until(opened + window) => {
                     summary(dropped);
                     dropped = 0;
@@ -787,9 +787,9 @@ async fn relay_stderr(
                 }
             }
         } else {
-            lines.next_line().await
+            lines.next().await
         };
-        let Ok(Some(line)) = next else { break };
+        let Some(line) = next else { break };
         let now = tokio::time::Instant::now();
         if now >= opened + window {
             if dropped > 0 {

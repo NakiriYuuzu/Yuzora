@@ -341,3 +341,116 @@ fn companion_store_load_rejects_what_gateway_init_would() {
         );
     }
 }
+
+/// Each rejected row is a credential the gateway's `CredentialRecord` refuses
+/// at init (`companion/src/devices.rs`), so the file must take the
+/// corrupt-backup path instead of failing every enable. The accepted rows are
+/// edges the gateway allows: the check must not be stricter.
+#[test]
+fn companion_store_credentials_follow_the_gateways_rules() {
+    fn with(change: impl FnOnce(&mut Value)) -> Value {
+        let mut value = device();
+        change(&mut value["credentials"][0]);
+        value
+    }
+    let rejected = [
+        (
+            "missing publicKeyState",
+            with(|c| {
+                c.as_object_mut().unwrap().remove("publicKeyState");
+            }),
+        ),
+        ("unknown field", with(|c| c["extra"] = json!(1))),
+        (
+            "publicKeyState not a string",
+            with(|c| c["publicKeyState"] = json!(1)),
+        ),
+        ("rpId uppercase", with(|c| c["rpId"] = json!("Bad_Host"))),
+        ("rpId ip address", with(|c| c["rpId"] = json!("127.0.0.1"))),
+        ("rpId empty label", with(|c| c["rpId"] = json!("a..b"))),
+        ("id not base64url", with(|c| c["id"] = json!("***"))),
+        ("id empty", with(|c| c["id"] = json!(""))),
+        (
+            "id too long",
+            with(|c| c["id"] = json!(URL_SAFE_NO_PAD.encode([1u8; 1025]))),
+        ),
+        (
+            "wrong stateFormat",
+            with(|c| c["stateFormat"] = json!("webauthn_rp-0.2.0-static")),
+        ),
+        (
+            "signCount over u32",
+            with(|c| c["signCount"] = json!(4_294_967_296u64)),
+        ),
+        ("signCount negative", with(|c| c["signCount"] = json!(-1))),
+        ("signCount float", with(|c| c["signCount"] = json!(1.5))),
+        (
+            "backupState without eligible",
+            with(|c| c["backupState"] = json!(true)),
+        ),
+        (
+            "backupEligible not a bool",
+            with(|c| c["backupEligible"] = json!("no")),
+        ),
+        (
+            "duplicate transport",
+            with(|c| c["transports"] = json!(["usb", "usb"])),
+        ),
+        (
+            "unknown transport",
+            with(|c| c["transports"] = json!(["carrier-pigeon"])),
+        ),
+        (
+            "transports not an array",
+            with(|c| c["transports"] = json!("usb")),
+        ),
+        ("credential not an object", with(|c| *c = Value::Null)),
+    ];
+    for (name, bad) in rejected {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = json!({"version": 1, "devices": [bad]}).to_string();
+        std::fs::write(dir.path().join("devices.json"), &contents).unwrap();
+        assert_eq!(
+            Devices::load(dir.path()).err().as_deref(),
+            Some("companion-store-corrupt"),
+            "{name}"
+        );
+        let backed_up = std::fs::read_dir(dir.path()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("devices.json.corrupt-")
+        });
+        assert!(backed_up, "{name}");
+    }
+    let accepted = [
+        (
+            "every transport",
+            with(|c| {
+                c["transports"] = json!(["usb", "nfc", "ble", "internal", "hybrid", "smart-card"])
+            }),
+        ),
+        ("no transports", with(|c| c["transports"] = json!([]))),
+        (
+            "largest signCount",
+            with(|c| c["signCount"] = json!(u32::MAX)),
+        ),
+        (
+            "synced passkey",
+            with(|c| {
+                c["backupEligible"] = json!(true);
+                c["backupState"] = json!(true);
+            }),
+        ),
+        (
+            "longest id",
+            with(|c| c["id"] = json!(URL_SAFE_NO_PAD.encode([1u8; 1024]))),
+        ),
+    ];
+    for (name, good) in accepted {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = json!({"version": 1, "devices": [good.clone()]}).to_string();
+        std::fs::write(dir.path().join("devices.json"), contents).unwrap();
+        assert_eq!(Devices::load(dir.path()).unwrap().all(), [good], "{name}");
+    }
+}

@@ -1343,3 +1343,25 @@ fn companion_gateway_git_env_refuses_lazy_fetches_even_for_a_git_before_2_44() {
     assert!(ok(git(&src, GATEWAY_GIT_ENV, &["diff"])).contains("+changed"));
     assert!(ok(git(&clone, GATEWAY_GIT_ENV, &["log", "--oneline"])).contains("first"));
 }
+
+/// A pipe is never read into memory past the cap: the oversized record is cut,
+/// the rest of it dropped, and the records after it still arrive. Bytes that
+/// are not UTF-8 are replaced and the drain goes on.
+#[tokio::test]
+async fn companion_stderr_records_are_bounded_and_survive_invalid_utf8() {
+    let mut input = Vec::new();
+    input.extend_from_slice(b"first\n");
+    input.extend(std::iter::repeat_n(b'x', 10_000_000));
+    input.extend_from_slice(b"\nbad \xff\xfe bytes\r\nlast");
+    let mut reader = RecordReader::new(BufReader::with_capacity(8192, &input[..]), 100);
+    let mut records = Vec::new();
+    while let Some(record) = reader.next().await {
+        assert!(reader.record.capacity() <= 8192 + 100, "buffer grew");
+        records.push(record);
+    }
+    assert_eq!(records.len(), 4);
+    assert_eq!(records[0], "first");
+    assert_eq!(records[1], "x".repeat(100));
+    assert_eq!(records[2], "bad \u{fffd}\u{fffd} bytes");
+    assert_eq!(records[3], "last");
+}
