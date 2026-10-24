@@ -34,13 +34,13 @@ const terminal = (lines: string[]) => ({
 function renderPanel(props: Partial<Parameters<typeof ControlPanel>[0]> = {}) {
   const onControl = vi.fn()
   const onConflictHandled = vi.fn()
-  render(
+  const view = render(
     <I18nextProvider i18n={i18n}>
       <ControlPanel session="work" pane="w:p" agent={agent("idle")} terminal={null} control={null}
         onControl={onControl} conflict={false} onConflictHandled={onConflictHandled} {...props} />
     </I18nextProvider>,
   )
-  return { onControl, onConflictHandled }
+  return { onControl, onConflictHandled, unmount: view.unmount }
 }
 
 beforeEach(async () => {
@@ -94,4 +94,50 @@ it("never resends a write whose outcome is unknown", async () => {
   await waitFor(() => expect(useCompanion.getState().notice?.tone).toBe("warning"))
   expect(client.call).toHaveBeenCalledTimes(1)
   expect(client.call).toHaveBeenCalledWith("agent.prompt", { session: "work", target: "w:p", text: "hello" })
+})
+
+it("uses the shared checkbox for appending Enter", () => {
+  renderPanel({ agent: undefined, control: opened })
+  const box = screen.getByRole("checkbox", { name: "Press Enter after" })
+  expect(box).toHaveAttribute("data-slot", "checkbox")
+  expect(box).toHaveAttribute("aria-checked", "true")
+  fireEvent.click(box)
+  expect(box).toHaveAttribute("aria-checked", "false")
+})
+
+it("scrolls the approval preview in a ScrollArea rather than a bare overflow", () => {
+  renderPanel({ agent: agent("blocked"), terminal: terminal(["Allow? [y/N]"]) })
+  fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+  const dialog = screen.getByRole("alertdialog")
+  const area = dialog.querySelector('[data-slot="scroll-area"]')
+  expect(area).not.toBeNull()
+  expect(area).toHaveTextContent("Allow? [y/N]")
+  expect(dialog.querySelector(".overflow-auto")).toBeNull()
+})
+
+it("releases a control stream that opens after the panel went away", async () => {
+  let resolveOpen: (value: ControlOpen) => void = () => undefined
+  client.call.mockImplementation((method: string) =>
+    method === "terminal.control" ? new Promise<ControlOpen>((done) => { resolveOpen = done }) : Promise.resolve({}))
+  const { onControl, unmount } = renderPanel()
+  fireEvent.click(screen.getByRole("button", { name: "Direct control" }))
+  fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Direct control" }))
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.control", expect.anything()))
+  unmount()
+  resolveOpen(opened)
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.release", { stream: 7 }))
+  expect(client.call.mock.calls.filter(([method]) => method === "terminal.release")).toHaveLength(1)
+  expect(onControl).not.toHaveBeenCalled()
+})
+
+it("releases a takeover stream that opens after the panel went away", async () => {
+  let resolveOpen: (value: ControlOpen) => void = () => undefined
+  client.call.mockImplementation((method: string) =>
+    method === "terminal.control" ? new Promise<ControlOpen>((done) => { resolveOpen = done }) : Promise.resolve({}))
+  const { unmount } = renderPanel({ conflict: true })
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Take over this pane" })).getByRole("button", { name: "passkey ok" }))
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.control", expect.objectContaining({ takeover: true })))
+  unmount()
+  resolveOpen(opened)
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.release", { stream: 7 }))
 })

@@ -175,3 +175,32 @@ it("keeps the last enable failure until the Companion runs, whichever way that i
   await store().refresh()
   expect(store().enableError).toBeNull()
 })
+
+it("never commits a read an event overtook, and reads again later", async () => {
+  vi.useFakeTimers()
+  try {
+    useCompanionStore.setState({ overview: fx.overviewRunning, devices: [fx.device] })
+    let calls = 0
+    // Every early read still lists the device that the revoke removed.
+    replies.companion_devices = () => {
+      calls++
+      if (calls <= 3) store().applyEvent({ type: "device.revoked", deviceId: fx.device.deviceId })
+      return calls <= 3 ? [fx.device] : []
+    }
+    await store().refresh()
+    expect(calls).toBe(3)
+    expect(store().devices).toEqual([])
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(calls).toBe(4)
+    expect(store().devices).toEqual([])
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it("drops the streams of a phone whose session closed", () => {
+  store().applyEvent(control("6", 1, true))
+  store().applyEvent(full("9", 1, true))
+  store().applyEvent({ type: "session.closed", peerId: 7, deviceId: fx.device.deviceId, reason: "closed" })
+  expect(Object.keys(store().streams)).toEqual(["9"])
+})

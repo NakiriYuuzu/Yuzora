@@ -19,3 +19,10 @@ void i18n.init({
   interpolation: { escapeValue: false },
   initAsync: false,
 })
+
+// The static shell says `en`; the page follows the language it renders.
+const setDocumentLang = (language: string) => {
+  if (typeof document !== "undefined") document.documentElement.lang = language
+}
+setDocumentLang(i18n.language)
+i18n.on("languageChanged", setDocumentLang)

@@ -1,8 +1,10 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import type { Terminal } from "@xterm/xterm"
 import { Hand, Send, ShieldCheck, TerminalSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { call } from "../client"
@@ -57,6 +59,11 @@ export function ControlPanel({ session, pane, agent, terminal, control, onContro
   const [text, setText] = useState("")
   const [direct, setDirect] = useState(false)
   const [enter, setEnter] = useState(true)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const remaining = elevation?.scope === "control" ? secondsUntil(elevation.until, offset, now) : 0
   const streamRemaining = control ? secondsUntil(control.until, offset, now) : 0
   // HERDR refuses a new prompt while the agent waits for interactive input.
@@ -102,7 +109,13 @@ export function ControlPanel({ session, pane, agent, terminal, control, onContro
   const open = async (takeover: boolean) => {
     setBusy(true)
     try {
-      onControl(await call<ControlOpen>("terminal.control", { session, target: pane, takeover, confirmResize: true }))
+      const opened = await call<ControlOpen>("terminal.control", { session, target: pane, takeover, confirmResize: true })
+      if (!mounted.current) {
+        // The pane was left while the RPC ran: nobody can release this lease any more.
+        void call("terminal.release", { stream: opened.stream }).catch(() => undefined)
+        return
+      }
+      onControl(opened)
       setDirect(true)
       setDialog(null)
     } catch (error) {
@@ -174,7 +187,7 @@ export function ControlPanel({ session, pane, agent, terminal, control, onContro
               <div className="flex items-center gap-3">
                 {!toAgent && (
                   <label className="flex min-h-11 items-center gap-2 text-sm">
-                    <input type="checkbox" className="size-5" checked={enter} onChange={(event) => setEnter(event.target.checked)} />
+                    <Checkbox className="size-5" checked={enter} onCheckedChange={(value) => setEnter(value === true)} />
                     {t("control.appendEnter")}
                   </label>
                 )}
@@ -215,7 +228,9 @@ export function ControlPanel({ session, pane, agent, terminal, control, onContro
             void send()
           }}
           onCancel={() => setDialog(null)}>
-          <pre className="max-h-[45dvh] overflow-auto rounded-md bg-[var(--term-bg)] p-2 font-mono text-xs leading-snug whitespace-pre text-[var(--term-fg)]">{dialog.screen || t("control.approveEmpty")}</pre>
+          <ScrollArea orientation="both" className="max-h-[45dvh] rounded-md bg-[var(--term-bg)]">
+            <pre className="p-2 font-mono text-xs leading-snug whitespace-pre text-[var(--term-fg)]">{dialog.screen || t("control.approveEmpty")}</pre>
+          </ScrollArea>
           <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
             <Hand className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             {t("control.approveNoCwd")}

@@ -14,10 +14,17 @@ const early = new Map<number, Uint8Array[]>()
 const EARLY_FRAMES = 64
 // Streams this page stopped listening to; their late frames are dropped.
 const ended = new Set<number>()
+// Closures that arrived before their stream's listener (a control stream can
+// report `owned-elsewhere` right after it opens), replayed on `listen`.
+const closedEarly = new Map<number, string>()
+const EARLY_CLOSURES = 16
 // Each session's event subscription, and its pending re-subscription.
 const eventStreams = new Map<string, number>()
 const reloads = new Map<string, ReturnType<typeof setTimeout>>()
 const lastReload = new Map<string, number>()
+// Events seen per session: a snapshot read across one is read again.
+const touched = new Map<string, number>()
+const SNAPSHOT_RETRIES = 2
 let socket: CompanionSocket | null = null
 let lastPing = 0
 
@@ -29,6 +36,7 @@ function socketUrl(): string {
 export function connect(): void {
   socket?.stop()
   streams.clear()
+  closedEarly.clear()
   socket = new CompanionSocket({
     url: socketUrl(),
     binding: storage.binding,
@@ -44,6 +52,7 @@ export function connect(): void {
         streams.clear()
         early.clear()
         ended.clear()
+        closedEarly.clear()
         eventStreams.clear()
       }
     },
@@ -59,7 +68,12 @@ export function connect(): void {
         const stream = Number(data.stream)
         const handlers = streams.get(stream)
         streams.delete(stream)
-        early.delete(stream)
+        const watched = [...eventStreams.values()].includes(stream)
+        if (!handlers && !watched && !ended.has(stream)) {
+          // Nobody listens yet: keep the closure (and any early frames) for `listen`.
+          if (closedEarly.size >= EARLY_CLOSURES) closedEarly.delete(closedEarly.keys().next().value!)
+          closedEarly.set(stream, String(data.reason))
+        } else early.delete(stream)
         handlers?.closed(String(data.reason))
         for (const [session, id] of eventStreams) {
           if (id !== stream) continue
@@ -85,6 +99,7 @@ export function disconnect(): void {
   streams.clear()
   early.clear()
   ended.clear()
+  closedEarly.clear()
   eventStreams.clear()
   for (const timer of reloads.values()) clearTimeout(timer)
   reloads.clear()
@@ -97,6 +112,14 @@ export function call<T>(method: string, params: Record<string, unknown> = {}): P
 
 /** Registers a stream's frames and closure; `release` stops listening. */
 export function listen(stream: number, handlers: StreamHandlers): () => void {
+  const reason = closedEarly.get(stream)
+  if (reason !== undefined) {
+    closedEarly.delete(stream)
+    for (const bytes of early.get(stream) ?? []) handlers.data(bytes)
+    early.delete(stream)
+    handlers.closed(reason)
+    return () => undefined
+  }
   streams.set(stream, handlers)
   for (const bytes of early.get(stream) ?? []) handlers.data(bytes)
   early.delete(stream)
@@ -128,12 +151,20 @@ export async function refresh(): Promise<void> {
     return
   }
   sessions.sort((left, right) => Number(right.default) - Number(left.default))
+  const listed = (name: string) => sessions.some((item) => item.name === name)
+  // A session that is gone keeps neither its subscription nor its error.
+  for (const [name, stream] of eventStreams) {
+    if (listed(name)) continue
+    eventStreams.delete(name)
+    void call("stream.close", { stream }).catch(() => undefined)
+  }
   useCompanion.setState((state) => ({
     sessions,
-    snapshots: Object.fromEntries(Object.entries(state.snapshots).filter(([name]) => sessions.some((item) => item.name === name))),
+    snapshots: Object.fromEntries(Object.entries(state.snapshots).filter(([name]) => listed(name))),
+    sessionErrors: Object.fromEntries(Object.entries(state.sessionErrors).filter(([name]) => listed(name))),
   }))
-  await Promise.all(sessions.map((session) => loadSession(session.name, false)))
-  openPendingPane()
+  const loaded = await Promise.all(sessions.map(async (session) => [session.name, await loadSession(session.name, false)] as const))
+  openPendingPane(new Set(loaded.filter(([, ok]) => !ok).map(([name]) => name)))
 }
 
 /**
@@ -149,9 +180,11 @@ export function showPane(target: PaneTarget): void {
 
 const paneKnown = ({ session, pane }: PaneTarget) => useCompanion.getState().snapshots[session]?.panes.some((item) => item.id === pane) ?? false
 
-function openPendingPane(): void {
+function openPendingPane(failed: ReadonlySet<string> = new Set()): void {
   const { pendingPane: target, screen } = useCompanion.getState()
   if (!target) return
+  // Its session's snapshot did not load, so the pane is not known to be gone.
+  if (!paneKnown(target) && failed.has(target.session)) return
   useCompanion.setState({ pendingPane: null })
   const showing = screen.name === "pane" && screen.session === target.session && screen.pane === target.pane
   if (paneKnown(target) && !showing) open({ name: "pane", session: target.session, pane: target.pane })
@@ -170,7 +203,8 @@ function scheduleReload(session: string): void {
   }, delay))
 }
 
-async function loadSession(name: string, resubscribe: boolean): Promise<void> {
+/** Whether the session's snapshot was committed. */
+async function loadSession(name: string, resubscribe: boolean): Promise<boolean> {
   try {
     const previous = eventStreams.get(name)
     if (resubscribe && previous !== undefined) {
@@ -181,12 +215,23 @@ async function loadSession(name: string, resubscribe: boolean): Promise<void> {
     // subscription missed.
     const subscribed = await call<{ stream: number }>("events.subscribe", { session: name })
     eventStreams.set(name, subscribed.stream)
-    const snapshot = await call<Snapshot>("snapshot.get", { session: name })
+    let snapshot: Snapshot
+    let raced: boolean
+    for (let retry = 0; ; retry++) {
+      const mark = touched.get(name)
+      snapshot = await call<Snapshot>("snapshot.get", { session: name })
+      // An event that landed during the read may be older or newer than it.
+      raced = touched.get(name) !== mark
+      if (!raced || retry === SNAPSHOT_RETRIES) break
+    }
     useCompanion.setState((state) => ({ snapshots: { ...state.snapshots, [name]: snapshot }, sessionErrors: withoutKey(state.sessionErrors, name) }))
+    if (raced) scheduleReload(name)
+    return true
   } catch (error) {
     if (error instanceof RpcError && error.code !== "disconnected") {
       useCompanion.setState((state) => ({ sessionErrors: { ...state.sessionErrors, [name]: error.code } }))
     }
+    return false
   }
 }
 
@@ -196,7 +241,10 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
   return next
 }
 
+const touch = (session: string) => touched.set(session, (touched.get(session) ?? 0) + 1)
+
 function applyStatus(session: string, pane: string, status: AgentStatus): void {
+  touch(session)
   const snapshot = useCompanion.getState().snapshots[session]
   if (!snapshot) return
   const next = withAgentStatus(snapshot, pane, status)
@@ -206,6 +254,7 @@ function applyStatus(session: string, pane: string, status: AgentStatus): void {
 }
 
 function applyExit(session: string, pane: string): void {
+  touch(session)
   const snapshot = useCompanion.getState().snapshots[session]
   if (snapshot) useCompanion.setState((state) => ({ snapshots: { ...state.snapshots, [session]: withoutPane(snapshot, pane) } }))
 }
@@ -232,8 +281,28 @@ export function endSession(reason: "expired" | "logged-out"): void {
   navigate({ name: "login", reason })
 }
 
+// The gateway answers every logout with a Set-Cookie that clears the login
+// cookie, so a late answer would also clear the cookie of a newer login.
+const LOGOUT_DEADLINE_MS = 3000
+let pendingLogout: AbortController | null = null
+
+/** Drops an unanswered logout request; its answer must never reach the browser's cookie jar. */
+export function abortLogout(): void {
+  pendingLogout?.abort()
+  pendingLogout = null
+}
+
 export async function logout(): Promise<void> {
   const binding = storage.binding()
-  if (binding) await api.logout(binding).catch(() => undefined)
   endSession("logged-out")
+  // Best effort: a slow or unreachable gateway must not keep the login.
+  if (!binding) return
+  abortLogout()
+  const request = new AbortController()
+  pendingLogout = request
+  const deadline = setTimeout(() => request.abort(), LOGOUT_DEADLINE_MS)
+  void api.logout(binding, request.signal).catch(() => undefined).finally(() => {
+    clearTimeout(deadline)
+    if (pendingLogout === request) pendingLogout = null
+  })
 }

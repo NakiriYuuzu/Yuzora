@@ -48,6 +48,11 @@ interface CompanionState {
 // raced one reads again rather than overwrite the newer state.
 let eventSeq = 0
 let refreshing: Promise<void> | null = null
+// A refresh that never read a quiet moment tries again later, a few times.
+const RETRY_MS = 1000
+const MAX_RETRIES = 3
+let retries = 0
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 /** A running Companion has no enable failure left to explain. */
 const settledEnable = (overview: CompanionOverview) => overview.status.state === "running" ? { enableError: null } : {}
@@ -69,8 +74,19 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
         for (let attempt = 0; ; attempt++) {
           const seq = eventSeq
           const [overview, devices] = await Promise.all([companionStatus(), companionDevices()])
-          if (seq === eventSeq || attempt === 2) {
+          if (seq === eventSeq) {
+            retries = 0
             set({ overview, devices, ...settledEnable(overview) })
+            return
+          }
+          // Never commit a read an event overtook: it would undo that event.
+          if (attempt === 2) {
+            if (retries++ < MAX_RETRIES && !retryTimer) {
+              retryTimer = setTimeout(() => {
+                retryTimer = null
+                void get().refresh().catch(() => undefined)
+              }, RETRY_MS)
+            }
             return
           }
         }
@@ -118,7 +134,8 @@ export const useCompanionStore = create<CompanionState>((set, get) => ({
         return
       case "session.closed": {
         const { [event.peerId]: _closed, ...peers } = get().peers
-        set({ peers })
+        const streams = Object.fromEntries(Object.entries(get().streams).filter(([, stream]) => stream.peerId !== event.peerId))
+        set({ peers, streams })
         return
       }
       case "control.state":
