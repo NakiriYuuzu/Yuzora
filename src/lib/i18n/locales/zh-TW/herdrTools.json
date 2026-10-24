@@ -55,6 +55,7 @@
   "reason": {
     "sessionStarting": "Session 正在啟動中。",
     "sessionNotConnected": "Session 尚未連線；請啟動它，或在上方改選其他 Session。",
+    "sessionUnreachable": "無法連線到這個 Session，它可能仍在執行；詳見「管理 Session」。HERDR 回報：{{reason}}",
     "serverNotRunning": "HERDR 服務未執行。",
     "unsupported": "此 HERDR 版本不支援（目前為 {{version}}）。",
     "unsupportedUnknown": "此 HERDR 版本不支援。",

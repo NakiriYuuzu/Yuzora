@@ -118,6 +118,24 @@ describe("HERDR actions home", () => {
     expect(card("sessions")).toBeEnabled()
   })
 
+  it("explains an unreachable Session on every task instead of asking to start it", () => {
+    const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)"
+    useHerdrStore.setState(state => ({
+      sessions: [...state.sessions, { name: "admin", default: false, running: false, connectionError: reason, sessionDir: "/tmp/admin", socketPath: "/tmp/admin.sock" }],
+      runtimesBySession: { ...state.runtimesBySession, admin: { connectionState: "stopped", capabilities: null, snapshot: null, errorMessage: null } } as never,
+    }))
+    render(<HerdrToolsDialog selection={{ sessionName: "admin" }} />)
+    const unreachable = i18n.t("herdrTools:reason.sessionUnreachable", { reason })
+    for (const key of ["worktree", "startAgent", "messageAgent", "movePane", "native"]) {
+      expect(card(key)).toBeDisabled()
+      expect(card(key)).toHaveTextContent(unreachable)
+    }
+    expect(screen.queryByText(i18n.t("herdrTools:reason.sessionNotConnected"))).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: i18n.t("herdrTools:tasks.plugins.title") })).toHaveAttribute("title", unreachable)
+    // The reason names "Manage Sessions", so find that card by its task id.
+    expect(document.querySelector('[data-task-card="sessions"]')).toBeEnabled()
+  })
+
   it("disables the Advanced Integrations and Plugins buttons with the reason when unavailable", () => {
     setRuntime({ capabilities: { ...capabilities, api: { snapshot: true, methods: [] } } })
     render(<HerdrToolsDialog selection={{ sessionName: "work" }} />)

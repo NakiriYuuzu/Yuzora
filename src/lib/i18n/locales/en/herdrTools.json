@@ -55,6 +55,7 @@
   "reason": {
     "sessionStarting": "The Session is still starting.",
     "sessionNotConnected": "The Session is not connected. Start it or pick another Session above.",
+    "sessionUnreachable": "Cannot connect to this Session; it may still be running. See Manage Sessions. HERDR reported: {{reason}}",
     "serverNotRunning": "The HERDR server is not running.",
     "unsupported": "This HERDR version does not support it (current {{version}}).",
     "unsupportedUnknown": "This HERDR version does not support it.",
