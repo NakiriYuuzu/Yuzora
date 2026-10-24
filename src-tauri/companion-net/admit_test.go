@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -239,5 +242,114 @@ func TestServiceCloseDoesNotReportAHangingLookupAsRejected(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if got := out.ofType(t, "peer.rejected"); len(got) != 0 {
 		t.Fatalf("a closing service reported a rejection: %v", got)
+	}
+}
+
+// shortReadTimeout shortens readTimeout for one test. Call it before the
+// servers start: cleanups run in reverse, so it is restored after they close.
+func shortReadTimeout(t *testing.T, d time.Duration) {
+	old := readTimeout
+	readTimeout = d
+	t.Cleanup(func() { readTimeout = old })
+}
+
+// startServiceFor serves the owner over TLS in front of a gateway handler.
+func startServiceFor(t *testing.T, gateway http.Handler) (*service, string) {
+	t.Helper()
+	upstream := httptest.NewServer(gateway)
+	t.Cleanup(upstream.Close)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := url.Parse(upstream.URL)
+	cert, _ := selfSigned(t, testDNSName, time.Now().Add(time.Hour))
+	emit, _ := newTestEmitter()
+	svc := startService(ln, &fakeLocal{cert: cert}, func() string { return testDNSName }, target,
+		serveConfig{target: upstream.URL, proxySecret: testSecret, requiredLogin: testLogin}, emit, discard, newTestClock().read)
+	t.Cleanup(svc.close)
+	return svc, ln.Addr().String()
+}
+
+func dialOwner(t *testing.T, addr string) *tls.Conn {
+	t.Helper()
+	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: testDNSName, InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// A body the peer declares and never sends must not keep the connection, and
+// with it an admission slot, after the gateway answered without reading it.
+func TestServiceReleasesTheSlotOfABodyThatNeverArrives(t *testing.T) {
+	shortReadTimeout(t, 300*time.Millisecond)
+	svc, addr := startServiceFor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMisdirectedRequest) // the gateway's Host check comes before the body
+	}))
+	conn := dialOwner(t, addr)
+	if _, err := io.WriteString(conn, "POST /api/auth/options HTTP/1.1\r\nHost: attacker.invalid\r\nContent-Length: 1\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err := io.Copy(io.Discard, conn)
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("the connection is still open 5 s after the read timeout")
+	}
+	waitFor(t, "the connection to give back its slot", func() bool {
+		svc.conns.mu.Lock()
+		defer svc.conns.mu.Unlock()
+		return len(svc.conns.conns) == 0
+	})
+}
+
+// The read timeout ends at the request: a long poll, with or without a body,
+// may answer after it, and an upgraded connection outlives it.
+func TestServiceReadTimeoutSparesLongPollsAndWebSockets(t *testing.T) {
+	shortReadTimeout(t, 200*time.Millisecond)
+	echo := newUpstream(t).Config.Handler
+	_, addr := startServiceFor(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws" {
+			echo.ServeHTTP(w, r)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		time.Sleep(800 * time.Millisecond)
+		_, _ = io.WriteString(w, "late:"+string(body))
+	}))
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig:   &tls.Config{ServerName: testDNSName, InsecureSkipVerify: true},
+		DisableKeepAlives: true,
+	}}
+	for _, body := range []string{"", `{"poll":1}`} {
+		resp, err := client.Post("https://"+addr+"/api/pair/status", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(got) != "late:"+body {
+			t.Fatalf("long poll with body %q: %d %q", body, resp.StatusCode, got)
+		}
+	}
+	conn := dialOwner(t, addr)
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	request := "GET /ws HTTP/1.1\r\nHost: " + testDNSName + "\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+		"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+	if _, err := io.WriteString(conn, request); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	if resp, err := http.ReadResponse(reader, nil); err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade: %v %v", resp, err)
+	}
+	time.Sleep(600 * time.Millisecond)
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(reader, got); err != nil || string(got) != "ping" {
+		t.Fatalf("echo after the read timeout: %q %v", got, err)
 	}
 }

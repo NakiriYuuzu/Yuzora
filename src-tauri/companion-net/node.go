@@ -38,6 +38,14 @@ const (
 	maxConns = 64
 )
 
+// readTimeout bounds reading a request's headers and body; it matches the
+// gateway's own body timeout. Without it a peer that declares a body and never
+// sends it holds the connection, and its slot, for as long as it likes, even
+// after the gateway has answered. It bounds neither a long poll nor a WebSocket:
+// the server clears the deadline once the body has been read (at once when
+// there is none) and when the proxy hijacks the connection. A variable for tests.
+var readTimeout = 15 * time.Second
+
 // runningInfo is what the running event reports; a change in any field re-emits it.
 type runningInfo struct {
 	dnsName      string
@@ -398,6 +406,7 @@ func startService(ln net.Listener, lc localAPI, currentName func() string, targe
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          connLog,
