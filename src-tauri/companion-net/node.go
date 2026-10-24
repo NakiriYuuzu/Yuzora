@@ -27,6 +27,15 @@ const (
 	certAttemptTime = 3 * time.Minute
 	logoutTimeout   = 8 * time.Second
 	listenAddr      = ":443"
+
+	// maxConns caps the connections the listener holds at once, TLS
+	// handshakes and upgraded connections included. It equals the Rust
+	// gateway's own 64-connection semaphore: the proxy opens one gateway
+	// connection per request in flight (a WebSocket for its whole life), so
+	// admitting more than the gateway serves would only queue 503s. Peers
+	// that are not the owner are closed at accept time (see admitListener),
+	// so they never hold a slot beyond one WhoIs lookup.
+	maxConns = 64
 )
 
 // runningInfo is what the running event reports; a change in any field re-emits it.
@@ -384,7 +393,8 @@ func startService(ln net.Listener, lc localAPI, currentName func() string, targe
 	// Both loggers write one line per peer action, so they share a limit.
 	logs := newLimitedLog(diag, now)
 	connLog := log.New(logs, "", 0)
-	handler := newProxyHandler(lc, target, cfg, rejectReporter(emit, now), connLog)
+	reject := rejectReporter(emit, now)
+	handler := newProxyHandler(lc, target, cfg, reject, connLog)
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -392,7 +402,8 @@ func startService(ln net.Listener, lc localAPI, currentName func() string, targe
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          connLog,
 	}
-	tlsListener := tls.NewListener(&trackingListener{Listener: ln, set: conns}, &tls.Config{
+	admitted := newAdmitListener(ln, lc, cfg.requiredLogin, reject, maxConns)
+	tlsListener := tls.NewListener(&trackingListener{Listener: admitted, set: conns}, &tls.Config{
 		GetCertificate: certificateFor(lc, currentName),
 		NextProtos:     []string{"http/1.1"},
 		MinVersion:     tls.VersionTLS12,
@@ -478,5 +489,117 @@ type trackedConn struct {
 
 func (c *trackedConn) Close() error {
 	c.once.Do(func() { c.set.remove(c) })
+	return c.Conn.Close()
+}
+
+// admitListener decides, before a socket reaches TLS or http.Server, whether
+// it may be served at all. Every connection needs a free slot, or it is closed
+// at once (waiting in Accept would let a flood stall the owner's reconnect for
+// as long as the flood lasts). A connection that holds a slot is then checked
+// with WhoIs, with the rules of the request handler: a tagged node, another
+// user or a failed lookup (fail closed) is reported as peer.rejected and
+// closed without a single TLS byte read. The lookup runs off the Accept loop,
+// so a slow answer holds only that connection's slot, for at most whoisTimeout.
+// Requests are still checked with WhoIs one by one: a keep-alive connection
+// outlives the identity it was admitted with.
+type admitListener struct {
+	net.Listener
+	lc     localAPI
+	login  string
+	reject func(peer, reason string)
+	slots  chan struct{}
+	ready  chan net.Conn
+	errs   chan error
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func newAdmitListener(ln net.Listener, lc localAPI, login string, reject func(peer, reason string), limit int) *admitListener {
+	ctx, cancel := context.WithCancel(context.Background())
+	l := &admitListener{
+		Listener: ln, lc: lc, login: login, reject: reject,
+		slots: make(chan struct{}, limit),
+		ready: make(chan net.Conn),
+		errs:  make(chan error),
+		ctx:   ctx, cancel: cancel,
+	}
+	go l.pump()
+	return l
+}
+
+// pump accepts sockets until the listener closes and admits each in its own
+// goroutine; those are bounded by the slots.
+func (l *admitListener) pump() {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			select {
+			case l.errs <- err:
+			case <-l.ctx.Done():
+				return
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			continue
+		}
+		select {
+		case l.slots <- struct{}{}:
+			go l.admit(&slotConn{Conn: conn, slots: l.slots})
+		default:
+			_ = conn.Close()
+		}
+	}
+}
+
+func (l *admitListener) admit(conn *slotConn) {
+	ctx, cancel := context.WithTimeout(l.ctx, whoisTimeout)
+	who, err := l.lc.WhoIs(ctx, conn.RemoteAddr().String())
+	cancel()
+	if l.ctx.Err() != nil {
+		// The service is closing and cut the lookup short: that says nothing
+		// about the peer, so nothing is reported.
+		_ = conn.Close()
+		return
+	}
+	if reason, peer := authorize(who, err, l.login); reason != "" {
+		l.reject(peer, reason)
+		_ = conn.Close()
+		return
+	}
+	select {
+	case l.ready <- conn:
+	case <-l.ctx.Done():
+		_ = conn.Close()
+	}
+}
+
+func (l *admitListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.ready:
+		return conn, nil
+	case err := <-l.errs:
+		return nil, err
+	case <-l.ctx.Done():
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *admitListener) Close() error {
+	l.cancel()
+	return l.Listener.Close()
+}
+
+// slotConn returns its slot when it closes, once however often it is closed:
+// http.Server closes a connection it serves, a hijacker closes its own, and
+// connSet.closeAll closes whatever is left.
+type slotConn struct {
+	net.Conn
+	slots chan struct{}
+	once  sync.Once
+}
+
+func (c *slotConn) Close() error {
+	c.once.Do(func() { <-c.slots })
 	return c.Conn.Close()
 }
