@@ -3093,6 +3093,76 @@ fn parse_session_list_json_reads_exact_dto_fields() {
     assert!(!sessions[1].running);
 }
 
+#[test]
+fn parse_session_list_json_keeps_connection_errors_only_for_unreachable_sessions() {
+    let value = serde_json::json!({
+        "sessions": [
+            { "name": "default", "default": true, "running": false, "session_dir": "/d", "socket_path": "/d.sock" },
+            { "name": "admin", "default": false, "running": false, "session_dir": "/a", "socket_path": "/a.sock",
+              "connection_error": " For an elevated server, use an administrator terminal. Access is denied. " },
+            { "name": "live", "default": false, "running": true, "session_dir": "/l", "socket_path": "/l.sock",
+              "connection_error": "stale" },
+            { "name": "blank", "default": false, "running": false, "session_dir": "/b", "socket_path": "/b.sock",
+              "connection_error": "  " }
+        ]
+    });
+    let sessions = parse_session_list_json(&value).unwrap();
+    let errors: Vec<_> = sessions
+        .iter()
+        .map(|s| s.connection_error.as_deref())
+        .collect();
+    assert_eq!(
+        errors,
+        [
+            None,
+            Some("For an elevated server, use an administrator terminal. Access is denied."),
+            None,
+            None
+        ]
+    );
+    // Reachable and stopped Sessions keep the pre-0.9.4 wire shape.
+    let wire = serde_json::to_value(&sessions).unwrap();
+    assert!(wire[0].get("connectionError").is_none());
+    assert_eq!(
+        wire[1]["connectionError"],
+        "For an elevated server, use an administrator terminal. Access is denied."
+    );
+    let message = session_not_running_message(&sessions[1]);
+    assert!(message.contains("'admin' is unreachable"), "{message}");
+    assert!(!message.contains("herdr session attach"), "{message}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreachable_session_is_never_stopped_or_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    // Unguarded, stop/delete would reach the fake and fail as unexpected args.
+    let binary = write_fake_herdr_with_sessions(
+        dir.path(),
+        r#"{"client":{"version":"0.0.0-fake","channel":"test","protocol":22,"binary":"FAKE"},"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":22,"compatible":true,"socket":"/tmp/admin.sock"},"update":{"restart_needed":false}}"#,
+        r#"{"protocol":22,"schema_version":1,"methods":["session.snapshot","tab.create"],"schemas":{"session.snapshot":{},"tab.create":{}}}"#,
+        r#"{"sessions":[{"name":"default","default":true,"running":false,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock"},{"name":"admin","default":false,"running":false,"connection_error":"Access is denied.","session_dir":"/tmp/admin","socket_path":"/tmp/admin.sock"}]}"#,
+    );
+    let mgr = HerdrManager::with_binary(binary);
+    for request in [
+        HerdrFeatureRequest::SessionStop {},
+        HerdrFeatureRequest::SessionDelete {},
+    ] {
+        let error = mgr.feature("admin", request).unwrap_err();
+        assert_eq!(
+            error,
+            "herdr session 'admin' is unreachable: Access is denied."
+        );
+    }
+    let caps = mgr.capabilities_for_session(Some("admin"));
+    assert!(!caps.api.snapshot);
+    assert_eq!(
+        caps.api.reason.as_deref(),
+        Some("herdr session 'admin' is unreachable: Access is denied.")
+    );
+    assert_eq!(caps.terminal.reason, caps.api.reason);
+}
+
 #[cfg(unix)]
 #[test]
 fn list_sessions_uses_session_list_json_only() {

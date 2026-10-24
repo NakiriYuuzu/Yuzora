@@ -254,6 +254,23 @@ it("keeps a pending-only picker visible but non-loadable", async () => {
   expect(mocks.select).not.toHaveBeenCalled();
 });
 
+it("marks a Session HERDR cannot reach as unreachable and keeps it non-loadable", async () => {
+  addSession("alpha", "Alpha");
+  const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)";
+  useHerdrStore.setState(current => ({
+    sessions: [{ name: "admin", default: false, running: false, connectionError: reason, sessionDir: "/admin", socketPath: "/admin.sock" }, ...current.sessions],
+  }));
+  render(<HerdrSessionPicker initialSession={null} onSelect={onSelect} onClose={onClose} returnFocusRef={{ current: null }} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "載入 Session" })).toBeEnabled());
+  const unreachable = screen.getByRole("option", { name: new RegExp(`admin.*${i18n.t("spaceTree:sessionUnreachable")}`) });
+  expect(unreachable).toHaveAttribute("aria-disabled", "true");
+  expect(unreachable).not.toHaveTextContent(i18n.t("spaceTree:pickerStoppedHint"));
+  expect(within(unreachable).getByText(i18n.t("spaceTree:pickerUnreachableHint"))).toHaveAttribute("title", expect.stringContaining(reason));
+  expect(within(unreachable).getByText(i18n.t("spaceTree:sessionUnreachable"))).toHaveAttribute("data-status", "unreachable");
+  fireEvent.doubleClick(unreachable);
+  expect(mocks.select).not.toHaveBeenCalled();
+});
+
 it("explains why nothing can be loaded and offers the Session tools", async () => {
   addSession("alpha", "Alpha");
   useHerdrStore.setState(state => ({ sessions: state.sessions.map(session => ({ ...session, running: false })) }));

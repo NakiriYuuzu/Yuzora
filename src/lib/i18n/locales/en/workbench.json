@@ -572,6 +572,7 @@
     "stoppedBadge": "stopped",
     "sessionStoppedTitle": "Session {{name}} is not running",
     "sessionStopped": "Session \"{{name}}\" is not running. Start it with `herdr session attach {{name}}`.",
+    "sessionUnreachable": "Cannot connect to Session \"{{name}}\"; it may still be running. HERDR reported: {{reason}}",
     "stoppedNoAgents": "No agents while this session is stopped",
     "attentionHeading": "Needs attention",
     "globalRuntime": "Global Herdr{{version}}",

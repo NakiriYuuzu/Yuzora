@@ -15,7 +15,7 @@
   "startAgentHint": "選取既有的 Shell Pane；HERDR 會先確認該 Pane 可供啟動 Agent。", "agentKind": "Agent", "arguments": "Agent 參數", "argumentsHint": "每行一個參數，直接傳入，不經 Shell 展開。",
   "promptAgent": "提示與控制", "promptHint": "HERDR 會驗證 Pane 目前的 Agent；傳送提示不會代為回答已開啟的授權或問題對話框。", "prompt": "提示內容", "waitUntil": "等待狀態", "state": { "unknown": "未知", "settled": "閒置、完成或等待輸入", "blocked": "等待輸入", "idle": "閒置", "done": "完成", "working": "工作中" },
   "moveDestination": "目的地", "destination": { "tab": "既有分頁", "new_tab": "新分頁", "new_workspace": "新 Space" }, "splitDirection": "分割方向", "right": "向右", "down": "向下",
-  "createSession": "建立或啟動 Session", "sessionHostHint": "新的 Session 屬於上方選定的主機；既有儲存的 Sessions 會保留。", "createAndStart": "建立／啟動", "running": "執行中", "stopped": "已停止",
+  "createSession": "建立或啟動 Session", "sessionHostHint": "新的 Session 屬於上方選定的主機；既有儲存的 Sessions 會保留。", "createAndStart": "建立／啟動", "running": "執行中", "stopped": "已停止", "unreachable": "無法連線",
   "stopSession": "停止 Session", "deleteSession": "刪除 Session", "stopSessionWarning": "停止 {{name}} 及其中所有 Pane 與程序？已儲存的版面會保留，可於之後重新啟動。", "deleteSessionWarning": "刪除 {{name}} 的儲存狀態？已儲存的版面會被移除；專案資料夾不會被刪除。",
   "integrationHint": "整合會回報生命週期或原生對話識別；安裝或更新後，請重新啟動對應 Agent。", "integrationState": { "not_installed": "尚未安裝", "current": "已是最新版", "outdated": "可更新" },
   "installIntegration": "安裝／更新整合", "uninstallIntegration": "移除整合", "integrationWarning": "更新此主機上 {{name}} 的 HERDR 整合設定？", "integrationRemoveWarning": "從此主機移除 {{name}} 的 HERDR 整合？",

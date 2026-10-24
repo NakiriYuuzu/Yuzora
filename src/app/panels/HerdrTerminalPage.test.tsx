@@ -279,7 +279,7 @@ const terminalControlCapabilities = {
 } satisfies HerdrCapabilities
 
 function seedSessions(
-  sessions: Array<{ name: string; default: boolean; running: boolean }>
+  sessions: Array<{ name: string; default: boolean; running: boolean; connectionError?: string }>
 ) {
   useHerdrStore.setState({
     ...herdrInitialState,
@@ -1569,6 +1569,17 @@ describe("HerdrTerminalPage stopped session gate", () => {
       "data-session-stopped",
       "true"
     )
+  })
+
+  it("shows HERDR's reason instead of start guidance for an unreachable page session", async () => {
+    const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)"
+    seedSessions([{ name: "work", default: false, running: false, connectionError: reason }])
+    render(<HerdrTerminalPage herdrSessionId="work" terminalId="term-1" active visible />)
+    const stopped = await screen.findByTestId("herdr-terminal-stopped")
+    expect(stopped).toHaveTextContent(reason)
+    expect(stopped).toHaveAttribute("title", expect.stringContaining(reason))
+    expect(stopped).not.toHaveTextContent("herdr session attach")
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
   })
 
   it("keeps the connected terminal and last frame visible during a running→inventory-unknown transition", async () => {
