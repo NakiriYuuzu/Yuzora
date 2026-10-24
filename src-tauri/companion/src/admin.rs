@@ -698,6 +698,10 @@ pub async fn read<R: AsyncBufRead + Unpin>(
     let Some(frame) = read_frame_zeroizing(reader).await? else {
         return Ok(None);
     };
+    // serde derive also accepts positional JSON arrays for structs; commands are objects.
+    if frame.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'{') {
+        return Err("invalid-command");
+    }
     let envelope: Envelope = serde_json::from_slice(&frame).map_err(|_| "invalid-command")?;
     if envelope.v != 1 {
         return Err("unsupported-version");

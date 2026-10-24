@@ -629,3 +629,154 @@ async fn admin_stalled_stdout_writer_timeout_closes_pending_ack() {
     );
     events.closed().await;
 }
+
+fn nested(open: &str, close: &str, depth: usize) -> String {
+    format!("{}0{}", open.repeat(depth), close.repeat(depth))
+}
+
+#[tokio::test]
+async fn admin_malformed_input_table_wrong_types_duplicates_nesting_bytes_and_blank_lines() {
+    let deep_array = nested("[", "]", 100_000);
+    let deep_object = format!("{}0{}", "{\"a\":".repeat(100_000), "}".repeat(100_000));
+    let mut cases: Vec<(String, &str)> = Vec::new();
+    // Wrong primitive types in the envelope are invalid-command, never a version error.
+    for v in [
+        "\"1\"",
+        "1.0",
+        "1.5",
+        "-1",
+        "true",
+        "null",
+        "[1]",
+        "{}",
+        "4294967297",
+    ] {
+        cases.push((
+            format!("{{\"v\":{v},\"type\":\"shutdown\"}}\n"),
+            "invalid-command",
+        ));
+    }
+    for kind in ["1", "null", "true", "[\"shutdown\"]", "{}"] {
+        cases.push((format!("{{\"v\":1,\"type\":{kind}}}\n"), "invalid-command"));
+    }
+    for top in ["[]", "\"shutdown\"", "1", "null", "true"] {
+        cases.push((format!("{top}\n"), "invalid-command"));
+    }
+    // Duplicate envelope keys are rejected (serde derive), so neither first-wins
+    // nor last-wins can smuggle a different version/type past a logger or proxy.
+    cases.push((
+        "{\"v\":1,\"v\":2,\"type\":\"shutdown\"}\n".into(),
+        "invalid-command",
+    ));
+    cases.push((
+        "{\"v\":2,\"v\":1,\"type\":\"shutdown\"}\n".into(),
+        "invalid-command",
+    ));
+    cases.push((
+        "{\"v\":1,\"type\":\"shutdown\",\"type\":\"init\"}\n".into(),
+        "invalid-command",
+    ));
+    cases.push((
+        "{\"v\":1,\"type\":\"pairing.approve\",\"pairingId\":\"a\",\"pairingId\":\"b\"}\n".into(),
+        "invalid-command",
+    ));
+    // Nesting beyond serde_json's recursion limit fails cleanly: no stack overflow.
+    cases.push((
+        format!("{{\"v\":1,\"type\":\"shutdown\",\"x\":{deep_array}}}\n"),
+        "invalid-command",
+    ));
+    cases.push((
+        format!("{{\"v\":1,\"type\":\"init\",\"x\":{deep_object}}}\n"),
+        "invalid-command",
+    ));
+    cases.push((
+        format!("{{\"v\":1,\"type\":\"init\",\"herdrBinary\":{deep_array}}}\n"),
+        "invalid-command",
+    ));
+    // Positional (array) envelopes are not NDJSON command objects.
+    cases.push(("[1,\"shutdown\"]\n".into(), "invalid-command"));
+    cases.push(("[2,\"shutdown\"]\n".into(), "invalid-command"));
+    cases.push((format!("{deep_array}\n"), "invalid-command"));
+    // Invalid UTF-8 and raw NUL bytes.
+    let mut frames: Vec<(Vec<u8>, &str)> = vec![(
+        b"{\"v\":1,\"type\":\"sh\xffutdown\"}\n".to_vec(),
+        "invalid-command",
+    )];
+    frames.push((
+        b"{\"v\":1,\"type\":\"init\",\"x\":\"\xc3\x28\"}\n".to_vec(),
+        "invalid-command",
+    ));
+    frames.push((
+        b"{\"v\":1,\"type\":\"shut\0down\"}\n".to_vec(),
+        "invalid-command",
+    ));
+    frames.push((
+        b"{\"v\":1,\"type\":\"shutdown\"}\0\n".to_vec(),
+        "invalid-command",
+    ));
+    frames.push((b"\0\n".to_vec(), "invalid-command"));
+    // Empty, whitespace-only and CRLF-only lines are frames, and invalid ones.
+    for blank in ["\n", "\r\n", " \n", "\t\r\n"] {
+        frames.push((blank.as_bytes().to_vec(), "invalid-command"));
+    }
+    // A lone CR is not a terminator: the frame is truncated at EOF.
+    frames.push((
+        b"{\"v\":1,\"type\":\"shutdown\"}\r".to_vec(),
+        "invalid-frame",
+    ));
+    frames.extend(
+        cases
+            .into_iter()
+            .map(|(text, code)| (text.into_bytes(), code)),
+    );
+    for (bytes, expected) in frames {
+        let mut reader = bytes.as_slice();
+        let result = admin::read(&mut reader).await;
+        assert!(
+            matches!(&result, Err(code) if *code == expected),
+            "{:?} -> {:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(80)]),
+            result.as_ref().map(|_| "accepted").map_err(|e| *e)
+        );
+    }
+    // Accepted shapes that must stay accepted: CRLF-terminated frame, nesting
+    // inside the recursion limit, and an escaped NUL in an ignored future field.
+    let mut reader = b"{\"v\":1,\"type\":\"shutdown\"}\r\n".as_slice();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Shutdown
+    ));
+    let shallow = format!(
+        "{{\"v\":1,\"type\":\"future\",\"x\":{},\"y\":\"\\u0000\"}}\n",
+        nested("[", "]", 64)
+    );
+    let mut reader = shallow.as_bytes();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Unknown
+    ));
+    // An IGNORED field of a future command type is skipped iteratively by serde_json:
+    // even 100000-deep nesting neither overflows the stack nor needs rejecting.
+    let ignored =
+        format!("{{\"v\":1,\"type\":\"future\",\"x\":{deep_array},\"y\":{deep_object}}}\n");
+    let mut reader = ignored.as_bytes();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Unknown
+    ));
+    // serde_json skips (does not UTF-8 validate) strings of an IGNORED field; that
+    // only happens for a future command type whose body is discarded as Unknown.
+    // Typed bodies (init above, shutdown, pairing...) still validate every byte.
+    let mut reader = b"{\"v\":1,\"type\":\"future\",\"x\":\"\xc3\x28\"}\n".as_slice();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Unknown
+    ));
+    // A bad frame consumes exactly its line: the next command still parses.
+    let mut reader = b"\r\n{\"v\":1,\"type\":\"shutdown\"}\n".as_slice();
+    assert!(admin::read(&mut reader).await.is_err());
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Shutdown
+    ));
+}

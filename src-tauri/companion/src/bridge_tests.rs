@@ -635,3 +635,111 @@ async fn review_snapshot_first_then_streams_preserves_reply_and_ping_headroom() 
         OUTBOUND_BYTES - WRITE_BUFFER_BYTES - REPLY_HEADROOM
     );
 }
+
+#[tokio::test]
+async fn bridge_invalid_request_table_and_still_requires_view_scope() {
+    let (f, ctx) = authenticated_fixture();
+    let long_id = "a".repeat(129);
+    let deep = |depth: usize| format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+    let deep_params = format!(
+        "{{\"id\":1,\"method\":\"hello\",\"params\":{{\"a\":{}}}}}",
+        deep(1000)
+    );
+    let huge_deep = format!(
+        "{{\"id\":1,\"method\":\"hello\",\"params\":{}}}",
+        deep(100_000)
+    );
+    let mut invalid: Vec<String> = vec![
+        // empty, truncated and non-JSON text frames
+        "".into(),
+        " ".into(),
+        "\r\n".into(),
+        "{".into(),
+        "{\"id\":1,\"method\":\"hello\"".into(),
+        "not json".into(),
+        "null".into(),
+        "42".into(),
+        "\"hello\"".into(),
+        "[]".into(),
+        // serde derive would accept a positional array; a Call is an object
+        "[1,\"hello\",{}]".into(),
+        "[1,\"hello\"]".into(),
+        // unknown top-level field, missing required fields
+        "{\"id\":1,\"method\":\"hello\",\"extra\":1}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"Params\":{}}".into(),
+        "{\"method\":\"hello\"}".into(),
+        "{\"id\":1}".into(),
+        "{}".into(),
+        // wrong-type or out-of-range id
+        "{\"id\":true,\"method\":\"hello\"}".into(),
+        "{\"id\":false,\"method\":\"hello\"}".into(),
+        "{\"id\":null,\"method\":\"hello\"}".into(),
+        "{\"id\":1.5,\"method\":\"hello\"}".into(),
+        "{\"id\":1.0,\"method\":\"hello\"}".into(),
+        "{\"id\":-1,\"method\":\"hello\"}".into(),
+        "{\"id\":18446744073709551616,\"method\":\"hello\"}".into(),
+        "{\"id\":[1],\"method\":\"hello\"}".into(),
+        "{\"id\":{\"a\":1},\"method\":\"hello\"}".into(),
+        format!("{{\"id\":\"{long_id}\",\"method\":\"hello\"}}"),
+        // params must be an object or absent/null
+        "{\"id\":1,\"method\":\"hello\",\"params\":[]}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"params\":[{}]}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"params\":\"x\"}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"params\":1}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"params\":true}".into(),
+        // method must be a string
+        "{\"id\":1,\"method\":1}".into(),
+        "{\"id\":1,\"method\":null}".into(),
+        "{\"id\":1,\"method\":[\"hello\"]}".into(),
+        "{\"id\":1,\"method\":{\"a\":1}}".into(),
+        // duplicate keys are rejected, never first- or last-wins
+        "{\"id\":1,\"id\":2,\"method\":\"hello\"}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"method\":\"full.open\"}".into(),
+        "{\"id\":1,\"method\":\"full.open\",\"method\":\"hello\"}".into(),
+        "{\"id\":1,\"method\":\"hello\",\"params\":{},\"params\":{}}".into(),
+        // nesting past the parser's recursion limit fails cleanly
+        deep_params,
+        huge_deep,
+        deep(100_000),
+    ];
+    // invalid UTF-8 cannot arrive as a Message::Text, but NUL can.
+    invalid.push("{\"id\":1,\"method\":\"hello\"}\0".into());
+    invalid.push("\0".into());
+    for text in &invalid {
+        let reply = rpc(&f.gateway, &ctx, text)
+            .unwrap_or_else(|_| panic!("view context must get a reply: {:.60}", text));
+        assert_eq!(
+            reply,
+            json!({"id":null,"error":{"code":"invalid-request","message":"Invalid request"}}),
+            "{:.60}",
+            text
+        );
+    }
+    // Boundaries that must remain valid: 128-byte string id, u64::MAX id, null params.
+    let ok_id = "a".repeat(128);
+    for text in [
+        format!("{{\"id\":\"{ok_id}\",\"method\":\"session.ping\"}}"),
+        "{\"id\":18446744073709551615,\"method\":\"session.ping\"}".into(),
+        "{\"id\":0,\"method\":\"session.ping\",\"params\":null}".into(),
+        "{\"id\":\"\",\"method\":\"session.ping\",\"params\":{}}\r\n".into(),
+    ] {
+        let reply = rpc(&f.gateway, &ctx, &text).unwrap_or_else(|_| panic!("{text:.60}"));
+        assert!(
+            reply["result"]["serverTime"].is_string() || reply["result"]["serverTime"].is_number(),
+            "{reply}"
+        );
+    }
+    // invalid-request is answered only to an authorized View session: once the
+    // session is gone, the same malformed text closes (4401) instead of replying.
+    f.gateway.logout(&ctx).unwrap();
+    for text in ["{", "{\"id\":true,\"method\":\"hello\"}", ""] {
+        assert!(
+            matches!(rpc(&f.gateway, &ctx, text), Err(close) if close.code == 4401),
+            "{text:.60}"
+        );
+    }
+    assert!(matches!(
+        rpc(&f.gateway, &ctx, "{\"id\":1,\"method\":\"hello\"}"),
+        Err(close) if close.code == 4401
+    ));
+}

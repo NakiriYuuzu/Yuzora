@@ -190,3 +190,134 @@ func TestEmitterDropsOversizedFrames(t *testing.T) {
 		t.Fatalf("frames after an oversized one: %v", got)
 	}
 }
+
+// malformedFrames are lines the desktop channel must never turn into a command.
+func malformedFrames() map[string]string {
+	deepArray := strings.Repeat("[", 100000) + strings.Repeat("]", 100000)
+	deepObject := strings.Repeat(`{"a":`, 100000) + "0" + strings.Repeat("}", 100000)
+	return map[string]string{
+		"empty":                   ``,
+		"truncated":               `{"v":1,"type":"serve"`,
+		"trailing garbage":        `{"v":1,"type":"shutdown"} x`,
+		"two objects":             `{"v":1,"type":"shutdown"}{"v":1,"type":"shutdown"}`,
+		"null":                    `null`,
+		"number":                  `1`,
+		"string":                  `"shutdown"`,
+		"true":                    `true`,
+		"empty object":            `{}`,
+		"positional array":        `[1,"shutdown"]`,
+		"version float":           `{"v":1.5,"type":"shutdown"}`,
+		"version 1.0":             `{"v":1.0,"type":"shutdown"}`,
+		"version exponent":        `{"v":1e0,"type":"shutdown"}`,
+		"version bool":            `{"v":true,"type":"shutdown"}`,
+		"version null":            `{"v":null,"type":"shutdown"}`,
+		"version array":           `{"v":[1],"type":"shutdown"}`,
+		"version object":          `{"v":{},"type":"shutdown"}`,
+		"version negative":        `{"v":-1,"type":"shutdown"}`,
+		"version overflow":        `{"v":9223372036854775808,"type":"shutdown"}`,
+		"type number":             `{"v":1,"type":5}`,
+		"type null":               `{"v":1,"type":null}`,
+		"type bool":               `{"v":1,"type":true}`,
+		"type array":              `{"v":1,"type":["shutdown"]}`,
+		"type object":             `{"v":1,"type":{}}`,
+		"type empty":              `{"v":1,"type":""}`,
+		"field array":             `{"v":1,"type":"serve","target":["http://127.0.0.1:1"]}`,
+		"field object":            `{"v":1,"type":"serve","proxySecret":{}}`,
+		"field bool":              `{"v":1,"type":"init","hostname":false}`,
+		"raw NUL":                 "\x00",
+		"NUL after object":        "{\"v\":1,\"type\":\"shutdown\"}\x00",
+		"NUL inside string":       "{\"v\":1,\"type\":\"shut\x00down\"}",
+		"nesting in ignored key":  `{"v":1,"type":"shutdown","x":` + deepArray + `}`,
+		"nesting in object":       `{"v":1,"type":"shutdown","x":` + deepObject + `}`,
+		"nesting at top level":    deepArray,
+		"nesting in known field":  `{"v":1,"type":"init","stateDir":` + deepArray + `}`,
+		"unterminated deep":       strings.Repeat("[", 100000),
+		"BOM":                     "\xef\xbb\xbf" + `{"v":1,"type":"shutdown"}`,
+		"unquoted keys":           `{v:1,type:"shutdown"}`,
+		"single quotes":           `{'v':1,'type':'shutdown'}`,
+		"comment":                 `{"v":1,"type":"shutdown"}//x`,
+		"NaN":                     `{"v":NaN,"type":"shutdown"}`,
+		"control char in string":  "{\"v\":1,\"type\":\"a\tb\"}",
+		"lone surrogate escape":   `{"v":1,"type":"\ud800"}`,
+		"bad escape":              `{"v":1,"type":"\q"}`,
+		"invalid UTF-8 in object": "{\"v\":1,\"type\":\"shutdown\"}\xff",
+	}
+}
+
+func TestParseCommandMalformedTable(t *testing.T) {
+	for name, line := range malformedFrames() {
+		cmd, err := parseCommand([]byte(line))
+		// A lone surrogate escape decodes to U+FFFD: a well-formed but unknown type.
+		if name == "lone surrogate escape" {
+			if err != nil || cmd.Type != "�" {
+				t.Errorf("%s: %+v %v", name, cmd, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: accepted as %+v", name, cmd)
+		}
+	}
+}
+
+// encoding/json is lenient in three ways the table above does not cover. They are
+// pinned because the channel is the private stdin pipe from the desktop (which
+// builds every frame with serde and never repeats a key); the gateway, which
+// faces the tailnet, rejects duplicates instead (companion tests/admin.rs).
+func TestParseCommandPinnedLeniencyOfTheTrustedPipe(t *testing.T) {
+	// Invalid UTF-8 inside a string becomes U+FFFD rather than an error.
+	cmd, err := parseCommand([]byte("{\"v\":1,\"type\":\"x\xffy\"}"))
+	if err != nil || cmd.Type != "x�y" {
+		t.Errorf("invalid UTF-8: %+v %v", cmd, err)
+	}
+	// Duplicate keys: the last value wins, for the version and the type alike.
+	cmd, err = parseCommand([]byte(`{"v":1,"type":"init","type":"serve"}`))
+	if err != nil || cmd.Type != "serve" {
+		t.Errorf("duplicate type: %+v %v", cmd, err)
+	}
+	if _, err = parseCommand([]byte(`{"v":1,"v":2,"type":"init"}`)); err == nil {
+		t.Error("duplicate version: the last (unsupported) value must win")
+	}
+	// Keys match case-insensitively.
+	cmd, err = parseCommand([]byte(`{"V":1,"TYPE":"shutdown"}`))
+	if err != nil || cmd.Type != "shutdown" {
+		t.Errorf("case-insensitive keys: %+v %v", cmd, err)
+	}
+	// Unknown fields are ignored (forward compatible), nested ones included.
+	cmd, err = parseCommand([]byte(`{"v":1,"type":"shutdown","future":{"a":[1,{"b":null}]}}`))
+	if err != nil || cmd.Type != "shutdown" {
+		t.Errorf("unknown field: %+v %v", cmd, err)
+	}
+}
+
+func TestFrameReaderMalformedLines(t *testing.T) {
+	// Blank, CR-only and whitespace-only lines are skipped; a NUL line is not
+	// whitespace and is handed to the parser, which rejects it.
+	reader := newFrameReader(strings.NewReader("\r\n\r\r\n \t \n\x00\n\xff\xfe\n{\"v\":1}\r\n\r"))
+	for _, want := range []string{"\x00", "\xff\xfe", `{"v":1}`} {
+		line, err := reader.next()
+		if err != nil || string(line) != want {
+			t.Fatalf("next() = %q, %v; want %q", line, err, want)
+		}
+		if want != `{"v":1}` {
+			if _, perr := parseCommand(line); perr == nil {
+				t.Errorf("%q parsed as a command", line)
+			}
+		}
+	}
+	if _, err := reader.next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("a trailing lone CR is not a frame: %v", err)
+	}
+	// Nothing but blank lines, or no bytes at all, is a clean EOF.
+	for _, input := range []string{"", "\n", "\r\n\r\n", "   "} {
+		if _, err := newFrameReader(strings.NewReader(input)).next(); !errors.Is(err, io.EOF) {
+			t.Errorf("%q: %v, want EOF", input, err)
+		}
+	}
+	// A CRLF-terminated frame at exactly the limit still passes (the CR is trimmed).
+	exact := strings.Repeat("x", maxFrameBytes-1)
+	line, err := newFrameReader(strings.NewReader(exact + "\r\n")).next()
+	if err != nil || len(line) != maxFrameBytes-1 {
+		t.Errorf("CRLF frame near the limit: len=%d err=%v", len(line), err)
+	}
+}

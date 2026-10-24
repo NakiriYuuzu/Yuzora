@@ -160,6 +160,14 @@ fn stop_reason(stop: &watch::Receiver<u16>) -> Close {
     }
 }
 
+// serde derive also decodes positional JSON arrays into structs; frames are objects.
+fn from_object<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> {
+    text.trim_start()
+        .starts_with('{')
+        .then(|| serde_json::from_str(text).ok())
+        .flatten()
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthFrame {
@@ -175,7 +183,7 @@ fn authenticate(
     let Message::Text(text) = message else {
         return None;
     };
-    let frame: AuthFrame = serde_json::from_str(&text).ok()?;
+    let frame: AuthFrame = from_object(&text)?;
     if frame.kind != "auth" {
         return None;
     }
@@ -743,7 +751,7 @@ fn rpc_error(id: Value, code: &'static str, message: &'static str) -> Value {
     json!({"id":id,"error":{"code":code,"message":message}})
 }
 fn rpc(gateway: &Gateway, ctx: &AuthContext, text: &str) -> Result<Value, Close> {
-    let call = serde_json::from_str::<Call>(text).ok().filter(|c| {
+    let call = from_object::<Call>(text).filter(|c| {
         (c.id.as_u64().is_some() || c.id.as_str().is_some_and(|id| id.len() <= 128))
             && (c.params.is_null() || c.params.is_object())
     });

@@ -783,3 +783,68 @@ fn websocket_ownership_contract_catches_production_after_test_module_and_admin_o
         &format!("{admin}\nfn other() {{ tokio::spawn(async {{}}); }}")
     ));
 }
+
+fn strip_comments(source: &str) -> String {
+    let mut out = String::new();
+    let mut rest = source;
+    while !rest.is_empty() {
+        if let Some(tail) = rest.strip_prefix("/*") {
+            rest = tail.split_once("*/").map_or("", |(_, after)| after);
+        } else if let Some(tail) = rest.strip_prefix("//") {
+            rest = tail.find('\n').map_or("", |n| &tail[n..]);
+        } else {
+            let ch = rest.chars().next().unwrap();
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// True only when `#![forbid(unsafe_code)]` is a live crate-level inner attribute
+/// in the leading attribute block, not commented out, quoted, or deeper in the file.
+fn forbids_unsafe_code(source: &str) -> bool {
+    let code = normalize(&strip_comments(source));
+    code.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take_while(|line| line.starts_with("#!["))
+        .any(|line| line == "#![forbid(unsafe_code)]")
+}
+
+#[test]
+fn forbid_unsafe_detection_ignores_comments_removals_and_weaker_lints() {
+    assert!(forbids_unsafe_code("#![forbid(unsafe_code)]\n\nmod a;\n"));
+    assert!(forbids_unsafe_code(
+        "//! doc\r\n#![forbid(unsafe_code)]\r\nmod a;\r\n"
+    ));
+    assert!(forbids_unsafe_code(
+        "#![deny(missing_docs)]\n#![forbid(unsafe_code)]\n"
+    ));
+    for broken in [
+        "// #![forbid(unsafe_code)]\nmod a;\n",
+        "/* #![forbid(unsafe_code)] */\nmod a;\n",
+        "/*\n#![forbid(unsafe_code)]\n*/\nmod a;\n",
+        "mod a;\n",
+        "#![deny(unsafe_code)]\nmod a;\n",
+        "#![allow(unsafe_code)]\nmod a;\n",
+        "// #![forbid(unsafe_code)]\n#![allow(unsafe_code)]\nmod a;\n",
+        "mod a;\n#![forbid(unsafe_code)]\n",
+        "const S: &str = \"#![forbid(unsafe_code)]\";\n",
+    ] {
+        assert!(!forbids_unsafe_code(broken), "{broken:?}");
+    }
+}
+
+#[test]
+fn gateway_crate_roots_forbid_unsafe_code() {
+    for (name, source) in [
+        ("src/main.rs", include_str!("../src/main.rs")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+    ] {
+        assert!(
+            forbids_unsafe_code(source),
+            "{name} must forbid unsafe_code"
+        );
+    }
+}

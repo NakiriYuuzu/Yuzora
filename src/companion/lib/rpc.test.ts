@@ -172,6 +172,40 @@ describe("CompanionSocket", () => {
     expect(next.calls().map((frame) => frame.method)).toEqual(["hello"])
   })
 
+  it("drops input typed while not connected: nothing is queued and nothing is replayed on the next socket", async () => {
+    vi.useFakeTimers()
+    const writes: [string, Record<string, unknown>][] = [
+      ["terminal.input", { stream: 3, text: "rm -rf build\r" }],
+      ["agent.prompt", { session: "work", target: "w:p", text: "approve" }],
+      ["pane.sendKeys", { session: "work", target: "w:p", keys: ["Enter"] }],
+      ["full.input", { stream: 4, text: "y" }],
+      ["terminal.control", { session: "work", target: "w:p" }],
+    ]
+    const ready = connected()
+    await vi.advanceTimersByTimeAsync(0)
+    const [client, socket] = await ready
+    socket.close(1006) // the network dropped; a reconnect is scheduled
+    expect(options.onState).toHaveBeenLastCalledWith("waiting", 1006)
+    for (const [method, params] of writes) {
+      await expect(client.call(method, params)).rejects.toMatchObject({ code: "not-connected" })
+    }
+
+    await vi.advanceTimersByTimeAsync(1000)
+    const next = FakeSocket.all.at(-1)!
+    expect(next).not.toBe(socket)
+    next.onopen?.() // authenticating: still not ready
+    for (const [method, params] of writes) {
+      await expect(client.call(method, params)).rejects.toMatchObject({ code: "not-connected" })
+    }
+    expect(next.sent.map((text) => JSON.parse(text))).toEqual([{ type: "auth", binding: "B" }])
+    next.server({ event: "session.ready", data: { protocolVersion: 1 } })
+    next.reply("hello", { protocolVersion: 1, serverTime: "2026-10-18T00:00:00Z", scopes: ["view"] })
+    await vi.advanceTimersByTimeAsync(5000)
+    // Only auth and hello ever reach the new socket: no dropped write was kept.
+    expect(next.sent.map((text) => JSON.parse(text).method ?? "auth")).toEqual(["auth", "hello"])
+    expect(socket.sent.map((text) => JSON.parse(text).method ?? "auth")).toEqual(["auth", "hello"])
+  })
+
   it("backs off up to 30 s with jitter and retries at once when asked", async () => {
     expect(reconnectDelay(0, () => 0)).toBe(500)
     expect(reconnectDelay(0, () => 1)).toBe(1000)
