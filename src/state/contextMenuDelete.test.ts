@@ -266,3 +266,14 @@ it("preserves ambiguous dirty split buffers when the registry can expose only on
     expect(paths()).toEqual([removed, removed])
     expect(first.state.doc.toString()).toBe("NEW_FIRST_EDIT")
 })
+
+it.each([
+    [folder, "Permanently delete folder \"folder\" and all of its contents? This cannot be undone."],
+    [removed, "Permanently delete \"folder/removed.txt\"? This cannot be undone."],
+])("confirms deleting %s with its workspace-relative path and an irreversible warning", async (path, expected) => {
+    const descriptions: string[] = []
+    useAppDialogStore.setState({ confirm: async request => { descriptions.push(request.description ?? ""); return false } })
+    await remove(path)
+    expect(descriptions).toEqual([expected])
+    expect(calls.some(call => call.command === "fs_delete")).toBe(false)
+})

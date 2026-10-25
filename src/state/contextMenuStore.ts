@@ -439,7 +439,7 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
     // buffers. Edits or new documents arriving after dispatch remain open.
     const text = i18n.t(
         isDir ? "contextMenu.confirm.deleteFolder" : "contextMenu.confirm.deleteFile",
-        { ns: "menus", name }
+        { ns: "menus", path: relativePathWithin(workspace, path) || workspacePathForDisplay(path) }
     )
     const ok = await requestAppConfirmation({
         title: i18n.t("contextMenu.confirm.deleteTitle", { ns: "menus" }),
