@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react"
 
 import { documentWorkspaceEpoch, getDocument } from "@/editor/documentRegistry"
 import { allowWorkspaceAssetScope } from "@/lib/ipc"
-import { launchOpenRequests } from "@/lib/openRequests"
+import { launchOpenRequests, openRequestBatchesAccepted } from "@/lib/openRequests"
 import { dismissSplash } from "@/lib/splash"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { isImagePath } from "@/workbench/ImageView"
@@ -56,6 +56,11 @@ function restoreSession(session: WorkspaceSession, restoredRef: { current: boole
         let cancelled = false
         let busy = false
         let attempted: string | null = null
+        // Files the OS opens meanwhile do not set a workspace, so the restore
+        // would replace their tabs; once the user opened something, it yields.
+        const openRequestBatches = openRequestBatchesAccepted()
+        const superseded = () => useWorkspaceStore.getState().workspacePath !== null
+            || openRequestBatchesAccepted() !== openRequestBatches
         const access = loadRemoteWorkspaces()[session.workspacePath]
         const connectionKey = () => {
             if (access === "runtime") {
@@ -67,13 +72,13 @@ function restoreSession(session: WorkspaceSession, restoredRef: { current: boole
         }
         const retry = () => {
             const key = connectionKey()
-            if (cancelled || busy || !key || attempted === key || useWorkspaceStore.getState().workspacePath) return
+            if (cancelled || busy || !key || attempted === key || superseded()) return
             attempted = key
             busy = true
             void openWorkspaceAtPath(session.workspacePath, {
                 // Keep recorded remote tabs even when one file cannot be
                 // read yet. The editor shows its source error on demand.
-                shouldOpen: () => !cancelled && connectionKey() === key && !useWorkspaceStore.getState().workspacePath
+                shouldOpen: () => !cancelled && connectionKey() === key && !superseded()
             }).catch((error) => console.warn("remote session restore deferred", error)).finally(() => {
                 busy = false
                 retry()

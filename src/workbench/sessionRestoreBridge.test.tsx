@@ -4,7 +4,7 @@ import indexHtml from "../../index.html?raw"
 
 import { getDocument } from "@/editor/documentRegistry"
 import { allowWorkspaceAssetScope } from "@/lib/ipc"
-import { launchOpenRequests } from "@/lib/openRequests"
+import { launchOpenRequests, openRequestBatchesAccepted } from "@/lib/openRequests"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { isWindowsPlatform } from "@/lib/platform"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
@@ -37,7 +37,8 @@ vi.mock("@/editor/documentRegistry", () => ({
 
 // The batch the OS queued before launch (Finder / Dock / Explorer).
 vi.mock("@/lib/openRequests", () => ({
-  launchOpenRequests: vi.fn()
+  launchOpenRequests: vi.fn(),
+  openRequestBatchesAccepted: vi.fn()
 }))
 
 // The bridge awaits the asset-scope grant before opening restored image tabs
@@ -92,6 +93,7 @@ beforeEach(() => {
   vi.mocked(getDocument).mockReset().mockResolvedValue({} as never)
   vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
   vi.mocked(launchOpenRequests).mockReset().mockResolvedValue([])
+  vi.mocked(openRequestBatchesAccepted).mockReset().mockReturnValue(0)
 })
 
 afterEach(() => {
@@ -364,6 +366,19 @@ describe("SessionRestoreBridge 還原", () => {
     render(<SessionRestoreBridge />)
     await act(async () => {})
     act(() => useWorkspaceStore.getState().setWorkspace("/chosen"))
+    act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await act(async () => {})
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
+  it("gives way to files the OS opened while the deferred host was connecting", async () => {
+    const root = remoteFilePath("waiting", "/project")
+    saveWorkspaceSession({ workspacePath: root, tabs: [root + "/main.ts"], activePath: null })
+    rememberRemoteWorkspace(root, "sftp")
+    render(<SessionRestoreBridge />)
+    await act(async () => {})
+    // Open With handed over a file: it opens as a tab without setting a workspace.
+    vi.mocked(openRequestBatchesAccepted).mockReturnValue(1)
     act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
     await act(async () => {})
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()

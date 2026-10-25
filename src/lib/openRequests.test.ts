@@ -163,6 +163,20 @@ describe("openFolderFromOs", () => {
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
   })
 
+  it("does not create a Space in a Session the user switched to while the path was canonicalized", async () => {
+    readyLocalHerdr()
+    const created = (herdr.state as { createSpaceFromFolder: unknown }).createSpaceFromFolder
+    vi.mocked(canonicalRuntimeWorkspace).mockImplementation(async (_scope, path) => {
+      setHerdr({ selectedSessionName: REMOTE_SESSION })
+      return `/canon${path}`
+    })
+
+    await openFolderFromOs("/project")
+
+    expect(created).not.toHaveBeenCalled()
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/project")
+  })
+
   it("opens a plain workspace when the local Session cannot create a Space", async () => {
     readyLocalHerdr({ canCreateSpace: () => false })
 

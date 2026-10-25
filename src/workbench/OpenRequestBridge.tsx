@@ -1,7 +1,7 @@
 import { useEffect } from "react"
 import { listen } from "@tauri-apps/api/event"
 
-import { takeOpenRequests } from "@/lib/ipc"
+import { takeOpenRequests, type OpenRequest } from "@/lib/ipc"
 import { launchOpenRequests, processOpenRequests } from "@/lib/openRequests"
 import { isTauri } from "@/lib/platform"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -34,20 +34,27 @@ export function OpenRequestBridge() {
       await whenSessionRestoreReady()
       return requests
     })
-    void ready.then((requests) => {
-      if (!disposed) void processOpenRequests(requests)
-    })
-    void listen(OPEN_REQUESTS_AVAILABLE_EVENT, () => {
+    const open = (requests: OpenRequest[]) => {
+      if (!disposed && requests.length > 0) void processOpenRequests(requests)
+    }
+    const drain = () => {
       void ready
         .then(() => takeOpenRequests())
-        .then((requests) => {
-          if (!disposed) void processOpenRequests(requests)
-        })
+        .then(open)
         .catch(() => {})
-    })
+    }
+    void ready.then(open)
+    void listen(OPEN_REQUESTS_AVAILABLE_EVENT, drain)
       .then((nextUnlisten) => {
-        if (disposed) nextUnlisten()
-        else unlisten = nextUnlisten
+        if (disposed) {
+          nextUnlisten()
+          return
+        }
+        unlisten = nextUnlisten
+        // A request queued after the launch take but before this listener
+        // existed announced itself to no one; take it now. It still opens
+        // after the launch batch, which was chained on `ready` first.
+        drain()
       })
       .catch(() => {})
 

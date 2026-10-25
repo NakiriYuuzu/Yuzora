@@ -115,6 +115,7 @@ fn enqueue<R: Runtime>(app: &AppHandle<R>, requests: Vec<OpenRequest>) {
     if requests.is_empty() {
         return;
     }
+    grant_file_assets(app, &requests);
     app.state::<OpenRequestState>().push(requests);
     let _ = app.emit_to("main", AVAILABLE_EVENT, ());
     // The startup window stays hidden until the frontend's first themed frame
@@ -125,6 +126,19 @@ fn enqueue<R: Runtime>(app: &AppHandle<R>, requests: Vec<OpenRequest>) {
                 let _ = window.unminimize();
             }
             let _ = window.set_focus();
+        }
+    }
+}
+
+/// Tauri's drop handler grants each dropped file (only that file) to the asset
+/// protocol; a file the OS asks to open needs the same grant, or an image tab
+/// outside an opened workspace cannot load its `asset:` URL. Folders open as
+/// workspaces, which grant their own tree.
+fn grant_file_assets<R: Runtime>(app: &AppHandle<R>, requests: &[OpenRequest]) {
+    let scope = app.asset_protocol_scope();
+    for request in requests {
+        if request.kind == OpenRequestKind::File {
+            let _ = scope.allow_file(&request.path);
         }
     }
 }
@@ -224,6 +238,30 @@ mod tests {
             paths(&requests),
             vec![(folder.to_str().unwrap(), OpenRequestKind::Directory)]
         );
+    }
+
+    #[test]
+    fn os_opened_files_get_asset_access_but_folders_and_siblings_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("pic.png"), "x").unwrap();
+        std::fs::write(root.join("sibling.png"), "x").unwrap();
+        std::fs::create_dir(root.join("project")).unwrap();
+        std::fs::write(root.join("project").join("inner.png"), "x").unwrap();
+        let requests: Vec<OpenRequest> = [root.join("pic.png"), root.join("project")]
+            .into_iter()
+            .filter_map(classify)
+            .collect();
+        let app = tauri::test::mock_app();
+        app.manage(OpenRequestState::default());
+
+        enqueue(app.handle(), requests);
+
+        let scope = app.asset_protocol_scope();
+        assert!(scope.is_allowed(root.join("pic.png")));
+        assert!(!scope.is_allowed(root.join("sibling.png")));
+        assert!(!scope.is_allowed(root.join("project").join("inner.png")));
+        assert_eq!(app.state::<OpenRequestState>().take().len(), 2);
     }
 
     #[test]

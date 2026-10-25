@@ -66,12 +66,14 @@ export async function openFolderFromOs(path: string): Promise<void> {
     try {
         const sessionName = await waitForLocalSpaceSession()
         if (sessionName) {
-            const herdr = useHerdrStore.getState()
             const root = await canonicalRuntimeWorkspace(sessionName, path)
+            // Read the store after the round-trip: Space lookup and creation follow the
+            // selected Session, so a switch meanwhile must not put this local path there.
+            const herdr = useHerdrStore.getState()
             const space = herdr.selectedSessionName === sessionName
                 ? herdr.spaces().find((item) => pathsMatch(item.path, root))
                 : undefined
-            if (space || herdr.canCreateSpace()) {
+            if (space || (herdr.selectedSessionName === sessionName && herdr.canCreateSpace())) {
                 const result = space
                     ? await herdr.activateSpace({ sessionName, workspaceId: space.id, path: root })
                     : await herdr.createSpaceFromFolder(root, workspacePathBasename(root))
@@ -88,9 +90,19 @@ export async function openFolderFromOs(path: string): Promise<void> {
 }
 
 let queue: Promise<void> = Promise.resolve()
+let acceptedBatches = 0
+
+/**
+ * How many non-empty batches the OS has handed over so far. A deferred
+ * session restore compares it to give way to what the user opened meanwhile.
+ */
+export function openRequestBatchesAccepted(): number {
+    return acceptedBatches
+}
 
 /** Opens requests one at a time in arrival order; consecutive files open as one batch. */
 export function processOpenRequests(requests: OpenRequest[]): Promise<void> {
+    if (requests.length > 0) acceptedBatches += 1
     const run = async () => {
         let files: string[] = []
         const flushFiles = async () => {
@@ -117,4 +129,5 @@ export function processOpenRequests(requests: OpenRequest[]): Promise<void> {
 export function resetOpenRequestsForTest(): void {
     launchRequests = null
     queue = Promise.resolve()
+    acceptedBatches = 0
 }

@@ -8,13 +8,14 @@ import { OpenRequestBridge } from "@/workbench/OpenRequestBridge"
 
 const eventMock = vi.hoisted(() => ({
   handler: null as (() => void) | null,
-  unlisten: vi.fn()
+  unlisten: vi.fn(),
+  registered: null as Promise<void> | null
 }))
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (event: string, handler: () => void) => {
     if (event === "open-requests:available") eventMock.handler = handler
-    return Promise.resolve(eventMock.unlisten)
+    return (eventMock.registered ?? Promise.resolve()).then(() => eventMock.unlisten)
   }
 }))
 vi.mock("@/lib/platform", () => ({ isTauri: () => true }))
@@ -33,6 +34,7 @@ async function flush(): Promise<void> {
 beforeEach(() => {
   eventMock.handler = null
   eventMock.unlisten.mockReset()
+  eventMock.registered = null
   useWorkspaceStore.setState({ sessionRestoreReady: false })
   vi.mocked(launchOpenRequests).mockReset().mockResolvedValue([])
   vi.mocked(processOpenRequests).mockReset().mockResolvedValue(undefined)
@@ -61,7 +63,8 @@ describe("OpenRequestBridge", () => {
     const launch = [{ path: "/launch.md", kind: "file" as const }]
     const later = [{ path: "/project", kind: "directory" as const }]
     vi.mocked(launchOpenRequests).mockResolvedValue(launch)
-    vi.mocked(takeOpenRequests).mockResolvedValue(later)
+    // The first take is the drain right after the listener registers.
+    vi.mocked(takeOpenRequests).mockResolvedValueOnce([]).mockResolvedValueOnce(later)
 
     render(<OpenRequestBridge />)
     await flush()
@@ -73,6 +76,23 @@ describe("OpenRequestBridge", () => {
     act(() => useWorkspaceStore.getState().markSessionRestoreReady())
     await flush()
     expect(vi.mocked(processOpenRequests).mock.calls).toEqual([[launch], [later]])
+  })
+
+  it("takes a request that was queued before the listener registered", async () => {
+    let register!: () => void
+    eventMock.registered = new Promise((resolve) => { register = resolve })
+    const missed = [{ path: "/missed.md", kind: "file" as const }]
+    vi.mocked(takeOpenRequests).mockResolvedValueOnce(missed)
+    act(() => useWorkspaceStore.getState().markSessionRestoreReady())
+
+    render(<OpenRequestBridge />)
+    await flush()
+    // Its availability event fired while nothing listened.
+    expect(processOpenRequests).not.toHaveBeenCalled()
+
+    register()
+    await flush()
+    expect(vi.mocked(processOpenRequests).mock.calls).toEqual([[missed]])
   })
 
   it("stops opening requests once unmounted", async () => {
