@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core"
 import { parseRemoteFilePath } from "./runtimeIdentity"
 import { invokeNativeGit, closeNativeGitWorkspace } from "./nativeGit"
 import { notifyFileSaved } from "./fileSaveEvents"
+import { withFileRead, withFileWrite } from "./fileRenameCoordinator"
 import type { PreviewInteractionSnapshot, PreviewResourceLease, PreviewResourceSource, PreviewShortcutBinding } from "./previewTypes"
 
 // Re-exported so feature modules that carry their own domain logic around a
@@ -109,14 +110,17 @@ export function listDir(path: string): Promise<FileNode[]> {
 }
 
 export function openFile(path: string): Promise<OpenFileResult> {
-    if (parseRemoteFilePath(path)) return import("./remoteFiles").then((remote) => remote.readRemoteFile(path))
-    return invoke("open_file", { path })
+    return withFileRead(path, () => parseRemoteFilePath(path)
+        ? import("./remoteFiles").then((remote) => remote.readRemoteFile(path))
+        : invoke("open_file", { path }))
 }
 
 /** Accept the revision only when the editor accepts the matching content. */
 export async function openFileSnapshot(path: string): Promise<{ result: OpenFileResult; accept: () => void }> {
-    if (parseRemoteFilePath(path)) return (await import("./remoteFiles")).readRemoteFileSnapshot(path)
-    return { result: await openFile(path), accept: () => {} }
+    return withFileRead(path, async () => {
+        if (parseRemoteFilePath(path)) return (await import("./remoteFiles")).readRemoteFileSnapshot(path)
+        return { result: await invoke<OpenFileResult>("open_file", { path }), accept: () => {} }
+    })
 }
 
 export function isOpenableFile(path: string): Promise<boolean> {
@@ -140,10 +144,12 @@ export function readFileBase64(path: string, maxBytes: number): Promise<FileBase
 }
 
 export function saveFile(path: string, content: string): Promise<number> {
-    const saved = parseRemoteFilePath(path)
-        ? import("./remoteFiles").then((remote) => remote.saveRemoteFile(path, content))
-        : invoke<number>("save_file", { path, content })
-    return saved.then((result) => { notifyFileSaved(path); return result })
+    return withFileWrite(path, async () => {
+        const saved = parseRemoteFilePath(path)
+            ? import("./remoteFiles").then((remote) => remote.saveRemoteFile(path, content))
+            : invoke<number>("save_file", { path, content })
+        return saved.then((result) => { notifyFileSaved(path); return result })
+    })
 }
 
 async function localMutation(workspace: string, paths: string[]) {
@@ -186,30 +192,36 @@ async function absoluteInWorkspace(workspace: string, relative: string[]): Promi
 }
 
 /** Recursively copies files/folders into `targetDir` (never overwrites; collisions get a "copy" name). Returns the created paths. */
-export async function fsCopyPaths(workspace: string, sources: string[], targetDir: string): Promise<string[]> {
+export async function fsCopyPaths(workspace: string, sources: string[], targetDir: string, canDispatch = () => true): Promise<string[]> {
     if ([workspace, targetDir, ...sources].some((path) => parseRemoteFilePath(path))) {
-        return import("./remoteFiles").then((remote) => remote.copyRemotePaths(workspace, sources, targetDir))
+        return import("./remoteFiles").then((remote) => canDispatch() ? remote.copyRemotePaths(workspace, sources, targetDir) : [])
     }
     const { workspaceCapabilityId, relative } = await localMutation(workspace, sources)
-    const created = await invoke<string[]>("fs_copy_paths", { workspaceCapabilityId, sources: relative, targetDir: await localTargetDir(workspace, targetDir) })
+    const destination = await localTargetDir(workspace, targetDir)
+    if (!canDispatch()) return []
+    const created = await invoke<string[]>("fs_copy_paths", { workspaceCapabilityId, sources: relative, targetDir: destination })
     return absoluteInWorkspace(workspace, created)
 }
 
 /** Moves files/folders into `targetDir` inside the same workspace. Returns their new paths. */
-export async function fsMovePaths(workspace: string, sources: string[], targetDir: string): Promise<string[]> {
+export async function fsMovePaths(workspace: string, sources: string[], targetDir: string, canDispatch = () => true): Promise<string[]> {
     if ([workspace, targetDir, ...sources].some((path) => parseRemoteFilePath(path))) {
-        return import("./remoteFiles").then((remote) => remote.moveRemotePaths(workspace, sources, targetDir))
+        return import("./remoteFiles").then((remote) => canDispatch() ? remote.moveRemotePaths(workspace, sources, targetDir) : [])
     }
     const { workspaceCapabilityId, relative } = await localMutation(workspace, sources)
-    const moved = await invoke<string[]>("fs_move_paths", { workspaceCapabilityId, sources: relative, targetDir: await localTargetDir(workspace, targetDir) })
+    const destination = await localTargetDir(workspace, targetDir)
+    if (!canDispatch()) return []
+    const moved = await invoke<string[]>("fs_move_paths", { workspaceCapabilityId, sources: relative, targetDir: destination })
     return absoluteInWorkspace(workspace, moved)
 }
 
 /** Copies the files currently on the OS clipboard (e.g. from Finder or Explorer) into `targetDir`. Local workspaces only. */
-export async function fsPasteClipboardFiles(workspace: string, targetDir: string): Promise<string[]> {
+export async function fsPasteClipboardFiles(workspace: string, targetDir: string, canDispatch = () => true): Promise<string[]> {
     if (parseRemoteFilePath(workspace)) throw new Error("clipboard-import-remote-unsupported")
     const { workspaceCapabilityId } = await localMutation(workspace, [])
-    const created = await invoke<string[]>("fs_paste_clipboard_files", { workspaceCapabilityId, targetDir: await localTargetDir(workspace, targetDir) })
+    const destination = await localTargetDir(workspace, targetDir)
+    if (!canDispatch()) return []
+    const created = await invoke<string[]>("fs_paste_clipboard_files", { workspaceCapabilityId, targetDir: destination })
     return absoluteInWorkspace(workspace, created)
 }
 
@@ -421,8 +433,12 @@ export function gitStashPush(
     return invokeGit("git_stash_push", { repositoryRoot, message, includeUntracked, keepIndex })
 }
 
-export function gitStashApply(repositoryRoot: string, index: number, pop: boolean): Promise<GitOperationOutcome> {
-    return invokeGit("git_stash_apply", { repositoryRoot, index, pop })
+export async function gitStashApply(repositoryRoot: string, index: number, pop: boolean, oid?: string): Promise<GitOperationOutcome> {
+    if (pop) return invokeGit("git_stash_apply", { repositoryRoot, index, pop })
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(oid ?? "")) {
+        throw new Error("git stash apply requires a full stash object ID")
+    }
+    return invokeGit("git_stash_apply", { repositoryRoot, index, pop, oid })
 }
 
 export function gitStashDrop(repositoryRoot: string, index: number): Promise<void> {
@@ -503,19 +519,22 @@ export function gitFileAtRev(
     return invokeGit("git_file_at_rev", { repositoryRoot, rev, path })
 }
 
-export function searchWorkspace(
+let searchRequestGeneration = 0
+export async function searchWorkspace(
     root: string,
     query: string,
     caseSensitive: boolean,
     onEvent: (e: SearchEvent) => void
 ): Promise<void> {
-    if (parseRemoteFilePath(root)) return import("./remoteSearch").then((remote) => remote.searchRemoteWorkspace(root, query, caseSensitive, onEvent))
+    const generation = ++searchRequestGeneration
+    const remote = await import("./remoteSearch")
+    if (generation !== searchRequestGeneration) return
+    if (parseRemoteFilePath(root)) return remote.searchRemoteWorkspace(root, query, caseSensitive, onEvent)
+    await remote.stopRemoteSearch()
+    if (generation !== searchRequestGeneration) return
     const ch = new Channel<SearchEvent>()
     ch.onmessage = onEvent
-    return import("./remoteSearch").then(async (remote) => {
-        await remote.stopRemoteSearch()
-        return invoke("search_workspace", { root, query, caseSensitive, onEvent: ch })
-    })
+    return invoke("search_workspace", { root, query, caseSensitive, onEvent: ch })
 }
 
 

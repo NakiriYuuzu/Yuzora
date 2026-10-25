@@ -77,7 +77,16 @@ export type GitEnvironment =
       }
     | { status: "notARepo" }
     | { status: "ready"; root: string; version: string }
-export interface BranchInfo { name: string; upstream: string | null; ahead: number; behind: number; isCurrent: boolean; gone: boolean }
+export interface BranchInfo {
+    name: string
+    upstream: string | null
+    /** Full Git ref; absent only for older helpers, null when no upstream is configured. */
+    upstreamRef?: string | null
+    ahead: number
+    behind: number
+    isCurrent: boolean
+    gone: boolean
+}
 export interface TagInfo { name: string; date: string }
 export interface BranchList { local: BranchInfo[]; remote: string[]; tags: TagInfo[] }
 // #57 T3：冷開 workspace 的 git 首載單趟快照——environment 非 ready 時
@@ -138,7 +147,7 @@ export interface GitConflictSides {
 }
 /** Outcome of an operation that can stop on merge conflicts (the repository is then mid-operation). */
 export interface GitOperationOutcome { conflicts: boolean }
-export interface GitStashEntry { index: number; message: string; timestamp: number }
+export interface GitStashEntry { index: number; oid?: string; message: string; timestamp: number }
 export type GitResetMode = "soft" | "mixed" | "hard" | "keep"
 export interface SearchMatch { line: number; col: number; preview: string }
 export type SearchEvent =
@@ -550,7 +559,8 @@ export interface DbObjectReference {
     kind: "table" | "view"
 }
 export type DbTable = DbObjectReference
-export interface DbColumn { name: string; type: string; notnull: boolean; pk: boolean }
+/** An omitted generated flag means the engine/helper did not provide that metadata. */
+export interface DbColumn { name: string; type: string; notnull: boolean; pk: boolean; generated?: boolean }
 
 /** Every cell is tagged. Integers/decimals use strings so JavaScript never
  * rounds a 64-bit integer or an engine decimal; binary bytes use lossless hex. */
@@ -675,7 +685,7 @@ export interface DbQueryRun extends DbQueryRunOwner {
     connectionTerminated: boolean
 }
 
-type DbQueryRunMode = "primary" | "script"
+type DbQueryRunMode = "primary" | "script" | "tableCellMutation"
 type DbTransactionBoundary = "none" | "begin" | "commit" | "rollback"
 interface DbQueryRunStatement {
     sql: string

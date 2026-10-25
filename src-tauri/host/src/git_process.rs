@@ -12,6 +12,10 @@ const STDOUT_LIMIT: usize = 8 * 1024 * 1024;
 const STDERR_LIMIT: usize = 1024 * 1024;
 const POLL: Duration = Duration::from_millis(5);
 
+#[cfg(all(test, unix))]
+#[path = "git_process_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 pub use crate::cancellation::with_cancellation;
 
 struct OwnedChild {
@@ -89,7 +93,7 @@ pub(crate) fn execute_with_stdout_limit(
     stdout_limit: usize,
 ) -> Result<GitOutput, String> {
     let cancelled = crate::cancellation::token();
-    if cancelled.load(Ordering::Acquire) {
+    if cancelled.load(Ordering::Acquire) || crate::git_service::processes_shutting_down() {
         return Err("git-cancelled".into());
     }
     if stdin.is_some_and(|data| data.len() > STDOUT_LIMIT) {
@@ -105,7 +109,11 @@ pub(crate) fn execute_with_stdout_limit(
         stop: stop.clone(),
         finished: false,
     };
-    crate::git_service::register_process(owned.child.id());
+    if !crate::git_service::register_process(owned.child.id()) {
+        // Shutdown may win after the pre-spawn check. OwnedChild terminates
+        // and reaps this late child before returning the cancellation.
+        return Err("git-cancelled".into());
+    }
     if let Some(hook) = on_spawn {
         hook(owned.child.id());
     }
@@ -184,10 +192,15 @@ pub(crate) fn execute_with_stdout_limit(
         while let Ok((which, result)) = rx.try_recv() {
             outputs[which] = Some(result?);
         }
-        if let Some(status) = owned.child.try_wait().map_err(|e| e.to_string())? {
-            if outputs.iter().all(Option::is_some) {
-                return Ok(status.code().unwrap_or(-1));
-            }
+        // Retain the Unix leader PID until output has completed or cleanup
+        // has signalled its group. A descendant may keep the pipes open.
+        #[cfg(unix)]
+        let exited = process_kill::leader_exited_without_reaping(owned.child.id() as libc::pid_t)
+            .map_err(|e| e.to_string())?;
+        #[cfg(not(unix))]
+        let exited = owned.child.try_wait().map_err(|e| e.to_string())?.is_some();
+        if exited && outputs.iter().all(Option::is_some) {
+            return Ok(());
         }
         // Wake on completion, but process it after the cancellation/deadline
         // checks above so those keep their existing precedence.
@@ -197,14 +210,29 @@ pub(crate) fn execute_with_stdout_limit(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(POLL),
         }
     })();
-    if result.is_err() {
-        stop.store(true, Ordering::Release);
-        let _ = process_kill::terminate_process_tree(&mut owned.child, &mut owned.tree);
-    } else {
-        process_kill::reap_process_tree(&mut owned.child, &mut owned.tree)
-            .map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    let normal_completion = result.is_ok();
+    let result = match result {
+        Err(error) => {
+            stop.store(true, Ordering::Release);
+            match process_kill::terminate_process_tree(&mut owned.child, &mut owned.tree) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}; process-tree cleanup failed: {cleanup}")),
+            }
+        }
+        Ok(()) => process_kill::reap_process_tree(&mut owned.child, &mut owned.tree)
+            .map(|status| status.code().unwrap_or(-1))
+            .map_err(|error| error.to_string()),
+    };
+    #[cfg(unix)]
+    {
+        owned.finished = true;
     }
-    owned.finished = true;
+    #[cfg(not(unix))]
+    {
+        // Preserve the retained Job cleanup retry if normal reaping failed.
+        owned.finished = !normal_completion || result.is_ok();
+    }
     // Unix readers are nonblocking, so even a descendant that detached its own
     // process group cannot keep the pipe workers alive after cancellation.
     #[cfg(unix)]

@@ -114,8 +114,8 @@ const dbEditorTheme = EditorView.theme({
  * Database mode main region (FEAT-1). With no active connection it keeps the
  * original empty state; once a connection is open it becomes a SQL console:
  * a CodeMirror editor (SQL highlight, Cmd/Ctrl+Enter to run) over a results
- * area. The panel is remounted on mode switch, but the SQL text and last
- * result live in dbStore so they survive leaving/returning to Database mode.
+ * area. The visited panel remains mounted across mode switches; each console
+ * may remount for connection changes, while the cell editor keeps its draft.
  */
 export function DatabasePanel() {
   const { t } = useTranslation("panels")
@@ -153,12 +153,20 @@ export function DatabasePanel() {
     }
     return newestTerminated?.descriptorId ?? null
   })
-  const connected = useDbStore((state) =>
-    descriptorId !== null &&
-    state.connections.some((connection) => connection.descriptorId === descriptorId)
-  )
+  const connection = useDbStore(state => state.connections.find(connection => connection.descriptorId === descriptorId))
+  const connected = connection !== undefined
+  const identity = useMemo(() => identityOf(connection), [connection])
+  const profileName = useDbStore(state => state.saved.find(profile => profile.id === descriptorId)?.name ?? connection?.name ?? "")
+  const table = useDbStore(state => descriptorId ? queryFor(state, descriptorId).table ?? null : null)
+  const metadata = useDbStore(state => descriptorId && table ? state.columnBuckets[descriptorId]?.[dbObjectRefKey(table)] ?? EMPTY_COLUMNS : EMPTY_COLUMNS)
+  const editingDisabled = useDbStore(state => {
+    if (!descriptorId || !connected) return true
+    const query = queryFor(state, descriptorId)
+    return query.running || !!query.runGroup?.run?.transactionMayBeOpen
+  })
 
   return (
+    <DatabaseCellEditing identity={identity} profileName={profileName} kind={connection?.kind ?? "sqlite"} table={table} metadata={metadata} disabled={editingDisabled}>
     <div className="yz-modein flex min-h-0 flex-1 flex-col overflow-hidden bg-(--paper-0)">
       {descriptorId ? (
         <DatabaseConsole
@@ -176,6 +184,7 @@ export function DatabasePanel() {
         </div>
       )}
     </div>
+    </DatabaseCellEditing>
   )
 }
 
@@ -194,13 +203,15 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   }, [mode])
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const editorRevisionRef = useRef(0)
+  const queryNavigationRef = useRef<{ queryRunId: string; revision: number } | null>(null)
+  const previousRunIdsRef = useRef<{ preparing?: string; group?: string }>({})
   const activeProfile = useDbStore((state) =>
     state.saved.find((profile) => profile.id === descriptorId) ?? null
   )
   const activeConnection = useDbStore((state) =>
     state.connections.find((connection) => connection.descriptorId === descriptorId) ?? null
   )
-  const identity = useMemo(() => identityOf(activeConnection ?? undefined), [activeConnection])
   const needsDatabase = activeProfile?.kind !== "sqlite" && activeProfile?.database === ""
   const sqlText = useDbStore((state) => queryFor(state, descriptorId).sql)
   const running = useDbStore((state) => queryFor(state, descriptorId).running)
@@ -210,6 +221,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   const elapsedMs = useDbStore((state) => queryFor(state, descriptorId).elapsedMs)
   const sortBy = useDbStore((state) => queryFor(state, descriptorId).sortBy)
   const runGroup = useDbStore((state) => queryFor(state, descriptorId).runGroup)
+  const preparingRun = useDbStore((state) => queryFor(state, descriptorId).preparingRun)
   const runQuery = useDbStore((s) => s.runQuery)
   const cancelQuery = useDbStore((s) => s.cancelQuery)
   const selectStatementTab = useDbStore((s) => s.selectStatementTab)
@@ -259,6 +271,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
           ...historyKeymap
         ]),
         EditorView.updateListener.of((u) => {
+          if (u.docChanged || u.selectionSet) editorRevisionRef.current += 1
           if (u.docChanged) useDbStore.getState().setSql(u.state.doc.toString())
         })
       ]
@@ -282,6 +295,25 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
     view.dispatch({ changes: { from: 0, to: current.length, insert: sqlText } })
   }, [sqlText])
 
+  // Capture the editor before awaiting release of a previous result session too.
+  // Later typing or cursor movement retires automatic query navigation.
+  const preparingRunId = preparingRun?.owner.queryRunId
+  const groupRunId = runGroup?.owner.queryRunId
+  const navigationRunId = preparingRunId ?? groupRunId
+  useEffect(() => {
+    const previous = previousRunIdsRef.current
+    const newIntent = preparingRunId && preparingRunId !== previous.preparing
+    const newGroup = groupRunId && groupRunId !== previous.group && groupRunId !== previous.preparing
+    // Admitting a prepared run keeps its original revision. Cancelling it must
+    // not grant its predecessor permission to move the editor again.
+    if (newIntent || newGroup) {
+      queryNavigationRef.current = navigationRunId
+        ? { queryRunId: navigationRunId, revision: editorRevisionRef.current }
+        : null
+    }
+    previousRunIdsRef.current = { preparing: preparingRunId, group: groupRunId }
+  }, [preparingRunId, groupRunId, navigationRunId])
+
   useEffect(() => {
     const view = viewRef.current
     if (!view || !parseError) return
@@ -296,6 +328,9 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   useEffect(() => {
     const view = viewRef.current
     if (!view || parseError || !runGroup || runGroup.units.length === 0) return
+    const navigation = queryNavigationRef.current
+    if (navigation?.queryRunId !== runGroup.owner.queryRunId ||
+        navigation.revision !== editorRevisionRef.current) return
     const activeStatement = runGroup.run?.statements.find((statement) =>
       statement.statementExecutionId === runGroup.activeStatementExecutionId
     )
@@ -303,15 +338,21 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
     const firstUnit = activeUnit ?? runGroup.units[0]
     const lastUnit = activeUnit ?? runGroup.units[runGroup.units.length - 1]
     if (!firstUnit || !lastUnit || lastUnit.end > view.state.doc.length) return
+    const units = activeUnit ? [activeUnit] : runGroup.units
+    if (units.some(unit => view.state.doc.sliceString(unit.start, unit.end) !== unit.sql)) return
     view.dispatch({
       selection: { anchor: firstUnit.start, head: lastUnit.end }
     })
+    navigation.revision = editorRevisionRef.current
   }, [parseError, runGroup])
 
   useEffect(() => {
     const view = viewRef.current
     const databaseError = error?.databaseError
     if (!view || parseError || !error || !databaseError) return
+    const navigation = queryNavigationRef.current
+    if (!navigation || navigation.queryRunId !== navigationRunId ||
+        navigation.revision !== editorRevisionRef.current) return
     const editorSql = view.state.doc.toString()
     let selection = databaseErrorSelectionForEditor(
       editorSql,
@@ -338,10 +379,24 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
       selection: { anchor: selection.from, head: selection.to },
       scrollIntoView: true
     })
-  }, [error, parseError, runGroup])
+    navigation.revision = editorRevisionRef.current
+  }, [error, parseError, runGroup, navigationRunId])
+
+  const navigateToStatement = (statementExecutionId: DbStatementExecution["statementExecutionId"]) => {
+    const view = viewRef.current
+    const statement = runGroup?.run?.statements.find(candidate =>
+      candidate.statementExecutionId === statementExecutionId
+    )
+    const unit = statement ? runGroup?.units[statement.statementIndex] : null
+    queryNavigationRef.current = view && runGroup && unit && unit.end <= view.state.doc.length &&
+      view.state.doc.sliceString(unit.start, unit.end) === unit.sql
+      ? { queryRunId: runGroup.owner.queryRunId, revision: editorRevisionRef.current }
+      : null
+    selectStatementTab(statementExecutionId)
+  }
 
   const canRun = connected && !needsDatabase && sqlText.trim().length > 0 && !running
-  const canCancel = connected && queryRunGroupIsCancellable(runGroup)
+  const canCancel = connected && queryRunGroupIsCancellable(runGroup, preparingRun)
   const runPrimary = () => {
     const view = viewRef.current
     if (!view) return
@@ -391,7 +446,6 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   )
 
   return (
-    <DatabaseCellEditing identity={identity} kind={activeConnection?.kind ?? "sqlite"} table={table} metadata={metadata} disabled={running || !!runGroup?.run?.transactionMayBeOpen}>
     <div className="database-console flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="database-profile-header flex shrink-0 items-center gap-2 border-b border-(--line-1) pl-4">
         <div
@@ -523,7 +577,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
           sortBy={sortBy}
           meta={resultMeta}
           onSort={sortResult}
-          onSelectStatement={selectStatementTab}
+          onSelectStatement={navigateToStatement}
           onPreviousPage={previousResultPage}
           onNextPage={nextResultPage}
           onReleaseResult={releaseResultSession}
@@ -532,7 +586,6 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
       </ResizablePanel>
       </ResizablePanelGroup>
     </div>
-    </DatabaseCellEditing>
   )
 }
 

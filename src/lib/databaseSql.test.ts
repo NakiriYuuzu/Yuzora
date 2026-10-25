@@ -159,6 +159,64 @@ describe("splitDatabaseSql common and SQLite syntax", () => {
 })
 
 describe("splitDatabaseSql PostgreSQL syntax", () => {
+    it.each(["雪", "é", "_雪2", "😀", "a\u0301", "\u00a0", ""])(
+        "keeps the exact body and UTF-16 offsets for dollar tag %j",
+        (tag) => {
+            const first = `SELECT $${tag}$a;b 'quoted'; -- body\r\n/* ; */ $other$nested;$other$ end$${tag}$;`
+            const source = `${first}\r\nSELECT 2;`
+            expect(units(source, "postgres").map(unit => unit.sql)).toEqual([first, "SELECT 2;"])
+        }
+    )
+
+    it.each(["雪", "😀", "é", "column_name"])("does not open dollar quotes inside identifier %s", (prefix) => {
+        const first = `SELECT ${prefix}$tag$;`
+        expect(units(`${first} SELECT 2;`, "postgres").map(unit => unit.sql)).toEqual([first, "SELECT 2;"])
+    })
+
+    it.each(["@", "#"])("recognizes a dollar quote following operator %s", (operator) => {
+        for (const operand of ["1 ", "column_name"]) {
+            const first = `SELECT ${operand}${operator}$tag$a;b$tag$;`
+            expect(units(`${first} SELECT 2;`, "postgres").map(unit => unit.sql)).toEqual([first, "SELECT 2;"])
+        }
+    })
+
+    it("does not case-fold Unicode identifiers into transaction keywords", () => {
+        expect(units("begın; commıt; BEGIN; COMMIT;", "postgres").map(unit => unit.transactionBoundary))
+            .toEqual(["none", "none", "begin", "commit"])
+    })
+
+    it.each(["SELECT $雪$unterminated;", "SELECT $É$body$é$;", "SELECT $é$body$e\u0301$;"])(
+        "reports an unmatched dollar tag without partial units: %s",
+        (source) => {
+            const result = splitDatabaseSql(source, "postgres")
+            expect(result).toMatchObject({ ok: false, error: { code: "unterminated-dollar-quote", position: 7 } })
+            expect("units" in result).toBe(false)
+        }
+    )
+
+    it("resolves Unicode dollar body cursors and rebases reverse selections without rewriting SQL", () => {
+        const prefix = "SELECT 0;\r\n"
+        const first = "SELECT $雪😀$a;b$雪😀$;"
+        const source = `${prefix}${first}\r\nSELECT 2;`
+        const cursor = source.indexOf("b$")
+        for (const selection of [
+            { from: cursor, to: cursor },
+            { from: prefix.length + first.length, to: prefix.length },
+        ]) {
+            expect(resolveDatabaseSqlTarget(source, "postgres", { kind: "primary", selection, cursor })).toEqual({
+                ok: true,
+                units: [{ sql: first, start: prefix.length, end: prefix.length + first.length, transactionBoundary: "none" }],
+                highlight: { from: prefix.length, to: prefix.length + first.length },
+            })
+        }
+    })
+
+    it("does not accept a digit at the beginning of a dollar tag", () => {
+        expect(units("SELECT $9雪$a;b$9雪$;", "postgres").map(unit => unit.sql)).toEqual([
+            "SELECT $9雪$a;", "b$9雪$;",
+        ])
+    })
+
     it("keeps tagged dollar-quoted function bodies and untagged dollar strings intact", () => {
         const source = [
             "CREATE FUNCTION public.bump(value integer)",

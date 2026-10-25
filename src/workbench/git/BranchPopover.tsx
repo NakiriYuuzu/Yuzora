@@ -69,8 +69,15 @@ function suggestedReleaseBranch(tagName: string): string {
     return `release/${tagName.replace(/^v/, "")}`
 }
 
+function remoteUpstreamName(branch: BranchInfo): string | null {
+    // Older helpers only supply the display name. Explicit null is authoritative.
+    if (branch.upstreamRef === undefined) return branch.upstream
+    const prefix = "refs/remotes/"
+    return branch.upstreamRef?.startsWith(prefix) ? branch.upstreamRef.slice(prefix.length) : null
+}
+
 function ownersForRemote(local: BranchInfo[], remoteName: string): BranchInfo[] {
-    return local.filter((branch) => branch.upstream === remoteName)
+    return local.filter((branch) => remoteUpstreamName(branch) === remoteName)
 }
 
 function prefixOf(fullName: string): string | null {
@@ -214,10 +221,11 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
     const remoteOwners = useMemo(() => {
         const owners = new Map<string, BranchInfo[]>()
         for (const branch of local) {
-            if (!branch.upstream) continue
-            const current = owners.get(branch.upstream)
+            const upstream = remoteUpstreamName(branch)
+            if (!upstream) continue
+            const current = owners.get(upstream)
             if (current) current.push(branch)
-            else owners.set(branch.upstream, [branch])
+            else owners.set(upstream, [branch])
         }
         return owners
     }, [local])
@@ -304,17 +312,18 @@ export function BranchPopover({ open, onOpenChange, trigger }: BranchPopoverProp
         }
 
         const derived = leafName(fullName)
+        const reservedName = derived === "HEAD"
         let localName = derived
-        if (local.some((branch) => branch.name === derived)) {
+        if (reservedName || local.some((branch) => branch.name === derived)) {
             const name = await requestTextInputDialog({
                 title: t("branchPopover.alternateLocalTitle", { ns: "menus" }),
-                description: t("branchPopover.alternateLocalDescription", {
+                description: t(reservedName ? "branchPopover.reservedLocalDescription" : "branchPopover.alternateLocalDescription", {
                     ns: "menus",
                     derived,
                     remote: fullName
                 }),
                 label: t("branchPopover.branchNameLabel", { ns: "menus" }),
-                initialValue: derived,
+                initialValue: reservedName ? "" : derived,
                 placeholder: t("branchNamePlaceholder"),
                 confirmLabel: t("branchPopover.createBranch", { ns: "menus" })
             })

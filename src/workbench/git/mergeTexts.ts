@@ -27,5 +27,13 @@ export function mergeTexts(sides: GitConflictSides): MergeTexts | "binary" | "de
     const base = sides.base === null ? "" : readableText(sides.base)
     if (ours === null || theirs === null || base === null) return "binary"
     const worktree = readableText(sides.worktree)
-    return { base, ours, theirs, crlf: (worktree ?? "").includes("\r\n"), worktree }
+    // Model offsets and inserted lengths must use CodeMirror's logical LF
+    // document coordinates. Keep the worktree raw for save/overwrite checks.
+    return {
+        base: base.replace(/\r\n?/g, "\n"),
+        ours: ours.replace(/\r\n?/g, "\n"),
+        theirs: theirs.replace(/\r\n?/g, "\n"),
+        crlf: (worktree ?? "").includes("\r\n"),
+        worktree
+    }
 }

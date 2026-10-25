@@ -34,14 +34,18 @@ export function runSearchTask(doc: Text, task: SearchTask): SearchTaskResult {
     const isCurrent = (match: { from: number; to: number }, current: { from: number; to: number }) =>
         current.from === current.to && match.from === current.from && match.to === current.to
     const next = (from: number, wrap: number, current?: { from: number; to: number }) => {
+        let skippedCurrent: Match | null = null
         const first = (iter: Iterator<Match>) => {
             let found = iter.next()
-            if (!found.done && current && isCurrent(found.value, current)) found = iter.next()
+            if (!found.done && current && isCurrent(found.value, current)) {
+                if (task.action === "next") skippedCurrent = found.value
+                found = iter.next()
+            }
             return found
         }
         let found = first(cursor(from))
         if (found.done) found = first(cursor(0, query.regexp ? wrap : Math.min(doc.length, wrap + queryLength)))
-        return found.done ? null : found.value
+        return found.done ? skippedCurrent : found.value
     }
     if (task.action === "next" || task.action === "replace") {
         const match = task.action === "replace" ? next(task.from, task.to) : next(task.to, task.to, task)

@@ -51,8 +51,9 @@ function mount() { return render(<><FolderPickerHost /><SshAuthenticationHost />
 function selectRecent() { fireEvent.click(screen.getByRole("button", { name: new RegExp(root) })) }
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
 }
 
 beforeEach(() => {
@@ -168,6 +169,77 @@ it("does not reuse an earlier host's delayed SFTP listing after switching hosts"
   expect(screen.getByLabelText("Remote folder")).toHaveValue(".")
   expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Browse" })).toBeEnabled()
+})
+
+it.each([
+  ["host", "success"], ["host", "failure"],
+  ["session", "success"], ["session", "failure"],
+  ["path", "success"], ["path", "failure"],
+] as const)("keeps a new browse pending after an old choice %s change and %s", async (change, outcome) => {
+  const other = { ...server, id: "ssh-b", name: "Server B", host: "b.example" }
+  useSshStore.setState({ hosts: [server, other], activeHostId: server.id })
+  connected(server); connected(other, "transport-b")
+  useFolderPickerStore.setState({ initialLocation: "remote" })
+  const choosing = deferred<string>(), browsing = deferred<SftpListing>()
+  vi.mocked(sftpListDir).mockReset()
+  vi.mocked(sftpListDir).mockResolvedValueOnce({ cwd: "/old-folder", entries: [] }).mockReturnValueOnce(browsing.promise)
+  vi.mocked(registerSftpWorkspace).mockReturnValueOnce(choosing.promise)
+  mount()
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  expect(registerSftpWorkspace).toHaveBeenCalledWith(server.id, "/old-folder")
+
+  if (change === "host") fireEvent.click(screen.getByTitle("test@b.example:22"))
+  else if (change === "session") act(() => { connected(server, "transport-reconnected") })
+  else fireEvent.change(screen.getByLabelText("Remote folder"), { target: { value: "/new-folder" } })
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  expect(sftpListDir).toHaveBeenLastCalledWith(
+    change === "host" ? "transport-b" : change === "session" ? "transport-reconnected" : "transport-a",
+    change === "path" ? "/new-folder" : ".",
+  )
+  expect(screen.getByRole("button", { name: "Browse" })).toBeDisabled()
+  await act(async () => {
+    if (outcome === "failure") choosing.reject(new Error("old choice failed"))
+    else choosing.resolve(remoteFilePath(server.id, "/old-folder"))
+  })
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Browse" })).toBeDisabled()
+  expect(finish).not.toHaveBeenCalled()
+  await act(async () => { browsing.resolve({ cwd: "/current-folder", entries: [] }) })
+  expect(screen.getByLabelText("Remote folder")).toHaveValue("/current-folder")
+  expect(screen.getByRole("button", { name: "Browse" })).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled()
+})
+
+it("reports a current SFTP choice failure and allows retry", async () => {
+  useSshStore.setState({ activeHostId: server.id })
+  connected(server)
+  useFolderPickerStore.setState({ initialLocation: "remote" })
+  vi.mocked(sftpListDir).mockResolvedValue({ cwd: root, entries: [] })
+  vi.mocked(registerSftpWorkspace).mockRejectedValueOnce(new Error("current choice failed"))
+  mount()
+  fireEvent.click(screen.getByRole("button", { name: "Browse" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("current choice failed")
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled()
+  const uri = remoteFilePath(server.id, root)
+  vi.mocked(registerSftpWorkspace).mockResolvedValueOnce(uri)
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  await waitFor(() => expect(finish).toHaveBeenCalledExactlyOnceWith(uri))
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+
+it.each(["cancel", "failure"] as const)("recovers the local folder chooser after %s", async (outcome) => {
+  if (outcome === "failure") vi.mocked(open).mockRejectedValueOnce(new Error("local choice failed"))
+  else vi.mocked(open).mockResolvedValueOnce(null)
+  mount()
+  fireEvent.click(screen.getByRole("button", { name: "Open folder" }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open folder" })).toBeEnabled())
+  expect(finish).not.toHaveBeenCalled()
+  if (outcome === "failure") expect(screen.getByRole("alert")).toHaveTextContent("local choice failed")
+  else expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 })
 
 function wslConfig() {

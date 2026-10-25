@@ -2,7 +2,7 @@ import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 import { HerdrScrollbar } from "@/terminal/HerdrScrollbar"
 import { installHerdrDragSelection, type HerdrDragSelection } from "@/terminal/herdrDragSelection"
 import { readPaneSelection } from "@/terminal/herdrScrollIpc"
-import { terminalFontStack } from "@/terminal/terminalFonts"
+import { BUNDLED_TERMINAL_FONT, terminalFallbackFontStack, terminalFontStack } from "@/terminal/terminalFonts"
 import {
   useCallback,
   useEffect,
@@ -56,7 +56,7 @@ import {
 } from "@/terminal/terminalClipboard"
 import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
 import { observeHerdrTerminalKeys, recordHerdrTerminalOutput } from "@/terminal/herdrTerminalDiagnostics"
-import { useAgentMruStore } from "@/state/agentMruStore"
+import { agentMruKey, useAgentMruStore } from "@/state/agentMruStore"
 import {
   TerminalOutputQueue,
   registerTerminalOutputQueue,
@@ -166,6 +166,27 @@ function pathKey(path: boolean[]): string {
   return path.map((bit) => (bit ? "1" : "0")).join("")
 }
 
+type SplitRatioWrite = {
+  request: Parameters<typeof herdrLayoutSetSplitRatio>[0]
+  generation: number
+  topology: string
+}
+
+function layoutTopologyKey(layout: HerdrLayoutDescription): string {
+  const shape = (node: HerdrLayoutNode): unknown[] => node.type === "pane"
+    ? ["pane", node.paneId]
+    : ["split", node.direction, shape(node.first), shape(node.second)]
+  return JSON.stringify([layout.workspaceId, layout.tabId, shape(layout.root)])
+}
+
+function hasSplitPath(node: HerdrLayoutNode, path: boolean[]): boolean {
+  for (const second of path) {
+    if (node.type !== "split") return false
+    node = second ? node.second : node.first
+  }
+  return node.type === "split"
+}
+
 /**
  * Herdr tab surface — one Yuzora page per Herdr tab.
  * Default attachment is control+takeover. Unmount/close releases connectors only.
@@ -238,13 +259,18 @@ export function HerdrTerminalPage({
   )
 
   const [layout, setLayout] = useState<HerdrLayoutDescription | null>(null)
+  const layoutTopology = useMemo(() => layout ? layoutTopologyKey(layout) : null, [layout])
   const [layoutError, setLayoutError] = useState<string | null>(null)
   const [layoutRetrying, setLayoutRetrying] = useState(false)
   const [layoutReady, setLayoutReady] = useState(!sessionCanConnect)
   const [surfaceSessionRunning, setSurfaceSessionRunning] = useState(sessionRunning)
   const suppressRatioWriteRef = useRef(true)
   const ratioTimersRef = useRef<Map<string, number>>(new Map())
-  const lastWrittenRatioRef = useRef<Map<string, number>>(new Map())
+  const lastWrittenRatioRef = useRef(new Map<string, SplitRatioWrite>())
+  const ratioQueueRef = useRef({ running: false, disposed: false, pending: new Map<string, SplitRatioWrite>() })
+  const layoutRef = useRef(layout)
+  const confirmedFocusRef = useRef<string | null>(null)
+  const focusConfirmationRevisionRef = useRef(0)
   const canSetSplitRatioRef = useRef(canSetSplitRatio)
   const layoutLoadGenerationRef = useRef(0)
   const layoutRetryTimerRef = useRef<number | null>(null)
@@ -252,6 +278,23 @@ export function HerdrTerminalPage({
   const updateHerdrPageTabId = useWorkspaceStore((s) => s.updateHerdrPageTabId)
 
   const sessionNameArg = herdrSessionId === "live" ? null : herdrSessionId
+
+  useLayoutEffect(() => {
+    layoutRef.current = layout
+  }, [layout])
+
+  useLayoutEffect(() => {
+    const queue = { running: false, disposed: false, pending: new Map<string, SplitRatioWrite>() }
+    ratioQueueRef.current = queue
+    lastWrittenRatioRef.current.clear()
+    const timers = ratioTimersRef.current
+    return () => {
+      queue.disposed = true
+      queue.pending.clear()
+      for (const timer of timers.values()) window.clearTimeout(timer)
+      timers.clear()
+    }
+  }, [herdrSessionId, pagePath, resolvedTabId, targetSessionName])
 
   useEffect(() => {
     if (resolvedTabId) updateHerdrPageTabId(pagePath, resolvedTabId)
@@ -274,6 +317,7 @@ export function HerdrTerminalPage({
       window.clearTimeout(timer)
     }
     ratioTimersRef.current.clear()
+    ratioQueueRef.current.pending.clear()
     lastWrittenRatioRef.current.clear()
     if (sessionIsStopped || (!sessionCanConnect && !hasConnectedSession)) {
       setLayoutRetrying(false)
@@ -369,6 +413,7 @@ export function HerdrTerminalPage({
     suppressRatioWriteRef.current = true
     for (const timer of ratioTimersRef.current.values()) window.clearTimeout(timer)
     ratioTimersRef.current.clear()
+    ratioQueueRef.current.pending.clear()
     lastWrittenRatioRef.current.clear()
   }, [canSetSplitRatio])
 
@@ -405,35 +450,75 @@ export function HerdrTerminalPage({
       if (suppressRatioWriteRef.current || !canSetSplitRatio) return
       if (!sessionCanConnect) return
       if (!(ratio >= 0 && ratio <= 1)) return
+      if (!layoutTopology || !layoutRef.current || layoutTopologyKey(layoutRef.current) !== layoutTopology) return
+      const queue = ratioQueueRef.current
+      if (queue.disposed) return
       const key = pathKey(splitPath)
-      const previous = lastWrittenRatioRef.current.get(key)
-      if (previous !== undefined && Math.abs(previous - ratio) < RATIO_EPSILON) return
       const existing = ratioTimersRef.current.get(key)
       if (existing !== undefined) window.clearTimeout(existing)
-      const timer = window.setTimeout(() => {
-        ratioTimersRef.current.delete(key)
-        if (!canSetSplitRatioRef.current) return
-        lastWrittenRatioRef.current.set(key, ratio)
-        const generation = layoutLoadGenerationRef.current
-        void herdrLayoutSetSplitRatio({
+      ratioTimersRef.current.delete(key)
+      queue.pending.delete(key)
+      const previous = lastWrittenRatioRef.current.get(key)?.request.ratio
+      if (previous !== undefined && Math.abs(previous - ratio) < RATIO_EPSILON) return
+      const write: SplitRatioWrite = {
+        generation: layoutLoadGenerationRef.current,
+        topology: layoutTopology,
+        request: {
           sessionName: sessionNameArg,
           tabId: layout?.tabId ?? resolvedTabId,
           paneId: layout?.tabId || resolvedTabId ? null : paneId,
           path: splitPath,
           ratio
-        })
-          .then((next) => {
-            if (generation === layoutLoadGenerationRef.current) setLayout(next)
-          })
-          .catch(() => {
-            if (lastWrittenRatioRef.current.get(key) === ratio) {
-              lastWrittenRatioRef.current.delete(key)
+        }
+      }
+      const timer = window.setTimeout(() => {
+        ratioTimersRef.current.delete(key)
+        if (queue.disposed || write.generation !== layoutLoadGenerationRef.current || !canSetSplitRatioRef.current) return
+        queue.pending.set(key, write)
+        if (queue.running) return
+        queue.running = true
+        // Replies contain the entire BSP tree. Serialize ratio mutations so
+        // one split cannot replace another split's newer confirmed geometry.
+        void (async () => {
+          try {
+            while (!queue.disposed && queue.pending.size > 0) {
+              const [nextKey, nextWrite] = queue.pending.entries().next().value!
+              queue.pending.delete(nextKey)
+              if (nextWrite.generation !== layoutLoadGenerationRef.current || !canSetSplitRatioRef.current ||
+                  !layoutRef.current || layoutTopologyKey(layoutRef.current) !== nextWrite.topology ||
+                  !hasSplitPath(layoutRef.current.root, nextWrite.request.path)) continue
+              lastWrittenRatioRef.current.set(nextKey, nextWrite)
+              const focusRevision = focusConfirmationRevisionRef.current
+              try {
+                const next = await herdrLayoutSetSplitRatio(nextWrite.request)
+                if (queue.disposed || nextWrite.generation !== layoutLoadGenerationRef.current || !canSetSplitRatioRef.current) continue
+                const confirmed = confirmedFocusRef.current
+                const accepted = focusRevision !== focusConfirmationRevisionRef.current && confirmed && collectPaneIds(next.root).includes(confirmed)
+                  ? { ...next, focusedPaneId: confirmed }
+                  : next
+                if (layoutTopologyKey(accepted) !== nextWrite.topology) {
+                  queue.pending.clear()
+                  for (const pendingTimer of ratioTimersRef.current.values()) window.clearTimeout(pendingTimer)
+                  ratioTimersRef.current.clear()
+                  lastWrittenRatioRef.current.clear()
+                }
+                // Publish before React commits: another queued command or a
+                // click may run in the same turn as this successful reply.
+                layoutRef.current = accepted
+                confirmedFocusRef.current = accepted.focusedPaneId
+                setLayout(accepted)
+              } catch {
+                if (lastWrittenRatioRef.current.get(nextKey) === nextWrite) lastWrittenRatioRef.current.delete(nextKey)
+              }
             }
-          })
+          } finally {
+            queue.running = false
+          }
+        })()
       }, RATIO_DEBOUNCE_MS)
       ratioTimersRef.current.set(key, timer)
     },
-    [canSetSplitRatio, sessionCanConnect, sessionNameArg, layout?.tabId, resolvedTabId, paneId]
+    [canSetSplitRatio, sessionCanConnect, sessionNameArg, layout?.tabId, layoutTopology, resolvedTabId, paneId]
   )
 
   const sessionGuidance = sessionIsStopped
@@ -464,28 +549,74 @@ export function HerdrTerminalPage({
       targetCapabilities?.server.running &&
       targetCapabilities.api.paneFocus
   )
+  const focusQueueRef = useRef({ running: false, pending: null as string | null, disposed: false })
+  const focusContextRef = useRef({ allowed: canFocusPane, panes: layoutPaneIds })
+  useLayoutEffect(() => {
+    confirmedFocusRef.current = focusedPaneId
+  }, [focusedPaneId])
+  useLayoutEffect(() => {
+    focusContextRef.current = { allowed: canFocusPane, panes: layoutPaneIds }
+  }, [canFocusPane, layoutPaneIds])
+  useLayoutEffect(() => {
+    const queue = { running: false, pending: null as string | null, disposed: false }
+    focusQueueRef.current = queue
+    return () => {
+      queue.disposed = true
+      queue.pending = null
+    }
+  }, [herdrSessionId, pagePath, resolvedTabId, targetSessionName])
+  useLayoutEffect(() => {
+    if (!active || !visible) focusQueueRef.current.pending = null
+  }, [active, visible])
+
   const onActivatePane = useCallback(
     (nextPaneId: string) => {
-      if (!canFocusPane || nextPaneId === focusedPaneId) return
-      void herdrPaneFocus({
-        sessionName: sessionNameArg,
-        paneId: nextPaneId
-      })
-        .then(() => {
-          setLayout((current) =>
-            current ? { ...current, focusedPaneId: nextPaneId } : current
-          )
-          // Clicking into an Agent's pane counts as using that Agent (Alt+Tab order).
-          const state = useHerdrStore.getState()
-          const scope = resolveSessionName(state.sessions, herdrSessionId)
-          const agent = scope
-            ? state.runtimesBySession[scope]?.snapshot?.agents.find((item) => item.paneId === nextPaneId)
-            : undefined
-          if (scope && agent) useAgentMruStore.getState().touch(scope, agent.id)
-        })
-        .catch(() => undefined)
+      const queue = focusQueueRef.current
+      if (!canFocusPane || queue.disposed ||
+          !focusContextRef.current.panes.includes(nextPaneId) ||
+          (!queue.running && nextPaneId === confirmedFocusRef.current)) return
+      queue.pending = nextPaneId
+      if (queue.running) return
+      queue.running = true
+      // Serialize server mutations too: ignoring stale replies alone can leave
+      // HERDR focused on an older click. Only the latest unsent click is needed.
+      void (async () => {
+        try {
+          while (queue.pending && !queue.disposed) {
+            const target = queue.pending
+            queue.pending = null
+            const context = focusContextRef.current
+            if (!context.allowed || !context.panes.includes(target)) continue
+            try {
+              await herdrPaneFocus({ sessionName: sessionNameArg, paneId: target })
+            } catch {
+              // Keep the confirmed pane; a queued or subsequent click can retry.
+              continue
+            }
+            if (queue.disposed) return
+            if (queue.pending === target) queue.pending = null
+            if (!focusContextRef.current.allowed || !focusContextRef.current.panes.includes(target)) continue
+            // Keep the last confirmed success even if the next request fails.
+            // Publish it synchronously for clicks that precede React's commit.
+            confirmedFocusRef.current = target
+            focusConfirmationRevisionRef.current += 1
+            setLayout((current) => current && collectPaneIds(current.root).includes(target)
+              ? { ...current, focusedPaneId: target }
+              : current)
+            // Clicking into an Agent's pane counts as using that Agent (Alt+Tab order).
+            const state = useHerdrStore.getState()
+            const scope = resolveSessionName(state.sessions, herdrSessionId)
+            const agent = scope
+              ? state.runtimesBySession[scope]?.snapshot?.agents.find((item) => item.paneId === target)
+              : undefined
+            if (scope && agent) useAgentMruStore.getState().touch(scope, agent.id)
+          }
+        } finally {
+          queue.running = false
+        }
+      })()
     },
-    [canFocusPane, focusedPaneId, herdrSessionId, sessionNameArg]
+    [canFocusPane, herdrSessionId, sessionNameArg]
   )
   // Agent activation (Alt+1..9, sidebar) can target another leaf of this
   // mounted tab without changing the page identity or reloading its layout.
@@ -493,11 +624,20 @@ export function HerdrTerminalPage({
     const request = state.paneFocusRequest
     if (!request || request === previous.paneFocusRequest) return
     if (request.sessionName !== targetSessionName && request.sessionName !== herdrSessionId) return
+    if (!focusContextRef.current.panes.includes(request.paneId)) {
+      focusQueueRef.current.pending = null
+      return
+    }
+    confirmedFocusRef.current = request.paneId
+    focusConfirmationRevisionRef.current += 1
     setLayout((current) => current && current.focusedPaneId !== request.paneId
       && collectPaneIds(current.root).includes(request.paneId)
       ? { ...current, focusedPaneId: request.paneId }
       : current)
-  }), [herdrSessionId, targetSessionName])
+    // This activation is already confirmed, but an older local command may
+    // still reach HERDR afterwards. Reassert it once that command settles.
+    if (focusQueueRef.current.running) onActivatePane(request.paneId)
+  }), [herdrSessionId, targetSessionName, onActivatePane])
   const tabMenuSession = targetSessionName ?? herdrSessionId
 
   const headerContextMenu = contextMenuHandler({
@@ -768,6 +908,15 @@ function HerdrTerminalLeaf({
   const { t } = useTranslation("workbench")
   const fontSize = useTerminalSettingsStore((state) => state.fontSize)
   const fontFamily = useTerminalSettingsStore((state) => state.fontFamily)
+  const fullFontStack = terminalFontStack(fontFamily)
+  const fontDescriptor = `${fontSize}px ${fullFontStack}`
+  const fontLoadDescriptor = `${fontSize}px ${BUNDLED_TERMINAL_FONT}`
+  const [loadedFontDescriptor, setLoadedFontDescriptor] = useState<string | null>(null)
+  // A pending webfont must not silently replace the face behind cached xterm
+  // metrics. Treat its arrival as a normal, full-frame-gated font change.
+  const effectiveFontStack = !document.fonts || loadedFontDescriptor === fontDescriptor
+    ? fullFontStack
+    : terminalFallbackFontStack(fontFamily)
   const paneKey = paneId ?? terminalId
   const attachmentKey = herdrAttachmentKey(pagePath, paneKey)
   const inventorySessionRunning = useHerdrStore((s) => resolveSessionRunning(s.sessions, herdrSessionId))
@@ -838,7 +987,7 @@ function HerdrTerminalLeaf({
   const openReadyRef = useRef(false)
   const lastSizeRef = useRef({ cols: defaultCols, rows: defaultRows })
   const fitViewportRef = useRef<(() => void) | null>(null)
-  const requestedFontRef = useRef({ fontSize, fontFamily: terminalFontStack(fontFamily) })
+  const requestedFontRef = useRef({ fontSize, fontFamily: effectiveFontStack })
   const activeRef = useRef(active)
   const visibleRef = useRef(visible)
   const tabIdRef = useRef(tabId)
@@ -866,11 +1015,11 @@ function HerdrTerminalLeaf({
 
   useEffect(() => {
     let cancelled = false
-    void document.fonts?.load(`${fontSize}px ${terminalFontStack(fontFamily)}`).then(() => {
-      if (!cancelled && !disposedRef.current && visibleRef.current) fitViewportRef.current?.()
+    void document.fonts?.load(fontLoadDescriptor, "W").then(() => {
+      if (!cancelled) setLoadedFontDescriptor(fontDescriptor)
     }).catch(() => undefined)
     return () => { cancelled = true }
-  }, [fontFamily, fontSize])
+  }, [fontDescriptor, fontLoadDescriptor])
 
   useLayoutEffect(() => {
     activeRef.current = active
@@ -896,7 +1045,7 @@ function HerdrTerminalLeaf({
       convertEol: true,
       cursorBlink: true,
       fontSize,
-      fontFamily: terminalFontStack(fontFamily),
+      fontFamily: effectiveFontStack,
       theme: { ...buildXtermTheme(currentMode()) },
       disableStdin: false,
       scrollback: 0,
@@ -908,6 +1057,7 @@ function HerdrTerminalLeaf({
     term.open(container)
     if (activeRef.current) safeFocus(term)
     clipboardRef.current = installTerminalClipboardHandling(term, {
+      pasteOwner: () => transportRef.current?.getSessionId?.() ?? null,
       pasteText: (text) => { void transportRef.current?.paste(text).catch(() => undefined) },
       copyOnSelect: () => useTerminalSettingsStore.getState().copyOnSelect,
       onCopyError: () => {
@@ -974,7 +1124,12 @@ function HerdrTerminalLeaf({
     const unregisterFocus = registerTerminalFocusTarget(attachmentKey, {
       pagePath,
       active: () => !disposedRef.current && activeRef.current && visibleRef.current,
-      focus: () => safeFocus(term)
+      focus: () => safeFocus(term),
+      agentKey: () => {
+        const agents = useHerdrStore.getState().runtimesBySession[contextSessionName]?.snapshot?.agents.filter(agent =>
+          agent.terminalId === terminalId && (!scrollPaneId || agent.paneId === scrollPaneId)) ?? []
+        return agents.length === 1 ? agentMruKey(contextSessionName, agents[0].id) : undefined
+      }
     })
     fitRef.current = fitAddon
     targetOpenRef.current = installTerminalTargetOpen(term, {
@@ -1380,7 +1535,7 @@ function HerdrTerminalLeaf({
         onEvent: handleEvent
       })
       .then(() => {
-        if (disposedRef.current) return
+        if (disposedRef.current || transport.isDisposed?.()) return
         openReadyRef.current = true
         scrollbarRefreshRef.current?.()
         clipboardRef.current?.flushPendingPaste()
@@ -1388,7 +1543,7 @@ function HerdrTerminalLeaf({
         void transport.resize(size.cols, size.rows).catch(() => undefined)
       })
       .catch((error) => {
-        if (disposedRef.current || retryConnect(error)) return
+        if (disposedRef.current || transport.isDisposed?.() || retryConnect(error)) return
         const message = error instanceof Error ? error.message : String(error)
         setStatusMessage(message)
         setConnectFailed(true)
@@ -1402,6 +1557,9 @@ function HerdrTerminalLeaf({
       scheduleFit()
     })
     resizeObserver.observe(container)
+    // DPR rounding can change the rendered cell size without resizing the host.
+    const screen = term.element?.querySelector<HTMLElement>(".xterm-screen")
+    if (screen) resizeObserver.observe(screen)
     observerRef.current = resizeObserver
 
     const themeObserver = new MutationObserver(() => {
@@ -1460,19 +1618,19 @@ function HerdrTerminalLeaf({
 
   useEffect(() => {
     const requestedChanged = requestedFontRef.current.fontSize !== fontSize
-      || requestedFontRef.current.fontFamily !== terminalFontStack(fontFamily)
-    requestedFontRef.current = { fontSize, fontFamily: terminalFontStack(fontFamily) }
+      || requestedFontRef.current.fontFamily !== effectiveFontStack
+    requestedFontRef.current = { fontSize, fontFamily: effectiveFontStack }
     const term = termRef.current
     const fitAddon = fitRef.current
     if (!term || !fitAddon || disposedRef.current) return
-    if (!requestedChanged && term.options.fontSize === fontSize && term.options.fontFamily === terminalFontStack(fontFamily)) return
+    if (!requestedChanged && term.options.fontSize === fontSize && term.options.fontFamily === effectiveFontStack) return
     if (!connectorEnabled) {
       term.options.fontSize = fontSize
-      term.options.fontFamily = terminalFontStack(fontFamily)
+      term.options.fontFamily = effectiveFontStack
     }
     if (!visibleRef.current) return
     fitViewportRef.current?.()
-  }, [fontSize, fontFamily, connectorEnabled])
+  }, [fontSize, effectiveFontStack, connectorEnabled])
 
   useLayoutEffect(() => {
     const term = termRef.current
@@ -1604,8 +1762,8 @@ function HerdrTerminalLeaf({
             aria-pressed={paneActive}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => {
+              if (paneId) onActivatePane?.(paneId)
               if (paneActive && termRef.current) safeFocus(termRef.current)
-              else if (paneId) onActivatePane?.(paneId)
             }}
           >
             <SquareTerminal data-icon="inline-start" aria-hidden="true" />

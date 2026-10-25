@@ -2,10 +2,33 @@ import { useHerdrStore } from "@/state/herdrStore"
 import { useUiStore } from "@/state/uiStore"
 import { useWorkspaceStore, type TabInfo } from "@/state/workspaceStore"
 import type { HerdrTabInfo } from "./herdrTypes"
-import { requestTerminalFocus } from "@/terminal/terminalFocus"
+import { activeTerminalAgentKey, requestTerminalFocus } from "@/terminal/terminalFocus"
+import { agentMruKey } from "@/state/agentMruStore"
+import { findRuntimeSession, sessionScope } from "./herdrProvider"
 
 export type TabNavigation = { index: number } | { direction: 1 | -1 }
 let navigationIntent = 0
+
+/** null means no Agent surface; undefined means the current split leaf is unknown. */
+export function currentWorkbenchAgentKey(): string | null | undefined {
+    if (!["files", "ade"].includes(useUiStore.getState().mode)) return null
+    const state = useWorkspaceStore.getState()
+    const group = state.groups[state.activeGroupIndex]
+    const page = group?.tabs.find(tab => tab.path === group.activePath)
+    if (page?.kind !== "herdr-terminal") return null
+    const active = activeTerminalAgentKey(page.path)
+    if (active !== undefined) return active ?? undefined
+    const runtime = useHerdrStore.getState()
+    const session = !page.herdrSessionId || page.herdrSessionId === "live"
+        ? sessionScope(findRuntimeSession(runtime.sessions, "live"))
+        : page.herdrSessionId
+    if (!session || !page.herdrTabId) return undefined
+    const agents = runtime.runtimesBySession[session]?.snapshot?.agents.filter(agent =>
+        agent.tabId === page.herdrTabId && (!page.herdrWorkspaceId || agent.workspaceId === page.herdrWorkspaceId)) ?? []
+    // Before a leaf mounts, a one-Agent tab is unambiguous. Never guess a split
+    // leaf from page.terminalId, which can still describe the original pane.
+    return agents.length === 1 ? agentMruKey(session, agents[0].id) : undefined
+}
 
 export function visibleWorkbenchTabs(groupIndex: number): TabInfo[] {
     const group = useWorkspaceStore.getState().groups[groupIndex]

@@ -396,7 +396,11 @@ fn select_host_binary(
             .installed_herdr
             .clone()
             .ok_or("herdr-not-found-on-selected-host")?,
-        HerdrBinarySource::Custom => custom_path.ok_or("herdr-custom-path-required")?.to_string(),
+        HerdrBinarySource::Custom => yuzora_host::herdr_runtime::normalize_custom_binary_path(
+            custom_path.ok_or("herdr-custom-path-required")?,
+            info.os == "windows",
+        )?
+        .to_string(),
     };
     if (if info.os == "windows" {
         !crate::host_windows::is_windows_path(&binary)
@@ -724,6 +728,80 @@ mod tests {
             .unwrap_err(),
             "host-setup-command-failed"
         );
+    }
+
+    fn custom_path_probe(os: &str) -> HostProbe {
+        HostProbe {
+            os: os.into(),
+            arch: "x86_64".into(),
+            home: "/unused".into(),
+            installed_herdr: None,
+        }
+    }
+
+    #[test]
+    fn windows_custom_path_accepts_copy_as_path_without_changing_its_spelling() {
+        let info = custom_path_probe("windows");
+        for path in [
+            r"C:\Tools 空間\herdr.exe",
+            r"\\server\share\Tools 空間\herdr.exe",
+            r"\\?\C:\Tools\herdr.exe",
+            r"\\?\UNC\server\share\herdr.exe",
+        ] {
+            for input in [
+                path.to_string(),
+                format!("\"{path}\""),
+                format!("  \"{path}\"\t"),
+            ] {
+                assert_eq!(
+                    select_host_binary(&info, HerdrBinarySource::Custom, Some(&input), "unused")
+                        .unwrap(),
+                    path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn windows_custom_path_rejects_malformed_quotes_and_non_absolute_paths() {
+        let info = custom_path_probe("windows");
+        for input in [
+            r#""C:\herdr.exe"#,
+            r#"C:\herdr.exe""#,
+            r#"""C:\herdr.exe"""#,
+            r#"C:\a"b\herdr.exe"#,
+            "",
+            "\"\"",
+            "  ",
+            "herdr.exe",
+            "C:herdr.exe",
+            "C:\\herdr.exe\0",
+        ] {
+            assert!(
+                select_host_binary(&info, HerdrBinarySource::Custom, Some(input), "unused")
+                    .is_err(),
+                "must reject {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unix_custom_path_preserves_literal_quotes_and_trailing_spaces() {
+        for os in ["linux", "macos"] {
+            let info = custom_path_probe(os);
+            let path = "/tmp/a\"b/herdr ";
+            assert_eq!(
+                select_host_binary(&info, HerdrBinarySource::Custom, Some(path), "unused").unwrap(),
+                path
+            );
+            assert!(select_host_binary(
+                &info,
+                HerdrBinarySource::Custom,
+                Some("\"/tmp/herdr\""),
+                "unused"
+            )
+            .is_err());
+        }
     }
 
     #[test]

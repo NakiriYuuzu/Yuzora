@@ -112,8 +112,9 @@ export async function renameBranch(branch: string): Promise<void> {
         confirmLabel: t("gitActions.rename")
     }))?.trim()
     if (!next || next === branch || actionableRoot() !== root) return
-    if (await useGitStore.getState().runOp("rename-branch", () => gitRenameBranch(root, branch, next))) {
-        reloadLogRefs(root)
+    if (await useGitStore.getState().runOp("rename-branch", () => gitRenameBranch(root, branch, next), {
+        afterMutationBeforeRefresh: () => reloadLogRefs(root)
+    })) {
         void logUserAction("git_rename_branch", `rename ${branch} → ${next}`)
     }
 }
@@ -130,8 +131,9 @@ export async function deleteBranch(branch: string): Promise<void> {
     })
     if (!ok || actionableRoot() !== root) return
     const store = useGitStore.getState()
-    if (await store.runOp("delete-branch", () => gitDeleteBranch(root, branch, false))) {
-        reloadLogRefs(root)
+    if (await store.runOp("delete-branch", () => gitDeleteBranch(root, branch, false), {
+        afterMutationBeforeRefresh: () => reloadLogRefs(root)
+    })) {
         void logUserAction("git_delete_branch", `delete ${branch}`)
         return
     }
@@ -144,8 +146,9 @@ export async function deleteBranch(branch: string): Promise<void> {
         destructive: true
     })
     if (!force || actionableRoot() !== root) return
-    if (await store.runOp("delete-branch", () => gitDeleteBranch(root, branch, true))) {
-        reloadLogRefs(root)
+    if (await store.runOp("delete-branch", () => gitDeleteBranch(root, branch, true), {
+        afterMutationBeforeRefresh: () => reloadLogRefs(root)
+    })) {
         void logUserAction("git_delete_branch", `force delete ${branch}`)
     }
 }

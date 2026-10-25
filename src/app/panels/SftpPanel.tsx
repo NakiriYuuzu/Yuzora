@@ -168,8 +168,9 @@ function SftpBrowser({ hostId }: { hostId: string }) {
   // Pressing a file row selects it (row highlight); a stale path simply stops
   // matching after navigation, so no explicit clearing is needed.
   const [selected, setSelected] = useState<{ pane: SftpPaneKind; path: string } | null>(null)
-  // Bumped after a drop-download completes so LocalPane re-lists in place.
+  // All download entrypoints refresh the current local directory when settled.
   const [localRefreshTick, setLocalRefreshTick] = useState(0)
+  const onDownloadSettled = () => setLocalRefreshTick((tick) => tick + 1)
 
   function beginRowDrag(
     kind: SftpPaneKind,
@@ -194,15 +195,16 @@ function SftpBrowser({ hostId }: { hostId: string }) {
   // confirm comes from plugin-dialog, matching the repo's confirm convention
   // (contextMenuStore) rather than relying on wry's window.confirm.
   async function acceptRemoteToLocalDrop(payload: SftpDragState, _target: SftpHoverTarget) {
-    if (!isSafeLeafName(payload.name)) return
+    const sourceSessionId = sessionId
+    if (!sourceSessionId || !isSafeLeafName(payload.name)) return
     const grant = await sftpPickDownloadDestination(payload.name)
-    if (!grant) return
+    if (!grant || useSshStore.getState().sessions[hostId]?.sessionId !== sourceSessionId) return
     await download(
       hostId,
       { name: payload.name, path: payload.path, isDir: false, isSymlink: false, size: payload.size },
       { capabilityId: grant.id, leaf: grant.leaf }
     )
-    setLocalRefreshTick((tick) => tick + 1)
+    onDownloadSettled()
   }
 
   const dragInProgress = drag !== null
@@ -327,6 +329,7 @@ function SftpBrowser({ hostId }: { hostId: string }) {
           hover={hover}
           selectedPath={selected?.pane === "remote" ? selected.path : null}
           onFileDragStart={beginRowDrag}
+          onDownloadSettled={onDownloadSettled}
         />
       </div>
       {hostTransfers.length > 0 ? <TransfersStrip entries={hostTransfers} /> : null}
@@ -494,8 +497,8 @@ function LocalPane({
     setEntries([])
   }, [nativeWorkspacePath])
 
-  // refreshTick: bumped by SftpBrowser after a drop-download completes so the
-  // freshly downloaded file appears without leaving the directory.
+  // Re-list the current directory after any download settles, including a
+  // partial folder transfer, without changing the user's navigation.
   useEffect(() => {
     if (!cwd) return
     let cancelled = false
@@ -606,7 +609,8 @@ function RemotePane({
   dragKind,
   hover,
   selectedPath,
-  onFileDragStart
+  onFileDragStart,
+  onDownloadSettled
 }: {
   hostId: string
   remote: RemotePaneState | undefined
@@ -620,6 +624,7 @@ function RemotePane({
     payload: { path: string; name: string; size: number },
     event: React.PointerEvent
   ) => void
+  onDownloadSettled: () => void
 }) {
   const { t } = useTranslation("panels")
   const listRemote = useSftpStore((s) => s.listRemote)
@@ -690,18 +695,21 @@ function RemotePane({
   }
 
   async function pickAndDownload(entry: SftpEntry) {
+    const sessionId = useSshStore.getState().sessions[hostId]?.sessionId
+    if (!sessionId) return
     if (entry.isDir) {
-      const sessionId = useSshStore.getState().sessions[hostId]?.sessionId
       const name = await requestTextInputDialog({ title: t("sshPanel.sftpDownloadFolder"), label: t("sshPanel.sftpNewDestination"), initialValue: entry.name, confirmLabel: t("sshPanel.sftpDownloadFolder") })
       if (!name || !isSafeLeafName(name)) return
       const grant = await sftpPickTree("download", name)
       if (!grant || useSshStore.getState().sessions[hostId]?.sessionId !== sessionId) return
       await useSftpStore.getState().transferTree(hostId, grant.id, "download", entry.path, name)
+      onDownloadSettled()
       return
     }
     const grant = await sftpPickDownloadDestination(entry.name)
-    if (!grant) return
-    void download(hostId, entry, { capabilityId: grant.id, leaf: grant.leaf })
+    if (!grant || useSshStore.getState().sessions[hostId]?.sessionId !== sessionId) return
+    await download(hostId, entry, { capabilityId: grant.id, leaf: grant.leaf })
+    onDownloadSettled()
   }
 
   return (
@@ -723,14 +731,14 @@ function RemotePane({
         />
         <IconButton
           label={t("sshPanel.sftpRefresh")}
-          onClick={() => remote && void listRemote(hostId, remote.cwd)}
+          onClick={() => remote && void listRemote(hostId)}
           disabled={!remote}
           icon={RefreshCw}
         />
         <IconButton
           label={t("sshPanel.sftpNewFolder")}
           onClick={() => void promptMkdir()}
-          disabled={!remote}
+          disabled={!remote?.cwd}
           icon={FolderPlus}
         />
         <IconButton

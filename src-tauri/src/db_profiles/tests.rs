@@ -2064,6 +2064,7 @@ fn forget_final_replace_failure_reopens_pending_and_retry_removes_profile_and_le
     );
 
     let durable_pending = repository.reopen().load().unwrap();
+    assert!(durable_pending.legacy_consumed_descriptor_ids.is_empty());
     assert_eq!(durable_pending.profiles.len(), 1);
     match durable_pending.pending_operations.as_slice() {
         [PendingOperation::PendingForget {
@@ -2102,6 +2103,10 @@ fn forget_final_replace_failure_reopens_pending_and_retry_removes_profile_and_le
     let durable_completed = repository.reopen().load().unwrap();
     assert!(durable_completed.profiles.is_empty());
     assert!(durable_completed.pending_operations.is_empty());
+    assert_eq!(
+        durable_completed.legacy_consumed_descriptor_ids,
+        vec![created.descriptor_id]
+    );
 }
 
 #[test]
@@ -2422,6 +2427,271 @@ fn explicit_resume_handles_corrupt_or_denied_generations_without_startup_access(
         assert_eq!(
             completed.profiles[0].credential_state,
             CredentialState::Stored
+        );
+    }
+}
+
+#[test]
+fn legacy_import_replay_after_forget_does_not_resurrect_profile_on_reopen() {
+    let (profiles, repository, vault, closer) = harness();
+    let descriptor = sqlite_profile("legacy-forgotten").descriptor();
+    profiles
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![descriptor.clone()],
+        })
+        .unwrap();
+    assert!(profiles
+        .forget(&descriptor.descriptor_id)
+        .unwrap()
+        .profiles
+        .is_empty());
+    let reopened = DatabaseProfiles::new(Arc::new(repository.reopen()), vault, closer);
+    let replayed = reopened
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![descriptor],
+        })
+        .unwrap();
+    assert!(
+        replayed.profiles.is_empty(),
+        "forgotten legacy profile was reimported"
+    );
+    assert!(replayed.recovery.is_empty());
+}
+
+#[test]
+fn legacy_import_receipts_survive_real_file_reopen_and_old_schema_forget() {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("profiles.json");
+    let old = ProfileDocument {
+        profiles: vec![sqlite_profile("old-import")],
+        ..ProfileDocument::default()
+    };
+    let bytes = serde_json::to_vec(&old).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("legacyConsumedDescriptorIds"));
+    fs::write(&path, bytes).unwrap();
+    let repository = Arc::new(FileProfileRepository::new(path.clone()));
+    let profiles = DatabaseProfiles::new(
+        repository.clone(),
+        Arc::new(TestVault::default()),
+        Arc::new(NoLiveProfileCloser),
+    );
+    assert!(repository
+        .load()
+        .unwrap()
+        .legacy_consumed_descriptor_ids
+        .is_empty());
+    profiles.forget(&DescriptorId("old-import".into())).unwrap();
+    let reopened = DatabaseProfiles::new(
+        Arc::new(FileProfileRepository::new(path)),
+        Arc::new(TestVault::default()),
+        Arc::new(NoLiveProfileCloser),
+    );
+    let replayed = reopened
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![
+                old.profiles[0].descriptor(),
+                sqlite_profile("new-import").descriptor(),
+            ],
+        })
+        .unwrap();
+    assert_eq!(replayed.profiles.len(), 1);
+    assert_eq!(replayed.profiles[0].descriptor_id.0, "new-import");
+    assert_eq!(
+        repository
+            .load()
+            .unwrap()
+            .legacy_consumed_descriptor_ids
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn legacy_import_receipts_are_atomic_retryable_and_deduplicated() {
+    for point in [
+        RepositoryFailurePoint::Permission,
+        RepositoryFailurePoint::Quota,
+        RepositoryFailurePoint::TempWrite,
+        RepositoryFailurePoint::Sync,
+        RepositoryFailurePoint::Rename,
+    ] {
+        let (profiles, repository, vault, _) = harness();
+        let descriptor = sqlite_profile("legacy-retry").descriptor();
+        let before = repository.durable_bytes();
+        repository.fail_next(point);
+        assert!(profiles
+            .import_legacy(LegacyProfileImportRequest {
+                profiles: vec![descriptor.clone()],
+            })
+            .is_err());
+        assert_eq!(repository.durable_bytes(), before, "{point:?}");
+        assert!(repository
+            .load()
+            .unwrap()
+            .legacy_consumed_descriptor_ids
+            .is_empty());
+        for _ in 0..2 {
+            let imported = profiles
+                .import_legacy(LegacyProfileImportRequest {
+                    profiles: vec![descriptor.clone(), descriptor.clone()],
+                })
+                .unwrap();
+            assert_eq!(imported.profiles.len(), 1);
+            assert_eq!(
+                repository.load().unwrap().legacy_consumed_descriptor_ids,
+                vec![descriptor.descriptor_id.clone()]
+            );
+        }
+        assert_eq!(vault.counts(), (0, 0, 0));
+    }
+}
+
+#[test]
+fn legacy_import_parent_sync_error_reloads_profile_and_receipt_together() {
+    let (profiles, repository, vault, closer) = harness();
+    let descriptor = sqlite_profile("legacy-parent-sync").descriptor();
+    repository.fail_next(RepositoryFailurePoint::ParentSync);
+    assert!(profiles
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![descriptor.clone()],
+        })
+        .is_err());
+    let durable = repository.reopen().load().unwrap();
+    assert_eq!(durable.profiles.len(), 1);
+    assert_eq!(
+        durable.legacy_consumed_descriptor_ids,
+        vec![descriptor.descriptor_id.clone()]
+    );
+    let reopened = DatabaseProfiles::new(Arc::new(repository.reopen()), vault, closer);
+    assert_eq!(
+        reopened
+            .import_legacy(LegacyProfileImportRequest {
+                profiles: vec![descriptor],
+            })
+            .unwrap()
+            .profiles
+            .len(),
+        1
+    );
+    assert_eq!(repository.load().unwrap(), durable);
+}
+
+#[test]
+fn legacy_import_existing_profile_is_consumed_without_overwrite_or_vault_access() {
+    let (profiles, repository, vault, closer) = harness();
+    let created = profiles.create(postgres_request(SENTINEL)).unwrap();
+    let original = repository.load().unwrap().profiles[0].clone();
+    let counts = vault.counts();
+    let mut stale = created.clone();
+    stale.name = "stale name".into();
+    stale.config_generation = 99;
+    stale.target = sqlite_profile("unused").target;
+    stale.credential_state = CredentialState::NotRequired;
+    profiles
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![stale.clone()],
+        })
+        .unwrap();
+    assert_eq!(repository.load().unwrap().profiles, vec![original]);
+    assert_eq!(vault.counts(), counts);
+    assert!(!String::from_utf8(repository.durable_bytes())
+        .unwrap()
+        .contains(SENTINEL));
+    profiles.forget(&created.descriptor_id).unwrap();
+    let reopened = DatabaseProfiles::new(Arc::new(repository.reopen()), vault, closer);
+    assert!(reopened
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![stale]
+        })
+        .unwrap()
+        .profiles
+        .is_empty());
+}
+
+#[test]
+fn legacy_import_conflicting_pending_create_does_not_commit_a_receipt() {
+    let (profiles, repository, vault, _) = harness();
+    let pending = postgres_profile("legacy-pending", CredentialState::Stored, None);
+    repository
+        .replace(&ProfileDocument {
+            pending_operations: vec![PendingOperation::PendingCreate {
+                operation_id: "pending-create".into(),
+                profile: pending.clone(),
+                credential_generation: CredentialGeneration("pending-generation".into()),
+            }],
+            ..ProfileDocument::default()
+        })
+        .unwrap();
+    let before = repository.durable_bytes();
+    assert!(profiles
+        .import_legacy(LegacyProfileImportRequest {
+            profiles: vec![pending.descriptor()],
+        })
+        .is_err());
+    assert_eq!(repository.durable_bytes(), before);
+    assert_eq!(vault.counts(), (0, 0, 0));
+}
+
+#[test]
+fn legacy_import_replay_preserves_pending_forget_and_postcommit_failure_state() {
+    for point in [
+        RepositoryFailurePoint::Rename,
+        RepositoryFailurePoint::ParentSync,
+    ] {
+        let (profiles, repository, vault, closer) = harness();
+        let old = sqlite_profile("legacy-forget-failure");
+        let descriptor = old.descriptor();
+        repository
+            .replace(&ProfileDocument {
+                profiles: vec![old],
+                ..ProfileDocument::default()
+            })
+            .unwrap();
+        repository.fail_nth_replace(2, point);
+        assert!(profiles.forget(&descriptor.descriptor_id).is_err());
+        let durable = repository.reopen().load().unwrap();
+        let reopened = DatabaseProfiles::new(Arc::new(repository.reopen()), vault, closer);
+        if point == RepositoryFailurePoint::Rename {
+            assert_eq!(durable.profiles.len(), 1);
+            assert!(durable.legacy_consumed_descriptor_ids.is_empty());
+            let pending = reopened
+                .import_legacy(LegacyProfileImportRequest {
+                    profiles: vec![descriptor.clone()],
+                })
+                .unwrap();
+            assert_eq!(
+                repository.load().unwrap().pending_operations,
+                durable.pending_operations
+            );
+            assert_eq!(
+                pending.recovery[0].kind,
+                PendingOperationKind::PendingForget
+            );
+            reopened
+                .recover(ProfileRecoveryRequest {
+                    operation_id: pending.recovery[0].operation_id.clone(),
+                    action: RecoveryAction::RetryCleanup,
+                    credential: None,
+                })
+                .unwrap();
+        } else {
+            assert!(durable.profiles.is_empty());
+            assert!(durable.pending_operations.is_empty());
+            assert_eq!(
+                durable.legacy_consumed_descriptor_ids,
+                vec![descriptor.descriptor_id.clone()]
+            );
+        }
+        assert!(reopened
+            .import_legacy(LegacyProfileImportRequest {
+                profiles: vec![descriptor.clone()],
+            })
+            .unwrap()
+            .profiles
+            .is_empty());
+        assert_eq!(
+            repository.load().unwrap().legacy_consumed_descriptor_ids,
+            vec![descriptor.descriptor_id]
         );
     }
 }

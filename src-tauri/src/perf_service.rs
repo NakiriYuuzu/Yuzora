@@ -168,20 +168,125 @@ fn aggregate_tree(rows: &[ProcessRow], root: Pid) -> Option<PerfSnapshot> {
     })
 }
 
-/// Refresh 整張 process table 並映射成 `ProcessRow`。
+struct ProcessSelection {
+    live: HashSet<Pid>,
+    owned: HashSet<Pid>,
+}
+
+/// Public libproc helpers return PID counts, but take buffer sizes in bytes.
+/// A zero result can mean either an empty list or an error, distinguished by errno.
+#[cfg(target_os = "macos")]
+fn macos_pid_list_with(mut list: impl FnMut(*mut libc::c_void, i32) -> i32) -> Option<Vec<Pid>> {
+    let mut read = |buffer, size| {
+        // Successful libproc calls do not necessarily clear an earlier errno.
+        unsafe { *libc::__error() = 0 };
+        let count = list(buffer, size);
+        let error = unsafe { *libc::__error() };
+        (count >= 0 && (count != 0 || error == 0)).then_some(count as usize)
+    };
+    let capacity = read(std::ptr::null_mut(), 0)?;
+    if capacity == 0 {
+        return None;
+    }
+    let capacity = capacity.checked_add(32)?;
+    let bytes = capacity.checked_mul(std::mem::size_of::<libc::pid_t>())?;
+    let bytes = i32::try_from(bytes).ok()?;
+    let mut pids = vec![0 as libc::pid_t; capacity];
+    let count = read(pids.as_mut_ptr().cast(), bytes)?;
+    if count >= capacity {
+        return None;
+    }
+    pids.truncate(count);
+    Some(
+        pids.into_iter()
+            .filter(|pid| *pid > 0)
+            .map(|pid| Pid::from_u32(pid as u32))
+            .collect(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_pid_list(parent: Option<Pid>) -> Option<Vec<Pid>> {
+    macos_pid_list_with(|buffer, size| unsafe {
+        match parent {
+            Some(parent) => libc::proc_listchildpids(parent.as_u32() as libc::pid_t, buffer, size),
+            None => libc::proc_listallpids(buffer, size),
+        }
+    })
+}
+
+/// PID discovery is a best-effort snapshot, like the full-table refresh. Reject
+/// any failed branch rather than returning a partial tree as a successful sample.
+#[cfg(target_os = "macos")]
+fn macos_process_tree_with(
+    root: Pid,
+    mut list: impl FnMut(Option<Pid>) -> Option<Vec<Pid>>,
+) -> Option<ProcessSelection> {
+    let mut live: HashSet<_> = list(None)?.into_iter().collect();
+    if !live.contains(&root) {
+        return None;
+    }
+    let mut owned = HashSet::from([root]);
+    let mut queue = VecDeque::from([root]);
+    while let Some(parent) = queue.pop_front() {
+        for child in list(Some(parent))? {
+            live.insert(child);
+            if owned.insert(child) {
+                queue.push_back(child);
+            }
+        }
+    }
+    Some(ProcessSelection { live, owned })
+}
+
+/// Refresh current descendants on macOS; other platforms keep the full table.
+fn collect_rows(system: &mut System, _root: Pid) -> Vec<ProcessRow> {
+    #[cfg(target_os = "macos")]
+    let selection = macos_process_tree_with(_root, macos_pid_list);
+    #[cfg(not(target_os = "macos"))]
+    let selection = None;
+    collect_selected_rows(system, selection)
+}
+
+/// Cached PIDs absent from the live list must also be refreshed for eviction.
+/// Live former descendants may stay cached but are not emitted as owned rows.
 ///
-/// `ProcessesToUpdate::All` 比單一 PID 昂貴，但只在 2 秒一次的 poll 執行，而且
-/// refresh kind 僅要 cpu + memory（不取 cmdline/env）。第二個參數 `true` 會把已
-/// 結束的 process 移出 table，因此 process exit 後下一次 sample 自然不再計入。
-fn collect_rows(system: &mut System) -> Vec<ProcessRow> {
+/// The same System survives fallback so CPU deltas retain their history.
+fn collect_selected_rows(
+    system: &mut System,
+    selection: Option<ProcessSelection>,
+) -> Vec<ProcessRow> {
+    let refresh_pids = selection.as_ref().map(|selection| {
+        selection
+            .owned
+            .iter()
+            .copied()
+            .chain(
+                system
+                    .processes()
+                    .keys()
+                    .filter(|pid| !selection.live.contains(pid))
+                    .copied(),
+            )
+            .collect::<Vec<_>>()
+    });
+    let update = refresh_pids
+        .as_deref()
+        .map(ProcessesToUpdate::Some)
+        .unwrap_or(ProcessesToUpdate::All);
     system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
+        update,
         true,
         ProcessRefreshKind::nothing().with_cpu().with_memory(),
     );
     system
         .processes()
         .iter()
+        .filter(|(pid, _)| {
+            selection
+                .as_ref()
+                .is_none_or(|selection| selection.owned.contains(pid))
+        })
         .map(|(pid, process)| ProcessRow {
             pid: *pid,
             parent: process.parent(),
@@ -193,15 +298,15 @@ fn collect_rows(system: &mut System) -> Vec<ProcessRow> {
 }
 
 fn sample(system: &mut System, pid: Pid) -> Option<PerfSnapshot> {
-    let rows = collect_rows(system);
+    let rows = collect_rows(system, pid);
     aggregate_tree(&rows, pid)
 }
 
-/// 必須是 `async`：sysinfo 在 macOS 上對每個 process 無條件執行
+/// 保持 `async`：fallback 的整表 refresh 仍會讓 sysinfo 對每個 process 執行
 /// `sysctl(KERN_PROCARGS2)`（把完整 argv + environ 複製進 userspace），
 /// `ProcessRefreshKind` 只決定「要不要留下來」、擋不住「讀取」，所以
 /// `ProcessesToUpdate::All` 一次約 10 ms（本機 652 個 process 實測 8.2–10.4 ms，
-/// 單一 PID 版本只要 0.15–0.23 ms）。同步 command 走 tauri 的 Blocking
+/// 正常路徑只 refresh 目前的程序樹）。同步 command 走 tauri 的 Blocking
 /// execution context，在 macOS/wry 下 inline 跑在主執行緒，等於每 2 秒吃掉超過
 /// 半個 60 fps frame budget 並全程持有 `PerfState` 的 Mutex；標成 async 才會被
 /// 丟到 async runtime 的執行緒上。
@@ -215,6 +320,127 @@ pub fn perf_snapshot(state: tauri::State<'_, PerfState>) -> Result<Option<PerfSn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pid_list_distinguishes_empty_success_from_errors_and_clears_stale_errno() {
+        for error in [0, libc::EPERM, libc::ENOMEM, libc::EFAULT] {
+            let mut calls = 0;
+            unsafe { *libc::__error() = libc::EACCES };
+            let result = macos_pid_list_with(|buffer, size| {
+                calls += 1;
+                assert_eq!(unsafe { *libc::__error() }, 0);
+                if buffer.is_null() {
+                    assert_eq!(size, 0);
+                    unsafe { *libc::__error() = libc::EACCES };
+                    1
+                } else {
+                    unsafe { *libc::__error() = error };
+                    0
+                }
+            });
+            assert_eq!(calls, 2);
+            assert_eq!(result, (error == 0).then(Vec::new));
+        }
+        for result in [-1, 0] {
+            assert!(macos_pid_list_with(|_, _| result).is_none());
+        }
+        assert!(macos_pid_list_with(|_, _| {
+            unsafe { *libc::__error() = libc::EFAULT };
+            0
+        })
+        .is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pid_list_checks_capacity_before_allocation_and_rejects_full_buffers() {
+        let mut calls = 0;
+        assert!(macos_pid_list_with(|_, _| {
+            calls += 1;
+            i32::MAX
+        })
+        .is_none());
+        assert_eq!(
+            calls, 1,
+            "overflow must be rejected before allocating or reading"
+        );
+        for returned in [-1, 33, 34] {
+            assert!(macos_pid_list_with(|buffer, bytes| {
+                if buffer.is_null() {
+                    1
+                } else {
+                    assert_eq!(bytes as usize, 33 * std::mem::size_of::<libc::pid_t>());
+                    returned
+                }
+            })
+            .is_none());
+        }
+        let pids = macos_pid_list_with(|buffer, bytes| {
+            if buffer.is_null() {
+                1
+            } else {
+                assert_eq!(bytes as usize, 33 * std::mem::size_of::<libc::pid_t>());
+                let pids =
+                    unsafe { std::slice::from_raw_parts_mut(buffer.cast::<libc::pid_t>(), 33) };
+                pids[..3].copy_from_slice(&[-1, 0, 7]);
+                32
+            }
+        });
+        assert_eq!(pids, Some(vec![Pid::from_u32(7)]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pid_tree_rejects_failed_branches_and_handles_churn_duplicates_and_cycles() {
+        let root = Pid::from_u32(10);
+        let child = Pid::from_u32(20);
+        let grandchild = Pid::from_u32(30);
+        let mut calls = Vec::new();
+        let selection = macos_process_tree_with(root, |parent| {
+            calls.push(parent);
+            match parent {
+                None => Some(vec![root]),
+                Some(pid) if pid == root => Some(vec![child, child]),
+                Some(pid) if pid == child => Some(vec![grandchild]),
+                Some(_) => Some(vec![root]),
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, vec![None, Some(root), Some(child), Some(grandchild)]);
+        assert_eq!(selection.owned, HashSet::from([root, child, grandchild]));
+        assert_eq!(
+            selection.live, selection.owned,
+            "newly discovered children are live"
+        );
+        assert!(macos_process_tree_with(root, |parent| match parent {
+            None => Some(vec![root, child]),
+            Some(pid) if pid == root => Some(vec![child]),
+            Some(_) => None,
+        })
+        .is_none());
+        assert!(macos_process_tree_with(root, |_| Some(vec![])).is_none());
+        assert!(macos_process_tree_with(root, |_| None).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scoped_refresh_excludes_cached_non_descendants_after_fallback() {
+        let root = get_current_pid().unwrap();
+        let mut system = System::new();
+        let all = collect_selected_rows(&mut system, None);
+        let parent = all
+            .iter()
+            .find(|row| row.pid == root)
+            .unwrap()
+            .parent
+            .unwrap();
+        assert!(system.process(parent).is_some());
+        let scoped = collect_rows(&mut system, root);
+        assert!(!scoped.iter().any(|row| row.pid == parent));
+        assert!(scoped.iter().any(|row| row.pid == root));
+        assert!(aggregate_tree(&scoped, root).is_some());
+    }
 
     fn row(pid: u32, parent: Option<u32>, cpu: f32, memory: u64) -> ProcessRow {
         named_row(pid, parent, cpu, memory, "")
@@ -506,7 +732,7 @@ mod tests {
         // 分類完全依賴 name；若 refresh kind 沒帶回 name，整個 §3.3 就是死碼。
         let pid = get_current_pid().unwrap();
         let mut system = System::new();
-        let rows = collect_rows(&mut system);
+        let rows = collect_rows(&mut system, pid);
         let own = rows
             .iter()
             .find(|row| row.pid == pid)
@@ -528,7 +754,7 @@ mod tests {
         let child_pid = Pid::from_u32(child.id());
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        let rows_alive = collect_rows(&mut system);
+        let rows_alive = collect_rows(&mut system, pid);
         let sampled = sample(&mut system, pid);
 
         // 先收掉子行程再斷言：`Child` 的 Drop 不會 kill，任何 panic 都會讓
@@ -536,7 +762,7 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let rows_after = collect_rows(&mut system);
+        let rows_after = collect_rows(&mut system, pid);
 
         let snapshot = sampled.expect("own process is alive");
 
@@ -563,6 +789,10 @@ mod tests {
         assert!(
             !rows_after.iter().any(|r| r.pid == child_pid),
             "exited child should be gone from the next refresh"
+        );
+        assert!(
+            system.process(child_pid).is_none(),
+            "exited child must leave the cache"
         );
     }
 }

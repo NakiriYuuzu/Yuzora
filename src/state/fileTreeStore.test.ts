@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import type { FileNode } from "../lib/types"
@@ -138,6 +138,24 @@ describe("fileTreeStore — hydrate 與展開狀態", () => {
 })
 
 describe("fileTreeStore — 精準失效 invalidatePaths", () => {
+    it("initial root reconciliation refreshes cached descendants without opening new subtrees", async () => {
+        fakeFs["/a"] = [entry("/a/open", true), entry("/a/closed", true)]
+        fakeFs["/a/open"] = [entry("/a/open/old.txt", false)]
+        fakeFs["/a/closed"] = [entry("/a/closed/unread.txt", false)]
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        await store.toggleDir("/a", "/a/open")
+        fakeFs["/a"] = [...fakeFs["/a"], entry("/a/new.txt", false)]
+        fakeFs["/a/open"] = [entry("/a/open/new.txt", false)]
+        listCalls = []
+        await store.invalidatePaths("/a", ["/a"])
+        const tree = useFileTreeStore.getState().trees["/a"]
+        expect(listCalls.sort()).toEqual(["/a", "/a/open"])
+        expect(tree.rootNodes).toEqual(fakeFs["/a"])
+        expect(tree.childrenByDir["/a/open"]).toEqual(fakeFs["/a/open"])
+        expect(tree.childrenByDir["/a/closed"]).toBeUndefined()
+        expect([...tree.expandedDirs]).toEqual(["/a/open"])
+    })
     it.each(["/fixture", "C:\\fixture"])("prunes multiple removed subtrees without touching prefix siblings or prior snapshots under %s", async root => {
         const separator = root.startsWith("C:") ? "\\" : "/"
         const path = (suffix: string) => root + separator + suffix.replaceAll("/", separator)
@@ -324,5 +342,166 @@ describe("fileTreeStore — 精準失效 invalidatePaths", () => {
         expect(useFileTreeStore.getState().consumePreciseRevision("/b", revision)).toBe(false)
         expect(useFileTreeStore.getState().consumePreciseRevision("/a", revision + 1)).toBe(false)
         expect(useFileTreeStore.getState().consumePreciseRevision("/a", revision)).toBe(true)
+    })
+})
+
+describe("fileTreeStore — overlapping listings", () => {
+    function deferred<T>() {
+        let resolve!: (value: T) => void
+        let reject!: (reason: Error) => void
+        const promise = new Promise<T>((ok, no) => { resolve = ok; reject = no })
+        return { promise, resolve, reject }
+    }
+
+    it.each(["/a", "/a/src"])("older success cannot overwrite a newer listing for %s", async dir => {
+        fakeFs["/a"] = [entry("/a/src", true)]
+        fakeFs["/a/src"] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        await store.toggleDir("/a", "/a/src")
+        const old = deferred<FileNode[]>()
+        const current = [entry(`${dir}/current.ts`, false)]
+        let calls = 0
+        mockIPC((command, args) => {
+            if (command === "list_dir" && (args as { path: string }).path === dir)
+                return ++calls === 1 ? old.promise : current
+        })
+        const previous = store.invalidatePaths("/a", [`${dir}/changed.ts`])
+        await store.invalidatePaths("/a", [`${dir}/changed.ts`])
+        old.resolve([entry(`${dir}/obsolete.ts`, false)])
+        await previous
+        const tree = useFileTreeStore.getState().trees["/a"]
+        expect(dir === "/a" ? tree.rootNodes : tree.childrenByDir[dir]).toEqual(current)
+    })
+
+    it("an older failure cannot prune a newer successful child listing", async () => {
+        fakeFs["/a"] = [entry("/a/src", true)]
+        fakeFs["/a/src"] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        await store.toggleDir("/a", "/a/src")
+        const old = deferred<FileNode[]>()
+        const current = [entry("/a/src/current.ts", false)]
+        let calls = 0
+        mockIPC(command => command === "list_dir" ? (++calls === 1 ? old.promise : current) : undefined)
+        const previous = store.invalidatePaths("/a", ["/a/src/changed.ts"])
+        await store.invalidatePaths("/a", ["/a/src/changed.ts"])
+        old.reject(new Error("owned old listing failed"))
+        await previous
+        const tree = useFileTreeStore.getState().trees["/a"]
+        expect(tree.childrenByDir["/a/src"]).toEqual(current)
+        expect(tree.expandedDirs.has("/a/src")).toBe(true)
+    })
+
+    it.each([false, true])("parent removal invalidates a pending child listing (already cached: %s)", async cached => {
+        fakeFs["/a"] = [entry("/a/src", true), entry("/a/keep", true)]
+        fakeFs["/a/src"] = []
+        fakeFs["/a/keep"] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        await store.toggleDir("/a", "/a/keep")
+        if (cached) await store.toggleDir("/a", "/a/src")
+        const old = deferred<FileNode[]>()
+        mockIPC((command, args) => {
+            if (command !== "list_dir") return
+            const path = (args as { path: string }).path
+            return path === "/a/src" ? old.promise : [entry("/a/keep", true)]
+        })
+        const previous = cached ? store.invalidatePaths("/a", ["/a/src/file"]) : store.toggleDir("/a", "/a/src")
+        await store.invalidatePaths("/a", ["/a/src"])
+        old.resolve([entry("/a/src/obsolete.ts", false)])
+        await previous
+        const tree = useFileTreeStore.getState().trees["/a"]
+        expect(tree.rootNodes).toEqual([entry("/a/keep", true)])
+        expect(tree.childrenByDir["/a/src"]).toBeUndefined()
+        expect(tree.expandedDirs.has("/a/src")).toBe(false)
+        expect(tree.childrenByDir["/a/keep"]).toEqual([])
+        expect(tree.expandedDirs.has("/a/keep")).toBe(true)
+    })
+
+    it("keeps pending sibling and other-workspace listings independent", async () => {
+        fakeFs["/a"] = [entry("/a/src", true), entry("/a/keep", true)]
+        fakeFs["/a/src"] = []
+        fakeFs["/a/keep"] = []
+        fakeFs["/b"] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        await store.ensureTree("/b")
+        for (const dir of ["/a/src", "/a/keep"]) await store.toggleDir("/a", dir)
+        const old = deferred<FileNode[]>()
+        const sibling = deferred<FileNode[]>()
+        const other = deferred<FileNode[]>()
+        let srcCalls = 0
+        mockIPC((command, args) => {
+            if (command !== "list_dir") return
+            const path = (args as { path: string }).path
+            if (path === "/a/src") return ++srcCalls === 1 ? old.promise : [entry("/a/src/current", false)]
+            if (path === "/a/keep") return sibling.promise
+            if (path === "/b") return other.promise
+        })
+        const pending = [
+            store.invalidatePaths("/a", ["/a/src/change"]),
+            store.invalidatePaths("/a", ["/a/keep/change"]),
+            store.invalidatePaths("/b", ["/b/change"]),
+        ]
+        await store.invalidatePaths("/a", ["/a/src/change"])
+        old.reject(new Error("owned obsolete failure"))
+        sibling.resolve([entry("/a/keep/current", false)])
+        other.resolve([entry("/b/current", false)])
+        await Promise.all(pending)
+        const trees = useFileTreeStore.getState().trees
+        expect(trees["/a"].childrenByDir["/a/src"]).toEqual([entry("/a/src/current", false)])
+        expect(trees["/a"].childrenByDir["/a/keep"]).toEqual([entry("/a/keep/current", false)])
+        expect(trees["/b"].rootNodes).toEqual([entry("/b/current", false)])
+    })
+
+    it("a current parent failure invalidates a pending descendant without clearing the root listing", async () => {
+        fakeFs["/a"] = [entry("/a/src", true)]
+        fakeFs["/a/src"] = [entry("/a/src/deep", true)]
+        fakeFs["/a/src/deep"] = []
+        const store = useFileTreeStore.getState()
+        await store.ensureTree("/a")
+        for (const dir of ["/a/src", "/a/src/deep"]) await store.toggleDir("/a", dir)
+        const descendant = deferred<FileNode[]>()
+        mockIPC((command, args) => {
+            if (command !== "list_dir") return
+            if ((args as { path: string }).path === "/a/src/deep") return descendant.promise
+            throw new Error("owned current parent failure")
+        })
+        const pending = store.invalidatePaths("/a", ["/a/src/deep/change"])
+        await store.invalidatePaths("/a", ["/a/src/change"])
+        descendant.resolve([entry("/a/src/deep/obsolete", false)])
+        await pending
+        const tree = useFileTreeStore.getState().trees["/a"]
+        expect(tree.rootNodes).toEqual(fakeFs["/a"])
+        expect(tree.childrenByDir).toEqual({})
+        expect(tree.expandedDirs.size).toBe(0)
+    })
+
+    it("does not start queued revalidation jobs after their parent prunes them", async () => {
+        const dirs = Array.from({ length: REVALIDATE_CONCURRENCY + 4 }, (_, i) => `/a/dir${i}`)
+        useFileTreeStore.setState({ trees: { "/a": {
+            rootNodes: dirs.map(dir => entry(dir, true)),
+            childrenByDir: Object.fromEntries(dirs.map(dir => [dir, []])),
+            expandedDirs: new Set(dirs), scrollTop: 0,
+        } } })
+        const root = deferred<FileNode[]>()
+        const children = deferred<FileNode[]>()
+        const calls: string[] = []
+        mockIPC((command, args) => {
+            if (command !== "list_dir") return
+            const path = (args as { path: string }).path
+            calls.push(path)
+            return path === "/a" ? root.promise : children.promise
+        })
+        const revalidating = useFileTreeStore.getState().ensureTree("/a")
+        expect(calls).toHaveLength(REVALIDATE_CONCURRENCY)
+        root.resolve([])
+        await vi.waitFor(() => expect(useFileTreeStore.getState().trees["/a"].rootNodes).toEqual([]))
+        children.resolve([])
+        await revalidating
+        expect(calls).toHaveLength(REVALIDATE_CONCURRENCY)
+        expect(useFileTreeStore.getState().trees["/a"].childrenByDir).toEqual({})
+        expect(useFileTreeStore.getState().trees["/a"].expandedDirs.size).toBe(0)
     })
 })

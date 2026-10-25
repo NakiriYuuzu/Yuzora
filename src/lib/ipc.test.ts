@@ -1,6 +1,7 @@
 import { expect, test, it, afterEach, describe } from "vitest"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 import * as ipcModule from "./ipc"
+
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import {
     openFile,
@@ -915,5 +916,27 @@ describe("database v2 IPC contract seams", () => {
             ["db_result_page", { request: { owner: resultOwner, direction: "next" } }],
             ["db_result_session_release", { owner: resultOwner }]
         ])
+    })
+})
+
+describe("stash Apply identity", () => {
+    it("forwards full SHA-1 and SHA-256 OIDs and preserves the original pop payload", async () => {
+        const seen: unknown[] = []
+        mockIPC((command, args) => { seen.push([command, args]); return { conflicts: false } })
+        for (const oid of ["a".repeat(40), "B".repeat(64)]) {
+            await ipcModule.gitStashApply("/w", 2, false, oid)
+            expect(seen.at(-1)).toEqual(["git_stash_apply", { repositoryRoot: "/w", index: 2, pop: false, oid }])
+        }
+        await ipcModule.gitStashApply("/w", 2, true)
+        expect(seen.at(-1)).toEqual(["git_stash_apply", { repositoryRoot: "/w", index: 2, pop: true }])
+    })
+
+    it("rejects missing, abbreviated and option-like identities before any IPC", async () => {
+        const seen: unknown[] = []
+        mockIPC((command, args) => { seen.push([command, args]); return { conflicts: false } })
+        for (const oid of [undefined, "", "stash@{0}", "--index", "abcdef12", "g".repeat(40)]) {
+            await expect(ipcModule.gitStashApply("/w", 0, false, oid)).rejects.toThrow("full stash object ID")
+        }
+        expect(seen).toEqual([])
     })
 })

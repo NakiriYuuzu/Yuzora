@@ -33,19 +33,21 @@ export function cycleHoldModifiers(binding: string, mac = isMacPlatform()): Modi
  * open an Alt+Tab-style switcher ordered by recent use. Listeners run in the
  * capture phase so they also work while a terminal has focus.
  */
-export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
+export function useAgentHotkeys<T>({ agents, keyOf, activate, getCurrentKey }: {
   agents: readonly T[]
   keyOf: (agent: T) => string
   activate: (agent: T) => void
+  getCurrentKey?: () => string | null | undefined
 }) {
   const [altHeld, setAltHeld] = useState(false)
   const [switcher, setSwitcherState] = useState<AgentSwitcherState<T> | null>(null)
   // `hold`: modifiers of the binding that opened the switcher; releasing them commits.
-  const latest = useRef({ agents, keyOf, activate, switcher, hold: [] as Modifier[] })
+  const latest = useRef({ agents, keyOf, activate, getCurrentKey, switcher, hold: [] as Modifier[] })
   useLayoutEffect(() => {
     latest.current.agents = agents
     latest.current.keyOf = keyOf
     latest.current.activate = activate
+    latest.current.getCurrentKey = getCurrentKey
   })
   const setSwitcher = useCallback((next: AgentSwitcherState<T> | null) => {
     latest.current.switcher = next
@@ -56,7 +58,13 @@ export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
     if (!current) return
     const item = current.items[index ?? current.index]
     setSwitcher(null)
-    if (item) latest.current.activate(item)
+    if (item === undefined) return
+    const { agents, keyOf, activate } = latest.current
+    // Keep the held switcher's order, but do not activate a retired or moved
+    // Agent using the object captured when the switcher opened.
+    const key = keyOf(item)
+    const live = agents.find(agent => keyOf(agent) === key)
+    if (live !== undefined) activate(live)
   }, [setSwitcher])
   const highlight = useCallback((index: number) => {
     const current = latest.current.switcher
@@ -73,10 +81,14 @@ export function useAgentHotkeys<T>({ agents, keyOf, activate }: {
         return
       }
       const { agents: list, keyOf: key } = latest.current
-      const items = orderAgentsByRecency(list, key, useAgentMruStore.getState().keys)
+      let items = orderAgentsByRecency(list, key, useAgentMruStore.getState().keys)
       if (items.length < 2) return
+      const currentKey = latest.current.getCurrentKey?.()
+      const currentIndex = items.findIndex(item => key(item) === currentKey)
+      if (currentIndex > 0) items = [items[currentIndex], ...items.filter((_, index) => index !== currentIndex)]
+      const nextIndex = currentKey === undefined || currentIndex >= 0 ? 1 : 0
       latest.current.hold = cycleHoldModifiers(effectiveBinding(command, useKeyboardSettingsStore.getState().overrides))
-      setSwitcher({ items, index: direction > 0 ? 1 : items.length - 1 })
+      setSwitcher({ items, index: direction > 0 ? nextIndex : items.length - 1 })
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAltHeld(true)

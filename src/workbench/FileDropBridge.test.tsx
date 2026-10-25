@@ -40,6 +40,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 
 vi.mock("@/lib/platform", () => ({ isTauri: () => true }))
 vi.mock("@/editor/documentRegistry", () => ({
+  documentWorkspaceEpoch: () => 0,
   getDocument: (path: string) => documentMock.getDocument(path),
 }))
 vi.mock("@/lib/actionFeedback", () => ({

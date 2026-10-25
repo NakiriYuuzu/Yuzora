@@ -118,8 +118,8 @@ function FolderPickerDialog() {
         const selected = await registerSftpWorkspace(activeHostId, listing.cwd)
         if (current()) finish?.(selected)
       }
-    } catch (cause) { setError(String(cause)) }
-    finally { setBusy(false) }
+    } catch (cause) { if (location === "local" || current()) setError(String(cause)) }
+    finally { if (location === "local" || current()) setBusy(false) }
   }
 
   if (runtimeHostId && runtimeHostId !== LOCAL_HOST_ID) {

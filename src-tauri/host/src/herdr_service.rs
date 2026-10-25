@@ -18,8 +18,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::herdr_backend::{HerdrMetadata, HerdrRemoteBackend};
+#[cfg(not(unix))]
+use crate::herdr_limits::read_bounded_bytes;
 use crate::herdr_limits::{
-    bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout, read_bounded_bytes,
+    bound_optional_json, bounded_ipc, ensure_ipc_bound, parse_herdr_cli_stdout,
     read_bounded_ndjson_line, validate_json_complexity, validate_snapshot_counts,
     BoundedNdjsonReadError, HerdrProtocolError, MAX_LAYOUT_DEPTH, MAX_NDJSON_LINE_BYTES,
     MAX_PANE_COUNT, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
@@ -31,6 +33,10 @@ use crate::herdr_transport::{
     write_local_all_until, LocalWaitProfile,
 };
 use crate::process_kill;
+
+#[cfg(all(test, unix))]
+#[path = "herdr_cli_lifecycle_tests.rs"]
+mod cli_lifecycle_tests;
 
 pub type OnTerminalEvent = Arc<dyn Fn(HerdrTerminalEvent) -> Result<(), String> + Send + Sync>;
 pub type OnSubscriptionEvent =
@@ -1150,7 +1156,11 @@ impl HerdrManager {
         custom_path: Option<String>,
     ) -> Result<crate::herdr_runtime::RuntimeBinaryCheck, String> {
         let binary = if source == HerdrBinarySource::Custom {
-            checked_custom_binary(custom_path.as_deref().map(Path::new))?
+            let path = crate::herdr_runtime::normalize_custom_binary_path(
+                custom_path.as_deref().ok_or("herdr-custom-path-required")?,
+                cfg!(windows),
+            )?;
+            checked_custom_binary(Some(Path::new(path)))?
         } else {
             let (path, reason) = self.resolve_binary_for_source(source);
             path.ok_or_else(|| reason.unwrap_or_else(|| "herdr-unavailable".into()))?
@@ -1173,10 +1183,10 @@ impl HerdrManager {
         custom_path: Option<String>,
     ) -> Result<HerdrBinarySourceSetResult, String> {
         let _write_guard = self.binary_source_write_lock.lock().unwrap();
-        self.check_binary_source(source, custom_path.clone())?
-            .require_compatible()?;
+        let check = self.check_binary_source(source, custom_path)?;
+        check.require_compatible()?;
         let custom_path = if source == HerdrBinarySource::Custom {
-            custom_path.map(PathBuf::from)
+            Some(PathBuf::from(check.binary))
         } else {
             None
         };
@@ -1625,6 +1635,8 @@ impl HerdrManager {
                 Some("herdr server protocol incompatible".into())
             } else if !socket_present {
                 Some("herdr server not running or socket unavailable".into())
+            } else if schema_value.is_none() {
+                caps.api.reason.clone()
             } else if !has_tab_create_method {
                 Some("selected herdr schema lacks tab.create".into())
             } else {
@@ -1652,7 +1664,7 @@ impl HerdrManager {
         } else if incompatible {
             clear_api_method_flags(&mut caps.api);
             caps.api.reason = Some("herdr server protocol incompatible".into());
-        } else if socket_ready {
+        } else if socket_ready && schema_value.is_some() {
             apply_schema_method_flags(&mut caps.api, &schema_methods, has_ping_method);
             if has_snapshot_method && has_tab_create_method {
                 // Full API surface present — drop seed/schema probe noise.
@@ -3558,6 +3570,92 @@ fn run_herdr_json_with_session_timeout(
     parse_herdr_cli_stdout(&stdout).map_err(String::from)
 }
 
+#[cfg(unix)]
+pub(crate) fn wait_bounded_child(
+    child: &mut Child,
+    process_tree: &mut process_kill::ProcessTreeGuard,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, Vec<u8>, std::process::ExitStatus), String> {
+    use std::io::{ErrorKind, Read};
+    use std::os::fd::AsRawFd;
+
+    let deadline = Instant::now() + timeout;
+    let result = (|| -> Result<_, String> {
+        let mut stdout = child.stdout.take().ok_or("herdr stdout pipe missing")?;
+        let mut stderr = child.stderr.take().ok_or("herdr stderr pipe missing")?;
+        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags == -1
+                || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+            {
+                return Err(format!(
+                    "herdr pipe setup failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        let mut pipes: [&mut dyn Read; 2] = [&mut stdout, &mut stderr];
+        let mut output = [Vec::new(), Vec::new()];
+        let mut eof = [false; 2];
+        let mut buffer = [0; 8192];
+        loop {
+            if Instant::now() >= deadline {
+                return Err(HerdrProtocolError::TimedOut.into());
+            }
+            let mut progressed = false;
+            // One chunk per stream per iteration keeps both streams and the
+            // deadline moving even when one writer produces continuously.
+            for (index, pipe) in pipes.iter_mut().enumerate() {
+                if eof[index] {
+                    continue;
+                }
+                match pipe.read(&mut buffer) {
+                    Ok(0) => eof[index] = true,
+                    Ok(n) => {
+                        if n > max_bytes.saturating_sub(output[index].len()) {
+                            return Err(HerdrProtocolError::ResponseTooLarge.into());
+                        }
+                        output[index].extend_from_slice(&buffer[..n]);
+                        progressed = true;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted
+                        ) => {}
+                    Err(error) => {
+                        let name = if index == 0 { "stdout" } else { "stderr" };
+                        return Err(format!("{name} read failed: {error}"));
+                    }
+                }
+            }
+            // Keep the leader unreaped until cleanup has sent its last signal.
+            // Exit alone is insufficient: descendants can still deliver bytes.
+            let exited = process_kill::leader_exited_without_reaping(child.id() as i32)
+                .map_err(|error| format!("wait failed: {error}"))?;
+            if exited && eof.iter().all(|done| *done) {
+                return Ok(output);
+            }
+            if !progressed {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    })();
+    match result {
+        Ok([stdout, stderr]) => {
+            let status = process_kill::reap_process_tree(child, process_tree)
+                .map_err(|error| format!("reap failed: {error}"))?;
+            Ok((stdout, stderr, status))
+        }
+        Err(error) => match process_kill::terminate_process_tree(child, process_tree) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}; process-tree cleanup failed: {cleanup}")),
+        },
+    }
+}
+
+#[cfg(not(unix))]
 pub(crate) fn wait_bounded_child(
     child: &mut Child,
     process_tree: &mut process_kill::ProcessTreeGuard,

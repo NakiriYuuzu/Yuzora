@@ -363,6 +363,31 @@ impl ResultSessionRegistry {
         effect_outcome: EffectOutcome,
         lifecycle: ResultSessionLifecycle,
     ) -> Result<ResultSession, SessionError> {
+        let session = self.finish_stored_session(owner, effect_outcome, lifecycle)?;
+        let initial_page = page_from_session(session, 0)?;
+        Ok(ResultSession {
+            owner: owner.clone(),
+            columns: session.columns.clone(),
+            initial_page,
+        })
+    }
+
+    pub fn finish_session_state(
+        &mut self,
+        owner: &ResultSessionOwner,
+        effect_outcome: EffectOutcome,
+        lifecycle: ResultSessionLifecycle,
+    ) -> Result<(), SessionError> {
+        self.finish_stored_session(owner, effect_outcome, lifecycle)
+            .map(|_| ())
+    }
+
+    fn finish_stored_session(
+        &mut self,
+        owner: &ResultSessionOwner,
+        effect_outcome: EffectOutcome,
+        lifecycle: ResultSessionLifecycle,
+    ) -> Result<&StoredSession, SessionError> {
         self.validate_active_run(owner)?;
         let session = self
             .sessions
@@ -374,19 +399,15 @@ impl ResultSessionRegistry {
         session.effect_outcome = effect_outcome;
         session.lifecycle = lifecycle;
         session.ready_pages = session.pages.len();
-        let initial_page = page_from_session(session, 0)?;
-        Ok(ResultSession {
-            owner: owner.clone(),
-            columns: session.columns.clone(),
-            initial_page,
-        })
+        session.pages.first().ok_or(SessionError::PageNotFound)?;
+        Ok(session)
     }
 
     pub fn mark_page_ready(
         &mut self,
         owner: &ResultSessionOwner,
         page_index: usize,
-    ) -> Result<ResultPage, SessionError> {
+    ) -> Result<(), SessionError> {
         self.validate_active_run(owner)?;
         let session = self
             .sessions
@@ -399,7 +420,17 @@ impl ResultSessionRegistry {
             return Err(SessionError::PageNotFound);
         }
         session.ready_pages = session.ready_pages.max(page_index + 1);
-        page_from_session(session, page_index)
+        Ok(())
+    }
+
+    /// Publish a completed read independently of the page the caller is viewing.
+    pub fn mark_next_page_ready(&mut self, owner: &ResultSessionOwner) -> Result<(), SessionError> {
+        let page_index = self
+            .sessions
+            .get(&owner.result_session_id.0)
+            .ok_or(SessionError::SessionNotFound)?
+            .ready_pages;
+        self.mark_page_ready(owner, page_index)
     }
 
     pub fn result_session(
@@ -479,6 +510,34 @@ impl ResultSessionRegistry {
             return Ok(NextPage::Continue { page_index });
         }
         Err(SessionError::PageNotFound)
+    }
+
+    /// A worker may consume the cursor only for the next unpublished page.
+    /// Unlike navigation, checking a duplicate continuation never moves current.
+    pub fn continuation_page_index(
+        &self,
+        owner: &ResultSessionOwner,
+    ) -> Result<usize, SessionError> {
+        self.validate_active_run(owner)?;
+        let session = self
+            .sessions
+            .get(&owner.result_session_id.0)
+            .ok_or(SessionError::SessionNotFound)?;
+        if session.owner != *owner {
+            return Err(SessionError::OwnerMismatch);
+        }
+        let page_index = session
+            .current_page
+            .checked_add(1)
+            .ok_or(SessionError::PageNotFound)?;
+        if session.lifecycle == ResultSessionLifecycle::Streaming
+            && page_index == session.ready_pages
+            && page_index < session.pages.len()
+        {
+            Ok(page_index)
+        } else {
+            Err(SessionError::PageNotFound)
+        }
     }
 
     pub fn complete_next(
@@ -962,6 +1021,166 @@ mod tests {
     }
 
     #[test]
+    fn state_only_finish_preserves_cached_pages_flags_cursor_and_accounting() {
+        for lifecycle in [
+            ResultSessionLifecycle::Complete,
+            ResultSessionLifecycle::Cancelled,
+            ResultSessionLifecycle::Error,
+        ] {
+            let mut registry = ResultSessionRegistry::with_limits(1 << 20, 2 << 20);
+            let owner = owner("run-a", "statement-a", "session-a");
+            registry.begin_run(&run_owner("run-a")).unwrap();
+            registry
+                .begin_session(owner.clone(), vec!["value".into()])
+                .unwrap();
+            for value in 0..1001 {
+                registry
+                    .push_row(
+                        &owner,
+                        vec![DbValue::Integer {
+                            value: value.to_string(),
+                        }],
+                    )
+                    .unwrap();
+            }
+            registry.mark_page_ready(&owner, 0).unwrap();
+            assert_eq!(
+                registry.next(&owner),
+                Ok(NextPage::Continue { page_index: 1 })
+            );
+            registry.mark_page_ready(&owner, 1).unwrap();
+            let second = registry.complete_next(&owner, 1).unwrap();
+            registry.mark_result_limit_reached(&owner).unwrap();
+            registry.mark_value_too_large(&owner).unwrap();
+            let bytes = (
+                registry.total_bytes(),
+                registry.session_bytes(&owner).unwrap(),
+            );
+
+            registry
+                .finish_session_state(&owner, EffectOutcome::Unknown, lifecycle)
+                .unwrap();
+            let current = registry.current_page(&owner).unwrap();
+            assert_eq!(current.page_index, 1);
+            assert_eq!(current.rows, second.rows);
+            assert_eq!(current.columns, vec!["value"]);
+            assert_eq!(current.owner, owner);
+            assert_eq!(current.lifecycle, lifecycle);
+            assert_eq!(current.effect_outcome, EffectOutcome::Unknown);
+            assert!(current.result_limit_reached && current.value_too_large);
+            assert_eq!(
+                (
+                    registry.total_bytes(),
+                    registry.session_bytes(&owner).unwrap()
+                ),
+                bytes
+            );
+            let previous = registry.previous(&owner).unwrap();
+            assert_eq!(previous.rows.len(), 500);
+            assert_eq!(
+                previous.rows[0],
+                vec![DbValue::Integer { value: "0".into() }]
+            );
+            assert_eq!(registry.next(&owner), Ok(NextPage::Cached(current)));
+            let NextPage::Cached(last) = registry.next(&owner).unwrap() else {
+                panic!("settled lookahead must be a cached terminal page");
+            };
+            assert_eq!(
+                last.rows,
+                vec![vec![DbValue::Integer {
+                    value: "1000".into()
+                }]]
+            );
+            assert!(!last.has_next);
+        }
+    }
+
+    #[test]
+    fn ready_and_state_only_finish_keep_error_boundaries_and_valid_owner_unchanged() {
+        let mut registry = ResultSessionRegistry::with_limits(1 << 20, 2 << 20);
+        let owner = owner("run-a", "statement-a", "session-a");
+        registry.begin_run(&run_owner("run-a")).unwrap();
+        registry
+            .begin_session(owner.clone(), vec!["value".into()])
+            .unwrap();
+        for value in 0..1001 {
+            registry
+                .push_row(
+                    &owner,
+                    vec![DbValue::Integer {
+                        value: value.to_string(),
+                    }],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            registry.mark_page_ready(&owner, 3),
+            Err(SessionError::OwnerMismatch)
+        );
+        assert_eq!(
+            registry.mark_page_ready(&owner, 1),
+            Err(SessionError::PageNotFound)
+        );
+        assert_eq!(registry.page(&owner, 0), Err(SessionError::PageNotFound));
+        registry.mark_page_ready(&owner, 0).unwrap();
+        let initial = registry.page(&owner, 0).unwrap();
+        let bytes = registry.total_bytes();
+        for field in 0..4 {
+            let mut stale = owner.clone();
+            match field {
+                0 => stale.connection_generation = ConnectionGeneration("stale".into()),
+                1 => stale.query_run_id = QueryRunId("stale".into()),
+                2 => stale.statement_execution_id = StatementExecutionId("stale".into()),
+                _ => stale.result_session_id = ResultSessionId("missing".into()),
+            }
+            let error = if field == 3 {
+                SessionError::SessionNotFound
+            } else {
+                SessionError::OwnerMismatch
+            };
+            assert_eq!(
+                registry.finish_session_state(
+                    &stale,
+                    EffectOutcome::Committed,
+                    ResultSessionLifecycle::Error
+                ),
+                Err(error)
+            );
+            assert_eq!(registry.mark_page_ready(&stale, 0), Err(error));
+            assert_eq!(registry.page(&owner, 0).unwrap(), initial);
+            assert_eq!(registry.total_bytes(), bytes);
+        }
+    }
+
+    #[test]
+    fn state_only_finish_preserves_empty_page_error_after_state_transition() {
+        let mut registry = ResultSessionRegistry::default();
+        let owner = owner("run-a", "statement-a", "session-a");
+        registry.begin_run(&run_owner("run-a")).unwrap();
+        registry
+            .begin_session(owner.clone(), vec!["value".into()])
+            .unwrap();
+        registry
+            .sessions
+            .get_mut(&owner.result_session_id.0)
+            .unwrap()
+            .pages
+            .clear();
+        assert_eq!(
+            registry.finish_session_state(
+                &owner,
+                EffectOutcome::Unknown,
+                ResultSessionLifecycle::Error
+            ),
+            Err(SessionError::PageNotFound)
+        );
+        let stored = &registry.sessions[&owner.result_session_id.0];
+        assert_eq!(stored.effect_outcome, EffectOutcome::Unknown);
+        assert_eq!(stored.lifecycle, ResultSessionLifecycle::Error);
+        assert_eq!(stored.ready_pages, 0);
+    }
+
+    #[test]
     fn validated_row_bytes_preserve_capacities_and_first_limit_failure() {
         fn spare(value: &str, capacity: usize) -> String {
             let mut text = String::with_capacity(capacity);
@@ -1341,7 +1560,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        let first = registry.mark_page_ready(&result_owner, 0).unwrap();
+        registry.mark_page_ready(&result_owner, 0).unwrap();
+        let first = registry.page(&result_owner, 0).unwrap();
         assert_eq!(first.rows.len(), 500);
         assert!(first.has_next, "only the 501st cached row proves Next");
         assert_eq!(

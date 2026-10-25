@@ -179,6 +179,8 @@ mod unix_impl {
         operations: Mutex<HashMap<String, OperationRecord>>,
         pending: Mutex<Pending>,
         emit: Box<dyn Fn(AskpassRequest) + Send + Sync + 'static>,
+        #[cfg(test)]
+        after_admission_unlock: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl AskpassServer {
@@ -203,6 +205,8 @@ mod unix_impl {
                     waiters: HashMap::new(),
                 }),
                 emit: Box::new(emit),
+                #[cfg(test)]
+                after_admission_unlock: Mutex::new(None),
             });
             // Hold a Weak (not a strong Arc) in the accept loop so the server's Drop
             // can actually run — a strong clone here would pin the Arc for the
@@ -227,6 +231,11 @@ mod unix_impl {
         #[cfg(test)]
         pub fn endpoint(&self) -> &str {
             &self.endpoint
+        }
+
+        #[cfg(test)]
+        pub(super) fn set_after_admission_unlock_hook(&self, hook: impl FnOnce() + Send + 'static) {
+            *self.after_admission_unlock.lock().unwrap() = Some(Box::new(hook));
         }
 
         pub fn begin_operation(
@@ -324,11 +333,17 @@ mod unix_impl {
 
         /// UI 回覆：Some(secret) 或 None（取消）。喚醒對應連線 thread。
         pub fn respond(&self, id: u64, response: Option<String>) {
+            let response = response.map(SecretString::from);
+            // Serialize reply authorization with revocation, using the same
+            // operations -> pending lock order as request admission.
+            let operations = self.operations.lock().unwrap();
             let sender = self.pending.lock().unwrap().waiters.remove(&id);
             if let Some(waiter) = sender {
-                let _ = waiter
-                    .sender
-                    .send(response.map(|value| SecretString::from(value)));
+                let live = operations
+                    .get(&waiter.operation_id)
+                    .is_some_and(OperationRecord::is_live);
+                let response = if live { response } else { None };
+                let _ = waiter.sender.send(response);
             }
         }
 
@@ -379,7 +394,6 @@ mod unix_impl {
 
             let kind = classify(&request.prompt);
             let context = operation.context.clone();
-            drop(operations);
 
             let (tx, rx) = channel::<Option<SecretString>>();
             let id = {
@@ -395,6 +409,17 @@ mod unix_impl {
                 );
                 id
             };
+            // Registration belongs to the validated operation. Revoke must
+            // observe this waiter if it removes the operation after admission.
+            drop(operations);
+
+            #[cfg(test)]
+            {
+                let hook = self.after_admission_unlock.lock().unwrap().take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
             (self.emit)(AskpassRequest {
                 id,
                 prompt: request.prompt,
@@ -1046,6 +1071,72 @@ mod tests {
         // the previous secret unless the UI answers again.
         server.respond(second_req[1].id, None);
         assert_eq!(replay.join().unwrap(), (1, String::new()));
+    }
+
+    #[test]
+    fn revoked_at_admission_unlock_cannot_receive_a_later_ui_reply() {
+        let emits = Arc::new(Mutex::new(Vec::new()));
+        let observed = emits.clone();
+        let server = AskpassServer::start(move |request| {
+            observed.lock().unwrap().push(request);
+        })
+        .unwrap();
+        let op = server.begin_operation(sample_ctx(false, AskpassOperationKind::Fetch));
+        bind_self(&op);
+        let env = op.env().to_vec();
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.set_after_admission_unlock_hook(move || {
+            reached_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        let worker = std::thread::spawn(move || {
+            run_client_impl(
+                &value_of(&env, "YUZORA_ASKPASS_ENDPOINT"),
+                &value_of(&env, "YUZORA_ASKPASS_TOKEN"),
+                &value_of(&env, "YUZORA_ASKPASS_OPERATION"),
+                "Password: ",
+            )
+        });
+        reached_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Revoke has completed before either admission continues or the UI
+        // supplies its answer; no scheduling delay is used to create the race.
+        drop(op);
+        release_tx.send(()).unwrap();
+        let requests = wait_for_emits(&emits, 1);
+        server.respond(requests[0].id, Some("owned-revoked-test-secret".into()));
+        assert_eq!(worker.join().unwrap(), (1, String::new()));
+        assert_eq!(server.live_operation_count(), 0);
+    }
+
+    #[test]
+    fn expired_after_prompt_cannot_receive_a_later_ui_reply() {
+        let emits = Arc::new(Mutex::new(Vec::new()));
+        let observed = emits.clone();
+        let server = AskpassServer::start(move |request| {
+            observed.lock().unwrap().push(request);
+        })
+        .unwrap();
+        let op = server.begin_operation_with_ttl(
+            sample_ctx(false, AskpassOperationKind::Fetch),
+            Duration::from_secs(1),
+        );
+        bind_self(&op);
+        let env = op.env().to_vec();
+        let worker = std::thread::spawn(move || {
+            run_client_impl(
+                &value_of(&env, "YUZORA_ASKPASS_ENDPOINT"),
+                &value_of(&env, "YUZORA_ASKPASS_TOKEN"),
+                &value_of(&env, "YUZORA_ASKPASS_OPERATION"),
+                "Password: ",
+            )
+        });
+        let requests = wait_for_emits(&emits, 1);
+        // Do not call any operation-count/sweep helper between expiry and reply.
+        std::thread::sleep(Duration::from_millis(1100));
+        server.respond(requests[0].id, Some("owned-expired-test-secret".into()));
+        assert_eq!(worker.join().unwrap(), (1, String::new()));
+        drop(op);
     }
 
     #[test]

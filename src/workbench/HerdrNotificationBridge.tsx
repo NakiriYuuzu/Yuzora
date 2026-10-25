@@ -8,13 +8,19 @@ import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { herdrPageMatchesSnapshotSession } from "@/lib/workbenchTabReorder"
 import { localDefaultScope } from "@/lib/herdrProvider"
 import { newHerdrAttention, playHerdrSound } from "@/lib/herdrNotifications"
+import type { HerdrAttentionItem } from "@/lib/herdrTypes"
 import i18n from "@/lib/i18n"
 
 export function HerdrNotificationBridge() {
   useEffect(() => {
     let disposed = false
+    const pending = new Map<string, HerdrAttentionItem>()
     const unsubscribe = useHerdrStore.subscribe((state, previous) => {
       if (state.attentionByKey === previous.attentionByKey) return
+      for (const [key, item] of pending) {
+        const latest = state.attentionByKey.get(key)
+        if (!latest || latest.kind !== item.kind || latest.seen) pending.delete(key)
+      }
       const settings = useHerdrNotificationStore.getState()
       for (const item of newHerdrAttention(previous.attentionByKey, state.attentionByKey)) {
         // Initial snapshots and reconnects populate history; they are not new work.
@@ -38,14 +44,24 @@ export function HerdrNotificationBridge() {
         const title = i18n.t(item.kind === "done" ? "herdrTools:agentDone" : "herdrTools:agentBlocked", { name: item.title ?? item.displayAgent ?? item.paneId })
         const description = `${item.sessionName} · ${item.workspaceId ?? ""}`
         if (settings.toast) toast(title, { id: item.key, description, action: agent ? { label: i18n.t("herdrTools:open"), onClick: () => { void useHerdrStore.getState().activateAgent({ ...agent, sessionName: item.sessionName }) } } : undefined })
-        if (settings.system) void isPermissionGranted().then(granted => {
-          const latest = useHerdrStore.getState().attentionByKey.get(item.key)
-          if (!disposed && granted && useHerdrNotificationStore.getState().system && latest?.kind === item.kind && latest.updatedAt === item.updatedAt && !latest.seen) sendNotification({ title, body: description })
-        }).catch(error => console.warn("HERDR notification delivery failed", error))
+        if (settings.system) {
+          // Same-kind refreshes belong to this transition; a later turn gets
+          // a different item even when the clock timestamp is identical.
+          pending.set(item.key, item)
+          void isPermissionGranted().then(granted => {
+            const current = useHerdrStore.getState()
+            const latest = current.attentionByKey.get(item.key)
+            const latestSettings = useHerdrNotificationStore.getState()
+            const enabled = item.kind === "done" ? latestSettings.done : latestSettings.blocked
+            if (!disposed && granted && latestSettings.system && enabled
+              && pending.get(item.key) === item && latest?.kind === item.kind && !latest.seen) sendNotification({ title, body: description })
+          }).catch(error => console.warn("HERDR notification delivery failed", error))
+            .finally(() => { if (pending.get(item.key) === item) pending.delete(item.key) })
+        }
         if (settings.sound) void playHerdrSound(item.kind as "done" | "blocked").catch(error => console.warn("HERDR notification sound failed", error))
       }
     })
-    return () => { disposed = true; unsubscribe() }
+    return () => { disposed = true; pending.clear(); unsubscribe() }
   }, [])
   return null
 }

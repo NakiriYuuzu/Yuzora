@@ -71,10 +71,15 @@ export function GitStashDialog() {
         if (!target) return
         let conflicts = false
         const ok = await useGitStore.getState().runOp(pop ? "stash-pop" : "stash-apply", async () => {
-            conflicts = (await gitStashApply(target, entry.index, pop)).conflicts
+            if (!pop && !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(entry.oid ?? "")) {
+                throw new Error(t("gitStash.identityUnavailable"))
+            }
+            conflicts = (pop
+                ? await gitStashApply(target, entry.index, true)
+                : await gitStashApply(target, entry.index, false, entry.oid)).conflicts
         })
         if (!ok) return
-        void logUserAction(pop ? "git_stash_pop" : "git_stash_apply", `stash@{${entry.index}}`)
+        void logUserAction(pop ? "git_stash_pop" : "git_stash_apply", pop ? `stash@{${entry.index}}` : entry.oid!)
         load()
         if (conflicts) {
             close()

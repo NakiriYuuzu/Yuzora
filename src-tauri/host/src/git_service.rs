@@ -46,25 +46,49 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct GitProcessRegistry {
-    active: Mutex<HashSet<u32>>,
+    state: Mutex<GitProcessRegistryState>,
+}
+
+#[derive(Default)]
+struct GitProcessRegistryState {
+    closing: bool,
+    active: HashSet<u32>,
 }
 
 impl GitProcessRegistry {
-    pub fn register(&self, pid: u32) {
-        if let Ok(mut active) = self.active.lock() {
-            active.insert(pid);
+    pub fn register(&self, pid: u32) -> bool {
+        match self.state.lock() {
+            Ok(mut state) if !state.closing => {
+                state.active.insert(pid);
+                true
+            }
+            _ => false,
         }
     }
 
     pub fn unregister(&self, pid: u32) {
-        if let Ok(mut active) = self.active.lock() {
-            active.remove(&pid);
+        if let Ok(mut state) = self.state.lock() {
+            state.active.remove(&pid);
         }
     }
 
     pub fn drain(&self) -> Vec<u32> {
-        match self.active.lock() {
-            Ok(mut active) => active.drain().collect(),
+        match self.state.lock() {
+            Ok(mut state) => state.active.drain().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn is_closing(&self) -> bool {
+        self.state.lock().map(|state| state.closing).unwrap_or(true)
+    }
+
+    fn shutdown(&self) -> Vec<u32> {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.closing = true;
+                state.active.drain().collect()
+            }
             Err(_) => Vec::new(),
         }
     }
@@ -74,7 +98,8 @@ static ACTIVE_GIT_PROCESSES: LazyLock<GitProcessRegistry> =
     LazyLock::new(GitProcessRegistry::default);
 
 pub fn kill_all_processes() {
-    for pid in ACTIVE_GIT_PROCESSES.drain() {
+    // App exit closes admission permanently, including work queued before exit.
+    for pid in ACTIVE_GIT_PROCESSES.shutdown() {
         let _ = crate::process_kill::kill_tree_pid(pid);
     }
 }
@@ -115,7 +140,10 @@ pub fn detect_environment(path: &Path) -> GitEnvironment {
         &[],
     ) {
         Ok(out) if out.code == 0 => {
-            let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // Git writes one LF record terminator; preceding whitespace belongs to the path.
+            let root =
+                String::from_utf8_lossy(out.stdout.strip_suffix(b"\n").unwrap_or(&out.stdout))
+                    .into_owned();
             GitEnvironment::Ready { root, version }
         }
         _ => GitEnvironment::NotARepo,
@@ -270,8 +298,11 @@ fn git_command(
 /// larger blobs raise to `TooLarge` as well.
 pub const BLOB_READ_LIMIT: usize = crate::file_content::HARD_CAP_BYTES as usize + 1;
 
-pub(crate) fn register_process(pid: u32) {
-    ACTIVE_GIT_PROCESSES.register(pid);
+pub(crate) fn register_process(pid: u32) -> bool {
+    ACTIVE_GIT_PROCESSES.register(pid)
+}
+pub(crate) fn processes_shutting_down() -> bool {
+    ACTIVE_GIT_PROCESSES.is_closing()
 }
 pub(crate) fn unregister_process(pid: u32) {
     ACTIVE_GIT_PROCESSES.unregister(pid);
@@ -369,6 +400,7 @@ pub const REMOTE_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct BranchInfo {
     pub name: String,
     pub upstream: Option<String>,
+    pub upstream_ref: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub is_current: bool,
@@ -559,6 +591,19 @@ fn push_args_with_env(root: &Path, env: &[(String, String)]) -> Result<Vec<Strin
         return Ok(vec!["push".into()]);
     }
     let branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    // A missing tracking ref does not mean that the branch has no upstream
+    // configuration. Preserve Git's push policy, including an invalid value.
+    let configured = run_git(
+        root,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+        DEFAULT_TIMEOUT,
+        env,
+    )?;
+    match configured.code {
+        0 => return Ok(vec!["push".into()]),
+        1 => {}
+        _ => return Err(git_err("config", &configured.stderr)),
+    }
     let remote = match push_remote(root, &branch, env)? {
         Some(remote) => remote,
         None => return Err("git push: no remote is configured for this repository".into()),
@@ -818,6 +863,24 @@ fn has_conflict_markers(bytes: &[u8]) -> bool {
 
 pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     let before = status_of(root, None)?;
+    let selected: HashSet<&str> = paths.iter().map(String::as_str).collect();
+    let mut seen = selected.clone();
+    let mut effective = paths.to_vec();
+    // A staged rename owns both index paths. Restoring only its new path leaves
+    // the old path staged for deletion. Copies do not own their source entry.
+    for entry in &before.parsed.staged {
+        if entry.status == "R" && selected.contains(entry.path.as_str()) {
+            let original = entry
+                .orig_path
+                .as_deref()
+                .ok_or("git unstage: rename has no original path")?;
+            reject_lossy_path("unstage", &entry.path)?;
+            reject_lossy_path("unstage", original)?;
+            if seen.insert(original) {
+                effective.push(original.to_string());
+            }
+        }
+    }
     // An unborn branch has no HEAD for `restore --staged`. Remove only the
     // index entries; --cached preserves working files, including later edits.
     let mut args: Vec<&str> = if before.parsed.head_oid == "(initial)" {
@@ -825,10 +888,10 @@ pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     } else {
         vec!["restore", "--staged", "--"]
     };
-    args.extend(paths.iter().map(String::as_str));
+    args.extend(effective.iter().map(String::as_str));
     run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
     let after = status_of(root, None)?;
-    ensure_literal_path_scope("unstage", paths, &before.parsed, &after.parsed)
+    ensure_literal_path_scope("unstage", &effective, &before.parsed, &after.parsed)
 }
 
 /// Status paths are decoded lossily, so U+FFFD may stand for undecodable bytes and
@@ -1347,7 +1410,7 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
             "refs/heads",
             "refs/remotes",
             "refs/tags",
-            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)",
+            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)%00%(upstream)%00%(symref)",
         ],
         DEFAULT_TIMEOUT,
         &[],
@@ -1360,7 +1423,7 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
     let mut tags = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let f: Vec<&str> = line.split('\0').collect();
-        if f.len() < 5 {
+        if f.len() < 7 {
             continue;
         }
         if let Some(name) = f[0].strip_prefix("refs/heads/") {
@@ -1372,13 +1435,18 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
                 } else {
                     Some(f[2].to_string())
                 },
+                upstream_ref: if f[5].is_empty() {
+                    None
+                } else {
+                    Some(f[5].to_string())
+                },
                 ahead,
                 behind,
                 is_current: f[1] == "*",
                 gone,
             });
         } else if let Some(name) = f[0].strip_prefix("refs/remotes/") {
-            if !name.ends_with("/HEAD") {
+            if f[6].is_empty() || !name.ends_with("/HEAD") {
                 remote.push(name.to_string());
             }
         } else if let Some(name) = f[0].strip_prefix("refs/tags/") {
@@ -1411,8 +1479,7 @@ pub fn create_branch(root: &Path, name: &str, start_point: Option<&str>) -> Resu
     run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
     if let Some((_, Some(upstream))) = resolved {
         // Implicit upstream is product behavior for remote-tracking starts, but
-        // must not fail branch creation when the logical name is ambiguous or
-        // the remote is not configured.
+        // must not fail branch creation when the remote is not configured.
         let set_upstream = format!("--set-upstream-to={upstream}");
         let _ = run_ok(
             root,
@@ -1454,7 +1521,7 @@ pub fn remote_tracking_start_ref(root: &Path, spec: &str) -> Result<Option<Strin
     {
         return Ok(None);
     }
-    Ok(Some(logical.to_string()))
+    Ok(Some(name))
 }
 
 pub fn checkout(root: &Path, name: &str) -> Result<(), String> {
@@ -1712,6 +1779,7 @@ pub fn reset_branch(root: &Path, hash: &str, mode: &str) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct GitStashEntry {
     pub index: u32,
+    pub oid: String,
     pub message: String,
     pub timestamp: i64,
 }
@@ -1719,7 +1787,7 @@ pub struct GitStashEntry {
 pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     let out = run_ok(
         root,
-        &["stash", "list", "-z", "--format=%gd%x1f%s%x1f%ct"],
+        &["stash", "list", "-z", "--format=%gd%x1f%H%x1f%ct%x1f%s"],
         DEFAULT_TIMEOUT,
         &[],
     )?;
@@ -1727,9 +1795,9 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     text.split('\0')
         .filter(|record| !record.is_empty())
         .map(|record| {
-            let mut fields = record.splitn(3, '\u{1f}');
-            let (Some(name), Some(message), Some(time)) =
-                (fields.next(), fields.next(), fields.next())
+            let mut fields = record.splitn(4, '\u{1f}');
+            let (Some(name), Some(oid), Some(time), Some(message)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
             else {
                 return Err("git stash list: unexpected output".to_string());
             };
@@ -1740,6 +1808,7 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
                 .ok_or_else(|| "git stash list: unexpected stash name".to_string())?;
             Ok(GitStashEntry {
                 index,
+                oid: crate::git_oid::GitOid::parse(oid)?.into_string(),
                 message: message.to_string(),
                 timestamp: time.trim().parse::<i64>().unwrap_or(0),
             })
@@ -1772,10 +1841,23 @@ pub fn stash_push(
     Ok(())
 }
 
-/// Apply (or pop) `stash@{index}`. A conflicting apply leaves unmerged paths;
-/// a conflicting `pop` keeps the stash, as git does.
-pub fn stash_apply(root: &Path, index: u32, pop: bool) -> Result<GitOperationOutcome, String> {
-    let name = format!("stash@{{{index}}}");
+/// Apply the selected full OID; pop retains Git's index-based removal semantics.
+/// A conflicting apply leaves unmerged paths, and a conflicting pop keeps the stash.
+pub fn stash_apply(
+    root: &Path,
+    index: u32,
+    pop: bool,
+    oid: Option<&str>,
+) -> Result<GitOperationOutcome, String> {
+    let name = if pop {
+        format!("stash@{{{index}}}")
+    } else {
+        let oid = crate::git_oid::GitOid::parse(
+            oid.ok_or_else(|| "git stash apply requires a full stash object ID".to_string())?,
+        )?;
+        // Git treats all-digit arguments as stash indices, even full OIDs.
+        format!("{}^{{commit}}", oid.as_str())
+    };
     let sub = if pop { "pop" } else { "apply" };
     let out = run_git(root, &["stash", sub, &name], DEFAULT_TIMEOUT, &[])?;
     operation_outcome(root, "stash", out)
@@ -2354,6 +2436,18 @@ pub mod test_repo {
 }
 
 #[cfg(test)]
+#[path = "git_unstage_lifecycle_tests.rs"]
+mod unstage_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "git_push_tracking_tests.rs"]
+mod push_tracking_tests;
+
+#[cfg(test)]
+#[path = "git_branch_tracking_tests.rs"]
+mod branch_tracking_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2876,7 +2970,7 @@ mod tests {
         assert!(list[0].timestamp > 1_000_000_000);
 
         // apply keeps the entry, pop removes it.
-        let outcome = stash_apply(repo, 1, false).unwrap();
+        let outcome = stash_apply(repo, 1, false, Some(&list[1].oid)).unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
         assert_eq!(
             std::fs::read_to_string(repo.join("a.txt")).unwrap(),
@@ -2884,7 +2978,7 @@ mod tests {
         );
         assert_eq!(stash_list(repo).unwrap().len(), 2);
         test_repo::git(repo, &["checkout", "--", "a.txt"]);
-        stash_apply(repo, 1, true).unwrap();
+        stash_apply(repo, 1, true, None).unwrap();
         let list = stash_list(repo).unwrap();
         assert_eq!(list.len(), 1);
         assert!(list[0].message.contains("with untracked"));
@@ -2919,7 +3013,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
         stash_push(repo, None, false, false).unwrap();
         test_repo::write_and_commit(repo, "a.txt", "committed\n", "c2");
-        let outcome = stash_apply(repo, 0, true).unwrap();
+        let outcome = stash_apply(repo, 0, true, None).unwrap();
         assert_eq!(outcome, GitOperationOutcome { conflicts: true });
         assert_eq!(
             stash_list(repo).unwrap().len(),
@@ -3037,12 +3131,98 @@ mod tests {
     }
 
     #[test]
+    fn stash_apply_uses_the_selected_identity_after_external_push() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "base\n", "baseline");
+        std::fs::write(repo.join("a.txt"), "selected A\n").unwrap();
+        stash_push(repo, Some("selected A"), false, false).unwrap();
+        let selected = stash_list(repo).unwrap().remove(0);
+        let selected_oid = git_line(repo, &["rev-parse", "stash@{0}"]);
+        assert_eq!(selected.oid, selected_oid);
+        std::fs::write(repo.join("a.txt"), "external B\n").unwrap();
+        test_repo::git(repo, &["stash", "push", "-m", "external B"]);
+        let newer_oid = git_line(repo, &["rev-parse", "stash@{0}"]);
+        assert_ne!(selected_oid, newer_oid);
+        stash_apply(repo, selected.index, false, Some(&selected.oid)).unwrap();
+        assert_eq!(read_text(repo, "a.txt"), "selected A\n");
+        assert_eq!(stash_list(repo).unwrap().len(), 2);
+        assert_eq!(git_line(repo, &["rev-parse", "stash@{0}"]), newer_oid);
+        assert_eq!(git_line(repo, &["rev-parse", "stash@{1}"]), selected_oid);
+    }
+
+    #[test]
+    fn stash_apply_uses_the_selected_identity_after_external_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "base\n", "baseline");
+        std::fs::write(repo.join("a.txt"), "selected A\n").unwrap();
+        stash_push(repo, Some("selected A"), false, false).unwrap();
+        std::fs::write(repo.join("a.txt"), "external B\n").unwrap();
+        stash_push(repo, Some("external B"), false, false).unwrap();
+        let selected = stash_list(repo).unwrap().remove(1);
+        test_repo::git(repo, &["stash", "drop", "stash@{0}"]);
+        stash_apply(repo, selected.index, false, Some(&selected.oid)).unwrap();
+        assert_eq!(read_text(repo, "a.txt"), "selected A\n");
+        let remaining = stash_list(repo).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].oid, selected.oid);
+    }
+
+    #[test]
+    fn stash_apply_rejects_missing_or_non_full_identity_without_mutating() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "base\n", "baseline");
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, Some("field\u{1f}separator"), false, false).unwrap();
+        let original = stash_list(repo).unwrap();
+        assert!(original[0].message.contains("field\u{1f}separator"));
+        for invalid in [
+            None,
+            Some(""),
+            Some("stash@{0}"),
+            Some("--index"),
+            Some("abcdef12"),
+            Some("gggggggggggggggggggggggggggggggggggggggg"),
+        ] {
+            assert!(stash_apply(repo, 0, false, invalid).is_err());
+            assert_eq!(read_text(repo, "a.txt"), "base\n");
+            assert_eq!(stash_list(repo).unwrap(), original);
+            assert!(git_line(repo, &["status", "--porcelain"]).is_empty());
+        }
+    }
+
+    #[test]
+    fn stash_apply_does_not_reinterpret_numeric_oids_as_stash_indices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "base\n", "baseline");
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, None, false, false).unwrap();
+        for length in [40, 64] {
+            let missing_oid = "1".repeat(length);
+            let error = stash_apply(repo, 0, false, Some(&missing_oid)).unwrap_err();
+            assert!(
+                !error.contains("stash@{"),
+                "a full numeric OID must be looked up as an object, not a reflog index: {error}"
+            );
+        }
+        assert_eq!(read_text(repo, "a.txt"), "base\n");
+        assert_eq!(stash_list(repo).unwrap().len(), 1);
+    }
+
+    #[test]
     fn stash_apply_that_fails_without_conflicts_is_an_error() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
         test_repo::init(repo);
         test_repo::write_and_commit(repo, "a.txt", "1\n", "c1");
-        assert!(stash_apply(repo, 0, false).is_err());
+        assert!(stash_apply(repo, 0, false, Some(&"0".repeat(40))).is_err());
     }
 
     #[test]

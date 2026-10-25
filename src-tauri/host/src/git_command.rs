@@ -80,7 +80,12 @@ pub enum GitCommand {
         keep_index: bool,
     },
     #[serde(rename = "git_stash_apply")]
-    StashApply { index: u32, pop: bool },
+    StashApply {
+        index: u32,
+        pop: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        oid: Option<String>,
+    },
     #[serde(rename = "git_stash_drop")]
     StashDrop { index: u32 },
     #[serde(rename = "git_remote_probe")]
@@ -344,7 +349,9 @@ mod host {
                     include_untracked,
                     keep_index,
                 )),
-                GitCommand::StashApply { index, pop } => value(stash_apply(root, index, pop)),
+                GitCommand::StashApply { index, pop, oid } => {
+                    value(stash_apply(root, index, pop, oid.as_deref()))
+                }
                 GitCommand::StashDrop { index } => value(stash_drop(root, index)),
                 GitCommand::RemoteProbe => value(remote_probe(root, &[])),
                 GitCommand::Diff {
@@ -390,6 +397,47 @@ pub use host::HostGit;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stash_apply_identity_is_explicit_and_pop_keeps_legacy_wire_shape() {
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "command", content = "args", deny_unknown_fields)]
+        enum LegacyCommand {
+            #[serde(rename = "git_stash_apply")]
+            StashApply { index: u32, pop: bool },
+        }
+        let pop = serde_json::to_value(GitCommand::StashApply {
+            index: 3,
+            pop: true,
+            oid: None,
+        })
+        .unwrap();
+        assert_eq!(
+            pop,
+            serde_json::json!({ "command": "git_stash_apply", "args": { "index": 3, "pop": true } })
+        );
+        let LegacyCommand::StashApply { index, pop: is_pop } = serde_json::from_value(pop).unwrap();
+        assert_eq!(index, 3);
+        assert!(is_pop);
+        let apply = serde_json::to_value(GitCommand::StashApply {
+            index: 3,
+            pop: false,
+            oid: Some("a".repeat(40)),
+        })
+        .unwrap();
+        assert_eq!(apply["args"]["oid"], "a".repeat(40));
+        assert!(serde_json::from_value::<LegacyCommand>(apply).is_err());
+        let legacy = serde_json::from_value::<GitCommand>(serde_json::json!({ "command": "git_stash_apply", "args": { "index": 3, "pop": false } })).unwrap();
+        assert!(matches!(
+            legacy,
+            GitCommand::StashApply {
+                oid: None,
+                pop: false,
+                ..
+            }
+        ));
+    }
+
     use crate::git_service::test_repo;
     use crate::workspace_trust::WorkspaceTrustState;
 

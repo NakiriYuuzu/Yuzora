@@ -1,7 +1,9 @@
+import { useMemo } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { CommandGroup, CommandItem } from "@/components/ui/command"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 import type { SearchEvent, SearchMatch } from "@/lib/types"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -33,20 +35,15 @@ function doneEvent(events: SearchEvent[]) {
         | undefined
 }
 
-// Split preview around the query so the matched substring renders as its own
-// <mark>. Case-insensitive to mirror the default (case-insensitive) search.
-function highlight(preview: string, query: string) {
-    if (!query) return [preview]
-    const lower = preview.toLowerCase()
-    const needle = query.toLowerCase()
+// Keep offsets on the original preview; Unicode case folding can change string length.
+function highlight(preview: string, pattern: RegExp | null) {
+    if (!pattern) return [preview]
     const parts: (string | { mark: string })[] = []
     let from = 0
-    let at = lower.indexOf(needle, from)
-    while (at !== -1) {
-        if (at > from) parts.push(preview.slice(from, at))
-        parts.push({ mark: preview.slice(at, at + query.length) })
-        from = at + query.length
-        at = lower.indexOf(needle, from)
+    for (const match of preview.matchAll(pattern)) {
+        if (match.index > from) parts.push(preview.slice(from, match.index))
+        parts.push({ mark: match[0] })
+        from = match.index + match[0].length
     }
     if (from < preview.length) parts.push(preview.slice(from))
     return parts
@@ -82,6 +79,7 @@ export function WorkspaceSearchGroup({
     events,
     query,
     loading,
+    error = null,
     caseSensitive,
     onToggleCaseSensitive,
     onReveal,
@@ -89,6 +87,7 @@ export function WorkspaceSearchGroup({
     events: SearchEvent[]
     query: string
     loading: boolean
+    error?: string | null
     caseSensitive: boolean
     onToggleCaseSensitive: () => void
     onReveal: (path: string, line: number) => void
@@ -97,6 +96,12 @@ export function WorkspaceSearchGroup({
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
     const groups = groupByFile(events)
     const done = doneEvent(events)
+    // Simple case folding preserves code-point count; one code point uses at most two UTF-16 units.
+    // Keep the eligibility result explicitly boolean for React Compiler dependency analysis.
+    const queryFitsPreview = groups.some(group => group.matches.some(match => query.length <= match.preview.length * 2)) === true
+    const highlightPattern = useMemo(() => query && queryFitsPreview
+        ? new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), caseSensitive ? "gu" : "giu")
+        : null, [query, caseSensitive, queryFitsPreview])
 
     return (
         <>
@@ -123,7 +128,16 @@ export function WorkspaceSearchGroup({
                 </button>
             </div>
 
-            {done?.truncated && (
+            {error !== null && (
+                <div className="mx-[8px] mb-[4px]">
+                    <Alert variant="destructive">
+                        <AlertTitle>{t("workspaceSearch.failed")}</AlertTitle>
+                        {error && <AlertDescription className="wrap-anywhere">{error}</AlertDescription>}
+                    </Alert>
+                </div>
+            )}
+
+            {error === null && done?.truncated && (
                 <div className="mx-[8px] mb-[4px] rounded-[8px] bg-(--yz-hover) px-[10px] py-[6px] text-[12px] text-(--ink-2)">
                     {t("workspaceSearch.truncatedNotice")}
                 </div>
@@ -156,7 +170,7 @@ export function WorkspaceSearchGroup({
                                 {m.line}
                             </span>
                             <span className="truncate text-(--ink-2)">
-                                {highlight(m.preview, query).map((part, j) =>
+                                {highlight(m.preview, highlightPattern).map((part, j) =>
                                     typeof part === "string" ? (
                                         <span key={j}>{part}</span>
                                     ) : (
@@ -174,7 +188,7 @@ export function WorkspaceSearchGroup({
                 </CommandGroup>
             ))}
 
-            {done && groups.length === 0 && (
+            {error === null && done && groups.length === 0 && (
                 <div className="px-[14px] py-[10px] text-[12.5px] text-(--ink-3)">
                     {t("workspaceSearch.noResults")}
                 </div>

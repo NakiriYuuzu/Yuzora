@@ -2243,6 +2243,65 @@ fn capabilities_do_not_claim_api_when_server_incompatible() {
 
 #[cfg(unix)]
 #[test]
+fn schema_probe_failures_are_not_reported_as_missing_snapshot_methods() {
+    for exits in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir
+            .path()
+            .join("fixture.sock")
+            .to_string_lossy()
+            .into_owned();
+        let status = serde_json::json!({
+            "client": { "version": "0.9.1", "channel": "test", "protocol": 22, "binary": "FAKE" },
+            "server": { "status": "running", "running": true, "version": "0.9.1", "protocol": 22, "compatible": true, "socket": socket },
+            "update": { "restart_needed": false }
+        }).to_string();
+        let sessions =
+            serde_json::json!({ "sessions": [{ "name": "default", "default": true, "running": true,
+            "session_dir": dir.path().join("session"), "socket_path": socket }] })
+            .to_string();
+        let binary =
+            write_fake_herdr_with_sessions(dir.path(), &status, "invalid-schema-json", &sessions);
+        if exits {
+            let script = std::fs::read_to_string(&binary).unwrap();
+            let original = "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"schema\" ] && [ \"$3\" = \"--json\" ]; then\n  cat <<'JSON'\ninvalid-schema-json\nJSON\n  exit 0\nfi";
+            let replacement = "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"schema\" ] && [ \"$3\" = \"--json\" ]; then\n  echo fixture-schema-probe-transient >&2\n  exit 42\nfi";
+            assert!(script.contains(original));
+            write_executable_fixture(&binary, &script.replace(original, replacement));
+        }
+        let manager = HerdrManager::with_binary(binary);
+        let caps = manager.discover_capabilities_for_session(Some("default"));
+        assert!(caps.server.running);
+        assert!(!caps.api.snapshot);
+        assert!(!caps.api.tab_create);
+        assert!(caps.api.methods.is_empty());
+        let reason = caps.api.reason.as_deref().unwrap();
+        assert!(reason.contains("herdr api schema failed:"), "{reason}");
+        assert!(!reason.contains("selected herdr schema lacks"), "{reason}");
+        assert!(caps
+            .terminal
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("herdr api schema failed:"));
+        if exits {
+            assert!(
+                reason.contains("fixture-schema-probe-transient"),
+                "{reason}"
+            );
+        }
+
+        let schema = r#"{"protocol":22,"schema_version":1,"methods":["session.snapshot","tab.create","session.ping"],"schemas":{"session.snapshot":{},"tab.create":{}}}"#;
+        write_fake_herdr_with_sessions(dir.path(), &status, schema, &sessions);
+        let recovered = manager.discover_capabilities_for_session(Some("default"));
+        assert!(recovered.api.snapshot);
+        assert!(recovered.api.tab_create);
+        assert!(recovered.api.reason.is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn capabilities_do_not_claim_methods_missing_from_schema() {
     let dir = tempfile::tempdir().unwrap();
     let binary = write_fake_herdr_with_sessions(
@@ -3489,4 +3548,41 @@ fn unix_pid_exists(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_source_preserves_unix_literal_path_through_check_save_and_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = write_source_fixture(dir.path(), true);
+    let binary = dir.path().join("herdr\" fixture ");
+    fs::rename(fixture, &binary).unwrap();
+    let mgr = HerdrManager::new();
+    let config = dir.path().join("isolated-config");
+    mgr.set_config_dir_for_test(config.clone());
+    let check = mgr
+        .check_binary_source(
+            HerdrBinarySource::Custom,
+            Some(binary.to_str().unwrap().into()),
+        )
+        .unwrap();
+    assert_eq!(check.binary, binary.to_str().unwrap());
+    assert!(check.can_apply);
+    mgr.set_binary_source_with_path(
+        HerdrBinarySource::Custom,
+        Some(binary.to_str().unwrap().into()),
+    )
+    .unwrap();
+    assert_eq!(
+        mgr.binary_source_info().custom_path.as_deref(),
+        binary.to_str()
+    );
+    assert_eq!(
+        *mgr.active_source.lock().unwrap(),
+        HerdrBinarySource::Default
+    );
+    let reloaded = HerdrManager::new();
+    reloaded.set_config_dir_for_test(config);
+    assert_eq!(reloaded.resolve_binary().as_deref(), Some(binary.as_path()));
+    assert!(!reloaded.binary_source_info().restart_required);
 }

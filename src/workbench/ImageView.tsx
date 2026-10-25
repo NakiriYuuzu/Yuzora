@@ -38,7 +38,7 @@ const CHECKERBOARD_CLASS =
     "[background:repeating-conic-gradient(rgba(0,0,0,0.07)_0%_25%,transparent_0%_50%)_0_0/16px_16px] " +
     "dark:[background:repeating-conic-gradient(rgba(255,255,255,0.07)_0%_25%,transparent_0%_50%)_0_0/16px_16px]"
 
-export function ImageView({ path }: { path: string }) {
+export function ImageView({ path, generation }: { path: string; generation?: number }) {
     const { t } = useTranslation("panels")
     const containerRef = useRef<HTMLDivElement>(null)
     // "fit" scales down to the viewport (never past 1:1); a number is an
@@ -50,9 +50,11 @@ export function ImageView({ path }: { path: string }) {
     const [loadError, setLoadError] = useState(false)
     const [remoteImage, setRemoteImage] = useState<{ path: string; src: string } | null>(null)
 
-    const src = useMemo(() => parseRemoteFilePath(path)
-        ? remoteImage?.path === path ? remoteImage.src : undefined
-        : convertFileSrc(path), [path, remoteImage])
+    const src = useMemo(() => {
+        if (parseRemoteFilePath(path)) return remoteImage?.path === path ? remoteImage.src : undefined
+        const asset = convertFileSrc(path)
+        return generation === undefined ? asset : `${asset}?generation=${generation}`
+    }, [path, remoteImage, generation])
     const name = workspacePathBasename(path)
 
     // File size comes from the existing open_file metadata path (binary kind
@@ -105,16 +107,17 @@ export function ImageView({ path }: { path: string }) {
     // viewport (with a little padding).
     const fitZoom =
         dims && containerSize
-            ? Math.min(
-                  1,
-                  Math.max(MIN_ZOOM, (containerSize.w - 24) / dims.w),
-                  Math.max(MIN_ZOOM, (containerSize.h - 24) / dims.h)
+            ? Math.max(
+                  0,
+                  Math.min(1, (containerSize.w - 24) / dims.w, (containerSize.h - 24) / dims.h)
               )
             : 1
     const effectiveZoom = zoom === "fit" ? fitZoom : zoom
 
     function zoomBy(factor: number) {
-        setZoom(clampZoom(effectiveZoom * factor))
+        const nextZoom = clampZoom(effectiveZoom * factor)
+        if (factor < 1 && nextZoom >= effectiveZoom) return
+        setZoom(nextZoom)
     }
 
     // React (v17+) attaches wheel listeners passively at the root, so an

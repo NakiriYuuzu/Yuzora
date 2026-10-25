@@ -102,6 +102,7 @@ function TreeNode({ node, root, depth }: { node: FileNode; root: string; depth: 
                     data-tree-dir={node.isDir ? "true" : undefined}
                     data-selected={selected ? "true" : undefined}
                     onContextMenu={workspacePath ? (event) => {
+                        event.currentTarget.focus({ preventScroll: true })
                         useFileClipboardStore.getState().select(root, node.path)
                         contextMenuHandler({
                             kind: "file",

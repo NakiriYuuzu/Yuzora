@@ -26,9 +26,10 @@ export function workspacePathForDisplay(path: string): string {
 
 export function workspacePathBasename(path: string): string {
   const displayPath = workspacePathForDisplay(path)
-  const withoutTrailingSeparators = displayPath.replace(/[\\/]+$/, "")
+  const windows = isWindowsPath(path) || isWindowsPath(displayPath) || preferredSeparator(displayPath) === "\\"
+  const withoutTrailingSeparators = displayPath.replace(windows ? /[\\/]+$/ : /\/+$/, "")
   if (!withoutTrailingSeparators) return displayPath
-  return withoutTrailingSeparators.split(/[\\/]+/).filter(Boolean).at(-1)
+  return withoutTrailingSeparators.split(windows ? /[\\/]+/ : /\/+/).filter(Boolean).at(-1)
     ?? displayPath
 }
 
@@ -40,7 +41,7 @@ export function isWindowsPath(path: string): boolean {
 }
 
 function normalizedPath(path: string, windows: boolean): string {
-  let normalized = path.replace(/\\/g, "/")
+  let normalized = windows ? path.replace(/\\/g, "/") : path
   if (normalized.startsWith("//?/") && normalized.slice(4, 8).toLowerCase() === "unc/") {
     normalized = "//" + normalized.slice("//?/UNC/".length)
   } else if (/^\/\/\?\/[A-Za-z]:\//.test(normalized)) {
@@ -219,6 +220,9 @@ function preferredSeparator(path: string): "/" | "\\" {
 
 function stripTrailingSeparators(path: string): string {
   if (!path) return path
+  if (!isWindowsPath(path) && preferredSeparator(path) === "/") {
+    return path.replace(/\/+$/, "") || path
+  }
   // Keep POSIX root, drive root, and UNC share roots intact.
   if (path === "/" || path === "\\") return path
   if (/^[A-Za-z]:[\\/]?$/.test(path)) return path
@@ -233,7 +237,8 @@ function splitSegments(path: string): string[] {
   const display = workspacePathForDisplay(path)
   if (display === "/" || display === "\\") return []
   if (/^[A-Za-z]:[\\/]?$/.test(display)) return []
-  return display.replace(/^[\\/]+/, "").split(/[\\/]+/).filter(Boolean)
+  const windows = isWindowsPath(path) || isWindowsPath(display) || preferredSeparator(display) === "\\"
+  return display.replace(windows ? /^[\\/]+/ : /^\/+/, "").split(windows ? /[\\/]+/ : /\/+/).filter(Boolean)
 }
 
 /**
@@ -249,7 +254,8 @@ export function nativePathJoin(dir: string, name: string): string {
   if (!name) return dir
   if (!dir) return name
   const sep = preferredSeparator(dir)
-  const child = name.replace(/^[\\/]+/, "")
+  const windows = isWindowsPath(dir) || sep === "\\"
+  const child = name.replace(windows ? /^[\\/]+/ : /^\/+/, "")
   // Drive roots like C: or C:\ already imply the root separator.
   if (/^[A-Za-z]:[\\/]?$/.test(dir)) {
     return `${dir.match(/^[A-Za-z]:/)![0]}${sep}${child}`
@@ -280,6 +286,7 @@ export function nativePathParent(path: string): string {
   }
   if (!path) return path
   const sep = preferredSeparator(path)
+  const windows = isWindowsPath(path) || sep === "\\"
   const trimmed = stripTrailingSeparators(path)
 
   // POSIX root.
@@ -293,16 +300,16 @@ export function nativePathParent(path: string): string {
   }
 
   // UNC share root (\\server\share) has no parent above the share.
-  const unc = trimmed.match(/^([\\/]{2}[^\\/]+[\\/][^\\/]+)/)
+  const unc = trimmed.match(windows ? /^([\\/]{2}[^\\/]+[\\/][^\\/]+)/ : /^(\/\/[^/]+\/[^/]+)/)
   if (unc && splitSegments(trimmed).length <= 2 && !/^[\\/]{2}\?/.test(trimmed)) {
     return unc[1]
   }
   const uncVerbatim = trimmed.match(/^([\\/]{2}\?[\\/]UNC[\\/][^\\/]+[\\/][^\\/]+)/i)
-  if (uncVerbatim && splitSegments(workspacePathForDisplay(trimmed)).length <= 2) {
+  if (uncVerbatim && splitSegments(trimmed).length <= 2) {
     return uncVerbatim[1]
   }
 
-  const lastSlash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"))
+  const lastSlash = windows ? Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\")) : trimmed.lastIndexOf("/")
   if (lastSlash < 0) return trimmed
 
   // Keep drive root when trimming the final segment of C:\foo.

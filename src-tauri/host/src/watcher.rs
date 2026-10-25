@@ -32,6 +32,14 @@ pub fn is_ignored_path(path: &Path) -> bool {
         .any(|c| matches!(c.as_os_str().to_str(), Some(".git" | "node_modules")))
 }
 
+fn exclude_directory<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    if !path.ends_with(".git/info/exclude") {
+        return None;
+    }
+    let directory = path.ancestors().nth(3)?;
+    (directory.starts_with(root) && !is_ignored_path(directory)).then_some(directory)
+}
+
 const CAPACITY: usize = 4096;
 
 // Root rules only: nested .gitignore files and global Git excludes are not
@@ -143,16 +151,19 @@ impl PendingChanges {
     fn extend(&mut self, root: &Path, matcher: &mut Gitignore, batch: Vec<PathBuf>) {
         // Reload before classifying any paths in this batch. A rescan reloads
         // too, since an overflow may have lost the ignore-file notification.
-        if batch
-            .iter()
-            .any(|path| path.file_name().is_some_and(|name| name == ".gitignore"))
-        {
+        if batch.iter().any(|path| {
+            path.file_name().is_some_and(|name| name == ".gitignore")
+                || exclude_directory(root, path).is_some()
+        }) {
             *matcher = ignore_matcher(root);
         }
         if self.rescan {
             return;
         }
         for path in batch {
+            let path = exclude_directory(root, &path)
+                .map(Path::to_path_buf)
+                .unwrap_or(path);
             let path = coalesce_path(root, matcher, path);
             self.paths.insert(path);
             if self.paths.len() > CAPACITY {
@@ -207,7 +218,10 @@ pub fn build_watcher(
             Ok(event) if event.paths.len() <= CAPACITY => event
                 .paths
                 .into_iter()
-                .filter(|p| p.starts_with(&callback_root) && !is_ignored_path(p))
+                .filter(|p| {
+                    p.starts_with(&callback_root)
+                        && (!is_ignored_path(p) || exclude_directory(&callback_root, p).is_some())
+                })
                 .collect::<Vec<_>>(),
             _ => {
                 overflow_callback.store(true, Ordering::Release);
@@ -259,6 +273,89 @@ pub fn build_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watcher_exclude_notification_matches_only_exact_supported_paths() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        for relative in [".git/info/exclude", "nested/.git/info/exclude"] {
+            let path = root.join(relative);
+            assert!(is_ignored_path(&path));
+            assert_eq!(exclude_directory(root, &path), path.ancestors().nth(3));
+        }
+        for relative in [
+            ".git/index",
+            ".git/objects/entry",
+            ".git/info",
+            ".git/info/exclude.lock",
+            ".git/info/exclude.tmp",
+            "nested/.git/info/exclude/child",
+            "node_modules/package/.git/info/exclude",
+            ".git/worktrees/lane/.git/info/exclude",
+            "other/info/exclude",
+        ] {
+            assert_eq!(
+                exclude_directory(root, &root.join(relative)),
+                None,
+                "{relative}"
+            );
+        }
+        assert_eq!(
+            exclude_directory(
+                root,
+                &root.with_extension("outside").join(".git/info/exclude")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn watcher_exclude_reload_precedes_mixed_batch_classification() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let exclude = root.join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::create_dir(root.join("cache")).unwrap();
+        let child = root.join("cache/change.txt");
+        std::fs::write(&child, "owned").unwrap();
+        std::fs::write(&exclude, "").unwrap();
+        let mut matcher = ignore_matcher(root);
+        std::fs::write(&exclude, "cache/\n").unwrap();
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![child.clone(), exclude.clone()]);
+        assert!(matcher.matched(root.join("cache"), true).is_ignore());
+        assert_eq!(
+            pending.paths,
+            HashSet::from([root.to_owned(), root.join("cache")])
+        );
+        pending.take(root).unwrap();
+
+        // Deletion must reload too; it cannot depend on the path still existing.
+        std::fs::remove_file(&exclude).unwrap();
+        pending.extend(root, &mut matcher, vec![child.clone(), exclude]);
+        assert!(!matcher.matched(root.join("cache"), true).is_ignore());
+        assert_eq!(pending.paths, HashSet::from([root.to_owned(), child]));
+    }
+
+    #[test]
+    fn watcher_exclude_nested_invalidates_its_directory_without_global_rules() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let nested = root.join("nested");
+        let exclude = nested.join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, "cache/\n").unwrap();
+        let mut matcher = ignore_matcher(root);
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![exclude.clone()]);
+        assert_eq!(pending.paths, HashSet::from([nested.clone()]));
+        assert!(!matcher.matched(root.join("cache"), true).is_ignore());
+        assert!(!matcher.matched(nested.join("cache"), true).is_ignore());
+        pending.take(root).unwrap();
+        std::fs::remove_file(&exclude).unwrap();
+        pending.extend(root, &mut matcher, vec![exclude]);
+        assert_eq!(pending.paths, HashSet::from([nested]));
+    }
 
     #[test]
     fn bounded_ignore_preserves_bom_precedence_and_skips_oversized_file() {

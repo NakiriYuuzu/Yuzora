@@ -20,3 +20,14 @@ export function isRetryableHerdrConnectError(error: unknown): boolean {
   const kind = herdrErrorKind(error)
   return kind !== 'permission-denied' && kind !== 'unsupported' && kind !== 'unknown-capability'
 }
+
+/** These snapshot-gate messages require fresh capabilities. They are hints to
+ * renegotiate, not proof that the current runtime is unsupported. */
+export function isHerdrSnapshotContractError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message === "herdr server protocol incompatible"
+    || message === "selected herdr schema lacks session.snapshot"
+    || message === "selected herdr schema lacks session.snapshot/tab.create"
+    || message === "herdr snapshot unavailable"
+    || message === "herdr server identity changed during capability discovery"
+}

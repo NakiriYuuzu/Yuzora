@@ -7,6 +7,7 @@ import { useUiStore } from "@/state/uiStore";
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces";
 import { useAgentMruStore, agentMruKey } from "@/state/agentMruStore";
 import { useKeyboardSettingsStore } from "@/state/keyboardSettingsStore";
+import { useWorkspaceStore } from "@/state/workspaceStore";
 import type { HerdrSessionRuntime, HerdrSnapshot } from "@/lib/herdrTypes";
 
 vi.mock("./HerdrLauncher", () => ({
@@ -25,9 +26,11 @@ beforeEach(() => {
   useRecentWorkspacesStore.setState({ presentations: {} });
   useKeyboardSettingsStore.setState({ overrides: {} });
   useAgentMruStore.setState({ keys: [] });
+  useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 });
+  useUiStore.setState({ mode: "ade" });
   activateAgent = vi.fn().mockResolvedValue({ ok: true });
   const agents = ["one", "two", "three"].map((id) => ({
-    id, name: id === "one" ? "pi" : "codex", title: `Agent ${id}`, status: "idle", workspaceId: "space", paneId: `p-${id}`, terminalId: `t-${id}`,
+    id, name: id === "one" ? "pi" : "codex", title: `Agent ${id}`, status: "idle", workspaceId: "space", tabId: `tab-${id}`, paneId: `p-${id}`, terminalId: `t-${id}`,
   }));
   useHerdrStore.setState({
     ...herdrInitialState,
@@ -83,7 +86,10 @@ it("jumps with Alt+N and cycles with Alt+` without moving focus into the sidebar
   fireEvent.keyDown(terminal, { key: "3", code: "Digit3", altKey: true });
   expect(activateAgent).toHaveBeenLastCalledWith(expect.objectContaining({ id: "three", sessionName: "s1" }));
   expect(document.activeElement).toBe(terminal);
-  act(() => useAgentMruStore.setState({ keys: [agentMruKey("s1", "three")] }));
+  act(() => {
+    useAgentMruStore.setState({ keys: [agentMruKey("s1", "three")] });
+    useWorkspaceStore.getState().openHerdrTerminalPage({ herdrSessionId: "s1", herdrTabId: "tab-three", herdrWorkspaceId: "space", terminalId: "t-three", title: "Agent three" });
+  });
   fireEvent.keyDown(terminal, { key: "`", code: "Backquote", altKey: true });
   const options = screen.getAllByRole("option");
   expect(options.map((option) => option.textContent)).toEqual([
@@ -95,4 +101,17 @@ it("jumps with Alt+N and cycles with Alt+` without moving focus into the sidebar
   expect(screen.queryByRole("listbox")).toBeNull();
   expect(document.activeElement).toBe(terminal);
   terminal.remove();
+});
+
+it("cycles away from the restored active Agent with empty recency", () => {
+  useWorkspaceStore.getState().openHerdrTerminalPage({ herdrSessionId: "s1", herdrTabId: "tab-two", herdrWorkspaceId: "space", terminalId: "t-two", title: "Agent two" });
+  render(<SpaceAgentTree />);
+  fireEvent.keyDown(window, { key: "`", code: "Backquote", altKey: true });
+  const options = screen.getAllByRole("option");
+  expect(options[0].textContent).toContain("Agent two");
+  expect(options[1].textContent).toContain("Agent one");
+  expect(options[1]).toHaveAttribute("aria-selected", "true");
+  expect(useAgentMruStore.getState().keys).toEqual([]);
+  fireEvent.keyUp(window, { key: "Alt", code: "AltLeft" });
+  expect(activateAgent).toHaveBeenLastCalledWith(expect.objectContaining({ id: "one" }));
 });

@@ -848,9 +848,10 @@ pub async fn git_stash_apply(
     repository_root: String,
     index: u32,
     pop: bool,
+    oid: Option<String>,
 ) -> Result<GitOperationOutcome, String> {
     with_requested_repo_blocking(state.inner(), trust.inner(), repository_root, move |root| {
-        stash_apply(root, index, pop)
+        stash_apply(root, index, pop, oid.as_deref())
     })
     .await
 }
@@ -908,6 +909,10 @@ pub mod test_repo {
         git(dir, &["commit", "-m", msg]);
     }
 }
+
+#[cfg(test)]
+#[path = "git_root_identity_tests.rs"]
+mod root_identity_tests;
 
 #[cfg(test)]
 mod tests {

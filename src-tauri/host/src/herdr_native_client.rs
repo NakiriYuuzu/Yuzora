@@ -25,11 +25,20 @@ fn terminate_native_client(child: &mut dyn portable_pty::Child) -> Result<(), St
 }
 
 pub(super) struct NativeHerdrClient {
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     input: Mutex<Option<Box<dyn Write + Send>>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     reader: Mutex<Option<JoinHandle<()>>>,
     closed: AtomicBool,
+}
+
+impl NativeHerdrClient {
+    fn close_pty(&self) {
+        self.input.lock().unwrap().take();
+        // An undrained master can hold macOS child exit in tty close. Release
+        // our PTY handles before waiting, while retaining the child to reap it.
+        self.master.lock().unwrap().take();
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -109,7 +118,7 @@ impl HerdrManager {
             .map_err(|e| e.to_string())?;
         drop(pair.slave);
         let client = Arc::new(NativeHerdrClient {
-            master: Mutex::new(pair.master),
+            master: Mutex::new(Some(pair.master)),
             input: Mutex::new(Some(input)),
             child: Mutex::new(child),
             reader: Mutex::new(None),
@@ -130,6 +139,8 @@ impl HerdrManager {
             let mut clients = self.native_clients.lock().unwrap();
             if clients.len() >= MAX_NATIVE_CLIENTS {
                 drop(clients);
+                drop(output);
+                client.close_pty();
                 let _ = terminate_native_client(client.child.lock().unwrap().as_mut());
                 return Err("too-many-native-herdr-clients".into());
             }
@@ -158,8 +169,9 @@ impl HerdrManager {
                     break;
                 }
             }
+            drop(output);
             if !reader_client.closed.swap(true, Ordering::AcqRel) {
-                reader_client.input.lock().unwrap().take();
+                reader_client.close_pty();
                 let mut child = reader_client.child.lock().unwrap();
                 let _ = terminate_native_client(child.as_mut());
                 drop(child);
@@ -176,6 +188,7 @@ impl HerdrManager {
             Ok(reader) => *client.reader.lock().unwrap() = Some(reader),
             Err(error) => {
                 self.native_clients.lock().unwrap().remove(&id);
+                client.close_pty();
                 let _ = terminate_native_client(client.child.lock().unwrap().as_mut());
                 return Err(error.to_string());
             }
@@ -236,6 +249,7 @@ impl HerdrManager {
             .cloned()
             .ok_or("herdr-client-closed")?;
         let master = client.master.lock().unwrap();
+        let master = master.as_ref().ok_or("herdr-client-closed")?;
         let previous = master.get_size().map_err(|e| e.to_string())?;
         let size = HerdrClientSize {
             cols,
@@ -254,7 +268,7 @@ impl HerdrManager {
             return Ok(());
         };
         client.closed.store(true, Ordering::Release);
-        client.input.lock().unwrap().take();
+        client.close_pty();
         // Kill only the official UI client. Never attach a process-tree guard:
         // HERDR's persistent server and its pane processes belong to the user.
         let mut child = client.child.lock().unwrap();
@@ -318,3 +332,7 @@ mod tests {
         .is_err());
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "herdr_native_client_lifecycle_tests.rs"]
+mod lifecycle_tests;

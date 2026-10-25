@@ -1,5 +1,6 @@
 import { canonicalRuntimeWorkspace, parseRuntimeScope, runtimeOwner, sessionScope, StaleRuntimeResponse } from "@/lib/herdrProvider"
 import { LOCAL_HOST_ID } from "@/lib/runtimeIdentity"
+import { isHerdrSnapshotContractError } from "@/lib/herdrErrors"
 import { bindWorkspaceRoot, directoryForSelection, projectWorkspaceRoots } from "@/lib/herdrWorkspaceRoots"
 import { create } from "zustand"
 
@@ -243,6 +244,14 @@ function capabilityIdentity(state: HerdrState, scope: string): string | null {
   return JSON.stringify([owner, session?.socketPath ?? null])
 }
 
+function serverIdentityChanged(capabilities: HerdrCapabilities | null, snapshot: HerdrSnapshot): boolean {
+  const server = capabilities?.server
+  return Boolean(server && (
+    (server.version && snapshot.version && server.version !== snapshot.version)
+    || (server.protocol != null && server.protocol !== snapshot.protocol)
+  ))
+}
+
 function withInventoryOnSnapshot(
   snapshot: HerdrSnapshot,
   inventory: HerdrSessionRuntime["worktreeInventory"]
@@ -422,6 +431,7 @@ export const herdrInitialState = {
 let sessionsInFlight: Promise<void> | null = null
 let startupGeneration = 0
 const bootstrapInFlight = new Map<string, Promise<void>>()
+let nextBootstrapGeneration = 0
 const refreshInFlight = new Map<string, Promise<boolean>>()
 const pendingRefresh = new Set<string>()
 const MAX_REFRESH_RETRIES = 2
@@ -485,6 +495,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
             sessionScope(sessions[0]) ??
             null
         }
+        if (selectedSessionName !== state.selectedSessionName) sessionSelectionGeneration += 1
         const patch = { sessions, ...projectSelected(state, selectedSessionName) }
         const projected = projectStartup(sameFields(state, patch) ? state : { ...state, ...patch })
         if (projected !== state) set(projected)
@@ -557,13 +568,16 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     const owner = JSON.stringify(runtimeOwner(resolved))
     const identity = capabilityIdentity(get(), resolved)
     const key = JSON.stringify([resolved, owner, identity])
-    const current = () => JSON.stringify(runtimeOwner(resolved)) === owner
-      && capabilityIdentity(get(), resolved) === identity
     const existing = bootstrapInFlight.get(key)
     if (existing) return existing
+    const generation = ++nextBootstrapGeneration
+    const current = () => JSON.stringify(runtimeOwner(resolved)) === owner
+      && capabilityIdentity(get(), resolved) === identity
+      && runtimeOf(get(), resolved).bootstrapGeneration === generation
 
     const task = (async () => {
       set((state) => withRuntime(state, resolved, {
+        bootstrapGeneration: generation,
         connectionState: "connecting",
         capabilities: null,
         capabilityIdentity: null,
@@ -620,9 +634,17 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         }
 
         set((state) => withRuntime(state, resolved, { capabilities }))
+        const orderGeneration = workspaceOrderGeneration.get(resolved) ?? 0
         const raw = await herdrSnapshot(resolved)
         if (!current()) throw new StaleRuntimeResponse()
+        if (workspaceReordering.has(resolved)
+          || orderGeneration !== (workspaceOrderGeneration.get(resolved) ?? 0)) {
+          throw new Error(i18n.t("herdrNav.runtimeChangedDuringInitialization"))
+        }
         const snapshot = normalizeHerdrSnapshot(raw, resolved)
+        if (serverIdentityChanged(capabilities, snapshot)) {
+          throw new Error(i18n.t("herdrNav.runtimeChangedDuringInitialization"))
+        }
         get().applySnapshot(resolved, snapshot)
         set((state) =>
           withRuntime(state, resolved, {
@@ -645,10 +667,11 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
           )
           return
         }
-        const hadSnapshot = runtimeOf(get(), resolved).snapshot !== null
+        // Cached content can stay visible, but an incomplete bootstrap must
+        // remain retryable until the current runtime contract is established.
         set((state) =>
           withRuntime(state, resolved, {
-            connectionState: hadSnapshot ? "ready" : "error",
+            connectionState: "error",
             errorMessage: message
           })
         )
@@ -689,12 +712,23 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       try {
         while (true) {
           let passSucceeded = false
+          const identity = capabilityIdentity(get(), resolved)
+          const bootstrap = bootstrapInFlight.get(JSON.stringify([resolved, JSON.stringify(runtimeOwner(resolved)), identity]))
+          if (bootstrap) {
+            await bootstrap
+            if (capabilityIdentity(get(), resolved) !== identity
+              || runtimeOf(get(), resolved).connectionState !== "ready") return false
+          }
+          const generation = runtimeOf(get(), resolved).bootstrapGeneration
+          const current = () => capabilityIdentity(get(), resolved) === identity
+            && runtimeOf(get(), resolved).bootstrapGeneration === generation
           // Requests that arrive during this pass are authoritative trailing
           // refreshes. Consume only requests that predate the pass here.
           pendingRefresh.delete(resolved)
           try {
             const orderGeneration = workspaceOrderGeneration.get(resolved) ?? 0
             const raw = await herdrSnapshot(resolved)
+            if (!current()) return false
             // A pre-drop or in-mutation snapshot cannot undo a confirmed order.
             if (workspaceReordering.has(resolved)) return false
             if (orderGeneration !== (workspaceOrderGeneration.get(resolved) ?? 0)) {
@@ -702,22 +736,31 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
               continue
             }
             const snapshot = normalizeHerdrSnapshot(raw, resolved)
-            get().applySnapshot(resolved, snapshot)
-            set((state) =>
-              withRuntime(state, resolved, {
-                connectionState: "ready",
-                errorMessage: null
-              })
-            )
-            // Agent status/output updates do not invalidate repository inventory.
-            // HerdrBridge refreshes it every 30s; topology changes clear it in applySnapshot.
-            if (!runtimeOf(get(), resolved).worktreeInventory) {
-              await get().refreshWorktreeInventory(resolved)
+            if (serverIdentityChanged(runtimeOf(get(), resolved).capabilities, snapshot)) {
+              // Negotiate before publishing a snapshot from a different server.
+              // Bootstrap owns error/unsupported states; do not replace them with
+              // the ordinary cached-snapshot fallback below.
+              await get().bootstrap(resolved)
+              if (capabilityIdentity(get(), resolved) !== identity
+                || runtimeOf(get(), resolved).connectionState !== "ready") return false
+            } else {
+              get().applySnapshot(resolved, snapshot)
+              set((state) =>
+                withRuntime(state, resolved, {
+                  connectionState: "ready",
+                  errorMessage: null
+                })
+              )
+              // Agent status/output updates do not invalidate repository inventory.
+              // HerdrBridge refreshes it every 30s; topology changes clear it in applySnapshot.
+              if (!runtimeOf(get(), resolved).worktreeInventory) {
+                await get().refreshWorktreeInventory(resolved)
+              }
             }
             consecutiveFailures = 0
             passSucceeded = true
           } catch (error) {
-            if (error instanceof StaleRuntimeResponse) return false
+            if (!current() || error instanceof StaleRuntimeResponse) return false
             const message = error instanceof Error ? error.message : String(error)
             if (isStoppedReason(message)) {
               pendingRefresh.delete(resolved)
@@ -729,27 +772,35 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
               )
               return false
             }
-            consecutiveFailures += 1
-            if (consecutiveFailures <= MAX_REFRESH_RETRIES) {
-              pendingRefresh.add(resolved)
-            }
-            const hadSnapshot = runtimeOf(get(), resolved).snapshot !== null
-            if (hadSnapshot) {
-              set((state) =>
-                withRuntime(state, resolved, {
-                  errorMessage: message,
-                  connectionState: "ready"
-                })
-              )
+            if (isHerdrSnapshotContractError(message)) {
+              await get().bootstrap(resolved)
+              if (capabilityIdentity(get(), resolved) !== identity
+                || runtimeOf(get(), resolved).connectionState !== "ready") return false
+              consecutiveFailures = 0
+              passSucceeded = true
             } else {
-              const current = runtimeOf(get(), resolved).connectionState
-              set((state) =>
-                withRuntime(state, resolved, {
-                  errorMessage: message,
-                  connectionState:
-                    current === "connecting" || current === "idle" ? "error" : current
-                })
-              )
+              consecutiveFailures += 1
+              if (consecutiveFailures <= MAX_REFRESH_RETRIES) {
+                pendingRefresh.add(resolved)
+              }
+              const hadSnapshot = runtimeOf(get(), resolved).snapshot !== null
+              if (hadSnapshot) {
+                set((state) =>
+                  withRuntime(state, resolved, {
+                    errorMessage: message,
+                    connectionState: "ready"
+                  })
+                )
+              } else {
+                const current = runtimeOf(get(), resolved).connectionState
+                set((state) =>
+                  withRuntime(state, resolved, {
+                    errorMessage: message,
+                    connectionState:
+                      current === "connecting" || current === "idle" ? "error" : current
+                  })
+                )
+              }
             }
           }
           if (!pendingRefresh.delete(resolved)) return passSucceeded
@@ -1197,8 +1248,10 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       }
     }
     spaceCreationInFlight.add(sessionName)
+    const activationGeneration = ++sessionSelectionGeneration
+    const isLatestActivation = () => sessionSelectionGeneration === activationGeneration
+    let releaseActivation: (() => void) | undefined
     try {
-      const previousSpace = stateBefore.selectedSpaceBySession[sessionName] ?? null
       const currentWorkspace = useWorkspaceStore.getState().workspacePath
       const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
 
@@ -1212,9 +1265,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         if (!proceed) return { ok: false, cancelled: true }
       }
 
+      releaseActivation = await acquireSelection()
+      if (!isLatestActivation()) return { ok: false, cancelled: true }
+      const previousSpace = runtimeOf(get(), sessionName).snapshot?.focusedWorkspaceId ??
+        get().selectedSpaceBySession[sessionName] ?? null
       let created
       try {
         cwd = await canonicalRuntimeWorkspace(sessionName, cwd)
+        if (!isLatestActivation()) return { ok: false, cancelled: true }
         created = await herdrWorkspaceCreate({
           sessionName,
           cwd,
@@ -1232,20 +1290,25 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         if (!previousSpace) return
         await herdrWorkspaceFocus({ sessionName, workspaceId: previousSpace }).catch(() => undefined)
       }
-      if (needsWorkspaceSwitch) {
+      if (needsWorkspaceSwitch && isLatestActivation()) {
         try {
-          const opened = await openWorkspaceAtPath(cwd, { skipUnsavedGuard: true })
-          if (opened === false) {
+          const opened = await openWorkspaceAtPath(cwd, {
+            skipUnsavedGuard: true,
+            shouldOpen: isLatestActivation
+          })
+          if (opened === false && isLatestActivation()) {
             await rollbackFocus()
-            void get().refreshSnapshot(sessionName)
+            await get().refreshSnapshot(sessionName)
             return { ok: false, cancelled: true }
           }
         } catch (error) {
-          await rollbackFocus()
-          void get().refreshSnapshot(sessionName)
-          const message = error instanceof Error ? error.message : String(error)
-          set((state) => withRuntime(state, sessionName, { errorMessage: message }))
-          return { ok: false, error: message }
+          if (isLatestActivation()) {
+            await rollbackFocus()
+            await get().refreshSnapshot(sessionName)
+            const message = error instanceof Error ? error.message : String(error)
+            set((state) => withRuntime(state, sessionName, { errorMessage: message }))
+            return { ok: false, error: message }
+          }
         }
       }
 
@@ -1272,10 +1335,14 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         set((state) => withRuntime(state, sessionName, { errorMessage: message }))
         return { ok: false, error: message }
       }
+      // A successful background create remains visible in its own Session,
+      // but must not commit a stale foreground selection or caller sidebar scope.
+      if (!isLatestActivation()) return { ok: false, cancelled: true, space }
       get().setSelectedSpaceId(created.workspaceId)
       set((state) => withRuntime(state, sessionName, { errorMessage: null }))
       return { ok: true, space }
     } finally {
+      releaseActivation?.()
       spaceCreationInFlight.delete(sessionName)
     }
   },
@@ -1623,6 +1690,12 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       useWorkspaceStore.getState().rememberSpaceNavigation(sessionName, tab.workspaceId)
       if (tab.paneId) get().markAttentionSeen(sessionName, tab.paneId)
       useUiStore.getState().setMode("ade")
+      const agents = get().runtimesBySession[sessionName]?.snapshot?.agents.filter((agent) =>
+        agent.workspaceId === tab.workspaceId && agent.terminalId === tab.terminalId &&
+        (!tab.paneId || agent.paneId === tab.paneId)) ?? []
+      // Plain tab navigation also counts as using its Agent. A split must match
+      // the selected leaf, and an ambiguous snapshot must not pick an arbitrary one.
+      if (agents.length === 1) useAgentMruStore.getState().touch(sessionName, agents[0].id)
       // The bounded bridge poll will reconcile the authoritative snapshot. Avoid
       // an immediate read-after-focus because protocol-19 may briefly return the
       // previous focused workspace/tab and overwrite this committed selection.
@@ -1863,7 +1936,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         displayAgent: event.displayAgent ?? previous?.displayAgent ?? null,
         // Reading never marks seen; only focus/activation does.
         // blocked always remains attention-visible.
-        seen: kind === "done" ? (previous?.seen ?? false) : false,
+        seen: kind === "done" && previous?.kind === "done" ? previous.seen : false,
         updatedAt: Date.now()
       })
       return { attentionByKey }

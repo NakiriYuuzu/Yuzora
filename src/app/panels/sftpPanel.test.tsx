@@ -86,6 +86,8 @@ const ipcMock = vi.hoisted(() => ({
         })
     ),
     sftpUpload: vi.fn(),
+    sftpPickTree: vi.fn(async (): Promise<{ id: string; leaf: string } | null> => ({ id: "tree-cap", leaf: "docs" })),
+    sftpTransferTree: vi.fn(async () => ({ files: 1, bytes: 7 })),
     sftpFileRevision: vi.fn(async () => null),
     sftpTransferPrepare: vi.fn(async () => `xfer-${crypto.randomUUID()}`),
     sftpTransferCancel: vi.fn(async () => {}),
@@ -116,6 +118,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => dialogMock)
 
 import { SftpPanel } from "./SftpPanel"
 import { useAppDialogStore } from "@/state/appDialogStore"
+import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 import { useSshStore } from "@/state/sshStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -163,18 +166,20 @@ beforeEach(() => {
         return { sessionId: `sess-${sessionSeq}`, fingerprint: `SHA256:host-${sessionSeq}` }
     })
     ipcMock.sshDisconnect.mockResolvedValue(undefined)
-    ipcMock.listDir.mockResolvedValue([])
+    ipcMock.listDir.mockReset().mockResolvedValue([])
     ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
     ipcMock.sftpMkdir.mockResolvedValue(undefined)
     ipcMock.sftpRename.mockResolvedValue(undefined)
     ipcMock.sftpRemove.mockResolvedValue(undefined)
     ipcMock.sftpPickSelectedPath.mockResolvedValue([])
-    ipcMock.sftpPickDownloadDestination.mockImplementation(async (leaf: string) => ({
+    ipcMock.sftpPickDownloadDestination.mockReset().mockImplementation(async (leaf: string) => ({
         id: "download-cap",
         leaf
     }))
     ipcMock.sftpUpload.mockResolvedValue(undefined)
-    ipcMock.sftpDownload.mockResolvedValue(undefined)
+    ipcMock.sftpDownload.mockReset().mockResolvedValue(undefined)
+    ipcMock.sftpPickTree.mockReset().mockResolvedValue({ id: "tree-cap", leaf: "docs" })
+    ipcMock.sftpTransferTree.mockReset().mockResolvedValue({ files: 1, bytes: 7 })
     dragMock.handler = null
 
     useSshStore.setState({ hosts: [], sessions: {}, activeHostId: null, pendingAuthHostId: null })
@@ -185,6 +190,7 @@ beforeEach(() => {
 
 afterEach(() => {
     cleanup()
+    useTextInputDialogStore.getState().respond(null)
 })
 
 async function connectTwoHosts() {
@@ -209,6 +215,154 @@ async function connectTwoHosts() {
     const fingerprintB = useSshStore.getState().sessions[hostB.id]!.fingerprint!
     return { hostA, hostB, sessionIdA, sessionIdB, fingerprintB }
 }
+
+describe("SFTP initial directory readiness", () => {
+    async function setupPendingDirectory() {
+        let resolve!: (listing: { cwd: string; entries: [] }) => void
+        let reject!: (error: Error) => void
+        const pending = new Promise<{ cwd: string; entries: [] }>((ok, fail) => { resolve = ok; reject = fail })
+        ipcMock.sftpListDir.mockReturnValueOnce(pending)
+        const { hostB, sessionIdB } = await connectTwoHosts()
+        act(() => useSftpStore.getState().setPanelOpen(true))
+        render(<SftpPanel />)
+        await vi.waitFor(() => expect(useSftpStore.getState().remote[hostB.id]).toMatchObject({ cwd: "", loading: true }))
+        return { hostId: hostB.id, sessionId: sessionIdB, resolve, reject }
+    }
+
+    it("blocks mkdir at the store boundary before the first directory resolves", async () => {
+        const { hostId, resolve } = await setupPendingDirectory()
+        try {
+            await act(async () => { await useSftpStore.getState().mkdir(hostId, "draft") })
+            expect(ipcMock.sftpMkdir).not.toHaveBeenCalled()
+        } finally {
+            await act(async () => resolve({ cwd: "/home/u", entries: [] }))
+        }
+    })
+
+    it("does not create a root folder through the toolbar before home is resolved", async () => {
+        const { resolve } = await setupPendingDirectory()
+        try {
+            fireEvent.click(screen.getByRole("button", { name: "New folder" }))
+            await act(async () => useTextInputDialogStore.getState().respond("draft"))
+            expect(ipcMock.sftpMkdir).not.toHaveBeenCalled()
+        } finally {
+            await act(async () => resolve({ cwd: "/home/u", entries: [] }))
+        }
+    })
+
+    it("keeps New Folder disabled during first loading and after first-list failure", async () => {
+        const { hostId, reject } = await setupPendingDirectory()
+        const button = screen.getByRole("button", { name: "New folder" })
+        try {
+            expect(button).toBeDisabled()
+            fireEvent.click(button)
+            expect(useTextInputDialogStore.getState().pending).toBeNull()
+        } finally {
+            await act(async () => reject(new Error("fixture first listing failed")))
+        }
+        expect(await screen.findByText("Error: fixture first listing failed")).toBeInTheDocument()
+        expect(button).toBeDisabled()
+        await act(async () => { await useSftpStore.getState().mkdir(hostId, "draft") })
+        expect(ipcMock.sftpMkdir).not.toHaveBeenCalled()
+    })
+
+    it.each(["/home/u", "/"])("allows New Folder after canonical directory %s becomes available", async cwd => {
+        const { sessionId, resolve } = await setupPendingDirectory()
+        await act(async () => resolve({ cwd, entries: [] }))
+        ipcMock.sftpListDir.mockResolvedValue({ cwd, entries: [] })
+        const button = screen.getByRole("button", { name: "New folder" })
+        expect(button).toBeEnabled()
+        fireEvent.click(button)
+        expect(useTextInputDialogStore.getState().pending).not.toBeNull()
+        await act(async () => useTextInputDialogStore.getState().respond("draft"))
+        expect(ipcMock.sftpMkdir).toHaveBeenCalledTimes(1)
+        expect(ipcMock.sftpMkdir).toHaveBeenCalledWith(sessionId, cwd === "/" ? "/draft" : `${cwd}/draft`)
+        expect(ipcMock.sftpListDir).toHaveBeenLastCalledWith(sessionId, cwd)
+    })
+
+    it("enables creation after a failed initial listing is retried and preserves cancel", async () => {
+        const { hostId, reject } = await setupPendingDirectory()
+        await act(async () => reject(new Error("fixture first listing failed")))
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        await act(async () => { await useSftpStore.getState().listRemote(hostId, "") })
+        const button = screen.getByRole("button", { name: "New folder" })
+        expect(button).toBeEnabled()
+        fireEvent.click(button)
+        await act(async () => useTextInputDialogStore.getState().respond(null))
+        expect(ipcMock.sftpMkdir).not.toHaveBeenCalled()
+    })
+})
+
+describe("SFTP refresh pending navigation", () => {
+    it("refreshes the requested directory while the previous directory remains visible", async () => {
+        const old = { cwd: "/A", entries: [{ name: "B", path: "/B", isDir: true, isSymlink: false, size: 0 }] }
+        let finish!: (listing: typeof old) => void
+        const pending = new Promise<typeof old>(resolve => { finish = resolve })
+        ipcMock.sftpListDir.mockResolvedValueOnce(old).mockReturnValueOnce(pending)
+        ipcMock.sftpListDir.mockImplementation(async (_session: string, path: string) => ({ cwd: path, entries: [] }))
+        const { hostB, sessionIdB } = await connectTwoHosts()
+        act(() => useSftpStore.getState().setPanelOpen(true))
+        render(<SftpPanel />)
+        fireEvent.click(await screen.findByRole("button", { name: "B" }))
+        expect(useSftpStore.getState().remote[hostB.id]).toMatchObject({ cwd: "/A", loading: true })
+        const pane = screen.getByTestId("sftp-remote-pane")
+        fireEvent.click(within(pane).getByRole("button", { name: "Refresh" }))
+        await act(async () => { await Promise.resolve() })
+        await act(async () => finish({ cwd: "/B", entries: [] }))
+        expect(ipcMock.sftpListDir).toHaveBeenLastCalledWith(sessionIdB, "/B")
+        expect(useSftpStore.getState().remote[hostB.id].cwd).toBe("/B")
+    })
+})
+
+describe("SFTP rename source directory", () => {
+    const paths = ["/A", "/", "/目錄 A"]
+    const join = (parent: string, name: string) => `${parent === "/" ? "" : parent}/${name}`
+
+    async function setupRename(parent: string) {
+        const entry = { name: "old file.txt", path: join(parent, "old file.txt"), isDir: false, isSymlink: false, size: 7 }
+        const childPath = join(parent, "B")
+        const initial = { cwd: parent, entries: [
+            { name: "B", path: childPath, isDir: true, isSymlink: false, size: 0 }, entry
+        ] }
+        let finish!: (value: typeof initial) => void
+        const next = new Promise<typeof initial>(resolve => { finish = resolve })
+        ipcMock.sftpListDir.mockImplementation(async (_session: string, requested: string | null) => requested === childPath ? next : initial)
+        const { hostB, sessionIdB } = await connectTwoHosts()
+        act(() => useSftpStore.getState().setPanelOpen(true))
+        render(<SftpPanel />)
+        await screen.findByText(entry.name)
+        return { entry, childPath, finish, hostId: hostB.id, sessionId: sessionIdB }
+    }
+
+    it.each(paths)("keeps the source parent %s when navigation completes during the prompt", async parent => {
+        const { entry, childPath, finish, hostId, sessionId } = await setupRename(parent)
+        fireEvent.click(screen.getByRole("button", { name: "B" }))
+        expect(useSftpStore.getState().remote[hostId]).toMatchObject({ cwd: parent, loading: true })
+        fireEvent.click(screen.getByRole("button", { name: `Rename ${entry.name}` }))
+        expect(useTextInputDialogStore.getState().pending?.initialValue).toBe(entry.name)
+        await act(async () => finish({ cwd: childPath, entries: [] }))
+        expect(useSftpStore.getState().remote[hostId]?.cwd).toBe(childPath)
+        await act(async () => useTextInputDialogStore.getState().respond("新 file.txt"))
+        expect(ipcMock.sftpRename).toHaveBeenCalledTimes(1)
+        expect(ipcMock.sftpRename).toHaveBeenCalledWith(sessionId, entry.path, join(parent, "新 file.txt"))
+        expect(useSftpStore.getState().remote[hostId]?.cwd).toBe(childPath)
+    })
+
+    it.each(paths)("preserves an ordinary same-directory rename in %s", async parent => {
+        const { entry, sessionId } = await setupRename(parent)
+        fireEvent.click(screen.getByRole("button", { name: `Rename ${entry.name}` }))
+        await act(async () => useTextInputDialogStore.getState().respond("新 file.txt"))
+        expect(ipcMock.sftpRename).toHaveBeenCalledTimes(1)
+        expect(ipcMock.sftpRename).toHaveBeenCalledWith(sessionId, entry.path, join(parent, "新 file.txt"))
+    })
+
+    it.each([null, "old file.txt"])("sends no rename for cancelled or unchanged response %s", async answer => {
+        const { entry } = await setupRename("/A")
+        fireEvent.click(screen.getByRole("button", { name: `Rename ${entry.name}` }))
+        await act(async () => useTextInputDialogStore.getState().respond(answer))
+        expect(ipcMock.sftpRename).not.toHaveBeenCalled()
+    })
+})
 
 describe("SftpPanel SSH/SFTP icons", () => {
     it("uses the server icon for the empty SSH state", () => {
@@ -535,10 +689,10 @@ describe("SftpPanel SFTP browser (F5)", () => {
                 useWorkspaceStore.setState({ workspacePath: "/ws" })
                 useSftpStore.getState().setPanelOpen(true)
             })
-            render(<SftpPanel />)
+            const view = render(<SftpPanel />)
             await screen.findByText("remote.txt")
             await screen.findByText("local.txt")
-            return { sessionId }
+            return { sessionId, unmount: view.unmount }
         }
 
         const rowOf = (text: string) =>
@@ -551,6 +705,167 @@ describe("SftpPanel SFTP browser (F5)", () => {
             fireEvent.pointerMove(window, { clientX: 40, clientY: 40 })
             fireEvent.pointerUp(window, { clientX: 40, clientY: 40 })
         }
+
+        async function startDownload(entrypoint: "file" | "folder" | "drop") {
+            if (entrypoint === "drop") dragByPointer(rowOf("remote.txt"), screen.getByTestId("sftp-local-pane-body"))
+            else fireEvent.click(screen.getByRole("button", { name: entrypoint === "folder" ? "Download docs" : "Download remote.txt" }))
+            if (entrypoint === "folder") {
+                expect(useTextInputDialogStore.getState().pending).not.toBeNull()
+                await act(async () => useTextInputDialogStore.getState().respond("docs"))
+            }
+        }
+
+        describe("download completion refresh", () => {
+            const pendingSettlements: (() => void)[] = []
+            afterEach(async () => {
+                await act(async () => {
+                    for (const settle of pendingSettlements.splice(0)) settle()
+                })
+            })
+
+            it.each(["file", "folder", "drop"] as const)("%s refreshes local results only after settlement", async entrypoint => {
+                await sftpDualPaneSetup()
+                let finish!: () => void
+                if (entrypoint === "folder") ipcMock.sftpTransferTree.mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ files: 1, bytes: 7 }) }))
+                else ipcMock.sftpDownload.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+                const before = ipcMock.listDir.mock.calls.length
+                await startDownload(entrypoint)
+                await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+                pendingSettlements.push(finish)
+                expect(ipcMock.listDir).toHaveBeenCalledTimes(before)
+                const name = entrypoint === "folder" ? "docs" : "remote.txt"
+                ipcMock.listDir.mockResolvedValue([{ name, path: `/ws/${name}`, isDir: entrypoint === "folder" }])
+                await act(async () => finish())
+                expect(await within(screen.getByTestId("sftp-local-pane-body")).findByText(name)).toBeVisible()
+                expect(ipcMock.listDir).toHaveBeenCalledTimes(before + 1)
+                expect(ipcMock.listDir).toHaveBeenLastCalledWith("/ws")
+            })
+
+            it.each(["file", "folder", "drop"] as const)("%s picker cancellation does not refresh or transfer", async entrypoint => {
+                await sftpDualPaneSetup()
+                const before = ipcMock.listDir.mock.calls.length
+                if (entrypoint === "folder") ipcMock.sftpPickTree.mockResolvedValueOnce(null)
+                else ipcMock.sftpPickDownloadDestination.mockResolvedValueOnce(null)
+                await startDownload(entrypoint)
+                await vi.waitFor(() => expect(entrypoint === "folder" ? ipcMock.sftpPickTree : ipcMock.sftpPickDownloadDestination).toHaveBeenCalledOnce())
+                await act(async () => {})
+                expect(ipcMock.sftpTransferPrepare).not.toHaveBeenCalled()
+                expect(ipcMock.listDir).toHaveBeenCalledTimes(before)
+            })
+
+            it.each(["file", "folder"] as const)("%s failure keeps its error and refreshes local output", async entrypoint => {
+                await sftpDualPaneSetup()
+                const error = entrypoint === "folder" ? "sftp-partial-staging:/ws/.partial-docs" : "download failed"
+                if (entrypoint === "folder") ipcMock.sftpTransferTree.mockRejectedValueOnce(new Error(error))
+                else ipcMock.sftpDownload.mockRejectedValueOnce(new Error(error))
+                ipcMock.listDir.mockResolvedValue([{ name: "visible-output", path: "/ws/visible-output", isDir: true }])
+                await act(async () => startDownload(entrypoint))
+                expect(await within(screen.getByTestId("sftp-local-pane-body")).findByText("visible-output")).toBeVisible()
+                expect(Object.values(useSftpStore.getState().transfers)).toEqual([expect.objectContaining({ done: true, error })])
+                expect(screen.getByText(entrypoint === "folder" ? "Transfer failed. A temporary folder remains for inspection: /ws/.partial-docs" : "Failed")).toBeVisible()
+            })
+
+            it.each(["directory", "workspace"] as const)("completion preserves the current %s after navigation", async navigation => {
+                await sftpDualPaneSetup()
+                let finish!: () => void
+                ipcMock.sftpDownload.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+                await startDownload("file")
+                await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+                pendingSettlements.push(finish)
+                const cwd = navigation === "workspace" ? "/new-workspace" : "/ws/localdir"
+                ipcMock.listDir.mockResolvedValue([{ name: "current", path: `${cwd}/current`, isDir: false }])
+                if (navigation === "workspace") act(() => useWorkspaceStore.setState({ workspacePath: cwd }))
+                else fireEvent.click(screen.getByRole("button", { name: "localdir" }))
+                await screen.findByText("current")
+                const before = ipcMock.listDir.mock.calls.length
+                ipcMock.listDir.mockResolvedValue([{ name: "current-complete", path: `${cwd}/current-complete`, isDir: false }])
+                await act(async () => finish())
+                expect(await screen.findByText("current-complete")).toBeVisible()
+                expect(ipcMock.listDir).toHaveBeenCalledTimes(before + 1)
+                expect(ipcMock.listDir).toHaveBeenLastCalledWith(cwd)
+                expect(screen.getByTestId("sftp-local-pane-body")).toHaveAttribute("data-sftp-pane-cwd", cwd)
+            })
+
+            it.each(["success", "error"] as const)("reversed completions ignore an older listing's late %s", async outcome => {
+                await sftpDualPaneSetup()
+                const finishes: (() => void)[] = []
+                ipcMock.sftpDownload.mockImplementation(() => new Promise<void>(resolve => { finishes.push(resolve); pendingSettlements.push(resolve) }))
+                await startDownload("file")
+                await startDownload("file")
+                await vi.waitFor(() => expect(finishes).toHaveLength(2))
+                let settleOld!: () => void
+                ipcMock.listDir.mockImplementationOnce(() => new Promise((resolve, reject) => {
+                    settleOld = () => outcome === "success"
+                        ? resolve([{ name: "older-only", path: "/ws/older-only", isDir: false }])
+                        : reject(new Error("older-list-failure"))
+                    pendingSettlements.push(settleOld)
+                }))
+                await act(async () => finishes[1]())
+                await vi.waitFor(() => expect(settleOld).toBeTypeOf("function"))
+                ipcMock.listDir.mockResolvedValue([{ name: "both-complete", path: "/ws/both-complete", isDir: false }])
+                await act(async () => finishes[0]())
+                expect(await screen.findByText("both-complete")).toBeVisible()
+                await act(async () => settleOld())
+                expect(screen.getByText("both-complete")).toBeVisible()
+                expect(screen.queryByText("older-only")).not.toBeInTheDocument()
+                expect(screen.queryByText("older-list-failure")).not.toBeInTheDocument()
+            })
+
+            it("an unmounted download cannot refresh a newly mounted local pane", async () => {
+                const { unmount } = await sftpDualPaneSetup()
+                let finish!: () => void
+                ipcMock.sftpDownload.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+                await startDownload("file")
+                await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+                pendingSettlements.push(finish)
+                unmount()
+                render(<SftpPanel />)
+                await screen.findByText("local.txt")
+                const before = ipcMock.listDir.mock.calls.length
+                await act(async () => finish())
+                expect(ipcMock.listDir).toHaveBeenCalledTimes(before)
+                expect(screen.getByText("local.txt")).toBeVisible()
+            })
+        })
+
+        describe("download picker Session ownership", () => {
+            for (const entrypoint of ["button", "drop"] as const) {
+                it.each(["replacement", "disconnect", "unchanged", "cancel", "switch-host"] as const)(`${entrypoint} keeps its source Session across the picker: %s`, async outcome => {
+                    const { sessionId } = await sftpDualPaneSetup()
+                    const hostId = useSshStore.getState().activeHostId!
+                    let choose!: (value: { id: string; leaf: string } | null) => void
+                    ipcMock.sftpPickDownloadDestination.mockImplementationOnce(() => new Promise(resolve => { choose = resolve }))
+                    if (entrypoint === "button") fireEvent.click(screen.getByRole("button", { name: "Download remote.txt" }))
+                    else dragByPointer(rowOf("remote.txt"), screen.getByTestId("sftp-local-pane-body"))
+                    expect(ipcMock.sftpPickDownloadDestination).toHaveBeenCalledTimes(1)
+                    await act(async () => {
+                        if (outcome === "replacement" || outcome === "disconnect") {
+                            useSshStore.setState(state => ({ sessions: {
+                                ...state.sessions,
+                                [hostId]: {
+                                    ...state.sessions[hostId],
+                                    sessionId: outcome === "replacement" ? "replacement-session" : null,
+                                    status: outcome === "replacement" ? "connected" : "disconnected"
+                                }
+                            } }))
+                        }
+                        if (outcome === "switch-host") {
+                            const other = useSshStore.getState().hosts.find(host => host.id !== hostId)!
+                            useSshStore.getState().setActiveHost(other.id)
+                        }
+                        choose(outcome === "cancel" ? null : { id: "picker083", leaf: "remote.txt" })
+                        await new Promise(resolve => setTimeout(resolve, 0))
+                    })
+                    if (outcome === "unchanged" || outcome === "switch-host") {
+                        expect(ipcMock.sftpDownload).toHaveBeenCalledOnce()
+                        expect(ipcMock.sftpDownload).toHaveBeenCalledWith(sessionId, expect.any(String), "/home/u/remote.txt", { capabilityId: "picker083", leaf: "remote.txt" })
+                    } else {
+                        expect(ipcMock.sftpDownload).not.toHaveBeenCalled()
+                        expect(ipcMock.sftpTransferPrepare).not.toHaveBeenCalled()
+                    }
+                })
+            }
+        })
 
         it("local 檔案 row 拖到遠端窗格空白＝上傳到遠端 cwd；拖曳中窗格高亮；資料夾 row 不可拖", async () => {
             const { sessionId } = await sftpDualPaneSetup()

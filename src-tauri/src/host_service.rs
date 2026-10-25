@@ -641,6 +641,96 @@ pub async fn host_disconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn oversized_control_response_preserves_queued_and_subsequent_requests() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(
+            fixture.path().join("escaped.txt"),
+            vec![b'\\'; yuzora_host::protocol::MAX_FILE_BYTES as usize],
+        )
+        .unwrap();
+        std::fs::write(fixture.path().join("small.txt"), "still connected").unwrap();
+        std::fs::write(
+            fixture.path().join("normal.txt"),
+            vec![b'a'; yuzora_host::protocol::MAX_FILE_BYTES as usize],
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.path().join("too-large.txt"),
+            vec![b'a'; yuzora_host::protocol::MAX_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (input, output) = tokio::io::split(server);
+        let server = tokio::spawn(yuzora_host::server::serve(input, output));
+        let connection = HostConnection::new(
+            ConnectionOwner {
+                host_id: "owned-overflow-fixture".into(),
+                generation: 7,
+            },
+            HostTarget::Local,
+            "unused-owned-helper".into(),
+            Box::new(client),
+        );
+        connection.request(Operation::Hello).await.unwrap();
+        let opened = connection
+            .request(Operation::WorkspaceOpen {
+                path: fixture.path().to_str().unwrap().into(),
+            })
+            .await
+            .unwrap();
+        let workspace = opened["capabilityId"].as_str().unwrap();
+        let normal = connection
+            .request(Operation::FilesRead {
+                workspace: workspace.into(),
+                path: "normal.txt".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            normal["file"]["content"].as_str().unwrap().len(),
+            yuzora_host::protocol::MAX_FILE_BYTES as usize
+        );
+        drop(normal);
+        let raw_limit = connection
+            .request(Operation::FilesRead {
+                workspace: workspace.into(),
+                path: "too-large.txt".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(raw_limit["file"]["kind"], "tooLarge");
+        let (oversized, queued) = tokio::join!(
+            connection.request(Operation::FilesRead {
+                workspace: workspace.into(),
+                path: "escaped.txt".into()
+            }),
+            connection.request(Operation::FilesRead {
+                workspace: workspace.into(),
+                path: "small.txt".into()
+            }),
+        );
+        let following = connection
+            .request(Operation::FilesRead {
+                workspace: workspace.into(),
+                path: "small.txt".into(),
+            })
+            .await;
+        let retained_io = connection.io.lock().await.is_some();
+        drop(connection);
+        let ended = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        eprintln!("oversized={:?}, queued={:?}, following={:?}, retained_io={retained_io}, server={ended:?}", oversized.as_ref().err(), queued.as_ref().err(), following.as_ref().err());
+        assert_eq!(oversized.unwrap_err(), "response-too-large");
+        assert_eq!(queued.unwrap()["file"]["content"], "still connected");
+        assert_eq!(following.unwrap()["file"]["content"], "still connected");
+        assert!(retained_io);
+        ended.unwrap();
+    }
+
     struct RuntimeDropStream(tokio::io::DuplexStream);
     impl Drop for RuntimeDropStream {
         fn drop(&mut self) {

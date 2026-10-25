@@ -84,6 +84,11 @@ impl SftpSession {
         })
     }
 
+    /// Whether the underlying SFTP transport worker has stopped.
+    pub fn is_closed(&self) -> bool {
+        self.session.is_closed()
+    }
+
     /// Set the maximum response time in seconds.
     /// Default: 10 seconds
     pub fn set_timeout(&self, secs: u64) {

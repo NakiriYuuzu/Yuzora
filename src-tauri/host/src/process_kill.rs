@@ -3,6 +3,10 @@ use std::process::{Child, Command};
 #[cfg(any(unix, windows, test))]
 use std::time::{Duration, Instant};
 
+#[cfg(all(test, unix))]
+#[path = "process_kill_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 #[cfg(unix)]
 const TERM_GRACE: Duration = Duration::from_millis(300);
 #[cfg(unix)]
@@ -372,41 +376,53 @@ pub fn reap_process_tree(
 }
 
 #[cfg(unix)]
+/// Terminate an owned, unreaped child. Group signals must precede reaping so
+/// the leader PID cannot be reused for an unrelated process or group.
+/// Callers must not call this after `wait`/`try_wait` reaps the child: a PID
+/// probe cannot authenticate the original process after numeric PID reuse.
 pub fn kill_tree(child: &mut Child) -> io::Result<()> {
     let pid = child.id() as GroupId;
-    let grouped = process_group_exists(pid).unwrap_or(false);
+    // Reject ECHILD before probing a group. The unreaped-ownership contract
+    // above, not this probe alone, pins the original process identity.
+    let already_exited = leader_exited_without_reaping(pid)?;
+    let grouped = process_group_exists(pid)?;
+    let completed_signal = |result: io::Result<()>| {
+        result.or_else(|error| {
+            // macOS may deny signalling a zombie. Only use this after the
+            // direct child (and, for group signals, the entire group) is gone.
+            if error.raw_os_error() == Some(libc::EPERM) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+    };
     if grouped {
-        let _ = terminate_process_group(pid);
-    } else {
-        let _ = signal_process(pid, libc::SIGTERM);
+        let term = terminate_process_group(pid);
+        // A zombie leader still pins the group ID. Do not reap it or shorten
+        // the remaining descendants' existing TERM grace when it exits first.
+        std::thread::sleep(TERM_GRACE);
+        let kill = signal_process_group(pid, libc::SIGKILL);
+        wait_for_unix_child_exit(child)?;
+        wait_for_process_group_exit(pid)?;
+        completed_signal(term)?;
+        return completed_signal(kill);
     }
-
+    if already_exited {
+        return wait_for_unix_child_exit(child);
+    }
+    let term = signal_process(pid, libc::SIGTERM);
     let deadline = Instant::now() + TERM_GRACE;
     while Instant::now() < deadline {
         if child.try_wait()?.is_some() {
-            if grouped {
-                let _ = wait_for_process_group_exit(pid);
-            }
-            return Ok(());
-        }
-        if grouped && leader_exited_without_reaping(pid)? {
-            break;
+            return completed_signal(term);
         }
         std::thread::sleep(POLL_INTERVAL);
     }
-
-    if grouped {
-        let _ = signal_process_group(pid, libc::SIGKILL)
-            .or_else(|err| tolerate_sigkill_permission_denied_after_leader_exit(err, pid));
-    } else {
-        let _ = signal_process(pid, libc::SIGKILL);
-    }
+    let kill = signal_process(pid, libc::SIGKILL);
     wait_for_unix_child_exit(child)?;
-    if grouped {
-        wait_for_process_group_exit(pid)
-    } else {
-        Ok(())
-    }
+    completed_signal(term)?;
+    completed_signal(kill)
 }
 
 #[cfg(windows)]
@@ -589,6 +605,10 @@ fn terminate_process_group(pgid: GroupId) -> io::Result<()> {
 
 #[cfg(unix)]
 fn signal_process_group(pgid: GroupId, signal: libc::c_int) -> io::Result<()> {
+    #[cfg(test)]
+    if lifecycle_tests::record_signal(pgid, signal) {
+        return Ok(());
+    }
     let rc = unsafe { libc::killpg(pgid, signal) };
     if rc == 0 {
         return Ok(());
@@ -603,6 +623,10 @@ fn signal_process_group(pgid: GroupId, signal: libc::c_int) -> io::Result<()> {
 
 #[cfg(unix)]
 fn signal_process(pid: GroupId, signal: libc::c_int) -> io::Result<()> {
+    #[cfg(test)]
+    if lifecycle_tests::record_signal(pid, signal) {
+        return Ok(());
+    }
     let rc = unsafe { libc::kill(pid, signal) };
     if rc == 0 {
         return Ok(());
@@ -633,19 +657,7 @@ fn wait_for_unix_child_exit(child: &mut Child) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn tolerate_sigkill_permission_denied_after_leader_exit(
-    err: io::Error,
-    pid: GroupId,
-) -> io::Result<()> {
-    if err.raw_os_error() == Some(libc::EPERM) && leader_exited_without_reaping(pid)? {
-        Ok(())
-    } else {
-        Err(err)
-    }
-}
-
-#[cfg(unix)]
-fn process_group_exists(pgid: GroupId) -> io::Result<bool> {
+pub(crate) fn process_group_exists(pgid: GroupId) -> io::Result<bool> {
     let rc = unsafe { libc::killpg(pgid, 0) };
     if rc == 0 {
         return Ok(true);
@@ -659,7 +671,7 @@ fn process_group_exists(pgid: GroupId) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn leader_exited_without_reaping(pid: GroupId) -> io::Result<bool> {
+pub(crate) fn leader_exited_without_reaping(pid: GroupId) -> io::Result<bool> {
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     let rc = unsafe {
         libc::waitid(
@@ -869,7 +881,10 @@ mod tests {
     fn kill_tree_reaps_direct_child_and_kills_grandchild() {
         let tmp = tempfile::tempdir().unwrap();
         let pid_file = tmp.path().join("grandchild.pid");
-        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let script = format!(
+            "sleep 30 & echo $! > {0}.tmp; /bin/mv {0}.tmp {0}; wait",
+            pid_file.display()
+        );
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg(script);
         super::configure_new_group(&mut cmd);
@@ -896,7 +911,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pid_file = tmp.path().join("grandchild.pid");
         let script = format!(
-            "trap '' TERM; sleep 30 & echo $! > {}; wait",
+            "trap '' TERM; sleep 30 & echo $! > {0}.tmp; /bin/mv {0}.tmp {0}; wait",
             pid_file.display()
         );
         let mut cmd = std::process::Command::new("sh");

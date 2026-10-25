@@ -3,11 +3,16 @@ import { parseRemoteFilePath } from "../lib/runtimeIdentity"
 import type { OpenFileResult } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { renameEditorViewState } from "./editorViewState"
+import { containsFilePath, fileRenameError, pendingFileRename, reserveFileRename } from "../lib/fileRenameCoordinator"
+import { isSameOrDescendantPath, rebasePath } from "../lib/paths"
+import type { Text } from "@codemirror/state"
 
 export interface RegistryEntry {
     result: OpenFileResult
     // Unlike result (the unmounted editor buffer), this never includes unsaved edits.
     diskResult?: OpenFileResult
+    // Only the history field outlives a view; extensions and their callbacks do not.
+    editorHistory?: { doc: Text; history: unknown }
 }
 
 const registry = new Map<string, RegistryEntry>()
@@ -15,7 +20,7 @@ const generations = new Map<string, number>()
 let generationBase = 0
 let highestGeneration = 0
 let epoch = 0
-const pendingReads = new Set<{ key: string }>()
+const pendingReads = new Set<{ key: string; followRename?: boolean }>()
 // Key by path, not workspace: overlapping native workspaces share the same file.
 const pendingSaves = new Map<string, Promise<void>>()
 const pendingRemoteSaves = new Map<string, { next: number; applied: number; pending: number }>()
@@ -24,15 +29,46 @@ function documentKey(path: string, workspace = useWorkspaceStore.getState().work
     return JSON.stringify([workspace, path])
 }
 
+export function documentWorkspaceEpoch(): number { return epoch }
+
+export function getCachedDocument(path: string, workspace = useWorkspaceStore.getState().workspacePath): RegistryEntry | undefined {
+    return registry.get(documentKey(path, workspace))
+}
+
+export function cachedDocumentPaths(root: string): string[] {
+    const workspace = useWorkspaceStore.getState().workspacePath
+    return [...registry.keys()].flatMap(key => {
+        const [owner, path] = JSON.parse(key) as [string | null, string]
+        return owner === workspace && isSameOrDescendantPath(root, path) ? [path] : []
+    })
+}
+
+export function reserveDocumentRename(from: string, to: string): () => void {
+    const sources = cachedDocumentPaths(from)
+    if (cachedDocumentPaths(to).some(path => !sources.includes(path))) throw fileRenameError("destinationOpen")
+    // Distinct cached spellings of the same Windows identity cannot be merged
+    // by choosing one buffer, including during a case-only rename.
+    const targets = sources.map(path => rebasePath(from, to, path)!)
+    if (targets.some((path, index) => targets.slice(0, index).some(other =>
+        containsFilePath(path, other) && containsFilePath(other, path)))) throw fileRenameError("destinationOpen")
+    const touched = (path: string) => containsFilePath(from, path) || containsFilePath(to, path)
+    if ([...pendingReads].some(read => touched((JSON.parse(read.key) as [unknown, string])[1]))
+        || [...pendingSaves.keys(), ...pendingRemoteSaves.keys()].some(touched)) throw fileRenameError("busy")
+    return reserveFileRename(from, to)
+}
+
 export async function getDocument(path: string): Promise<RegistryEntry> {
     const key = documentKey(path)
     const started = epoch
-    const existing = registry.get(key)
-    if (existing) return existing
     const read = { key }
     pendingReads.add(read)
     const accept = () => pendingReads.has(read) && started === epoch && key === documentKey(path)
     try {
+        let pending: Promise<void> | undefined
+        while ((pending = pendingFileRename(path))) await pending
+        if (!accept()) throw new Error("Document workspace changed or closed")
+        const existing = registry.get(key)
+        if (existing) return existing
         const snapshot = await openFileSnapshot(path)
         if (!accept()) throw new Error("Document workspace changed")
         const current = registry.get(key)
@@ -48,6 +84,28 @@ export function dropDocument(path: string, workspace = useWorkspaceStore.getStat
     const key = documentKey(path, workspace)
     registry.delete(key)
     for (const read of pendingReads) if (read.key === key) pendingReads.delete(read)
+}
+
+export function retireRenamedDocumentReads(from: string, to: string) {
+    const workspace = useWorkspaceStore.getState().workspacePath
+    const source = documentKey(from, workspace)
+    const destination = documentKey(to, workspace)
+    for (const read of pendingReads) {
+        if (read.followRename) {
+            // Resource cleanup observes tab changes synchronously. Move this
+            // owner before it drops the old path; closing the new path must
+            // still cancel the comparison normally.
+            if (read.key === source) read.key = destination
+            continue
+        }
+        const [owner, path] = JSON.parse(read.key) as [string | null, string]
+        if (owner !== workspace || read.key === destination) continue
+        if ([from, to].some(candidate => containsFilePath(candidate, path) && containsFilePath(path, candidate))) {
+            // The old/alias pane is replaced by the canonical target pane. Do
+            // not let its delayed read install a second cache or revision.
+            pendingReads.delete(read)
+        }
+    }
 }
 
 // Move a cached document from oldPath to newPath after a rename so a re-opened
@@ -120,6 +178,9 @@ export async function reloadDocument(
         && previous?.diskResult === previousDisk
         && generations.get(key) === generation && canApply()
     try {
+        let pending: Promise<void> | undefined
+        while ((pending = pendingFileRename(path))) await pending
+        if (!accept()) throw new Error("Document changed during reload")
         const snapshot = await openFileSnapshot(path)
         if (!accept()) throw new Error("Document changed during reload")
         snapshot.accept()
@@ -149,15 +210,38 @@ export async function documentChangedOnDisk(path: string, onRenamed?: (path: str
     const disk = previous?.diskResult
     const started = epoch
     const generation = generations.get(key)
-    const read = { key }
+    const read = { key, followRename: true }
     pendingReads.add(read)
     try {
-        const snapshot = await openFileSnapshot(path)
-        if (!pendingReads.has(read) || started !== epoch || key !== documentKey(path)
-            || registry.get(key) !== previous || generations.get(key) !== generation || previous?.diskResult !== disk) {
+        let currentPath = path
+        for (;;) {
+            currentPath = (JSON.parse(read.key) as [unknown, string])[1]
+            if (!pendingReads.has(read) || started !== epoch || read.key !== documentKey(currentPath)) {
+                throw new Error("Document workspace changed")
+            }
+            const pending = pendingFileRename(currentPath)
+            if (pending) { await pending; continue }
+            if (previous && registry.get(read.key) !== previous) {
+                // A watcher arriving during our rename must compare the same
+                // document at its new location, not report the old name missing.
+                const moved = [...registry].find(([candidate, entry]) =>
+                    entry === previous && (JSON.parse(candidate) as [string | null, string])[0] === workspace)
+                if (!moved) throw new Error("Document changed during disk comparison")
+                read.key = moved[0]
+                currentPath = (JSON.parse(moved[0]) as [unknown, string])[1]
+                continue
+            }
+            break
+        }
+        const snapshot = await openFileSnapshot(currentPath)
+        if (!pendingReads.has(read) || started !== epoch || read.key !== documentKey(currentPath)
+            || registry.get(read.key) !== previous || generations.get(read.key) !== generation || previous?.diskResult !== disk) {
             throw new Error("Document changed during disk comparison")
         }
-        if (!sameDiskSnapshot(disk, snapshot.result)) return true
+        if (!sameDiskSnapshot(disk, snapshot.result)) {
+            if (currentPath !== path) onRenamed?.(currentPath)
+            return true
+        }
         snapshot.accept()
         return false
     } catch (error) {

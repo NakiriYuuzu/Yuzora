@@ -16,12 +16,30 @@ struct Helper {
     input: Option<tokio::process::ChildStdin>,
     output: BufReader<tokio::process::ChildStdout>,
     owner: ConnectionOwner,
+    _config: tempfile::TempDir,
 }
 impl Helper {
     async fn start(home: &std::path::Path, host: &str) -> Self {
-        let mut child = tokio::process::Command::new(helper_binary())
-            .arg("--stdio")
-            .env("HOME", home)
+        let config = tempfile::tempdir().unwrap();
+        let mut command = tokio::process::Command::new(helper_binary());
+        command.arg("--stdio").env("HOME", home);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("HERDR_") {
+                command.env_remove(key);
+            }
+        }
+        for key in [
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+        ] {
+            let path = config.path().join(key);
+            std::fs::create_dir(&path).unwrap();
+            command.env(key, path);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -29,6 +47,7 @@ impl Helper {
             .spawn()
             .unwrap();
         let mut helper = Self {
+            _config: config,
             input: child.stdin.take(),
             output: BufReader::new(child.stdout.take().unwrap()),
             child,
@@ -138,6 +157,102 @@ fn call(workspace: &str, root: Option<&str>, call: GitCommand) -> Operation {
         repository_root: root.map(str::to_owned),
         call,
     }
+}
+
+#[tokio::test]
+async fn stash_apply_keeps_selected_oid_across_the_helper_protocol() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = home.path().join("repo");
+    init(&repo);
+    let root = repo.canonicalize().unwrap().to_str().unwrap().to_owned();
+    let mut helper = Helper::start(home.path(), "stash-identity").await;
+    let workspace = helper.open(&repo).await;
+    helper.trust(&workspace).await;
+    helper.ok(call(&workspace, None, GitCommand::Detect)).await;
+    std::fs::write(repo.join("中文 file.txt"), "selected A").unwrap();
+    helper
+        .ok(call(
+            &workspace,
+            Some(&root),
+            GitCommand::StashPush {
+                message: Some("selected A".into()),
+                include_untracked: false,
+                keep_index: false,
+            },
+        ))
+        .await;
+    let selected = helper
+        .ok(call(&workspace, Some(&root), GitCommand::StashList))
+        .await;
+    let oid = selected[0]["oid"].as_str().unwrap().to_owned();
+    assert_eq!(selected[0]["index"], 0);
+    std::fs::write(repo.join("中文 file.txt"), "external B").unwrap();
+    git(&repo, &["stash", "push", "-m", "external B"]);
+    let applied = helper
+        .ok(call(
+            &workspace,
+            Some(&root),
+            GitCommand::StashApply {
+                index: 0,
+                pop: false,
+                oid: Some(oid.clone()),
+            },
+        ))
+        .await;
+    assert_eq!(applied["conflicts"], false);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("中文 file.txt")).unwrap(),
+        "selected A"
+    );
+    let stashes = helper
+        .ok(call(&workspace, Some(&root), GitCommand::StashList))
+        .await;
+    assert_eq!(stashes.as_array().unwrap().len(), 2);
+    assert_eq!(stashes[1]["oid"], oid);
+    for invalid in [None, Some("stash@{0}".into())] {
+        let result = helper
+            .call(call(
+                &workspace,
+                Some(&root),
+                GitCommand::StashApply {
+                    index: 0,
+                    pop: false,
+                    oid: invalid,
+                },
+            ))
+            .await;
+        assert!(matches!(result, Outcome::Error { .. }));
+        assert_eq!(
+            std::fs::read_to_string(repo.join("中文 file.txt")).unwrap(),
+            "selected A"
+        );
+    }
+    git(&repo, &["checkout", "--", "中文 file.txt"]);
+    helper
+        .ok(call(
+            &workspace,
+            Some(&root),
+            GitCommand::StashApply {
+                index: 0,
+                pop: true,
+                oid: None,
+            },
+        ))
+        .await;
+    assert_eq!(
+        std::fs::read_to_string(repo.join("中文 file.txt")).unwrap(),
+        "external B"
+    );
+    assert_eq!(
+        helper
+            .ok(call(&workspace, Some(&root), GitCommand::StashList))
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    helper.close().await;
 }
 
 #[tokio::test]

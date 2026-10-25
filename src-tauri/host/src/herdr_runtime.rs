@@ -2,6 +2,22 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Interpret Copy-as-path quoting only for an explicitly Windows-owned custom path.
+pub fn normalize_custom_binary_path(path: &str, windows_target: bool) -> Result<&str, String> {
+    if !windows_target {
+        return Ok(path);
+    }
+    let path = path
+        .trim()
+        .strip_prefix('"')
+        .and_then(|path| path.strip_suffix('"'))
+        .unwrap_or(path);
+    if path.contains('"') {
+        return Err("herdr-custom-path-invalid-quotes".into());
+    }
+    Ok(path)
+}
+
 pub fn inspect_local(binary: std::path::PathBuf) -> Result<RuntimeBinaryCheck, String> {
     use crate::herdr_backend::HerdrMetadata;
     let manager = crate::herdr_service::HerdrManager::with_binary(binary.clone());
@@ -260,5 +276,47 @@ mod tests {
         assert_eq!(check.client_version, "0.8.2");
         assert!(!check.can_apply);
         assert_eq!(check.sessions[0].server_protocol, Some(22));
+    }
+}
+
+#[cfg(test)]
+mod custom_path_tests {
+    use super::normalize_custom_binary_path;
+
+    #[test]
+    fn windows_copy_as_path_removes_only_one_outer_quote_layer() {
+        let literal = r"\\?\C:\tools\herdr.exe ";
+        assert_eq!(
+            normalize_custom_binary_path(literal, true).unwrap(),
+            literal
+        );
+        assert_eq!(
+            normalize_custom_binary_path("  \"C:\\tools\\herdr.exe\" \t", true).unwrap(),
+            "C:\\tools\\herdr.exe"
+        );
+        assert_eq!(
+            normalize_custom_binary_path("\"C:\\tools\\herdr.exe \"", true).unwrap(),
+            "C:\\tools\\herdr.exe "
+        );
+        for path in [
+            "\"\"C:\\herdr.exe\"\"",
+            "\"C:\\herdr.exe",
+            "C:\\herdr.exe\"",
+            "C:\\a\"b\\herdr.exe",
+        ] {
+            assert!(normalize_custom_binary_path(path, true).is_err());
+        }
+    }
+
+    #[test]
+    fn unix_paths_are_not_trimmed_or_unquoted() {
+        for path in [
+            "/tmp/a\"b/herdr ",
+            "/tmp/a'b/herdr",
+            " /tmp/herdr ",
+            "\"/tmp/herdr\"",
+        ] {
+            assert_eq!(normalize_custom_binary_path(path, false).unwrap(), path);
+        }
     }
 }

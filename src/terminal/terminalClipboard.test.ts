@@ -314,6 +314,34 @@ describe("terminal clipboard paste buffering", () => {
     controller.dispose()
   })
 
+  it.each([false, true])("binds a pending setup clipboard read to the first writable connector (reconnected=%s)", async reconnected => {
+    let writable = false
+    let owner: string | null = null
+    let finishRead!: (text: string) => void
+    readTextMock.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve }))
+    const { element, paste, term } = terminalStub()
+    const controller = installTerminalClipboardHandling(term, {
+      canPaste: () => writable,
+      pasteOwner: () => owner,
+    })
+    try {
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true, cancelable: true }))
+      expect(readTextMock).toHaveBeenCalledOnce()
+      owner = "first"
+      writable = true
+      controller.flushPendingPaste()
+      if (reconnected) {
+        owner = "second"
+        controller.flushPendingPaste()
+      }
+      finishRead("initial clipboard payload")
+      await Promise.resolve()
+      await Promise.resolve()
+      if (reconnected) expect(paste).not.toHaveBeenCalled()
+      else expect(paste).toHaveBeenCalledExactlyOnceWith("initial clipboard payload")
+    } finally { controller.dispose() }
+  })
+
   it("drops setup-buffered paste when the initial connection remains read-only", () => {
     let canPaste = false
     const { element, paste, term } = terminalStub()

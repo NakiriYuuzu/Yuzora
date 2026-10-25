@@ -176,6 +176,56 @@ describe("useSshStore never persists secrets", () => {
 })
 
 describe("useSshStore connection lifecycle", () => {
+    it("keeps a later selected connected host when another connection finishes", async () => {
+        const a = useSshStore.getState().addHost(keyHost)
+        const b = useSshStore.getState().addHost({ ...keyHost, name: "other", host: "10.0.0.6" })
+        await useSshStore.getState().connect(b.id)
+        const previousB = useSshStore.getState().sessions[b.id]
+        let complete!: (result: Awaited<ReturnType<typeof sshConnect>>) => void
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+        const connecting = useSshStore.getState().connect(a.id)
+        expect(useSshStore.getState().activeHostId).toBe(a.id)
+        useSshStore.getState().beginConnect(b.id)
+        complete({ sessionId: "background-a", fingerprint: "fixture-a" })
+        await connecting
+        expect(useSshStore.getState().activeHostId).toBe(b.id)
+        expect(useSshStore.getState().sessions[a.id]).toMatchObject({ status: "connected", sessionId: "background-a" })
+        expect(useSshStore.getState().sessions[b.id]).toBe(previousB)
+        expect(mockConnect).toHaveBeenCalledTimes(2)
+        expect(mockDisconnect).not.toHaveBeenCalled()
+    })
+
+    it.each(["a", "b"])("keeps the latest selected host when concurrent connects finish with %s first", async first => {
+        const a = useSshStore.getState().addHost(keyHost)
+        const b = useSshStore.getState().addHost({ ...keyHost, name: "other", host: "10.0.0.6" })
+        const complete: Record<string, (result: Awaited<ReturnType<typeof sshConnect>>) => void> = {}
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete.a = resolve }))
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete.b = resolve }))
+        const pending = { a: useSshStore.getState().connect(a.id), b: useSshStore.getState().connect(b.id) }
+        for (const next of [first, first === "a" ? "b" : "a"] as ("a" | "b")[]) {
+            complete[next]({ sessionId: `session-${next}`, fingerprint: `fixture-${next}` })
+            await pending[next]
+            expect(useSshStore.getState().activeHostId).toBe(b.id)
+        }
+        expect(useSshStore.getState().sessions[a.id].status).toBe("connected")
+        expect(useSshStore.getState().sessions[b.id].status).toBe("connected")
+    })
+
+    it("preserves selection of a disconnected host while another connection finishes", async () => {
+        const host = useSshStore.getState().addHost(keyHost)
+        const other = useSshStore.getState().addHost({ ...keyHost, name: "other", host: "10.0.0.6" })
+        let complete!: (result: Awaited<ReturnType<typeof sshConnect>>) => void
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+        const connecting = useSshStore.getState().connect(host.id)
+        useSshStore.getState().setActiveHost(other.id)
+        expect(useSshStore.getState().activeHostId).toBe(other.id)
+        complete({ sessionId: "background", fingerprint: "fixture" })
+        await connecting
+        expect(useSshStore.getState().activeHostId).toBe(other.id)
+        expect(useSshStore.getState().sessions[host.id].status).toBe("connected")
+        expect(useSshStore.getState().sessions[other.id]).toBeUndefined()
+    })
+
     it("connect marks connecting then connected and stores the fingerprint", async () => {
         const host = useSshStore.getState().addHost(passwordHost)
         await useSshStore.getState().connect(host.id, "pw")

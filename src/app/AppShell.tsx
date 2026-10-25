@@ -320,6 +320,7 @@ export function AppShell() {
     if (sidebarToggleRequest === sidebarToggleHandledRef.current) return
     sidebarToggleHandledRef.current = sidebarToggleRequest
     navAutoCollapsedRef.current = false
+    if (navCollapsed && window.innerWidth < 1200) setToolsOpen(false)
     leftToggleRef.current?.focus()
     // Persist outside the state updater so it stays pure; the handled-request
     // guard keeps navCollapsed changes from re-running the toggle.
@@ -333,6 +334,7 @@ export function AppShell() {
   useEffect(() => useUiStore.subscribe((state, previous) => {
     if (state.sidebarViewToggleRequest === previous.sidebarViewToggleRequest || !navCollapsedRef.current) return
     navAutoCollapsedRef.current = false
+    if (window.innerWidth < 1200) setToolsOpen(false)
     saveWorkbenchLayout({ navCollapsed: false })
     setNavCollapsed(false)
   }), [])

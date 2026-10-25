@@ -31,7 +31,7 @@
   "editHint": "Double-click a cell, or focus it and press Enter, to edit. Changes are saved explicitly.",
   "readOnlyHint": "This result is read-only. Open a table with a complete primary key to edit scalar values.",
   "editCell": "Edit {{column}}",
-  "editCellDescription": "Update one record in {{table}}. The original value is checked before saving.",
+  "editCellDescription": "Update one record in {{table}} on {{profile}}. The original value is checked before saving.",
   "value": "Value",
   "save": "Save",
   "saving": "Saving…",

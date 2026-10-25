@@ -15,6 +15,7 @@ interface RuntimeSubscription {
   identity: string
   needsBootstrap: boolean
   inFlight: boolean
+  forceRefreshQueued: boolean
   connecting: boolean
   subscriptionId: string | null
   subscriptionGeneration: number
@@ -43,10 +44,12 @@ export function HerdrBridge() {
     const current = (entry: RuntimeSubscription) => !cancelledRef.current && active.get(entry.scope) === entry
     const release = (entry: RuntimeSubscription) => {
       entry.subscriptionGeneration++
+      entry.connecting = false
       if (entry.refreshTimer) clearTimeout(entry.refreshTimer)
       if (entry.retryTimer) clearTimeout(entry.retryTimer)
       entry.refreshTimer = null
       entry.retryTimer = null
+      entry.forceRefreshQueued = false
       const id = entry.subscriptionId
       entry.subscriptionId = null
       useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
@@ -109,6 +112,7 @@ export function HerdrBridge() {
 
     const subscribe = async (entry: RuntimeSubscription) => {
       if (!current(entry) || entry.connecting || entry.retryTimer) return
+      if (useHerdrStore.getState().runtimesBySession[entry.scope]?.connectionState !== "ready") return
       const paneIds = [...new Set(useHerdrStore.getState().runtimesBySession[entry.scope]?.snapshot?.terminals
         .flatMap((terminal) => terminal.paneId ? [terminal.paneId] : []) ?? [])].sort()
       const paneKey = JSON.stringify(paneIds)
@@ -174,11 +178,18 @@ export function HerdrBridge() {
           useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
           retry()
         }
-      } finally { entry.connecting = false }
+      } finally {
+        if (entry.subscriptionGeneration === generation) entry.connecting = false
+      }
     }
 
     const refresh = async (entry: RuntimeSubscription, force = false) => {
-      if (!current(entry) || entry.inFlight || (!force && Date.now() < entry.nextAttempt)) return
+      if (!current(entry)) return
+      if (entry.inFlight) {
+        entry.forceRefreshQueued ||= force
+        return
+      }
+      if (!force && Date.now() < entry.nextAttempt) return
       entry.inFlight = true
       try {
         const state = useHerdrStore.getState()
@@ -206,7 +217,15 @@ export function HerdrBridge() {
         }
         void subscribe(entry)
         await maybeRestoreFocusedView(entry.scope)
-      } finally { entry.inFlight = false }
+      } finally {
+        entry.inFlight = false
+        // Event recovery must outlive the snapshot that was already in flight.
+        // Ordinary polling ticks still coalesce without scheduling extra work.
+        if (entry.forceRefreshQueued) {
+          entry.forceRefreshQueued = false
+          if (current(entry)) void refresh(entry, true)
+        }
+      }
     }
 
     const reconcileRuntimes = (refreshExisting = true) => {
@@ -226,7 +245,7 @@ export function HerdrBridge() {
         let entry = active.get(scope)
         const shouldRefresh = refreshExisting || !entry
         if (!entry) {
-          entry = {scope, identity, needsBootstrap:runtimeOwner(scope) !== null, inFlight:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
+          entry = {scope, identity, needsBootstrap:runtimeOwner(scope) !== null, inFlight:false, forceRefreshQueued:false, connecting:false, subscriptionId:null, subscriptionGeneration:0, paneKey:null, attempts:0, nextAttempt:0, lastSnapshot:0, lastInventory:Date.now(), refreshTimer:null, retryTimer:null}
           active.set(scope, entry)
         }
         if (shouldRefresh) void refresh(entry).catch(() => undefined)
@@ -279,7 +298,11 @@ export function HerdrBridge() {
     })
     const unsubscribeFocus = useHerdrStore.subscribe((state, previous) => {
       for (const [runtimeScope, entry] of active) {
-        if (state.runtimesBySession[runtimeScope]?.snapshot !== previous.runtimesBySession[runtimeScope]?.snapshot) {
+        const runtime = state.runtimesBySession[runtimeScope]
+        const before = previous.runtimesBySession[runtimeScope]
+        if (before?.capabilities && !runtime?.capabilities) release(entry)
+        if (runtime?.snapshot !== before?.snapshot || runtime?.capabilities !== before?.capabilities
+          || runtime?.connectionState !== before?.connectionState) {
           void subscribe(entry)
         }
       }

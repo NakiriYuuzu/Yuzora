@@ -64,11 +64,13 @@ export function isTerminalSafeCommand(id: AppCommandId): boolean {
 export function effectiveBinding(id: AppCommandId, overrides: Overrides): string {
     return overrides[id] ?? defaultBindingFor(id)
 }
+// Match WorkbenchKeyboardBridge when logical and physical keys alias on a layout.
+const TAB_COMMAND_ORDER = ["nextTab", "previousTab", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9"] as const
 export function tabShortcutBindings(): PreviewShortcutBinding[] {
     const mac = isMacPlatform()
-    return APP_COMMANDS.filter(command => /^(tab[1-9]|nextTab|previousTab)$/.test(command.id)).map(command => {
-        const parts = (useKeyboardSettingsStore.getState().overrides[command.id] ?? defaultBindingFor(command.id, mac)).split("+")
-        return { id: command.id, key: parts.pop()!.toUpperCase(), ctrl: parts.includes("Ctrl") || (parts.includes("Mod") && !mac), meta: parts.includes("Mod") && mac, alt: parts.includes("Alt"), shift: parts.includes("Shift") }
+    return TAB_COMMAND_ORDER.map(id => {
+        const parts = (useKeyboardSettingsStore.getState().overrides[id] ?? defaultBindingFor(id, mac)).split("+")
+        return { id, key: parts.pop()!.toUpperCase(), ctrl: parts.includes("Ctrl") || (parts.includes("Mod") && !mac), meta: parts.includes("Mod") && mac, alt: parts.includes("Alt"), shift: parts.includes("Shift") }
     })
 }
 type Overrides = Partial<Record<AppCommandId, string>>
@@ -100,11 +102,12 @@ function bindingValueError(value: string, mac = isMacPlatform()): "invalid" | "r
 }
 
 export function bindingError(id: AppCommandId, value: string, overrides: Overrides): "invalid" | "reserved" | "conflict" | null {
-    const invalid = bindingValueError(value)
+    const mac = isMacPlatform()
+    const invalid = bindingValueError(value, mac)
     if (invalid) return invalid
     const normalized = normalizeBinding(value)!
-    const canonical = (s: string) => s.replace("Mod+", "Ctrl+")
-    if (APP_COMMANDS.some(c => c.id !== id && canonical(overrides[c.id] ?? defaultBindingFor(c.id)) === canonical(normalized))) return "conflict"
+    const canonical = (s: string) => mac ? s : s.replace("Mod+", "Ctrl+")
+    if (APP_COMMANDS.some(c => c.id !== id && canonical(overrides[c.id] ?? defaultBindingFor(c.id, mac)) === canonical(normalized))) return "conflict"
     return null
 }
 

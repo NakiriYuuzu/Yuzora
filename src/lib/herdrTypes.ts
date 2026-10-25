@@ -580,6 +580,8 @@ export interface HerdrLayoutSetSplitRatioRequest {
 }
 
 export interface HerdrSessionRuntime {
+  /** Distinguishes negotiations even when Host owner and socket stay the same. */
+  bootstrapGeneration?: number
   /** Host generation and Session socket for the last successful negotiation. */
   capabilityIdentity?: string | null
   eventsHealthy?: boolean
