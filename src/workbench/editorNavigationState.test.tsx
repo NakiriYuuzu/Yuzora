@@ -4,7 +4,7 @@ import type { Editor } from "@tiptap/react"
 import { undo } from "@codemirror/commands"
 import { EditorSelection } from "@codemirror/state"
 import { getView } from "@/editor/viewRegistry"
-import { clearAll, dropDocument } from "@/editor/documentRegistry"
+import { clearAll, dropDocument, reloadDocument } from "@/editor/documentRegistry"
 import { retargetOpenDocuments } from "@/state/contextMenuStore"
 import { clearEditorViewStatesForTest } from "@/editor/editorViewState"
 import { clearMarkdownViewStatesForTest } from "@/editor/markdownViewState"
@@ -116,6 +116,35 @@ it("does not bring back undo history after the tab was closed", async () => {
     await waitFor(() => expect(getView("/w/a.txt")).toBeUndefined())
     act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
     await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    expect(undo(getView("/w/a.txt")!)).toBe(false)
+})
+
+// Text identical to the file on disk with undo steps recorded, so only an
+// explicit invalidation (not a text mismatch) can drop the retained history.
+async function editBackToDiskTextThenSwitchAway() {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.paste" }))
+    act(() => first.dispatch({ changes: { from: 0, to: "edit ".length }, userEvent: "input.paste" }))
+    await switchTo("/w/b.txt")
+}
+
+it("does not bring back undo history after an inactive tab was closed", async () => {
+    await editBackToDiskTextThenSwitchAway()
+    act(() => {
+        useWorkspaceStore.getState().closeTab(0, "/w/a.txt")
+        dropDocument("/w/a.txt")
+    })
+    act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
+    await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    expect(undo(getView("/w/a.txt")!)).toBe(false)
+})
+
+it("does not bring back undo history after an inactive document was reloaded", async () => {
+    await editBackToDiskTextThenSwitchAway()
+    await act(async () => { await reloadDocument("/w/a.txt") })
+    await switchTo("/w/a.txt")
     expect(undo(getView("/w/a.txt")!)).toBe(false)
 })
 

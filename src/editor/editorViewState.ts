@@ -123,6 +123,15 @@ export function rememberEditorHistory(workspacePath: string | null, path: string
 }
 
 /**
+ * Drops a document's recorded undo history. Its own pane skips recording when
+ * the buffer is gone, but a history recorded earlier, when the document was
+ * switched away from, has to be dropped with the buffer explicitly.
+ */
+export function forgetEditorHistory(workspacePath: string | null, path: string): void {
+    retainedViewState<SavedEditorHistory>(workspacePath, path, HISTORY_FACET).delete()
+}
+
+/**
  * Serialized undo history for `doc`, for EditorState.fromJSON with
  * `{ history: historyField }`, or undefined when none was recorded or the text
  * changed since (an external reload, or an edit made in another group).

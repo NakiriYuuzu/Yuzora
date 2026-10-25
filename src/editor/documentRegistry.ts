@@ -2,7 +2,7 @@ import { openFileSnapshot, saveFile } from "../lib/ipc"
 import { parseRemoteFilePath } from "../lib/runtimeIdentity"
 import type { OpenFileResult } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
-import { renameEditorViewState } from "./editorViewState"
+import { forgetEditorHistory, renameEditorViewState } from "./editorViewState"
 
 export interface RegistryEntry {
     result: OpenFileResult
@@ -48,6 +48,8 @@ export function dropDocument(path: string, workspace = useWorkspaceStore.getStat
     const key = documentKey(path, workspace)
     registry.delete(key)
     for (const read of pendingReads) if (read.key === key) pendingReads.delete(read)
+    // A closed document starts over with no undo history.
+    forgetEditorHistory(workspace, path)
 }
 
 // Move a cached document from oldPath to newPath after a rename so a re-opened
@@ -129,6 +131,9 @@ export async function reloadDocument(
         if (mode === "reconcile" && previous && sameDiskSnapshot(previousDisk, snapshot.result)) return previous
         const entry = { result: snapshot.result, diskResult: snapshot.result }
         registry.set(key, entry)
+        // A reloaded document starts over with no undo history, even when the
+        // new text happens to equal the text the history was recorded against.
+        forgetEditorHistory(useWorkspaceStore.getState().workspacePath, path)
         const nextGeneration = (generations.get(key) ?? generationBase) + 1
         generations.set(key, nextGeneration)
         highestGeneration = Math.max(highestGeneration, nextGeneration)

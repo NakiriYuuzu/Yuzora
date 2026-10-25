@@ -77,3 +77,13 @@ it("routes Edit menu events to the focused editor, otherwise to the native respo
     expect(ipc.editHistoryNative).not.toHaveBeenCalled()
     expect(editor.state.doc.toString()).toBe("alpha")
 })
+
+it("leaves the action native when a child Browser webview owns keyboard focus over a stale editor activeElement", () => {
+    const editor = editedView()
+    render(<EditHistoryBridge />)
+    vi.spyOn(document, "activeElement", "get").mockReturnValue(editor.contentDOM)
+    vi.spyOn(document, "hasFocus").mockReturnValue(false)
+    events.handler!({ payload: "undo" })
+    expect(ipc.editHistoryNative).toHaveBeenCalledWith("undo")
+    expect(editor.state.doc.toString()).toBe("alpha beta")
+})
