@@ -6,8 +6,11 @@ export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown"
 export type SessionInfo = { name: string; default: boolean }
 export type Snapshot = {
   session: string
-  /** `git`: the desktop shares this Space's repository read-only. */
-  workspaces: { id: string | null; label: string | null; status: AgentStatus; git: boolean }[]
+  /**
+   * `git`: the desktop shares this Space's repository read-only. `gitGeneration`
+   * (only with `git`) is an opaque token that changes whenever the desktop maps the Space to another folder.
+   */
+  workspaces: { id: string | null; label: string | null; status: AgentStatus; git: boolean; gitGeneration?: string }[]
   tabs: { id: string | null; workspaceId: string | null; label: string | null }[]
   panes: { id: string | null; tabId: string | null; workspaceId: string | null; status: AgentStatus; label: string | null; layout: { cols: number; rows: number } | null }[]
   agents: { paneId: string | null; name: string | null; agent: string | null; status: AgentStatus }[]
@@ -85,6 +88,13 @@ export const READ_METHODS = new Set([
   "sessions.list", "snapshot.get", "events.subscribe", "terminal.observe",
   "git.status", "git.branches", "git.log", "git.commit", "git.diff", "push.status",
 ])
+
+/**
+ * Calls that hold one of the gateway's two per-peer pending slots. `push.subscribe`
+ * waits there for the desktop to store the subscription; it is not a read, so a
+ * lost answer stays `outcome-unknown`.
+ */
+export const SLOT_METHODS = new Set([...READ_METHODS, "push.subscribe"])
 
 /** Keys `pane.sendKeys` accepts. */
 export const AGENT_KEYS = ["Enter", "Escape", "Tab", "BackTab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Ctrl-C", "Ctrl-D"] as const

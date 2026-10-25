@@ -159,6 +159,35 @@ it("shows the desktop's refusal in words and stays off", async () => {
   expect(screen.getByRole("button", { name: "Turn on" })).toBeEnabled()
 })
 
+it.each([
+  ["push-store-failed", "The desktop could not save this notification setting. Try again."],
+  ["push-unconfirmed", "The desktop did not confirm the notification setting in time. Try again."],
+])("stays off and says why when the desktop answers %s to the subscribe", async (code, message) => {
+  client.call.mockImplementation(async (method: string) => {
+    if (method === "push.subscribe") throw new RpcError(code)
+    return { subscribed: false }
+  })
+  await openDialog(/Get a notification/)
+  fireEvent.click(screen.getByRole("button", { name: "Turn on" }))
+  expect(await screen.findByText(message)).toBeInTheDocument()
+  expect(screen.queryByText("Notifications are on for this phone.")).toBeNull()
+  expect(screen.getByRole("button", { name: "Turn on" })).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Turn off" })).toBeNull()
+})
+
+it("says on only once the desktop's answer to the subscribe has come", async () => {
+  let confirm: (value: unknown) => void = () => {}
+  client.call.mockImplementation((method: string) =>
+    method === "push.subscribe" ? new Promise((resolve) => { confirm = resolve }) : Promise.resolve({ subscribed: false }),
+  )
+  await openDialog(/Get a notification/)
+  fireEvent.click(screen.getByRole("button", { name: "Turn on" }))
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("push.subscribe", expect.anything()))
+  expect(screen.queryByText("Notifications are on for this phone.")).toBeNull()
+  confirm({ subscribed: true })
+  expect(await screen.findByText("Notifications are on for this phone.")).toBeInTheDocument()
+})
+
 it("reports a browser failure generically", async () => {
   subscribe.mockRejectedValue(new Error("push service error"))
   await openDialog(/Get a notification/)

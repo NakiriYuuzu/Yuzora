@@ -42,5 +42,5 @@ export const api = {
   loginFinish: (credential: unknown) => post<LoginResponse>("/api/auth/finish", { credential }),
   elevateOptions: (scope: Scope, binding: string) => post<unknown>("/api/auth/elevate/options", { scope }, binding),
   elevateFinish: (scope: Scope, credential: unknown, binding: string) => post<ElevationResponse>("/api/auth/elevate/finish", { scope, credential }, binding),
-  logout: (binding: string) => post<void>("/api/auth/logout", {}, binding),
+  logout: (binding: string, signal?: AbortSignal) => post<void>("/api/auth/logout", {}, binding, signal),
 }

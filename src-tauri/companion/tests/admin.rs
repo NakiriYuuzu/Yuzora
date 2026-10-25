@@ -459,6 +459,103 @@ async fn admin_push_devices_frame_is_versioned_closed_and_unacknowledged() {
 }
 
 #[tokio::test]
+async fn admin_push_ack_and_peers_list_frames_are_versioned_and_closed() {
+    let frame = |value: serde_json::Value| (value.to_string() + "\n").into_bytes();
+    let read = |bytes: Vec<u8>| async move { admin::read(&mut bytes.as_slice()).await };
+    let Ok(Some(command)) = read(frame(
+        serde_json::json!({"v":1,"type":"push.ack","requestId":7,"stored":false}),
+    ))
+    .await
+    else {
+        panic!("valid command")
+    };
+    let CommandBody::PushAck(ack) = command.body else {
+        panic!("push.ack")
+    };
+    assert_eq!((ack.request_id, ack.stored), (7, false));
+    let Ok(Some(command)) = read(frame(
+        serde_json::json!({"v":1,"type":"peers.list","requestId":3}),
+    ))
+    .await
+    else {
+        panic!("valid command")
+    };
+    let CommandBody::Peers(list) = command.body else {
+        panic!("peers.list")
+    };
+    assert_eq!(list.request_id, 3);
+    for (kind, body) in [
+        ("push.ack", serde_json::json!({"requestId":1,"stored":true})),
+        ("peers.list", serde_json::json!({"requestId":1})),
+    ] {
+        let mut versioned = body.clone();
+        versioned["v"] = serde_json::json!(2);
+        versioned["type"] = serde_json::json!(kind);
+        assert!(matches!(
+            read(frame(versioned)).await,
+            Err("unsupported-version")
+        ));
+    }
+    for invalid in [
+        serde_json::json!({"v":1,"type":"push.ack"}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":1}),
+        serde_json::json!({"v":1,"type":"push.ack","stored":true}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":"1","stored":true}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":-1,"stored":true}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":1,"stored":"yes"}),
+        serde_json::json!({"v":1,"type":"push.ack","requestId":1,"stored":true,"x":1}),
+        serde_json::json!({"v":1,"type":"peers.list"}),
+        serde_json::json!({"v":1,"type":"peers.list","requestId":null}),
+        serde_json::json!({"v":1,"type":"peers.list","requestId":1,"x":1}),
+    ] {
+        assert!(matches!(read(frame(invalid)).await, Err("invalid-command")));
+    }
+}
+
+#[tokio::test]
+async fn admin_peers_snapshot_event_is_a_closed_reply_with_its_request_id() {
+    use yuzora_companion::{admin::AdminResult, clock::Clock, gateway::Gateway};
+    let init: yuzora_companion::admin::Init = serde_json::from_str(&init_fixture::json()).unwrap();
+    let (events, _writer) = admin::spawn_writer(tokio::io::sink());
+    let gateway = Gateway::new(&init, events, Clock::default()).unwrap();
+    let list = CommandBody::Peers(
+        serde_json::from_value(serde_json::json!({"v":1,"type":"peers.list","requestId":9}))
+            .unwrap(),
+    );
+    let result = gateway.command(list).unwrap();
+    assert!(
+        matches!(&result, AdminResult::Peers { request_id: 9, peers, streams } if peers.is_empty() && streams.is_empty())
+    );
+    let event = serde_json::to_value(result.deferred_event().unwrap()).unwrap();
+    assert_eq!(
+        event,
+        serde_json::json!({"v":1,"type":"peers.snapshot","requestId":9,"peers":[],"streams":[]})
+    );
+    let filled = AdminResult::Peers {
+        request_id: 1,
+        peers: vec![admin::PeerInfo {
+            peer_id: 4,
+            device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+        }],
+        streams: vec![admin::StreamInfo {
+            stream: "12".into(),
+            device_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+            peer_id: 4,
+            session: "work".into(),
+            scope: admin::Scope::Control,
+            target: Some("w:p".into()),
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(filled.deferred_event().unwrap()).unwrap(),
+        serde_json::json!({"v":1,"type":"peers.snapshot","requestId":1,
+            "peers":[{"peerId":4,"deviceId":"AAAAAAAAAAAAAAAAAAAAAA"}],
+            "streams":[{"stream":"12","deviceId":"AAAAAAAAAAAAAAAAAAAAAA","peerId":4,
+                "session":"work","scope":"control","target":"w:p"}]})
+    );
+}
+
+#[tokio::test]
 async fn admin_concurrent_emits_are_ordered_complete_lines() {
     use tokio::io::AsyncReadExt;
     // Tiny transport forces each line to span multiple writes.
@@ -628,4 +725,155 @@ async fn admin_stalled_stdout_writer_timeout_closes_pending_ack() {
         std::io::ErrorKind::TimedOut
     );
     events.closed().await;
+}
+
+fn nested(open: &str, close: &str, depth: usize) -> String {
+    format!("{}0{}", open.repeat(depth), close.repeat(depth))
+}
+
+#[tokio::test]
+async fn admin_malformed_input_table_wrong_types_duplicates_nesting_bytes_and_blank_lines() {
+    let deep_array = nested("[", "]", 100_000);
+    let deep_object = format!("{}0{}", "{\"a\":".repeat(100_000), "}".repeat(100_000));
+    let mut cases: Vec<(String, &str)> = Vec::new();
+    // Wrong primitive types in the envelope are invalid-command, never a version error.
+    for v in [
+        "\"1\"",
+        "1.0",
+        "1.5",
+        "-1",
+        "true",
+        "null",
+        "[1]",
+        "{}",
+        "4294967297",
+    ] {
+        cases.push((
+            format!("{{\"v\":{v},\"type\":\"shutdown\"}}\n"),
+            "invalid-command",
+        ));
+    }
+    for kind in ["1", "null", "true", "[\"shutdown\"]", "{}"] {
+        cases.push((format!("{{\"v\":1,\"type\":{kind}}}\n"), "invalid-command"));
+    }
+    for top in ["[]", "\"shutdown\"", "1", "null", "true"] {
+        cases.push((format!("{top}\n"), "invalid-command"));
+    }
+    // Duplicate envelope keys are rejected (serde derive), so neither first-wins
+    // nor last-wins can smuggle a different version/type past a logger or proxy.
+    cases.push((
+        "{\"v\":1,\"v\":2,\"type\":\"shutdown\"}\n".into(),
+        "invalid-command",
+    ));
+    cases.push((
+        "{\"v\":2,\"v\":1,\"type\":\"shutdown\"}\n".into(),
+        "invalid-command",
+    ));
+    cases.push((
+        "{\"v\":1,\"type\":\"shutdown\",\"type\":\"init\"}\n".into(),
+        "invalid-command",
+    ));
+    cases.push((
+        "{\"v\":1,\"type\":\"pairing.approve\",\"pairingId\":\"a\",\"pairingId\":\"b\"}\n".into(),
+        "invalid-command",
+    ));
+    // Nesting beyond serde_json's recursion limit fails cleanly: no stack overflow.
+    cases.push((
+        format!("{{\"v\":1,\"type\":\"shutdown\",\"x\":{deep_array}}}\n"),
+        "invalid-command",
+    ));
+    cases.push((
+        format!("{{\"v\":1,\"type\":\"init\",\"x\":{deep_object}}}\n"),
+        "invalid-command",
+    ));
+    cases.push((
+        format!("{{\"v\":1,\"type\":\"init\",\"herdrBinary\":{deep_array}}}\n"),
+        "invalid-command",
+    ));
+    // Positional (array) envelopes are not NDJSON command objects.
+    cases.push(("[1,\"shutdown\"]\n".into(), "invalid-command"));
+    cases.push(("[2,\"shutdown\"]\n".into(), "invalid-command"));
+    cases.push((format!("{deep_array}\n"), "invalid-command"));
+    // Invalid UTF-8 and raw NUL bytes.
+    let mut frames: Vec<(Vec<u8>, &str)> = vec![(
+        b"{\"v\":1,\"type\":\"sh\xffutdown\"}\n".to_vec(),
+        "invalid-command",
+    )];
+    frames.push((
+        b"{\"v\":1,\"type\":\"init\",\"x\":\"\xc3\x28\"}\n".to_vec(),
+        "invalid-command",
+    ));
+    frames.push((
+        b"{\"v\":1,\"type\":\"shut\0down\"}\n".to_vec(),
+        "invalid-command",
+    ));
+    frames.push((
+        b"{\"v\":1,\"type\":\"shutdown\"}\0\n".to_vec(),
+        "invalid-command",
+    ));
+    frames.push((b"\0\n".to_vec(), "invalid-command"));
+    // Empty, whitespace-only and CRLF-only lines are frames, and invalid ones.
+    for blank in ["\n", "\r\n", " \n", "\t\r\n"] {
+        frames.push((blank.as_bytes().to_vec(), "invalid-command"));
+    }
+    // A lone CR is not a terminator: the frame is truncated at EOF.
+    frames.push((
+        b"{\"v\":1,\"type\":\"shutdown\"}\r".to_vec(),
+        "invalid-frame",
+    ));
+    frames.extend(
+        cases
+            .into_iter()
+            .map(|(text, code)| (text.into_bytes(), code)),
+    );
+    for (bytes, expected) in frames {
+        let mut reader = bytes.as_slice();
+        let result = admin::read(&mut reader).await;
+        assert!(
+            matches!(&result, Err(code) if *code == expected),
+            "{:?} -> {:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(80)]),
+            result.as_ref().map(|_| "accepted").map_err(|e| *e)
+        );
+    }
+    // Accepted shapes that must stay accepted: CRLF-terminated frame, nesting
+    // inside the recursion limit, and an escaped NUL in an ignored future field.
+    let mut reader = b"{\"v\":1,\"type\":\"shutdown\"}\r\n".as_slice();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Shutdown
+    ));
+    let shallow = format!(
+        "{{\"v\":1,\"type\":\"future\",\"x\":{},\"y\":\"\\u0000\"}}\n",
+        nested("[", "]", 64)
+    );
+    let mut reader = shallow.as_bytes();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Unknown
+    ));
+    // An IGNORED field of a future command type is skipped iteratively by serde_json:
+    // even 100000-deep nesting neither overflows the stack nor needs rejecting.
+    let ignored =
+        format!("{{\"v\":1,\"type\":\"future\",\"x\":{deep_array},\"y\":{deep_object}}}\n");
+    let mut reader = ignored.as_bytes();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Unknown
+    ));
+    // serde_json skips (does not UTF-8 validate) strings of an IGNORED field; that
+    // only happens for a future command type whose body is discarded as Unknown.
+    // Typed bodies (init above, shutdown, pairing...) still validate every byte.
+    let mut reader = b"{\"v\":1,\"type\":\"future\",\"x\":\"\xc3\x28\"}\n".as_slice();
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Unknown
+    ));
+    // A bad frame consumes exactly its line: the next command still parses.
+    let mut reader = b"\r\n{\"v\":1,\"type\":\"shutdown\"}\n".as_slice();
+    assert!(admin::read(&mut reader).await.is_err());
+    assert!(matches!(
+        admin::read(&mut reader).await.unwrap().unwrap().body,
+        CommandBody::Shutdown
+    ));
 }

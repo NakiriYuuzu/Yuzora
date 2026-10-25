@@ -1,7 +1,11 @@
-import type { GitRef } from "./protocol"
+import type { GitRef, Snapshot } from "./protocol"
 
 /** A Space's key in the per-Space caches. */
 export const spaceKey = (session: string, workspaceId: string) => `${session}\0${workspaceId}`
+
+/** The repository token a snapshot names for a Space; `undefined` when it shares none (or an older desktop sends no token). */
+export const gitGeneration = (snapshot: Snapshot | undefined, workspaceId: string) =>
+  snapshot?.workspaces.find((space) => space.id === workspaceId)?.gitGeneration
 
 /** A repository-relative path as its directory (with the trailing slash) and file name. */
 export function splitPath(path: string): { dir: string; name: string } {

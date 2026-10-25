@@ -85,11 +85,12 @@ View scope。**沒有** `FileAtRev`／整檔內容／任何寫入／remote 存�
 
 - Init 頂層多兩個必填欄位：`trustStore`（桌面 `workspace-trust.json` 的**絕對**路徑，否則 `invalid-trust-store`）與 `spaceRoots`（≤512 筆 `{session, workspaceId, root}`；session／workspaceId 非空且 ≤256 bytes，root 非空、≤4096 bytes 且為絕對路徑；`(session, workspaceId)` 重複或任何一筆不合規 → `invalid-space-roots`，皆為 fatal init 錯誤）。session 不在 `sessionAllowlist` 的項目靜默丟棄（檢查在過濾**之前**，過濾掉的重複項仍算無效）。缺欄位是一般的 `invalid-command`。
 - Admin `{"v":1,"type":"spaces.roots","roots":[…]}`：同樣驗證，**整批取代**對映；root 沒變的 Space 保留已偵測的 Git 狀態，變更與移除的丟棄。沒有 ack；無效 → `error{admin-command-rejected}`，原對映不變；格式錯誤 → `invalid-command`。
+- Admin `{"v":1,"type":"peers.list","requestId":<u64>}`：問「現在連線的手機」。gateway 以事件 `peers.snapshot {requestId, peers:[{peerId, deviceId}], streams:[{stream, deviceId, peerId, session, scope:"control"|"full", target?}]}` 回覆（`requestId` 原樣帶回；`stream` 與 `control.state`／`full.state` 的 `stream` 同一把鑰匙；`target` 只有 control）。這是 gateway 自己的狀態，不依賴 best-effort 的 `session.*`／`*.state` 事件，桌面用它校正遺失的事件。回覆走可靠的 `emit`（等 flush），不是 `try_emit`。格式錯誤（含缺少或非整數的 `requestId`）→ `invalid-command`；政策過期 → `error{admin-command-rejected}`。
 - Gateway 只**讀**信任檔：每次讀取都重新讀檔（桌面撤銷後下一個請求即生效），從不 grant／revoke／發 challenge（`tests/contracts.rs` 有文字 tripwire）。信任檔不存在等同空白，全部 `git-untrusted`。
 
 ### Snapshot
 
-`snapshot.get` 的每個 `workspaces[]` 多一個 `git: boolean`＝該 `(session, workspace id)` 有對映的 root。仍無任何路徑。
+`snapshot.get` 的每個 `workspaces[]` 多一個 `git: boolean`＝該 `(session, workspace id)` 有對映的 root；有對映時另帶 `gitGeneration`（不透明字串）：只要這個 Space 的 root 對映變了（換了資料夾、移除後重新加入）就會換新值，root 沒變的 `spaces.roots` 不會；值每次 gateway 啟動都不同，且不含路徑。手機以它作為 Git 快取的版本，值變了就丟掉該 Space 的快取。仍無任何路徑。
 
 ### 方法
 
@@ -147,7 +148,7 @@ gateway 只負責**判斷何時該推**：它不碰網路、不持有 VAPID 私�
 - Admin `{"v":1,"type":"push.devices","devices":[{deviceId, endpoints:[endpointId, …]}]}`：**整批取代**「持有訂閱的裝置集合」（限制與 init 的 `devices` 相同，未知 device 忽略）。沒有 ack；init 沒有 `push` 或違反限制（超過 64 個 device、某 device 的 endpoint 為 0 或超過 4 個、id 格式不符、device 重複）→ `error{admin-command-rejected}`，原集合不變；格式錯誤（含舊的 `deviceIds` 形狀）→ `invalid-command`。
 - 這個集合只由 init 與 `push.devices` 決定，另外 `device.revoke` 會立刻把該裝置連同它所有的 endpoint id 移出（不等桌面下一次 `push.devices`；之後的 `push.devices` 也帶不回已撤銷的裝置）。`push.subscribe`／`push.unsubscribe` **不**直接改集合：桌面存好訂閱後以 `push.devices` 回覆。
 - Admin 事件（兩者都是 ordinary 類，與稽核共用 48 個 slot，不會吃掉收緊事件的保留空間）：
-  - `push.subscription {deviceId, subscription:{endpoint,p256dh,auth}}`：該裝置新增／取代這一個 endpoint 的訂閱（不影響它的其他 endpoint）。
+  - `push.subscription {deviceId, subscription:{endpoint,p256dh,auth}, requestId}`：該裝置新增／取代這一個 endpoint 的訂閱（不影響它的其他 endpoint）；`requestId`（u64）是手機正在等的那一次，桌面以 `push.ack` 回答。
   - `push.subscription {deviceId, subscription:null, endpointId}`：只移除該裝置的這一個 endpoint；`subscription` 為 `null` 時一定帶 `endpointId`，否則不帶。
   - 佇列滿 → 該 RPC 回 `busy`，不送。
   - `push.request {deviceIds:[…], payload:{kind:"blocked"|"done", session, paneId, workspaceId:string|null, title, space:string|null}}`：`deviceIds` 是當下集合扣掉已鎖定與已撤銷的裝置（空則不送）。`title`＝agent 的 `name`，其次 agent 種類，其次 pane label，最後 pane id；`space`＝workspace label；兩者去頭尾空白、最多 128 個字元。佇列滿 → 丟棄，計入 `audit.dropped.lost`（不重送）。
@@ -157,15 +158,16 @@ gateway 只負責**判斷何時該推**：它不碰網路、不持有 VAPID 私�
 | 方法 | params | result / 行為 |
 |---|---|---|
 | `hello` | — | `result.push`＝`{vapidPublicKey}` 或 `null`（不提供） |
-| `push.subscribe` | `{endpoint, keys:{p256dh, auth}}`（封閉物件；`PushSubscription.toJSON()` 的 `expirationTime` 等多餘欄位須先拿掉） | 送 admin `push.subscription`，回 `{subscribed:true}` |
+| `push.subscribe` | `{endpoint, keys:{p256dh, auth}}`（封閉物件；`PushSubscription.toJSON()` 的 `expirationTime` 等多餘欄位須先拿掉） | 送 admin `push.subscription`（帶 `requestId`），**等桌面以 `push.ack` 確認已寫入**才回 `{subscribed:true}`；桌面回 `stored:false` → `push-store-failed`；5 秒內沒有 ack → `push-unconfirmed`。等待占用該連線 2 個 pending 槽之一 |
 | `push.unsubscribe` | `{endpoint}`（字串，≤2048 bytes） | 送 admin `push.subscription`（`subscription:null`、`endpointId`＝該 endpoint 的 id），回 `{subscribed:false}`；只移除這一個 endpoint |
 | `push.status` | `{endpoint}`（字串或 `null`，≤2048 bytes；省略或整個 params 為空視同 `null`） | `{available, subscribed}`；`subscribed` 只有在 `endpoint` 非 `null` 且它的 id 在**此 device** 的 endpoint 清單內才為 true（桌面 `push.devices` 確認後）：同一個 device 的另一個瀏覽器有訂閱，不會讓這個瀏覽器顯示為已開啟 |
 
+- Admin `{"v":1,"type":"push.ack","requestId":<u64>,"stored":<bool>}`：桌面對帶 `requestId` 的 `push.subscription` 的回答（`stored` ＝訂閱已落地；未知裝置、無效訂閱或寫入失敗皆為 `false`）。桌面先送新的 `push.devices` 再送 ack，所以收到成功後 `push.status` 已反映。沒有人在等（逾時後才到、id 不明）的 ack 靜默忽略；沒有回覆。
 - 不提供推播時 `push.subscribe`／`push.unsubscribe` 回 `push-unavailable`（先於參數檢查）；`push.status` 回 `{available:false, subscribed:false}`。
 - `push.status`／`push.unsubscribe` 的 `endpoint` 只會被雜湊，所以除了長度（≤2048 bytes，超過 → `invalid-params`）與型別（非字串 → `invalid-params`）外不做其他驗證；params 是封閉物件。
 - `endpoint` ≤2048 bytes，只能是可見 ASCII，**必須** `https://`（小寫）、**不得**有 userinfo、port、fragment（`#`）或反斜線，host 為小寫 DNS 名稱，且等於或是以下之一的子網域：`push.apple.com`、`fcm.googleapis.com`、`updates.push.services.mozilla.com`、`notify.windows.com`。比對邊界是 `.`：`evilpush.apple.com`、`push.apple.com.attacker.tld`、`push.apple.com.evil`、`push.services.mozilla.com`（上層網域）、結尾多 `.` 都不合。
 - `p256dh`：unpadded base64url、解碼 65 bytes、第一個 byte 0x04；`auth`：unpadded base64url、解碼 16 bytes。非標準尾端位元、padding、標準字母表（`+`／`/`）一律 `invalid-params`。
-- 錯誤碼：`push-unavailable`、`invalid-params`、`busy`（admin 佇列滿）。這三個方法不列在 `hello.capabilities.methods`。
+- 錯誤碼：`push-unavailable`、`invalid-params`、`busy`（admin 佇列滿，或該連線的 pending 槽已滿）、`push-store-failed`、`push-unconfirmed`。這三個方法不列在 `hello.capabilities.methods`。
 
 ### Watcher
 

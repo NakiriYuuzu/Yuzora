@@ -1,5 +1,5 @@
 import { fromBase64 } from "./base64url"
-import { READ_METHODS, type Hello } from "./protocol"
+import { READ_METHODS, SLOT_METHODS, type Hello } from "./protocol"
 
 /**
  * - `connecting`: opening the socket or waiting for `session.ready`.
@@ -90,11 +90,12 @@ export class CompanionSocket {
   }
 
   /**
-   * Reads share two slots (the gateway's per-peer limit) and retry `busy`.
+   * Reads and `push.subscribe` share two slots (the gateway's per-peer limit)
+   * and retry `busy`, which means the gateway did not run the call.
    * Everything else is sent once, immediately, and never retried.
    */
   async call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    if (!READ_METHODS.has(method)) return this.send<T>(method, params)
+    if (!SLOT_METHODS.has(method)) return this.send<T>(method, params)
     await this.acquireRead()
     try {
       for (let attempt = 0; ; attempt += 1) {

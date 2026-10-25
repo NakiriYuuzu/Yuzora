@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { dropLog, loadCommit, loadDiff, loadLog } from "./gitReads"
+import { dropLog, loadCommit, loadDiff, loadLog, loadStatus } from "./gitReads"
 import { spaceKey } from "./lib/git"
-import type { GitCommit, GitLog, GitLogCommit } from "./lib/protocol"
+import type { GitCommit, GitLog, GitLogCommit, Snapshot } from "./lib/protocol"
 import { RpcError } from "./lib/rpc"
 import { useCompanion } from "./store"
 
@@ -100,5 +100,50 @@ describe("loadDiff", () => {
     expect(client.call.mock.calls).toEqual([
       ["git.diff", { session: "work", workspaceId: "w1", kind: "worktree", path: "a.ts", untracked: false }],
     ])
+  })
+})
+
+describe("a Space the desktop maps to another repository", () => {
+  const sharing = (gitGeneration: string): Snapshot => ({
+    session: "work",
+    workspaces: [{ id: "w1", label: null, status: "idle", git: true, gitGeneration }],
+    tabs: [],
+    panes: [],
+    agents: [],
+  })
+
+  it("tags what it reads with the repository it was read from", async () => {
+    useCompanion.setState({ snapshots: { work: sharing("g1") } })
+    client.call.mockResolvedValueOnce(page(["a"], null))
+    await loadLog("work", "w1")
+    expect(useCompanion.getState().git[spaceKey("work", "w1")]?.generation).toBe("g1")
+  })
+
+  it("does not file a read that was on its way during the remap under the new repository", async () => {
+    useCompanion.setState({ snapshots: { work: sharing("g1") } })
+    let finish: (value: GitLog) => void = () => {}
+    client.call.mockReturnValueOnce(new Promise<GitLog>((resolve) => { finish = resolve }))
+    const reading = loadLog("work", "w1")
+    // The snapshot that names the new repository lands first.
+    useCompanion.setState({ snapshots: { work: sharing("g2") } })
+    finish(page(["old-repo-commit"], null))
+    await reading
+    expect(log()).toBeUndefined()
+    // The next read, now of the new repository, is kept.
+    client.call.mockResolvedValueOnce(page(["new-repo-commit"], null))
+    await loadLog("work", "w1")
+    expect(log()?.commits.map((item) => item.hash)).toEqual(["new-repo-commit"])
+    expect(useCompanion.getState().git[spaceKey("work", "w1")]?.generation).toBe("g2")
+  })
+
+  it("applies the same rule to status", async () => {
+    useCompanion.setState({ snapshots: { work: sharing("g1") } })
+    let finish: (value: unknown) => void = () => {}
+    client.call.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    const reading = loadStatus("work", "w1")
+    useCompanion.setState({ snapshots: { work: sharing("g2") } })
+    finish({ repo: { name: "old" }, status: {}, truncated: false })
+    await reading
+    expect(useCompanion.getState().git[spaceKey("work", "w1")]?.status).toBeUndefined()
   })
 })

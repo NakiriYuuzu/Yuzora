@@ -341,3 +341,60 @@ func TestStdLogNeverReachesStderr(t *testing.T) {
 		t.Fatalf("the std logger reached stderr: %q", stderr.String())
 	}
 }
+
+// runnableMalformedFrames are the malformed lines that fit one frame; the
+// oversize ones are a fatal read error covered by TestRunOversizedFrameAfterInitStops.
+func runnableMalformedFrames() map[string]string {
+	lines := map[string]string{
+		"nesting 30000 deep": `{"v":1,"type":"serve","x":` + strings.Repeat("[", 30000) + strings.Repeat("]", 30000) + `}`,
+	}
+	for name, line := range malformedFrames() {
+		if line != "" && len(line) <= maxFrameBytes {
+			lines[name] = line
+		}
+	}
+	return lines
+}
+
+func TestRunMalformedHandshakeFramesExitWithTwo(t *testing.T) {
+	for name, line := range runnableMalformedFrames() {
+		f := startRun(t, nil)
+		go func() { _, _ = io.WriteString(f.in, line+"\n") }()
+		if code := f.exitCode(t); code != exitProtocol {
+			t.Errorf("%s: exit %d, want 2", name, code)
+		}
+		if got := errorCodes(t, f.out); len(got) != 1 || got[0] != "net-init-invalid" {
+			t.Errorf("%s: error codes %v, want net-init-invalid", name, got)
+		}
+		if len(f.out.ofType(t, "started")) != 0 || f.host != "" {
+			t.Errorf("%s: the node must not start", name)
+		}
+	}
+}
+
+func TestRunMalformedFramesAfterInitAreIgnored(t *testing.T) {
+	f := startRun(t, nil)
+	f.init(t)
+	// Written from a goroutine: if a frame wrongly stopped the loop, the pipe
+	// stops draining and the test must fail on the missing reply, not hang.
+	go func() {
+		for _, line := range runnableMalformedFrames() {
+			if _, err := io.WriteString(f.in, line+"\n"); err != nil {
+				return
+			}
+		}
+		_, _ = io.WriteString(f.in, `{"v":1,"type":"unserve"}`+"\n")
+	}()
+	// The loop is still alive and answers the next well-formed command.
+	waitFrame(t, f.out, "unserved")
+	if got := errorCodes(t, f.out); len(got) != 0 {
+		t.Errorf("malformed frames must be dropped silently, got errors %v", got)
+	}
+	if len(f.out.ofType(t, "serving")) != 0 {
+		t.Error("a malformed frame must never start serving")
+	}
+	f.send(t, `{"v":1,"type":"shutdown"}`)
+	if code := f.exitCode(t); code != exitOK {
+		t.Fatalf("exit %d, want 0", code)
+	}
+}

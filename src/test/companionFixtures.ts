@@ -1,5 +1,5 @@
 import fixtures from "./companionFixtures.json"
-import type { CompanionDevice, CompanionEvent, CompanionOverview, CompanionPairingQr, CompanionPhoneLink, CompanionStatus, NetOverview, PushOverview } from "@/lib/companionIpc"
+import type { CompanionDevice, CompanionEvent, CompanionOverview, CompanionPairingQr, CompanionPeers, CompanionPhoneLink, CompanionStatus, NetOverview, PushOverview } from "@/lib/companionIpc"
 
 /** What the Rust commands serialize, pinned by `companion_ui_fixtures_match_the_serialized_shapes`. */
 export const companionFixtures = fixtures as unknown as {
@@ -22,6 +22,7 @@ export const companionFixtures = fixtures as unknown as {
   pairingQr: CompanionPairingQr
   phoneLink: CompanionPhoneLink
   sessionsSet: { restartRequired: boolean }
+  peersSnapshot: CompanionPeers
 }
 
 /** `{ reject }` makes the mocked command fail with that message, as Tauri rejects with a string. */

@@ -727,6 +727,23 @@ async fn companion_net_stop_kills_a_node_that_ignores_shutdown() {
     assert_eq!(h.notices(), ["running", "exited:true"]);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn companion_net_sidecar_spawns_through_the_spawn_lock() {
+    let h = Harness::new(
+        r#"read init
+while read line; do
+  case "$line" in *'"shutdown"'*) exit 0;; esac
+done"#,
+    );
+    let (started, spawns) =
+        crate::process_kill::trace_spawns(|| h.manager.start(&h.bin, Mode::Enable));
+    started.unwrap();
+    assert_eq!(spawns, [h.bin.display().to_string()]);
+    h.manager.stop().await;
+    assert_eq!(h.manager.overview().state, State::Stopped);
+}
+
 #[tokio::test]
 async fn companion_net_missing_binary_fails_to_start() {
     let h = Harness::new("exit 0");
@@ -1071,6 +1088,27 @@ impl Relayed {
         let logged = self.logged.lock().unwrap().clone();
         logged
     }
+}
+
+#[tokio::test]
+async fn companion_net_stderr_survives_an_oversized_record_and_invalid_utf8() {
+    let mut relay = Relayed::new(10, Duration::from_secs(60));
+    use tokio::io::AsyncWriteExt;
+    relay
+        .writer
+        .write_all(&vec![b'y'; STDERR_RECORD_BYTES * 3])
+        .await
+        .unwrap();
+    relay
+        .writer
+        .write_all(b"\nbad \xff\nafter\n")
+        .await
+        .unwrap();
+    relay.until(3).await;
+    let logged = relay.end().await;
+    assert_eq!(logged[0], "y".repeat(500));
+    assert_eq!(logged[1], "bad \u{fffd}");
+    assert_eq!(logged[2], "after");
 }
 
 #[tokio::test]

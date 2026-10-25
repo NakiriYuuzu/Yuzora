@@ -13,6 +13,8 @@ if [ "$1" = terminal ] && [ "$2" = session ] && { [ "$3" = observe ] || [ "$3" =
   printf '%s\n' "$$" >> "$base/children"
   # Host passes target --cols COLS --rows ROWS; reflect fixed requested size.
   printf '{"type":"terminal.frame","seq":1,"full":true,"encoding":"ansi","width":%s,"height":%s,"bytes":"ZmFrZSBmcmFtZQ=="}\n' "$6" "$8"
+  # `stall-stdin` makes a connector that never reads its input.
+  [ ! -e "$base/stall-stdin" ] || exec sleep 60
   while IFS= read -r line; do printf '%s\n' "$line" >> "$base/input"; done
   exit 0
 fi

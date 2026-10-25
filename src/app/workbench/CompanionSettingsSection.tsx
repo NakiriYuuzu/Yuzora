@@ -140,6 +140,8 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
   const closePairing = useCallback(() => setPairing(false), [])
   const [linking, setLinking] = useState(false)
   const closeLinking = useCallback(() => setLinking(false), [])
+  // A link made for a running Companion is of no use once it stops.
+  if (linking && status.state !== "running") setLinking(false)
   const { busy, run, message } = useAction()
   const enableError = useCompanionStore(s => s.enableError)
   const now = useNow(30_000)
@@ -222,8 +224,8 @@ function TailscaleCard({ overview }: { overview: CompanionOverview }) {
     {!enabling && !loggingOut && <CardFooter className="flex flex-wrap items-center gap-2">
       {!stopped ? <>
         <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionDisable)}>{t("disable")}</Button>
-        <Button size="sm" disabled={busy || !owner || status.state !== "running"} onClick={() => setPairing(true)}>{t("pairing.open")}</Button>
-        <Button size="sm" variant="outline" disabled={status.state !== "running"} onClick={() => setLinking(true)}>{t("phoneLink.open")}</Button>
+        <Button size="sm" disabled={busy || !owner || status.state !== "running" || !net.serving} onClick={() => setPairing(true)}>{t("pairing.open")}</Button>
+        <Button size="sm" variant="outline" disabled={busy || status.state !== "running" || !net.serving} onClick={() => setLinking(true)}>{t("phoneLink.open")}</Button>
       </> : signingIn ? <>
         {net.state === "needsLogin" && <>
           <Button size="sm" disabled={!authUrl} onClick={() => openPage(authUrl!)}>{t("tailscale.openBrowser")}</Button>

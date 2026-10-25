@@ -43,7 +43,12 @@ pub(crate) fn capabilities() -> Value {
 pub(crate) fn is_read(method: &str) -> bool {
     matches!(
         method,
-        "sessions.list" | "snapshot.get" | "events.subscribe" | "terminal.observe" | "stream.close"
+        "sessions.list"
+            | "snapshot.get"
+            | "events.subscribe"
+            | "terminal.observe"
+            | "stream.close"
+            | "push.subscribe"
     ) || crate::git_bridge::is_git(method)
 }
 fn error(id: Value, code: &'static str) -> Value {
@@ -210,6 +215,14 @@ impl Sink {
             HerdrTerminalEvent::Error { code, .. } if code == "tooLarge" => {
                 self.state.close("payload-too-large");
                 Err("payload-too-large".into())
+            }
+            // The Host tore a stalled connector down and said so, for the
+            // desktop. Here the command that stalled is a gateway call of this
+            // stream: its failure reply closes the stream as `stream-stalled`
+            // (`finish`), and closing it from here would only win the race and
+            // turn that reply into `stream-not-found`.
+            HerdrTerminalEvent::Resync { message, .. } if message.starts_with("ioTimeout:") => {
+                Ok(())
             }
             HerdrTerminalEvent::Error { .. } | HerdrTerminalEvent::Resync { .. } => {
                 self.state.close("stream-closed");
@@ -391,6 +404,9 @@ impl Reads {
             };
             stream.state.close("client-closed");
             return Some(reply(id, json!({"stream":p.stream,"closed":true})));
+        }
+        if method == "push.subscribe" {
+            return self.push_subscribe(gateway, device, id, &params);
         }
         if crate::git_bridge::is_git(method) {
             return self.git(gateway, device, id, method, params);
@@ -589,6 +605,34 @@ impl Reads {
             }
         }
     }
+    /// Replies once the desktop confirms it stored the subscription; the wait
+    /// holds one of the peer's pending slots.
+    fn push_subscribe(
+        &mut self,
+        gateway: &Gateway,
+        device: &str,
+        id: Value,
+        params: &Value,
+    ) -> Option<Value> {
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Some(error(id, "busy"));
+        };
+        match gateway.push.subscribe(gateway, device, params) {
+            Err(code) => Some(error(id, code)),
+            Ok(stored) => {
+                self.completed.push(Box::pin(async move {
+                    let _pending = pending;
+                    Completion {
+                        id,
+                        stream: None,
+                        result: stored.await.map(Output::Value),
+                        write: false,
+                    }
+                }));
+                None
+            }
+        }
+    }
     /// Read-only Git of a mapped Space. Shares the read executor and the peer's
     /// pending slots; replies take the snapshot path, so large ones are chunked.
     fn git(
@@ -612,7 +656,12 @@ impl Reads {
         };
         let (session, workspace_id) = (request.session.clone(), request.workspace_id.clone());
         let tokens = gateway.spaces.tokens(device, gateway.clock.now());
+        let reads = gateway.herdr.clone();
+        let running_session = session.clone();
         match gateway.herdr_jobs.submit_device(device, false, move || {
+            // The mapped roots outlive a stopped session; check right before
+            // reading them, as the snapshot and terminal reads do.
+            reads.running(&running_session)?;
             request.run(&space, &tokens).map(Output::Snapshot)
         }) {
             Ok(receive) => {
@@ -676,9 +725,10 @@ impl Reads {
                     write.audit.target = value["target"].as_str().map(str::to_owned);
                     // Host has succeeded. Capacity was reserved before that call;
                     // a newly deferred DIFFERENT stream cannot reverse this key.
-                    announcement
-                        .expect("write open reservation")
-                        .emit(write.audit.state(true, write.takeover));
+                    write.audit.announce(
+                        announcement.expect("write open reservation"),
+                        write.takeover,
+                    );
                     write.announced = true;
                 }
                 // Caller enqueues these replies synchronously before the writer
@@ -705,6 +755,12 @@ impl Reads {
                         .is_some_and(|s| !write || s.lease.is_none())
                     {
                         if let Some(stream) = self.streams.remove(&s) {
+                            stream.state.close(code);
+                        }
+                    } else if write && code == "stream-stalled" {
+                        // Host gave up on the input and released the session:
+                        // close the stream, so closed() drops its Lease.
+                        if let Some(stream) = self.streams.get(&s) {
                             stream.state.close(code);
                         }
                     }

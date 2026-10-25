@@ -89,6 +89,8 @@ const PANE_SCROLL_CACHE_MS = 160
  * replaying after the wheel stops.
  */
 const SCROLL_FRAME_WAIT_MS = 100
+const MOUSE_RELEASE_RETRY_MS = 250
+const MOUSE_RELEASE_RETRIES = 4
 /**
  * HERDR turns each connector `terminal.scroll` routed to an application into
  * exactly one mouse report or alternate-scroll key, ignoring `lines` (xterm.js
@@ -314,7 +316,21 @@ export function createHerdrTerminalTransport(
     scrollDrainToken = null
     paneScrollController?.()?.reset()
   }
+  let releaseRetry: ReturnType<typeof setTimeout> | null = null
+  /** Resend a button release that only waited behind a busy writer; bounded. */
+  const resendRelease = (id: string, event: { action: HerdrMouseAction; cell: TerminalCell; modifiers: number }, attempt: number) => {
+    if (releaseRetry !== null) clearTimeout(releaseRetry)
+    releaseRetry = setTimeout(() => {
+      releaseRetry = null
+      if (disposed || sessionId !== id || mode !== "control") return
+      herdrTerminalMouse(id, event.action, event.cell, event.modifiers).catch(error => {
+        if (reportStall(error, id)) return
+        if (herdrErrorKind(error) === "busy" && attempt < MOUSE_RELEASE_RETRIES) resendRelease(id, event, attempt + 1)
+      })
+    }, MOUSE_RELEASE_RETRY_MS)
+  }
   const discardInput = () => {
+    if (releaseRetry !== null) { clearTimeout(releaseRetry); releaseRetry = null }
     if (inputQueue) { inputQueue.frames = []; inputQueue.bytes = 0 }
     inputQueue = null
     mouseQueue = []
@@ -323,6 +339,22 @@ export function createHerdrTerminalTransport(
     if (inputQueue !== queue) return
     discardInput()
     eventHandler?.({ type: "error", message })
+  }
+
+  /**
+   * The Host gave up on a connector whose stdin stopped moving (`ioTimeout:`)
+   * during a scroll, pointer or resize command, and tore it down. Delivery is
+   * unknown, so recover like a failed input: the page reopens the attachment.
+   * The Host's own `resync` event says the same; this covers the reply racing
+   * ahead of it or the event path being absent.
+   */
+  const reportStall = (error: unknown, attached: string | null) => {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/^(?:Error:\s*)?ioTimeout:/.test(message) || !attached || sessionId !== attached) return false
+    discardInput()
+    discardScroll()
+    eventHandler?.({ type: "error", message: "terminal-input-failed" })
+    return true
   }
 
   const target = () => terminalId
@@ -489,7 +521,13 @@ export function createHerdrTerminalTransport(
       if (!sessionId) return
       // Resize is controller-owned in Herdr; observers skip silently.
       if (mode !== "control") return
-      await herdrTerminalResize(sessionId, cols, rows)
+      const attached = sessionId
+      try {
+        await herdrTerminalResize(attached, cols, rows)
+      } catch (error) {
+        reportStall(error, attached)
+        throw error
+      }
     },
     async scroll(delta, cell) {
       if (
@@ -607,6 +645,10 @@ export function createHerdrTerminalTransport(
               recordHerdrTerminalMetric({ kind: "ipc", command: "terminal.scroll.frame", ms: performance.now() - sentAt, ok: framed })
             } catch (error) {
               frameWaiter?.()
+              // A late rejection from a superseded attachment (the Host's
+              // Resync can beat the reply) must not trip the new one's breaker.
+              if (generation !== scrollDrainGeneration || sessionId !== activeSessionId) return
+              if (reportStall(error, activeSessionId)) return
               // A full remote stream queue is backpressure shared with input,
               // not a rejected command: drop the queued gestures, keep the route.
               if (herdrErrorKind(error) === "busy") {
@@ -652,19 +694,29 @@ export function createHerdrTerminalTransport(
       // Only the latest position of a queued drag or hover matters.
       if ((action === "drag" || action === "move") && mouseQueue.at(-1)?.action === action) mouseQueue.pop()
       mouseQueue.push({ action, cell, modifiers })
+      if (releaseRetry !== null) { clearTimeout(releaseRetry); releaseRetry = null }
       mouseDrain ??= (async () => {
         await Promise.resolve()
+        let mouseSessionId: string | null = null
+        let failed: (typeof mouseQueue)[number] | null = null
         try {
           while (mouseQueue.length) {
             const id = sessionId
             if (disposed || !id || mode !== "control") break
-            const event = mouseQueue.shift()!
+            mouseSessionId = id
+            const event = failed = mouseQueue.shift()!
             mouseInFlight = herdrTerminalMouse(id, event.action, event.cell, event.modifiers)
             await mouseInFlight
             mouseInFlight = null
           }
-        } catch {
-          // Delivery is unknown; never replay part of a gesture.
+        } catch (error) {
+          // Delivery is unknown; never replay part of a gesture. A busy Host
+          // never delivered it, though: keep the newest button release so the
+          // application is not left with a pressed button.
+          if (!reportStall(error, mouseSessionId) && herdrErrorKind(error) === "busy" && mouseSessionId) {
+            const release = [...(failed ? [failed] : []), ...mouseQueue].reverse().find(event => event.action === "up")
+            if (release) resendRelease(mouseSessionId, release, 1)
+          }
         } finally {
           mouseQueue = []
           mouseDrain = null

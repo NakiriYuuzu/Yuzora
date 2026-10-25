@@ -174,11 +174,84 @@ fn valid_devices(devices: &[Value]) -> bool {
                 // Credential ids are unique per relying party across all devices.
                 && device["credentials"].as_array().is_some_and(|list| {
                     (1..=8).contains(&list.len())
-                        && list.iter().all(|c| match (c["rpId"].as_str(), c["id"].as_str()) {
-                            (Some(rp), Some(id)) => credentials.insert((rp.to_owned(), id.to_owned())),
-                            _ => false,
+                        && list.iter().all(|c| {
+                            valid_credential(c)
+                                && credentials.insert((
+                                    c["rpId"].as_str().unwrap_or_default().to_owned(),
+                                    c["id"].as_str().unwrap_or_default().to_owned(),
+                                ))
                         })
                 })
+        })
+}
+
+/// The gateway's `CredentialRecord::valid` plus its closed field set, except
+/// that `publicKeyState` only has to be a string. A shared fixture table in the
+/// tests keeps this in step with it.
+fn valid_credential(credential: &Value) -> bool {
+    const FIELDS: [&str; 8] = [
+        "id",
+        "rpId",
+        "publicKeyState",
+        "stateFormat",
+        "signCount",
+        "backupEligible",
+        "backupState",
+        "transports",
+    ];
+    const TRANSPORTS: [&str; 6] = ["usb", "nfc", "ble", "internal", "hybrid", "smart-card"];
+    let Some(object) = credential.as_object() else {
+        return false;
+    };
+    // Indexing a Map panics on a missing key, so the closed field set comes first.
+    if object.len() != FIELDS.len() || !FIELDS.iter().all(|f| object.contains_key(*f)) {
+        return false;
+    }
+    let id_ok = object["id"].as_str().is_some_and(|id| {
+        !id.is_empty()
+            && id.len() <= 1024usize.div_ceil(3) * 4
+            && URL_SAFE_NO_PAD
+                .decode(id)
+                .is_ok_and(|bytes| !bytes.is_empty() && bytes.len() <= 1024)
+    });
+    let transports_ok = object["transports"].as_array().is_some_and(|list| {
+        let mut seen = HashSet::new();
+        list.len() <= 6
+            && list.iter().all(|t| {
+                t.as_str()
+                    .is_some_and(|t| TRANSPORTS.contains(&t) && seen.insert(t))
+            })
+    });
+    id_ok
+        && object["rpId"].as_str().is_some_and(valid_rp_id)
+        && object["publicKeyState"].is_string()
+        && object["stateFormat"] == "webauthn_rp-0.3.0-static"
+        && object["signCount"]
+            .as_u64()
+            .is_some_and(|n| u32::try_from(n).is_ok())
+        && transports_ok
+        && match (
+            object["backupEligible"].as_bool(),
+            object["backupState"].as_bool(),
+        ) {
+            (Some(eligible), Some(state)) => !state || eligible,
+            _ => false,
+        }
+}
+
+/// The gateway's rule for a relying party id (`companion/src/devices.rs`).
+fn valid_rp_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.parse::<std::net::IpAddr>().is_err()
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
 }
 

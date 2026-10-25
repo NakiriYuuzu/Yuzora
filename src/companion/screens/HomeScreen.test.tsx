@@ -53,6 +53,7 @@ it("keeps a Space that has no id out of the buttons", () => {
 it("folds Spaces without agents into a group that starts collapsed", () => {
   const group = screen.getByRole("button", { name: /Other Spaces/ })
   expect(group).toHaveAttribute("aria-expanded", "false")
+  expect(group).toHaveAttribute("data-slot", "collapsible-trigger")
   expect(group.textContent).toContain("2")
   expect(screen.queryByRole("button", { name: "Docs" })).toBeNull()
   fireEvent.click(group)

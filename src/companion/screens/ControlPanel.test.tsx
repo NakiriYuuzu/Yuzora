@@ -34,13 +34,13 @@ const terminal = (lines: string[]) => ({
 function renderPanel(props: Partial<Parameters<typeof ControlPanel>[0]> = {}) {
   const onControl = vi.fn()
   const onConflictHandled = vi.fn()
-  render(
+  const view = render(
     <I18nextProvider i18n={i18n}>
       <ControlPanel session="work" pane="w:p" agent={agent("idle")} terminal={null} control={null}
         onControl={onControl} conflict={false} onConflictHandled={onConflictHandled} {...props} />
     </I18nextProvider>,
   )
-  return { onControl, onConflictHandled }
+  return { onControl, onConflictHandled, unmount: view.unmount }
 }
 
 beforeEach(async () => {
@@ -94,4 +94,108 @@ it("never resends a write whose outcome is unknown", async () => {
   await waitFor(() => expect(useCompanion.getState().notice?.tone).toBe("warning"))
   expect(client.call).toHaveBeenCalledTimes(1)
   expect(client.call).toHaveBeenCalledWith("agent.prompt", { session: "work", target: "w:p", text: "hello" })
+})
+
+it("uses the shared checkbox for appending Enter", () => {
+  renderPanel({ agent: undefined, control: opened })
+  const box = screen.getByRole("checkbox", { name: "Press Enter after" })
+  expect(box).toHaveAttribute("data-slot", "checkbox")
+  expect(box).toHaveAttribute("aria-checked", "true")
+  fireEvent.click(box)
+  expect(box).toHaveAttribute("aria-checked", "false")
+})
+
+it("scrolls the approval preview in a ScrollArea rather than a bare overflow", () => {
+  renderPanel({ agent: agent("blocked"), terminal: terminal(["Allow? [y/N]"]) })
+  fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+  const dialog = screen.getByRole("alertdialog")
+  const area = dialog.querySelector('[data-slot="scroll-area"]')
+  expect(area).not.toBeNull()
+  expect(area).toHaveTextContent("Allow? [y/N]")
+  expect(dialog.querySelector(".overflow-auto")).toBeNull()
+})
+
+it("releases a control stream that opens after the panel went away", async () => {
+  let resolveOpen: (value: ControlOpen) => void = () => undefined
+  client.call.mockImplementation((method: string) =>
+    method === "terminal.control" ? new Promise<ControlOpen>((done) => { resolveOpen = done }) : Promise.resolve({}))
+  const { onControl, unmount } = renderPanel()
+  fireEvent.click(screen.getByRole("button", { name: "Direct control" }))
+  fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Direct control" }))
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.control", expect.anything()))
+  unmount()
+  resolveOpen(opened)
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.release", { stream: 7 }))
+  expect(client.call.mock.calls.filter(([method]) => method === "terminal.release")).toHaveLength(1)
+  expect(onControl).not.toHaveBeenCalled()
+})
+
+it("releases a takeover stream that opens after the panel went away", async () => {
+  let resolveOpen: (value: ControlOpen) => void = () => undefined
+  client.call.mockImplementation((method: string) =>
+    method === "terminal.control" ? new Promise<ControlOpen>((done) => { resolveOpen = done }) : Promise.resolve({}))
+  const { unmount } = renderPanel({ conflict: true })
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Take over this pane" })).getByRole("button", { name: "passkey ok" }))
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.control", expect.objectContaining({ takeover: true })))
+  unmount()
+  resolveOpen(opened)
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith("terminal.release", { stream: 7 }))
+})
+
+it("shows the whole pending request in the approval dialog, not a truncated preview", () => {
+  const long = `Run: ${"x".repeat(600)} --force`
+  const lines = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`)
+  lines.splice(30, 0, long)
+  // Blank rows after the request are trimmed; the ones inside it are kept.
+  renderPanel({ agent: agent("blocked"), terminal: terminal([...lines.slice(0, 20), "", ...lines.slice(20), "", ""]) })
+  fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+  const dialog = screen.getByRole("alertdialog")
+  const preview = dialog.querySelector("pre")!
+  expect(preview.textContent).toBe([...lines.slice(0, 20), "", ...lines.slice(20)].join("\n"))
+  expect(preview.textContent).toContain(long)
+  const area = dialog.querySelector('[data-slot="scroll-area"]')!
+  expect(area).toContainElement(preview)
+  // The preview is scrollable (bounded height, both axes) rather than clamped or ellipsised.
+  expect(area.className).toMatch(/max-h-/)
+  expect(preview.className).toContain("whitespace-pre")
+  expect(preview.className).not.toMatch(/truncate|line-clamp|text-ellipsis/)
+  expect(client.call).not.toHaveBeenCalled()
+})
+
+it("says the working directory is not shared, and an empty screen is shown as empty", () => {
+  renderPanel({ agent: agent("blocked"), terminal: terminal(["", "  ", ""]) })
+  fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+  const dialog = screen.getByRole("alertdialog")
+  // The protocol carries no cwd (snapshot panes have id/tab/status/label/layout
+  // only), so the dialog must tell the user it cannot show it.
+  expect(within(dialog).getByText(/does not share the working directory/)).toBeInTheDocument()
+  expect(within(dialog).getByText("(The screen is empty.)")).toBeInTheDocument()
+})
+
+it("sends nothing for a blocked agent until the second tap, and cancelling sends nothing at all", () => {
+  renderPanel({ agent: agent("blocked"), terminal: terminal(["Allow? [y/N]"]), control: opened })
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "y" } })
+  fireEvent.click(screen.getByRole("button", { name: "Send" }))
+  const dialog = screen.getByRole("alertdialog")
+  expect(client.call).not.toHaveBeenCalled()
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }))
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Enter" }))
+  fireEvent.keyDown(screen.getByRole("alertdialog"), { key: "Escape" })
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(client.call).not.toHaveBeenCalled()
+})
+
+it("keeps the typed text and does not resend it when the socket drops and comes back", async () => {
+  client.call.mockRejectedValue(new RpcError("outcome-unknown"))
+  renderPanel()
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "deploy" } })
+  fireEvent.click(screen.getByRole("button", { name: "Send to agent" }))
+  await waitFor(() => expect(useCompanion.getState().notice?.tone).toBe("warning"))
+  useCompanion.setState({ socket: "waiting" })
+  useCompanion.setState({ socket: "ready", epoch: useCompanion.getState().epoch + 1 })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(client.call).toHaveBeenCalledTimes(1)
+  // The user decides: the text is still in the box, untouched.
+  expect(screen.getByRole("textbox")).toHaveValue("deploy")
 })

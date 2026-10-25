@@ -193,6 +193,25 @@ export function companionDevices(): Promise<CompanionDevice[]> {
   return invoke("companion_devices")
 }
 
+/** A phone connected to the gateway now. */
+export interface CompanionPeer { peerId: number; deviceId: string }
+/** An open control or full stream; `stream` is the key `control.state` / `full.state` use. */
+export interface CompanionOpenStream {
+  stream: string
+  deviceId: string
+  peerId: number
+  session: string
+  scope: "control" | "full"
+  /** The pane a control stream drives. */
+  target?: string
+}
+/** The gateway's own list of who is connected and who drives what, unlike the best effort `session.*` events. */
+export interface CompanionPeers { peers: CompanionPeer[]; streams: CompanionOpenStream[] }
+
+export function companionPeers(): Promise<CompanionPeers> {
+  return invoke("companion_peers")
+}
+
 export function companionDeviceUpdate(deviceId: string, change: { label: string } | { grants: CompanionGrants }): Promise<CompanionDevice> {
   return invoke("companion_device_update", { deviceId, ...change })
 }

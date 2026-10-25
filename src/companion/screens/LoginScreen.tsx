@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { KeyRound } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { connect } from "../client"
+import { abortLogout, connect } from "../client"
 import { Message, Page } from "../components/Page"
 import { api } from "../lib/api"
 import { failureKey } from "../lib/errors"
@@ -39,6 +39,7 @@ export function LoginScreen({ reason }: { reason?: "expired" | "registered" | "l
     setOptions(null)
     setBusy(true)
     setError(null)
+    abortLogout()
     try {
       const login = await api.loginFinish(await getPasskey(current))
       storage.setBinding(login.binding)

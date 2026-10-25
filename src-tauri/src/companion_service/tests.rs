@@ -149,6 +149,22 @@ done"#
     h.manager.stop().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn companion_service_gateway_spawns_through_the_spawn_lock() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in *'"shutdown"'*) exit 0;; esac
+done"#
+    ));
+    let (started, spawns) = crate::process_kill::trace_spawns(|| h.manager.start(h.launch()));
+    started.unwrap();
+    assert_eq!(spawns, [h.bin.display().to_string()]);
+    h.until("ready", running).await;
+    h.manager.stop().await;
+}
+
 #[tokio::test]
 async fn companion_service_pairing_reply_is_returned_not_emitted() {
     let h = Harness::new(&format!(
@@ -1326,4 +1342,175 @@ fn companion_gateway_git_env_refuses_lazy_fetches_even_for_a_git_before_2_44() {
     assert!(ok(git(&src, GATEWAY_GIT_ENV, &["log", "--oneline"])).contains("first"));
     assert!(ok(git(&src, GATEWAY_GIT_ENV, &["diff"])).contains("+changed"));
     assert!(ok(git(&clone, GATEWAY_GIT_ENV, &["log", "--oneline"])).contains("first"));
+}
+
+/// A pipe is never read into memory past the cap: the oversized record is cut,
+/// the rest of it dropped, and the records after it still arrive. Bytes that
+/// are not UTF-8 are replaced and the drain goes on.
+#[tokio::test]
+async fn companion_stderr_records_are_bounded_and_survive_invalid_utf8() {
+    let mut input = Vec::new();
+    input.extend_from_slice(b"first\n");
+    input.extend(std::iter::repeat_n(b'x', 10_000_000));
+    input.extend_from_slice(b"\nbad \xff\xfe bytes\r\nlast");
+    let mut reader = RecordReader::new(BufReader::with_capacity(8192, &input[..]), 100);
+    let mut records = Vec::new();
+    while let Some(record) = reader.next().await {
+        assert!(reader.record.capacity() <= 8192 + 100, "buffer grew");
+        records.push(record);
+    }
+    assert_eq!(records.len(), 4);
+    assert_eq!(records[0], "first");
+    assert_eq!(records[1], "x".repeat(100));
+    assert_eq!(records[2], "bad \u{fffd}\u{fffd} bytes");
+    assert_eq!(records[3], "last");
+}
+
+// A subscribe the phone waits for is answered once it is on disk, or refused.
+#[tokio::test]
+async fn companion_service_acks_a_waiting_subscribe_only_after_it_is_stored() {
+    let subscription = push_tests::subscription(1);
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{subscription},"requestId":7}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{other}","subscription":{subscription},"requestId":8}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{{"endpoint":"https://evil.example/x","p256dh":"x","auth":"y"}},"requestId":9}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{subscription}}}'
+echo '{{"v":1,"type":"session.opened","peerId":1,"deviceId":"{known}"}}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        known = push_tests::DEVICE_ID,
+        other = push_tests::OTHER_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    h.manager.start(h.launch()).unwrap();
+    h.until("acks", |h| gateway_frames(h, "push.ack").len() == 3)
+        .await;
+    let acks: Vec<(u64, bool)> = gateway_frames(&h, "push.ack")
+        .iter()
+        .map(|frame| {
+            (
+                frame["requestId"].as_u64().unwrap(),
+                frame["stored"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    // Stored; an unknown device; an invalid subscription. The last frame had
+    // no request id, so nobody waits for it and nothing answers it.
+    assert_eq!(acks, [(7, true), (8, false), (9, false)]);
+    // The gateway hears the new set before the ack that confirms it.
+    let frames: Vec<String> = h
+        .sidecar_file("in")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .map(|frame| frame["type"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(frames[..2], ["push.devices", "push.ack"]);
+    assert_eq!(h.manager.push().devices(), [push_tests::DEVICE_ID]);
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_refuses_a_waiting_subscribe_it_could_not_write() {
+    let subscription = push_tests::subscription(1);
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{subscription},"requestId":5}}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        known = push_tests::DEVICE_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    // The subscription file cannot be written: a directory sits in its place.
+    std::fs::create_dir_all(h.dir.join("push.json")).unwrap();
+    h.manager.start(h.launch()).unwrap();
+    h.until("ack", |h| !gateway_frames(h, "push.ack").is_empty())
+        .await;
+    assert_eq!(
+        gateway_frames(&h, "push.ack"),
+        [json!({"v": 1, "type": "push.ack", "requestId": 5, "stored": false})]
+    );
+    assert!(h.manager.push().devices().is_empty());
+    h.manager.stop().await;
+}
+
+/// A gateway that answers `peers.list` with the peers listed in `reply`.
+fn peers_script(reply: &str) -> String {
+    format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in
+    *'"peers.list"'*)
+      id=$(printf '%s' "$line" | sed 's/.*"requestId":\([0-9]*\).*/\1/')
+      {reply};;
+    *'"shutdown"'*) exit 0;;
+  esac
+done"#
+    )
+}
+
+#[tokio::test]
+async fn companion_service_peers_come_from_the_gateway_and_match_by_request_id() {
+    let reply = r#"echo '{"v":1,"type":"peers.snapshot","requestId":'"$id"',"peers":[{"peerId":3,"deviceId":"D1"}],"streams":[{"stream":"12","deviceId":"D1","peerId":3,"session":"work","scope":"control","target":"w:p"},{"stream":"13","deviceId":"D1","peerId":3,"session":"work","scope":"full"}]}'"#;
+    let h = Harness::new(&peers_script(reply));
+    assert_eq!(
+        h.manager.peers().await.unwrap_err(),
+        "companion-not-running"
+    );
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    let snapshot = h.manager.peers().await.unwrap();
+    assert_eq!(
+        snapshot,
+        PeersSnapshot {
+            peers: vec![PeerRow {
+                peer_id: 3,
+                device_id: "D1".into()
+            }],
+            streams: vec![
+                StreamRow {
+                    stream: "12".into(),
+                    device_id: "D1".into(),
+                    peer_id: 3,
+                    session: "work".into(),
+                    scope: "control".into(),
+                    target: Some("w:p".into())
+                },
+                StreamRow {
+                    stream: "13".into(),
+                    device_id: "D1".into(),
+                    peer_id: 3,
+                    session: "work".into(),
+                    scope: "full".into(),
+                    target: None
+                },
+            ],
+        }
+    );
+    // It does not wait behind, or disturb, a command in flight, and repeats.
+    assert_eq!(h.manager.peers().await.unwrap(), snapshot);
+    assert!(running(&h));
+    // Nothing of it reaches the UI as an event: the answer is the return value.
+    assert!(h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|e| e["type"] != "peers.snapshot"));
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_an_unanswered_peers_query_fails_alone_and_a_late_answer_is_ignored() {
+    // The gateway sits on the first query for longer than the command deadline,
+    // then answers it (late) with a phone nobody may see, and answers the rest.
+    let reply = r#"if [ "$id" = 1 ]; then sleep 3; echo '{"v":1,"type":"peers.snapshot","requestId":1,"peers":[{"peerId":9,"deviceId":"LATE"}],"streams":[]}'; else echo '{"v":1,"type":"peers.snapshot","requestId":'"$id"',"peers":[],"streams":[]}'; fi"#;
+    let h = Harness::new(&peers_script(reply));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    assert_eq!(h.manager.peers().await.unwrap_err(), "companion-timeout");
+    // Only this call failed: the gateway still runs and nobody waits for it.
+    assert!(running(&h));
+    assert!(h.manager.inner.lock().unwrap().peer_waits.is_empty());
+    // The next query is answered by its own reply, not by the late one.
+    assert_eq!(h.manager.peers().await.unwrap(), PeersSnapshot::default());
+    h.manager.stop().await;
 }

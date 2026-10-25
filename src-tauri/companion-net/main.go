@@ -27,6 +27,9 @@ const (
 	exitProtocol = 2
 
 	initTimeout = 5 * time.Second
+	// parentPoll is faster than the gateway's 1 s check, so the node is unserved
+	// before the gateway (which then waits 500 ms) lets go of its loopback port.
+	parentPoll = 250 * time.Millisecond
 	// closeGrace keeps shutdown under the 2 s the desktop allows.
 	closeGrace = 1500 * time.Millisecond
 )
@@ -38,9 +41,14 @@ type runConfig struct {
 	newTailnet  func(dir, hostname string) (tailnet, error)
 	initTimeout time.Duration
 	closeGrace  time.Duration
+	// parentGone reports that the desktop is gone though stdin is still open
+	// (nil: not checked), looked at every parentPoll.
+	parentGone func() bool
+	parentPoll time.Duration
 }
 
-// setupProcess runs first in main, before tsnet or any goroutine exists.
+// setupProcess runs before tsnet or any goroutine exists (newParentCheck only
+// records the parent pid).
 func setupProcess() {
 	// tsnet uploads the node's logs (peer names, the tailnet name, the login
 	// URL) to log.tailscale.com unless this is set. Nothing may leave the machine.
@@ -52,6 +60,7 @@ func setupProcess() {
 }
 
 func main() {
+	parentGone := newParentCheck()
 	setupProcess()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := run(ctx, runConfig{
@@ -61,6 +70,8 @@ func main() {
 		newTailnet:  newTSNetNode,
 		initTimeout: initTimeout,
 		closeGrace:  closeGrace,
+		parentGone:  parentGone,
+		parentPoll:  parentPoll,
 	})
 	stop()
 	os.Exit(code)
@@ -76,6 +87,12 @@ type inbound struct {
 
 // run is the whole process: init handshake, node start, command loop, shutdown.
 func run(ctx context.Context, cfg runConfig) int {
+	// A desktop that died without closing stdin (a leaked copy of the pipe keeps
+	// it open) ends the run like EOF does, through ctx.
+	ctx, parentCancel := context.WithCancel(ctx)
+	defer parentCancel()
+	go watchParent(ctx, cfg.parentGone, cfg.parentPoll, parentCancel)
+
 	emit := &emitter{w: cfg.out, diag: cfg.diag}
 	frames := make(chan inbound)
 	stopReading := make(chan struct{})
@@ -104,6 +121,10 @@ func run(ctx context.Context, cfg runConfig) int {
 	initCfg, code := handshake(ctx, cfg, emit, frames)
 	if code != exitOK {
 		return code
+	}
+	// A cancel during the handshake returns exitOK without an init config.
+	if ctx.Err() != nil {
+		return exitOK
 	}
 	ts, err := cfg.newTailnet(initCfg.stateDir, initCfg.hostname)
 	if err != nil {

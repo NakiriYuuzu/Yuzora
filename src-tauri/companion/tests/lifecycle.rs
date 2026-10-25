@@ -34,9 +34,30 @@ impl Process {
         Self::with_options(true, true)
     }
     fn with_options(read_stdout: bool, timing: bool) -> Self {
+        Self::launched(
+            Command::new(env!("CARGO_BIN_EXE_yuzora-companion")),
+            read_stdout,
+            timing,
+        )
+    }
+    /// The gateway as a background job of a shell that exits once `gate` exists:
+    /// the gateway is orphaned while this test still holds its stdin write end.
+    /// Stdout starts with the gateway's pid on its own line.
+    #[cfg(unix)]
+    fn orphaned_by_shell(gate: &std::path::Path) -> Self {
+        let mut shell = Command::new("sh");
+        shell
+            .args([
+                "-c",
+                r#"exec 3<&0; "$YZC_BIN" <&3 3<&- & echo $!; while [ ! -e "$YZC_GATE" ]; do sleep 0.05; done"#,
+            ])
+            .env("YZC_BIN", env!("CARGO_BIN_EXE_yuzora-companion"))
+            .env("YZC_GATE", gate);
+        Self::launched(shell, true, false)
+    }
+    fn launched(mut command: Command, read_stdout: bool, timing: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("index.html"), "shell").unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yuzora-companion"));
         command.env_remove("YZC_TEST_TIMING");
         if timing {
             command.env("YZC_TEST_TIMING", "1");
@@ -518,6 +539,51 @@ fn lifecycle_broken_stdout_exits_and_closes_listener_with_fixed_stderr() {
     assert!(!p.exited(Duration::from_secs(2)).success());
     closed(port, connection);
     assert_eq!(p.stderr(), "Companion admin stdout unavailable\n");
+}
+
+/// Ends a gateway that outlived its test (it is no child of this process).
+#[cfg(unix)]
+struct OrphanGuard(u32);
+#[cfg(unix)]
+impl Drop for OrphanGuard {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            let _ = spawn::serialized(Command::new("kill").arg(self.0.to_string()))
+                .and_then(|mut kill| kill.wait());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn lifecycle_orphaned_gateway_exits_although_stdin_is_still_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("gate");
+    let mut p = Process::orphaned_by_shell(&gate);
+    let pid = p
+        .stdout
+        .recv_timeout(Duration::from_secs(8))
+        .expect("the shell reports the gateway pid");
+    let _orphan = OrphanGuard(pid.parse().unwrap());
+    let port = p.init();
+    let connection = TcpStream::connect(address(port)).unwrap();
+    connection
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    // The shell exits and the gateway is its orphan. This test keeps the stdin
+    // write end open, as a leaked copy would: only the parent check can end it.
+    std::fs::write(&gate, "").unwrap();
+    let orphaned = Instant::now();
+    // The pipe reaches end of stream once the gateway and the shell are both gone.
+    assert_eq!(
+        p.stdout.recv_timeout(Duration::from_secs(5)),
+        Err(mpsc::RecvTimeoutError::Disconnected),
+        "the orphaned gateway kept running"
+    );
+    assert!(orphaned.elapsed() < Duration::from_secs(4));
+    assert!(p.exited(Duration::from_secs(2)).success());
+    closed(port, connection);
+    assert!(p.stderr().is_empty());
 }
 
 /// A gateway whose policy ends in two seconds, with one peer connected.

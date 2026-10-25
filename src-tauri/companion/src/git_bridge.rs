@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     time::Duration,
 };
 use yuzora_host::{
@@ -77,6 +80,9 @@ pub(crate) struct Spaces {
     allowlist: HashSet<String>,
     spaces: Mutex<HashMap<(String, String), Arc<Space>>>,
     cursors: Arc<Mutex<Cursors>>,
+    /// Random per gateway run, so a generation never repeats across restarts.
+    salt: String,
+    generations: AtomicU64,
 }
 impl Spaces {
     pub(crate) fn new(
@@ -92,6 +98,8 @@ impl Spaces {
             allowlist: allowlist.iter().cloned().collect(),
             spaces: Mutex::default(),
             cursors: Arc::default(),
+            salt: secrets::encode(secrets::random::<6>()?.as_ref()),
+            generations: AtomicU64::new(1),
         };
         if !spaces.replace(roots) {
             return Err("invalid-space-roots");
@@ -116,7 +124,16 @@ impl Spaces {
                 .get(&key)
                 .filter(|space| space.root == entry.root)
                 .cloned()
-                .unwrap_or_else(|| Space::new(entry.root.clone(), self.trust_store.clone()));
+                .unwrap_or_else(|| {
+                    // A new, changed or re-added root is a new repository for
+                    // the phone: its caches of the old one must go.
+                    let generation = format!(
+                        "{}{}",
+                        self.salt,
+                        self.generations.fetch_add(1, Ordering::Relaxed)
+                    );
+                    Space::new(entry.root.clone(), self.trust_store.clone(), generation)
+                });
             next.insert(key, space);
         }
         *spaces = next;
@@ -146,14 +163,19 @@ impl Spaces {
             now,
         }
     }
-    /// Adds `git: bool` to each workspace of a normalized snapshot.
+    /// Adds `git: bool` to each workspace of a normalized snapshot, and for a
+    /// mapped one `gitGeneration`: an opaque token that changes whenever the
+    /// Space's root mapping does (never the folder itself).
     pub(crate) fn mark(&self, session: &str, snapshot: &mut Value) {
         let spaces = self.spaces.lock().unwrap();
         for workspace in snapshot["workspaces"].as_array_mut().into_iter().flatten() {
-            let mapped = workspace["id"]
+            let space = workspace["id"]
                 .as_str()
-                .is_some_and(|id| spaces.contains_key(&(session.to_owned(), id.to_owned())));
-            workspace["git"] = json!(mapped);
+                .and_then(|id| spaces.get(&(session.to_owned(), id.to_owned())));
+            workspace["git"] = json!(space.is_some());
+            if let Some(space) = space {
+                workspace["gitGeneration"] = json!(space.generation);
+            }
         }
     }
 }
@@ -229,6 +251,8 @@ impl Tokens {
 pub(crate) struct Space {
     trust: WorkspaceTrustState,
     root: String,
+    /// Changes with the mapping; see `Spaces::mark`.
+    generation: String,
     state: Mutex<SpaceGit>,
 }
 #[derive(Default)]
@@ -241,10 +265,11 @@ impl Space {
     /// Each Space has a trust state of its own: Detect binds a repository root
     /// to the Space that found it, and Spaces in subfolders of one repository
     /// must not take that binding over from each other.
-    fn new(root: String, trust_store: PathBuf) -> Arc<Self> {
+    fn new(root: String, trust_store: PathBuf, generation: String) -> Arc<Self> {
         Arc::new(Self {
             trust: WorkspaceTrustState::at(trust_store),
             root,
+            generation,
             state: Mutex::default(),
         })
     }

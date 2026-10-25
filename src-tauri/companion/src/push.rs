@@ -13,11 +13,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::{Arc, Mutex},
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinSet,
     time::Instant,
 };
@@ -36,6 +41,8 @@ const MAX_DEVICES: usize = 64;
 const MAX_ENDPOINTS: usize = 4;
 /// Events buffered between the Host reader thread and a watcher.
 const EVENTS: usize = 64;
+/// How long a phone's subscribe waits for the desktop to say it stored it.
+const ACK_WAIT: Duration = Duration::from_secs(5);
 /// Agent and Space names go to the desktop (and into a notification) bounded.
 const LABEL_CHARS: usize = 128;
 
@@ -50,7 +57,13 @@ pub(crate) struct Push {
     devices: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// True while `devices` is not empty: the watchers run exactly then.
     active: watch::Sender<bool>,
+    /// Subscribes waiting for the desktop's `push.ack`, by request id.
+    acks: Arc<Mutex<HashMap<u64, oneshot::Sender<bool>>>>,
+    next_request: AtomicU64,
 }
+
+/// The reply of a `push.subscribe`, once the desktop has answered or the wait ended.
+pub(crate) type Subscribed = Pin<Box<dyn Future<Output = Result<Value, &'static str>> + Send>>;
 
 /// The id of a subscription endpoint, as the desktop computes it: unpadded
 /// base64url of the SHA-256 of its UTF-8 bytes. Endpoints are bearer URLs and
@@ -119,6 +132,8 @@ impl Push {
                 .collect(),
             active: watch::channel(!devices.is_empty()).0,
             devices: Mutex::new(devices),
+            acks: Arc::default(),
+            next_request: AtomicU64::new(1),
         })
     }
     pub(crate) fn available(&self) -> bool {
@@ -151,7 +166,49 @@ impl Push {
             self.active.send_replace(!devices.is_empty());
         }
     }
-    /// The `push.*` WS methods; `Ok` is the reply's result.
+    /// The desktop's `push.ack`: whether it stored the subscription of that
+    /// request. An answer nobody waits for any more is ignored.
+    pub(crate) fn ack(&self, request: u64, stored: bool) {
+        if let Some(waiting) = self.acks.lock().unwrap().remove(&request) {
+            let _ = waiting.send(stored);
+        }
+    }
+    /// `push.subscribe`: asks the desktop to store the subscription. The reply
+    /// is a success only once the desktop says it persisted it; it is a
+    /// failure when the desktop says it did not, or says nothing in time.
+    pub(crate) fn subscribe(
+        &self,
+        gateway: &Gateway,
+        device: &str,
+        params: &Value,
+    ) -> Result<Subscribed, &'static str> {
+        if self.vapid.is_none() {
+            return Err("push-unavailable");
+        }
+        let subscription = subscription(params)?;
+        let request = self.next_request.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = oneshot::channel();
+        self.acks.lock().unwrap().insert(request, answer);
+        if !gateway.events.try_emit(Event::push_subscription(
+            device.into(),
+            subscription,
+            request,
+        )) {
+            self.acks.lock().unwrap().remove(&request);
+            return Err("busy");
+        }
+        let acks = self.acks.clone();
+        Ok(Box::pin(async move {
+            let answer = tokio::time::timeout(ACK_WAIT, answered).await;
+            acks.lock().unwrap().remove(&request);
+            match answer {
+                Ok(Ok(true)) => Ok(json!({"subscribed":true})),
+                Ok(Ok(false)) => Err("push-store-failed"),
+                _ => Err("push-unconfirmed"),
+            }
+        }))
+    }
+    /// The other `push.*` WS methods; `Ok` is the reply's result.
     pub(crate) fn call(
         &self,
         gateway: &Gateway,
@@ -173,24 +230,19 @@ impl Push {
                 });
                 Ok(json!({"available":self.vapid.is_some(),"subscribed":subscribed}))
             }
-            "push.subscribe" | "push.unsubscribe" => {
+            "push.unsubscribe" => {
                 if self.vapid.is_none() {
                     return Err("push-unavailable");
                 }
-                let event = if method == "push.subscribe" {
-                    Event::push_subscription(device.into(), subscription(params)?)
-                } else {
-                    Event::push_unsubscription(
-                        device.into(),
-                        endpoint_id(unsubscribe_endpoint(params)?),
-                    )
-                };
-                let subscribed = method == "push.subscribe";
-                // The desktop stores it and answers with the new `push.devices`.
+                let event = Event::push_unsubscription(
+                    device.into(),
+                    endpoint_id(unsubscribe_endpoint(params)?),
+                );
+                // The desktop forgets it and answers with the new `push.devices`.
                 if !gateway.events.try_emit(event) {
                     return Err("busy");
                 }
-                Ok(json!({"subscribed":subscribed}))
+                Ok(json!({"subscribed":false}))
             }
             _ => Err("unknown-method"),
         }

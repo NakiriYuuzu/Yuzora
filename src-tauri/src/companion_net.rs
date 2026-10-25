@@ -5,7 +5,7 @@
 //! and stops it on disable or exit. Never log or emit the proxy secret.
 
 use crate::{
-    companion_service::ENV_ALLOWLIST,
+    companion_service::{RecordReader, ENV_ALLOWLIST, STDERR_RECORD_BYTES},
     companion_store::{create_private_dir, NetIdentity},
 };
 use serde::Serialize;
@@ -329,7 +329,7 @@ impl NetManager {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000);
-        let mut child = command.spawn().map_err(|e| failed(&e))?;
+        let mut child = crate::process_kill::spawn_tokio(&mut command).map_err(|e| failed(&e))?;
         let (input, mut frames) = mpsc::unbounded_channel::<Vec<u8>>();
         let (kill, killed) = oneshot::channel();
         let (exited_tx, exited) = watch::channel(false);
@@ -355,7 +355,8 @@ impl NetManager {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         // Stdin stays open while the process lives: EOF is how the sidecar
-        // learns that Yuzora crashed.
+        // learns that Yuzora crashed (on Unix it also watches its parent pid,
+        // for when another process kept a copy of this pipe).
         tokio::spawn(async move {
             while let Some(frame) = frames.recv().await {
                 if stdin.write_all(&frame).await.is_err() || stdin.flush().await.is_err() {
@@ -772,13 +773,13 @@ async fn relay_stderr(
     window: Duration,
     log: impl Fn(&str),
 ) {
-    let mut lines = BufReader::new(stderr).lines();
+    let mut lines = RecordReader::new(BufReader::new(stderr), STDERR_RECORD_BYTES);
     let (mut opened, mut written, mut dropped) = (tokio::time::Instant::now(), 0, 0usize);
     let summary = |dropped: usize| log(&format!("… {dropped} similar lines suppressed"));
     loop {
         let next = if dropped > 0 {
             tokio::select! {
-                line = lines.next_line() => line,
+                line = lines.next() => line,
                 _ = tokio::time::sleep_until(opened + window) => {
                     summary(dropped);
                     dropped = 0;
@@ -786,9 +787,9 @@ async fn relay_stderr(
                 }
             }
         } else {
-            lines.next_line().await
+            lines.next().await
         };
-        let Ok(Some(line)) = next else { break };
+        let Some(line) = next else { break };
         let now = tokio::time::Instant::now();
         if now >= opened + window {
             if dropped > 0 {

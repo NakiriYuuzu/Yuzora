@@ -198,3 +198,22 @@ it("disables the Companion and re-reads its state", async () => {
   // The stop makes the chip disappear with the refreshed overview.
   await waitFor(() => expect(screen.queryByTestId("status-companion-chip")).not.toBeInTheDocument())
 })
+
+it("is corrected by the gateway's list: a phone the events never announced appears, a ghost whose close was dropped goes", async () => {
+  replies.companion_peers = { peers: [{ peerId: 5, deviceId: "dev-live" }], streams: [] }
+  render(<CompanionStatusIndicator />)
+  event({ type: "session.opened", peerId: 4, deviceId: "dev-ghost" })
+  expect(within(chip()).getByTitle("1 connected")).toBeInTheDocument()
+  await act(async () => { await useCompanionStore.getState().reconcilePeers() })
+  expect(within(chip()).getByTitle("1 connected")).toBeInTheDocument()
+  expect(useCompanionStore.getState().peers).toEqual({ 5: "dev-live" })
+  const dialog = await openPopover()
+  expect(within(dialog).getAllByTestId("status-companion-device")).toHaveLength(1)
+  // A stream the events missed shows who drives which pane.
+  replies.companion_peers = {
+    peers: [{ peerId: 5, deviceId: "dev-live" }],
+    streams: [{ stream: "9", deviceId: "dev-live", peerId: 5, session: "default", scope: "control", target: "w1:p1" }],
+  }
+  await act(async () => { await useCompanionStore.getState().reconcilePeers() })
+  expect(chip()).toHaveAttribute("data-controlling", "true")
+})
