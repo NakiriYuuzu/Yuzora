@@ -20,6 +20,7 @@ import { TabBar } from "./TabBar"
 import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
 import { SvgSplitView, isSvgPath } from "./SvgSplitView"
+import { tabRetention } from "./viewRetention"
 
 const RichMarkdownEditor = lazy(() => import("../editor/RichMarkdownEditor").then(m => ({ default: m.RichMarkdownEditor })))
 
@@ -46,12 +47,14 @@ export function EditorArea() {
             {groups.map((group, i) => {
                 const last = i === groups.length - 1
                 const activeTab = group.tabs.find((tab) => tab.path === group.activePath)
-                const herdrTabs = group.tabs.filter(
+                // Kept-alive pages (viewRetention) stay mounted in their own
+                // layer and are only hidden while another tab is in front.
+                const keptAliveTabs = group.tabs.filter(
                     (tab) =>
-                        tab.kind === "herdr-terminal" &&
-                        tab.herdrSessionId &&
-                        tab.terminalId
+                        tabRetention(tab) === "keep-alive" &&
+                        (tab.kind !== "herdr-terminal" || (tab.herdrSessionId && tab.terminalId))
                 )
+                const activeKeptAlive = activeTab !== undefined && tabRetention(activeTab) === "keep-alive"
                 return (
                     <div
                         key={group.id ?? `legacy-group-${i}`}
@@ -102,41 +105,45 @@ export function EditorArea() {
                             )}
                         </div>
                         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-                            {herdrTabs.map((tab) => {
+                            {keptAliveTabs.map((tab) => {
                                 const tabVisible = editorSurfaceVisible && tab.path === group.activePath
+                                const herdr = tab.kind === "herdr-terminal"
                                 return (
                                     <div
                                         key={tab.path}
                                         className={cn(
                                             "absolute inset-0 min-h-0 min-w-0",
+                                            !herdr && "flex",
                                             tabVisible
                                                 ? "visible pointer-events-auto"
                                                 : "invisible pointer-events-none"
                                         )}
                                         aria-hidden={!tabVisible}
                                         inert={!tabVisible}
-                                        data-testid={`herdr-page-layer-${tab.path}`}
+                                        data-testid={herdr ? `herdr-page-layer-${tab.path}` : `kept-alive-layer-${tab.path}`}
                                     >
-                                        <StableHerdrTerminalPage
-                                            herdrSessionId={tab.herdrSessionId!}
-                                            terminalId={tab.terminalId!}
-                                            paneId={tab.paneId}
-                                            herdrTabId={tab.herdrTabId}
-                                            title={tab.name}
-                                            pagePath={tab.path}
-                                            active={tabVisible && i === activeGroupIndex}
-                                            visible={tabVisible}
-                                        />
+                                        {herdr ? (
+                                            <StableHerdrTerminalPage
+                                                herdrSessionId={tab.herdrSessionId!}
+                                                terminalId={tab.terminalId!}
+                                                paneId={tab.paneId}
+                                                herdrTabId={tab.herdrTabId}
+                                                title={tab.name}
+                                                pagePath={tab.path}
+                                                active={tabVisible && i === activeGroupIndex}
+                                                visible={tabVisible}
+                                            />
+                                        ) : (
+                                            <PreviewPanel visible={tabVisible} />
+                                        )}
                                     </div>
                                 )
                             })}
-                            {activeTab?.kind !== "herdr-terminal" && (
+                            {!activeKeptAlive && (
                                 <div className="absolute inset-0 flex min-h-0 min-w-0">
                                     {(() => {
-                                        if (
-                                            group.activePath === PREVIEW_TAB_PATH ||
-                                            activeTab?.kind === "preview"
-                                        ) {
+                                        // Legacy: an active preview path without its tab entry.
+                                        if (group.activePath === PREVIEW_TAB_PATH) {
                                             return <PreviewPanel />
                                         }
                                         if (activeTab && isMarkdownPreviewTab(activeTab)) {

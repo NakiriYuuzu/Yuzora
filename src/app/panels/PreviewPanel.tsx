@@ -90,7 +90,12 @@ function reportPreviewReloadError(error: unknown): Promise<void> {
   return showActionError(i18n.t("previewPanel.reload", { ns: "panels" }), error)
 }
 
-export function PreviewPanel() {
+/**
+ * `visible` is false while another tab of the group is in front. The panel is
+ * kept mounted then (see viewRetention): the native webview is only hidden, so
+ * its page, scroll position and in-page state are still there on return.
+ */
+export function PreviewPanel({ visible = true }: { visible?: boolean } = {}) {
   const { t } = useTranslation("preview")
   const { t: tp } = useTranslation("panels")
   const workspace = useWorkspaceStore((s) => s.workspacePath)
@@ -100,11 +105,12 @@ export function PreviewPanel() {
   const nav = workspace ? navMap[workspace] ?? EMPTY_NAV : EMPTY_NAV
   // EditorPanel (and this panel) stays mounted but CSS-hidden when the mode is not
   // "files"; a native webview isn't affected by `display:none`, so gate its
-  // visibility on the mode too — otherwise it floats over the Git/DB/SSH panels.
+  // visibility on the mode and on this tab being in front too — otherwise it
+  // floats over the Git/DB/SSH panels or over the group's other tabs.
   const mode = useUiStore((s) => s.mode)
 
   const overlayOpen = useAnyOverlayOpen()
-  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
+  const previewVisible = visible && (mode === "files" || mode === "ade") && !overlayOpen
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [urlError, setUrlError] = useState<string | null>(null)
   const webviewHostRef = useRef<HTMLDivElement | null>(null)
@@ -211,8 +217,8 @@ export function PreviewPanel() {
   }, [external, nativeNavigationSync, nav.url, workspace, renderedPreview.url])
 
   // Close the webview when the preview is no longer showing an external URL, and
-  // on unmount (the panel unmounts when another tab becomes active — a stray
-  // native layer would otherwise float over the editor).
+  // on unmount (the preview tab was closed or moved — a stray native layer
+  // would otherwise float over the editor).
   useEffect(() => {
     if (!isTauri()) return
     if (!external || !renderedPreview.url) {
@@ -238,7 +244,8 @@ export function PreviewPanel() {
     const targetUrl = nav.url
     let queued = false
     const update = () => {
-      if (queued) return
+      // A hidden webview gets its bounds when it is shown again (below).
+      if (queued || !previewVisibleRef.current) return
       queued = true
       void enqueueNativePreviewOperation(async () => {
         // Waiting notifications share the latest bounds; an in-flight write can queue a follow-up.

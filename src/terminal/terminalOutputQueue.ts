@@ -182,12 +182,23 @@ export class TerminalOutputQueue {
   private flushLatencyMs = 0
   private flushStartedAt = 0
 
+  private readonly discardHiddenAfterOverflow: boolean
+
+  /**
+   * `discardHiddenAfterOverflow`: for owners that answer `needsResync` with a
+   * fresh authoritative frame (`replace`) instead of replaying the truncated
+   * tail. Once a hidden session overflows, everything it buffered is dropped
+   * and further hidden output is only counted, so a busy background session
+   * holds no memory and does no trimming work for bytes nobody will display.
+   */
   constructor(
     private readonly write: TerminalWriter,
     visible: boolean,
     private readonly limit = TERMINAL_OUTPUT_BUFFER_LIMIT,
+    options: { discardHiddenAfterOverflow?: boolean } = {},
   ) {
     this.visible = visible
+    this.discardHiddenAfterOverflow = options.discardHiddenAfterOverflow === true
   }
 
   // Read-only telemetry (issue #39 AC 6), also surfaced next to the Rust
@@ -368,9 +379,22 @@ export class TerminalOutputQueue {
 
   private appendHidden(data: string, bytes = utf8Length(data)): void {
     if (bytes === 0) return
+    if (this.discardHiddenAfterOverflow && this.hiddenTruncated) {
+      this.droppedTotal += bytes
+      return
+    }
     this.hiddenChunks.push(data)
     this.hiddenSizes.push(bytes)
     this.hiddenSize += bytes
+    if (this.discardHiddenAfterOverflow && this.hiddenSize > this.limit) {
+      this.hiddenTruncated = true
+      this.droppedTotal += this.hiddenSize
+      this.hiddenChunks = []
+      this.hiddenHead = 0
+      this.hiddenSizes = []
+      this.hiddenSize = 0
+      return
+    }
     while (this.hiddenSize > this.limit) {
       this.hiddenTruncated = true
       if (this.hiddenChunks.length - this.hiddenHead > 1) {

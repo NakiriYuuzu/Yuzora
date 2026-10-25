@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next"
 import { getDocument } from "../editor/documentRegistry"
 import { getView, subscribeView } from "../editor/viewRegistry"
 import { subscribePreviewView } from "./subscribePreviewView"
+import { useRetainedScroll } from "./viewRetention"
 import { useWorkspaceStore } from "../state/workspaceStore"
 import { fileGradeOf } from "../lib/types"
 import type { OpenFileResult } from "../lib/types"
@@ -322,6 +323,15 @@ export const MarkdownPreview = memo(function MarkdownPreview({
     )
     const documentLineCount = useMemo(() => content.split(/\r\n?|\n/).length, [content])
     const syncEnabled = grade === "full" && content.trim() !== ""
+    // Come back to the same place after switching to an Agent or another tab.
+    // While the source is open in an editor its scroll sync owns the position.
+    const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+    useRetainedScroll(
+        previewBodyRef,
+        { workspacePath, path: sourcePath, facet: "markdown-preview" },
+        syncEnabled && !loadError,
+        () => getView(sourcePath) === undefined
+    )
 
     useEffect(() => {
         documentLineCountRef.current = documentLineCount

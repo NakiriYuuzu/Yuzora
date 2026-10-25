@@ -8,6 +8,8 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { openFile, readFileBase64 } from "@/lib/ipc"
 import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
+import { useWorkspaceStore } from "@/state/workspaceStore"
+import { retainedViewState, useRetainedScroll } from "./viewRetention"
 
 // Binary raster formats the WebView can decode natively. SVG is intentionally
 // absent: it is a text file and opens as an editor with SvgSplitView.
@@ -41,9 +43,19 @@ const CHECKERBOARD_CLASS =
 export function ImageView({ path }: { path: string }) {
     const { t } = useTranslation("panels")
     const containerRef = useRef<HTMLDivElement>(null)
+    const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+    const zoomState = useMemo(
+        () => retainedViewState<number | "fit">(workspacePath, path, "image-zoom"),
+        [workspacePath, path]
+    )
     // "fit" scales down to the viewport (never past 1:1); a number is an
-    // explicit zoom factor from the wheel / toolbar.
-    const [zoom, setZoom] = useState<number | "fit">("fit")
+    // explicit zoom factor from the wheel / toolbar. It comes back to the zoom
+    // the image was last left at.
+    const [zoom, setZoomState] = useState<number | "fit">(() => zoomState.get() ?? "fit")
+    const setZoom = (next: number | "fit") => {
+        zoomState.set(next)
+        setZoomState(next)
+    }
     const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
     const [byteSize, setByteSize] = useState<number | null>(null)
     const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
@@ -112,6 +124,8 @@ export function ImageView({ path }: { path: string }) {
               )
             : 1
     const effectiveZoom = zoom === "fit" ? fitZoom : zoom
+    // The scroll offset is only meaningful once the image has its zoomed size.
+    useRetainedScroll(containerRef, { workspacePath, path, facet: "image-scroll" }, dims !== null && !loadError)
 
     function zoomBy(factor: number) {
         setZoom(clampZoom(effectiveZoom * factor))

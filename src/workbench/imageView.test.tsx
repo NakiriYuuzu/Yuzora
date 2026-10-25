@@ -24,6 +24,7 @@ vi.mock("@/app/panels/PreviewPanel", () => ({
 
 import { ImageView, isImagePath } from "./ImageView"
 import { EditorArea } from "./EditorArea"
+import { clearRetainedViewStatesForTest } from "./viewRetention"
 import { readFileBase64 } from "@/lib/ipc"
 import { convertFileSrc } from "@tauri-apps/api/core"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
@@ -38,6 +39,7 @@ function loadImage(width: number, height: number) {
 
 afterEach(() => {
     cleanup()
+    clearRetainedViewStatesForTest()
     vi.clearAllMocks()
 })
 
@@ -114,6 +116,30 @@ describe("ImageView", () => {
             fireEvent.click(screen.getByRole("button", { name: "Zoom out" }))
         }
         expect(screen.getByTestId("image-view-meta").textContent).toContain("10%")
+    })
+
+    it("returns to the zoom and scroll offset the image was left at", () => {
+        const first = render(<ImageView path="/ws/logo.png" />)
+        loadImage(100, 100)
+        fireEvent.click(screen.getByRole("button", { name: "Actual size (1:1)" }))
+        fireEvent.click(screen.getByRole("button", { name: "Zoom in" }))
+        const viewport = screen.getByTestId("image-view-img").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+        viewport.scrollTop = 30
+        viewport.scrollLeft = 12
+        fireEvent.scroll(viewport)
+        first.unmount()
+
+        render(<ImageView path="/ws/logo.png" />)
+        expect(screen.getByTestId("image-view-meta").textContent).toContain("125%")
+        loadImage(100, 100)
+        const restored = screen.getByTestId("image-view-img").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+        expect(restored.scrollTop).toBe(30)
+        expect(restored.scrollLeft).toBe(12)
+
+        cleanup()
+        render(<ImageView path="/ws/other.png" />)
+        loadImage(100, 100)
+        expect(screen.getByTestId("image-view-meta").textContent).not.toContain("125%")
     })
 
     it("Cmd/Ctrl＋滾輪縮放（preventDefault 阻止捲動）；一般滾輪不攔截、不改縮放", () => {

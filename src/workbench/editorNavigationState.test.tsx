@@ -1,9 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { Editor } from "@tiptap/react"
+import { undo } from "@codemirror/commands"
 import { EditorSelection } from "@codemirror/state"
 import { getView } from "@/editor/viewRegistry"
-import { clearAll } from "@/editor/documentRegistry"
+import { clearAll, dropDocument } from "@/editor/documentRegistry"
+import { retargetOpenDocuments } from "@/state/contextMenuStore"
 import { clearEditorViewStatesForTest } from "@/editor/editorViewState"
 import { clearMarkdownViewStatesForTest } from "@/editor/markdownViewState"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -68,6 +70,53 @@ it("restores a source selection through the actual A → B → A tab lifecycle",
     await switchTo("/w/b.txt")
     await switchTo("/w/a.txt")
     expect(getView("/w/a.txt")!.state.selection.main).toMatchObject({ anchor: 12, head: 20 })
+})
+
+it("keeps undo history through the actual A → B → A tab lifecycle", async () => {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.type" }))
+    const edited = first.state.doc.toString()
+    await switchTo("/w/b.txt")
+    await switchTo("/w/a.txt")
+    const second = getView("/w/a.txt")!
+    expect(second).not.toBe(first)
+    expect(second.state.doc.toString()).toBe(edited)
+    act(() => { expect(undo(second)).toBe(true) })
+    expect(second.state.doc.toString()).toBe(edited.slice("edit ".length))
+})
+
+it("keeps undo history when an open file is renamed right after an edit", async () => {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.type" }))
+    const edited = first.state.doc.toString()
+    act(() => retargetOpenDocuments("/w/a.txt", "/w/c.txt"))
+    await waitFor(() => expect(getView("/w/c.txt")).toBeDefined())
+    const renamed = getView("/w/c.txt")!
+    expect(renamed.state.doc.toString()).toBe(edited)
+    act(() => { expect(undo(renamed)).toBe(true) })
+    expect(renamed.state.doc.toString()).toBe(edited.slice("edit ".length))
+})
+
+it("does not bring back undo history after the tab was closed", async () => {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    // Leave the text identical to the file on disk with undo steps recorded,
+    // so only the closed-tab rule (not a text mismatch) can drop the history.
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.paste" }))
+    act(() => first.dispatch({ changes: { from: 0, to: "edit ".length }, userEvent: "input.paste" }))
+    act(() => {
+        useWorkspaceStore.getState().closeTab(0, "/w/a.txt")
+        dropDocument("/w/a.txt")
+    })
+    await waitFor(() => expect(getView("/w/a.txt")).toBeUndefined())
+    act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
+    await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    expect(undo(getView("/w/a.txt")!)).toBe(false)
 })
 
 it.each([[12, 20], [20, 12]])("restores a Markdown document selection (%i → %i) through A → B → A", async (anchor, head) => {

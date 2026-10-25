@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { historyField } from "@codemirror/commands"
 import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { FileX2 } from "lucide-react"
@@ -8,7 +9,12 @@ import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
 import { getDocument, updateBuffer, documentGeneration, saveDocumentContent } from "./documentRegistry"
 import { getView, registerView, unregisterView } from "./viewRegistry"
-import { editorViewStateTracker, restoreEditorViewState } from "./editorViewState"
+import {
+    editorViewStateTracker,
+    rememberEditorHistory,
+    restoreEditorHistory,
+    restoreEditorViewState
+} from "./editorViewState"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
@@ -128,14 +134,22 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
             const editorSettings = useEditorSettingsStore.getState()
             const reveal = useWorkspaceStore.getState().pendingReveal
             const revealPending = reveal?.path === path
-            let state = EditorState.create({
-                doc: content,
-                extensions: [
-                    ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
-                    conflictMarkers(),
-                    editorViewStateTracker(workspacePath, path)
-                ]
-            })
+            const extensions = [
+                ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
+                conflictMarkers(),
+                editorViewStateTracker(workspacePath, path)
+            ]
+            let state = EditorState.create({ doc: content, extensions })
+            // Undo/redo survive the pane being destroyed, as long as the text is
+            // still exactly what that history was recorded against.
+            const history = restoreEditorHistory(workspacePath, path, state.doc)
+            if (history !== undefined) {
+                state = EditorState.fromJSON(
+                    { doc: content, selection: state.selection.toJSON(), history },
+                    { extensions },
+                    { history: historyField }
+                )
+            }
             // Return to where this document was last left (tab, Space or
             // workspace switch) unless a navigation asks for a specific line.
             const restored = revealPending ? {} : restoreEditorViewState(workspacePath, path, state.doc)
@@ -162,7 +176,12 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
             disposed = true
             const view = viewRef.current
             if (view) {
-                updateBuffer(path, view.state.doc.toString(), generation, workspacePath)
+                // Undo history follows the buffer: kept on a tab/Space switch,
+                // dropped with a closed tab, a reloaded or a renamed document
+                // (renameEditorViewState already took the live history).
+                if (updateBuffer(path, view.state.doc.toString(), generation, workspacePath)) {
+                    rememberEditorHistory(workspacePath, path, view.state)
+                }
                 // Pass this pane's own view so a split group that reused the path
                 // isn't unregistered out from under it (m4).
                 unregisterView(path, view)

@@ -9,6 +9,7 @@ import { GitBridge } from "@/workbench/GitBridge";
 import { FileDropBridge } from "@/workbench/FileDropBridge";
 import { WorkbenchKeyboardBridge } from "@/workbench/WorkbenchKeyboardBridge";
 import { WorkbenchFocusBridge } from "@/workbench/WorkbenchFocusBridge";
+import { EditHistoryBridge } from "@/workbench/EditHistoryBridge";
 import { HerdrBridge } from "@/workbench/HerdrBridge";
 import { MachinesBridge } from "@/workbench/MachinesBridge";
 import { HerdrToolsHost } from "@/workbench/HerdrToolsHost";
@@ -45,6 +46,7 @@ function App() {
       <ToasterHost />
       <WorkbenchFocusBridge />
       <WorkbenchKeyboardBridge />
+      <EditHistoryBridge />
       <SshBridge />
       <SshHostKeyHost />
       <SftpHost />

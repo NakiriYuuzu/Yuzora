@@ -77,15 +77,17 @@ export function renameDocument(oldPath: string, newPath: string, liveContent?: s
     }
 }
 
-export function updateBuffer(path: string, content: string, generation: number, workspace = useWorkspaceStore.getState().workspacePath) {
-    if (workspace !== useWorkspaceStore.getState().workspacePath) return
-    if (generation !== documentGeneration(path)) return
+/** Returns whether the document is still cached for this workspace and generation. */
+export function updateBuffer(path: string, content: string, generation: number, workspace = useWorkspaceStore.getState().workspacePath): boolean {
+    if (workspace !== useWorkspaceStore.getState().workspacePath) return false
+    if (generation !== documentGeneration(path)) return false
     const entry = registry.get(documentKey(path, workspace))
-    if (!entry) return
+    if (!entry) return false
     const r = entry.result
     if (r.kind === "full" || r.kind === "limited") {
         entry.result = { ...r, content }
     }
+    return true
 }
 
 // Retire every old token, including dropped documents, without retaining their

@@ -50,7 +50,9 @@ vi.mock("@/app/panels/HerdrTerminalPage", () => ({
 }))
 
 vi.mock("@/app/panels/PreviewPanel", () => ({
-    PreviewPanel: () => <div data-testid="preview-panel" />
+    PreviewPanel: ({ visible }: { visible?: boolean }) => (
+        <div data-testid="preview-panel" data-visible={String(visible ?? true)} />
+    )
 }))
 
 vi.mock("../editor/EditorPane", () => ({
@@ -328,6 +330,45 @@ describe("EditorArea markdown preview tabs", () => {
         expect(useWorkspaceStore.getState().groups[0].id).toBe("mixed-preview-herdr")
         expect(screen.getByTestId("mock-herdr-term-keep")).toBe(herdr)
         expect(screen.queryByTestId("preview-panel")).toBeNull()
+    })
+
+    it("keeps the Browser mounted and only hidden while an Agent or file tab is in front", () => {
+        const herdrPath = "yuzora://herdr/default/term-agent"
+        useWorkspaceStore.setState({
+            groups: [{
+                id: "browser-agent",
+                activePath: PREVIEW_TAB_PATH,
+                tabs: [
+                    { path: PREVIEW_TAB_PATH, name: "Preview", dirty: false, externallyModified: false, kind: "preview" },
+                    { ...herdrTab(herdrPath, "term-agent", "tab-agent"), herdrWorkspaceId: "ws-1" },
+                    { path: "/w/notes.md", name: "notes.md", dirty: false, externallyModified: false }
+                ]
+            }],
+            activeGroupIndex: 0
+        })
+        useHerdrStore.setState({ selectedSessionName: "default", selectedSpaceId: "ws-1" })
+
+        render(<EditorArea />)
+        const browser = screen.getByTestId("preview-panel")
+        const layer = screen.getByTestId(`kept-alive-layer-${PREVIEW_TAB_PATH}`)
+        expect(browser).toHaveAttribute("data-visible", "true")
+        expect(layer).not.toHaveAttribute("inert")
+
+        act(() => useWorkspaceStore.getState().setActiveTab(0, herdrPath))
+        expect(screen.getByTestId("preview-panel")).toBe(browser)
+        expect(browser).toHaveAttribute("data-visible", "false")
+        expect(layer).toHaveClass("invisible")
+        expect(layer).toHaveAttribute("inert")
+        expect(layer).toHaveAttribute("aria-hidden", "true")
+
+        act(() => useWorkspaceStore.getState().setActiveTab(0, "/w/notes.md"))
+        expect(screen.getByTestId("preview-panel")).toBe(browser)
+        expect(browser).toHaveAttribute("data-visible", "false")
+
+        act(() => useWorkspaceStore.getState().setActiveTab(0, PREVIEW_TAB_PATH))
+        expect(screen.getByTestId("preview-panel")).toBe(browser)
+        expect(browser).toHaveAttribute("data-visible", "true")
+        expect(layer).toHaveClass("visible")
     })
 })
 
