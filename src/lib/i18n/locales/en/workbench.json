@@ -88,7 +88,7 @@
   },
   "commandPalette": {
     "title": "Command Palette",
-    "searchPlaceholder": "Search files, run a command…",
+    "searchPlaceholder": "Search file contents, run a command…",
     "noCommandsMatch": "No commands match",
     "goToHeading": "Go to",
     "togglePreview": "Toggle browser",

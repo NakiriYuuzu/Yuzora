@@ -57,7 +57,7 @@ async function openFrom(owner: HTMLElement) {
     owner.focus()
     expect(document.activeElement).toBe(owner)
     toggle(owner)
-    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    const input = await screen.findByPlaceholderText("Search file contents, run a command…")
     await waitFor(() => expect(input).toHaveFocus())
     return input
 }
@@ -68,7 +68,7 @@ async function dismiss(input: HTMLElement, method = "escape") {
         fireEvent.pointerDown(overlay, { button: 0, pointerType: "mouse", isPrimary: true })
         fireEvent.click(overlay)
     } else fireEvent.keyDown(input, { key: "Escape" })
-    await waitFor(() => expect(screen.queryByPlaceholderText("Search files, run a command…")).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByPlaceholderText("Search file contents, run a command…")).not.toBeInTheDocument())
     await drainClose()
 }
 
@@ -191,7 +191,7 @@ it("does not let an old close callback steal a rapidly reopened palette's focus"
     const second = ownerElement()
     second.focus()
     toggle(second)
-    const reopened = await screen.findByPlaceholderText("Search files, run a command…")
+    const reopened = await screen.findByPlaceholderText("Search file contents, run a command…")
     await drainClose()
     expect(reopened).toHaveFocus()
     await dismiss(reopened)

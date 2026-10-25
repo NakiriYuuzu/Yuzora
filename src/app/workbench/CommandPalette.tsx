@@ -118,6 +118,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   const [search, setSearch] = useState("")
   const [caseSensitive, setCaseSensitive] = useState(false)
   const focusOwner = useRef<PaletteFocusOwner | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const setPaletteOpen = useCallback((nextOpen: boolean) => {
     if (!nextOpen) setSearch("")
     onOpenChange(nextOpen)
@@ -372,9 +373,18 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   ]
   const visibleCommands = commands.filter((c) => matchesCommand(c.label, c.value))
 
+  // Opens the palette in content-search mode: an already-open palette drops a
+  // leading ">" command prefix and takes focus back into its input.
+  const openWorkspaceSearch = useCallback(() => {
+    if (!open) return onOpenChange(true)
+    setSearch((value) => (value.startsWith(">") ? value.slice(1).trimStart() : value))
+    inputRef.current?.focus()
+  }, [open, onOpenChange])
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       dispatchAppShortcut(event, "commandPalette", () => setPaletteOpen(!open))
+      dispatchAppShortcut(event, "workspaceSearch", openWorkspaceSearch)
       dispatchAppShortcut(event, "settings", onOpenSettings)
       dispatchAppShortcut(event, "toggleSidebar", useUiStore.getState().requestSidebarToggle)
       dispatchAppShortcut(event, "toggleTools", useUiStore.getState().requestToolsToggle)
@@ -388,7 +398,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
     // listener never sees terminal-safe shortcuts typed inside a terminal.
     window.addEventListener("keydown", handler, true)
     return () => window.removeEventListener("keydown", handler, true)
-  }, [open, setPaletteOpen, onOpenSettings, onSelectMode, togglePreviewTab])
+  }, [open, setPaletteOpen, openWorkspaceSearch, onOpenSettings, onSelectMode, togglePreviewTab])
 
   return (
     <>
@@ -401,6 +411,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
         resizeId="command-palette"
         minSize={dialogMinSize(420, 280)}
         showCloseButton={false}
+        onKeyDown={(event) => { dispatchAppShortcut(event.nativeEvent, "workspaceSearch", openWorkspaceSearch, true) }}
         onOpenAutoFocus={(event) => {
           const element = document.activeElement
           focusOwner.current = element instanceof HTMLElement
@@ -429,6 +440,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
           <div className="flex shrink-0 items-center gap-3 border-b border-(--line-1) px-[21px] py-[17px]">
             <SearchIcon className="size-5 shrink-0 text-(--ink-3)" aria-hidden="true" />
             <CommandPrimitive.Input
+              ref={inputRef}
               value={search}
               onValueChange={setSearch}
               placeholder={t("commandPalette.searchPlaceholder")}

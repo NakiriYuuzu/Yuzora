@@ -63,7 +63,7 @@ it("shows a failed workspace invocation and still reveals a partial match", asyn
     })
     try {
         render(<Harness />)
-        fireEvent.change(screen.getByPlaceholderText("Search files, run a command…"), { target: { value: "needle" } })
+        fireEvent.change(screen.getByPlaceholderText("Search file contents, run a command…"), { target: { value: "needle" } })
         await act(async () => { await vi.advanceTimersByTimeAsync(250) })
         expect(screen.getByRole("alert")).toHaveTextContent("Could not finish searching. Results may be incomplete.")
         expect(screen.getByRole("alert")).toHaveTextContent("channel unavailable")
@@ -323,7 +323,7 @@ it("filters the complete Herdr Space snapshot by name or ID before applying the 
     })
     render(<Harness />)
 
-    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    const input = await screen.findByPlaceholderText("Search file contents, run a command…")
     fireEvent.change(input, {
         target: { value: ">Late Space" }
     })
@@ -367,7 +367,7 @@ it("filters the complete Herdr Agent snapshot by name or ID before applying the 
     })
     render(<Harness />)
 
-    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    const input = await screen.findByPlaceholderText("Search file contents, run a command…")
     fireEvent.change(input, {
         target: { value: ">Late Agent" }
     })
@@ -385,7 +385,7 @@ it("filters the complete Herdr Agent snapshot by name or ID before applying the 
 
 it("'>' prefix restricts to commands and skips the workspace search", async () => {
     render(<Harness />)
-    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    const input = await screen.findByPlaceholderText("Search file contents, run a command…")
 
     // ">" alone keeps every command and runs no workspace search.
     fireEvent.change(input, { target: { value: ">" } })
@@ -399,7 +399,7 @@ it("'>' prefix restricts to commands and skips the workspace search", async () =
 
 it("a single-character query stays below the search floor and runs no workspace search", async () => {
     render(<Harness />)
-    const input = await screen.findByPlaceholderText("Search files, run a command…")
+    const input = await screen.findByPlaceholderText("Search file contents, run a command…")
 
     fireEvent.change(input, { target: { value: "a" } })
     expect(searchWorkspace).not.toHaveBeenCalled()
@@ -415,7 +415,7 @@ it("a plain query renders the workspace search group and reveals a hit on select
     })
 
     render(<Harness />)
-    const input = screen.getByPlaceholderText("Search files, run a command…")
+    const input = screen.getByPlaceholderText("Search file contents, run a command…")
     fireEvent.change(input, { target: { value: "needle" } })
     await act(async () => {
         await vi.advanceTimersByTimeAsync(250)
@@ -441,7 +441,7 @@ it("workspace search marks the helper's ranges, including folds toLowerCase miss
     })
 
     render(<Harness />)
-    fireEvent.change(screen.getByPlaceholderText("Search files, run a command…"), { target: { value: "st" } })
+    fireEvent.change(screen.getByPlaceholderText("Search file contents, run a command…"), { target: { value: "st" } })
     await act(async () => {
         await vi.advanceTimersByTimeAsync(250)
     })
@@ -462,7 +462,7 @@ it("workspace search sanitizes an extended Windows child path but reveals the ra
     })
 
     render(<Harness />)
-    fireEvent.change(screen.getByPlaceholderText("Search files, run a command…"), {
+    fireEvent.change(screen.getByPlaceholderText("Search file contents, run a command…"), {
         target: { value: "needle" }
     })
     await act(async () => {
@@ -495,6 +495,38 @@ it("opens from Ctrl+K while a Windows terminal has focus", async () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument()
     expect(terminalKey).not.toHaveBeenCalled()
     terminal.remove()
+})
+
+it("opens ready for workspace search from Ctrl+Shift+F, even while a Windows terminal has focus", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    function ClosedHarness() {
+        const [open, setOpen] = useState(false)
+        return <CommandPalette open={open} onOpenChange={setOpen} onSelectMode={() => {}} onOpenSettings={() => {}} />
+    }
+    render(<ClosedHarness />)
+    const terminal = document.body.appendChild(document.createElement("div"))
+    terminal.className = "xterm"
+    const input = terminal.appendChild(document.createElement("textarea"))
+    const terminalKey = vi.fn()
+    input.addEventListener("keydown", terminalKey)
+    act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "F", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })) })
+    expect(await screen.findByRole("dialog")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("Search file contents, run a command…")).toHaveValue("")
+    expect(terminalKey).not.toHaveBeenCalled()
+    terminal.remove()
+})
+
+it("Ctrl+Shift+F inside an open palette drops the '>' command prefix and refocuses the input", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    render(<Harness />)
+    const input = await screen.findByPlaceholderText("Search file contents, run a command…")
+    fireEvent.change(input, { target: { value: ">settings" } })
+    act(() => input.blur())
+    expect(input).not.toHaveFocus()
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "F", ctrlKey: true, shiftKey: true })
+    expect(input).toHaveValue("settings")
+    expect(input).toHaveFocus()
+    expect(screen.getByRole("dialog")).toBeInTheDocument()
 })
 
 it("hides HERDR action commands until a Session is selected", async () => {

@@ -36,3 +36,15 @@ it.each(["Macintosh", "Windows", "Linux"])("validates and applies a Control bind
         expect(useKeyboardSettingsStore.getState().overrides).toEqual({})
     }
 })
+
+it("shows a command whose default key a persisted binding took as unbound, without an error", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    useKeyboardSettingsStore.setState({ overrides: { toggleBrowser: "Mod+Shift+F" } })
+    render(<KeyboardSettings />)
+    const search = screen.getByLabelText(i18n.t("commands.workspaceSearch", { ns: "editorPreferences" }))
+    expect(search).toHaveValue("")
+    expect(search).toHaveAttribute("aria-invalid", "false")
+    const row = within(search.closest(".settings-shortcut-row") as HTMLElement)
+    expect(row.getByText(i18n.t("unbound", { ns: "editorPreferences" }))).toBeInTheDocument()
+    expect(screen.getByLabelText(i18n.t("commands.toggleBrowser", { ns: "editorPreferences" }))).toHaveValue("Mod+Shift+F")
+})
