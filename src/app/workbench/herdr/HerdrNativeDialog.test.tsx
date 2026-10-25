@@ -8,7 +8,7 @@ import HerdrNativeDialog from "./HerdrNativeDialog"
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(), feature: vi.fn(), release: vi.fn(), resize: vi.fn(), input: vi.fn(), paneFocus: vi.fn(),
   bootstrap: vi.fn(), terminalOpen: vi.fn(), terminalDispose: vi.fn(), graphicsDispose: vi.fn(), fit: vi.fn(), onData: vi.fn(),
-  graphicsWrite: vi.fn(), writeText: vi.fn(), oscHandler: vi.fn()
+  graphicsWrite: vi.fn(), writeText: vi.fn(), oscHandler: vi.fn(), clipboardOptions: vi.fn()
 }))
 
 vi.mock("@/lib/herdrProvider", () => ({ invokeHerdr: mocks.invoke }))
@@ -23,7 +23,7 @@ vi.mock("@/terminal/kittyRenderer", () => ({
   installKittyRenderer: () => ({ write: mocks.graphicsWrite, dispose: mocks.graphicsDispose })
 }))
 vi.mock("@/terminal/terminalClipboard", () => ({
-  installTerminalClipboardHandling: () => ({ flushPendingPaste: vi.fn(), dispose: vi.fn() })
+  installTerminalClipboardHandling: (_term: unknown, options: unknown) => { mocks.clipboardOptions(options); return { flushPendingPaste: vi.fn(), dispose: vi.fn() } }
 }))
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit = mocks.fit } }))
 vi.mock("@xterm/xterm", () => ({
@@ -71,6 +71,56 @@ afterEach(() => {
 })
 
 describe("HERDR native client dialog lifecycle", () => {
+  it.each(["resize", "source", "feature", "returned"] as const)("waits for %s initialization before admitting user paste while preserving protocol replies", async phase => {
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    const result = { plugin_pane: { pane: { pane_id: "result-pane" } } }
+    mocks.feature.mockResolvedValue(result)
+    if (phase === "resize") mocks.resize.mockReturnValueOnce(pending)
+    if (phase === "source") mocks.paneFocus.mockReturnValueOnce(pending)
+    if (phase === "feature") mocks.feature.mockImplementationOnce(async () => { await pending; return result })
+    if (phase === "returned") mocks.paneFocus.mockImplementation(({ paneId }) => paneId === "result-pane" ? pending : Promise.resolve())
+    render(<HerdrNativeDialog selection={{ sessionName: "fixture", paneId: "source-pane", request: {
+      method: "plugin.pane.open", params: { plugin_id: "fixture", entrypoint: "inspect", placement: "tab", focus: true }
+    } }} />)
+    await waitFor(() => {
+      if (phase === "resize") expect(mocks.resize).toHaveBeenCalledTimes(1)
+      if (phase === "source") expect(mocks.paneFocus).toHaveBeenCalledTimes(1)
+      if (phase === "feature") expect(mocks.feature).toHaveBeenCalledTimes(1)
+      if (phase === "returned") expect(mocks.paneFocus).toHaveBeenCalledTimes(2)
+    })
+    const clipboard = mocks.clipboardOptions.mock.calls[0][0] as { canPaste: () => boolean }
+    expect(clipboard.canPaste()).toBe(false)
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    await act(async () => { mocks.onData.mock.calls[0][0]("\x1b[0n") })
+    expect(mocks.input).toHaveBeenCalledExactlyOnceWith("native-client-1", "\x1b[0n")
+    await act(async () => { finish() })
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
+    expect(clipboard.canPaste()).toBe(true)
+    expect(mocks.terminalOpen.mock.calls[0][0]).not.toHaveAttribute("inert")
+  })
+
+  it("waits for the original pending plugin request after remount without replaying it", async () => {
+    let finish!: (result: unknown) => void
+    mocks.feature.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const selection: HerdrNativeSelection = { sessionName: "fixture", paneId: "source-pane", request: {
+      method: "plugin.pane.open", params: { plugin_id: "fixture", entrypoint: "inspect", placement: "tab", focus: true }
+    } }
+    const first = render(<HerdrNativeDialog selection={selection} />)
+    await waitFor(() => expect(mocks.feature).toHaveBeenCalledTimes(1))
+    first.unmount()
+    render(<HerdrNativeDialog selection={selection} />)
+    await waitFor(() => expect(mocks.paneFocus).toHaveBeenCalledTimes(2))
+    const clipboard = mocks.clipboardOptions.mock.calls.at(-1)![0] as { canPaste: () => boolean }
+    expect(clipboard.canPaste()).toBe(false)
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(mocks.feature).toHaveBeenCalledTimes(1)
+    await act(async () => { finish({ plugin_pane: { pane: { pane_id: "result-pane" } } }) })
+    await waitFor(() => expect(clipboard.canPaste()).toBe(true))
+    expect(mocks.paneFocus.mock.calls.filter(([request]) => request.paneId === "result-pane")).toHaveLength(1)
+    expect(mocks.feature).toHaveBeenCalledTimes(1)
+  })
+
   function frame(bytesBase64: string): HerdrTerminalEvent {
     return { type: "frame", sessionId: "native-client-1", seq: 1, full: false, encoding: "ansi", width: 80, height: 24, bytesBase64 }
   }
@@ -108,6 +158,122 @@ describe("HERDR native client dialog lifecycle", () => {
     await act(async () => { finish() })
     expect(mocks.graphicsWrite.mock.calls.map(([bytes]) => new TextDecoder().decode(bytes))).toEqual(["first", "second"])
   })
+
+  it("renders a final frame even when EOF arrives in the same event turn", async () => {
+    const { onEvent } = await openOutputDialog()
+    await act(async () => {
+      onEvent(frame(btoa("final diagnostic")))
+      onEvent({ type: "closed", sessionId: "native-client-1", reason: "EOF" })
+    })
+    expect(mocks.graphicsWrite).toHaveBeenCalledExactlyOnceWith(Uint8Array.from(new TextEncoder().encode("final diagnostic")))
+    expect(screen.getByRole("alert")).toHaveTextContent("EOF")
+    expect(mocks.release).toHaveBeenCalledExactlyOnceWith("native-client-1")
+  })
+
+  it("drains accepted frames on EOF while rejecting new frames and input", async () => {
+    let finish!: () => void
+    mocks.graphicsWrite.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    const { onEvent } = await openOutputDialog()
+    await act(async () => { onEvent(frame(btoa("first"))) })
+    act(() => {
+      onEvent(frame(btoa("final diagnostic")))
+      onEvent({ type: "closed", sessionId: "native-client-1", reason: "EOF" })
+      onEvent(frame(btoa("late ignored")))
+      mocks.onData.mock.calls[0][0]("late input")
+    })
+    expect(mocks.input).not.toHaveBeenCalled()
+    await act(async () => { finish() })
+    expect(mocks.graphicsWrite.mock.calls.map(([bytes]) => new TextDecoder().decode(bytes))).toEqual(["first", "final diagnostic"])
+  })
+
+  it("aborts an EOF drain when the dialog is unmounted", async () => {
+    let finish!: () => void
+    mocks.graphicsWrite.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    const { onEvent, unmount } = await openOutputDialog()
+    await act(async () => { onEvent(frame(btoa("first"))) })
+    act(() => { onEvent(frame(btoa("queued"))); onEvent({ type: "closed", sessionId: "native-client-1" }) })
+    unmount()
+    await act(async () => { finish() })
+    expect(mocks.graphicsWrite).toHaveBeenCalledTimes(1)
+    expect(mocks.graphicsDispose).toHaveBeenCalledTimes(1)
+  })
+
+  it("aborts remaining EOF output if the renderer rejects", async () => {
+    let reject!: (reason: Error) => void
+    mocks.graphicsWrite.mockReturnValueOnce(new Promise<void>((_resolve, no) => { reject = no }))
+    const { onEvent } = await openOutputDialog()
+    await act(async () => { onEvent(frame(btoa("first"))) })
+    act(() => { onEvent(frame(btoa("queued"))); onEvent({ type: "closed", sessionId: "native-client-1", reason: "EOF" }) })
+    await act(async () => { reject(new Error("renderer failed")) })
+    expect(mocks.graphicsWrite).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole("alert")).toHaveTextContent("renderer failed")
+  })
+
+  it("drains EOF received before the open reply without activating the client", async () => {
+    let open!: (value: { sessionId: string }) => void
+    mocks.invoke.mockReturnValueOnce(new Promise(resolve => { open = resolve }))
+    render(<HerdrNativeDialog selection={{ sessionName: "e2e-session", request: { method: "plugin.action.invoke", params: { plugin_id: "fixture", action_id: "inspect" } } }} />)
+    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1))
+    const onEvent = mocks.invoke.mock.calls[0][1].onEvent
+    await act(async () => {
+      onEvent(frame(btoa("open failed detail")))
+      onEvent({ type: "closed", sessionId: "native-client-1", reason: "EOF" })
+      open({ sessionId: "native-client-1" })
+    })
+    expect(mocks.graphicsWrite).toHaveBeenCalledExactlyOnceWith(Uint8Array.from(new TextEncoder().encode("open failed detail")))
+    expect(mocks.resize).not.toHaveBeenCalled()
+    expect(mocks.feature).not.toHaveBeenCalled()
+    expect(mocks.release).toHaveBeenCalledExactlyOnceWith("native-client-1")
+  })
+
+  it("does not activate or dispatch a feature after EOF during initial resize", async () => {
+    let finish!: () => void
+    mocks.resize.mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve }))
+    render(<HerdrNativeDialog selection={{ sessionName: "e2e-session", paneId: "source", request: { method: "plugin.action.invoke", params: { plugin_id: "fixture", action_id: "inspect" } } }} />)
+    await waitFor(() => expect(mocks.resize).toHaveBeenCalledTimes(1))
+    const onEvent = mocks.invoke.mock.calls[0][1].onEvent
+    await act(async () => { onEvent({ type: "closed", sessionId: "native-client-1", reason: "EOF" }); finish() })
+    expect(mocks.paneFocus).not.toHaveBeenCalled()
+    expect(mocks.feature).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("EOF")
+  })
+
+  it.each(["input", "resize", "open-release", "feature", "clipboard"] as const)(
+    "does not abort accepted EOF output when a late %s operation fails", async kind => {
+      let finishWrite!: () => void, rejectControl!: (cause: Error) => void
+      const control = new Promise<void>((_resolve, reject) => { rejectControl = reject })
+      let open!: (value: { sessionId: string }) => void
+      mocks.graphicsWrite.mockReturnValueOnce(new Promise<void>(resolve => { finishWrite = resolve }))
+      if (kind === "input") mocks.input.mockReturnValueOnce(control)
+      if (kind === "resize") mocks.resize.mockReturnValueOnce(control)
+      if (kind === "feature") mocks.feature.mockReturnValueOnce(control)
+      if (kind === "open-release") {
+        mocks.invoke.mockReturnValueOnce(new Promise(resolve => { open = resolve }))
+        mocks.release.mockReturnValueOnce(control)
+      }
+      render(<HerdrNativeDialog selection={{ sessionName: "e2e-session", request: kind === "feature" ? { method: "plugin.action.invoke", params: { plugin_id: "fixture", action_id: "inspect" } } : undefined }} />)
+      await waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1))
+      if (kind !== "open-release") await waitFor(() => expect(mocks.resize).toHaveBeenCalledTimes(1))
+      if (kind === "feature") await waitFor(() => expect(mocks.feature).toHaveBeenCalledTimes(1))
+      const onEvent = mocks.invoke.mock.calls[0][1].onEvent
+      if (kind === "input") {
+        await act(async () => mocks.onData.mock.calls[0][0]("in flight"))
+        expect(mocks.input).toHaveBeenCalledTimes(1)
+      }
+      await act(async () => onEvent(frame(btoa("first"))))
+      act(() => { onEvent(frame(btoa("final"))); onEvent({ type: "closed", sessionId: "native-client-1", reason: "EOF" }) })
+      if (kind === "open-release") await act(async () => open({ sessionId: "native-client-1" }))
+      if (kind === "clipboard") {
+        act(() => mocks.clipboardOptions.mock.calls[0][0].onCopyError(new Error("copy failed")))
+        // This branch does not attach control to a production promise.
+        void control.catch(() => {})
+      }
+      await act(async () => rejectControl(new Error("herdr-client-closed")))
+      await act(async () => finishWrite())
+      expect(mocks.graphicsWrite.mock.calls.map(([bytes]) => new TextDecoder().decode(bytes))).toEqual(["first", "final"])
+      expect(screen.getByRole("alert")).toHaveTextContent(kind === "clipboard" ? "copy failed" : "EOF")
+    }
+  )
 
   it("retires queued output and ignores malformed late frames after disposal", async () => {
     let finish!: () => void

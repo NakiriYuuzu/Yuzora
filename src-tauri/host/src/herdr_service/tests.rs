@@ -2758,6 +2758,65 @@ fn capabilities_do_not_claim_api_when_server_incompatible() {
 
 #[cfg(unix)]
 #[test]
+fn schema_probe_failures_are_not_reported_as_missing_snapshot_methods() {
+    for exits in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir
+            .path()
+            .join("fixture.sock")
+            .to_string_lossy()
+            .into_owned();
+        let status = serde_json::json!({
+            "client": { "version": "0.9.1", "channel": "test", "protocol": 22, "binary": "FAKE" },
+            "server": { "status": "running", "running": true, "version": "0.9.1", "protocol": 22, "compatible": true, "socket": socket },
+            "update": { "restart_needed": false }
+        }).to_string();
+        let sessions =
+            serde_json::json!({ "sessions": [{ "name": "default", "default": true, "running": true,
+            "session_dir": dir.path().join("session"), "socket_path": socket }] })
+            .to_string();
+        let binary =
+            write_fake_herdr_with_sessions(dir.path(), &status, "invalid-schema-json", &sessions);
+        if exits {
+            let script = std::fs::read_to_string(&binary).unwrap();
+            let original = "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"schema\" ] && [ \"$3\" = \"--json\" ]; then\n  cat <<'JSON'\ninvalid-schema-json\nJSON\n  exit 0\nfi";
+            let replacement = "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"schema\" ] && [ \"$3\" = \"--json\" ]; then\n  echo fixture-schema-probe-transient >&2\n  exit 42\nfi";
+            assert!(script.contains(original));
+            write_executable_fixture(&binary, &script.replace(original, replacement));
+        }
+        let manager = HerdrManager::with_binary(binary);
+        let caps = manager.discover_capabilities_for_session(Some("default"));
+        assert!(caps.server.running);
+        assert!(!caps.api.snapshot);
+        assert!(!caps.api.tab_create);
+        assert!(caps.api.methods.is_empty());
+        let reason = caps.api.reason.as_deref().unwrap();
+        assert!(reason.contains("herdr api schema failed:"), "{reason}");
+        assert!(!reason.contains("selected herdr schema lacks"), "{reason}");
+        assert!(caps
+            .terminal
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("herdr api schema failed:"));
+        if exits {
+            assert!(
+                reason.contains("fixture-schema-probe-transient"),
+                "{reason}"
+            );
+        }
+
+        let schema = r#"{"protocol":22,"schema_version":1,"methods":["session.snapshot","tab.create","session.ping"],"schemas":{"session.snapshot":{},"tab.create":{}}}"#;
+        write_fake_herdr_with_sessions(dir.path(), &status, schema, &sessions);
+        let recovered = manager.discover_capabilities_for_session(Some("default"));
+        assert!(recovered.api.snapshot);
+        assert!(recovered.api.tab_create);
+        assert!(recovered.api.reason.is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn capabilities_do_not_claim_methods_missing_from_schema() {
     let dir = tempfile::tempdir().unwrap();
     let binary = write_fake_herdr_with_sessions(

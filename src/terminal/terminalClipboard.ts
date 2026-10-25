@@ -11,6 +11,8 @@ export interface TerminalClipboardController extends IDisposable {
 
 interface TerminalClipboardOptions {
   canPaste?: () => boolean
+  /** Stable connector identity; a delayed clipboard read cannot cross reconnects. */
+  pasteOwner?: () => string | null
   pasteText?: (text: string) => void
   pasteImage?: (image?: Blob) => void
   copyOnSelect?: () => boolean
@@ -65,6 +67,7 @@ export function installTerminalClipboardHandling(
   let pendingPaste: string | null = null
   let initialConnectionSetup = true
   let initialConnectionWasWritable: boolean | null = null
+  let initialConnectionOwner: string | null | undefined
   const element = term.element
   const textarea = term.textarea
   let selecting = false
@@ -90,12 +93,13 @@ export function installTerminalClipboardHandling(
   const copySelection = () => {
     if (disposed || !hasSelection()) return
     if (selectionTimer) { clearTimeout(selectionTimer); selectionTimer = undefined }
+    const revision = copyQueue.reserve()
     const enqueue = (text: string) => copyQueue.copy({
       owner: copyOwner,
       text,
       lineEnding: isWindowsPlatform() ? "crlf" : "lf",
       onError: (error) => options.onCopyError?.(error),
-    })
+    }, revision)
     const extended = options.extendedSelection
     if (!extended?.active()) {
       enqueue(terminalSelectionSnapshot(term))
@@ -112,13 +116,13 @@ export function installTerminalClipboardHandling(
     if (disposed) return
     const requestedDuringInitialSetup = initialConnectionSetup
     if (!requestedDuringInitialSetup && !canPaste()) return
+    const requestedOwner = options.pasteOwner?.()
     void readClipboardText()
       .then((text) => {
-        if (
-          requestedDuringInitialSetup
-          && !initialConnectionSetup
-          && initialConnectionWasWritable !== true
-        ) return
+        if (requestedDuringInitialSetup) {
+          if (!initialConnectionSetup && (initialConnectionWasWritable !== true
+            || options.pasteOwner?.() !== initialConnectionOwner)) return
+        } else if (options.pasteOwner?.() !== requestedOwner) return
         deliverPaste(text)
       })
       .catch(() => undefined)
@@ -220,7 +224,10 @@ export function installTerminalClipboardHandling(
     flushPendingPaste: () => {
       const text = pendingPaste
       pendingPaste = null
-      if (initialConnectionSetup) initialConnectionWasWritable = canPaste()
+      if (initialConnectionSetup) {
+        initialConnectionWasWritable = canPaste()
+        initialConnectionOwner = options.pasteOwner?.()
+      }
       initialConnectionSetup = false
       if (text !== null && canPaste()) deliverPaste(text)
     },

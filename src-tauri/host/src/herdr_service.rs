@@ -1869,6 +1869,8 @@ impl HerdrManager {
                 Some("herdr server protocol incompatible".into())
             } else if !socket_present {
                 Some("herdr server not running or socket unavailable".into())
+            } else if schema_value.is_none() {
+                caps.api.reason.clone()
             } else if !has_tab_create_method {
                 Some("selected herdr schema lacks tab.create".into())
             } else {
@@ -1893,7 +1895,7 @@ impl HerdrManager {
         } else if incompatible {
             clear_api_method_flags(&mut caps.api);
             caps.api.reason = Some("herdr server protocol incompatible".into());
-        } else if socket_ready {
+        } else if socket_ready && schema_value.is_some() {
             apply_schema_method_flags(&mut caps.api, &schema_methods, has_ping_method);
             if has_snapshot_method && has_tab_create_method {
                 // Full API surface present — drop seed/schema probe noise.

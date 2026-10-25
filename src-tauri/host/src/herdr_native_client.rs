@@ -26,7 +26,7 @@ fn terminate_native_client(child: &mut dyn portable_pty::Child) -> Result<(), St
 }
 
 pub(super) struct NativeHerdrClient {
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     input: Mutex<Option<Box<dyn Write + Send>>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     reader: Mutex<Option<JoinHandle<()>>>,
@@ -62,6 +62,7 @@ impl NativeHerdrClient {
     /// The release of this client as part of `release_together`.
     pub(super) fn release_target(self: &Arc<Self>) -> ReleaseTarget {
         self.begin_release();
+        // Unix releases the master once the child was signalled (`NativeChild`).
         #[cfg(unix)]
         let child = Box::new(NativeChild {
             client: Arc::clone(self),
@@ -71,6 +72,7 @@ impl NativeHerdrClient {
         let child = {
             let client = Arc::clone(self);
             Box::new(TerminateNow::new(move || {
+                client.release_master();
                 let _ = terminate_native_client(client.child.lock().unwrap().as_mut());
             })) as Box<dyn ReleaseChild>
         };
@@ -136,14 +138,15 @@ struct NativeChild {
 #[cfg(unix)]
 impl ReleaseChild for NativeChild {
     fn signal(&mut self, kill: bool) {
-        if self.reaped {
-            return;
+        if !self.reaped {
+            // A busy lock means the reader's tail is terminating the child right now.
+            if let Ok(mut child) = self.client.child.try_lock() {
+                self.reaped = !signal_unless_reaped(child.as_mut(), kill);
+            }
         }
-        // A busy lock means the reader's tail is terminating the child right now.
-        let Ok(mut child) = self.client.child.try_lock() else {
-            return;
-        };
-        self.reaped = !signal_unless_reaped(child.as_mut(), kill);
+        // Only after the signal, as the hangup of a closed master could end the
+        // child first; and before any wait for it (see `release_master`).
+        self.client.release_master();
     }
 
     fn gone(&mut self) -> bool {
@@ -182,6 +185,22 @@ impl PtyLaunch {
         self.child = Some(slave.spawn_command(command).map_err(|e| e.to_string())?);
         self.slave = None;
         Ok(())
+    }
+}
+
+impl NativeHerdrClient {
+    /// An undrained master can hold macOS child exit in tty close. Release it
+    /// before waiting for the child, while retaining the child to reap it. A
+    /// release never takes the writer here: it may be in use (see `release_input`).
+    fn release_master(&self) {
+        let mut master = self.master.lock().unwrap_or_else(|p| p.into_inner());
+        master.take();
+    }
+
+    /// For a client nobody else is writing to (its own reader tail, a failed open).
+    fn close_pty(&self) {
+        self.input.lock().unwrap().take();
+        self.release_master();
     }
 }
 
@@ -256,8 +275,9 @@ fn native_reader_loop(
             break;
         }
     }
+    drop(output);
     if !client.closed.swap(true, Ordering::AcqRel) {
-        client.input.lock().unwrap().take();
+        client.close_pty();
         let mut child = client.child.lock().unwrap();
         let _ = terminate_native_client(child.as_mut());
         drop(child);
@@ -396,7 +416,7 @@ impl HerdrManager {
             return Err("native-client-launch-incomplete".into());
         };
         let client = Arc::new(NativeHerdrClient {
-            master: Mutex::new(master),
+            master: Mutex::new(Some(master)),
             input: Mutex::new(Some(input)),
             child: Mutex::new(child),
             reader: Mutex::new(None),
@@ -418,6 +438,8 @@ impl HerdrManager {
             let mut clients = self.native_clients.lock().unwrap();
             if clients.len() >= MAX_NATIVE_CLIENTS {
                 drop(clients);
+                drop(output);
+                client.close_pty();
                 let _ = terminate_native_client(client.child.lock().unwrap().as_mut());
                 return Err(limit_error.into());
             }
@@ -437,6 +459,7 @@ impl HerdrManager {
             Ok(reader) => *client.reader.lock().unwrap() = Some(reader),
             Err(error) => {
                 self.native_clients.lock().unwrap().remove(&id);
+                client.close_pty();
                 let _ = terminate_native_client(client.child.lock().unwrap().as_mut());
                 return Err(error.to_string());
             }
@@ -514,6 +537,7 @@ impl HerdrManager {
             .cloned()
             .ok_or("herdr-client-closed")?;
         let master = client.master.lock().unwrap();
+        let master = master.as_ref().ok_or("herdr-client-closed")?;
         let previous = master.get_size().map_err(|e| e.to_string())?;
         let size = HerdrClientSize {
             cols,
@@ -532,6 +556,7 @@ impl HerdrManager {
             return Ok(());
         };
         client.begin_release();
+        client.release_master();
         // Kill only the official UI client. Never attach a process-tree guard:
         // HERDR's persistent server and its pane processes belong to the user.
         let terminated = terminate_native_client(client.child.lock().unwrap().as_mut());
@@ -781,7 +806,7 @@ mod tests {
         });
         drop(pair.slave);
         Arc::new(NativeHerdrClient {
-            master: Mutex::new(pair.master),
+            master: Mutex::new(Some(pair.master)),
             input: Mutex::new(None),
             child: Mutex::new(child),
             reader: Mutex::new(None),
@@ -1362,7 +1387,14 @@ mod tests {
         let client = client_of(&manager, &id);
         // Fill the PTY through another descriptor on the same master: the
         // client's own writer stays idle, and so droppable.
-        let master = client.master.lock().unwrap().as_raw_fd().unwrap();
+        let master = client
+            .master
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .as_raw_fd()
+            .unwrap();
         let filler_fd = unsafe { libc::dup(master) };
         assert!(filler_fd >= 0);
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1431,3 +1463,7 @@ mod tests {
         .is_err());
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "herdr_native_client_lifecycle_tests.rs"]
+mod lifecycle_tests;

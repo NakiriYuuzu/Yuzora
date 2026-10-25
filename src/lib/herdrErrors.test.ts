@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import i18n from "@/lib/i18n"
 import enMessages from "./i18n/locales/en/herdrErrors.json"
 import zhMessages from "./i18n/locales/zh-TW/herdrErrors.json"
-import { describeHerdrError, herdrErrorKind, isRetryableHerdrConnectError } from "./herdrErrors"
+import { describeHerdrError, herdrErrorKind, isHerdrSnapshotContractError, isRetryableHerdrConnectError } from "./herdrErrors"
 
 describe("herdrErrorKind", () => {
   it("treats remote helper admission limits as backpressure", () => {
@@ -79,5 +79,34 @@ describe("describeHerdrError", () => {
     expect(described.message).not.toContain("protocol 20")
     expect(described.detail).toContain("protocol 20")
     expect(described.raw).toBe(raw)
+  })
+})
+
+describe("isHerdrSnapshotContractError", () => {
+  it.each([
+    "herdr server protocol incompatible",
+    "selected herdr schema lacks session.snapshot",
+    "selected herdr schema lacks session.snapshot/tab.create",
+    "herdr snapshot unavailable",
+    "herdr server identity changed during capability discovery"
+  ])("recognizes the exact snapshot gate signal: %s", message => {
+    expect(isHerdrSnapshotContractError(message)).toBe(true)
+    expect(isHerdrSnapshotContractError(new Error(message))).toBe(true)
+  })
+
+  it.each([
+    "selected herdr schema lacks tab.create",
+    "herdr api schema failed: selected herdr schema lacks session.snapshot",
+    "herdr api schema failed: process timed out",
+    "read failed: herdr snapshot unavailable",
+    "connect fixture.sock failed: connection refused",
+    "write failed: broken pipe",
+    "host-request-timeout",
+    "host-request-limit",
+    "host-call-wait-timeout",
+    "snapshot temporarily unavailable",
+    "unknown error: herdr server protocol incompatible"
+  ])("does not promote a transient or unrelated error into a contract signal: %s", message => {
+    expect(isHerdrSnapshotContractError(new Error(message))).toBe(false)
   })
 })

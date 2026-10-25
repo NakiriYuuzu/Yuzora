@@ -388,3 +388,26 @@ it("rolls back a helper update if saving its paths fails", async () => {
   expect(useHostStore.getState().configs.host).toBe(saved)
   expect(useHostStore.getState().hosts.host.error).toContain("disk full")
 })
+
+
+it("persists the prepared custom binary for subsequent checks and reload", async () => {
+  const { useHostStore, selectionForHost } = await import("./hostStore")
+  const binary = String.raw`C:\Tools 空間\herdr.exe`
+  const connected = { ...host(), hello: { ...host().hello, os: "windows", home: "C:/Users/test" } }
+  mocks.prepare.mockResolvedValue({ connection: connected, helper: "C:/helper.exe", binary })
+  await useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" }, { source: "custom", customPath: `  "${binary}"  ` })
+  const expected = { source: "custom", customPath: binary }
+  expect(useHostStore.getState().configs.host).toMatchObject({ binary, selection: expected })
+  expect(selectionForHost(useHostStore.getState().configs.host)).toEqual(expected)
+  expect(JSON.parse(localStorage.getItem("yuzora.runtime.hosts.v2")!)[0].selection).toEqual(expected)
+  vi.resetModules()
+  const reloaded = await import("./hostStore")
+  expect(reloaded.selectionForHost(reloaded.useHostStore.getState().configs.host)).toEqual(expected)
+})
+
+it.each(["default", "global"] as const)("preserves the %s policy after preparation", async source => {
+  const { useHostStore, selectionForHost } = await import("./hostStore")
+  mocks.prepare.mockResolvedValue({ connection: host(), helper: "/helper", binary: "/chosen/herdr" })
+  await useHostStore.getState().setup("host", "Server", { kind: "ssh", sessionId: "ssh-1" }, { source })
+  expect(selectionForHost(useHostStore.getState().configs.host)).toEqual({ source })
+})
