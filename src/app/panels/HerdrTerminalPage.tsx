@@ -1211,7 +1211,9 @@ function HerdrTerminalLeaf({
         }
         onProcessed()
       })
-    }, visibleRef.current)
+      // An overflowed hidden page reopens for a full Herdr frame when shown
+      // (needsResync → recoverOutput), so its truncated tail is never displayed.
+    }, visibleRef.current, undefined, { discardHiddenAfterOverflow: true })
     outputQueueRef.current = queue
     registerTerminalOutputQueue(attachmentKey, queue)
 

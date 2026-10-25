@@ -187,7 +187,7 @@ mod unix_impl {
         pub fn start(
             emit: impl Fn(AskpassRequest) + Send + Sync + 'static,
         ) -> Result<Arc<AskpassServer>, String> {
-            let endpoint = std::env::temp_dir()
+            let endpoint = swept_temp_dir()
                 .join(format!(
                     "yz-ap-{}-{:x}.sock",
                     std::process::id(),
@@ -448,6 +448,64 @@ mod unix_impl {
             self.sweep_expired();
             self.operations.lock().unwrap().len()
         }
+    }
+
+    /// Parses `yz-ap-<decimal pid>-<hex>.sock` strictly, returning the pid.
+    fn parse_socket_pid(name: &str) -> Option<u32> {
+        let rest = name.strip_prefix("yz-ap-")?.strip_suffix(".sock")?;
+        let (pid, hex) = rest.split_once('-')?;
+        if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        pid.parse().ok()
+    }
+
+    /// Best-effort removal of askpass sockets left behind by crashed/killed
+    /// processes (Drop never ran). Returns the number of removed sockets.
+    pub(super) fn sweep_stale_sockets_in(dir: &std::path::Path, current_pid: u32) -> usize {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let Some(pid) = file_name.to_str().and_then(parse_socket_pid) else {
+                continue;
+            };
+            if pid == current_pid {
+                continue;
+            }
+            let Ok(pid_raw) = libc::pid_t::try_from(pid) else {
+                continue;
+            };
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !meta.file_type().is_socket() || meta.uid() != uid {
+                continue;
+            }
+            // SAFETY: signal 0 only performs an existence/permission check.
+            let dead = unsafe { libc::kill(pid_raw, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if dead && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    /// Sweeps stale askpass sockets from the temp dir, then returns it.
+    fn swept_temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir();
+        sweep_stale_sockets_in(&dir, std::process::id());
+        dir
     }
 
     impl Drop for AskpassServer {
@@ -790,6 +848,42 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    fn make_socket(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        path
+    }
+
+    #[test]
+    fn sweep_stale_sockets_removes_only_dead_pid_sockets() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let dead = make_socket(d, &format!("yz-ap-{}-1a2b.sock", dead_pid()));
+        let alive = make_socket(
+            d,
+            &format!("yz-ap-{}-1a2b.sock", std::os::unix::process::parent_id()),
+        );
+        let current = make_socket(d, "yz-ap-4242-ff.sock");
+        let bad1 = make_socket(d, "yz-ap-abc-1.sock");
+        let bad2 = make_socket(d, "other.sock");
+        let regular = d.join(format!("yz-ap-{}-3c.sock", dead_pid()));
+        std::fs::write(&regular, b"x").unwrap();
+
+        assert_eq!(super::sweep_stale_sockets_in(d, 4242), 1);
+        assert!(!dead.exists());
+        for kept in [&alive, &current, &bad1, &bad2, &regular] {
+            assert!(kept.exists(), "{kept:?} should be kept");
+        }
+    }
 
     fn value_of(env: &[(String, String)], key: &str) -> String {
         env.iter().find(|(k, _)| k == key).unwrap().1.clone()

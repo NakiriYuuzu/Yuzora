@@ -2,17 +2,14 @@ import { openFileSnapshot, saveFile } from "../lib/ipc"
 import { parseRemoteFilePath } from "../lib/runtimeIdentity"
 import type { OpenFileResult } from "../lib/types"
 import { useWorkspaceStore } from "../state/workspaceStore"
-import { renameEditorViewState } from "./editorViewState"
+import { forgetEditorHistory, renameEditorViewState } from "./editorViewState"
 import { containsFilePath, fileRenameError, pendingFileRename, reserveFileRename } from "../lib/fileRenameCoordinator"
 import { isSameOrDescendantPath, rebasePath } from "../lib/paths"
-import type { Text } from "@codemirror/state"
 
 export interface RegistryEntry {
     result: OpenFileResult
     // Unlike result (the unmounted editor buffer), this never includes unsaved edits.
     diskResult?: OpenFileResult
-    // Only the history field outlives a view; extensions and their callbacks do not.
-    editorHistory?: { doc: Text; history: unknown }
 }
 
 const registry = new Map<string, RegistryEntry>()
@@ -80,10 +77,17 @@ export async function getDocument(path: string): Promise<RegistryEntry> {
     } finally { pendingReads.delete(read) }
 }
 
-export function dropDocument(path: string, workspace = useWorkspaceStore.getState().workspacePath) {
+export function dropDocument(
+    path: string,
+    workspace = useWorkspaceStore.getState().workspacePath,
+    options?: { keepHistory?: boolean }
+) {
     const key = documentKey(path, workspace)
     registry.delete(key)
     for (const read of pendingReads) if (read.key === key) pendingReads.delete(read)
+    // A closed document starts over with no undo history. Leaving its whole
+    // workspace keeps it for the return, like a tab switch.
+    if (!options?.keepHistory) forgetEditorHistory(workspace, path)
 }
 
 export function retireRenamedDocumentReads(from: string, to: string) {
@@ -135,15 +139,17 @@ export function renameDocument(oldPath: string, newPath: string, liveContent?: s
     }
 }
 
-export function updateBuffer(path: string, content: string, generation: number, workspace = useWorkspaceStore.getState().workspacePath) {
-    if (workspace !== useWorkspaceStore.getState().workspacePath) return
-    if (generation !== documentGeneration(path)) return
+/** Returns whether the document is still cached for this workspace and generation. */
+export function updateBuffer(path: string, content: string, generation: number, workspace = useWorkspaceStore.getState().workspacePath): boolean {
+    if (workspace !== useWorkspaceStore.getState().workspacePath) return false
+    if (generation !== documentGeneration(path)) return false
     const entry = registry.get(documentKey(path, workspace))
-    if (!entry) return
+    if (!entry) return false
     const r = entry.result
     if (r.kind === "full" || r.kind === "limited") {
         entry.result = { ...r, content }
     }
+    return true
 }
 
 // The unmounted editor buffer of a cached text document, synchronously.
@@ -194,6 +200,9 @@ export async function reloadDocument(
         if (mode === "reconcile" && previous && sameDiskSnapshot(previousDisk, snapshot.result)) return previous
         const entry = { result: snapshot.result, diskResult: snapshot.result }
         registry.set(key, entry)
+        // A reloaded document starts over with no undo history, even when the
+        // new text happens to equal the text the history was recorded against.
+        forgetEditorHistory(useWorkspaceStore.getState().workspacePath, path)
         const nextGeneration = (generations.get(key) ?? generationBase) + 1
         generations.set(key, nextGeneration)
         highestGeneration = Math.max(highestGeneration, nextGeneration)

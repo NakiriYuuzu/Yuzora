@@ -579,6 +579,7 @@ export function createTerminalTargetContextGate() {
     return {
         markConsumed,
         setHovered,
+        hasHovered: () => hovered !== null,
         shouldDedup,
         handleContextMenu,
         dispose() {
@@ -803,6 +804,9 @@ export function installTerminalTargetOpen(
             gate.dispose()
         },
         resetHover() {
+            // Runs after every parsed write. Without a hovered link there is no
+            // stale link decoration to clear, so skip the full-viewport repaint.
+            if (!gate.hasHovered()) return
             gate.setHovered(null)
             const element = terminal.element
             if (element) element.style.cursor = ""

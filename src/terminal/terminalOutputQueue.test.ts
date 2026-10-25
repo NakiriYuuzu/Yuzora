@@ -171,6 +171,63 @@ describe("TerminalOutputQueue", () => {
 
     expect(writes).toEqual([`${TERMINAL_OUTPUT_TRUNCATED_NOTICE}3456`])
   })
+
+  it("drops all hidden output after an overflow when the owner resyncs instead", () => {
+    const writes: string[] = []
+    const queue = new TerminalOutputQueue(
+      (data, done) => {
+        writes.push(data)
+        done()
+      },
+      false,
+      5,
+      { discardHiddenAfterOverflow: true },
+    )
+
+    queue.push("abc")
+    expect(queue.hiddenBytes).toBe(3)
+    expect(queue.needsResync).toBe(false)
+
+    queue.push("def")
+    expect(queue.needsResync).toBe(true)
+    expect(queue.hiddenBytes).toBe(0)
+    expect(queue.droppedBytes).toBe(6)
+
+    // Later hidden output is only counted, never stored or trimmed.
+    queue.push("ghij")
+    expect(queue.hiddenBytes).toBe(0)
+    expect(queue.droppedBytes).toBe(10)
+    expect(writes).toEqual([])
+
+    // The authoritative frame clears the overflow and buffering resumes.
+    queue.replace("FULL")
+    expect(queue.needsResync).toBe(false)
+    queue.push("k")
+    expect(queue.hiddenBytes).toBe(5)
+    queue.setVisible(true)
+    flushFrame()
+    expect(writes).toEqual(["FULLk"])
+  })
+
+  it("drops pending output moved into the hidden buffer after a visible overflow", () => {
+    const writes: string[] = []
+    const queue = new TerminalOutputQueue(
+      (data, done) => {
+        writes.push(data)
+        done()
+      },
+      true,
+      5,
+      { discardHiddenAfterOverflow: true },
+    )
+
+    queue.push("123456")
+    expect(queue.needsResync).toBe(true)
+    queue.setVisible(false)
+    expect(queue.hiddenBytes).toBe(0)
+    expect(queue.needsResync).toBe(true)
+    expect(writes).toEqual([])
+  })
 })
 
 describe("TerminalOutputQueue telemetry", () => {

@@ -509,8 +509,21 @@ describe("installTerminalTargetOpen", () => {
         expect(useWorkspaceStore.getState().groups[0]?.activePath).toBe(PREVIEW_TAB_PATH)
         expect(openSpy).not.toHaveBeenCalled()
 
+        // Output parsing calls resetHover on every write: without a hovered
+        // link it must not repaint the whole viewport.
+        installed.resetHover()
+        expect(terminal.refresh).not.toHaveBeenCalled()
+
+        handler?.hover?.(
+            mouse({ button: 0, metaKey: true }) as MouseEvent,
+            "https://example.com/hovered",
+            { start: { x: 1, y: 1 }, end: { x: 5, y: 1 } }
+        )
         installed.resetHover()
         expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1)
+        expect(terminal.element?.style.cursor).toBe("")
+        installed.resetHover()
+        expect(terminal.refresh).toHaveBeenCalledTimes(1)
 
         installed.dispose()
         openSpy.mockRestore()

@@ -5,6 +5,9 @@ import { WorkspaceResourcesBridge } from "./WorkspaceResourcesBridge"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useSvgPreviewStore } from "@/state/svgPreviewStore"
 import { clearAll, getDocument, updateBuffer, documentGeneration } from "@/editor/documentRegistry"
+import { clearEditorViewStatesForTest, rememberEditorHistory, restoreEditorHistory } from "@/editor/editorViewState"
+import { history } from "@codemirror/commands"
+import { EditorState } from "@codemirror/state"
 afterEach(() => { cleanup(); clearAll(); clearMocks(); useWorkspaceStore.setState({ workspacePath: null, groups: [{ tabs: [], activePath: null }], activeGroupIndex: 0 }); useSvgPreviewStore.getState().reset() })
 it("drops all closed split documents but preserves a moved or inactive open file", async () => {
   let reads = 0
@@ -155,4 +158,22 @@ it("keeps metadata-only pending reads but invalidates a pending removed owner", 
   await Promise.resolve()
   finish!({ kind: "full", content: "late", size: 4, lineEnding: "lf" })
   await rejected
+})
+
+it("drops a closed tab's undo history but keeps it when the whole workspace is left", () => {
+  const edited = (path: string) => {
+    const state = EditorState.create({ doc: "disk", extensions: [history()] })
+    const next = state.update({ changes: { from: 0, insert: "x" }, userEvent: "input.type" }).state
+    rememberEditorHistory("/repo", path, next)
+    return next.doc
+  }
+  useWorkspaceStore.getState().setWorkspace("/repo")
+  render(<WorkspaceResourcesBridge />)
+  act(() => { useWorkspaceStore.getState().openTab("/repo/kept.ts"); useWorkspaceStore.getState().openTab("/repo/closed.ts") })
+  const kept = edited("/repo/kept.ts"), closed = edited("/repo/closed.ts")
+  act(() => useWorkspaceStore.getState().closeTab(0, "/repo/closed.ts"))
+  expect(restoreEditorHistory("/repo", "/repo/closed.ts", closed)).toBeUndefined()
+  act(() => useWorkspaceStore.getState().setWorkspace("/other"))
+  expect(restoreEditorHistory("/repo", "/repo/kept.ts", kept)).toBeDefined()
+  clearEditorViewStatesForTest()
 })

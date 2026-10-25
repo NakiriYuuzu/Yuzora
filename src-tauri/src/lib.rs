@@ -13,6 +13,7 @@ pub mod db_query_worker;
 pub mod db_result_session;
 pub mod db_service;
 mod db_transport;
+mod edit_menu;
 pub mod env_path;
 pub mod file_clipboard;
 pub mod file_content;
@@ -205,7 +206,7 @@ pub fn run() {
     logging::record_app_start();
     let database_shutdown_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let graceful_exit_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    tauri::Builder::default()
+    edit_menu::install(tauri::Builder::default())
         .on_webview_event(preview_webview::forward_preview_file_drop)
         .on_webview_event(file_clipboard::record_native_drop)
         .plugin(tauri_plugin_opener::init())
@@ -359,6 +360,7 @@ pub fn run() {
             update_herdr::update_herdr_processes,
             update_herdr::update_stop_herdr,
             brand_icon::set_brand_icon,
+            edit_menu::edit_history_native,
             host_service::host_connect,
             host_service::host_request,
             host_service::host_disconnect,
@@ -752,6 +754,16 @@ mod command_inventory_tests {
                 "missing runtime preference command: {cmd}"
             );
         }
+    }
+
+    #[test]
+    fn edit_menu_is_installed_with_its_native_fallback() {
+        let source = include_str!("lib.rs");
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        assert!(run_source.contains("edit_menu::install(tauri::Builder::default())"));
+        assert!(run_source
+            .lines()
+            .any(|line| line.trim() == "edit_menu::edit_history_native,"));
     }
 
     #[test]

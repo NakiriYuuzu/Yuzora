@@ -15,6 +15,10 @@ export { invoke }
 /** Top-level activation, including Windows when a child WebView has lost focus. */
 export const isWorkbenchWindowActive = () => invoke<boolean>("workbench_is_window_active")
 
+export type EditHistoryAction = "undo" | "redo"
+/** macOS: sends an Edit menu Undo/Redo that no editor took to the native responder chain. */
+export const editHistoryNative = (action: EditHistoryAction) => invoke<void>("edit_history_native", { action })
+
 import type {
     DeleteProgress,
     FileNode,

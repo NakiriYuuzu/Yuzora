@@ -1,9 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { Editor } from "@tiptap/react"
+import { undo } from "@codemirror/commands"
 import { EditorSelection } from "@codemirror/state"
 import { getView } from "@/editor/viewRegistry"
-import { clearAll } from "@/editor/documentRegistry"
+import { clearAll, dropDocument, reloadDocument } from "@/editor/documentRegistry"
+import { retargetOpenDocuments } from "@/state/contextMenuStore"
 import { clearEditorViewStatesForTest } from "@/editor/editorViewState"
 import { clearMarkdownViewStatesForTest } from "@/editor/markdownViewState"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -27,6 +29,9 @@ vi.mock("@/lib/ipc", async importOriginal => ({
         result: { kind: "full", content: "## Heading\n\nFirst paragraph\n\nSecond paragraph", size: 45, lineEnding: "lf" },
         accept: vi.fn()
     })),
+    openWorkspace: vi.fn(async (path: string) => ({ canonicalPath: path, capabilityId: `cap:${path}` })),
+    allowWorkspaceAssetScope: vi.fn(async () => {}),
+    startWatch: vi.fn(async () => {}),
     logEvent: vi.fn(async () => {})
 }))
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn(async () => {}) }))
@@ -35,6 +40,8 @@ vi.mock("@/app/panels/HerdrTerminalPage", () => ({ HerdrTerminalPage: () => null
 vi.mock("@/app/panels/PreviewPanel", () => ({ PreviewPanel: () => null }))
 
 import { EditorArea } from "./EditorArea"
+import { WorkspaceResourcesBridge } from "./WorkspaceResourcesBridge"
+import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 
 const originalWorkspace = useWorkspaceStore.getState()
 const file = (path: string) => ({ path, name: path.split("/").at(-1)!, dirty: false, externallyModified: false })
@@ -68,6 +75,100 @@ it("restores a source selection through the actual A → B → A tab lifecycle",
     await switchTo("/w/b.txt")
     await switchTo("/w/a.txt")
     expect(getView("/w/a.txt")!.state.selection.main).toMatchObject({ anchor: 12, head: 20 })
+})
+
+it("keeps undo history through the actual A → B → A tab lifecycle", async () => {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.type" }))
+    const edited = first.state.doc.toString()
+    await switchTo("/w/b.txt")
+    await switchTo("/w/a.txt")
+    const second = getView("/w/a.txt")!
+    expect(second).not.toBe(first)
+    expect(second.state.doc.toString()).toBe(edited)
+    act(() => { expect(undo(second)).toBe(true) })
+    expect(second.state.doc.toString()).toBe(edited.slice("edit ".length))
+})
+
+it("keeps undo history when an open file is renamed right after an edit", async () => {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.type" }))
+    const edited = first.state.doc.toString()
+    act(() => retargetOpenDocuments("/w/a.txt", "/w/c.txt"))
+    await waitFor(() => expect(getView("/w/c.txt")).toBeDefined())
+    const renamed = getView("/w/c.txt")!
+    expect(renamed.state.doc.toString()).toBe(edited)
+    act(() => { expect(undo(renamed)).toBe(true) })
+    expect(renamed.state.doc.toString()).toBe(edited.slice("edit ".length))
+})
+
+it("does not bring back undo history after the tab was closed", async () => {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    // Leave the text identical to the file on disk with undo steps recorded,
+    // so only the closed-tab rule (not a text mismatch) can drop the history.
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.paste" }))
+    act(() => first.dispatch({ changes: { from: 0, to: "edit ".length }, userEvent: "input.paste" }))
+    act(() => {
+        useWorkspaceStore.getState().closeTab(0, "/w/a.txt")
+        dropDocument("/w/a.txt")
+    })
+    await waitFor(() => expect(getView("/w/a.txt")).toBeUndefined())
+    act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
+    await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    expect(undo(getView("/w/a.txt")!)).toBe(false)
+})
+
+// Text identical to the file on disk with undo steps recorded, so only an
+// explicit invalidation (not a text mismatch) can drop the retained history.
+async function editBackToDiskTextThenSwitchAway() {
+    render(<EditorArea />)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.paste" }))
+    act(() => first.dispatch({ changes: { from: 0, to: "edit ".length }, userEvent: "input.paste" }))
+    await switchTo("/w/b.txt")
+}
+
+it("does not bring back undo history after an inactive tab was closed", async () => {
+    await editBackToDiskTextThenSwitchAway()
+    act(() => {
+        useWorkspaceStore.getState().closeTab(0, "/w/a.txt")
+        dropDocument("/w/a.txt")
+    })
+    act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
+    await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    expect(undo(getView("/w/a.txt")!)).toBe(false)
+})
+
+it("keeps the active editor's undo history through a workspace round trip (a Space switch)", async () => {
+    render(<><WorkspaceResourcesBridge /><EditorArea /></>)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.paste" }))
+    act(() => first.dispatch({ changes: { from: 0, to: "edit ".length }, userEvent: "input.paste" }))
+    const disk = first.state.doc.toString()
+    await act(async () => { expect(await openWorkspaceAtPath("/w2", { skipUnsavedGuard: true })).toBe(true) })
+    await waitFor(() => expect(getView("/w/a.txt")).toBeUndefined())
+    await act(async () => { expect(await openWorkspaceAtPath("/w", { skipUnsavedGuard: true })).toBe(true) })
+    act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
+    await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    const returned = getView("/w/a.txt")!
+    expect(returned.state.doc.toString()).toBe(disk)
+    act(() => { expect(undo(returned)).toBe(true) })
+    expect(returned.state.doc.toString()).toBe(`edit ${disk}`)
+})
+
+it("does not bring back undo history after an inactive document was reloaded", async () => {
+    await editBackToDiskTextThenSwitchAway()
+    await act(async () => { await reloadDocument("/w/a.txt") })
+    await switchTo("/w/a.txt")
+    expect(undo(getView("/w/a.txt")!)).toBe(false)
 })
 
 it.each([[12, 20], [20, 12]])("restores a Markdown document selection (%i → %i) through A → B → A", async (anchor, head) => {

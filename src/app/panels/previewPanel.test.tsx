@@ -281,6 +281,34 @@ describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
     await waitFor(() => expect(ipcMocks.previewClose).toHaveBeenCalled())
   })
 
+  it("only hides the webview while another tab is in front, keeping its page", async () => {
+    ;(globalThis as { isTauri?: boolean }).isTauri = true
+    usePreviewStore.getState().navigate("/workspace", "https://example.com")
+    const observers = trackPreviewObservers()
+    try {
+      const view = render(<PreviewPanel visible />)
+      await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(true))
+      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledOnce()
+
+      ipcMocks.previewSetVisible.mockClear()
+      ipcMocks.previewSetBounds.mockClear()
+      view.rerender(<PreviewPanel visible={false} />)
+      await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenCalledWith(false))
+      // A hidden webview does not chase layout changes behind other tabs.
+      observers.notify()
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      expect(ipcMocks.previewSetBounds).not.toHaveBeenCalled()
+
+      view.rerender(<PreviewPanel visible />)
+      await waitFor(() => expect(ipcMocks.previewSetVisible).toHaveBeenLastCalledWith(true))
+      expect(ipcMocks.previewSetBounds).toHaveBeenCalled()
+      expect(ipcMocks.previewOpenUrl).toHaveBeenCalledOnce()
+      expect(ipcMocks.previewClose).not.toHaveBeenCalled()
+    } finally {
+      observers.restore()
+    }
+  })
+
   it("coalesces waiting resize notifications and reads the latest bounds", async () => {
     ;(globalThis as { isTauri?: boolean }).isTauri = true
     const opening = deferred<void>()
