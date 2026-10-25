@@ -231,6 +231,20 @@ describe("GitRollbackDialog", () => {
         expect(gitRollbackPaths).not.toHaveBeenCalled()
     })
 
+    it("keeps nested dirty targets protected when a POSIX repository contains a backslash", async () => {
+        const root = String.raw`/repo\literal`
+        const path = root + "/nested/a.txt"
+        const status = makeStatus({ unstaged: [{ path: "nested/a.txt", origPath: null, status: "M" }] })
+        refreshedStatus = status
+        useGitStore.setState({ environment: { status: "ready", root, version: "2.50.1" }, status })
+        useWorkspaceStore.setState({ workspacePath: root, groups: [{ tabs: [{ path, name: "a.txt", dirty: true, externallyModified: false }], activePath: path }] })
+        render(<GitRollbackDialog />)
+        useGitRollbackDialogStore.getState().request({ repositoryRoot: root, targets: gitChangeRows(status) })
+        expect(await screen.findByText("Save or close unsaved content first.")).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: "Rollback" })).toBeDisabled()
+        expect(gitRollbackPaths).not.toHaveBeenCalled()
+    })
+
     it("closes clean descendant tabs if a backend reports a deleted directory path", async () => {
         const status = makeStatus({ untracked: ["scratch/"] })
         useWorkspaceStore.setState({

@@ -13,7 +13,7 @@ import {
     markdownPreviewTabName,
     previewTabSourcePath
 } from "../lib/markdownPreviewTab"
-import { rebasePath, workspacePathBasename } from "../lib/paths"
+import { isSameOrDescendantPath, rebasePath, workspacePathBasename } from "../lib/paths"
 import {
     herdrPageMatchesSnapshotSession,
     hydrateFocusedSpaceHerdrPages,
@@ -133,7 +133,7 @@ interface WorkspaceState {
         snapshot: HerdrSnapshot,
         defaultSessionName?: string | null
     ) => void
-    updateTabPath: (fromPath: string, toPath: string) => void
+    updateTabPath: (fromPath: string, toPath: string, mergeLoadingDestinations?: boolean) => void
     openPreviewTab: (groupIndex?: number) => void
     closePreviewTab: () => void
     togglePreviewTab: () => void
@@ -864,13 +864,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // exactly `fromPath` moves to `toPath`; a tab under `fromPath/` (folder
     // rename) has its prefix rewritten. path + name (+ any matching activePath)
     // are updated in place, preserving the tab's dirty flag and position.
-    updateTabPath: (fromPath, toPath) =>
+    updateTabPath: (fromPath, toPath, mergeLoadingDestinations = false) =>
         set((s) => {
             const remap = (p: string): string | null => rebasePath(fromPath, toPath, p)
+            const sameFile = (left: string, right: string) =>
+                isSameOrDescendantPath(left, right) && isSameOrDescendantPath(right, left)
+            const renamedFiles = mergeLoadingDestinations ? s.groups.flatMap(group => group.tabs).flatMap(tab => {
+                const path = isFileTab(tab) ? remap(tab.path) : null
+                return path ? [{ ...tab, path, name: workspacePathBasename(path) }] : []
+            }) : []
             return {
                 groups: s.groups.map((g) => {
                     let changed = false
-                    const tabs = g.tabs.map((t) => {
+                    let tabs = g.tabs.map((t) => {
                         if (isMarkdownPreviewTab(t)) {
                             const oldSource = previewTabSourcePath(t)
                             if (!oldSource) return t
@@ -886,10 +892,44 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                             }
                         }
                         const np = remap(t.path)
-                        if (np === null) return t
+                        if (np === null) {
+                            const source = isFileTab(t) && renamedFiles.find(tab => sameFile(tab.path, t.path))
+                            if (!source) return t
+                            changed = true
+                            return mergeConservativeTab(source, t)
+                        }
                         changed = true
                         return { ...t, path: np, name: workspacePathBasename(np) }
                     })
+                    if (mergeLoadingDestinations && changed) {
+                        const moved = tabs.filter((_tab, index) => {
+                            const original = g.tabs[index]
+                            const path = isMarkdownPreviewTab(original) ? previewTabSourcePath(original) : original.path
+                            return path !== null && remap(path) !== null
+                        })
+                        // Only safe rename uses this: destination documents were
+                        // excluded before I/O and new opens waited for its lease.
+                        tabs = tabs.filter(tab => moved.includes(tab) || !moved.some(source =>
+                            isFileTab(source) && isFileTab(tab) ? sameFile(source.path, tab.path)
+                                : source.path === tab.path))
+                        const unique: TabInfo[] = []
+                        for (const tab of tabs) {
+                            const involved = [...moved, ...renamedFiles].some(target =>
+                                isFileTab(target) && isFileTab(tab) ? sameFile(target.path, tab.path)
+                                    : target.path === tab.path)
+                            if (!involved) { unique.push(tab); continue }
+                            const index = unique.findIndex(other => isFileTab(other) && isFileTab(tab)
+                                ? sameFile(other.path, tab.path) : other.path === tab.path)
+                            if (index === -1) unique.push(tab)
+                            else {
+                                const previous = unique[index]
+                                unique[index] = { ...mergeConservativeTab(previous, tab),
+                                    pinned: previous.pinned || tab.pinned,
+                                    transient: previous.transient && tab.transient }
+                            }
+                        }
+                        tabs = unique
+                    }
                     let activePath = g.activePath
                     if (activePath !== null) {
                         const remappedActive = remap(activePath)
@@ -902,6 +942,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                                 if (newSource) activePath = markdownPreviewPath(newSource)
                             }
                         }
+                    }
+                    if (mergeLoadingDestinations && activePath !== null && !tabs.some(tab => tab.path === activePath)) {
+                        activePath = tabs.find(tab => isFileTab(tab) && sameFile(tab.path, activePath!))?.path ?? activePath
                     }
                     if (!changed && activePath === g.activePath) return g
                     return { ...g, tabs, activePath }

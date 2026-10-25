@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const getDocument = vi.fn()
-const bufferContent = vi.fn((_path: string): string | undefined => undefined)
+const documentGeneration = vi.fn(() => 0)
 const getView = vi.fn()
 const saveFile = vi.fn(async (_path: string, _content: string) => 0)
 const recentlySavedMark = vi.fn()
 const showActionError = vi.fn(async (_action: string, _error: unknown) => undefined)
 
 vi.mock("./documentRegistry", () => ({
+    documentGeneration: () => documentGeneration(),
     getDocument: (path: string) => getDocument(path),
-    bufferContent: (path: string) => bufferContent(path),
     saveDocumentContent: (path: string, content: string) => saveFile(path, content)
 }))
 vi.mock("./viewRegistry", () => ({
@@ -49,16 +49,51 @@ function seedTab(lineEnding: "lf" | "crlf" | "mixed", dirty = true) {
 
 beforeEach(() => {
     vi.clearAllMocks()
+    documentGeneration.mockReturnValue(0)
     getView.mockReturnValue({ state: { doc: { toString: () => "one\ntwo\n" } } })
     getDocument.mockResolvedValue({
         result: { kind: "full", content: "one\ntwo\n", size: 8, lineEnding: "lf" }
     })
     saveFile.mockResolvedValue(123)
-    bufferContent.mockReturnValue(undefined)
     seedTab("lf")
 })
 
 describe("saveDirtyTab", () => {
+    it("does not write if its close operation became stale during a document read", async () => {
+        getView.mockReturnValue(undefined)
+        let finish!: (entry: unknown) => void
+        getDocument.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+        let current = true
+        const saving = saveDirtyTab(PATH, () => current)
+        current = false
+        finish({ result: { kind: "full", content: "old", size: 3, lineEnding: "lf" } })
+        await expect(saving).resolves.toEqual({ kind: "changed" })
+        expect(saveFile).not.toHaveBeenCalled()
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+    })
+
+    it("keeps dirty state if a previously inactive file gains a live view during saving", async () => {
+        getView.mockReturnValue(undefined)
+        let finish!: (size: number) => void
+        saveFile.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+        const saving = saveDirtyTab(PATH)
+        await vi.waitFor(() => expect(saveFile).toHaveBeenCalledTimes(1))
+        getView.mockReturnValue({ state: { doc: { toString: () => "new edits" } } })
+        finish(123)
+        await expect(saving).resolves.toEqual({ kind: "changed" })
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+    })
+
+    it("does not mark a newer document generation clean when an old write finishes", async () => {
+        let finish!: (size: number) => void
+        saveFile.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+        const saving = saveDirtyTab(PATH)
+        documentGeneration.mockReturnValue(1)
+        finish(123)
+        await expect(saving).resolves.toEqual({ kind: "changed" })
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+    })
+
     it("serializes the live normalized editor buffer to CRLF before I/O", async () => {
         seedTab("crlf")
         getDocument.mockResolvedValue({
@@ -164,33 +199,33 @@ describe("saveDirtyTab", () => {
     })
 
     it("keeps the tab dirty when its text is edited while the write runs", async () => {
-        let text = "one\ntwo\n"
-        getView.mockReturnValue({ state: { doc: { toString: () => text } } })
+        const view = { state: { doc: { toString: () => "one\ntwo\n" } } }
+        getView.mockReturnValue(view)
         saveFile.mockImplementation(async () => {
-            text = "one\ntwo\nthree\n"
+            // A real CodeMirror edit replaces the immutable document.
+            view.state = { doc: { toString: () => "one\ntwo\nthree\n" } }
             return 123
         })
 
-        await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "editedDuringSave" })
+        await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "changed" })
 
         expect(saveFile).toHaveBeenCalledWith(PATH, "one\ntwo\n")
-        expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
-            dirty: true,
-            externallyModified: false
-        })
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
     })
 
     it("keeps an unmounted tab dirty when its mirrored buffer changes during the write", async () => {
         getView.mockReturnValue(undefined)
-        getDocument.mockResolvedValue({
+        const entry = {
             result: { kind: "full", content: "disk\nmirror\n", size: 12, lineEnding: "lf" }
-        })
+        }
+        getDocument.mockResolvedValue(entry)
         saveFile.mockImplementation(async () => {
-            bufferContent.mockReturnValue("disk\nmirror\nnewer\n")
+            // updateBuffer replaces the cached result with the newer text.
+            entry.result = { kind: "full", content: "disk\nmirror\nnewer\n", size: 18, lineEnding: "lf" }
             return 123
         })
 
-        await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "editedDuringSave" })
+        await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "changed" })
 
         expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
     })

@@ -4,13 +4,13 @@ import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 import { acceptChunk, getChunks, unifiedMergeView } from "@codemirror/merge"
 
-import { openFile } from "../lib/ipc"
+import { openFileSnapshot } from "../lib/ipc"
 import type { ExternalChangePayload, OpenFileResult } from "../lib/types"
 import { relativePathWithin, workspacePathForDisplay } from "../lib/paths"
 import { logUserAction } from "@/features/logs/userAction"
 import { recentlySaved } from "../lib/saveSuppress"
 import { getView } from "../editor/viewRegistry"
-import { reloadDocument, sameDiskSnapshot, saveDocumentContent } from "../editor/documentRegistry"
+import { documentGeneration, documentWorkspaceEpoch, getCachedDocument, reloadDocument, sameDiskSnapshot, saveDocumentContent } from "../editor/documentRegistry"
 import { serializeDocumentLineEndings } from "../editor/lineEndings"
 import { showMixedLineEndingSaveError } from "../editor/saveDocument"
 import { useUiStore } from "../state/uiStore"
@@ -34,7 +34,17 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 // offered, and a later successful read restores the merge view.
 type Degraded = "binary" | "deleted" | "unreadable" | null
 
-export function ResolverBody({ path }: { path: string }) {
+// What this resolver session reconciles: a read or an operation that finishes
+// after any of it changed must not touch the new owner.
+type ResolverOwner = {
+    view: EditorView
+    document: EditorState["doc"]
+    workspace: string | null
+    epoch: number
+    generation: number
+}
+
+export function ResolverBody({ path, session }: { path: string; session: number }) {
     const containerRef = useRef<HTMLDivElement>(null)
     const mergeViewRef = useRef<EditorView | null>(null)
     const bufferRef = useRef<string>("")
@@ -52,10 +62,21 @@ export function ResolverBody({ path }: { path: string }) {
     const [rechanged, setRechanged] = useState(false)
     const [ready, setReady] = useState(false)
     const [saveError, setSaveError] = useState(false)
+    const [saving, setSaving] = useState(false)
+    const ownerRef = useRef<ResolverOwner | null>(null)
+    const operationRef = useRef<object | null>(null)
 
     const closeResolver = useUiStore((s) => s.closeResolver)
     const markDirty = useWorkspaceStore((s) => s.markDirty)
     const markExternallyModified = useWorkspaceStore((s) => s.markExternallyModified)
+
+    function ownerCurrent(owner: ResolverOwner) {
+        return ownerRef.current === owner
+            && useUiStore.getState().resolverPath === path && useUiStore.getState().resolverNonce === session
+            && useWorkspaceStore.getState().workspacePath === owner.workspace
+            && documentWorkspaceEpoch() === owner.epoch && documentGeneration(path) === owner.generation
+            && getView(path) === owner.view && owner.view.state.doc === owner.document
+    }
 
     useEffect(() => {
         let disposed = false
@@ -68,11 +89,21 @@ export function ResolverBody({ path }: { path: string }) {
         }
         const buffer = mainView.state.doc.toString()
         bufferRef.current = buffer
+        const owner: ResolverOwner = {
+            view: mainView, document: mainView.state.doc,
+            workspace: useWorkspaceStore.getState().workspacePath,
+            epoch: documentWorkspaceEpoch(), generation: documentGeneration(path),
+        }
+        ownerRef.current = owner
 
         const gen = ++readGenRef.current
-        void openFile(path)
-            .then((disk) => {
-                if (disposed || gen !== readGenRef.current) return
+        void openFileSnapshot(path)
+            .then((snapshot) => {
+                if (disposed || gen !== readGenRef.current || !ownerCurrent(owner)) return
+                // Accept the remote revision only together with the disk content
+                // this resolver actually displays.
+                snapshot.accept()
+                const disk = snapshot.result
                 diskSnapshotRef.current = disk
                 if (disk.kind === "binary" || disk.kind === "tooLarge") {
                     setDegraded("binary")
@@ -93,17 +124,21 @@ export function ResolverBody({ path }: { path: string }) {
                 setReady(true)
             })
             .catch(() => {
-                if (disposed || gen !== readGenRef.current) return
+                if (disposed || gen !== readGenRef.current || !ownerCurrent(owner)) return
                 setDegraded("deleted")
                 setReady(true)
             })
 
         return () => {
             disposed = true
+            if (ownerRef.current === owner) ownerRef.current = null
+            operationRef.current = null
             mergeViewRef.current?.destroy()
             mergeViewRef.current = null
         }
-    }, [path, closeResolver])
+        // ownerCurrent only reads refs and stores for this path and session.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path, session, closeResolver])
 
     // The disk side became undiffable while the resolver is open: tear down the
     // merge view so no stale-disk action (takeDisk / resolveAndSave) remains, keep
@@ -147,10 +182,14 @@ export function ResolverBody({ path }: { path: string }) {
             // 事件不得觸發 rebuild（防串場）。
             if (e.payload.workspaceRoot !== useWorkspaceStore.getState().workspacePath) return
             if (!e.payload.paths.some((changed) => relativePathWithin(changed, path) !== null)) return
+            const owner = ownerRef.current
+            if (!owner || !ownerCurrent(owner)) return
             const gen = ++readGenRef.current
-            void openFile(path)
-                .then((disk) => {
-                    if (disposed || gen !== readGenRef.current) return
+            void openFileSnapshot(path)
+                .then((snapshot) => {
+                    if (disposed || gen !== readGenRef.current || !ownerCurrent(owner)) return
+                    snapshot.accept()
+                    const disk = snapshot.result
                     if (sameDiskSnapshot(diskSnapshotRef.current, disk)) return
                     diskSnapshotRef.current = disk
                     setRechanged(true)
@@ -186,7 +225,7 @@ export function ResolverBody({ path }: { path: string }) {
                     })
                 })
                 .catch(() => {
-                    if (disposed || gen !== readGenRef.current) return
+                    if (disposed || gen !== readGenRef.current || !ownerCurrent(owner)) return
                     setRechanged(true)
                     // Forget the snapshot so the next successful read always restores.
                     diskSnapshotRef.current = undefined
@@ -197,7 +236,44 @@ export function ResolverBody({ path }: { path: string }) {
             disposed = true
             void unlisten.then((fn) => fn())
         }
-    }, [path])
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path, session])
+
+    // One save or reload at a time, admitted only while the resolver still owns
+    // the same document, buffer, line ending and merge view it started with.
+    function beginOperation() {
+        if (operationRef.current) return
+        const owner = ownerRef.current
+        if (!owner) return
+        const lineEnding = useWorkspaceStore.getState().getLineEnding(path)
+        const cached = getCachedDocument(path)
+        const cachedResult = cached?.result
+        const mergeView = mergeViewRef.current
+        const mergeDocument = mergeView?.state.doc
+        const token = {}
+        const sessionCurrent = () => ownerRef.current === owner && useUiStore.getState().resolverPath === path
+            && useUiStore.getState().resolverNonce === session
+        const ownerUnchanged = () => sessionCurrent()
+            && documentWorkspaceEpoch() === owner.epoch
+            && useWorkspaceStore.getState().workspacePath === owner.workspace
+            && useWorkspaceStore.getState().getLineEnding(path) === lineEnding
+            && getView(path) === owner.view && owner.view.state.doc === owner.document
+            && mergeViewRef.current === mergeView && mergeView?.state.doc === mergeDocument
+        const unchanged = () => ownerUnchanged() && documentGeneration(path) === owner.generation
+            && getCachedDocument(path) === cached && cached?.result === cachedResult
+        if (!unchanged()) { setSaveError(true); return }
+        operationRef.current = token
+        setSaveError(false)
+        setSaving(true)
+        return {
+            owner, lineEnding, unchanged, ownerUnchanged,
+            finish: () => {
+                if (operationRef.current !== token) return
+                operationRef.current = null
+                if (sessionCurrent()) setSaving(false)
+            },
+        }
+    }
 
     function keepAll() {
         const view = mergeViewRef.current
@@ -227,26 +303,30 @@ export function ResolverBody({ path }: { path: string }) {
     // view as one undoable transaction, clear the dirty/external flags, log, and
     // close. Order matters for data safety — mark saveSuppress before saveFile.
     function commitMerged(merged: string) {
-        const mainView = getView(path)
-        setSaveError(false)
-        const lineEnding = useWorkspaceStore.getState().getLineEnding(path)
+        const operation = beginOperation()
+        if (!operation) return
+        const { lineEnding } = operation
         if (!lineEnding) {
             setSaveError(true)
+            operation.finish()
             return
         }
         const serialized = serializeDocumentLineEndings(merged, lineEnding)
         if (serialized.kind === "blocked") {
             void showMixedLineEndingSaveError()
+            operation.finish()
             return
         }
         recentlySaved.mark(path)
         void saveDocumentContent(path, serialized.content)
             .then(() => {
-                if (mainView) {
-                    mainView.dispatch({
-                        changes: { from: 0, to: mainView.state.doc.length, insert: merged }
-                    })
-                }
+                // A completed disk write does not authorize replacing a newer
+                // live buffer or closing another resolver opened in the meantime.
+                if (!operation.unchanged()) return
+                const mainView = operation.owner.view
+                mainView.dispatch({
+                    changes: { from: 0, to: mainView.state.doc.length, insert: merged }
+                })
                 markDirty(path, false)
                 markExternallyModified(path, false)
                 void logUserAction("resolve_external_change", `resolve ${path}`)
@@ -255,8 +335,9 @@ export function ResolverBody({ path }: { path: string }) {
             .catch(() => {
                 // Save failed: surface the error and keep the resolver open so the
                 // user can retry or cancel. Leave dirty/external flags untouched.
-                setSaveError(true)
+                if (operation.unchanged()) setSaveError(true)
             })
+            .finally(operation.finish)
     }
 
     function resolveAndSave() {
@@ -271,8 +352,17 @@ export function ResolverBody({ path }: { path: string }) {
     }
 
     function takeDiskReload() {
-        void reloadDocument(path)
-            .then(() => {
+        const operation = beginOperation()
+        if (!operation) return
+        const cached = getCachedDocument(path)
+        const disk = cached?.diskResult
+        const canApply = () => operation.unchanged() && cached?.diskResult === disk
+        void reloadDocument(path, canApply)
+            .then((entry) => {
+                // This reload itself advances the generation and replaces the
+                // cache. Admit only that exact result, with the original view intact.
+                if (!operation.ownerUnchanged() || getCachedDocument(path) !== entry
+                    || documentGeneration(path) !== operation.owner.generation + 1) return
                 // Buffer now matches disk — clear dirty as well as the external flag,
                 // otherwise the tab stays marked dirty despite being reconciled (m5).
                 markDirty(path, false)
@@ -281,6 +371,7 @@ export function ResolverBody({ path }: { path: string }) {
                 closeResolver()
             })
             .catch(() => {
+                if (!canApply()) return
                 // R2B-F1: the file was deleted between opening the resolver and
                 // clicking reload — there is nothing to reload. Settle so the
                 // dialog doesn't hang: clear the external flag and close, but KEEP
@@ -290,6 +381,7 @@ export function ResolverBody({ path }: { path: string }) {
                 void logUserAction("resolve_external_change", `reload-missing ${path}`)
                 closeResolver()
             })
+            .finally(operation.finish)
     }
 
     function discardAndCloseTab() {
@@ -302,6 +394,8 @@ export function ResolverBody({ path }: { path: string }) {
 
     function cancel() {
         // Cancel touches nothing: no write, no buffer change, flags untouched.
+        ownerRef.current = null
+        operationRef.current = null
         closeResolver()
     }
 
@@ -363,28 +457,28 @@ export function ResolverBody({ path }: { path: string }) {
                                 取消
                             </Button>
                             {degraded === "deleted" ? (
-                                <Button variant="outline" onClick={discardAndCloseTab}>
+                                <Button variant="outline" disabled={saving} onClick={discardAndCloseTab}>
                                     丟棄並關閉分頁
                                 </Button>
                             ) : degraded === "unreadable" ? null : (
-                                <Button variant="outline" onClick={takeDiskReload}>
+                                <Button variant="outline" disabled={saving} onClick={takeDiskReload}>
                                     採用磁碟版（重新載入）
                                 </Button>
                             )}
-                            <Button onClick={keepMineOverwrite}>保留我的（覆寫存檔）</Button>
+                            <Button disabled={saving} onClick={keepMineOverwrite}>保留我的（覆寫存檔）</Button>
                         </>
                     ) : (
                         <>
                             <Button variant="outline" onClick={cancel}>
                                 取消
                             </Button>
-                            <Button variant="outline" disabled={!ready} onClick={keepAll}>
+                            <Button variant="outline" disabled={!ready || saving} onClick={keepAll}>
                                 全部保留我的
                             </Button>
-                            <Button variant="outline" disabled={!ready} onClick={takeDisk}>
+                            <Button variant="outline" disabled={!ready || saving} onClick={takeDisk}>
                                 全部採用磁碟版
                             </Button>
-                            <Button disabled={!ready} onClick={resolveAndSave}>
+                            <Button disabled={!ready || saving} onClick={resolveAndSave}>
                                 解決並存檔
                             </Button>
                         </>

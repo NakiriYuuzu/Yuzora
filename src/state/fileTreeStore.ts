@@ -89,6 +89,29 @@ async function mapLimit<T>(
 }
 
 export const useFileTreeStore = create<FileTreeState>((set, get) => {
+    // Only in-flight listings are retained; each workspace/dir has its own owner.
+    const pendingListings = new Map<string, Map<string, symbol>>()
+    function discardListings(root: string, removed: (dir: string) => boolean): void {
+        const pending = pendingListings.get(root)
+        if (!pending) return
+        for (const dir of pending.keys()) if (removed(dir)) pending.delete(dir)
+        if (pending.size === 0) pendingListings.delete(root)
+    }
+
+    // Forget listings without pruning expansion state or descendant listings.
+    function invalidateListings(root: string, stale: (dir: string) => boolean): void {
+        discardListings(root, stale)
+        set((s) => {
+            const tree = s.trees[root]
+            if (!tree) return s
+            const dirs = Object.keys(tree.childrenByDir).filter(stale)
+            if (dirs.length === 0) return s
+            const childrenByDir = { ...tree.childrenByDir }
+            for (const dir of dirs) delete childrenByDir[dir]
+            return { trees: { ...s.trees, [root]: { ...tree, childrenByDir } } }
+        })
+    }
+
     // Diff-apply a fresh listing of `dir`: keep the old array reference when
     // nothing changed (no re-render churn), otherwise swap it in and prune the
     // cached subtrees of subdirectories that no longer exist under `dir`.
@@ -103,6 +126,10 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
             const removed = new Set(cachedDirs.filter(
                 (key) => parentOf(key) === dir && !liveDirs.has(key)
             ))
+            // A first expansion may still be loading and have no child cache.
+            for (const node of prev ?? []) {
+                if (node.isDir && !liveDirs.has(node.path)) removed.add(node.path)
+            }
             const childrenByDir = dir !== root || removed.size > 0
                 ? { ...tree.childrenByDir } : tree.childrenByDir
             let expandedDirs = tree.expandedDirs
@@ -118,6 +145,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
                     const child = path.slice(dir.length + 1).split(/[/\\]/, 1)[0]
                     return removed.has(dir + path[dir.length] + child)
                 }
+                discardListings(root, isRemoved)
                 for (const key of cachedDirs) {
                     if (isRemoved(key)) delete childrenByDir[key]
                 }
@@ -144,6 +172,7 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
     // cached subtree + expansion flags. The parent's own re-list removes the
     // node from view.
     function dropSubtree(root: string, dir: string): void {
+        discardListings(root, (path) => path === dir || isUnder(path, dir))
         set((s) => {
             const tree = s.trees[root]
             if (!tree) return s
@@ -160,13 +189,22 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
     }
 
     async function relistDir(root: string, dir: string): Promise<void> {
+        const pending = pendingListings.get(root) ?? new Map<string, symbol>()
+        const owner = Symbol()
+        pending.set(dir, owner)
+        pendingListings.set(root, pending)
+        const isCurrent = () => pendingListings.get(root)?.get(dir) === owner
         try {
             const nodes = await listDir(dir)
+            if (!isCurrent()) return
             applyListing(root, dir, Array.isArray(nodes) ? nodes : [])
         } catch {
             // Keep the last-known root listing on a root failure (transient IO
             // errors shouldn't blank the whole tree); drop deleted subdirs.
-            if (dir !== root) dropSubtree(root, dir)
+            if (isCurrent() && dir !== root) dropSubtree(root, dir)
+        } finally {
+            if (pending.get(dir) === owner) pending.delete(dir)
+            if (pending.size === 0 && pendingListings.get(root) === pending) pendingListings.delete(root)
         }
     }
 
@@ -180,10 +218,21 @@ export const useFileTreeStore = create<FileTreeState>((set, get) => {
                 await relistDir(root, root)
                 return
             }
+            // A full refresh also invalidates collapsed listings. Fetch them
+            // lazily on the next expansion, and retire older in-flight replies.
+            invalidateListings(root, (dir) => dir !== root && !tree.expandedDirs.has(dir))
             await mapLimit(
                 [root, ...tree.expandedDirs],
                 REVALIDATE_CONCURRENCY,
-                (dir) => relistDir(root, dir)
+                async (dir) => {
+                    // A preceding parent result may prune jobs still in the queue.
+                    if (dir === root || get().trees[root]?.expandedDirs.has(dir))
+                        await relistDir(root, dir)
+                    else if (get().trees[root]?.childrenByDir[dir] !== undefined
+                        || pendingListings.get(root)?.has(dir))
+                        // Collapsed while queued: refresh lazily on the next open.
+                        invalidateListings(root, (path) => path === dir)
+                }
             )
         },
         toggleDir: async (root, dir) => {

@@ -40,6 +40,12 @@ afterEach(() => {
 })
 
 describe("pasteTargetDir", () => {
+    it("pastes beside a file on a mixed-separator verbatim UNC path", () => {
+        expect(pasteTargetDir("//?/UNC/Server/Share", {
+            path: String.raw`//?/UNC/Server/Share\Dir\file.ts`, isDirectory: false
+        })).toBe(String.raw`//?/UNC/Server/Share\Dir`)
+    })
+
     it("pastes into folders, next to files, or at the root", () => {
         expect(pasteTargetDir(W, { path: "/w/src", isDirectory: true })).toBe("/w/src")
         expect(pasteTargetDir(W, { path: "/w/src/a.ts", isDirectory: false })).toBe("/w/src")
@@ -56,7 +62,7 @@ describe("copy, cut and paste", () => {
         vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce(["/w/src/a.ts"])
 
         expect(await pasteFiles(W, { path: "/w/src", isDirectory: true })).toEqual(["/w/src/a.ts"])
-        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(W, ["/w/a.ts"], "/w/src")
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(W, ["/w/a.ts"], "/w/src", expect.any(Function))
         expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/src/a.ts"])
         expect(tree.toggleDir).toHaveBeenCalledWith(W, "/w/src")
         // A copy can be pasted again.
@@ -68,7 +74,7 @@ describe("copy, cut and paste", () => {
         vi.mocked(ipc.fsMovePaths).mockResolvedValueOnce(["/w/src/a.ts"])
         await pasteFiles(W, { path: "/w/src/b.ts", isDirectory: false })
 
-        expect(ipc.fsMovePaths).toHaveBeenCalledWith(W, ["/w/a.ts"], "/w/src")
+        expect(ipc.fsMovePaths).toHaveBeenCalledWith(W, ["/w/a.ts"], "/w/src", expect.any(Function))
         expect(retargetOpenDocuments).toHaveBeenCalledWith("/w/a.ts", "/w/src/a.ts")
         expect(tree.invalidatePaths).toHaveBeenCalledWith(W, ["/w/a.ts", "/w/src/a.ts"])
         expect(useFileClipboardStore.getState().clipboard).toBeNull()
@@ -80,7 +86,7 @@ describe("copy, cut and paste", () => {
         vi.mocked(ipc.fsPasteClipboardFiles).mockResolvedValueOnce(["/w/photo.png"])
 
         expect(await pasteFiles(W, null)).toEqual(["/w/photo.png"])
-        expect(ipc.fsPasteClipboardFiles).toHaveBeenCalledWith(W, W)
+        expect(ipc.fsPasteClipboardFiles).toHaveBeenCalledWith(W, W, expect.any(Function))
         expect(ipc.fsCopyPaths).not.toHaveBeenCalled()
     })
 
@@ -88,7 +94,7 @@ describe("copy, cut and paste", () => {
         useFileClipboardStore.setState({ clipboard: { workspacePath: "/other", paths: ["/other/x.ts"], mode: "cut" } })
         vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["/other/x.ts"])
         await pasteFiles(W, null)
-        expect(ipc.fsPasteClipboardFiles).toHaveBeenCalledWith(W, W)
+        expect(ipc.fsPasteClipboardFiles).toHaveBeenCalledWith(W, W, expect.any(Function))
         expect(ipc.fsMovePaths).not.toHaveBeenCalled()
     })
 
@@ -133,7 +139,7 @@ describe("remote workspaces", () => {
         expect(ipc.clipboardWriteWorkspaceFiles).not.toHaveBeenCalled()
         await pasteFiles(R, null)
         expect(ipc.clipboardReadFileList).not.toHaveBeenCalled()
-        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(R, [A], R)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(R, [A], R, expect.any(Function))
     })
 
     it("explains that Finder files cannot be pasted instead of silently ignoring them", async () => {
@@ -210,7 +216,7 @@ describe("WSL host workspaces", () => {
         vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
         vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce([A])
         await pasteFiles(WSL, null)
-        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL, expect.any(Function))
         expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
     })
 
@@ -223,7 +229,7 @@ describe("WSL host workspaces", () => {
         vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
         vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce([A])
         await pasteFiles(WSL, null)
-        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL, expect.any(Function))
         expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
         snapshot(["C:\\Users\\me\\old.png"])
         await copying
@@ -236,7 +242,7 @@ describe("WSL host workspaces", () => {
         vi.mocked(ipc.clipboardReadFileList).mockResolvedValueOnce(["C:\\Users\\me\\old.png"])
         vi.mocked(ipc.fsCopyPaths).mockResolvedValueOnce([A])
         await pasteFiles(WSL, null)
-        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL)
+        expect(ipc.fsCopyPaths).toHaveBeenCalledWith(WSL, [A], WSL, expect.any(Function))
         expect(ipc.wslImportOsFiles).not.toHaveBeenCalled()
     })
 
