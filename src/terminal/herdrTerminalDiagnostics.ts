@@ -32,6 +32,8 @@ interface Window {
 }
 
 let enabled = import.meta.env.VITE_YUZORA_SCROLL_DIAGNOSTICS === "1"
+let enabledEpoch = 0
+let enabledIntent = 0
 let current: Window | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -57,8 +59,11 @@ export function summarize(samples: readonly number[]): Summary {
 
 export function isHerdrTerminalDiagnosticsEnabled() { return enabled }
 export function setHerdrTerminalDiagnosticsEnabled(next: boolean) {
+  // Even an unchanged setting supersedes a pending startup read.
+  enabledIntent++
   if (enabled === next) return
   enabled = next
+  enabledEpoch++
   if (!next) {
     if (timer) clearTimeout(timer)
     timer = null
@@ -68,8 +73,11 @@ export function setHerdrTerminalDiagnosticsEnabled(next: boolean) {
 
 /** Startup sync with the persisted app log level (Settings → Logs → debug). */
 export function initHerdrTerminalDiagnosticsFromLogLevel(): Promise<void> {
+  const intent = enabledIntent
   return getLogLevel()
-    .then((level) => { if (level === "debug") setHerdrTerminalDiagnosticsEnabled(true) })
+    .then((level) => {
+      if (intent === enabledIntent && level === "debug") setHerdrTerminalDiagnosticsEnabled(true)
+    })
     .catch(() => undefined)
 }
 
@@ -156,10 +164,17 @@ export function flushHerdrTerminalDiagnostics(now = performance.now()) {
 /** Measures one IPC promise without changing its result. */
 export function timeHerdrTerminalIpc<T>(command: HerdrTerminalIpcCommand, run: () => Promise<T>): Promise<T> {
   if (!enabled) return run()
+  const epoch = enabledEpoch
   const startedAt = performance.now()
   return run().then(
-    (value) => { recordHerdrTerminalMetric({ kind: "ipc", command, ms: performance.now() - startedAt, ok: true }); return value },
-    (error: unknown) => { recordHerdrTerminalMetric({ kind: "ipc", command, ms: performance.now() - startedAt, ok: false }); throw error },
+    (value) => {
+      if (epoch === enabledEpoch) recordHerdrTerminalMetric({ kind: "ipc", command, ms: performance.now() - startedAt, ok: true })
+      return value
+    },
+    (error: unknown) => {
+      if (epoch === enabledEpoch) recordHerdrTerminalMetric({ kind: "ipc", command, ms: performance.now() - startedAt, ok: false })
+      throw error
+    },
   )
 }
 

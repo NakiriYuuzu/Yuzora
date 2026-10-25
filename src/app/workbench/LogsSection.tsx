@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { homeDir, join } from "@tauri-apps/api/path"
 import { writeText } from "@tauri-apps/plugin-clipboard-manager"
@@ -122,6 +122,10 @@ export function LogsSection({
   const [selectedKinds, setSelectedKinds] = useState<string[]>([])
   const [selectedLevels, setSelectedLevels] = useState<string[]>([])
   const [source, setSource] = useState(initialSource ?? "")
+  const sourceOptions = useMemo(
+    () => [...new Set([...sources, source])].filter(Boolean).sort(),
+    [sources, source],
+  )
   const [text, setText] = useState("")
   const [since, setSince] = useState("")
   const [until, setUntil] = useState("")
@@ -148,7 +152,7 @@ export function LogsSection({
     let alive = true
     void logSources()
       .then((items) => {
-        if (alive) setSources(items)
+        if (alive) setSources((previous) => [...new Set([...previous, ...items])])
       })
       .catch((e) => {
         if (alive) setError(t("settings.logs.sourcesFailed", { error: String(e) }))
@@ -193,6 +197,7 @@ export function LogsSection({
         .then((records) => {
           if (!alive) return
           setRows(records)
+          setSources((previous) => [...new Set([...previous, ...records.map((row) => row.source)])])
           setResultPage(0)
           setExpanded({})
           // run 分組是從**這一批結果**導出的，因此每次重新查詢都必須清掉 run
@@ -386,7 +391,7 @@ export function LogsSection({
                 className="h-[30px] rounded-[8px] border border-(--line-1) bg-(--paper-0) px-[9px] text-[11.5px] text-(--ink-1) outline-none transition-colors focus:border-(--yz-accent) focus-visible:ring-2 focus-visible:ring-(--yz-accent)/30"
               >
                 <option value="">{t("settings.logs.allSources")}</option>
-                {sources.map((item) => (
+                {sourceOptions.map((item) => (
                   <option key={item} value={item}>
                     {item}
                   </option>
