@@ -4,7 +4,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, OnceLock,
     },
     task::{ready, Context, Poll},
@@ -44,6 +44,7 @@ struct ResponseContext {
     next_req_id: AtomicU32,
     packet_limit: AtomicU64,
     handles: AtomicU64,
+    closed: AtomicBool,
 }
 
 impl ResponseContext {
@@ -202,7 +203,9 @@ impl SessionInner {
 
 impl Drop for SessionInner {
     fn drop(&mut self) {
-        // Wake pending requests when the transport stops.
+        // Publish closure before waking requests; their next explicit retry
+        // must not reuse this session while the write task is still exiting.
+        self.responses.closed.store(true, Ordering::Release);
         self.requests.clear();
     }
 }
@@ -311,6 +314,7 @@ impl RawSftpSession {
             next_req_id: AtomicU32::new(1),
             packet_limit: AtomicU64::new(u64::MAX),
             handles: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
         });
         let inner = SessionInner {
             version: None,
@@ -327,6 +331,12 @@ impl RawSftpSession {
             timeout: AtomicU64::new(cfg.request_timeout_secs),
             limits: Limits::default(),
         }
+    }
+
+    /// Whether the transport worker has stopped. A request timeout alone does
+    /// not close the session. This is a snapshot, not a guarantee for future I/O.
+    pub fn is_closed(&self) -> bool {
+        self.responses.closed.load(Ordering::Acquire) || self.tx.is_closed()
     }
 
     /// Set the maximum response time in seconds.

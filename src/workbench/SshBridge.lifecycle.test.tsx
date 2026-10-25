@@ -17,7 +17,10 @@ vi.mock("@/lib/ipc", () => ({
     sftpUpload: vi.fn(), sftpDownload: vi.fn(), sftpTransferTree: vi.fn(),
     sftpMkdir: vi.fn(), sftpRename: vi.fn(), sftpRemove: vi.fn()
 }))
-vi.mock("@/state/appDialogStore", () => ({ requestAppConfirmation: vi.fn(async () => true) }))
+vi.mock("@/state/appDialogStore", async (importOriginal) => ({
+    ...await importOriginal<typeof import("@/state/appDialogStore")>(),
+    requestAppConfirmation: vi.fn(async () => true)
+}))
 import { sshDisconnect, sftpListDir, sftpTransferPrepare, sftpTransferCancel, sftpFileRevision, sftpUpload, sftpDownload, sftpTransferTree } from "@/lib/ipc"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { useSshStore } from "@/state/sshStore"
@@ -76,7 +79,7 @@ it("releases removed-host listings and transfers over 100 warm and 100 measured 
     const original = Map.prototype.set
     let tokenCount: (() => number) | undefined
     vi.spyOn(Map.prototype, "set").mockImplementation(function (this: Map<unknown, unknown>, key, value) {
-        if (typeof key === "string" && typeof value === "symbol" && value.description === key) tokenCount = () => this.size
+        if (typeof key === "string" && value?.sessionId === "session-" + key && typeof value.path === "string") tokenCount = () => this.size
         return original.call(this, key, value)
     })
     for (let i = 0; i < 200; i++) {
