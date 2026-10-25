@@ -162,3 +162,29 @@ it.each(["visible", "disabled"])("keeps the %s completion notification guard aft
   expect(mocks.toast).not.toHaveBeenCalled()
   expect(mocks.permission).not.toHaveBeenCalled()
 })
+
+it("titles the toast with the runtime agent name when the attention item has not received displayAgent yet", async () => {
+  useHerdrStore.setState({ runtimesBySession: { default: {
+    ...runtime("ready"),
+    snapshot: { focusedPaneId: "p9", agents: [{ paneId: "p1", tabId: "t1", displayAgent: "claude", name: "w1:p1" }] } as HerdrSnapshot
+  } } })
+  render(<HerdrNotificationBridge />)
+  await emit({ ...attention, kind: "blocked", agentStatus: "blocked" })
+  expect(mocks.toast).toHaveBeenCalledTimes(1)
+  expect(mocks.toast.mock.calls[0][0]).toContain("claude")
+  expect(mocks.toast.mock.calls[0][0]).not.toContain("p1")
+})
+it("falls back to the HERDR tab label when the agent name is only its id fallback", async () => {
+  // herdrNormalize sets name to terminalId ?? paneId when HERDR reports no agent/title.
+  const snapshot: HerdrSnapshot = {
+    herdrSessionId: "default", protocol: 22, version: "0.9.1", raw: {},
+    spaces: [], terminals: [], focusedPaneId: "p9",
+    agents: [{ id: "term-1", name: "term-1", terminalId: "term-1", paneId: "p1", tabId: "t1", workspaceId: "w1", status: "blocked" }],
+    tabs: [{ id: "t1", label: "term-b", order: 0, workspaceId: "w1", paneCount: 1, status: "blocked", active: true, focused: false }]
+  }
+  useHerdrStore.setState({ runtimesBySession: { default: { ...runtime("ready"), snapshot } } })
+  render(<HerdrNotificationBridge />)
+  await emit()
+  expect(mocks.toast.mock.calls[0][0]).toContain("term-b")
+  expect(mocks.toast.mock.calls[0][0]).not.toContain("term-1")
+})
