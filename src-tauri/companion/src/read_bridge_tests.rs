@@ -82,6 +82,7 @@ impl HerdrPort for Fake {
                 default: false,
                 session_dir: "SECRET".into(),
                 socket_path: "SECRET".into(),
+                connection_error: None,
             })
             .collect())
     }

@@ -117,6 +117,7 @@ impl HerdrPort for Fake {
             default: true,
             session_dir: "private".into(),
             socket_path: "private".into(),
+            connection_error: None,
         }])
     }
     fn snapshot(&self, _: &str) -> herdr::Result<HerdrSnapshotResult> {

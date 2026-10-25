@@ -911,6 +911,7 @@ impl HerdrPort for Fake {
             default: true,
             session_dir: "SECRET".into(),
             socket_path: "SECRET".into(),
+            connection_error: None,
         }])
     }
     fn snapshot(&self, _: &str) -> HerdrResult<HerdrSnapshotResult> {
