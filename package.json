@@ -88,6 +88,7 @@
     "lucide-react": "^1.48.0",
     "markdown-it": "^15.0.2",
     "material-icon-theme": "^5.38.1",
+    "pdfjs-dist": "^6.4.299",
     "radix-ui": "^1.6.7",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
