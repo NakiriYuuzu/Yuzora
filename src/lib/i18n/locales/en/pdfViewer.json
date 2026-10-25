@@ -1,0 +1,20 @@
+{
+  "toolbar": "PDF toolbar",
+  "previousPage": "Previous page",
+  "nextPage": "Next page",
+  "pageNumber": "Page number",
+  "pageCount": "/ {{count}}",
+  "zoomIn": "Zoom in",
+  "zoomOut": "Zoom out",
+  "zoomLevel": "Zoom level",
+  "fitWidth": "Fit width",
+  "loading": "Loading PDF…",
+  "pageRenderError": "This page could not be rendered",
+  "loadError": "Could not open this PDF",
+  "loadErrorDescription": "“{{path}}” may be damaged, removed, or not a valid PDF",
+  "passwordTitle": "This PDF is password-protected",
+  "passwordDescription": "PDFs that need a password to open cannot be previewed yet",
+  "tooLargeTitle": "PDF is too large to preview",
+  "tooLargeDescription": "“{{name}}” is {{size}}; the preview limit is {{limit}}",
+  "tooLargeDescriptionUnknownSize": "“{{name}}” exceeds the preview limit of {{limit}}"
+}
