@@ -7,6 +7,7 @@ import { ExternalChangeBridge } from "@/workbench/ExternalChangeBridge";
 import { ExternalChangeResolver } from "@/workbench/ExternalChangeResolver";
 import { GitBridge } from "@/workbench/GitBridge";
 import { FileDropBridge } from "@/workbench/FileDropBridge";
+import { OpenRequestBridge } from "@/workbench/OpenRequestBridge";
 import { WorkbenchKeyboardBridge } from "@/workbench/WorkbenchKeyboardBridge";
 import { WorkbenchFocusBridge } from "@/workbench/WorkbenchFocusBridge";
 import { HerdrBridge } from "@/workbench/HerdrBridge";
@@ -37,6 +38,7 @@ function App() {
       <ExternalChangeResolver />
       <GitBridge />
       <FileDropBridge />
+      <OpenRequestBridge />
       <SessionRestoreBridge />
       <HerdrBridge />
       <MachinesBridge />

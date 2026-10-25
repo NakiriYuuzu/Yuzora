@@ -36,6 +36,7 @@ mod host_windows;
 pub mod host_wsl;
 pub mod logging;
 mod nsis_migration;
+mod open_requests;
 pub mod path_capability;
 pub mod perf_service;
 mod preview_resources;
@@ -200,7 +201,20 @@ pub fn run() {
     logging::record_app_start();
     let database_shutdown_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let graceful_exit_recorded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // The plugin must be registered first. Release builds only: dev and
+    // installed builds share the app identifier, so a dev run would forward
+    // itself to the installed Yuzora and exit. A runtime check rather than a
+    // cfg keeps the call type-checked by the debug Windows CI build.
+    #[cfg(windows)]
+    let builder = if cfg!(debug_assertions) {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            open_requests::enqueue_args(app, args, std::path::Path::new(&cwd));
+        }))
+    };
+    builder
         .on_webview_event(preview_webview::forward_preview_file_drop)
         .on_webview_event(file_clipboard::record_native_drop)
         .plugin(tauri_plugin_opener::init())
@@ -250,6 +264,9 @@ pub fn run() {
         .manage(path_capability::DownloadDestinationState::new())
         .manage(fs_service::DeleteOperations::default())
         .manage(sftp_tree::TreeState::default())
+        // On the builder, not in setup: macOS can deliver a launch document
+        // (RunEvent::Opened) before setup runs.
+        .manage(open_requests::OpenRequestState::default())
         .setup(|app| {
             use tauri::{Emitter, Manager};
             #[cfg(windows)]
@@ -258,6 +275,12 @@ pub fn run() {
                     eprintln!("window activation observer unavailable: {error}");
                 }
             }
+            #[cfg(not(target_os = "macos"))]
+            open_requests::enqueue_args(
+                app.handle(),
+                std::env::args_os(),
+                &std::env::current_dir().unwrap_or_default(),
+            );
             nsis_migration::spawn();
             #[cfg(desktop)]
             app.handle()
@@ -339,6 +362,7 @@ pub fn run() {
         })
         .invoke_handler(main_webview_commands(tauri::generate_handler![
             window_activation::workbench_is_window_active,
+            open_requests::open_requests_take,
             reveal_directory::open_workspace_directory,
             update_channel::check_preview_update,
             update_channel::check_release_update,
@@ -543,6 +567,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running yuzora application")
         .run(move |app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                open_requests::enqueue_urls(app, urls);
+            }
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
@@ -716,6 +744,41 @@ mod command_inventory_tests {
             assert!(
                 run_source.contains(cmd),
                 "missing runtime preference command: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn os_open_requests_are_wired_before_startup() {
+        let source = include_str!("lib.rs");
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        let builder = run_source.find("tauri::Builder::default()").unwrap();
+        let single_instance = run_source
+            .find(".plugin(tauri_plugin_single_instance::init(")
+            .expect("Windows must forward a second instance's paths");
+        let first_other_plugin = run_source
+            .find(".plugin(tauri_plugin_opener::init())")
+            .unwrap();
+        assert!(
+            builder < single_instance && single_instance < first_other_plugin,
+            "single-instance must be the first plugin"
+        );
+        let state = run_source
+            .find(".manage(open_requests::OpenRequestState::default())")
+            .expect("open request state must be managed");
+        assert!(
+            state < run_source.find(".setup(|app|").unwrap(),
+            "a macOS launch document can arrive before setup"
+        );
+        for required in [
+            "open_requests::open_requests_take,",
+            "tauri::RunEvent::Opened { urls }",
+            "open_requests::enqueue_urls(app, urls)",
+            "std::env::args_os()",
+        ] {
+            assert!(
+                run_source.contains(required),
+                "missing open request seam: {required}"
             );
         }
     }

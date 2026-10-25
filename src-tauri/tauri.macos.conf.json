@@ -19,6 +19,28 @@
     ]
   },
   "bundle": {
+    "fileAssociations": [
+      {
+        "ext": [],
+        "contentTypes": ["public.text", "public.image", "public.data"],
+        "name": "Yuzora Document",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["rs", "go", "jsx", "kt", "vue", "svelte", "scss", "lock", "env"],
+        "name": "Yuzora Source",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [],
+        "contentTypes": ["public.folder"],
+        "name": "Folder",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ],
     "macOS": {
       "signingIdentity": "-"
     },
