@@ -1,0 +1,255 @@
+{
+  "device": {
+    "createdAt": "2026-10-18T10:00:00Z",
+    "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+    "grants": {
+      "control": {
+        "until": "2026-10-18T13:00:00Z"
+      },
+      "full": false
+    },
+    "label": "iPhone",
+    "lastSeen": "2026-10-18T12:00:00Z",
+    "locked": false
+  },
+  "netCertPending": {
+    "authUrl": null,
+    "cert": {
+      "error": null,
+      "notAfter": null,
+      "state": "pending"
+    },
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": true,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "enable",
+    "serving": false,
+    "state": "running"
+  },
+  "netEnabling": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "enable",
+    "serving": false,
+    "state": "starting"
+  },
+  "netLoggedOut": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": null,
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": false,
+    "login": null,
+    "mode": null,
+    "serving": false,
+    "state": "stopped"
+  },
+  "netNeedsApproval": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "yuzora-1.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": false,
+    "login": null,
+    "mode": "login",
+    "serving": false,
+    "state": "needsApproval"
+  },
+  "netNeedsLogin": {
+    "authUrl": "https://login.tailscale.com/a/abc123",
+    "cert": null,
+    "dnsName": null,
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": false,
+    "login": null,
+    "mode": "login",
+    "serving": false,
+    "state": "needsLogin"
+  },
+  "netRunning": {
+    "authUrl": null,
+    "cert": {
+      "error": null,
+      "notAfter": "2026-12-31T10:00:00Z",
+      "state": "ready"
+    },
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": true,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "enable",
+    "serving": true,
+    "state": "running"
+  },
+  "netSigningOut": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": "logout",
+    "serving": false,
+    "state": "starting"
+  },
+  "netStopped": {
+    "authUrl": null,
+    "cert": null,
+    "dnsName": "desktop.tail1234.ts.net",
+    "error": null,
+    "httpsCapable": null,
+    "loggedIn": true,
+    "login": "user@example.com",
+    "mode": null,
+    "serving": false,
+    "state": "stopped"
+  },
+  "overviewOff": {
+    "enableUntil": null,
+    "net": {
+      "authUrl": null,
+      "cert": null,
+      "dnsName": null,
+      "error": null,
+      "httpsCapable": null,
+      "loggedIn": false,
+      "login": null,
+      "mode": null,
+      "serving": false,
+      "state": "stopped"
+    },
+    "owner": true,
+    "push": {
+      "available": false,
+      "subscribed": []
+    },
+    "settings": {
+      "duration": "8h",
+      "experimental": false,
+      "fullSessionEnabled": false,
+      "gatewayPort": 47110,
+      "net": null,
+      "sessionAllowlist": [],
+      "version": 1
+    },
+    "status": {
+      "state": "disabled"
+    }
+  },
+  "overviewRunning": {
+    "enableUntil": "2026-10-18T20:00:00Z",
+    "net": {
+      "authUrl": null,
+      "cert": {
+        "error": null,
+        "notAfter": "2026-12-31T10:00:00Z",
+        "state": "ready"
+      },
+      "dnsName": "desktop.tail1234.ts.net",
+      "error": null,
+      "httpsCapable": true,
+      "loggedIn": true,
+      "login": "user@example.com",
+      "mode": "enable",
+      "serving": true,
+      "state": "running"
+    },
+    "owner": true,
+    "push": {
+      "available": false,
+      "subscribed": []
+    },
+    "settings": {
+      "duration": "8h",
+      "experimental": true,
+      "fullSessionEnabled": false,
+      "gatewayPort": 47110,
+      "net": {
+        "dnsName": "desktop.tail1234.ts.net",
+        "login": "user@example.com"
+      },
+      "sessionAllowlist": [
+        "default"
+      ],
+      "version": 1
+    },
+    "status": {
+      "port": 47110,
+      "state": "running"
+    }
+  },
+  "pairingQr": {
+    "expiresAt": "2026-10-18T12:05:00Z",
+    "pairingId": "pairing-1",
+    "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"
+  },
+  "peersSnapshot": {
+    "peers": [
+      {
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "peerId": 3
+      }
+    ],
+    "streams": [
+      {
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "peerId": 3,
+        "scope": "control",
+        "session": "work",
+        "stream": "12",
+        "target": "w:p"
+      },
+      {
+        "deviceId": "AAAAAAAAAAAAAAAAAAAAAA",
+        "peerId": 3,
+        "scope": "full",
+        "session": "work",
+        "stream": "13"
+      }
+    ]
+  },
+  "phoneLink": {
+    "qrSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+    "url": "https://desktop.tail1234.ts.net/"
+  },
+  "pushEvent": {
+    "push": {
+      "available": true,
+      "subscribed": [
+        "AAAAAAAAAAAAAAAAAAAAAA"
+      ]
+    },
+    "type": "push"
+  },
+  "pushOverview": {
+    "available": true,
+    "subscribed": [
+      "AAAAAAAAAAAAAAAAAAAAAA"
+    ]
+  },
+  "sessionsSet": {
+    "restartRequired": true
+  },
+  "statusFailed": {
+    "code": "companion-crashed",
+    "state": "failed"
+  },
+  "statusStarting": {
+    "state": "starting"
+  },
+  "statusStopping": {
+    "state": "stopping"
+  }
+}

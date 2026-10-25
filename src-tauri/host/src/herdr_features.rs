@@ -223,8 +223,14 @@ impl HerdrManager {
             HerdrFeatureRequest::SessionStop {} | HerdrFeatureRequest::SessionDelete {} => {
                 // Require the exact advertised name; do not let an inherited
                 // caller or a case-insensitive filesystem select another Session.
-                if !self.list_sessions()?.iter().any(|s| s.name == session_name) {
+                let sessions = self.list_sessions()?;
+                let Some(session) = sessions.iter().find(|s| s.name == session_name) else {
                     return Err("unknown-herdr-session".into());
+                };
+                // HERDR deletes the saved layout of a Session it cannot reach
+                // as if it were stopped, even while that server still runs.
+                if session.connection_error.is_some() {
+                    return Err(session_not_running_message(session));
                 }
                 let binary = self.resolve_binary().ok_or("herdr-unavailable")?;
                 let action = if method == "session.stop" {
@@ -322,7 +328,7 @@ impl HerdrManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         process_kill::configure_background_process(&mut command);
-        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let mut child = process_kill::spawn_std(&mut command).map_err(|e| e.to_string())?;
         let mut tree = process_kill::attach_process_tree(&mut child).map_err(|e| e.to_string())?;
         let (stdout, stderr, status) = wait_bounded_child(
             &mut child,
@@ -368,9 +374,13 @@ impl HerdrManager {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         process_kill::configure_background_process(&mut command);
-        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let mut child = process_kill::spawn_std(&mut command).map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
+            // Read before the status: a server child that exits once its
+            // server is up must count as started, so only an exit the
+            // following status still reports as not running is a failure.
+            let exited = child.try_wait().map_err(|e| e.to_string())?.is_some();
             if let Ok(status) = run_herdr_json_with_session_timeout(
                 &binary,
                 &["status", "--json"],
@@ -399,7 +409,7 @@ impl HerdrManager {
                     return Ok(json!({"started": true, "name": name}));
                 }
             }
-            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            if exited {
                 return Err("herdr-session-start-failed".into());
             }
             if Instant::now() >= deadline {

@@ -158,6 +158,9 @@
     "passwordDialogTitle": "SSH 密碼",
     "passwordDialogDescription": "{{user}}@{{host}} — 密碼僅用於此次連線，不會被儲存。",
     "passwordAriaLabel": "SSH 密碼",
+    "passphraseDialogTitle": "SSH 金鑰密語",
+    "passphraseDialogDescription": "{{user}}@{{host}} — 私鑰已加密，請輸入密語。密語僅用於此次連線，不會被儲存。",
+    "passphraseAriaLabel": "SSH 金鑰密語",
     "connect": "連線"
   },
   "database": {
@@ -212,6 +215,8 @@
     "recentQueriesHeading": "最近查詢",
     "noRecentQueries": "本次應用程式工作階段尚無查詢。",
     "historyFailed": "查詢失敗",
+    "historyTruncated": "已截斷",
+    "historyTruncatedDescription": "此查詢只保留部分內容，無法載入重新執行。",
     "newConnection": "新增連線…",
     "newConnectionDialogTitle": "新增連線",
     "newConnectionDialogDescription": "憑證由作業系統 vault 保存，應用程式 UI 無法讀回。",
@@ -341,6 +346,22 @@
       "mixed": "混合",
       "useLf": "使用 LF",
       "useCrlf": "使用 CRLF"
+    },
+    "companion": {
+      "ariaLabel": "Companion 遠端控制",
+      "title": "Companion",
+      "untilExit": "直到結束",
+      "viewers": "{{n}} 台已連線",
+      "controlling": "控制中",
+      "empty": "目前沒有手機連線。",
+      "unknownDevice": "一支手機",
+      "deviceViewing": "檢視中",
+      "deviceControlling": "正在控制 {{pane}}",
+      "deviceFull": "完整 Session：{{session}}",
+      "revokeControl": "撤銷控制並登出手機",
+      "revokeControlHint": "結束所有控制授權與完整 Session，相關手機會被登出，需要重新登入。",
+      "settings": "Companion 設定",
+      "disable": "停用"
     }
   },
   "settings": {
@@ -364,6 +385,10 @@
       "safety": {
         "label": "安全性",
         "sub": "檔案與 git 的防護機制"
+      },
+      "companion": {
+        "label": "Companion",
+        "sub": "透過 Tailscale 用手機遠端控制"
       },
       "git": {
         "label": "Git",
@@ -535,9 +560,9 @@
     "markdownModeDocument": "文件預覽",
     "markdownModeSource": "原始碼",
     "reconcileExternalChanges": "同步外部變更",
-    "reconcileExternalChangesSub": "重新載入被其他工具在磁碟上異動的檔案",
+    "reconcileExternalChangesSub": "固定開啟。被其他工具在磁碟上異動的檔案會重新載入；有未儲存編輯的檔案改為標示",
     "confirmDestructiveGitActions": "確認具破壞性的 git 操作",
-    "confirmDestructiveGitActionsSub": "捨棄與重設前需按住以確認",
+    "confirmDestructiveGitActionsSub": "固定開啟。捨棄與重設前一律會先要求確認",
     "trustedWorkspaces": "已信任的 workspace",
     "trustedWorkspacesSub": "這些資料夾可以執行 Git 與 preview 命令。撤銷後會再次要求同意。",
     "noTrustedWorkspaces": "尚未信任任何 workspace",
@@ -574,8 +599,10 @@
     "renameTabAction": "重新命名 Herdr 分頁",
     "sessionsHeading": "Sessions",
     "stoppedBadge": "已停止",
+    "runtimeChangedDuringInitialization": "HERDR 狀態在初始化期間已變更。",
     "sessionStoppedTitle": "Session {{name}} 未運行",
     "sessionStopped": "Session「{{name}}」未運行。請用 `herdr session attach {{name}}` 啟動。",
+    "sessionUnreachable": "無法連線到 Session「{{name}}」，它可能仍在執行。若是以系統管理員身分執行的 Windows server，請改用系統管理員終端機，或在該處以 `--allow-unelevated-clients` 重新啟動 `herdr server`（會關閉它的 panes）。HERDR 回報：{{reason}}",
     "stoppedNoAgents": "此 session 已停止，尚無 agent",
     "attentionHeading": "需要注意",
     "globalRuntime": "全域 Herdr{{version}}",

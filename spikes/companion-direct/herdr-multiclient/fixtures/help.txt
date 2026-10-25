@@ -1,0 +1,74 @@
+herdr — terminal workspace manager for AI coding agents
+
+Usage: herdr [options]
+       herdr --session <name> [options]
+       herdr --machine <label-or-id> <command>
+       herdr --remote <ssh-target> [--session <name>]
+       herdr session attach <name>
+       herdr completion zsh
+       herdr update [--handoff]
+       herdr channel set <stable|preview>
+       herdr machine <subcommand> ...
+       herdr server stop
+       herdr server reload-config
+       herdr api <subcommand> ...
+       herdr completion <shell>
+       herdr config <subcommand> ...
+       herdr channel <subcommand> ...
+       herdr workspace <subcommand> ...
+       herdr worktree <subcommand> ...
+       herdr tab <subcommand> ...
+       herdr notification <subcommand> ...
+       herdr agent <subcommand> ...
+       herdr pane <subcommand> ...
+       herdr session <subcommand> ...
+       herdr integration <subcommand> ...
+
+Common commands:
+  herdr                            Launch or attach to the persistent session
+  herdr status [server|client]     Show local client and running server status
+  herdr update                     Download and install the latest version
+  herdr completion zsh             Generate shell completions for zsh
+  herdr server stop                Stop the running server via the API socket
+  herdr channel set <stable|preview> Choose the stable or preview update channel
+  herdr server reload-config       Reload config.toml in the running server
+  herdr config reset-keys          Back up config.toml and remove custom keybindings
+  herdr channel <subcommand>       Manage the stable or preview update channel
+  herdr machine <subcommand>       Manage saved SSH machines
+  herdr api <subcommand>           Inspect socket API metadata and live runtime state
+  herdr workspace <subcommand>     Workspace helpers over the socket API
+  herdr worktree <subcommand>      Git worktree helpers over the socket API
+  herdr tab <subcommand>           Tab helpers over the socket API
+  herdr notification <subcommand>  Notification helpers over the socket API
+  herdr agent <subcommand>         Agent/terminal helpers over the socket API
+  herdr pane <subcommand>          Pane control helpers over the socket API
+  herdr session <subcommand>       Manage named persistent sessions
+  herdr integration <subcommand>   Manage built-in agent integrations
+
+Advanced commands:
+  herdr server                     Run as headless server
+
+Options:
+  --session <name>    Use or create a named persistent session
+  --machine <label-or-id>  Run an API command on a saved SSH machine
+  --remote <target>   Attach through SSH to a remote Herdr server
+  --remote-keybindings <local|server>
+                      Keybindings for --remote app attach (default: local)
+  --handoff           Opt into live handoff for update or remote attach
+  --default-config    Print default configuration and exit
+  --skill             Print the agent skill file and exit
+  --version, -V       Print version and exit
+  --help, -h          Show this help
+
+Config: /tmp/yzc-spike/config/herdr/config.toml
+Logs:   /tmp/yzc-spike/config/herdr/herdr.log (plus herdr-client.log, herdr-server.log)
+Env:    HERDR_CONFIG_PATH overrides config file path
+Home:   https://herdr.dev
+
+Are you an AI? Use these resources ONLY IF your task specifically asks you to:
+  Help a human understand or set up Herdr for the first time:
+    https://herdr.dev/agent-guide.md
+  Debug or investigate a problem with Herdr:
+    https://herdr.dev/llms.txt
+  Control Herdr panes, agents, or workspaces:
+    SKIP if a Herdr skill is already in your context. Otherwise run: herdr --skill

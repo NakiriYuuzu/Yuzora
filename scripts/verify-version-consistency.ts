@@ -11,10 +11,15 @@ export function verifyVersionConsistency(root = process.cwd(), tag = process.env
   const cargoLock = readFileSync(resolve(root, "src-tauri/Cargo.lock"), "utf8")
   const hostCargoToml = readFileSync(resolve(root, "src-tauri/host/Cargo.toml"), "utf8")
   const hostCargoLock = readFileSync(resolve(root, "src-tauri/host/Cargo.lock"), "utf8")
+  const companionCargoToml = readFileSync(resolve(root, "src-tauri/companion/Cargo.toml"), "utf8")
+  const companionCargoLock = readFileSync(resolve(root, "src-tauri/companion/Cargo.lock"), "utf8")
   const cargoVersion = cargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
   const cargoLockVersion = cargoLock.match(/\[\[package\]\]\r?\nname = "yuzora"\r?\nversion = "([^"]+)"/)?.[1]
   const hostCargoVersion = hostCargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
   const hostCargoLockVersion = hostCargoLock.match(/\[\[package\]\]\r?\nname = "yuzora-host"\r?\nversion = "([^"]+)"/)?.[1]
+  const companionCargoVersion = companionCargoToml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m)?.[1]
+  const companionCargoLockVersion = companionCargoLock.match(/\[\[package\]\]\r?\nname = "yuzora-companion"\r?\nversion = "([^"]+)"/)?.[1]
+  const companionHostCargoLockVersion = companionCargoLock.match(/\[\[package\]\]\r?\nname = "yuzora-host"\r?\nversion = "([^"]+)"/)?.[1]
 
   if (typeof tauriVersion !== "string" || !tauriVersion) {
     throw new Error("tauri.conf.json must define a non-empty product version")
@@ -36,6 +41,15 @@ export function verifyVersionConsistency(root = process.cwd(), tag = process.env
   }
   if (hostCargoLockVersion !== tauriVersion) {
     mismatches.push(`host Cargo.lock package version ${String(hostCargoLockVersion)} != ${tauriVersion}`)
+  }
+  if (companionCargoVersion !== tauriVersion) {
+    mismatches.push(`companion Cargo.toml version ${String(companionCargoVersion)} != ${tauriVersion}`)
+  }
+  if (companionCargoLockVersion !== tauriVersion) {
+    mismatches.push(`companion Cargo.lock package version ${String(companionCargoLockVersion)} != ${tauriVersion}`)
+  }
+  if (companionHostCargoLockVersion !== tauriVersion) {
+    mismatches.push(`companion Cargo.lock host version ${String(companionHostCargoLockVersion)} != ${tauriVersion}`)
   }
   if (tag && versionFromTag(tag) !== tauriVersion) {
     mismatches.push(`tag ${tag} != v${tauriVersion}`)

@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@/lib/ipc")>()),
     gitMergeBranch: vi.fn(async () => ({ conflicts: false })),
+    gitPush: vi.fn(async () => undefined),
     gitDeleteBranch: vi.fn(async () => undefined),
     gitRenameBranch: vi.fn(async () => undefined),
     gitResetBranch: vi.fn(async () => undefined),
@@ -22,13 +23,13 @@ vi.mock("@/state/textInputDialogStore", () => ({ requestTextInputDialog: dialogs
 
 import { resolveContextMenuEntries } from "@/app/workbench/contextMenuDefs"
 import * as ipc from "@/lib/ipc"
-import type { GitOperationOutcome, GitStatus } from "@/lib/types"
+import type { BranchInfo, GitOperationOutcome, GitStatus } from "@/lib/types"
 import { useGitActionDialogStore } from "@/state/gitActionDialogStore"
 import { useGitConflictStore } from "@/state/gitConflictStore"
 import { initialGitState, useGitStore } from "@/state/gitStore"
 import { GitResetDialog } from "./GitResetDialog"
 import { GitStashDialog } from "./GitStashDialog"
-import { deleteBranch, mergeIntoCurrent, renameBranch, switchBranch } from "./gitOperations"
+import { deleteBranch, forcePushWithLease, mergeIntoCurrent, renameBranch, switchBranch } from "./gitOperations"
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
     return {
@@ -60,6 +61,51 @@ afterEach(() => {
     useGitConflictStore.setState({ conflictsOpen: false, mergePath: null })
     useGitActionDialogStore.setState({ stashOpen: false, resetTarget: null })
     vi.clearAllMocks()
+})
+
+function branchList(pushOid: string | null) {
+    const main: BranchInfo = { name: "main", upstream: "origin/main", pushOid, ahead: 1, behind: 1, isCurrent: true, gone: false }
+    return { local: [main], remote: ["origin/main"], tags: [] }
+}
+
+describe("force push with lease", () => {
+    it("leases the remote commit the branch list showed when the confirmation opened", async () => {
+        const seen = "b".repeat(40)
+        useGitStore.setState({ branches: branchList(seen) })
+        // An autofetch lands while the dialog is open: the lease must not follow it.
+        dialogs.confirm.mockImplementationOnce(async () => {
+            useGitStore.setState({ branches: branchList("c".repeat(40)) })
+            return true
+        })
+        await forcePushWithLease()
+        expect(ipc.gitPush).toHaveBeenCalledTimes(1)
+        expect(ipc.gitPush).toHaveBeenCalledWith("/w", { forceWithLeaseOid: seen })
+    })
+
+    it("leases the push target's commit, which a triangular workflow keeps apart from the upstream's", async () => {
+        const forkTip = "d".repeat(40)
+        const main: BranchInfo = { name: "main", upstream: "upstream/main", pushOid: forkTip, ahead: 1, behind: 0, isCurrent: true, gone: false }
+        useGitStore.setState({ branches: { local: [main], remote: ["upstream/main", "fork/main"], tags: [] } })
+        await forcePushWithLease()
+        expect(ipc.gitPush).toHaveBeenCalledWith("/w", { forceWithLeaseOid: forkTip })
+    })
+
+    it("fails closed instead of forcing when the remote commit is unknown", async () => {
+        for (const branches of [branchList(null), null]) {
+            useGitStore.setState({ branches, lastError: null })
+            await forcePushWithLease()
+            expect(useGitStore.getState().lastError).toMatch(/Cannot force push 'main'/)
+        }
+        expect(dialogs.confirm).not.toHaveBeenCalled()
+        expect(ipc.gitPush).not.toHaveBeenCalled()
+    })
+
+    it("does not push when the confirmation is declined", async () => {
+        useGitStore.setState({ branches: branchList("b".repeat(40)) })
+        dialogs.confirm.mockResolvedValueOnce(false)
+        await forcePushWithLease()
+        expect(ipc.gitPush).not.toHaveBeenCalled()
+    })
 })
 
 describe("branch operations", () => {
@@ -152,6 +198,18 @@ describe("smart checkout", () => {
 })
 
 describe("GitStashDialog", () => {
+    it("applies the selected full OID from the displayed list", async () => {
+        const oid = "a".repeat(40)
+        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid, message: "Selected A", timestamp: 1 }])
+        useGitActionDialogStore.setState({ stashOpen: true })
+        const { unmount } = render(<GitStashDialog />)
+        const dialog = await screen.findByRole("dialog")
+        const apply = await within(dialog).findByRole("button", { name: "Apply stash@{0}" })
+        await act(async () => { fireEvent.click(apply) })
+        await waitFor(() => expect(ipc.gitStashApply).toHaveBeenCalledWith("/w", 0, oid, false))
+        unmount()
+    })
+
     it("stashes with the chosen options and pops with conflict handoff", async () => {
         vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid: "a".repeat(40), message: "On main: wip", timestamp: 1 }])
         vi.mocked(ipc.gitStashApply).mockResolvedValueOnce({ conflicts: true })

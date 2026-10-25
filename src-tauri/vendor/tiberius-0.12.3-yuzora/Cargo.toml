@@ -141,11 +141,12 @@ version = "1.6"
 optional = true
 
 [dependencies.rustls-native-certs]
-version = "0.6"
+version = "0.8"
 optional = true
 
-[dependencies.rustls-pemfile]
-version = "1"
+[dependencies.rustls-pki-types]
+version = "1.9"
+features = ["std"]
 optional = true
 
 [dependencies.thiserror]
@@ -164,8 +165,12 @@ features = [
 optional = true
 
 [dependencies.tokio-rustls]
-version = "0.24.0"
-features = ["dangerous_configuration"]
+version = "0.26"
+features = [
+    "ring",
+    "tls12",
+]
+default-features = false
 optional = true
 
 [dependencies.tokio-util]
@@ -262,7 +267,7 @@ native-tls = ["async-native-tls"]
 rustls = [
     "tokio-rustls",
     "tokio-util",
-    "rustls-pemfile",
+    "rustls-pki-types",
     "rustls-native-certs",
 ]
 sql-browser-async-std = ["async-std"]

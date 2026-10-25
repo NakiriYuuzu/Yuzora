@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+
 type UnknownRecord = Record<string, unknown>
 
 type Workflow = UnknownRecord
@@ -137,6 +139,22 @@ export function apiLookupIsAuthoritativeNotFound(exitCode: number, output: strin
 
 export function isPinnedReleaseActionRef(value: unknown): value is string {
   return typeof value === "string" && /^[^@\s]+@[a-f0-9]{40}$/.test(value)
+}
+
+// companion:prepare compiles the Go network sidecar inside `tauri build`, so Go
+// must be installed from the sidecar's own go.mod before the first build step.
+function verifyCompanionNetGoSetup(job: UnknownRecord, label: string): void {
+  const items = steps(job, label)
+  const setup = items.findIndex((step) => typeof step.uses === "string" && step.uses.startsWith("actions/setup-go@"))
+  assert(setup >= 0, `${label} must install Go with actions/setup-go to build the Companion network sidecar`)
+  const step = items[setup]!
+  assert(isPinnedReleaseActionRef(step.uses), `${label} setup-go must be pinned to a full 40-character commit SHA`)
+  assert(
+    record(step.with, `${label} setup-go.with`)["go-version-file"] === "src-tauri/companion-net/go.mod",
+    `${label} setup-go must read the Go version from src-tauri/companion-net/go.mod`
+  )
+  const build = items.findIndex((item) => includes(item.run, "tauri build"))
+  assert(build < 0 || setup < build, `${label} must install Go before the first tauri build`)
 }
 
 function verifyReleaseActionPins(workflow: Workflow): void {
@@ -314,7 +332,7 @@ function verifyArtifactBoundary(workflow: Workflow): void {
       includes(collect.run, "*.msi.sig"),
     "build must validate Tauri CLI macOS Apple Silicon and Windows MSI-only/updater output paths"
   )
-  verifyRuntimePayloadSteps(buildSteps, "matrix.artifact_name == 'windows'")
+  verifyRuntimePayloadSteps(buildSteps, "matrix.artifact_name == 'windows'", "matrix.artifact_name == 'macos'")
 
   const assemble = jobFor(workflow, "assemble-draft")
   const assembleUpload = stepByName(
@@ -411,6 +429,7 @@ function verifyStableMacOsDistributionContract(workflow: Workflow): void {
 
 function verifyReleaseWorkflowHardening(workflow: Workflow): void {
   verifyReleaseActionPins(workflow)
+  verifyCompanionNetGoSetup(jobFor(workflow, "build"), "jobs.build")
   verifyReleaseLeastPrivilege(workflow)
   verifyReleaseLookupFailureHandling(workflow)
   verifyReleaseStateNormalization(workflow)
@@ -620,6 +639,7 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
     "release candidates must run only for release pull requests"
   )
   const candidateSteps = steps(candidate, "release candidate")
+  verifyCompanionNetGoSetup(candidate, "release candidate")
   const candidateMatrix = record(record(candidate.strategy, "candidate strategy").matrix, "candidate matrix")
   assert(Array.isArray(candidateMatrix.include), "candidate matrix is required")
   const macCandidates = candidateMatrix.include.map((row) => record(row, "candidate matrix row")).filter((row) => String(row.os).startsWith("macos"))
@@ -645,7 +665,7 @@ export function verifyBetaReleaseContract(workflow: Workflow, ci: Workflow): voi
     macBundleSeal.if === "runner.os == 'macOS'" && includes(macBundleSeal.run, "codesign --verify --deep --strict"),
     "macOS candidates must verify the complete ad-hoc app bundle seal"
   )
-  verifyRuntimePayloadSteps(candidateSteps, "runner.os == 'Windows'")
+  verifyRuntimePayloadSteps(candidateSteps, "runner.os == 'Windows'", "runner.os == 'macOS'")
 
   verifyCiLinuxDependencySetup(ci)
 }
@@ -664,7 +684,57 @@ function verifyCiLinuxDependencySetup(ci: Workflow): void {
   }
 }
 
-function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], windowsCondition: string): void {
+const COMPANION_MAC_CHECKS = [
+  'test "$(lipo -archs "$APP/MacOS/yuzora-companion")" = "arm64"',
+  'test "$(lipo -archs "$APP/MacOS/yuzora-companion-net")" = "arm64"',
+  'test -f "$APP/Resources/companion-web/index.html"',
+  'test -f "$APP/Resources/companion-net/THIRD_PARTY_NOTICES.txt"',
+]
+
+// Whole assertion lines of the Windows verifier; matching a fragment would let
+// `-ne 1` become `-gt 1` or the check hide behind a comment.
+const COMPANION_WINDOWS_CHECKS = [
+  "foreach ($sidecar in @('yuzora-companion.exe', 'yuzora-companion-net.exe')) {",
+  'if (@($files | Where-Object { $_.Name -ceq $sidecar }).Count -ne 1) { throw "Expected exactly one Companion sidecar: $sidecar" }',
+  "foreach ($resource in @('companion-web\\index.html', 'companion-net\\THIRD_PARTY_NOTICES.txt')) {",
+  "if (@($files | Where-Object { $_.FullName.EndsWith('\\' + $resource, [System.StringComparison]::Ordinal) }).Count -ne 1) { throw \"Expected exactly one Companion resource: $resource\" }",
+]
+
+/** Trimmed script lines that are neither blank nor whole-line comments. */
+function codeLines(script: string): string[] {
+  return script.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"))
+}
+
+export function verifyWindowsPayloadScriptCompanion(script: string): void {
+  const lines = codeLines(script)
+  // `return` is legitimate only inside the Get-OneFile helper; anywhere else it
+  // can leave Assert-Payload before the Companion assertions.
+  const helperStart = lines.findIndex((line) => /^function\s+Get-OneFile\b/i.test(line))
+  const helperEnd = helperStart < 0 ? -1 : lines.indexOf("}", helperStart)
+  const rest = helperEnd < 0 ? lines : [...lines.slice(0, helperStart), ...lines.slice(helperEnd + 1)]
+  assert(
+    COMPANION_WINDOWS_CHECKS.every((check) => lines.includes(check)) &&
+      !rest.some((line) => /\breturn\b/i.test(line) || /\bif\s*\(\s*\$false\s*\)/i.test(line)),
+    "the Windows payload verifier must require the Companion sidecars, web root and notices, without an early `return` or `if ($false)`"
+  )
+}
+
+function verifyCompanionBundleChecks(buildSteps: Record<string, unknown>[], macCondition: string): void {
+  const mac = stepByName(buildSteps, "Verify bundled Companion sidecar")
+  const lines = typeof mac.run === "string" ? codeLines(mac.run) : []
+  assert(
+    mac.if === macCondition &&
+      mac["continue-on-error"] === undefined &&
+      mac.shell === "bash" &&
+      COMPANION_MAC_CHECKS.every((check) => lines.includes(check)) &&
+      !lines.some((line) => line.includes("||") || /\bset\s+\+/.test(line) || /\bexit\b/.test(line) || /\bexec\b/.test(line)),
+    "macOS installers must verify the bundled Companion sidecars (arm64), web root and notices, without continue-on-error, `||`, `set +`, `exit` or `exec`"
+  )
+  verifyWindowsPayloadScriptCompanion(readFileSync(new URL("./verify-windows-runtime-payload.ps1", import.meta.url), "utf8"))
+}
+
+function verifyRuntimePayloadSteps(buildSteps: Record<string, unknown>[], windowsCondition: string, macCondition: string): void {
+  verifyCompanionBundleChecks(buildSteps, macCondition)
   const download = stepByName(buildSteps, "Download Unix host runtimes")
   const options = record(download.with, "runtime download options")
   assert(download.uses === "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" && options.pattern === "host-*" && options["merge-multiple"] === true && options.path === "src-tauri/resources/host/", "installers must consume all four Unix runtime artifacts")

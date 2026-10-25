@@ -1,0 +1,16 @@
+[advisories]
+# RUSTSEC-2023-0071; rsa 0.9.10 (see Cargo.lock).
+# Owner: Yuzora maintainers; review-by: 2027-03-31.
+# Production only verifies WebAuthn RS256 signatures; VAPID uses ES256.
+# No production RSA private-key operations. Test authenticators are test-only.
+# Reassess immediately if private-key operations are added. The contract test
+# supply_chain_exception_is_version_pinned_and_not_expired enforces the deadline.
+#
+# RUSTSEC-2026-0387; crypto-bigint 0.5.5 via webauthn_rp 0.3.0 -> p256 0.13.2 (ES256) /
+# p384 0.13.1 (ES384).
+# Owner: Yuzora maintainers; review-by: 2027-03-31.
+# Production only verifies WebAuthn ES256/ES384 assertion signatures over public
+# inputs; no secret scalars, signing or ECDH. SigningKey is test-authenticator
+# only. Reassess when webauthn_rp moves to p256 >=0.14 / crypto-bigint >=0.7.6,
+# and immediately if production private-key operations are added.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387"]

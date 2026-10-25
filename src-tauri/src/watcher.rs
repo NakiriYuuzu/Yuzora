@@ -1,6 +1,6 @@
 use std::path::Path;
 pub use yuzora_host::watcher::{
-    build_classified_watcher, build_watcher, is_ignored_path, WatcherHandle,
+    build_classified_watcher, build_watcher, is_ignored_path, WatcherHandle, SAVE_SCRATCH_PREFIX,
 };
 #[derive(Default)]
 pub struct WatcherState(pub std::sync::Mutex<WatcherSlot>);
@@ -67,34 +67,69 @@ pub struct ExternalChangeEvent {
 /// 切換 gap 內不再產生舊 workspace 的 fs 事件（listener 端另有 workspaceRoot
 /// 過濾雙保險）。
 #[tauri::command]
-pub async fn start_watch(
-    app: tauri::AppHandle,
+pub async fn start_watch<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: tauri::State<'_, WatcherState>,
+    trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     path: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
     let (generation, stale) = state.0.lock().map_err(|e| e.to_string())?.begin();
     drop(stale);
     let workspace_root = path.clone();
+    // Git classification is gated per batch on workspace trust (see
+    // `take_classified`); an untrusted workspace never spawns Git here.
+    let trust = trust.inner().clone();
+    let event_root = workspace_root.clone();
+    let event_app = app.clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        build_classified_watcher(Path::new(&path), move |paths, git_relevant| {
-            let _ = app.emit(
-                "fs:external-change",
-                ExternalChangeEvent {
-                    workspace_root: workspace_root.clone(),
-                    paths,
-                    git_relevant,
-                },
-            );
-        })
+        build_classified_watcher(
+            Path::new(&path),
+            move |root: &Path| root.to_str().is_some_and(|root| trust.is_trusted(root)),
+            move |paths, git_relevant| {
+                let _ = event_app.emit(
+                    "fs:external-change",
+                    ExternalChangeEvent {
+                        workspace_root: event_root.clone(),
+                        paths,
+                        git_relevant,
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|e| format!("watcher blocking task failed: {e}"))??;
-    state
+    install_and_reconcile(&app, &state, generation, handle, workspace_root)
+}
+
+fn install_and_reconcile<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &WatcherState,
+    generation: u64,
+    handle: WatcherHandle,
+    workspace_root: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let installed = state
         .0
         .lock()
         .map_err(|e| e.to_string())?
         .install(generation, handle);
+    if installed {
+        // Listing and open buffers may predate registration. Reconcile once
+        // after admission; synchronous listeners must run outside the slot lock.
+        // A whole-root invalidation is Git-relevant, like an overflow rescan.
+        app.emit(
+            "fs:external-change",
+            ExternalChangeEvent {
+                workspace_root: workspace_root.clone(),
+                paths: vec![workspace_root],
+                git_relevant: true,
+            },
+        )
+        .map_err(|error| format!("watcher reconciliation failed: {error}"))?;
+    }
     Ok(())
 }
 
@@ -102,6 +137,200 @@ pub async fn start_watch(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    // The trust store lives outside the watched root so it never produces events.
+    fn manage_state(app: &tauri::App<tauri::test::MockRuntime>) -> tempfile::TempDir {
+        use tauri::Manager;
+        let dir = tempfile::tempdir().unwrap();
+        app.manage(WatcherState::default());
+        app.manage(crate::workspace_trust::WorkspaceTrustState::at(
+            dir.path().join("trust.json"),
+        ));
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_alias_watch_survives_write_replace_write_replace() {
+        use std::io::Write;
+        use tauri::{Listener, Manager};
+        let fixture = tempfile::tempdir().unwrap();
+        let real = fixture.path().join("real");
+        let alias = fixture.path().join("alias");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let root = crate::fs_service::canonicalize_workspace(alias.to_str().unwrap()).unwrap();
+        let file = Path::new(&root).join("document.txt");
+        let app = tauri::test::mock_app();
+        let _trust_dir = manage_state(&app);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let listener = app.listen("fs:external-change", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            let _ = sender.send(payload);
+        });
+        tauri::async_runtime::block_on(start_watch(
+            app.handle().clone(),
+            app.state::<WatcherState>(),
+            app.state::<crate::workspace_trust::WorkspaceTrustState>(),
+            root.clone(),
+        ))
+        .unwrap();
+        for (index, content) in ["write one", "replace two", "write three", "replace four"]
+            .into_iter()
+            .enumerate()
+        {
+            // Bounded OS smoke: drain currently available batches, but OS delay
+            // and debounce mean a later event cannot be attributed to one stage.
+            let quiet_deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                assert!(
+                    std::time::Instant::now() < quiet_deadline,
+                    "owned watcher did not settle"
+                );
+                match receiver.recv_timeout(Duration::from_millis(250)) {
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(error) => panic!("watch listener closed: {error}"),
+                }
+            }
+            if index % 2 == 0 {
+                std::fs::write(&file, content).unwrap();
+            } else {
+                let mut temporary = tempfile::NamedTempFile::new_in(&root).unwrap();
+                temporary.write_all(content.as_bytes()).unwrap();
+                temporary.persist(&file).unwrap();
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let event = receiver
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap();
+                assert_eq!(event["workspaceRoot"], root);
+                if event["paths"].as_array().unwrap().iter().any(|path| {
+                    path == &serde_json::json!(root)
+                        || path == &serde_json::json!(file.to_str().unwrap())
+                }) {
+                    break;
+                }
+            }
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), content);
+        }
+        stop_watch(app.state::<WatcherState>()).unwrap();
+        app.unlisten(listener);
+        assert!(std::fs::symlink_metadata(alias)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn rejected_and_stopped_completions_do_not_reconcile_even_after_returning_to_same_root() {
+        use tauri::{Listener, Manager};
+        let fixture = tempfile::tempdir().unwrap();
+        let root =
+            crate::fs_service::canonicalize_workspace(fixture.path().to_str().unwrap()).unwrap();
+        let app = tauri::test::mock_app();
+        let _trust_dir = manage_state(&app);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let listener_app = app.handle().clone();
+        let listener = app.listen("fs:external-change", move |event| {
+            let unlocked = listener_app.state::<WatcherState>().0.try_lock().is_ok();
+            let _ = sender.send((event.payload().to_string(), unlocked));
+        });
+        let state = app.state::<WatcherState>();
+        let (old_a, _) = state.0.lock().unwrap().begin();
+        let (_b, _) = state.0.lock().unwrap().begin();
+        let (current_a, _) = state.0.lock().unwrap().begin();
+        // Real handles, quiet callbacks: only the completion path under test
+        // publishes to this app, independent of OS prelude timing.
+        let old = build_watcher(Path::new(&root), |_| {}).unwrap();
+        install_and_reconcile(app.handle(), &state, old_a, old, root.clone()).unwrap();
+        assert!(receiver.try_recv().is_err());
+        let current = build_watcher(Path::new(&root), |_| {}).unwrap();
+        install_and_reconcile(app.handle(), &state, current_a, current, root.clone()).unwrap();
+        let (payload, unlocked) = receiver.try_recv().unwrap();
+        assert!(unlocked);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap()["paths"],
+            serde_json::json!([root])
+        );
+        assert!(receiver.try_recv().is_err());
+        let (pending, previous) = state.0.lock().unwrap().begin();
+        drop(previous);
+        stop_watch(app.state::<WatcherState>()).unwrap();
+        let stopped = build_watcher(Path::new(&root), |_| {}).unwrap();
+        install_and_reconcile(app.handle(), &state, pending, stopped, root.clone()).unwrap();
+        assert!(receiver.try_recv().is_err());
+        assert!(tauri::async_runtime::block_on(start_watch(
+            app.handle().clone(),
+            app.state::<WatcherState>(),
+            app.state::<crate::workspace_trust::WorkspaceTrustState>(),
+            format!("{root}/absent")
+        ))
+        .is_err());
+        assert!(receiver.try_recv().is_err());
+        stop_watch(app.state::<WatcherState>()).unwrap();
+        app.unlisten(listener);
+    }
+
+    #[test]
+    fn native_watch_completion_reconciles_changes_since_initial_snapshot() {
+        use tauri::{Listener, Manager};
+        let fixture = tempfile::tempdir().unwrap();
+        let root =
+            crate::fs_service::canonicalize_workspace(fixture.path().to_str().unwrap()).unwrap();
+        let file = Path::new(&root).join("a.txt");
+        std::fs::write(&file, "v1").unwrap();
+        let initial_listing = crate::fs_service::list_dir_entries(Path::new(&root)).unwrap();
+        let initial_buffer = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, "v2").unwrap();
+        std::fs::write(Path::new(&root).join("new.txt"), "new").unwrap();
+        let app = tauri::test::mock_app();
+        let _trust_dir = manage_state(&app);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let listener_app = app.handle().clone();
+        let listener = app.listen("fs:external-change", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            let unlocked = listener_app.state::<WatcherState>().0.try_lock().is_ok();
+            let _ = sender.send((payload, unlocked));
+        });
+        tauri::async_runtime::block_on(start_watch(
+            app.handle().clone(),
+            app.state::<WatcherState>(),
+            app.state::<crate::workspace_trust::WorkspaceTrustState>(),
+            root.clone(),
+        ))
+        .unwrap();
+        // Observe at completion; later OS batches are not the required initial
+        // reconciliation and cannot repair the registration gap reliably.
+        let events: Vec<_> = receiver.try_iter().collect();
+        stop_watch(app.state::<WatcherState>()).unwrap();
+        app.unlisten(listener);
+        eprintln!(
+            "completion events={}, old listing={}, old buffer={initial_buffer}",
+            events.len(),
+            initial_listing.len()
+        );
+        assert_eq!(initial_buffer, "v1");
+        assert_eq!(initial_listing.len(), 1);
+        let (_, unlocked) = events
+            .iter()
+            .find(|(payload, _)| {
+                payload["workspaceRoot"] == root && payload["paths"] == serde_json::json!([root])
+            })
+            .expect("successful registration must invalidate the initial root snapshot");
+        assert!(
+            *unlocked,
+            "synchronous listeners must run outside the watcher lock"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+        assert_eq!(
+            crate::fs_service::list_dir_entries(Path::new(&root))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
 
     #[test]
     fn watcher_emits_debounced_paths_on_change() {
@@ -267,5 +496,19 @@ mod tests {
         assert!(is_ignored_path(Path::new("/w/node_modules/a/b.js")));
         assert!(!is_ignored_path(Path::new("/w/src/git_helpers.rs")));
         assert!(!is_ignored_path(Path::new("/w/my.gitignore.txt")));
+        // A save's scratch file is renamed over its target within the same save.
+        assert!(is_ignored_path(Path::new(
+            "/w/src/.yuzora-save-0123456789abcdef0123456789abcdef"
+        )));
+        assert!(!is_ignored_path(Path::new("/w/src/yuzora-save-notes.txt")));
+        // User files that only share the prefix stay visible.
+        assert!(!is_ignored_path(Path::new("/w/src/.yuzora-save-notes.txt")));
+        assert!(!is_ignored_path(Path::new("/w/src/.yuzora-save-Ab12Cd")));
+        assert!(!is_ignored_path(Path::new(
+            "/w/src/.yuzora-save-0123456789ABCDEF0123456789abcdef"
+        )));
+        assert!(!is_ignored_path(Path::new(
+            "/w/src/.yuzora-save-0123456789abcdef0123456789abcdef.txt"
+        )));
     }
 }

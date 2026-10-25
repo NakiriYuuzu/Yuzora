@@ -12,6 +12,10 @@ const STDOUT_LIMIT: usize = 8 * 1024 * 1024;
 const STDERR_LIMIT: usize = 1024 * 1024;
 const POLL: Duration = Duration::from_millis(5);
 
+#[cfg(all(test, unix))]
+#[path = "git_process_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 pub use crate::cancellation::with_cancellation;
 
 struct OwnedChild {
@@ -40,10 +44,13 @@ fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> Result<(), String> {
     Ok(())
 }
 
+/// `truncated` set: output past `limit` is dropped and reported through the flag
+/// instead of failing with `limit_error`; reading stops there.
 fn read_pipe(
     mut pipe: impl Read,
     limit: usize,
     limit_error: &'static str,
+    truncated: Option<&AtomicBool>,
     stop: &AtomicBool,
     deadline: Instant,
 ) -> Result<Vec<u8>, String> {
@@ -57,7 +64,12 @@ fn read_pipe(
             Ok(0) => return Ok(bytes),
             Ok(n) => {
                 if bytes.len() + n > limit {
-                    return Err(limit_error.into());
+                    let Some(truncated) = truncated else {
+                        return Err(limit_error.into());
+                    };
+                    bytes.extend_from_slice(&buffer[..limit - bytes.len()]);
+                    truncated.store(true, Ordering::Release);
+                    return Ok(bytes);
                 }
                 bytes.extend_from_slice(&buffer[..n]);
             }
@@ -81,22 +93,47 @@ pub(crate) fn execute(
 /// `execute` with a caller-chosen stdout bound, for reads whose own contract
 /// (e.g. blob grading up to the file hard cap) exceeds the default limit.
 pub(crate) fn execute_with_stdout_limit(
-    mut cmd: Command,
+    cmd: Command,
     args: &[&str],
     timeout: Duration,
     stdin: Option<&[u8]>,
     on_spawn: Option<&dyn Fn(u32)>,
     stdout_limit: usize,
 ) -> Result<GitOutput, String> {
+    run(cmd, args, timeout, stdin, on_spawn, stdout_limit, false).map(|(output, _)| output)
+}
+
+/// `execute` that keeps the first `stdout_cap` bytes and kills the process once
+/// it writes more, instead of failing with `git-output-limit`. The flag reports
+/// that output was cut; the exit code of a cut process is meaningless.
+pub(crate) fn execute_capped_stdout(
+    cmd: Command,
+    args: &[&str],
+    timeout: Duration,
+    stdout_cap: usize,
+) -> Result<(GitOutput, bool), String> {
+    run(cmd, args, timeout, None, None, stdout_cap, true)
+}
+
+fn run(
+    mut cmd: Command,
+    args: &[&str],
+    timeout: Duration,
+    stdin: Option<&[u8]>,
+    on_spawn: Option<&dyn Fn(u32)>,
+    stdout_limit: usize,
+    cap_stdout: bool,
+) -> Result<(GitOutput, bool), String> {
     let cancelled = crate::cancellation::token();
-    if cancelled.load(Ordering::Acquire) {
+    if cancelled.load(Ordering::Acquire) || crate::git_service::processes_shutting_down() {
         return Err("git-cancelled".into());
     }
     if stdin.is_some_and(|data| data.len() > STDOUT_LIMIT) {
         return Err("git-input-limit".into());
     }
     let deadline = Instant::now() + timeout;
-    let mut child = cmd.spawn().map_err(|e| format!("git spawn failed: {e}"))?;
+    let mut child =
+        process_kill::spawn_std(&mut cmd).map_err(|e| format!("git spawn failed: {e}"))?;
     let tree = process_kill::attach_process_tree(&mut child).map_err(|e| e.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     let mut owned = OwnedChild {
@@ -105,7 +142,11 @@ pub(crate) fn execute_with_stdout_limit(
         stop: stop.clone(),
         finished: false,
     };
-    crate::git_service::register_process(owned.child.id());
+    if !crate::git_service::register_process(owned.child.id()) {
+        // Shutdown may win after the pre-spawn check. OwnedChild terminates
+        // and reaps this late child before returning the cancellation.
+        return Err("git-cancelled".into());
+    }
     if let Some(hook) = on_spawn {
         hook(owned.child.id());
     }
@@ -120,8 +161,9 @@ pub(crate) fn execute_with_stdout_limit(
             nonblocking(input)?;
         }
     }
+    let truncated = Arc::new(AtomicBool::new(false));
     let (tx, rx) = std::sync::mpsc::sync_channel(3);
-    let output_worker = |pipe, limit, which| {
+    let output_worker = |pipe, limit, which, truncated: Option<Arc<AtomicBool>>| {
         let stop = stop.clone();
         let tx = tx.clone();
         std::thread::spawn(move || {
@@ -132,12 +174,32 @@ pub(crate) fn execute_with_stdout_limit(
             } else {
                 "git-stderr-limit"
             };
-            let _ = tx.send((which, read_pipe(pipe, limit, limit_error, &stop, deadline)));
+            let _ = tx.send((
+                which,
+                read_pipe(
+                    pipe,
+                    limit,
+                    limit_error,
+                    truncated.as_deref(),
+                    &stop,
+                    deadline,
+                ),
+            ));
         })
     };
     // Boxed Read gives both pipe types one bounded worker implementation.
-    let out_thread = output_worker(Box::new(stdout) as Box<dyn Read + Send>, stdout_limit, 0);
-    let err_thread = output_worker(Box::new(stderr) as Box<dyn Read + Send>, STDERR_LIMIT, 1);
+    let out_thread = output_worker(
+        Box::new(stdout) as Box<dyn Read + Send>,
+        stdout_limit,
+        0,
+        cap_stdout.then(|| truncated.clone()),
+    );
+    let err_thread = output_worker(
+        Box::new(stderr) as Box<dyn Read + Send>,
+        STDERR_LIMIT,
+        1,
+        None,
+    );
     let data = stdin.unwrap_or_default().to_vec();
     let tx_input = tx.clone();
     let stop_input = stop.clone();
@@ -184,10 +246,19 @@ pub(crate) fn execute_with_stdout_limit(
         while let Ok((which, result)) = rx.try_recv() {
             outputs[which] = Some(result?);
         }
-        if let Some(status) = owned.child.try_wait().map_err(|e| e.to_string())? {
-            if outputs.iter().all(Option::is_some) {
-                return Ok(status.code().unwrap_or(-1));
-            }
+        // The capped process would block on its full pipe forever: stop it here.
+        if truncated.load(Ordering::Acquire) && outputs[0].is_some() {
+            return Ok(());
+        }
+        // Retain the Unix leader PID until output has completed or cleanup
+        // has signalled its group. A descendant may keep the pipes open.
+        #[cfg(unix)]
+        let exited = process_kill::leader_exited_without_reaping(owned.child.id() as libc::pid_t)
+            .map_err(|e| e.to_string())?;
+        #[cfg(not(unix))]
+        let exited = owned.child.try_wait().map_err(|e| e.to_string())?.is_some();
+        if exited && outputs.iter().all(Option::is_some) {
+            return Ok(());
         }
         // Wake on completion, but process it after the cancellation/deadline
         // checks above so those keep their existing precedence.
@@ -197,14 +268,36 @@ pub(crate) fn execute_with_stdout_limit(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(POLL),
         }
     })();
-    if result.is_err() {
-        stop.store(true, Ordering::Release);
-        let _ = process_kill::terminate_process_tree(&mut owned.child, &mut owned.tree);
-    } else {
-        process_kill::reap_process_tree(&mut owned.child, &mut owned.tree)
-            .map_err(|e| e.to_string())?;
+    let cut = truncated.load(Ordering::Acquire);
+    #[cfg(not(unix))]
+    let normal_completion = result.is_ok() && !cut;
+    let result = match result {
+        Err(error) => {
+            stop.store(true, Ordering::Release);
+            match process_kill::terminate_process_tree(&mut owned.child, &mut owned.tree) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}; process-tree cleanup failed: {cleanup}")),
+            }
+        }
+        Ok(()) if cut => {
+            stop.store(true, Ordering::Release);
+            process_kill::terminate_process_tree(&mut owned.child, &mut owned.tree)
+                .map(|()| -1)
+                .map_err(|error| error.to_string())
+        }
+        Ok(()) => process_kill::reap_process_tree(&mut owned.child, &mut owned.tree)
+            .map(|status| status.code().unwrap_or(-1))
+            .map_err(|error| error.to_string()),
+    };
+    #[cfg(unix)]
+    {
+        owned.finished = true;
     }
-    owned.finished = true;
+    #[cfg(not(unix))]
+    {
+        // Preserve the retained Job cleanup retry if normal reaping failed.
+        owned.finished = !normal_completion || result.is_ok();
+    }
     // Unix readers are nonblocking, so even a descendant that detached its own
     // process group cannot keep the pipe workers alive after cancellation.
     #[cfg(unix)]
@@ -223,7 +316,7 @@ pub(crate) fn execute_with_stdout_limit(
         stderr: String::from_utf8_lossy(&outputs[1].take().unwrap_or_default()).into_owned(),
     };
     crate::git_service::log_git_call(args, output.code, &output.stderr);
-    Ok(output)
+    Ok((output, cut))
 }
 
 #[cfg(all(test, unix))]
@@ -303,6 +396,34 @@ mod tests {
     }
 
     #[test]
+    fn capped_stdout_keeps_the_prefix_and_stops_a_flooding_process() {
+        let root = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let (output, cut) = execute_capped_stdout(
+            fixture_command(root.path(), "/usr/bin/yes", &[], false),
+            &["capped-flood"],
+            Duration::from_secs(10),
+            100,
+        )
+        .unwrap();
+        assert!(cut);
+        assert_eq!(output.stdout, "y\n".repeat(50).into_bytes());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        for (cap, expected, expected_cut) in [(2, "ok", false), (1, "o", true)] {
+            let (output, cut) = execute_capped_stdout(
+                fixture_command(root.path(), "/usr/bin/printf", &["ok"], false),
+                &["capped-fit"],
+                Duration::from_secs(2),
+                cap,
+            )
+            .unwrap();
+            assert_eq!(cut, expected_cut);
+            assert_eq!(output.stdout, expected.as_bytes());
+            assert_eq!(output.code == 0, !expected_cut);
+        }
+    }
+
+    #[test]
     fn owned_cancel_retains_precedence_and_does_not_cancel_the_next_job() {
         let root = tempfile::tempdir().unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -332,6 +453,22 @@ mod tests {
         .unwrap();
         assert_eq!(next.code, 0);
         assert_eq!(next.stdout, b"ok");
+    }
+
+    #[test]
+    fn git_runs_spawn_through_the_process_spawn_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let (result, spawns) = process_kill::trace_spawns(|| {
+            execute(
+                fixture_command(root.path(), "/usr/bin/printf", &["ok"], false),
+                &["spawn-lock"],
+                Duration::from_secs(2),
+                None,
+                None,
+            )
+        });
+        assert_eq!(result.unwrap().stdout, b"ok");
+        assert_eq!(spawns, ["/usr/bin/printf ok"]);
     }
 
     #[test]

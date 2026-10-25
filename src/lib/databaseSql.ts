@@ -175,13 +175,23 @@ function fail(
     return { ok: false, error: { code, message, position } }
 }
 
+// PostgreSQL's lexer accepts high-bit bytes in identifiers and tags. For UTF-8
+// SQL, scan non-ASCII UTF-16 units without changing source offsets.
+function isPostgresIdentifierStart(char: string | undefined): boolean {
+    return char !== undefined && /[A-Za-z_\u0080-\uFFFF]/.test(char)
+}
+
+function isPostgresIdentifierPart(char: string | undefined): boolean {
+    return char !== undefined && /[A-Za-z0-9_$\u0080-\uFFFF]/.test(char)
+}
+
 function dollarDelimiterAt(source: string, index: number): string | null {
-    if (source[index] !== "$" || isWordPart(source[index - 1])) return null
+    if (source[index] !== "$" || isPostgresIdentifierPart(source[index - 1])) return null
     if (source[index + 1] === "$") return "$$"
-    if (!/[A-Za-z_]/.test(source[index + 1] ?? "")) return null
+    if (!isPostgresIdentifierStart(source[index + 1])) return null
 
     let end = index + 2
-    while (/[A-Za-z0-9_]/.test(source[end] ?? "")) end += 1
+    while (source[end] !== "$" && isPostgresIdentifierPart(source[end])) end += 1
     return source[end] === "$" ? source.slice(index, end + 1) : null
 }
 
@@ -260,8 +270,20 @@ function transactionBoundaryFor(
     dialect: DatabaseSqlDialect,
     words: string[]
 ): DatabaseSqlTransactionBoundary {
-    if (words[0] === "COMMIT") return "commit"
-    if (words[0] === "ROLLBACK") return "rollback"
+    // PostgreSQL spells COMMIT/ROLLBACK as END/ABORT as well; SQLite only has END.
+    // In T-SQL END closes a BEGIN block and is never a transaction boundary.
+    const commit = words[0] === "COMMIT" || (dialect !== "mssql" && words[0] === "END")
+    const rollback = words[0] === "ROLLBACK" || (dialect === "postgres" && words[0] === "ABORT")
+    if (commit || rollback) {
+        if (dialect !== "mssql") {
+            // ROLLBACK [WORK | TRANSACTION] TO [SAVEPOINT] name keeps the transaction open.
+            if (words[0] === "ROLLBACK" && (words[1] === "TO" || words[2] === "TO")) return "none"
+            // ... AND CHAIN ends the transaction and immediately opens the next one.
+            const and = words.indexOf("AND", 1)
+            if (and > 0 && words[and + 1] === "CHAIN") return "none"
+        }
+        return commit ? "commit" : "rollback"
+    }
     if (words[0] === "START" && words[1] === "TRANSACTION") return "begin"
     if (words[0] !== "BEGIN") return "none"
     if (dialect !== "mssql") return "begin"
@@ -292,6 +314,9 @@ export function splitDatabaseSql(
     let sqliteTriggerClosed = false
     let blocks: BlockFrame[] = []
     let parentheses: number[] = []
+    // True from a statement terminator until the end of its line: a comment there
+    // trails the finished statement and must not become the start of the next unit.
+    let trailingAfterTerminator = false
 
     const mark = (position: number, sql: boolean) => {
         if (firstSource === null) firstSource = position
@@ -380,13 +405,14 @@ export function splitDatabaseSql(
         if (isWhitespace(char)) {
             if (char === "\n" || (char === "\r" && source[index + 1] !== "\n")) {
                 lineStart = index + 1
+                trailingAfterTerminator = false
             }
             index += 1
             continue
         }
 
         if (source.startsWith("--", index)) {
-            mark(index, false)
+            if (!trailingAfterTerminator) mark(index, false)
             const newline = source.indexOf("\n", index + 2)
             index = newline < 0 ? source.length : newline
             continue
@@ -394,7 +420,7 @@ export function splitDatabaseSql(
 
         if (source.startsWith("/*", index)) {
             const start = index
-            mark(start, false)
+            if (!trailingAfterTerminator) mark(start, false)
             let depth = 1
             index += 2
             while (index < source.length && depth > 0) {
@@ -410,6 +436,8 @@ export function splitDatabaseSql(
                 }
             }
             if (depth > 0) return fail("unterminated-comment", "Block comment is not closed", start)
+            // A comment that opened on the terminator's line keeps the rest of the line it
+            // closes on trailing; only the next newline (whitespace branch) ends that state.
             continue
         }
 
@@ -573,12 +601,17 @@ export function splitDatabaseSql(
             }
         }
 
-        if (isWordStart(char)) {
+        if (dialect === "postgres" ? isPostgresIdentifierStart(char) : isWordStart(char)) {
             const start = index
             index += 1
-            while (isWordPart(source[index])) index += 1
+            while (dialect === "postgres" ? isPostgresIdentifierPart(source[index]) : isWordPart(source[index])) index += 1
             mark(start, true)
-            const error = recordWord(source.slice(start, index).toUpperCase(), start)
+            const rawWord = source.slice(start, index)
+            // Unicode case folding must not turn an identifier into BEGIN or
+            // COMMIT (e.g. dotless i). PostgreSQL keywords are ASCII.
+            const word = dialect === "postgres" && /[\u0080-\uFFFF]/.test(rawWord)
+                ? rawWord : rawWord.toUpperCase()
+            const error = recordWord(word, start)
             if (error) return error
             continue
         }
@@ -612,10 +645,13 @@ export function splitDatabaseSql(
                     parentheses[parentheses.length - 1]
                 )
             }
-            if (dialect === "sqlite" && sqliteTrigger) {
-                if (sqliteTriggerClosed) emit(index + 1)
-            } else if (dialect !== "mssql" || (!mssqlRoutine && blocks.length === 0)) {
+            const terminates =
+                dialect === "sqlite" && sqliteTrigger
+                    ? sqliteTriggerClosed
+                    : dialect !== "mssql" || (!mssqlRoutine && blocks.length === 0)
+            if (terminates) {
                 emit(index + 1)
+                trailingAfterTerminator = true
             }
             index += 1
             continue

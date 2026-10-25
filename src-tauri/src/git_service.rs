@@ -613,7 +613,7 @@ pub async fn git_push_cmd(
     trust: tauri::State<'_, crate::workspace_trust::WorkspaceTrustState>,
     askpass: tauri::State<'_, crate::askpass::AskpassState>,
     repository_root: String,
-    force_with_lease: Option<bool>,
+    force_with_lease_oid: Option<String>,
     tags: Option<bool>,
 ) -> Result<(), String> {
     let askpass = askpass.inner().clone();
@@ -624,11 +624,8 @@ pub async fn git_push_cmd(
             crate::askpass::AskpassOperationKind::Push,
             false,
         );
-        let args = push_args_with_options(
-            root,
-            force_with_lease.unwrap_or(false),
-            tags.unwrap_or(false),
-        )?;
+        let args =
+            push_args_with_options(root, force_with_lease_oid.as_deref(), tags.unwrap_or(false))?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         run_ok_with_askpass(root, &args, REMOTE_TIMEOUT, op.env(), &op).map(|_| ())
     })
@@ -913,6 +910,10 @@ pub mod test_repo {
         git(dir, &["commit", "-m", msg]);
     }
 }
+
+#[cfg(test)]
+#[path = "git_root_identity_tests.rs"]
+mod root_identity_tests;
 
 #[cfg(test)]
 mod tests {

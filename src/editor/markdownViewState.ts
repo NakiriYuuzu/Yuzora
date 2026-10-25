@@ -1,7 +1,9 @@
 import type { Text } from "@codemirror/state"
 import { useEditorSettingsStore, type MarkdownViewMode } from "@/state/editorSettingsStore"
+import { clearRetainedViewStatesForTest, retainedViewState } from "@/workbench/viewRetention"
 
-// Match source-editor state lifetime: per workspace/document, bounded in memory.
+// Match source-editor state lifetime: per workspace/document, bounded in memory
+// by the shared view-state registry (viewRetention).
 interface SavedMarkdownViewState {
     mode: MarkdownViewMode
     selection?: { doc: Text; anchor: number; head: number }
@@ -13,25 +15,25 @@ export interface MarkdownViewState {
     set: (patch: Partial<SavedMarkdownViewState>) => void
 }
 
-const states = new Map<string, MarkdownViewState>()
+type StoredMarkdownViewState = Omit<SavedMarkdownViewState, "mode"> & { mode?: MarkdownViewMode }
+
+const FACET = "markdown"
 
 export function markdownViewState(workspace: string | null, path: string): MarkdownViewState {
-    const key = JSON.stringify([workspace, path])
-    let state = states.get(key)
-    if (!state) {
+    const state = retainedViewState<StoredMarkdownViewState>(workspace, path, FACET)
+    // Touch the entry so a document being opened counts as recently used.
+    const snapshot = (): StoredMarkdownViewState => state.get() ?? {}
+    state.set(snapshot())
+    return {
         // Until this file's mode is chosen, it follows the editor setting.
-        let snapshot: Omit<SavedMarkdownViewState, "mode"> & { mode?: MarkdownViewMode } = {}
-        state = {
-            get: () => ({ ...snapshot, mode: snapshot.mode ?? useEditorSettingsStore.getState().markdownDefaultMode }),
-            set: patch => { snapshot = { ...snapshot, ...patch } }
-        }
+        get: () => {
+            const current = snapshot()
+            return { ...current, mode: current.mode ?? useEditorSettingsStore.getState().markdownDefaultMode }
+        },
+        set: patch => state.set({ ...snapshot(), ...patch })
     }
-    states.delete(key)
-    states.set(key, state)
-    if (states.size > 200) states.delete(states.keys().next().value!)
-    return state
 }
 
 export function clearMarkdownViewStatesForTest() {
-    states.clear()
+    clearRetainedViewStatesForTest(FACET)
 }

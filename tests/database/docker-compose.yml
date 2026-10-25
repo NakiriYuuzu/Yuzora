@@ -47,6 +47,10 @@ services:
       - "127.0.0.1:51433:1433"
     volumes:
       - mssql-data:/var/opt/mssql
+      # Fixture-only CA-signed X.509 v3 server certificate (SAN localhost,
+      # 127.0.0.1) so strict TLS can succeed once the fixture CA is trusted.
+      - ./fixtures/mssql/mssql.conf:/var/opt/mssql/mssql.conf:ro
+      - ./fixtures/mssql/tls:/yuzora-tls:ro
     healthcheck:
       test:
         - CMD-SHELL

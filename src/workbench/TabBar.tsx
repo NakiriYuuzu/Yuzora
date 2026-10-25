@@ -9,7 +9,7 @@ import {
 } from "../lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, type TabInfo, useWorkspaceStore } from "../state/workspaceStore"
 import type { HerdrTabInfo } from "../lib/herdrTypes"
-import { useUiStore } from "../state/uiStore"
+import { openResolverForTab } from "./ExternalChangeResolver"
 import { useConfirmDialogStore } from "../state/confirmDialogStore"
 import { useHerdrStore } from "../state/herdrStore"
 import { dropDocument } from "../editor/documentRegistry"
@@ -525,7 +525,7 @@ export function TabBar({ groupIndex }: { groupIndex: number }) {
                                 title={t("tabBar.externallyModifiedTitle")}
                                 onClick={(e) => {
                                     e.stopPropagation()
-                                    useUiStore.getState().openResolver(tab.path)
+                                    openResolverForTab(groupIndex, tab.path)
                                 }}
                             >
                                 <span aria-hidden="true">↻</span>

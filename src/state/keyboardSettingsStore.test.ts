@@ -126,3 +126,59 @@ it("matches macOS Option-letter shortcuts even when event.key is a symbol", () =
     expect(run).toHaveBeenCalledOnce()
     expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "∫", code: "KeyB", metaKey: true }), "toggleTools", run)).toBe(false)
 })
+
+it.each([false, true])("keeps macOS Command and Control handlers independent (reverse order=%s)", reverse => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    expect(bindingError("settings", "Ctrl+K", {})).toBeNull()
+    expect(useKeyboardSettingsStore.getState().setBinding("settings", "Ctrl+K")).toBe(true)
+    const palette = vi.fn(), settings = vi.fn()
+    const commands = reverse ? ["settings", "commandPalette"] as const : ["commandPalette", "settings"] as const
+    const handler = (event: KeyboardEvent) => {
+        for (const id of commands) dispatchAppShortcut(event, id, id === "settings" ? settings : palette)
+    }
+    const field = document.body.appendChild(document.createElement("input"))
+    window.addEventListener("keydown", handler, true)
+    try {
+        field.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))
+        expect(palette).toHaveBeenCalledTimes(1)
+        expect(settings).not.toHaveBeenCalled()
+        field.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true, cancelable: true }))
+        expect(palette).toHaveBeenCalledTimes(1)
+        expect(settings).toHaveBeenCalledTimes(1)
+        field.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true }))
+        expect(palette).toHaveBeenCalledTimes(1)
+        expect(settings).toHaveBeenCalledTimes(1)
+    } finally { window.removeEventListener("keydown", handler, true); field.remove() }
+})
+
+it("keeps macOS modifiers distinct while rejecting actual duplicates", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    expect(bindingError("settings", "Mod+K", {})).toBe("conflict")
+    expect(bindingError("settings", "Mod+`", {})).toBeNull()
+    expect(bindingError("settings", "Ctrl+`", {})).toBe("conflict")
+    expect(bindingError("toggleSidebar", "Ctrl+K", { settings: "Ctrl+K" })).toBe("conflict")
+    localStorage.setItem(KEYBOARD_STORAGE_KEY, JSON.stringify({ settings: "Ctrl+K", toggleSidebar: "Ctrl+K" }))
+    expect(loadKeyboardOverrides()).toEqual({})
+})
+
+it.each(["Windows", "Linux"])("preserves Mod/Ctrl conflict semantics on %s", platform => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(platform)
+    expect(bindingError("settings", "Ctrl+K", {})).toBe("conflict")
+    expect(bindingError("settings", "Mod+K", { commandPalette: "Ctrl+K" })).toBe("conflict")
+    expect(useKeyboardSettingsStore.getState().setBinding("settings", "Ctrl+K")).toBe(false)
+    expect(useKeyboardSettingsStore.getState().overrides).toEqual({})
+})
+
+it("reloads a macOS Control override and safely filters it on other platforms without rewriting storage", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    expect(useKeyboardSettingsStore.getState().setBinding("settings", "Ctrl+K")).toBe(true)
+    const stored = localStorage.getItem(KEYBOARD_STORAGE_KEY)
+    expect(loadKeyboardOverrides()).toEqual({ settings: "Ctrl+K" })
+    for (const platform of ["Windows", "Linux"]) {
+        vi.spyOn(navigator, "userAgent", "get").mockReturnValue(platform)
+        expect(loadKeyboardOverrides()).toEqual({})
+        expect(localStorage.getItem(KEYBOARD_STORAGE_KEY)).toBe(stored)
+    }
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    expect(loadKeyboardOverrides()).toEqual({ settings: "Ctrl+K" })
+})

@@ -45,7 +45,10 @@ export default defineConfig(({ mode }) => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-  envPrefix: ["VITE_", "TAURI_"],
+  // Release builds run `vite build` with the updater signing key in the
+  // environment (TAURI_SIGNING_PRIVATE_KEY); a TAURI_ prefix would let any bare
+  // `import.meta.env` inline it into the shipped bundle.
+  envPrefix: ["VITE_"],
   build: {
     // Gzip estimates for every chunk only lengthen each production build.
     reportCompressedSize: false,
@@ -57,7 +60,8 @@ export default defineConfig(({ mode }) => ({
   },
   test: {
     globals: true,
-    exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**"],
+    // Spike tests run under `bun test` (bun:test), not vitest.
+    exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**"],
     projects: [
       {
         extends: true,
@@ -74,7 +78,7 @@ export default defineConfig(({ mode }) => ({
           environment: "jsdom",
           setupFiles: "./src/test/setup.ts",
           // Only proven DOM-free tests opt out; new tests keep the safe default.
-          exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", ...nodeTests],
+          exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**", ...nodeTests],
         },
       },
     ],

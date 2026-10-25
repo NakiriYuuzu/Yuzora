@@ -155,14 +155,26 @@ pub async fn serve<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             let root = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
             let id = root.to_str().ok_or("path-not-utf8")?.to_owned();
             let workspace_root = id.clone();
-            let watcher =
-                crate::watcher::build_classified_watcher(&root, move |paths, git_relevant| {
+            // Trust is re-read per classification: a later grant enables Git,
+            // a revoke or unreadable store disables it again.
+            let trust = crate::trust_command::host_trust(&host_id).ok();
+            let watcher = crate::watcher::build_classified_watcher(
+                &root,
+                move |root: &std::path::Path| {
+                    let root = root.to_str();
+                    trust
+                        .as_ref()
+                        .zip(root)
+                        .is_some_and(|(trust, root)| trust.is_trusted(root))
+                },
+                move |paths, git_relevant| {
                     let _ = emit(StreamPayload::Files {
                         workspace_root: workspace_root.clone(),
                         paths,
                         git_relevant,
                     });
-                })?;
+                },
+            )?;
             return Ok((
                 None,
                 Some(Box::new(watcher) as Box<dyn Send>),

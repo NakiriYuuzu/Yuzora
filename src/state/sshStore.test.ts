@@ -176,6 +176,56 @@ describe("useSshStore never persists secrets", () => {
 })
 
 describe("useSshStore connection lifecycle", () => {
+    it("keeps a later selected connected host when another connection finishes", async () => {
+        const a = useSshStore.getState().addHost(keyHost)
+        const b = useSshStore.getState().addHost({ ...keyHost, name: "other", host: "10.0.0.6" })
+        await useSshStore.getState().connect(b.id)
+        const previousB = useSshStore.getState().sessions[b.id]
+        let complete!: (result: Awaited<ReturnType<typeof sshConnect>>) => void
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+        const connecting = useSshStore.getState().connect(a.id)
+        expect(useSshStore.getState().activeHostId).toBe(a.id)
+        useSshStore.getState().beginConnect(b.id)
+        complete({ sessionId: "background-a", fingerprint: "fixture-a" })
+        await connecting
+        expect(useSshStore.getState().activeHostId).toBe(b.id)
+        expect(useSshStore.getState().sessions[a.id]).toMatchObject({ status: "connected", sessionId: "background-a" })
+        expect(useSshStore.getState().sessions[b.id]).toBe(previousB)
+        expect(mockConnect).toHaveBeenCalledTimes(2)
+        expect(mockDisconnect).not.toHaveBeenCalled()
+    })
+
+    it.each(["a", "b"])("keeps the latest selected host when concurrent connects finish with %s first", async first => {
+        const a = useSshStore.getState().addHost(keyHost)
+        const b = useSshStore.getState().addHost({ ...keyHost, name: "other", host: "10.0.0.6" })
+        const complete: Record<string, (result: Awaited<ReturnType<typeof sshConnect>>) => void> = {}
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete.a = resolve }))
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete.b = resolve }))
+        const pending = { a: useSshStore.getState().connect(a.id), b: useSshStore.getState().connect(b.id) }
+        for (const next of [first, first === "a" ? "b" : "a"] as ("a" | "b")[]) {
+            complete[next]({ sessionId: `session-${next}`, fingerprint: `fixture-${next}` })
+            await pending[next]
+            expect(useSshStore.getState().activeHostId).toBe(b.id)
+        }
+        expect(useSshStore.getState().sessions[a.id].status).toBe("connected")
+        expect(useSshStore.getState().sessions[b.id].status).toBe("connected")
+    })
+
+    it("preserves selection of a disconnected host while another connection finishes", async () => {
+        const host = useSshStore.getState().addHost(keyHost)
+        const other = useSshStore.getState().addHost({ ...keyHost, name: "other", host: "10.0.0.6" })
+        let complete!: (result: Awaited<ReturnType<typeof sshConnect>>) => void
+        mockConnect.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+        const connecting = useSshStore.getState().connect(host.id)
+        useSshStore.getState().setActiveHost(other.id)
+        expect(useSshStore.getState().activeHostId).toBe(other.id)
+        complete({ sessionId: "background", fingerprint: "fixture" })
+        await connecting
+        expect(useSshStore.getState().activeHostId).toBe(other.id)
+        expect(useSshStore.getState().sessions[host.id].status).toBe("connected")
+        expect(useSshStore.getState().sessions[other.id]).toBeUndefined()
+    })
+
     it("connect marks connecting then connected and stores the fingerprint", async () => {
         const host = useSshStore.getState().addHost(passwordHost)
         await useSshStore.getState().connect(host.id, "pw")
@@ -209,6 +259,51 @@ describe("useSshStore connection lifecycle", () => {
             keyPath: "/home/u/.ssh/id_ed25519",
             passphrase: undefined
         })
+    })
+
+    it("asks for the passphrase of an encrypted key, then retries with it", async () => {
+        mockConnect.mockRejectedValueOnce("ssh-key-passphrase-required")
+        const key = useSshStore.getState().addHost(keyHost)
+        useSshStore.getState().beginConnect(key.id)
+        await vi.waitFor(() => expect(useSshStore.getState().pendingAuthHostId).toBe(key.id))
+        // Not an error banner: the host is waiting on the prompt, like a password host.
+        expect(useSshStore.getState().sessions[key.id]).toBeUndefined()
+        expect(mockConnect).toHaveBeenCalledTimes(1)
+
+        await useSshStore.getState().connect(key.id, "keypass")
+
+        expect(mockConnect).toHaveBeenLastCalledWith("10.0.0.5", 2222, "deploy", {
+            kind: "key",
+            keyPath: "/home/u/.ssh/id_ed25519",
+            passphrase: "keypass"
+        })
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]).toMatchObject({ status: "connected", sessionId: "sess-1" })
+        expect(localStorage.getItem(SSH_HOSTS_STORAGE_KEY) ?? "").not.toContain("keypass")
+    })
+
+    it("does not loop the passphrase prompt when a supplied passphrase is still refused", async () => {
+        mockConnect.mockRejectedValueOnce("ssh-key-passphrase-required")
+        const key = useSshStore.getState().addHost(keyHost)
+        await useSshStore.getState().connect(key.id, "keypass")
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]?.status).toBe("error")
+    })
+
+    it("keeps other key failures as plain errors instead of prompting", async () => {
+        mockConnect.mockRejectedValueOnce("無法讀取私鑰 /k：The key is corrupt")
+        const key = useSshStore.getState().addHost(keyHost)
+        await useSshStore.getState().connect(key.id)
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]?.status).toBe("error")
+    })
+
+    it("prompts only for the exact passphrase code, not a message that merely contains it", async () => {
+        mockConnect.mockRejectedValueOnce("無法讀取私鑰 /k/ssh-key-passphrase-required：The key is corrupt")
+        const key = useSshStore.getState().addHost(keyHost)
+        await useSshStore.getState().connect(key.id)
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]?.status).toBe("error")
     })
 
     it("beginConnect on an already-connected host just activates it", async () => {

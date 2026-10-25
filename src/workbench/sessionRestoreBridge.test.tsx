@@ -31,6 +31,7 @@ vi.mock("@/lib/workspaceActions", () => ({
 vi.mock("@/lib/platform", () => ({ isWindowsPlatform: vi.fn(() => false) }))
 
 vi.mock("@/editor/documentRegistry", () => ({
+  documentWorkspaceEpoch: () => 0,
   getDocument: vi.fn()
 }))
 
@@ -346,6 +347,8 @@ describe("SessionRestoreBridge 還原", () => {
     rememberRemoteWorkspace(root, "sftp")
     mockOpenResolves()
     render(<SessionRestoreBridge />)
+    // Launch open requests are awaited first; let the restore subscribe.
+    await act(async () => {})
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
     act(() => useSshStore.setState({ sessions: { other: { sessionId: "other-1" } as SshSessionState } }))
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
@@ -354,14 +357,89 @@ describe("SessionRestoreBridge 還原", () => {
     expect(openWorkspaceAtPath).toHaveBeenCalledWith(root, { shouldOpen: expect.any(Function) })
   })
 
-  it("does not replace the user's workspace when the deferred host connects", () => {
+  it("does not replace the user's workspace when the deferred host connects", async () => {
     const root = remoteFilePath("waiting", "/project")
     saveWorkspaceSession({ workspacePath: root, tabs: [root + "/main.ts"], activePath: null })
     rememberRemoteWorkspace(root, "sftp")
     render(<SessionRestoreBridge />)
+    await act(async () => {})
     act(() => useWorkspaceStore.getState().setWorkspace("/chosen"))
     act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await act(async () => {})
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
+  it("persists a manual workspace and tabs while a remote restore is awaiting open", async () => {
+    const root = remoteFilePath("waiting", "/project")
+    const remoteSession = { workspacePath: root, tabs: [root + "/main.ts"], activePath: root + "/main.ts" }
+    saveWorkspaceSession(remoteSession)
+    rememberRemoteWorkspace(root, "sftp")
+    let finish!: () => void
+    let admitted: boolean | undefined
+    vi.mocked(openWorkspaceAtPath).mockImplementationOnce((_path, options) => new Promise(resolve => {
+      finish = () => {
+        admitted = options!.shouldOpen!()
+        resolve(admitted)
+      }
+    }))
+    render(<SessionRestoreBridge />)
+    act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await waitFor(() => expect(finish).toBeDefined())
+    act(() => {
+      useWorkspaceStore.getState().setWorkspace("/chosen")
+      useWorkspaceStore.getState().openTab("/chosen/a.ts")
+      useWorkspaceStore.getState().toggleTabPinned(0, "/chosen/a.ts")
+    })
+    await act(async () => { finish(); await Promise.resolve() })
+    expect(admitted).toBe(false)
+    expect(loadWorkspaceSession()).toEqual({
+      workspacePath: "/chosen", tabs: ["/chosen/a.ts"], activePath: "/chosen/a.ts", pinnedPaths: ["/chosen/a.ts"]
+    })
+    expect(loadWorkspaceSessionEntry(root)).toMatchObject({ tabs: remoteSession.tabs, activePath: remoteSession.activePath })
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/chosen")
+    expect(tabPaths()).toEqual(["/chosen/a.ts"])
+  })
+
+  it("keeps the remote entry through its empty-group transition and restores every tab", async () => {
+    const root = remoteFilePath("waiting", "/project")
+    const saved = {
+      workspacePath: root,
+      tabs: [root + "/first.ts", root + "/second.ts"],
+      activePath: root + "/first.ts",
+      pinnedPaths: [root + "/second.ts"]
+    }
+    saveWorkspaceSession(saved)
+    rememberRemoteWorkspace(root, "sftp")
+    let finish!: () => void
+    let duringTransition: ReturnType<typeof loadWorkspaceSessionEntry> = null
+    vi.mocked(openWorkspaceAtPath).mockImplementationOnce((path, options) => new Promise(resolve => {
+      // workspaceActions captures this entry before publishing setWorkspace;
+      // its existing tests exercise that same dependency contract directly.
+      const entry = loadWorkspaceSessionEntry(path)!
+      finish = () => {
+        if (!options!.shouldOpen!()) { resolve(false); return }
+        const store = useWorkspaceStore.getState()
+        store.setWorkspace(path)
+        duringTransition = loadWorkspaceSessionEntry(path)
+        for (const tab of entry.tabs) {
+          store.openTab(tab)
+          if (entry.pinnedPaths?.includes(tab)) store.toggleTabPinned(0, tab)
+        }
+        if (entry.activePath) store.setActiveTab(0, entry.activePath)
+        resolve(true)
+      }
+    }))
+    render(<SessionRestoreBridge />)
+    act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await waitFor(() => expect(finish).toBeDefined())
+    await act(async () => { finish(); await Promise.resolve() })
+    expect(duringTransition).toMatchObject({ tabs: saved.tabs, activePath: saved.activePath, pinnedPaths: saved.pinnedPaths })
+    // Restoring pin state uses the store's existing pinned-first ordering.
+    const restoredTabs = [saved.tabs[1], saved.tabs[0]]
+    expect(loadWorkspaceSession()).toEqual({ ...saved, tabs: restoredTabs })
+    expect(tabPaths()).toEqual(restoredTabs)
+    expect(activePath()).toBe(saved.activePath)
+    expect(useWorkspaceStore.getState().groups[0].tabs.find(tab => tab.path === saved.pinnedPaths[0])?.pinned).toBe(true)
   })
 
   it("有 session 時開啟 workspace、還原分頁與 active", async () => {
@@ -374,7 +452,7 @@ describe("SessionRestoreBridge 還原", () => {
     expect(activePath()).toBe("/ws/a.ts")
     // 冷啟路徑自帶逐檔驗證還原，須關掉 workspaceActions 的 map 還原以免
     // 失效檔案的分頁被搶先開出來（#60 T4c）。
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false })
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false, shouldOpen: expect.any(Function) })
   })
 
   it("冷啟動帶資料夾開啟請求時不還原上次的 session，交給該資料夾取代", async () => {
@@ -402,7 +480,7 @@ describe("SessionRestoreBridge 還原", () => {
     render(<SessionRestoreBridge />)
 
     await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false })
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false, shouldOpen: expect.any(Function) })
     expect(useWorkspaceStore.getState().sessionRestoreReady).toBe(true)
   })
 

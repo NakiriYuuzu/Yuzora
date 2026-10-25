@@ -112,6 +112,23 @@ describe("usePreviewStore", () => {
         expect(usePreviewStore.getState().nativeSession).toBeNull()
     })
 
+    it("close intent immediately revokes native identity while preserving outer navigation", () => {
+        const s = usePreviewStore.getState()
+        useWorkspaceStore.setState({ workspacePath: "/ws/a" })
+        s.navigate("/ws/a", "https://example.com/a")
+        s.recordNativeOpen("/ws/a", "https://example.com/a", "owned-old-session")
+        s.receiveNativeNavigation({ sessionId: "owned-old-session", url: "https://example.com/b", canGoBack: true, canGoForward: false })
+        const nav = usePreviewStore.getState().nav
+        const markers = usePreviewStore.getState().nativeNavigationSyncs
+        const close = s.beginNativeCloseRequest("/ws/a")
+        expect(usePreviewStore.getState().nativeSession).toBeNull()
+        s.beginNativeOpenRequest("/ws/a", "https://example.com/b")
+        expect(s.nativeRequestIsCurrent(close)).toBe(false)
+        expect(usePreviewStore.getState().nativeSession).toBeNull()
+        expect(usePreviewStore.getState().nav).toBe(nav)
+        expect(usePreviewStore.getState().nativeNavigationSyncs).toBe(markers)
+    })
+
     it("assigns monotonic native open/close request tokens", () => {
         const s = usePreviewStore.getState()
         const first = s.beginNativeOpenRequest("/ws/a", "https://example.com/a")

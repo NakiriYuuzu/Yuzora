@@ -8,6 +8,8 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { openFile, readFileBase64 } from "@/lib/ipc"
 import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
+import { useWorkspaceStore } from "@/state/workspaceStore"
+import { retainedViewState, useRetainedScroll } from "./viewRetention"
 
 // Binary raster formats the WebView can decode natively. SVG is intentionally
 // absent: it is a text file and opens as an editor with SvgSplitView.
@@ -38,21 +40,33 @@ const CHECKERBOARD_CLASS =
     "[background:repeating-conic-gradient(rgba(0,0,0,0.07)_0%_25%,transparent_0%_50%)_0_0/16px_16px] " +
     "dark:[background:repeating-conic-gradient(rgba(255,255,255,0.07)_0%_25%,transparent_0%_50%)_0_0/16px_16px]"
 
-export function ImageView({ path }: { path: string }) {
+export function ImageView({ path, generation }: { path: string; generation?: number }) {
     const { t } = useTranslation("panels")
     const containerRef = useRef<HTMLDivElement>(null)
+    const workspacePath = useWorkspaceStore((s) => s.workspacePath)
+    const zoomState = useMemo(
+        () => retainedViewState<number | "fit">(workspacePath, path, "image-zoom"),
+        [workspacePath, path]
+    )
     // "fit" scales down to the viewport (never past 1:1); a number is an
-    // explicit zoom factor from the wheel / toolbar.
-    const [zoom, setZoom] = useState<number | "fit">("fit")
+    // explicit zoom factor from the wheel / toolbar. It comes back to the zoom
+    // the image was last left at.
+    const [zoom, setZoomState] = useState<number | "fit">(() => zoomState.get() ?? "fit")
+    const setZoom = (next: number | "fit") => {
+        zoomState.set(next)
+        setZoomState(next)
+    }
     const [dims, setDims] = useState<{ w: number; h: number } | null>(null)
     const [byteSize, setByteSize] = useState<number | null>(null)
     const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null)
     const [loadError, setLoadError] = useState(false)
     const [remoteImage, setRemoteImage] = useState<{ path: string; src: string } | null>(null)
 
+    // The asset URL is otherwise identical after an external rewrite, so the
+    // WebView would keep showing the cached bitmap: version it by generation.
     const src = useMemo(() => parseRemoteFilePath(path)
         ? remoteImage?.path === path ? remoteImage.src : undefined
-        : convertFileSrc(path), [path, remoteImage])
+        : generation === undefined ? convertFileSrc(path) : `${convertFileSrc(path)}?v=${generation}`, [path, remoteImage, generation])
     const name = workspacePathBasename(path)
 
     // File size comes from the existing open_file metadata path (binary kind
@@ -80,7 +94,7 @@ export function ImageView({ path }: { path: string }) {
         return () => {
             disposed = true
         }
-    }, [path])
+    }, [path, generation])
 
     useEffect(() => {
         const container = containerRef.current
@@ -105,16 +119,19 @@ export function ImageView({ path }: { path: string }) {
     // viewport (with a little padding).
     const fitZoom =
         dims && containerSize
-            ? Math.min(
-                  1,
-                  Math.max(MIN_ZOOM, (containerSize.w - 24) / dims.w),
-                  Math.max(MIN_ZOOM, (containerSize.h - 24) / dims.h)
+            ? Math.max(
+                  0,
+                  Math.min(1, (containerSize.w - 24) / dims.w, (containerSize.h - 24) / dims.h)
               )
             : 1
     const effectiveZoom = zoom === "fit" ? fitZoom : zoom
+    // The scroll offset is only meaningful once the image has its zoomed size.
+    useRetainedScroll(containerRef, { workspacePath, path, facet: "image-scroll" }, dims !== null && !loadError)
 
     function zoomBy(factor: number) {
-        setZoom(clampZoom(effectiveZoom * factor))
+        const nextZoom = clampZoom(effectiveZoom * factor)
+        if (factor < 1 && nextZoom >= effectiveZoom) return
+        setZoom(nextZoom)
     }
 
     // React (v17+) attaches wheel listeners passively at the root, so an

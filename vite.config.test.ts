@@ -1,4 +1,5 @@
 import { configDefaults } from "vitest/config";
+import { loadEnv } from "vite";
 import { describe, expect, it } from "vitest";
 import viteConfig from "./vite.config";
 import { readFileSync } from "node:fs";
@@ -25,7 +26,7 @@ describe("Vitest environment projects", () => {
     const config = await (typeof viteConfig === "function"
       ? viteConfig({ command: "serve", mode: "test" })
       : viteConfig);
-    const excluded = [...configDefaults.exclude, "**/.superpowers/**", "output/**"];
+    const excluded = [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**"];
     expect(config.test?.globals).toBe(true);
     expect(config.test?.exclude).toEqual(excluded);
     expect(config.test?.projects).toEqual([
@@ -43,5 +44,21 @@ describe("Vitest environment projects", () => {
         },
       },
     ]);
+  });
+});
+
+describe("client env exposure", () => {
+  it("never exposes the updater signing key to the client bundle", async () => {
+    const config = await (typeof viteConfig === "function"
+      ? viteConfig({ command: "build", mode: "production" })
+      : viteConfig);
+    const keys = ["TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"];
+    for (const key of keys) process.env[key] = "canary";
+    try {
+      const env = loadEnv("production", import.meta.dirname, config.envPrefix);
+      for (const key of keys) expect(env).not.toHaveProperty(key);
+    } finally {
+      for (const key of keys) delete process.env[key];
+    }
   });
 });

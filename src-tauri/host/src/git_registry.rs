@@ -19,6 +19,7 @@ const GIT_JOB_WAIT: Duration = Duration::from_secs(30);
 
 struct Repository {
     identity: WorkspaceIdentity,
+    mutation_admission: JobGate,
     operation: Mutex<()>,
     cancelled: Arc<AtomicBool>,
 }
@@ -59,22 +60,7 @@ impl GitRegistry {
     }
 
     fn acquire_job_within(&self, wait: Duration) -> Result<GitJob<'_>, String> {
-        let deadline = Instant::now() + wait;
-        let mut running = self.1.running.lock().map_err(|e| e.to_string())?;
-        while *running >= MAX_GIT_JOBS {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err("git-jobs-busy".into());
-            }
-            running = self
-                .1
-                .freed
-                .wait_timeout(running, left)
-                .map_err(|e| e.to_string())?
-                .0;
-        }
-        *running += 1;
-        Ok(GitJob(&self.1))
+        self.1.acquire_within(wait)
     }
     pub fn begin(&self, workspace: &str) -> Result<u64, String> {
         let mut state = self.0.lock().map_err(|e| e.to_string())?;
@@ -132,6 +118,7 @@ impl GitRegistry {
                     key,
                     Arc::new(Repository {
                         identity,
+                        mutation_admission: JobGate::default(),
                         operation: Mutex::new(()),
                         cancelled: Arc::new(AtomicBool::new(false)),
                     }),
@@ -205,7 +192,6 @@ impl GitRegistry {
         exclusive: bool,
         operation: impl FnOnce(&Path) -> Result<T, String>,
     ) -> Result<T, String> {
-        let _job = self.acquire_job()?;
         let identity = observe_identity(requested).map_err(|e| e.to_frontend())?;
         let root = PathBuf::from(&identity.canonical_path);
         let repo = self
@@ -216,17 +202,45 @@ impl GitRegistry {
             .get(&root)
             .cloned()
             .ok_or("no repository detected for this workspace")?;
+        // Preserve bounded admission for a busy repository without reserving
+        // execution slots while its mutations wait for the operation lock.
+        let _admission = if exclusive {
+            Some(repo.mutation_admission.acquire_within(GIT_JOB_WAIT)?)
+        } else {
+            None
+        };
         let _operation = if exclusive {
             Some(repo.operation.lock().map_err(|e| e.to_string())?)
         } else {
             None
         };
+        let _job = self.acquire_job()?;
         if repo.cancelled.load(Ordering::Acquire)
             || observe_identity(requested).map_err(|e| e.to_frontend())? != repo.identity
         {
             return Err("git repository changed before operation".into());
         }
         crate::git_process::with_cancellation(repo.cancelled.clone(), || operation(&root))
+    }
+}
+
+impl JobGate {
+    fn acquire_within(&self, wait: Duration) -> Result<GitJob<'_>, String> {
+        let deadline = Instant::now() + wait;
+        let mut running = self.running.lock().map_err(|e| e.to_string())?;
+        while *running >= MAX_GIT_JOBS {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err("git-jobs-busy".into());
+            }
+            running = self
+                .freed
+                .wait_timeout(running, left)
+                .map_err(|e| e.to_string())?
+                .0;
+        }
+        *running += 1;
+        Ok(GitJob(self))
     }
 }
 
@@ -352,5 +366,193 @@ mod tests {
                 None
             )
             .unwrap());
+    }
+
+    #[test]
+    fn queued_mutations_do_not_occupy_execution_slots() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let path_a = a.path().to_str().unwrap().to_string();
+        let path_b = b.path().to_str().unwrap().to_string();
+        let registry = Arc::new(GitRegistry::default());
+        bind(&registry, a.path());
+        bind(&registry, b.path());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let active = {
+            let registry = registry.clone();
+            let path = path_a.clone();
+            std::thread::spawn(move || {
+                registry.with_repository(&path, |_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                })
+            })
+        };
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let root = PathBuf::from(observe_identity(&path_a).unwrap().canonical_path);
+        let repository = registry.0.lock().unwrap().repositories[&root].clone();
+        let expected_owners = Arc::strong_count(&repository) + MAX_GIT_JOBS - 1;
+        let queued: Vec<_> = (1..MAX_GIT_JOBS)
+            .map(|_| {
+                let registry = registry.clone();
+                let path = path_a.clone();
+                std::thread::spawn(move || registry.with_repository(&path, |_| Ok(())))
+            })
+            .collect();
+        // Observe actual entry into repository admission, rather than guessing
+        // that a newly spawned thread has already reached the mutex.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&repository) < expected_owners && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let all_queued = Arc::strong_count(&repository) == expected_owners;
+        let occupied = *registry.1.running.lock().unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let independent: Vec<_> = [(path_a, false), (path_b, true)]
+            .into_iter()
+            .map(|(path, exclusive)| {
+                let registry = registry.clone();
+                let done_tx = done_tx.clone();
+                std::thread::spawn(move || {
+                    let result = registry.with_repository_access(&path, exclusive, |_| Ok(()));
+                    done_tx.send(result.is_ok()).unwrap();
+                    result
+                })
+            })
+            .collect();
+        let completions = [
+            done_rx.recv_timeout(Duration::from_secs(2)),
+            done_rx.recv_timeout(Duration::from_secs(2)),
+        ];
+        // Always drain our threads before asserting, including the failing baseline.
+        release_tx.send(()).unwrap();
+        active.join().unwrap().unwrap();
+        for thread in queued.into_iter().chain(independent) {
+            thread.join().unwrap().unwrap();
+        }
+        assert!(
+            all_queued,
+            "queued threads did not enter repository admission"
+        );
+        assert_eq!(occupied, 1, "waiting mutations consumed execution slots");
+        assert!(
+            completions.iter().all(|result| matches!(result, Ok(true))),
+            "read/other repository waited behind queued mutations: {completions:?}"
+        );
+        assert_eq!(*registry.1.running.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn queued_mutation_revalidates_after_close_or_identity_replacement() {
+        for replace_identity in [false, true] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().join("repo");
+            std::fs::create_dir(&path).unwrap();
+            let requested = path.to_str().unwrap().to_string();
+            let registry = Arc::new(GitRegistry::default());
+            let generation = bind(&registry, &path);
+            let root = PathBuf::from(observe_identity(&requested).unwrap().canonical_path);
+            let repository = registry.0.lock().unwrap().repositories[&root].clone();
+            let operation_lock = repository.operation.lock().unwrap();
+            let entered = Arc::new(AtomicBool::new(false));
+            let queued = {
+                let registry = registry.clone();
+                let requested = requested.clone();
+                let entered = entered.clone();
+                std::thread::spawn(move || {
+                    registry.with_repository(&requested, |_| {
+                        entered.store(true, Ordering::Release);
+                        Ok(())
+                    })
+                })
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Arc::strong_count(&repository) < 3 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let admitted = Arc::strong_count(&repository) == 3;
+            if replace_identity {
+                std::fs::rename(&path, fixture.path().join("old-repo")).unwrap();
+                std::fs::create_dir(&path).unwrap();
+                bind(&registry, &path);
+                registry.with_repository(&requested, |_| Ok(())).unwrap();
+            } else {
+                registry.close(&requested, generation).unwrap();
+            }
+            drop(operation_lock);
+            let result = queued.join().unwrap();
+            assert!(admitted, "worker did not reach repository admission");
+            assert_eq!(
+                result.err().as_deref(),
+                Some("git repository changed before operation")
+            );
+            assert!(!entered.load(Ordering::Acquire));
+            assert_eq!(*registry.1.running.lock().unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn overflow_mutation_retains_admission_deadline() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().to_str().unwrap().to_string();
+        let registry = Arc::new(GitRegistry::default());
+        bind(&registry, fixture.path());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let active = {
+            let registry = registry.clone();
+            let path = path.clone();
+            std::thread::spawn(move || {
+                registry.with_repository(&path, |_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                })
+            })
+        };
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let root = PathBuf::from(observe_identity(&path).unwrap().canonical_path);
+        let repository = registry.0.lock().unwrap().repositories[&root].clone();
+        let expected = Arc::strong_count(&repository) + MAX_GIT_JOBS - 1;
+        let queued: Vec<_> = (1..MAX_GIT_JOBS)
+            .map(|_| {
+                let registry = registry.clone();
+                let path = path.clone();
+                std::thread::spawn(move || registry.with_repository(&path, |_| Ok(())))
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (Arc::strong_count(&repository) < expected
+            || *repository.mutation_admission.running.lock().unwrap() < MAX_GIT_JOBS)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let queued_ready = Arc::strong_count(&repository) == expected
+            && *repository.mutation_admission.running.lock().unwrap() == MAX_GIT_JOBS;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let overflow = {
+            let registry = registry.clone();
+            std::thread::spawn(move || {
+                let result = registry.with_repository(&path, |_| Ok(()));
+                done_tx.send(result.clone()).unwrap();
+                result
+            })
+        };
+        let before_release = done_rx.recv_timeout(GIT_JOB_WAIT + Duration::from_secs(2));
+        release_tx.send(()).unwrap();
+        active.join().unwrap().unwrap();
+        for job in queued {
+            job.join().unwrap().unwrap();
+        }
+        let result = overflow.join().unwrap();
+        assert!(queued_ready, "waiters did not reach repository admission");
+        assert_eq!(
+            before_release,
+            Ok(Err("git-jobs-busy".into())),
+            "overflow bypassed admission deadline; final result: {result:?}"
+        );
     }
 }

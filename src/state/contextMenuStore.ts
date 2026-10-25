@@ -17,12 +17,14 @@ import i18n from "@/lib/i18n"
 import {
     isSameOrDescendantPath,
     nativePathJoin,
+    nativePathParent,
     rebasePath,
     relativePathWithin,
     workspacePathBasename,
     workspacePathForDisplay,
 } from "@/lib/paths"
-import { dropDocument, renameDocument } from "../editor/documentRegistry"
+import { cachedDocumentPaths, documentGeneration, documentWorkspaceEpoch, dropDocument, getCachedDocument, renameDocument, reserveDocumentRename, retireRenamedDocumentReads } from "../editor/documentRegistry"
+import { fileRenameError } from "../lib/fileRenameCoordinator"
 import { getView, getViewEntry, type RegisteredEditorView } from "../editor/viewRegistry"
 import { logUserAction } from "@/features/logs/userAction"
 import { showActionError } from "@/lib/actionFeedback"
@@ -33,11 +35,12 @@ import {
     fsCreateFile,
     fsDelete,
     fsRename,
+    isOpenableFile,
     gitFetch,
     gitPull,
     gitPush,
 } from "../lib/ipc"
-import { isFileTab, isMarkdownPreviewTab } from "../lib/markdownPreviewTab"
+import { isFileTab, isMarkdownPreviewTab, previewTabSourcePath } from "../lib/markdownPreviewTab"
 import { useSvgPreviewStore } from "./svgPreviewStore"
 import { worktreeFilesFrom } from "../workbench/git/fileRows"
 import { withDeleteProgress } from "../workbench/deleteProgress"
@@ -355,6 +358,9 @@ function affectedTabPaths(target: string): string[] {
 
 async function renameEntry(path: string, workspace: string): Promise<ContextMenuCommandOutcome> {
     if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
+    const epoch = documentWorkspaceEpoch()
+    const current = () => documentWorkspaceEpoch() === epoch
+        && useWorkspaceStore.getState().workspacePath === workspace
     const currentName = workspacePathBasename(path)
     const name = await requestTextInputDialog({
         title: i18n.t("contextMenu.prompt.rename", { ns: "menus" }),
@@ -362,12 +368,19 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
         initialValue: currentName,
         confirmLabel: i18n.t("textInputDialog.rename", { ns: "menus" })
     })
-    if (!name || name === currentName) return CONTEXT_MENU_CANCELLED
-    const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
-    const target = path.slice(0, slash + 1) + name
+    if (!name || name === currentName || !current()) return CONTEXT_MENU_CANCELLED
     try {
-        await fsRename(workspace, path, target)
-        retargetOpenDocuments(path, target)
+        const target = nativePathJoin(nativePathParent(path), name)
+        const occupied = useWorkspaceStore.getState().groups.flatMap(group => group.tabs).some(tab => {
+            const document = isFileTab(tab) ? tab.path : previewTabSourcePath(tab)
+            return document && isSameOrDescendantPath(target, document) && !isSameOrDescendantPath(path, document)
+        })
+        if (occupied) throw fileRenameError("destinationOpen")
+        const release = reserveDocumentRename(path, target)
+        try {
+            await fsRename(workspace, path, target)
+            if (current()) retargetOpenDocuments(path, target, true)
+        } finally { release() }
         // 舊、新路徑一起失效：同層 re-list 反映改名；資料夾改名時 relist 的
         // prune 會丟掉舊路徑底下的快取子樹（新路徑首次展開時重新 list）。
         await useFileTreeStore.getState().invalidatePaths(workspace, [path, target])
@@ -382,12 +395,48 @@ async function renameEntry(path: string, workspace: string): Promise<ContextMenu
     }
 }
 
+function deleteDocumentSource(tab: TabInfo): string | null {
+    return isFileTab(tab) ? tab.path : isMarkdownPreviewTab(tab) ? previewTabSourcePath(tab) : null
+}
+
+function captureDeleteDocuments(path: string) {
+    const allTabs = useWorkspaceStore.getState().groups.flatMap(group => group.tabs)
+    const sources = new Map<string, TabInfo[]>()
+    for (const tab of allTabs) {
+        const source = deleteDocumentSource(tab)
+        if (!source || !isSameOrDescendantPath(path, source)) continue
+        const tabs = sources.get(source) ?? []
+        tabs.push(tab)
+        sources.set(source, tabs)
+    }
+    return [...sources].map(([source, tabs]) => {
+        const fileTabs = tabs.filter(isFileTab)
+        const view = getView(source), document = view?.state.doc
+        const entry = getCachedDocument(source), result = entry?.result
+        const generation = documentGeneration(source)
+        const wasDirty = fileTabs.some(tab => tab.dirty)
+        // The view registry exposes one view per identity. Preserve ambiguous
+        // dirty multi-pane buffers rather than assume that view covers them all.
+        const ambiguousDirtyView = wasDirty && !!view && allTabs.filter(tab => isFileTab(tab)
+            && isSameOrDescendantPath(source, tab.path) && isSameOrDescendantPath(tab.path, source)).length > 1
+        return { source, tabs, hasFileTab: fileTabs.length > 0, wasDirty, stable: () => {
+            const current = useWorkspaceStore.getState().groups.flatMap(group => group.tabs)
+                .filter(tab => deleteDocumentSource(tab) === source)
+            return !ambiguousDirtyView && current.length === tabs.length && current.every(tab => tabs.includes(tab))
+                && getView(source) === view && view?.state.doc === document
+                && getCachedDocument(source) === entry && entry?.result === result
+                && documentGeneration(source) === generation
+        } }
+    })
+}
+
 async function deleteEntry(path: string, isDir: boolean, workspace: string): Promise<ContextMenuCommandOutcome> {
     if (useWorkspaceStore.getState().workspacePath !== workspace) return CONTEXT_MENU_CANCELLED
+    const epoch = documentWorkspaceEpoch()
+    const current = () => documentWorkspaceEpoch() === epoch && useWorkspaceStore.getState().workspacePath === workspace
     const name = workspacePathBasename(path)
-    // The delete confirm below already covers the destructive intent (the file's
-    // content — dirty buffer included — is going away regardless), so no separate
-    // per-tab dirty prompt: it would be redundant once the user confirms delete.
+    // Confirmation covers the captured contents, including existing dirty
+    // buffers. Edits or new documents arriving after dispatch remain open.
     const text = i18n.t(
         isDir ? "contextMenu.confirm.deleteFolder" : "contextMenu.confirm.deleteFile",
         { ns: "menus", name }
@@ -399,26 +448,51 @@ async function deleteEntry(path: string, isDir: boolean, workspace: string): Pro
         kind: "warning",
         destructive: true
     })
-    if (!ok) return CONTEXT_MENU_CANCELLED
-    try {
-        await withDeleteProgress(name, !parseRemoteFilePath(workspace), (operation) => fsDelete(workspace, path, operation))
-        // Close every tab that pointed at the deleted file/folder and drop its
-        // editor + preview state, so a stale tab can't recreate the file on its
-        // next save (Finding 3).
-        const affected = affectedTabPaths(path)
-        if (affected.length > 0) {
-            useWorkspaceStore.getState().closeTabsByPath(affected)
-            for (const p of affected) {
-                dropDocument(p)
-                useSvgPreviewStore.getState().forget(p)
+    if (!ok || !current()) return CONTEXT_MENU_CANCELLED
+    const affected = captureDeleteDocuments(path)
+    const local = !parseRemoteFilePath(workspace)
+    const reconcile = async (deleted: boolean) => {
+        for (const document of affected) {
+            if (!current()) return
+            if (!deleted) {
+                if (!local || parseRemoteFilePath(document.source) || document.wasDirty) continue
+                try {
+                    // Native false means missing or no longer a regular file;
+                    // a metadata error is not evidence that deletion succeeded.
+                    if (await isOpenableFile(document.source)) continue
+                } catch (error) {
+                    console.warn("Could not reconcile deleted document", document.source, error)
+                    continue
+                }
+            }
+            if (!current() || !document.stable()) continue
+            const paths = document.tabs.map(tab => tab.path)
+            if (document.hasFileTab) paths.push(document.source)
+            useWorkspaceStore.getState().closeTabsByPath(paths)
+            // Preview-only tabs have no reliable dirty bit for their source.
+            // Close the stale preview but retain any unowned cached buffer.
+            if (document.hasFileTab) {
+                dropDocument(document.source)
+                useSvgPreviewStore.getState().forget(document.source)
             }
         }
+    }
+    try {
+        await withDeleteProgress(name, local, (operation) => fsDelete(workspace, path, operation))
+        await reconcile(true)
+        affected.length = 0
         await useFileTreeStore.getState().invalidatePaths(workspace, [path])
         return CONTEXT_MENU_COMPLETED
     } catch (e) {
         const message = String(e)
-        // A delete stopped midway already removed part of the tree.
-        if (message.includes("partial")) await useFileTreeStore.getState().invalidatePaths(workspace, [path])
+        // Ordinary I/O errors can also follow partial deletion. Probe only the
+        // original local documents and keep the original delete error visible.
+        const cancelledBeforeDelete = (e instanceof Error ? e.message : message) === "delete-cancelled"
+        if (!cancelledBeforeDelete) await reconcile(false)
+        affected.length = 0
+        if (!cancelledBeforeDelete && (local || message.includes("partial"))) {
+            await useFileTreeStore.getState().invalidatePaths(workspace, [path])
+        }
         if (message.includes("delete-cancelled")) {
             if (message.includes("partial")) {
                 await showAppMessage({
@@ -649,12 +723,16 @@ export async function executeLegacyContextMenuAction(
  * store-owned adjacent-group tabs; updateTabPath rebases their
  * sourcePath/identity in the same pass.
  */
-export function retargetOpenDocuments(from: string, to: string): void {
+export function retargetOpenDocuments(from: string, to: string, mergeLoadingDestinations = false): void {
     const svgPreview = useSvgPreviewStore.getState()
-    for (const oldPath of affectedTabPaths(from)) {
+    const paths = mergeLoadingDestinations
+        ? new Set([...affectedTabPaths(from), ...cachedDocumentPaths(from)])
+        : affectedTabPaths(from)
+    for (const oldPath of paths) {
         const newPath = rebasePath(from, to, oldPath)
         if (!newPath) continue
         renameDocument(oldPath, newPath, getView(oldPath)?.state.doc.toString())
+        if (mergeLoadingDestinations) retireRenamedDocumentReads(oldPath, newPath)
         // SVG previews default open, so the *closed* flag is what follows
         // the rename. Forget the old path unconditionally: after a double-toggle
         // the store holds a false-valued flag (isOpen already true) that would
@@ -663,5 +741,5 @@ export function retargetOpenDocuments(from: string, to: string): void {
         svgPreview.forget(oldPath)
         if (svgWasClosed && svgPreview.isOpen(newPath)) svgPreview.toggle(newPath)
     }
-    useWorkspaceStore.getState().updateTabPath(from, to)
+    useWorkspaceStore.getState().updateTabPath(from, to, mergeLoadingDestinations)
 }

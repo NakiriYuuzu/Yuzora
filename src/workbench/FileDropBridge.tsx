@@ -94,7 +94,7 @@ export function FileDropBridge() {
           return
         }
         indicate(null)
-        if (payload.type !== "drop" || dropIsOwnedByAnotherSurface(payload)) return
+        if (payload.type !== "drop" || dropIsOwnedByAnotherSurface(payload) || disposed) return
         const terminal = terminalDropTargetAt(elementAtPoint(logicalPoint(payload.position)))
         if (terminal) {
           void pastePathsIntoTerminal(terminal, payload.paths).catch(notifyTerminalPathPasteError)
@@ -105,7 +105,7 @@ export function FileDropBridge() {
           void importDroppedFiles(tree.workspacePath, tree.dir, payload.paths)
           return
         }
-        void openExternalFiles(payload.paths, "drop")
+        void openExternalFiles(payload.paths, "drop", () => !disposed)
       })
       .then((nextUnlisten) => {
         if (disposed) nextUnlisten()
@@ -113,7 +113,7 @@ export function FileDropBridge() {
       })
       .catch(() => {})
     void listen<ForwardedFileDropPayload>(PREVIEW_FILE_DROP_EVENT, (event) => {
-      void openExternalFiles(event.payload.paths, "drop")
+      void openExternalFiles(event.payload.paths, "drop", () => !disposed)
     })
       .then((nextUnlisten) => {
         if (disposed) nextUnlisten()

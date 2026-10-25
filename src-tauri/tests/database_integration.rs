@@ -5,10 +5,10 @@ use rusqlite::Connection as SqliteFixtureConnection;
 use yuzora_lib::db_result_session::DEFAULT_FIELD_BYTES;
 use yuzora_lib::db_service::integration_harness::{IntegrationConnection, IntegrationRuntime};
 use yuzora_lib::db_service::{
-    DatabaseError, DatabaseErrorEngine, DatabaseObjectKind, DatabaseOperationalErrorCode, DbValue,
-    EffectOutcome, QueryCancelOutcome, QueryExecutionUnit, QueryRun, QueryRunId,
-    ResultPageDirection, ResultSession, ResultSessionLifecycle, StatementExecutionResult,
-    TransactionBoundary,
+    DatabaseError, DatabaseErrorEngine, DatabaseObjectKind, DatabaseOperationalError,
+    DatabaseOperationalErrorCode, DbValue, EffectOutcome, QueryCancelOutcome, QueryExecutionUnit,
+    QueryRun, QueryRunId, ResultPageDirection, ResultSession, ResultSessionLifecycle,
+    StatementExecutionResult, TransactionBoundary,
 };
 
 const ROW_BOUNDARIES: [usize; 7] = [0, 499, 500, 501, 1000, 1001, 1201];
@@ -1638,6 +1638,35 @@ async fn assert_hostile_field_recovers(
         .expect("release recovery result after hostile field");
 }
 
+fn assert_invalid_peer_certificate(error: &DatabaseOperationalError) {
+    let text = format!("{error:?}");
+    assert!(
+        text.contains("invalid peer certificate"),
+        "expected a certificate verification failure, got {text}"
+    );
+}
+
+/// Points the platform trust store at one PEM file for the helper processes
+/// spawned while it is alive, and restores the previous value on drop.
+struct SslCertFile(Option<std::ffi::OsString>);
+
+impl SslCertFile {
+    fn set(path: &std::path::Path) -> Self {
+        let previous = std::env::var_os("SSL_CERT_FILE");
+        std::env::set_var("SSL_CERT_FILE", path);
+        Self(previous)
+    }
+}
+
+impl Drop for SslCertFile {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("SSL_CERT_FILE", value),
+            None => std::env::remove_var("SSL_CERT_FILE"),
+        }
+    }
+}
+
 async fn run_mssql() {
     ensure_query_helper_bin();
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -1662,6 +1691,9 @@ async fn run_mssql() {
         strict_error.code,
         DatabaseOperationalErrorCode::ConnectionFailed
     );
+    // A helper panic or an I/O failure also maps to ConnectionFailed; only a
+    // certificate verification failure proves strict mode actually verified.
+    assert_invalid_peer_certificate(&strict_error);
     let strict_open_error = match runtime
         .open_mssql(
             "mssql-strict",
@@ -1684,6 +1716,51 @@ async fn run_mssql() {
         strict_open_error.code,
         DatabaseOperationalErrorCode::ConnectionFailed
     );
+    assert_invalid_peer_certificate(&strict_open_error);
+
+    // Strict mode verifies against the platform trust store, which the helper
+    // process reads from SSL_CERT_FILE. The fixture server certificate is an
+    // X.509 v3 certificate signed by tests/database/fixtures/mssql/tls/ca.pem
+    // with SAN localhost and 127.0.0.1.
+    let tls_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/database/fixtures/mssql/tls");
+
+    scenario(Engine::Mssql, "tls-strict-wrong-ca-rejected");
+    let wrong_ca = SslCertFile::set(&tls_dir.join("other-ca.pem"));
+    let wrong_ca_error = runtime
+        .test_mssql(HOST, PORT, DATABASE, FULL_USER, password.clone(), false)
+        .await
+        .expect_err("strict MSSQL trust must reject a certificate from an untrusted CA");
+    assert_eq!(
+        wrong_ca_error.code,
+        DatabaseOperationalErrorCode::ConnectionFailed
+    );
+    assert_invalid_peer_certificate(&wrong_ca_error);
+    drop(wrong_ca);
+
+    scenario(Engine::Mssql, "tls-strict-trusted-ca-succeeds");
+    let trusted_ca = SslCertFile::set(&tls_dir.join("ca.pem"));
+    let strict_version = runtime
+        .test_mssql(HOST, PORT, DATABASE, FULL_USER, password.clone(), false)
+        .await
+        .expect("strict MSSQL trust must accept the certificate from the trusted fixture CA");
+    assert!(strict_version.is_some_and(|version| version.contains("Microsoft SQL Server")));
+    let strict_connection = runtime
+        .open_mssql(
+            "mssql-strict-trusted",
+            HOST,
+            PORT,
+            DATABASE,
+            FULL_USER,
+            password.clone(),
+            false,
+        )
+        .await
+        .expect("open strict MSSQL connection with the fixture CA trusted");
+    strict_connection
+        .close()
+        .expect("close strict MSSQL connection");
+    drop(trusted_ca);
 
     scenario(Engine::Mssql, "tls-trust-test-open");
     let version = runtime
@@ -1987,6 +2064,28 @@ async fn run_mssql() {
         .await
         .expect("release MSSQL reuse result");
 
+    scenario(Engine::Mssql, "multiple-result-sets-fail-closed");
+    // Two result sets with different columns cannot be one coherent result. The helper
+    // must drain the stream to EOF and report resultShape instead of mixing rows
+    // under the first result set's columns.
+    let multi = connection
+        .run_primary("mssql-multi-result", "SELECT 1 AS a; SELECT 2 AS b, 3 AS c")
+        .await
+        .expect("return a structured MSSQL result shape error");
+    let multi_error = first_statement_error(&multi);
+    assert_eq!(multi_error.engine, DatabaseErrorEngine::Mssql);
+    assert_eq!(multi_error.code.as_deref(), Some("resultShape"));
+    let after_multi = connection
+        .run_primary("mssql-multi-result-after", "SELECT CAST(8 AS INT)")
+        .await
+        .expect("reuse MSSQL connection after a result shape error");
+    let after_multi_session = first_result_session(&after_multi);
+    assert_integer_id(&after_multi_session.initial_page.rows[0][0], 8);
+    connection
+        .release_result(after_multi_session.owner)
+        .await
+        .expect("release MSSQL result after the shape error");
+
     scenario(Engine::Mssql, "procedure-done-counts-trigger-effect-once");
     let before = connection
         .run_primary(
@@ -2217,6 +2316,82 @@ async fn run_mssql() {
         .release_result(transaction_session.owner)
         .await
         .expect("release MSSQL transaction result");
+
+    scenario(Engine::Mssql, "single-batch-transaction-flag-clears");
+    // Without semicolons the splitter sees one unit that starts with BEGIN, although the
+    // batch commits itself. The flag may claim an open transaction, but a COMMIT that
+    // MSSQL rejects with 3902 must clear it again.
+    let single_batch = connection
+        .run_script(
+            "mssql-single-batch-transaction",
+            vec![QueryExecutionUnit {
+                sql: "BEGIN TRAN\nUPDATE alpha.transaction_probe SET value = value WHERE id = 1\nCOMMIT"
+                    .to_string(),
+                transaction_boundary: TransactionBoundary::Begin,
+            }],
+        )
+        .await
+        .expect("run MSSQL single-batch transaction");
+    assert!(single_batch.transaction_may_be_open);
+    let stray_commit = connection
+        .run_script(
+            "mssql-single-batch-commit",
+            vec![QueryExecutionUnit {
+                sql: "COMMIT".to_string(),
+                transaction_boundary: TransactionBoundary::Commit,
+            }],
+        )
+        .await
+        .expect("run MSSQL COMMIT without a transaction");
+    assert_eq!(
+        first_statement_error(&stray_commit).code.as_deref(),
+        Some("3902")
+    );
+    assert!(!stray_commit.transaction_may_be_open);
+
+    scenario(Engine::Mssql, "nested-and-savepoint-transactions-stay-open");
+    // COMMIT only closes the outermost of nested BEGIN TRANs and ROLLBACK TRAN to a
+    // savepoint closes nothing, so the server is asked what is still open.
+    let unit = |sql: &str, transaction_boundary: TransactionBoundary| QueryExecutionUnit {
+        sql: sql.to_string(),
+        transaction_boundary,
+    };
+    let nested = connection
+        .run_script(
+            "mssql-nested-commit",
+            vec![
+                unit("BEGIN TRAN", TransactionBoundary::Begin),
+                unit("BEGIN TRAN", TransactionBoundary::Begin),
+                unit("COMMIT", TransactionBoundary::Commit),
+            ],
+        )
+        .await
+        .expect("run nested MSSQL transactions");
+    assert!(nested.transaction_may_be_open);
+    let savepoint = connection
+        .run_script(
+            "mssql-savepoint-rollback",
+            vec![
+                unit("SAVE TRAN yuzora_probe", TransactionBoundary::None),
+                unit("ROLLBACK TRAN yuzora_probe", TransactionBoundary::Rollback),
+            ],
+        )
+        .await
+        .expect("roll back to an MSSQL savepoint");
+    assert!(savepoint.transaction_may_be_open);
+    // A primary-mode COMMIT is settled the same way.
+    let outer = connection
+        .run_primary_unit(
+            "mssql-outer-commit",
+            unit("COMMIT", TransactionBoundary::Commit),
+        )
+        .await
+        .expect("commit the outer MSSQL transaction");
+    assert!(matches!(
+        outer.statements[0].result,
+        StatementExecutionResult::Execute { .. }
+    ));
+    assert!(!outer.transaction_may_be_open);
 
     scenario(Engine::Mssql, "q6-select-1201-then-update");
     assert_select_1201_then_update(

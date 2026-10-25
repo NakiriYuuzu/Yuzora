@@ -60,17 +60,57 @@ async function mount() {
     return getView(path)!
 }
 function tab() { return useWorkspaceStore.getState().groups[0].tabs[0] }
-async function siblingEvent() {
+async function siblingEvent(eventPath = "/w/target") {
     // Explicitly cross the 750ms own-save suppression window without waiting.
     const now = Date.now()
     const clock = vi.spyOn(Date, "now").mockReturnValue(now + 1000)
     expect(recentlySaved.snapshot().has(path)).toBe(false)
-    await act(async () => { listener({ payload: { workspaceRoot: "/w", paths: ["/w/target"] } }) })
+    await act(async () => { listener({ payload: { workspaceRoot: "/w", paths: [eventPath] } }) })
     clock.mockRestore()
 }
 function edit(view: EditorView) {
     act(() => view.dispatch({ changes: { from: 0, insert: "saved edit\n" } }))
 }
+
+it.each(["clean-changed", "dirty-changed", "dirty-unchanged"])("initial root reconciliation preserves document ownership: %s", async scenario => {
+    const view = await mount()
+    const dirty = scenario.startsWith("dirty")
+    if (dirty) edit(view)
+    const depth = undoDepth(view.state)
+    if (scenario.endsWith("-changed")) disk = "external before watch\n"
+    await siblingEvent("/w")
+    if (dirty) {
+        expect(getView(path)).toBe(view)
+        expect(view.state.doc.toString()).toBe("saved edit\nbefore\n")
+        expect(undoDepth(view.state)).toBe(depth)
+        expect(tab().dirty).toBe(true)
+        expect(tab().externallyModified).toBe(scenario === "dirty-changed")
+    } else {
+        await waitFor(() => expect(getView(path)).not.toBe(view))
+        expect(getView(path)!.state.doc.toString()).toBe(disk)
+        expect(tab().dirty).toBe(false)
+    }
+})
+
+it("initial root reconciliation respects own-save suppression and ignores other workspaces", async () => {
+    const view = await mount()
+    vi.spyOn(Date, "now").mockReturnValue(Date.now())
+    edit(view)
+    await act(async () => save())
+    await waitFor(() => expect(tab().dirty).toBe(false))
+    disk = "external after save\n"
+    const read = vi.fn(() => ({ kind: "full", content: disk, size: disk.length, lineEnding: "lf" }))
+    mockIPC(command => command === "open_file" ? read() : [])
+    await act(async () => { listener({ payload: { workspaceRoot: "/other", paths: ["/other"] } }) })
+    expect(read).not.toHaveBeenCalled()
+    expect(recentlySaved.snapshot().has(path)).toBe(true)
+    await act(async () => { listener({ payload: { workspaceRoot: "/w", paths: ["/w"] } }) })
+    expect(read).not.toHaveBeenCalled()
+    expect(getView(path)).toBe(view)
+    await siblingEvent("/w")
+    await waitFor(() => expect(getView(path)!.state.doc.toString()).toBe(disk))
+    expect(read).toHaveBeenCalledTimes(1)
+})
 
 it("a saved edit survives a sibling-only event with the same EditorView and undo depth", async () => {
     const view = await mount()

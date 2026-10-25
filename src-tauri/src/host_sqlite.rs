@@ -18,6 +18,7 @@ struct Call {
 }
 struct Proxy {
     connection: Option<Arc<HostConnection>>,
+    atomic_cell_mutation: bool,
     cancelled: watch::Sender<bool>,
     requests: mpsc::Sender<Call>,
 }
@@ -49,6 +50,14 @@ impl RemoteSqlite for Proxy {
         Box::pin(async move {
             if self.is_closed() {
                 return Err(disconnected());
+            }
+            if !self.atomic_cell_mutation
+                && matches!(&command, SqliteCommand::QueryRun(request) if request.mode == yuzora_host::db_service::QueryRunMode::TableCellMutation)
+            {
+                return Err(DatabaseOperationalError::new(
+                    DatabaseOperationalErrorCode::QueryFailed,
+                    "source helper does not support atomic cell edits; set up this host again",
+                ));
             }
             // Preserve local long-running queries: isolation supplies the memory
             // boundary; users still own cancellation. Remote requests retain their deadline.
@@ -239,9 +248,27 @@ pub(crate) async fn open(
     });
     Ok(DbHandle::RemoteSqlite(Arc::new(Proxy {
         connection: Some(connection),
+        atomic_cell_mutation: hello["methods"]
+            .as_array()
+            .is_some_and(|methods| methods.iter().any(|method| method == "sqliteCellMutation")),
         cancelled,
         requests,
     })))
+}
+
+fn spawn_local_worker(
+    program: impl AsRef<std::ffi::OsStr>,
+) -> std::io::Result<tokio::process::Child> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .env(LOCAL_WORKER_ENV, "1")
+        .env_remove(yuzora_host::db_query_worker::WORKER_ENV)
+        .env_remove("YUZORA_ASKPASS_ENDPOINT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    crate::process_kill::spawn_tokio(&mut command)
 }
 
 /// Local profiles use the same persistent request/cancel protocol, without
@@ -278,15 +305,7 @@ pub(crate) async fn open_local(
         identity: identity.clone(),
     };
     let operation = async {
-        let child = tokio::process::Command::new(yuzora_host::db_query_worker::helper_program())
-            .env(LOCAL_WORKER_ENV, "1")
-            .env_remove(yuzora_host::db_query_worker::WORKER_ENV)
-            .env_remove("YUZORA_ASKPASS_ENDPOINT")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
+        let child = spawn_local_worker(yuzora_host::db_query_worker::helper_program())
             .map_err(|_| disconnected())?;
         let mut io =
             crate::host_service::owned_process_stream(child).map_err(|_| disconnected())?;
@@ -321,6 +340,9 @@ pub(crate) async fn open_local(
     });
     Ok(DbHandle::RemoteSqlite(Arc::new(Proxy {
         connection: None,
+        // The bundled worker has the same contract. An overridden older
+        // worker rejects the unknown mode before SQL dispatch.
+        atomic_cell_mutation: true,
         cancelled,
         requests,
     })))
@@ -334,6 +356,76 @@ mod tests {
     use yuzora_host::db_connection_actor::ProductionConnectionActor;
     use yuzora_host::db_result_session::ResultSessionState;
     use yuzora_host::db_service::*;
+
+    #[tokio::test]
+    async fn the_local_worker_spawns_through_the_spawn_lock() {
+        let (child, spawns) = crate::process_kill::trace_spawns(|| spawn_local_worker("/bin/cat"));
+        child.unwrap().kill().await.unwrap();
+        assert_eq!(spawns, ["/bin/cat"]);
+    }
+
+    #[tokio::test]
+    async fn cell_mutation_capability_rejects_before_enqueue_without_retiring_queries() {
+        for supported in [false, true] {
+            let (cancelled, _receiver) = watch::channel(false);
+            let (requests, mut queue) = mpsc::channel(MAX_DATABASE_REQUESTS);
+            let proxy = Proxy {
+                connection: None,
+                atomic_cell_mutation: supported,
+                cancelled,
+                requests,
+            };
+            let request = QueryRunRequest {
+                descriptor_id: DescriptorId("capability".into()),
+                connection_id: ConnectionId("capability".into()),
+                connection_generation: ConnectionGeneration("1".into()),
+                query_run_id: QueryRunId("edit".into()),
+                mode: QueryRunMode::TableCellMutation,
+                statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
+                    sql: "UPDATE sample SET value='new' WHERE id=1".into(),
+                    transaction_boundary: TransactionBoundary::None,
+                }])
+                .unwrap(),
+            };
+            let command = SqliteCommand::QueryRun(request);
+            if supported {
+                let (reply, ()) = tokio::join!(proxy.request(command), async {
+                    let call = queue.recv().await.unwrap();
+                    assert!(
+                        matches!(call.command, SqliteCommand::QueryRun(ref request) if request.mode == QueryRunMode::TableCellMutation)
+                    );
+                    // This test checks admission, not engine execution.
+                    call.reply
+                        .send(Err(DatabaseOperationalError::new(
+                            DatabaseOperationalErrorCode::ConnectionBusy,
+                            "owned responder",
+                        )))
+                        .unwrap();
+                });
+                assert_eq!(
+                    reply.unwrap_err().code,
+                    DatabaseOperationalErrorCode::ConnectionBusy
+                );
+            } else {
+                let error = proxy.request(command).await.unwrap_err();
+                assert_eq!(error.code, DatabaseOperationalErrorCode::QueryFailed);
+                assert!(error.message.contains("atomic cell edits"));
+                assert!(matches!(
+                    queue.try_recv(),
+                    Err(mpsc::error::TryRecvError::Empty)
+                ));
+            }
+            assert!(!proxy.is_closed());
+            let (reply, ()) = tokio::join!(proxy.request(SqliteCommand::Probe), async {
+                let call = queue.recv().await.unwrap();
+                assert!(matches!(call.command, SqliteCommand::Probe));
+                call.reply
+                    .send(Ok(SqliteResult::Version("owned".into())))
+                    .unwrap();
+            });
+            assert!(matches!(reply.unwrap(), SqliteResult::Version(_)));
+        }
+    }
 
     #[tokio::test]
     #[ignore = "121-second local deadline regression; requires YUZORA_DB_QUERY_WORKER_BIN"]

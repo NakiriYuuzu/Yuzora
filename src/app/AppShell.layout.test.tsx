@@ -36,7 +36,90 @@ beforeEach(() => {
   useUiStore.setState({ ...uiInitialState, mode: "ade" })
   resize(1440)
 })
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+function storedLayout() {
+  const values = new Map([[WORKBENCH_LAYOUT_STORAGE_KEY, JSON.stringify({ navWidth: 320, toolsWidth: 280, navCollapsed: false, toolsOpen: true })]])
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value) },
+    removeItem: (key: string) => { values.delete(key) },
+  })
+  return () => JSON.parse(values.get(WORKBENCH_LAYOUT_STORAGE_KEY)!)
+}
+
+function requestLeft(kind: "toggle" | "reveal") {
+  act(() => {
+    if (kind === "toggle") useUiStore.getState().requestSidebarToggle()
+    else useUiStore.getState().requestSidebarViewToggle()
+  })
+}
+
+function showToolsOnly() {
+  if (rightToggle().getAttribute("aria-expanded") !== "true") fireEvent.click(rightToggle())
+  if (leftToggle().getAttribute("aria-expanded") === "true") fireEvent.click(leftToggle())
+  expect(leftToggle()).toHaveAttribute("aria-expanded", "false")
+  expect(rightToggle()).toHaveAttribute("aria-expanded", "true")
+}
+
+it.each(([800, 1100, 1199, 1200, 1440] as const).flatMap(width => (["toggle", "reveal"] as const).map(kind => ({ width, kind }))))("keeps sidebar exclusion at $width px for the $kind request", ({ width, kind }) => {
+  const saved = storedLayout()
+  resize(width)
+  render(<AppShell />)
+  showToolsOnly()
+  const editor = screen.getByRole("textbox", { name: "Editor buffer" })
+  fireEvent.change(editor, { target: { value: "keep this draft" } })
+  editor.focus()
+  requestLeft(kind)
+  expect(leftToggle()).toHaveAttribute("aria-expanded", "true")
+  expect(rightToggle()).toHaveAttribute("aria-expanded", String(width >= 1200))
+  expect(document.getElementById("workbench-spaces")).toHaveStyle({ width: "320px" })
+  expect(document.getElementById("workbench-tools")).toHaveStyle({ width: width >= 1200 ? "280px" : "0px" })
+  expect(saved()).toEqual({ navWidth: 320, toolsWidth: 280, navCollapsed: false, toolsOpen: true })
+  if (kind === "reveal") expect(editor).toHaveFocus()
+  else expect(leftToggle()).toHaveFocus()
+  requestLeft(kind)
+  expect(leftToggle()).toHaveAttribute("aria-expanded", String(kind === "reveal"))
+  expect(rightToggle()).toHaveAttribute("aria-expanded", String(width >= 1200))
+  expect(screen.getByRole("textbox", { name: "Editor buffer" })).toBe(editor)
+  expect(editor).toHaveValue("keep this draft")
+  expect(lifecycle.editorMount).toHaveBeenCalledOnce()
+  expect(lifecycle.spacesMount).toHaveBeenCalledOnce()
+})
+
+it.each(["toggle", "reveal"] as const)("keeps tools closed on narrow Database return after the %s request", async kind => {
+  storedLayout()
+  resize(1100)
+  render(<AppShell />)
+  showToolsOnly()
+  const editor = screen.getByRole("textbox", { name: "Editor buffer" })
+  await act(async () => { useUiStore.getState().setMode("database") })
+  expect(rightToggle()).toHaveAttribute("aria-expanded", "false")
+  requestLeft(kind)
+  fireEvent.click(screen.getByRole("button", { name: "Back to workspace" }))
+  expect(useUiStore.getState().mode).toBe("ade")
+  expect(leftToggle()).toHaveAttribute("aria-expanded", "true")
+  expect(rightToggle()).toHaveAttribute("aria-expanded", "false")
+  expect(screen.getByRole("textbox", { name: "Editor buffer" })).toBe(editor)
+})
+
+it.each(["toggle", "reveal"] as const)("preserves chosen widths and explicit pane preferences after the %s request", kind => {
+  const saved = storedLayout()
+  resize(1100)
+  const view = render(<AppShell />)
+  showToolsOnly()
+  requestLeft(kind)
+  resize(1440)
+  expect(leftToggle()).toHaveAttribute("aria-expanded", "true")
+  expect(rightToggle()).toHaveAttribute("aria-expanded", "false")
+  expect(saved()).toEqual({ navWidth: 320, toolsWidth: 280, navCollapsed: false, toolsOpen: true })
+  view.unmount()
+  render(<AppShell />)
+  expect(leftToggle()).toHaveAttribute("aria-expanded", "true")
+  expect(rightToggle()).toHaveAttribute("aria-expanded", "true")
+  expect(document.getElementById("workbench-spaces")).toHaveStyle({ width: "320px" })
+  expect(document.getElementById("workbench-tools")).toHaveStyle({ width: "280px" })
+})
 
 it("applies and saves the global bot animation switch without remounting work surfaces", async () => {
   const app = render(<AppShell />)

@@ -7,6 +7,7 @@ import { getDocument } from "../editor/documentRegistry"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { markdownPreviewPath } from "../lib/markdownPreviewTab"
 import { useWorkspaceStore } from "../state/workspaceStore"
+import { clearRetainedViewStatesForTest } from "./viewRetention"
 
 // Mutable stand-in for the editor buffer the preview reads. Each test seeds it
 // before rendering, mirroring the EditorPane.test.tsx documentRegistry mock.
@@ -40,6 +41,7 @@ const {
 
 afterEach(() => {
     cleanup()
+    clearRetainedViewStatesForTest()
     expect(viewListeners.size).toBe(0)
     vi.clearAllMocks()
     vi.unstubAllGlobals()
@@ -361,6 +363,26 @@ test("full grade 檔渲染出對應 HTML", async () => {
     render(<MarkdownPreview sourcePath="/w/r.md" />)
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeTruthy())
     expect(screen.getByText("one")).toBeTruthy()
+})
+
+test("returns to the preview scroll offset after the tab was switched away", async () => {
+    mockResult = { kind: "full", content: "# Title\n\nbody", size: 13, lineEnding: "lf" }
+    const first = render(<MarkdownPreview sourcePath="/w/watched.md" />)
+    const preview = await screen.findByTestId("markdown-preview-body")
+    preview.scrollTop = 420
+    fireEvent.scroll(preview)
+    first.unmount()
+
+    const second = render(<MarkdownPreview sourcePath="/w/watched.md" />)
+    const restored = await screen.findByTestId("markdown-preview-body")
+    expect(restored).not.toBe(preview)
+    expect(restored.scrollTop).toBe(420)
+    second.unmount()
+
+    // With the source open in an editor, its scroll sync owns the position.
+    vi.mocked(getView).mockReturnValue(fakeView(() => mockResult.kind === "full" ? mockResult.content : ""))
+    render(<MarkdownPreview sourcePath="/w/watched.md" />)
+    expect((await screen.findByTestId("markdown-preview-body")).scrollTop).toBe(0)
 })
 
 test("synthetic offsets 證明 editor／preview scroll events 雙向接線（非 pixel proof）", async () => {

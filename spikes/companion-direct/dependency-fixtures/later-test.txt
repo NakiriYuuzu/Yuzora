@@ -1,0 +1,4 @@
+   Compiling yzc-dependency-spike v0.0.0 (/tmp/yzc-deps)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.40s
+     Running `/tmp/yzc-deps/target/debug/later`
+PASS: rcgen CA generated; qrcode SVG; Web Push aes128gcm + VAPID request built offline (not sent)

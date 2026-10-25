@@ -90,7 +90,12 @@ function reportPreviewReloadError(error: unknown): Promise<void> {
   return showActionError(i18n.t("previewPanel.reload", { ns: "panels" }), error)
 }
 
-export function PreviewPanel() {
+/**
+ * `visible` is false while another tab of the group is in front. The panel is
+ * kept mounted then (see viewRetention): the native webview is only hidden, so
+ * its page, scroll position and in-page state are still there on return.
+ */
+export function PreviewPanel({ visible = true }: { visible?: boolean } = {}) {
   const { t } = useTranslation("preview")
   const { t: tp } = useTranslation("panels")
   const workspace = useWorkspaceStore((s) => s.workspacePath)
@@ -100,11 +105,12 @@ export function PreviewPanel() {
   const nav = workspace ? navMap[workspace] ?? EMPTY_NAV : EMPTY_NAV
   // EditorPanel (and this panel) stays mounted but CSS-hidden when the mode is not
   // "files"; a native webview isn't affected by `display:none`, so gate its
-  // visibility on the mode too — otherwise it floats over the Git/DB/SSH panels.
+  // visibility on the mode and on this tab being in front too — otherwise it
+  // floats over the Git/DB/SSH panels or over the group's other tabs.
   const mode = useUiStore((s) => s.mode)
 
   const overlayOpen = useAnyOverlayOpen()
-  const previewVisible = (mode === "files" || mode === "ade") && !overlayOpen
+  const previewVisible = visible && (mode === "files" || mode === "ade") && !overlayOpen
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [urlError, setUrlError] = useState<string | null>(null)
   const webviewHostRef = useRef<HTMLDivElement | null>(null)
@@ -125,8 +131,8 @@ export function PreviewPanel() {
   } : null
   const previewRequest = previewTarget ? { kind: "preview" as const, ...previewTarget } : null
   const previewChromeContextMenu = previewRequest ? contextMenuHandler(previewRequest) : undefined
-  const canGoBack = previewTarget ? previewTargetCanGoBack(previewTarget) : false
-  const canGoForward = previewTarget ? previewTargetCanGoForward(previewTarget) : false
+  const canGoBack = usePreviewStore(() => previewTarget ? previewTargetCanGoBack(previewTarget) : false)
+  const canGoForward = usePreviewStore(() => previewTarget ? previewTargetCanGoForward(previewTarget) : false)
   const canReload = previewTarget ? previewTargetHasUrl(previewTarget) : false
   const frameWidth = nav.frame === "mobile" ? 390 : "100%"
 
@@ -142,7 +148,12 @@ export function PreviewPanel() {
   // so re-running on url change doesn't recreate it.
   useEffect(() => {
     if (!isTauri() || !external || !nav.url || !workspace || !renderedPreview.url) return
-    if (nativeNavigationSync?.url === nav.url) {
+    const previewState = usePreviewStore.getState()
+    const nativeSession = previewState.nativeSession
+    const hasNativeContinuity = previewState.nativeRequest === null
+      && nativeSession?.workspacePath === workspace
+      && nativeSession.currentUrl === nav.url
+    if (nativeNavigationSync?.url === nav.url && hasNativeContinuity) {
       consumedNativeNavigationRef.current = nativeNavigationSync
       usePreviewStore.getState().consumeNativeNavigationSync(
         workspace,
@@ -153,12 +164,11 @@ export function PreviewPanel() {
     const consumed = consumedNativeNavigationRef.current
     if (consumed) {
       consumedNativeNavigationRef.current = null
-      if (consumed.url === nav.url) return
+      if (consumed.url === nav.url && hasNativeContinuity) return
     }
     const host = webviewHostRef.current
     if (!host) return
     const targetUrl = nav.url
-    const nativeSession = usePreviewStore.getState().nativeSession
     const sessionId = (nativeSession?.workspacePath === workspace ? nativeSession.sessionId : null)
       ?? crypto.randomUUID()
     const requestToken = usePreviewStore.getState().beginNativeOpenRequest(workspace, targetUrl)
@@ -204,15 +214,19 @@ export function PreviewPanel() {
       }
       usePreviewStore.getState().recordNativeOpen(workspace, targetUrl, sessionId)
       usePreviewStore.getState().settleNativeRequest(requestToken)
+      if (nativeNavigationSync?.url === targetUrl) {
+        consumedNativeNavigationRef.current = nativeNavigationSync
+        usePreviewStore.getState().consumeNativeNavigationSync(workspace, nativeNavigationSync.token)
+      }
     })
     return () => {
       cancelled = true
     }
-  }, [external, nativeNavigationSync, nav.url, workspace, renderedPreview.url])
+  }, [external, nativeNavigationSync, nav.url, nav.reloadNonce, workspace, renderedPreview.url])
 
   // Close the webview when the preview is no longer showing an external URL, and
-  // on unmount (the panel unmounts when another tab becomes active — a stray
-  // native layer would otherwise float over the editor).
+  // on unmount (the preview tab was closed or moved — a stray native layer
+  // would otherwise float over the editor).
   useEffect(() => {
     if (!isTauri()) return
     if (!external || !renderedPreview.url) {
@@ -238,7 +252,8 @@ export function PreviewPanel() {
     const targetUrl = nav.url
     let queued = false
     const update = () => {
-      if (queued) return
+      // A hidden webview gets its bounds when it is shown again (below).
+      if (queued || !previewVisibleRef.current) return
       queued = true
       void enqueueNativePreviewOperation(async () => {
         // Waiting notifications share the latest bounds; an in-flight write can queue a follow-up.

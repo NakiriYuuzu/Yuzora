@@ -50,7 +50,9 @@ vi.mock("@/app/panels/HerdrTerminalPage", () => ({
 }))
 
 vi.mock("@/app/panels/PreviewPanel", () => ({
-    PreviewPanel: () => <div data-testid="preview-panel" />
+    PreviewPanel: ({ visible }: { visible?: boolean }) => (
+        <div data-testid="preview-panel" data-visible={String(visible ?? true)} />
+    )
 }))
 
 vi.mock("../editor/EditorPane", () => ({
@@ -329,6 +331,45 @@ describe("EditorArea markdown preview tabs", () => {
         expect(screen.getByTestId("mock-herdr-term-keep")).toBe(herdr)
         expect(screen.queryByTestId("preview-panel")).toBeNull()
     })
+
+    it("keeps the Browser mounted and only hidden while an Agent or file tab is in front", () => {
+        const herdrPath = "yuzora://herdr/default/term-agent"
+        useWorkspaceStore.setState({
+            groups: [{
+                id: "browser-agent",
+                activePath: PREVIEW_TAB_PATH,
+                tabs: [
+                    { path: PREVIEW_TAB_PATH, name: "Preview", dirty: false, externallyModified: false, kind: "preview" },
+                    { ...herdrTab(herdrPath, "term-agent", "tab-agent"), herdrWorkspaceId: "ws-1" },
+                    { path: "/w/notes.md", name: "notes.md", dirty: false, externallyModified: false }
+                ]
+            }],
+            activeGroupIndex: 0
+        })
+        useHerdrStore.setState({ selectedSessionName: "default", selectedSpaceId: "ws-1" })
+
+        render(<EditorArea />)
+        const browser = screen.getByTestId("preview-panel")
+        const layer = screen.getByTestId(`kept-alive-layer-${PREVIEW_TAB_PATH}`)
+        expect(browser).toHaveAttribute("data-visible", "true")
+        expect(layer).not.toHaveAttribute("inert")
+
+        act(() => useWorkspaceStore.getState().setActiveTab(0, herdrPath))
+        expect(screen.getByTestId("preview-panel")).toBe(browser)
+        expect(browser).toHaveAttribute("data-visible", "false")
+        expect(layer).toHaveClass("invisible")
+        expect(layer).toHaveAttribute("inert")
+        expect(layer).toHaveAttribute("aria-hidden", "true")
+
+        act(() => useWorkspaceStore.getState().setActiveTab(0, "/w/notes.md"))
+        expect(screen.getByTestId("preview-panel")).toBe(browser)
+        expect(browser).toHaveAttribute("data-visible", "false")
+
+        act(() => useWorkspaceStore.getState().setActiveTab(0, PREVIEW_TAB_PATH))
+        expect(screen.getByTestId("preview-panel")).toBe(browser)
+        expect(browser).toHaveAttribute("data-visible", "true")
+        expect(layer).toHaveClass("visible")
+    })
 })
 
  it("keeps Herdr mounted but invisible and inert across Git and Database modes", () => {
@@ -352,3 +393,58 @@ describe("EditorArea markdown preview tabs", () => {
     expect(terminal).toHaveAttribute("data-active", "true")
     expect(layer).not.toHaveAttribute("inert")
  })
+
+describe("EditorArea close split", () => {
+    function fileTab(path: string, dirty: boolean) {
+        return { path, name: path, dirty, externallyModified: false }
+    }
+
+    it("asks before dropping unsaved edits that only the right group owns", async () => {
+        const { useConfirmDialogStore } = await import("@/state/confirmDialogStore")
+        useConfirmDialogStore.setState({ pending: null })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 1,
+            groups: [
+                { activePath: "/w/a.ts", tabs: [fileTab("/w/a.ts", false)] },
+                { activePath: "/w/b.ts", tabs: [fileTab("/w/b.ts", true)] }
+            ]
+        })
+        render(<EditorArea />)
+
+        await act(async () => {
+            screen.getAllByRole("button", { name: "Close split" })[0].click()
+        })
+        expect(useConfirmDialogStore.getState().pending).not.toBeNull()
+        expect(useWorkspaceStore.getState().groups).toHaveLength(2)
+
+        await act(async () => useConfirmDialogStore.getState().respond("cancel"))
+        expect(useWorkspaceStore.getState().groups).toHaveLength(2)
+
+        await act(async () => {
+            screen.getAllByRole("button", { name: "Close split" })[0].click()
+        })
+        await act(async () => useConfirmDialogStore.getState().respond("discard"))
+        expect(useWorkspaceStore.getState().groups).toHaveLength(1)
+    })
+
+    it("closes without asking when the left group still owns the dirty file", async () => {
+        const { useConfirmDialogStore } = await import("@/state/confirmDialogStore")
+        useConfirmDialogStore.setState({ pending: null })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 1,
+            groups: [
+                { activePath: "/w/b.ts", tabs: [fileTab("/w/b.ts", true)] },
+                { activePath: "/w/b.ts", tabs: [fileTab("/w/b.ts", true)] }
+            ]
+        })
+        render(<EditorArea />)
+
+        await act(async () => {
+            screen.getAllByRole("button", { name: "Close split" })[0].click()
+        })
+        expect(useConfirmDialogStore.getState().pending).toBeNull()
+        expect(useWorkspaceStore.getState().groups).toHaveLength(1)
+    })
+})

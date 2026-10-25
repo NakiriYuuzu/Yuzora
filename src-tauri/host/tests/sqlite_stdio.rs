@@ -161,6 +161,14 @@ impl Lane {
         response.result.map_err(Box::new)
     }
     fn query(&self, run: &str, sql: &str) -> QueryRunRequest {
+        self.query_with_boundary(run, sql, TransactionBoundary::None)
+    }
+    fn query_with_boundary(
+        &self,
+        run: &str,
+        sql: &str,
+        transaction_boundary: TransactionBoundary,
+    ) -> QueryRunRequest {
         QueryRunRequest {
             descriptor_id: self.identity.descriptor_id.clone(),
             connection_id: self.identity.connection_id.clone(),
@@ -169,7 +177,7 @@ impl Lane {
             mode: QueryRunMode::Primary,
             statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
                 sql: sql.into(),
-                transaction_boundary: TransactionBoundary::None,
+                transaction_boundary,
             }])
             .unwrap(),
         }
@@ -461,17 +469,25 @@ async fn local_sqlite_worker_preserves_connection_transactions_and_contains_fail
             .unwrap(),
         SqliteResult::Tables(_)
     ));
-    for (id, sql) in [
-        ("begin", "BEGIN"),
-        ("update", "UPDATE sample SET counter=7 WHERE id=1"),
-        ("commit", "COMMIT"),
+    // Separate runs on one connection: the open-transaction flag belongs to the
+    // connection, so the UPDATE run (no boundary of its own) still reports it.
+    for (id, sql, boundary, transaction_open) in [
+        ("begin", "BEGIN", TransactionBoundary::Begin, true),
+        (
+            "update",
+            "UPDATE sample SET counter=7 WHERE id=1",
+            TransactionBoundary::None,
+            true,
+        ),
+        ("commit", "COMMIT", TransactionBoundary::Commit, false),
     ] {
-        let request = first.query(id, sql);
+        let request = first.query_with_boundary(id, sql, boundary);
         let SqliteResult::Run(result) = first.call(SqliteCommand::QueryRun(request)).await.unwrap()
         else {
             panic!()
         };
         assert!(!result.connection_terminated);
+        assert_eq!(result.transaction_may_be_open, transaction_open, "{id}");
     }
     assert_eq!(
         rusqlite::Connection::open(&fixture.path)
@@ -535,4 +551,74 @@ async fn local_sqlite_worker_preserves_connection_transactions_and_contains_fail
         SqliteResult::Version(_)
     ));
     second.eof(true).await;
+}
+
+#[tokio::test]
+async fn cell_mutation_is_atomic_over_local_and_source_sqlite_lanes() {
+    for local in [false, true] {
+        let fixture = Fixture::new("cell-lane", !local);
+        let (mut lane, opened) =
+            Lane::start_mode(&fixture, "cell-lane", &fixture.path, local).await;
+        assert!(opened.result.is_ok());
+        for (id, sql, expected) in [
+            (
+                "many",
+                "UPDATE sample SET counter=counter+1",
+                EffectOutcome::RolledBack,
+            ),
+            (
+                "one",
+                "UPDATE sample SET counter=counter+1 WHERE id=1",
+                EffectOutcome::Committed,
+            ),
+        ] {
+            let mut request = lane.query(id, sql);
+            request.mode = QueryRunMode::TableCellMutation;
+            let SqliteResult::Run(run) = lane.call(SqliteCommand::QueryRun(request)).await.unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(run.statements[0].effect_outcome, expected);
+            assert!(!run.transaction_may_be_open);
+            let sum: i64 = rusqlite::Connection::open(&fixture.path)
+                .unwrap()
+                .query_row("SELECT sum(counter) FROM sample", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(sum, i64::from(expected == EffectOutcome::Committed));
+        }
+        rusqlite::Connection::open(&fixture.path).unwrap().execute_batch(
+            "CREATE TABLE audit(value INTEGER); CREATE TRIGGER fail_edit BEFORE UPDATE ON sample BEGIN INSERT INTO audit VALUES(1); SELECT RAISE(FAIL, 'owned trigger failure'); END;"
+        ).unwrap();
+        for (index, mode) in [QueryRunMode::TableCellMutation, QueryRunMode::Primary]
+            .into_iter()
+            .enumerate()
+        {
+            let mut request = lane.query(
+                &format!("trigger-{index}"),
+                "UPDATE sample SET counter=9 WHERE id=1",
+            );
+            request.mode = mode;
+            let SqliteResult::Run(run) = lane.call(SqliteCommand::QueryRun(request)).await.unwrap()
+            else {
+                panic!()
+            };
+            assert!(matches!(
+                run.statements[0].result,
+                StatementExecutionResult::Error { .. }
+            ));
+            if mode == QueryRunMode::TableCellMutation {
+                assert_eq!(run.statements[0].effect_outcome, EffectOutcome::RolledBack);
+            }
+            let audit: i64 = rusqlite::Connection::open(&fixture.path)
+                .unwrap()
+                .query_row("SELECT count(*) FROM audit", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(audit, index as i64);
+        }
+        assert!(matches!(
+            lane.call(SqliteCommand::Probe).await.unwrap(),
+            SqliteResult::Version(_)
+        ));
+        lane.eof(true).await;
+    }
 }

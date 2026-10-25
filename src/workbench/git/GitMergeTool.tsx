@@ -19,6 +19,7 @@ import { appHighlightStyle, appTheme } from "@/editor/cmTheme"
 import { hasVeryLongLine, languageExtensions } from "@/editor/cmExtensions"
 import { logUserAction } from "@/features/logs/userAction"
 import { gitConflictSides, gitStage, saveFile } from "@/lib/ipc"
+import type { GitConflictSides } from "@/lib/types"
 import { isWindowsPath, nativePathJoin } from "@/lib/paths"
 import { dirtyTabPaths } from "@/lib/unsavedGuard"
 import { requestAppConfirmation } from "@/state/appDialogStore"
@@ -196,7 +197,23 @@ function baseExtensions(path: string, content: string): Extension[] {
     ]
 }
 
-function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts; onDone: () => void }) {
+function sameConflictInputs(left: GitConflictSides, right: GitConflictSides): boolean {
+    return left.code === right.code && left.symlink === right.symlink && (["base", "ours", "theirs"] as const).every((side) => {
+        const a = left[side]
+        const b = right[side]
+        return a === null ? b === null : b !== null && a.kind === b.kind && readableText(a) === readableText(b)
+    })
+}
+
+interface MergeSource {
+    root: string
+    path: string
+    rebase: boolean
+    sides: GitConflictSides
+    texts: MergeTexts
+}
+
+function MergeEditors({ root, path, rebase, sides, texts, onDone }: MergeSource & { onDone: () => void }) {
     const { t } = useTranslation("menus")
     const runOp = useGitStore((s) => s.runOp)
     const repositoryRoot = useGitStore((s) => s.environment?.status === "ready" ? s.environment.root : null)
@@ -208,6 +225,8 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
     const fieldRef = useRef<StateField<ResultRegion[]> | null>(null)
     // Null until the editors exist, so no action runs against missing views.
     const [resolved, setResolved] = useState<boolean[] | null>(null)
+    const saveInFlight = useRef(false)
+    const [saving, setSaving] = useState(false)
 
     const model = useMemo(() => {
         const base = splitLines(texts.base)
@@ -365,42 +384,81 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
 
     const save = async () => {
         const views = viewsRef.current
-        if (!views || !repositoryRoot || busy != null) return
-        if (pending.length) {
-            const ok = await requestAppConfirmation({
-                title: t("gitMerge.applyTitle"),
-                description: t("gitMerge.applyUnresolved", { count: pending.length }),
-                kind: "warning"
-            })
-            if (!ok) return
+        if (!views || repositoryRoot !== root || busy != null || saveInFlight.current) return
+        saveInFlight.current = true
+        setSaving(true)
+        const doc = views.result.state.doc
+        const ownsView = () => {
+            const state = useGitStore.getState()
+            return viewsRef.current === views
+                && useGitConflictStore.getState().mergePath === path
+                && state.environment?.status === "ready" && state.environment.root === root
+                && (state.status?.inProgress === "rebase") === rebase
         }
-        let content = views.result.state.doc.toString()
-        if (texts.crlf) content = content.replace(/\r?\n/g, "\r\n")
-        const root = repositoryRoot
-        const absolute = nativePathJoin(root, isWindowsPath(root) ? path.replace(/\//g, "\\") : path)
-        // The result is built from the merge base, so it replaces any manual
-        // work on the file: unsaved editor edits, or conflicts resolved by hand.
-        const unsaved = dirtyTabPaths().includes(absolute)
-        const worktree = await gitConflictSides(root, path)
-            .then((sides) => readableText(sides.worktree))
-            .catch(() => texts.worktree)
-        const conflicts = model.regions.filter((region) => region.kind === "conflict").length
-        const edited = worktree !== texts.worktree || (worktree !== null && conflictMarkerCount(worktree) < conflicts)
-        if (unsaved || edited) {
-            const replace = await requestAppConfirmation({
-                title: t("gitMerge.applyTitle"),
-                description: t(unsaved ? "gitMerge.replaceUnsaved" : "gitMerge.replaceManual"),
-                kind: "warning"
-            })
-            if (!replace) return
+        const assertCurrent = (latest: GitConflictSides) => {
+            // The path may have become a symlink since the tool loaded it, and the
+            // write would then go through the link: refuse without asking anything.
+            if (latest.symlink) throw new Error(t("gitMerge.symlink"))
+            if (!ownsView() || views.result.state.doc !== doc || !sameConflictInputs(sides, latest)) {
+                throw new Error(t("gitMerge.changed"))
+            }
         }
-        const ok = await runOp("conflict-merge", async () => {
-            await saveFile(absolute, content)
-            await gitStage(root, [path])
-        })
-        if (ok) {
-            void logUserAction("git_conflict_merge", `merge ${path}`)
-            onDone()
+        try {
+            if (pending.length) {
+                const ok = await requestAppConfirmation({
+                    title: t("gitMerge.applyTitle"),
+                    description: t("gitMerge.applyUnresolved", { count: pending.length }),
+                    kind: "warning"
+                })
+                if (!ok || !ownsView()) return
+            }
+            // A failed preflight must not authorize writing a stale merge result.
+            const latest = await gitConflictSides(root, path)
+            if (!ownsView()) return
+            assertCurrent(latest)
+            let content = doc.toString()
+            if (texts.crlf) content = content.replace(/\r?\n/g, "\r\n")
+            const absolute = nativePathJoin(root, isWindowsPath(root) ? path.replace(/\//g, "\\") : path)
+            const unsaved = dirtyTabPaths().includes(absolute)
+            const worktree = readableText(latest.worktree)
+            const conflicts = model.regions.filter((region) => region.kind === "conflict").length
+            const edited = worktree !== texts.worktree || (worktree !== null && conflictMarkerCount(worktree) < conflicts)
+            const needsConfirmation = unsaved || edited
+            if (needsConfirmation) {
+                const replace = await requestAppConfirmation({
+                    title: t("gitMerge.applyTitle"),
+                    description: t(unsaved ? "gitMerge.replaceUnsaved" : "gitMerge.replaceManual"),
+                    kind: "warning"
+                })
+                if (!replace || !ownsView()) return
+            }
+            const ok = await runOp("conflict-merge", async () => {
+                assertCurrent(latest)
+                // The confirmation above can stay open while the path is swapped
+                // (for a symlink, too), so read it again right before the write;
+                // an unreadable path fails closed. Consent covers this worktree, not
+                // edits or a new conflict that appeared while it was open. Ordinary
+                // Apply has no intervening await and needs only the first preflight.
+                if (needsConfirmation) {
+                    const confirmed = await gitConflictSides(root, path)
+                    assertCurrent(confirmed)
+                    if (readableText(confirmed.worktree) !== worktree || confirmed.worktree?.kind !== latest.worktree?.kind) {
+                        throw new Error(t("gitMerge.changed"))
+                    }
+                }
+                await saveFile(absolute, content)
+                assertCurrent(latest)
+                await gitStage(root, [path])
+            })
+            if (ok && ownsView() && views.result.state.doc === doc) {
+                void logUserAction("git_conflict_merge", `merge ${path}`)
+                onDone()
+            }
+        } catch (error) {
+            if (ownsView()) await runOp("conflict-merge", async () => { throw error })
+        } finally {
+            saveInFlight.current = false
+            setSaving(false)
         }
     }
 
@@ -440,7 +498,7 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
             </div>
             <DialogFooter>
                 <Button type="button" variant="ghost" onClick={onDone}>{t("gitMerge.cancel")}</Button>
-                <Button type="button" disabled={busy != null || !repositoryRoot || !resolved} onClick={() => void save()}>{t("gitMerge.apply")}</Button>
+                <Button type="button" disabled={saving || busy != null || repositoryRoot !== root || !resolved} onClick={() => void save()}>{t("gitMerge.apply")}</Button>
             </DialogFooter>
         </>
     )
@@ -452,27 +510,28 @@ export function GitMergeTool() {
     const path = useGitConflictStore((s) => s.mergePath)
     const close = useGitConflictStore((s) => s.closeMerge)
     const repositoryRoot = useGitStore((s) => s.environment?.status === "ready" ? s.environment.root : null)
-    const [loaded, setLoaded] = useState<{ path: string; texts?: MergeTexts; error?: string } | null>(null)
-    // A result for another path (or none yet) means this path is still loading.
-    const state = loaded?.path === path ? loaded : null
+    const rebase = useGitStore((s) => s.status?.inProgress === "rebase")
+    const [loaded, setLoaded] = useState<{ root: string; path: string; rebase: boolean; source?: MergeSource; error?: string } | null>(null)
+    const state = loaded?.path === path && loaded.root === repositoryRoot && loaded.rebase === rebase ? loaded : null
     useOverlayPresence(path !== null)
 
     useEffect(() => {
         if (!path || !repositoryRoot) return
         let cancelled = false
-        const setState = (next: { path: string; texts?: MergeTexts; error?: string }) => { if (!cancelled) setLoaded(next) }
+        const setState = (next: { source?: MergeSource; error?: string }) => {
+            if (!cancelled) setLoaded({ root: repositoryRoot, path, rebase, ...next })
+        }
         gitConflictSides(repositoryRoot, path).then((sides) => {
             // The left pane is the user's side, which a rebase stores as theirs.
-            const rebase = useGitStore.getState().status?.inProgress === "rebase"
             const texts = mergeTexts(rebase ? { ...sides, ours: sides.theirs, theirs: sides.ours } : sides)
             setState(typeof texts === "string"
-                ? { path, error: t(texts === "deleted" ? "gitMerge.deletedSide" : "gitMerge.binary") }
-                : { path, texts })
+                ? { error: t({ deleted: "gitMerge.deletedSide", binary: "gitMerge.binary", encoding: "gitMerge.lossyEncoding", symlink: "gitMerge.symlink" }[texts]) }
+                : { source: { root: repositoryRoot, path, rebase, sides, texts } })
         }).catch((error: unknown) => {
-            setState({ path, error: String(error) })
+            setState({ error: String(error) })
         })
         return () => { cancelled = true }
-    }, [path, repositoryRoot, t])
+    }, [path, repositoryRoot, rebase, t])
 
     return (
         <Dialog open={path !== null} onOpenChange={(next) => { if (!next) close() }}>
@@ -487,8 +546,8 @@ export function GitMergeTool() {
                         <DialogTitle>{t("gitMerge.title", { path })}</DialogTitle>
                         <DialogDescription>{t("gitMerge.description")}</DialogDescription>
                     </DialogHeader>
-                    {state?.texts ? (
-                        <MergeEditors key={state.path} path={state.path} texts={state.texts} onDone={close} />
+                    {state?.source ? (
+                        <MergeEditors key={state.path} {...state.source} onDone={close} />
                     ) : (
                         <div role={state?.error ? "alert" : "status"} className="flex min-h-0 flex-1 items-center justify-center text-[12px] text-(--ink-3)">
                             {state?.error ?? t("gitMerge.loading")}

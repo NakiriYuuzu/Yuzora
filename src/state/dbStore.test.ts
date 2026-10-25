@@ -14,7 +14,8 @@ import type {
     DbResultSessionOwner,
     DbSaveAndConnectOutcome,
     DbStatementExecution,
-    DbTable
+    DbTable,
+    DbValue
 } from "@/lib/types"
 import { migrateLegacyPostgresTransport } from "@/lib/types"
 import { dbObjectRefKey } from "@/lib/databaseSql"
@@ -571,6 +572,28 @@ describe("useDbStore", () => {
         expect(q.error).toBeNull()
         expect(q.running).toBe(false)
         expect(typeof q.elapsedMs).toBe("number")
+    })
+
+    it.each(["all", "current", "selection"] as const)("submits whole PostgreSQL Unicode dollar strings for %s execution", async (kind) => {
+        await useDbStore.getState().openConfig({
+            kind: "postgres", host: "fixture.invalid", port: 5432, database: "fixture",
+            user: "fixture", password: "fixture-only", transportMode: "verifyFull", // ggignore: test fixture credential, not a secret
+        })
+        const prefix = "SELECT 0;\r\n"
+        const first = "SELECT $雪😀$a;b$雪😀$;"
+        const source = `${prefix}${first}\r\nSELECT 2;`
+        const cursor = source.indexOf("b$")
+        useDbStore.getState().setSql(source)
+        await useDbStore.getState().runQuery(kind === "all" ? { kind: "all" } : {
+            kind: "primary", cursor,
+            selection: kind === "current" ? { from: cursor, to: cursor }
+                : { from: prefix.length + first.length, to: prefix.length },
+        })
+        expect(mockQueryRun).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+            statements: (kind === "all" ? ["SELECT 0;", first, "SELECT 2;"] : [first])
+                .map(sql => ({ sql, transactionBoundary: "none" })),
+        }))
+        expect(useDbStore.getState().queries["db-1"].sql).toBe(source)
     })
 
     it("runQuery reloads tables after an execute (schema may have changed)", async () => {
@@ -1286,6 +1309,244 @@ describe("useDbStore session-only query history", () => {
 })
 
 describe("useDbStore sort", () => {
+    async function loadSortRows(mode: string, rows: DbValue[][]) {
+        mockRunResultOnce({ ...selectResult, columns: ["value", "row-id"], rows })
+        useDbStore.getState().setSql("SELECT mixed_value, row_id FROM fixture")
+        await useDbStore.getState().runQuery()
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        if (mode === "legacy") {
+            const query = { ...useDbStore.getState().queryBuckets[descriptorId], runGroup: null }
+            useDbStore.setState({ queryBuckets: { [descriptorId]: query }, queries: { "db-1": query } })
+        }
+        mockQueryRun.mockClear()
+    }
+
+    function sortedRows() {
+        const result = useDbStore.getState().queries["db-1"].result
+        if (result?.kind !== "select") throw new Error("expected loaded rows")
+        return result.rows
+    }
+
+    const permutations = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+    const mixedCases = ["session", "legacy"].flatMap((mode) =>
+        (["text", "json", "binary"] as const).flatMap((kind) =>
+            permutations.map((order) => ({ mode, kind, order, label: order.join("") }))
+        )
+    )
+
+    it.each(mixedCases)("keeps mixed sorting transitive: $mode $kind permutation $label", async ({ mode, kind, order }) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const values: DbValue[] = [
+            { kind: "integer", value: "2" },
+            { kind: "integer", value: "10" },
+            kind === "binary" ? { kind, hex: "11" } : { kind, value: "11" }
+        ]
+        const canonical = values.map((value, index): DbValue[] => [value, { kind: "text", value: String(index) }])
+        const rows = order.map((index) => canonical[index])
+        const original = structuredClone(rows)
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual(canonical)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([...canonical].reverse())
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toBe(rows)
+        expect(rows).toEqual(original)
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        expect(mockResultPageNext).not.toHaveBeenCalled()
+        expect(mockResultPagePrevious).not.toHaveBeenCalled()
+    })
+
+    it.each(["session", "legacy"])("preserves numeric precision, stable ties and null ordering in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const values: DbValue[] = [
+            { kind: "null" },
+            { kind: "integer", value: "9007199254740993" },
+            { kind: "decimal", value: "2.00" },
+            { kind: "integer", value: "2" },
+            { kind: "decimal", value: "9007199254740992.9" },
+            { kind: "decimal", value: "-0" },
+            { kind: "integer", value: "0" },
+            { kind: "integer", value: "-10" },
+            { kind: "integer", value: "-2" },
+            { kind: "decimal", value: "0.0000000000000000000001" },
+            { kind: "integer", value: "9007199254740992" }
+        ]
+        const rows = values.map((value, index): DbValue[] => [value, { kind: "text", value: String(index) }])
+        rows.push([]) // Missing value follows NULL under the existing comparison.
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([7, 8, 5, 6, 9, 2, 3, 10, 4, 1, 0, 11].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([11, 0, 1, 4, 10, 2, 3, 9, 6, 5, 8, 7].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toBe(rows)
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
+    it.each(["session", "legacy"])("retains lexical order among nonnumeric kinds in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const values: DbValue[] = [
+            { kind: "text", value: "z" },
+            { kind: "boolean", value: false },
+            { kind: "json", value: "11" },
+            { kind: "binary", hex: "00ff" },
+            { kind: "date", value: "2026-01-01" },
+            { kind: "time", value: "12:00:00" },
+            { kind: "dateTime", value: "2026-01-02T00:00:00+00:00" }
+        ]
+        const rows = values.map((value): DbValue[] => [value])
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([3, 2, 5, 4, 6, 1, 0].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([0, 1, 6, 4, 5, 2, 3].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toBe(rows)
+    })
+
+    it.each(["session", "legacy"])("orders nonfinite numeric aliases with stable ties in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const values: DbValue[] = [
+            { kind: "decimal", value: "NaN" },
+            { kind: "integer", value: "-10" },
+            { kind: "decimal", value: "-inf" },
+            { kind: "integer", value: "-9007199254740993" },
+            { kind: "decimal", value: "Infinity" },
+            { kind: "decimal", value: "-Infinity" },
+            { kind: "integer", value: "0" },
+            { kind: "decimal", value: "inf" },
+            { kind: "decimal", value: "9007199254740992.9" },
+            { kind: "integer", value: "9007199254740993" },
+            { kind: "null" },
+            { kind: "decimal", value: "NaN" }
+        ]
+        const rows = values.map((value, index): DbValue[] => [value, { kind: "text", value: String(index) }])
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([2, 5, 3, 1, 6, 8, 9, 4, 7, 0, 11, 10].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([10, 0, 11, 4, 7, 9, 8, 6, 1, 3, 2, 5].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toBe(rows)
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        expect(mockResultPageNext).not.toHaveBeenCalled()
+    })
+
+    it.each(["session", "legacy"])("orders negative infinity before finite values in every permutation in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const canonical: DbValue[][] = [
+            [{ kind: "decimal", value: "-inf" }],
+            [{ kind: "integer", value: "-10" }],
+            [{ kind: "integer", value: "0" }]
+        ]
+        for (const order of permutations) {
+            const rows = order.map((index) => canonical[index])
+            await loadSortRows(mode, rows)
+            await useDbStore.getState().sortResult(0)
+            expect(sortedRows()).toEqual(canonical)
+            await useDbStore.getState().sortResult(0)
+            expect(sortedRows()).toEqual([...canonical].reverse())
+            await useDbStore.getState().sortResult(0)
+            expect(sortedRows()).toBe(rows)
+        }
+    })
+
+    it.each(["session", "legacy"])("keeps special numeric spellings lexical when typed as text in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const rows: DbValue[][] = [
+            [{ kind: "text", value: "NaN" }],
+            [{ kind: "text", value: "-inf" }],
+            [{ kind: "text", value: "-10" }],
+            [{ kind: "text", value: "Infinity" }]
+        ]
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([2, 1, 3, 0].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([0, 3, 1, 2].map((index) => rows[index]))
+    })
+
+    it.each(["session", "legacy"])("orders UTC datetime fractions chronologically without dropping submillisecond digits in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const values = [
+            "2026-01-01T00:00:00.001+00:00",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00.000000002+00:00",
+            "2026-01-01T00:00:00.000001+00:00",
+            "2026-01-01T00:00:00.000000001+00:00"
+        ]
+        const rows = values.map((value, index): DbValue[] => [{ kind: "dateTime", value }, { kind: "text", value: String(index) }])
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([1, 4, 2, 3, 0].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([0, 3, 2, 4, 1].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toBe(rows)
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
+    it.each(["session", "legacy"])("keeps equivalent UTC datetime representations stable across date and second boundaries in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const values = [
+            "2026-01-01T00:00:00.100Z",
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:00:00.100000000+00:00",
+            "2026-01-01T00:00:00.1+00:00",
+            "2025-12-31T23:59:59.999999999Z",
+            "2026-01-01T00:00:01Z",
+            "2026-01-01T00:00:00.000000000Z"
+        ]
+        const rows = values.map((value, index): DbValue[] => [{ kind: "dateTime", value }, { kind: "text", value: String(index) }])
+        await loadSortRows(mode, rows)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([4, 1, 6, 0, 2, 3, 5].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([5, 0, 2, 3, 1, 6, 4].map((index) => rows[index]))
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toBe(rows)
+    })
+
+    it.each(["session", "legacy"])("keeps datetime and text comparisons consistent in every permutation in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const canonical: DbValue[][] = [
+            [{ kind: "dateTime", value: "2026-01-01T00:00:00+00:00" }],
+            [{ kind: "text", value: "2026-01-01T00:00:00.0005" }],
+            [{ kind: "dateTime", value: "2026-01-01T00:00:00.001+00:00" }]
+        ]
+        for (const order of permutations) {
+            const rows = order.map((index) => canonical[index])
+            await loadSortRows(mode, rows)
+            await useDbStore.getState().sortResult(0)
+            expect(sortedRows()).toEqual(canonical)
+            await useDbStore.getState().sortResult(0)
+            expect(sortedRows()).toEqual([...canonical].reverse())
+            await useDbStore.getState().sortResult(0)
+            expect(sortedRows()).toBe(rows)
+        }
+    })
+
+    it.each(["session", "legacy"])("preserves naive timestamp precision and literal text ordering in %s", async (mode) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const naive: DbValue[][] = [
+            [{ kind: "dateTime", value: "2026-01-01 00:00:00.000000002" }],
+            [{ kind: "dateTime", value: "2026-01-01 00:00:00" }],
+            [{ kind: "dateTime", value: "2026-01-01 00:00:00.000000001" }]
+        ]
+        await loadSortRows(mode, naive)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([1, 2, 0].map((index) => naive[index]))
+        const literal: DbValue[][] = [
+            [{ kind: "text", value: "2026-01-01T00:00:00+00:00" }],
+            [{ kind: "text", value: "2026-01-01T00:00:00.001+00:00" }]
+        ]
+        await loadSortRows(mode, literal)
+        await useDbStore.getState().sortResult(0)
+        expect(sortedRows()).toEqual([literal[1], literal[0]])
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
     it("runQuery records lastSql for a select and clears any prior sort", async () => {
         await useDbStore.getState().openConnection("/a.db")
         useDbStore.getState().setSql("SELECT * FROM users")
@@ -1815,6 +2076,30 @@ describe("P2 profile repository migration and recovery projection", () => {
         expect(localStorage.getItem(DB_CONNECTIONS_STORAGE_KEY)).not.toBeNull()
     })
 
+    it("replays stale legacy data after Forget but honors the Rust migration snapshot", async () => {
+        localStorage.setItem(DB_CONNECTIONS_STORAGE_KEY, JSON.stringify([legacyRecord]))
+        vi.spyOn(localStorage, "removeItem").mockImplementation(() => {
+            throw new Error("browser storage denied")
+        })
+        await useDbStore.getState().initializeProfiles()
+        const firstPayload = mockProfileImportLegacy.mock.calls[0][0]
+        await useDbStore.getState().removeSaved(legacyRecord.id)
+        expect(useDbStore.getState().saved).toEqual([])
+        expect(localStorage.getItem(DB_CONNECTIONS_STORAGE_KEY)).not.toBeNull()
+
+        // The Rust regression exercises persistent deduplication. This control
+        // proves the renderer can replay the same payload after Forget/reload.
+        useDbStore.getState().reset()
+        mockProfileList.mockResolvedValueOnce({ profiles: [], recovery: [] })
+        mockProfileImportLegacy.mockResolvedValueOnce({ profiles: [], recovery: [] })
+        await useDbStore.getState().initializeProfiles()
+        expect(mockProfileImportLegacy).toHaveBeenCalledTimes(2)
+        expect(mockProfileImportLegacy.mock.calls[1][0]).toEqual(firstPayload)
+        expect(useDbStore.getState().saved).toEqual([])
+        expect(useDbStore.getState().profileError).toBe("legacyCleanupFailed")
+        expect(mockProfileOpen).not.toHaveBeenCalled()
+    })
+
     it("startup projects profiles and recovery rows without opening or mutating credentials", async () => {
         mockProfileList.mockResolvedValueOnce({
             profiles: [storedProfile],
@@ -2172,6 +2457,97 @@ describe("dbStore descriptor identity + sessions", () => {
             status: "error",
             error: "staleConnection"
         })
+    })
+
+    it.each([
+        ["save-first", "success"], ["save-first", "error"],
+        ["query-first", "success"], ["query-first", "error"],
+    ] as const)("unchanged profile save preserves pending query (%s, %s)", async (order, outcome) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const id = useDbStore.getState().activeDescriptorId!
+        const profile = snapshotProfiles().find((item) => item.descriptorId === id)!
+        const query = deferred<DbQueryRun>()
+        const update = deferred<DbProfileDescriptor>()
+        let request!: DbQueryRunRequest
+        mockQueryRun.mockImplementationOnce((args) => { request = args; return query.promise })
+        mockProfileUpdate.mockReturnValueOnce(update.promise)
+        useDbStore.getState().setSql("SELECT 1;")
+        const running = useDbStore.getState().runQuery()
+        const saving = useDbStore.getState().updateSaved(id, { kind: "sqlite", path: "/a.db" })
+        if (order === "save-first") { update.resolve(profile); await saving }
+        if (outcome === "success") query.resolve(queryRunFromResult(request, selectResult))
+        else query.reject({ code: "queryFailed", message: "query failure" })
+        await running
+        if (order === "query-first") { update.resolve(profile); await saving }
+        const current = useDbStore.getState().queryBuckets[id]
+        expect(current.running).toBe(false)
+        expect(current.error?.code ?? null).toBe(outcome === "error" ? "queryFailed" : null)
+        if (outcome === "success") expect(current.result).toMatchObject({ kind: "select", rows: selectResult.rows })
+        expect(useDbStore.getState().connections).toHaveLength(1)
+        expect(useDbStore.getState().saved[0].configGeneration).toBe(profile.configGeneration)
+        await useDbStore.getState().runQuery()
+        expect(mockQueryRun).toHaveBeenCalledTimes(2)
+    })
+
+    it("unchanged profile save preserves a pending result page", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        const id = useDbStore.getState().activeDescriptorId!
+        useDbStore.getState().setSql("SELECT paged_value();")
+        mockRunResultOnce({ ...selectResult, truncated: true })
+        await useDbStore.getState().runQuery()
+        const owner = resultOwnerOf(useDbStore.getState().queryBuckets[id].runGroup!.run!.statements[0])
+        const page = deferred<DbResultPage>()
+        mockResultPageNext.mockReturnValueOnce(page.promise)
+        const loading = useDbStore.getState().nextResultPage(owner)
+        mockProfileUpdate.mockResolvedValueOnce(snapshotProfiles().find((item) => item.descriptorId === id)!)
+        await useDbStore.getState().updateSaved(id, { kind: "sqlite", path: "/a.db" })
+        page.resolve(wirePage(owner, { pageIndex: 1, hasPrevious: true }))
+        await loading
+        expect(storedResultPage(id, owner)).toMatchObject({ loading: false, page: { pageIndex: 1 } })
+    })
+
+    it("unchanged profile save preserves pending metadata", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        const id = useDbStore.getState().activeDescriptorId!
+        const tables = deferred<DbTable[]>()
+        const columns = deferred<DbColumn[]>()
+        mockList.mockReturnValueOnce(tables.promise)
+        mockColumns.mockReturnValueOnce(columns.promise)
+        const loadingTables = useDbStore.getState().loadTables(id)
+        const loadingColumns = useDbStore.getState().loadColumns(id, usersTable[0])
+        mockProfileUpdate.mockResolvedValueOnce(snapshotProfiles().find((item) => item.descriptorId === id)!)
+        await useDbStore.getState().updateSaved(id, { kind: "sqlite", path: "/a.db" })
+        const extraTable = { ...usersTable[0], name: "new_table" }
+        const extraColumn = { name: "updated", type: "TEXT", pk: false, notnull: false }
+        // A successful table refresh now rereads requested columns. Both reads
+        // observe the same database metadata; the unchanged profile save must
+        // still preserve the final table and column results.
+        mockColumns.mockResolvedValue([extraColumn])
+        tables.resolve([...usersTable, extraTable]); columns.resolve([extraColumn])
+        await Promise.all([loadingTables, loadingColumns])
+        expect(useDbStore.getState().tableBuckets[id]).toEqual([...usersTable, extraTable])
+        expect(useDbStore.getState().columnBuckets[id][dbObjectRefKey(usersTable[0])]).toEqual([extraColumn])
+        expect(mockColumns).toHaveBeenCalledTimes(2)
+    })
+
+    it.each(["open", "disconnect"] as const)("unchanged profile save preserves a pending %s", async (operation) => {
+        await useDbStore.getState().openConnection("/a.db")
+        const id = useDbStore.getState().activeDescriptorId!
+        if (operation === "open") await useDbStore.getState().disconnect(id)
+        const opened = deferred<DbLiveConnection>()
+        const disconnected = deferred<void>()
+        if (operation === "open") mockProfileOpen.mockReturnValueOnce(opened.promise)
+        else mockProfileDisconnect.mockReturnValueOnce(disconnected.promise)
+        const pending = operation === "open"
+            ? useDbStore.getState().openOrReconnectSavedConnection(id)
+            : useDbStore.getState().disconnect(id)
+        mockProfileUpdate.mockResolvedValueOnce(snapshotProfiles().find((item) => item.descriptorId === id)!)
+        await useDbStore.getState().updateSaved(id, { kind: "sqlite", path: "/a.db" })
+        if (operation === "open") opened.resolve(live(id, "new-connection", "new-generation"))
+        else disconnected.resolve()
+        await pending
+        expect(useDbStore.getState().sessions[id].status).toBe(operation === "open" ? "connected" : "disconnected")
+        expect(useDbStore.getState().connections).toHaveLength(operation === "open" ? 1 : 0)
     })
 
     it("updateSaved rewrites fields in place while keeping the same id", async () => {
@@ -3396,6 +3772,108 @@ describe("approved owner-tagged database regression seams", () => {
             .not.toBe(firstGroup.owner.queryRunId)
     })
 
+    it.each([
+        [true, "released"], [false, "released"],
+        [true, "stale"], [false, "stale"],
+        [true, "error"], [false, "error"],
+    ] as const)("cancels new SQL before dispatch while cleaning old results (streaming=%s, release=%s)", async (streaming, outcome) => {
+        await useDbStore.getState().openConnection("/a.db")
+        useDbStore.getState().setSql("SELECT 1;")
+        mockRunResultOnce({ ...selectResult, truncated: streaming })
+        await useDbStore.getState().runQuery()
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        const previous = useDbStore.getState().queryBuckets[descriptorId].runGroup!
+        const owner = resultOwnerOf(previous.run!.statements[0])
+        const release = deferred<DbResultPage>()
+        mockResultSessionRelease.mockReturnValueOnce(release.promise)
+        mockQueryRun.mockClear()
+        useDbStore.getState().setSql("UPDATE counters SET value = value + 1;")
+        const pending = useDbStore.getState().runQuery()
+        expect(useDbStore.getState().queryBuckets[descriptorId].running).toBe(true)
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        await useDbStore.getState().cancelQuery()
+        if (outcome === "released") release.resolve(wirePage(owner, { lifecycle: "released" }))
+        else release.reject({ code: outcome === "stale" ? "staleConnection" : "queryFailed", message: "release failed" })
+        await pending
+
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        expect(mockQueryCancel).not.toHaveBeenCalled()
+        const query = useDbStore.getState().queryBuckets[descriptorId]
+        expect(query.running).toBe(false)
+        expect(query.runGroup?.owner.queryRunId).toBe(previous.owner.queryRunId)
+        expect(useDbStore.getState().historyBuckets[descriptorId].filter((entry) => entry.ok)).toHaveLength(1)
+        if (outcome === "error") expect(query.error?.code).toBe("queryFailed")
+        else {
+            expect(query.error).toBeNull()
+            expect(storedResultPage(descriptorId, owner)).toMatchObject({ released: true, loading: false, page: { lifecycle: "released", hasNext: false } })
+            // A later explicit Run is still allowed; cancellation never replays it.
+            await useDbStore.getState().runQuery()
+            expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        }
+    })
+
+    it("finishes all prior cursor cleanup after cancellation without admitting new page requests", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        useDbStore.getState().setSql("SELECT 1; SELECT 2;")
+        mockQueryRun.mockImplementationOnce(async (request) => queryRunWithStatements(request, [
+            rowExecution(request, 0, { ...selectResult, truncated: true }),
+            rowExecution(request, 1, { ...selectResult, truncated: true }),
+        ]))
+        await useDbStore.getState().runQuery()
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        const previous = useDbStore.getState().queryBuckets[descriptorId].runGroup!
+        const owners = previous.run!.statements.map(resultOwnerOf)
+        const firstRelease = deferred<DbResultPage>()
+        const secondRelease = deferred<DbResultPage>()
+        mockResultSessionRelease.mockReturnValueOnce(firstRelease.promise).mockReturnValueOnce(secondRelease.promise)
+        mockQueryRun.mockClear()
+        useDbStore.getState().setSql("UPDATE counters SET value = value + 1;")
+        const pending = useDbStore.getState().runQuery()
+        await useDbStore.getState().cancelQuery()
+        await useDbStore.getState().nextResultPage(owners[1])
+        await useDbStore.getState().releaseResultSession(owners[1])
+        expect(mockResultPageNext).not.toHaveBeenCalled()
+        expect(mockResultSessionRelease).toHaveBeenCalledTimes(1)
+        firstRelease.resolve(wirePage(owners[0], { lifecycle: "released" }))
+        await vi.waitFor(() => expect(mockResultSessionRelease).toHaveBeenCalledTimes(2))
+        expect(useDbStore.getState().queryBuckets[descriptorId].running).toBe(true)
+        await useDbStore.getState().runQuery()
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        secondRelease.resolve(wirePage(owners[1], { lifecycle: "released" }))
+        await pending
+        expect(mockResultSessionRelease.mock.calls.map(([owner]) => owner)).toEqual(owners)
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        expect(mockQueryCancel).not.toHaveBeenCalled()
+        expect(useDbStore.getState().queryBuckets[descriptorId]).toMatchObject({ running: false, preparingRun: null })
+        for (const owner of owners) expect(storedResultPage(descriptorId, owner).released).toBe(true)
+    })
+
+    it("does not publish or dispatch a preparing run after disconnect and reconnect", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        useDbStore.getState().setSql("SELECT 1;")
+        await useDbStore.getState().runQuery()
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        const previous = useDbStore.getState().queryBuckets[descriptorId].runGroup!
+        const owner = resultOwnerOf(previous.run!.statements[0])
+        const release = deferred<DbResultPage>()
+        mockResultSessionRelease.mockReturnValueOnce(release.promise)
+        mockQueryRun.mockClear()
+        useDbStore.getState().setSql("UPDATE counters SET value = value + 1;")
+        const pending = useDbStore.getState().runQuery()
+        await useDbStore.getState().cancelQuery()
+        await useDbStore.getState().disconnect(descriptorId)
+        await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
+        useDbStore.getState().setSql("SELECT 3;")
+        await useDbStore.getState().runQuery()
+        const reconnected = useDbStore.getState().queryBuckets[descriptorId]
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        release.resolve(wirePage(owner, { lifecycle: "released" }))
+        await pending
+        expect(mockQueryRun).toHaveBeenCalledTimes(1)
+        expect(useDbStore.getState().queryBuckets[descriptorId]).toBe(reconnected)
+        expect(reconnected.preparingRun).toBeNull()
+    })
+
     it("keeps old tabs during stale-generation cleanup and still starts the new run", async () => {
         await useDbStore.getState().openConnection("/a.db")
         useDbStore.getState().setSql("SELECT 1;")
@@ -3521,6 +3999,42 @@ describe("SQLite source workspace identity", () => {
 })
 
 describe("database workbench writes", () => {
+    it("requests the SQLite atomic cell mode while keeping schema writes generic", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "committed" })
+        await useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1")
+        expect(mockQueryRun.mock.calls[0][0].mode).toBe("tableCellMutation")
+        mockRunResultOnce({ kind: "execute", affectedRows: "0", effectOutcome: "committed" })
+        await useDbStore.getState().executeTableStatement(identity, "ALTER TABLE users ADD COLUMN nickname TEXT")
+        expect(mockQueryRun.mock.calls[1][0].mode).toBe("primary")
+    })
+
+    it.each(["rolledBack", "unknown"] as const)("preserves SQLite cell failure evidence: %s", async (effectOutcome) => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockQueryRun.mockImplementationOnce(async request => queryRunWithStatements(request, [{
+            statementExecutionId: `${request.queryRunId}:0` as never,
+            statementIndex: 0,
+            sql: request.statements[0].sql,
+            effectOutcome,
+            result: { kind: "error", error: { engine: "yuzora", code: "cardinalityMismatch", message: "row count changed", position: null, detail: null, hint: null, retryability: "notRetryable" } }
+        }]))
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow(effectOutcome === "rolledBack" ? "editConflict" : "editUncertain")
+        expect(mockQueryRun).toHaveBeenCalledOnce()
+        expect(useDbStore.getState().queryBuckets[identity.descriptorId].running).toBe(false)
+    })
+
+    it("reports a backend SQLite transaction admission rejection without resending", async () => {
+        await useDbStore.getState().openConnection("/workbench.db")
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockQueryRun.mockRejectedValueOnce({ code: "connectionBusy", message: "existing user transaction" })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("connectionBusy")
+        expect(mockQueryRun).toHaveBeenCalledOnce()
+    })
+
     it.each(["1", "0"])("uses the outer MSSQL update count %s even when trigger counts differ", async (count) => {
         await useDbStore.getState().openConfig({ kind: "mssql", host: "h", port: 1433, database: "d", user: "u", password: "fixture", trustCert: true })
         const identity = identityOf(useDbStore.getState().connections[0])!
@@ -3708,6 +4222,106 @@ describe("database workbench writes", () => {
         useDbStore.getState().setSql("SELECT 1")
         await useDbStore.getState().runQuery()
         expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+})
+
+describe("connection-level open-transaction state", () => {
+    const reportOpenTransaction = (
+        overrides: Partial<Pick<DbQueryRun, "transactionMayBeOpen" | "connectionTerminated">> = {}
+    ) => mockQueryRun.mockImplementationOnce(async (request) => queryRunWithStatements(
+        request,
+        [executeExecution(request, 0, "transactionPending")],
+        { transactionMayBeOpen: true, ...overrides }
+    ))
+
+    async function openWithTransaction(overrides: Parameters<typeof reportOpenTransaction>[0] = {}) {
+        await useDbStore.getState().openConnection("/transaction.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        useDbStore.getState().setSql("BEGIN;")
+        reportOpenTransaction(overrides)
+        await useDbStore.getState().runQuery({ kind: "all" })
+        return descriptorId
+    }
+
+    it("blocks a table edit while the most recent run still reports an open transaction", async () => {
+        const descriptorId = await openWithTransaction()
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(true)
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        // The backend reports the connection-level flag on every later run, so
+        // opening a table inside the transaction keeps reporting it.
+        useDbStore.getState().setSql("SELECT * FROM users")
+        reportOpenTransaction()
+        await useDbStore.getState().runQuery({ kind: "all" })
+        mockQueryRun.mockClear()
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("connectionBusy")
+
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        expect(useDbStore.getState().queryBuckets[descriptorId].running).toBe(false)
+    })
+
+    it("keeps blocking table edits after a later run is rejected before it publishes a result", async () => {
+        const descriptorId = await openWithTransaction()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        // The backend refuses the next run (for example while a result owns the lease),
+        // so no run is published and the retained last run is replaced by an empty one.
+        useDbStore.getState().setSql("SELECT * FROM users")
+        mockQueryRun.mockRejectedValueOnce({ code: "connectionBusy", message: "lease held" })
+        await useDbStore.getState().runQuery({ kind: "all" })
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run).toBeNull()
+        mockQueryRun.mockClear()
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("connectionBusy")
+
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
+    it("reopens table edits once a published run reports the transaction closed", async () => {
+        await openWithTransaction()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        useDbStore.getState().setSql("COMMIT;")
+        mockQueryRun.mockImplementationOnce(async (request) => queryRunWithStatements(
+            request,
+            [executeExecution(request, 0, "committed")]
+        ))
+        await useDbStore.getState().runQuery({ kind: "all" })
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "none" })
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .resolves.toBeUndefined()
+    })
+
+    it("drops the open-transaction flag when the user disconnects and reconnects", async () => {
+        const descriptorId = await openWithTransaction()
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(true)
+
+        await useDbStore.getState().disconnect(descriptorId)
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(false)
+
+        await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "none" })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .resolves.toBeUndefined()
+    })
+
+    it("drops the open-transaction flag when the server connection is lost", async () => {
+        const descriptorId = await openWithTransaction({ connectionTerminated: true })
+
+        expect(useDbStore.getState().connections).toHaveLength(0)
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(false)
+
+        await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "none" })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .resolves.toBeUndefined()
     })
 })
 
@@ -3935,5 +4549,136 @@ describe("stale result page response notifications", () => {
         expect(listener).toHaveBeenCalledTimes(1)
         expect(storedResultPage(descriptorId, owner)).toMatchObject({ loading: false, pageError: null, page: { pageIndex: 1 } })
         expect(useDbStore.getState().queryBuckets[descriptorId].error).toBeNull()
+    })
+})
+
+describe("database catalog column refresh", () => {
+    const idColumn: DbColumn[] = [{ name: "id", type: "INTEGER", notnull: false, pk: true }]
+    const newColumn: DbColumn[] = [{ name: "renamed", type: "INTEGER", notnull: false, pk: true }]
+
+    it("refreshes requested full references only and prunes dropped objects", async () => {
+        const audit: DbTable = { ...usersTable[0], schema: "audit" }
+        const dropped: DbTable = { ...usersTable[0], name: "dropped" }
+        const unopened: DbTable = { ...usersTable[0], name: "unopened" }
+        mockList.mockResolvedValue([usersTable[0], audit, dropped, unopened])
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        for (const table of [usersTable[0], audit, dropped]) await useDbStore.getState().loadColumns(descriptorId, table)
+        mockColumns.mockClear().mockImplementation(async (_, table) => table.schema === "audit" ? newColumn : idColumn)
+        mockList.mockResolvedValue([usersTable[0], audit, unopened])
+        await useDbStore.getState().loadTables(descriptorId)
+        expect(mockColumns.mock.calls.map(([, table]) => table)).toEqual([usersTable[0], audit])
+        expect(useDbStore.getState().columnBuckets[descriptorId]).toEqual({
+            [dbObjectRefKey(usersTable[0])]: idColumn,
+            [dbObjectRefKey(audit)]: newColumn
+        })
+        expect(useDbStore.getState().columnErrors[descriptorId][dbObjectRefKey(dropped)]).toBeUndefined()
+    })
+
+    it("restarts an in-flight column read and rejects its late old result", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        const old = deferred<DbColumn[]>()
+        mockColumns.mockReturnValueOnce(old.promise).mockResolvedValue(newColumn)
+        const previousLoad = useDbStore.getState().loadColumns(descriptorId, usersTable[0])
+        await useDbStore.getState().loadTables(descriptorId)
+        expect(useDbStore.getState().columnBuckets[descriptorId]?.[dbObjectRefKey(usersTable[0])]).toEqual(newColumn)
+        old.resolve(idColumn)
+        await previousLoad
+        expect(useDbStore.getState().columnBuckets[descriptorId][dbObjectRefKey(usersTable[0])]).toEqual(newColumn)
+    })
+
+    it("keeps an in-flight column read valid when table refresh fails", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        const pending = deferred<DbColumn[]>()
+        mockColumns.mockReturnValueOnce(pending.promise)
+        const loading = useDbStore.getState().loadColumns(descriptorId, usersTable[0])
+        mockList.mockRejectedValueOnce({ code: "metadataFailed" })
+        await useDbStore.getState().loadTables(descriptorId)
+        pending.resolve(idColumn)
+        await loading
+        expect(useDbStore.getState().columnBuckets[descriptorId]?.[dbObjectRefKey(usersTable[0])]).toEqual(idColumn)
+        expect(useDbStore.getState().tableErrors[descriptorId]?.code).toBe("metadataFailed")
+    })
+
+    it("keeps cached columns with an explicit refresh error and permits retry", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        mockColumns.mockResolvedValueOnce(idColumn)
+        await useDbStore.getState().loadColumns(descriptorId, usersTable[0])
+        mockColumns.mockRejectedValueOnce({ code: "connectionBusy" })
+        await useDbStore.getState().loadTables(descriptorId)
+        expect(useDbStore.getState().columnBuckets[descriptorId][dbObjectRefKey(usersTable[0])]).toEqual(idColumn)
+        expect(useDbStore.getState().columnErrors[descriptorId][dbObjectRefKey(usersTable[0])]?.code).toBe("connectionBusy")
+        mockColumns.mockResolvedValueOnce(newColumn)
+        await useDbStore.getState().loadTables(descriptorId)
+        expect(useDbStore.getState().columnBuckets[descriptorId][dbObjectRefKey(usersTable[0])]).toEqual(newColumn)
+        expect(useDbStore.getState().columnErrors[descriptorId][dbObjectRefKey(usersTable[0])]).toBeNull()
+    })
+
+    it("serializes metadata reloads and stops when the connection owner changes", async () => {
+        const audit: DbTable = { ...usersTable[0], schema: "audit" }
+        mockList.mockResolvedValue([usersTable[0], audit])
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        for (const table of [usersTable[0], audit]) await useDbStore.getState().loadColumns(descriptorId, table)
+        const pending = deferred<DbColumn[]>()
+        mockColumns.mockClear().mockReturnValueOnce(pending.promise)
+        const refresh = useDbStore.getState().loadTables(descriptorId)
+        await vi.waitFor(() => expect(mockColumns).toHaveBeenCalledTimes(1))
+        useDbStore.setState(state => ({ connections: state.connections.map(connection => ({ ...connection, connectionGeneration: "new-generation" as DbLiveConnection["connectionGeneration"] })) }))
+        pending.resolve(newColumn)
+        await refresh
+        expect(mockColumns).toHaveBeenCalledTimes(1)
+        expect(useDbStore.getState().columnBuckets[descriptorId][dbObjectRefKey(usersTable[0])]).not.toEqual(newColumn)
+    })
+
+    it("does not let an older table refresh overwrite newer column metadata", async () => {
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        await useDbStore.getState().loadColumns(descriptorId, usersTable[0])
+        const older = deferred<DbColumn[]>()
+        mockColumns.mockClear().mockReturnValueOnce(older.promise).mockResolvedValue(newColumn)
+        const first = useDbStore.getState().loadTables(descriptorId)
+        await vi.waitFor(() => expect(mockColumns).toHaveBeenCalledTimes(1))
+        await useDbStore.getState().loadTables(descriptorId)
+        older.resolve(idColumn)
+        await first
+        expect(useDbStore.getState().columnBuckets[descriptorId][dbObjectRefKey(usersTable[0])]).toEqual(newColumn)
+    })
+})
+
+describe("catalog refresh overlap and failure", () => {
+    it.each([true, false])("finishes successful metadata reloads after a newer table refresh fails (cached=%s)", async cached => {
+        const first = usersTable[0]
+        const second: DbTable = { ...first, name: "second" }
+        mockList.mockResolvedValue([first, second])
+        await useDbStore.getState().openConnection("/a.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        await useDbStore.getState().loadColumns(descriptorId, first)
+        const oldSecond = deferred<DbColumn[]>()
+        let oldLoad: Promise<void> | undefined
+        if (cached) await useDbStore.getState().loadColumns(descriptorId, second)
+        else {
+            mockColumns.mockReturnValueOnce(oldSecond.promise)
+            oldLoad = useDbStore.getState().loadColumns(descriptorId, second)
+        }
+        const firstReload = deferred<DbColumn[]>()
+        const updated = [{ name: "current", type: "TEXT", notnull: false, pk: false }]
+        mockColumns.mockClear().mockReturnValueOnce(firstReload.promise).mockResolvedValue(updated)
+        const refresh = useDbStore.getState().loadTables(descriptorId)
+        await vi.waitFor(() => expect(mockColumns).toHaveBeenCalledTimes(1))
+        mockList.mockRejectedValueOnce({ code: "metadataFailed" })
+        await useDbStore.getState().loadTables(descriptorId)
+        firstReload.resolve(updated)
+        await refresh
+        if (oldLoad) {
+            oldSecond.resolve([{ name: "obsolete", type: "TEXT", notnull: false, pk: false }])
+            await oldLoad
+        }
+        expect(useDbStore.getState().columnBuckets[descriptorId]?.[dbObjectRefKey(second)]).toEqual(updated)
+        expect(mockColumns).toHaveBeenCalledTimes(2)
+        expect(useDbStore.getState().tableErrors[descriptorId]?.code).toBe("metadataFailed")
     })
 })

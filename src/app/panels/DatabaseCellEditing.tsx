@@ -10,42 +10,55 @@ import { buildCellUpdate, isBinaryDbColumn, parseEditedDbValue } from "@/lib/dat
 import { dbObjectRefKey } from "@/lib/databaseSql"
 import { formatDbValue, type DbColumn, type DbConnectionIdentity, type DbKind, type DbTable, type DbValue } from "@/lib/types"
 import { queryFor, useDbStore } from "@/state/dbStore"
+import { useUiStore } from "@/state/uiStore"
 import { useOverlayPresence } from "@/state/overlayStore"
 import { CellEditingContext, type EditingContext } from "./databaseCellEditingContext"
 
-export function DatabaseCellEditing({ children, identity, kind, table, metadata, disabled }: {
-    children: ReactNode; identity: DbConnectionIdentity | null; kind: DbKind; table: DbTable | null; metadata: DbColumn[]; disabled: boolean
+function hasLiveOwner(identity: DbConnectionIdentity, state = useDbStore.getState()): boolean {
+    return state.connections.some(connection => connection.descriptorId === identity.descriptorId
+        && connection.connId === identity.connectionId
+        && connection.connectionGeneration === identity.connectionGeneration)
+}
+
+export function DatabaseCellEditing({ children, identity, profileName, kind, table, metadata, disabled }: {
+    children: ReactNode; identity: DbConnectionIdentity | null; profileName: string; kind: DbKind; table: DbTable | null; metadata: DbColumn[]; disabled: boolean
 }) {
     const { t } = useTranslation("databaseWorkbench")
-    const [editing, setEditing] = useState<{ identity: DbConnectionIdentity; table: DbTable; kind: DbKind; metadata: DbColumn[]; columns: string[]; row: DbValue[]; column: DbColumn } | null>(null)
+    const [editing, setEditing] = useState<{ identity: DbConnectionIdentity; profileName: string; table: DbTable; kind: DbKind; metadata: DbColumn[]; columns: string[]; row: DbValue[]; column: DbColumn } | null>(null)
     const [text, setText] = useState("")
     const [isNull, setIsNull] = useState(false)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
-    useOverlayPresence(editing !== null)
+    const visible = useUiStore(state => state.mode === "database")
+    const liveOwner = useDbStore(state => editing !== null && hasLiveOwner(editing.identity, state))
+    useOverlayPresence(editing !== null && visible)
     const context = useMemo<EditingContext | null>(() => {
-        if (!identity || !table || table.kind !== "table" || disabled || !metadata.some(column => column.pk)) return null
+        if (editing || !identity || !table || table.kind !== "table" || disabled || !metadata.some(column => column.pk)) return null
         const byName = new Map(metadata.map(column => [column.name, column]))
         return {
             editable: (name, value) => {
                 const column = byName.get(name)
-                return column !== undefined && !isBinaryDbColumn(column) && value.kind !== "binary" && value.kind !== "json"
+                return column !== undefined && column.generated !== true && !isBinaryDbColumn(column) && value.kind !== "binary" && value.kind !== "json"
             },
             edit: (columns, row, name) => {
                 const original = row[columns.indexOf(name)]
                 const column = byName.get(name)
                 if (!original || !column) return
                 try { buildCellUpdate(kind, table, metadata, columns, row, name, original) } catch { return }
-                setEditing({ identity, table, kind, metadata, columns, row, column })
+                setEditing({ identity, profileName, table, kind, metadata, columns, row, column })
                 setText(formatDbValue(original) ?? "")
                 setIsNull(original.kind === "null")
                 setError(null)
             },
         }
-    }, [identity, kind, table, metadata, disabled])
+    }, [identity, profileName, kind, table, metadata, disabled, editing])
 
     async function save() {
         if (!editing || busy) return
+        if (!hasLiveOwner(editing.identity)) {
+            setError(current => current === "editUncertain" ? current : "staleConnection")
+            return
+        }
         setBusy(true)
         setError(null)
         try {
@@ -56,7 +69,7 @@ export function DatabaseCellEditing({ children, identity, kind, table, metadata,
             setEditing(null)
             const state = useDbStore.getState()
             const current = queryFor(state, editing.identity.descriptorId).table
-            if (state.activeDescriptorId === editing.identity.descriptorId && current && dbObjectRefKey(current) === dbObjectRefKey(editing.table)) await state.openTableQuery(editing.table)
+            if (hasLiveOwner(editing.identity, state) && state.activeDescriptorId === editing.identity.descriptorId && current && dbObjectRefKey(current) === dbObjectRefKey(editing.table)) await state.openTableQuery(editing.table)
         } catch (failure) {
             const code = failure instanceof Error ? failure.message : "editFailed"
             setError(["invalidValue", "notNullable", "editConflict", "staleConnection", "connectionBusy", "editUncertain", "editCancelled"].includes(code) ? code : "editFailed")
@@ -70,17 +83,18 @@ export function DatabaseCellEditing({ children, identity, kind, table, metadata,
         else if (editing) void useDbStore.getState().cancelTableStatement(editing.identity)
     }
 
+    const message = error ?? (editing && !liveOwner ? "staleConnection" : null)
     return <CellEditingContext value={context}>
         {children}
-        <Dialog open={editing !== null} onOpenChange={open => { if (!open && !busy) setEditing(null) }}>
+        <Dialog open={editing !== null && visible} onOpenChange={open => { if (!open && !busy && visible) setEditing(null) }}>
             <DialogContent onInteractOutside={event => { if (busy) event.preventDefault() }} onEscapeKeyDown={event => { if (busy) event.preventDefault() }}>
-                <DialogHeader><DialogTitle>{t("editCell", { column: editing?.column.name })}</DialogTitle><DialogDescription>{t("editCellDescription", { table: editing?.table.name })}</DialogDescription></DialogHeader>
+                <DialogHeader><DialogTitle>{t("editCell", { column: editing?.column.name })}</DialogTitle><DialogDescription>{t("editCellDescription", { table: editing?.table.name, profile: editing?.profileName })}</DialogDescription></DialogHeader>
                 <FieldGroup>
-                    <Field><FieldLabel htmlFor="database-cell-value">{t("value")}</FieldLabel><Textarea id="database-cell-value" value={text} onChange={event => setText(event.target.value)} disabled={busy || isNull} className="min-h-32 font-mono" autoFocus /></Field>
-                    <Field orientation="horizontal"><Checkbox id="database-cell-null" checked={isNull} onCheckedChange={checked => setIsNull(checked === true)} disabled={busy || editing?.column.notnull || editing?.column.pk} /><FieldLabel htmlFor="database-cell-null">NULL</FieldLabel></Field>
+                    <Field><FieldLabel htmlFor="database-cell-value">{t("value")}</FieldLabel><Textarea id="database-cell-value" value={text} onChange={event => setText(event.target.value)} disabled={busy || isNull} readOnly={!liveOwner} className="min-h-32 font-mono" autoFocus /></Field>
+                    <Field orientation="horizontal"><Checkbox id="database-cell-null" checked={isNull} onCheckedChange={checked => setIsNull(checked === true)} disabled={busy || !liveOwner || editing?.column.notnull || editing?.column.pk} /><FieldLabel htmlFor="database-cell-null">NULL</FieldLabel></Field>
                 </FieldGroup>
-                {error && <Alert variant="destructive"><AlertDescription>{t(error)}</AlertDescription></Alert>}
-                <DialogFooter><Button variant="outline" onClick={cancel}>{t("cancel")}</Button><Button disabled={busy} onClick={() => void save()}>{busy ? t("saving") : t("save")}</Button></DialogFooter>
+                {message && <Alert variant="destructive"><AlertDescription>{t(message)}</AlertDescription></Alert>}
+                <DialogFooter><Button variant="outline" onClick={cancel}>{t("cancel")}</Button><Button disabled={busy || !liveOwner} onClick={() => void save()}>{busy ? t("saving") : t("save")}</Button></DialogFooter>
             </DialogContent>
         </Dialog>
     </CellEditingContext>

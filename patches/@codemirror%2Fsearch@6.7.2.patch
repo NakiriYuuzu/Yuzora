@@ -1,0 +1,26 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index de60b2fe37f8a5614be0307a2def52770a6b3c9f..a92b8e0c92efae819ef2fda0387bd16e7637424b 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -743,7 +743,7 @@ class RegExpQuery extends QueryType {
+             for (let l = i.length; l > 0; l--) {
+                 let n = +i.slice(0, l);
+                 if (n > 0 && n < result.match.length)
+-                    return result.match[n] + i.slice(l);
++                    return (result.match[n] ?? "") + i.slice(l);
+             }
+             return m;
+         });
+diff --git a/dist/index.js b/dist/index.js
+index aa163287735acd24aa4a6d78bdbe35fbf2737323..712c01c3da4eeaef8185586ac25974f6f9e4e9c2 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -741,7 +741,7 @@ class RegExpQuery extends QueryType {
+             for (let l = i.length; l > 0; l--) {
+                 let n = +i.slice(0, l);
+                 if (n > 0 && n < result.match.length)
+-                    return result.match[n] + i.slice(l);
++                    return (result.match[n] ?? "") + i.slice(l);
+             }
+             return m;
+         });

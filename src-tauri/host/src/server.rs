@@ -27,8 +27,8 @@ fn herdr_command(binary: &str, args: &[&str]) -> tokio::process::Command {
 }
 
 async fn command_json(binary: &str, args: &[&str]) -> Result<Value, String> {
-    let mut child = herdr_command(binary, args)
-        .spawn()
+    let mut command = herdr_command(binary, args);
+    let mut child = crate::process_kill::spawn_tokio(&mut command)
         .map_err(|e| format!("herdr-unavailable: {e}"))?;
     let mut stdout = child
         .stdout
@@ -367,6 +367,25 @@ impl HostServer {
     }
 }
 
+fn encode_response(mut response: Response) -> Result<Vec<u8>, String> {
+    let mut bytes = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
+    if bytes.len() >= MAX_FRAME_BYTES {
+        drop(bytes);
+        // Dispatch has already completed. Only replace the outcome; never
+        // replay an operation whose response could not fit on the wire.
+        response.outcome = Outcome::Error {
+            code: "response-too-large".into(),
+            message: "response-too-large".into(),
+        };
+        bytes = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
+        if bytes.len() >= MAX_FRAME_BYTES {
+            return Err("response-too-large".into());
+        }
+    }
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
 pub async fn serve<R, W>(input: R, mut output: W) -> Result<(), String>
 where
     R: AsyncRead + Unpin,
@@ -394,11 +413,7 @@ where
                 handling.await
             }
         };
-        let mut bytes = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
-        if bytes.len() >= MAX_FRAME_BYTES {
-            return Err("response-too-large".into());
-        }
-        bytes.push(b'\n');
+        let bytes = encode_response(response)?;
         tokio::time::timeout(Duration::from_secs(10), async {
             output.write_all(&bytes).await?;
             output.flush().await
@@ -432,6 +447,89 @@ mod tests {
             .chain(["HERDR_SESSION"])
         {
             assert!(removed.contains(key), "{key} must not be inherited");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_discovery_spawns_through_the_spawn_lock() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (value, spawns) = crate::process_kill::trace_spawns(|| {
+            runtime.block_on(command_json("/bin/echo", &["{}"]))
+        });
+        assert_eq!(value.unwrap(), json!({}));
+        assert_eq!(spawns, ["/bin/echo {}"]);
+    }
+
+    fn response_fixture(id: &str, value: Value) -> Response {
+        Response {
+            version: PROTOCOL_VERSION,
+            id: id.into(),
+            owner: ConnectionOwner {
+                host_id: "fixture-雪".into(),
+                generation: 73,
+            },
+            outcome: Outcome::Ok { value },
+        }
+    }
+
+    #[test]
+    fn response_frame_boundary_and_overflow_preserve_identity() {
+        let empty = response_fixture("request-id", json!(""));
+        let overhead = serde_json::to_vec(&empty).unwrap().len();
+        let frame = encode_response(response_fixture(
+            "request-id",
+            json!("a".repeat(MAX_FRAME_BYTES - overhead - 1)),
+        ))
+        .unwrap();
+        assert_eq!(frame.len(), MAX_FRAME_BYTES);
+        assert_eq!(frame.last(), Some(&b'\n'));
+        let parsed: Response = serde_json::from_slice(&frame).unwrap();
+        assert!(matches!(parsed.outcome, Outcome::Ok { .. }));
+        drop(frame);
+        let frame = encode_response(response_fixture(
+            "request-id",
+            json!("a".repeat(MAX_FRAME_BYTES - overhead)),
+        ))
+        .unwrap();
+        let parsed: Response = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(parsed.version, empty.version);
+        assert_eq!(parsed.id, empty.id);
+        assert_eq!(parsed.owner, empty.owner);
+        assert!(
+            matches!(parsed.outcome, Outcome::Error { code, message } if code == "response-too-large" && message == "response-too-large")
+        );
+        assert!(frame.len() < MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn overflow_error_uses_the_same_frame_limit_and_fails_before_writing() {
+        let mut fallback = response_fixture("", Value::Null);
+        fallback.outcome = Outcome::Error {
+            code: "response-too-large".into(),
+            message: "response-too-large".into(),
+        };
+        let overhead = serde_json::to_vec(&fallback).unwrap().len();
+        for fits in [true, false] {
+            let id = "i".repeat(MAX_FRAME_BYTES - overhead - usize::from(fits));
+            let response = response_fixture(&id, json!("x".repeat(1000)));
+            assert!(serde_json::to_vec(&response).unwrap().len() >= MAX_FRAME_BYTES);
+            let encoded = encode_response(response);
+            if fits {
+                let frame = encoded.unwrap();
+                assert_eq!(frame.len(), MAX_FRAME_BYTES);
+                let parsed: Response = serde_json::from_slice(&frame).unwrap();
+                assert!(parsed.id == id);
+                assert_eq!(parsed.owner, fallback.owner);
+                assert!(
+                    matches!(parsed.outcome, Outcome::Error { code, message } if code == "response-too-large" && message == "response-too-large")
+                );
+            } else {
+                assert_eq!(encoded.unwrap_err(), "response-too-large");
+            }
         }
     }
 

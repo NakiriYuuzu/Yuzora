@@ -42,11 +42,11 @@ async function settle() {
     })
 }
 
-function loadImage() {
+function loadImage(imageWidth = 1000, imageHeight = 800) {
     const image = screen.getByTestId("image-view-img") as HTMLImageElement
     Object.defineProperties(image, {
-        naturalWidth: { configurable: true, value: 1000 },
-        naturalHeight: { configurable: true, value: 800 }
+        naturalWidth: { configurable: true, value: imageWidth },
+        naturalHeight: { configurable: true, value: imageHeight }
     })
     fireEvent.load(image)
     return image
@@ -77,6 +77,77 @@ afterEach(async () => {
 })
 
 describe("ImageView viewport lifetime", () => {
+    it.each([
+        { imageWidth: 6000, imageHeight: 4000, expectedWidth: 376, expectedHeight: 251 },
+        { imageWidth: 1000, imageHeight: 10000, expectedWidth: 28, expectedHeight: 276 },
+        { imageWidth: 20000, imageHeight: 1000, expectedWidth: 376, expectedHeight: 19 },
+        { imageWidth: 40, imageHeight: 20, expectedWidth: 40, expectedHeight: 20 }
+    ])("fits $imageWidth×$imageHeight within a400×300 viewport without upscaling", async ({ imageWidth, imageHeight, expectedWidth, expectedHeight }) => {
+        width = 400
+        height = 300
+        render(<ImageView path="/owned/large.png" />)
+        await settle()
+        const image = loadImage(imageWidth, imageHeight)
+        expect(image.style.width).toBe(`${expectedWidth}px`)
+        expect(image.style.height).toBe(`${expectedHeight}px`)
+    })
+
+    it("does not generate negative dimensions when the viewport is smaller than Fit padding", async () => {
+        width = 10
+        height = 10
+        render(<ImageView path="/owned/large.png" />)
+        await settle()
+        const image = loadImage(6000, 4000)
+        expect(image.style.width).toBe("1px")
+        expect(image.style.height).toBe("1px")
+    })
+
+    it.each(["button", "wheel"])("keeps sub10percent Fit responsive after zoomout by %s", async (gesture) => {
+        width = 400
+        height = 300
+        render(<ImageView path="/owned/large.png" />)
+        await settle()
+        const image = loadImage(6000, 4000)
+        const originalWidth = image.style.width
+        const viewport = document.querySelector('[data-slot="scroll-area-viewport"]')!
+        if (gesture === "button") fireEvent.click(screen.getByRole("button", { name: "imageViewer.zoomOut" }))
+        else expect(fireEvent.wheel(viewport, { ctrlKey: true, deltaY: 1 })).toBe(false)
+        expect(image.style.width).toBe(originalWidth)
+        width = 500
+        height = 400
+        act(() => {
+            for (const observer of TrackedResizeObserver.live) {
+                if (!observer.targets.has(viewport)) continue
+                observer.callback([{
+                    target: viewport,
+                    contentRect: viewport.getBoundingClientRect(),
+                    borderBoxSize: [{ inlineSize: width, blockSize: height }],
+                    contentBoxSize: [{ inlineSize: width, blockSize: height }],
+                    devicePixelContentBoxSize: []
+                }], observer as unknown as ResizeObserver)
+            }
+        })
+        await settle()
+        expect(image.style.width).toBe("476px")
+        expect(image.style.height).toBe("317px")
+    })
+
+    it("keeps manual minimum zoom and allows returning to smaller Fit", async () => {
+        width = 400
+        height = 300
+        render(<ImageView path="/owned/large.png" />)
+        await settle()
+        const image = loadImage(6000, 4000)
+        fireEvent.click(screen.getByRole("button", { name: "imageViewer.zoomActual" }))
+        expect(image.style.width).toBe("6000px")
+        for (let i = 0; i < 30; i++) fireEvent.click(screen.getByRole("button", { name: "imageViewer.zoomOut" }))
+        expect(image.style.width).toBe("600px")
+        fireEvent.click(screen.getByRole("button", { name: "imageViewer.zoomFit" }))
+        expect(image.style.width).toBe("376px")
+        fireEvent.click(screen.getByRole("button", { name: "imageViewer.zoomIn" }))
+        expect(image.style.width).toBe("600px")
+    })
+
     it("releases the removed viewport after a decode error while the error view stays mounted", async () => {
         render(<ImageView path="/owned/image.png" />)
         await settle()

@@ -1,4 +1,8 @@
 {
+  "fileRename": {
+    "busy": "This file is being read, saved, or renamed. Wait for that operation to finish, then try again.",
+    "destinationOpen": "The destination has an open editor document. Close its tabs before renaming to preserve its content."
+  },
   "contextMenu": {
     "cmHerdrMoveSpaceUp": "Move Up",
     "cmHerdrMoveSpaceDown": "Move Down",
@@ -160,6 +164,7 @@
   "unsavedDialog": {
     "closeTabTitle": "Unsaved changes",
     "closeTabDescription": "\"{{name}}\" has unsaved changes. Save before closing?",
+    "closeSplitDescription": "Some files in this split have unsaved changes. Save before closing the split?",
     "switchWorkspaceTitle": "Unsaved changes",
     "switchWorkspaceDescription": "Some open files have unsaved changes. Save before switching workspace?",
     "exitTitle": "Unsaved changes",
@@ -250,6 +255,7 @@
     "localNameTaken": "{{name}} already exists. Enter a different local branch name.",
     "alternateLocalTitle": "Choose a local branch name",
     "alternateLocalDescription": "{{derived}} already exists. Enter a different local name for {{remote}}.",
+    "reservedLocalDescription": "HEAD is reserved by Git. Enter a local branch name for {{remote}}.",
     "emptyTagsTitle": "No Git tags",
     "emptyTagsDescription": "Create or fetch tags to see them here.",
     "resultsTags": "Git tags",
@@ -398,8 +404,9 @@
   },
   "workspaceSearch": {
     "heading": "Workspace search",
+    "failed": "Could not finish searching. Results may be incomplete.",
     "matchCaseAriaLabel": "Match case",
-    "truncatedNotice": "Reached the 5,000-file limit — narrow your search",
+    "truncatedNotice": "Search results may be incomplete. Narrow your search.",
     "noResults": "No matching results"
   },
   "gitPanel": {
@@ -508,11 +515,14 @@
     "close": "Close"
   },
   "gitMerge": {
+    "changed": "The conflict or merge result changed. Review it and try again; reopen the merge tool if the conflict changed.",
     "title": "Merge {{path}}",
     "description": "Left: your version. Right: the incoming version. The result starts as the common base.",
     "loading": "Loading the conflicting versions…",
     "binary": "This file is binary or too large to merge here; accept one side instead.",
     "deletedSide": "One side deleted this file; accept one side instead.",
+    "lossyEncoding": "This file is not UTF-8 text (or is UTF-16), so a text merge would rewrite it and corrupt its characters; accept one side instead, or resolve it in an editor that keeps its encoding.",
+    "symlink": "This conflict is between symbolic links. A merged result would be written through the link to the file it points at instead of replacing the link; accept one side instead.",
     "acceptYours": "« Yours",
     "acceptTheirs": "Theirs »",
     "acceptBoth": "Both",
@@ -569,6 +579,7 @@
     "forcePushItem": "Force push (with lease)…",
     "forcePushTitle": "Force push",
     "forcePushConfirm": "Overwrite the remote '{{branch}}' with your local history? --force-with-lease refuses if someone else pushed meanwhile.",
+    "forcePushNoLease": "Cannot force push '{{branch}}': Yuzora does not know which remote commit it would overwrite. Fetch, make sure the branch tracks a remote branch, then try again.",
     "forcePush": "Force push",
     "stashItem": "Stash / unstash…",
     "checkoutProblemTitle": "Git Checkout Problem",

@@ -1,9 +1,26 @@
 import { afterEach, expect, it, vi } from "vitest"
-import { focusActiveTerminal, registerTerminalFocusTarget, requestTerminalFocus } from "./terminalFocus"
+import { activeTerminalAgentKey, focusActiveTerminal, registerTerminalFocusTarget, requestTerminalFocus } from "./terminalFocus"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useTextInputDialogStore } from "@/state/textInputDialogStore"
 
 afterEach(() => { vi.useRealTimers(); document.body.innerHTML = ""; useTextInputDialogStore.setState({ pending: null }) })
+it("reads only a unique active leaf and releases its Agent identity with the target", () => {
+    const pagePath = "yuzora://herdr/identity"
+    let firstActive = false, secondActive = true, key = "B"
+    const first = registerTerminalFocusTarget("identity-a", { pagePath, active: () => firstActive, focus: () => {}, agentKey: () => "A" })
+    const second = registerTerminalFocusTarget("identity-b", { pagePath, active: () => secondActive, focus: () => {}, agentKey: () => key })
+    try {
+        expect(activeTerminalAgentKey(pagePath)).toBe("B")
+        key = "updated-B"
+        expect(activeTerminalAgentKey(pagePath)).toBe("updated-B")
+        firstActive = true
+        expect(activeTerminalAgentKey(pagePath)).toBeNull()
+        firstActive = false; secondActive = false
+        expect(activeTerminalAgentKey(pagePath)).toBeNull()
+        expect(activeTerminalAgentKey("other-page")).toBeUndefined()
+    } finally { first(); second() }
+    expect(activeTerminalAgentKey(pagePath)).toBeUndefined()
+})
 it("resolves the current terminal identity after a view is replaced", () => {
     const path = "yuzora://herdr/one"
     useWorkspaceStore.setState({ groups: [{ tabs: [], activePath: path }], activeGroupIndex: 0 })

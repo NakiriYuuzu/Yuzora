@@ -1,0 +1,5 @@
+$ isolated-herdr.sh --session companion-spike terminal session observe w1:p1 --cols 44 --rows 30
+exit=1
+herdr: failed to connect to server: No such file or directory (os error 2)
+Is herdr server running? Start it with `herdr server`.
+Socket path: /tmp/yzc-spike/config/herdr/sessions/companion-spike/herdr-client.sock

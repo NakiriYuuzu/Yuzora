@@ -72,6 +72,409 @@ fn row_session(run: &QueryRun) -> &ResultSession {
     }
 }
 
+async fn sqlite_transaction_probe(
+    state: &DbState,
+    sessions: &ResultSessionState,
+    identity: &ConnectionIdentity,
+    mode: QueryRunMode,
+    sql: &str,
+    boundary: TransactionBoundary,
+) -> QueryRun {
+    let mut request = primary_request(identity, &uuid::Uuid::new_v4().to_string(), sql.into());
+    request.mode = mode;
+    request.statements = NonEmptyVec::try_from(vec![QueryExecutionUnit {
+        sql: sql.into(),
+        transaction_boundary: boundary,
+    }])
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        query_run_in_state(state, sessions, request),
+    )
+    .await
+    .expect("query must return without waiting for its own result cursor")
+    .unwrap()
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_survives_separate_primary_runs() {
+    sqlite_transaction_state_survives_separate_runs(QueryRunMode::Primary).await;
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_survives_separate_script_runs() {
+    sqlite_transaction_state_survives_separate_runs(QueryRunMode::Script).await;
+}
+
+async fn sqlite_transaction_state_survives_separate_runs(mode: QueryRunMode) {
+    let state = DbState::default();
+    let actor = registered_sqlite_actor(&state, "transaction", "transaction-connection");
+    let sessions = ResultSessionState::default();
+    for (sql, boundary, expected_open) in [
+        ("BEGIN", TransactionBoundary::Begin, true),
+        (
+            "INSERT INTO transaction_table VALUES (1)",
+            TransactionBoundary::None,
+            true,
+        ),
+        (
+            "SELECT * FROM transaction_table",
+            TransactionBoundary::None,
+            true,
+        ),
+        (
+            "SELECT * FROM missing_table",
+            TransactionBoundary::None,
+            true,
+        ),
+        ("ROLLBACK", TransactionBoundary::Rollback, false),
+    ] {
+        let run =
+            sqlite_transaction_probe(&state, &sessions, actor.identity(), mode, sql, boundary)
+                .await;
+        let DbHandle::Sqlite(connection) = actor.handle() else {
+            unreachable!()
+        };
+        let connection = connection.lock().unwrap();
+        assert_eq!(
+            !connection.is_autocommit(),
+            expected_open,
+            "driver state: {sql}"
+        );
+        assert_eq!(
+            run.transaction_may_be_open, expected_open,
+            "reported state: {sql}"
+        );
+        if sql.contains("missing_table") {
+            assert!(matches!(
+                run.statements[0].result,
+                StatementExecutionResult::Error { .. }
+            ));
+        }
+    }
+    let DbHandle::Sqlite(connection) = actor.handle() else {
+        unreachable!()
+    };
+    assert_eq!(
+        connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM transaction_table", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_tracks_savepoints_end_and_implicit_rollback() {
+    for mode in [QueryRunMode::Primary, QueryRunMode::Script] {
+        let state = DbState::default();
+        let actor = registered_sqlite_actor(&state, "boundaries", "boundaries-connection");
+        let sessions = ResultSessionState::default();
+        let DbHandle::Sqlite(connection) = actor.handle() else {
+            unreachable!()
+        };
+        connection.lock().unwrap().execute_batch(
+            "CREATE TABLE unique_rows (id INTEGER PRIMARY KEY); INSERT INTO unique_rows VALUES (1);"
+        ).unwrap();
+        for (sql, boundary, open) in [
+            ("SAVEPOINT outer_save", TransactionBoundary::None, true),
+            (
+                "INSERT INTO unique_rows VALUES (2)",
+                TransactionBoundary::None,
+                true,
+            ),
+            ("SAVEPOINT inner_save", TransactionBoundary::None, true),
+            (
+                "ROLLBACK TO inner_save",
+                TransactionBoundary::Rollback,
+                true,
+            ),
+            ("RELEASE inner_save", TransactionBoundary::None, true),
+            ("RELEASE outer_save", TransactionBoundary::None, false),
+            ("BEGIN", TransactionBoundary::Begin, true),
+            (
+                "INSERT INTO unique_rows VALUES (3)",
+                TransactionBoundary::None,
+                true,
+            ),
+            (
+                "INSERT OR ROLLBACK INTO unique_rows VALUES (1)",
+                TransactionBoundary::None,
+                false,
+            ),
+            ("BEGIN", TransactionBoundary::Begin, true),
+            ("END", TransactionBoundary::None, false),
+        ] {
+            let run =
+                sqlite_transaction_probe(&state, &sessions, actor.identity(), mode, sql, boundary)
+                    .await;
+            assert_eq!(
+                !connection.lock().unwrap().is_autocommit(),
+                open,
+                "driver state: {sql}"
+            );
+            assert_eq!(run.transaction_may_be_open, open, "reported state: {sql}");
+            if sql.starts_with("INSERT OR ROLLBACK") {
+                assert!(matches!(
+                    run.statements[0].result,
+                    StatementExecutionResult::Error { .. }
+                ));
+                assert_eq!(
+                    connection
+                        .lock()
+                        .unwrap()
+                        .query_row("SELECT COUNT(*) FROM unique_rows", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    2
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_streams_and_releases_without_relocking() {
+    let state = DbState::default();
+    let actor = registered_sqlite_actor(&state, "stream_tx", "stream-tx-connection");
+    let other = registered_sqlite_actor(&state, "other_tx", "other-tx-connection");
+    let sessions = ResultSessionState::default();
+    sqlite_transaction_probe(
+        &state,
+        &sessions,
+        actor.identity(),
+        QueryRunMode::Script,
+        "BEGIN",
+        TransactionBoundary::Begin,
+    )
+    .await;
+    let run = sqlite_transaction_probe(
+        &state, &sessions, actor.identity(), QueryRunMode::Primary,
+        "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<1201) SELECT n FROM rows",
+        TransactionBoundary::None,
+    ).await;
+    assert!(run.transaction_may_be_open);
+    let session = row_session(&run);
+    assert!(session.initial_page.has_next);
+    let next = result_page_in_state(
+        &state,
+        &sessions,
+        ResultPageRequest {
+            owner: session.owner.clone(),
+            direction: ResultPageDirection::Next,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(next.has_next);
+    result_session_release_in_state(&state, &sessions, session.owner.clone())
+        .await
+        .unwrap();
+    let other_run = sqlite_transaction_probe(
+        &state,
+        &sessions,
+        other.identity(),
+        QueryRunMode::Primary,
+        "SELECT 1",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(!other_run.transaction_may_be_open);
+    let still_open = sqlite_transaction_probe(
+        &state,
+        &sessions,
+        actor.identity(),
+        QueryRunMode::Script,
+        "SELECT 1",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(still_open.transaction_may_be_open);
+    let commit = sqlite_transaction_probe(
+        &state,
+        &sessions,
+        actor.identity(),
+        QueryRunMode::Primary,
+        "COMMIT",
+        TransactionBoundary::Commit,
+    )
+    .await;
+    assert!(!commit.transaction_may_be_open);
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_after_cancel_matches_driver() {
+    for mode in [QueryRunMode::Primary, QueryRunMode::Script] {
+        let state = DbState::default();
+        let actor = registered_sqlite_actor(&state, "cancel_tx", "cancel-tx-connection");
+        let sessions = ResultSessionState::default();
+        sqlite_transaction_probe(
+            &state,
+            &sessions,
+            actor.identity(),
+            mode,
+            "BEGIN",
+            TransactionBoundary::Begin,
+        )
+        .await;
+        let mut request = primary_request(
+            actor.identity(),
+            "cancel-transaction",
+            SQLITE_CANCELLATION_PROBE.into(),
+        );
+        request.mode = mode;
+        let owner = QueryRunOwner {
+            descriptor_id: request.descriptor_id.clone(),
+            connection_id: request.connection_id.clone(),
+            connection_generation: request.connection_generation.clone(),
+            query_run_id: request.query_run_id.clone(),
+        };
+        let run_state = state.clone();
+        let run_sessions = sessions.clone();
+        let pending =
+            tokio::spawn(
+                async move { query_run_in_state(&run_state, &run_sessions, request).await },
+            );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while sessions.lock().unwrap().session_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("query must reach its row-reading session");
+        query_cancel_in_state(&state, owner).await.unwrap();
+        let run = pending.await.unwrap().unwrap();
+        assert!(matches!(
+            run.statements[0].result,
+            StatementExecutionResult::Cancelled { .. }
+        ));
+        let DbHandle::Sqlite(connection) = actor.handle() else {
+            unreachable!()
+        };
+        assert_eq!(
+            run.transaction_may_be_open,
+            !connection.lock().unwrap().is_autocommit()
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_after_interrupted_writes_matches_rollback() {
+    for mode in [QueryRunMode::Primary, QueryRunMode::Script] {
+        let state = DbState::default();
+        let actor = registered_sqlite_actor(&state, "cancel_write", "cancel-write-connection");
+        let sessions = ResultSessionState::default();
+        let DbHandle::Sqlite(connection) = actor.handle() else {
+            unreachable!()
+        };
+        connection.lock().unwrap().execute_batch(
+            "CREATE TABLE write_probe (id INTEGER PRIMARY KEY); INSERT INTO write_probe VALUES (1);",
+        ).unwrap();
+        sqlite_transaction_probe(
+            &state,
+            &sessions,
+            actor.identity(),
+            mode,
+            "BEGIN",
+            TransactionBoundary::Begin,
+        )
+        .await;
+        sqlite_transaction_probe(
+            &state,
+            &sessions,
+            actor.identity(),
+            mode,
+            "INSERT INTO write_probe VALUES (2)",
+            TransactionBoundary::None,
+        )
+        .await;
+        let modified = Arc::new(AtomicU64::new(0));
+        let modified_by_worker = modified.clone();
+        connection
+            .lock()
+            .unwrap()
+            .update_hook(Some(
+                move |_: rusqlite::hooks::Action, _: &str, _: &str, _: i64| {
+                    modified_by_worker.fetch_add(1, Ordering::SeqCst);
+                },
+            ))
+            .unwrap();
+        let mut request = primary_request(
+            actor.identity(), "cancel-write-transaction",
+            "WITH RECURSIVE rows(n) AS (VALUES(100) UNION ALL SELECT n+1 FROM rows WHERE n<100000000) INSERT INTO write_probe SELECT n FROM rows".into(),
+        );
+        request.mode = mode;
+        let owner = QueryRunOwner {
+            descriptor_id: request.descriptor_id.clone(),
+            connection_id: request.connection_id.clone(),
+            connection_generation: request.connection_generation.clone(),
+            query_run_id: request.query_run_id.clone(),
+        };
+        let run_state = state.clone();
+        let run_sessions = sessions.clone();
+        let pending =
+            tokio::spawn(
+                async move { query_run_in_state(&run_state, &run_sessions, request).await },
+            );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while modified.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("DML must modify data before cancellation");
+        query_cancel_in_state(&state, owner).await.unwrap();
+        let run = pending.await.unwrap().unwrap();
+        assert!(matches!(
+            run.statements[0].result,
+            StatementExecutionResult::Cancelled { .. }
+        ));
+        let connection = connection.lock().unwrap();
+        assert!(
+            connection.is_autocommit(),
+            "SQLite interrupt rolls back the explicit write transaction"
+        );
+        assert!(!run.transaction_may_be_open);
+        let ids = connection
+            .prepare("SELECT id FROM write_probe ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            ids,
+            vec![1],
+            "committed data survives; both earlier and interrupted writes roll back"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_transaction_state_unavailable_does_not_report_closed() {
+    for mode in [QueryRunMode::Primary, QueryRunMode::Script] {
+        let state = DbState::default();
+        let actor = registered_sqlite_actor(&state, "poison_tx", "poison-tx-connection");
+        let DbHandle::Sqlite(connection) = actor.handle() else {
+            unreachable!()
+        };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = connection.lock().unwrap();
+            panic!("isolated poisoned connection fixture");
+        }));
+        let mut request =
+            primary_request(actor.identity(), "poison-transaction", "SELECT 1".into());
+        request.mode = mode;
+        let result = query_run_in_state(&state, &ResultSessionState::default(), request).await;
+        assert!(
+            result.is_err(),
+            "unavailable state must not be reported as a closed transaction"
+        );
+    }
+}
+
 #[tokio::test]
 async fn shutdown_signals_stream_worker_then_closes_and_exact_removes_every_actor() {
     let state = DbState::default();
@@ -317,6 +720,101 @@ fn mssql_helper_terminal_response_distinguishes_execute_from_row_stream() {
     ));
 }
 
+#[test]
+fn mssql_helper_stream_fails_closed_on_a_second_result_set() {
+    let mut shape = MssqlHelperShape::default();
+    assert_eq!(
+        shape.observe_metadata(0, vec!["a".to_string()]),
+        Some(vec!["a".to_string()])
+    );
+    assert!(shape.accepts_row(0, 1));
+    assert_eq!(
+        shape.observe_metadata(1, vec!["b".to_string(), "c".to_string()]),
+        None,
+        "a later result set must not announce its own columns"
+    );
+    assert!(
+        !shape.accepts_row(1, 2),
+        "rows of a later result set must be drained, never forwarded under the first columns"
+    );
+    assert!(
+        !shape.accepts_row(0, 1),
+        "after a shape error every remaining row is drained"
+    );
+    assert!(shape.columns_sent());
+    let error = shape.finish().unwrap_err();
+    assert_eq!(error.code.as_deref(), Some("resultShape"));
+    assert!(error
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("cannot represent result set 1"));
+}
+
+#[test]
+fn mssql_helper_stream_rejects_a_row_wider_than_its_metadata() {
+    let mut shape = MssqlHelperShape::default();
+    assert!(shape
+        .observe_metadata(0, vec!["only".to_string()])
+        .is_some());
+    assert!(!shape.accepts_row(0, 2));
+    let error = shape.finish().unwrap_err();
+    assert_eq!(error.code.as_deref(), Some("resultShape"));
+    assert!(error.detail.as_deref().unwrap().contains("contains 2"));
+}
+
+#[test]
+fn mssql_helper_stream_keeps_a_single_result_set_and_execute_only_batches() {
+    let mut rows = MssqlHelperShape::default();
+    assert_eq!(
+        rows.observe_metadata(0, vec!["a".to_string(), "b".to_string()]),
+        Some(vec!["a".to_string(), "b".to_string()])
+    );
+    assert!(rows.accepts_row(0, 2));
+    assert!(rows.accepts_row(0, 2));
+    assert!(rows.columns_sent());
+    rows.finish().unwrap();
+
+    let execute = MssqlHelperShape::default();
+    assert!(!execute.columns_sent());
+    execute.finish().unwrap();
+}
+
+#[test]
+fn mssql_helper_stream_end_turns_a_deferred_shape_error_into_the_failure() {
+    // The same item sequence helper_mssql_query feeds for `SELECT 1 AS a; SELECT 2 AS b, 3 AS c`.
+    let mut shape = MssqlHelperShape::default();
+    assert!(shape.observe_metadata(0, vec!["a".to_string()]).is_some());
+    assert!(shape.accepts_row(0, 1));
+    assert!(shape
+        .observe_metadata(1, vec!["b".to_string(), "c".to_string()])
+        .is_none());
+    assert!(!shape.accepts_row(1, 2));
+
+    let error = helper_mssql_stream_end(shape, &[1, 1]).unwrap_err();
+    assert_eq!(error.engine, DatabaseErrorEngine::Mssql);
+    assert_eq!(error.code.as_deref(), Some("resultShape"));
+}
+
+#[test]
+fn mssql_helper_stream_end_reports_the_terminal_frame_of_a_coherent_stream() {
+    let mut rows = MssqlHelperShape::default();
+    rows.observe_metadata(0, vec!["a".to_string()]);
+    assert!(rows.accepts_row(0, 1));
+    assert!(matches!(
+        helper_mssql_stream_end(rows, &[1]).unwrap(),
+        WorkerResponse::End {
+            affected_rows: Some(value)
+        } if value == "1"
+    ));
+    assert!(matches!(
+        helper_mssql_stream_end(MssqlHelperShape::default(), &[3, 4]).unwrap(),
+        WorkerResponse::Execute {
+            affected_rows: Some(value)
+        } if value == "7"
+    ));
+}
+
 #[tokio::test]
 async fn worker_request_pump_preserves_fragmented_control_frames() {
     use tokio::io::AsyncWriteExt;
@@ -352,6 +850,364 @@ async fn worker_request_pump_preserves_fragmented_control_frames() {
 
     drop(writer);
     let _ = pump.await;
+}
+
+#[tokio::test]
+#[ignore = "Only the network admission regression launches this isolated protocol child"]
+async fn owned_network_admission_child() {
+    use tokio::io::AsyncWriteExt;
+    let scenario = std::env::var("YUZORA_TEST_NETWORK_ADMISSION").expect("owned fixture only");
+    assert!(matches!(
+        scenario.as_str(),
+        "queued" | "streaming" | "disconnect" | "late-cancel" | "confirmed-cancel"
+    ));
+    let mut input = tokio::io::stdin();
+    let mut output = tokio::io::stdout();
+    output
+        .write_all(b"YUZORA_OWNED_ADMISSION_READY\n")
+        .await
+        .unwrap();
+    output.flush().await.unwrap();
+    let mut queries = 0;
+    let mut streaming = false;
+    let mut pending_cancel = false;
+    loop {
+        match read_request(&mut input).await.unwrap() {
+            WorkerRequest::Query { sql } => {
+                queries += 1;
+                assert_eq!(
+                    sql,
+                    format!("query-{queries}"),
+                    "SQL must never be replayed"
+                );
+                if queries == 1 {
+                    write_frame(
+                        &mut output,
+                        &WorkerResponse::RowMeta {
+                            columns: vec!["value".into()],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    if scenario == "queued" {
+                        write_frame(
+                            &mut output,
+                            &WorkerResponse::End {
+                                affected_rows: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    } else {
+                        streaming = true;
+                        if scenario == "confirmed-cancel" {
+                            std::fs::write(
+                                std::env::var("YUZORA_TEST_ADMISSION_SIGNAL").unwrap(),
+                                b"query-ready",
+                            )
+                            .unwrap();
+                        }
+                    }
+                } else {
+                    if pending_cancel {
+                        pending_cancel = false;
+                        write_frame(&mut output, &WorkerResponse::Cancelled)
+                            .await
+                            .unwrap();
+                        continue;
+                    }
+                    if streaming {
+                        write_frame(
+                            &mut output,
+                            &WorkerResponse::Error {
+                                error: worker_error(
+                                    "queryBeforeStop",
+                                    "previous stream was not stopped",
+                                ),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        continue;
+                    }
+                    let affected = match queries {
+                        2 => "7",
+                        3 => "9",
+                        _ => panic!("unexpected query"),
+                    };
+                    write_frame(
+                        &mut output,
+                        &WorkerResponse::Execute {
+                            affected_rows: Some(affected.into()),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+            WorkerRequest::StopStreaming => {
+                if scenario == "late-cancel" {
+                    std::fs::write(
+                        std::env::var("YUZORA_TEST_ADMISSION_SIGNAL").unwrap(),
+                        b"stopped",
+                    )
+                    .unwrap();
+                    streaming = false;
+                    continue;
+                }
+                if scenario == "disconnect" {
+                    std::process::exit(0);
+                }
+                if streaming {
+                    write_frame(
+                        &mut output,
+                        &WorkerResponse::Row {
+                            values: vec![DbValue::Null],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    write_frame(
+                        &mut output,
+                        &WorkerResponse::End {
+                            affected_rows: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    streaming = false;
+                }
+            }
+            WorkerRequest::CancelQuery => {
+                if scenario == "confirmed-cancel" {
+                    streaming = false;
+                    write_frame(&mut output, &WorkerResponse::Cancelled)
+                        .await
+                        .unwrap();
+                    continue;
+                }
+                assert_eq!(scenario, "late-cancel");
+                pending_cancel = true;
+                // The previous query has ended, but the caller has not read its
+                // terminal frame yet. Idle helpers retain this late cancellation.
+                write_frame(
+                    &mut output,
+                    &WorkerResponse::End {
+                        affected_rows: None,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+            WorkerRequest::Close => break,
+            other => panic!("unexpected fixture command: {other:?}"),
+        }
+    }
+}
+
+async fn network_admission_fixture(scenario: &str) -> (NetworkQueryWorker, tempfile::TempDir) {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "db_service::tests::owned_network_admission_child",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("YUZORA_TEST_NETWORK_ADMISSION", scenario)
+        .env(
+            "YUZORA_TEST_ADMISSION_SIGNAL",
+            sandbox.path().join("stop-seen"),
+        );
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("HERDR_") {
+            command.env_remove(key);
+        }
+    }
+    for key in [
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+    ] {
+        let path = sandbox.path().join(key);
+        std::fs::create_dir(&path).unwrap();
+        command.env(key, path);
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    // Consume only the libtest prelude, byte by byte, leaving framed bytes intact.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut prelude = Vec::new();
+        while !prelude.ends_with(b"YUZORA_OWNED_ADMISSION_READY\n") {
+            prelude.push(child.stdout.as_mut().unwrap().read_u8().await.unwrap());
+            assert!(prelude.len() < 4096);
+        }
+    })
+    .await
+    .expect("owned protocol child must become ready");
+    (NetworkQueryWorker::from_child(child).unwrap(), sandbox)
+}
+
+fn network_admission_session() -> (ResultSessionState, ResultSessionOwner) {
+    let sessions = ResultSessionState::with_limits(1, usize::MAX);
+    let run_owner = QueryRunOwner {
+        descriptor_id: DescriptorId("admission".into()),
+        connection_id: ConnectionId("admission".into()),
+        connection_generation: ConnectionGeneration("generation-1".into()),
+        query_run_id: QueryRunId("run-1".into()),
+    };
+    sessions.lock().unwrap().begin_run(&run_owner).unwrap();
+    let owner = ResultSessionOwner {
+        descriptor_id: run_owner.descriptor_id,
+        connection_id: run_owner.connection_id,
+        connection_generation: run_owner.connection_generation,
+        query_run_id: run_owner.query_run_id,
+        statement_execution_id: StatementExecutionId("statement-1".into()),
+        result_session_id: ResultSessionId("result-1".into()),
+    };
+    (sessions, owner)
+}
+
+#[tokio::test]
+async fn network_materialized_admission_error_does_not_shift_subsequent_responses() {
+    for scenario in ["queued", "streaming"] {
+        let (worker, _sandbox) = network_admission_fixture(scenario).await;
+        let (sessions, owner) = network_admission_session();
+        let first =
+            network_run_materialized_unit(&worker, "query-1", &sessions, owner.clone()).await;
+        let second =
+            network_run_materialized_unit(&worker, "query-2", &sessions, owner.clone()).await;
+        let third = network_run_materialized_unit(&worker, "query-3", &sessions, owner).await;
+        worker.close().await.unwrap();
+        assert_eq!(
+            first.unwrap_err().code.as_deref(),
+            Some("resultSessionState")
+        );
+        assert!(
+            matches!(second, Ok((StatementExecutionResult::Execute { affected_rows: Some(ref n) }, _, false)) if n == "7"),
+            "{scenario}: second={second:?}"
+        );
+        assert!(
+            matches!(third, Ok((StatementExecutionResult::Execute { affected_rows: Some(ref n) }, _, false)) if n == "9"),
+            "{scenario}: third={third:?}"
+        );
+        assert_eq!(sessions.lock().unwrap().session_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn network_materialized_admission_error_survives_cleanup_disconnect() {
+    let (worker, _sandbox) = network_admission_fixture("disconnect").await;
+    let (sessions, owner) = network_admission_session();
+    let result = network_run_materialized_unit(&worker, "query-1", &sessions, owner).await;
+    let closed = worker.is_closed();
+    worker.close().await.unwrap();
+    assert_eq!(
+        result.unwrap_err().code.as_deref(),
+        Some("resultSessionState")
+    );
+    assert!(
+        closed,
+        "a disconnected helper cannot be reused after cleanup"
+    );
+    assert_eq!(sessions.lock().unwrap().session_count(), 0);
+}
+
+#[tokio::test]
+async fn network_materialized_admission_cancel_cannot_escape_to_the_next_run() {
+    network_materialized_cancel_case("late-cancel", true).await;
+}
+
+#[tokio::test]
+async fn network_materialized_confirmed_cancel_keeps_connection_reusable() {
+    network_materialized_cancel_case("confirmed-cancel", false).await;
+}
+
+async fn network_materialized_cancel_case(scenario: &str, terminated: bool) {
+    let (worker, sandbox) = network_admission_fixture(scenario).await;
+    let state = DbState::default();
+    let identity = ConnectionIdentity {
+        descriptor_id: DescriptorId("cancel-admission".into()),
+        connection_id: ConnectionId("cancel-admission".into()),
+        connection_generation: ConnectionGeneration("generation-1".into()),
+    };
+    let actor = Arc::new(ProductionConnectionActor::new(
+        identity.clone(),
+        DbHandle::Postgres(PgConn { worker }),
+    ));
+    register_actor(&state, actor.clone()).unwrap();
+    let sessions = if terminated {
+        ResultSessionState::with_limits(1, usize::MAX)
+    } else {
+        ResultSessionState::default()
+    };
+    let mut request = primary_request(&identity, "run-cancel-admission", "query-1".into());
+    request.mode = QueryRunMode::Script;
+    let owner = QueryRunOwner {
+        descriptor_id: identity.descriptor_id.clone(),
+        connection_id: identity.connection_id.clone(),
+        connection_generation: identity.connection_generation.clone(),
+        query_run_id: request.query_run_id.clone(),
+    };
+    let run_state = state.clone();
+    let run_sessions = sessions.clone();
+    let pending =
+        tokio::spawn(async move { query_run_in_state(&run_state, &run_sessions, request).await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !sandbox.path().join("stop-seen").exists() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("helper must reach the controlled cancellation boundary");
+    let cancelled = query_cancel_in_state(&state, owner).await.unwrap();
+    let run = pending.await.unwrap().unwrap();
+    let mut next = primary_request(&identity, "run-after-cancel-admission", "query-2".into());
+    next.mode = QueryRunMode::Script;
+    let next = query_run_in_state(&state, &sessions, next).await;
+    let DbHandle::Postgres(connection) = actor.handle() else {
+        unreachable!()
+    };
+    let closed = connection.worker().is_closed();
+    connection.worker().close().await.unwrap();
+    assert_eq!(
+        run.connection_terminated, terminated,
+        "{scenario}: next={next:?}"
+    );
+    assert_eq!(closed, terminated);
+    if terminated {
+        assert!(
+            next.is_err(),
+            "the next run must require an explicit reconnect"
+        );
+        assert_eq!(
+            cancelled.outcome,
+            QueryCancelOutcome::CancelledConnectionTerminated
+        );
+        assert!(
+            matches!(&run.statements[0].result, StatementExecutionResult::Cancelled { error } if error.code.as_deref() == Some("resultSessionState"))
+        );
+    } else {
+        assert_eq!(cancelled.outcome, QueryCancelOutcome::Cancelled);
+        assert!(
+            matches!(&run.statements[0].result, StatementExecutionResult::Cancelled { error } if error.code.as_deref() == Some("cancelled"))
+        );
+        let next = next.expect("confirmed cancellation leaves the actor reusable");
+        assert!(
+            matches!(&next.statements[0].result, StatementExecutionResult::Execute { affected_rows: Some(n) } if n == "7")
+        );
+    }
 }
 
 #[test]
@@ -446,6 +1302,260 @@ fn network_primary_workers_decode_only_inside_the_helper() {
     assert!(cancel < drain && drain < settle);
 }
 
+async fn sqlite_navigation_relay_scenario(abandon_first: bool, previous_during_next: bool) {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let state = DbState::default();
+    let actor = registered_sqlite_actor(&state, "descriptor-next-race", "connection-next-race");
+    let identity = actor.identity().clone();
+    let run_owner = QueryRunOwner {
+        descriptor_id: identity.descriptor_id.clone(),
+        connection_id: identity.connection_id.clone(),
+        connection_generation: identity.connection_generation.clone(),
+        query_run_id: QueryRunId("run-next-race".into()),
+    };
+    let owner = ResultSessionOwner {
+        descriptor_id: identity.descriptor_id,
+        connection_id: identity.connection_id,
+        connection_generation: identity.connection_generation,
+        query_run_id: run_owner.query_run_id.clone(),
+        statement_execution_id: StatementExecutionId("statement-next-race".into()),
+        result_session_id: ResultSessionId("session-next-race".into()),
+    };
+    let sessions = ResultSessionState::default();
+    sessions.lock().unwrap().begin_run(&run_owner).unwrap();
+    let lease = actor
+        .acquire_execution(run_owner, CancelCapability::SqliteInterrupt)
+        .unwrap();
+    let settlement = ExecutionSettlementGuard::new(actor.clone(), lease.clone());
+    // Relay only the continuation transport. All SQL, cursor reads, registry
+    // transitions, acknowledgements, and public page requests remain real.
+    let (client_sender, mut client_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (worker_sender, worker_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (initial_sender, initial_receiver) = tokio::sync::oneshot::channel();
+    let worker_actor = actor.clone();
+    let worker_sessions = sessions.clone();
+    let worker_owner = owner.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        sqlite_run_primary_worker(
+            worker_actor, worker_sessions,
+            "WITH RECURSIVE rows(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 1501) SELECT value FROM rows".into(),
+            worker_owner, lease, settlement, client_sender, worker_receiver,
+            initial_sender,
+        );
+    });
+    let initial = tokio::time::timeout(Duration::from_secs(5), initial_receiver)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        initial.result,
+        StatementExecutionResult::Rows { .. }
+    ));
+    assert!(!actor.transaction_may_be_open());
+    let request = || ResultPageRequest {
+        owner: owner.clone(),
+        direction: ResultPageDirection::Next,
+    };
+    if previous_during_next {
+        let mut prefetch = Box::pin(result_page_in_state(&state, &sessions, request()));
+        assert!(prefetch
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending());
+        worker_sender
+            .send(client_receiver.try_recv().unwrap())
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), prefetch)
+                .await
+                .unwrap()
+                .unwrap()
+                .page_index,
+            1
+        );
+    }
+    let mut first = Some(Box::pin(result_page_in_state(&state, &sessions, request())));
+    assert!(first
+        .as_mut()
+        .unwrap()
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_pending());
+    let first_command = client_receiver.try_recv().unwrap();
+    if abandon_first {
+        drop(first.take());
+    }
+    let second_request = ResultPageRequest {
+        owner: owner.clone(),
+        direction: if previous_during_next {
+            ResultPageDirection::Previous
+        } else {
+            ResultPageDirection::Next
+        },
+    };
+    let mut second = Box::pin(result_page_in_state(&state, &sessions, second_request));
+    let mut commands = vec![first_command];
+    let second_ready = match second
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => {
+            commands.push(
+                client_receiver
+                    .try_recv()
+                    .expect("pending Next should dispatch a continuation"),
+            );
+            None
+        }
+    };
+    let mut acknowledgements = Vec::new();
+    for command in commands {
+        let ResultContinuationCommand::Next { respond_to } = command else {
+            panic!("expected Next")
+        };
+        let (observe_sender, observe_receiver) = tokio::sync::oneshot::channel();
+        worker_sender
+            .send(ResultContinuationCommand::Next {
+                respond_to: observe_sender,
+            })
+            .unwrap();
+        acknowledgements.push((respond_to, observe_receiver));
+    }
+    // Delay both callers' completion until every queued worker command has run.
+    for (respond_to, observation) in acknowledgements {
+        let ack = tokio::time::timeout(Duration::from_secs(5), observation)
+            .await
+            .unwrap()
+            .unwrap();
+        eprintln!("worker acknowledgement: {:?}", ack.outcome);
+        let _ = respond_to.send(ack);
+    }
+    let first = match first {
+        Some(first) => Some(first.await),
+        None => None,
+    };
+    let second = match second_ready {
+        Some(result) => result,
+        None => second.await,
+    };
+    let current = sessions
+        .lock()
+        .unwrap()
+        .current_page(&owner)
+        .unwrap()
+        .page_index;
+    let mut following = Box::pin(result_page_in_state(&state, &sessions, request()));
+    let following = match following
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(result) => result,
+        Poll::Pending => {
+            worker_sender
+                .send(client_receiver.try_recv().unwrap())
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), following)
+                .await
+                .unwrap()
+        }
+    };
+    let final_page = if previous_during_next {
+        let mut final_next = Box::pin(result_page_in_state(&state, &sessions, request()));
+        let result = match final_next
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(result) => result,
+            Poll::Pending => {
+                worker_sender
+                    .send(client_receiver.try_recv().unwrap())
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(5), final_next)
+                    .await
+                    .unwrap()
+            }
+        };
+        Some(result)
+    } else {
+        None
+    };
+    drop(client_receiver);
+    drop(worker_sender);
+    tokio::time::timeout(Duration::from_secs(5), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    let metadata = actor
+        .acquire_metadata()
+        .expect("owned worker must settle its lease");
+    actor.settle_metadata(&metadata).unwrap();
+    let published: Vec<usize> = first
+        .iter()
+        .chain(std::iter::once(&second))
+        .filter_map(|result| result.as_ref().ok().map(|page| page.page_index))
+        .collect();
+    eprintln!(
+        "published={published:?}, current={current}, following={:?}, first={:?}, second={:?}",
+        following.as_ref().map(|page| page.page_index),
+        first.as_ref().and_then(|result| result.as_ref().err()),
+        second.as_ref().err()
+    );
+    if previous_during_next {
+        assert_eq!(second.unwrap().page_index, 0);
+        assert!(
+            first.unwrap().is_err(),
+            "displaced forward request must not navigate"
+        );
+        assert_eq!(current, 0);
+        assert_eq!(following.unwrap().page_index, 1);
+        assert_eq!(final_page.unwrap().unwrap().page_index, 2);
+        return;
+    }
+    assert!(
+        published.contains(&1),
+        "both requests lost unpublished page 1"
+    );
+    let highest = *published.iter().max().unwrap();
+    assert_eq!(current, highest);
+    assert_eq!(following.unwrap().page_index, highest + 1);
+    let page_one = first
+        .iter()
+        .chain(std::iter::once(&second))
+        .find_map(|result| result.as_ref().ok().filter(|page| page.page_index == 1))
+        .unwrap();
+    assert_eq!(
+        page_one.rows[0],
+        vec![DbValue::Integer {
+            value: "501".into()
+        }]
+    );
+    assert_eq!(
+        page_one.rows.last().unwrap(),
+        &vec![DbValue::Integer {
+            value: "1000".into()
+        }]
+    );
+}
+
+#[tokio::test]
+async fn overlapping_sqlite_next_requests_do_not_skip_an_unpublished_page() {
+    sqlite_navigation_relay_scenario(false, false).await;
+}
+
+#[tokio::test]
+async fn abandoned_sqlite_next_caller_does_not_skip_the_unpublished_page() {
+    sqlite_navigation_relay_scenario(true, false).await;
+}
+
+#[tokio::test]
+async fn sqlite_previous_during_next_preserves_subsequent_page_order() {
+    sqlite_navigation_relay_scenario(false, true).await;
+}
+
 #[tokio::test]
 async fn p7_sqlite_primary_boundaries_page_once_without_blank_terminal_pages() {
     for row_count in ROW_BOUNDARIES {
@@ -514,6 +1624,98 @@ async fn p7_sqlite_primary_boundaries_page_once_without_blank_terminal_pages() {
             .expect("EOF must settle the primary execution lease");
         actor.settle_metadata(&metadata).unwrap();
     }
+}
+
+#[test]
+fn network_ready_publication_does_not_navigate_a_cached_page() {
+    let sessions = ResultSessionState::default();
+    let run = QueryRunOwner {
+        descriptor_id: DescriptorId("network-navigation".into()),
+        connection_id: ConnectionId("network-navigation".into()),
+        connection_generation: ConnectionGeneration("generation".into()),
+        query_run_id: QueryRunId("run".into()),
+    };
+    let owner = ResultSessionOwner {
+        descriptor_id: run.descriptor_id.clone(),
+        connection_id: run.connection_id.clone(),
+        connection_generation: run.connection_generation.clone(),
+        query_run_id: run.query_run_id.clone(),
+        statement_execution_id: StatementExecutionId("statement".into()),
+        result_session_id: ResultSessionId("session".into()),
+    };
+    {
+        let mut registry = sessions.lock().unwrap();
+        registry.begin_run(&run).unwrap();
+        registry
+            .begin_session(owner.clone(), vec!["value".into()])
+            .unwrap();
+        for value in 1..=501 {
+            registry
+                .push_row(
+                    &owner,
+                    vec![DbValue::Integer {
+                        value: value.to_string(),
+                    }],
+                )
+                .unwrap();
+        }
+        registry.mark_page_ready(&owner, 0).unwrap();
+    }
+    for start in [502, 1002] {
+        {
+            let mut registry = sessions.lock().unwrap();
+            for value in start..start + 500 {
+                registry
+                    .push_row(
+                        &owner,
+                        vec![DbValue::Integer {
+                            value: value.to_string(),
+                        }],
+                    )
+                    .unwrap();
+            }
+        }
+        let publication = mark_next_network_page_ready(&sessions, &owner);
+        assert_eq!(
+            sessions
+                .lock()
+                .unwrap()
+                .current_page(&owner)
+                .unwrap()
+                .page_index,
+            0,
+            "worker publication advanced an unpublished current page"
+        );
+        publication.unwrap();
+    }
+    let first_next = sessions.lock().unwrap().complete_next(&owner, 1).unwrap();
+    assert_eq!(
+        first_next.rows[0],
+        vec![DbValue::Integer {
+            value: "501".into()
+        }]
+    );
+    let second_next = sessions.lock().unwrap().complete_next(&owner, 2).unwrap();
+    assert_eq!(
+        second_next.rows[0],
+        vec![DbValue::Integer {
+            value: "1001".into()
+        }]
+    );
+    sessions
+        .lock()
+        .unwrap()
+        .finish_session(&owner, EffectOutcome::None)
+        .unwrap();
+    let before = sessions.lock().unwrap().current_page(&owner).unwrap();
+    let mut stale = owner.clone();
+    stale.connection_generation = ConnectionGeneration("stale-generation".into());
+    assert!(mark_next_network_page_ready(&sessions, &stale).is_err());
+    assert!(mark_next_network_page_ready(&sessions, &owner).is_err());
+    assert_eq!(
+        sessions.lock().unwrap().current_page(&owner).unwrap(),
+        before
+    );
 }
 
 #[tokio::test]
@@ -933,6 +2135,104 @@ async fn sqlite_field_ceiling_rejects_before_clone_and_next_query_recovers() {
 }
 
 #[tokio::test]
+async fn sqlite_continuation_decode_failure_preserves_published_page_and_settles_lease() {
+    let state = DbState::default();
+    let actor = registered_sqlite_actor(&state, "descriptor-late-decode", "connection-late-decode");
+    let identity = actor.identity().clone();
+    let sessions = ResultSessionState::default();
+    let run = query_run_in_state(
+        &state,
+        &sessions,
+        primary_request(
+            &identity,
+            "run-late-decode",
+            "WITH RECURSIVE rows(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 600) SELECT CASE WHEN value = 502 THEN CAST(x'80' AS TEXT) ELSE 'valid' END AS value FROM rows".into(),
+        ),
+    ).await.unwrap();
+    let session = row_session(&run);
+    assert_eq!(session.initial_page.rows.len(), 500);
+    assert_eq!(
+        session.initial_page.lifecycle,
+        ResultSessionLifecycle::Streaming
+    );
+    let partial = result_page_in_state(
+        &state,
+        &sessions,
+        ResultPageRequest {
+            owner: session.owner.clone(),
+            direction: ResultPageDirection::Next,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(partial.page_index, 1);
+    assert_eq!(partial.owner, session.owner);
+    assert_eq!(partial.columns, session.columns);
+    assert_eq!(
+        partial.rows,
+        vec![vec![DbValue::Text {
+            value: "valid".into()
+        }]]
+    );
+    assert_eq!(partial.lifecycle, ResultSessionLifecycle::Error);
+    assert_eq!(partial.effect_outcome, EffectOutcome::Unknown);
+    assert!(partial.has_previous);
+    assert!(!partial.has_next);
+    let cached = sessions.lock().unwrap().page(&session.owner, 0).unwrap();
+    assert_eq!(cached.rows, session.initial_page.rows);
+    assert_eq!(cached.columns, session.columns);
+    assert_eq!(cached.lifecycle, ResultSessionLifecycle::Error);
+    assert_eq!(cached.effect_outcome, EffectOutcome::Unknown);
+    let metadata = actor
+        .acquire_metadata()
+        .expect("late decode failure must settle the lease");
+    actor.settle_metadata(&metadata).unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_continuation_cancel_preserves_published_page_and_settles_lease() {
+    let state = DbState::default();
+    let actor = registered_sqlite_actor(
+        &state,
+        "descriptor-stream-cancel",
+        "connection-stream-cancel",
+    );
+    let identity = actor.identity().clone();
+    let sessions = ResultSessionState::default();
+    let run = query_run_in_state(&state, &sessions, primary_request(
+        &identity, "run-stream-cancel",
+        "WITH RECURSIVE rows(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM rows WHERE value < 1201) SELECT value FROM rows".into(),
+    )).await.unwrap();
+    let session = row_session(&run);
+    assert_eq!(session.initial_page.rows.len(), 500);
+    assert_eq!(
+        session.initial_page.lifecycle,
+        ResultSessionLifecycle::Streaming
+    );
+    let cancelled = query_cancel_in_state(
+        &state,
+        QueryRunOwner {
+            descriptor_id: identity.descriptor_id.clone(),
+            connection_id: identity.connection_id.clone(),
+            connection_generation: identity.connection_generation.clone(),
+            query_run_id: QueryRunId("run-stream-cancel".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cancelled.outcome, QueryCancelOutcome::Cancelled);
+    let cached = sessions.lock().unwrap().page(&session.owner, 0).unwrap();
+    assert_eq!(cached.rows, session.initial_page.rows);
+    assert_eq!(cached.columns, session.columns);
+    assert_eq!(cached.lifecycle, ResultSessionLifecycle::Cancelled);
+    assert_eq!(cached.effect_outcome, EffectOutcome::Unknown);
+    let metadata = actor
+        .acquire_metadata()
+        .expect("stream cancellation must settle the lease");
+    actor.settle_metadata(&metadata).unwrap();
+}
+
+#[tokio::test]
 async fn p6_runner_settles_lease_on_registry_failure_and_aborts_partial_session_on_decode_error() {
     let state = DbState::default();
     let actor = registered_sqlite_actor(&state, "descriptor-cleanup", "connection-cleanup");
@@ -1117,26 +2417,396 @@ fn cancelled_transaction_boundaries_do_not_change_the_open_transaction_warning()
         error: mssql_cancelled_connection_error(),
     };
     let mut before_begin = false;
-    apply_successful_transaction_boundary(
-        &mut before_begin,
-        TransactionBoundary::Begin,
-        &cancelled,
-    );
+    apply_transaction_boundary(&mut before_begin, TransactionBoundary::Begin, &cancelled);
     assert!(
         !before_begin,
         "a cancelled BEGIN never opened a transaction"
     );
 
     let mut before_commit = true;
-    apply_successful_transaction_boundary(
-        &mut before_commit,
-        TransactionBoundary::Commit,
-        &cancelled,
-    );
+    apply_transaction_boundary(&mut before_commit, TransactionBoundary::Commit, &cancelled);
     assert!(
         before_commit,
         "a cancelled COMMIT did not prove the transaction closed"
     );
+}
+
+fn mssql_no_transaction_error(code: &str) -> DatabaseError {
+    DatabaseError {
+        engine: DatabaseErrorEngine::Mssql,
+        message: "The request has no corresponding BEGIN TRANSACTION.".to_string(),
+        code: Some(code.to_string()),
+        position: None,
+        detail: None,
+        hint: None,
+        retryability: Retryability::NotRetryable,
+    }
+}
+
+#[test]
+fn a_commit_or_rollback_the_server_says_has_no_transaction_clears_the_open_flag() {
+    // MSSQL answers COMMIT/ROLLBACK without a transaction with 3902/3903, e.g. after a
+    // single batch already committed or after XACT_ABORT/deadlock rolled it back.
+    for (boundary, code) in [
+        (TransactionBoundary::Commit, "3902"),
+        (TransactionBoundary::Rollback, "3903"),
+    ] {
+        let mut open = true;
+        apply_transaction_boundary(
+            &mut open,
+            boundary,
+            &StatementExecutionResult::Error {
+                error: mssql_no_transaction_error(code),
+            },
+        );
+        assert!(!open, "{code} proves no transaction is open");
+    }
+}
+
+#[test]
+fn other_failed_boundaries_keep_the_open_flag() {
+    let mut open = true;
+    // An unrelated failure of COMMIT proves nothing about the transaction.
+    apply_transaction_boundary(
+        &mut open,
+        TransactionBoundary::Commit,
+        &StatementExecutionResult::Error {
+            error: mssql_no_transaction_error("1205"),
+        },
+    );
+    assert!(open);
+    // The "no transaction" code only clears on a COMMIT/ROLLBACK unit.
+    apply_transaction_boundary(
+        &mut open,
+        TransactionBoundary::None,
+        &StatementExecutionResult::Error {
+            error: mssql_no_transaction_error("3902"),
+        },
+    );
+    assert!(open);
+    // Another engine's error code that happens to be 3902 is not MSSQL's answer.
+    let mut error = mssql_no_transaction_error("3902");
+    error.engine = DatabaseErrorEngine::Postgres;
+    apply_transaction_boundary(
+        &mut open,
+        TransactionBoundary::Commit,
+        &StatementExecutionResult::Error { error },
+    );
+    assert!(open);
+}
+
+#[tokio::test]
+async fn sqlite_implicit_rollback_clears_the_open_flag_in_both_run_modes() {
+    // A statement without result columns fails on execute; one with RETURNING fails
+    // while its first row is read. Both make SQLite roll the transaction back itself.
+    for (suffix, mode, failing_sql) in [
+        (
+            "primary-execute",
+            QueryRunMode::Primary,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1)",
+        ),
+        (
+            "primary-returning",
+            QueryRunMode::Primary,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1) RETURNING id",
+        ),
+        (
+            "script-execute",
+            QueryRunMode::Script,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1)",
+        ),
+        (
+            "script-returning",
+            QueryRunMode::Script,
+            "INSERT OR ROLLBACK INTO implicit_rollback VALUES (1) RETURNING id",
+        ),
+    ] {
+        let state = DbState::default();
+        let sessions = ResultSessionState::default();
+        let actor = registered_sqlite_actor(
+            &state,
+            &format!("descriptor-implicit-{suffix}"),
+            &format!("connection-implicit-{suffix}"),
+        );
+        let identity = actor.identity().clone();
+        macro_rules! run {
+            ($id:expr, $sql:expr, $boundary:expr) => {
+                run_unit_with_boundary(&state, &sessions, &identity, $id, mode, $sql, $boundary)
+                    .await
+            };
+        }
+
+        run!(
+            "create",
+            "CREATE TABLE implicit_rollback (id INTEGER PRIMARY KEY)",
+            TransactionBoundary::None
+        );
+        assert!(run!("begin", "BEGIN", TransactionBoundary::Begin).transaction_may_be_open);
+        assert!(
+            run!(
+                "insert",
+                "INSERT INTO implicit_rollback VALUES (1)",
+                TransactionBoundary::None
+            )
+            .transaction_may_be_open
+        );
+
+        let failed = run!("implicit-rollback", failing_sql, TransactionBoundary::None);
+        assert!(matches!(
+            failed.statements[0].result,
+            StatementExecutionResult::Error { .. }
+        ));
+        assert!(
+            !failed.transaction_may_be_open,
+            "{suffix}: SQLite already rolled the transaction back"
+        );
+        assert!(!actor.transaction_may_be_open());
+    }
+}
+
+#[tokio::test]
+async fn sqlite_runs_reconcile_a_stale_open_flag_with_the_connection() {
+    for (suffix, mode, sql, boundary) in [
+        (
+            "rollback-primary",
+            QueryRunMode::Primary,
+            "ROLLBACK",
+            TransactionBoundary::Rollback,
+        ),
+        (
+            "commit-script",
+            QueryRunMode::Script,
+            "COMMIT",
+            TransactionBoundary::Commit,
+        ),
+        (
+            "select-primary",
+            QueryRunMode::Primary,
+            "SELECT 1",
+            TransactionBoundary::None,
+        ),
+        (
+            "select-script",
+            QueryRunMode::Script,
+            "SELECT 1",
+            TransactionBoundary::None,
+        ),
+        (
+            // More rows than one page keeps the worker streaming after it publishes.
+            "streaming-primary",
+            QueryRunMode::Primary,
+            "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 1200) SELECT n FROM c",
+            TransactionBoundary::None,
+        ),
+    ] {
+        let state = DbState::default();
+        let sessions = ResultSessionState::default();
+        let actor = registered_sqlite_actor(
+            &state,
+            &format!("descriptor-stale-{suffix}"),
+            &format!("connection-stale-{suffix}"),
+        );
+        let identity = actor.identity().clone();
+        // The connection is in autocommit mode, but the flag claims a transaction.
+        actor.set_transaction_may_be_open(true);
+
+        let run =
+            run_unit_with_boundary(&state, &sessions, &identity, "stale", mode, sql, boundary)
+                .await;
+        // A still-streaming result keeps its worker (and the connection) alive until
+        // released, so release before asserting to fail cleanly instead of hanging.
+        if let StatementExecutionResult::Rows {
+            result_session: Some(session),
+            ..
+        } = &run.statements[0].result
+        {
+            result_session_release_in_state(&state, &sessions, session.owner.clone())
+                .await
+                .unwrap();
+        }
+        assert!(
+            !run.transaction_may_be_open,
+            "{suffix}: no transaction is open on the connection"
+        );
+        assert!(!actor.transaction_may_be_open(), "{suffix}");
+    }
+}
+
+async fn run_unit_with_boundary(
+    state: &DbState,
+    sessions: &ResultSessionState,
+    identity: &ConnectionIdentity,
+    run: &str,
+    mode: QueryRunMode,
+    sql: &str,
+    transaction_boundary: TransactionBoundary,
+) -> QueryRun {
+    query_run_in_state(
+        state,
+        sessions,
+        QueryRunRequest {
+            descriptor_id: identity.descriptor_id.clone(),
+            connection_id: identity.connection_id.clone(),
+            connection_generation: identity.connection_generation.clone(),
+            query_run_id: QueryRunId(run.to_string()),
+            mode,
+            statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
+                sql: sql.to_string(),
+                transaction_boundary,
+            }])
+            .unwrap(),
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn transaction_may_be_open_is_connection_level_across_separate_runs() {
+    let state = DbState::default();
+    let sessions = ResultSessionState::default();
+    let actor = registered_sqlite_actor(&state, "descriptor-tx-level", "connection-tx-level");
+    let identity = actor.identity().clone();
+    let other = registered_sqlite_actor(&state, "descriptor-tx-other", "connection-tx-other");
+    let other_identity = other.identity().clone();
+
+    let begin = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-begin",
+        QueryRunMode::Primary,
+        "BEGIN",
+        TransactionBoundary::Begin,
+    )
+    .await;
+    assert!(begin.transaction_may_be_open);
+
+    // Statements without a boundary must inherit the connection's open
+    // transaction instead of reporting a fresh `false` for every run.
+    let write = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-write",
+        QueryRunMode::Primary,
+        "INSERT INTO descriptor_tx_level_table VALUES (1)",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(
+        write.transaction_may_be_open,
+        "a primary run inside an open transaction must keep reporting it"
+    );
+    let read = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-read",
+        QueryRunMode::Script,
+        "SELECT id FROM descriptor_tx_level_table",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(
+        read.transaction_may_be_open,
+        "a script run inside an open transaction must keep reporting it"
+    );
+    let failed = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-failed",
+        QueryRunMode::Primary,
+        "SELECT * FROM missing_inside_transaction",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(matches!(
+        failed.statements[0].result,
+        StatementExecutionResult::Error { .. }
+    ));
+    assert!(
+        failed.transaction_may_be_open,
+        "a failed statement does not close the transaction"
+    );
+
+    // The flag belongs to one connection, not to the process.
+    let other_read = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &other_identity,
+        "run-other",
+        QueryRunMode::Primary,
+        "SELECT 1",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(!other_read.transaction_may_be_open);
+
+    let commit = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-commit",
+        QueryRunMode::Primary,
+        "COMMIT",
+        TransactionBoundary::Commit,
+    )
+    .await;
+    assert!(!commit.transaction_may_be_open);
+    let after = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-after",
+        QueryRunMode::Primary,
+        "SELECT id FROM descriptor_tx_level_table",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(!after.transaction_may_be_open);
+}
+
+#[tokio::test]
+async fn script_runs_save_and_clear_the_connection_transaction_flag() {
+    let state = DbState::default();
+    let sessions = ResultSessionState::default();
+    let actor = registered_sqlite_actor(&state, "descriptor-tx-script", "connection-tx-script");
+    let identity = actor.identity().clone();
+
+    run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-begin",
+        QueryRunMode::Script,
+        "BEGIN",
+        TransactionBoundary::Begin,
+    )
+    .await;
+    let still_open = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-select",
+        QueryRunMode::Script,
+        "SELECT 1",
+        TransactionBoundary::None,
+    )
+    .await;
+    assert!(still_open.transaction_may_be_open);
+    let rollback = run_unit_with_boundary(
+        &state,
+        &sessions,
+        &identity,
+        "run-rollback",
+        QueryRunMode::Script,
+        "ROLLBACK",
+        TransactionBoundary::Rollback,
+    )
+    .await;
+    assert!(!rollback.transaction_may_be_open);
 }
 
 #[tokio::test]
@@ -2051,6 +3721,83 @@ fn sqlite_qualified_columns_keep_duplicate_names_and_composite_primary_keys_dist
     assert_eq!(audit_columns[0].name, "audit_only");
     assert!(audit_columns[0].notnull);
     assert!(!audit_columns[0].pk);
+}
+
+#[test]
+fn sqlite_generated_column_metadata_preserves_all_columns_and_namespaces() {
+    let conn = mem();
+    conn.execute_batch(
+        "ATTACH DATABASE ':memory:' AS audit;
+         CREATE TABLE main.people(id INTEGER PRIMARY KEY, name TEXT);
+         CREATE TABLE audit.people(
+           id INTEGER PRIMARY KEY, name TEXT,
+           virtual_name TEXT AS (upper(name)) VIRTUAL,
+           stored_name TEXT AS (name || '!') STORED
+         );
+         CREATE VIRTUAL TABLE main.search USING fts5(body);",
+    )
+    .unwrap();
+    let objects = list_tables(&conn).unwrap();
+    let audit = objects
+        .iter()
+        .find(|table| table.schema == "audit" && table.name == "people")
+        .unwrap();
+    let main = objects
+        .iter()
+        .find(|table| table.schema == "main" && table.name == "people")
+        .unwrap();
+    let columns = serde_json::to_value(table_columns(&conn, audit).unwrap()).unwrap();
+    assert_eq!(
+        columns
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|column| (
+                column["name"].as_str().unwrap(),
+                column["generated"].as_bool()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("id", Some(false)),
+            ("name", Some(false)),
+            ("virtual_name", Some(true)),
+            ("stored_name", Some(true))
+        ]
+    );
+    let ordinary = serde_json::to_value(table_columns(&conn, main).unwrap()).unwrap();
+    assert_eq!(ordinary.as_array().unwrap().len(), 2);
+    assert!(ordinary
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|column| column["generated"] == false));
+    let search = objects.iter().find(|table| table.name == "search").unwrap();
+    let hidden = serde_json::to_value(table_columns(&conn, search).unwrap()).unwrap();
+    assert_eq!(
+        hidden
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|column| column["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["body", "search", "rank"]
+    );
+    assert!(hidden
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|column| column["generated"] == false));
+}
+
+#[test]
+fn column_metadata_preserves_unknown_generated_status_for_legacy_payloads() {
+    let legacy = serde_json::json!({"name":"name", "type":"TEXT", "notnull":false, "pk":false});
+    let column: ColumnInfo = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(column).unwrap(), legacy);
+    let mut known = legacy;
+    known["generated"] = serde_json::json!(true);
+    let column: ColumnInfo = serde_json::from_value(known.clone()).unwrap();
+    assert_eq!(serde_json::to_value(column).unwrap(), known);
 }
 
 #[test]

@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use russh::client::{self, Handle};
-use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{load_secret_key, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use russh::Disconnect;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{oneshot, watch, Notify};
 
 use crate::logging;
 use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelativePath};
@@ -22,6 +22,30 @@ use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelati
 // fails fast instead of hanging the connect command indefinitely.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+
+// Stable code (not prose) so the frontend can ask for the key's passphrase and retry.
+const KEY_PASSPHRASE_REQUIRED: &str = "ssh-key-passphrase-required";
+
+fn load_client_key(key_path: &str, passphrase: Option<&str>) -> Result<PrivateKey, String> {
+    use russh::keys::{ssh_key, Error as KeyError};
+    load_secret_key(key_path, passphrase).map_err(|e| match e {
+        KeyError::KeyIsEncrypted => KEY_PASSPHRASE_REQUIRED.to_string(),
+        KeyError::SshKey(ssh_key::Error::Crypto) if passphrase.is_some() => {
+            format!("無法解開私鑰 {key_path}：密語不正確")
+        }
+        // PKCS#8 decoding without a passphrase fails as a DER parse error rather
+        // than KeyIsEncrypted, so recognise the encrypted envelope by its label.
+        _ if passphrase.is_none() && is_encrypted_pkcs8(key_path) => {
+            KEY_PASSPHRASE_REQUIRED.to_string()
+        }
+        e => format!("無法讀取私鑰 {key_path}：{e}"),
+    })
+}
+
+fn is_encrypted_pkcs8(key_path: &str) -> bool {
+    std::fs::read_to_string(key_path)
+        .is_ok_and(|pem| pem.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----"))
+}
 
 // PAM-backed servers often expose password login only as keyboard-interactive.
 // Answer one concealed password prompt, never reuse it as an OTP/MFA response.
@@ -348,7 +372,7 @@ impl HostKeyPersistIo for StdHostKeyIo {
 /// Windows scanners (Defender, indexers) briefly hold a file that was just
 /// written, so reopening or renaming it can fail with a sharing violation or
 /// access denied for a few milliseconds.
-fn windows_scanner_held(error: &std::io::Error) -> bool {
+pub(crate) fn windows_scanner_held(error: &std::io::Error) -> bool {
     const ERROR_ACCESS_DENIED: i32 = 5;
     const ERROR_SHARING_VIOLATION: i32 = 32;
     cfg!(windows)
@@ -360,7 +384,7 @@ fn windows_scanner_held(error: &std::io::Error) -> bool {
 
 /// Retries only failures `transient` accepts, a few times over ~150 ms;
 /// anything else, or a failure that persists, is returned (fail closed).
-fn retry_transient<T>(
+pub(crate) fn retry_transient<T>(
     transient: fn(&std::io::Error) -> bool,
     mut op: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
@@ -967,6 +991,8 @@ impl client::Handler for Client {
 
 struct SessionEntry {
     handle: Arc<AsyncMutex<Handle<Client>>>,
+    /// Wake SFTP initializers before disconnect waits for their handle lock.
+    closing: watch::Sender<bool>,
     /// Lazily-opened SFTP subsystem for this session (F5). `SftpSession` methods
     /// take `&self` and drive an internal request pipeline, so one `Arc` is
     /// shared across concurrent list/transfer commands.
@@ -1390,8 +1416,7 @@ impl SshManager {
                     passphrase,
                 } => {
                     // Failures are logged once by the timeout wrapper below.
-                    let key = load_secret_key(&key_path, passphrase.as_deref())
-                        .map_err(|e| format!("無法讀取私鑰 {key_path}：{e}"))?;
+                    let key = load_client_key(&key_path, passphrase.as_deref())?;
                     let hash = session
                         .best_supported_rsa_hash()
                         .await
@@ -1435,6 +1460,7 @@ impl SshManager {
             session_id.clone(),
             SessionEntry {
                 handle: Arc::new(AsyncMutex::new(session)),
+                closing: watch::channel(false).0,
                 sftp: None,
                 host,
             },
@@ -1452,45 +1478,56 @@ impl SshManager {
     /// a `SftpSession`. Cached on the entry so every sftp command shares one
     /// subsystem; a race where two commands open concurrently keeps whichever
     /// registered first and drops the loser.
+    /// A stopped subsystem is replaced only on a new call, never by replaying
+    /// an operation that already failed with an unknown remote outcome.
     pub(crate) async fn ensure_sftp(&self, session_id: &str) -> Result<Arc<SftpSession>, String> {
-        if let Some(sftp) = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .and_then(|e| e.sftp.clone())
-        {
-            return Ok(sftp);
-        }
-
-        let handle = self.get_handle(session_id)?;
-        let channel = {
-            let handle = handle.lock().await;
-            let channel = handle
-                .channel_open_session()
-                .await
-                .map_err(|e| format!("無法開啟 SFTP channel：{e}"))?;
-            channel
-                .request_subsystem(true, "sftp")
-                .await
-                .map_err(|e| format!("無法啟動 SFTP 子系統：{e}"))?;
-            channel
+        let (handle, mut closing) = {
+            let map = self.sessions.lock().unwrap();
+            let entry = map
+                .get(session_id)
+                .ok_or_else(|| format!("找不到 SSH session {session_id}"))?;
+            if let Some(sftp) = entry.sftp.clone().filter(|sftp| !sftp.is_closed()) {
+                return Ok(sftp);
+            }
+            (entry.handle.clone(), entry.closing.subscribe())
         };
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|e| format!("無法建立 SFTP session：{e}"))?;
+        let sftp = tokio::select! {
+            biased;
+            _ = closing.wait_for(|closed| *closed) => {
+                return Err(format!("SSH session {session_id} 已關閉"));
+            }
+            result = async {
+                let channel = {
+                    let handle = handle.lock().await;
+                    let channel = handle
+                        .channel_open_session()
+                        .await
+                        .map_err(|e| format!("無法開啟 SFTP channel：{e}"))?;
+                    channel
+                        .request_subsystem(true, "sftp")
+                        .await
+                        .map_err(|e| format!("無法啟動 SFTP 子系統：{e}"))?;
+                    channel
+                };
+                SftpSession::new(channel.into_stream())
+                .await
+                .map_err(|e| format!("無法建立 SFTP session：{e}"))
+            } => result?,
+        };
         let sftp = Arc::new(sftp);
 
         let mut map = self.sessions.lock().unwrap();
         match map.get_mut(session_id) {
-            Some(entry) => match entry.sftp.clone() {
-                Some(existing) => Ok(existing),
-                None => {
-                    entry.sftp = Some(sftp.clone());
-                    Ok(sftp)
+            Some(entry) if Arc::ptr_eq(&entry.handle, &handle) => {
+                match entry.sftp.clone().filter(|sftp| !sftp.is_closed()) {
+                    Some(existing) => Ok(existing),
+                    None => {
+                        entry.sftp = Some(sftp.clone());
+                        Ok(sftp)
+                    }
                 }
-            },
-            None => Err(format!("SSH session {session_id} 已關閉")),
+            }
+            _ => Err(format!("SSH session {session_id} 已關閉")),
         }
     }
 
@@ -1877,10 +1914,17 @@ impl SshManager {
     async fn disconnect(&self, session_id: &str) -> Result<(), String> {
         self.transfers.disconnect(Some(session_id));
         let entry = self.sessions.lock().unwrap().remove(session_id);
-        let Some(SessionEntry { handle, host, .. }) = entry else {
+        let Some(SessionEntry {
+            handle,
+            closing,
+            host,
+            ..
+        }) = entry
+        else {
             // Idempotent: disconnecting an unknown/already-closed session is fine.
             return Ok(());
         };
+        closing.send_replace(true);
         {
             let handle = handle.lock().await;
             let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
@@ -1894,7 +1938,9 @@ impl SshManager {
         // on app exit.
         self.host_keys.reject_all_pending();
         self.transfers.disconnect(None);
-        self.sessions.lock().unwrap().clear();
+        for (_, entry) in self.sessions.lock().unwrap().drain() {
+            entry.closing.send_replace(true);
+        }
         self.transfer_dests.clear();
     }
 
@@ -1904,24 +1950,38 @@ impl SshManager {
         helper: &str,
         mode: crate::host_service::HostLane,
     ) -> Result<crate::host_service::HostStream, String> {
-        let handle = self.get_handle(session_id)?;
-        let channel = handle
-            .lock()
-            .await
-            .channel_open_session()
-            .await
-            .map_err(|e| e.to_string())?;
-        let mode = mode.argument();
-        let command = if crate::host_windows::is_windows_path(helper) {
-            crate::host_windows::helper_command(helper, mode)?
-        } else {
-            format!("exec {} {mode}", crate::host_service::shell_quote(helper)?)
+        let (handle, mut closing) = {
+            let map = self.sessions.lock().unwrap();
+            let entry = map
+                .get(session_id)
+                .ok_or_else(|| format!("找不到 SSH session {session_id}"))?;
+            (entry.handle.clone(), entry.closing.subscribe())
         };
-        channel
-            .exec(true, command.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(Box::new(channel.into_stream()))
+        tokio::select! {
+            biased;
+            _ = closing.wait_for(|closed| *closed) => {
+                Err(format!("SSH session {session_id} 已關閉"))
+            }
+            result = async {
+                let channel = handle
+                    .lock()
+                    .await
+                    .channel_open_session()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mode = mode.argument();
+                let command = if crate::host_windows::is_windows_path(helper) {
+                    crate::host_windows::helper_command(helper, mode)?
+                } else {
+                    format!("exec {} {mode}", crate::host_service::shell_quote(helper)?)
+                };
+                channel
+                    .exec(true, command.as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(Box::new(channel.into_stream()) as crate::host_service::HostStream)
+            } => result,
+        }
     }
 
     pub(crate) async fn open_host_socket(
@@ -1959,20 +2019,32 @@ impl SshManager {
         &self,
         session_id: &str,
     ) -> Result<russh_sftp::client::RawSftpSession, String> {
-        let handle = self.get_handle(session_id)?;
-        let channel = handle
-            .lock()
-            .await
-            .channel_open_session()
-            .await
-            .map_err(|e| e.to_string())?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(russh_sftp::client::RawSftpSession::new(
-            channel.into_stream(),
-        ))
+        let (handle, mut closing) = {
+            let map = self.sessions.lock().unwrap();
+            let entry = map
+                .get(session_id)
+                .ok_or_else(|| format!("找不到 SSH session {session_id}"))?;
+            (entry.handle.clone(), entry.closing.subscribe())
+        };
+        tokio::select! {
+            biased;
+            _ = closing.wait_for(|closed| *closed) => {
+                Err(format!("SSH session {session_id} 已關閉"))
+            }
+            result = async {
+                let channel = handle
+                    .lock()
+                    .await
+                    .channel_open_session()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                channel
+                    .request_subsystem(true, "sftp")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(russh_sftp::client::RawSftpSession::new(channel.into_stream()))
+            } => result,
+        }
     }
 
     pub(crate) fn reserve_remote_write(
@@ -2239,6 +2311,77 @@ mod tests {
         }
     }
 
+    // `ssh-keygen -t ed25519 -N 'correct horse'`; throwaway key, never trusted anywhere.
+    const ENCRYPTED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABADfH+3g/
+RQ+X8j6GW6j1UDAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAILj8C65TFrPhpMMA
+4fq2+VWLFwtf96Dj55GgNODYZ+duAAAAkALfmBybsef3SzO7fx+ohvp6goZvzxXL7xRLn1
+hepkhSWmJxF0n1GKI0qT+g9CuEy2ZXzQp6Yr+Jgmm/NZLjoEDnL+snGZe1D5YVS7n3qJi8
+RlIFL4c56Nuy9qT/sJP1m80d95UtVmCRrtHU1+PK3iUGJXkP8Yp4VwlScbNVvWahyauLFl
+tvqU1gDDpOIEsJtw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    // `openssl genpkey -algorithm ed25519 -aes-256-cbc -pass pass:yuzora-test`;
+    // throwaway PKCS#8 key, never trusted anywhere.
+    const ENCRYPTED_PKCS8_KEY: &str = "-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIGjMF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBCvQexx+4ZHej5OS54c
+v/B9AgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQzCyyOyb3eYAU9aYJ
+MkGM1wRA+dgUGgTmc+iZf5s9FAPFthd0pfg0NQp8zX4dezYiFBO6VuijQYIE/Q6e
+1xJZALD4pmodL7Q26RM+lqC9zDaYQA==
+-----END ENCRYPTED PRIVATE KEY-----
+";
+
+    fn key_file(contents: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id_test");
+        std::fs::write(&path, contents).unwrap();
+        let path = path.to_str().unwrap().to_string();
+        (dir, path)
+    }
+
+    #[test]
+    fn encrypted_key_without_passphrase_asks_for_one_by_code() {
+        let (_dir, path) = key_file(ENCRYPTED_KEY);
+        assert_eq!(
+            load_client_key(&path, None).unwrap_err(),
+            KEY_PASSPHRASE_REQUIRED
+        );
+    }
+
+    #[test]
+    fn encrypted_key_loads_with_the_right_passphrase_only() {
+        let (_dir, path) = key_file(ENCRYPTED_KEY);
+        assert!(load_client_key(&path, Some("correct horse")).is_ok());
+        let wrong = load_client_key(&path, Some("wrong")).unwrap_err();
+        assert_ne!(wrong, KEY_PASSPHRASE_REQUIRED);
+        assert!(wrong.contains("密語不正確"), "{wrong}");
+    }
+
+    #[test]
+    fn encrypted_pkcs8_key_without_passphrase_asks_for_one_by_code() {
+        let (_dir, path) = key_file(ENCRYPTED_PKCS8_KEY);
+        assert_eq!(
+            load_client_key(&path, None).unwrap_err(),
+            KEY_PASSPHRASE_REQUIRED
+        );
+        assert!(load_client_key(&path, Some("yuzora-test")).is_ok());
+    }
+
+    #[test]
+    fn plain_key_needs_no_passphrase() {
+        let (_dir, path) = key_file(TEST_HOST_KEY);
+        assert!(load_client_key(&path, None).is_ok());
+    }
+
+    #[test]
+    fn unreadable_key_keeps_the_path_in_its_message() {
+        let (_dir, path) = key_file("not a key");
+        let message = load_client_key(&path, None).unwrap_err();
+        assert!(message.starts_with("無法讀取私鑰 "), "{message}");
+        assert!(message.contains(&path), "{message}");
+    }
+
     #[test]
     fn unknown_auth_kind_is_rejected() {
         assert!(serde_json::from_str::<SshAuth>(r#"{"kind":"agent"}"#).is_err());
@@ -2257,17 +2400,26 @@ mod tests {
         let sink = captured.clone();
         let mgr = SshManager::with_log(Box::new(move |ev| sink.lock().unwrap().push(ev)));
 
-        // 127.0.0.1:1 幾乎必然 ECONNREFUSED → 走傳輸層錯誤分支
-        let res = mgr
-            .connect(
+        // Own the endpoint until both sides finish; closing the accepted peer
+        // exercises the transport error without depending on another service.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let ((), res) = tokio::join!(
+            async {
+                let (peer, _) = listener.accept().await.unwrap();
+                drop(peer);
+            },
+            mgr.connect(
                 "127.0.0.1".into(),
-                1,
+                port,
                 "nobody".into(),
                 SshAuth::Password {
                     password: "x".into(),
                 },
             )
-            .await;
+        );
 
         assert!(res.is_err());
         let events = captured.lock().unwrap();
@@ -3956,6 +4108,10 @@ mod sftp_integration_tests;
 #[cfg(all(test, unix))]
 #[path = "ssh_tcp_open_tests.rs"]
 mod tcp_open_tests;
+
+#[cfg(test)]
+#[path = "ssh_sftp_lifecycle_tests.rs"]
+mod sftp_lifecycle_tests;
 
 #[cfg(test)]
 #[path = "sftp_directory_contract_tests.rs"]

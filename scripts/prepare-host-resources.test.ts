@@ -7,7 +7,7 @@ it("pins five targets, helper paths, and complete official HERDR packages", () =
   for (const target of Object.keys(HOST_TARGETS) as Array<keyof typeof HOST_TARGETS>) {
     const suffix = target.startsWith("windows-") ? ".exe" : ""
     const files = HERDR_RESOURCE_TARGETS[target].files
-    const artifact: HostArtifact = { protocol:1, version:"0.0.9-beta.3", target, helper:{path:`${target}/yuzora-host${suffix}`,sha256:"a".repeat(64)}, herdr:{path:`${target}/herdr${suffix}`,sha256:files.find(file => file.path === `herdr${suffix}`)!.sha256,version:"0.9.3",protocol: 22}, files:files.filter(file => file.path !== `herdr${suffix}`).map(file => ({path:`${target}/${file.path}`,sha256:file.sha256})) }
+    const artifact: HostArtifact = { protocol:1, version:"0.0.9-beta.3", target, helper:{path:`${target}/yuzora-host${suffix}`,sha256:"a".repeat(64)}, herdr:{path:`${target}/herdr${suffix}`,sha256:files.find(file => file.path === `herdr${suffix}`)!.sha256,version:"0.9.5",protocol: 22}, files:files.filter(file => file.path !== `herdr${suffix}`).map(file => ({path:`${target}/${file.path}`,sha256:file.sha256})) }
     expect(() => validateHostArtifact(artifact)).not.toThrow()
     expect(() => validateHostArtifact({...artifact, helper:{...artifact.helper,path:"../../bin/herdr"}})).toThrow("Invalid artifact path")
     expect(() => validateHostArtifact({...artifact, herdr:{...artifact.herdr,sha256:"b".repeat(64)}})).toThrow("Unexpected official HERDR")

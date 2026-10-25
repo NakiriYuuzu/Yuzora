@@ -3,12 +3,53 @@ import { useWorkspaceStore, type TabInfo } from "@/state/workspaceStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { useUiStore } from "@/state/uiStore"
 import type { HerdrSnapshot, HerdrTabInfo } from "./herdrTypes"
-import { activateWorkbenchTab, navigateWorkbenchTabs, tabNavigationIndex, visibleWorkbenchTabs } from "./workbenchTabNavigation"
+import { activateWorkbenchTab, currentWorkbenchAgentKey, navigateWorkbenchTabs, tabNavigationIndex, visibleWorkbenchTabs } from "./workbenchTabNavigation"
+import { agentMruKey } from "@/state/agentMruStore"
 import { registerTerminalFocusTarget } from "@/terminal/terminalFocus"
 
 const originalRuntime = useHerdrStore.getState()
 afterEach(() => { useHerdrStore.setState(originalRuntime, true); vi.restoreAllMocks(); vi.useRealTimers(); document.body.innerHTML = "" })
 const file = (path: string, pinned = false): TabInfo => ({ path, name: path, pinned, dirty: false, externallyModified: false })
+
+it("identifies the current workbench Agent from the live split leaf and never guesses an ambiguous pane", () => {
+    useUiStore.setState({ mode: "ade" })
+    const path = "yuzora://herdr/current-split"
+    const page: TabInfo = { ...file(path), kind: "herdr-terminal", herdrSessionId: "s1", herdrTabId: "tab", herdrWorkspaceId: "space", terminalId: "term-a" }
+    const agents = ["a", "b"].map(id => ({ id, name: id, status: "idle", workspaceId: "space", tabId: "tab", terminalId: `term-${id}` }))
+    useHerdrStore.setState({ runtimesBySession: { s1: { capabilities: null, connectionState: "ready", errorMessage: null, worktreeInventory: null, snapshot: { agents } as HerdrSnapshot } } })
+    useWorkspaceStore.setState({ activeGroupIndex: 0, groups: [{ activePath: path, tabs: [page] }] })
+    expect(currentWorkbenchAgentKey()).toBeUndefined()
+    let active = true
+    const release = registerTerminalFocusTarget("current-split", { pagePath: path, active: () => active, focus: () => {}, agentKey: () => agentMruKey("s1", "b") })
+    try {
+        expect(currentWorkbenchAgentKey()).toBe(agentMruKey("s1", "b"))
+        active = false
+        expect(currentWorkbenchAgentKey()).toBeUndefined()
+        active = true
+        useWorkspaceStore.setState({ activeGroupIndex: 1, groups: [{ activePath: path, tabs: [page] }, { activePath: "file", tabs: [file("file")] }] })
+        expect(currentWorkbenchAgentKey()).toBeNull()
+        useWorkspaceStore.setState({ activeGroupIndex: 0 })
+        useUiStore.setState({ mode: "git" })
+        expect(currentWorkbenchAgentKey()).toBeNull()
+    } finally { release() }
+})
+
+it.each(["named", "live"])("uses only a unique Agent from the active %s Session tab before mount", alias => {
+    useUiStore.setState({ mode: "ade" })
+    const path = "yuzora://herdr/unmounted"
+    const page: TabInfo = { ...file(path), kind: "herdr-terminal", herdrSessionId: alias === "live" ? "live" : "s1", herdrTabId: "tab", herdrWorkspaceId: "space" }
+    const agent = { id: "same-id", name: "same", status: "idle", workspaceId: "space", tabId: "tab", terminalId: "same-term" }
+    useHerdrStore.setState({ sessions: [{ name: "s1", default: true, running: true, sessionDir: "/owned", socketPath: "/owned/socket" }], runtimesBySession: {
+        s1: { capabilities: null, connectionState: "ready", errorMessage: null, worktreeInventory: null, snapshot: { agents: [agent] } as HerdrSnapshot },
+        other: { capabilities: null, connectionState: "ready", errorMessage: null, worktreeInventory: null, snapshot: { agents: [agent] } as HerdrSnapshot },
+    } })
+    useWorkspaceStore.setState({ activeGroupIndex: 0, groups: [{ activePath: path, tabs: [page] }] })
+    expect(currentWorkbenchAgentKey()).toBe(agentMruKey("s1", "same-id"))
+    useWorkspaceStore.setState({ groups: [{ activePath: path, tabs: [{ ...page, herdrSessionId: "other" }] }] })
+    expect(currentWorkbenchAgentKey()).toBe(agentMruKey("other", "same-id"))
+    useWorkspaceStore.setState({ groups: [{ activePath: path, tabs: [{ ...page, herdrWorkspaceId: "wrong-space" }] }] })
+    expect(currentWorkbenchAgentKey()).toBeUndefined()
+})
 
 it("selects numbered tabs and wraps adjacent navigation", () => {
     expect(tabNavigationIndex(0, 0, { direction: 1 })).toBeNull()

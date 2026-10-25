@@ -23,14 +23,14 @@ describe("prepare Herdr resources", () => {
     expect(() => archiveExtractionCommand("win32", "archive.zip", "runtime")).toThrow("SystemRoot")
     expect(archiveExtractionCommand("darwin", "/tmp/archive.zip", "/tmp/runtime")).toEqual(["unzip", "-q", "/tmp/archive.zip", "-d", "/tmp/runtime"])
   })
-  it("pins protocol-22 Herdr v0.9.3 Stable resources for both released desktop platforms", () => {
+  it("pins protocol-22 Herdr v0.9.5 Stable resources for both released desktop platforms", () => {
     expect(HERDR_RESOURCE_VERSION).toEqual({
-      baseVersion: "0.9.3",
+      baseVersion: "0.9.5",
       protocol: 22,
       licenseSha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     })
-    expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.9.3/")
-    expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.9.3/")
+    expect(HERDR_RESOURCE_TARGETS["macos-aarch64"].url).toContain("/v0.9.5/")
+    expect(HERDR_RESOURCE_TARGETS["macos-x86_64"].url).toContain("/v0.9.5/")
     expect(Object.keys(HERDR_RESOURCE_TARGETS).sort()).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64", "windows-x86_64"])
     expect(resourceTargetIdsForHost("darwin")).toEqual(["macos-aarch64"])
     expect(resourceTargetIdsForHost("win32")).toEqual(["windows-x86_64"])
@@ -82,17 +82,40 @@ describe("prepare Herdr resources", () => {
       await readFile(resolve(repositoryRoot, "src-tauri/tauri.windows.conf.json"), "utf8")
     )
     expect(macos.bundle.resources).toEqual({
+      "resources/companion-web/": "companion-web/",
+      "resources/companion-net/": "companion-net/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     })
     expect(windows.bundle.resources).toEqual({
+      "resources/companion-web/": "companion-web/",
+      "resources/companion-net/": "companion-net/",
       "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     })
     expect(macos.bundle.resources["resources/host/"]).toBe("host/")
+  })
+
+  it("bundles both Companion sidecars and ships the same Companion resources on Linux", async () => {
+    const base = JSON.parse(
+      await readFile(resolve(repositoryRoot, "src-tauri/tauri.conf.json"), "utf8")
+    )
+    const linux = JSON.parse(
+      await readFile(resolve(repositoryRoot, "src-tauri/tauri.linux.conf.json"), "utf8")
+    )
+    expect(base.bundle.externalBin).toEqual(["binaries/yuzora-companion", "binaries/yuzora-companion-net"])
+    expect(linux.bundle.resources).toEqual({
+      "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
+      "resources/herdr/linux-aarch64/": "herdr/linux-aarch64/",
+      "resources/herdr/linux-x86_64/": "herdr/linux-x86_64/",
+      "resources/companion-web/": "companion-web/",
+      "resources/companion-net/": "companion-net/",
+      "resources/host/": "host/",
+      "resources/legacy-cleanup/": "legacy-cleanup/"
+    })
   })
 
   it("ad-hoc signs the complete macOS app bundle so Gatekeeper can validate resources", async () => {

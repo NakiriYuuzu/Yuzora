@@ -1,0 +1,3 @@
+Protected baseline files: 296; changed mtimes: 1; added files: 0
+CHANGED mtime: specs/yuzora-companion-pwa-direct-connections-plan.html
+This worker issued writes only to spikes/companion-direct/**, ADR-0007, CONTEXT Companion block/date, and the mandated report. Concurrent worker owns protected paths; mtime changes, if any, cannot establish writer identity.

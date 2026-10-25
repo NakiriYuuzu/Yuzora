@@ -2,6 +2,7 @@ import { Loader2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { CommandGroup, CommandItem } from "@/components/ui/command"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { workspacePathBasename, workspacePathForDisplay } from "@/lib/paths"
 import type { SearchEvent, SearchMatch } from "@/lib/types"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -95,6 +96,7 @@ export function WorkspaceSearchGroup({
     events,
     query,
     loading,
+    error = null,
     caseSensitive,
     onToggleCaseSensitive,
     onReveal,
@@ -102,6 +104,7 @@ export function WorkspaceSearchGroup({
     events: SearchEvent[]
     query: string
     loading: boolean
+    error?: string | null
     caseSensitive: boolean
     onToggleCaseSensitive: () => void
     onReveal: (path: string, line: number) => void
@@ -136,7 +139,16 @@ export function WorkspaceSearchGroup({
                 </button>
             </div>
 
-            {done?.truncated && (
+            {error !== null && (
+                <div className="mx-[8px] mb-[4px]">
+                    <Alert variant="destructive">
+                        <AlertTitle>{t("workspaceSearch.failed")}</AlertTitle>
+                        {error && <AlertDescription className="wrap-anywhere">{error}</AlertDescription>}
+                    </Alert>
+                </div>
+            )}
+
+            {error === null && done?.truncated && (
                 <div className="mx-[8px] mb-[4px] rounded-[8px] bg-(--yz-hover) px-[10px] py-[6px] text-[12px] text-(--ink-2)">
                     {t("workspaceSearch.truncatedNotice")}
                 </div>
@@ -187,7 +199,7 @@ export function WorkspaceSearchGroup({
                 </CommandGroup>
             ))}
 
-            {done && groups.length === 0 && (
+            {error === null && done && groups.length === 0 && (
                 <div className="px-[14px] py-[10px] text-[12.5px] text-(--ink-3)">
                     {t("workspaceSearch.noResults")}
                 </div>

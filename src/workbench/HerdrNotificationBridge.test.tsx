@@ -75,3 +75,90 @@ it("drops a delayed system notification if its attention has already cleared", a
   await act(async () => { useHerdrStore.setState({ attentionByKey: new Map() }); finish(true) })
   expect(mocks.system).not.toHaveBeenCalled()
 })
+
+it.each([
+  ["done", "category", 0], ["blocked", "category", 0],
+  ["done", "other-category", 1], ["blocked", "other-category", 1],
+  ["done", "system", 0], ["blocked", "system", 0],
+  ["done", "unchanged", 1], ["blocked", "unchanged", 1],
+] as const)("rechecks pending %s notification preferences after %s changes", async (kind, change, deliveries) => {
+  let finish!: (value: boolean) => void
+  mocks.permission.mockReturnValue(new Promise<boolean>(resolve => { finish = resolve }))
+  useHerdrNotificationStore.setState({ toast: false })
+  render(<HerdrNotificationBridge />)
+  await emit({ ...attention, kind, agentStatus: kind })
+  expect(mocks.permission).toHaveBeenCalledOnce()
+  if (change === "category") useHerdrNotificationStore.setState({ [kind]: false })
+  else if (change === "other-category") useHerdrNotificationStore.setState({ [kind === "done" ? "blocked" : "done"]: false })
+  else if (change === "system") useHerdrNotificationStore.setState({ system: false })
+  await act(async () => { finish(true) })
+  expect(mocks.system).toHaveBeenCalledTimes(deliveries)
+  expect(mocks.toast).not.toHaveBeenCalled()
+})
+
+it.each(["blocked", "unknown"] as const)("notifies a live completion after previously seen %s exactly once", async previousStatus => {
+  useHerdrStore.getState().setEventsHealth("default", true, "sub-default")
+  const emitStatus = (agentStatus: string) => useHerdrStore.getState().applySubscriptionEvent("default", {
+    type: "agent_status_changed", subscriptionId: "sub-default", paneId: "p1", workspaceId: "w1", agentStatus, stateLabels: {}
+  })
+  emitStatus(previousStatus)
+  useHerdrStore.getState().markAttentionSeen("default", "p1")
+  useHerdrStore.setState({ selectedSessionName: "other" })
+  mocks.permission.mockResolvedValue(true)
+  render(<HerdrNotificationBridge />)
+  await act(async () => { emitStatus("done") })
+  expect(mocks.toast).toHaveBeenCalledTimes(1)
+  expect(mocks.system).toHaveBeenCalledTimes(1)
+  expect(useHerdrStore.getState().attentionItems("default")).toMatchObject([{ kind: "done", seen: false }])
+  await act(async () => {
+    emitStatus("done")
+    useHerdrStore.getState().applySnapshot("default", {
+      herdrSessionId: "default", protocol: 22, version: "0.9.1", raw: {},
+      spaces: [], tabs: [], terminals: [],
+      agents: [{ id: "a1", name: "Agent", paneId: "p1", tabId: "t1", workspaceId: "w1", status: "done" }]
+    })
+  })
+  expect(mocks.toast).toHaveBeenCalledTimes(1)
+  expect(mocks.system).toHaveBeenCalledTimes(1)
+  expect(useHerdrStore.getState().attentionItems("default")).toHaveLength(1)
+  await act(async () => {
+    useHerdrStore.getState().markAttentionSeen("default", "p1")
+    emitStatus("done")
+  })
+  expect(mocks.toast).toHaveBeenCalledTimes(1)
+  expect(mocks.system).toHaveBeenCalledTimes(1)
+  expect(useHerdrStore.getState().attentionItems("default")).toEqual([])
+})
+
+it.each(["blocked", "unknown"] as const)("silently reconciles seen %s into an unread completion from a snapshot", async status => {
+  const snapshot: HerdrSnapshot = {
+    herdrSessionId: "default", protocol: 22, version: "0.9.1", raw: {},
+    spaces: [], tabs: [], terminals: [],
+    agents: [{ id: "a1", name: "Agent", paneId: "p1", workspaceId: "w1", status }]
+  }
+  useHerdrStore.getState().applySnapshot("default", snapshot)
+  useHerdrStore.getState().markAttentionSeen("default", "p1")
+  render(<HerdrNotificationBridge />)
+  await act(async () => { useHerdrStore.getState().applySnapshot("default", { ...snapshot, agents: snapshot.agents.map(agent => ({ ...agent, status: "done" })) }) })
+  expect(useHerdrStore.getState().attentionItems("default")).toMatchObject([{ kind: "done", seen: false }])
+  expect(mocks.toast).not.toHaveBeenCalled()
+  expect(mocks.permission).not.toHaveBeenCalled()
+})
+
+it.each(["visible", "disabled"])("keeps the %s completion notification guard after a seen status transition", async guard => {
+  useHerdrStore.getState().setEventsHealth("default", true, "sub-default")
+  const emitStatus = (agentStatus: string) => useHerdrStore.getState().applySubscriptionEvent("default", {
+    type: "agent_status_changed", subscriptionId: "sub-default", paneId: "p1", workspaceId: "w1", agentStatus, stateLabels: {}
+  })
+  emitStatus("blocked")
+  useHerdrStore.getState().markAttentionSeen("default", "p1")
+  if (guard === "visible") {
+    vi.mocked(document.hasFocus).mockReturnValue(true)
+    useHerdrNativeStore.setState({ selection: { sessionName: "default" } })
+  } else useHerdrNotificationStore.setState({ done: false })
+  render(<HerdrNotificationBridge />)
+  await act(async () => { emitStatus("done") })
+  expect(useHerdrStore.getState().attentionItems("default")).toMatchObject([{ kind: "done", seen: false }])
+  expect(mocks.toast).not.toHaveBeenCalled()
+  expect(mocks.permission).not.toHaveBeenCalled()
+})

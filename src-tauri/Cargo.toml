@@ -21,7 +21,7 @@ tauri-build = { version = "2.7.0", features = [] }
 yuzora-host = { path = "host" }
 # `unstable` unlocks the multiwebview API (Window::add_child) the preview panel
 # uses to overlay an external-URL browser webview over the panel region (P3).
-tauri = { version = "2.12.0", features = ["unstable", "macos-private-api", "protocol-asset", "image-png"] }
+tauri = { version = "=2.12.0", features = ["unstable", "macos-private-api", "protocol-asset", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -37,6 +37,7 @@ keyring = "4.1.4"
 secrecy = { version = "0.10.3", features = ["serde"] }
 zeroize = "1.9.0"
 chrono = { version = "0.4", features = ["serde"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 dirs = "7"
 encoding_rs = "0.8"
 notify = "8.2.0"
@@ -46,6 +47,10 @@ grep-searcher = "0.1"
 grep-regex = "0.1"
 rand = "0.10.3"
 sha2 = "0.11.0"
+# companion_push: RFC 8291 payload encryption and the VAPID (RFC 8292) signature.
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "ecdsa"] }
+hkdf = "0.13"
+aes-gcm = "0.11"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 libc = "0.2"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }
@@ -57,7 +62,7 @@ russh = { version = "=0.62.7", path = "vendor/russh-0.62.7-yuzora" }
 russh-sftp = { version = "=3.0.0", path = "vendor/russh-sftp-3.0.0-yuzora" }
 # tauri bundles tokio; ssh_service needs select!/timeout which async_runtime
 # doesn't re-export, so name tokio directly (already resolved in the lock).
-tokio = { version = "1", features = ["macros", "time", "sync", "net", "process", "io-util", "io-std", "rt"] }
+tokio = { version = "1.53.3", features = ["macros", "time", "sync", "net", "process", "io-util", "io-std", "rt"] }
 # perf_service samples only this process's cpu/memory; the `system` feature is
 # all it needs — drop disk/network/component/user to keep the build lean.
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
@@ -71,8 +76,8 @@ tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid
 tiberius = { version = "0.12.3", path = "vendor/tiberius-0.12.3-yuzora", default-features = false, features = ["tds73", "rustls", "chrono"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
-webpki-roots = "1.0.8"
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1.0.10"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 tempfile = "3"
@@ -82,6 +87,11 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-notification = "2"
 
 [dev-dependencies]
+tauri = { version = "=2.12.0", features = ["test"] }
+
+[patch.crates-io]
+# Keep Browser children outside the App asset scope; see the vendor patch notes.
+tauri = { path = "vendor/tauri-2.12.0-yuzora" }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2.12.0"
@@ -92,8 +102,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage", "NSResponder", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSString"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKNavigation"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

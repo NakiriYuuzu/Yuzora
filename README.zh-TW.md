@@ -135,6 +135,19 @@ HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷
 
 <br />
 
+### Companion（實驗性）
+
+用手機控制 HERDR Agent：查看 Agent 狀態、瀏覽 Spaces、唯讀查看 Git 狀態、歷史與 diff；在桌面授權後才能送出輸入。Companion **預設關閉**，需到「設定 → Companion」手動開啟。
+
+- Yuzora 內建自己的 Tailscale 節點，這台電腦不必安裝 Tailscale App；手機則需要安裝 Tailscale 並登入同一個 tailnet，再以 HTTPS 開啟 Companion 頁面。
+- 手機以 QR code 配對：兩邊核對確認碼（SAS）後註冊 passkey，之後每次連線都要通過 passkey。
+
+> **警告：**啟用 Companion 等同授予這台電腦帳號遠端 shell 權限。取得操作授權的手機可以驅動你的 AI Agent，而 Agent 可以執行指令。請只在你信任的 tailnet 上、在需要的期間內啟用。
+
+設定方式、存取控制（ACL）建議與疑難排解見 [docs/operations.md](docs/operations.md)。
+
+<br />
+
 ## 下載
 
 正式版由 GitHub Actions 建置並發佈於 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)。未發布的 PR 候選版只提供 Actions artifacts。
@@ -160,7 +173,7 @@ macOS 安裝檔**未經 Apple Developer ID 簽章或公證**，首次開啟可�
 | Terminal | xterm.js ＋ HERDR terminal pages |
 | 工具鏈 | Bun · Vitest · Cargo |
 
-Yuzora 隨附 HERDR 0.9.3，透過 private protocol 22 與 schema 檢查保留 0.9.0、0.9.1 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
+Yuzora 隨附 HERDR 0.9.5，透過 private protocol 22 與 schema 檢查保留 0.9.0、0.9.1、0.9.3 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
 
 Apple Silicon macOS App 的受管 HERDR 共用 `Contents/Resources/host/macos-aarch64/herdr`，不再額外隨附 `herdr/macos-*` binary。五平台遠端 Host payload 全數保留，包含 Intel macOS；Windows 維持獨立的原生 HERDR 路徑。
 

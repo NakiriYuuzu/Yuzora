@@ -10,18 +10,19 @@ import { useHerdrNativeStore, type HerdrNativeSelection } from "@/state/herdrNat
 import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { useHerdrStore } from "@/state/herdrStore"
 import { invokeHerdr } from "@/lib/herdrProvider"
-import { herdrFeature } from "@/lib/herdrFeatures"
+import { herdrFeature, type HerdrFeatureResult } from "@/lib/herdrFeatures"
 import { herdrPaneFocus, herdrTerminalInput, herdrTerminalRelease, herdrTerminalResize } from "@/lib/herdrIpc"
 import type { HerdrTerminalEvent, HerdrTerminalOpenResult } from "@/lib/herdrTypes"
 import { terminalFontStack } from "@/terminal/terminalFonts"
 import { buildXtermTheme, xtermMinimumContrastRatio } from "@/terminal/xtermTheme"
 import { installTerminalClipboardHandling } from "@/terminal/terminalClipboard"
+import { installTerminalImeHandling } from "@/terminal/terminalImeHandling"
 import { installKittyRenderer } from "@/terminal/kittyRenderer"
 import "@xterm/xterm/css/xterm.css"
 import "@/terminal/xtermBlockGlyphs.css"
 
 // A feature request belongs to one open() call; remounting the client must not replay it.
-const dispatchedRequests = new WeakSet<HerdrNativeSelection>()
+const dispatchedRequests = new WeakMap<HerdrNativeSelection, Promise<HerdrFeatureResult>>()
 
 export default function HerdrNativeDialog({ selection }: { selection: HerdrNativeSelection }) {
   const { t } = useTranslation("herdrTools")
@@ -32,25 +33,45 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
     // Radix mounts portal content after the parent effect's first pass.
     const element = container
     if (!element) return
-    let disposed = false, failed = false, id: string | null = null, queue = Promise.resolve(), queuedBytes = 0
+    let disposed = false, failed = false, closed = false, inputReady = false, id: string | null = null, queue = Promise.resolve(), queuedBytes = 0
+    // Block user interaction until the intended pane is ready. disableStdin
+    // would also suppress the terminal protocol replies needed during setup.
+    element.setAttribute("inert", "")
     const settings = useTerminalSettingsStore.getState()
     const term = new Terminal({ fontFamily: terminalFontStack(settings.fontFamily), fontSize: settings.fontSize, allowProposedApi: true, allowTransparency: true, scrollback: 0, theme: buildXtermTheme(document.documentElement.classList.contains("dark") ? "dark" : "light"), minimumContrastRatio: xtermMinimumContrastRatio(document.documentElement.classList.contains("dark") ? "dark" : "light") })
     const fit = new FitAddon()
     term.loadAddon(fit); term.open(element); fit.fit()
+    const stopTransport = (cause: unknown) => {
+      if (disposed) return
+      const firstClose = !closed
+      closed = true; inputReady = false; element.removeAttribute("inert")
+      setReady(false); setError(String(cause)); term.options.disableStdin = true
+      if (firstClose && id) void herdrTerminalRelease(id).catch(() => undefined)
+    }
     const fail = (cause: unknown) => {
       if (disposed || failed) return
-      failed = true; setReady(false); setError(String(cause)); term.options.disableStdin = true
-      if (id) void herdrTerminalRelease(id).catch(() => undefined)
+      failed = true
+      stopTransport(cause)
     }
+    // EOF may race with replies from controls already sent to the retired
+    // client. Their rejection does not invalidate accepted renderer output.
+    const controlFailed = (cause: unknown) => { if (!closed) fail(cause) }
     const pendingInput: string[] = []
     let inputQueue = Promise.resolve()
     const send = (text: string) => {
-      if (disposed || failed) return
-      if (id) inputQueue = inputQueue.then(async () => { if (!disposed && !failed && id) await herdrTerminalInput(id, text) }).catch(fail)
+      if (disposed || closed) return
+      if (id) inputQueue = inputQueue.then(async () => { if (!disposed && !closed && id) await herdrTerminalInput(id, text) }).catch(controlFailed)
       else if (pendingInput.reduce((size, part) => size + part.length, 0) + text.length <= 16384) pendingInput.push(text)
     }
     const graphics = installKittyRenderer(term, send)
-    const clipboard = installTerminalClipboardHandling(term, { canPaste: () => Boolean(id) && !failed, onCopyError: fail })
+    const clipboard = installTerminalClipboardHandling(term, {
+      canPaste: () => inputReady && Boolean(id) && !disposed && !closed,
+      onCopyError: cause => {
+        if (disposed) return
+        if (closed) setError(String(cause))
+        else fail(cause)
+      }
+    })
     // Official Copy mode exports its selected text via OSC 52, including over SSH.
     // Clipboard reads ("?") are deliberately not implemented.
     const osc = term.parser.registerOscHandler(52, data => {
@@ -64,7 +85,7 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
       } catch { /* malformed clipboard output */ }
       return true
     })
-    const input = term.onData(send)
+    const input = installTerminalImeHandling(term, send)
     let fitFrame = 0
     const resize = new ResizeObserver(() => {
       if (disposed || fitFrame) return
@@ -72,7 +93,7 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
         fitFrame = 0
         if (disposed) return
         fit.fit()
-        if (id && !failed) void herdrTerminalResize(id, term.cols, term.rows).catch(fail)
+        if (id && !closed) void herdrTerminalResize(id, term.cols, term.rows).catch(controlFailed)
       })
     })
     resize.observe(element)
@@ -82,9 +103,11 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
     const theme = new MutationObserver(() => { if (disposed) return; const mode = document.documentElement.classList.contains("dark") ? "dark" : "light"; term.options.theme = buildXtermTheme(mode); term.options.minimumContrastRatio = xtermMinimumContrastRatio(mode) })
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] })
     const onEvent = (event: HerdrTerminalEvent) => {
-      if (disposed || failed) return
+      if (disposed || closed) return
       if (event.type === "error") { fail(event.message); return }
-      if (event.type === "closed") { fail(event.reason ?? i18n.t("herdrTools:nativeDetached")); return }
+      // EOF stops transport admission immediately, but accepted output still
+      // belongs to the renderer queue. Only failure or disposal aborts it.
+      if (event.type === "closed") { stopTransport(event.reason ?? i18n.t("herdrTools:nativeDetached")); return }
       if (event.type !== "frame") return
       const bytes = Uint8Array.from(atob(event.bytesBase64), char => char.charCodeAt(0))
       queuedBytes += bytes.length
@@ -93,31 +116,40 @@ export default function HerdrNativeDialog({ selection }: { selection: HerdrNativ
     }
     // Mount the dialog after the normal pane effects have released controllers.
     const open = requestAnimationFrame(() => {
+      setReady(false); setError(null)
       const screen = term.element?.querySelector<HTMLElement>(".xterm-screen")
       void invokeHerdr<HerdrTerminalOpenResult>("herdr_client_open", {
         sessionName: selection.sessionName,
         size: { cols: term.cols, rows: term.rows, cellWidth: Math.max(1, Math.round((screen?.clientWidth ?? element.clientWidth) / term.cols)), cellHeight: Math.max(1, Math.round((screen?.clientHeight ?? element.clientHeight) / term.rows)) }, onEvent
       }).then(async opened => {
         id = opened.sessionId
-        if (disposed || failed) { await herdrTerminalRelease(id); return }
+        if (disposed || closed) { await herdrTerminalRelease(id); return }
         // The first buffered write must own the same queue as later onData input.
         // Otherwise typing while this write awaits IPC can overtake it.
         if (pendingInput.length) send(pendingInput.splice(0).join(""))
         await inputQueue
-        if (disposed || failed) return
+        if (disposed || closed) return
         await herdrTerminalResize(id, term.cols, term.rows)
+        if (disposed || closed) return
         if (selection.paneId) await herdrPaneFocus({ sessionName: selection.sessionName, paneId: selection.paneId })
-        if (disposed) return
-        setReady(true); clipboard.flushPendingPaste(); term.focus()
-        if (selection.request && !dispatchedRequests.has(selection)) {
-          dispatchedRequests.add(selection)
-          const result = await herdrFeature(selection.sessionName, selection.request)
+        if (disposed || closed) return
+        if (selection.request) {
+          let requested = dispatchedRequests.get(selection)
+          if (!requested) {
+            requested = herdrFeature(selection.sessionName, selection.request)
+            dispatchedRequests.set(selection, requested)
+          }
+          const result = await requested
+          if (disposed || closed) return
           const openedPane = result.plugin_pane as { pane?: { pane_id?: string } } | undefined
-          if (!disposed && selection.request.method === "plugin.pane.open" && openedPane?.pane?.pane_id) {
+          if (selection.request.method === "plugin.pane.open" && openedPane?.pane?.pane_id) {
             await herdrPaneFocus({ sessionName: selection.sessionName, paneId: openedPane.pane.pane_id })
+            if (disposed || closed) return
           }
         }
-      }).catch(fail)
+        inputReady = true; element.removeAttribute("inert")
+        setReady(true); clipboard.flushPendingPaste(); term.focus()
+      }).catch(controlFailed)
     })
     return () => {
       disposed = true; cancelAnimationFrame(open); cancelAnimationFrame(fitFrame); resize.disconnect(); theme.disconnect()

@@ -1,5 +1,5 @@
 import { useUiStore } from "../state/uiStore"
-import { lazy, memo, Suspense } from "react"
+import { lazy, memo, Suspense, useRef } from "react"
 import { FileCode2, Globe, Search, SquareTerminal } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
@@ -11,15 +11,18 @@ import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
 import { EmptyState } from "@/app/workbench/EmptyState"
 import { HerdrTerminalPage } from "@/app/panels/HerdrTerminalPage"
 import { PreviewPanel } from "@/app/panels/PreviewPanel"
-import { isMarkdownPreviewTab, previewTabSourcePath } from "../lib/markdownPreviewTab"
+import { isFileTab, isMarkdownPreviewTab, previewTabSourcePath } from "../lib/markdownPreviewTab"
 import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { isMarkdownPath } from "./MarkdownPreview"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
+import { saveDirtyTab } from "../editor/saveDocument"
+import { useConfirmDialogStore } from "../state/confirmDialogStore"
 import { TabBar } from "./TabBar"
 import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
 import { SvgSplitView, isSvgPath } from "./SvgSplitView"
+import { tabRetention } from "./viewRetention"
 
 const RichMarkdownEditor = lazy(() => import("../editor/RichMarkdownEditor").then(m => ({ default: m.RichMarkdownEditor })))
 
@@ -40,18 +43,77 @@ export function EditorArea() {
     const splitRight = useWorkspaceStore((s) => s.splitRight)
     const closeSplit = useWorkspaceStore((s) => s.closeSplit)
     const setActiveGroup = useWorkspaceStore((s) => s.setActiveGroup)
+    const closingSplit = useRef(false)
+
+    async function handleCloseSplit() {
+        if (closingSplit.current) return
+        const initial = useWorkspaceStore.getState()
+        if (initial.groups.length < 2) return
+        const keptPaths = new Set(initial.groups[0].tabs.filter(isFileTab).map(tab => tab.path))
+        const dirtyPaths = (state: typeof initial) => [...new Set(state.groups[1]?.tabs
+            .filter(tab => isFileTab(tab) && tab.dirty && !keptPaths.has(tab.path))
+            .map(tab => tab.path) ?? [])]
+        const pendingPaths = dirtyPaths(initial)
+        if (pendingPaths.length === 0) {
+            closeSplit()
+            return
+        }
+
+        closingSplit.current = true
+        let invalidated = false
+        const sameSplit = (state: typeof initial) => state.workspacePath === initial.workspacePath
+            && state.groups.length === initial.groups.length
+            && state.groups.every((group, index) => {
+                const before = initial.groups[index]
+                return group.id === before.id && group.activePath === before.activePath
+                    && group.tabs.length === before.tabs.length
+                    && group.tabs.every((tab, tabIndex) => tab.path === before.tabs[tabIndex].path
+                        && tab.kind === before.tabs[tabIndex].kind)
+            })
+        // Observe intermediate ownership changes too: switching away and back
+        // must not revive an earlier confirmation.
+        const unsubscribe = useWorkspaceStore.subscribe(state => {
+            if (!sameSplit(state)) invalidated = true
+        })
+        const canContinue = () => !invalidated && sameSplit(useWorkspaceStore.getState())
+            && dirtyPaths(useWorkspaceStore.getState()).every(path => pendingPaths.includes(path))
+        try {
+            const decision = await useConfirmDialogStore.getState().requestUnsavedDecision({
+                title: t("unsavedDialog.closeTabTitle"),
+                description: t("unsavedDialog.closeSplitDescription"),
+                saveLabel: t("unsavedDialog.saveAll")
+            })
+            if (decision === "cancel" || !canContinue()) return
+            if (decision === "save") {
+                const saved = new Set<string>()
+                for (const path of pendingPaths) {
+                    if (!canContinue()) return
+                    const outcome = await saveDirtyTab(path, canContinue)
+                    if (outcome.kind !== "saved") return
+                    saved.add(path)
+                    if (!canContinue() || dirtyPaths(useWorkspaceStore.getState()).some(path => saved.has(path))) return
+                }
+            }
+            if (canContinue()) closeSplit()
+        } finally {
+            unsubscribe()
+            closingSplit.current = false
+        }
+    }
 
     return (
         <div className="editor-groups flex min-h-0 min-w-0 flex-1">
             {groups.map((group, i) => {
                 const last = i === groups.length - 1
                 const activeTab = group.tabs.find((tab) => tab.path === group.activePath)
-                const herdrTabs = group.tabs.filter(
+                // Kept-alive pages (viewRetention) stay mounted in their own
+                // layer and are only hidden while another tab is in front.
+                const keptAliveTabs = group.tabs.filter(
                     (tab) =>
-                        tab.kind === "herdr-terminal" &&
-                        tab.herdrSessionId &&
-                        tab.terminalId
+                        tabRetention(tab) === "keep-alive" &&
+                        (tab.kind !== "herdr-terminal" || (tab.herdrSessionId && tab.terminalId))
                 )
+                const activeKeptAlive = activeTab !== undefined && tabRetention(activeTab) === "keep-alive"
                 return (
                     <div
                         key={group.id ?? `legacy-group-${i}`}
@@ -78,7 +140,7 @@ export function EditorArea() {
                                                 ? t("editorArea.splitTitle")
                                                 : t("editorArea.closeSplitTitle")
                                         }
-                                        onClick={groups.length < 2 ? splitRight : closeSplit}
+                                        onClick={groups.length < 2 ? splitRight : () => void handleCloseSplit()}
                                         className={cn(
                                             ACTION_BUTTON_CLASS,
                                             groups.length < 2 ? ACTION_IDLE_CLASS : ACTION_ACTIVE_CLASS
@@ -102,41 +164,45 @@ export function EditorArea() {
                             )}
                         </div>
                         <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-                            {herdrTabs.map((tab) => {
+                            {keptAliveTabs.map((tab) => {
                                 const tabVisible = editorSurfaceVisible && tab.path === group.activePath
+                                const herdr = tab.kind === "herdr-terminal"
                                 return (
                                     <div
                                         key={tab.path}
                                         className={cn(
                                             "absolute inset-0 min-h-0 min-w-0",
+                                            !herdr && "flex",
                                             tabVisible
                                                 ? "visible pointer-events-auto"
                                                 : "invisible pointer-events-none"
                                         )}
                                         aria-hidden={!tabVisible}
                                         inert={!tabVisible}
-                                        data-testid={`herdr-page-layer-${tab.path}`}
+                                        data-testid={herdr ? `herdr-page-layer-${tab.path}` : `kept-alive-layer-${tab.path}`}
                                     >
-                                        <StableHerdrTerminalPage
-                                            herdrSessionId={tab.herdrSessionId!}
-                                            terminalId={tab.terminalId!}
-                                            paneId={tab.paneId}
-                                            herdrTabId={tab.herdrTabId}
-                                            title={tab.name}
-                                            pagePath={tab.path}
-                                            active={tabVisible && i === activeGroupIndex}
-                                            visible={tabVisible}
-                                        />
+                                        {herdr ? (
+                                            <StableHerdrTerminalPage
+                                                herdrSessionId={tab.herdrSessionId!}
+                                                terminalId={tab.terminalId!}
+                                                paneId={tab.paneId}
+                                                herdrTabId={tab.herdrTabId}
+                                                title={tab.name}
+                                                pagePath={tab.path}
+                                                active={tabVisible && i === activeGroupIndex}
+                                                visible={tabVisible}
+                                            />
+                                        ) : (
+                                            <PreviewPanel visible={tabVisible} />
+                                        )}
                                     </div>
                                 )
                             })}
-                            {activeTab?.kind !== "herdr-terminal" && (
+                            {!activeKeptAlive && (
                                 <div className="absolute inset-0 flex min-h-0 min-w-0">
                                     {(() => {
-                                        if (
-                                            group.activePath === PREVIEW_TAB_PATH ||
-                                            activeTab?.kind === "preview"
-                                        ) {
+                                        // Legacy: an active preview path without its tab entry.
+                                        if (group.activePath === PREVIEW_TAB_PATH) {
                                             return <PreviewPanel />
                                         }
                                         if (activeTab && isMarkdownPreviewTab(activeTab)) {
@@ -173,6 +239,7 @@ export function EditorArea() {
                                                 <ImageView
                                                     key={group.activePath}
                                                     path={group.activePath}
+                                                    generation={documentGeneration(group.activePath)}
                                                 />
                                             )
                                         }

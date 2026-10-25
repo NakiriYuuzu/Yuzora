@@ -44,6 +44,7 @@ import { SpaceCharacter } from "./SpaceCharacter";
 import { AgentSwitcher, type AgentSwitcherItem } from "./AgentSwitcher";
 import { useAgentHotkeys } from "./useAgentHotkeys";
 import { agentMruKey } from "@/state/agentMruStore";
+import { currentWorkbenchAgentKey } from "@/lib/workbenchTabNavigation";
 import { bindingLabel, effectiveBinding, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore";
 import { Kbd } from "@/components/ui/kbd";
 import { isMacPlatform } from "@/lib/platform";
@@ -159,6 +160,10 @@ export function SpaceAgentTree() {
   const previousOwner = useRef("");
   const shownSessions = sessions.filter(
     (item) => scopeSession === null || item.name === scopeSession,
+  );
+  const shownSessionNames = new Set(shownSessions.map((item) => item.name));
+  const shownAttention = [...attention.values()].filter(
+    (item) => shownSessionNames.has(item.sessionName) && !(item.kind === "done" && item.seen),
   );
   function repairHost(name?: string) {
     useUiStore.getState().openSettings("herdr", { hostId: name ? parseRuntimeScope(name).hostId : undefined });
@@ -507,6 +512,7 @@ export function SpaceAgentTree() {
     agents: agentNodes,
     keyOf: (node) => agentMruKey(node.sessionName, node.agent!.id),
     activate: activateAgentNode,
+    getCurrentKey: currentWorkbenchAgentKey,
   });
   const visible: TreeNode[] = viewMode === "agents"
     ? all.filter((node) => node.kind === "agent").map((node, index, nodes) => ({ ...node, parent: undefined, level: 1, position: index + 1, size: nodes.length }))
@@ -736,29 +742,13 @@ export function SpaceAgentTree() {
         className="space-tree-scroll"
         viewportClassName="[&>div]:block!"
       >
-        {[...attention.values()].filter(
-          (item) =>
-            !(item.kind === "done" && item.seen) &&
-            (scopeSession === null || item.sessionName === scopeSession),
-        ).length > 0 && (
+        {shownAttention.length > 0 && (
           <div className="space-tree-attention">
             <strong>
               {t("attention")} ·{" "}
-              {
-                [...attention.values()].filter(
-                  (item) =>
-                    !(item.kind === "done" && item.seen) &&
-                    (scopeSession === null ||
-                      item.sessionName === scopeSession),
-                ).length
-              }
+              {shownAttention.length}
             </strong>
-            {[...attention.values()]
-              .filter(
-                (item) =>
-                  !(item.kind === "done" && item.seen) &&
-                  (scopeSession === null || item.sessionName === scopeSession),
-              )
+            {shownAttention
               .sort(
                 (a, b) =>
                   Number(b.kind === "blocked") - Number(a.kind === "blocked") ||

@@ -1,7 +1,7 @@
 import { bindingLabel, dispatchAppShortcut, effectiveBinding, useKeyboardSettingsStore, type AppCommandId } from "@/state/keyboardSettingsStore"
 import { useSftpStore } from "@/state/sftpStore"
 import { openNewTerminalTab } from "@/terminal/openNewTerminalTab"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import {
@@ -72,6 +72,33 @@ const MODE_COMMANDS: Record<Mode, AppCommandId> = {
 const HERDR_PALETTE_SPACE_LIMIT = 64
 const HERDR_PALETTE_AGENT_LIMIT = 128
 
+interface PaletteFocusOwner {
+  element: HTMLElement
+  container: EventTarget | null
+  context: string
+  commandSelected: boolean
+}
+
+function paletteFocusContext(): string {
+  const workspace = useWorkspaceStore.getState()
+  const herdr = useHerdrStore.getState()
+  return JSON.stringify([
+    workspace.workspacePath, workspace.activeGroupIndex,
+    workspace.groups[workspace.activeGroupIndex]?.activePath,
+    herdr.selectedSessionName, herdr.selectedSpaceId, useUiStore.getState().mode,
+  ])
+}
+
+function availablePaletteFocusOwner(element: HTMLElement): boolean {
+  if (!element.isConnected || element.matches(":disabled")
+    || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false
+  for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) {
+    const style = getComputedStyle(parent)
+    if (style.display === "none" || style.visibility === "hidden") return false
+  }
+  return true
+}
+
 /**
  * Command palette — design reference 5.9. Global ⌘K / Ctrl+K toggle. VSCode-style
  * modes: a leading ">" restricts the list to commands (filtered by the text after
@@ -90,6 +117,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
   useOverlayPresence(open)
   const [search, setSearch] = useState("")
   const [caseSensitive, setCaseSensitive] = useState(false)
+  const focusOwner = useRef<PaletteFocusOwner | null>(null)
   const setPaletteOpen = useCallback((nextOpen: boolean) => {
     if (!nextOpen) setSearch("")
     onOpenChange(nextOpen)
@@ -144,7 +172,7 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
 
   // Discard/cancel in-flight responses whenever the palette is closed or the
   // query switches to command-only mode by feeding the hook an empty query.
-  const { events, loading } = useWorkspaceSearch(open && showWorkspace ? search : "", caseSensitive)
+  const { events, loading, error } = useWorkspaceSearch(open && showWorkspace ? search : "", caseSensitive)
 
   type Cmd = { value: string; label: string; icon: LucideIcon; onSelect: () => void; className: string; shortcut?: AppCommandId }
   const commands: Cmd[] = [
@@ -373,13 +401,34 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
         resizeId="command-palette"
         minSize={dialogMinSize(420, 280)}
         showCloseButton={false}
+        onOpenAutoFocus={(event) => {
+          const element = document.activeElement
+          focusOwner.current = element instanceof HTMLElement
+            && element !== document.body && element !== document.documentElement
+            ? { element, container: event.target, context: paletteFocusContext(), commandSelected: false }
+            : null
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          const owner = focusOwner.current
+          // Radix dispatches close autofocus later. An older content teardown
+          // must not restore or clear a newer opening's focus owner.
+          if (!owner || owner.container !== event.target || open) return
+          focusOwner.current = null
+          if (owner.commandSelected || owner.context !== paletteFocusContext()
+            || !availablePaletteFocusOwner(owner.element)) return
+          if (document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], dialog[open], [role="menu"][data-state="open"]')) return
+          const active = document.activeElement
+          if (active && active !== document.body && active !== document.documentElement
+            && active !== owner.element) return
+          owner.element.focus({ preventScroll: true })
+        }}
         className="yz-diffin flex min-h-0 flex-col gap-0 overflow-hidden rounded-(--r-lg) border border-(--line-2) bg-(--frost-light) p-0 shadow-(--shadow-xl) ring-0 backdrop-blur-[20px] backdrop-saturate-[1.5]"
       >
         <Command shouldFilter={false} className="flex min-h-0 flex-1 flex-col rounded-none! bg-transparent p-0">
           <div className="flex shrink-0 items-center gap-3 border-b border-(--line-1) px-[21px] py-[17px]">
             <SearchIcon className="size-5 shrink-0 text-(--ink-3)" aria-hidden="true" />
             <CommandPrimitive.Input
-              autoFocus
               value={search}
               onValueChange={setSearch}
               placeholder={t("commandPalette.searchPlaceholder")}
@@ -408,7 +457,10 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
                     <CommandItem
                       key={c.value}
                       value={c.value}
-                      onSelect={c.onSelect}
+                      onSelect={() => {
+                        if (focusOwner.current) focusOwner.current.commandSelected = true
+                        c.onSelect()
+                      }}
                       className={c.className}
                     >
                       <span className="flex size-[28px] shrink-0 items-center justify-center rounded-[9px] bg-(--yz-hover)">
@@ -430,9 +482,11 @@ export function CommandPalette({ open, onOpenChange, onSelectMode, onOpenSetting
                 events={events}
                 query={search.trim()}
                 loading={loading}
+                error={error}
                 caseSensitive={caseSensitive}
                 onToggleCaseSensitive={() => setCaseSensitive((v) => !v)}
                 onReveal={(path, line) => {
+                  if (focusOwner.current) focusOwner.current.commandSelected = true
                   requestReveal(path, line)
                   setPaletteOpen(false)
                 }}

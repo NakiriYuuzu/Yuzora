@@ -1289,6 +1289,31 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
         promptSpy.mockRestore()
     })
 
+    it("file: cmRename 檔名含反斜線的 POSIX 檔案不會改到另一個路徑", async () => {
+        const calls = ipcCalls()
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("c.txt")
+
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/a\\b.txt" })
+        await vi.waitFor(() => expect(promptSpy).toHaveBeenCalled())
+        expect(promptSpy).toHaveBeenCalledWith(expect.any(String), "a\\b.txt")
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(calls.some((c) => c.cmd === "fs_rename")).toBe(false)
+        promptSpy.mockRestore()
+    })
+
+    it("file: cmRename 新名稱含反斜線不會被當成子目錄", async () => {
+        const calls = ipcCalls()
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+        const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("x\\y.ts")
+
+        runLegacyContextMenuAction("file", "cmRename", { path: "/w/src/old.ts" })
+        await vi.waitFor(() => expect(promptSpy).toHaveBeenCalled())
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(calls.some((c) => c.cmd === "fs_rename")).toBe(false)
+        promptSpy.mockRestore()
+    })
+
     it("file: cmRename 的 Windows prompt 預設值只顯示 basename", async () => {
         const workspace = String.raw`\\?\C:\Work\中文 workspace`
         const path = String.raw`\\?\C:\Work\中文 workspace\old.ts`
@@ -1316,6 +1341,17 @@ describe("runContextMenuAction — 檔案操作 (PROB-5 後波)", () => {
             path: "f.ts"
         })
         await vi.waitFor(() => expect(useWorkspaceStore.getState().treeRevision).toBe(1))
+    })
+
+    it("file: cmDelete 檔名含反斜線的 POSIX 檔案顯示完整檔名且不刪到 a/b.txt", async () => {
+        const calls = ipcCalls()
+        useWorkspaceStore.setState({ workspacePath: "/w", treeRevision: 0 })
+
+        runLegacyContextMenuAction("file", "cmDelete", { path: "/w/a\\b.txt", isDir: false })
+        await vi.waitFor(() => expect(calls.some((c) => c.cmd === "plugin:dialog|message")).toBe(true))
+        expect(String(calls.find((c) => c.cmd === "plugin:dialog|message")?.args.message)).toContain("a\\b.txt")
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(calls.some((c) => c.cmd === "fs_delete")).toBe(false)
     })
 
     it("file: cmDelete 資料夾 → localized confirm 明確涵蓋全部內容", async () => {

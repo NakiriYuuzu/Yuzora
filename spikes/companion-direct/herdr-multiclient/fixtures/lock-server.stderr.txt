@@ -1,0 +1,5 @@
+herdr server running; you can use any herdr CLI command in another terminal.
+api socket: /tmp/yzc-spike/config/herdr/sessions/companion-spike/herdr.sock
+client socket: /tmp/yzc-spike/config/herdr/sessions/companion-spike/herdr-client.sock
+logs: /tmp/yzc-spike/config/herdr/sessions/companion-spike/herdr-server.log
+did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.

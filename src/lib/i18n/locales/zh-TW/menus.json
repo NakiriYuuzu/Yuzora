@@ -1,4 +1,8 @@
 {
+  "fileRename": {
+    "busy": "這個檔案正在讀取、儲存或重新命名。請等待操作完成後再試。",
+    "destinationOpen": "目的地已有開啟的編輯器文件。請先關閉其分頁，再重新命名，以保留文件內容。"
+  },
   "contextMenu": {
     "cmHerdrMoveSpaceUp": "上移",
     "cmHerdrMoveSpaceDown": "下移",
@@ -160,6 +164,7 @@
   "unsavedDialog": {
     "closeTabTitle": "未儲存的變更",
     "closeTabDescription": "「{{name}}」有未儲存的變更。關閉前要儲存嗎？",
+    "closeSplitDescription": "此分割區中有檔案尚未儲存。關閉分割前要儲存嗎？",
     "switchWorkspaceTitle": "未儲存的變更",
     "switchWorkspaceDescription": "有開啟的檔案尚未儲存。切換工作區前要儲存嗎？",
     "exitTitle": "未儲存的變更",
@@ -250,6 +255,7 @@
     "localNameTaken": "{{name}} 已存在。請輸入不同的本地分支名稱。",
     "alternateLocalTitle": "選擇本地分支名稱",
     "alternateLocalDescription": "{{derived}} 已存在。請為 {{remote}} 輸入不同的本地名稱。",
+    "reservedLocalDescription": "HEAD 是 Git 的保留名稱。請為 {{remote}} 輸入本地分支名稱。",
     "emptyTagsTitle": "沒有 Git 標籤",
     "emptyTagsDescription": "建立或抓取標籤後會顯示在這裡。",
     "resultsTags": "Git 標籤",
@@ -396,8 +402,9 @@
   },
   "workspaceSearch": {
     "heading": "工作區搜尋",
+    "failed": "無法完成搜尋，已找到的結果可能不完整。",
     "matchCaseAriaLabel": "區分大小寫",
-    "truncatedNotice": "已達 5,000 檔上限，請縮小範圍",
+    "truncatedNotice": "搜尋結果可能不完整，請縮小搜尋範圍。",
     "noResults": "沒有符合的結果"
   },
   "gitPanel": {
@@ -506,11 +513,14 @@
     "close": "關閉"
   },
   "gitMerge": {
+    "changed": "衝突或合併結果已變更。請檢查後重試；若衝突已改變，請重新開啟合併工具。",
     "title": "合併 {{path}}",
     "description": "左側是你的版本，右側是傳入的版本；中間的結果一開始是共同基底。",
     "loading": "正在載入衝突的各方版本…",
     "binary": "這個檔案是二進位或太大，無法在此合併；請改為接受其中一方。",
     "deletedSide": "其中一方刪除了這個檔案；請改為接受其中一方。",
+    "lossyEncoding": "這個檔案不是 UTF-8 文字（或為 UTF-16），文字合併會改寫檔案並破壞字元；請改為接受其中一方，或用能保留編碼的編輯器解決。",
+    "symlink": "這個衝突涉及符號連結（symlink）。合併結果會穿過連結寫進它指向的檔案，而不是取代連結本身；請改為接受其中一方。",
     "acceptYours": "« Yours",
     "acceptTheirs": "Theirs »",
     "acceptBoth": "兩者",
@@ -567,6 +577,7 @@
     "forcePushItem": "強制 Push（with lease）…",
     "forcePushTitle": "強制 Push",
     "forcePushConfirm": "要用本機歷史覆寫遠端的 '{{branch}}' 嗎？若期間有其他人 push，--force-with-lease 會拒絕。",
+    "forcePushNoLease": "無法強制 Push '{{branch}}'：Yuzora 不知道會覆寫遠端的哪個 commit。請先 fetch，並確認此分支有追蹤遠端分支後再試。",
     "forcePush": "強制 Push",
     "stashItem": "Stash／取回 stash…",
     "checkoutProblemTitle": "Git 簽出問題",

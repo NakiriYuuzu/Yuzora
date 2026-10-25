@@ -165,6 +165,8 @@ pub fn methods() -> Vec<String> {
         "clipboardImage",
         "tcpTunnel",
         "sqlite",
+        // Capability marker: QueryRun accepts the atomic single-cell mode.
+        "sqliteCellMutation",
         "trust",
         "git",
         "workspaceAuthorize",

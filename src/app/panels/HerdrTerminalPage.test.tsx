@@ -5,9 +5,12 @@ import { useTerminalSettingsStore } from "@/state/terminalSettingsStore"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { HerdrCapabilities, HerdrTerminalEvent } from "@/lib/herdrTypes"
+import type { HerdrCapabilities, HerdrSnapshot, HerdrTerminalEvent } from "@/lib/herdrTypes"
+import { activeTerminalAgentKey } from "@/terminal/terminalFocus"
+import { agentMruKey } from "@/state/agentMruStore"
 import { normalizeHerdrSnapshot } from "@/lib/herdrNormalize"
 import { herdrInitialState, useHerdrStore } from "@/state/herdrStore"
+import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 
 const xtermMock = vi.hoisted(() => {
   type DataHandler = (data: string) => void
@@ -98,6 +101,9 @@ const xtermMock = vi.hoisted(() => {
 
     constructor(options: Record<string, unknown>) {
       this.options = options
+      const screen = document.createElement("div")
+      screen.className = "xterm-screen"
+      this.element.append(screen)
       state.terminals.push(this)
     }
   }
@@ -227,6 +233,7 @@ import { terminalDropTargetAt } from "@/terminal/terminalDropTargets"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { stubElementFromPoint, pointerDrag } from "@/test/pointerDrag"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
 
 const terminalControlCapabilities = {
   binaryPath: "/bin/herdr",
@@ -279,7 +286,7 @@ const terminalControlCapabilities = {
 } satisfies HerdrCapabilities
 
 function seedSessions(
-  sessions: Array<{ name: string; default: boolean; running: boolean }>
+  sessions: Array<{ name: string; default: boolean; running: boolean; connectionError?: string }>
 ) {
   useHerdrStore.setState({
     ...herdrInitialState,
@@ -346,6 +353,82 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it("registers the live leaf Agent identity and releases it on hide and unmount", async () => {
+    const agent: HerdrSnapshot["agents"][number] = { id: "one", name: "one", status: "idle", workspaceId: "space", tabId: "tab", terminalId: "term-1", paneId: "pane-1" }
+    const snapshot = { agents: [agent], tabs: [], spaces: [], terminals: [], raw: {}, herdrSessionId: "default", protocol: 19, version: "0.8.0" } as HerdrSnapshot
+    useHerdrStore.setState({ runtimesBySession: { default: { capabilities: terminalControlCapabilities, snapshot, connectionState: "ready", errorMessage: null, worktreeInventory: null } } })
+    const pagePath = "yuzora://herdr/default/term-1"
+    const view = render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" paneId="pane-1" active visible />)
+    await waitFor(() => expect(activeTerminalAgentKey(pagePath)).toBe(agentMruKey("default", "one")))
+    act(() => useHerdrStore.setState(state => ({ runtimesBySession: { ...state.runtimesBySession, default: { ...state.runtimesBySession.default!, snapshot: { ...snapshot, agents: [{ ...agent, id: "replacement" }] } } } })))
+    expect(activeTerminalAgentKey(pagePath)).toBe(agentMruKey("default", "replacement"))
+    view.rerender(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" paneId="pane-1" active={false} visible={false} />)
+    expect(activeTerminalAgentKey(pagePath)).not.toBe(agentMruKey("default", "replacement"))
+    view.unmount()
+    expect(activeTerminalAgentKey(pagePath)).toBeUndefined()
+  })
+
+  it("ignores an old open rejection after native Session view replaces the connector", async () => {
+    let rejectOld!: (error: Error) => void
+    herdrIpcMock.herdrTerminalOpen.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const leaf = screen.getByTestId("herdr-terminal-leaf-term-1")
+    const oldTerm = xtermMock.state.terminals[0]
+    try {
+      act(() => useHerdrNativeStore.getState().open({ sessionName: "default" }))
+      expect(oldTerm.dispose).toHaveBeenCalledOnce()
+      expect(screen.getByTestId("herdr-terminal-leaf-term-1")).toBe(leaf)
+      act(() => useHerdrNativeStore.getState().close())
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+      const current = xtermMock.state.terminals.at(-1)!
+      await act(async () => { herdrIpcMock.emit(frame(1, "owned current screen", true)) })
+      await waitFor(() => expect(current.write).toHaveBeenCalled())
+      await act(async () => { rejectOld(new Error("owned obsolete open failure")) })
+      expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument()
+      expect(screen.queryByText("owned obsolete open failure")).not.toBeInTheDocument()
+      expect(current.write.mock.calls.map(([text]) => text).join("")).not.toContain("owned obsolete open failure")
+      const input = vi.mocked(installTerminalImeHandling).mock.calls.at(-1)![1]
+      await act(async () => { input("owned current input") })
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledWith("sess-1", "owned current input", null))
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2)
+    } finally { useHerdrNativeStore.getState().close() }
+  })
+
+  it("releases a late successful open without replacing the native-view successor", async () => {
+    let finishOld!: (value: Awaited<ReturnType<typeof herdrIpcMock.herdrTerminalOpen>>) => void
+    let oldEvent!: (event: HerdrTerminalEvent) => void
+    herdrIpcMock.herdrTerminalOpen.mockImplementationOnce(args => {
+      oldEvent = args.onEvent
+      return new Promise(resolve => { finishOld = resolve })
+    })
+    render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
+    const leaf = screen.getByTestId("herdr-terminal-leaf-term-1")
+    try {
+      act(() => useHerdrNativeStore.getState().open({ sessionName: "default" }))
+      act(() => useHerdrNativeStore.getState().close())
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+      const current = xtermMock.state.terminals.at(-1)!
+      await act(async () => { finishOld({ sessionId: "owned-late-session", target: "term-1", mode: "control", role: "controller", cols: 80, rows: 24, takeover: true }) })
+      expect(herdrIpcMock.herdrTerminalRelease.mock.calls.filter(([id]) => id === "owned-late-session")).toHaveLength(1)
+      expect([...useHerdrStore.getState().attachments.values()].map(record => record.sessionId)).toEqual(["sess-1"])
+      expect(screen.getByTestId("herdr-terminal-leaf-term-1")).toBe(leaf)
+      await act(async () => {
+        oldEvent({ ...frame(1, "owned obsolete stream", true), sessionId: "owned-late-session" })
+        herdrIpcMock.emit(frame(1, "owned current stream", true))
+      })
+      await waitFor(() => expect(current.write).toHaveBeenCalled())
+      const written = current.write.mock.calls.map(([text]) => text).join("")
+      expect(written).toContain("owned current stream")
+      expect(written).not.toContain("owned obsolete stream")
+      expect(screen.queryByTestId("herdr-reconnect")).not.toBeInTheDocument()
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(2)
+    } finally { useHerdrNativeStore.getState().close() }
   })
 
   it("ignores attachment updates for other terminal pages while keeping its own badge reactive", async () => {
@@ -714,6 +797,150 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
   })
 
+  it("refits a changed xterm screen without a container resize and waits for the matching frame", async () => {
+    const original = globalThis.ResizeObserver
+    const observers: ScreenObserver[] = []
+    class ScreenObserver implements ResizeObserver {
+      targets = new Set<Element>()
+      constructor(readonly callback: ResizeObserverCallback) { observers.push(this) }
+      observe(target: Element) { this.targets.add(target) }
+      unobserve(target: Element) { this.targets.delete(target) }
+      disconnect() { this.targets.clear() }
+      notify(target: Element) {
+        if (this.targets.has(target)) this.callback([{ target } as ResizeObserverEntry], this)
+      }
+    }
+    globalThis.ResizeObserver = ScreenObserver
+    try {
+      const view = render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+      const term = xtermMock.state.terminals[0]
+      const screen = term.element.querySelector(".xterm-screen")!
+      herdrIpcMock.emit(frame(1, "initial", true))
+      await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+      xtermMock.state.proposedSize = { cols: 80, rows: 23 }
+      act(() => observers.forEach(observer => observer.notify(screen)))
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 80, 23))
+      expect([term.cols, term.rows]).toEqual([80, 24])
+      herdrIpcMock.emit({ ...frame(2, "matching screen", true), height: 23 })
+      await waitFor(() => expect(term.rows).toBe(23))
+      const calls = herdrIpcMock.herdrTerminalResize.mock.calls.length
+      act(() => observers.forEach(observer => observer.notify(screen)))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+      expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledTimes(calls)
+      view.rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active={false} visible={false} />)
+      xtermMock.state.proposedSize = { cols: 80, rows: 22 }
+      act(() => observers.forEach(observer => observer.notify(screen)))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+      expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledTimes(calls)
+      view.rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 80, 22))
+      view.unmount()
+      const retiredCalls = herdrIpcMock.herdrTerminalResize.mock.calls.length
+      expect(observers.every(observer => observer.targets.size === 0)).toBe(true)
+      act(() => observers.forEach(observer => observer.callback([{ target: screen } as ResizeObserverEntry], observer)))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+      expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledTimes(retiredCalls)
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce()
+    } finally { cleanup(); globalThis.ResizeObserver = original }
+  })
+
+  describe("bundled font readiness", () => {
+    let originalFonts: PropertyDescriptor | undefined
+    let pending: Array<{ resolve: (faces: FontFace[]) => void; reject: (error: Error) => void }>
+
+    beforeEach(() => {
+      originalFonts = Object.getOwnPropertyDescriptor(document, "fonts")
+      pending = []
+      Object.defineProperty(document, "fonts", { configurable: true, value: {
+        // WKWebView can report true while the actual face's load is pending.
+        check: vi.fn(() => true),
+        load: vi.fn(() => new Promise<FontFace[]>((resolve, reject) => pending.push({ resolve, reject })))
+      } })
+      useTerminalSettingsStore.setState({ fontFamily: "jetbrains" })
+    })
+
+    afterEach(() => {
+      cleanup()
+      if (originalFonts) Object.defineProperty(document, "fonts", originalFonts)
+      else Reflect.deleteProperty(document, "fonts")
+    })
+
+    it("opens with a stable fallback and changes to the loaded font only with its full frame", async () => {
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+      const term = xtermMock.state.terminals[0]
+      const fallback = term.options.fontFamily
+      expect(fallback).not.toContain("JetBrains")
+      expect(fallback).toContain("monospace")
+      herdrIpcMock.emit(frame(1, "fallback screen", true))
+      await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+      xtermMock.state.proposedSize = { cols: 106, rows: 31 }
+      await act(async () => pending[0].resolve([]))
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 106, 31))
+      expect([term.options.fontFamily, term.cols, term.rows]).toEqual([fallback, 80, 24])
+      herdrIpcMock.emit({ ...frame(2, "loaded screen", true), width: 106, height: 31 })
+      await waitFor(() => expect(term.options.fontFamily).toContain("JetBrains"))
+      expect([term.cols, term.rows]).toEqual([106, 31])
+      expect(xtermMock.state.terminals).toHaveLength(1)
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce()
+    })
+
+    it("keeps the fallback terminal available when font loading fails", async () => {
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+      const term = xtermMock.state.terminals[0]
+      await act(async () => pending[0].reject(new Error("owned font failure")))
+      expect(term.options.fontFamily).not.toContain("JetBrains")
+      herdrIpcMock.emit(frame(1, "fallback still usable", true))
+      await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+      expect(term.dispose).not.toHaveBeenCalled()
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce()
+    })
+
+    it("uses an already-loaded font before the first connector fit without reopening", async () => {
+      vi.mocked(document.fonts.load).mockResolvedValue([])
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+      expect(xtermMock.state.terminals).toHaveLength(1)
+      expect(xtermMock.state.terminals[0].options.fontFamily).toContain("JetBrains")
+      expect(document.fonts.load).toHaveBeenCalledWith('12px "JetBrains Mono Variable"', "W")
+    })
+
+    it("remembers a font loaded while hidden and fits it on return", async () => {
+      const view = render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+      const term = xtermMock.state.terminals[0]
+      herdrIpcMock.emit(frame(1, "before hidden", true))
+      await waitFor(() => expect(term.write).toHaveBeenCalledOnce())
+      view.rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active={false} visible={false} />)
+      xtermMock.state.proposedSize = { cols: 106, rows: 31 }
+      await act(async () => pending[0].resolve([]))
+      expect(term.options.fontFamily).not.toContain("JetBrains")
+      view.rerender(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledWith("sess-1", 106, 31))
+      herdrIpcMock.emit({ ...frame(2, "loaded after hidden", true), width: 106, height: 31 })
+      await waitFor(() => expect(term.options.fontFamily).toContain("JetBrains"))
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce()
+    })
+
+    it("ignores retired font loads after an A-B-A setting change and disposal", async () => {
+      const view = render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+      const term = xtermMock.state.terminals[0]
+      act(() => useTerminalSettingsStore.setState({ fontFamily: "menlo" }))
+      act(() => useTerminalSettingsStore.setState({ fontFamily: "jetbrains" }))
+      expect(pending).toHaveLength(3)
+      await act(async () => { pending[0].resolve([]); pending[1].resolve([]) })
+      expect(term.options.fontFamily).not.toContain("JetBrains")
+      view.unmount()
+      await act(async () => pending[2].resolve([]))
+      expect(term.dispose).toHaveBeenCalledOnce()
+      expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce()
+      expect(xtermMock.state.terminals).toHaveLength(1)
+    })
+  })
+
   it("publishes a font-driven fit without reflowing the last rendered frame before acknowledgement", async () => {
     render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
@@ -763,6 +990,19 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     herdrIpcMock.emit({ ...frame(3, "current", true), width: 40, height: 10 })
     await waitFor(() => expect(term.write).toHaveBeenCalledTimes(2))
     expect([term.options.fontSize, term.cols, term.rows]).toEqual([30, 40, 10])
+  })
+
+  it("resends the latest size after a resize only waited behind a busy writer", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledOnce())
+    herdrIpcMock.herdrTerminalResize.mockClear()
+    herdrIpcMock.herdrTerminalResize.mockRejectedValueOnce(new Error("host-call-wait-timeout"))
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    expect(herdrIpcMock.herdrTerminalResize.mock.calls.at(-1)).toEqual(["sess-1", 55, 15])
   })
 
   it("coalesces intermediate fits before resizing the server", async () => {
@@ -1118,6 +1358,43 @@ describe("HerdrTerminalPage clipboard", () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  it.each(["plugin", "browser fallback"])("drops a delayed %s clipboard read after reconnecting the terminal", async source => {
+    let finishRead!: (text: string) => void
+    const pendingRead = new Promise<string>(resolve => { finishRead = resolve })
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+    const fallbackRead = vi.fn(() => pendingRead)
+    if (source === "plugin") clipboardMock.readText.mockReturnValueOnce(pendingRead)
+    else {
+      clipboardMock.readText.mockRejectedValueOnce(new Error("fixture clipboard fallback"))
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: fallbackRead } })
+    }
+    try {
+      render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+      await waitFor(() => expect(useHerdrStore.getState().attachments.size).toBe(1))
+      const term = xtermMock.state.terminals[0]
+      const paste = () => term.emitKey(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, cancelable: true }))
+      expect(paste()).toBe(false)
+      await waitFor(() => expect(clipboardMock.readText).toHaveBeenCalledOnce())
+      if (source !== "plugin") await waitFor(() => expect(fallbackRead).toHaveBeenCalledOnce())
+      await act(async () => {
+        herdrIpcMock.emit({ type: "closed", sessionId: "sess-1", reason: "terminal attach taken over" })
+      })
+      const open = herdrIpcMock.herdrTerminalOpen.getMockImplementation()!
+      herdrIpcMock.herdrTerminalOpen.mockImplementationOnce(async args => ({ ...await open(args), sessionId: "sess-2" }))
+      fireEvent.click(await screen.findByTestId("herdr-reconnect"))
+      await waitFor(() => expect([...useHerdrStore.getState().attachments.values()].map(item => item.sessionId)).toEqual(["sess-2"]))
+      await act(async () => { finishRead("old attachment payload") })
+      expect(herdrIpcMock.herdrTerminalInput).not.toHaveBeenCalled()
+
+      clipboardMock.readText.mockResolvedValueOnce("current attachment payload")
+      expect(paste()).toBe(false)
+      await waitFor(() => expect(herdrIpcMock.herdrTerminalInput).toHaveBeenCalledExactlyOnceWith("sess-2", "\x1b[200~current attachment payload\x1b[201~", null))
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard)
+      else Reflect.deleteProperty(navigator, "clipboard")
+    }
+  })
+
   it("drops observer paste rather than replaying it after Take Control", async () => {
     clipboardMock.readText.mockResolvedValue("observer clipboard payload")
     herdrIpcMock.herdrTerminalOpen.mockResolvedValueOnce({
@@ -1471,10 +1748,9 @@ describe("HerdrTerminalPage hover forwarding", () => {
     render(<HerdrTerminalPage herdrSessionId="default" terminalId="term-1" active visible />)
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledTimes(1))
     const term = xtermMock.state.terminals[0]
-    const screen = document.createElement("div")
-    screen.className = "xterm-screen"
+    // The xterm mock already renders a screen element; give that one a size.
+    const screen = term.element.querySelector<HTMLElement>(".xterm-screen")!
     screen.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 } as DOMRect)
-    term.element.appendChild(screen)
     await waitFor(() => expect(document.querySelector("[data-attachment-key]")).not.toBeNull())
     await act(async () => {})
     return term
@@ -1569,6 +1845,17 @@ describe("HerdrTerminalPage stopped session gate", () => {
       "data-session-stopped",
       "true"
     )
+  })
+
+  it("shows HERDR's reason instead of start guidance for an unreachable page session", async () => {
+    const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)"
+    seedSessions([{ name: "work", default: false, running: false, connectionError: reason }])
+    render(<HerdrTerminalPage herdrSessionId="work" terminalId="term-1" active visible />)
+    const stopped = await screen.findByTestId("herdr-terminal-stopped")
+    expect(stopped).toHaveTextContent(reason)
+    expect(stopped).toHaveAttribute("title", expect.stringContaining(reason))
+    expect(stopped).not.toHaveTextContent("herdr session attach")
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
   })
 
   it("keeps the connected terminal and last frame visible during a running→inventory-unknown transition", async () => {
@@ -1954,6 +2241,57 @@ describe("HerdrTerminalPage target opening", () => {
     })
     expect(documentMock.getDocument).not.toHaveBeenCalledWith("/selected/wrong/src/app.ts")
     expect(useWorkspaceStore.getState().groups[0]?.activePath).toBe("/pane/exact/src/app.ts")
+  })
+
+  it("opens file links from a remote Session as that host's file identity, never a local path", async () => {
+    const hostId = "wsl-ubuntu"
+    const scope = JSON.stringify([hostId, "default"])
+    seedSessions([{ name: "default", default: true, running: true }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      sessions: [local, { ...local, hostId, runtimeId: scope, running: true }],
+      runtimesBySession: {
+        [scope]: {
+          capabilities: terminalControlCapabilities,
+          snapshot: {
+            herdrSessionId: scope,
+            protocol: 22,
+            version: "0.9.0",
+            spaces: [{ id: "space-a", label: "A", order: 0, focused: true, path: remoteFilePath(hostId, "/home/me/repo") }],
+            agents: [],
+            tabs: [],
+            terminals: [{ terminalId: "term-1", paneId: "pane-1", workspaceId: "space-a", cwd: "/home/me/repo/pkg" }],
+            raw: {}
+          },
+          worktreeInventory: null,
+          connectionState: "ready",
+          errorMessage: null
+        }
+      }
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="term-1" paneId="pane-1" active visible />)
+    await waitFor(() => expect(xtermMock.state.terminals.length).toBe(1))
+    const term = xtermMock.state.terminals[0]
+    term.bufferLines = [{ text: "src/app.ts" }, { text: "/home/me/repo/src/main.ts:12" }]
+    const modifier = isMacPlatform() ? { metaKey: true } : { ctrlKey: true }
+    const gesture = { button: 0, altKey: false, ctrlKey: false, metaKey: false, ...modifier } as MouseEvent
+    const expected = [
+      remoteFilePath(hostId, "/home/me/repo/pkg/src/app.ts", "/home/me/repo"),
+      remoteFilePath(hostId, "/home/me/repo/src/main.ts", "/home/me/repo")
+    ]
+    for (const [index, line] of [1, 2].entries()) {
+      let links: Array<{ activate: (event: MouseEvent, text: string) => void }> | undefined
+      term.linkProvider?.provideLinks(line, (next) => {
+        links = next as typeof links
+      })
+      await waitFor(() => expect(links).toHaveLength(1))
+      links?.[0]?.activate(gesture, "")
+      await waitFor(() => expect(documentMock.getDocument).toHaveBeenCalledWith(expected[index]))
+    }
+    expect(documentMock.getDocument).toHaveBeenCalledTimes(2)
+    expect(documentMock.getDocument).not.toHaveBeenCalledWith("/home/me/repo/pkg/src/app.ts")
+    expect(documentMock.getDocument).not.toHaveBeenCalledWith("/home/me/repo/src/main.ts")
   })
 
   it("keeps the pane menu on right click even when a target is hovered", async () => {

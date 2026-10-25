@@ -339,6 +339,9 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
     beginNativeCloseRequest: (workspace) => {
         const token = get().nativeRequestToken + 1
         set({
+            // Revoke continuity before queued opens can supersede the close.
+            // The physical close still follows the native queue/request token.
+            nativeSession: null,
             nativeRequestToken: token,
             nativeRequest: { token, kind: "close", workspacePath: workspace }
         })

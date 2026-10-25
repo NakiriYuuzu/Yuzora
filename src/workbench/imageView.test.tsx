@@ -24,7 +24,9 @@ vi.mock("@/app/panels/PreviewPanel", () => ({
 
 import { ImageView, isImagePath } from "./ImageView"
 import { EditorArea } from "./EditorArea"
-import { readFileBase64 } from "@/lib/ipc"
+import { clearRetainedViewStatesForTest } from "./viewRetention"
+import { documentGeneration } from "../editor/documentRegistry"
+import { openFile, readFileBase64 } from "@/lib/ipc"
 import { convertFileSrc } from "@tauri-apps/api/core"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
 
@@ -38,6 +40,7 @@ function loadImage(width: number, height: number) {
 
 afterEach(() => {
     cleanup()
+    clearRetainedViewStatesForTest()
     vi.clearAllMocks()
 })
 
@@ -116,6 +119,30 @@ describe("ImageView", () => {
         expect(screen.getByTestId("image-view-meta").textContent).toContain("10%")
     })
 
+    it("returns to the zoom and scroll offset the image was left at", () => {
+        const first = render(<ImageView path="/ws/logo.png" />)
+        loadImage(100, 100)
+        fireEvent.click(screen.getByRole("button", { name: "Actual size (1:1)" }))
+        fireEvent.click(screen.getByRole("button", { name: "Zoom in" }))
+        const viewport = screen.getByTestId("image-view-img").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+        viewport.scrollTop = 30
+        viewport.scrollLeft = 12
+        fireEvent.scroll(viewport)
+        first.unmount()
+
+        render(<ImageView path="/ws/logo.png" />)
+        expect(screen.getByTestId("image-view-meta").textContent).toContain("125%")
+        loadImage(100, 100)
+        const restored = screen.getByTestId("image-view-img").closest('[data-slot="scroll-area-viewport"]') as HTMLElement
+        expect(restored.scrollTop).toBe(30)
+        expect(restored.scrollLeft).toBe(12)
+
+        cleanup()
+        render(<ImageView path="/ws/other.png" />)
+        loadImage(100, 100)
+        expect(screen.getByTestId("image-view-meta").textContent).not.toContain("125%")
+    })
+
     it("Cmd/Ctrl＋滾輪縮放（preventDefault 阻止捲動）；一般滾輪不攔截、不改縮放", () => {
         render(<ImageView path="/ws/logo.png" />)
         loadImage(100, 100)
@@ -129,6 +156,52 @@ describe("ImageView", () => {
 
         expect(fireEvent.wheel(surface, { deltaY: -120 })).toBe(true)
         expect(screen.getByTestId("image-view-meta").textContent).toContain("125%")
+    })
+
+    // A07-F3：watcher 重載會 bump document generation；已掛載的圖片也要跟著重新載入。
+    it("document generation 變動（外部改寫後重載）：本機圖片換新的 asset URL 重新抓圖", () => {
+        const view = render(<ImageView path="/ws/logo.png" generation={0} />)
+        const before = screen.getByTestId("image-view-img").getAttribute("src")
+
+        view.rerender(<ImageView path="/ws/logo.png" generation={1} />)
+
+        const after = screen.getByTestId("image-view-img").getAttribute("src")
+        expect(after).not.toBe(before)
+        expect(after).toContain(encodeURIComponent("/ws/logo.png"))
+    })
+
+    it("document generation 變動：重新讀檔案大小並保留使用者的縮放", async () => {
+        vi.mocked(openFile).mockResolvedValueOnce({ kind: "binary", size: 245760 })
+        const view = render(<ImageView path="/ws/logo.png" generation={0} />)
+        loadImage(100, 100)
+        fireEvent.click(screen.getByRole("button", { name: "Actual size (1:1)" }))
+        fireEvent.click(screen.getByRole("button", { name: "Zoom in" }))
+        fireEvent.click(screen.getByRole("button", { name: "Zoom in" }))
+        const meta = screen.getByTestId("image-view-meta")
+        await waitFor(() => expect(meta.textContent).toContain("240.0 KB"))
+        expect(meta.textContent).toContain("156%")
+
+        vi.mocked(openFile).mockResolvedValueOnce({ kind: "binary", size: 2048 })
+        view.rerender(<ImageView path="/ws/logo.png" generation={1} />)
+
+        await waitFor(() => expect(meta.textContent).toContain("2.0 KB"))
+        expect(openFile).toHaveBeenCalledTimes(2)
+        expect(meta.textContent).toContain("156%")
+    })
+
+    it("document generation 變動：遠端圖片重新讀 base64，不沿用舊畫面", async () => {
+        const remote = remoteFilePath("a", "/ws/logo.png")
+        vi.mocked(readFileBase64).mockResolvedValueOnce({ data: "b2xk", size: 3 })
+        const view = render(<ImageView path={remote} generation={0} />)
+        expect(await screen.findByTestId("image-view-img")).toHaveAttribute("src", "data:image/png;base64,b2xk")
+
+        vi.mocked(readFileBase64).mockResolvedValueOnce({ data: "bmV3", size: 3 })
+        view.rerender(<ImageView path={remote} generation={1} />)
+
+        await waitFor(() =>
+            expect(screen.getByTestId("image-view-img")).toHaveAttribute("src", "data:image/png;base64,bmV3")
+        )
+        expect(readFileBase64).toHaveBeenCalledTimes(2)
     })
 
     it("載入失敗顯示安全路徑，不洩漏 Windows extended prefix", () => {
@@ -172,5 +245,17 @@ describe("EditorArea 分支", () => {
 
         expect(screen.getByTestId("image-view")).toBeInTheDocument()
         expect(screen.queryByTestId("editor-pane-mock")).not.toBeInTheDocument()
+    })
+
+    it("外部改寫後 watcher 重載 bump generation：開著的圖片 tab 重新載入", () => {
+        vi.mocked(documentGeneration).mockReturnValue(3)
+        render(<EditorArea />)
+        const before = screen.getByTestId("image-view-img").getAttribute("src")
+
+        // ExternalChangeBridge: reloadDocument bumps the generation, then clears the flag.
+        vi.mocked(documentGeneration).mockReturnValue(4)
+        act(() => useWorkspaceStore.getState().markExternallyModified("/ws/logo.png", false))
+
+        expect(screen.getByTestId("image-view-img").getAttribute("src")).not.toBe(before)
     })
 })

@@ -20,6 +20,21 @@ function prepare(root: string, path = "src/a.ts", status = "M") {
 }
 
 describe("current Git working-file menu target", () => {
+    it.each(["\\a.txt", "a\\b.txt", "tail\\", "folder/\\中文 name.txt"])("opens the literal POSIX changed path %s", name => {
+        const root = "/repo\\"
+        const row = prepare(root, name)
+        const open = vi.spyOn(useWorkspaceStore.getState(), "openTab").mockImplementation(() => {})
+        try {
+            expect(openGitWorkingFile(root, row)).toBe(true)
+            expect(open).toHaveBeenCalledExactlyOnceWith(`${root}/${name}`)
+        } finally { open.mockRestore() }
+    })
+
+    it("preserves remote POSIX backslash names and workspace binding", () => {
+        const root = remoteFilePath("host-a", "/repo\\", "/workspace")
+        const row = prepare(root, "folder/\\a.txt")
+        expect(gitWorkingFilePath(root, row)).toBe(remoteFilePath("host-a", "/repo\\/folder/\\a.txt", "/workspace"))
+    })
     it("preserves local Windows paths and remote workspace identity", () => {
         const row = prepare("C:\\work")
         expect(gitWorkingFilePath("C:\\work", row)).toBe("C:\\work\\src\\a.ts")
