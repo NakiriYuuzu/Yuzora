@@ -81,11 +81,68 @@ impl Deferred {
         }
     }
 }
+/// A view-scope Git read. Ordinary class: a full queue drops it, counted as lost.
+pub(crate) fn git_read(
+    gateway: &crate::gateway::Gateway,
+    device: &str,
+    peer_id: u64,
+    session: &str,
+    workspace_id: &str,
+    method: &str,
+) {
+    let now = gateway.clock.now();
+    let event = Event::audit(
+        device.into(),
+        peer_id,
+        Scope::View,
+        "git.read".into(),
+        session.into(),
+        Some(workspace_id.into()),
+        json!({"method":method}),
+        now,
+    );
+    if !gateway.events.try_emit(event) {
+        gateway.deferred_audit.lock().unwrap().lost(1, now);
+    }
+}
+
+/// An ordinary admin event that found the queue full: counted, never retried.
+pub(crate) fn event_lost(gateway: &crate::gateway::Gateway) {
+    let now = gateway.clock.now();
+    gateway.deferred_audit.lock().unwrap().lost(1, now);
+}
+
 #[derive(Default)]
 pub(crate) struct Rejections {
     count: u64,
     next: Option<Timestamp>,
 }
+/// An open control or full stream, as announced; kept until it is torn down so
+/// the desktop can ask for the truth when an announcement was lost.
+pub(crate) struct LiveStream {
+    device: String,
+    peer_id: u64,
+    session: String,
+    target: Option<String>,
+    scope: Scope,
+}
+pub(crate) type LiveStreams = Arc<Mutex<std::collections::BTreeMap<u64, LiveStream>>>;
+/// Open streams in `peers.snapshot` form, oldest first.
+pub(crate) fn live_list(live: &LiveStreams) -> Vec<crate::admin::StreamInfo> {
+    live.lock()
+        .unwrap()
+        .iter()
+        .map(|(key, stream)| crate::admin::StreamInfo {
+            stream: key.to_string(),
+            device_id: stream.device.clone(),
+            peer_id: stream.peer_id,
+            session: stream.session.clone(),
+            scope: stream.scope,
+            target: stream.target.clone(),
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub(crate) struct Audit {
     pub(crate) device: String,
@@ -98,6 +155,7 @@ pub(crate) struct Audit {
     pub(crate) deferred: Arc<Mutex<Deferred>>,
     key: u64,
     rejections: Arc<Mutex<Rejections>>,
+    live: LiveStreams,
 }
 impl Audit {
     #[allow(clippy::too_many_arguments)]
@@ -123,6 +181,7 @@ impl Audit {
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
                 .expect("audit stream key exhausted"),
             rejections,
+            live: gateway.live_streams.clone(),
         }
     }
     pub(crate) fn event(&self, action: &str, summary: Value) -> Event {
@@ -168,6 +227,20 @@ impl Audit {
                 open,
             )
         }
+    }
+    /// Announces the stream's open and records it as live until `tightened`.
+    pub(crate) fn announce(&self, reservation: crate::admin::EventReservation, takeover: bool) {
+        self.live.lock().unwrap().insert(
+            self.key,
+            LiveStream {
+                device: self.device.clone(),
+                peer_id: self.peer_id,
+                session: self.session.clone(),
+                target: self.target.clone(),
+                scope: self.scope,
+            },
+        );
+        reservation.emit(self.state(true, takeover));
     }
     pub(crate) fn reserve_announcement(
         &self,
@@ -246,6 +319,7 @@ impl Audit {
         };
         let mut events = vec![self.event(action, json!({"reason":reason}))];
         if announced {
+            self.live.lock().unwrap().remove(&self.key);
             events.push(self.state(false, false));
         }
         let mut deferred = self.deferred.lock().unwrap();

@@ -43,7 +43,7 @@ ConvertTo-Json -InputObject $result -Compress
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .creation_flags(0x0800_0000);
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let mut child = crate::process_kill::spawn_tokio(&mut command).map_err(|e| e.to_string())?;
     let stdout = child.stdout.take().ok_or("wsl-probe-stdout-missing")?;
     let mut bytes = Vec::new();
     tokio::time::timeout(Duration::from_secs(15), async {

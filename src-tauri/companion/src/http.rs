@@ -30,6 +30,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{oneshot, OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
+    time::Instant,
 };
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -37,6 +38,8 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 // Header (15s) + body (15s) + long-poll (26s), plus a 4s margin.
 pub const CONNECTION_GRACE: Duration = Duration::from_secs(60);
 pub const MAX_CONNECTIONS: usize = 64;
+/// After the policy expired the loopback port stays bound for at most this long.
+pub const EXPIRY_HOLD: Duration = Duration::from_secs(5);
 const MAX_STATIC_BYTES: u64 = 16 * 1024 * 1024;
 pub const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 pub const SECURITY_HEADERS: &[(&str, &str)] = &[
@@ -221,6 +224,7 @@ pub struct Server {
     listener: TcpListener,
     router: Router,
     gateway: Arc<Gateway>,
+    expired: Option<oneshot::Sender<()>>,
 }
 impl Server {
     pub async fn bind(
@@ -256,7 +260,14 @@ impl Server {
             listener,
             router,
             gateway,
+            expired: None,
         })
+    }
+    /// Fires the moment the policy expires, before any connection is drained.
+    pub fn on_expiry(&mut self) -> oneshot::Receiver<()> {
+        let (sender, receiver) = oneshot::channel();
+        self.expired = Some(sender);
+        receiver
     }
     pub fn port(&self) -> std::io::Result<u16> {
         Ok(self.listener.local_addr()?.port())
@@ -264,13 +275,16 @@ impl Server {
 
     /// Shutdown owns all connections, including idle/partial requests. No detached
     /// tasks survive EOF. WS peers receive 1001 (4401 for policy expiry).
-    /// Returns true only for policy expiry, after closing the listener and peers.
+    /// Returns true only for policy expiry, after closing the peers. Expiry keeps
+    /// the listener bound (accepting and closing) until `shutdown` or `EXPIRY_HOLD`:
+    /// the node forwards the tailnet to this port until the desktop has unserved it.
     pub async fn run(mut self, mut shutdown: oneshot::Receiver<()>) -> bool {
         let mut expired = false;
         let mut maintenance = tokio::time::interval(Duration::from_secs(1));
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let mut connections = JoinSet::new();
         let (stop, stopping) = tokio::sync::watch::channel(0u16);
+        connections.spawn(crate::push::run(self.gateway.clone(), stopping.clone()));
         loop {
             tokio::select! {
                 biased;
@@ -307,7 +321,15 @@ impl Server {
                 }
             }
         }
-        drop(self.listener);
+        let held = if expired {
+            if let Some(notice) = self.expired.take() {
+                let _ = notice.send(());
+            }
+            Some((self.listener, Instant::now() + EXPIRY_HOLD))
+        } else {
+            drop(self.listener);
+            None
+        };
         self.upgrades.close();
         while self.upgrades.try_recv().is_ok() {}
         if expired {
@@ -316,14 +338,49 @@ impl Server {
         stop.send_replace(if expired { 4401 } else { 1001 });
         // Give writable peers their close frame, then abort every remaining task.
         // main's one-second server join remains an outer bound.
-        let _ = tokio::time::timeout(Duration::from_millis(500), async {
+        let teardown = async {
+            let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                while connections.join_next().await.is_some() {}
+                self.gateway.herdr_jobs.drain().await;
+            })
+            .await;
+            connections.abort_all();
             while connections.join_next().await.is_some() {}
-            self.gateway.herdr_jobs.drain().await;
-        })
-        .await;
-        connections.abort_all();
-        while connections.join_next().await.is_some() {}
+        };
+        match held {
+            Some((listener, until)) => hold_port(listener, teardown, &mut shutdown, until).await,
+            None => teardown.await,
+        }
         expired
+    }
+}
+
+/// Accepts and drops every connection while `teardown` runs and then until
+/// `shutdown` or `until`; the port is released when this returns.
+async fn hold_port(
+    listener: TcpListener,
+    teardown: impl Future<Output = ()>,
+    shutdown: &mut oneshot::Receiver<()>,
+    until: Instant,
+) {
+    tokio::pin!(teardown);
+    let mut torn_down = false;
+    loop {
+        tokio::select! {
+            _ = &mut teardown, if !torn_down => torn_down = true,
+            _ = &mut *shutdown => break,
+            _ = tokio::time::sleep_until(until) => break,
+            accepted = listener.accept() => {
+                if let Err(error) = accepted {
+                    if let Some(delay) = accept_retry_delay(&error) {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+    }
+    if !torn_down {
+        teardown.await;
     }
 }
 
@@ -707,7 +764,12 @@ async fn static_file(root: &Path, path: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::identity::PROXY_SECRET;
     use tokio::io::AsyncWriteExt;
+
+    fn proxy_secret() -> crate::admin::ProxySecret {
+        crate::admin::ProxySecret(zeroize::Zeroizing::new(PROXY_SECRET.into()))
+    }
 
     #[test]
     fn accept_errors_retry_without_terminating_gateway() {
@@ -786,6 +848,7 @@ mod tests {
                 port: 0,
                 public_host: "desktop.tailnet.ts.net:8443".into(),
                 required_tailscale_login: "user@example.com".into(),
+                proxy_secret: proxy_secret(),
             },
             root.path(),
             test_gateway(),
@@ -800,7 +863,8 @@ mod tests {
             .method(method)
             .uri(path)
             .header("Host", "desktop.tailnet.ts.net:8443")
-            .header("Tailscale-User-Login", "user@example.com")
+            .header("Yzc-Proxy-Secret", PROXY_SECRET)
+            .header("Yzc-Peer-Login", "user@example.com")
             .header("Origin", "https://desktop.tailnet.ts.net:8443")
             .body(Body::empty())
             .unwrap()
@@ -815,6 +879,7 @@ mod tests {
                 port: 0,
                 public_host: "desktop.tailnet.ts.net:8443".into(),
                 required_tailscale_login: "user@example.com".into(),
+                proxy_secret: proxy_secret(),
             })
             .unwrap(),
             root: tokio::fs::canonicalize(root.path()).await.unwrap(),
@@ -905,10 +970,10 @@ mod tests {
             lifetime,
             Duration::from_secs(1),
         ));
-        client.write_all(b"GET / HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\n\r\n").await.unwrap();
+        client.write_all(format!("GET / HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\n\r\n").as_bytes()).await.unwrap();
         assert_eq!(read_response(&mut client).await.1, b"shell");
         tokio::time::sleep_until(started + Duration::from_millis(600)).await;
-        client.write_all(b"GET /test/slow HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\n\r\n").await.unwrap();
+        client.write_all(format!("GET /test/slow HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\n\r\n").as_bytes()).await.unwrap();
         assert!(
             started.elapsed() < lifetime,
             "request must arrive before lifetime"
@@ -944,7 +1009,7 @@ mod tests {
             Duration::from_millis(300),
             Duration::from_secs(60),
         ));
-        client.write_all(b"GET / HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\n\r\n").await.unwrap();
+        client.write_all(format!("GET / HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\n\r\n").as_bytes()).await.unwrap();
         assert_eq!(read_response(&mut client).await.1, b"shell");
         tokio::time::timeout(Duration::from_secs(2), task)
             .await
@@ -972,6 +1037,7 @@ mod tests {
                 port: 0,
                 public_host: "desktop.tailnet.ts.net:8443".into(),
                 required_tailscale_login: "user@example.com".into(),
+                proxy_secret: proxy_secret(),
             },
             root.path(),
             test_gateway(),
@@ -995,7 +1061,7 @@ mod tests {
             lifetime,
             grace,
         ));
-        client.write_all(b"GET /assets/large.js HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nConnection: close\r\n\r\n").await.unwrap();
+        client.write_all(format!("GET /assets/large.js HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         let mut header = Vec::new();
         while !header.ends_with(b"\r\n\r\n") {
             header.push(client.read_u8().await.unwrap());

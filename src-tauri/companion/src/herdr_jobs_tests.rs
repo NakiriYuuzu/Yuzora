@@ -57,7 +57,7 @@ impl HerdrPort for Releasing {
     fn observe(&self, _: &str, _: &str, _: u16, _: u16, _: OnTerminalEvent) -> Result<String> {
         unreachable!()
     }
-    fn subscribe(&self, _: &str, _: OnSubscriptionEvent) -> Result<String> {
+    fn subscribe(&self, _: &str, _: Vec<String>, _: OnSubscriptionEvent) -> Result<String> {
         unreachable!()
     }
     fn release(&self, _: Resource) {
@@ -127,4 +127,25 @@ async fn bridge_jobs_device_quota_retained_by_orphans_and_write_slots_independen
         jobs.submit_device("a", false, || 8).unwrap().await.unwrap(),
         8
     );
+}
+/// A device's next write is submitted as soon as the previous result arrives
+/// (the write pump): by then the previous job's permits must be back, or the
+/// next write is refused as `busy` (seen on 2-vCPU Linux runners). The result
+/// is polled in a spin so the next job follows it at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bridge_jobs_permits_return_before_the_result_is_delivered() {
+    let jobs = Jobs::new();
+    for round in 0..2000 {
+        let mut result = jobs
+            .submit_device("a", true, move || round)
+            .unwrap_or_else(|code| panic!("round {round}: {code}"));
+        let value = loop {
+            match result.try_recv() {
+                Ok(value) => break value,
+                Err(oneshot::error::TryRecvError::Empty) => std::hint::spin_loop(),
+                Err(oneshot::error::TryRecvError::Closed) => panic!("round {round}: dropped"),
+            }
+        };
+        assert_eq!(value, round);
+    }
 }

@@ -6,6 +6,7 @@
 > Runtime／payload 與產品驗收範圍更新：2026-09-23（v0.0.16 新增 Windows x86_64 SSH host 與五平台 host payload，候選另行驗收）；Host 與 Stable 恢復 workflow 最後查證：2026-09-23；Release／Pages 流程最後查證：2026-09-12；Pages SEO 建置流程更新：2026-09-20。v0.0.9-beta.3 已於 2026-09-10 發布。
 > Toolchain／Actions 設定更新：2026-09-27；本機驗證不代表遠端 CI 或安裝包／GUI 已驗收。
 > Repository：[`NakiriYuuzu/Yuzora`](https://github.com/NakiriYuuzu/Yuzora)。
+> Companion 使用者與運維手冊（第 14 節）更新：2026-10-24。
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
 
@@ -70,6 +71,7 @@ Required CI checks：
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend checks 與 3 個 test shards 平行、固定名稱 aggregator 守門；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR（`release/*` PR 只由 CI 呼叫，不重複觸發）、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
+| Companion gateway | `.github/workflows/companion.yml` | 手動 dispatch；`src-tauri/companion/**`、`src-tauri/companion-net/**`、`src-tauri/host/**`、tiberius vendor 或自身變更的 pull request（無 push 觸發，也不是 required check） | Gateway 三平台 fmt、clippy `-D warnings`、tests 與原生 TLS 依賴拒絕檢查；cargo-deny／cargo-audit；Companion 網路 sidecar 三平台 `gofmt -l`（須無輸出）、`go vet`、`go test`、固定版本的 `govulncheck`（fail-closed） |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
@@ -173,7 +175,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - 更新後的 `src-tauri/Cargo.lock`。
 - `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新 helper 的 `Cargo.lock` 及桌面 lockfile 內的 path dependency entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
 - `src-tauri/companion/Cargo.toml` 版本與桌面一致，並更新 `src-tauri/companion/Cargo.lock`（含其中的 `yuzora-companion` 與 `yuzora-host` entry）；`verify-version-consistency.ts` 會拒絕不一致。
-- `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。
+- `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
 - 必要的 release／updater contract 修改與測試。
 
 `CHANGELOG.md` 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由該版本章節自動產生，因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
@@ -735,7 +737,7 @@ Agent 通知預設僅 toast；系統通知與聲音分別選配。首次快照�
 
 ### CI 編譯與測試隔離
 
-一般 Rust compile／database integration jobs 使用 `TAURI_CONFIG={"bundle":{"resources":[]}}`，讓乾淨 checkout 不依賴未下載的 installer payload。此設定只屬編譯／測試 jobs；candidate／Release 必須保留實際 resources 與 `runtime:verify`、installer payload gate，不得沿用空資源設定。
+一般 Rust compile／database integration jobs 使用 `TAURI_CONFIG={"bundle":{"resources":[],"externalBin":[]}}`，讓乾淨 checkout 不依賴未下載的 installer payload，也不依賴尚未建置的 Companion sidecar。此設定只屬編譯／測試 jobs；candidate／Release 必須保留實際 resources、`externalBin` 與 `runtime:verify`、installer payload gate，不得沿用空設定。
 
 `upload-artifact` 會把 `host-*` artifact 內的檔案一律存成 0644，而 macOS App 從 `host/macos-aarch64/herdr` 執行內建 HERDR。candidate／Release 在下載後、`runtime:verify` 前，以「Restore Unix host runtime execute bits」步驟恢復執行權限；`runtime:verify` 在非 Windows runner 上遇到不可執行的 Unix helper／HERDR 會直接失敗，release contract 也檢查這個步驟的存在與順序。
 
@@ -770,7 +772,30 @@ macOS App 僅支援 Apple Silicon，受管 HERDR 共用 `Contents/Resources/host
 
 本機 `herdr:prepare` 在 macOS 只準備 Apple Silicon source-tree binary，保留 `src-tauri/resources/herdr/macos-aarch64/herdr` 供開發與 compatibility gate 使用；`host:prepare macos-x86_64` 仍獨立準備 Intel 遠端 payload，不依賴桌面準備清單。
 
-App 與獨立 Host 的 Cargo release profile 使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。
+### Companion sidecar
+
+Companion 以兩個 Tauri `externalBin` sidecar 隨桌面 App 出貨，都只建置 bundle 自己的 target：Rust gateway `yuzora-companion`（`src-tauri/companion`），以及內嵌 tsnet 節點的 Go 網路 sidecar `yuzora-companion-net`（`src-tauri/companion-net`，Companion 的 Tailscale 連線由它提供，不依賴系統 Tailscale）。`bun run companion:prepare` 依 Tauri 提供的 `TAURI_ENV_TARGET_TRIPLE` 建置（未提供時用 `rustc -vV` 的 host triple；`TAURI_ENV_DEBUG=true` 時 gateway 建 debug），輸出：
+
+- `src-tauri/binaries/yuzora-companion-<triple>`：gateway。
+- `src-tauri/binaries/yuzora-companion-net-<triple>`：Go sidecar，以 `CGO_ENABLED=0 go build -trimpath -buildvcs=false -tags=ts_omit_webclient -ldflags "-s -w -X main.version=<App 版本>"` 建置。`GOOS`／`GOARCH` 由 triple 對應（`aarch64`／`x86_64` 的 apple-darwin、pc-windows-msvc、unknown-linux-gnu 六種），其他 triple 直接報錯。`ts_omit_webclient` 不連結 tsnet 的 web client：sidecar 用不到它，且它內嵌的預建前端資產含第三方字型，其授權不在任何 `LICENSE*` 檔內。版本字串必須等於桌面 App 版本，否則 sidecar 啟動時回報 `net-version-mismatch`；Go 對不存在的 `-X` 變數不會報錯（變數名打錯會得到版本 `dev`），所以 host 能執行該 binary 時（OS 與架構相同；交叉建置的不執行），`companion:prepare` 會在安裝前以一個不存在的版本送 `init`，要求回覆的 `net-version-mismatch` 指名 App 版本，否則失敗。
+- `src-tauri/resources/companion-net/THIRD_PARTY_NOTICES.txt`：Go 標準庫 LICENSE，加上 `go list -deps`（與建置同一組 tags）列出的每個 module 的授權檔，依 module path 排序。授權檔掃描的是每個實際連結的 package 目錄一路到其 module 根目錄的 `LICENSE*`／`COPYING*`／`NOTICE*`，所以巢狀授權（例如 `klauspost/compress` 的 `zstd/internal/xxhash/LICENSE.txt`）也在內，同一 module 內內容相同者只列一次。任何 module 掃不到授權檔時 `companion:prepare` 失敗。範圍限於授權檔：以 `go:embed` 內嵌的第三方資產不在掃描內，這是移除 web client 的原因；之後若新增這類依賴須另行檢查。內容會隨 target 而異（Windows 另含 Windows-only 依賴）。
+- `src-tauri/resources/companion-web/`：Companion PWA（先建置到 staging 並驗證，再同步）。
+
+以上輸出都由 gitignore 排除。為避免重編 app crate，內容相同時不覆寫既有檔案（gateway、Go sidecar 與 notices 皆然），所以 Go 建置須可重現（固定 `-trimpath`、`-buildvcs=false`，不嵌入 VCS 資訊）。`beforeBuildCommand` 與 `beforeDevCommand` 都會先執行它，所以 `tauri dev`／`tauri build` 需要 **Go 1.27 以上**：`src-tauri/companion-net/go.mod` 目前要求 `go 1.27.1`，並以 `toolchain go1.27.3` 固定出貨 sidecar 的 Go 版本；缺少 Go 時 `companion:prepare` 會報出安裝指引。第一次 `tauri dev` 會多一次 gateway 與 Go 建置。
+
+Go sidecar 預設不上傳任何 log：`main` 一開始就設定 `TS_NO_LOGS_NO_SUPPORT`（`envknob.SetNoLogsNoSupport()`），tsnet 不會把節點 log（含 peer 名稱、tailnet 名稱與登入網址）送到 `log.tailscale.com`；這是無條件設定，不依賴桌面端傳入的環境變數（allowlist 本來就不含它），環境變數也無法改回上傳。tsnet 的 log 與標準 `log` 套件的輸出（tshttpproxy 會印出含帳密的 proxy URL）只寫入 `<stateDir>/tsnet.log`（0600，每次啟動截斷；目錄建立前直接丟棄），不寫 stderr，因此桌面 log 不會出現登入網址或 proxy 帳密。stderr 只留 sidecar 自己的診斷訊息；其中每個 peer 動作各一行的 log（`http.Server` 與 reverse proxy 的 `ErrorLog`，例如每次失敗的 TLS 握手）經過限流，每分鐘最多 10 行進 stderr，其餘只計數，視窗結束或服務停止時以 `… N similar lines suppressed` 摘要一行，避免 tailnet 上的非擁有者灌爆桌面 log。
+
+宣告 `externalBin` 後，缺 binary 的 app crate 建置會失敗，所以 CI 只做編譯與測試的 job 以 `TAURI_CONFIG` 同時清空 `resources` 與 `externalBin`；candidate 與 Release 不覆寫。
+
+CI 檢查：
+
+- macOS／Windows candidate 與 Release `build` 在建置前以 `actions/setup-go` 讀取 `src-tauri/companion-net/go.mod` 安裝 Go；Release 的 action 以完整 SHA 固定且不還原 Go 快取。release contract（`bun run check:beta-release`、`check:updater-release`）要求這兩處都有以完整 SHA 固定、讀取該 `go.mod`、且位於第一個 `tauri build` 之前的 `setup-go` 步驟；`scripts/prepare-herdr-resources.test.ts` 鎖定兩個 `externalBin` 與 Linux resource map（含 `companion-net/`）。升級 Go 時只改 `go.mod`（`setup-go` 優先讀 `toolchain` 行，沒有才讀 `go` 行），並確認 `companion.yml` 與 candidate 仍以同一版本通過。
+- macOS candidate 會確認 `Contents/MacOS/yuzora-companion` 與 `Contents/MacOS/yuzora-companion-net` 都是 arm64，且 `Contents/Resources/companion-web/index.html`、`Contents/Resources/companion-net/THIRD_PARTY_NOTICES.txt` 存在。Release 的 macOS 建置在封裝驗證後有相同的檢查步驟。Windows MSI verifier（`scripts/verify-windows-runtime-payload.ps1`）解包後要求 `yuzora-companion.exe` 與 `yuzora-companion-net.exe` 各恰好一份（Tauri 打包時移除 `externalBin` 的 target triple，安裝在 app 執行檔旁），且 `companion-web\index.html`、`companion-net\THIRD_PARTY_NOTICES.txt` 存在。release contract（`scripts/release-contract.ts`）對這三處的強制內容：macOS 兩處的步驟須為 `shell: bash`、只在 macOS 執行、不得設 `continue-on-error`，且 `run` 的非註解行須逐行完整包含上述四個 `test` 斷言，同時任一非註解行都不得含有 `||`、`set +`（含行中如 `true; set +e`）、作為單字的 `exit`（含 `exit;`）或 `exec`；Windows verifier 的非註解行須逐行完整包含兩個 `foreach` 與兩個 `Count -ne 1` 斷言（改成 `-gt 1` 或以 `#` 註解掉都會失敗），且 `Get-OneFile` 以外不得出現 `return`，也不得出現 `if ($false)`。這是靜態比對，不會執行腳本；以 `if false; then … fi`、heredoc 等結構包住斷言的寫法不在偵測範圍內，仍需由審查把關。
+- `companion.yml` 的 `net` job 在 macOS、Windows、Linux 以 `CGO_ENABLED=0`（等同出貨設定）執行 `gofmt -l`（須無輸出）、`go vet ./...`、`go test ./...`，再以固定版本（`golang.org/x/vuln/cmd/govulncheck@v1.9.0`）、與出貨相同的 `-tags ts_omit_webclient` 執行 `govulncheck ./...`；可達的標準庫或依賴弱點使 job 失敗（exit 3，不得以 `|| true` 吞掉；`contracts.rs` 檢查版本已固定、tags 與 `toolchain` 下限）。Windows job 先設定 `core.autocrlf=false`，避免 CRLF checkout 使 gofmt 誤報；Go 測試以 `t.TempDir()` 建立 state 目錄，因為 sidecar 要求絕對路徑，而 `/tmp/...` 這類字面路徑在 Windows 沒有磁碟代號、不算絕對路徑。此 workflow 只在相關路徑的 pull request 觸發，不是 required check。
+- `companion.yml` 的 `supply-chain` job 以固定版本（`cargo-deny` 0.20.2、`cargo-audit` 0.22.2）對 gateway 的 `Cargo.lock` 執行 `cargo-deny --locked check` 與 `cargo-audit audit`。目前有兩筆已審查的例外，各有負責人與 review-by 2027-03-31，且皆限於「只驗證簽章、沒有私鑰運算」：RUSTSEC-2023-0071（`rsa` 0.9.10，WebAuthn RS256 驗證）與 RUSTSEC-2026-0387（`crypto-bigint` 0.5.5，經 `webauthn_rp` 的 `p256`／`p384` 驗證 ES256／ES384）。例外列在 `src-tauri/companion/deny.toml` 與 `.cargo/audit.toml`，`tests/contracts.rs` 會檢查日期未過期、版本鎖定，且 production 相依與原始碼沒有 `p256`／`p384`／`ecdsa`／`elliptic-curve`／`crypto-bigint` 的簽章或私鑰用法；新增 production 私鑰運算會使例外失效。
+- 本機 `go test` 若因 cgo 無法連結 Xcode SDK 而失敗，改用 `CGO_ENABLED=0 go test ./...`（與出貨及 CI 設定相同）。
+
+App、獨立 Host 與 Companion 的 Cargo release profile 都使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。
 
 Windows 安裝包建置後，在具備 verifier 所需解包工具的 Windows 環境驗證：
 
@@ -804,3 +829,125 @@ sh cleanup-wsl-adapter.sh --apply "$HOME/.pi/agent"
 ### 發布前證據
 
 記錄 source commit／tree、平台、installer SHA256、五平台 manifest、測試命令與結果、GUI acceptance及未完成項目。工作樹未提交時只能記錄本機 checkpoint，遠端舊 PR 的綠燈與 candidate 不涵蓋新修改。完整矩陣未通過前，不設定 accepted-tree attestation、不 merge、不發布；沿用第 5 節的使用者候選驗證與明確 merge 核准流程。
+
+---
+
+## 14. Companion（手機遠端控制）使用者與運維手冊
+
+Companion 是實驗性功能（預設關閉）：讓已配對的手機透過 Tailscale 檢視 HERDR Agent、瀏覽 Spaces、唯讀查看 Git，並在桌面授權後送出輸入。建置、打包與 CI 見第 13 節「Companion sidecar」；本節是啟用、存取控制、稽核與疑難排解。設計依據是 ADR-0008（`.yuuzu/adr/0008-companion-pwa-direct-connections.html`，狀態仍為 Proposed）。
+
+> **風險聲明：**啟用 Companion 等同授予這台電腦帳號遠端 shell 權限（設定頁的警語為「這會開放遠端操作這台電腦」）。取得操作授權的手機可以對 Agent 送出提示與按鍵，而 Agent 能執行指令。請只在信任的 tailnet 上、在需要的期間內啟用。
+
+### 14.1 運作方式
+
+- 桌面的 `yuzora-companion-net` sidecar 是 tailnet 上一個獨立的 tsnet 節點（預設名稱 `yuzora`，狀態存在 App data 目錄的 `companion/net`），在 443 上終止 TLS，對每個請求做 WhoIs，再以 loopback 轉給只監聽 `127.0.0.1` 的 gateway（預設 port 47110）。**這台電腦不需要安裝 Tailscale App**；手機需要安裝 Tailscale 並登入**同一個**帳號。節點不使用 Funnel，網址只在 tailnet 內可達。
+- 這是 tailnet 上真實存在的裝置，會出現在 Tailscale 管理後台的 Machines 頁面，金鑰會依 tailnet 設定到期。
+- 節點只在 Companion 啟用期間存在；停用、結束 Yuzora 或到期後即消失。
+- 實際網址與名稱以設定頁「名稱」欄為準（節點回報的 DNS 名稱）。
+
+來源：ADR-0008「2026-10-20 第三輪修訂 (a)」；`src-tauri/src/companion_net.rs`（`hostname: "yuzora"`）；`src-tauri/src/companion_store.rs`（`gateway_port: 47110`）。
+
+### 14.2 啟用步驟
+
+1. **設定 → Companion**，開啟「Companion（手機遠端控制）」（標示「實驗性」）。關閉此開關會一併停止執行中的 Companion。
+2. 在「Tailscale 連線」卡片按「登入 Tailscale」，在瀏覽器完成登入（也可「複製連結」），卡片會自動更新並顯示「名稱」與「登入帳號」。用個人帳號登入一次即可；之後 Yuzora 會以該帳號的節點出現在 tailnet。
+3. 在 Tailscale 管理後台為該 tailnet 開啟 **HTTPS Certificates**（DNS 頁面）。未開啟時啟用會失敗（見 14.7）。
+4. 勾選要讓手機看到的 HERDR Session（未勾選任何 Session 時手機看不到任何內容；Companion 執行中變更需停用後重新啟用才會套用）。
+5. 選「啟用期限」：「1 小時」、「8 小時」（預設）或「直到結束 Yuzora」，按「啟用」並在確認對話框按「啟用遠端控制」。第一次取得憑證約需 30 秒以上，上限 120 秒；狀態顯示「執行中」後即完成。
+6. 用「配對手機」配對（14.4）；已配對的手機用「在手機開啟」取得網址。iPhone 在 Safari 按「分享」→「加入主畫面」，Android 在 Chrome 選單按「加到主畫面」。
+
+啟用順序是節點、憑證、gateway、對外轉發，任何一步失敗都會反向拆除（fail-closed）。到期、停用或結束 Yuzora 時先停止對外轉發，再停 gateway 與節點。
+
+來源：`src/lib/i18n/locales/zh-TW/companion.json`（所有 UI 字串）；`src-tauri/src/companion_store.rs`（`EnableFor` 預設 8h）；ADR-0008 (a)「fail-closed」「先 unserve」。
+
+### 14.3 存取控制：ACL／Grants 範例
+
+Companion 自己會拒絕下列連線（不依賴 ACL）：
+
+- **tagged 節點**：手機不能打 tag；打了 tag 的手機一律被拒。
+- **其他使用者的裝置**：包含被分享進來的他人裝置，只接受啟用當下登入 Tailscale 的那個使用者。
+- WhoIs 查詢失敗。
+
+被拒絕的對端會記錄 `peer.rejected`（原因 `tagged`、`other-user`、`whois-failed`；同一節點同一原因每 60 秒最多一筆）。sidecar 在接受連線時就先做 WhoIs，不符者在任何 TLS 位元組讀取之前就被關閉；已建立的連線上每個請求仍會再做一次 WhoIs，不符者回 `403 Forbidden`。
+
+另外建議用 tailnet ACL／Grants 把可連線的來源縮小到你的手機。以下只是**範例，需依你的 tailnet 調整**，貼上前請先在 Tailscale 的 policy editor 預覽並用其 tests 驗證：
+
+```jsonc
+{
+  "hosts": {
+    // Machines 頁面顯示的 IP；範例值，請換成你的
+    "yuzora-desktop": "100.64.0.10", // Companion 的 yuzora 節點
+    "my-phone":       "100.64.0.20"  // 你的手機（不可打 tag）
+  },
+  "grants": [
+    // 只允許你的手機連到 yuzora 節點的 tcp/443
+    { "src": ["my-phone"], "dst": ["yuzora-desktop"], "ip": ["tcp:443"] }
+  ]
+}
+```
+
+注意：
+
+- 若 policy 內已有 `*` 到 `*` 之類的寬鬆規則，上面這條不會收緊任何東西；請同時讓寬鬆規則不再涵蓋這個節點。
+- 重新登入 Tailscale 會建立新節點（名稱與 IP 可能不同），需同步更新 `hosts`。
+- 手機仍須是無 tag、屬於同一個使用者的裝置，否則即使 ACL 放行也會被 Companion 拒絕。
+- Tailnet Lock 與裝置核准（device approval）可降低「他人加入 tailnet」的風險；啟用裝置核准時的畫面見 14.7。
+- Tailscale 與 passkey（同步型 passkey 通常綁同一個 Apple／Google 帳號）可能依賴同一個身分來源，不能視為兩個互相獨立的因素。
+
+來源：`src-tauri/companion-net/proxy.go`（`authorize`、reject reasons、60 秒視窗）與 `node.go`（accept-time 檢查）；ADR-0008 (a)；計畫「威脅與對策」表。ACL 範例的語法是 Tailscale 的政策語言，沒有在真實 tailnet 驗證過。
+
+### 14.4 配對、授權、撤銷與到期
+
+- **配對**：「配對手機」顯示 QR code，5 分鐘內有效，只能被領取一次。手機掃描後會顯示一組確認碼（SAS），桌面的「要核准這支手機嗎？」對話框會顯示裝置、Tailscale 使用者與瀏覽器；**只有兩邊的碼完全相同才按「核准」**。核准後手機註冊 passkey。
+- **登入與 session**：之後每次連線都要 passkey 加生物辨識。檢視 session 閒置 30 分鐘或存活 12 小時會失效。連續五次通過簽章驗證、但違反政策的失敗會鎖定該裝置（列上顯示「已鎖定」，按「解鎖」恢復）。
+- **操作授權**：裝置預設「僅檢視」。在裝置列選「可操作 15 分鐘」「可操作 1 小時」「可操作 8 小時」才允許送出輸入；手機端還要再用 passkey 提權，單次提權最長 15 分鐘（可續），且不超過授權與啟用期限。Full Session access 預設關閉，目前桌面設定頁沒有開關，也沒有授予它的入口。
+- **撤銷**：裝置列「撤銷」會讓該手機立即斷線，之後必須重新配對。狀態列 Companion 面板的「撤銷控制並登出手機」會結束所有控制授權與完整 Session，並登出相關手機。「停用」則停止整個 Companion。
+- **到期**：到「啟用期限」時 gateway 會關閉所有連線，桌面先停止對外轉發再收尾，狀態列顯示「啟用期限已到。」。
+
+來源：`companion.json`；`src-tauri/src/companion_commands.rs`（policy：`viewIdleMin` 30、`viewAbsoluteHours` 12、`elevationMaxMin` 15、`fullSessionEnabled`）；`src-tauri/companion/src/pairing.rs`（`TTL` 300 秒）；計畫 2B review fixes（五次鎖定）與 Phase 3 elevation 條目；`workbench.json`（`revokeControl`）。
+
+### 14.5 桌面會記錄與通知什麼
+
+- **Logs**（設定 → Logs，kind `audit`、source `companion`、event `companion_audit`）：手機的每個稽核事件，包含裝置、動作、Session、目標 pane、結果與理由。提示與按鍵的**內容不會記錄**，只留長度、按鍵數等計數與固定代碼。
+- **桌面通知**：手機送出提示、按鍵或輸入時顯示 toast；開始控制時顯示 toast；**接管（takeover）**時顯示警告，視窗不在前景時另發系統通知；HERDR 寫入停滯時顯示警告；稽核紀錄因佇列滿而遺失時也會警告。
+- **Git 讀取**：每個手機對每個 Space 每 60 秒最多記一筆 `git.read`（只含方法名稱，不含內容），只寫 Logs；裝置列顯示「最近讀取 Git」。
+- **其他 Logs**（kind `debug`、source `companion`）：`companion_net_peer_rejected`（被拒絕的對端與原因）、`companion_net_error`、`companion_net_stderr`、`companion_stderr`，以及推播相關的 `companion_push_*`。sidecar 的 stderr 先遮蔽 URL 中的帳密再寫入，並有速率上限（sidecar 每分鐘 10 行、桌面每個行程每分鐘 60 行）。
+- **不上傳**：sidecar 一開始就停用 Tailscale 節點日誌上傳（`TS_NO_LOGS_NO_SUPPORT`）；tsnet 的內部日誌只寫在狀態目錄的 `tsnet.log`（0600，每次啟動截斷）。節點仍會連 Tailscale control plane 與 DERP，這是 tailnet 的本質。
+
+來源：`src/workbench/companionAudit.ts`；`src-tauri/src/companion_net.rs`、`companion_service.rs`、`companion_push.rs`；ADR-0008 (a) 隱私與日誌限流、(b) 稽核。
+
+### 14.6 Web Push 通知
+
+- Agent 轉入 blocked（等待輸入）或 done 時，桌面對已訂閱的手機推送通知。通知只含 Agent 顯示名稱、工作區名稱與種類，**不含終端機輸出**，內容以 RFC 8291 加密。
+- 只在 Companion 啟用期間運作，Yuzora 關閉後不會推播；iOS 須先「加入主畫面」；不保證送達。每個裝置最多 4 個訂閱（每個瀏覽器一個）；撤銷裝置會刪除其全部訂閱。
+- VAPID 簽章金鑰（P-256）存在作業系統的 keyring（service `yuzora.companion`、account `vapid-p256`）；訂閱存在 App data 的 `companion/push.json`（0600）。keyring 不可用時通知功能關閉（錯誤「無法使用系統憑證儲存區，通知已關閉。」）；重新產生金鑰會丟掉所有已存訂閱，手機需重新訂閱。
+- 推送目的地只允許 Apple、Google FCM、Mozilla 與 Windows 的 push 服務。
+
+來源：ADR-0008 (c)；`companion.json`（`companion-push-vault-*`）。真機的授權、訂閱、顯示與點擊尚未驗收。
+
+### 14.7 疑難排解
+
+| 現象（UI 字串或代碼） | 原因與處理 |
+| --- | --- |
+| 卡片顯示「這台電腦尚未連線」，啟用失敗 `companion-net-login-required`（「Tailscale 需要重新登入。」）| 節點需要登入（首次、被登出、被從 Machines 移除，或**節點金鑰到期**）。按「登入 Tailscale」重新登入。啟用期間金鑰到期時，Companion 會自動停止。可在 Tailscale 管理後台調整該機器的金鑰到期設定。 |
+| 「正在等待核准」`companion-net-approval-required`（backend state `NeedsMachineAuth`）| tailnet 啟用了裝置核准。到 Tailscale 管理後台 Machines 頁面核准指名的機器（或標示「Needs approval」的新機器）；這個狀態沒有逾時，核准後自動繼續。可按「改用其他帳號」放棄：本機狀態會被刪除，但待核准的機器仍列在管理後台，直到管理員移除。 |
+| `companion-net-https-disabled`（「這個 tailnet 尚未啟用 HTTPS 憑證…」）| 到管理後台 DNS 頁開啟 HTTPS Certificates（卡片上有「開啟 Tailscale DNS 設定」），再啟用一次。 |
+| `companion-net-cert-failed`（「Tailscale 未能及時簽發 HTTPS 憑證」）| 憑證 120 秒內未就緒；節點會自行重試，稍後再按「啟用」。 |
+| `companion-net-start-failed`、`companion-net-serve-failed`、`companion-net-crashed` | 節點無法啟動、無法開啟對外位址或意外結束（Companion 一併停止）。確認這台電腦連得上 tailnet 後再啟用；持續發生請查 Logs 的 `companion_net_*`。 |
+| `companion-net-unavailable`、`companion-web-unavailable`、`companion-unavailable` | 此安裝包缺少對應元件（sidecar 或網頁檔案）；請重新安裝 Yuzora。 |
+| `port-in-use`／`companion-port-mismatch` | gateway 的 loopback port 被其他程式占用或監聽了非預期的 port。關閉占用者後重試。 |
+| 手機打不開頁面 | 確認手機 Tailscale 已連線並登入**同一個帳號**、裝置無 tag、ACL 放行 tcp/443、Companion 狀態為「執行中」且未過期。節點同時最多 64 條連線，超過的新連線會在接受時被關閉，瀏覽器會自動重試；閒置連線最多佔用 120 秒。 |
+| 節點改名或重新登入後手機無法登入 | passkey 綁定網址（rp_id），名稱改變後既有手機必須重新配對：撤銷舊的裝置列，再按「配對手機」。「登出」確認對話框也有此警告。 |
+| 裝置顯示「已鎖定」 | 連續五次通過簽章驗證、但違反政策的登入失敗會觸發鎖定；在裝置列按「解鎖」。 |
+| 「Companion 由另一個 Yuzora 管理」`companion-other-instance` | 另一個執行中的 Yuzora 控制著 Companion；結束它再重啟這個 Yuzora。 |
+| 沒有收到推播 | 見 14.6：需在啟用期間、已加入主畫面（iOS）、keyring 可用且手機已訂閱。 |
+
+### 14.8 憑證透明度（Certificate Transparency）與隱私
+
+HTTPS 憑證由 Tailscale 簽發給 `<機器名>.<tailnet 名>.ts.net`，**憑證會公開記錄在 Certificate Transparency log**，因此機器名稱與（隨機產生的）tailnet 名稱會被公開看見。設定頁在 Tailscale 連線卡上也有此警語。若不接受，請不要啟用 Companion。
+
+### 14.9 已知限制（2026-10-24）
+
+- 尚未在真實 tailnet 驗證 `Listen`／`GetCertificate`／`WhoIs`／`Logout`，也尚未在真實 iPhone／Android 與 Windows／Linux 桌面完成驗收；ADR-0008 因此仍為 Proposed。
+- 只支援 Tailscale 路徑；區域網路（LAN）路徑已延後。
+- 未做的 Git 能力：不提供整檔內容（FileAtRev）與作者篩選，沒有任何寫入。

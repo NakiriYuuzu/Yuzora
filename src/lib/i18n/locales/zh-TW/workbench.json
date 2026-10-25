@@ -337,6 +337,22 @@
       "mixed": "混合",
       "useLf": "使用 LF",
       "useCrlf": "使用 CRLF"
+    },
+    "companion": {
+      "ariaLabel": "Companion 遠端控制",
+      "title": "Companion",
+      "untilExit": "直到結束",
+      "viewers": "{{n}} 台已連線",
+      "controlling": "控制中",
+      "empty": "目前沒有手機連線。",
+      "unknownDevice": "一支手機",
+      "deviceViewing": "檢視中",
+      "deviceControlling": "正在控制 {{pane}}",
+      "deviceFull": "完整 Session：{{session}}",
+      "revokeControl": "撤銷控制並登出手機",
+      "revokeControlHint": "結束所有控制授權與完整 Session，相關手機會被登出，需要重新登入。",
+      "settings": "Companion 設定",
+      "disable": "停用"
     }
   },
   "settings": {
@@ -360,6 +376,10 @@
       "safety": {
         "label": "安全性",
         "sub": "檔案與 git 的防護機制"
+      },
+      "companion": {
+        "label": "Companion",
+        "sub": "透過 Tailscale 用手機遠端控制"
       },
       "git": {
         "label": "Git",

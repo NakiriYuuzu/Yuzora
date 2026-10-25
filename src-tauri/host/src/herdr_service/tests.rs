@@ -17,6 +17,14 @@ mod event_idle_tests;
 #[path = "perf_tests.rs"]
 mod perf_tests;
 
+#[cfg(unix)]
+#[path = "spawn_lock_tests.rs"]
+mod spawn_lock_tests;
+
+#[cfg(unix)]
+#[path = "bounded_wait_tests.rs"]
+mod bounded_wait_tests;
+
 fn frame(seq: u64, full: bool) -> HerdrWireFrame {
     HerdrWireFrame {
         kind: "terminal.frame".into(),
@@ -2853,6 +2861,8 @@ fn connector_reader_rejects_oversized_line_and_does_not_emit_frame() {
         stdin: Mutex::new(None),
         reader: Mutex::new(None),
         closed: Mutex::new(false),
+        released: AtomicBool::new(false),
+        on_event: None,
     });
     let (tx, rx) = mpsc::channel();
     let on_event: OnTerminalEvent =

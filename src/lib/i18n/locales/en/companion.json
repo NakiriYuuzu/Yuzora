@@ -1,0 +1,219 @@
+{
+  "loading": "Loading Companion settings…",
+  "cancel": "Cancel",
+  "disable": "Disable",
+  "otherInstance": {
+    "title": "Another Yuzora owns the Companion",
+    "description": "Another running Yuzora controls the Companion. Quit it and restart this Yuzora to manage the Companion here."
+  },
+  "warning": {
+    "title": "Remote control of this computer",
+    "description": "Once enabled, an approved phone can operate AI Agents remotely. That is equivalent to granting shell access to this computer's account."
+  },
+  "experimental": {
+    "label": "Companion (phone remote control)",
+    "badge": "Experimental",
+    "description": "Lets a paired phone on your tailnet view and, with a grant, control HERDR Agents. Turning this off stops a running Companion."
+  },
+  "tailscale": {
+    "title": "Tailscale connection",
+    "description": "Yuzora joins your tailnet by itself, so this computer does not need the Tailscale app. Your phone does: install Tailscale there and sign in to the same account.",
+    "signedOut": "This computer is not connected yet. Sign in once with your personal Tailscale account; Yuzora then appears in your tailnet as \"yuzora\".",
+    "signIn": "Sign in to Tailscale",
+    "openBrowser": "Open in browser",
+    "copyLink": "Copy link",
+    "copied": "Copied",
+    "signOut": "Sign out",
+    "signOutTitle": "Sign this computer out of Tailscale?",
+    "signOutDescription": "Yuzora removes this computer from your tailnet and forgets the login. Signing in again creates a new node whose name may differ. If the name changes, paired phones can no longer log in and have to be paired again.",
+    "useOtherAccount": "Use another account",
+    "useOtherAccountTitle": "Use another Tailscale account?",
+    "useOtherAccountDescription": "Yuzora forgets this sign-in and starts over, so you can sign in with another account. The machine waiting for approval stays listed in the Tailscale admin console until an admin removes it.",
+    "openDnsSettings": "Open the Tailscale DNS settings",
+    "openMachines": "Open the Tailscale Machines page",
+    "dnsName": "Name",
+    "login": "Signed in as",
+    "certificateNote": "HTTPS uses a certificate for this computer's tailnet name; the name is published in public Certificate Transparency logs.",
+    "accessNote": "Tagged devices and other users on your tailnet are rejected automatically. For extra safety, limit this computer to your phones with a Tailscale ACL.",
+    "progress": {
+      "connecting": "Connecting to Tailscale…",
+      "waitingForSignIn": "Finish signing in with your browser. This updates by itself.",
+      "waitingForApproval": "Waiting for approval. In the Tailscale admin console, approve the machine \"{{name}}\" on the Machines page. This updates by itself.",
+      "waitingForApprovalUnnamed": "Waiting for approval. In the Tailscale admin console, approve the new machine marked “Needs approval” on the Machines page. This updates by itself.",
+      "certificate": "Getting the HTTPS certificate. The first time takes about 30 seconds…",
+      "certificateRetry": "The certificate request failed. Trying again…",
+      "starting": "Starting the Companion…",
+      "signingOut": "Signing out of Tailscale…"
+    }
+  },
+  "status": {
+    "label": "Status",
+    "disabled": "Off",
+    "starting": "Starting",
+    "running": "Running",
+    "stopping": "Stopping",
+    "failed": "Stopped with an error",
+    "untilExit": "Until Yuzora quits",
+    "remaining": "{{time}} left"
+  },
+  "enable": {
+    "duration": "Enable for",
+    "window": {
+      "1h": "1 hour",
+      "8h": "8 hours",
+      "untilExit": "Until Yuzora quits"
+    },
+    "button": "Enable",
+    "confirmTitle": "Enable the Companion?",
+    "confirmDescription": "Once enabled, an approved phone on your tailnet can operate AI Agents on this computer remotely. That is equivalent to giving it shell access to this account. Disabling the Companion or quitting Yuzora turns it off again.",
+    "confirm": "Enable remote control",
+    "ready": "The Companion is on"
+  },
+  "pairing": {
+    "open": "Pair a phone",
+    "title": "Pair a phone",
+    "description": "Scan this code with the phone's camera. The phone then shows a code, and Yuzora asks you to approve the same code. A phone that is already paired does not need this: use Open on phone instead.",
+    "qrAlt": "Pairing QR code",
+    "expiresIn": "Expires in {{time}}",
+    "creating": "Creating a pairing code…"
+  },
+  "phoneLink": {
+    "open": "Open on phone",
+    "title": "Open on a paired phone",
+    "description": "On a phone that is already paired, scan this QR code or open this address, then log in with its passkey. No new pairing needed.",
+    "qrAlt": "QR code for the Companion address",
+    "copy": "Copy address",
+    "copied": "Copied",
+    "homeScreen": "On iPhone, tap Share → Add to Home Screen in Safari; on Android, use Add to Home screen in the Chrome menu. Then open it from the home screen.",
+    "loading": "Getting the address…"
+  },
+  "sessions": {
+    "title": "HERDR Sessions",
+    "description": "Phones only see the selected local HERDR Sessions.",
+    "none": "No local HERDR Session found.",
+    "notFound": "(not found)",
+    "emptyAllowlist": "No Session selected: phones see nothing.",
+    "restartRequired": "The Companion is running: disable and enable it again to apply."
+  },
+  "devices": {
+    "title": "Devices",
+    "description": "Phones registered with a passkey. Control lets a phone send input after confirming with its passkey.",
+    "none": "No paired phones.",
+    "label": "Device name",
+    "saveLabel": "Save name",
+    "locked": "Locked",
+    "lastSeen": "Last seen {{time}}",
+    "notifications": "Notifications on",
+    "lastGitRead": "Last read Git {{time}}",
+    "controlUntil": "Control until {{time}}",
+    "controlNone": "View only",
+    "grant": {
+      "15m": "Control 15 min",
+      "1h": "Control 1 hour",
+      "8h": "Control 8 hours",
+      "none": "View only"
+    },
+    "unlock": "Unlock",
+    "revoke": "Revoke",
+    "revokeTitle": "Revoke {{label}}?",
+    "revokeDescription": "The phone is disconnected at once and has to pair again."
+  },
+  "approval": {
+    "title": "Approve this phone?",
+    "description": "Approve only if the phone shows exactly this code.",
+    "device": "Device",
+    "login": "Tailscale user",
+    "browser": "Browser",
+    "warning": "An approved phone can register a passkey and view your Agents.",
+    "reject": "Reject",
+    "approve": "Approve"
+  },
+  "errors": {
+    "companion-already-running": "The Companion is already running.",
+    "companion-busy": "The Companion is starting or stopping. Try again in a moment.",
+    "companion-confirmation-required": "Confirm enabling the Companion first.",
+    "companion-crashed": "The Companion stopped unexpectedly.",
+    "companion-exited": "The Companion stopped before replying.",
+    "companion-stopped": "The Companion is stopped.",
+    "companion-not-running": "The Companion is not running.",
+    "companion-experimental-off": "Turn on the Experimental Companion first.",
+    "companion-other-instance": "Another running Yuzora owns the Companion.",
+    "companion-grants-invalid": "That grant is not valid.",
+    "companion-grants-mixed": "Change one grant at a time.",
+    "companion-label-invalid": "Use a name of up to 80 bytes without leading or trailing spaces.",
+    "companion-device-unknown": "That device is no longer registered.",
+    "companion-herdr-unavailable": "HERDR was not found.",
+    "companion-net-unavailable": "The Tailscale connector is not included in this build.",
+    "companion-net-login-required": "Tailscale needs you to sign in again.",
+    "companion-net-approval-required": "This computer is waiting for device approval on your tailnet. Approve the machine on the Machines page of the Tailscale admin console, then try again.",
+    "companion-net-https-disabled": "HTTPS certificates are not enabled for this tailnet. Turn on HTTPS Certificates on the DNS page of the Tailscale admin console, then try again.",
+    "companion-net-cert-failed": "Tailscale did not issue the HTTPS certificate in time. Try again in a moment.",
+    "companion-net-serve-failed": "The Tailscale connection could not open its address.",
+    "companion-net-crashed": "The Tailscale connection stopped unexpectedly, so the Companion was stopped.",
+    "companion-net-start-failed": "The Tailscale connection could not start.",
+    "companion-net-logout-failed": "Signing out of Tailscale failed. Make sure this computer can reach the tailnet and try again.",
+    "companion-port-mismatch": "The Companion listened on an unexpected port and was stopped.",
+    "companion-session-invalid": "That Session name is not valid.",
+    "companion-start-timeout": "The Companion did not start in time.",
+    "companion-timeout": "The Companion did not reply in time and was stopped.",
+    "companion-store-corrupt": "The Companion files are damaged; a backup was kept.",
+    "companion-store-unreadable": "The Companion files could not be read.",
+    "companion-store-write-failed": "The Companion files could not be saved.",
+    "companion-unavailable": "The Companion is not included in this build.",
+    "companion-web-unavailable": "The Companion web files are missing from this build.",
+    "companion-cancelled": "Starting the Companion was cancelled because it was stopped.",
+    "companion-device-invalid": "A stored device record is not valid, so the Companion was stopped.",
+    "companion-invalid-reply": "The Companion sent a reply that Yuzora could not read.",
+    "companion-path-unsupported": "This way of pairing is not supported.",
+    "companion-qr-failed": "The QR code could not be created.",
+    "companion-space-roots-invalid": "The list of Space folders for the Companion is not valid.",
+    "companion-push-encrypt-failed": "A notification could not be encrypted, so it was not sent.",
+    "companion-push-subscription-invalid": "A phone's notification subscription is not valid.",
+    "companion-push-vault-corrupt": "The stored notification key is damaged, so notifications are unavailable.",
+    "companion-push-vault-unavailable": "The system credential store is not available, so notifications are off.",
+    "companion-push-vault-write-failed": "The notification key could not be saved to the system credential store.",
+    "companion-error": "The Companion reported an error.",
+    "invalid-command": "The Companion received a command it could not read.",
+    "invalid-trust-store": "The workspace trust file given to the Companion is not valid.",
+    "invalid-space-roots": "The Space folders given to the Companion are not valid.",
+    "invalid-host": "The Companion cannot use this Tailscale address.",
+    "invalid-login": "The Tailscale account name given to the Companion is not valid.",
+    "invalid-proxy-secret": "The connection secret between Tailscale and the Companion is not valid.",
+    "invalid-herdr-binary": "The HERDR program path given to the Companion is not valid.",
+    "invalid-frame": "The Companion received settings that were cut off or unreadable.",
+    "invalid-policy": "The enable period given to the Companion is not valid.",
+    "init-timeout": "The Companion did not receive its settings in time.",
+    "invalid-web-root": "The Companion could not open its web files folder. Restart the Companion; if it keeps happening, reinstall Yuzora.",
+    "invalid-devices": "The stored list of paired phones names the same device twice, so the Companion did not start. Restart the Companion; if it keeps happening, the device file may be damaged.",
+    "invalid-push": "The notification settings given to the Companion are not valid, so it did not start. Restart the Companion and try again.",
+    "lan-not-supported": "The Companion only works through Tailscale and cannot listen on the local network. Restart the Companion.",
+    "not-initialized": "The Companion received a command before it had its settings. Restart the Companion.",
+    "unknown-type": "The Companion received a command it does not recognize. Yuzora and the Companion may be different versions; restart the Companion or update Yuzora.",
+    "already-initialized": "The Companion was sent its settings a second time and ignored them. To change its settings, restart the Companion.",
+    "admin-queue-unavailable": "The Companion could not take that change right now. Try again in a moment; if it keeps failing, restart the Companion.",
+    "admin-command-rejected": "The Companion rejected that change. Check that the device or setting is still valid, then try again.",
+    "port-in-use": "Another program is using port {{port}}, which the Companion needs. Quit that program and try again.",
+    "port-in-use-generic": "Another program is using the Companion's port. Quit that program and try again.",
+    "listen-failed": "The Companion could not start listening on its port. Try again; if it keeps failing, restart Yuzora.",
+    "policy-expired": "The enable period ended."
+  },
+  "audit": {
+    "unknownDevice": "A phone",
+    "write": {
+      "agent": {
+        "prompt": "{{device}} sent a prompt to {{pane}}"
+      },
+      "pane": {
+        "sendKeys": "{{device}} sent keys to {{pane}}"
+      },
+      "terminal": {
+        "input": "{{device}} typed into {{pane}}"
+      }
+    },
+    "control": "{{device}} is controlling {{pane}}",
+    "takeover": "{{device}} took over {{pane}}",
+    "stalled": "A write from {{device}} to {{pane}} has stalled and may not be cleaned up yet.",
+    "dropped": "Some Companion audit records were lost ({{count}}).",
+    "droppedTightening": "Companion audit records about releasing or revoking control were lost ({{count}}). Check the devices in Settings."
+  }
+}

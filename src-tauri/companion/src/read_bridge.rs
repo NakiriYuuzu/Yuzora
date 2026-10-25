@@ -43,8 +43,13 @@ pub(crate) fn capabilities() -> Value {
 pub(crate) fn is_read(method: &str) -> bool {
     matches!(
         method,
-        "sessions.list" | "snapshot.get" | "events.subscribe" | "terminal.observe" | "stream.close"
-    )
+        "sessions.list"
+            | "snapshot.get"
+            | "events.subscribe"
+            | "terminal.observe"
+            | "stream.close"
+            | "push.subscribe"
+    ) || crate::git_bridge::is_git(method)
 }
 fn error(id: Value, code: &'static str) -> Value {
     json!({"id":id,"error":{"code":code,"message":code}})
@@ -211,11 +216,27 @@ impl Sink {
                 self.state.close("payload-too-large");
                 Err("payload-too-large".into())
             }
+            // The Host tore a stalled connector down and said so, for the
+            // desktop. Here the command that stalled is a gateway call of this
+            // stream: its failure reply closes the stream as `stream-stalled`
+            // (`finish`), and closing it from here would only win the race and
+            // turn that reply into `stream-not-found`.
+            HerdrTerminalEvent::Resync { message, .. } if message.starts_with("ioTimeout:") => {
+                Ok(())
+            }
             HerdrTerminalEvent::Error { .. } | HerdrTerminalEvent::Resync { .. } => {
                 self.state.close("stream-closed");
                 Err("stream-closed".into())
             }
         }
+    }
+    /// Content-free hint that panes, tabs or Spaces changed: the client
+    /// fetches a snapshot and subscribes again.
+    fn stale(&self, session: &str) -> std::result::Result<(), String> {
+        self.send(Message::text(
+            json!({"event":"snapshot.stale","data":{"session":session},"stream":self.id})
+                .to_string(),
+        ))
     }
     fn event(
         &self,
@@ -240,6 +261,10 @@ impl Sink {
                 "pane.exited",
                 json!({"session":session,"pane":pane_id,"workspaceId":workspace_id}),
             ),
+            // Title/cwd updates are not topology and would only cause refetch storms.
+            HerdrSubscriptionEvent::TopologyChanged { kind, .. } if kind != "pane.updated" => {
+                return self.stale(session)
+            }
             HerdrSubscriptionEvent::Disconnected { .. } | HerdrSubscriptionEvent::Error { .. } => {
                 self.state.close("stream-closed");
                 return Ok(());
@@ -279,6 +304,7 @@ pub(crate) struct Reads {
     next_id: u32,
     writes: writes::Queue,
     pending: Arc<Semaphore>,
+    git_reads: crate::git_bridge::AuditWindow,
     pub(crate) completed: FuturesUnordered<BoxFuture<'static, Completion>>,
     pub(crate) changed: Arc<Notify>,
 }
@@ -329,6 +355,7 @@ impl Reads {
                 next_id: 1,
                 writes: writes::Queue::new(),
                 pending: Arc::new(Semaphore::new(2)),
+                git_reads: Default::default(),
                 completed: FuturesUnordered::new(),
                 changed: Arc::new(Notify::new()),
             },
@@ -377,6 +404,12 @@ impl Reads {
             };
             stream.state.close("client-closed");
             return Some(reply(id, json!({"stream":p.stream,"closed":true})));
+        }
+        if method == "push.subscribe" {
+            return self.push_subscribe(gateway, device, id, &params);
+        }
+        if crate::git_bridge::is_git(method) {
+            return self.git(gateway, device, id, method, params);
         }
         let (session, target) = match method {
             "sessions.list"
@@ -461,6 +494,7 @@ impl Reads {
         };
         let reads = gateway.herdr.clone();
         let jobs = gateway.herdr_jobs.clone();
+        let spaces = gateway.spaces.clone();
         let method = method.to_owned();
         let work = move || {
             let active = || {
@@ -477,7 +511,10 @@ impl Reads {
             reads.running(&session)?;
             active()?;
             if method == "snapshot.get" {
-                return reads.snapshot(&session).map(Output::Snapshot);
+                return reads.snapshot(&session).map(|mut snapshot| {
+                    spaces.mark(&session, &mut snapshot);
+                    Output::Snapshot(snapshot)
+                });
             }
             let (resource, value) = if let Some(target) = target {
                 let snapshot = reads
@@ -504,11 +541,33 @@ impl Reads {
                     json!({"stream":stream_id,"cols":cols,"rows":rows}),
                 )
             } else {
+                // Agent-status events need the current pane IDs; the client
+                // subscribes again after `snapshot.stale` to cover new panes.
+                let snapshot = reads
+                    .port
+                    .snapshot(&session)
+                    .map_err(|e| reads.after_error(&session, e))?;
+                active()?;
+                let panes = herdr::pane_ids(&snapshot.snapshot);
                 let name = session.clone();
+                let check = sink.clone();
                 let subscription = reads
                     .port
-                    .subscribe(&session, Arc::new(move |event| sink.event(&name, event)))
+                    .subscribe(
+                        &session,
+                        panes.clone(),
+                        Arc::new(move |event| sink.event(&name, event)),
+                    )
                     .map_err(|e| reads.after_error(&session, e))?;
+                // A pane created before the subscription took effect is not
+                // covered, and its creation event is gone: say so once.
+                if reads
+                    .port
+                    .snapshot(&session)
+                    .is_ok_and(|now| herdr::pane_ids(&now.snapshot) != panes)
+                {
+                    let _ = check.stale(&session);
+                }
                 (
                     Resource::Events(subscription),
                     json!({"stream":stream_id,"subscribed":true}),
@@ -546,6 +605,93 @@ impl Reads {
             }
         }
     }
+    /// Replies once the desktop confirms it stored the subscription; the wait
+    /// holds one of the peer's pending slots.
+    fn push_subscribe(
+        &mut self,
+        gateway: &Gateway,
+        device: &str,
+        id: Value,
+        params: &Value,
+    ) -> Option<Value> {
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Some(error(id, "busy"));
+        };
+        match gateway.push.subscribe(gateway, device, params) {
+            Err(code) => Some(error(id, code)),
+            Ok(stored) => {
+                self.completed.push(Box::pin(async move {
+                    let _pending = pending;
+                    Completion {
+                        id,
+                        stream: None,
+                        result: stored.await.map(Output::Value),
+                        write: false,
+                    }
+                }));
+                None
+            }
+        }
+    }
+    /// Read-only Git of a mapped Space. Shares the read executor and the peer's
+    /// pending slots; replies take the snapshot path, so large ones are chunked.
+    fn git(
+        &mut self,
+        gateway: &Gateway,
+        device: &str,
+        id: Value,
+        method: &str,
+        params: Value,
+    ) -> Option<Value> {
+        let request = match crate::git_bridge::parse(method, params) {
+            Ok(request) => request,
+            Err(code) => return Some(error(id, code)),
+        };
+        let space = match gateway.spaces.get(&request.session, &request.workspace_id) {
+            Ok(space) => space,
+            Err(code) => return Some(error(id, code)),
+        };
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Some(error(id, "busy"));
+        };
+        let (session, workspace_id) = (request.session.clone(), request.workspace_id.clone());
+        let tokens = gateway.spaces.tokens(device, gateway.clock.now());
+        let reads = gateway.herdr.clone();
+        let running_session = session.clone();
+        match gateway.herdr_jobs.submit_device(device, false, move || {
+            // The mapped roots outlive a stopped session; check right before
+            // reading them, as the snapshot and terminal reads do.
+            reads.running(&running_session)?;
+            request.run(&space, &tokens).map(Output::Snapshot)
+        }) {
+            Ok(receive) => {
+                if self
+                    .git_reads
+                    .due(&session, &workspace_id, gateway.clock.now())
+                {
+                    crate::audit::git_read(
+                        gateway,
+                        device,
+                        self.peer_id,
+                        &session,
+                        &workspace_id,
+                        method,
+                    );
+                }
+                self.completed.push(Box::pin(async move {
+                    let _pending = pending;
+                    Completion {
+                        id,
+                        stream: None,
+                        result: receive.await.unwrap_or(Err("herdr-unavailable")),
+                        write: false,
+                    }
+                }));
+                None
+            }
+            Err(code) => Some(error(id, code)),
+        }
+    }
     pub(crate) fn finish(&mut self, completion: Completion) -> Vec<Value> {
         let Completion {
             id,
@@ -579,9 +725,10 @@ impl Reads {
                     write.audit.target = value["target"].as_str().map(str::to_owned);
                     // Host has succeeded. Capacity was reserved before that call;
                     // a newly deferred DIFFERENT stream cannot reverse this key.
-                    announcement
-                        .expect("write open reservation")
-                        .emit(write.audit.state(true, write.takeover));
+                    write.audit.announce(
+                        announcement.expect("write open reservation"),
+                        write.takeover,
+                    );
                     write.announced = true;
                 }
                 // Caller enqueues these replies synchronously before the writer
@@ -608,6 +755,12 @@ impl Reads {
                         .is_some_and(|s| !write || s.lease.is_none())
                     {
                         if let Some(stream) = self.streams.remove(&s) {
+                            stream.state.close(code);
+                        }
+                    } else if write && code == "stream-stalled" {
+                        // Host gave up on the input and released the session:
+                        // close the stream, so closed() drops its Lease.
+                        if let Some(stream) = self.streams.get(&s) {
                             stream.state.close(code);
                         }
                     }

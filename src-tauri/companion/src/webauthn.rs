@@ -73,7 +73,7 @@ fn user(id: &str) -> Result<UserHandle16, Failure> {
     UserHandle16::decode(crate::devices::decode::<16>(id).ok_or(REJECTED)?).map_err(|_| REJECTED)
 }
 pub(crate) fn requires_unbacked(policy: PasskeyBinding, scope: Scope) -> bool {
-    policy == PasskeyBinding::O1 || (policy == PasskeyBinding::O2 && scope != Scope::View)
+    policy == PasskeyBinding::O1 || (policy == PasskeyBinding::O2 && scope == Scope::Full)
 }
 fn backup_requirement(policy: PasskeyBinding, scope: Scope) -> BackupReq {
     if requires_unbacked(policy, scope) {

@@ -121,10 +121,169 @@ fn workflow_tracks_vendor_and_checks_each_forbidden_tls_package() {
 }
 
 #[test]
+fn go_sidecar_pins_a_patched_toolchain_and_a_failing_pinned_govulncheck() {
+    // setup-go installs the toolchain line of go.mod, else its go line.
+    let go_mod = normalize(include_str!("../../companion-net/go.mod"));
+    let toolchain = go_mod
+        .lines()
+        .find_map(|line| line.strip_prefix("toolchain go"))
+        .expect("go.mod must name the toolchain the sidecar is built with");
+    let version: Vec<u32> = toolchain
+        .split('.')
+        .map(|part| part.parse().expect("numeric toolchain version"))
+        .collect();
+    // 1.27.2 and 1.27.3 carry the crypto/tls, net/http and crypto/x509 fixes.
+    assert!(version >= vec![1, 27, 3], "toolchain go{toolchain}");
+
+    let workflow = normalize(include_str!("../../../.github/workflows/companion.yml"));
+    let net = workflow
+        .split("\n  net:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  supply-chain:\n").next())
+        .expect("net job");
+    let step = net
+        .split("- name: govulncheck\n")
+        .nth(1)
+        .expect("the net job has a govulncheck step");
+    let install = step
+        .lines()
+        .find(|line| line.contains("go install golang.org/x/vuln/cmd/govulncheck@"))
+        .expect("the step installs govulncheck");
+    assert!(
+        install.contains("govulncheck@v") && !install.contains("@latest"),
+        "govulncheck must be pinned: {install}"
+    );
+    // The shipped binary is built with these tags (scripts/prepare-companion.ts);
+    // govulncheck exits 3 for a reachable advisory and nothing may swallow that.
+    assert!(step.contains("/govulncheck\" -tags ts_omit_webclient ./..."));
+    assert!(step.contains("set -euo pipefail"));
+    assert!(!step.contains("|| true") && !step.contains("continue-on-error"));
+}
+
+#[test]
 fn companion_build_output_is_ignored() {
     assert!(normalize(include_str!("../../../.gitignore"))
         .lines()
         .any(|line| line == "src-tauri/companion/target/"));
+}
+
+#[test]
+fn proxy_secret_is_never_debug_or_serialize_and_guard_ignores_the_old_header() {
+    let admin = normalize(include_str!("../src/admin.rs"));
+    let before = admin.split("pub struct ProxySecret").next().unwrap();
+    assert_eq!(
+        before
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("#[derive")),
+        Some("#[derive(Clone)]")
+    );
+    for forbidden in ["Debug for ProxySecret", "Serialize for ProxySecret"] {
+        assert!(!admin.contains(forbidden));
+    }
+    // Production code only; the guard tests name the old header on purpose.
+    let guard = normalize(include_str!("../src/guard.rs"));
+    let production = guard.split("#[cfg(test)]").next().unwrap();
+    assert!(!production
+        .to_ascii_lowercase()
+        .contains("tailscale-user-login"));
+    assert!(
+        production.contains("\"yzc-proxy-secret\"") && production.contains("\"yzc-peer-login\"")
+    );
+}
+
+#[test]
+fn git_bridge_only_detects_and_reads_and_never_touches_trust_grants() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let code = |source: &str| {
+        normalize(source)
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let bridge = code(&std::fs::read_to_string(root.join("git_bridge.rs")).unwrap());
+    // Git is reached through typed read functions; the one command named is Detect.
+    let commands: Vec<_> = bridge
+        .match_indices("GitCommand::")
+        .map(|(at, _)| {
+            bridge[at..]
+                .split(|c: char| !(c.is_alphanumeric() || c == ':'))
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(commands, ["GitCommand::Detect"]);
+    for forbidden in [
+        "grant",
+        "revoke",
+        "challenge",
+        "mutate",
+        "FileAtRev",
+        "RemoteProbe",
+        "Bootstrap",
+        ".execute(",
+        "files::",
+    ] {
+        assert!(
+            !bridge.contains(forbidden),
+            "git_bridge.rs names {forbidden}"
+        );
+    }
+    // No other module reaches the trust store.
+    for entry in std::fs::read_dir(&root).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        if path.extension().is_some_and(|ext| ext == "rs") && name != "git_bridge.rs" {
+            let source = code(&std::fs::read_to_string(&path).unwrap());
+            assert!(
+                !source.contains("workspace_trust"),
+                "{name} reaches the workspace trust store"
+            );
+        }
+    }
+}
+
+#[test]
+fn push_module_never_touches_the_network_or_key_material() {
+    // The desktop holds the VAPID key and sends every push; the gateway only
+    // decides that one is due.
+    let push = normalize(include_str!("../src/push.rs"));
+    let code = push
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for forbidden in [
+        "TcpStream",
+        "TcpListener",
+        "UdpSocket",
+        "reqwest",
+        "hyper::client",
+        "hyper_util::client",
+        "p256::",
+        "ecdsa::",
+        "aes_gcm::",
+        "hkdf::",
+        "SigningKey",
+        "private",
+    ] {
+        assert!(!code.contains(forbidden), "push.rs names {forbidden}");
+    }
+    let manifest = normalize(include_str!("../Cargo.toml"));
+    let dependencies = manifest.split("[dev-dependencies]").next().unwrap();
+    for crate_name in ["reqwest", "p256", "hkdf", "aes-gcm"] {
+        assert!(
+            !dependencies.contains(&format!("\n{crate_name} =")),
+            "{crate_name} is a production dependency"
+        );
+    }
 }
 
 #[test]
@@ -183,6 +342,144 @@ fn supply_chain_exception_is_version_pinned_and_not_expired() {
     let workflow = normalize(include_str!("../../../.github/workflows/companion.yml"));
     assert!(workflow.contains("cargo-deny --version 0.20.2"));
     assert!(workflow.contains("cargo-audit --version 0.22.2"));
+}
+
+#[test]
+fn p256_bigint_exception_is_pinned_and_production_never_holds_private_keys() {
+    let deadline = chrono::NaiveDate::from_ymd_opt(2027, 3, 31).unwrap();
+    assert!(
+        chrono::Utc::now().date_naive() <= deadline,
+        "crypto-bigint advisory exception expired: Yuzora maintainers must re-review"
+    );
+    let lock = normalize(include_str!("../Cargo.lock"));
+    assert_eq!(
+        lock.lines()
+            .filter(|line| *line == "name = \"crypto-bigint\"")
+            .count(),
+        1
+    );
+    assert!(lock.contains("name = \"crypto-bigint\"\nversion = \"0.5.5\""));
+    assert!(lock.contains("name = \"p256\"\nversion = \"0.13.2\""));
+    for config in [
+        include_str!("../deny.toml"),
+        include_str!("../.cargo/audit.toml"),
+    ] {
+        // The quoted id is the active ignore entry; comments never quote it.
+        assert!(config.contains("\"RUSTSEC-2026-0387\""));
+        for marker in [
+            "crypto-bigint 0.5.5",
+            "Yuzora maintainers",
+            "2027-03-31",
+            "ES256",
+        ] {
+            assert!(config.contains(marker), "missing {marker}");
+        }
+    }
+    // The exception holds only while production never touches private keys:
+    // none of these crates is a production dependency (in any manifest table
+    // form, under any rename) and no production source names secret-key types.
+    // yuzora-host is compiled into the gateway, so it is covered too.
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let companion_manifest = read_manifest(&manifest_dir.join("Cargo.toml"));
+    let host_manifest = read_manifest(&manifest_dir.join("../host/Cargo.toml"));
+    for manifest in [&companion_manifest, &host_manifest] {
+        for (key, value) in production_dependencies(manifest) {
+            let package = value
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(&key);
+            for crate_name in P256_FAMILY {
+                assert!(
+                    key != *crate_name && package != *crate_name,
+                    "{crate_name} is a production dependency ({key})"
+                );
+            }
+        }
+    }
+    assert!(companion_manifest["dev-dependencies"]
+        .as_table()
+        .unwrap()
+        .contains_key("p256"));
+    let mut inspected = 0;
+    for root in [manifest_dir.join("src"), manifest_dir.join("../host/src")] {
+        let mut directories = vec![root];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+                if path.is_dir() {
+                    directories.push(path);
+                } else if name.ends_with(".rs")
+                    && name != "tests.rs"
+                    && !name.ends_with("_tests.rs")
+                    && name != "test_support.rs"
+                {
+                    let source = production_source(&std::fs::read_to_string(&path).unwrap());
+                    let code = source
+                        .lines()
+                        .filter(|line| !line.trim_start().starts_with("//"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    for forbidden in [
+                        "SigningKey",
+                        "SecretKey",
+                        "NonZeroScalar",
+                        "Scalar",
+                        "ecdh",
+                        "diffie_hellman",
+                        "crypto_bigint",
+                        "elliptic_curve",
+                    ] {
+                        assert!(
+                            !code.contains(forbidden),
+                            "{} names {forbidden}",
+                            path.display()
+                        );
+                    }
+                    inspected += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        inspected >= 40,
+        "production source scan found {inspected} files"
+    );
+}
+
+const P256_FAMILY: &[&str] = &["p256", "p384", "ecdsa", "elliptic-curve", "crypto-bigint"];
+
+fn read_manifest(path: &std::path::Path) -> toml::Table {
+    std::fs::read_to_string(path).unwrap().parse().unwrap()
+}
+
+// Every non-dev dependency entry: [dependencies], [build-dependencies] and the
+// same two under [target.<cfg>]. Entries are normalized to tables so inline,
+// dotted ([dependencies.name]) and renamed (`package = ...`) forms look alike.
+fn production_dependencies(manifest: &toml::Table) -> Vec<(String, toml::Value)> {
+    let mut tables = Vec::new();
+    for kind in ["dependencies", "build-dependencies"] {
+        tables.push(manifest.get(kind));
+    }
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values() {
+            for kind in ["dependencies", "build-dependencies"] {
+                tables.push(target.get(kind));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    for table in tables.into_iter().flatten() {
+        for (key, value) in table.as_table().unwrap() {
+            let value = if value.is_table() {
+                value.clone()
+            } else {
+                toml::Value::Table(toml::Table::new())
+            };
+            entries.push((key.clone(), value));
+        }
+    }
+    entries
 }
 
 #[test]
@@ -485,4 +782,69 @@ fn websocket_ownership_contract_catches_production_after_test_module_and_admin_o
         "admin.rs",
         &format!("{admin}\nfn other() {{ tokio::spawn(async {{}}); }}")
     ));
+}
+
+fn strip_comments(source: &str) -> String {
+    let mut out = String::new();
+    let mut rest = source;
+    while !rest.is_empty() {
+        if let Some(tail) = rest.strip_prefix("/*") {
+            rest = tail.split_once("*/").map_or("", |(_, after)| after);
+        } else if let Some(tail) = rest.strip_prefix("//") {
+            rest = tail.find('\n').map_or("", |n| &tail[n..]);
+        } else {
+            let ch = rest.chars().next().unwrap();
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// True only when `#![forbid(unsafe_code)]` is a live crate-level inner attribute
+/// in the leading attribute block, not commented out, quoted, or deeper in the file.
+fn forbids_unsafe_code(source: &str) -> bool {
+    let code = normalize(&strip_comments(source));
+    code.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take_while(|line| line.starts_with("#!["))
+        .any(|line| line == "#![forbid(unsafe_code)]")
+}
+
+#[test]
+fn forbid_unsafe_detection_ignores_comments_removals_and_weaker_lints() {
+    assert!(forbids_unsafe_code("#![forbid(unsafe_code)]\n\nmod a;\n"));
+    assert!(forbids_unsafe_code(
+        "//! doc\r\n#![forbid(unsafe_code)]\r\nmod a;\r\n"
+    ));
+    assert!(forbids_unsafe_code(
+        "#![deny(missing_docs)]\n#![forbid(unsafe_code)]\n"
+    ));
+    for broken in [
+        "// #![forbid(unsafe_code)]\nmod a;\n",
+        "/* #![forbid(unsafe_code)] */\nmod a;\n",
+        "/*\n#![forbid(unsafe_code)]\n*/\nmod a;\n",
+        "mod a;\n",
+        "#![deny(unsafe_code)]\nmod a;\n",
+        "#![allow(unsafe_code)]\nmod a;\n",
+        "// #![forbid(unsafe_code)]\n#![allow(unsafe_code)]\nmod a;\n",
+        "mod a;\n#![forbid(unsafe_code)]\n",
+        "const S: &str = \"#![forbid(unsafe_code)]\";\n",
+    ] {
+        assert!(!forbids_unsafe_code(broken), "{broken:?}");
+    }
+}
+
+#[test]
+fn gateway_crate_roots_forbid_unsafe_code() {
+    for (name, source) in [
+        ("src/main.rs", include_str!("../src/main.rs")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+    ] {
+        assert!(
+            forbids_unsafe_code(source),
+            "{name} must forbid unsafe_code"
+        );
+    }
 }

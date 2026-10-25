@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::Fixture;
+use crate::test_support::{identity::PROXY_SECRET, Fixture};
 
 #[test]
 fn pairing_sas_fixed_vector_and_constant_time_primitive() {
@@ -468,7 +468,7 @@ async fn pairing_http_long_poll_decisions_expiry_timeout_and_cancellation() {
             let mut client = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
                 .await
                 .unwrap();
-            client.write_all(format!("POST /api/pair/status HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{request}", request.len()).as_bytes()).await.unwrap();
+            client.write_all(format!("POST /api/pair/status HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{request}", request.len()).as_bytes()).await.unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).await.unwrap();
             response

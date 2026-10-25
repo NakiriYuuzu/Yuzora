@@ -3,6 +3,7 @@ use crate::{
     clock::Timestamp,
     devices::{Device, Grants},
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::PathBuf;
 use tokio::{
@@ -24,6 +25,10 @@ pub enum CommandBody {
     Shutdown,
     Pairing(PairingCommand),
     Device(DeviceCommand),
+    Spaces(SpacesRoots),
+    Push(PushDevices),
+    PushAck(PushAck),
+    Peers(PeersList),
     Unknown,
 }
 
@@ -60,6 +65,87 @@ pub struct Init {
     #[serde(deserialize_with = "crate::devices::deserialize_devices")]
     pub devices: Vec<Device>,
     pub policy: Policy,
+    /// The desktop's workspace trust file. Only ever read, never granted from here.
+    pub trust_store: PathBuf,
+    pub space_roots: Vec<SpaceRoot>,
+    /// Web Push; `null` (or absent) when the desktop has no VAPID key.
+    pub push: Option<PushInit>,
+}
+
+/// What the gateway needs to offer Web Push. The VAPID private key and every
+/// push request stay with the desktop; the gateway never talks to the network.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushInit {
+    pub vapid_public_key: String,
+    /// Devices that hold stored subscriptions; unknown ids are ignored.
+    pub devices: Vec<PushDevice>,
+}
+
+/// A device with its stored subscriptions, each by endpoint id: unpadded
+/// base64url of the SHA-256 of the endpoint URL. The URL itself (a bearer
+/// capability) stays with the desktop.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushDevice {
+    pub device_id: String,
+    pub endpoints: Vec<String>,
+}
+
+/// `push.devices`: replaces the set of devices that hold stored subscriptions.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushDevices {
+    #[serde(rename = "v")]
+    _v: u32,
+    #[serde(rename = "type")]
+    _kind: String,
+    pub devices: Vec<PushDevice>,
+}
+
+/// `push.ack`: the desktop's answer to a `push.subscription` that carried a
+/// `requestId`. `stored: false` means it did not persist the subscription.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushAck {
+    #[serde(rename = "v")]
+    _v: u32,
+    #[serde(rename = "type")]
+    _kind: String,
+    pub request_id: u64,
+    pub stored: bool,
+}
+
+/// `peers.list`: asks which phones are connected now. Answered with
+/// `peers.snapshot` carrying the same `requestId`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PeersList {
+    #[serde(rename = "v")]
+    _v: u32,
+    #[serde(rename = "type")]
+    _kind: String,
+    pub request_id: u64,
+}
+
+/// Where a HERDR workspace lives on this machine, for read-only Git.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpaceRoot {
+    pub session: String,
+    pub workspace_id: String,
+    pub root: String,
+}
+
+/// `spaces.roots`: replaces the whole mapping. No ack; invalid is a rejected command.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpacesRoots {
+    #[serde(rename = "v")]
+    _v: u32,
+    #[serde(rename = "type")]
+    _kind: String,
+    pub roots: Vec<SpaceRoot>,
 }
 
 #[derive(Deserialize)]
@@ -76,10 +162,31 @@ pub struct Loopback {
     pub port: u16,
     pub public_host: String,
     pub required_tailscale_login: String,
+    /// Shared with the tsnet sidecar, which adds it on every proxied request.
+    pub proxy_secret: ProxySecret,
 }
 
 fn default_port() -> u16 {
     47110
+}
+
+// No Debug/Serialize: the proxy secret must never be printed or persisted.
+#[derive(Clone)]
+pub struct ProxySecret(pub Zeroizing<String>);
+impl ProxySecret {
+    /// Canonical unpadded base64url of exactly 32 bytes.
+    pub fn valid(&self) -> bool {
+        self.0.len() == 43
+            && URL_SAFE_NO_PAD
+                .decode(self.0.as_bytes())
+                .map(Zeroizing::new)
+                .is_ok_and(|bytes| bytes.len() == 32)
+    }
+}
+impl<'de> Deserialize<'de> for ProxySecret {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|s| Self(Zeroizing::new(s)))
+    }
 }
 
 // No Debug/Serialize: PEM material must never be printed or persisted.
@@ -120,7 +227,10 @@ impl Policy {
             && (1..=64).contains(&self.max_devices)
     }
 }
-/// Provisional O2 default; 2B applies this during actual WebAuthn verification.
+/// Which passkeys may authorize each scope; every login and elevation also
+/// requires user verification (Face ID, device passcode). O1: all scopes need
+/// a credential that cannot sync. O2 (default): synced passkeys may view and
+/// control, full needs one that cannot sync. O3: any passkey, every scope.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PasskeyBinding {
@@ -188,15 +298,53 @@ pub enum DeviceCommand {
 #[derive(Debug, PartialEq, Eq)]
 pub enum AdminResult {
     Applied,
+    /// The answer to `peers.list`: a reply event, not a deferral.
+    Peers {
+        request_id: u64,
+        peers: Vec<PeerInfo>,
+        streams: Vec<StreamInfo>,
+    },
     NotificationDeferred {
         command: &'static str,
         target: String,
     },
 }
+/// A phone connected now, as the authoritative `peers.snapshot` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerInfo {
+    pub peer_id: u64,
+    pub device_id: String,
+}
+/// An open control or full stream. `stream` is the key the `control.state` /
+/// `full.state` events use; `target` is the pane a control stream drives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamInfo {
+    pub stream: String,
+    pub device_id: String,
+    pub peer_id: u64,
+    pub session: String,
+    pub scope: Scope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
 impl AdminResult {
     pub fn deferred_event(self) -> Option<Event> {
         match self {
             Self::Applied => None,
+            Self::Peers {
+                request_id,
+                peers,
+                streams,
+            } => Some(Event {
+                v: 1,
+                body: EventBody::PeersSnapshot {
+                    request_id,
+                    peers,
+                    streams,
+                },
+            }),
             Self::NotificationDeferred { command, target } => Some(Event {
                 v: 1,
                 body: EventBody::CommandDeferred {
@@ -210,7 +358,7 @@ impl AdminResult {
 }
 
 /// Names reserved for later typed payloads; none are emitted before auth exists.
-pub const RESERVED_EVENTS: &[&str] = &["push.request"];
+pub const RESERVED_EVENTS: &[&str] = &[];
 
 /// These are distinct scopes, not an ordered privilege level. The gateway must
 /// enforce each method's scope itself: Herdr silently ignores observer writes.
@@ -291,6 +439,12 @@ enum EventBody {
         device_id: String,
         reason: &'static str,
     },
+    #[serde(rename = "peers.snapshot", rename_all = "camelCase")]
+    PeersSnapshot {
+        request_id: u64,
+        peers: Vec<PeerInfo>,
+        streams: Vec<StreamInfo>,
+    },
     Ready {
         ports: Ports,
     },
@@ -333,6 +487,23 @@ enum EventBody {
     DeviceRevoked {
         device_id: String,
     },
+    #[serde(rename = "push.subscription", rename_all = "camelCase")]
+    PushSubscription {
+        device_id: String,
+        subscription: Option<Subscription>,
+        /// Only with `subscription: null`: the one endpoint to remove.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        endpoint_id: Option<String>,
+        /// Only on a subscribe a phone waits for: the desktop answers it with
+        /// `push.ack` once the subscription is on disk.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u64>,
+    },
+    #[serde(rename = "push.request", rename_all = "camelCase")]
+    PushRequest {
+        device_ids: Vec<String>,
+        payload: PushPayload,
+    },
     Error {
         code: &'static str,
         message: &'static str,
@@ -342,6 +513,25 @@ enum EventBody {
 struct Ports {
     loopback: u16,
     lan: Option<u16>,
+}
+/// A phone's browser push subscription. No Debug: the auth secret and the
+/// endpoint (a bearer URL for pushing to that phone) must never be printed.
+#[derive(Clone, Serialize)]
+pub(crate) struct Subscription {
+    pub(crate) endpoint: String,
+    pub(crate) p256dh: String,
+    pub(crate) auth: String,
+}
+/// What the desktop turns into one notification per subscribed device.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PushPayload {
+    pub(crate) kind: &'static str,
+    pub(crate) session: String,
+    pub(crate) pane_id: String,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) space: Option<String>,
 }
 impl Event {
     #[allow(clippy::too_many_arguments)]
@@ -526,6 +716,41 @@ impl Event {
             body: EventBody::DeviceRevoked { device_id },
         }
     }
+    pub(crate) fn push_subscription(
+        device_id: String,
+        subscription: Subscription,
+        request_id: u64,
+    ) -> Self {
+        Self {
+            v: 1,
+            body: EventBody::PushSubscription {
+                device_id,
+                subscription: Some(subscription),
+                endpoint_id: None,
+                request_id: Some(request_id),
+            },
+        }
+    }
+    pub(crate) fn push_unsubscription(device_id: String, endpoint_id: String) -> Self {
+        Self {
+            v: 1,
+            body: EventBody::PushSubscription {
+                device_id,
+                subscription: None,
+                endpoint_id: Some(endpoint_id),
+                request_id: None,
+            },
+        }
+    }
+    pub(crate) fn push_request(device_ids: Vec<String>, payload: PushPayload) -> Self {
+        Self {
+            v: 1,
+            body: EventBody::PushRequest {
+                device_ids,
+                payload,
+            },
+        }
+    }
     pub fn ready(port: u16) -> Self {
         Self {
             v: 1,
@@ -554,6 +779,10 @@ pub async fn read<R: AsyncBufRead + Unpin>(
     let Some(frame) = read_frame_zeroizing(reader).await? else {
         return Ok(None);
     };
+    // serde derive also accepts positional JSON arrays for structs; commands are objects.
+    if frame.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'{') {
+        return Err("invalid-command");
+    }
     let envelope: Envelope = serde_json::from_slice(&frame).map_err(|_| "invalid-command")?;
     if envelope.v != 1 {
         return Err("unsupported-version");
@@ -567,6 +796,18 @@ pub async fn read<R: AsyncBufRead + Unpin>(
         }
         "device.update" | "device.revoke" | "device.unlock" => {
             CommandBody::Device(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
+        }
+        "spaces.roots" => {
+            CommandBody::Spaces(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
+        }
+        "push.devices" => {
+            CommandBody::Push(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
+        }
+        "push.ack" => {
+            CommandBody::PushAck(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
+        }
+        "peers.list" => {
+            CommandBody::Peers(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
         }
         "shutdown" => {
             let _: ShutdownFrame = serde_json::from_slice(&frame).map_err(|_| "invalid-command")?;
@@ -696,6 +937,8 @@ impl EventSender {
             ),
             EventBody::ControlState { open, .. } | EventBody::FullState { open, .. } => *open,
             EventBody::AuditDropped { .. } => true,
+            // A phone can repeat these: they must not eat the lifecycle slots.
+            EventBody::PushSubscription { .. } | EventBody::PushRequest { .. } => true,
             _ => false,
         };
         let audit = if ordinary {

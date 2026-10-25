@@ -162,3 +162,30 @@ fn devices_labels_reject_format_and_bidi_controls() {
     assert!(valid_label("手機 📱"));
     assert!(valid_label("日本語 e\u{301}"));
 }
+
+/// The PWA pre-checks labels and recomputes the SAS from this same fixture
+/// (src/companion/lib/contract.test.ts); both sides must agree with the gateway.
+#[test]
+fn pwa_contract_fixture_matches_label_rules_and_sas() {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use yuzora_companion::{devices::valid_label, pairing::derive_sas};
+    let fixture: Value = serde_json::from_str(include_str!("fixtures/pwa-contract.json")).unwrap();
+    for (key, expected) in [("valid", true), ("invalid", false)] {
+        let labels = fixture["labels"][key].as_array().unwrap();
+        assert!(labels.len() > 5);
+        for label in labels {
+            assert_eq!(valid_label(label.as_str().unwrap()), expected, "{label}");
+        }
+    }
+    for case in fixture["sas"].as_array().unwrap() {
+        let bytes = |key: &str| URL_SAFE_NO_PAD.decode(case[key].as_str().unwrap()).unwrap();
+        assert_eq!(
+            derive_sas(
+                &bytes("secret"),
+                &bytes("deviceNonce"),
+                &bytes("gatewayNonce")
+            ),
+            case["sas"].as_str().unwrap()
+        );
+    }
+}

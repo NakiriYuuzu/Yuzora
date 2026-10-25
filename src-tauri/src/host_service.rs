@@ -182,8 +182,7 @@ pub(crate) fn spawn_process_stream(
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);
-    let mut child = command
-        .spawn()
+    let mut child = crate::process_kill::spawn_tokio(command)
         .map_err(|e| format!("host-helper-unavailable: {e}"))?;
     let stdin = child.stdin.take().ok_or("helper-stdin-missing")?;
     let stdout = child.stdout.take().ok_or("helper-stdout-missing")?;
@@ -728,6 +727,22 @@ mod tests {
             target_dir: String::new(),
         };
         assert!(renderer_may_send(&copy));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_stream_spawns_through_the_spawn_lock() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut command = tokio::process::Command::new("/bin/cat");
+        let (stream, spawns) = crate::process_kill::trace_spawns(|| {
+            runtime.block_on(async { spawn_process_stream(&mut command) })
+        });
+        // Dropping the stream kills the child; its drop needs the runtime.
+        runtime.block_on(async { drop(stream.unwrap()) });
+        assert_eq!(spawns, ["/bin/cat"]);
     }
 
     struct RuntimeDropStream(tokio::io::DuplexStream);

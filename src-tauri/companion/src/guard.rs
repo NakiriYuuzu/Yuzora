@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use std::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::admin::Loopback;
+use crate::{admin::Loopback, secrets};
 
 pub const BODY_LIMIT: usize = 64 * 1024;
 pub const HEADER_LIMIT: usize = 16 * 1024;
@@ -14,6 +14,9 @@ const RATE_PER_SECOND: f64 = 10.0;
 pub struct Guard {
     host: String,
     login: String,
+    // Digest only: the supplied header is hashed too, so the constant-time
+    // compare is also independent of the supplied length.
+    proxy_secret: [u8; 32],
     origin: String,
     // Only one permitted login, and all peers are loopback. A single bucket
     // bounds state and cannot be bypassed by spoofing forwarding/IP headers.
@@ -58,9 +61,13 @@ impl Guard {
         {
             return Err("invalid-login");
         }
+        if !config.proxy_secret.valid() {
+            return Err("invalid-proxy-secret");
+        }
         Ok(Self {
             host: config.public_host.clone(),
             login: config.required_tailscale_login.clone(),
+            proxy_secret: secrets::hash(config.proxy_secret.0.as_bytes()),
             origin: format!("https://{}", config.public_host),
             api_bucket: Mutex::new(Bucket {
                 tokens: f64::from(RATE_BURST),
@@ -91,7 +98,13 @@ impl Guard {
         {
             return Err(StatusCode::MISDIRECTED_REQUEST);
         }
-        let login = one(headers, "tailscale-user-login")
+        // Only the embedded tsnet node knows the secret. Without it, the peer
+        // identity header below is attacker-controlled (any local process).
+        let secret = one(headers, "yzc-proxy-secret").ok_or(StatusCode::FORBIDDEN)?;
+        if !secrets::matches(&self.proxy_secret, secret.as_bytes()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let login = one(headers, "yzc-peer-login")
             .and_then(decode_login)
             .ok_or(StatusCode::FORBIDDEN)?;
         // Login identifiers are exact, case-sensitive identities, not DNS names.
@@ -210,6 +223,136 @@ fn hex(b: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{admin::ProxySecret, test_support::identity::PROXY_SECRET};
+    use axum::http::{HeaderName, HeaderValue};
+    use zeroize::Zeroizing;
+
+    fn guard() -> Guard {
+        Guard::new(&Loopback {
+            port: 0,
+            public_host: "desktop.tailnet.ts.net:8443".into(),
+            required_tailscale_login: "user@example.com".into(),
+            proxy_secret: ProxySecret(Zeroizing::new(PROXY_SECRET.into())),
+        })
+        .unwrap()
+    }
+    // `append`, so duplicate names stay duplicates.
+    fn check(guard: &Guard, identity: &[(&str, &str)]) -> Result<(), StatusCode> {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "host",
+            HeaderValue::from_static("desktop.tailnet.ts.net:8443"),
+        );
+        for (name, value) in identity {
+            headers.append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_bytes(value.as_bytes()).unwrap(),
+            );
+        }
+        guard.check(&Method::GET, &Uri::from_static("/"), &headers)
+    }
+
+    #[test]
+    fn guard_proxy_secret_gates_the_peer_login() {
+        let guard = guard();
+        let secret = ("yzc-proxy-secret", PROXY_SECRET);
+        let login = ("yzc-peer-login", "user@example.com");
+        let mut same_length = PROXY_SECRET.to_owned();
+        same_length.replace_range(..1, "B");
+        let wrong = ("yzc-proxy-secret", same_length.as_str());
+        let long = format!("{PROXY_SECRET}A");
+        let forbidden = Err(StatusCode::FORBIDDEN);
+        assert_eq!(check(&guard, &[secret, login]), Ok(()));
+        for (name, identity, expected) in [
+            ("missing secret", vec![login], forbidden),
+            ("wrong secret, same length", vec![wrong, login], forbidden),
+            (
+                "shorter secret",
+                vec![("yzc-proxy-secret", &PROXY_SECRET[..42]), login],
+                forbidden,
+            ),
+            (
+                "longer secret",
+                vec![("yzc-proxy-secret", long.as_str()), login],
+                forbidden,
+            ),
+            (
+                "empty secret",
+                vec![("yzc-proxy-secret", ""), login],
+                forbidden,
+            ),
+            (
+                "non-ASCII secret",
+                vec![("yzc-proxy-secret", "\u{e9}"), login],
+                forbidden,
+            ),
+            ("duplicate secret", vec![secret, secret, login], forbidden),
+            ("correct then wrong", vec![secret, wrong, login], forbidden),
+            ("wrong then correct", vec![wrong, secret, login], forbidden),
+            ("missing login", vec![secret], forbidden),
+            (
+                "wrong login",
+                vec![secret, ("yzc-peer-login", "other@example.com")],
+                forbidden,
+            ),
+            (
+                "login is case-sensitive",
+                vec![secret, ("yzc-peer-login", "User@example.com")],
+                forbidden,
+            ),
+            ("duplicate login", vec![secret, login, login], forbidden),
+            (
+                "malformed encoded login",
+                vec![secret, ("yzc-peer-login", "=?UTF-8?Q?=GG?=")],
+                forbidden,
+            ),
+            (
+                "login without the secret",
+                vec![("yzc-peer-login", "user@example.com")],
+                forbidden,
+            ),
+            (
+                "old header alone",
+                vec![("tailscale-user-login", "user@example.com")],
+                forbidden,
+            ),
+            (
+                "old header instead of the peer login",
+                vec![secret, ("tailscale-user-login", "user@example.com")],
+                forbidden,
+            ),
+            (
+                "old header beside a wrong peer login",
+                vec![
+                    secret,
+                    ("yzc-peer-login", "other@example.com"),
+                    ("tailscale-user-login", "user@example.com"),
+                ],
+                forbidden,
+            ),
+            (
+                "RFC 2047 Q login",
+                vec![secret, ("yzc-peer-login", "=?UTF-8?Q?user=40example.com?=")],
+                Ok(()),
+            ),
+            (
+                "RFC 2047 B login",
+                vec![
+                    secret,
+                    ("yzc-peer-login", "=?UTF-8?B?dXNlckBleGFtcGxlLmNvbQ==?="),
+                ],
+                Ok(()),
+            ),
+            (
+                "old header is ignored beside a valid pair",
+                vec![secret, login, ("tailscale-user-login", "other@example.com")],
+                Ok(()),
+            ),
+        ] {
+            assert_eq!(check(&guard, &identity), expected, "{name}");
+        }
+    }
+
     #[test]
     fn guard_rfc2047_table() {
         for (input, expected) in [
