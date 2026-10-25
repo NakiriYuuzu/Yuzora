@@ -4,9 +4,9 @@ import type { Terminal } from "@xterm/xterm"
 import { Hand, Send, ShieldCheck, TerminalSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
 import { call } from "../client"
 import { ConfirmDialog } from "../components/ConfirmDialog"
 import { ElevateDialog } from "../components/ElevateDialog"
@@ -173,14 +173,15 @@ export function ControlPanel({ session, pane, agent, terminal, control, onContro
           {((agent && !blocked) || control) && (
             <form className="flex flex-col gap-2 px-3" onSubmit={(event) => { event.preventDefault(); sendText() }}>
               {agent && !blocked && control && (
-                <div role="radiogroup" aria-label={t("control.target")} className="flex gap-1 rounded-lg bg-muted p-1">
-                  {[false, true].map((value) => (
-                    <button key={String(value)} type="button" role="radio" aria-checked={direct === value} onClick={() => setDirect(value)}
-                      className={cn("h-10 flex-1 rounded-md text-sm font-medium", direct === value ? "bg-background shadow-sm" : "text-muted-foreground")}>
-                      {value ? t("control.toTerminal") : t("control.toAgent")}
-                    </button>
+                <RadioGroup aria-label={t("control.target")} value={direct ? "terminal" : "agent"} onValueChange={(value) => setDirect(value === "terminal")}
+                  className="flex gap-1 rounded-lg bg-muted p-1">
+                  {(["agent", "terminal"] as const).map((value) => (
+                    <RadioGroupItem key={value} value={value}
+                      className="aspect-auto h-10 w-auto flex-1 rounded-md border-0 text-sm font-medium text-muted-foreground shadow-none dark:bg-transparent data-[state=checked]:bg-background data-[state=checked]:text-foreground data-[state=checked]:shadow-sm dark:data-[state=checked]:bg-background [&_[data-slot=radio-group-indicator]]:hidden">
+                      {value === "terminal" ? t("control.toTerminal") : t("control.toAgent")}
+                    </RadioGroupItem>
                   ))}
-                </div>
+                </RadioGroup>
               )}
               <Textarea value={text} onChange={(event) => setText(event.target.value)} rows={2} className="min-h-11 text-base"
                 placeholder={toAgent ? t("control.promptPlaceholder") : t("control.inputPlaceholder")} aria-label={toAgent ? t("control.promptPlaceholder") : t("control.inputPlaceholder")} />

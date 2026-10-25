@@ -105,6 +105,24 @@ it("uses the shared checkbox for appending Enter", () => {
   expect(box).toHaveAttribute("aria-checked", "false")
 })
 
+it("picks the input target with the shared radio group: one tab stop, arrow keys move the choice", async () => {
+  renderPanel({ control: opened })
+  const group = screen.getByRole("radiogroup", { name: "Send to" })
+  expect(group).toHaveAttribute("data-slot", "radio-group")
+  const toAgent = within(group).getByRole("radio", { name: "Agent" })
+  const toTerminal = within(group).getByRole("radio", { name: "Terminal" })
+  expect(toAgent).toHaveAttribute("aria-checked", "true")
+  // The group is one tab stop: the option not chosen is reached with the arrow keys.
+  expect(toTerminal.tabIndex).toBe(-1)
+  fireEvent.click(toTerminal)
+  expect(toTerminal).toHaveAttribute("aria-checked", "true")
+  expect(screen.getByRole("textbox", { name: "Type into the terminal" })).toBeInTheDocument()
+  toTerminal.focus()
+  fireEvent.keyDown(toTerminal, { key: "ArrowLeft" })
+  await waitFor(() => expect(toAgent).toHaveAttribute("aria-checked", "true"))
+  expect(screen.getByRole("textbox", { name: "Message the agent" })).toBeInTheDocument()
+})
+
 it("scrolls the approval preview in a ScrollArea rather than a bare overflow", () => {
   renderPanel({ agent: agent("blocked"), terminal: terminal(["Allow? [y/N]"]) })
   fireEvent.click(screen.getByRole("button", { name: "Enter" }))
