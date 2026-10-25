@@ -191,9 +191,11 @@ export async function reloadPreview(
       return completed()
     }
   }
-  if ((isLocalPreviewUrl(target.url) || browserTarget(target.url).kind === "file")
-    && usePreviewStore.getState().nativeSession?.workspacePath !== target.workspacePath) {
-    usePreviewStore.getState().reload(target.workspacePath)
+  const preview = usePreviewStore.getState()
+  // A missing child needs a new open. Keep Reload queued behind an active open.
+  if (preview.nativeRequest?.kind !== "open"
+    && preview.nativeSession?.workspacePath !== target.workspacePath) {
+    preview.reload(target.workspacePath)
     return completed()
   }
   return enqueueNativePreviewOperation(async () => {
