@@ -82,17 +82,40 @@ describe("prepare Herdr resources", () => {
       await readFile(resolve(repositoryRoot, "src-tauri/tauri.windows.conf.json"), "utf8")
     )
     expect(macos.bundle.resources).toEqual({
+      "resources/companion-web/": "companion-web/",
+      "resources/companion-net/": "companion-net/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     })
     expect(windows.bundle.resources).toEqual({
+      "resources/companion-web/": "companion-web/",
+      "resources/companion-net/": "companion-net/",
       "resources/herdr/windows-x86_64/": "herdr/windows-x86_64/",
       "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
       "resources/host/": "host/",
       "resources/legacy-cleanup/": "legacy-cleanup/"
     })
     expect(macos.bundle.resources["resources/host/"]).toBe("host/")
+  })
+
+  it("bundles both Companion sidecars and ships the same Companion resources on Linux", async () => {
+    const base = JSON.parse(
+      await readFile(resolve(repositoryRoot, "src-tauri/tauri.conf.json"), "utf8")
+    )
+    const linux = JSON.parse(
+      await readFile(resolve(repositoryRoot, "src-tauri/tauri.linux.conf.json"), "utf8")
+    )
+    expect(base.bundle.externalBin).toEqual(["binaries/yuzora-companion", "binaries/yuzora-companion-net"])
+    expect(linux.bundle.resources).toEqual({
+      "resources/herdr/LICENSE-HERDR.txt": "herdr/LICENSE-HERDR.txt",
+      "resources/herdr/linux-aarch64/": "herdr/linux-aarch64/",
+      "resources/herdr/linux-x86_64/": "herdr/linux-x86_64/",
+      "resources/companion-web/": "companion-web/",
+      "resources/companion-net/": "companion-net/",
+      "resources/host/": "host/",
+      "resources/legacy-cleanup/": "legacy-cleanup/"
+    })
   })
 
   it("ad-hoc signs the complete macOS app bundle so Gatekeeper can validate resources", async () => {

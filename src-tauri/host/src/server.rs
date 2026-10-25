@@ -27,8 +27,8 @@ fn herdr_command(binary: &str, args: &[&str]) -> tokio::process::Command {
 }
 
 async fn command_json(binary: &str, args: &[&str]) -> Result<Value, String> {
-    let mut child = herdr_command(binary, args)
-        .spawn()
+    let mut command = herdr_command(binary, args);
+    let mut child = crate::process_kill::spawn_tokio(&mut command)
         .map_err(|e| format!("herdr-unavailable: {e}"))?;
     let mut stdout = child
         .stdout
@@ -433,6 +433,20 @@ mod tests {
         {
             assert!(removed.contains(key), "{key} must not be inherited");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn herdr_discovery_spawns_through_the_spawn_lock() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (value, spawns) = crate::process_kill::trace_spawns(|| {
+            runtime.block_on(command_json("/bin/echo", &["{}"]))
+        });
+        assert_eq!(value.unwrap(), json!({}));
+        assert_eq!(spawns, ["/bin/echo {}"]);
     }
 
     #[cfg(unix)]

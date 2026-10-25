@@ -141,6 +141,19 @@ HERDR terminal pages provide xterm-powered input, output and split panes; the gi
 
 <br />
 
+### Companion (Experimental)
+
+Control your HERDR Agents from your phone: check Agent status, browse Spaces, read Git status, history and diffs (read-only), and — after you grant it on the desktop — send input. Companion is **off by default** and must be switched on under Settings → Companion.
+
+- Yuzora runs its own built-in Tailscale node, so the desktop does not need the Tailscale app. Your phone does: it must run the Tailscale app signed in to the same tailnet and open the Companion page over HTTPS.
+- Pair a phone by scanning a QR code, comparing a confirmation code (SAS) on both screens, and registering a passkey. Every connection then needs the passkey.
+
+> **Warning:** enabling Companion is equivalent to granting remote shell access to this computer account. A phone that holds a control grant can drive your AI Agents, and Agents can run commands. Only enable it on a tailnet you trust, for the time you need it.
+
+Setup, access-control (ACL) advice and troubleshooting: [docs/operations.md](docs/operations.md) (Traditional Chinese).
+
+<br />
+
 ## Download
 
 Stable releases are built by GitHub Actions and published on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Unpublished PR candidates are available only as Actions artifacts.

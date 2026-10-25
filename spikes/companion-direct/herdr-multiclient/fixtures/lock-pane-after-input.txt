@@ -1,0 +1,8 @@
+$ isolated-herdr.sh --session companion-spike pane read w1:p1
+exit=0
+sh-3.2$ stty size
+24 80
+sh-3.2$ echo LOCK_MARKER; stty size
+LOCK_MARKER
+24 80
+sh-3.2$

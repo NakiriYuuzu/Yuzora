@@ -766,6 +766,19 @@ describe("HerdrTerminalPage TerminalOutputQueue writer contract", () => {
     expect([term.options.fontSize, term.cols, term.rows]).toEqual([30, 40, 10])
   })
 
+  it("resends the latest size after a resize only waited behind a busy writer", async () => {
+    render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())
+    herdrIpcMock.emit(frame(1, "initial", true))
+    await waitFor(() => expect(xtermMock.state.terminals[0].write).toHaveBeenCalledOnce())
+    herdrIpcMock.herdrTerminalResize.mockClear()
+    herdrIpcMock.herdrTerminalResize.mockRejectedValueOnce(new Error("host-call-wait-timeout"))
+    xtermMock.state.proposedSize = { cols: 55, rows: 15 }
+    act(() => useTerminalSettingsStore.setState({ fontSize: 22 }))
+    await waitFor(() => expect(herdrIpcMock.herdrTerminalResize).toHaveBeenCalledTimes(2), { timeout: 3000 })
+    expect(herdrIpcMock.herdrTerminalResize.mock.calls.at(-1)).toEqual(["sess-1", 55, 15])
+  })
+
   it("coalesces intermediate fits before resizing the server", async () => {
     render(<HerdrTerminalPage herdrSessionId="live" terminalId="term-1" active visible />)
     await waitFor(() => expect(herdrIpcMock.herdrTerminalOpen).toHaveBeenCalledOnce())

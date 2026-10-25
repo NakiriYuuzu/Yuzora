@@ -372,7 +372,7 @@ impl HostKeyPersistIo for StdHostKeyIo {
 /// Windows scanners (Defender, indexers) briefly hold a file that was just
 /// written, so reopening or renaming it can fail with a sharing violation or
 /// access denied for a few milliseconds.
-fn windows_scanner_held(error: &std::io::Error) -> bool {
+pub(crate) fn windows_scanner_held(error: &std::io::Error) -> bool {
     const ERROR_ACCESS_DENIED: i32 = 5;
     const ERROR_SHARING_VIOLATION: i32 = 32;
     cfg!(windows)
@@ -384,7 +384,7 @@ fn windows_scanner_held(error: &std::io::Error) -> bool {
 
 /// Retries only failures `transient` accepts, a few times over ~150 ms;
 /// anything else, or a failure that persists, is returned (fail closed).
-fn retry_transient<T>(
+pub(crate) fn retry_transient<T>(
     transient: fn(&std::io::Error) -> bool,
     mut op: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {

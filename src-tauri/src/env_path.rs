@@ -24,7 +24,8 @@ pub fn fix_gui_path() {
     // 設定，login 非互動 shell 讀不到——這正是要點。`-l` 讀 profile、`-c` 執行單行。
     // 輸出兩段用 marker 包夾，能從 rc 檔的雜訊輸出裡精準切出：PATH（`printf $PATH`）與
     // 整包 env（`awk ENVIRON` 以 `%c,0` 印成 `KEY=VALUE\0…`，NUL 分隔耐值裡的特殊字元）。
-    let mut child = match Command::new(&shell)
+    let mut command = Command::new(&shell);
+    command
         .args([
             "-ilc",
             "printf '__YZ_PATH_S__%s__YZ_PATH_E__' \"$PATH\"; \
@@ -34,9 +35,8 @@ pub fn fix_gui_path() {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    let mut child = match crate::process_kill::spawn_std(&mut command) {
         Ok(child) => child,
         Err(e) => {
             eprintln!("[env_path] shell spawn 失敗，保留原 PATH: {e}");

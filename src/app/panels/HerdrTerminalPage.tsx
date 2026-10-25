@@ -37,7 +37,7 @@ import {
   ResizablePanelGroup
 } from "@/components/ui/resizable"
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
-import { isRetryableHerdrConnectError } from "@/lib/herdrErrors"
+import { herdrErrorKind, isRetryableHerdrConnectError } from "@/lib/herdrErrors"
 import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate, supportsHerdrTerminalMouse, supportsHerdrTerminalMouseMove } from "@/lib/herdrCapabilities"
 import { findRuntimeSession, parseRuntimeScope, sessionConnectionError, sessionScope } from "@/lib/herdrProvider"
 import { useHostStore } from "@/state/hostStore"
@@ -101,6 +101,8 @@ const defaultRows = 24
 const RATIO_EPSILON = 0.01
 const RATIO_DEBOUNCE_MS = 120
 const LAYOUT_RETRY_DELAYS = [400, 1000]
+const RESIZE_BUSY_RETRIES = 5
+const RESIZE_BUSY_RETRY_MS = 400
 /** Herdr's `terminal.closed` reason when another controller attached with --takeover. */
 const HERDR_TAKEN_OVER_REASON = "terminal attach taken over"
 /** Automatic connector reopen attempts (0.5s, 1s, 2s, 4s, 8s) before offering Reconnect. */
@@ -1194,6 +1196,8 @@ function HerdrTerminalLeaf({
     let hasFrame = false
     let openStarted = false
     let fitTimer: number | null = null
+    let resizeRetryTimer: number | null = null
+    let resizeRetries = 0
     let fittedFont: { fontSize: number; fontFamily: string; cols: number; rows: number } | null = null
     const fitAndPublish = () => {
       if (disposedRef.current || (openStarted && !visibleRef.current)) return
@@ -1233,6 +1237,7 @@ function HerdrTerminalLeaf({
         term.options.fontFamily = requestedFont.fontFamily
       }
       if (openStarted && next.cols === lastSizeRef.current.cols && next.rows === lastSizeRef.current.rows) return
+      const previousSize = lastSizeRef.current
       lastSizeRef.current = next
       // Once output exists, its grid belongs to the frame being decoded. A
       // local fit must not reflow it while older ANSI writes are still queued.
@@ -1244,10 +1249,19 @@ function HerdrTerminalLeaf({
           expectedFrameSize = requestSize
           awaitingFull = true
         }
-        void transport.resize(next.cols, next.rows).catch(() => {
+        void transport.resize(next.cols, next.rows).then(() => { resizeRetries = 0 }, (error: unknown) => {
           if (expectedFrameSize === requestSize) {
             expectedFrameSize = null
             awaitingFull = false
+          }
+          // The Host never applied a resize that only waited behind a busy
+          // writer: forget it and fit again so the PTY reaches the latest size.
+          if (herdrErrorKind(error) === "busy" && resizeRetries < RESIZE_BUSY_RETRIES
+            && lastSizeRef.current === next) {
+            resizeRetries += 1
+            lastSizeRef.current = previousSize
+            if (resizeRetryTimer !== null) window.clearTimeout(resizeRetryTimer)
+            resizeRetryTimer = window.setTimeout(() => { resizeRetryTimer = null; fitAndPublish() }, RESIZE_BUSY_RETRY_MS)
           }
         })
       }
@@ -1518,6 +1532,7 @@ function HerdrTerminalLeaf({
       fitRef.current = null
       fitViewportRef.current = null
       if (fitTimer !== null) window.clearTimeout(fitTimer)
+      if (resizeRetryTimer !== null) window.clearTimeout(resizeRetryTimer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [herdrSessionId, terminalId, pagePath, attachmentKey, connectorEnabled, scrollPaneId, targetHostId, targetSessionName, contextSessionName])

@@ -1,0 +1,5 @@
+?? .github/workflows/companion.yml
+?? specs/yuzora-companion-pwa-direct-connections-plan.html
+?? specs/yuzora-companion-pwa-direct-connections-plan/
+?? spikes/companion-direct/
+?? src-tauri/companion/

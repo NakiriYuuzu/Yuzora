@@ -1,0 +1,41 @@
+[package]
+name = "yuzora-companion"
+version = "0.0.19"
+edition = "2021"
+publish = false
+
+[dependencies]
+yuzora-host = { path = "../host" }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
+hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio", "service"] }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "sync", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = "1.9.0"
+base64 = "0.23"
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "now"] }
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+subtle = "=2.6.1"
+rand = { version = "=0.10.3", default-features = false, features = ["sys_rng"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+tokio-tungstenite = { version = "=0.29.0", default-features = false, features = ["handshake"] }
+tokio-util = { version = "0.7", features = ["io"] }
+webauthn_rp = { version = "=0.3.0", features = ["serde_relaxed"] }
+
+[dev-dependencies]
+tempfile = "3"
+ciborium = "=0.2.2"
+p256 = { version = "=0.13.2", features = ["ecdsa"] }
+ed25519-dalek = "=2.2.0"
+rsa = { version = "=0.9.10", features = ["sha2"] }
+rand08 = { package = "rand", version = "=0.8.6" }
+tokio = { version = "1.53.3", features = ["test-util"] }
+toml = { version = "=1.1.8", default-features = false, features = ["std", "parse", "serde"] }
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+# Keep default panic unwinding and codegen units, like the app and Host.

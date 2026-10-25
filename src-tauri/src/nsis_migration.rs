@@ -132,9 +132,9 @@ mod windows {
             // Its uninstaller removes only its own files, shortcuts and
             // registration; app data stays because silent mode never asks.
             Some(Plan::Uninstall { uninstaller }) if uninstaller.is_file() => {
-                std::process::Command::new(&uninstaller)
-                    .arg("/S")
-                    .spawn()
+                let mut command = std::process::Command::new(&uninstaller);
+                command.arg("/S");
+                crate::process_kill::spawn_std(&mut command)
                     .map(drop)
                     .map_err(|error| format!("{}: {error}", uninstaller.display()))
             }

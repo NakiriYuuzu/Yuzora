@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### 新增與改善
+
+- 新增實驗性的 Companion（手機遠端控制），預設關閉，需到「設定 → Companion」開啟。已配對的手機可以檢視 HERDR Agent、瀏覽 Spaces，並唯讀查看 Git 的狀態、歷史與 diff；桌面授予操作權限後，手機才能送出輸入。Agent 等待輸入或完成時，手機可收到 Web Push 通知（需先加入主畫面；通知內容不含終端機輸出）。
+- Yuzora 內建 Tailscale 節點，這台電腦不必安裝 Tailscale App；手機需要安裝 Tailscale 並登入同一個帳號。使用前要在 tailnet 啟用 HTTPS 憑證，節點名稱與 tailnet 名稱會公開記錄在 Certificate Transparency log。
+- 手機以 QR code 配對，兩邊核對確認碼後註冊 passkey，之後每次連線都要通過 passkey。操作權限由桌面逐一授予（15 分鐘、1 小時或 8 小時），手機端還要再用 passkey 確認；可隨時撤銷單一裝置。啟用期限可選 1 小時、8 小時或直到結束 Yuzora。
+- 手機的輸入與接管會在桌面顯示通知並記錄到 Logs；HERDR 終端機的輸入寫入現在有時限，對方不再讀取時會中止並提示，不再無限等待。
+
+### 已知限制
+
+- Companion 為實驗性功能：尚未在真實的 iPhone、Android 與 Windows／Linux 桌面上完成驗收。
+- 啟用 Companion 等同授予這台電腦帳號遠端 shell 權限，請只在信任的 tailnet 上、於需要的期間內啟用。
+- Companion 只在 Yuzora 執行且已啟用期間運作；節點名稱改變後，已配對的手機必須重新配對。
+- 設定與疑難排解見 `docs/operations.md`。
+
 ## [0.0.19] - 2026-10-10
 
 ### 新增與改善

@@ -1,0 +1,3 @@
+$ isolated-herdr.sh session delete companion-spike
+exit=0
+deleted session companion-spike

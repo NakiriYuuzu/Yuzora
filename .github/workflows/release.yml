@@ -308,6 +308,13 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # actions/setup-go@v7.0.0; companion:prepare builds the Companion network
+      # sidecar. No Go module or build cache is restored for release builds.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: src-tauri/companion-net/go.mod
+          cache: false
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -392,6 +399,18 @@ jobs:
           set -euo pipefail
           APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app"
           codesign --verify --deep --strict --verbose=2 "$APP"
+
+      # externalBin lands next to the app executable; the web root and notices are resources.
+      - name: Verify bundled Companion sidecar
+        if: matrix.artifact_name == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Yuzora.app/Contents
+          test "$(lipo -archs "$APP/MacOS/yuzora-companion")" = "arm64"
+          test "$(lipo -archs "$APP/MacOS/yuzora-companion-net")" = "arm64"
+          test -f "$APP/Resources/companion-web/index.html"
+          test -f "$APP/Resources/companion-net/THIRD_PARTY_NOTICES.txt"
 
       - name: Verify Windows native and Unix runtime payloads
         if: matrix.artifact_name == 'windows'

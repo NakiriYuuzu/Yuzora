@@ -1,0 +1,15 @@
+$ cargo tree --locked --manifest-path /tmp/yzc-deps/Cargo.toml --target x86_64-unknown-linux-gnu -i openssl
+exit=101
+error: package ID specification `openssl` did not match any packages
+
+$ cargo tree --locked --manifest-path /tmp/yzc-deps/Cargo.toml --target x86_64-unknown-linux-gnu -i openssl-sys
+exit=101
+error: package ID specification `openssl-sys` did not match any packages
+
+$ cargo tree --locked --manifest-path /tmp/yzc-deps/Cargo.toml --target x86_64-unknown-linux-gnu -i aws-lc-rs
+exit=101
+error: package ID specification `aws-lc-rs` did not match any packages
+
+$ cargo tree --locked --manifest-path /tmp/yzc-deps/Cargo.toml --target x86_64-unknown-linux-gnu -i aws-lc-sys
+exit=101
+error: package ID specification `aws-lc-sys` did not match any packages
