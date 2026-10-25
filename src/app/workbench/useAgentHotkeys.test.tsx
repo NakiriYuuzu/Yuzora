@@ -132,3 +132,56 @@ it("derives the held modifiers from the binding", () => {
   expect(cycleHoldModifiers("Mod+J", false)).toEqual(["ctrlKey"])
   expect(cycleHoldModifiers("Shift+F5", false)).toEqual(["shiftKey"])
 })
+
+it.each(["release", "click"])("commits the latest same-key Agent after rerender via %s", method => {
+  const a = { id: "a", session: "one", title: "A", pane: "a" }
+  const b = { id: "b", session: "one", title: "B", pane: "old" }
+  const c = { id: "c", session: "one", title: "C", pane: "c" }
+  const keyOf = (agent: typeof a) => JSON.stringify([agent.session, agent.id])
+  const originalActivate = vi.fn(), latestActivate = vi.fn()
+  const hook = renderHook(({ agents, activate }) => useAgentHotkeys({ agents, keyOf, activate }), {
+    initialProps: { agents: [a, b, c], activate: originalActivate }
+  })
+  down({ key: "`", code: "Backquote", altKey: true })
+  const replacement = { ...b, title: "Renamed", pane: "new" }
+  useAgentMruStore.setState({ keys: [keyOf(c), keyOf(a)] })
+  hook.rerender({ agents: [c, replacement, a], activate: latestActivate })
+  expect(hook.result.current.switcher?.items.map(keyOf)).toEqual([keyOf(a), keyOf(b), keyOf(c)])
+  expect(hook.result.current.switcher?.index).toBe(1)
+  if (method === "click") act(() => hook.result.current.commit(1))
+  else up({ key: "Alt", code: "AltLeft" })
+  expect(originalActivate).not.toHaveBeenCalled()
+  expect(latestActivate).toHaveBeenCalledExactlyOnceWith(replacement)
+  expect(hook.result.current.switcher).toBeNull()
+})
+
+it.each(["removed", "all-removed", "same-name", "other-session"])("dismisses a %s Agent selection without activating a replacement", variant => {
+  const a = { id: "a", session: "one", name: "A" }
+  const b = { id: "b", session: "one", name: "B" }
+  const activate = vi.fn(), keyOf = (agent: typeof a) => JSON.stringify([agent.session, agent.id])
+  const hook = renderHook(({ agents }) => useAgentHotkeys({ agents, keyOf, activate }), { initialProps: { agents: [a, b] } })
+  down({ key: "`", code: "Backquote", altKey: true })
+  const agents = variant === "all-removed" ? [] : variant === "removed" ? [a]
+    : [a, variant === "same-name" ? { ...b, id: "new-id" } : { ...b, session: "two" }]
+  hook.rerender({ agents })
+  up({ key: "Alt", code: "AltLeft" })
+  expect(activate).not.toHaveBeenCalled()
+  expect(hook.result.current.switcher).toBeNull()
+})
+
+it.each([
+  { current: "b", reverse: false, expected: "a", order: ["b", "a", "c"] },
+  { current: "b", reverse: true, expected: "c", order: ["b", "a", "c"] },
+  { current: null, reverse: false, expected: "a", order: ["a", "b", "c"] },
+  { current: null, reverse: true, expected: "c", order: ["a", "b", "c"] },
+  { current: "outside-list", reverse: false, expected: "a", order: ["a", "b", "c"] },
+  { current: undefined, reverse: false, expected: "b", order: ["a", "b", "c"] },
+])("starts cycling relative to current=$current reverse=$reverse without writing MRU", ({ current, reverse, expected, order }) => {
+  const activate = vi.fn()
+  const hook = renderHook(() => useAgentHotkeys({ agents: ["a", "b", "c"], keyOf: agent => agent, activate, getCurrentKey: () => current }))
+  down({ key: reverse ? "~" : "`", code: "Backquote", altKey: true, shiftKey: reverse })
+  expect(hook.result.current.switcher?.items).toEqual(order)
+  expect(useAgentMruStore.getState().keys).toEqual([])
+  up({ key: "Alt", code: "AltLeft" })
+  expect(activate).toHaveBeenCalledExactlyOnceWith(expected)
+})
