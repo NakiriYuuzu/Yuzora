@@ -215,6 +215,18 @@ it("native file mutations send the active capability and relative paths", async 
     expect(calls).toHaveLength(2)
 })
 
+it("native file mutations never turn a POSIX backslash file name into another path", async () => {
+    useWorkspaceStore.setState({ workspacePath: "/work", workspaceCapabilityId: "ws-active" })
+    const calls: unknown[] = []
+    mockIPC((command, payload) => { calls.push([command, payload]) })
+    // `/work/a\\b.txt` is one file; it must not be sent as the real `a/b.txt`.
+    await expect(ipcModule.fsDelete("/work", "/work/a\\b.txt")).rejects.toThrow("unsupported-path-name")
+    await expect(ipcModule.fsRename("/work", "/work/a\\b.txt", "/work/c.txt")).rejects.toThrow("unsupported-path-name")
+    await expect(ipcModule.fsRename("/work", "/work/src/old.ts", "/work/src/x\\y.ts")).rejects.toThrow("unsupported-path-name")
+    await expect(ipcModule.fsCopyPaths("/work", ["/work/a\\b.txt"], "/work")).rejects.toThrow("unsupported-path-name")
+    expect(calls).toEqual([])
+})
+
 it("dropped-file import sends the dropped paths with a workspace-relative target, also for a WSL UNC workspace", async () => {
     const calls: unknown[] = []
     mockIPC((command, payload) => { calls.push([command, payload]); return ["src\\a.png"] })
@@ -430,9 +442,10 @@ it("gitPush forwards optional repository authority", async () => {
     const seen: unknown[] = []
     mockIPC((cmd, payload) => { seen.push([cmd, payload]) })
     await gitPush("/repo")
-    expect(seen[0]).toEqual(["git_push_cmd", { repositoryRoot: "/repo", forceWithLease: false, tags: false }])
-    await gitPush("/repo", { forceWithLease: true, tags: true })
-    expect(seen[1]).toEqual(["git_push_cmd", { repositoryRoot: "/repo", forceWithLease: true, tags: true }])
+    expect(seen[0]).toEqual(["git_push_cmd", { repositoryRoot: "/repo", forceWithLeaseOid: null, tags: false }])
+    // A force push always carries the remote commit it may overwrite.
+    await gitPush("/repo", { forceWithLeaseOid: "a".repeat(40), tags: true })
+    expect(seen[1]).toEqual(["git_push_cmd", { repositoryRoot: "/repo", forceWithLeaseOid: "a".repeat(40), tags: true }])
 })
 
 it("gitCherryPick forwards hash", async () => {

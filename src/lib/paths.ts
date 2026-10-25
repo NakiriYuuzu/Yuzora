@@ -10,6 +10,19 @@ export function isAbsolutePath(path: string | null | undefined): path is string 
 }
 
 /**
+ * The machine a UNC path names (`\\host\share`, `//host/share`, `\\?\UNC\host\share`),
+ * lowercased, or `.`/`?` for a device namespace. Null for local paths, including
+ * verbatim drive paths and WSL's own namespace. On Windows even a stat of such a path
+ * contacts that host over SMB or WebDAV, possibly with the user's NTLM credentials.
+ */
+export function uncHost(path: string): string | null {
+  const match = /^[\\/]{2}(?:\?[\\/]UNC[\\/])?([^\\/]*)/i.exec(path)
+  if (!match || /^[\\/]{2}\?[\\/][A-Za-z]:(?:[\\/]|$)/.test(path)) return null
+  const host = match[1].toLowerCase()
+  return host === "wsl.localhost" || host === "wsl$" ? null : host
+}
+
+/**
  * Derive user-facing text from a canonical workspace path without changing
  * the operational path kept in state or passed to IPC.
  */
@@ -26,9 +39,12 @@ export function workspacePathForDisplay(path: string): string {
 
 export function workspacePathBasename(path: string): string {
   const displayPath = workspacePathForDisplay(path)
-  const withoutTrailingSeparators = displayPath.replace(/[\\/]+$/, "")
+  // `\` is part of the file name on POSIX, so only `/` separates its segments.
+  // Classify the operational path: stripping `//?/UNC/` leaves a `//` prefix.
+  const posix = !isWindowsPath(path) && isPosixPath(displayPath)
+  const withoutTrailingSeparators = displayPath.replace(posix ? /\/+$/ : /[\\/]+$/, "")
   if (!withoutTrailingSeparators) return displayPath
-  return withoutTrailingSeparators.split(/[\\/]+/).filter(Boolean).at(-1)
+  return withoutTrailingSeparators.split(posix ? /\/+/ : /[\\/]+/).filter(Boolean).at(-1)
     ?? displayPath
 }
 
@@ -39,8 +55,15 @@ export function isWindowsPath(path: string): boolean {
     || path.startsWith("\\\\")
 }
 
+/** Absolute POSIX paths, where `\` is an ordinary file-name character. */
+function isPosixPath(path: string): boolean {
+  return path.startsWith("/") && !isWindowsPath(path)
+}
+
 function normalizedPath(path: string, windows: boolean): string {
-  let normalized = path.replace(/\\/g, "/")
+  // Every caller derives `windows` from isWindowsPath, so an absolute path that
+  // is not Windows keeps its backslashes: `/w/a\b.txt` is not `/w/a/b.txt`.
+  let normalized = windows || !path.startsWith("/") ? path.replace(/\\/g, "/") : path
   if (normalized.startsWith("//?/") && normalized.slice(4, 8).toLowerCase() === "unc/") {
     normalized = "//" + normalized.slice("//?/UNC/".length)
   } else if (/^\/\/\?\/[A-Za-z]:\//.test(normalized)) {
@@ -302,7 +325,9 @@ export function nativePathParent(path: string): string {
     return uncVerbatim[1]
   }
 
-  const lastSlash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"))
+  const lastSlash = isPosixPath(trimmed)
+    ? trimmed.lastIndexOf("/")
+    : Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"))
   if (lastSlash < 0) return trimmed
 
   // Keep drive root when trimming the final segment of C:\foo.

@@ -154,6 +154,9 @@
     "passwordDialogTitle": "SSH password",
     "passwordDialogDescription": "{{user}}@{{host}} — used only for this connection, never stored.",
     "passwordAriaLabel": "SSH password",
+    "passphraseDialogTitle": "SSH key passphrase",
+    "passphraseDialogDescription": "{{user}}@{{host}} — the private key is encrypted. The passphrase is used only for this connection, never stored.",
+    "passphraseAriaLabel": "SSH key passphrase",
     "connect": "Connect"
   },
   "database": {
@@ -531,9 +534,9 @@
     "markdownModeDocument": "Document preview",
     "markdownModeSource": "Source",
     "reconcileExternalChanges": "Reconcile external changes",
-    "reconcileExternalChangesSub": "Reload files changed on disk by other tools",
+    "reconcileExternalChangesSub": "Always on. Files changed on disk by other tools are reloaded; files with unsaved edits are flagged instead",
     "confirmDestructiveGitActions": "Confirm destructive git actions",
-    "confirmDestructiveGitActionsSub": "Require hold-to-confirm for discard & reset",
+    "confirmDestructiveGitActionsSub": "Always on. Discard and reset always ask for confirmation first",
     "trustedWorkspaces": "Trusted workspaces",
     "trustedWorkspacesSub": "These folders may run Git and preview commands. Revoke a folder to require consent again.",
     "noTrustedWorkspaces": "No trusted workspaces",

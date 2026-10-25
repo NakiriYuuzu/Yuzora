@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const getDocument = vi.fn()
+const bufferContent = vi.fn((_path: string): string | undefined => undefined)
 const getView = vi.fn()
 const saveFile = vi.fn(async (_path: string, _content: string) => 0)
 const recentlySavedMark = vi.fn()
@@ -8,6 +9,7 @@ const showActionError = vi.fn(async (_action: string, _error: unknown) => undefi
 
 vi.mock("./documentRegistry", () => ({
     getDocument: (path: string) => getDocument(path),
+    bufferContent: (path: string) => bufferContent(path),
     saveDocumentContent: (path: string, content: string) => saveFile(path, content)
 }))
 vi.mock("./viewRegistry", () => ({
@@ -52,6 +54,7 @@ beforeEach(() => {
         result: { kind: "full", content: "one\ntwo\n", size: 8, lineEnding: "lf" }
     })
     saveFile.mockResolvedValue(123)
+    bufferContent.mockReturnValue(undefined)
     seedTab("lf")
 })
 
@@ -157,6 +160,38 @@ describe("saveDirtyTab", () => {
         await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "notEditable" })
 
         expect(saveFile).not.toHaveBeenCalled()
+        expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
+    })
+
+    it("keeps the tab dirty when its text is edited while the write runs", async () => {
+        let text = "one\ntwo\n"
+        getView.mockReturnValue({ state: { doc: { toString: () => text } } })
+        saveFile.mockImplementation(async () => {
+            text = "one\ntwo\nthree\n"
+            return 123
+        })
+
+        await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "editedDuringSave" })
+
+        expect(saveFile).toHaveBeenCalledWith(PATH, "one\ntwo\n")
+        expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({
+            dirty: true,
+            externallyModified: false
+        })
+    })
+
+    it("keeps an unmounted tab dirty when its mirrored buffer changes during the write", async () => {
+        getView.mockReturnValue(undefined)
+        getDocument.mockResolvedValue({
+            result: { kind: "full", content: "disk\nmirror\n", size: 12, lineEnding: "lf" }
+        })
+        saveFile.mockImplementation(async () => {
+            bufferContent.mockReturnValue("disk\nmirror\nnewer\n")
+            return 123
+        })
+
+        await expect(saveDirtyTab(PATH)).resolves.toEqual({ kind: "editedDuringSave" })
+
         expect(useWorkspaceStore.getState().groups[0].tabs[0].dirty).toBe(true)
     })
 })

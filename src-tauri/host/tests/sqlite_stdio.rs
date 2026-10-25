@@ -161,6 +161,14 @@ impl Lane {
         response.result.map_err(Box::new)
     }
     fn query(&self, run: &str, sql: &str) -> QueryRunRequest {
+        self.query_with_boundary(run, sql, TransactionBoundary::None)
+    }
+    fn query_with_boundary(
+        &self,
+        run: &str,
+        sql: &str,
+        transaction_boundary: TransactionBoundary,
+    ) -> QueryRunRequest {
         QueryRunRequest {
             descriptor_id: self.identity.descriptor_id.clone(),
             connection_id: self.identity.connection_id.clone(),
@@ -169,7 +177,7 @@ impl Lane {
             mode: QueryRunMode::Primary,
             statements: NonEmptyVec::try_from(vec![QueryExecutionUnit {
                 sql: sql.into(),
-                transaction_boundary: TransactionBoundary::None,
+                transaction_boundary,
             }])
             .unwrap(),
         }
@@ -461,17 +469,25 @@ async fn local_sqlite_worker_preserves_connection_transactions_and_contains_fail
             .unwrap(),
         SqliteResult::Tables(_)
     ));
-    for (id, sql) in [
-        ("begin", "BEGIN"),
-        ("update", "UPDATE sample SET counter=7 WHERE id=1"),
-        ("commit", "COMMIT"),
+    // Separate runs on one connection: the open-transaction flag belongs to the
+    // connection, so the UPDATE run (no boundary of its own) still reports it.
+    for (id, sql, boundary, transaction_open) in [
+        ("begin", "BEGIN", TransactionBoundary::Begin, true),
+        (
+            "update",
+            "UPDATE sample SET counter=7 WHERE id=1",
+            TransactionBoundary::None,
+            true,
+        ),
+        ("commit", "COMMIT", TransactionBoundary::Commit, false),
     ] {
-        let request = first.query(id, sql);
+        let request = first.query_with_boundary(id, sql, boundary);
         let SqliteResult::Run(result) = first.call(SqliteCommand::QueryRun(request)).await.unwrap()
         else {
             panic!()
         };
         assert!(!result.connection_terminated);
+        assert_eq!(result.transaction_may_be_open, transaction_open, "{id}");
     }
     assert_eq!(
         rusqlite::Connection::open(&fixture.path)

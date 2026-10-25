@@ -8,6 +8,7 @@
 //! owned and can be stored directly. The compile proofs below use the real
 //! locked driver types for all three shapes.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::db_query_worker::NetworkCancelHandle;
@@ -543,6 +544,11 @@ pub struct ProductionConnectionActor {
     >,
     result_continuation: Mutex<Option<ActiveResultContinuation>>,
     settlement_changed: tokio::sync::Notify,
+    /// Connection-level "a user-opened transaction may still be open" state.
+    /// Every query run reports it, so a `BEGIN` stays visible to later runs
+    /// without a transaction boundary. It dies with the actor: a disconnect or
+    /// reconnect creates a new actor that starts at `false`.
+    transaction_may_be_open: AtomicBool,
 }
 
 impl ProductionConnectionActor {
@@ -567,6 +573,7 @@ impl ProductionConnectionActor {
             mssql_cancel: Mutex::new(None),
             result_continuation: Mutex::new(None),
             settlement_changed: tokio::sync::Notify::new(),
+            transaction_may_be_open: AtomicBool::new(false),
         }
     }
 
@@ -576,6 +583,14 @@ impl ProductionConnectionActor {
 
     pub fn handle(&self) -> &DbHandle {
         &self.handle
+    }
+
+    pub fn transaction_may_be_open(&self) -> bool {
+        self.transaction_may_be_open.load(Ordering::Acquire)
+    }
+
+    pub fn set_transaction_may_be_open(&self, open: bool) {
+        self.transaction_may_be_open.store(open, Ordering::Release);
     }
 
     pub fn acquire_metadata(&self) -> Result<MetadataLease, ActorError> {

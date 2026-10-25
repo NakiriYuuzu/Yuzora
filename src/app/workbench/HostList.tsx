@@ -373,6 +373,8 @@ export function PasswordPromptDialog({ host }: { host: SshHost }) {
   const connect = useSshStore((s) => s.connect)
   const cancelPendingAuth = useSshStore((s) => s.cancelPendingAuth)
   const [password, setPassword] = useState("")
+  // A key host only lands here once its key proved encrypted: ask for the passphrase.
+  const isKey = host.authKind === "key"
 
   function submit() {
     void connect(host.id, password)
@@ -395,13 +397,16 @@ export function PasswordPromptDialog({ host }: { host: SshHost }) {
         data-testid="ssh-password-dialog"
       >
         <DialogHeader>
-          <DialogTitle>{t("ssh.passwordDialogTitle")}</DialogTitle>
+          <DialogTitle>{t(isKey ? "ssh.passphraseDialogTitle" : "ssh.passwordDialogTitle")}</DialogTitle>
           <DialogDescription>
-            {t("ssh.passwordDialogDescription", { user: host.user, host: host.host })}
+            {t(isKey ? "ssh.passphraseDialogDescription" : "ssh.passwordDialogDescription", {
+              user: host.user,
+              host: host.host
+            })}
           </DialogDescription>
         </DialogHeader>
         <Input
-          aria-label={t("ssh.passwordAriaLabel")}
+          aria-label={t(isKey ? "ssh.passphraseAriaLabel" : "ssh.passwordAriaLabel")}
           type="password"
           autoFocus
           value={password}

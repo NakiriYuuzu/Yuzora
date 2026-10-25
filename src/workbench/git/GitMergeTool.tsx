@@ -381,12 +381,14 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
         // The result is built from the merge base, so it replaces any manual
         // work on the file: unsaved editor edits, or conflicts resolved by hand.
         const unsaved = dirtyTabPaths().includes(absolute)
-        const worktree = await gitConflictSides(root, path)
-            .then((sides) => readableText(sides.worktree))
-            .catch(() => texts.worktree)
+        const latest = await gitConflictSides(root, path).catch(() => null)
+        // The path may have become a symlink since the tool loaded it, and the
+        // write would then go through the link: refuse without asking anything.
+        const becameSymlink = latest?.symlink === true
+        const worktree = latest ? readableText(latest.worktree) : texts.worktree
         const conflicts = model.regions.filter((region) => region.kind === "conflict").length
         const edited = worktree !== texts.worktree || (worktree !== null && conflictMarkerCount(worktree) < conflicts)
-        if (unsaved || edited) {
+        if (!becameSymlink && (unsaved || edited)) {
             const replace = await requestAppConfirmation({
                 title: t("gitMerge.applyTitle"),
                 description: t(unsaved ? "gitMerge.replaceUnsaved" : "gitMerge.replaceManual"),
@@ -395,6 +397,10 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
             if (!replace) return
         }
         const ok = await runOp("conflict-merge", async () => {
+            if (becameSymlink) throw new Error(t("gitMerge.symlink"))
+            // The confirmation above can stay open while the path is swapped,
+            // so check again right before the write; an unreadable path fails closed.
+            if ((await gitConflictSides(root, path)).symlink) throw new Error(t("gitMerge.symlink"))
             await saveFile(absolute, content)
             await gitStage(root, [path])
         })
@@ -466,7 +472,7 @@ export function GitMergeTool() {
             const rebase = useGitStore.getState().status?.inProgress === "rebase"
             const texts = mergeTexts(rebase ? { ...sides, ours: sides.theirs, theirs: sides.ours } : sides)
             setState(typeof texts === "string"
-                ? { path, error: t(texts === "deleted" ? "gitMerge.deletedSide" : "gitMerge.binary") }
+                ? { path, error: t({ deleted: "gitMerge.deletedSide", binary: "gitMerge.binary", encoding: "gitMerge.lossyEncoding", symlink: "gitMerge.symlink" }[texts]) }
                 : { path, texts })
         }).catch((error: unknown) => {
             setState({ path, error: String(error) })

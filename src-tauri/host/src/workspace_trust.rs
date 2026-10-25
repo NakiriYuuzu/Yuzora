@@ -221,6 +221,10 @@ impl WorkspaceTrustState {
     pub fn bind_session_git_root(&self, identity: &WorkspaceIdentity, git_root: &str) {
         self.0.bind_session_git_root(identity, git_root);
     }
+
+    pub fn is_trusted(&self, path: &str) -> bool {
+        self.0.is_trusted(path)
+    }
 }
 
 pub fn default_store_path() -> PathBuf {
@@ -354,6 +358,13 @@ impl WorkspaceTrustStore {
                 })
             }
         }
+    }
+
+    /// Background check (file watcher): no challenge is issued, and any error
+    /// counts as untrusted.
+    pub fn is_trusted(&self, path: &str) -> bool {
+        observe_identity(path)
+            .is_ok_and(|observed| matches!(self.lookup(&observed), Ok(TrustLookup::Trusted)))
     }
 
     pub fn require_trusted_git(&self, path: &str) -> Result<WorkspaceIdentity, TrustError> {
@@ -913,6 +924,18 @@ mod tests {
         assert!(store.require_trusted(path).is_err());
         assert_eq!(store.grant(&displayed).unwrap().state, "trusted");
         assert!(store.grant(&refreshed).is_err(), "grants remain single-use");
+    }
+
+    #[test]
+    fn is_trusted_follows_grants_without_issuing_challenges() {
+        let (tmp, store) = temp_store();
+        let workspace = make_workspace(&tmp, "workspace");
+        let path = workspace.to_str().unwrap();
+        assert!(!store.is_trusted(path));
+        assert!(store.inner.lock().unwrap().challenges.is_empty());
+        store.grant_for_tests(path);
+        assert!(store.is_trusted(path));
+        assert!(!store.is_trusted(tmp.path().join("missing").to_str().unwrap()));
     }
 
     fn temp_store() -> (tempfile::TempDir, WorkspaceTrustStore) {
