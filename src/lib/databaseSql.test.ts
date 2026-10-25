@@ -269,6 +269,67 @@ describe("splitDatabaseSql MSSQL syntax", () => {
     })
 })
 
+describe("splitDatabaseSql transaction boundary classification", () => {
+    const boundaryOf = (source: string, dialect: DatabaseSqlDialect) =>
+        units(source, dialect).map((unit) => unit.transactionBoundary)
+
+    it.each([
+        ["postgres", "BEGIN;", "begin"],
+        ["postgres", "START TRANSACTION;", "begin"],
+        ["postgres", "COMMIT;", "commit"],
+        ["postgres", "COMMIT WORK AND NO CHAIN;", "commit"],
+        ["postgres", "END;", "commit"],
+        ["postgres", "END TRANSACTION;", "commit"],
+        ["postgres", "ROLLBACK;", "rollback"],
+        ["postgres", "ABORT;", "rollback"],
+        ["postgres", "ABORT WORK AND NO CHAIN;", "rollback"],
+        ["sqlite", "BEGIN IMMEDIATE;", "begin"],
+        ["sqlite", "COMMIT;", "commit"],
+        ["sqlite", "END;", "commit"],
+        ["sqlite", "END TRANSACTION;", "commit"],
+        ["sqlite", "ROLLBACK;", "rollback"],
+        ["mssql", "BEGIN TRAN;", "begin"],
+        ["mssql", "COMMIT TRANSACTION;", "commit"],
+        ["mssql", "ROLLBACK TRAN;", "rollback"]
+    ] as const)("%s %s ends or starts the transaction as %s", (dialect, source, expected) => {
+        expect(boundaryOf(source, dialect)).toEqual([expected])
+    })
+
+    it.each([
+        ["postgres", "ROLLBACK TO SAVEPOINT sp;"],
+        ["postgres", "ROLLBACK TO sp;"],
+        ["postgres", "ROLLBACK WORK TO SAVEPOINT sp;"],
+        ["postgres", "COMMIT AND CHAIN;"],
+        ["postgres", "COMMIT WORK AND CHAIN;"],
+        ["postgres", "ROLLBACK AND CHAIN;"],
+        ["postgres", "END AND CHAIN;"],
+        ["postgres", "ABORT AND CHAIN;"],
+        ["sqlite", "ROLLBACK TO sp;"],
+        ["sqlite", "ROLLBACK TRANSACTION TO SAVEPOINT sp;"]
+    ] as const)("%s %s leaves the transaction open", (dialect, source) => {
+        expect(boundaryOf(source, dialect)).toEqual(["none"])
+    })
+
+    it("does not treat a T-SQL block END as a transaction boundary", () => {
+        expect(boundaryOf("BEGIN\n  SELECT 1;\nEND;", "mssql")).toEqual(["none"])
+    })
+
+    it("keeps BEGIN; ...; END; balanced for PostgreSQL and SQLite scripts", () => {
+        for (const dialect of ["postgres", "sqlite"] as const) {
+            expect(boundaryOf("BEGIN;\nSELECT 1;\nEND;", dialect)).toEqual([
+                "begin",
+                "none",
+                "commit"
+            ])
+        }
+        expect(boundaryOf("BEGIN;\nSELECT 1;\nABORT;", "postgres")).toEqual([
+            "begin",
+            "none",
+            "rollback"
+        ])
+    })
+})
+
 describe("splitDatabaseSql fail-closed errors", () => {
     it.each([
         ["sqlite", "SELECT 'unterminated", "unterminated-string"],
@@ -427,6 +488,90 @@ describe("resolveDatabaseSqlTarget", () => {
                 from: quote,
                 to: quote + 1
             }
+        })
+    })
+
+    describe("a trailing comment on the same line as the previous terminator", () => {
+        const commentSources = [
+            ["line comment", "UPDATE t SET a = 1 WHERE id = 1; -- fix\nDELETE FROM t WHERE id = 2;", "-- fix"],
+            ["block comment", "UPDATE t SET a = 1 WHERE id = 1; /* fix */\nDELETE FROM t WHERE id = 2;", "/* fix */"],
+            ["block comment before the next statement", "UPDATE t SET a = 1 WHERE id = 1; /* fix */ DELETE FROM t WHERE id = 2;", "/* fix */"]
+        ] as const
+        const dialects = ["sqlite", "postgres", "mssql"] as const
+
+        const resolveAt = (source: string, dialect: DatabaseSqlDialect, cursor: number) =>
+            resolveDatabaseSqlTarget(source, dialect, {
+                kind: "primary",
+                selection: { from: cursor, to: cursor },
+                cursor
+            })
+
+        for (const dialect of dialects) {
+            for (const [label, source, comment] of commentSources) {
+                it(`never resolves the cursor inside a ${label} to the next statement (${dialect})`, () => {
+                    const first = "UPDATE t SET a = 1 WHERE id = 1;"
+                    const commentStart = source.indexOf(comment)
+                    const commentEnd = commentStart + comment.length
+                    const secondStart = source.indexOf("DELETE")
+
+                    for (let cursor = commentStart; cursor <= commentEnd; cursor += 1) {
+                        const result = resolveAt(source, dialect, cursor)
+                        expect(result.ok, `cursor ${cursor}`).toBe(false)
+                        if (result.ok) throw new Error("expected a fail-closed result")
+                        expect(result.error.code).toBe("noCurrentStatement")
+                    }
+                    const atTerminator = resolveAt(source, dialect, first.length)
+                    expect(atTerminator.ok).toBe(true)
+                    if (!atTerminator.ok) throw new Error(atTerminator.error.code)
+                    expect(atTerminator.units.map((unit) => unit.sql)).toEqual([first])
+                    const inSecond = resolveAt(source, dialect, secondStart + 2)
+                    expect(inSecond.ok).toBe(true)
+                    if (!inSecond.ok) throw new Error(inSecond.error.code)
+                    expect(inSecond.units.map((unit) => unit.sql)).toEqual([
+                        "DELETE FROM t WHERE id = 2;"
+                    ])
+                })
+            }
+        }
+
+        it("still gives a comment on its own line to the statement that follows it", () => {
+            const source = "UPDATE t SET a = 1 WHERE id = 1;\n-- next\nDELETE FROM t WHERE id = 2;"
+            const result = resolveAt(source, "sqlite", source.indexOf("-- next") + 3)
+            expect(result.ok).toBe(true)
+            if (!result.ok) throw new Error(result.error.code)
+            expect(result.units.map((unit) => unit.sql)).toEqual([
+                "-- next\nDELETE FROM t WHERE id = 2;"
+            ])
+        })
+
+        it("keeps a multi-line block comment that opens after the terminator out of the next unit", () => {
+            const source = "SELECT 1; /* one\ntwo */\nSELECT 2;"
+            expect(units(source, "postgres").map((unit) => unit.sql)).toEqual([
+                "SELECT 1;",
+                "SELECT 2;"
+            ])
+        })
+
+        for (const dialect of dialects) {
+            it(`keeps a line comment after a multi-line trailing block comment out of the next unit (${dialect})`, () => {
+                const source = "SELECT 1; /* a\nb */ -- x\nSELECT 2;"
+                expect(units(source, dialect).map((unit) => unit.sql)).toEqual([
+                    "SELECT 1;",
+                    "SELECT 2;"
+                ])
+                const result = resolveAt(source, dialect, source.indexOf("-- x") + 2)
+                expect(result.ok).toBe(false)
+                if (result.ok) throw new Error("expected a fail-closed result")
+                expect(result.error.code).toBe("noCurrentStatement")
+            })
+        }
+
+        it("keeps a block comment after a multi-line trailing block comment out of the next unit", () => {
+            const source = "SELECT 1; /* a\nb */ /* c */\nSELECT 2;"
+            expect(units(source, "postgres").map((unit) => unit.sql)).toEqual([
+                "SELECT 1;",
+                "SELECT 2;"
+            ])
         })
     })
 

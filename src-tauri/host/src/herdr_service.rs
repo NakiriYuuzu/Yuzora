@@ -275,6 +275,21 @@ pub struct HerdrNamedSession {
     pub running: bool,
     pub session_dir: String,
     pub socket_path: String,
+    /// HERDR 0.9.4+ lists a Session whose socket refused this client (for
+    /// example an elevated Windows server) as not running with this reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_error: Option<String>,
+}
+
+/// Why a listed Session cannot be used; an unreachable one may still be running.
+fn session_not_running_message(session: &HerdrNamedSession) -> String {
+    match &session.connection_error {
+        Some(error) => format!("herdr session '{}' is unreachable: {error}", session.name),
+        None => format!(
+            "herdr session '{}' is not running; start it with `herdr session attach {}`",
+            session.name, session.name
+        ),
+    }
 }
 
 /// Result of public `workspace.create`.
@@ -1849,10 +1864,7 @@ impl HerdrManager {
             let control_ok = socket_ready;
             let create_ok = socket_ready && has_tab_create_method;
             let terminal_reason = if session_stopped {
-                let name = named.as_ref().map(|s| s.name.as_str()).unwrap_or("session");
-                Some(format!(
-                    "herdr session '{name}' is not running; start it with `herdr session attach {name}`"
-                ))
+                named.as_ref().map(session_not_running_message)
             } else if incompatible {
                 Some("herdr server protocol incompatible".into())
             } else if !socket_present {
@@ -1876,11 +1888,8 @@ impl HerdrManager {
         }
 
         if session_stopped {
-            let name = named.as_ref().map(|s| s.name.as_str()).unwrap_or("session");
             clear_api_method_flags(&mut caps.api);
-            caps.api.reason = Some(format!(
-                "herdr session '{name}' is not running; start it with `herdr session attach {name}`"
-            ));
+            caps.api.reason = named.as_ref().map(session_not_running_message);
         } else if incompatible {
             clear_api_method_flags(&mut caps.api);
             caps.api.reason = Some("herdr server protocol incompatible".into());
@@ -2038,10 +2047,7 @@ impl HerdrManager {
     ) -> Result<(HerdrNamedSession, String), String> {
         let session = self.resolve_named_session(session_name)?;
         if !session.running {
-            return Err(format!(
-                "herdr session '{}' is not running; start it with `herdr session attach {}`",
-                session.name, session.name
-            ));
+            return Err(session_not_running_message(&session));
         }
         let socket_from_list = session.socket_path.trim().to_string();
         if socket_from_list.is_empty() {
@@ -2810,10 +2816,7 @@ impl HerdrManager {
         // Refuse connectors against stopped sessions; never secretly attach/start.
         let named = self.resolve_named_session(session_name.as_deref())?;
         if !named.running {
-            return Err(format!(
-                "herdr session '{}' is not running; start it with `herdr session attach {}`",
-                named.name, named.name
-            ));
+            return Err(session_not_running_message(&named));
         }
 
         let binary = self
@@ -4750,12 +4753,20 @@ pub fn parse_session_list_json(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        // A reachable Session has no connection error, whatever the listing says.
+        let connection_error = item
+            .get("connection_error")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !running && !s.is_empty())
+            .map(str::to_string);
         out.push(HerdrNamedSession {
             name,
             default,
             running,
             session_dir,
             socket_path,
+            connection_error,
         });
     }
     Ok(out)

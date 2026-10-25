@@ -2064,6 +2064,28 @@ async fn run_mssql() {
         .await
         .expect("release MSSQL reuse result");
 
+    scenario(Engine::Mssql, "multiple-result-sets-fail-closed");
+    // Two result sets with different columns cannot be one coherent result. The helper
+    // must drain the stream to EOF and report resultShape instead of mixing rows
+    // under the first result set's columns.
+    let multi = connection
+        .run_primary("mssql-multi-result", "SELECT 1 AS a; SELECT 2 AS b, 3 AS c")
+        .await
+        .expect("return a structured MSSQL result shape error");
+    let multi_error = first_statement_error(&multi);
+    assert_eq!(multi_error.engine, DatabaseErrorEngine::Mssql);
+    assert_eq!(multi_error.code.as_deref(), Some("resultShape"));
+    let after_multi = connection
+        .run_primary("mssql-multi-result-after", "SELECT CAST(8 AS INT)")
+        .await
+        .expect("reuse MSSQL connection after a result shape error");
+    let after_multi_session = first_result_session(&after_multi);
+    assert_integer_id(&after_multi_session.initial_page.rows[0][0], 8);
+    connection
+        .release_result(after_multi_session.owner)
+        .await
+        .expect("release MSSQL result after the shape error");
+
     scenario(Engine::Mssql, "procedure-done-counts-trigger-effect-once");
     let before = connection
         .run_primary(
@@ -2294,6 +2316,82 @@ async fn run_mssql() {
         .release_result(transaction_session.owner)
         .await
         .expect("release MSSQL transaction result");
+
+    scenario(Engine::Mssql, "single-batch-transaction-flag-clears");
+    // Without semicolons the splitter sees one unit that starts with BEGIN, although the
+    // batch commits itself. The flag may claim an open transaction, but a COMMIT that
+    // MSSQL rejects with 3902 must clear it again.
+    let single_batch = connection
+        .run_script(
+            "mssql-single-batch-transaction",
+            vec![QueryExecutionUnit {
+                sql: "BEGIN TRAN\nUPDATE alpha.transaction_probe SET value = value WHERE id = 1\nCOMMIT"
+                    .to_string(),
+                transaction_boundary: TransactionBoundary::Begin,
+            }],
+        )
+        .await
+        .expect("run MSSQL single-batch transaction");
+    assert!(single_batch.transaction_may_be_open);
+    let stray_commit = connection
+        .run_script(
+            "mssql-single-batch-commit",
+            vec![QueryExecutionUnit {
+                sql: "COMMIT".to_string(),
+                transaction_boundary: TransactionBoundary::Commit,
+            }],
+        )
+        .await
+        .expect("run MSSQL COMMIT without a transaction");
+    assert_eq!(
+        first_statement_error(&stray_commit).code.as_deref(),
+        Some("3902")
+    );
+    assert!(!stray_commit.transaction_may_be_open);
+
+    scenario(Engine::Mssql, "nested-and-savepoint-transactions-stay-open");
+    // COMMIT only closes the outermost of nested BEGIN TRANs and ROLLBACK TRAN to a
+    // savepoint closes nothing, so the server is asked what is still open.
+    let unit = |sql: &str, transaction_boundary: TransactionBoundary| QueryExecutionUnit {
+        sql: sql.to_string(),
+        transaction_boundary,
+    };
+    let nested = connection
+        .run_script(
+            "mssql-nested-commit",
+            vec![
+                unit("BEGIN TRAN", TransactionBoundary::Begin),
+                unit("BEGIN TRAN", TransactionBoundary::Begin),
+                unit("COMMIT", TransactionBoundary::Commit),
+            ],
+        )
+        .await
+        .expect("run nested MSSQL transactions");
+    assert!(nested.transaction_may_be_open);
+    let savepoint = connection
+        .run_script(
+            "mssql-savepoint-rollback",
+            vec![
+                unit("SAVE TRAN yuzora_probe", TransactionBoundary::None),
+                unit("ROLLBACK TRAN yuzora_probe", TransactionBoundary::Rollback),
+            ],
+        )
+        .await
+        .expect("roll back to an MSSQL savepoint");
+    assert!(savepoint.transaction_may_be_open);
+    // A primary-mode COMMIT is settled the same way.
+    let outer = connection
+        .run_primary_unit(
+            "mssql-outer-commit",
+            unit("COMMIT", TransactionBoundary::Commit),
+        )
+        .await
+        .expect("commit the outer MSSQL transaction");
+    assert!(matches!(
+        outer.statements[0].result,
+        StatementExecutionResult::Execute { .. }
+    ));
+    assert!(!outer.transaction_may_be_open);
 
     scenario(Engine::Mssql, "q6-select-1201-then-update");
     assert_select_1201_then_update(

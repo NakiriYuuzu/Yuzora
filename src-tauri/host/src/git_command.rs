@@ -56,7 +56,7 @@ pub enum GitCommand {
     Pull { mode: Option<String> },
     #[serde(rename = "git_push_cmd")]
     Push {
-        force_with_lease: Option<bool>,
+        force_with_lease_oid: Option<String>,
         tags: Option<bool>,
     },
     #[serde(rename = "git_merge_branch")]
@@ -330,12 +330,12 @@ mod host {
                         }))
                     }
                     GitCommand::Push {
-                        force_with_lease,
+                        force_with_lease_oid,
                         tags,
                     } => value(
                         push_args_with_options(
                             root,
-                            force_with_lease.unwrap_or(false),
+                            force_with_lease_oid.as_deref(),
                             tags.unwrap_or(false),
                         )
                         .and_then(|args| {

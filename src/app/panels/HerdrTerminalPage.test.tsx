@@ -227,6 +227,7 @@ import { terminalDropTargetAt } from "@/terminal/terminalDropTargets"
 import { useContextMenuStore } from "@/state/contextMenuStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { stubElementFromPoint, pointerDrag } from "@/test/pointerDrag"
+import { remoteFilePath } from "@/lib/runtimeIdentity"
 
 const terminalControlCapabilities = {
   binaryPath: "/bin/herdr",
@@ -279,7 +280,7 @@ const terminalControlCapabilities = {
 } satisfies HerdrCapabilities
 
 function seedSessions(
-  sessions: Array<{ name: string; default: boolean; running: boolean }>
+  sessions: Array<{ name: string; default: boolean; running: boolean; connectionError?: string }>
 ) {
   useHerdrStore.setState({
     ...herdrInitialState,
@@ -1584,6 +1585,17 @@ describe("HerdrTerminalPage stopped session gate", () => {
     )
   })
 
+  it("shows HERDR's reason instead of start guidance for an unreachable page session", async () => {
+    const reason = "For an elevated server, use an administrator terminal. Access is denied. (os error 5)"
+    seedSessions([{ name: "work", default: false, running: false, connectionError: reason }])
+    render(<HerdrTerminalPage herdrSessionId="work" terminalId="term-1" active visible />)
+    const stopped = await screen.findByTestId("herdr-terminal-stopped")
+    expect(stopped).toHaveTextContent(reason)
+    expect(stopped).toHaveAttribute("title", expect.stringContaining(reason))
+    expect(stopped).not.toHaveTextContent("herdr session attach")
+    expect(herdrIpcMock.herdrTerminalOpen).not.toHaveBeenCalled()
+  })
+
   it("keeps the connected terminal and last frame visible during a running→inventory-unknown transition", async () => {
     seedSessions([{ name: "work", default: false, running: true }])
     render(
@@ -1967,6 +1979,57 @@ describe("HerdrTerminalPage target opening", () => {
     })
     expect(documentMock.getDocument).not.toHaveBeenCalledWith("/selected/wrong/src/app.ts")
     expect(useWorkspaceStore.getState().groups[0]?.activePath).toBe("/pane/exact/src/app.ts")
+  })
+
+  it("opens file links from a remote Session as that host's file identity, never a local path", async () => {
+    const hostId = "wsl-ubuntu"
+    const scope = JSON.stringify([hostId, "default"])
+    seedSessions([{ name: "default", default: true, running: true }])
+    const local = useHerdrStore.getState().sessions[0]
+    useHerdrStore.setState({
+      selectedSessionName: scope,
+      sessions: [local, { ...local, hostId, runtimeId: scope, running: true }],
+      runtimesBySession: {
+        [scope]: {
+          capabilities: terminalControlCapabilities,
+          snapshot: {
+            herdrSessionId: scope,
+            protocol: 22,
+            version: "0.9.0",
+            spaces: [{ id: "space-a", label: "A", order: 0, focused: true, path: remoteFilePath(hostId, "/home/me/repo") }],
+            agents: [],
+            tabs: [],
+            terminals: [{ terminalId: "term-1", paneId: "pane-1", workspaceId: "space-a", cwd: "/home/me/repo/pkg" }],
+            raw: {}
+          },
+          worktreeInventory: null,
+          connectionState: "ready",
+          errorMessage: null
+        }
+      }
+    })
+    render(<HerdrTerminalPage herdrSessionId={scope} terminalId="term-1" paneId="pane-1" active visible />)
+    await waitFor(() => expect(xtermMock.state.terminals.length).toBe(1))
+    const term = xtermMock.state.terminals[0]
+    term.bufferLines = [{ text: "src/app.ts" }, { text: "/home/me/repo/src/main.ts:12" }]
+    const modifier = isMacPlatform() ? { metaKey: true } : { ctrlKey: true }
+    const gesture = { button: 0, altKey: false, ctrlKey: false, metaKey: false, ...modifier } as MouseEvent
+    const expected = [
+      remoteFilePath(hostId, "/home/me/repo/pkg/src/app.ts", "/home/me/repo"),
+      remoteFilePath(hostId, "/home/me/repo/src/main.ts", "/home/me/repo")
+    ]
+    for (const [index, line] of [1, 2].entries()) {
+      let links: Array<{ activate: (event: MouseEvent, text: string) => void }> | undefined
+      term.linkProvider?.provideLinks(line, (next) => {
+        links = next as typeof links
+      })
+      await waitFor(() => expect(links).toHaveLength(1))
+      links?.[0]?.activate(gesture, "")
+      await waitFor(() => expect(documentMock.getDocument).toHaveBeenCalledWith(expected[index]))
+    }
+    expect(documentMock.getDocument).toHaveBeenCalledTimes(2)
+    expect(documentMock.getDocument).not.toHaveBeenCalledWith("/home/me/repo/pkg/src/app.ts")
+    expect(documentMock.getDocument).not.toHaveBeenCalledWith("/home/me/repo/src/main.ts")
   })
 
   it("keeps the pane menu on right click even when a target is hovered", async () => {

@@ -352,3 +352,58 @@ describe("EditorArea markdown preview tabs", () => {
     expect(terminal).toHaveAttribute("data-active", "true")
     expect(layer).not.toHaveAttribute("inert")
  })
+
+describe("EditorArea close split", () => {
+    function fileTab(path: string, dirty: boolean) {
+        return { path, name: path, dirty, externallyModified: false }
+    }
+
+    it("asks before dropping unsaved edits that only the right group owns", async () => {
+        const { useConfirmDialogStore } = await import("@/state/confirmDialogStore")
+        useConfirmDialogStore.setState({ pending: null })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 1,
+            groups: [
+                { activePath: "/w/a.ts", tabs: [fileTab("/w/a.ts", false)] },
+                { activePath: "/w/b.ts", tabs: [fileTab("/w/b.ts", true)] }
+            ]
+        })
+        render(<EditorArea />)
+
+        await act(async () => {
+            screen.getAllByRole("button", { name: "Close split" })[0].click()
+        })
+        expect(useConfirmDialogStore.getState().pending).not.toBeNull()
+        expect(useWorkspaceStore.getState().groups).toHaveLength(2)
+
+        await act(async () => useConfirmDialogStore.getState().respond("cancel"))
+        expect(useWorkspaceStore.getState().groups).toHaveLength(2)
+
+        await act(async () => {
+            screen.getAllByRole("button", { name: "Close split" })[0].click()
+        })
+        await act(async () => useConfirmDialogStore.getState().respond("discard"))
+        expect(useWorkspaceStore.getState().groups).toHaveLength(1)
+    })
+
+    it("closes without asking when the left group still owns the dirty file", async () => {
+        const { useConfirmDialogStore } = await import("@/state/confirmDialogStore")
+        useConfirmDialogStore.setState({ pending: null })
+        useWorkspaceStore.setState({
+            workspacePath: "/w",
+            activeGroupIndex: 1,
+            groups: [
+                { activePath: "/w/b.ts", tabs: [fileTab("/w/b.ts", true)] },
+                { activePath: "/w/b.ts", tabs: [fileTab("/w/b.ts", true)] }
+            ]
+        })
+        render(<EditorArea />)
+
+        await act(async () => {
+            screen.getAllByRole("button", { name: "Close split" })[0].click()
+        })
+        expect(useConfirmDialogStore.getState().pending).toBeNull()
+        expect(useWorkspaceStore.getState().groups).toHaveLength(1)
+    })
+})

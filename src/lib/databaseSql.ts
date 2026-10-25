@@ -260,8 +260,20 @@ function transactionBoundaryFor(
     dialect: DatabaseSqlDialect,
     words: string[]
 ): DatabaseSqlTransactionBoundary {
-    if (words[0] === "COMMIT") return "commit"
-    if (words[0] === "ROLLBACK") return "rollback"
+    // PostgreSQL spells COMMIT/ROLLBACK as END/ABORT as well; SQLite only has END.
+    // In T-SQL END closes a BEGIN block and is never a transaction boundary.
+    const commit = words[0] === "COMMIT" || (dialect !== "mssql" && words[0] === "END")
+    const rollback = words[0] === "ROLLBACK" || (dialect === "postgres" && words[0] === "ABORT")
+    if (commit || rollback) {
+        if (dialect !== "mssql") {
+            // ROLLBACK [WORK | TRANSACTION] TO [SAVEPOINT] name keeps the transaction open.
+            if (words[0] === "ROLLBACK" && (words[1] === "TO" || words[2] === "TO")) return "none"
+            // ... AND CHAIN ends the transaction and immediately opens the next one.
+            const and = words.indexOf("AND", 1)
+            if (and > 0 && words[and + 1] === "CHAIN") return "none"
+        }
+        return commit ? "commit" : "rollback"
+    }
     if (words[0] === "START" && words[1] === "TRANSACTION") return "begin"
     if (words[0] !== "BEGIN") return "none"
     if (dialect !== "mssql") return "begin"
@@ -292,6 +304,9 @@ export function splitDatabaseSql(
     let sqliteTriggerClosed = false
     let blocks: BlockFrame[] = []
     let parentheses: number[] = []
+    // True from a statement terminator until the end of its line: a comment there
+    // trails the finished statement and must not become the start of the next unit.
+    let trailingAfterTerminator = false
 
     const mark = (position: number, sql: boolean) => {
         if (firstSource === null) firstSource = position
@@ -380,13 +395,14 @@ export function splitDatabaseSql(
         if (isWhitespace(char)) {
             if (char === "\n" || (char === "\r" && source[index + 1] !== "\n")) {
                 lineStart = index + 1
+                trailingAfterTerminator = false
             }
             index += 1
             continue
         }
 
         if (source.startsWith("--", index)) {
-            mark(index, false)
+            if (!trailingAfterTerminator) mark(index, false)
             const newline = source.indexOf("\n", index + 2)
             index = newline < 0 ? source.length : newline
             continue
@@ -394,7 +410,7 @@ export function splitDatabaseSql(
 
         if (source.startsWith("/*", index)) {
             const start = index
-            mark(start, false)
+            if (!trailingAfterTerminator) mark(start, false)
             let depth = 1
             index += 2
             while (index < source.length && depth > 0) {
@@ -410,6 +426,8 @@ export function splitDatabaseSql(
                 }
             }
             if (depth > 0) return fail("unterminated-comment", "Block comment is not closed", start)
+            // A comment that opened on the terminator's line keeps the rest of the line it
+            // closes on trailing; only the next newline (whitespace branch) ends that state.
             continue
         }
 
@@ -612,10 +630,13 @@ export function splitDatabaseSql(
                     parentheses[parentheses.length - 1]
                 )
             }
-            if (dialect === "sqlite" && sqliteTrigger) {
-                if (sqliteTriggerClosed) emit(index + 1)
-            } else if (dialect !== "mssql" || (!mssqlRoutine && blocks.length === 0)) {
+            const terminates =
+                dialect === "sqlite" && sqliteTrigger
+                    ? sqliteTriggerClosed
+                    : dialect !== "mssql" || (!mssqlRoutine && blocks.length === 0)
+            if (terminates) {
                 emit(index + 1)
+                trailingAfterTerminator = true
             }
             index += 1
             continue

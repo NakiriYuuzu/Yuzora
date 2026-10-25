@@ -15,7 +15,6 @@
 /// 在單執行緒階段修改行程環境才安全。
 #[cfg(unix)]
 pub fn fix_gui_path() {
-    use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -96,14 +95,19 @@ pub fn fix_gui_path() {
     // （皆 ASCII），只把個別壞位元組換成替代字元，不影響純 ASCII 的 API key。
     let mut raw = Vec::new();
     if let Some(mut pipe) = child.stdout.take() {
-        if let Err(e) = pipe.read_to_end(&mut raw) {
-            eprintln!("[env_path] 讀取 shell stdout 失敗，保留原 PATH: {e}");
-            log_path_fix(
-                "warn",
-                &format!("reading shell stdout failed, PATH unchanged: {e}"),
-                None,
-            );
-            return;
+        // 讀取同樣受 deadline 約束：shell 已結束，但 rc 檔啟動的背景程序可能
+        // 繼承 stdout、讓 EOF 永遠不來。
+        match read_probe_output(&mut pipe, deadline) {
+            Ok(output) => raw = output,
+            Err(e) => {
+                eprintln!("[env_path] 讀取 shell stdout 失敗，保留原 PATH: {e}");
+                log_path_fix(
+                    "warn",
+                    &format!("reading shell stdout failed, PATH unchanged: {e}"),
+                    None,
+                );
+                return;
+            }
         }
     }
     let stdout = String::from_utf8_lossy(&raw);
@@ -167,6 +171,55 @@ pub fn fix_gui_path() {
             ),
             metadata: serde_json::json!({ "count": imported.len(), "keys": imported }),
         });
+    }
+}
+
+/// 讀 probe 輸出直到結尾 marker、EOF 或 `deadline`。只靠 EOF 不夠：背景程序
+/// 持有 pipe 時 EOF 不會來，而結尾 marker 是 probe 印出的最後一段。
+#[cfg(unix)]
+fn read_probe_output(
+    pipe: &mut (impl std::io::Read + std::os::fd::AsRawFd),
+    deadline: std::time::Instant,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind};
+    let fd = pipe.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    let end = ENV_END.as_bytes();
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) => return Ok(raw),
+            Ok(n) => {
+                raw.extend_from_slice(&buf[..n]);
+                let tail = &raw[raw.len().saturating_sub(n + end.len())..];
+                if tail.windows(end.len()).any(|window| window == end) {
+                    return Ok(raw);
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(Error::new(
+                        ErrorKind::TimedOut,
+                        "shell output did not finish",
+                    ));
+                }
+                let mut poll_fd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
+                // Wakes on data, EOF or error; the next read reports which.
+                unsafe { libc::poll(&mut poll_fd, 1, millis) };
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -406,6 +459,53 @@ mod tests {
         ] {
             assert!(should_import_env(k), "{k} 應可匯入");
         }
+    }
+
+    #[cfg(unix)]
+    fn spawn_probe(script: &str) -> std::process::Child {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_output_stops_at_end_marker_while_a_background_job_holds_the_pipe() {
+        // The shell exits at once; `sleep` inherits stdout and keeps it open.
+        let mut child = spawn_probe("sleep 5 & printf 'noise__YZ_ENV_S__A=1__YZ_ENV_E__'");
+        let mut pipe = child.stdout.take().unwrap();
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_secs(3);
+        let raw = read_probe_output(&mut pipe, deadline).unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(String::from_utf8_lossy(&raw).ends_with("__YZ_ENV_E__"));
+        child.wait().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_output_times_out_when_the_marker_never_arrives() {
+        let mut child = spawn_probe("sleep 5 & printf 'partial'");
+        let mut pipe = child.stdout.take().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        let error = read_probe_output(&mut pipe, deadline).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        child.wait().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_output_returns_everything_at_eof() {
+        let mut child = spawn_probe("printf 'no marker at all'");
+        let mut pipe = child.stdout.take().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        assert_eq!(
+            read_probe_output(&mut pipe, deadline).unwrap(),
+            b"no marker at all"
+        );
+        child.wait().unwrap();
     }
 
     #[cfg(target_os = "macos")]

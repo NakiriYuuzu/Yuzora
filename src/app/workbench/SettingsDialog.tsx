@@ -201,8 +201,6 @@ export function SettingsDialog({
   const setMoveOpenedWorkspaceToTop = useRecentWorkspacesStore(
     (s) => s.setMoveOpenedWorkspaceToTop
   )
-  const [reconcile, setReconcile] = useState(true)
-  const [confirmGit, setConfirmGit] = useState(true)
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [installBlockedByDirty, setInstallBlockedByDirty] = useState(false)
   const [installConfirmationOpen, setInstallConfirmationOpen] = useState(false)
@@ -448,10 +446,6 @@ export function SettingsDialog({
 
             {section === "safety" && (
               <SafetySettingsSection
-                reconcile={reconcile}
-                onReconcileChange={setReconcile}
-                confirmGit={confirmGit}
-                onConfirmGitChange={setConfirmGit}
                 open={open}
                 trustedWorkspaces={trustedWorkspaces}
                 onRefreshTrustList={refreshTrustList}
@@ -609,19 +603,11 @@ export function SettingsDialog({
 }
 
 function SafetySettingsSection({
-  reconcile,
-  onReconcileChange,
-  confirmGit,
-  onConfirmGitChange,
   open,
   trustedWorkspaces,
   onRefreshTrustList,
   onRevokeWorkspace,
 }: {
-  reconcile: boolean
-  onReconcileChange: (value: boolean) => void
-  confirmGit: boolean
-  onConfirmGitChange: (value: boolean) => void
   open: boolean
   trustedWorkspaces: TrustedWorkspace[]
   onRefreshTrustList: () => Promise<TrustedWorkspace[]>
@@ -639,18 +625,21 @@ function SafetySettingsSection({
   return (
     <FieldGroup className="settings-fields">
       <SettingsRowGroup>
+      {/* Fixed policies: neither behavior is configurable, so these stay on and cannot be toggled. */}
       <ToggleRow
         label={tw("settings.reconcileExternalChanges")}
         sub={tw("settings.reconcileExternalChangesSub")}
-        checked={reconcile}
-        onCheckedChange={onReconcileChange}
+        disabled
+        checked
+        onCheckedChange={() => {}}
       />
       <ToggleRow
         label={tw("settings.confirmDestructiveGitActions")}
         sub={tw("settings.confirmDestructiveGitActionsSub")}
         locked
-        checked={confirmGit}
-        onCheckedChange={onConfirmGitChange}
+        disabled
+        checked
+        onCheckedChange={() => {}}
       />
       </SettingsRowGroup>
       <SettingCard

@@ -77,7 +77,8 @@ export type GitEnvironment =
       }
     | { status: "notARepo" }
     | { status: "ready"; root: string; version: string }
-export interface BranchInfo { name: string; upstream: string | null; ahead: number; behind: number; isCurrent: boolean; gone: boolean }
+/** `pushOid`: the commit the remote-tracking ref this branch pushes to (not necessarily `upstream`: triangular workflows, `push.default`) points at when the list was read; unknown (null/absent) when there is none. */
+export interface BranchInfo { name: string; upstream: string | null; pushOid?: string | null; ahead: number; behind: number; isCurrent: boolean; gone: boolean }
 export interface TagInfo { name: string; date: string }
 export interface BranchList { local: BranchInfo[]; remote: string[]; tags: TagInfo[] }
 // #57 T3：冷開 workspace 的 git 首載單趟快照——environment 非 ready 時
@@ -137,6 +138,10 @@ export interface GitConflictSides {
     ours: GradedText | null
     theirs: GradedText | null
     worktree: GradedText | null
+    /** A text side cannot be written back byte-for-byte as UTF-8 (non-UTF-8 bytes or UTF-16): never rewrite it from decoded text. */
+    lossyEncoding: boolean
+    /** A stage or the working-tree entry is a symbolic link: never write merged text through it. */
+    symlink: boolean
 }
 /** Outcome of an operation that can stop on merge conflicts (the repository is then mid-operation). */
 export interface GitOperationOutcome { conflicts: boolean }
@@ -674,6 +679,7 @@ export interface DbStatementExecution {
 type DbNonEmptyArray<T> = readonly [T, ...T[]]
 export interface DbQueryRun extends DbQueryRunOwner {
     statements: DbNonEmptyArray<DbStatementExecution>
+    /** Connection-level: a transaction may still be open after this run, even if an earlier run opened it. */
     transactionMayBeOpen: boolean
     connectionTerminated: boolean
 }

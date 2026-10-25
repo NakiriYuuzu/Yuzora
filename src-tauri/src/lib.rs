@@ -353,6 +353,7 @@ pub fn run() {
         .invoke_handler(main_webview_commands(tauri::generate_handler![
             window_activation::workbench_is_window_active,
             reveal_directory::open_workspace_directory,
+            reveal_directory::open_workspace_file,
             update_channel::check_preview_update,
             update_channel::check_release_update,
             update_herdr::update_herdr_processes,

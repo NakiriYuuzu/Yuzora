@@ -3711,6 +3711,106 @@ describe("database workbench writes", () => {
     })
 })
 
+describe("connection-level open-transaction state", () => {
+    const reportOpenTransaction = (
+        overrides: Partial<Pick<DbQueryRun, "transactionMayBeOpen" | "connectionTerminated">> = {}
+    ) => mockQueryRun.mockImplementationOnce(async (request) => queryRunWithStatements(
+        request,
+        [executeExecution(request, 0, "transactionPending")],
+        { transactionMayBeOpen: true, ...overrides }
+    ))
+
+    async function openWithTransaction(overrides: Parameters<typeof reportOpenTransaction>[0] = {}) {
+        await useDbStore.getState().openConnection("/transaction.db")
+        const descriptorId = useDbStore.getState().activeDescriptorId!
+        useDbStore.getState().setSql("BEGIN;")
+        reportOpenTransaction(overrides)
+        await useDbStore.getState().runQuery({ kind: "all" })
+        return descriptorId
+    }
+
+    it("blocks a table edit while the most recent run still reports an open transaction", async () => {
+        const descriptorId = await openWithTransaction()
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(true)
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        // The backend reports the connection-level flag on every later run, so
+        // opening a table inside the transaction keeps reporting it.
+        useDbStore.getState().setSql("SELECT * FROM users")
+        reportOpenTransaction()
+        await useDbStore.getState().runQuery({ kind: "all" })
+        mockQueryRun.mockClear()
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("connectionBusy")
+
+        expect(mockQueryRun).not.toHaveBeenCalled()
+        expect(useDbStore.getState().queryBuckets[descriptorId].running).toBe(false)
+    })
+
+    it("keeps blocking table edits after a later run is rejected before it publishes a result", async () => {
+        const descriptorId = await openWithTransaction()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        // The backend refuses the next run (for example while a result owns the lease),
+        // so no run is published and the retained last run is replaced by an empty one.
+        useDbStore.getState().setSql("SELECT * FROM users")
+        mockQueryRun.mockRejectedValueOnce({ code: "connectionBusy", message: "lease held" })
+        await useDbStore.getState().runQuery({ kind: "all" })
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run).toBeNull()
+        mockQueryRun.mockClear()
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .rejects.toThrow("connectionBusy")
+
+        expect(mockQueryRun).not.toHaveBeenCalled()
+    })
+
+    it("reopens table edits once a published run reports the transaction closed", async () => {
+        await openWithTransaction()
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        useDbStore.getState().setSql("COMMIT;")
+        mockQueryRun.mockImplementationOnce(async (request) => queryRunWithStatements(
+            request,
+            [executeExecution(request, 0, "committed")]
+        ))
+        await useDbStore.getState().runQuery({ kind: "all" })
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "none" })
+
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .resolves.toBeUndefined()
+    })
+
+    it("drops the open-transaction flag when the user disconnects and reconnects", async () => {
+        const descriptorId = await openWithTransaction()
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(true)
+
+        await useDbStore.getState().disconnect(descriptorId)
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(false)
+
+        await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "none" })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .resolves.toBeUndefined()
+    })
+
+    it("drops the open-transaction flag when the server connection is lost", async () => {
+        const descriptorId = await openWithTransaction({ connectionTerminated: true })
+
+        expect(useDbStore.getState().connections).toHaveLength(0)
+        expect(useDbStore.getState().queryBuckets[descriptorId].runGroup?.run?.transactionMayBeOpen)
+            .toBe(false)
+
+        await useDbStore.getState().openOrReconnectSavedConnection(descriptorId)
+        const identity = identityOf(useDbStore.getState().connections[0])!
+        mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "none" })
+        await expect(useDbStore.getState().executeTableStatement(identity, "UPDATE users SET id = 2 WHERE id = 1", "1"))
+            .resolves.toBeUndefined()
+    })
+})
+
 describe("result page completion notifications", () => {
     async function startPagedQuery() {
         await useDbStore.getState().openConnection("/owned-page-notifications.db")

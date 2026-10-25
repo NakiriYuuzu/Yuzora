@@ -13,12 +13,12 @@ const cards: { id: HerdrTask | "native"; icon: LucideIcon }[] = [
 ]
 
 /** Task-oriented launcher: what do you want to do, and why is something unavailable. */
-export function HerdrActionHome({ runtime, starting, busy, onTask, onNative, onNotifications }: {
-  runtime: HerdrSessionRuntime | undefined; starting: boolean; busy: boolean
+export function HerdrActionHome({ runtime, starting, unreachable, busy, onTask, onNative, onNotifications }: {
+  runtime: HerdrSessionRuntime | undefined; starting: boolean; unreachable: string | null; busy: boolean
   onTask: (task: HerdrTask) => void; onNative: () => void; onNotifications: () => void
 }) {
   const { t } = useTranslation("herdrTools")
-  const availability = (id: HerdrTask | "native"): HerdrAvailability => id === "native" ? herdrNativeAvailability(runtime, starting) : herdrTaskAvailability(id, runtime, starting)
+  const availability = (id: HerdrTask | "native"): HerdrAvailability => id === "native" ? herdrNativeAvailability(runtime, starting, unreachable) : herdrTaskAvailability(id, runtime, starting, unreachable)
   return <div className="flex min-w-0 flex-col gap-5">
     <div className="flex min-w-0 items-baseline justify-between gap-3">
       <h3 className="text-base font-medium">{t("homeQuestion")}</h3>

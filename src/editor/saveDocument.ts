@@ -1,4 +1,4 @@
-import { getDocument, saveDocumentContent } from "./documentRegistry"
+import { bufferContent, getDocument, saveDocumentContent } from "./documentRegistry"
 import { getView } from "./viewRegistry"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -11,6 +11,8 @@ export type SaveDirtyTabOutcome =
     | { kind: "blocked"; reason: "mixed" }
     | { kind: "notEditable" }
     | { kind: "failed" }
+    /** Written, but the text was edited while the write ran: still dirty. */
+    | { kind: "editedDuringSave" }
 
 function saveActionLabel(): string {
     return i18n.t("statusBar.saveAction", { ns: "workbench" })
@@ -28,9 +30,9 @@ export function showDocumentSaveError(error: unknown): Promise<void> {
 }
 
 /**
- * Persists a dirty tab to disk and clears its dirty / externally-modified flags
- * — the "Save" branch of the unsaved-changes modal (TabBar close, workspace
- * switch). The active tab's freshest text lives in its live CodeMirror view; a
+ * Persists a dirty tab to disk and clears its externally-modified flag, and its
+ * dirty flag unless the text was edited while the write ran — the "Save" branch
+ * of the unsaved-changes modal (TabBar close, workspace switch). The active tab's freshest text lives in its live CodeMirror view; a
  * dirty non-active tab (only the active pane is mounted) has its latest text
  * mirrored into the document registry on unmount, so read from whichever is
  * present. Marks the path recentlySaved first so the fs watcher doesn't flag our
@@ -80,7 +82,11 @@ export async function saveDirtyTab(path: string): Promise<SaveDirtyTabOutcome> {
         await showDocumentSaveError(error)
         return { kind: "failed" }
     }
-    store.markDirty(path, false)
     store.markExternallyModified(path, false)
+    // The editors stay interactive while the write runs; text typed meanwhile is
+    // not on disk, so the tab keeps its dirty mark and the caller must not drop it.
+    const current = getView(path)?.state.doc.toString() ?? bufferContent(path)
+    if (current !== undefined && current !== content) return { kind: "editedDuringSave" }
+    store.markDirty(path, false)
     return { kind: "saved" }
 }

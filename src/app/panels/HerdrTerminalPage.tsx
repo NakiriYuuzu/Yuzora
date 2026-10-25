@@ -24,6 +24,7 @@ import {
 } from "react"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
+import type { TFunction } from "i18next"
 import { useTranslation } from "react-i18next"
 import { useShallow } from "zustand/react/shallow"
 import { SquareTerminal } from "lucide-react"
@@ -38,7 +39,7 @@ import {
 import { herdrAttachmentKey, herdrPagePath } from "@/lib/herdrPages"
 import { herdrErrorKind, isRetryableHerdrConnectError } from "@/lib/herdrErrors"
 import { herdrScrollStrategyForRuntime, supportsHerdrApplicationWheel, supportsHerdrPaneScrollCandidate, supportsHerdrTerminalMouse, supportsHerdrTerminalMouseMove } from "@/lib/herdrCapabilities"
-import { findRuntimeSession, parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
+import { findRuntimeSession, parseRuntimeScope, sessionConnectionError, sessionScope } from "@/lib/herdrProvider"
 import { useHostStore } from "@/state/hostStore"
 import {
   herdrLayoutExport,
@@ -152,6 +153,14 @@ function resolveSessionName(
   return sessionScope(findRuntimeSession(sessions, herdrSessionId))
 }
 
+/** Stopped-Session guidance; HERDR lists an unreachable Session as stopped though it may still run. */
+function sessionStoppedText(t: TFunction, herdrSessionId: string, unreachable: string | null): string {
+  const name = herdrSessionId === "live" ? "default" : herdrSessionId
+  return unreachable
+    ? t("herdrNav.sessionUnreachable", { name, reason: unreachable })
+    : t("herdrTerminal.sessionStopped", { name })
+}
+
 /** Resolve named session running flag; `live` maps to the default session entry. */
 function resolveSessionRunning(
   sessions: HerdrNamedSession[],
@@ -238,6 +247,7 @@ export function HerdrTerminalPage({
     ?? (targetSessionName === s.selectedSessionName ? s.capabilities : null))
 
   const sessionRunning = useHerdrStore((s) => resolveSessionRunning(s.sessions, herdrSessionId))
+  const sessionUnreachable = useHerdrStore((s) => sessionConnectionError(findRuntimeSession(s.sessions, herdrSessionId)))
   const startupPending = useHerdrStore((s) => isHerdrStartupPending(s, findRuntimeSession(s.sessions, herdrSessionId)))
   const sessionCanConnect = !startupPending && sessionRunning === true
   const sessionIsStopped = !startupPending && sessionRunning === false
@@ -455,10 +465,9 @@ export function HerdrTerminalPage({
     [canSetSplitRatio, sessionCanConnect, sessionNameArg, layout?.tabId, resolvedTabId, paneId]
   )
 
+  const stoppedText = sessionStoppedText(t, herdrSessionId, sessionUnreachable)
   const sessionGuidance = sessionIsStopped
-    ? t("herdrTerminal.sessionStopped", {
-        name: herdrSessionId === "live" ? "default" : herdrSessionId
-      })
+    ? stoppedText
     : startupPending || sessionRunning === null
       ? t("herdrNav.connecting")
       : sessionCanConnect && !canOpenTerminalConnector
@@ -703,10 +712,9 @@ export function HerdrTerminalPage({
           <span
             data-testid="herdr-terminal-stopped"
             className="ml-auto truncate text-[11px] text-(--ink-3)"
+            title={stoppedText}
           >
-            {t("herdrTerminal.sessionStopped", {
-              name: herdrSessionId === "live" ? "default" : herdrSessionId
-            })}
+            {stoppedText}
           </span>
         )}
       </div>
@@ -790,6 +798,7 @@ function HerdrTerminalLeaf({
   const paneKey = paneId ?? terminalId
   const attachmentKey = herdrAttachmentKey(pagePath, paneKey)
   const inventorySessionRunning = useHerdrStore((s) => resolveSessionRunning(s.sessions, herdrSessionId))
+  const sessionUnreachable = useHerdrStore((s) => sessionConnectionError(findRuntimeSession(s.sessions, herdrSessionId)))
   const targetSessionName = useHerdrStore((s) => resolveSessionName(s.sessions, herdrSessionId))
   const targetHostId = useHerdrStore((s) => {
     const session = s.sessions.find((candidate) => sessionScope(candidate) === targetSessionName)
@@ -805,7 +814,8 @@ function HerdrTerminalLeaf({
     snapshot: targetSessionName ? s.runtimesBySession[targetSessionName]?.snapshot ?? null : null,
     terminalId,
     paneId,
-    workspaceId
+    workspaceId,
+    hostId: targetHostId
   }))
   const sessionRunning = sessionRunningOverride ?? inventorySessionRunning
   const startupPending = useHerdrStore((s) => isHerdrStartupPending(s, findRuntimeSession(s.sessions, herdrSessionId)))
@@ -866,6 +876,7 @@ function HerdrTerminalLeaf({
   const transportRef = useRef<ReturnType<typeof createHerdrTerminalTransport> | null>(null)
   const targetOpenRef = useRef<ReturnType<typeof installTerminalTargetOpen> | null>(null)
   const cwdRef = useRef<string | null>(baseCwd)
+  const hostIdRef = useRef<string | null>(targetHostId)
   const [controlMode, setControlMode] = useState<HerdrTerminalMode>(() =>
     useHerdrStore.getState().attachments.get(attachmentKey)?.mode ?? "control"
   )
@@ -902,6 +913,7 @@ function HerdrTerminalLeaf({
     visibleRef.current = visible
     tabIdRef.current = tabId
     cwdRef.current = baseCwd
+    hostIdRef.current = targetHostId
     const queue = outputQueueRef.current
     if (visible && !previousVisibleRef.current) repaintAfterWriteRef.current = true
     if (visible && queue?.needsResync) {
@@ -910,7 +922,7 @@ function HerdrTerminalLeaf({
       queue?.setVisible(visible)
       if (visible) queue?.flushNow()
     }
-  }, [active, baseCwd, tabId, visible])
+  }, [active, baseCwd, tabId, targetHostId, visible])
 
   useEffect(() => {
     disposedRef.current = false
@@ -1019,7 +1031,8 @@ function HerdrTerminalLeaf({
     })
     fitRef.current = fitAddon
     targetOpenRef.current = installTerminalTargetOpen(term, {
-      getCwd: () => cwdRef.current
+      getCwd: () => cwdRef.current,
+      getHostId: () => hostIdRef.current
     })
     const parsedDisposable = term.onWriteParsed?.(() => {
       targetOpenRef.current?.resetHover()
@@ -1751,9 +1764,7 @@ function HerdrTerminalLeaf({
         <div
           className="pointer-events-none absolute inset-x-2 bottom-2 truncate rounded-[4px] border border-(--term-line) bg-(--term-bar) px-[8px] py-[4px] text-[11px] text-(--ink-3)"
         >
-          {t("herdrTerminal.sessionStopped", {
-            name: herdrSessionId === "live" ? "default" : herdrSessionId
-          })}
+          {sessionStoppedText(t, herdrSessionId, sessionUnreachable)}
         </div>
       )}
     </div>
