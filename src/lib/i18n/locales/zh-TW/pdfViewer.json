@@ -1,0 +1,20 @@
+{
+  "toolbar": "PDF 工具列",
+  "previousPage": "上一頁",
+  "nextPage": "下一頁",
+  "pageNumber": "頁碼",
+  "pageCount": "/ {{count}}",
+  "zoomIn": "放大",
+  "zoomOut": "縮小",
+  "zoomLevel": "縮放比例",
+  "fitWidth": "符合寬度",
+  "loading": "正在載入 PDF…",
+  "pageRenderError": "此頁無法顯示",
+  "loadError": "無法開啟 PDF",
+  "loadErrorDescription": "「{{path}}」可能已損壞、被移除，或不是有效的 PDF",
+  "passwordTitle": "此 PDF 受密碼保護",
+  "passwordDescription": "目前尚不支援預覽需要密碼才能開啟的 PDF",
+  "tooLargeTitle": "PDF 過大，無法預覽",
+  "tooLargeDescription": "「{{name}}」大小為 {{size}}，預覽上限為 {{limit}}",
+  "tooLargeDescriptionUnknownSize": "「{{name}}」超過預覽上限 {{limit}}"
+}

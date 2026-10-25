@@ -120,6 +120,10 @@
   "fileDrop": {
     "openAction": "Open dropped file"
   },
+  "openRequests": {
+    "openFileAction": "Open file",
+    "openFolderAction": "Open folder"
+  },
   "ssh": {
     "emptyTitle": "No hosts yet",
     "emptyDescription": "Add a host to connect over SSH or SFTP",

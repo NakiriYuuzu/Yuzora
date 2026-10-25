@@ -23,6 +23,7 @@ import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
 import { SvgSplitView, isSvgPath } from "./SvgSplitView"
 import { tabRetention } from "./viewRetention"
+import { PdfView, isPdfPath } from "./PdfView"
 
 const RichMarkdownEditor = lazy(() => import("../editor/RichMarkdownEditor").then(m => ({ default: m.RichMarkdownEditor })))
 
@@ -224,6 +225,15 @@ export function EditorArea() {
                                         }
                                         if (isMarkdownPath(group.activePath)) {
                                             return <Suspense fallback={<div className="editor-pane" aria-busy="true" />}><RichMarkdownEditor key={`${group.activePath}:${documentGeneration(group.activePath)}`} path={group.activePath} groupIndex={i} /></Suspense>
+                                        }
+                                        if (isPdfPath(group.activePath)) {
+                                            return (
+                                                <PdfView
+                                                    key={group.activePath}
+                                                    path={group.activePath}
+                                                    generation={documentGeneration(group.activePath)}
+                                                />
+                                            )
                                         }
                                         if (isSvgPath(group.activePath)) {
                                             return (
