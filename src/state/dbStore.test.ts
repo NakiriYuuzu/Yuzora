@@ -577,7 +577,7 @@ describe("useDbStore", () => {
     it.each(["all", "current", "selection"] as const)("submits whole PostgreSQL Unicode dollar strings for %s execution", async (kind) => {
         await useDbStore.getState().openConfig({
             kind: "postgres", host: "fixture.invalid", port: 5432, database: "fixture",
-            user: "fixture", password: "fixture-only", transportMode: "verifyFull",
+            user: "fixture", password: "fixture-only", transportMode: "verifyFull", // ggignore: test fixture credential, not a secret
         })
         const prefix = "SELECT 0;\r\n"
         const first = "SELECT $雪😀$a;b$雪😀$;"
