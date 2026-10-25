@@ -51,23 +51,16 @@
   {
     "code": "clippy::manual_contains",
     "file": "src/ssh_service.rs",
-    "line": 3455,
+    "line": 3513,
     "message": "using `contains()` instead of `iter().any()` is more efficient",
     "count": 1
   },
   {
     "code": "clippy::needless_borrow",
     "file": "src/ssh_service.rs",
-    "line": 3441,
+    "line": 3499,
     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
     "count": 1
-  },
-  {
-    "code": "clippy::redundant_closure",
-    "file": "src/askpass.rs",
-    "line": 331,
-    "message": "redundant closure",
-    "count": 2
   },
   {
     "code": "clippy::suspicious_open_options",
@@ -79,21 +72,21 @@
   {
     "code": "clippy::useless_conversion",
     "file": "src/db_profiles.rs",
-    "line": 1846,
+    "line": 1867,
     "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
     "count": 2
   },
   {
     "code": "clippy::useless_conversion",
     "file": "src/db_profiles.rs",
-    "line": 1942,
+    "line": 1963,
     "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
     "count": 2
   },
   {
     "code": "clippy::useless_conversion",
     "file": "src/db_profiles.rs",
-    "line": 2336,
+    "line": 2359,
     "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
     "count": 2
   }

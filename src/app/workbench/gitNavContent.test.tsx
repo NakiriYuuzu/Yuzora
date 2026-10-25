@@ -41,6 +41,7 @@ vi.mock("@/lib/ipc", () => ({
     gitCommit: vi.fn(async () => undefined),
     gitCommitDetail: vi.fn(async () => ({ subject: "last subject", body: "last body", authorName: "A", authorEmail: "a@example.test", timestamp: 0, parents: [], files: [], totalAdditions: 0, totalDeletions: 0 })),
     gitStatus: vi.fn(async () => makeStatus()),
+    gitBootstrap: vi.fn(),
     gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] })),
     // BranchPopover pulls these in through the shared trigger.
     gitCheckout: vi.fn(async () => undefined),
@@ -442,6 +443,75 @@ describe("GitNavContent — ready state (E1)", () => {
         fireEvent.click(screen.getByRole("button", { name: "Commit" }))
         await waitFor(() => expect(ipc.gitCommit).toHaveBeenCalledWith("/w", "feat: x"))
         await waitFor(() => expect(useGitStore.getState().commitMessage).toBe(""))
+    })
+
+    it.each([
+        ["refresh", "draft", "/w"],
+        ["refresh", "amend", "/w"],
+        ["mutation", "draft", "/w"],
+        ["mutation", "amend", "/w"],
+        ["refresh", "draft", "/other"],
+    ] as const)("preserves a new %s-delayed commit's %s after detecting %s", async (phase, input, destination) => {
+        const head = "a".repeat(40)
+        const status = makeStatus({ headOid: head, staged: [{ path: "staged.ts", status: "M", origPath: null }] })
+        vi.mocked(ipc.gitBootstrap).mockImplementation(async (root) => ({
+            environment: { ...READY, root }, status,
+            branches: { local: [], remote: [], tags: [] }, snapshotError: null,
+        }))
+        await useGitStore.getState().detect("/w")
+        useGitStore.getState().setCommitMessage("same draft text")
+        let finish!: () => void
+        const delayed = new Promise<void>((resolve) => { finish = resolve })
+        if (phase === "mutation") vi.mocked(ipc.gitCommit).mockImplementationOnce(() => delayed)
+        else vi.mocked(ipc.gitStatus).mockImplementationOnce(async () => { await delayed; return status })
+        const originalRunOp = useGitStore.getState().runOp
+        let operation: Promise<boolean> | undefined
+        useGitStore.setState({ runOp: (...args) => (operation = originalRunOp(...args)) })
+        try {
+            render(<GitNavContent />)
+            fireEvent.click(screen.getByRole("button", { name: "Commit" }))
+            await waitFor(() => expect(ipc.gitCommit).toHaveBeenCalledWith("/w", "same draft text"))
+            if (phase === "refresh") await waitFor(() => expect(ipc.gitStatus).toHaveBeenCalled())
+            await act(async () => {
+                await useGitStore.getState().detect("/other")
+                if (destination === "/w") await useGitStore.getState().detect("/w")
+            })
+            expect(screen.getByLabelText("Commit message")).toBeEnabled()
+            // Identical text still belongs to a new draft, not the completed commit.
+            fireEvent.change(screen.getByLabelText("Commit message"), { target: { value: "same draft text" } })
+            if (input === "amend") {
+                fireEvent.click(screen.getByRole("button", { name: "Amend last commit…" }))
+                await waitFor(() => expect(useGitStore.getState().amendHead).toBe(head))
+                fireEvent.change(screen.getByLabelText("Commit message"), { target: { value: "new amend draft" } })
+            }
+            const expectedMessage = useGitStore.getState().commitMessage
+            const expectedAmend = useGitStore.getState().amendHead
+            await act(async () => { finish(); await operation })
+            expect(useGitStore.getState().commitMessage).toBe(expectedMessage)
+            expect(useGitStore.getState().amendHead).toBe(expectedAmend)
+            expect(screen.getByLabelText("Commit message")).toHaveValue(expectedMessage)
+        } finally {
+            finish()
+            await operation
+            useGitStore.setState({ runOp: originalRunOp })
+        }
+    })
+
+    it.each([false, true])("keeps failed commit input and amend ownership (amend=%s)", async (amend) => {
+        const head = "a".repeat(40)
+        setReady({ headOid: head, staged: [{ path: "staged.ts", status: "M", origPath: null }] })
+        useGitStore.getState().setCommitMessage("ordinary draft")
+        render(<GitNavContent />)
+        if (amend) {
+            fireEvent.click(screen.getByRole("button", { name: "Amend last commit…" }))
+            await waitFor(() => expect(useGitStore.getState().amendHead).toBe(head))
+        }
+        fireEvent.change(screen.getByLabelText("Commit message"), { target: { value: "keep on failure" } })
+        vi.mocked(ipc.gitCommit).mockRejectedValueOnce(new Error("commit rejected"))
+        fireEvent.click(screen.getByRole("button", { name: amend ? "Update last commit" : "Commit" }))
+        await waitFor(() => expect(useGitStore.getState().lastError).toContain("commit rejected"))
+        expect(useGitStore.getState().commitMessage).toBe("keep on failure")
+        expect(useGitStore.getState().amendHead).toBe(amend ? head : null)
     })
 
     it("Review diff opens the worktree modal with the flattened files", () => {

@@ -16,12 +16,30 @@ struct Helper {
     input: Option<tokio::process::ChildStdin>,
     output: BufReader<tokio::process::ChildStdout>,
     owner: ConnectionOwner,
+    _config: tempfile::TempDir,
 }
 impl Helper {
     async fn start(home: &std::path::Path, host: &str) -> Self {
-        let mut child = tokio::process::Command::new(helper_binary())
-            .arg("--stdio")
-            .env("HOME", home)
+        let config = tempfile::tempdir().unwrap();
+        let mut command = tokio::process::Command::new(helper_binary());
+        command.arg("--stdio").env("HOME", home);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("HERDR_") {
+                command.env_remove(key);
+            }
+        }
+        for key in [
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+        ] {
+            let path = config.path().join(key);
+            std::fs::create_dir(&path).unwrap();
+            command.env(key, path);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -29,6 +47,7 @@ impl Helper {
             .spawn()
             .unwrap();
         let mut helper = Self {
+            _config: config,
             input: child.stdin.take(),
             output: BufReader::new(child.stdout.take().unwrap()),
             child,

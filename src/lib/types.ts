@@ -78,7 +78,17 @@ export type GitEnvironment =
     | { status: "notARepo" }
     | { status: "ready"; root: string; version: string }
 /** `pushOid`: the commit the remote-tracking ref this branch pushes to (not necessarily `upstream`: triangular workflows, `push.default`) points at when the list was read; unknown (null/absent) when there is none. */
-export interface BranchInfo { name: string; upstream: string | null; pushOid?: string | null; ahead: number; behind: number; isCurrent: boolean; gone: boolean }
+export interface BranchInfo {
+    name: string
+    upstream: string | null
+    /** Full Git ref; absent only for older helpers, null when no upstream is configured. */
+    upstreamRef?: string | null
+    pushOid?: string | null
+    ahead: number
+    behind: number
+    isCurrent: boolean
+    gone: boolean
+}
 export interface TagInfo { name: string; date: string }
 export interface BranchList { local: BranchInfo[]; remote: string[]; tags: TagInfo[] }
 // #57 T3：冷開 workspace 的 git 首載單趟快照——environment 非 ready 時
@@ -558,7 +568,8 @@ export interface DbObjectReference {
     kind: "table" | "view"
 }
 export type DbTable = DbObjectReference
-export interface DbColumn { name: string; type: string; notnull: boolean; pk: boolean }
+/** An omitted generated flag means the engine/helper did not provide that metadata. */
+export interface DbColumn { name: string; type: string; notnull: boolean; pk: boolean; generated?: boolean }
 
 /** Every cell is tagged. Integers/decimals use strings so JavaScript never
  * rounds a 64-bit integer or an engine decimal; binary bytes use lossless hex. */
@@ -684,7 +695,7 @@ export interface DbQueryRun extends DbQueryRunOwner {
     connectionTerminated: boolean
 }
 
-type DbQueryRunMode = "primary" | "script"
+type DbQueryRunMode = "primary" | "script" | "tableCellMutation"
 type DbTransactionBoundary = "none" | "begin" | "commit" | "rollback"
 interface DbQueryRunStatement {
     sql: string
