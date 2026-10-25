@@ -77,11 +77,13 @@ pub fn open_workspace_directory(
 /// Extensions the OS shell launches or runs as a script instead of merely showing.
 /// Best effort, not a sandbox: it keeps a file from an untrusted workspace from being
 /// launched by the "open externally" button. Revealing such a file stays possible.
+/// The Python family is what the standard Windows installer associates with the py
+/// launcher; Python source needs no shebang there, so the header check misses it.
 const LAUNCHABLE_EXTENSIONS: &[&str] = &[
     "app", "appimage", "bash", "bat", "cmd", "com", "command", "cpl", "csh", "desktop", "exe",
     "fish", "hta", "jar", "js", "jse", "ksh", "lnk", "mpkg", "msc", "msi", "msp", "pif", "pkg",
-    "ps1", "psm1", "reg", "run", "scpt", "scr", "sh", "terminal", "url", "vb", "vbe", "vbs",
-    "workflow", "ws", "wsf", "wsh", "zsh",
+    "ps1", "psm1", "py", "pyc", "pyo", "pyw", "pyz", "pyzw", "reg", "run", "scpt", "scr", "sh",
+    "terminal", "url", "vb", "vbe", "vbs", "workflow", "ws", "wsf", "wsh", "zsh",
 ];
 
 fn is_launchable(path: &Path) -> std::io::Result<bool> {
@@ -285,6 +287,10 @@ mod tests {
             ("run.sh", b"x"),
             ("macro.Ps1", b"x"),
             ("tool.jar", b"x"),
+            // Windows runs Python through the py launcher association; no shebang needed.
+            ("large.py", b"import os\nos.system('calc')\n"),
+            ("gui.PYW", b"x"),
+            ("bundle.pyz", b"PK\x03\x04"),
             ("no-extension-script", b"#!/bin/sh\necho hi\n"),
             ("linux-binary", b"\x7fELF\x02\x01"),
             ("windows-binary", b"MZ\x90\x00"),
@@ -306,6 +312,9 @@ mod tests {
             "run.sh",
             "macro.Ps1",
             "tool.jar",
+            "large.py",
+            "gui.PYW",
+            "bundle.pyz",
             "no-extension-script",
             "linux-binary",
             "windows-binary",

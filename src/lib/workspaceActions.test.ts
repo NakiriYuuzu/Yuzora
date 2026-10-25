@@ -324,6 +324,40 @@ test("preflight 通過後、openWorkspace 等待期間才變 dirty：clearAll �
     expect(startWatch).not.toHaveBeenCalled()
 })
 
+test("重新詢問選 cancel：open_workspace 已撤銷舊 grant，要把 capability 還給仍顯示的舊工作區", async () => {
+    cleanWorkspace()
+    useWorkspaceStore.setState({ workspaceCapabilityId: "ws-old" })
+    const finish = deferOpenWorkspace()
+    vi.mocked(openWorkspace).mockResolvedValueOnce({ canonicalPath: "/old", capabilityId: "ws-restored" })
+    const opening = openWorkspaceAtPath("/new")
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(vi.mocked(openWorkspace).mock.calls).toEqual([["/new"], ["/old"]])
+    expect(useWorkspaceStore.getState()).toMatchObject({ workspacePath: "/old", workspaceCapabilityId: "ws-restored" })
+    expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({ path: "/old/a.ts", dirty: true })
+})
+
+test("重新詢問選 cancel 時已被較新的開啟取代：不重新啟用舊工作區，以免撤銷較新的 grant", async () => {
+    cleanWorkspace()
+    useWorkspaceStore.setState({ workspaceCapabilityId: "ws-old" })
+    let current = true
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new", { shouldOpen: () => current })
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    current = false
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(openWorkspace).toHaveBeenCalledTimes(1)
+    expect(useWorkspaceStore.getState().workspaceCapabilityId).toBe("ws-old")
+})
+
 test("等待期間新增的 dirty：重新詢問選 save → 先存檔再切換", async () => {
     cleanWorkspace()
     const finish = deferOpenWorkspace()

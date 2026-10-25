@@ -11,6 +11,7 @@ import {
     snapshotDirtyTabs,
     type DirtyTabsSnapshot
 } from "@/lib/unsavedGuard"
+import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { loadWorkspaceSessionEntry } from "@/state/workspaceSession"
 import { useWorkspaceStore } from "@/state/workspaceStore"
@@ -44,6 +45,31 @@ const switchWorkspaceLabels = () => ({
 })
 
 /**
+ * The native registry keeps one local workspace grant, so activating the
+ * target revoked the one the UI still shows. Hand it back when the switch is
+ * cancelled after activation. Refresh only the grant, as revealPath does:
+ * reopening the UI workspace would drop the edits the user just kept.
+ */
+async function restoreDisplayedWorkspaceGrant(
+    path: string | null,
+    capabilityId: string | null,
+    target: string
+): Promise<void> {
+    if (!path || !capabilityId || parseRemoteFilePath(path) || parseRemoteFilePath(target)) return
+    const unchanged = () => {
+        const current = useWorkspaceStore.getState()
+        return current.workspacePath === path && current.workspaceCapabilityId === capabilityId
+    }
+    if (!unchanged()) return
+    try {
+        const reopened = await openWorkspace(path)
+        if (unchanged()) useWorkspaceStore.setState({ workspaceCapabilityId: reopened.capabilityId })
+    } catch (error) {
+        console.warn("restoring the workspace grant failed", error)
+    }
+}
+
+/**
  * Opens `path` as the active workspace: canonicalizes it through the backend,
  * drops cached document content from any previous workspace so it can't leak
  * into the new one, restores the workspace's recorded editor tabs, starts the
@@ -69,6 +95,8 @@ async function openWorkspaceAtPathWithOutcome(
     }
     unsavedBaseline ??= snapshotDirtyTabs()
 
+    const { workspacePath: previousPath, workspaceCapabilityId: previousCapabilityId } =
+        useWorkspaceStore.getState()
     const opened = await openWorkspace(path)
     if (options?.shouldOpen && !options.shouldOpen()) return false
     const canonical = opened.canonicalPath
@@ -89,7 +117,13 @@ async function openWorkspaceAtPathWithOutcome(
     // The preflight is a snapshot: edits typed while the workspace was opening
     // (remote I/O, queued Herdr focus) would be dropped by clearAll() below.
     while (dirtyPathsSince(unsavedBaseline).length > 0) {
-        if (!(await confirmDiscardingUnsavedSince(unsavedBaseline, switchWorkspaceLabels()))) return false
+        if (!(await confirmDiscardingUnsavedSince(unsavedBaseline, switchWorkspaceLabels()))) {
+            // A superseded open leaves the grant to the newer one.
+            if (!options?.shouldOpen || options.shouldOpen()) {
+                await restoreDisplayedWorkspaceGrant(previousPath, previousCapabilityId, canonical)
+            }
+            return false
+        }
         unsavedBaseline = snapshotDirtyTabs()
         if (options?.shouldOpen && !options.shouldOpen()) return false
     }
