@@ -55,6 +55,28 @@ function Harness() {
     )
 }
 
+it("shows a failed workspace invocation and still reveals a partial match", async () => {
+    vi.useFakeTimers()
+    searchWorkspace.mockImplementationOnce((_root, _query, _cs, onEvent) => {
+        onEvent({ type: "match", path: "/ws/partial.txt", matches: [{ line: 8, col: 0, preview: "needle" }] })
+        return Promise.reject(new Error("channel unavailable"))
+    })
+    try {
+        render(<Harness />)
+        fireEvent.change(screen.getByPlaceholderText("Search files, run a command…"), { target: { value: "needle" } })
+        await act(async () => { await vi.advanceTimersByTimeAsync(250) })
+        expect(screen.getByRole("alert")).toHaveTextContent("Could not finish searching. Results may be incomplete.")
+        expect(screen.getByRole("alert")).toHaveTextContent("channel unavailable")
+        expect(screen.queryByText("No matching results")).not.toBeInTheDocument()
+        fireEvent.click(screen.getByText("needle"))
+        expect(useWorkspaceStore.getState().pendingReveal).toEqual({ path: "/ws/partial.txt", line: 8 })
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    } finally {
+        cleanup()
+        vi.useRealTimers()
+    }
+})
+
 it("toggle browser command opens the singleton browser tab", async () => {
     render(<Harness />)
 

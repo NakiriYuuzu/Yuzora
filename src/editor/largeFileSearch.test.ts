@@ -45,3 +45,27 @@ it.each(["query", "document", "close", "destroy"])("cancels work on %s changes a
     deliver({ data: result } as MessageEvent<SearchTaskResult>)
     if (view) expect(view.state.selection.main.to).toBeLessThan(10)
 })
+
+it("does not report noMatch for repeated Next on a large document's sole zero-width hit", () => {
+    const worker = { postMessage: vi.fn<(task: SearchTask) => void>(), terminate: vi.fn(), onmessage: null as null | ((event: MessageEvent<SearchTaskResult>) => void), onerror: null }
+    const content = "a".repeat(256 * 1024 + 1)
+    view = new EditorView({ state: EditorState.create({ doc: content, extensions: largeFileSearch(() => worker as unknown as Worker) }), parent: document.body })
+    openSearchPanel(view)
+    view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "^", regexp: true })) })
+    const doc = view.state.doc
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        view.dom.querySelector<HTMLButtonElement>('button[name="next"]')!.click()
+        expect(view.dom.querySelector(".cm-search")).toHaveAttribute("aria-busy", "true")
+        const request = worker.postMessage.mock.calls[attempt][0]
+        if (attempt === 0) expect(request.lines).toEqual([content])
+        else expect(request.lines).toBeUndefined()
+        const result = runSearchTask(doc, request)
+        worker.onmessage!({ data: result } as MessageEvent<SearchTaskResult>)
+        expect(view.dom.querySelector(".cm-search")).toHaveAttribute("aria-busy", "false")
+        expect(view.dom.querySelector(".yz-search-status")?.textContent).toBe("")
+        expect(result.ranges).toEqual([{ from: 0, to: 0 }])
+        expect(view.state.selection.main.from).toBe(0)
+        expect(view.state.selection.main.to).toBe(0)
+        expect(view.state.doc).toBe(doc)
+    }
+})
