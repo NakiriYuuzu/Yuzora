@@ -4,7 +4,8 @@
   },
   "common": {
     "dismiss": "關閉",
-    "cancel": "取消"
+    "cancel": "取消",
+    "back": "返回"
   },
   "status": {
     "idle": "閒置",
@@ -114,7 +115,15 @@
     "invalid-params": "要求內容無效。",
     "stream-not-found": "這個檢視已經關閉。",
     "unknown": "發生錯誤。",
-    "agent-blocked": "Agent 正在等待互動輸入，不能送新的提示。請用按鍵或直接控制回答。"
+    "agent-blocked": "Agent 正在等待互動輸入，不能送新的提示。請用按鍵或直接控制回答。",
+    "git-untrusted": "請在桌面信任此工作區",
+    "git-unavailable": "桌面沒有分享這個 Space 的資料夾，所以無法顯示 Git。只有帶有資料夾的本機 Space 會分享。",
+    "git-not-repository": "這個 Space 的資料夾不是 Git 儲存庫。",
+    "git-cursor-invalid": "歷史已變動，需要重新載入。",
+    "git-failed": "Git 無法讀取這個儲存庫，請稍後再試。",
+    "push-unavailable": "桌面目前無法傳送通知。",
+    "push-store-failed": "桌面無法儲存這項通知設定，請再試一次。",
+    "push-unconfirmed": "桌面沒有及時確認通知設定，請再試一次。"
   },
   "home": {
     "refresh": "重新整理",
@@ -123,7 +132,8 @@
     "noSessions": "桌面沒有執行中的 HERDR Session。",
     "default": "預設",
     "noAgents": "這個 Session 沒有 Agent。",
-    "unnamedSpace": "未命名的 Space"
+    "unnamedSpace": "未命名的 Space",
+    "otherSpaces": "其他 Spaces"
   },
   "pane": {
     "back": "返回",
@@ -184,5 +194,95 @@
     "approveEmpty": "（畫面是空的。）",
     "approveNoCwd": "Companion 不會傳送工作目錄，請依畫面內容判斷。",
     "blockedHint": "Agent 正在等待互動輸入。請用上方按鍵回答，或開啟直接控制來輸入文字。"
+  },
+  "space": {
+    "tabs": {
+      "agents": "Agents",
+      "git": "Git"
+    },
+    "gone": "這個 Space 已不在桌面上。",
+    "noAgents": "這個 Space 沒有 Agent。"
+  },
+  "git": {
+    "refresh": "重新整理 Git",
+    "retry": "再試一次",
+    "loadMore": "載入更多",
+    "loadingMore": "載入中…",
+    "historyReloaded": "歷史已在桌面更新，已從頭重新載入。",
+    "noCommits": "尚無提交。",
+    "listTruncated": "只顯示清單的前面部分。",
+    "clean": "沒有變更，工作樹是乾淨的。",
+    "detached": "分離的 HEAD（{{oid}}）",
+    "noBranch": "尚無分支",
+    "nestedRepo": "巢狀儲存庫",
+    "inProgress": {
+      "rebase": "正在 rebase",
+      "merge": "正在合併",
+      "cherry-pick": "正在 cherry-pick",
+      "revert": "正在 revert"
+    },
+    "group": {
+      "conflicted": "衝突",
+      "staged": "已暫存",
+      "unstaged": "未暫存",
+      "untracked": "未追蹤"
+    },
+    "views": {
+      "changes": "變更",
+      "history": "歷史",
+      "branches": "分支"
+    },
+    "branches": {
+      "local": "本機分支",
+      "remote": "遠端分支",
+      "tags": "標籤",
+      "none": "沒有本機分支。",
+      "current": "目前分支",
+      "gone": "上游 {{upstream}} 已不存在",
+      "noUpstream": "沒有上游"
+    },
+    "commit": {
+      "parents": "上一個提交",
+      "files": "變更的檔案：{{count}}",
+      "binary": "二進位"
+    },
+    "diff": {
+      "source": {
+        "worktree": "工作樹的變更",
+        "untracked": "未追蹤的檔案",
+        "staged": "已暫存的變更",
+        "commit": "提交 {{hash}}"
+      },
+      "change": {
+        "added": "新增檔案",
+        "deleted": "已刪除",
+        "renamed": "已重新命名",
+        "copied": "已複製"
+      },
+      "mode": "權限 {{from}} → {{to}}",
+      "truncated": "已截斷：差異太大，只顯示開頭的部分。",
+      "binary": "二進位檔案，沒有文字差異可顯示。",
+      "empty": "沒有差異可顯示。",
+      "noContentChange": "內容沒有變更。",
+      "unmerged": "未解決的衝突：其中一方刪除或新增了這個檔案，沒有可顯示的合併差異，請在桌面處理。",
+      "unmergedMatched": "未解決的衝突：這個檔案仍是未合併狀態，工作樹的內容可能已與其中一方相同，因此沒有可顯示的合併差異，請在桌面完成處理。",
+      "resolved": "這個檔案已不再衝突。返回上一頁即可重新整理清單。"
+    }
+  },
+  "push": {
+    "title": "通知",
+    "checking": "檢查中…",
+    "state": {
+      "unavailable": "這個瀏覽器目前無法接收 Yuzora 的通知。稍候再試，或改用支援通知的瀏覽器。",
+      "home-screen": "在 iPhone 與 iPad 上，請先把 Yuzora 加入主畫面（分享，再選加入主畫面），並從主畫面開啟，才能開啟通知。",
+      "denied": "Yuzora 的通知已被封鎖。請到手機設定允許通知後再回來。",
+      "off": "Agent 需要你輸入或已完成時通知你。桌面開啟 Companion 期間才會送出通知。",
+      "update-first": "Yuzora Companion 有新版本。請先重新載入，再開啟通知，這樣通知才會由新版接收。",
+      "updating": "正在下載 Yuzora Companion 新版本…完成後請重新載入，再開啟通知。",
+      "on": "這支手機已開啟通知。"
+    },
+    "enable": "開啟",
+    "disable": "關閉",
+    "failed": "無法變更通知設定，請再試一次。"
   }
 }

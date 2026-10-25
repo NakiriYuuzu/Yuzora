@@ -10,7 +10,8 @@ import { useHerdrStore } from "@/state/herdrStore"
 
 // Counts and fixed codes only. `agent.prompt` also carries the prompt's first
 // characters, and Logs persist: an allowlist keeps any content field out.
-const SUMMARY_FIELDS = ["length", "bytes", "keys", "count", "accepted", "takeover", "resizeConfirmed", "reason", "outcome", "phase"]
+// `method` is the Git method of a `git.read`, one of a fixed set of names.
+const SUMMARY_FIELDS = ["length", "bytes", "keys", "count", "accepted", "takeover", "resizeConfirmed", "reason", "outcome", "phase", "method"]
 // Writes a phone sends to a pane; the notice updates in place per device and pane.
 const WRITES = new Set(["agent.prompt", "pane.sendKeys", "terminal.input"])
 
@@ -20,7 +21,7 @@ function deviceLabel(deviceId: string): string {
 }
 
 /** The agent's name from the desktop's own snapshot, else `session · pane`. */
-function paneLabel(session: string, target: string | null): string {
+export function paneLabel(session: string, target: string | null): string {
   if (!target) return session
   const { sessions, runtimesBySession } = useHerdrStore.getState()
   const local = sessions.find(item => item.name === session && (!item.hostId || item.hostId === LOCAL_HOST_ID))

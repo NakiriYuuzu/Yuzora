@@ -14,7 +14,7 @@ use std::{
 
 const DEVICES_FILE: &str = "devices.json";
 const SETTINGS_FILE: &str = "settings.json";
-const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 1;
 
 #[derive(Deserialize, Serialize)]
 struct DevicesFile {
@@ -174,11 +174,84 @@ fn valid_devices(devices: &[Value]) -> bool {
                 // Credential ids are unique per relying party across all devices.
                 && device["credentials"].as_array().is_some_and(|list| {
                     (1..=8).contains(&list.len())
-                        && list.iter().all(|c| match (c["rpId"].as_str(), c["id"].as_str()) {
-                            (Some(rp), Some(id)) => credentials.insert((rp.to_owned(), id.to_owned())),
-                            _ => false,
+                        && list.iter().all(|c| {
+                            valid_credential(c)
+                                && credentials.insert((
+                                    c["rpId"].as_str().unwrap_or_default().to_owned(),
+                                    c["id"].as_str().unwrap_or_default().to_owned(),
+                                ))
                         })
                 })
+        })
+}
+
+/// The gateway's `CredentialRecord::valid` plus its closed field set, except
+/// that `publicKeyState` only has to be a string. A shared fixture table in the
+/// tests keeps this in step with it.
+fn valid_credential(credential: &Value) -> bool {
+    const FIELDS: [&str; 8] = [
+        "id",
+        "rpId",
+        "publicKeyState",
+        "stateFormat",
+        "signCount",
+        "backupEligible",
+        "backupState",
+        "transports",
+    ];
+    const TRANSPORTS: [&str; 6] = ["usb", "nfc", "ble", "internal", "hybrid", "smart-card"];
+    let Some(object) = credential.as_object() else {
+        return false;
+    };
+    // Indexing a Map panics on a missing key, so the closed field set comes first.
+    if object.len() != FIELDS.len() || !FIELDS.iter().all(|f| object.contains_key(*f)) {
+        return false;
+    }
+    let id_ok = object["id"].as_str().is_some_and(|id| {
+        !id.is_empty()
+            && id.len() <= 1024usize.div_ceil(3) * 4
+            && URL_SAFE_NO_PAD
+                .decode(id)
+                .is_ok_and(|bytes| !bytes.is_empty() && bytes.len() <= 1024)
+    });
+    let transports_ok = object["transports"].as_array().is_some_and(|list| {
+        let mut seen = HashSet::new();
+        list.len() <= 6
+            && list.iter().all(|t| {
+                t.as_str()
+                    .is_some_and(|t| TRANSPORTS.contains(&t) && seen.insert(t))
+            })
+    });
+    id_ok
+        && object["rpId"].as_str().is_some_and(valid_rp_id)
+        && object["publicKeyState"].is_string()
+        && object["stateFormat"] == "webauthn_rp-0.3.0-static"
+        && object["signCount"]
+            .as_u64()
+            .is_some_and(|n| u32::try_from(n).is_ok())
+        && transports_ok
+        && match (
+            object["backupEligible"].as_bool(),
+            object["backupState"].as_bool(),
+        ) {
+            (Some(eligible), Some(state)) => !state || eligible,
+            _ => false,
+        }
+}
+
+/// The gateway's rule for a relying party id (`companion/src/devices.rs`).
+fn valid_rp_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.parse::<std::net::IpAddr>().is_err()
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
 }
 
@@ -281,14 +354,11 @@ impl EnableFor {
     }
 }
 
-/// The Serve handler this desktop added. Kept apart from the current ports:
-/// removal must target what was applied, even after the settings change.
+/// The node this desktop last saw logged in; shown while the sidecar is stopped.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppliedServe {
-    pub https_port: u16,
-    pub gateway_port: u16,
-    pub host: String,
+pub struct NetIdentity {
+    pub dns_name: String,
     pub login: String,
 }
 
@@ -296,12 +366,12 @@ pub struct AppliedServe {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub version: u32,
-    pub https_port: u16,
     pub gateway_port: u16,
     pub duration: EnableFor,
     pub session_allowlist: Vec<String>,
     pub full_session_enabled: bool,
-    pub applied: Option<AppliedServe>,
+    #[serde(default)]
+    pub net: Option<NetIdentity>,
     /// The Experimental opt-in: off, the Companion cannot be enabled.
     #[serde(default)]
     pub experimental: bool,
@@ -310,12 +380,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             version: VERSION,
-            https_port: 8443,
             gateway_port: 47110,
             duration: EnableFor::default(),
             session_allowlist: Vec::new(),
             full_session_enabled: false,
-            applied: None,
+            net: None,
             experimental: false,
         }
     }
@@ -324,17 +393,9 @@ impl Settings {
     pub fn load(dir: &Path) -> Result<Self, String> {
         let path = dir.join(SETTINGS_FILE);
         let settings = read_versioned::<Self>(&path, |s| s.version)?.unwrap_or_default();
-        // Port 0 would have Serve proxy to nothing while the gateway binds an
-        // ephemeral port.
-        let mut ports = [settings.https_port, settings.gateway_port]
-            .into_iter()
-            .chain(
-                settings
-                    .applied
-                    .iter()
-                    .flat_map(|a| [a.https_port, a.gateway_port]),
-            );
-        if ports.any(|port| port == 0) {
+        // Port 0 would have the node proxy to nothing while the gateway binds
+        // an ephemeral port.
+        if settings.gateway_port == 0 {
             return Err(corrupt(&path));
         }
         Ok(settings)
@@ -344,7 +405,7 @@ impl Settings {
     }
 }
 
-fn read_versioned<T: for<'de> Deserialize<'de>>(
+pub(crate) fn read_versioned<T: for<'de> Deserialize<'de>>(
     path: &Path,
     version: impl Fn(&T) -> u32,
 ) -> Result<Option<T>, String> {
@@ -371,7 +432,7 @@ fn corrupt(path: &Path) -> String {
     "companion-store-corrupt".to_string()
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("companion-store-write-failed: {e}");
     let dir = path.parent().ok_or("companion-store-write-failed")?;
     create_private_dir(dir).map_err(failed)?;

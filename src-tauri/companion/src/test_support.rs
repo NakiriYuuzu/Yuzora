@@ -3,6 +3,7 @@ use crate::{
     clock::Clock,
     gateway::Gateway,
 };
+use identity::PROXY_SECRET;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::{
@@ -75,7 +76,7 @@ impl Drop for Fixture {
 /// Real loopback HTTP with paused-clock-safe bounded polling, for unit-only seams.
 pub async fn post(port: u16, path: &str, body: Value, headers: &str) -> (u16, Value, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let request = format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.to_string().len());
+    let request = format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: https://desktop.tailnet.ts.net:8443\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.to_string().len());
     let task = tokio::spawn(async move {
         let mut socket = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
             .await
@@ -149,6 +150,12 @@ macro_rules! reject_writes {
     };
 }
 pub(crate) use reject_writes;
+
+#[path = "../tests/support/git_repo.rs"]
+pub mod git_repo;
+
+#[path = "../tests/support/identity.rs"]
+pub mod identity;
 
 #[path = "../tests/support/init.rs"]
 pub mod init;

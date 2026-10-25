@@ -51,6 +51,14 @@ function Assert-Payload([string]$Root) {
         $bundledHash = (Get-FileHash -LiteralPath (Join-Path $root $relative) -Algorithm SHA256).Hash
         if ($sourceHash -ne $bundledHash) { throw "Runtime payload hash mismatch: $relative" }
     }
+    # Tauri strips the target triple from externalBin (tauri.conf.json bundle.externalBin) and installs the sidecars next to the app executable;
+    # the web root and notices come from the resource map in tauri.windows.conf.json.
+    foreach ($sidecar in @('yuzora-companion.exe', 'yuzora-companion-net.exe')) {
+        if (@($files | Where-Object { $_.Name -ceq $sidecar }).Count -ne 1) { throw "Expected exactly one Companion sidecar: $sidecar" }
+    }
+    foreach ($resource in @('companion-web\index.html', 'companion-net\THIRD_PARTY_NOTICES.txt')) {
+        if (@($files | Where-Object { $_.FullName.EndsWith('\' + $resource, [System.StringComparison]::Ordinal) }).Count -ne 1) { throw "Expected exactly one Companion resource: $resource" }
+    }
     $appRoot = Split-Path -Parent $root
     foreach ($script in @(Get-ChildItem -LiteralPath $cleanupRoot -File)) {
         $bundled = Join-Path (Join-Path $appRoot 'legacy-cleanup') $script.Name
@@ -66,7 +74,7 @@ try {
     $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/a', ('"{0}"' -f $msi.FullName), '/qn', ('TARGETDIR="{0}"' -f $msiRoot)) -Wait -PassThru
     if ($process.ExitCode -notin @(0, 3010)) { throw "MSI administrative extraction failed: $($process.ExitCode)" }
     Assert-Payload $msiRoot
-    Write-Output 'MSI contains pinned native Windows HERDR and all five verified host payloads; no legacy WSL plugin'
+    Write-Output 'MSI contains pinned native Windows HERDR, all five verified host payloads, and the Companion sidecars, web root and notices; no legacy WSL plugin'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

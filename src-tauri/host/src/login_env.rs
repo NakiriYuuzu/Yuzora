@@ -65,14 +65,12 @@ fn capture(
     // alone makes interactive bash stop itself with SIGTTIN before the probe.
     // A new session detaches that terminal while retaining group cancellation.
     crate::process_kill::configure_new_group(command);
-    let mut child = Probe(
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(OwnedFd::from(writer)))
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| "environment-shell-failed")?,
-    );
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(OwnedFd::from(writer)))
+        .stderr(Stdio::null());
+    let mut child =
+        Probe(crate::process_kill::spawn_std(command).map_err(|_| "environment-shell-failed")?);
     let deadline = Instant::now() + timeout;
     let mut output = Zeroizing::new(Vec::new());
     let mut buffer = Zeroizing::new([0u8; 8192]);
@@ -192,6 +190,18 @@ mod tests {
                 ("TOKEN".into(), "a=b 中文\nnext".into())
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_account_probe_spawns_through_the_spawn_lock() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'probe'"]);
+        let (bytes, spawns) = crate::process_kill::trace_spawns(|| {
+            capture(&mut command, Duration::from_secs(2), 4096)
+        });
+        assert_eq!(bytes.unwrap().as_slice(), b"probe");
+        assert_eq!(spawns, ["/bin/sh -c printf 'probe'"]);
     }
 
     #[test]

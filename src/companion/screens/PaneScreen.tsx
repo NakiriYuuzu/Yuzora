@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { ArrowLeft, Maximize2, Minimize2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -12,7 +12,7 @@ import { findAgent } from "../lib/agents"
 import { rpcErrorKey } from "../lib/errors"
 import type { ControlOpen } from "../lib/protocol"
 import { RpcError } from "../lib/rpc"
-import { navigate, notify, useCompanion } from "../store"
+import { goBack, notify, useCompanion } from "../store"
 import { ControlPanel } from "./ControlPanel"
 
 type View = { stream: number; cols: number; rows: number }
@@ -31,6 +31,10 @@ export function PaneScreen({ session, pane }: { session: string; pane: string })
   const [control, setControl] = useState<ControlOpen | null>(null)
   const [conflict, setConflict] = useState(false)
   const controlling = control !== null
+  const controlRef = useRef(control)
+  useEffect(() => {
+    controlRef.current = control
+  }, [control])
 
   // Read-only observation while not controlling; reopened after every reconnect.
   useEffect(() => {
@@ -80,11 +84,19 @@ export function PaneScreen({ session, pane }: { session: string; pane: string })
     })
   }, [terminal, control])
 
+  // Leaving the screen hands the pane back: the lease would otherwise outlive
+  // it, with no button left to release it. Reads the latest control from a
+  // ref so a re-run of the effect above never releases a live stream.
+  useEffect(() => () => {
+    const current = controlRef.current
+    if (current) void call("terminal.release", { stream: current.stream }).catch(() => undefined)
+  }, [])
+
   return (
     <Page
       title={agent?.name ?? pane}
       leading={
-        <Button variant="ghost" size="icon" className="size-11" aria-label={t("pane.back")} onClick={() => navigate({ name: "home" })}>
+        <Button variant="ghost" size="icon" className="size-11" aria-label={t("pane.back")} onClick={goBack}>
           <ArrowLeft aria-hidden />
         </Button>
       }

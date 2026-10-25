@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
+import { writeText } from "@tauri-apps/plugin-clipboard-manager"
+import { openUrl } from "@tauri-apps/plugin-opener"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   AlertDialog,
@@ -25,16 +28,17 @@ import {
   companionDisable,
   companionEnable,
   companionExperimentalSet,
+  companionNetCancel,
+  companionNetLogin,
+  companionNetLogout,
   companionSessionsSet,
-  companionTailscaleForget,
-  companionTailscaleProbe,
-  companionTailscaleRemove,
   type CompanionDevice,
   type CompanionOverview,
   type CompanionWindow,
-  type TailscaleProbe,
 } from "@/lib/companionIpc"
 import { describeCompanionError } from "@/lib/companionErrors"
+import { companionAgo } from "@/lib/companionAgo"
+import { companionRemaining } from "@/lib/companionRemaining"
 import { useNow } from "@/lib/useNow"
 import { useCompanionStore } from "@/state/companionStore"
 import { useHerdrStore } from "@/state/herdrStore"
@@ -43,6 +47,10 @@ import { CompanionPhoneLinkDialog } from "./CompanionPhoneLinkDialog"
 
 const WINDOWS: CompanionWindow[] = ["1h", "8h", "untilExit"]
 const CONTROL_GRANTS = [["15m", 15], ["1h", 60], ["8h", 480]] as const
+/** Where a tailnet admin turns on HTTPS Certificates. */
+const TAILSCALE_DNS_URL = "https://login.tailscale.com/admin/dns"
+/** Where a tailnet admin approves a device that waits for it. */
+const TAILSCALE_MACHINES_URL = "https://login.tailscale.com/admin/machines"
 
 const refresh = () => useCompanionStore.getState().refresh()
 const idle = (overview: CompanionOverview) => overview.status.state === "disabled" || overview.status.state === "failed"
@@ -52,10 +60,14 @@ function untilIn(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString().replace(/\.\d{3}Z$/, "Z")
 }
 
+/** A page of Tailscale's own, in the browser; failing to open it is a notice, not a card error. */
+const openPage = (url: string) => void openUrl(url).catch(cause => toast.error(String(cause)))
+
 function useAction() {
   const { t } = useTranslation("companion")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const port = useCompanionStore(s => s.overview?.settings.gatewayPort)
   /** Resolves true once the task succeeded; a failure is shown, not thrown. */
   const run = useCallback(async (task: () => Promise<unknown>) => {
     setBusy(true)
@@ -64,7 +76,7 @@ function useAction() {
     catch (cause) { setError(String(cause)); return false }
     finally { setBusy(false) }
   }, [])
-  const message = error && <p role="alert" className="text-[12px] text-destructive">{describeCompanionError(error, t)}</p>
+  const message = error && <p role="alert" className="text-[12px] text-destructive">{describeCompanionError(error, t, port)}</p>
   return { busy, run, message }
 }
 
@@ -117,133 +129,162 @@ function ExperimentalCard({ overview }: { overview: CompanionOverview }) {
 
 function TailscaleCard({ overview }: { overview: CompanionOverview }) {
   const { t } = useTranslation("companion")
-  const { settings, status, owner } = overview
-  const [probe, setProbe] = useState<TailscaleProbe | null>(null)
-  const [probeError, setProbeError] = useState<string | null>(null)
+  const { settings, status, owner, net } = overview
   const [duration, setDuration] = useState<CompanionWindow>(settings.duration)
   const [confirming, setConfirming] = useState(false)
-  const [forgetting, setForgetting] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [pairing, setPairing] = useState(false)
   const closePairing = useCallback(() => setPairing(false), [])
   const [linking, setLinking] = useState(false)
   const closeLinking = useCallback(() => setLinking(false), [])
+  // A link made for a running Companion is of no use once it stops.
+  if (linking && status.state !== "running") setLinking(false)
   const { busy, run, message } = useAction()
+  const enableError = useCompanionStore(s => s.enableError)
   const now = useNow(30_000)
 
-  const reprobe = useCallback(() => companionTailscaleProbe().then(
-    next => { setProbe(next); setProbeError(null) },
-    cause => setProbeError(String(cause)),
-  ), [])
-  useEffect(() => { void reprobe() }, [reprobe])
   const after = (task: () => Promise<unknown>) => run(async () => {
+    useCompanionStore.getState().setEnableError(null)
     try { await task() }
-    finally { await Promise.all([refresh().catch(() => undefined), reprobe()]) }
+    finally { await refresh().catch(() => undefined) }
   })
+  const enable = async () => {
+    const { setWelcomePending, setEnableError } = useCompanionStore.getState()
+    setStarting(true)
+    // The welcome host greets once the Companion serves, even if this card is gone by then.
+    setWelcomePending(true)
+    let failed = false
+    // The failure goes to the store, not this card: the card may be gone when it comes, and the host tells the user then.
+    await after(async () => {
+      try { await companionEnable(duration) }
+      catch (cause) { failed = true; setEnableError(String(cause)) }
+    })
+    setStarting(false)
+    if (failed || useCompanionStore.getState().overview?.status.state !== "running") setWelcomePending(false)
+  }
 
-  const ready = probe?.cli && probe.node && probe.serve && !probe.refusal
   const stopped = idle(overview)
-  // Off the node a handler was applied on, `serve … off` cannot reach it: the record can only be forgotten.
-  const elsewhere = !!settings.applied && (probeError !== null || (probe !== null && probe.node?.dnsName !== settings.applied.host))
-  const minutes = overview.enableUntil ? Math.max(0, Math.ceil((Date.parse(overview.enableUntil) - now) / 60_000)) : null
-  const remaining = minutes === null ? null : minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`
+  // Only an https page may be opened from what the node reports.
+  const authUrl = net.authUrl?.startsWith("https://") ? net.authUrl : null
+  // The node's mode tells what it runs for, also when this card was opened after the command started.
+  const enabling = starting || (net.mode === "enable" && (status.state === "disabled" || status.state === "starting"))
+  const loggingOut = net.mode === "logout"
+  const signingIn = stopped && !enabling && net.mode === "login"
+  const loginRequired = !!enableError?.startsWith("companion-net-login-required")
+  const httpsDisabled = !!enableError?.startsWith("companion-net-https-disabled")
+  const approvalRequired = !!enableError?.startsWith("companion-net-approval-required")
+  const needsApproval = net.state === "needsApproval"
+  // The machine an admin looks for: the name the node reports while it waits. Empty until it does: no name is guessed.
+  const machine = net.dnsName?.split(".")[0] ?? ""
+  const remaining = companionRemaining(overview.enableUntil, now)
+  const progress = status.state === "starting" || net.cert?.state === "ready" ? "starting"
+    : net.cert?.state === "error" ? "certificateRetry"
+      : net.state === "running" ? "certificate" : "connecting"
+  // A failure older than the sign-in or enable under way is not this run's.
+  const failure = status.state === "failed" && !enabling && !signingIn ? describeCompanionError(status.code, t, settings.gatewayPort) : null
+  const netFailure = net.error && stopped && !enabling ? describeCompanionError(net.error, t, settings.gatewayPort) : null
+  const enableFailure = enableError ? describeCompanionError(enableError, t, settings.gatewayPort) : null
+  const signIn = <Button size="sm" disabled={busy || !owner} onClick={() => void after(companionNetLogin)}>{t("tailscale.signIn")}</Button>
   return <Card size="sm">
     <CardHeader>
       <CardTitle data-settings-label={t("tailscale.title")}>{t("tailscale.title")}</CardTitle>
       <CardDescription>{t("tailscale.description")}</CardDescription>
     </CardHeader>
     <CardContent className="flex flex-col gap-3">
-      {probeError ? <p role="alert" className="text-[12px] text-destructive">{describeCompanionError(probeError, t)}</p>
-        : !probe ? <p className="text-[12px] text-muted-foreground">{t("tailscale.checking")}</p>
-          : !probe.cli ? <Alert><AlertTitle>{t("tailscale.noCli")}</AlertTitle><AlertDescription>{t("tailscale.install")}</AlertDescription></Alert>
-            : <ProbeDetails probe={probe} />}
-      {probe?.refusal && <Alert variant="destructive"><AlertDescription>{t(`refusal.${probe.refusal}`)}</AlertDescription></Alert>}
-      {!!probe?.serve?.otherPorts.length && <Alert><AlertDescription>{t("tailscale.otherPorts", { ports: probe.serve.otherPorts.join(", ") })}</AlertDescription></Alert>}
+      {net.loggedIn && net.dnsName && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12px]">
+        <dt className="text-muted-foreground">{t("tailscale.dnsName")}</dt><dd className="break-all font-mono">{net.dnsName}</dd>
+        <dt className="text-muted-foreground">{t("tailscale.login")}</dt><dd className="break-all">{net.login ?? "—"}</dd>
+      </dl>}
+      {enabling ? <p role="status" className="text-[12px]">{t(`tailscale.progress.${progress}`)}</p>
+        : loggingOut ? <p role="status" className="text-[12px]">{t("tailscale.progress.signingOut")}</p>
+        : <div className="flex flex-wrap items-center gap-2 text-[12px]">
+          <span className="text-muted-foreground">{t("status.label")}</span>
+          <Badge data-testid="companion-status" variant={status.state === "failed" ? "destructive" : status.state === "running" ? "default" : "outline"}>{t(`status.${status.state}`)}</Badge>
+          {status.state === "running" && <span>{settings.duration === "untilExit" ? t("status.untilExit") : remaining !== null && t("status.remaining", { time: remaining })}</span>}
+        </div>}
+      {stopped && !enabling && !loggingOut && (signingIn
+        ? <p role="status" className="text-[12px]">{t(net.state === "needsLogin" ? "tailscale.progress.waitingForSignIn" : needsApproval ? (machine ? "tailscale.progress.waitingForApproval" : "tailscale.progress.waitingForApprovalUnnamed") : "tailscale.progress.connecting", { name: machine })}</p>
+        : !net.loggedIn && <p className="text-[12px]">{t("tailscale.signedOut")}</p>)}
+      {failure && <p role="alert" className="text-[12px] text-destructive">{failure}</p>}
+      {netFailure && netFailure !== failure && <p role="alert" className="text-[12px] text-destructive">{netFailure}</p>}
       <p className="text-[12px] text-muted-foreground">{t("tailscale.certificateNote")}</p>
-      <p className="text-[12px] text-muted-foreground">{t("tailscale.taggedNote")}</p>
-
-      <div className="flex flex-wrap items-center gap-2 text-[12px]">
-        <span className="text-muted-foreground">{t("status.label")}</span>
-        <Badge data-testid="companion-status" variant={status.state === "failed" ? "destructive" : status.state === "running" ? "default" : "outline"}>{t(`status.${status.state}`)}</Badge>
-        {status.state === "running" && <span>{settings.duration === "untilExit" ? t("status.untilExit") : remaining !== null && t("status.remaining", { time: remaining })}</span>}
-      </div>
-      {status.state === "failed" && <p role="alert" className="text-[12px] text-destructive">{describeCompanionError(status.code, t)}</p>}
-      {stopped && settings.applied && <Alert>
-        <AlertTitle>{t("leftover.title")}</AlertTitle>
-        <AlertDescription className="flex flex-col items-start gap-2">
-          <span>{t("leftover.description", { host: settings.applied.host, port: settings.applied.httpsPort })}</span>
-          {elsewhere && <span>{t("leftover.elsewhere")}</span>}
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionTailscaleRemove)}>{t("leftover.remove")}</Button>
-            {elsewhere && <Button size="sm" variant="ghost" disabled={busy || !owner} onClick={() => setForgetting(true)}>{t("leftover.forget")}</Button>}
-          </div>
-        </AlertDescription>
-      </Alert>}
+      <p className="text-[12px] text-muted-foreground">{t("tailscale.accessNote")}</p>
+      {enableFailure && enableFailure !== failure && enableFailure !== netFailure && <p role="alert" className="text-[12px] text-destructive">{enableFailure}</p>}
       {message}
+      {httpsDisabled && <div>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => openPage(TAILSCALE_DNS_URL)}>{t("tailscale.openDnsSettings")}</Button>
+      </div>}
+      {approvalRequired && <div>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => openPage(TAILSCALE_MACHINES_URL)}>{t("tailscale.openMachines")}</Button>
+      </div>}
     </CardContent>
-    <CardFooter className="flex flex-wrap items-center gap-2">
-      {stopped ? <>
+    {!enabling && !loggingOut && <CardFooter className="flex flex-wrap items-center gap-2">
+      {!stopped ? <>
+        <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionDisable)}>{t("disable")}</Button>
+        <Button size="sm" disabled={busy || !owner || status.state !== "running" || !net.serving} onClick={() => setPairing(true)}>{t("pairing.open")}</Button>
+        <Button size="sm" variant="outline" disabled={busy || status.state !== "running" || !net.serving} onClick={() => setLinking(true)}>{t("phoneLink.open")}</Button>
+      </> : signingIn ? <>
+        {net.state === "needsLogin" && <>
+          <Button size="sm" disabled={!authUrl} onClick={() => openPage(authUrl!)}>{t("tailscale.openBrowser")}</Button>
+          <Button size="sm" variant="outline" disabled={busy || !authUrl} onClick={() => void run(async () => { await writeText(authUrl!); setCopied(true) })}>{t(copied ? "tailscale.copied" : "tailscale.copyLink")}</Button>
+        </>}
+        {needsApproval && <>
+          <Button size="sm" onClick={() => openPage(TAILSCALE_MACHINES_URL)}>{t("tailscale.openMachines")}</Button>
+          <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => setSwitching(true)}>{t("tailscale.useOtherAccount")}</Button>
+        </>}
+        <Button size="sm" variant="ghost" disabled={busy || !owner} onClick={() => void after(companionNetCancel)}>{t("cancel")}</Button>
+      </> : !net.loggedIn ? signIn : <>
         <Select value={duration} onValueChange={value => setDuration(value as CompanionWindow)}>
           <SelectTrigger aria-label={t("enable.duration")} className="w-[160px]"><SelectValue /></SelectTrigger>
           <SelectContent><SelectGroup>{WINDOWS.map(value => <SelectItem key={value} value={value}>{t(`enable.window.${value}`)}</SelectItem>)}</SelectGroup></SelectContent>
         </Select>
-        <Button size="sm" disabled={busy || !owner || !ready} onClick={() => setConfirming(true)}>{t("enable.button")}</Button>
-      </> : <>
-        <Button size="sm" variant="outline" disabled={busy || !owner} onClick={() => void after(companionDisable)}>{t("disable")}</Button>
-        <Button size="sm" disabled={busy || !owner || status.state !== "running"} onClick={() => setPairing(true)}>{t("pairing.open")}</Button>
-        <Button size="sm" variant="outline" disabled={status.state !== "running"} onClick={() => setLinking(true)}>{t("phoneLink.open")}</Button>
+        <Button size="sm" disabled={busy || !owner} onClick={() => setConfirming(true)}>{t("enable.button")}</Button>
+        {loginRequired && signIn}
+        <Button size="sm" variant="ghost" disabled={busy || !owner} onClick={() => setSigningOut(true)}>{t("tailscale.signOut")}</Button>
       </>}
-      <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setProbe(null); void reprobe() }}>{t("tailscale.recheck")}</Button>
-    </CardFooter>
+    </CardFooter>}
     <AlertDialog open={confirming} onOpenChange={setConfirming}>
       <AlertDialogContent className="sm:max-w-[480px]">
         <AlertDialogHeader>
           <AlertDialogTitle>{t("enable.confirmTitle")}</AlertDialogTitle>
           <AlertDialogDescription>{t("enable.confirmDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
-        <pre data-testid="companion-serve-command" className="whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-[12px]">{probe?.command}</pre>
         <AlertDialogFooter>
           <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
-          <Button variant="destructive" onClick={() => { setConfirming(false); void after(() => companionEnable(duration)) }}>{t("enable.confirm")}</Button>
+          <Button variant="destructive" onClick={() => { setConfirming(false); void enable() }}>{t("enable.confirm")}</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-    <AlertDialog open={forgetting} onOpenChange={setForgetting}>
+    <AlertDialog open={signingOut} onOpenChange={setSigningOut}>
       <AlertDialogContent className="sm:max-w-[480px]">
         <AlertDialogHeader>
-          <AlertDialogTitle>{t("leftover.forgetTitle")}</AlertDialogTitle>
-          <AlertDialogDescription>{t("leftover.forgetDescription", { host: settings.applied?.host })}</AlertDialogDescription>
+          <AlertDialogTitle>{t("tailscale.signOutTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("tailscale.signOutDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
-        {/* The same arguments Yuzora runs to remove its handler (tailscale::off_args). */}
-        <pre data-testid="companion-serve-off-command" className="whitespace-pre-wrap break-all rounded-md border bg-muted/40 p-2 font-mono text-[12px]">{`tailscale serve --https=${settings.applied?.httpsPort} --set-path=/ off`}</pre>
         <AlertDialogFooter>
           <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
-          <Button variant="destructive" onClick={() => { setForgetting(false); void after(companionTailscaleForget) }}>{t("leftover.forgetConfirm")}</Button>
+          <Button variant="destructive" onClick={() => { setSigningOut(false); void after(companionNetLogout) }}>{t("tailscale.signOut")}</Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={switching} onOpenChange={setSwitching}>
+      <AlertDialogContent className="sm:max-w-[480px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("tailscale.useOtherAccountTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("tailscale.useOtherAccountDescription")}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+          <Button variant="destructive" onClick={() => { setSwitching(false); void after(companionNetLogout) }}>{t("tailscale.useOtherAccount")}</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
     {pairing && <CompanionPairingDialog onClose={closePairing} />}
     {linking && <CompanionPhoneLinkDialog onClose={closeLinking} />}
   </Card>
-}
-
-function ProbeDetails({ probe }: { probe: TailscaleProbe }) {
-  const { t } = useTranslation("companion")
-  const { node, serve } = probe
-  const yes = (value: boolean) => t(value ? "tailscale.yes" : "tailscale.no")
-  return <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12px]">
-    <dt className="text-muted-foreground">{t("tailscale.cli")}</dt><dd className="break-all font-mono">{probe.cli?.path}</dd>
-    {node && <>
-      <dt className="text-muted-foreground">{t("tailscale.version")}</dt><dd>{node.version}</dd>
-      <dt className="text-muted-foreground">{t("tailscale.state")}</dt><dd>{node.backendState}</dd>
-      <dt className="text-muted-foreground">{t("tailscale.dnsName")}</dt><dd className="break-all font-mono">{node.dnsName ?? "—"}</dd>
-      <dt className="text-muted-foreground">{t("tailscale.login")}</dt><dd className="break-all">{node.login ?? "—"}</dd>
-      <dt className="text-muted-foreground">{t("tailscale.https")}</dt><dd>{yes(node.httpsReady)}</dd>
-    </>}
-    {serve && <>
-      <dt className="text-muted-foreground">{t("tailscale.funnel")}</dt><dd>{yes(serve.funnel)}</dd>
-      <dt className="text-muted-foreground">{t("tailscale.port", { port: probe.httpsPort })}</dt><dd>{t(`tailscale.portState.${serve.foreground ? "foreground" : serve.port}`)}</dd>
-    </>}
-  </dl>
 }
 
 function SessionsCard({ overview }: { overview: CompanionOverview }) {
@@ -296,13 +337,16 @@ function DevicesCard({ owner }: { owner: boolean }) {
 }
 
 function DeviceRow({ device, owner }: { device: CompanionDevice; owner: boolean }) {
-  const { t } = useTranslation("companion")
+  const { t, i18n } = useTranslation("companion")
+  const notifying = useCompanionStore(s => s.overview?.push.subscribed.includes(device.deviceId) ?? false)
+  const lastGitRead = useCompanionStore(s => s.lastGitRead[device.deviceId])
   const [draft, setDraft] = useState<string | null>(null)
   const label = draft ?? device.label
   const [revoking, setRevoking] = useState(false)
   const { busy, run, message } = useAction()
   const now = useNow(30_000)
   const until = device.grants.control ? Date.parse(device.grants.control.until) : 0
+  const gitReadAgo = lastGitRead ? companionAgo(lastGitRead, now, i18n.language) : null
   const disabled = busy || !owner
   // A stopped gateway sends no device events: take the stored result.
   const store = (task: () => Promise<CompanionDevice>) => run(async () => useCompanionStore.getState().applyEvent({ type: "device.updated", device: await task() }))
@@ -316,8 +360,10 @@ function DeviceRow({ device, owner }: { device: CompanionDevice; owner: boolean 
       <Input aria-label={t("devices.label")} className="h-7 w-[200px]" value={label} disabled={disabled} onChange={event => setDraft(event.target.value)} />
       {label !== device.label && <Button size="sm" variant="outline" disabled={disabled} onClick={() => void store(() => companionDeviceUpdate(device.deviceId, { label })).then(saved => { if (saved) setDraft(null) })}>{t("devices.saveLabel")}</Button>}
       {device.locked && <Badge variant="destructive">{t("devices.locked")}</Badge>}
+      {notifying && <Badge variant="secondary">{t("devices.notifications")}</Badge>}
       <span className="ml-auto text-[12px] text-muted-foreground">{t("devices.lastSeen", { time: new Date(device.lastSeen).toLocaleString() })}</span>
     </div>
+    {gitReadAgo && <p className="text-[12px] text-muted-foreground">{t("devices.lastGitRead", { time: gitReadAgo })}</p>}
     <div className="flex flex-wrap items-center gap-2 text-[12px]">
       <span>{until > now ? t("devices.controlUntil", { time: new Date(until).toLocaleString() }) : t("devices.controlNone")}</span>
       {CONTROL_GRANTS.map(([key, minutes]) => <Button key={key} size="sm" variant="outline" disabled={disabled} onClick={() => void grant(minutes)}>{t(`devices.grant.${key}`)}</Button>)}

@@ -47,6 +47,10 @@ grep-searcher = "0.1"
 grep-regex = "0.1"
 rand = "0.10.3"
 sha2 = "0.11.0"
+# companion_push: RFC 8291 payload encryption and the VAPID (RFC 8292) signature.
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "ecdsa"] }
+hkdf = "0.13"
+aes-gcm = "0.11"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 libc = "0.2"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }
@@ -58,7 +62,7 @@ russh = { version = "=0.62.7", path = "vendor/russh-0.62.7-yuzora" }
 russh-sftp = { version = "=3.0.0", path = "vendor/russh-sftp-3.0.0-yuzora" }
 # tauri bundles tokio; ssh_service needs select!/timeout which async_runtime
 # doesn't re-export, so name tokio directly (already resolved in the lock).
-tokio = { version = "1", features = ["macros", "time", "sync", "net", "process", "io-util", "io-std", "rt"] }
+tokio = { version = "1.53.3", features = ["macros", "time", "sync", "net", "process", "io-util", "io-std", "rt"] }
 # perf_service samples only this process's cpu/memory; the `system` feature is
 # all it needs — drop disk/network/component/user to keep the build lean.
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
@@ -72,8 +76,8 @@ tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid
 tiberius = { version = "0.12.3", path = "vendor/tiberius-0.12.3-yuzora", default-features = false, features = ["tds73", "rustls", "chrono"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
-webpki-roots = "1.0.8"
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1.0.10"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 tempfile = "3"

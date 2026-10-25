@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { findAgent, projectSpaces, withAgentStatus, withoutPane } from "./agents"
+import { findAgent, otherSpaces, projectSpaces, withAgentStatus, withoutPane } from "./agents"
 import { keyBytes } from "./keys"
 import type { Snapshot } from "./protocol"
 import { clockOffset, formatCountdown, secondsUntil } from "./time"
@@ -7,9 +7,9 @@ import { clockOffset, formatCountdown, secondsUntil } from "./time"
 const snapshot: Snapshot = {
   session: "work",
   workspaces: [
-    { id: "w1", label: "Yuzora", status: "working" },
-    { id: "w2", label: "Empty", status: "idle" },
-    { id: "w3", label: "Site", status: "blocked" },
+    { id: "w1", label: "Yuzora", status: "working", git: true },
+    { id: "w2", label: "Empty", status: "idle", git: false },
+    { id: "w3", label: "Site", status: "blocked", git: false },
   ],
   tabs: [
     { id: "w1:t", workspaceId: "w1", label: "main" },
@@ -30,6 +30,17 @@ const snapshot: Snapshot = {
     { paneId: null, name: "Orphan", agent: null, status: "blocked" },
   ],
 }
+
+describe("otherSpaces", () => {
+  it("lists the Spaces projectSpaces leaves out for having no agent, with a usable id", () => {
+    expect(otherSpaces(snapshot)).toEqual([{ session: "work", workspaceId: "w2", label: "Empty" }])
+  })
+
+  it("is empty when every Space has an agent, and skips a Space without an id", () => {
+    const busy: Snapshot = { ...snapshot, workspaces: [snapshot.workspaces[0], { id: null, label: "Loose", status: "idle", git: false }] }
+    expect(otherSpaces(busy)).toEqual([])
+  })
+})
 
 describe("projectSpaces", () => {
   it("groups agents by Space in desktop order and sorts them by urgency", () => {

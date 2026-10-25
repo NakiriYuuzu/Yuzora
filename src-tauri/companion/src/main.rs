@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
-use std::time::Duration;
+mod parent;
+
+use std::{future::Future, time::Duration};
 use tokio::{
     io::{AsyncBufRead, BufReader},
     sync::oneshot,
@@ -15,6 +17,9 @@ use yuzora_companion::{
 };
 
 fn main() {
+    // First: the pid this process was started under, before anything else can
+    // take long (the first command may arrive five seconds from now).
+    let parent = parent::probe();
     // Must run before the Tokio runtime (or any other thread) is created.
     // Host connector commands otherwise inherit pane-local routing overrides.
     for (name, _) in std::env::vars_os() {
@@ -30,16 +35,17 @@ fn main() {
         .enable_all()
         .build()
         .expect("Companion runtime")
-        .block_on(run_main());
+        .block_on(run_main(parent));
 }
 
-async fn run_main() {
+async fn run_main(parent: Option<parent::Probe>) {
     let (events, mut writer) = admin::spawn_writer(tokio::io::stdout());
     let mut shutdown_started = None;
     let mut success = run(
         &events,
         BufReader::new(tokio::io::stdin()),
         &mut shutdown_started,
+        parent::watch(parent, parent::POLL),
     )
     .await;
     let writer_started = std::time::Instant::now();
@@ -79,6 +85,7 @@ async fn run(
     events: &EventSender,
     mut input: impl AsyncBufRead + Unpin,
     shutdown_started: &mut Option<std::time::Instant>,
+    parent_gone: impl Future<Output = ()>,
 ) -> bool {
     let deadline = Instant::now() + Duration::from_secs(5);
     let init = loop {
@@ -120,31 +127,49 @@ async fn run(
             return false;
         }
     };
-    let server = match Server::bind(&init.listeners.loopback, &init.web_root, gateway.clone()).await
-    {
-        Ok(server) => server,
-        Err(code) => {
-            events.emit(Event::error(code)).await;
-            return false;
-        }
-    };
+    let mut server =
+        match Server::bind(&init.listeners.loopback, &init.web_root, gateway.clone()).await {
+            Ok(server) => server,
+            Err(code) => {
+                events.emit(Event::error(code)).await;
+                return false;
+            }
+        };
     let Ok(port) = server.port() else {
         return false;
     };
     // Construction pins the selected binary but performs no Herdr IO. Only an
     // authorized read RPC can request discovery; nothing starts a server.
     drop(init);
+    let mut expiry = server.on_expiry();
     let (stop, stopped) = oneshot::channel();
     let mut tasks = JoinSet::new();
     tasks.spawn(server.run(stopped));
     let mut success = events.emit(Event::ready(port)).await;
+    let mut expiry_announced = false;
+    tokio::pin!(parent_gone);
     while success {
         tokio::select! {
+            biased;
             _ = events.closed() => success = false,
+            // From here the server only holds its port, for the desktop to unserve
+            // the node: it ends at `shutdown`, stdin EOF, its own hold deadline or a gone
+            // parent (after GONE_GRACE).
+            notice = &mut expiry, if !expiry_announced => {
+                expiry_announced = true;
+                if notice.is_ok() {
+                    success = events.emit(Event::error("policy-expired")).await;
+                }
+            }
+            // Stdin EOF without the EOF: the desktop is gone but a leaked copy of the
+            // pipe keeps it open. One future polled by `&mut`, never a ticker arm: an
+            // arm that completes drops `admin::read`, and a half-read frame is lost.
+            _ = &mut parent_gone => {
+                tokio::time::sleep(parent::GONE_GRACE).await;
+                break;
+            }
             result = tasks.join_next() => {
-                if matches!(result, Some(Ok(true))) {
-                    events.emit(Event::error("policy-expired")).await;
-                } else {
+                if !matches!(result, Some(Ok(true))) {
                     eprintln!("Companion listener stopped unexpectedly");
                 }
                 return false;
@@ -198,8 +223,9 @@ mod tests {
         serde_json::json!({
             "v":1, "type":"init", "herdrBinary":root.join("DO-NOT-EXECUTE-HERDR"),
             "sessionAllowlist":[], "webRoot":root, "devices":[],
-            "listeners":{"loopback":{"port":0,"publicHost":"desktop.tailnet.ts.net:8443","requiredTailscaleLogin":"user@example.com"},"lan":null},
-            "policy":{"enableUntil":"2099-01-01T00:00:00Z","viewIdleMin":30,"viewAbsoluteHours":12,"elevationMaxMin":15,"fullSessionEnabled":false,"maxDevices":5}
+            "listeners":{"loopback":{"port":0,"publicHost":"desktop.tailnet.ts.net:8443","requiredTailscaleLogin":"user@example.com","proxySecret":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"},"lan":null},
+            "policy":{"enableUntil":"2099-01-01T00:00:00Z","viewIdleMin":30,"viewAbsoluteHours":12,"elevationMaxMin":15,"fullSessionEnabled":false,"maxDevices":5},
+            "trustStore":root.join("workspace-trust.json"), "spaceRoots":[]
         })
     }
 
@@ -217,10 +243,10 @@ mod tests {
             .write_all(format!("{init}\n").as_bytes())
             .await
             .unwrap();
-        let task =
-            tokio::spawn(
-                async move { run(&events, BufReader::new(command_input), &mut None).await },
-            );
+        let task = tokio::spawn(async move {
+            let input = BufReader::new(command_input);
+            run(&events, input, &mut None, std::future::pending()).await
+        });
         let reader = tokio::spawn(async move {
             let mut input = BufReader::new(input);
             for _ in 0..4 {
@@ -272,10 +298,10 @@ mod tests {
             .write_all(format!("{}\n", init(root.path())).as_bytes())
             .await
             .unwrap();
-        let task =
-            tokio::spawn(
-                async move { run(&events, BufReader::new(command_input), &mut None).await },
-            );
+        let task = tokio::spawn(async move {
+            let input = BufReader::new(command_input);
+            run(&events, input, &mut None, std::future::pending()).await
+        });
         let mut reader = BufReader::new(input);
         let mut ready = String::new();
         timeout(Duration::from_secs(2), reader.read_line(&mut ready))
@@ -297,5 +323,164 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// A gateway over in-memory pipes, already past `ready`.
+    struct Running {
+        commands: tokio::io::DuplexStream,
+        events: BufReader<tokio::io::DuplexStream>,
+        task: tokio::task::JoinHandle<bool>,
+        port: u16,
+        _root: tempfile::TempDir,
+    }
+    impl Running {
+        async fn start(parent_gone: impl Future<Output = ()> + Send + 'static) -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let (output, input) = tokio::io::duplex(64 * 1024);
+            let (events, _writer) = admin::spawn_writer(output);
+            let (mut commands, command_input) = tokio::io::duplex(64 * 1024);
+            commands
+                .write_all(format!("{}\n", init(root.path())).as_bytes())
+                .await
+                .unwrap();
+            let task = tokio::spawn(async move {
+                let input = BufReader::new(command_input);
+                run(&events, input, &mut None, parent_gone).await
+            });
+            let mut running = Self {
+                commands,
+                events: BufReader::new(input),
+                task,
+                port: 0,
+                _root: root,
+            };
+            let ready = running.event().await;
+            assert_eq!(ready["type"], "ready");
+            running.port = ready["ports"]["loopback"].as_u64().unwrap() as u16;
+            running
+        }
+        async fn event(&mut self) -> serde_json::Value {
+            let mut line = String::new();
+            timeout(Duration::from_secs(5), self.events.read_line(&mut line))
+                .await
+                .expect("admin event deadline")
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+    }
+
+    /// A root that is absolute on every platform ("/srv/x" is relative on Windows).
+    fn absolute_root(name: &str) -> String {
+        let root = std::env::temp_dir().join(name);
+        assert!(root.is_absolute(), "{root:?} is not absolute here");
+        root.to_str().unwrap().to_owned()
+    }
+
+    /// A `spaces.roots` command of about 20 KiB whose last root is `last`.
+    fn roots_frame(last: &str) -> String {
+        let filler = "a".repeat(100);
+        let mut roots: Vec<_> = (0..120)
+            .map(|n| serde_json::json!({"session":"s","workspaceId":format!("w{n}"),"root":absolute_root(&format!("{filler}{n}"))}))
+            .collect();
+        roots.push(serde_json::json!({"session":"s","workspaceId":"last","root":last}));
+        let frame = serde_json::json!({"v":1,"type":"spaces.roots","roots":roots}).to_string();
+        assert!(frame.len() > 2 * 8192);
+        frame + "\n"
+    }
+
+    #[tokio::test]
+    async fn parent_polls_never_cut_a_command_frame_in_two() {
+        let probe: parent::Probe = Box::new(|| false);
+        let mut running =
+            Running::start(parent::watch(Some(probe), Duration::from_millis(20))).await;
+        // Each frame arrives in two writes five poll intervals apart.
+        for last in [absolute_root("last"), "relative".to_owned()] {
+            let frame = roots_frame(&last);
+            let (head, tail) = frame.split_at(frame.len() / 2);
+            running.commands.write_all(head.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            running.commands.write_all(tail.as_bytes()).await.unwrap();
+            if last == "relative" {
+                // Judged as a whole: the relative last root is what rejects it.
+                assert_eq!(running.event().await["code"], "admin-command-rejected");
+            }
+        }
+        // Nothing else was emitted for either frame, `invalid-command` above all.
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"future\"}\n")
+            .await
+            .unwrap();
+        assert_eq!(running.event().await["code"], "unknown-type");
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"shutdown\"}\n")
+            .await
+            .unwrap();
+        assert!(timeout(Duration::from_secs(2), running.task)
+            .await
+            .unwrap()
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn peers_list_is_answered_over_the_admin_channel_with_its_request_id() {
+        let mut running = Running::start(std::future::pending()).await;
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"peers.list\",\"requestId\":41}\n")
+            .await
+            .unwrap();
+        let snapshot = running.event().await;
+        assert_eq!(
+            snapshot,
+            serde_json::json!({"v":1,"type":"peers.snapshot","requestId":41,"peers":[],"streams":[]})
+        );
+        // An ack nobody waits for gets no reply and does not stop the gateway.
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"push.ack\",\"requestId\":1,\"stored\":true}\n{\"v\":1,\"type\":\"peers.list\",\"requestId\":42}\n")
+            .await
+            .unwrap();
+        assert_eq!(running.event().await["requestId"], 42);
+        running
+            .commands
+            .write_all(b"{\"v\":1,\"type\":\"shutdown\"}\n")
+            .await
+            .unwrap();
+        assert!(timeout(Duration::from_secs(2), running.task)
+            .await
+            .unwrap()
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn gone_parent_stops_the_gateway_after_a_grace_while_stdin_stays_open() {
+        let gone = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = gone.clone();
+        let probe: parent::Probe = Box::new(move || seen.load(std::sync::atomic::Ordering::SeqCst));
+        let mut running =
+            Running::start(parent::watch(Some(probe), Duration::from_millis(10))).await;
+        let port = running.port;
+        let _connection = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!running.task.is_finished(), "a live parent stops nothing");
+        let flipped = std::time::Instant::now();
+        gone.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Stopped like stdin EOF (a clean `true`) with stdin still open, but only
+        // after the grace that lets the tsnet sidecar unserve first.
+        assert!(timeout(Duration::from_secs(3), &mut running.task)
+            .await
+            .unwrap()
+            .unwrap());
+        assert!(flipped.elapsed() >= parent::GONE_GRACE);
+        assert!(
+            tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_err()
+        );
+        drop(running.commands);
     }
 }

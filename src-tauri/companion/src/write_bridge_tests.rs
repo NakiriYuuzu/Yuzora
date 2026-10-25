@@ -263,6 +263,10 @@ async fn io<T>(future: impl std::future::Future<Output = T>) -> T {
 }
 impl Fixture {
     async fn new() -> Self {
+        let fake = Arc::new(Fake::default());
+        Self::with_port(fake.clone(), fake).await
+    }
+    async fn with_port(port: Arc<dyn HerdrPort>, fake: Arc<Fake>) -> Self {
         let auth = Authenticator::new("ES256", 7, false);
         let rp = crate::webauthn::RelyingParty::new("desktop.tailnet.ts.net:8443").unwrap();
         let (state, options) = rp.registration(DEVICE, "Phone", &[], true).unwrap();
@@ -284,9 +288,8 @@ impl Fixture {
         init.session_allowlist = vec!["work".into()];
         let events = Arc::new(Mutex::new(Vec::new()));
         let (sender, writer) = admin::spawn_writer(Capture(events.clone()));
-        let fake = Arc::new(Fake::default());
         let clock = Clock::at(serde_json::from_str("\"2030-01-01T00:00:00Z\"").unwrap());
-        let gateway = Gateway::with_herdr(&init, sender, clock, fake.clone()).unwrap();
+        let gateway = Gateway::with_herdr(&init, sender, clock, port).unwrap();
         let (id, binding) = gateway
             .identity
             .lock()
@@ -351,7 +354,11 @@ impl Fixture {
             .unwrap();
         for (k, v) in [
             ("origin", "https://desktop.tailnet.ts.net:8443"),
-            ("tailscale-user-login", "user@example.com"),
+            (
+                "yzc-proxy-secret",
+                crate::test_support::identity::PROXY_SECRET,
+            ),
+            ("yzc-peer-login", "user@example.com"),
             ("cookie", &self.cookie),
         ] {
             request.headers_mut().insert(k, v.parse().unwrap());
@@ -522,6 +529,72 @@ async fn bridge_write_control_confirmation_conflict_takeover_freshness_taken_ove
         .audits()
         .iter()
         .any(|a| a["type"] == "control.state" && a["takeover"] == true));
+}
+#[tokio::test(start_paused = true)]
+async fn bridge_peers_list_names_open_control_and_full_streams_until_they_end() {
+    let list = |f: &Fixture| {
+        let command =
+            serde_json::from_value(json!({"v":1,"type":"peers.list","requestId":1})).unwrap();
+        match f
+            .gateway
+            .command(admin::CommandBody::Peers(command))
+            .unwrap()
+        {
+            admin::AdminResult::Peers { peers, streams, .. } => (peers, streams),
+            other => panic!("{other:?}"),
+        }
+    };
+    let mut f = Fixture::new().await;
+    f.elevate("control").await;
+    f.elevate("full").await;
+    let mut ws = f.connect().await;
+    assert!(list(&f).1.is_empty());
+    let stream = control(&mut ws).await;
+    let (peers, streams) = list(&f);
+    assert_eq!(peers.len(), 1);
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].device_id, DEVICE);
+    assert_eq!(streams[0].peer_id, peers[0].peer_id);
+    assert_eq!(streams[0].session, "work");
+    assert_eq!(streams[0].scope, Scope::Control);
+    assert_eq!(streams[0].target.as_deref(), Some("w:p"));
+    assert_eq!(
+        rpc(&mut ws, "terminal.release", json!({"stream":stream})).await["result"]["closed"],
+        true
+    );
+    f.released().await;
+    // The key is the one `control.state` announced.
+    let key = f
+        .audits()
+        .iter()
+        .find(|a| a["type"] == "control.state" && a["open"] == true)
+        .map(|a| a["stream"].as_str().unwrap().to_owned())
+        .unwrap();
+    assert_eq!(streams[0].stream, key);
+    assert!(list(&f).1.is_empty(), "a released stream is not listed");
+    // A full stream is listed without a pane, and goes with its socket.
+    let opened = full(&mut ws).await;
+    assert!(opened["result"].is_object(), "{opened}");
+    let streams = list(&f).1;
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].scope, Scope::Full);
+    assert_eq!(streams[0].target, None);
+    let full_stream = opened["result"]["stream"].clone();
+    assert_eq!(
+        rpc(&mut ws, "full.close", json!({"stream":full_stream})).await["result"]["closed"],
+        true
+    );
+    f.released().await;
+    assert!(list(&f).1.is_empty());
+    // Closing the socket ends the peer, whether or not anyone saw the event.
+    drop(ws);
+    for _ in 0..200 {
+        if list(&f).0.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(list(&f).0.is_empty());
 }
 #[tokio::test(start_paused = true)]
 async fn bridge_write_rpc_binary_ownership_and_scope() {
@@ -2164,4 +2237,84 @@ async fn final_f1_leased_unannounced_open_tightens_without_state_false() {
             assert!(!f.gateway.deferred_audit.lock().unwrap().pending_for(DEVICE));
         }
     }
+}
+
+/// The real Host manager against a control connector that never reads: the
+/// stuck input ends by itself (real time; the Host bound is wall-clock), the
+/// stream closes as `stream-stalled`, the connector is gone, every permit is
+/// back and the same pane can be opened again.
+#[cfg(unix)]
+#[tokio::test]
+async fn bridge_write_host_input_timeout_closes_stream_and_returns_every_permit() {
+    async fn next(ws: &mut WebSocketStream<TcpStream>) -> Value {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(20), ws.next())
+                .await
+                .expect("no message within 20 s")
+                .unwrap()
+                .unwrap();
+            match message {
+                Message::Text(s) => return serde_json::from_str(&s).unwrap(),
+                Message::Ping(_) => ws.flush().await.unwrap(),
+                Message::Binary(_) => {}
+                other => panic!("expected JSON {other:?}"),
+            }
+        }
+    }
+    let snapshot = json!({"panes":[{"pane_id":"w:p","terminal_id":"term"}],"agents":[{"pane_id":"w:p","agent":"fake"}],"layouts":[{"panes":[{"pane_id":"w:p","rect":{"width":120,"height":40}}]}]});
+    let fake = fake_herdr::FakeHerdr::new(snapshot).await;
+    fake.stall_stdin();
+    let port = Arc::new(herdr::LocalHerdr::new(fake.binary.clone()));
+    let mut f = Fixture::with_port(port, Arc::new(Fake::default())).await;
+    f.elevate("control").await;
+    let mut ws = f.connect().await;
+    let control = json!({"id":1,"method":"terminal.control","params":{"session":"work","target":"w:p","confirmResize":true}});
+    ws.send(Message::text(control.to_string())).await.unwrap();
+    let reply = next(&mut ws).await;
+    let stream = reply["result"]["stream"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{reply}"));
+
+    // Fill the connector's pipe; the write that cannot finish is the one that fails.
+    let text = "x".repeat(4096);
+    let mut replies = Vec::new();
+    let started = std::time::Instant::now();
+    let mut sent = 0;
+    while !replies.iter().any(|r: &Value| r.get("error").is_some()) {
+        sent += 1;
+        assert!(sent < 200, "the pipe never filled up");
+        let call = json!({"id":100 + sent,"method":"terminal.input","params":{"stream":stream,"text":text}});
+        ws.send(Message::text(call.to_string())).await.unwrap();
+        replies.push(next(&mut ws).await);
+    }
+    assert!(started.elapsed() < Duration::from_secs(20));
+    let failed = replies.last().unwrap();
+    assert_eq!(failed["error"]["code"], "stream-stalled", "{failed}");
+    // The stream closes, so its Lease drops.
+    let closed = next(&mut ws).await;
+    assert_eq!(closed["event"], "stream.closed", "{closed}");
+    assert_eq!(closed["data"]["reason"], "stream-stalled");
+
+    fake.assert_released().await;
+    f.gateway.herdr_jobs.drain().await;
+    assert!(f.gateway.herdr_jobs.idle());
+    // The write slot and the device permit are free: not "busy".
+    f.gateway
+        .herdr_jobs
+        .submit_device(DEVICE, true, || ())
+        .unwrap()
+        .await
+        .unwrap();
+    // The same pane can be controlled again (on a connector that reads).
+    std::fs::remove_file(fake.root.path().join("stall-stdin")).unwrap();
+    ws.send(Message::text(control.to_string())).await.unwrap();
+    let again = next(&mut ws).await;
+    assert!(again["result"]["stream"].is_u64(), "{again}");
+    ws.send(Message::text(
+        json!({"id":7,"method":"terminal.input","params":{"stream":again["result"]["stream"],"text":"ok"}})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    assert!(next(&mut ws).await["result"].is_object());
 }

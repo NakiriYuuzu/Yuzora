@@ -18,8 +18,8 @@ import { reportCompanionEvent } from "./companionAudit"
 
 // Shapes as the gateway sends them (captured from the PWA end-to-end run).
 const device = { ...fx.device, deviceId: "ikrCaV7JPKLNW7SjoMYrdA", label: "iPhone" }
-const audit = (action: string, summary: Record<string, unknown>, target = "w1:p1"): CompanionEvent => ({
-  type: "audit", deviceId: device.deviceId, peerId: 0, scope: "control", action, session: "e2e", target, summary, at: "2026-10-18T03:47:38.176376458Z",
+const audit = (action: string, summary: Record<string, unknown>, target = "w1:p1", scope: "view" | "control" = "control"): CompanionEvent => ({
+  type: "audit", deviceId: device.deviceId, peerId: 0, scope, action, session: "e2e", target, summary, at: "2026-10-18T03:47:38.176376458Z",
 })
 const controlState = (takeover: boolean, open = true): CompanionEvent => ({
   type: "control.state", deviceId: device.deviceId, peerId: 0, stream: "6", seq: open ? 1 : 2, session: "e2e", target: "w1:p1", takeover, open,
@@ -54,6 +54,22 @@ it("logs a prompt as an audit without its text and shows one notice per device a
   }])
   expect(mocks.toast).toHaveBeenCalledWith("iPhone sent a prompt to pi", { id: `companion-${device.deviceId}-w1:p1` })
   expect(JSON.stringify([mocks.invoke.mock.calls, mocks.toast.mock.calls])).not.toContain("SECRET")
+})
+
+it("logs a Git read by its method only, and shows no notice", () => {
+  reportCompanionEvent(audit("git.read", { method: "git.diff", path: "secrets/.env", prefix: "SECRET", text: "SECRET" }, "w1", "view"))
+  expect(logged()).toEqual([{
+    level: "info", kind: "audit", source: "companion", workspace_path: null, event: "companion_audit",
+    message: "iPhone: git.read on e2e · w1",
+    metadata: {
+      deviceId: device.deviceId, peerId: 0, scope: "view", action: "git.read", session: "e2e", target: "w1",
+      reason: undefined, outcome: undefined, at: "2026-10-18T03:47:38.176376458Z", summary: { method: "git.diff" },
+    },
+  }])
+  expect(mocks.toast).not.toHaveBeenCalled()
+  expect(mocks.toast.warning).not.toHaveBeenCalled()
+  expect(JSON.stringify(mocks.invoke.mock.calls)).not.toContain("SECRET")
+  expect(JSON.stringify(mocks.invoke.mock.calls)).not.toContain(".env")
 })
 
 it("notices a control stream once, from its state, and a background takeover also notifies the system", async () => {

@@ -994,8 +994,11 @@ fn helper_command() -> Result<Command, DatabaseError> {
 }
 
 fn spawn_helper_process() -> Result<NetworkQueryWorker, DatabaseError> {
-    let child = helper_command()?
-        .spawn()
+    spawn_helper(helper_command()?)
+}
+
+fn spawn_helper(mut command: Command) -> Result<NetworkQueryWorker, DatabaseError> {
+    let child = crate::process_kill::spawn_tokio(&mut command)
         .map_err(|error| worker_error("helperSpawn", &error.to_string()))?;
     NetworkQueryWorker::from_child(child)
 }
@@ -1234,6 +1237,26 @@ mod tests {
         );
         assert!(rendered.contains("<redacted>"));
         assert!(rendered.contains("alice"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_helper_spawns_through_the_spawn_lock() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut command = Command::new("/bin/cat");
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let (worker, spawns) =
+            crate::process_kill::trace_spawns(|| runtime.block_on(async { spawn_helper(command) }));
+        // Dropping the worker kills the stand-in helper; its drop needs the runtime.
+        runtime.block_on(async { drop(worker.unwrap()) });
+        assert_eq!(spawns, ["/bin/cat"]);
     }
 
     #[test]

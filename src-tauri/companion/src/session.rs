@@ -177,6 +177,19 @@ impl Identity {
     pub(crate) fn unregister_peer(&mut self, id: u64) {
         self.peers.remove(&id);
     }
+    /// The phones connected now, oldest first: what `peers.snapshot` reports.
+    pub(crate) fn peer_list(&self) -> Vec<crate::admin::PeerInfo> {
+        let mut peers: Vec<_> = self
+            .peers
+            .iter()
+            .map(|(id, peer)| crate::admin::PeerInfo {
+                peer_id: *id,
+                device_id: peer.device.clone(),
+            })
+            .collect();
+        peers.sort_by_key(|peer| peer.peer_id);
+        peers
+    }
     fn invalidate_session(&mut self, id: &[u8; 32]) {
         self.sessions.remove(id);
         for peer in self.peers.values().filter(|p| p.session == *id) {

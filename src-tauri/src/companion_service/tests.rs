@@ -1,5 +1,6 @@
 //! Fake sidecars are shell scripts speaking the admin NDJSON protocol.
 use super::*;
+use crate::companion_push::tests::{self as push_tests, Wire};
 use std::path::Path;
 
 const DEVICE: &str = include_str!("../../companion/tests/fixtures/device.json");
@@ -12,6 +13,7 @@ struct Harness {
     manager: Arc<CompanionManager>,
     events: Arc<Mutex<Vec<Value>>>,
     stopped: Arc<std::sync::atomic::AtomicUsize>,
+    wire: Wire,
 }
 impl Harness {
     fn new(script: &str) -> Self {
@@ -28,17 +30,21 @@ impl Harness {
         let stopped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sink = events.clone();
         let count = stopped.clone();
+        let wire = push_tests::wire();
         let manager = Arc::new(CompanionManager {
             dir: dir.clone(),
             emit: Arc::new(move |event| sink.lock().unwrap().push(event)),
             stopped: Arc::new(move || {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
+            closing: OnceLock::new(),
+            push: wire.push(&dir),
             inner: Mutex::default(),
             store: Mutex::new(None),
             commands: tokio::sync::Mutex::new(()),
             timing: Timing {
-                command: Duration::from_millis(500),
+                // Fake replies sleep up to 0.2 s; loaded CI runners need slack.
+                command: Duration::from_millis(2000),
                 stop: Duration::from_millis(500),
                 ready: Duration::from_millis(1000),
             },
@@ -50,6 +56,7 @@ impl Harness {
             manager,
             events,
             stopped,
+            wire,
         }
     }
     fn launch(&self) -> Launch {
@@ -101,14 +108,30 @@ done"#
         init["devices"],
         json!([serde_json::from_str::<Value>(DEVICE).unwrap()])
     );
-    // Only allowlisted variables reach the gateway; sh adds PWD, SHLVL and _.
-    for line in h.sidecar_file("env").lines() {
+    // Only allowlisted variables reach the gateway, and the ones it is given;
+    // sh adds PWD, SHLVL and _.
+    let env = h.sidecar_file("env");
+    for line in env.lines() {
         let key = line.split('=').next().unwrap();
         assert!(
-            ENV_ALLOWLIST.contains(&key) || ["PWD", "SHLVL", "_", "OLDPWD"].contains(&key),
+            ENV_ALLOWLIST.contains(&key)
+                || GATEWAY_GIT_ENV.iter().any(|(given, _)| *given == key)
+                || ["PWD", "SHLVL", "_", "OLDPWD"].contains(&key),
             "leaked {key}"
         );
     }
+    // Never inherited, always set: a phone's git read must not fetch from a remote.
+    for (key, _) in GATEWAY_GIT_ENV {
+        assert!(!ENV_ALLOWLIST.contains(key), "{key} would be inherited");
+    }
+    let given = |name: &str| {
+        env.lines()
+            .filter(|line| line.starts_with(&format!("{name}=")))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(given("GIT_NO_LAZY_FETCH"), ["GIT_NO_LAZY_FETCH=1"]);
+    // Empty, but set: git before 2.44 refuses every transport with it.
+    assert_eq!(given("GIT_ALLOW_PROTOCOL"), ["GIT_ALLOW_PROTOCOL="]);
     h.until("session event", |h| {
         h.events
             .lock()
@@ -123,6 +146,22 @@ done"#
     assert_eq!(h.sidecar_file("stopped").trim(), "shutdown");
     assert_eq!(h.stops(), 0, "a requested stop does its own cleanup");
     assert!(h.manager.start(h.launch()).is_ok(), "can start again");
+    h.manager.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn companion_service_gateway_spawns_through_the_spawn_lock() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in *'"shutdown"'*) exit 0;; esac
+done"#
+    ));
+    let (started, spawns) = crate::process_kill::trace_spawns(|| h.manager.start(h.launch()));
+    started.unwrap();
+    assert_eq!(spawns, [h.bin.display().to_string()]);
+    h.until("ready", running).await;
     h.manager.stop().await;
 }
 
@@ -447,6 +486,281 @@ done"#
 }
 
 #[tokio::test]
+async fn companion_service_fail_halts_a_running_gateway_from_outside() {
+    // The node in front of the gateway is gone.
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'; while read line; do :; done"#
+    ));
+    h.manager.fail("companion-net-crashed");
+    assert_eq!(
+        h.manager.status(),
+        Status::Disabled,
+        "nothing runs: nothing to halt"
+    );
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    h.manager.fail("companion-net-crashed");
+    let failed = Status::Failed {
+        code: "companion-net-crashed".into(),
+    };
+    assert_eq!(h.manager.status(), failed);
+    h.until("gateway gone", |h| h.manager.idle()).await;
+    assert_eq!(h.manager.status(), failed);
+    h.until("stop hook", |h| h.stops() == 1).await;
+}
+
+/// What the node does before the gateway may go: takes a while to stop
+/// forwarding. `closed` is set when it is done, and is the only thing that
+/// lets the gateway go.
+fn closing_in(
+    h: &Harness,
+    took: Duration,
+) -> (
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let (closed, asked) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let (done, count) = (closed.clone(), asked.clone());
+    h.manager.on_closing(Arc::new(move || {
+        let (done, count) = (done.clone(), count.clone());
+        Box::pin(async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(took).await;
+            done.store(true, Ordering::SeqCst);
+        })
+    }));
+    (closed, asked)
+}
+
+/// After a halt the failure is published, and the gateway lives until the node
+/// has stopped forwarding to it; only then is it killed.
+async fn halted_gateway_outlives_the_closing(
+    h: &Harness,
+    closed: &std::sync::atomic::AtomicBool,
+    code: &str,
+) {
+    use std::sync::atomic::Ordering;
+    let failed = Status::Failed { code: code.into() };
+    assert_eq!(h.manager.status(), failed);
+    assert!(
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "status" && e["status"]["code"] == code),
+        "the failure was not published"
+    );
+    assert!(!h.manager.idle(), "{code}: killed before the node closed");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !closed.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{code}: the node was never asked to close"
+        );
+        // `closed` is set before the kill: an idle gateway means it was.
+        let idle = h.manager.idle();
+        assert!(
+            !idle || closed.load(Ordering::SeqCst),
+            "{code}: killed before the node closed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    h.until("gateway gone", |h| h.manager.idle()).await;
+    assert_eq!(h.manager.status(), failed);
+}
+
+#[tokio::test]
+async fn companion_service_a_failed_gateway_is_killed_only_after_the_node_stopped_forwarding() {
+    let ready_loop = format!(r#"read init; echo '{READY}'; while read line; do :; done"#);
+
+    // Failed from outside (the node's key expired, a crash).
+    let h = Harness::new(&ready_loop);
+    let (closed, asked) = closing_in(&h, Duration::from_millis(500));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    h.manager.fail("companion-net-login-required");
+    halted_gateway_outlives_the_closing(&h, &closed, "companion-net-login-required").await;
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    h.until("stop hook", |h| h.stops() == 1).await;
+
+    // A command the gateway never answers.
+    let h = Harness::new(&ready_loop);
+    let (closed, _) = closing_in(&h, Duration::from_millis(500));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    assert_eq!(
+        h.manager.pairing_create(None).await.unwrap_err(),
+        "companion-timeout"
+    );
+    halted_gateway_outlives_the_closing(&h, &closed, "companion-timeout").await;
+
+    // A device change that could not be written down.
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in *'"device.revoke"'*) echo '{{"v":1,"type":"device.revoked","deviceId":"AAAAAAAAAAAAAAAAAAAAAA"}}';; esac
+done"#
+    ));
+    let (closed, _) = closing_in(&h, Duration::from_millis(500));
+    Devices::load(&h.dir)
+        .unwrap()
+        .upsert(serde_json::from_str(DEVICE).unwrap())
+        .unwrap();
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    std::fs::create_dir(h.dir.join("devices.json.tmp")).unwrap();
+    assert!(h
+        .manager
+        .device_command(json!({"type": "device.revoke", "deviceId": "AAAAAAAAAAAAAAAAAAAAAA"}))
+        .await
+        .is_err());
+    let code = match h.manager.status() {
+        Status::Failed { code } => code,
+        other => panic!("{other:?}"),
+    };
+    assert!(code.starts_with("companion-store-write-failed"), "{code}");
+    halted_gateway_outlives_the_closing(&h, &closed, &code).await;
+
+    // Ready on another port than the node would forward to.
+    let h = Harness::new(&ready_loop);
+    let (closed, _) = closing_in(&h, Duration::from_millis(500));
+    let mut launch = h.launch();
+    launch.init["listeners"] = json!({"loopback": {"port": 47111}});
+    h.manager.start(launch).unwrap();
+    h.until("port mismatch", |h| {
+        matches!(h.manager.status(), Status::Failed { .. })
+    })
+    .await;
+    halted_gateway_outlives_the_closing(&h, &closed, "companion-port-mismatch").await;
+
+    // Never ready.
+    let h = Harness::new("read init; while read line; do :; done");
+    let (closed, _) = closing_in(&h, Duration::from_millis(500));
+    h.manager.start(h.launch()).unwrap();
+    h.until("start timeout", |h| {
+        matches!(h.manager.status(), Status::Failed { .. })
+    })
+    .await;
+    halted_gateway_outlives_the_closing(&h, &closed, "companion-start-timeout").await;
+
+    // A requested stop is the caller's own cleanup, not a halt: nothing waits.
+    let h = Harness::new(&ready_loop);
+    let (_, asked) = closing_in(&h, Duration::from_millis(500));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    h.manager.stop().await;
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn companion_service_an_expired_gateway_is_told_to_go_only_after_the_node_stopped_forwarding()
+{
+    use std::sync::atomic::Ordering;
+    // As the real one: it keeps its port until told to go, or its stdin closes.
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'; sleep 0.1
+echo '{{"v":1,"type":"error","code":"policy-expired","message":"Companion request rejected"}}'
+while read line; do
+  printf '%s
+' "$line" >> "$0.in"
+  case "$line" in *'"shutdown"'*) echo released > "$0.released"; exit 1;; esac
+done"#
+    ));
+    let (closed, asked) = closing_in(&h, Duration::from_millis(800));
+    h.manager.start(h.launch()).unwrap();
+    h.until("expiry noticed", |h| {
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "error" && e["code"] == "policy-expired")
+    })
+    .await;
+    // While the node closes its listener the gateway holds the port.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !closed.load(Ordering::SeqCst),
+        "the closing ended too early for this test"
+    );
+    assert!(
+        gateway_frames(&h, "shutdown").is_empty(),
+        "told to go before the node closed"
+    );
+    assert_eq!(h.sidecar_file("released"), "");
+    assert!(!h.manager.idle());
+
+    // Then it is told, and leaves; the expiry is reported as before.
+    h.until("released", |h| !h.sidecar_file("released").is_empty())
+        .await;
+    assert!(
+        closed.load(Ordering::SeqCst),
+        "told to go before the node closed"
+    );
+    h.until("disabled", |h| h.manager.status() == Status::Disabled)
+        .await;
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    h.until("stop hook", |h| h.stops() == 1).await;
+    assert!(h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|e| e["type"] != "status" || e["status"]["state"] != "failed"));
+}
+
+#[tokio::test]
+async fn companion_service_a_failure_is_forgotten_only_when_nothing_runs() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'; while read line; do :; done"#
+    ));
+    let statuses = |h: &Harness| -> Vec<Value> {
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "status")
+            .map(|e| e["status"]["state"].clone())
+            .collect()
+    };
+    // Nothing failed: nothing to forget, nothing to say.
+    h.manager.clear_failure();
+    assert!(statuses(&h).is_empty());
+
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    h.manager.clear_failure();
+    assert!(running(&h), "a gateway that runs has no failure to forget");
+
+    // A halted gateway that is still on its way out keeps its failure.
+    let (closed, _) = closing_in(&h, Duration::from_millis(500));
+    h.manager.fail("companion-timeout");
+    h.manager.clear_failure();
+    assert!(matches!(h.manager.status(), Status::Failed { .. }));
+    for _ in 0..300 {
+        if closed.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    h.until("gone", |h| h.manager.idle()).await;
+    let before = statuses(&h).len();
+    assert!(matches!(h.manager.status(), Status::Failed { .. }));
+
+    // Once it is gone the failure is forgotten, once.
+    h.manager.clear_failure();
+    assert_eq!(h.manager.status(), Status::Disabled);
+    assert_eq!(statuses(&h)[before..], ["disabled"]);
+    h.manager.clear_failure();
+    assert_eq!(statuses(&h).len(), before + 1);
+    assert!(h.manager.idle());
+}
+
+#[tokio::test]
 async fn companion_service_crash_fails_without_restarting() {
     // A restart would leave Serve forwarding to an unbound port meanwhile.
     let h = Harness::new(&format!(
@@ -495,7 +809,7 @@ async fn companion_service_startup_errors_and_expiry_never_restart() {
 
 #[tokio::test]
 async fn companion_service_ready_must_come_in_time_on_the_configured_port() {
-    // Hangs after init: stopped as failed, and the stop hook removes Serve.
+    // Hangs after init: stopped as failed, and the stop hook closes the node's listener.
     let h = Harness::new("read init; while read line; do :; done");
     h.manager.start(h.launch()).unwrap();
     assert_eq!(
@@ -535,7 +849,8 @@ fn companion_service_halted_gateway_writes_nothing_more() {
     *h.manager.store.lock().unwrap() = Some(Devices::load(&h.dir).unwrap());
     let generation = {
         let mut inner = h.manager.inner.lock().unwrap();
-        halt(&mut inner, "companion-store-write-failed");
+        // Nothing runs: no handle to kill.
+        assert!(halt(&mut inner, "companion-store-write-failed").is_none());
         inner.generation
     };
     h.manager.on_event(
@@ -578,7 +893,7 @@ async fn companion_service_commands_need_a_running_gateway_and_time_out() {
         "companion-timeout"
     );
     // A late reply could answer the next command: the gateway is stopped as
-    // failed, nothing more is sent to it, and the stop hook removes Serve.
+    // failed, nothing more is sent to it, and the stop hook closes the node's listener.
     assert_eq!(
         h.manager.status(),
         Status::Failed {
@@ -616,4 +931,586 @@ async fn companion_service_missing_binary_and_corrupt_store_fail_to_start() {
             code: "companion-store-corrupt".into()
         }
     );
+}
+
+fn push_events(h: &Harness) -> Vec<Value> {
+    h.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "push")
+        .cloned()
+        .collect()
+}
+
+fn gateway_frames(h: &Harness, kind: &str) -> Vec<Value> {
+    h.sidecar_file("in")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|frame| frame["type"] == kind)
+        .collect()
+}
+
+#[tokio::test]
+async fn companion_service_push_events_stay_here_and_a_gone_subscription_leaves_the_gateways_set() {
+    let subscription = push_tests::subscription(1);
+    let request = json!({"v": 1, "type": "push.request", "deviceIds": [push_tests::DEVICE_ID], "payload": push_tests::request_payload("p1")});
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{id}","subscription":{subscription}}}'
+while read line; do
+  printf '%s\n' "$line" >> "$0.in"
+  case "$line" in
+    *"{id}"*'"push.devices"'*) echo '{request}';;
+    *'"shutdown"'*) exit 0;;
+  esac
+done"#,
+        id = push_tests::DEVICE_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    h.wire.answer("https://fcm.googleapis.com/fcm/send/1", 410);
+    assert!(h.manager.push().init().is_object());
+    h.manager.start(h.launch()).unwrap();
+    h.until("subscription gone again", |h| {
+        gateway_frames(h, "push.devices").len() == 2
+    })
+    .await;
+
+    // The gateway is told the set, then the set without the dead endpoint.
+    let sets: Vec<Value> = gateway_frames(&h, "push.devices")
+        .iter()
+        .map(|frame| frame["devices"].clone())
+        .collect();
+    let endpoint_ids = json!([crate::companion_push::endpoint_id(&push_tests::endpoint(1))]);
+    assert_eq!(
+        sets,
+        [
+            json!([{"deviceId": push_tests::DEVICE_ID, "endpoints": endpoint_ids}]),
+            json!([])
+        ]
+    );
+    assert_eq!(
+        gateway_frames(&h, "push.devices")[0],
+        json!({"v": 1, "type": "push.devices", "devices": [{"deviceId": push_tests::DEVICE_ID, "endpoints": endpoint_ids}]})
+    );
+    assert_eq!(h.wire.urls(), ["https://fcm.googleapis.com/fcm/send/1"]);
+    assert!(h.manager.push().devices().is_empty());
+    let file = std::fs::read_to_string(h.dir.join("push.json")).unwrap();
+    assert!(!file.contains("fcm.googleapis.com"));
+
+    // The UI follows through its own event, which says who, never how.
+    let overview = |subscribed: Value| json!({"type": "push", "push": {"available": true, "subscribed": subscribed}});
+    h.until("both push events", |h| push_events(h).len() == 2)
+        .await;
+    assert_eq!(
+        push_events(&h),
+        [
+            overview(json!([push_tests::DEVICE_ID])),
+            overview(json!([]))
+        ]
+    );
+    let emitted = serde_json::to_string(&*h.events.lock().unwrap()).unwrap();
+    for secret in [
+        "fcm.googleapis.com",
+        "p256dh",
+        "BTBZMq",
+        "push.subscription",
+        "push.request",
+        "claude",
+    ] {
+        assert!(!emitted.contains(secret), "{secret} reached the UI");
+    }
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_a_browser_leaving_removes_only_its_own_subscription() {
+    let (first, second) = (push_tests::subscription(1), push_tests::subscription(2));
+    let id = |n: u32| crate::companion_push::endpoint_id(&push_tests::endpoint(n));
+    let gone = id(2);
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{device}","subscription":{first}}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{device}","subscription":{second}}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{device}","subscription":null}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{device}","subscription":null,"endpointId":"{gone}"}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{device}","subscription":null,"endpointId":"{gone}"}}'
+echo '{{"v":1,"type":"session.opened","peerId":1,"deviceId":"{device}"}}'
+while read line; do printf '%s
+' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        device = push_tests::DEVICE_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    assert!(h.manager.push().init().is_object());
+    h.manager.start(h.launch()).unwrap();
+    h.until("later event", |h| {
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "session.opened")
+    })
+    .await;
+    // The device keeps the first browser's endpoint; the gateway heard each
+    // change as the list of ids, and the UI that the device is still subscribed.
+    h.until("three sets", |h| {
+        gateway_frames(h, "push.devices").len() == 3
+    })
+    .await;
+    let sets: Vec<Value> = gateway_frames(&h, "push.devices")
+        .iter()
+        .map(|frame| frame["devices"].clone())
+        .collect();
+    let listing = |ns: &[u32]| json!([{"deviceId": push_tests::DEVICE_ID, "endpoints": ns.iter().map(|n| id(*n)).collect::<Vec<_>>()}]);
+    assert_eq!(sets, [listing(&[1]), listing(&[1, 2]), listing(&[1])]);
+    assert_eq!(h.manager.push().devices(), [push_tests::DEVICE_ID]);
+    // `null` without an id names nothing, and the repeat found nothing.
+    assert_eq!(push_events(&h).len(), 3);
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_push_subscriptions_of_unknown_devices_are_ignored() {
+    let subscription = push_tests::subscription(1);
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{other}","subscription":{subscription}}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{{"endpoint":"https://evil.example/x","p256dh":"x","auth":"y"}}}}'
+echo '{{"v":1,"type":"session.opened","peerId":1,"deviceId":"{known}"}}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        other = push_tests::OTHER_ID,
+        known = push_tests::DEVICE_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    h.manager.start(h.launch()).unwrap();
+    // Events are handled in order: the one after both has been.
+    h.until("later event", |h| {
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "session.opened")
+    })
+    .await;
+    assert!(h.manager.push().devices().is_empty());
+    assert!(gateway_frames(&h, "push.devices").is_empty());
+    assert!(push_events(&h).is_empty());
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_a_pane_that_just_pushed_does_not_push_again() {
+    let request = json!({"v": 1, "type": "push.request", "deviceIds": [push_tests::DEVICE_ID], "payload": push_tests::request_payload("p1")});
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{request}'
+echo '{request}'
+echo '{{"v":1,"type":"session.opened","peerId":1,"deviceId":"{id}"}}'
+while read line; do case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        id = push_tests::DEVICE_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    let push = h.manager.push();
+    assert!(push.init().is_object());
+    assert!(push.subscription(push_tests::DEVICE_ID, &push_tests::subscription(1)));
+    h.manager.start(h.launch()).unwrap();
+    h.until("sent", |h| !h.wire.urls().is_empty()).await;
+    h.until("later event", |h| {
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "session.opened")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.wire.urls().len(), 1);
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_a_revoked_device_loses_its_subscription() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in
+    *'"device.revoke"'*) echo '{{"v":1,"type":"device.revoked","deviceId":"{id}"}}';;
+    *'"shutdown"'*) exit 0;;
+  esac
+done"#,
+        id = push_tests::DEVICE_ID
+    ));
+    let (kept, other) = (push_tests::OTHER_ID, push_tests::DEVICE_ID);
+    push_tests::seed(&h.dir, &[other, kept]);
+    let push = h.manager.push();
+    assert!(push.init().is_object());
+    for (n, id) in [other, kept].into_iter().enumerate() {
+        assert!(push.subscription(id, &push_tests::subscription(n as u32)));
+    }
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    h.manager
+        .device_command(json!({"type": "device.revoke", "deviceId": other}))
+        .await
+        .unwrap();
+    assert_eq!(push.devices(), [kept]);
+    let file = std::fs::read_to_string(h.dir.join("push.json")).unwrap();
+    assert!(!file.contains("/send/0") && file.contains("/send/1"));
+    assert_eq!(
+        push_events(&h),
+        [json!({"type": "push", "push": {"available": true, "subscribed": [kept]}})]
+    );
+    h.manager.stop().await;
+
+    // Revoked while no gateway runs: the desktop edits devices.json itself.
+    h.manager
+        .edit_stopped(&json!({"type": "device.revoke", "deviceId": kept}))
+        .unwrap();
+    assert!(push.devices().is_empty());
+    assert!(!std::fs::read_to_string(h.dir.join("push.json"))
+        .unwrap()
+        .contains("/send/1"));
+    assert_eq!(push_events(&h).len(), 2);
+}
+
+#[tokio::test]
+async fn companion_service_a_new_push_key_drops_the_subscriptions_and_tells_everyone() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    let push = h.manager.push();
+    // A phone subscribed under a key that is gone: the vault is empty.
+    assert!(push.subscription(push_tests::DEVICE_ID, &push_tests::subscription(1)));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+
+    let init = h.manager.push_init();
+    assert_eq!(init["devices"], json!([]));
+    assert!(init["vapidPublicKey"].is_string());
+    assert!(push.devices().is_empty());
+    // The UI and the running gateway hear it, as for any other change.
+    assert_eq!(
+        push_events(&h),
+        [json!({"type": "push", "push": {"available": true, "subscribed": []}})]
+    );
+    h.until("push.devices", |h| {
+        !gateway_frames(h, "push.devices").is_empty()
+    })
+    .await;
+    assert_eq!(
+        gateway_frames(&h, "push.devices"),
+        [json!({"v": 1, "type": "push.devices", "devices": []})]
+    );
+
+    // Nothing more to say when the key is there.
+    h.manager.push_init();
+    assert_eq!(push_events(&h).len(), 1);
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_notify_reaches_only_a_running_gateway() {
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#
+    ));
+    let frame = json!({"v": 1, "type": "spaces.roots", "roots": []});
+    // Nothing runs: dropped, and the next start gets the state through init.
+    h.manager.notify(&frame);
+    h.manager.start(h.launch()).unwrap();
+    // Starting is not running: the gateway has not said it is ready.
+    h.manager.notify(&frame);
+    h.until("ready", running).await;
+    h.manager.notify(&frame);
+    h.until("frame", |h| !gateway_frames(h, "spaces.roots").is_empty())
+        .await;
+    h.manager.stop().await;
+    h.manager.notify(&frame);
+    assert_eq!(gateway_frames(&h, "spaces.roots"), [frame]);
+}
+
+/// Git the way the gateway runs it: its allowlisted environment and a quiet
+/// config, with `extra` on top.
+fn gateway_git(
+    dir: &Path,
+    config: &Path,
+    extra: &[(&str, &str)],
+    args: &[&str],
+) -> std::process::Output {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env_clear()
+        .envs(
+            ENV_ALLOWLIST
+                .iter()
+                .filter_map(|key| std::env::var_os(key).map(|value| (*key, value))),
+        )
+        .env("GIT_CONFIG_GLOBAL", config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(extra.iter().copied())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn companion_gateway_git_env_refuses_lazy_fetches_even_for_a_git_before_2_44() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("gitconfig");
+    std::fs::write(&config, "").unwrap();
+    let (src, clone) = (root.path().join("src"), root.path().join("clone"));
+    let ok = |output: std::process::Output| {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let git =
+        |dir: &Path, extra: &[(&str, &str)], args: &[&str]| gateway_git(dir, &config, extra, args);
+    std::fs::create_dir(&src).unwrap();
+    ok(git(&src, &[], &["init", "-q"]));
+    ok(git(
+        &src,
+        &[],
+        &["config", "uploadpack.allowFilter", "true"],
+    ));
+    std::fs::write(src.join("a.txt"), "one\n").unwrap();
+    std::fs::write(src.join("b.txt"), "two\n").unwrap();
+    ok(git(&src, &[], &["add", "."]));
+    ok(git(
+        &src,
+        &[],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "first",
+        ],
+    ));
+    let blob = ok(git(&src, &[], &["rev-parse", "HEAD:a.txt"]));
+    let blob = blob.trim();
+    // A partial clone: its blobs stay on the remote until something asks.
+    ok(git(
+        root.path(),
+        &[],
+        &[
+            "clone",
+            "-q",
+            "--no-checkout",
+            "--filter=blob:none",
+            &format!("file://{}", src.display()),
+            clone.to_str().unwrap(),
+        ],
+    ));
+    let missing = || {
+        ok(git(
+            &clone,
+            &[],
+            &["rev-list", "--objects", "--all", "--missing=print"],
+        ))
+        .lines()
+        .filter(|line| line.starts_with('?'))
+        .count()
+    };
+    assert_eq!(missing(), 2);
+
+    // What a git that does not know GIT_NO_LAZY_FETCH is left with.
+    let older: Vec<_> = GATEWAY_GIT_ENV
+        .iter()
+        .copied()
+        .filter(|(key, _)| *key != "GIT_NO_LAZY_FETCH")
+        .collect();
+    let read = git(&clone, &older, &["cat-file", "-p", blob]);
+    assert!(!read.status.success(), "a missing blob was fetched");
+    assert_eq!(missing(), 2, "the remote was asked for objects");
+    // Nothing else forbids it, so the refusal above is the variable's.
+    assert_eq!(ok(git(&clone, &[], &["cat-file", "-p", blob])), "one\n");
+    assert_eq!(missing(), 1);
+
+    // What a phone reads still works with the whole environment.
+    std::fs::write(src.join("a.txt"), "changed\n").unwrap();
+    assert!(ok(git(&src, GATEWAY_GIT_ENV, &["status", "--porcelain"])).contains(" M a.txt"));
+    assert!(ok(git(&src, GATEWAY_GIT_ENV, &["log", "--oneline"])).contains("first"));
+    assert!(ok(git(&src, GATEWAY_GIT_ENV, &["diff"])).contains("+changed"));
+    assert!(ok(git(&clone, GATEWAY_GIT_ENV, &["log", "--oneline"])).contains("first"));
+}
+
+/// A pipe is never read into memory past the cap: the oversized record is cut,
+/// the rest of it dropped, and the records after it still arrive. Bytes that
+/// are not UTF-8 are replaced and the drain goes on.
+#[tokio::test]
+async fn companion_stderr_records_are_bounded_and_survive_invalid_utf8() {
+    let mut input = Vec::new();
+    input.extend_from_slice(b"first\n");
+    input.extend(std::iter::repeat_n(b'x', 10_000_000));
+    input.extend_from_slice(b"\nbad \xff\xfe bytes\r\nlast");
+    let mut reader = RecordReader::new(BufReader::with_capacity(8192, &input[..]), 100);
+    let mut records = Vec::new();
+    while let Some(record) = reader.next().await {
+        assert!(reader.record.capacity() <= 8192 + 100, "buffer grew");
+        records.push(record);
+    }
+    assert_eq!(records.len(), 4);
+    assert_eq!(records[0], "first");
+    assert_eq!(records[1], "x".repeat(100));
+    assert_eq!(records[2], "bad \u{fffd}\u{fffd} bytes");
+    assert_eq!(records[3], "last");
+}
+
+// A subscribe the phone waits for is answered once it is on disk, or refused.
+#[tokio::test]
+async fn companion_service_acks_a_waiting_subscribe_only_after_it_is_stored() {
+    let subscription = push_tests::subscription(1);
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{subscription},"requestId":7}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{other}","subscription":{subscription},"requestId":8}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{{"endpoint":"https://evil.example/x","p256dh":"x","auth":"y"}},"requestId":9}}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{subscription}}}'
+echo '{{"v":1,"type":"session.opened","peerId":1,"deviceId":"{known}"}}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        known = push_tests::DEVICE_ID,
+        other = push_tests::OTHER_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    h.manager.start(h.launch()).unwrap();
+    h.until("acks", |h| gateway_frames(h, "push.ack").len() == 3)
+        .await;
+    let acks: Vec<(u64, bool)> = gateway_frames(&h, "push.ack")
+        .iter()
+        .map(|frame| {
+            (
+                frame["requestId"].as_u64().unwrap(),
+                frame["stored"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    // Stored; an unknown device; an invalid subscription. The last frame had
+    // no request id, so nobody waits for it and nothing answers it.
+    assert_eq!(acks, [(7, true), (8, false), (9, false)]);
+    // The gateway hears the new set before the ack that confirms it.
+    let frames: Vec<String> = h
+        .sidecar_file("in")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .map(|frame| frame["type"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(frames[..2], ["push.devices", "push.ack"]);
+    assert_eq!(h.manager.push().devices(), [push_tests::DEVICE_ID]);
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_refuses_a_waiting_subscribe_it_could_not_write() {
+    let subscription = push_tests::subscription(1);
+    let h = Harness::new(&format!(
+        r#"read init; echo '{READY}'
+echo '{{"v":1,"type":"push.subscription","deviceId":"{known}","subscription":{subscription},"requestId":5}}'
+while read line; do printf '%s\n' "$line" >> "$0.in"; case "$line" in *'"shutdown"'*) exit 0;; esac; done"#,
+        known = push_tests::DEVICE_ID
+    ));
+    push_tests::seed(&h.dir, &[push_tests::DEVICE_ID]);
+    // The subscription file cannot be written: a directory sits in its place.
+    std::fs::create_dir_all(h.dir.join("push.json")).unwrap();
+    h.manager.start(h.launch()).unwrap();
+    h.until("ack", |h| !gateway_frames(h, "push.ack").is_empty())
+        .await;
+    assert_eq!(
+        gateway_frames(&h, "push.ack"),
+        [json!({"v": 1, "type": "push.ack", "requestId": 5, "stored": false})]
+    );
+    assert!(h.manager.push().devices().is_empty());
+    h.manager.stop().await;
+}
+
+/// A gateway that answers `peers.list` with the peers listed in `reply`.
+fn peers_script(reply: &str) -> String {
+    format!(
+        r#"read init; echo '{READY}'
+while read line; do
+  case "$line" in
+    *'"peers.list"'*)
+      id=$(printf '%s' "$line" | sed 's/.*"requestId":\([0-9]*\).*/\1/')
+      {reply};;
+    *'"shutdown"'*) exit 0;;
+  esac
+done"#
+    )
+}
+
+#[tokio::test]
+async fn companion_service_peers_come_from_the_gateway_and_match_by_request_id() {
+    let reply = r#"echo '{"v":1,"type":"peers.snapshot","requestId":'"$id"',"peers":[{"peerId":3,"deviceId":"D1"}],"streams":[{"stream":"12","deviceId":"D1","peerId":3,"session":"work","scope":"control","target":"w:p"},{"stream":"13","deviceId":"D1","peerId":3,"session":"work","scope":"full"}]}'"#;
+    let h = Harness::new(&peers_script(reply));
+    assert_eq!(
+        h.manager.peers().await.unwrap_err(),
+        "companion-not-running"
+    );
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    let snapshot = h.manager.peers().await.unwrap();
+    assert_eq!(
+        snapshot,
+        PeersSnapshot {
+            peers: vec![PeerRow {
+                peer_id: 3,
+                device_id: "D1".into()
+            }],
+            streams: vec![
+                StreamRow {
+                    stream: "12".into(),
+                    device_id: "D1".into(),
+                    peer_id: 3,
+                    session: "work".into(),
+                    scope: "control".into(),
+                    target: Some("w:p".into())
+                },
+                StreamRow {
+                    stream: "13".into(),
+                    device_id: "D1".into(),
+                    peer_id: 3,
+                    session: "work".into(),
+                    scope: "full".into(),
+                    target: None
+                },
+            ],
+        }
+    );
+    // It does not wait behind, or disturb, a command in flight, and repeats.
+    assert_eq!(h.manager.peers().await.unwrap(), snapshot);
+    assert!(running(&h));
+    // Nothing of it reaches the UI as an event: the answer is the return value.
+    assert!(h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|e| e["type"] != "peers.snapshot"));
+    h.manager.stop().await;
+}
+
+#[tokio::test]
+async fn companion_service_an_unanswered_peers_query_fails_alone_and_a_late_answer_is_ignored() {
+    // The gateway sits on the first query for longer than the command deadline,
+    // then answers it (late) with a phone nobody may see, and answers the rest.
+    let reply = r#"if [ "$id" = 1 ]; then sleep 3; echo '{"v":1,"type":"peers.snapshot","requestId":1,"peers":[{"peerId":9,"deviceId":"LATE"}],"streams":[]}'; else echo '{"v":1,"type":"peers.snapshot","requestId":'"$id"',"peers":[],"streams":[]}'; fi"#;
+    let h = Harness::new(&peers_script(reply));
+    h.manager.start(h.launch()).unwrap();
+    h.until("ready", running).await;
+    assert_eq!(h.manager.peers().await.unwrap_err(), "companion-timeout");
+    // Only this call failed: the gateway still runs and nobody waits for it.
+    assert!(running(&h));
+    assert!(h.manager.inner.lock().unwrap().peer_waits.is_empty());
+    // The next query is answered by its own reply, not by the late one.
+    assert_eq!(h.manager.peers().await.unwrap(), PeersSnapshot::default());
+    h.manager.stop().await;
 }

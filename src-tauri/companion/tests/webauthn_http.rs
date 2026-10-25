@@ -1,8 +1,11 @@
 //! Software authenticator fixtures only. All RP verification runs through the
 //! production verifier over real loopback HTTP, never browser/E2E automation.
+#[path = "support/identity.rs"]
+mod identity;
 #[path = "support/init.rs"]
 mod init_fixture;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+use identity::PROXY_SECRET;
 use serde_json::{json, Value};
 use std::{
     sync::{Arc, Mutex},
@@ -138,7 +141,7 @@ impl Fixture {
         self.post_headers(path, body, &credentials).await
     }
     async fn post_headers(&self, path: &str, body: Value, extra: &str) -> Reply {
-        let request=format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nOrigin: {ORIGIN}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.to_string().len());
+        let request=format!("POST {path} HTTP/1.1\r\nHost: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nOrigin: {ORIGIN}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.to_string().len());
         let port = self.port;
         let task = tokio::spawn(async move {
             let mut socket = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))

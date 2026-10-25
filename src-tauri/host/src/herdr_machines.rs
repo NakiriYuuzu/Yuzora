@@ -828,8 +828,7 @@ fn run_machine_cli_ungated(
         .env_remove("HERDR_SESSION")
         .env_remove("HERDR_CLIENT_SOCKET_PATH");
     process_kill::configure_background_process(&mut cmd);
-    let mut child = cmd
-        .spawn()
+    let mut child = process_kill::spawn_std(&mut cmd)
         .map_err(|e| error("machines-binary-unavailable", &e.to_string()))?;
     let mut tree = process_kill::attach_process_tree(&mut child).map_err(|e| {
         error(

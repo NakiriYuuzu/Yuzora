@@ -147,6 +147,35 @@ describe("CompanionSocket", () => {
     expect(socket.calls().filter((frame) => frame.method === "pane.sendKeys")).toHaveLength(1)
   })
 
+  it("gives push.subscribe a read slot and retries its busy, but its lost outcome stays unknown", async () => {
+    vi.useFakeTimers()
+    const ready = connected()
+    await vi.advanceTimersByTimeAsync(0)
+    const [client, socket] = await ready
+    const reads = ["a", "b"].map((session) => client.call("snapshot.get", { session }))
+    const subscribe = client.call("push.subscribe", { endpoint: "https://push.example/x" })
+    await vi.advanceTimersByTimeAsync(0)
+    // The gateway holds a pending slot while it waits for the desktop: queue behind the reads.
+    expect(socket.calls().map((frame) => frame.method)).not.toContain("push.subscribe")
+    socket.reply("snapshot.get", { ok: "a" })
+    await vi.advanceTimersByTimeAsync(0)
+    const first = socket.calls().find((frame) => frame.method === "push.subscribe")!
+    expect(first).toBeDefined()
+    // `busy` means the gateway sent nothing to the desktop: asking again is safe.
+    socket.server({ id: first.id, error: { code: "busy", message: "busy" } })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(socket.calls().filter((frame) => frame.method === "push.subscribe")).toHaveLength(2)
+    // While it waits for the desktop it still holds the slot: a third read queues.
+    const third = client.call("snapshot.get", { session: "c" })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(socket.calls().filter((frame) => frame.method === "snapshot.get")).toHaveLength(2)
+    socket.close(1006)
+    await expect(subscribe).rejects.toMatchObject({ code: "outcome-unknown" })
+    await expect(reads[1]).rejects.toMatchObject({ code: "disconnected" })
+    await expect(reads[0]).resolves.toEqual({ ok: "a" })
+    await expect(third).rejects.toMatchObject({ code: "not-connected" })
+  })
+
   it("never resends a write the socket lost and marks its outcome unknown", async () => {
     vi.useFakeTimers()
     const ready = connected()
@@ -170,6 +199,40 @@ describe("CompanionSocket", () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(options.onReady).toHaveBeenLastCalledWith(expect.anything(), 2)
     expect(next.calls().map((frame) => frame.method)).toEqual(["hello"])
+  })
+
+  it("drops input typed while not connected: nothing is queued and nothing is replayed on the next socket", async () => {
+    vi.useFakeTimers()
+    const writes: [string, Record<string, unknown>][] = [
+      ["terminal.input", { stream: 3, text: "rm -rf build\r" }],
+      ["agent.prompt", { session: "work", target: "w:p", text: "approve" }],
+      ["pane.sendKeys", { session: "work", target: "w:p", keys: ["Enter"] }],
+      ["full.input", { stream: 4, text: "y" }],
+      ["terminal.control", { session: "work", target: "w:p" }],
+    ]
+    const ready = connected()
+    await vi.advanceTimersByTimeAsync(0)
+    const [client, socket] = await ready
+    socket.close(1006) // the network dropped; a reconnect is scheduled
+    expect(options.onState).toHaveBeenLastCalledWith("waiting", 1006)
+    for (const [method, params] of writes) {
+      await expect(client.call(method, params)).rejects.toMatchObject({ code: "not-connected" })
+    }
+
+    await vi.advanceTimersByTimeAsync(1000)
+    const next = FakeSocket.all.at(-1)!
+    expect(next).not.toBe(socket)
+    next.onopen?.() // authenticating: still not ready
+    for (const [method, params] of writes) {
+      await expect(client.call(method, params)).rejects.toMatchObject({ code: "not-connected" })
+    }
+    expect(next.sent.map((text) => JSON.parse(text))).toEqual([{ type: "auth", binding: "B" }])
+    next.server({ event: "session.ready", data: { protocolVersion: 1 } })
+    next.reply("hello", { protocolVersion: 1, serverTime: "2026-10-18T00:00:00Z", scopes: ["view"] })
+    await vi.advanceTimersByTimeAsync(5000)
+    // Only auth and hello ever reach the new socket: no dropped write was kept.
+    expect(next.sent.map((text) => JSON.parse(text).method ?? "auth")).toEqual(["auth", "hello"])
+    expect(socket.sent.map((text) => JSON.parse(text).method ?? "auth")).toEqual(["auth", "hello"])
   })
 
   it("backs off up to 30 s with jitter and retries at once when asked", async () => {

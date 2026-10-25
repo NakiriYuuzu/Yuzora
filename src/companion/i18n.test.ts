@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import en from "./locales/en.json"
 import zhTW from "./locales/zh-TW.json"
-import { pickLanguage } from "./i18n"
+import { i18n, pickLanguage } from "./i18n"
 
 function keys(value: unknown, prefix = ""): string[] {
   if (typeof value !== "object" || value === null) return [prefix]
@@ -20,5 +20,13 @@ describe("Companion i18n", () => {
     expect(pickLanguage(["en-US", "zh-TW"])).toBe("en")
     expect(pickLanguage(["ja-JP"])).toBe("en")
     expect(pickLanguage([])).toBe("en")
+  })
+
+  it("keeps the document language on the language it renders", async () => {
+    expect(document.documentElement.lang).toBe(i18n.language)
+    await i18n.changeLanguage("zh-TW")
+    expect(document.documentElement.lang).toBe("zh-TW")
+    await i18n.changeLanguage("en")
+    expect(document.documentElement.lang).toBe("en")
   })
 })

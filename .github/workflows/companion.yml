@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'src-tauri/companion/**'
+      - 'src-tauri/companion-net/**'
       - 'src-tauri/host/**'
       - 'src-tauri/vendor/tiberius-0.12.3-yuzora/**'
       - '.github/workflows/companion.yml'
@@ -48,6 +49,54 @@ jobs:
             printf '%s\n' "$output"
             grep -F 'did not match any packages' <<< "$output"
           done
+
+  net:
+    name: net (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      # The shipped sidecar is built without cgo, so vet and test that build.
+      CGO_ENABLED: '0'
+    steps:
+      # gofmt rejects the CRLF line endings a default Windows checkout produces.
+      - name: Keep LF line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: src-tauri/companion-net/go.mod
+          cache-dependency-path: src-tauri/companion-net/go.sum
+      - name: gofmt
+        shell: bash
+        working-directory: src-tauri/companion-net
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'gofmt would change:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+        working-directory: src-tauri/companion-net
+      - run: go test ./...
+        working-directory: src-tauri/companion-net
+      # The sidecar terminates TLS for tailnet peers, so a reachable advisory in
+      # the Go standard library or a dependency fails the job (exit 3). The
+      # tags are the ones the shipped binary is built with.
+      - name: govulncheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOBIN="$RUNNER_TEMP/yzc-go-tools" go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          cd src-tauri/companion-net
+          "$RUNNER_TEMP/yzc-go-tools/govulncheck" -tags ts_omit_webclient ./...
 
   supply-chain:
     runs-on: ubuntu-latest

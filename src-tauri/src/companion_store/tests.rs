@@ -135,11 +135,7 @@ fn companion_store_corrupt_files_are_kept_and_backed_up() {
         ("settings.json", r#"{"version":1}"#),
         (
             "settings.json",
-            r#"{"version":1,"httpsPort":8443,"gatewayPort":0,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
-        ),
-        (
-            "settings.json",
-            r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":{"httpsPort":0,"gatewayPort":47110,"host":"h","login":"l"}}"#,
+            r#"{"version":1,"gatewayPort":0,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false}"#,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -171,25 +167,27 @@ fn companion_store_settings_defaults_and_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let defaults = Settings::load(dir.path()).unwrap();
     assert_eq!(defaults, Settings::default());
-    assert_eq!((defaults.https_port, defaults.gateway_port), (8443, 47110));
+    assert_eq!(defaults.gateway_port, 47110);
     assert_eq!(defaults.duration, EnableFor::EightHours);
     assert!(!defaults.experimental, "the Experimental opt-in starts off");
-    // Files written before the opt-in existed still load, with it off.
+    assert_eq!(defaults.net, None);
+    // Files written before the opt-in or the node existed still load, with
+    // them off; so do the fields of the Serve handler this replaced.
     std::fs::write(
         dir.path().join("settings.json"),
-        r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":null}"#,
+        r#"{"version":1,"httpsPort":8443,"gatewayPort":47110,"duration":"8h","sessionAllowlist":[],"fullSessionEnabled":false,"applied":{"httpsPort":0,"gatewayPort":47110,"host":"h","login":"l"}}"#,
     )
     .unwrap();
-    assert!(!Settings::load(dir.path()).unwrap().experimental);
+    let old = Settings::load(dir.path()).unwrap();
+    assert!(!old.experimental);
+    assert_eq!(old.net, None);
     std::fs::remove_file(dir.path().join("settings.json")).unwrap();
     let mut settings = defaults;
     settings.duration = EnableFor::UntilExit;
     settings.experimental = true;
     settings.session_allowlist = vec!["default".into()];
-    settings.applied = Some(AppliedServe {
-        https_port: 8443,
-        gateway_port: 47110,
-        host: "desktop.tail1234.ts.net".into(),
+    settings.net = Some(NetIdentity {
+        dns_name: "desktop.tail1234.ts.net".into(),
         login: "user@example.com".into(),
     });
     settings.save(dir.path()).unwrap();
@@ -197,7 +195,8 @@ fn companion_store_settings_defaults_and_round_trip() {
     let raw: Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap()).unwrap();
     assert_eq!(raw["duration"], "untilExit");
-    assert_eq!(raw["applied"]["httpsPort"], 8443);
+    assert_eq!(raw["net"]["dnsName"], "desktop.tail1234.ts.net");
+    assert!(raw.get("applied").is_none() && raw.get("httpsPort").is_none());
 }
 
 #[cfg(unix)]
@@ -340,5 +339,131 @@ fn companion_store_load_rejects_what_gateway_init_would() {
             Err("companion-store-corrupt".into()),
             "{name}"
         );
+    }
+}
+
+/// Each rejected row is a credential the gateway's `CredentialRecord` refuses
+/// at init (`companion/src/devices.rs`), so the file must take the
+/// corrupt-backup path instead of failing every enable. The accepted rows are
+/// edges the gateway allows: the check must not be stricter.
+#[test]
+fn companion_store_credentials_follow_the_gateways_rules() {
+    fn with(change: impl FnOnce(&mut Value)) -> Value {
+        let mut value = device();
+        change(&mut value["credentials"][0]);
+        value
+    }
+    let rejected = [
+        (
+            "missing publicKeyState",
+            with(|c| {
+                c.as_object_mut().unwrap().remove("publicKeyState");
+            }),
+        ),
+        ("unknown field", with(|c| c["extra"] = json!(1))),
+        (
+            "publicKeyState not a string",
+            with(|c| c["publicKeyState"] = json!(1)),
+        ),
+        ("rpId uppercase", with(|c| c["rpId"] = json!("Bad_Host"))),
+        ("rpId ip address", with(|c| c["rpId"] = json!("127.0.0.1"))),
+        ("rpId empty label", with(|c| c["rpId"] = json!("a..b"))),
+        ("id not base64url", with(|c| c["id"] = json!("***"))),
+        ("id empty", with(|c| c["id"] = json!(""))),
+        (
+            "id too long",
+            with(|c| c["id"] = json!(URL_SAFE_NO_PAD.encode([1u8; 1025]))),
+        ),
+        (
+            "wrong stateFormat",
+            with(|c| c["stateFormat"] = json!("webauthn_rp-0.2.0-static")),
+        ),
+        (
+            "signCount over u32",
+            with(|c| c["signCount"] = json!(4_294_967_296u64)),
+        ),
+        ("signCount negative", with(|c| c["signCount"] = json!(-1))),
+        ("signCount float", with(|c| c["signCount"] = json!(1.5))),
+        (
+            "backupState without eligible",
+            with(|c| c["backupState"] = json!(true)),
+        ),
+        (
+            "backupEligible not a bool",
+            with(|c| c["backupEligible"] = json!("no")),
+        ),
+        (
+            "duplicate transport",
+            with(|c| c["transports"] = json!(["usb", "usb"])),
+        ),
+        (
+            "unknown transport",
+            with(|c| c["transports"] = json!(["carrier-pigeon"])),
+        ),
+        (
+            "transports not an array",
+            with(|c| c["transports"] = json!("usb")),
+        ),
+        ("credential not an object", with(|c| *c = Value::Null)),
+        ("empty credential object", with(|c| *c = json!({}))),
+        (
+            "missing id",
+            with(|c| {
+                c.as_object_mut().unwrap().remove("id");
+            }),
+        ),
+        (
+            "missing transports",
+            with(|c| {
+                c.as_object_mut().unwrap().remove("transports");
+            }),
+        ),
+    ];
+    for (name, bad) in rejected {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = json!({"version": 1, "devices": [bad]}).to_string();
+        std::fs::write(dir.path().join("devices.json"), &contents).unwrap();
+        assert_eq!(
+            Devices::load(dir.path()).err().as_deref(),
+            Some("companion-store-corrupt"),
+            "{name}"
+        );
+        let backed_up = std::fs::read_dir(dir.path()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("devices.json.corrupt-")
+        });
+        assert!(backed_up, "{name}");
+    }
+    let accepted = [
+        (
+            "every transport",
+            with(|c| {
+                c["transports"] = json!(["usb", "nfc", "ble", "internal", "hybrid", "smart-card"])
+            }),
+        ),
+        ("no transports", with(|c| c["transports"] = json!([]))),
+        (
+            "largest signCount",
+            with(|c| c["signCount"] = json!(u32::MAX)),
+        ),
+        (
+            "synced passkey",
+            with(|c| {
+                c["backupEligible"] = json!(true);
+                c["backupState"] = json!(true);
+            }),
+        ),
+        (
+            "longest id",
+            with(|c| c["id"] = json!(URL_SAFE_NO_PAD.encode([1u8; 1024]))),
+        ),
+    ];
+    for (name, good) in accepted {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = json!({"version": 1, "devices": [good.clone()]}).to_string();
+        std::fs::write(dir.path().join("devices.json"), contents).unwrap();
+        assert_eq!(Devices::load(dir.path()).unwrap().all(), [good], "{name}");
     }
 }

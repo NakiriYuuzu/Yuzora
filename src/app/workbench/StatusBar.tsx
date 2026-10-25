@@ -1,3 +1,4 @@
+import { CompanionStatusIndicator } from "./CompanionStatusIndicator";
 import { ResourceUsagePopover } from "./ResourceUsagePopover";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -198,6 +199,8 @@ export function StatusBar() {
 
 
       <div className="flex-1" />
+
+      <CompanionStatusIndicator />
 
       {perfChipText && (
         <ResourceUsagePopover trigger={<Button variant="ghost" size="sm"

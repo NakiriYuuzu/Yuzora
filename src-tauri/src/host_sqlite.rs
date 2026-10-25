@@ -244,6 +244,21 @@ pub(crate) async fn open(
     })))
 }
 
+fn spawn_local_worker(
+    program: impl AsRef<std::ffi::OsStr>,
+) -> std::io::Result<tokio::process::Child> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .env(LOCAL_WORKER_ENV, "1")
+        .env_remove(yuzora_host::db_query_worker::WORKER_ENV)
+        .env_remove("YUZORA_ASKPASS_ENDPOINT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    crate::process_kill::spawn_tokio(&mut command)
+}
+
 /// Local profiles use the same persistent request/cancel protocol, without
 /// granting a remote caller the ability to bypass workspace trust.
 pub(crate) async fn open_local(
@@ -278,15 +293,7 @@ pub(crate) async fn open_local(
         identity: identity.clone(),
     };
     let operation = async {
-        let child = tokio::process::Command::new(yuzora_host::db_query_worker::helper_program())
-            .env(LOCAL_WORKER_ENV, "1")
-            .env_remove(yuzora_host::db_query_worker::WORKER_ENV)
-            .env_remove("YUZORA_ASKPASS_ENDPOINT")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
+        let child = spawn_local_worker(yuzora_host::db_query_worker::helper_program())
             .map_err(|_| disconnected())?;
         let mut io =
             crate::host_service::owned_process_stream(child).map_err(|_| disconnected())?;
@@ -334,6 +341,13 @@ mod tests {
     use yuzora_host::db_connection_actor::ProductionConnectionActor;
     use yuzora_host::db_result_session::ResultSessionState;
     use yuzora_host::db_service::*;
+
+    #[tokio::test]
+    async fn the_local_worker_spawns_through_the_spawn_lock() {
+        let (child, spawns) = crate::process_kill::trace_spawns(|| spawn_local_worker("/bin/cat"));
+        child.unwrap().kill().await.unwrap();
+        assert_eq!(spawns, ["/bin/cat"]);
+    }
 
     #[tokio::test]
     #[ignore = "121-second local deadline regression; requires YUZORA_DB_QUERY_WORKER_BIN"]

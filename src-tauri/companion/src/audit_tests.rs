@@ -152,3 +152,33 @@ async fn final_n2_dropped_separates_actual_loss_tightening_and_omitted_rejection
     assert!(counts["since"].is_string());
     assert!(f.gateway.deferred_audit.lock().unwrap().dropped.is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn git_read_audit_is_view_scope_ordinary_and_a_full_queue_only_counts_it_lost() {
+    let mut f = Fixture::new();
+    git_read(&f.gateway, "device", 7, "work", "w", "git.log");
+    let event = f.event().await;
+    assert_eq!(event["type"], "audit");
+    assert_eq!(event["action"], "git.read");
+    assert_eq!(event["scope"], "view");
+    assert_eq!(event["deviceId"], "device");
+    assert_eq!(event["peerId"], 7);
+    assert_eq!(event["session"], "work");
+    assert_eq!(event["target"], "w");
+    assert_eq!(event["summary"], json!({"method":"git.log"}));
+
+    // Ordinary class: the 48 ordinary slots run out while the lifecycle ones stay free.
+    for _ in 0..48 {
+        git_read(&f.gateway, "device", 7, "work", "w", "git.log");
+    }
+    assert!(f.gateway.deferred_audit.lock().unwrap().dropped.is_none());
+    git_read(&f.gateway, "device", 7, "work", "w", "git.log");
+    {
+        let deferred = f.gateway.deferred_audit.lock().unwrap();
+        let counts = deferred.dropped.unwrap();
+        assert_eq!(counts.lost, 1);
+        assert_eq!(counts.lost_tightening, 0);
+        assert_eq!(counts.rejected_omitted, 0);
+    }
+    assert!(f.events.try_emit(Event::device_revoked("device".into())));
+}

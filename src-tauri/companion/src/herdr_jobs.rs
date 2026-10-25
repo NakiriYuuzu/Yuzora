@@ -33,6 +33,14 @@ impl Jobs {
             tasks: Mutex::new(JoinSet::new()),
         })
     }
+    /// Every slot and permit is free again.
+    #[cfg(all(test, unix))]
+    pub(crate) fn idle(&self) -> bool {
+        self.slots.available_permits() == MAX_CALLS
+            && self.write_slots.available_permits() == 2
+            && self.cleanup_slots.available_permits() == 2
+            && self.resources.available_permits() == MAX_RESOURCES
+    }
     pub(crate) fn reap(&self) {
         let mut tasks = self.tasks.lock().unwrap();
         while tasks.try_join_next().is_some() {}
@@ -74,10 +82,13 @@ impl Jobs {
         let mut tasks = self.tasks.lock().unwrap();
         while tasks.try_join_next().is_some() {}
         tasks.spawn_blocking(move || {
-            let (_permit, _device) = (permit, device_permit);
+            let result = call();
+            // The permits go back before the result is delivered: the caller may
+            // submit the device's next job as soon as it sees the result.
+            drop((permit, device_permit));
             // A dropped receiver owns cancellation. A successfully opened Lease
             // in an orphaned result is dropped here and scheduled for release.
-            let _ = send.send(call());
+            let _ = send.send(result);
         });
         Ok(receive)
     }

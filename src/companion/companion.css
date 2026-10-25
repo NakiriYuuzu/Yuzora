@@ -6,7 +6,10 @@
 @source "../components/ui/alert-dialog.tsx";
 @source "../components/ui/badge.tsx";
 @source "../components/ui/button.tsx";
+@source "../components/ui/checkbox.tsx";
 @source "../components/ui/input.tsx";
+@source "../components/ui/scroll-area.tsx";
+@source "../components/ui/tabs.tsx";
 @source "../components/ui/textarea.tsx";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";

@@ -38,7 +38,10 @@ async fn connect(
         .insert("origin", ORIGIN.parse().unwrap());
     request
         .headers_mut()
-        .insert("tailscale-user-login", "user@example.com".parse().unwrap());
+        .insert("yzc-proxy-secret", PROXY_SECRET.parse().unwrap());
+    request
+        .headers_mut()
+        .insert("yzc-peer-login", "user@example.com".parse().unwrap());
     if let Some(login) = login {
         request
             .headers_mut()
@@ -132,7 +135,9 @@ async fn ws_guarded_upgrade_and_query_rejection() {
             headers.push_str("Host: desktop.tailnet.ts.net:8443\r\n");
         }
         if omit != "login" {
-            headers.push_str("Tailscale-User-Login: user@example.com\r\n");
+            headers.push_str(&format!(
+                "Yzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\n"
+            ));
         }
         if omit != "origin" {
             headers.push_str(&format!("Origin: {ORIGIN}\r\n"));
@@ -164,6 +169,13 @@ async fn ws_first_frame_auth_required_timeout_garbage_cookie_only_wrong_binding(
         "rpc-first",
         "binary",
         "duplicate-binding",
+        "extra-field",
+        "positional-array",
+        "binding-not-header-value",
+        "binding-wrong-type",
+        "binding-empty",
+        "empty-text",
+        "oversize-first-frame",
     ] {
         let mut ws = connect(&f, Some(&login)).await.unwrap();
         match case {
@@ -192,6 +204,26 @@ async fn ws_first_frame_auth_required_timeout_garbage_cookie_only_wrong_binding(
             ))))
             .await
             .unwrap(),
+            "extra-field" => {
+                send(
+                    &mut ws,
+                    json!({"type":"auth","binding":login.binding,"x":1}),
+                )
+                .await
+            }
+            "positional-array" => send(&mut ws, json!(["auth", login.binding])).await,
+            "binding-not-header-value" => {
+                send(
+                    &mut ws,
+                    json!({"type":"auth","binding":format!("{}\r\nx: y", login.binding)}),
+                )
+                .await
+            }
+            "binding-wrong-type" => send(&mut ws, json!({"type":"auth","binding":7})).await,
+            "binding-empty" => send(&mut ws, json!({"type":"auth","binding":""})).await,
+            "empty-text" => io(ws.send(Message::text(""))).await.unwrap(),
+            // Pre-auth, any read error (including the size cap) is the same 4401.
+            "oversize-first-frame" => io(ws.send(Message::text("x".repeat(65537)))).await.unwrap(),
             _ => send(&mut ws, json!({"type":"auth","binding":login.binding})).await,
         }
         close(&mut ws, 4401).await;
@@ -356,6 +388,12 @@ async fn ws_active_idle_absolute_and_enable_until_expiry() {
         close(&mut ws, 4401).await;
         if case == "enable" {
             settle().await;
+            // The peers are gone but the port stays bound until the hold ends:
+            // the node forwards the tailnet to it until the desktop unserves.
+            assert!(!f.server.is_finished());
+            assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, f.port)).is_err());
+            tokio::time::advance(yuzora_companion::http::EXPIRY_HOLD).await;
+            settle().await;
             assert!(f.server.is_finished());
             // Not io(): Windows retries a refused loopback connect for about
             // two seconds, beyond the yield budget. The server has finished.
@@ -475,7 +513,7 @@ async fn ws_global_permits_include_preauth_release_and_http_separate() {
         http.push(connection);
     }
     let mut last = http.pop().unwrap();
-    io(last.write_all(b"Host: desktop.tailnet.ts.net:8443\r\nTailscale-User-Login: user@example.com\r\nConnection: close\r\n\r\n")).await.unwrap();
+    io(last.write_all(format!("Host: desktop.tailnet.ts.net:8443\r\nYzc-Proxy-Secret: {PROXY_SECRET}\r\nYzc-Peer-Login: user@example.com\r\nConnection: close\r\n\r\n").as_bytes())).await.unwrap();
     let mut response = String::new();
     io(last.read_to_string(&mut response)).await.unwrap();
     assert!(
@@ -612,6 +650,22 @@ async fn ws_preauth_cookie_filter_rejects_without_exhausting_pool() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn ws_text_frame_at_the_cap_is_answered_and_one_byte_over_closes_1009() {
+    let f = Fixture::new("o2", 5).await;
+    let (_, _, login) = identity(&f).await;
+    let mut ws = authenticated(&f, &login).await;
+    // Exactly 64 KiB of non-JSON text: inside the cap, so an invalid-request
+    // reply (not a close), and the socket stays usable.
+    io(ws.send(Message::text("x".repeat(65536)))).await.unwrap();
+    assert_eq!(
+        value(&mut ws).await,
+        json!({"id":null,"error":{"code":"invalid-request","message":"Invalid request"}})
+    );
+    assert!(rpc(&mut ws, "session.ping").await["result"].is_object());
+    io(ws.send(Message::text("x".repeat(65537)))).await.unwrap();
+    close_clean(&mut ws, 1009).await;
+}
 #[tokio::test(start_paused = true)]
 async fn ws_invalid_utf8_text_closes_1007() {
     let f = Fixture::new("o2", 5).await;
