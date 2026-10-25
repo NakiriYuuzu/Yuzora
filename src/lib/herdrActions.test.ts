@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { HerdrCapabilities, HerdrSessionRuntime, HerdrSnapshot } from "@/lib/herdrTypes"
-import { AGENT_NAME_PATTERN, agentTaskForPane, herdrActionAvailability, herdrTaskAvailability, suggestAgentName } from "./herdrActions"
+import { AGENT_NAME_PATTERN, agentTaskForPane, herdrActionAvailability, herdrNativeAvailability, herdrTaskAvailability, suggestAgentName } from "./herdrActions"
 
 const runtime = (patch: Partial<HerdrSessionRuntime> = {}, methods = ["agent.start", "pane.move"], server = { running: true, compatible: true, version: "0.9.1" }): HerdrSessionRuntime => ({
   connectionState: "ready", errorMessage: null, worktreeInventory: null,
@@ -17,6 +17,18 @@ describe("herdrActionAvailability", () => {
     expect(herdrActionAvailability(runtime({}, [], { running: false, compatible: true, version: "0.9.1" }), "agent.start")).toMatchObject({ ok: false, reason: expect.stringContaining("server is not running") })
     expect(herdrActionAvailability(runtime(), "plugin.list")).toMatchObject({ ok: false, reason: expect.stringContaining("(current 0.9.1)") })
     expect(herdrActionAvailability(runtime(), "agent.start")).toEqual({ ok: true })
+  })
+
+  it("gives HERDR's reason for an unreachable Session instead of asking to start it", () => {
+    const reason = "Access is denied. (os error 5)"
+    const stopped = runtime({ connectionState: "stopped", capabilities: null, snapshot: null })
+    for (const state of [herdrActionAvailability(stopped, "agent.start", false, reason), herdrTaskAvailability("startAgent", stopped, false, reason), herdrNativeAvailability(stopped, false, reason)]) {
+      expect(state).toMatchObject({ ok: false, reason: expect.stringContaining(reason) })
+      expect(state.ok ? "" : state.reason).not.toContain("Start it")
+    }
+    expect(herdrActionAvailability(stopped, "agent.start", true, reason)).toMatchObject({ ok: false, reason: expect.stringContaining("still starting") })
+    expect(herdrTaskAvailability("sessions", stopped, false, reason)).toEqual({ ok: true })
+    expect(herdrActionAvailability(runtime(), "agent.start", false, reason)).toEqual({ ok: true })
   })
 })
 

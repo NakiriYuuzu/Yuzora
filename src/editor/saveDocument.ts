@@ -1,4 +1,4 @@
-import { bufferContent, getDocument, saveDocumentContent } from "./documentRegistry"
+import { documentGeneration, getDocument, saveDocumentContent, type RegistryEntry } from "./documentRegistry"
 import { getView } from "./viewRegistry"
 import { recentlySaved } from "../lib/saveSuppress"
 import { useWorkspaceStore } from "../state/workspaceStore"
@@ -11,8 +11,8 @@ export type SaveDirtyTabOutcome =
     | { kind: "blocked"; reason: "mixed" }
     | { kind: "notEditable" }
     | { kind: "failed" }
-    /** Written, but the text was edited while the write ran: still dirty. */
-    | { kind: "editedDuringSave" }
+    /** The buffer, document or workspace changed before or during the write: still dirty. */
+    | { kind: "changed" }
 
 function saveActionLabel(): string {
     return i18n.t("statusBar.saveAction", { ns: "workbench" })
@@ -38,12 +38,15 @@ export function showDocumentSaveError(error: unknown): Promise<void> {
  * present. Marks the path recentlySaved first so the fs watcher doesn't flag our
  * own write as an external change (mirrors EditorPane's save).
  */
-export async function saveDirtyTab(path: string): Promise<SaveDirtyTabOutcome> {
+export async function saveDirtyTab(path: string, canContinue: () => boolean = () => true): Promise<SaveDirtyTabOutcome> {
     const view = getView(path)
+    const document = view?.state.doc
+    const generation = documentGeneration(path)
     const store = useWorkspaceStore.getState()
     const storedLineEnding = store.getLineEnding(path)
     let content: string
     let lineEnding = storedLineEnding
+    let entry: RegistryEntry | undefined
 
     if (view && lineEnding) {
         // A failed external reload deliberately leaves the live pane mounted but
@@ -51,7 +54,6 @@ export async function saveDirtyTab(path: string): Promise<SaveDirtyTabOutcome> {
         // a file deleted on disk without another failing openFile call.
         content = view.state.doc.toString()
     } else {
-        let entry
         try {
             entry = await getDocument(path)
         } catch (error) {
@@ -65,6 +67,15 @@ export async function saveDirtyTab(path: string): Promise<SaveDirtyTabOutcome> {
         content = view ? view.state.doc.toString() : result.content
         lineEnding ??= result.lineEnding
     }
+
+    const cachedResult = entry?.result
+    const unchanged = () => canContinue()
+        && useWorkspaceStore.getState().workspacePath === store.workspacePath
+        && useWorkspaceStore.getState().getLineEnding(path) === storedLineEnding
+        && documentGeneration(path) === generation
+        && getView(path) === view
+        && (view ? view.state.doc === document : entry?.result === cachedResult)
+    if (!unchanged()) return { kind: "changed" }
 
     const serialized = serializeDocumentLineEndings(
         content,
@@ -82,11 +93,10 @@ export async function saveDirtyTab(path: string): Promise<SaveDirtyTabOutcome> {
         await showDocumentSaveError(error)
         return { kind: "failed" }
     }
-    store.markExternallyModified(path, false)
-    // The editors stay interactive while the write runs; text typed meanwhile is
-    // not on disk, so the tab keeps its dirty mark and the caller must not drop it.
-    const current = getView(path)?.state.doc.toString() ?? bufferContent(path)
-    if (current !== undefined && current !== content) return { kind: "editedDuringSave" }
+    // A completed write belongs to its captured buffer, not edits or a new
+    // workspace that arrived while it was in flight.
+    if (!unchanged()) return { kind: "changed" }
     store.markDirty(path, false)
+    store.markExternallyModified(path, false)
     return { kind: "saved" }
 }

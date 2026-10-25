@@ -1,0 +1,142 @@
+[
+  {
+    "name": "crlf-five-lines",
+    "sides": {
+      "code": "UU",
+      "base": {
+        "kind": "full",
+        "content": "a\r\nb\r\nc\r\nd\r\ne\r\n"
+      },
+      "ours": {
+        "kind": "full",
+        "content": "a\r\nOb\r\nc\r\nd\r\ne\r\n"
+      },
+      "theirs": {
+        "kind": "full",
+        "content": "a\r\nTb\r\nc\r\nd\r\ne\r\n"
+      },
+      "worktree": {
+        "kind": "full",
+        "content": "a\r\n<<<<<<< HEAD\r\nOb\r\n=======\r\nTb\r\n>>>>>>> fixture-theirs\r\nc\r\nd\r\ne\r\n"
+      }
+    },
+    "expected": {
+      "ours": "a\r\nOb\r\nc\r\nd\r\ne\r\n",
+      "theirs": "a\r\nTb\r\nc\r\nd\r\ne\r\n",
+      "ignore": "a\r\nb\r\nc\r\nd\r\ne\r\n"
+    },
+    "regions": 1
+  },
+  {
+    "name": "crlf-short",
+    "sides": {
+      "code": "UU",
+      "base": {
+        "kind": "full",
+        "content": "a\r\nb\r\n"
+      },
+      "ours": {
+        "kind": "full",
+        "content": "a\r\nOb\r\n"
+      },
+      "theirs": {
+        "kind": "full",
+        "content": "a\r\nTb\r\n"
+      },
+      "worktree": {
+        "kind": "full",
+        "content": "a\r\n<<<<<<< HEAD\r\nOb\r\n=======\r\nTb\r\n>>>>>>> fixture-theirs\r\n"
+      }
+    },
+    "expected": {
+      "ours": "a\r\nOb\r\n",
+      "theirs": "a\r\nTb\r\n",
+      "ignore": "a\r\nb\r\n"
+    },
+    "regions": 1
+  },
+  {
+    "name": "crlf-multiple",
+    "sides": {
+      "code": "UU",
+      "base": {
+        "kind": "full",
+        "content": "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n"
+      },
+      "ours": {
+        "kind": "full",
+        "content": "1\r\nO2\r\n3\r\n4\r\n5\r\nO6\r\n7\r\n8\r\n9\r\n"
+      },
+      "theirs": {
+        "kind": "full",
+        "content": "1\r\nT2\r\n3\r\n4\r\n5\r\nT6\r\n7\r\n8\r\n9\r\n"
+      },
+      "worktree": {
+        "kind": "full",
+        "content": "1\r\n<<<<<<< HEAD\r\nO2\r\n3\r\n4\r\n5\r\nO6\r\n=======\r\nT2\r\n3\r\n4\r\n5\r\nT6\r\n>>>>>>> fixture-theirs\r\n7\r\n8\r\n9\r\n"
+      }
+    },
+    "expected": {
+      "ours": "1\r\nO2\r\n3\r\n4\r\n5\r\nO6\r\n7\r\n8\r\n9\r\n",
+      "theirs": "1\r\nT2\r\n3\r\n4\r\n5\r\nT6\r\n7\r\n8\r\n9\r\n",
+      "ignore": "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n"
+    },
+    "regions": 2
+  },
+  {
+    "name": "lf-control",
+    "sides": {
+      "code": "UU",
+      "base": {
+        "kind": "full",
+        "content": "a\nb\nc\nd\ne\n"
+      },
+      "ours": {
+        "kind": "full",
+        "content": "a\nOb\nc\nd\ne\n"
+      },
+      "theirs": {
+        "kind": "full",
+        "content": "a\nTb\nc\nd\ne\n"
+      },
+      "worktree": {
+        "kind": "full",
+        "content": "a\n<<<<<<< HEAD\nOb\n=======\nTb\n>>>>>>> fixture-theirs\nc\nd\ne\n"
+      }
+    },
+    "expected": {
+      "ours": "a\nOb\nc\nd\ne\n",
+      "theirs": "a\nTb\nc\nd\ne\n",
+      "ignore": "a\nb\nc\nd\ne\n"
+    },
+    "regions": 1
+  },
+  {
+    "name": "crlf-no-final",
+    "sides": {
+      "code": "UU",
+      "base": {
+        "kind": "full",
+        "content": "a\r\nb\r\nc\r\nd\r\ne"
+      },
+      "ours": {
+        "kind": "full",
+        "content": "a\r\nOb\r\nc\r\nd\r\ne"
+      },
+      "theirs": {
+        "kind": "full",
+        "content": "a\r\nTb\r\nc\r\nd\r\ne"
+      },
+      "worktree": {
+        "kind": "full",
+        "content": "a\r\n<<<<<<< HEAD\r\nOb\r\n=======\r\nTb\r\n>>>>>>> fixture-theirs\r\nc\r\nd\r\ne"
+      }
+    },
+    "expected": {
+      "ours": "a\r\nOb\r\nc\r\nd\r\ne",
+      "theirs": "a\r\nTb\r\nc\r\nd\r\ne",
+      "ignore": "a\r\nb\r\nc\r\nd\r\ne"
+    },
+    "regions": 1
+  }
+]

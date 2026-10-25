@@ -141,6 +141,19 @@ HERDR terminal pages provide xterm-powered input, output and split panes; the gi
 
 <br />
 
+### Companion (Experimental)
+
+Control your HERDR Agents from your phone: check Agent status, browse Spaces, read Git status, history and diffs (read-only), and — after you grant it on the desktop — send input. Companion is **off by default** and must be switched on under Settings → Companion.
+
+- Yuzora runs its own built-in Tailscale node, so the desktop does not need the Tailscale app. Your phone does: it must run the Tailscale app signed in to the same tailnet and open the Companion page over HTTPS.
+- Pair a phone by scanning a QR code, comparing a confirmation code (SAS) on both screens, and registering a passkey. Every connection then needs the passkey.
+
+> **Warning:** enabling Companion is equivalent to granting remote shell access to this computer account. A phone that holds a control grant can drive your AI Agents, and Agents can run commands. Only enable it on a tailnet you trust, for the time you need it.
+
+Setup, access-control (ACL) advice and troubleshooting: [docs/operations.md](docs/operations.md) (Traditional Chinese).
+
+<br />
+
 ## Download
 
 Stable releases are built by GitHub Actions and published on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Unpublished PR candidates are available only as Actions artifacts.
@@ -176,7 +189,7 @@ Older betas, including **v0.0.9-beta.3**, shipped with automatic updates disable
 | Terminal | xterm.js + HERDR terminal pages |
 | Toolchain | Bun · Vitest · Cargo |
 
-Yuzora bundles HERDR 0.9.3 and retains compatibility with 0.9.0 and 0.9.1 through private protocol 22 and schema checks. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
+Yuzora bundles HERDR 0.9.5 and retains compatibility with 0.9.0, 0.9.1 and 0.9.3 through private protocol 22 and schema checks. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
 
 The Apple Silicon macOS app shares its managed HERDR binary with `Contents/Resources/host/macos-aarch64/herdr`; it does not bundle separate `herdr/macos-*` binaries. All five remote Host payloads remain included, including Intel macOS. Windows keeps its separate native HERDR paths.
 

@@ -227,15 +227,17 @@ function GitNavReady({ filterQuery }: { filterQuery: string }) {
         const message = commitMessage.trim()
         if (!repositoryRoot) return
         const capturedRoot = repositoryRoot
-        const ok = await runOp(amendHead ? "amend" : "commit", () => amendHead
+        await runOp(amendHead ? "amend" : "commit", () => amendHead
             ? gitCommit(capturedRoot, message, amendHead)
-            : gitCommit(capturedRoot, message))
-        const afterEnvironment = useGitStore.getState().environment
-        if (ok && afterEnvironment?.status === "ready" && afterEnvironment.root === capturedRoot) {
-            void logUserAction("git_commit", `${amendHead ? "amend" : "commit"}: ${message}`)
-            cancelAmend()
-            setCommitMessage("")
-        }
+            : gitCommit(capturedRoot, message), {
+            // runOp checks the repository generation before this hook. Waiting
+            // for refresh would let an old completion clear a later draft.
+            afterMutationBeforeRefresh: () => {
+                void logUserAction("git_commit", `${amendHead ? "amend" : "commit"}: ${message}`)
+                cancelAmend()
+                setCommitMessage("")
+            }
+        })
     }
     async function discardRows(targets: readonly GitChangeRow[], kind: "all" | "selected") {
         if (!repositoryRoot || !targets.length || mutationsDisabled) return

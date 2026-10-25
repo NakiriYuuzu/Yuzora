@@ -14,7 +14,7 @@ import {
 } from "@/lib/ipc"
 import type { SftpDownloadDest, SftpEntry, SftpProgressEvent, SftpUploadSource } from "@/lib/types"
 import { useSshStore } from "./sshStore"
-import { requestAppConfirmation } from "./appDialogStore"
+import { requestAppConfirmation, useAppDialogStore } from "./appDialogStore"
 import i18n from "@/lib/i18n"
 
 export interface RemotePaneState {
@@ -48,7 +48,8 @@ interface SftpStore {
     setPanelOpen: (open: boolean) => void
     /** cmOpenSftp entry point: reveal the SFTP tab and (re)connect the host. */
     openSftp: (hostId: string) => void
-    listRemote: (hostId: string, path: string) => Promise<void>
+    /** Omit path to refresh the latest requested directory, including pending navigation. */
+    listRemote: (hostId: string, path?: string) => Promise<void>
     navigateUp: (hostId: string) => Promise<void>
     mkdir: (hostId: string, name: string) => Promise<void>
     rename: (hostId: string, entry: SftpEntry, newName: string) => Promise<void>
@@ -105,24 +106,34 @@ async function reserveTransfer(sessionId: string): Promise<{ id: string; error: 
     catch (error) { return { id: newTransferId(), error: String(error) } }
 }
 
-const listings = new Map<string, symbol>()
+const listings = new Map<string, { sessionId: string | null; path: string }>()
 let transferEpoch = 0
+// The app has one confirmation surface. Serialize SFTP prompts, while letting
+// approved transfers and uploads without an existing destination run in parallel.
+let overwriteConfirmations: Promise<void> = Promise.resolve()
+let activeOverwritePrompt: ReturnType<typeof useAppDialogStore.getState>["pending"] = null
 
-// The app confirm dialog holds a single request and cancels the one it replaces, so
-// overwrite prompts raised by parallel uploads are asked strictly one after another.
-// `stillWanted` runs when a prompt's turn comes and throws if its transfer died while queued.
-let overwritePrompts: Promise<unknown> = Promise.resolve()
-function confirmRemoteOverwrite(name: string, stillWanted: () => void): Promise<boolean> {
-    const asked = overwritePrompts.then(() => {
-        stillWanted()
-        return requestAppConfirmation({
-            title: i18n.t("panels:sshPanel.sftpOverwriteRemoteTitle"),
-            description: i18n.t("panels:sshPanel.sftpOverwriteRemoteConfirm", { name }),
-            kind: "warning"
-        })
+function waitForOverwriteSurface(assertCurrent: () => void): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const check = () => {
+            try {
+                assertCurrent()
+                if (useAppDialogStore.getState().pending) return
+            } catch (error) {
+                for (const unsubscribe of unsubscribers) unsubscribe()
+                reject(error)
+                return
+            }
+            for (const unsubscribe of unsubscribers) unsubscribe()
+            resolve()
+        }
+        const unsubscribers = [
+            useAppDialogStore.subscribe(check),
+            useSftpStore.subscribe(check),
+            useSshStore.subscribe(check)
+        ]
+        check()
     })
-    overwritePrompts = asked.catch(() => undefined)
-    return asked
 }
 
 export const useSftpStore = create<SftpStore>()((set, get) => ({
@@ -145,7 +156,10 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             listings.delete(hostId)
             return
         }
-        const token = Symbol(hostId)
+        const previous = listings.get(hostId)
+        const requestedPath = path ?? (previous?.sessionId === sessionId ? previous.path : undefined)
+            ?? get().remote[hostId]?.cwd ?? ""
+        const token = { sessionId, path: requestedPath }
         listings.set(hostId, token)
         if (!sessionId) {
             set((s) => ({
@@ -173,8 +187,9 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             }
         }))
         try {
-            const listing = await sftpListDir(sessionId, path)
+            const listing = await sftpListDir(sessionId, requestedPath)
             if (listings.get(hostId) !== token || sessionIdOf(hostId) !== sessionId) return
+            token.path = listing.cwd
             set((s) => ({
                 remote: {
                     ...s.remote,
@@ -188,6 +203,8 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             }))
         } catch (e) {
             if (listings.get(hostId) !== token || sessionIdOf(hostId) !== sessionId) return
+            // A failed navigation leaves the previous directory on screen.
+            token.path = get().remote[hostId]?.cwd ?? ""
             set((s) => ({
                 remote: {
                     ...s.remote,
@@ -212,28 +229,32 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
     mkdir: async (hostId, name) => {
         const sessionId = sessionIdOf(hostId)
         const cwd = get().remote[hostId]?.cwd
-        if (!sessionId || cwd === undefined) return
+        if (!sessionId || !cwd) return
+        const epoch = transferEpoch
         await sftpMkdir(sessionId, remoteJoin(cwd, name))
-        if (sessionIdOf(hostId) !== sessionId) return
-        await get().listRemote(hostId, cwd)
+        if (epoch !== transferEpoch || sessionIdOf(hostId) !== sessionId || !get().remote[hostId]) return
+        await get().listRemote(hostId)
     },
 
     rename: async (hostId, entry, newName) => {
         const sessionId = sessionIdOf(hostId)
         const cwd = get().remote[hostId]?.cwd
         if (!sessionId || cwd === undefined) return
-        await sftpRename(sessionId, entry.path, remoteJoin(cwd, newName))
-        if (sessionIdOf(hostId) !== sessionId) return
-        await get().listRemote(hostId, cwd)
+        const epoch = transferEpoch
+        const parent = entry.path.slice(0, entry.path.lastIndexOf("/")) || "/"
+        await sftpRename(sessionId, entry.path, remoteJoin(parent, newName))
+        if (epoch !== transferEpoch || sessionIdOf(hostId) !== sessionId || !get().remote[hostId]) return
+        await get().listRemote(hostId)
     },
 
     remove: async (hostId, entry) => {
         const sessionId = sessionIdOf(hostId)
         const cwd = get().remote[hostId]?.cwd
         if (!sessionId || cwd === undefined) return
+        const epoch = transferEpoch
         await sftpRemove(sessionId, entry.path, entry.isDir && !entry.isSymlink)
-        if (sessionIdOf(hostId) !== sessionId) return
-        await get().listRemote(hostId, cwd)
+        if (epoch !== transferEpoch || sessionIdOf(hostId) !== sessionId || !get().remote[hostId]) return
+        await get().listRemote(hostId)
     },
 
     upload: async (hostId, source, destDir) => {
@@ -264,23 +285,47 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             }
         }))
         if (reservation.error) return
+        const assertCurrentTransfer = () => {
+            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
+            const transfer = get().transfers[transferId]
+            if (epoch !== transferEpoch || !transfer || transfer.cancelling || transfer.done) {
+                throw new Error("sftp-transfer-cancelled")
+            }
+        }
         try {
-            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
+            assertCurrentTransfer()
             const expectedRevision = await sftpFileRevision(sessionId, remoteJoin(cwd, name), transferId)
-            if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
-            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
-            if (expectedRevision !== null && !await confirmRemoteOverwrite(name, () => {
-                if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
-                if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
-            })) throw new Error("sftp-transfer-cancelled")
-            if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
-            if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
+            assertCurrentTransfer()
+            if (expectedRevision !== null) {
+                const confirmation = overwriteConfirmations.then(async () => {
+                    assertCurrentTransfer()
+                    // Another feature can supersede our previous prompt. Do not
+                    // let the next queued upload supersede that feature in turn.
+                    while (useAppDialogStore.getState().pending) {
+                        await waitForOverwriteSurface(assertCurrentTransfer)
+                        assertCurrentTransfer()
+                    }
+                    const response = requestAppConfirmation({
+                        title: i18n.t("panels:sshPanel.sftpOverwriteRemoteTitle"),
+                        description: i18n.t("panels:sshPanel.sftpOverwriteRemoteConfirm", { name }),
+                        kind: "warning"
+                    })
+                    const prompt = useAppDialogStore.getState().pending
+                    activeOverwritePrompt = prompt
+                    try { return await response }
+                    finally { if (activeOverwritePrompt === prompt) activeOverwritePrompt = null }
+                })
+                // Keep the queue usable after a retired request; the original
+                // promise below still reports its error to transfer cleanup.
+                overwriteConfirmations = confirmation.then(() => undefined, () => undefined)
+                if (!await confirmation) throw new Error("sftp-transfer-cancelled")
+            }
+            assertCurrentTransfer()
             await sftpUpload(sessionId, transferId, source, cwd, expectedRevision)
             get().applyProgress({ sessionId, transferId, transferred: 0, total: 0, done: true })
             // Refresh the pane the user is looking at — uploading into a folder
             // row (destDir) must not navigate the view into that folder.
-            const viewCwd = get().remote[hostId]?.cwd
-            if (viewCwd && sessionIdOf(hostId) === sessionId) await get().listRemote(hostId, viewCwd)
+            if (epoch === transferEpoch && get().remote[hostId]?.cwd && sessionIdOf(hostId) === sessionId) await get().listRemote(hostId)
         } catch (e) {
             await sftpTransferCancel(sessionId, transferId).catch(() => undefined)
             set((s) => {
@@ -356,8 +401,7 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
             const result = await sftpTransferTree(sessionId, { selectionId, transferId, direction, remotePath, name })
             get().applyProgress({ sessionId, transferId, transferred: result.bytes, total: result.bytes, done: true })
-            const cwd = get().remote[hostId]?.cwd
-            if (direction === "upload" && cwd && sessionIdOf(hostId) === sessionId) await get().listRemote(hostId, cwd)
+            if (direction === "upload" && epoch === transferEpoch && get().remote[hostId]?.cwd && sessionIdOf(hostId) === sessionId) await get().listRemote(hostId)
         } catch (error) {
             await sftpTransferCancel(sessionId, transferId).catch(() => undefined)
             set((s) => {
@@ -407,6 +451,12 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
 
     reset: () => {
         transferEpoch++
+        overwriteConfirmations = Promise.resolve()
+        const prompt = activeOverwritePrompt
+        activeOverwritePrompt = null
+        if (prompt && useAppDialogStore.getState().pending === prompt) {
+            useAppDialogStore.getState().respond(false)
+        }
         listings.clear()
         for (const [id, transfer] of Object.entries(get().transfers)) if (!transfer.done) void sftpTransferCancel(transfer.sessionId, id).catch(() => undefined)
         set({ panelOpen: false, remote: {}, transfers: {} })

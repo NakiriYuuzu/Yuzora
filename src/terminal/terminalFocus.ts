@@ -5,6 +5,7 @@ interface FocusTarget {
     pagePath: string
     active: () => boolean
     focus: () => void
+    agentKey?: () => string | undefined
 }
 const targets = new Map<string, FocusTarget>()
 let focusIntent = 0
@@ -12,6 +13,14 @@ let focusIntent = 0
 export function registerTerminalFocusTarget(key: string, target: FocusTarget): () => void {
     targets.set(key, target)
     return () => { if (targets.get(key) === target) targets.delete(key) }
+}
+
+/** Read the live leaf, rather than the terminal that originally opened a split page. */
+export function activeTerminalAgentKey(pagePath: string): string | null | undefined {
+    const page = [...targets.values()].filter(target => target.pagePath === pagePath)
+    if (!page.length) return undefined
+    const active = page.filter(target => target.active())
+    return active.length === 1 ? active[0].agentKey?.() ?? null : null
 }
 
 export function activeTerminalFocusPath(): string | undefined {

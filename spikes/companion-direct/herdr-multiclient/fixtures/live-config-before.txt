@@ -1,0 +1,12 @@
+total 8080
+drwxr-xr-x@ 11 yuuzu  staff      352 Sep 28 00:54 .
+drwx------  23 yuuzu  staff      736 Sep 19 17:16 ..
+-rw-r--r--@  1 yuuzu  staff        0 Aug  9 20:51 .plugins.lock
+-rw-r--r--@  1 yuuzu  staff      222 Aug 12 22:16 config.toml
+-rw-r--r--@  1 yuuzu  staff  2711879 Sep 28 00:50 herdr-client.log
+srw-------@  1 yuuzu  staff        0 Sep 26 21:54 herdr-client.sock
+-rw-r--r--@  1 yuuzu  staff   388325 Sep 28 01:05 herdr-server.log
+srw-------@  1 yuuzu  staff        0 Sep 26 21:54 herdr.sock
+-rw-r--r--@  1 yuuzu  staff    10974 Sep 20 11:34 release-notes.json
+-rw-r--r--@  1 yuuzu  staff     7392 Sep 28 00:54 session.json
+drwxr-xr-x@  6 yuuzu  staff      192 Sep 15 00:10 sessions

@@ -55,6 +55,14 @@ pub fn is_ignored_path(path: &Path) -> bool {
             .is_some_and(is_save_scratch_name)
 }
 
+fn exclude_directory<'a>(root: &Path, path: &'a Path) -> Option<&'a Path> {
+    if !path.ends_with(".git/info/exclude") {
+        return None;
+    }
+    let directory = path.ancestors().nth(3)?;
+    (directory.starts_with(root) && !is_ignored_path(directory)).then_some(directory)
+}
+
 const CAPACITY: usize = 4096;
 const COALESCE_INTERVAL: Duration = Duration::from_millis(300);
 
@@ -177,6 +185,27 @@ fn coalesce_path(root: &Path, matcher: &Gitignore, path: PathBuf) -> (PathBuf, b
 /// Most ignored paths a single batch may verify; larger batches just refresh.
 const TRACKED_CHECK_LIMIT: usize = 256;
 
+/// True only when Git proves that nothing is tracked at or under any of `specs`.
+/// Git precomposes a pathspec where it can (macOS), which then misses an index
+/// entry stored decomposed, so a name it would respell is asked again as stored.
+fn nothing_tracked(root: &Path, specs: &[String]) -> bool {
+    let lists_nothing = |spelling: &[&str], specs: Vec<&str>| {
+        let mut args = spelling.to_vec();
+        args.extend(["ls-files", "-z", "--cached", "--"]);
+        args.extend(specs);
+        let tracked = crate::git_service::run_git(root, &args, Duration::from_secs(10), &[]);
+        matches!(&tracked, Ok(out) if out.code == 0 && out.stdout.is_empty())
+    };
+    let respelled: Vec<&str> = specs
+        .iter()
+        .map(String::as_str)
+        .filter(|spec| crate::git_service::git_respells(spec))
+        .collect();
+    lists_nothing(&[], specs.iter().map(String::as_str).collect())
+        && (respelled.is_empty()
+            || lists_nothing(crate::git_service::TRACKED_NAMES_AS_STORED, respelled))
+}
+
 /// True only when Git confirms every path is really ignored and nothing tracked
 /// lives at or under it. An ignore rule never hides edits to force-added files,
 /// and the root-only matcher can over-ignore (nested `.gitignore` negations), so
@@ -210,10 +239,7 @@ fn all_untracked(root: &Path, paths: &[&PathBuf], cancel: &Arc<AtomicBool>) -> b
         return false;
     }
     crate::cancellation::with_cancellation(cancel.clone(), || {
-        let mut args = vec!["ls-files", "-z", "--cached", "--"];
-        args.extend(specs.iter().map(String::as_str));
-        let tracked = crate::git_service::run_git(root, &args, Duration::from_secs(10), &[]);
-        if !matches!(&tracked, Ok(out) if out.code == 0 && out.stdout.is_empty()) {
+        if !nothing_tracked(root, &specs) {
             return false;
         }
         let mut input = Vec::new();
@@ -280,16 +306,19 @@ impl PendingChanges {
     fn extend(&mut self, root: &Path, matcher: &mut Gitignore, batch: Vec<PathBuf>) {
         // Reload before classifying any paths in this batch. A rescan reloads
         // too, since an overflow may have lost the ignore-file notification.
-        if batch
-            .iter()
-            .any(|path| path.file_name().is_some_and(|name| name == ".gitignore"))
-        {
+        if batch.iter().any(|path| {
+            path.file_name().is_some_and(|name| name == ".gitignore")
+                || exclude_directory(root, path).is_some()
+        }) {
             *matcher = ignore_matcher(root);
         }
         if self.rescan {
             return;
         }
         for path in batch {
+            let path = exclude_directory(root, &path)
+                .map(Path::to_path_buf)
+                .unwrap_or(path);
             let (path, ignored) = coalesce_path(root, matcher, path);
             let known = self.paths.entry(path).or_insert(ignored);
             *known &= ignored;
@@ -390,7 +419,10 @@ pub fn build_classified_watcher(
             Ok(event) if event.paths.len() <= CAPACITY => event
                 .paths
                 .into_iter()
-                .filter(|p| p.starts_with(&callback_root) && !is_ignored_path(p))
+                .filter(|p| {
+                    p.starts_with(&callback_root)
+                        && (!is_ignored_path(p) || exclude_directory(&callback_root, p).is_some())
+                })
                 .collect::<Vec<_>>(),
             _ => {
                 request_rescan(&overflow_callback, &send);
@@ -518,6 +550,92 @@ mod tests {
         );
         assert!(receive.recv_timeout(Duration::from_millis(350)).is_err());
         drop(watcher);
+    }
+
+    #[test]
+    fn watcher_exclude_notification_matches_only_exact_supported_paths() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        for relative in [".git/info/exclude", "nested/.git/info/exclude"] {
+            let path = root.join(relative);
+            assert!(is_ignored_path(&path));
+            assert_eq!(exclude_directory(root, &path), path.ancestors().nth(3));
+        }
+        for relative in [
+            ".git/index",
+            ".git/objects/entry",
+            ".git/info",
+            ".git/info/exclude.lock",
+            ".git/info/exclude.tmp",
+            "nested/.git/info/exclude/child",
+            "node_modules/package/.git/info/exclude",
+            ".git/worktrees/lane/.git/info/exclude",
+            "other/info/exclude",
+        ] {
+            assert_eq!(
+                exclude_directory(root, &root.join(relative)),
+                None,
+                "{relative}"
+            );
+        }
+        assert_eq!(
+            exclude_directory(
+                root,
+                &root.with_extension("outside").join(".git/info/exclude")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn watcher_exclude_reload_precedes_mixed_batch_classification() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let exclude = root.join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::create_dir(root.join("cache")).unwrap();
+        let child = root.join("cache/change.txt");
+        std::fs::write(&child, "owned").unwrap();
+        std::fs::write(&exclude, "").unwrap();
+        let mut matcher = ignore_matcher(root);
+        std::fs::write(&exclude, "cache/\n").unwrap();
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![child.clone(), exclude.clone()]);
+        assert!(matcher.matched(root.join("cache"), true).is_ignore());
+        assert_eq!(
+            pending.paths,
+            HashMap::from([(root.to_owned(), false), (root.join("cache"), true)])
+        );
+        pending.take(root).unwrap();
+
+        // Deletion must reload too; it cannot depend on the path still existing.
+        std::fs::remove_file(&exclude).unwrap();
+        pending.extend(root, &mut matcher, vec![child.clone(), exclude]);
+        assert!(!matcher.matched(root.join("cache"), true).is_ignore());
+        assert_eq!(
+            pending.paths,
+            HashMap::from([(root.to_owned(), false), (child, false)])
+        );
+    }
+
+    #[test]
+    fn watcher_exclude_nested_invalidates_its_directory_without_global_rules() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let nested = root.join("nested");
+        let exclude = nested.join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, "cache/\n").unwrap();
+        let mut matcher = ignore_matcher(root);
+        let mut pending = PendingChanges::default();
+        pending.extend(root, &mut matcher, vec![exclude.clone()]);
+        assert_eq!(pending.paths, HashMap::from([(nested.clone(), false)]));
+        assert!(!matcher.matched(root.join("cache"), true).is_ignore());
+        assert!(!matcher.matched(nested.join("cache"), true).is_ignore());
+        pending.take(root).unwrap();
+        std::fs::remove_file(&exclude).unwrap();
+        pending.extend(root, &mut matcher, vec![exclude]);
+        assert_eq!(pending.paths, HashMap::from([(nested, false)]));
     }
 
     #[test]
@@ -1154,6 +1272,66 @@ mod tests {
         // Untracked siblings in the same ignored directory do not change that.
         std::fs::write(root.join("generated/untracked.txt"), "u").unwrap();
         assert!(classify(root, &["generated/untracked.txt"]));
+    }
+
+    /// Two ignored folders with a force-added file each, committed with the
+    /// folder named as Foundation stores it (decomposed): once under an index
+    /// entry stored decomposed, once under a precomposed one (a Finder folder).
+    /// Git precomposes a pathspec, which then misses an entry stored decomposed.
+    #[cfg(target_os = "macos")]
+    fn ignored_folders_with_tracked_files() -> tempfile::TempDir {
+        use crate::git_service::test_repo;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        test_repo::init(root);
+        std::fs::write(root.join(".gitignore"), "*.out/\n").unwrap();
+        test_repo::git(root, &["config", "core.precomposeunicode", "false"]);
+        std::fs::create_dir(root.join("ume\u{301}.out")).unwrap();
+        std::fs::write(root.join("ume\u{301}.out/keep.txt"), "x").unwrap();
+        test_repo::git(root, &["add", "-f", "--", "ume\u{301}.out/keep.txt"]);
+        test_repo::git(root, &["config", "core.precomposeunicode", "true"]);
+        std::fs::create_dir(root.join("fre\u{301}sh.out")).unwrap();
+        std::fs::write(root.join("fre\u{301}sh.out/keep.txt"), "x").unwrap();
+        test_repo::git(root, &["add", "-f", "--", "fr\u{e9}sh.out/keep.txt"]);
+        test_repo::git(root, &["commit", "-m", "track"]);
+        temp
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nothing_tracked_asks_again_as_stored_for_a_name_git_would_respell() {
+        let temp = ignored_folders_with_tracked_files();
+        let root = temp.path();
+        let nothing = |names: &[&str]| {
+            let specs: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+            nothing_tracked(root, &specs)
+        };
+        // Only the query as stored finds an entry stored decomposed.
+        assert!(!nothing(&["ume\u{301}.out"]));
+        assert!(!nothing(&["ume\u{301}.out/keep.txt"]));
+        assert!(!nothing(&["plain.out", "ume\u{301}.out"]));
+        // The ordinary one finds a precomposed entry, by either spelling.
+        assert!(!nothing(&["fre\u{301}sh.out"]));
+        assert!(!nothing(&["fr\u{e9}sh.out"]));
+        // Names nothing tracks, in every spelling, stay skippable.
+        assert!(nothing(&["plain.out", "cafe\u{301}.out", "caf\u{e9}.out"]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tracked_files_under_an_ignored_decomposed_folder_stay_git_relevant() {
+        let temp = ignored_folders_with_tracked_files();
+        let root = temp.path();
+        // An event inside an ignored folder coalesces to the folder.
+        assert!(classify(root, &["ume\u{301}.out/keep.txt"]));
+        assert!(classify(root, &["ume\u{301}.out/new.txt", "other.out/x"]));
+        assert!(classify(root, &["fre\u{301}sh.out/keep.txt"]));
+        // Controls: untracked folders of the same kind stay skippable.
+        for folder in ["cafe\u{301}.out", "plain.out"] {
+            std::fs::create_dir(root.join(folder)).unwrap();
+            std::fs::write(root.join(folder).join("a.txt"), "u").unwrap();
+            assert!(!classify(root, &[&format!("{folder}/a.txt")]), "{folder}");
+        }
     }
 
     #[test]

@@ -1023,9 +1023,10 @@ function RecentQueriesRegion() {
                 >
                   <button
                     type="button"
+                    disabled={entry.truncated}
                     onClick={() => setSql(entry.sql)}
-                    title={entry.sql}
-                    className="flex h-7 w-full items-center gap-2 rounded-(--r-xs) px-2.5 text-left text-(--ink-2) outline-none transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)]"
+                    title={entry.truncated ? t("database.historyTruncatedDescription") : entry.sql}
+                    className="flex h-7 w-full items-center gap-2 rounded-(--r-xs) px-2.5 text-left text-(--ink-2) outline-none transition-colors hover:bg-(--db-hover) hover:text-(--ink-1) focus-visible:shadow-[inset_0_0_0_2px_var(--ring)] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <span className="flex size-2 shrink-0 items-center justify-center">
                       {!entry.ok && (
@@ -1040,6 +1041,11 @@ function RecentQueriesRegion() {
                     <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
                       {entry.sql.split("\n")[0]}
                     </span>
+                    {entry.truncated && (
+                      <span className="shrink-0 text-[10px] text-(--ink-4)">
+                        {t("database.historyTruncated")}
+                      </span>
+                    )}
                     <span className="shrink-0 font-mono text-[10.5px] text-(--ink-4) tabular-nums">
                       {relativeTime(Math.floor(entry.ranAt / 1000))}
                     </span>

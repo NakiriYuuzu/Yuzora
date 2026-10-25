@@ -188,6 +188,55 @@ pub fn read_bounded_bytes<R: Read>(
     }
 }
 
+/// [`read_bounded_bytes`] for a non-blocking pipe whose writer may outlive the
+/// child it was made for: a descendant (or a descriptor captured by a racing
+/// spawn) can keep the write end open, so EOF is not guaranteed.
+///
+/// Ends at EOF, at the byte ceiling, or once `stop` is raised and the pipe has
+/// nothing more to give. `stop` means the child has been reaped, so every byte
+/// it wrote is already in the pipe: the reader drains it until `WouldBlock`
+/// and returns exactly what a read-to-EOF would have, minus anything a
+/// surviving descendant writes later. `wait_for_data` is how an idle reader
+/// waits (at most ~10 ms) before it looks at `stop` again. `WouldBlock` is
+/// never reported as an error.
+pub fn read_bounded_bytes_until_stopped<R: Read>(
+    reader: &mut R,
+    max: usize,
+    stop: &std::sync::atomic::AtomicBool,
+    mut wait_for_data: impl FnMut(),
+) -> Result<Vec<u8>, BoundedNdjsonReadError> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut draining = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return Ok(buf),
+            Ok(n) => {
+                if buf.len().saturating_add(n) > max {
+                    return Err(BoundedNdjsonReadError::Protocol(
+                        HerdrProtocolError::ResponseTooLarge,
+                    ));
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if draining {
+                    return Ok(buf);
+                }
+                // Read once more after seeing `stop`: the byte that made the
+                // previous read come up empty may have landed since.
+                if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    draining = true;
+                } else {
+                    wait_for_data();
+                }
+            }
+            Err(error) => return Err(BoundedNdjsonReadError::Io(error)),
+        }
+    }
+}
+
 /// Strict-UTF-8 JSON parse for a completed Herdr CLI stdout buffer.
 pub fn parse_herdr_cli_stdout(stdout: &[u8]) -> Result<serde_json::Value, HerdrProtocolError> {
     if stdout.len() > MAX_NDJSON_LINE_BYTES {
@@ -467,5 +516,92 @@ mod tests {
         }
         let kept = read_bounded_bytes(&mut Cursor::new(&bytes), 16).expect("exact cap");
         assert_eq!(kept, bytes);
+    }
+
+    /// Hands out one scripted read result per call; reading past it fails the test.
+    struct Scripted(std::collections::VecDeque<std::io::Result<&'static [u8]>>);
+
+    impl Scripted {
+        fn new(script: Vec<std::io::Result<&'static [u8]>>) -> Self {
+            Self(script.into())
+        }
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let bytes = self.0.pop_front().expect("read past the script")?;
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    fn would_block() -> std::io::Result<&'static [u8]> {
+        Err(std::io::ErrorKind::WouldBlock.into())
+    }
+
+    #[test]
+    fn stoppable_reader_waits_while_idle_then_drains_what_arrived_before_the_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = AtomicBool::new(false);
+        let mut waits = 0;
+        // The stop is raised during the third wait; "ef" is the byte that landed
+        // between the read that came up empty and the check of the flag.
+        let mut reader = Scripted::new(vec![
+            Ok(b"ab"),
+            would_block(),
+            would_block(),
+            Ok(b"cd"),
+            would_block(),
+            would_block(),
+            Ok(b"ef"),
+            would_block(),
+        ]);
+        let bytes = read_bounded_bytes_until_stopped(&mut reader, 64, &stop, || {
+            waits += 1;
+            if waits == 3 {
+                stop.store(true, Ordering::Release);
+            }
+        })
+        .expect("drained");
+        assert_eq!(bytes, b"abcdef");
+        assert_eq!(waits, 3);
+        assert!(reader.0.is_empty(), "the drain stopped before the script");
+    }
+
+    #[test]
+    fn stoppable_reader_ends_at_eof_without_the_stop() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut reader = Scripted::new(vec![Ok(b"ab"), would_block(), Ok(b"c"), Ok(b"")]);
+        let mut waits = 0;
+        let bytes =
+            read_bounded_bytes_until_stopped(&mut reader, 64, &stop, || waits += 1).expect("eof");
+        assert_eq!(bytes, b"abc");
+        assert_eq!(waits, 1);
+    }
+
+    #[test]
+    fn stoppable_reader_keeps_the_byte_ceiling_while_draining() {
+        let stop = std::sync::atomic::AtomicBool::new(true);
+        let mut reader = Scripted::new(vec![would_block(), Ok(b"aaaaaa"), Ok(b"bbbbbb")]);
+        match read_bounded_bytes_until_stopped(&mut reader, 10, &stop, || ()) {
+            Err(BoundedNdjsonReadError::Protocol(HerdrProtocolError::ResponseTooLarge)) => {}
+            other => panic!("expected tooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stoppable_reader_retries_interrupts_and_reports_real_errors() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut reader = Scripted::new(vec![
+            Err(std::io::ErrorKind::Interrupted.into()),
+            Ok(b"ab"),
+            Err(std::io::ErrorKind::BrokenPipe.into()),
+        ]);
+        match read_bounded_bytes_until_stopped(&mut reader, 64, &stop, || ()) {
+            Err(BoundedNdjsonReadError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+            }
+            other => panic!("expected the io error, got {other:?}"),
+        }
     }
 }

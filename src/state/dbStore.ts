@@ -217,6 +217,8 @@ export interface DbQueryState {
      * the transaction open regardless. Cleared when the connection goes away. */
     transactionMayBeOpen?: boolean
     running: boolean
+    /** New run waiting for prior cursors to close; old result tabs stay visible. */
+    preparingRun?: { owner: DbQueryRunOwner; cancelRequested: boolean } | null
     result: DbQueryResult | null
     error: DbQueryErrorState | null
     elapsedMs: number | null
@@ -233,6 +235,7 @@ export interface DbQueryState {
  * `ranAt` is `Date.now()` (ms), and `error` is set only when `ok` is false. */
 export interface DbHistoryEntry {
     sql: string
+    truncated?: boolean
     ranAt: number
     ok: boolean
     error?: string
@@ -1100,7 +1103,11 @@ function activeStreamingResultOwner(group: DbQueryRunGroup): DbResultSessionOwne
         : null
 }
 
-export function queryRunGroupIsCancellable(group: DbQueryRunGroup | null): boolean {
+export function queryRunGroupIsCancellable(
+    group: DbQueryRunGroup | null,
+    preparingRun?: DbQueryState["preparingRun"]
+): boolean {
+    if (preparingRun) return !preparingRun.cancelRequested
     return group?.status === "running" || Boolean(group && activeStreamingResultOwner(group))
 }
 
@@ -1189,7 +1196,18 @@ function resultSessionOwners(run: DbQueryRun): Array<Parameters<typeof dbResultS
     })
 }
 
+function numericTextRank(value: string): number {
+    if (value === "-inf" || value === "-Infinity") return 0
+    if (value === "inf" || value === "Infinity") return 2
+    return value === "NaN" ? 3 : 1
+}
+
 function compareNumericText(left: string, right: string): number | null {
+    // Float and NUMERIC decoders use different spellings for the same infinities.
+    const leftRank = numericTextRank(left)
+    const rightRank = numericTextRank(right)
+    if (leftRank !== rightRank) return leftRank - rightRank
+    if (leftRank !== 1) return 0
     const pattern = /^([+-]?)(\d+)(?:\.(\d+))?$/
     const leftMatch = pattern.exec(left)
     const rightMatch = pattern.exec(right)
@@ -1212,6 +1230,13 @@ function compareNumericText(left: string, right: string): number | null {
     return a.fraction.padEnd(width, "0").localeCompare(b.fraction.padEnd(width, "0")) * direction
 }
 
+function dateTimeSortKey(value: string): string {
+    // Host timezone-aware values are UTC; compare fractions without offset punctuation.
+    const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(?:\+00:00|Z)$/.exec(value)
+    if (!match) return value
+    return `${match[1]}.${(match[2] ?? "").replace(/0+$/, "").padEnd(9, "0")}`
+}
+
 function compareDbValues(left: DbValue | undefined, right: DbValue | undefined): number {
     if (!left && !right) return 0
     if (!left) return 1
@@ -1220,15 +1245,16 @@ function compareDbValues(left: DbValue | undefined, right: DbValue | undefined):
         if (left.kind === right.kind) return 0
         return left.kind === "null" ? 1 : -1
     }
-    if (
-        (left.kind === "integer" || left.kind === "decimal") &&
-        (right.kind === "integer" || right.kind === "decimal")
-    ) {
+    const leftNumeric = left.kind === "integer" || left.kind === "decimal"
+    const rightNumeric = right.kind === "integer" || right.kind === "decimal"
+    // Mixing numeric and lexical comparisons across the same values creates cycles.
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1
+    if (leftNumeric && rightNumeric) {
         const numeric = compareNumericText(left.value, right.value)
         if (numeric !== null) return numeric
     }
-    const leftText = left.kind === "binary" ? left.hex : String(left.value)
-    const rightText = right.kind === "binary" ? right.hex : String(right.value)
+    const leftText = left.kind === "binary" ? left.hex : left.kind === "dateTime" ? dateTimeSortKey(left.value) : String(left.value)
+    const rightText = right.kind === "binary" ? right.hex : right.kind === "dateTime" ? dateTimeSortKey(right.value) : String(right.value)
     return leftText.localeCompare(rightText)
 }
 
@@ -1441,6 +1467,7 @@ export const useDbStore = create<DbState>()((set, get) => {
         if (
             configGeneration === null ||
             !exact ||
+            queryFor(initial, owner.descriptorId).preparingRun ||
             exact.state.loading ||
             !operationStillCurrent(
                 initial,
@@ -1998,17 +2025,23 @@ export const useDbStore = create<DbState>()((set, get) => {
         if (!previous) return
         const configGeneration = savedConfigGeneration(previous)
         if (configGeneration === null) return
+        const replacementCredential =
+            config.kind !== "sqlite" && config.password.length > 0
+                ? { password: config.password }
+                : null
+        const previousTarget = profileFromSaved(previous)?.target
+        const invalidatedLive =
+            JSON.stringify(previousTarget) !== JSON.stringify(profileTargetOf(config)) ||
+            replacementCredential !== null
+        // Same-target edits preserve the backend's live connection and config
+        // generation, so its in-flight operations must retain their owners too.
         const editToken = beginOperation(
             id,
             "edit",
-            ["open", "disconnect", "tables", "columns", "query", "page"]
+            invalidatedLive ? ["open", "disconnect", "tables", "columns", "query", "page"] : []
         )
         beginUserIntent(null)
         try {
-            const replacementCredential =
-                config.kind !== "sqlite" && config.password.length > 0
-                    ? { password: config.password }
-                    : null
             const updated = savedFromProfile(
                 await dbProfileUpdate({
                     descriptorId: id as DbDescriptorId,
@@ -2021,10 +2054,6 @@ export const useDbStore = create<DbState>()((set, get) => {
                 })
             )
             if (!operationStillCurrent(get(), id, configGeneration, "edit", editToken)) return
-            const previousTarget = profileFromSaved(previous)?.target
-            const invalidatedLive =
-                JSON.stringify(previousTarget) !== JSON.stringify(profileTargetOf(config)) ||
-                replacementCredential !== null
             set((current) => {
                 if (!operationStillCurrent(current, id, configGeneration, "edit", editToken)) {
                     return {}
@@ -2315,12 +2344,14 @@ export const useDbStore = create<DbState>()((set, get) => {
             state.saved.find((profile) => profile.id === descriptorId)
         )
         if (!connection || !identity || configGeneration === null) return
-        const tablesToken = beginOperation(descriptorId, "tables", ["columns"])
+        const tablesToken = beginOperation(descriptorId, "tables")
         set((current) => ({
             tableErrors: { ...current.tableErrors, [descriptorId]: null }
         }))
         try {
             const tableList = await dbListTables(identity)
+            let reloadColumns: DbTable[] = []
+            let columnsEpoch = 0
             set((current) => {
                 if (!operationStillCurrent(
                     current,
@@ -2330,7 +2361,25 @@ export const useDbStore = create<DbState>()((set, get) => {
                     tablesToken,
                     identity
                 )) return {}
+                const columns = current.columnBuckets[descriptorId] ?? {}
+                const errors = current.columnErrors[descriptorId] ?? {}
+                const requested = new Set([...Object.keys(columns), ...Object.keys(errors)])
+                const liveKeys = new Set(tableList.map(dbObjectRefKey))
+                reloadColumns = tableList.filter(table => requested.has(dbObjectRefKey(table)))
+                const refreshed = bumpOperations(current.operations, descriptorId, "columns")
+                columnsEpoch = refreshed.token
                 return {
+                    // Retire old column replies only after a successful table
+                    // refresh, so a failed refresh cannot strand loading rows.
+                    operations: refreshed.operations,
+                    columnBuckets: {
+                        ...current.columnBuckets,
+                        [descriptorId]: Object.fromEntries(Object.entries(columns).filter(([key]) => liveKeys.has(key)))
+                    },
+                    columnErrors: {
+                        ...current.columnErrors,
+                        [descriptorId]: Object.fromEntries(Object.entries(errors).filter(([key]) => liveKeys.has(key)))
+                    },
                     tableBuckets: {
                         ...current.tableBuckets,
                         [descriptorId]: tableList
@@ -2339,6 +2388,16 @@ export const useDbStore = create<DbState>()((set, get) => {
                     tables: { ...current.tables, [connection.connId]: tableList }
                 }
             })
+            // Reload only previously requested objects, including expanded rows
+            // whose first read was retired. A connection may allow one metadata
+            // lease at a time, so do not fan these requests out in parallel.
+            // A newer failed table refresh must not interrupt this valid queue.
+            for (const table of reloadColumns) {
+                if (!operationStillCurrent(
+                    get(), descriptorId, configGeneration, "columns", columnsEpoch, identity
+                )) return
+                await get().loadColumns(descriptorId, table)
+            }
         } catch (error) {
             if (!operationStillCurrent(
                 get(), descriptorId, configGeneration, "tables", tablesToken, identity
@@ -2515,6 +2574,9 @@ export const useDbStore = create<DbState>()((set, get) => {
             ? resultSessionOwners(current.runGroup.run)
             : []
         const executedSql = resolved.units.map((unit) => unit.sql).join("\n")
+        const historySql = connection.kind === "mssql"
+            ? sql.slice(resolved.highlight.from, resolved.highlight.to)
+            : executedSql
         set((snapshot) => {
             if (!operationStillCurrent(
                 snapshot, descriptorId, configGeneration, "query", queryToken, identity
@@ -2522,6 +2584,7 @@ export const useDbStore = create<DbState>()((set, get) => {
             const next: DbQueryState = {
                 ...queryFor(snapshot, descriptorId),
                 running: true,
+                preparingRun: { owner, cancelRequested: false },
                 error: null,
                 parseError: null
             }
@@ -2540,6 +2603,37 @@ export const useDbStore = create<DbState>()((set, get) => {
                 if (!operationStillCurrent(
                     get(), descriptorId, configGeneration, "query", queryToken, identity
                 )) return
+                set((snapshot) => {
+                    const query = queryFor(snapshot, descriptorId)
+                    const page = exactResultPageState(query, sessionOwner)
+                    if (!page) return {}
+                    const next = queryWithResultPageState(query, sessionOwner, {
+                        ...page.state,
+                        page: { ...page.state.page, lifecycle: "released", hasNext: false },
+                        loading: false,
+                        released: true,
+                    })
+                    if (!next) return {}
+                    return {
+                        queryBuckets: { ...snapshot.queryBuckets, [descriptorId]: next },
+                        queries: { ...snapshot.queries, [connection.connId]: next }
+                    }
+                })
+            }
+            // Cancel targets the new intent even while its predecessor is being
+            // released. Finish that cleanup, but never send the cancelled SQL.
+            if (!operationStillCurrent(
+                get(), descriptorId, configGeneration, "query", queryToken, identity
+            )) return
+            if (queryFor(get(), descriptorId).preparingRun?.cancelRequested) {
+                set((snapshot) => {
+                    const next = { ...queryFor(snapshot, descriptorId), running: false, preparingRun: null }
+                    return {
+                        queryBuckets: { ...snapshot.queryBuckets, [descriptorId]: next },
+                        queries: { ...snapshot.queries, [connection.connId]: next }
+                    }
+                })
+                return
             }
             startedAt = performance.now()
             set((snapshot) => {
@@ -2548,6 +2642,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                 )) return {}
                 const next: DbQueryState = {
                     ...queryFor(snapshot, descriptorId),
+                    preparingRun: null,
                     sortBy: null,
                     sortBaseRows: null,
                     runGroup: {
@@ -2629,7 +2724,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                 statement.result.kind === "resultLimitReached"
             )
             get().recordHistory(descriptorId, {
-                sql: executedSql,
+                sql: historySql,
                 ranAt: Date.now(),
                 ok: !failedStatement,
                 error: failedStatement?.result.kind,
@@ -2681,11 +2776,23 @@ export const useDbStore = create<DbState>()((set, get) => {
                 })
             }
             get().recordHistory(descriptorId, {
-                sql: executedSql,
+                sql: historySql,
                 ranAt: Date.now(),
                 ok: false,
                 error: failure.code,
                 elapsedMs
+            })
+        } finally {
+            set((snapshot) => {
+                const query = queryFor(snapshot, descriptorId)
+                if (!query.preparingRun || !queryRunOwnerMatches(query.preparingRun.owner, owner)) return {}
+                const next = { ...query, preparingRun: null }
+                return {
+                    queryBuckets: { ...snapshot.queryBuckets, [descriptorId]: next },
+                    queries: snapshot.queries[connection.connId] === query
+                        ? { ...snapshot.queries, [connection.connId]: next }
+                        : snapshot.queries
+                }
             })
         }
     },
@@ -2698,7 +2805,24 @@ export const useDbStore = create<DbState>()((set, get) => {
         const identity = identityOf(connection ?? undefined)
         const current = queryFor(state, descriptorId)
         const group = current.runGroup
-        if (!connection || !identity || !group || !queryRunGroupIsCancellable(group)) return
+        if (!connection || !identity) return
+        if (current.preparingRun) {
+            const pendingOwner = current.preparingRun.owner
+            if (pendingOwner.descriptorId !== identity.descriptorId ||
+                pendingOwner.connectionId !== identity.connectionId ||
+                pendingOwner.connectionGeneration !== identity.connectionGeneration) return
+            set((snapshot) => {
+                const query = queryFor(snapshot, descriptorId)
+                if (!query.preparingRun || !queryRunOwnerMatches(query.preparingRun.owner, pendingOwner)) return {}
+                const next = { ...query, preparingRun: { ...query.preparingRun, cancelRequested: true } }
+                return {
+                    queryBuckets: { ...snapshot.queryBuckets, [descriptorId]: next },
+                    queries: { ...snapshot.queries, [connection.connId]: next }
+                }
+            })
+            return
+        }
+        if (!group || !queryRunGroupIsCancellable(group)) return
         if (
             group.owner.descriptorId !== identity.descriptorId ||
             group.owner.connectionId !== identity.connectionId ||
@@ -2929,6 +3053,8 @@ export const useDbStore = create<DbState>()((set, get) => {
         const initial = get()
         const connection = exactConnection(initial, identity)
         if (!connection) throw new Error("staleConnection")
+        const sqliteCellEdit = connection.kind === "sqlite" && expectedRows !== undefined
+        if (sqliteCellEdit && expectedRows !== "1") throw new Error("editFailed")
         // MSSQL DONE counts include trigger work. Read the outer UPDATE count
         // in the same batch, without another request or changing NOCOUNT state.
         const mssqlCellEdit = connection.kind === "mssql" && expectedRows !== undefined
@@ -2976,11 +3102,15 @@ export const useDbStore = create<DbState>()((set, get) => {
             if (!isCurrent()) throw new Error("staleConnection")
             if (edit.cancelRequested) throw new Error("editCancelled")
             edit.sent = true
-            run = await dbQueryRun({ ...owner, mode: "primary", statements: [{ sql: statementSql, transactionBoundary: "none" }] })
+            run = await dbQueryRun({ ...owner, mode: sqliteCellEdit ? "tableCellMutation" : "primary", statements: [{ sql: statementSql, transactionBoundary: "none" }] })
             if (!queryRunMatchesOwner(run, owner) || !isCurrent()) throw new Error("staleConnection")
             if (run.connectionTerminated) edit.connectionTerminated = true
             if (edit.connectionTerminated) throw new Error("editUncertain")
             const statement = run.statements[0]
+            if (sqliteCellEdit && (statement.result.kind === "error" || statement.result.kind === "cancelled")) {
+                if (statement.effectOutcome !== "rolledBack" && statement.effectOutcome !== "none") throw new Error("editUncertain")
+                if (statement.result.kind === "error" && statement.effectOutcome === "rolledBack" && statement.result.error.code === "cardinalityMismatch") throw new Error("editConflict")
+            }
             if (statement.result.kind === "cancelled") throw new Error(edit.cancelRequested ? "editCancelled" : "editFailed")
             if (statement.result.kind === "error") throw new Error("editFailed")
             if (run.transactionMayBeOpen || statement.effectOutcome === "transactionPending" || statement.effectOutcome === "rolledBack") throw new Error("editUncertain")
@@ -3014,6 +3144,7 @@ export const useDbStore = create<DbState>()((set, get) => {
                 projectExactServerDisconnect(identity, undefined, edit.connectionTerminated ? null : "serverDisconnected")
                 if (edit.sent) throw new Error("editUncertain", { cause: error })
             }
+            if (sqliteCellEdit && operationalErrorCode(error, "queryFailed") === "connectionBusy") throw new Error("connectionBusy", { cause: error })
             throw error
         } finally {
             if (activeTableEdits.get(descriptorId) === edit) activeTableEdits.delete(descriptorId)
@@ -3066,12 +3197,12 @@ export const useDbStore = create<DbState>()((set, get) => {
 
     recordHistory: (descriptorId, entry) =>
         set((state) => {
-            const sql =
-                entry.sql.length > DB_HISTORY_SQL_MAX ? entry.sql.slice(0, DB_HISTORY_SQL_MAX) : entry.sql
+            const truncated = entry.sql.length > DB_HISTORY_SQL_MAX
+            const sql = truncated ? entry.sql.slice(0, DB_HISTORY_SQL_MAX) : entry.sql
             const existing = state.historyBuckets[descriptorId] ?? []
             // A consecutive re-run of the identical statement doesn't earn a new row.
             if (existing[0]?.sql === sql) return state
-            const next = [{ ...entry, sql }, ...existing].slice(0, DB_HISTORY_LIMIT)
+            const next = [{ ...entry, sql, ...(truncated ? { truncated: true } : {}) }, ...existing].slice(0, DB_HISTORY_LIMIT)
             const historyBuckets = { ...state.historyBuckets, [descriptorId]: next }
             return { historyBuckets }
         }),

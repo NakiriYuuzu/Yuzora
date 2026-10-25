@@ -18,9 +18,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::herdr_backend::{HerdrMetadata, HerdrRemoteBackend};
+#[cfg(unix)]
+use crate::herdr_limits::read_bounded_bytes_until_stopped;
 use crate::herdr_limits::{
     bound_optional_json, bounded_ipc, ensure_ipc_bound, ensure_raw_ipc_bound,
-    parse_herdr_cli_stdout, read_bounded_bytes, read_bounded_ndjson_line, validate_json_complexity,
+    parse_herdr_cli_stdout, read_bounded_ndjson_line, validate_json_complexity,
     validate_snapshot_counts, BoundedNdjsonReadError, HerdrProtocolError, MAX_IPC_BYTES,
     MAX_JSON_ARRAY_LEN, MAX_JSON_DEPTH, MAX_JSON_OBJECT_KEYS, MAX_LAYOUT_DEPTH,
     MAX_NDJSON_LINE_BYTES, MAX_PANE_COUNT, MAX_SESSION_COUNT, MAX_STATE_LABELS, MAX_WORKTREE_COUNT,
@@ -50,6 +52,20 @@ const TEST_EVENT_RECV_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LOCAL_IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a terminal input write (or the wait for the writer lock) may go
+/// without moving a byte before the session is given up. Below the Companion
+/// gateway's ten second write watchdog, so the Host answers first.
+#[cfg(not(test))]
+const INPUT_WRITE_TIMEOUT: Duration = LOCAL_IO_TIMEOUT;
+#[cfg(test)]
+const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Stable prefix of the error for a stalled input write; the Companion gateway
+/// matches it.
+const INPUT_TIMEOUT_PREFIX: &str = "ioTimeout:";
+/// A control command gave up waiting for the connector's stdin, which another
+/// writer holds. The session is untouched (the holder is bounded and tears it
+/// down itself if it is stuck); the text is the frontend's `busy` error kind.
+const CONTROL_BUSY_ERROR: &str = "host-call-wait-timeout";
 /// Reuse expensive CLI inventory and binary fingerprint checks on hot paths.
 /// Explicit lists stay fresh; failures and lifecycle changes invalidate caches.
 /// Socket paths still come only from the authoritative session list.
@@ -259,6 +275,21 @@ pub struct HerdrNamedSession {
     pub running: bool,
     pub session_dir: String,
     pub socket_path: String,
+    /// HERDR 0.9.4+ lists a Session whose socket refused this client (for
+    /// example an elevated Windows server) as not running with this reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_error: Option<String>,
+}
+
+/// Why a listed Session cannot be used; an unreachable one may still be running.
+fn session_not_running_message(session: &HerdrNamedSession) -> String {
+    match &session.connection_error {
+        Some(error) => format!("herdr session '{}' is unreachable: {error}", session.name),
+        None => format!(
+            "herdr session '{}' is not running; start it with `herdr session attach {}`",
+            session.name, session.name
+        ),
+    }
 }
 
 /// Result of public `workspace.create`.
@@ -966,6 +997,14 @@ struct ConnectorSession {
     stdin: Mutex<Option<ChildStdin>>,
     reader: Mutex<Option<JoinHandle<()>>>,
     closed: Mutex<bool>,
+    /// Set by a release and never cleared: the reader emits nothing afterwards,
+    /// even if it outlived the release's bounded wait. `closed` also turns true
+    /// when the connector ends by itself, and its last stderr lines still count.
+    released: AtomicBool,
+    /// Where the Host itself reports a teardown it started (a stalled input
+    /// write): the reader is silenced by `released` first, so only this path
+    /// can tell the frontend. None for a session nobody listens to.
+    on_event: Option<OnTerminalEvent>,
 }
 
 struct EventSubscription {
@@ -1130,7 +1169,7 @@ impl HerdrManager {
 
             let mut command = default_server_command(&binary);
             process_kill::configure_background_process(&mut command);
-            let mut child = command.spawn().map_err(|error| {
+            let mut child = process_kill::spawn_std(&mut command).map_err(|error| {
                 format!(
                     "failed to launch Herdr server from {}: {error}",
                     binary.display()
@@ -1825,14 +1864,13 @@ impl HerdrManager {
             let control_ok = socket_ready;
             let create_ok = socket_ready && has_tab_create_method;
             let terminal_reason = if session_stopped {
-                let name = named.as_ref().map(|s| s.name.as_str()).unwrap_or("session");
-                Some(format!(
-                    "herdr session '{name}' is not running; start it with `herdr session attach {name}`"
-                ))
+                named.as_ref().map(session_not_running_message)
             } else if incompatible {
                 Some("herdr server protocol incompatible".into())
             } else if !socket_present {
                 Some("herdr server not running or socket unavailable".into())
+            } else if schema_value.is_none() {
+                caps.api.reason.clone()
             } else if !has_tab_create_method {
                 Some("selected herdr schema lacks tab.create".into())
             } else {
@@ -1852,15 +1890,12 @@ impl HerdrManager {
         }
 
         if session_stopped {
-            let name = named.as_ref().map(|s| s.name.as_str()).unwrap_or("session");
             clear_api_method_flags(&mut caps.api);
-            caps.api.reason = Some(format!(
-                "herdr session '{name}' is not running; start it with `herdr session attach {name}`"
-            ));
+            caps.api.reason = named.as_ref().map(session_not_running_message);
         } else if incompatible {
             clear_api_method_flags(&mut caps.api);
             caps.api.reason = Some("herdr server protocol incompatible".into());
-        } else if socket_ready {
+        } else if socket_ready && schema_value.is_some() {
             apply_schema_method_flags(&mut caps.api, &schema_methods, has_ping_method);
             if has_snapshot_method && has_tab_create_method {
                 // Full API surface present — drop seed/schema probe noise.
@@ -2014,10 +2049,7 @@ impl HerdrManager {
     ) -> Result<(HerdrNamedSession, String), String> {
         let session = self.resolve_named_session(session_name)?;
         if !session.running {
-            return Err(format!(
-                "herdr session '{}' is not running; start it with `herdr session attach {}`",
-                session.name, session.name
-            ));
+            return Err(session_not_running_message(&session));
         }
         let socket_from_list = session.socket_path.trim().to_string();
         if socket_from_list.is_empty() {
@@ -2786,10 +2818,7 @@ impl HerdrManager {
         // Refuse connectors against stopped sessions; never secretly attach/start.
         let named = self.resolve_named_session(session_name.as_deref())?;
         if !named.running {
-            return Err(format!(
-                "herdr session '{}' is not running; start it with `herdr session attach {}`",
-                named.name, named.name
-            ));
+            return Err(session_not_running_message(&named));
         }
 
         let binary = self
@@ -2826,8 +2855,7 @@ impl HerdrManager {
         // Connector only — never a process group that could sweep Herdr panes.
         process_kill::configure_background_process(&mut cmd);
 
-        let mut child = cmd
-            .spawn()
+        let mut child = process_kill::spawn_std(&mut cmd)
             .map_err(|e| format!("failed to spawn herdr terminal connector: {e}"))?;
         let mut process_tree = process_kill::attach_process_tree(&mut child)
             .map_err(|e| format!("failed to contain herdr terminal connector: {e}"))?;
@@ -2865,6 +2893,8 @@ impl HerdrManager {
             stdin: Mutex::new(Some(stdin)),
             reader: Mutex::new(None),
             closed: Mutex::new(false),
+            released: AtomicBool::new(false),
+            on_event: Some(on_event.clone()),
         });
 
         let reader_session = session.clone();
@@ -2972,23 +3002,35 @@ impl HerdrManager {
     }
 
     /// Shutdown path: drop every Yuzora connector child. Never stops Herdr server/panes.
+    ///
+    /// Bounded however many connectors there are: every child is signalled
+    /// first, then all of them share `RELEASE_ALL_TERM_WAIT` to exit, survivors
+    /// are killed and get `RELEASE_ALL_KILL_WAIT`, and whatever is left is let
+    /// go: 1.5 s at most, apart from the event subscriptions released after.
     pub fn release_all_connectors(&self) {
+        self.release_all_connectors_within(RELEASE_ALL_TERM_WAIT, RELEASE_ALL_KILL_WAIT);
+    }
+
+    fn release_all_connectors_within(&self, term_wait: Duration, kill_wait: Duration) {
         let clients: Vec<_> = self
             .native_clients
             .lock()
             .unwrap()
-            .keys()
-            .cloned()
+            .drain()
+            .map(|(_, client)| client)
             .collect();
-        for id in clients {
-            let _ = self.release_native_client(&id);
-        }
         let sessions: Vec<Arc<ConnectorSession>> = {
             let mut map = self.sessions.lock().unwrap();
             map.drain().map(|(_, s)| s).collect()
         };
-        for session in sessions {
-            let _ = release_connector(&session);
+        let mut targets: Vec<ReleaseTarget> = clients
+            .iter()
+            .map(|client| client.release_target())
+            .collect();
+        targets.extend(sessions.iter().map(connector_release_target));
+        release_together(targets, term_wait, kill_wait);
+        for client in &clients {
+            client.release_input();
         }
         self.release_all_event_subscriptions();
     }
@@ -3008,54 +3050,584 @@ impl HerdrManager {
             return Err(format!("herdr terminal session {session_id} is closed"));
         }
         let line = cmd.to_json_line()?;
-        let mut stdin_guard = session.stdin.lock().unwrap();
-        let stdin = stdin_guard
-            .as_mut()
-            .ok_or_else(|| format!("herdr terminal session {session_id} has no stdin"))?;
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("failed to write control command: {e}"))?;
-        stdin
-            .flush()
-            .map_err(|e| format!("failed to flush control command: {e}"))?;
+        // A wait that ran out says nothing about the holder: it may be a large
+        // paste into a slow reader that is still moving. The holder is bounded
+        // by its own stall timer and tears the session down if it is truly
+        // stuck, so this caller only reports busy (the frontend's existing
+        // `busy` kind: queued wheels are dropped, the route is kept).
+        let Some(mut stdin_guard) =
+            lock_within(&session.stdin, Instant::now() + INPUT_WRITE_TIMEOUT)
+        else {
+            return Err(CONTROL_BUSY_ERROR.into());
+        };
+        if stdin_guard.is_none() {
+            return Err(format!("herdr terminal session {session_id} has no stdin"));
+        }
+        if write_connector_input(&mut stdin_guard, line.into_bytes(), &session.released)? {
+            // The guard goes first: the release below only tries this lock.
+            drop(stdin_guard);
+            return Err(self.abandon_stalled_connector(session_id, &session));
+        }
         Ok(())
+    }
+
+    /// A write that stopped moving may have left half a line in the pipe, so
+    /// the connector is never reused: out of the map, a `Resync` for the
+    /// frontend (sent before the release silences the reader, and with the
+    /// timeout text so the gateway names the stall), then the bounded release
+    /// (its kill ends a write that is still stuck).
+    fn abandon_stalled_connector(
+        &self,
+        session_id: &str,
+        session: &Arc<ConnectorSession>,
+    ) -> String {
+        {
+            let mut map = self.sessions.lock().unwrap();
+            if map
+                .get(session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, session))
+            {
+                map.remove(session_id);
+            }
+        }
+        let error = input_timeout_error("herdr terminal connector");
+        if let Some(on_event) = &session.on_event {
+            if !session.released.load(Ordering::Acquire) {
+                let _ = on_event(HerdrTerminalEvent::Resync {
+                    session_id: session.id.clone(),
+                    expected_seq: None,
+                    received_seq: None,
+                    message: error.clone(),
+                });
+            }
+        }
+        let _ = release_connector(session);
+        error
     }
 }
 
-fn release_connector(session: &ConnectorSession) -> Result<(), String> {
+// ── Bounded input ───────────────────────────────────────────────────────────
+//
+// An input write goes into a pipe or PTY whose reader may have stopped, and a
+// blocking write then never returns while holding the writer's lock. Every
+// write therefore gives up once it has moved no byte for `INPUT_WRITE_TIMEOUT`
+// (forward progress restarts the clock, so a large paste into a slow reader is
+// not cut off), and so does the wait for the lock behind a stuck writer. The
+// caller then treats the session as poisoned: a partial line may be written.
+
+fn input_timeout_error(what: &str) -> String {
+    format!("{INPUT_TIMEOUT_PREFIX} {what} stopped accepting input")
+}
+
+/// Locks `mutex`, giving up at `deadline`.
+fn lock_within<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<std::sync::MutexGuard<'_, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(1).min(deadline - now));
+    }
+}
+
+/// Writes `bytes` to a control connector's stdin; true when it stalled.
+#[cfg(unix)]
+fn write_connector_input(
+    stdin: &mut Option<ChildStdin>,
+    bytes: Vec<u8>,
+    released: &AtomicBool,
+) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    let Some(stdin) = stdin.as_mut() else {
+        return Err("herdr terminal connector has no stdin".into());
+    };
+    let fd = stdin.as_raw_fd();
+    // The flag lives on this end's description only; the connector's own read
+    // end is untouched.
+    set_nonblocking(fd).map_err(|e| format!("failed to write control command: {e}"))?;
+    let mut rest = bytes.as_slice();
+    let mut deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+    while !rest.is_empty() {
+        match stdin.write(rest) {
+            Ok(0) => return Err("failed to write control command: write zero".into()),
+            Ok(written) => {
+                rest = &rest[written..];
+                deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if released.load(Ordering::Acquire) {
+                    return Err("herdr terminal session was released".into());
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(true);
+                }
+                wait_for_pipe_room(fd, RELEASE_POLL_INTERVAL.min(deadline - now));
+            }
+            Err(error) => return Err(format!("failed to write control command: {error}")),
+        }
+    }
+    Ok(false)
+}
+
+/// Waits up to `limit` for `fd` to take more bytes (or fail).
+#[cfg(unix)]
+fn wait_for_pipe_room(fd: std::os::fd::RawFd, limit: Duration) {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut poll, 1, limit.as_millis().max(1) as libc::c_int) };
+    if ready < 0 || poll.revents & libc::POLLNVAL != 0 {
+        std::thread::sleep(RELEASE_POLL_INTERVAL.min(limit));
+    }
+}
+
+/// For a pipe whose write cannot be made non-blocking (Windows): see
+/// `write_on_thread`.
+#[cfg(not(unix))]
+fn write_connector_input(
+    stdin: &mut Option<ChildStdin>,
+    bytes: Vec<u8>,
+    _released: &AtomicBool,
+) -> Result<bool, String> {
+    let Some(owned) = stdin.take() else {
+        return Err("herdr terminal connector has no stdin".into());
+    };
+    match write_on_thread(owned, bytes, INPUT_WRITE_TIMEOUT, "herdr-connector-input") {
+        Ok(owned) => {
+            *stdin = Some(owned);
+            Ok(false)
+        }
+        Err(ThreadWrite::Stalled) => Ok(true),
+        Err(ThreadWrite::Failed(owned, error)) => {
+            *stdin = owned;
+            Err(format!("failed to write control command: {error}"))
+        }
+    }
+}
+
+/// Progress is counted per chunk, so a chunk must be small enough for a slow
+/// reader to take it whole inside the stall limit: `PIPE_BUF`.
+const THREAD_WRITE_CHUNK: usize = 512;
+
+pub(super) enum ThreadWrite<W> {
+    /// No byte moved for the whole stall limit; the thread still owns the writer.
+    Stalled,
+    /// The write failed. The writer is handed back unless the thread is gone.
+    Failed(Option<W>, String),
+}
+
+/// Writes `bytes` on a thread of its own, for a writer that cannot be made
+/// non-blocking (a PTY master shares its description with the reader; a
+/// Windows pipe has no such mode). The caller waits at most `stall` for
+/// progress, chunk by chunk. On a stall the thread keeps the writer and ends
+/// with the kill the caller issues next, which breaks the pipe or PTY and
+/// drops the writer there instead of in the caller.
+pub(super) fn write_on_thread<W: Write + Send + 'static>(
+    mut writer: W,
+    bytes: Vec<u8>,
+    stall: Duration,
+    name: &str,
+) -> Result<W, ThreadWrite<W>> {
+    let (done, finished) = std::sync::mpsc::channel();
+    let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let moved = Arc::clone(&progress);
+    let spawned = std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let mut result = Ok(());
+            for chunk in bytes.chunks(THREAD_WRITE_CHUNK) {
+                if let Err(error) = writer.write_all(chunk) {
+                    result = Err(error);
+                    break;
+                }
+                moved.fetch_add(1, Ordering::AcqRel);
+            }
+            let result = result.and_then(|()| writer.flush());
+            // Nobody waiting any more: the writer is dropped here, off the caller.
+            let _ = done.send((writer, result));
+        });
+    if let Err(error) = spawned {
+        return Err(ThreadWrite::Failed(None, error.to_string()));
+    }
+    let mut seen = 0;
+    let mut deadline = Instant::now() + stall;
+    loop {
+        match finished.recv_timeout(RELEASE_POLL_INTERVAL) {
+            Ok((writer, Ok(()))) => return Ok(writer),
+            Ok((writer, Err(error))) => {
+                return Err(ThreadWrite::Failed(Some(writer), error.to_string()))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let now = progress.load(Ordering::Acquire);
+                if now != seen {
+                    seen = now;
+                    deadline = Instant::now() + stall;
+                } else if Instant::now() >= deadline {
+                    return Err(ThreadWrite::Stalled);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ThreadWrite::Failed(None, "input thread ended".into()))
+            }
+        }
+    }
+}
+
+// ── Bounded release ─────────────────────────────────────────────────────────
+//
+// A connector or client reader can outlive its child: another process (a
+// descendant, or a descriptor captured by a racing spawn) may hold the pipe or
+// PTY open, and then no EOF ever reaches the reader. A release therefore
+// terminates first, waits for the reader only for a grace period and then lets
+// it go. A reader that was let go emits nothing (`guard_released_events`).
+
+/// How long one release waits for its reader after the child is gone.
+const RELEASE_READER_GRACE: Duration = Duration::from_secs(1);
+/// `release_all_connectors`: how long every child gets to exit after the polite
+/// signal, and how long the survivors get after the kill.
+const RELEASE_ALL_TERM_WAIT: Duration = Duration::from_secs(1);
+const RELEASE_ALL_KILL_WAIT: Duration = Duration::from_millis(500);
+const RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CONNECTOR_RELEASE_LINE: &[u8] = b"{\"type\":\"terminal.release\"}\n";
+
+/// Polls `done` until it holds or `deadline` passes; true when it held.
+fn wait_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
+    loop {
+        if done() {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        std::thread::sleep(RELEASE_POLL_INTERVAL.min(deadline - now));
+    }
+}
+
+/// Joins `handle` if it finishes within `grace`; otherwise lets it go.
+fn join_within(handle: JoinHandle<()>, grace: Duration) -> bool {
+    let finished = wait_until(Instant::now() + grace, || handle.is_finished());
+    if finished {
+        let _ = handle.join();
+    }
+    finished
+}
+
+/// Wraps `on_event` so nothing is delivered once `released` holds: a reader
+/// that was let go while blocked in a read must not report what arrives later.
+fn guard_released_events(
+    released: impl Fn() -> bool + Send + Sync + 'static,
+    on_event: OnTerminalEvent,
+) -> OnTerminalEvent {
+    Arc::new(move |event| {
+        if released() {
+            return Err("herdr terminal session was released".into());
+        }
+        on_event(event)
+    })
+}
+
+/// A child that `release_together` signals and reaps without ever waiting.
+trait ReleaseChild: Send {
+    /// Asks the child to stop, or kills it.
+    fn signal(&mut self, kill: bool);
+    /// Reaps it if it exited; true once nothing is left to wait for.
+    fn gone(&mut self) -> bool;
+}
+
+struct ReleaseTarget {
+    child: Option<Box<dyn ReleaseChild>>,
+    reader: Option<JoinHandle<()>>,
+}
+
+/// Releases `targets` against shared deadlines: signal all, wait until every
+/// child is gone and every reader finished (or `term_wait` passed), kill the
+/// children still alive and wait `kill_wait` more, then let go of the rest.
+fn release_together(mut targets: Vec<ReleaseTarget>, term_wait: Duration, kill_wait: Duration) {
+    // `gone` reaps, so every target is asked each round.
+    fn settled(targets: &mut [ReleaseTarget]) -> bool {
+        let mut all = true;
+        for target in targets {
+            if target.child.as_mut().is_some_and(|child| !child.gone()) {
+                all = false;
+            }
+            if target
+                .reader
+                .as_ref()
+                .is_some_and(|reader| !reader.is_finished())
+            {
+                all = false;
+            }
+        }
+        all
+    }
+
+    for target in &mut targets {
+        if let Some(child) = target.child.as_mut() {
+            child.signal(false);
+        }
+    }
+    if !wait_until(Instant::now() + term_wait, || settled(&mut targets)) {
+        let mut survivors = false;
+        for target in &mut targets {
+            if let Some(child) = target.child.as_mut() {
+                if !child.gone() {
+                    child.signal(true);
+                    survivors = true;
+                }
+            }
+        }
+        if survivors {
+            wait_until(Instant::now() + kill_wait, || settled(&mut targets));
+        }
+    }
+    for target in targets {
+        if let Some(reader) = target.reader.filter(|reader| reader.is_finished()) {
+            let _ = reader.join();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Waits up to 10 ms for `fd` to become readable (or hang up).
+#[cfg(unix)]
+fn wait_for_pipe_data(fd: std::os::fd::RawFd) {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut poll, 1, 10) };
+    if ready < 0 || poll.revents & libc::POLLNVAL != 0 {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+fn group_exists(pgid: libc::pid_t) -> bool {
+    // EPERM still means the group exists.
+    if unsafe { libc::killpg(pgid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// A connector's process group, signalled and reaped without waiting.
+#[cfg(unix)]
+struct ConnectorGroup {
+    /// `None` once reaped.
+    child: Option<Child>,
+    pgid: libc::pid_t,
+    group_gone: bool,
+}
+
+#[cfg(unix)]
+impl ReleaseChild for ConnectorGroup {
+    fn signal(&mut self, kill: bool) {
+        let signal = if kill { libc::SIGKILL } else { libc::SIGTERM };
+        // The connector leads its own group (`setsid`); like `kill_tree`, fall
+        // back to the pid while it is not reaped.
+        if unsafe { libc::killpg(self.pgid, signal) } != 0 && self.child.is_some() {
+            unsafe { libc::kill(self.pgid, signal) };
+        }
+    }
+
+    fn gone(&mut self) -> bool {
+        if let Some(child) = self.child.as_mut() {
+            // try_wait reaps; an error means it can never be waited on again.
+            if matches!(child.try_wait(), Ok(None)) {
+                return false;
+            }
+            self.child = None;
+        }
+        // Members of the group can outlive its leader.
+        if !self.group_gone {
+            self.group_gone = !group_exists(self.pgid);
+        }
+        self.group_gone
+    }
+}
+
+#[cfg(any(not(unix), test))]
+type Termination = Box<dyn FnOnce() + Send>;
+
+/// Where signals do not apply (Windows), a release runs the existing bounded
+/// termination (Job object, process kill) on a thread of its own, so every
+/// target is terminated at the same time instead of one after the other and
+/// the shared deadlines hold for any number of sessions. The termination kills
+/// as its first step: the second (kill) signal has nothing to add.
+#[cfg(any(not(unix), test))]
+struct TerminateNow {
+    /// Taken by whoever runs it: the thread, or `signal` when none could start.
+    terminate: Arc<Mutex<Option<Termination>>>,
+    running: Option<JoinHandle<()>>,
+}
+
+#[cfg(any(not(unix), test))]
+impl TerminateNow {
+    fn new(terminate: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            terminate: Arc::new(Mutex::new(Some(Box::new(terminate)))),
+            running: None,
+        }
+    }
+
+    fn run_once(slot: &Mutex<Option<Termination>>) {
+        let terminate = slot.lock().unwrap().take();
+        if let Some(terminate) = terminate {
+            terminate();
+        }
+    }
+}
+
+#[cfg(any(not(unix), test))]
+impl ReleaseChild for TerminateNow {
+    fn signal(&mut self, _kill: bool) {
+        if self.running.is_some() {
+            return;
+        }
+        let slot = Arc::clone(&self.terminate);
+        match std::thread::Builder::new()
+            .name("herdr-release-terminate".into())
+            .spawn(move || Self::run_once(&slot))
+        {
+            Ok(handle) => self.running = Some(handle),
+            Err(_) => Self::run_once(&self.terminate),
+        }
+    }
+
+    fn gone(&mut self) -> bool {
+        self.running
+            .as_ref()
+            .is_none_or(|running| running.is_finished())
+    }
+}
+
+fn take_connector_child(
+    session: &ConnectorSession,
+) -> (Option<Child>, Option<process_kill::ProcessTreeGuard>) {
+    let mut process_tree = session.process_tree.lock().unwrap();
+    let mut child = session.child.lock().unwrap();
+    (child.take(), process_tree.take())
+}
+
+/// The first steps of every release, none of which can wait on the connector:
+/// remember the release, then give a control connector its goodbye.
+fn begin_connector_release(session: &ConnectorSession) {
+    session.released.store(true, Ordering::Release);
     let first_release = {
         let mut closed = session.closed.lock().unwrap();
         let first_release = !*closed;
         *closed = true;
         first_release
     };
-
     if first_release {
-        // Prefer graceful release on control connectors; observe has no release wire cmd.
-        if matches!(session.mode, HerdrTerminalMode::Control) {
-            if let Some(mut stdin) = session.stdin.lock().unwrap().take() {
-                let _ = stdin.write_all(b"{\"type\":\"terminal.release\"}\n");
-                let _ = stdin.flush();
-            }
-        } else {
-            let _ = session.stdin.lock().unwrap().take();
-        }
+        release_connector_stdin(session);
     }
+}
 
+/// Closes the connector's stdin, after a `terminal.release` line for a control
+/// connector (observe has no release wire command).
+fn release_connector_stdin(session: &ConnectorSession) {
+    // `send_control` holds this lock for the whole of a write, which ends only
+    // when it moved everything or stalled (or this release's flag or kill
+    // reaches it). Waiting here would wait on the process this release is
+    // about to kill, so a busy writer means no goodbye.
+    let Ok(mut guard) = session.stdin.try_lock() else {
+        return;
+    };
+    let Some(stdin) = guard.take() else {
+        return;
+    };
+    drop(guard);
+    if matches!(session.mode, HerdrTerminalMode::Control) {
+        write_connector_release(stdin);
+    }
+}
+
+/// Best effort and never blocking: the line is far below `PIPE_BUF`, so a pipe
+/// with room takes it whole and a full one refuses it (`WouldBlock`).
+#[cfg(unix)]
+fn write_connector_release(mut stdin: ChildStdin) {
+    use std::os::fd::AsRawFd;
+    if set_nonblocking(stdin.as_raw_fd()).is_ok() {
+        let _ = stdin.write_all(CONNECTOR_RELEASE_LINE);
+    }
+}
+
+#[cfg(not(unix))]
+fn write_connector_release(stdin: ChildStdin) {
+    write_connector_release_on_thread(stdin);
+}
+
+/// For a pipe whose write cannot be made non-blocking (Windows): the write runs
+/// on a thread of its own, so a connector that stopped reading cannot hold the
+/// release. The kill that follows breaks the pipe and ends the write, and the
+/// thread drops the stdin it was given, which closes it as the release meant.
+#[cfg(any(not(unix), test))]
+fn write_connector_release_on_thread(mut stdin: ChildStdin) {
+    let _ = std::thread::Builder::new()
+        .name("herdr-connector-goodbye".into())
+        .spawn(move || {
+            let _ = stdin.write_all(CONNECTOR_RELEASE_LINE);
+            let _ = stdin.flush();
+        });
+}
+
+fn release_connector(session: &ConnectorSession) -> Result<(), String> {
+    begin_connector_release(session);
     let cleanup = terminate_connector_process(session);
-
-    if let Some(handle) = session.reader.lock().unwrap().take() {
-        let _ = handle.join();
+    // Taken out first: no lock is held while waiting.
+    let reader = session.reader.lock().unwrap().take();
+    if let Some(reader) = reader {
+        join_within(reader, RELEASE_READER_GRACE);
     }
     cleanup
 }
 
-fn terminate_connector_process(session: &ConnectorSession) -> Result<(), String> {
-    let (child, process_tree) = {
-        let mut process_tree = session.process_tree.lock().unwrap();
-        let mut child = session.child.lock().unwrap();
-        (child.take(), process_tree.take())
+/// The release of one connector as part of `release_together`.
+fn connector_release_target(session: &Arc<ConnectorSession>) -> ReleaseTarget {
+    begin_connector_release(session);
+    #[cfg(unix)]
+    let child = take_connector_child(session).0.map(|child| {
+        Box::new(ConnectorGroup {
+            pgid: child.id() as libc::pid_t,
+            child: Some(child),
+            group_gone: false,
+        }) as Box<dyn ReleaseChild>
+    });
+    #[cfg(not(unix))]
+    let child = {
+        let session = Arc::clone(session);
+        Some(Box::new(TerminateNow::new(move || {
+            let _ = terminate_connector_process(&session);
+        })) as Box<dyn ReleaseChild>)
     };
+    ReleaseTarget {
+        child,
+        reader: session.reader.lock().unwrap().take(),
+    }
+}
+
+fn terminate_connector_process(session: &ConnectorSession) -> Result<(), String> {
+    let (child, process_tree) = take_connector_child(session);
     if let Some(mut child) = child {
         // Only the Yuzora-owned connector Job/process group — never the Herdr
         // server or pane processes, which are not descendants of this child.
@@ -3143,6 +3715,14 @@ fn connector_reader_loop<R: std::io::Read + Send + 'static>(
     stderr: Option<impl std::io::Read + Send + 'static>,
     on_event: OnTerminalEvent,
 ) {
+    // One guard for the stdout loop, the stderr thread and the closing event.
+    let on_event = guard_released_events(
+        {
+            let session = Arc::clone(&session);
+            move || session.released.load(Ordering::Acquire)
+        },
+        on_event,
+    );
     if let Some(stderr) = stderr {
         let session_id = session.id.clone();
         let on_event_err = on_event.clone();
@@ -3952,7 +4532,7 @@ fn run_herdr_json_with_session_timeout(
 ) -> Result<serde_json::Value, String> {
     let mut cmd = herdr_cli_command(binary, args, session_name);
     process_kill::configure_background_process(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    let mut child = process_kill::spawn_std(&mut cmd).map_err(|e| format!("spawn failed: {e}"))?;
     let mut process_tree = process_kill::attach_process_tree(&mut child)
         .map_err(|e| format!("process containment failed: {e}"))?;
     let (stdout, stderr, status) = wait_bounded_child(
@@ -3970,6 +4550,29 @@ fn run_herdr_json_with_session_timeout(
         ));
     }
     parse_herdr_cli_stdout(&stdout).map_err(String::from)
+}
+
+/// Reads one child pipe to EOF, or on Unix to the end of what the reaped child
+/// left in it (see `read_bounded_bytes_until_stopped`).
+#[cfg(unix)]
+fn read_child_pipe<P: std::io::Read + std::os::fd::AsRawFd>(
+    pipe: &mut P,
+    max: usize,
+    reaped: &AtomicBool,
+) -> Result<Vec<u8>, BoundedNdjsonReadError> {
+    let fd = pipe.as_raw_fd();
+    read_bounded_bytes_until_stopped(pipe, max, reaped, || wait_for_pipe_data(fd))
+}
+
+/// Windows ends every descendant with the Job object before the readers are
+/// joined, so EOF is guaranteed and the blocking read stays.
+#[cfg(not(unix))]
+fn read_child_pipe<P: std::io::Read>(
+    pipe: &mut P,
+    max: usize,
+    _reaped: &AtomicBool,
+) -> Result<Vec<u8>, BoundedNdjsonReadError> {
+    crate::herdr_limits::read_bounded_bytes(pipe, max)
 }
 
 pub(crate) fn wait_bounded_child(
@@ -3998,12 +4601,36 @@ pub(crate) fn wait_bounded_child(
             });
         }
     };
+    // Unix: the readers poll instead of blocking, so one can end without EOF
+    // once the child is reaped. A descendant (or a descriptor captured by a
+    // racing spawn) can hold a write end open long after the child is gone.
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if let Err(error) =
+            set_nonblocking(stdout.as_raw_fd()).and_then(|()| set_nonblocking(stderr.as_raw_fd()))
+        {
+            let cleanup = process_kill::terminate_process_tree(child, process_tree);
+            return Err(match cleanup {
+                Ok(()) => format!("herdr pipe setup failed: {error}"),
+                Err(cleanup_error) => {
+                    format!("herdr pipe setup failed: {error}; cleanup failed: {cleanup_error}")
+                }
+            });
+        }
+    }
     let too_large = Arc::new(AtomicBool::new(false));
     let stdout_flag = Arc::clone(&too_large);
     let stderr_flag = Arc::clone(&too_large);
+    // Raised once the wait loop and the reap attempt are over: from then on
+    // the child's own output is complete and the readers may stop at the end
+    // of what is in the pipe.
+    let reaped = Arc::new(AtomicBool::new(false));
+    let stdout_reaped = Arc::clone(&reaped);
+    let stderr_reaped = Arc::clone(&reaped);
     let stdout_thread = std::thread::spawn(move || {
         let mut reader = stdout;
-        let result = read_bounded_bytes(&mut reader, max_bytes);
+        let result = read_child_pipe(&mut reader, max_bytes, &stdout_reaped);
         if matches!(
             result,
             Err(BoundedNdjsonReadError::Protocol(
@@ -4016,7 +4643,7 @@ pub(crate) fn wait_bounded_child(
     });
     let stderr_thread = std::thread::spawn(move || {
         let mut reader = stderr;
-        let result = read_bounded_bytes(&mut reader, max_bytes);
+        let result = read_child_pipe(&mut reader, max_bytes, &stderr_reaped);
         if matches!(
             result,
             Err(BoundedNdjsonReadError::Protocol(
@@ -4052,7 +4679,9 @@ pub(crate) fn wait_bounded_child(
             }
         }
     }
+    // Whatever the reap returned, and whichever way the loop ended.
     let status = process_kill::reap_process_tree(child, process_tree);
+    reaped.store(true, Ordering::Release);
     let stdout = stdout_thread
         .join()
         .map_err(|_| "stdout reader panicked".to_string())?;
@@ -4126,12 +4755,20 @@ pub fn parse_session_list_json(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        // A reachable Session has no connection error, whatever the listing says.
+        let connection_error = item
+            .get("connection_error")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !running && !s.is_empty())
+            .map(str::to_string);
         out.push(HerdrNamedSession {
             name,
             default,
             running,
             session_dir,
             socket_path,
+            connection_error,
         });
     }
     Ok(out)

@@ -225,6 +225,7 @@ export function clearGitSnapshots(): void {
     statusRefreshError = null
     branchRefreshError = null
     foregroundError = null
+    remoteCheckFlight = null
     resetRefreshFlight()
 }
 
@@ -395,6 +396,7 @@ let statusRefreshError: string | null = null
 let branchRefreshError: string | null = null
 // Successful background reads cannot recover an explicit user operation.
 let foregroundError: string | null = null
+let remoteCheckFlight: { isCurrent: () => boolean } | null = null
 
 // ready environment 的 root，否則 null。status/branches 的 stale-resolve 丟棄
 // 用：只看 `status === "ready"` 擋不住 ready→ready 的 workspace 切換（A 的慢
@@ -841,6 +843,7 @@ export const useGitStore = create<GitState>()((set, get) => ({
         const capturedRoot = readyRoot(get().environment)
         if (!capturedRoot) return false
         const seqAtOp = detectSeq
+        remoteCheckFlight = null
         set({ busy: name })
         // Single-point Console wiring: every runOp completion (success and
         // failure) records one entry here. The IPC layer returns no stdout, so
@@ -926,39 +929,32 @@ export const useGitStore = create<GitState>()((set, get) => ({
         const root = before.environment.root
         const { mode } = before.remoteCheck
         if (mode === "off") return
+        if (remoteCheckFlight?.isCurrent()) return
+        const seqAtCheck = detectSeq
+        const epochAtCheck = statusEpoch
+        const flight = {
+            isCurrent: (): boolean => {
+                const current = get()
+                return remoteCheckFlight === flight
+                    && seqAtCheck === detectSeq && epochAtCheck === statusEpoch
+                    && current.remoteCheck === before.remoteCheck
+                    && !current.busy && !detectInFlight && !current.snapshotStale
+                    && readyRoot(current.environment) === root
+            }
+        }
+        remoteCheckFlight = flight
         try {
             if (mode === "probe") {
                 const remoteIncoming = await gitRemoteProbe(root)
-                const current = get()
-                if (!detectInFlight && !current.snapshotStale && readyRoot(current.environment) === root) {
-                    set({ remoteIncoming })
-                }
+                if (flight.isCurrent()) set({ remoteIncoming })
             } else {
                 await gitFetch(root, true)
-                const current = get()
-                if (!detectInFlight && !current.snapshotStale && readyRoot(current.environment) === root) {
-                    const epochAtQuiet = statusEpoch
-                    try {
-                        await current.refreshQuiet()
-                    } catch {
-                        const after = get()
-                        if (
-                            !detectInFlight
-                            && !after.snapshotStale
-                            && readyRoot(after.environment) === root
-                            && statusEpoch === epochAtQuiet
-                        ) {
-                            set({ remotePaused: true })
-                        }
-                        return
-                    }
-                }
+                if (flight.isCurrent()) await get().refreshQuiet()
             }
         } catch {
-            const current = get()
-            if (!detectInFlight && !current.snapshotStale && readyRoot(current.environment) === root) {
-                set({ remotePaused: true })
-            }
+            if (flight.isCurrent()) set({ remotePaused: true })
+        } finally {
+            if (remoteCheckFlight === flight) remoteCheckFlight = null
         }
     },
 

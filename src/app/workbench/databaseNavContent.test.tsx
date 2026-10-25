@@ -49,7 +49,7 @@ import {
   dbTestConnection,
   dbPostgresTransportChallenge
 } from "@/lib/ipc"
-import { useDbStore } from "@/state/dbStore"
+import { DB_HISTORY_SQL_MAX, useDbStore } from "@/state/dbStore"
 import { useHostStore } from "@/state/hostStore"
 import { DatabaseNavContent } from "@/app/workbench/DatabaseNavContent"
 
@@ -312,6 +312,155 @@ afterEach(() => {
 })
 
 describe("DatabaseNavContent recent queries", () => {
+  function seedMssqlHistory() {
+    const connection: DbConnection = {
+      ...sqliteConn("db-1", "history-mssql"),
+      kind: "mssql",
+      targetKey: "mssql:fixture:1433:history",
+    }
+    seed({
+      connections: [connection],
+      saved: [{ ...storedPostgres(connection.descriptorId), kind: "mssql", port: 1433, targetKey: connection.targetKey }],
+    })
+    return connection.descriptorId
+  }
+
+  it.each([
+    ["all", "\n"], ["all", "\r\n"], ["selection", "\n"], ["selection", "\r\n"],
+  ] as const)("round-trips MSSQL GO batches from %s with line ending %j", async (scope, newline) => {
+    const descriptorId = seedMssqlHistory()
+    const sql = ["CREATE OR ALTER PROCEDURE dbo.history_probe AS SELECT 1;", "GO", "SELECT 2;"].join(newline)
+    const prefix = scope === "selection" ? `SELECT 0;${newline}GO${newline}` : ""
+    const suffix = scope === "selection" ? `${newline}GO${newline}SELECT 3;` : ""
+    useDbStore.getState().setSql(prefix + sql + suffix)
+    render(<DatabaseNavContent />)
+    await act(async () => {
+      await useDbStore.getState().runQuery(scope === "all" ? { kind: "all" } : {
+        kind: "primary", cursor: prefix.length, selection: { from: prefix.length, to: prefix.length + sql.length },
+      })
+    })
+    const first = mockQueryRun.mock.calls[0][0].statements.map(statement => statement.sql)
+    expect(first).toHaveLength(2)
+    expect(first[1]).toBe("SELECT 2;")
+    expect(useDbStore.getState().historyBuckets[descriptorId]).toHaveLength(1)
+    fireEvent.click(within(screen.getByTestId("db-history-row")).getByRole("button"))
+    expect(mockQueryRun).toHaveBeenCalledTimes(1)
+    await act(async () => { await useDbStore.getState().runQuery() })
+    expect(mockQueryRun.mock.calls[1][0].statements.map(statement => statement.sql)).toEqual(first)
+  })
+
+  it("round-trips failed MSSQL batch history without changing the error SQL presentation", async () => {
+    const descriptorId = seedMssqlHistory()
+    const sql = "CREATE OR ALTER PROCEDURE dbo.history_probe AS SELECT 1;\nGO\nSELECT 2;"
+    useDbStore.getState().setSql(sql)
+    mockQueryRun.mockRejectedValueOnce(new Error("fixture request failed"))
+    render(<DatabaseNavContent />)
+    await act(async () => { await useDbStore.getState().runQuery() })
+    const first = mockQueryRun.mock.calls[0][0].statements.map(statement => statement.sql)
+    expect(useDbStore.getState().queries["db-1"].error?.executedSql).toBe(first.join("\n"))
+    expect(useDbStore.getState().historyBuckets[descriptorId][0].ok).toBe(false)
+    fireEvent.click(within(screen.getByTestId("db-history-row")).getByRole("button"))
+    await act(async () => { await useDbStore.getState().runQuery() })
+    expect(mockQueryRun.mock.calls[1][0].statements.map(statement => statement.sql)).toEqual(first)
+  })
+
+  it("records only the MSSQL primary cursor statement when replaying history", async () => {
+    seedMssqlHistory()
+    const sql = "SELECT 0;\nGO\nSELECT 2;\nGO\nSELECT 3;"
+    const cursor = sql.indexOf("SELECT 2") + 2
+    useDbStore.getState().setSql(sql)
+    render(<DatabaseNavContent />)
+    await act(async () => {
+      await useDbStore.getState().runQuery({ kind: "primary", cursor, selection: { from: cursor, to: cursor } })
+    })
+    expect(mockQueryRun.mock.calls[0][0].statements.map(statement => statement.sql)).toEqual(["SELECT 2;"])
+    fireEvent.click(within(screen.getByTestId("db-history-row")).getByRole("button"))
+    expect(useDbStore.getState().queries["db-1"].sql).toBe("SELECT 2;")
+    await act(async () => { await useDbStore.getState().runQuery() })
+    expect(mockQueryRun.mock.calls[1][0].statements.map(statement => statement.sql)).toEqual(["SELECT 2;"])
+  })
+
+  it("blocks partial replay when preserving MSSQL batch spacing crosses the history cap", async () => {
+    const descriptorId = seedMssqlHistory()
+    const sql = "CREATE OR ALTER PROCEDURE dbo.history_probe AS SELECT 1;\nGO\n"
+      + " ".repeat(DB_HISTORY_SQL_MAX) + "SELECT 2;"
+    useDbStore.getState().setSql(sql)
+    render(<DatabaseNavContent />)
+    await act(async () => { await useDbStore.getState().runQuery() })
+    const statements = mockQueryRun.mock.calls[0][0].statements.map(statement => statement.sql)
+    expect(statements).toHaveLength(2)
+    expect(statements.join("\n").length).toBeLessThan(DB_HISTORY_SQL_MAX)
+    const entry = useDbStore.getState().historyBuckets[descriptorId][0]
+    expect(entry.sql).toHaveLength(DB_HISTORY_SQL_MAX)
+    expect(entry).toMatchObject({ truncated: true })
+    act(() => useDbStore.getState().setSql("SELECT 'keep draft';"))
+    const button = within(screen.getByTestId("db-history-row")).getByRole("button")
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(useDbStore.getState().queries["db-1"].sql).toBe("SELECT 'keep draft';")
+    expect(mockQueryRun).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([DB_HISTORY_SQL_MAX, DB_HISTORY_SQL_MAX + 1, DB_HISTORY_SQL_MAX + 5])(
+    "only replays a fully retained history entry of %i characters", async length => {
+      seed({})
+      const sql = `SELECT 1${" ".repeat(length - 13)} + 1;`
+      expect(sql).toHaveLength(length)
+      useDbStore.getState().setSql(sql)
+      render(<DatabaseNavContent />)
+      await act(async () => { await useDbStore.getState().runQuery() })
+      expect(mockQueryRun.mock.calls[0][0].statements[0].sql).toBe(sql)
+      const entry = useDbStore.getState().historyBuckets["/tmp/app.sqlite"][0]
+      expect(entry.sql).toHaveLength(Math.min(length, DB_HISTORY_SQL_MAX))
+      const draft = "SELECT 'keep my draft';"
+      act(() => useDbStore.getState().setSql(draft))
+      const button = within(screen.getByTestId("db-history-row")).getByRole("button")
+      fireEvent.click(button)
+      expect(useDbStore.getState().queries["db-1"].sql).toBe(length > DB_HISTORY_SQL_MAX ? draft : sql)
+      expect(mockQueryRun).toHaveBeenCalledTimes(1)
+      if (length > DB_HISTORY_SQL_MAX) {
+        expect(entry).toMatchObject({ truncated: true })
+        expect(button).toBeDisabled()
+        expect(within(button).getByText("Truncated")).toBeInTheDocument()
+        expect(button).toHaveAttribute("title", expect.stringContaining("cannot be loaded for replay"))
+      } else {
+        expect(button).toBeEnabled()
+        expect(within(button).queryByText("Truncated")).toBeNull()
+      }
+    },
+  )
+
+  it("retains truncation metadata through consecutive prefix deduplication", () => {
+    seed({})
+    const descriptorId = "/tmp/app.sqlite"
+    const prefix = "SELECT 1" + " ".repeat(DB_HISTORY_SQL_MAX - 8)
+    useDbStore.getState().recordHistory(descriptorId, { sql: prefix + "+1;", ranAt: 1, ok: true, elapsedMs: 1 })
+    useDbStore.getState().recordHistory(descriptorId, { sql: prefix + "+2;", ranAt: 2, ok: false, elapsedMs: 2 })
+    expect(useDbStore.getState().historyBuckets[descriptorId]).toEqual([
+      { sql: prefix, ranAt: 1, ok: true, elapsedMs: 1, truncated: true },
+    ])
+  })
+
+  it("does not replay a history prefix cut inside a Unicode surrogate pair", async () => {
+    seed({})
+    const prefix = "SELECT '"
+    const sql = prefix + "a".repeat(DB_HISTORY_SQL_MAX - 1 - prefix.length) + "🙂';"
+    useDbStore.getState().setSql(sql)
+    render(<DatabaseNavContent />)
+    await act(async () => { await useDbStore.getState().runQuery() })
+    expect(mockQueryRun.mock.calls[0][0].statements[0].sql).toBe(sql)
+    const entry = useDbStore.getState().historyBuckets["/tmp/app.sqlite"][0]
+    expect(entry.sql).toHaveLength(DB_HISTORY_SQL_MAX)
+    expect(entry.sql.charCodeAt(DB_HISTORY_SQL_MAX - 1)).toBe(0xd83d)
+    expect(entry).toMatchObject({ truncated: true })
+    act(() => useDbStore.getState().setSql("SELECT 'unchanged';"))
+    const button = within(screen.getByTestId("db-history-row")).getByRole("button")
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(useDbStore.getState().queries["db-1"].sql).toBe("SELECT 'unchanged';")
+    expect(mockQueryRun).toHaveBeenCalledTimes(1)
+  })
+
   it("renders the recent-queries list with sql first line, relative time and a failure dot", () => {
     const now = Date.now()
     seed({
@@ -1850,5 +1999,32 @@ describe("DatabaseNavContent status + edit + delete (SSH parity)", () => {
     fireEvent.click(screen.getByText("Save"))
     expect(await screen.findByTestId("database-transport-ack-dialog")).toHaveTextContent("other.example")
     expect(mockTransportChallenge).not.toHaveBeenCalled()
+  })
+})
+
+describe("DatabaseNavContent columns after SQL changes", () => {
+  it.each([true, false])("updates previously loaded columns with expanded=%s", async (expanded) => {
+    const users = [{ catalog: "main", schema: "main", name: "users", kind: "table" as const }]
+    mockList.mockResolvedValue(users)
+    mockColumns.mockResolvedValueOnce([{ name: "old_name", type: "TEXT", notnull: false, pk: false }])
+    await useDbStore.getState().openConnection("/fixture081.db")
+    render(<DatabaseNavContent />)
+    fireEvent.click(screen.getByRole("button", { name: "Expand columns for users" }))
+    expect(await screen.findByText("old_name")).toBeInTheDocument()
+    if (!expanded) fireEvent.click(screen.getByRole("button", { name: "Collapse columns for users" }))
+    mockColumns.mockResolvedValue([{ name: "new_name", type: "TEXT", notnull: false, pk: false }])
+    mockQueryRun.mockImplementation(async request => {
+      const run = emptyRowsRun(request)
+      run.statements[0].result = { kind: "execute", affectedRows: "0" }
+      return run
+    })
+    await act(async () => {
+      useDbStore.getState().setSql("ALTER TABLE users RENAME COLUMN old_name TO new_name")
+      await useDbStore.getState().runQuery()
+    })
+    if (!expanded) fireEvent.click(screen.getByRole("button", { name: "Expand columns for users" }))
+    expect(await screen.findByText("new_name")).toBeInTheDocument()
+    expect(screen.queryByText("old_name")).not.toBeInTheDocument()
+    expect(mockColumns).toHaveBeenCalledTimes(2)
   })
 })

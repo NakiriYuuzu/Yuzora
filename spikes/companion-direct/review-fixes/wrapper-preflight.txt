@@ -1,0 +1,8 @@
+Symlink rejection: 1 Refusing symlink spike root: /tmp/yzc-spike
+$ isolated-herdr.sh session list --json
+exit= 0 
+ {"sessions":[{"default":true,"name":"default","running":false,"session_dir":"/tmp/yzc-spike/config/herdr","socket_path":"/tmp/yzc-spike/config/herdr/herdr.sock"}]}
+ 
+PASS: fresh virtual default, stopped; all realpaths under root; cache exists; owned root
+$ test ! -e /tmp/yzc-spike: PASS
+PASS: ps environment check of 11 existing Herdr processes; no isolated root process remains; no live process details saved

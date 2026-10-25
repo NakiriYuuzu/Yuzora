@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next"
 import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
-import { getDocument, updateBuffer, documentGeneration, saveDocumentContent } from "./documentRegistry"
+import { getCachedDocument, getDocument, updateBuffer, documentGeneration, saveDocumentContent, type RegistryEntry } from "./documentRegistry"
 import { getView, registerView, unregisterView } from "./viewRegistry"
 import {
     editorViewStateTracker,
@@ -73,8 +73,15 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
     useEffect(() => {
         let disposed = false
         const generation = documentGeneration(path)
+        let documentEntry: RegistryEntry | undefined
+        const ownsDocument = (view: EditorView) => documentEntry !== undefined
+            && getView(path) === view
+            && useWorkspaceStore.getState().workspacePath === workspacePath
+            && documentGeneration(path) === generation
+            && getCachedDocument(path, workspacePath) === documentEntry
         void getDocument(path).then((entry) => {
             if (disposed) return
+            documentEntry = entry
             setResult(entry.result)
             const r = entry.result
             hydrateLineEnding(
@@ -176,10 +183,11 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
             disposed = true
             const view = viewRef.current
             if (view) {
-                // Undo history follows the buffer: kept on a tab/Space switch,
-                // dropped with a closed tab, a reloaded or a renamed document
-                // (renameEditorViewState already took the live history).
-                if (updateBuffer(path, view.state.doc.toString(), generation, workspacePath)) {
+                // Undo history follows the buffer: kept on a tab/Space switch, dropped
+                // with a closed tab, a reloaded or a renamed document (renameEditorViewState
+                // already took the live history). Retired panes must not overwrite a
+                // replacement entry or a newer same-path view: both share the owner check.
+                if (ownsDocument(view) && updateBuffer(path, view.state.doc.toString(), generation, workspacePath)) {
                     rememberEditorHistory(workspacePath, path, view.state)
                 }
                 // Pass this pane's own view so a split group that reused the path

@@ -459,6 +459,46 @@ describe("gitLogStore", () => {
         expect(ipc.gitCommitDetail).toHaveBeenCalledTimes(1)
     })
 
+    it.each([false, true].flatMap(aba => ["resolve", "reject"].map(outcome => ({ aba, outcome }))))(
+        "keeps the latest detail request pending when an earlier selection settles (ABA=$aba, $outcome)",
+        async ({ aba, outcome }) => {
+            const { useGitLogStore } = await import("./gitLogStore")
+            const ipc = await import("../lib/ipc")
+            let resolveOld!: (value: CommitDetail) => void
+            let rejectOld!: (error: Error) => void
+            let resolveLatest!: (value: CommitDetail) => void
+            const oldResult = new Promise<CommitDetail>((resolve, reject) => {
+                resolveOld = resolve
+                rejectOld = reject
+            })
+            const latestResult = new Promise<CommitDetail>(resolve => { resolveLatest = resolve })
+            const fetchDetail = ipc.gitCommitDetail as ReturnType<typeof vi.fn>
+            fetchDetail.mockReturnValueOnce(oldResult)
+            const old = useGitLogStore.getState().select("/w", "A")
+            if (aba) {
+                fetchDetail.mockResolvedValueOnce(mkDetail({ subject: "commit B" }))
+                await useGitLogStore.getState().select("/w", "B")
+            }
+            fetchDetail.mockReturnValueOnce(latestResult)
+            const latest = useGitLogStore.getState().select("/w", "A")
+            if (outcome === "resolve") resolveOld(mkDetail({ subject: "commit A" }))
+            else rejectOld(new Error("retired detail request failed"))
+            await old
+            const afterOld = useGitLogStore.getState()
+            resolveLatest(mkDetail({ subject: "commit A" }))
+            await latest
+
+            expect(afterOld.selectedHash).toBe("A")
+            expect(afterOld.detailLoading).toBe(true)
+            expect(afterOld.detail).toBeNull()
+            expect(afterOld.detailError).toBeNull()
+            expect(afterOld.detailCache.has("/w\0A")).toBe(false)
+            expect(useGitLogStore.getState().detailLoading).toBe(false)
+            expect(useGitLogStore.getState().detail?.subject).toBe("commit A")
+            expect(useGitLogStore.getState().detailError).toBeNull()
+        }
+    )
+
     it("select cache-miss clears the previous detail before the new one loads", async () => {
         const { useGitLogStore } = await import("./gitLogStore")
         const ipc = await import("../lib/ipc")

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -19,6 +19,32 @@ describe("release version classification", () => {
     expect(verifyVersionConsistency(process.cwd(), `v${version}`)).toBe(
       `Version consistency verified: v${version}`
     )
+  })
+
+  it.each([
+    ["src-tauri/companion/Cargo.toml", "yuzora-companion"],
+    ["src-tauri/companion/Cargo.lock", "yuzora-companion"],
+    ["src-tauri/companion/Cargo.lock", "yuzora-host"],
+  ])("rejects companion version drift in %s (%s)", (path, name) => {
+    const root = mkdtempSync(join(tmpdir(), "yuzora-companion-version-"))
+    try {
+      for (const file of [
+        "package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml",
+        "src-tauri/Cargo.lock", "src-tauri/host/Cargo.toml", "src-tauri/host/Cargo.lock",
+        "src-tauri/companion/Cargo.toml", "src-tauri/companion/Cargo.lock",
+      ]) {
+        cpSync(file, join(root, file), { recursive: true })
+      }
+      const input = readFileSync(join(root, path), "utf8")
+      const changed = input.replace(
+        new RegExp(`(name = "${name}"\\nversion = ")[^"]+`), "$199.0.0"
+      )
+      expect(changed).not.toBe(input)
+      writeFileSync(join(root, path), changed)
+      expect(() => verifyVersionConsistency(root, "")).toThrow("companion")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it("keeps both README version badges aligned with the product version", () => {
@@ -44,6 +70,7 @@ describe("version consistency across checkout line endings", () => {
   function fixture(lineEnding: string, rootVersion = version, hostVersion = version) {
     const root = mkdtempSync(join(tmpdir(), "yuzora-version-check-"))
     mkdirSync(join(root, "src-tauri/host"), { recursive: true })
+    mkdirSync(join(root, "src-tauri/companion"), { recursive: true })
     const files: Record<string, string> = {
       "package.json": JSON.stringify({ version }),
       "src-tauri/tauri.conf.json": JSON.stringify({ version }),
@@ -51,6 +78,8 @@ describe("version consistency across checkout line endings", () => {
       "src-tauri/host/Cargo.toml": `[package]\nname = "yuzora-host"\nversion = "${version}"\n`,
       "src-tauri/Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora"\nversion = "${rootVersion}"\n`,
       "src-tauri/host/Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora-host"\nversion = "${hostVersion}"\n`,
+      "src-tauri/companion/Cargo.toml": `[package]\nname = "yuzora-companion"\nversion = "${version}"\n`,
+      "src-tauri/companion/Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora-companion"\nversion = "${version}"\n\n[[package]]\nname = "yuzora-host"\nversion = "${version}"\n`,
     }
     for (const [path, content] of Object.entries(files)) {
       writeFileSync(join(root, path), content.replaceAll("\n", lineEnding))

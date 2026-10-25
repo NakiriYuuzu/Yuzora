@@ -15,7 +15,7 @@
   "startAgentHint": "Choose an existing shell Pane. HERDR checks that it is available before starting an agent.", "agentKind": "Agent", "arguments": "Agent arguments", "argumentsHint": "One argument per line; values are passed directly without shell evaluation.",
   "promptAgent": "Prompt and control", "promptHint": "HERDR validates the pane's live agent. Prompts do not answer an existing approval or question dialog.", "prompt": "Prompt", "waitUntil": "Wait until", "state": { "unknown": "Unknown", "settled": "Idle, done or blocked", "blocked": "Needs input", "idle": "Idle", "done": "Done", "working": "Working" },
   "moveDestination": "Destination", "destination": { "tab": "Existing tab", "new_tab": "New tab", "new_workspace": "New Space" }, "splitDirection": "Split direction", "right": "Right", "down": "Down",
-  "createSession": "Create or start a Session", "sessionHostHint": "The new Session belongs to the host selected above. Existing saved Sessions are preserved.", "createAndStart": "Create / start", "running": "Running", "stopped": "Stopped",
+  "createSession": "Create or start a Session", "sessionHostHint": "The new Session belongs to the host selected above. Existing saved Sessions are preserved.", "createAndStart": "Create / start", "running": "Running", "stopped": "Stopped", "unreachable": "Unreachable",
   "stopSession": "Stop Session", "deleteSession": "Delete Session", "stopSessionWarning": "Stop {{name}} and all of its panes and processes? Its saved layout remains available for restart.", "deleteSessionWarning": "Delete the saved state of {{name}}? Its saved layout will be removed. This does not delete project folders.",
   "integrationHint": "Integrations report lifecycle or native conversation identity. Restart the affected agent after an installation or update.", "integrationState": { "not_installed": "Not installed", "current": "Current", "outdated": "Update available" },
   "installIntegration": "Install / update integration", "uninstallIntegration": "Remove integration", "integrationWarning": "Update {{name}}'s HERDR integration configuration on this host?", "integrationRemoveWarning": "Remove {{name}}'s HERDR integration from this host?",
@@ -55,6 +55,7 @@
   "reason": {
     "sessionStarting": "The Session is still starting.",
     "sessionNotConnected": "The Session is not connected. Start it or pick another Session above.",
+    "sessionUnreachable": "Cannot connect to this Session; it may still be running. See Manage Sessions. HERDR reported: {{reason}}",
     "serverNotRunning": "The HERDR server is not running.",
     "unsupported": "This HERDR version does not support it (current {{version}}).",
     "unsupportedUnknown": "This HERDR version does not support it.",

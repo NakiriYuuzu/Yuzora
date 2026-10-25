@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider";
+import { parseRuntimeScope, sessionConnectionError, sessionScope } from "@/lib/herdrProvider";
 import type { HerdrNamedSession, HerdrRuntimeSelection } from "@/lib/herdrTypes";
 import { wslDistributions, type HostTarget, type WslDistribution } from "@/lib/hostIpc";
 import { isWindowsPlatform } from "@/lib/platform";
@@ -353,13 +353,14 @@ function SessionList({ sessions, value, current, disabled, kindOf, onValueChange
           {items.map((session) => {
             const scope = sessionScope(session)!;
             const pending = isHerdrStartupPending({ herdrStartup }, session);
+            const unreachable = sessionConnectionError(session);
             const kind = kindOf(scope);
             const Icon = kind === "local" ? Laptop : kind === "wsl" ? SquareTerminal : Server;
             return <CommandItem
               key={scope}
               value={scope}
               disabled={disabled || pending || !session.running}
-              aria-label={`${runtimeSessionLabel(scope, session)}${pending ? ` · ${t("loading")}` : session.running ? "" : ` · ${t("sessionNotRunning")}`}`}
+              aria-label={`${runtimeSessionLabel(scope, session)}${pending ? ` · ${t("loading")}` : session.running ? "" : ` · ${t(unreachable ? "sessionUnreachable" : "sessionNotRunning")}`}`}
               className="herdr-session-picker-row"
               onSelect={() => onValueChange(scope)}
               onDoubleClick={() => { if (!disabled && !pending && session.running) { onValueChange(scope); onLoad(scope); } }}
@@ -367,9 +368,11 @@ function SessionList({ sessions, value, current, disabled, kindOf, onValueChange
               <span className="herdr-session-picker-glyph" aria-hidden="true"><Icon /></span>
               <span className="herdr-session-picker-row-main">
                 <span className="herdr-session-picker-row-title">{session.name}</span>
-                <span className="herdr-session-picker-row-sub">{pending
+                <span className="herdr-session-picker-row-sub" title={!pending && unreachable
+                  ? t("workbench:herdrNav.sessionUnreachable", { name: session.name, reason: unreachable })
+                  : undefined}>{pending
                   ? t("loading")
-                  : !session.running ? t("pickerStoppedHint")
+                  : !session.running ? t(unreachable ? "pickerUnreachableHint" : "pickerStoppedHint")
                   : runtimes[scope]?.snapshot
                     ? t("pickerSessionSummary", { spaces: runtimes[scope]!.snapshot!.spaces.length, agents: runtimes[scope]!.snapshot!.agents.length })
                     : hostTitle(scope, session)}</span>
@@ -377,7 +380,7 @@ function SessionList({ sessions, value, current, disabled, kindOf, onValueChange
               {pending ? <Badge variant="outline" data-status="connecting">{t("loading")}</Badge>
                 : scope === current
                 ? <Badge variant="secondary">{t("pickerCurrent")}</Badge>
-                : <Badge variant="outline" data-status={session.running ? "running" : "stopped"}>{t(session.running ? "pickerRunning" : "sessionNotRunning")}</Badge>}
+                : <Badge variant="outline" data-status={session.running ? "running" : unreachable ? "unreachable" : "stopped"}>{t(session.running ? "pickerRunning" : unreachable ? "sessionUnreachable" : "sessionNotRunning")}</Badge>}
             </CommandItem>;
           })}
         </CommandGroup>;

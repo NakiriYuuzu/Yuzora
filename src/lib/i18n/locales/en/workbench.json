@@ -211,6 +211,8 @@
     "recentQueriesHeading": "Recent queries",
     "noRecentQueries": "No queries in this app session.",
     "historyFailed": "Query failed",
+    "historyTruncated": "Truncated",
+    "historyTruncatedDescription": "Only part of this query was retained, so it cannot be loaded for replay.",
     "newConnection": "New connection…",
     "newConnectionDialogTitle": "New connection",
     "newConnectionDialogDescription": "Credentials are stored by the operating system vault and are never readable by the app UI.",
@@ -340,6 +342,22 @@
       "mixed": "Mixed",
       "useLf": "Use LF",
       "useCrlf": "Use CRLF"
+    },
+    "companion": {
+      "ariaLabel": "Companion remote control",
+      "title": "Companion",
+      "untilExit": "Until quit",
+      "viewers": "{{n}} connected",
+      "controlling": "Controlling",
+      "empty": "No phone is connected.",
+      "unknownDevice": "A phone",
+      "deviceViewing": "Viewing",
+      "deviceControlling": "Controlling {{pane}}",
+      "deviceFull": "Full session on {{session}}",
+      "revokeControl": "Revoke control, sign phones out",
+      "revokeControlHint": "Ends every control grant and full session. The phones concerned are signed out and have to log in again.",
+      "settings": "Companion settings",
+      "disable": "Disable"
     }
   },
   "settings": {
@@ -363,6 +381,10 @@
       "safety": {
         "label": "Safety",
         "sub": "Guardrails for files and git"
+      },
+      "companion": {
+        "label": "Companion",
+        "sub": "Phone remote control over Tailscale"
       },
       "git": {
         "label": "Git",
@@ -573,8 +595,10 @@
     "renameTabAction": "Rename Herdr tab",
     "sessionsHeading": "Sessions",
     "stoppedBadge": "stopped",
+    "runtimeChangedDuringInitialization": "The HERDR state changed during initialization.",
     "sessionStoppedTitle": "Session {{name}} is not running",
     "sessionStopped": "Session \"{{name}}\" is not running. Start it with `herdr session attach {{name}}`.",
+    "sessionUnreachable": "Cannot connect to Session \"{{name}}\"; it may still be running. HERDR reported: {{reason}}",
     "stoppedNoAgents": "No agents while this session is stopped",
     "attentionHeading": "Needs attention",
     "globalRuntime": "Global Herdr{{version}}",

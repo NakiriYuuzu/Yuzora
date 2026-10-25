@@ -1,0 +1,10 @@
+bun test v1.3.14 (0d9b296a)
+
+spikes/companion-direct/lan/server.test.ts:
+(pass) bind accepts only loopback and canonical RFC1918 dotted quads [0.18ms]
+(pass) bind rejects noncanonical, malformed, wildcard and non-RFC1918 addresses [0.07ms]
+
+ 2 pass
+ 0 fail
+ 39 expect() calls
+Ran 2 tests across 1 file. [28.00ms]

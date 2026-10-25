@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@/lib/ipc", async (importOriginal) => ({
@@ -198,6 +198,18 @@ describe("smart checkout", () => {
 })
 
 describe("GitStashDialog", () => {
+    it("applies the selected full OID from the displayed list", async () => {
+        const oid = "a".repeat(40)
+        vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid, message: "Selected A", timestamp: 1 }])
+        useGitActionDialogStore.setState({ stashOpen: true })
+        const { unmount } = render(<GitStashDialog />)
+        const dialog = await screen.findByRole("dialog")
+        const apply = await within(dialog).findByRole("button", { name: "Apply stash@{0}" })
+        await act(async () => { fireEvent.click(apply) })
+        await waitFor(() => expect(ipc.gitStashApply).toHaveBeenCalledWith("/w", 0, oid, false))
+        unmount()
+    })
+
     it("stashes with the chosen options and pops with conflict handoff", async () => {
         vi.mocked(ipc.gitStashList).mockResolvedValue([{ index: 0, oid: "a".repeat(40), message: "On main: wip", timestamp: 1 }])
         vi.mocked(ipc.gitStashApply).mockResolvedValueOnce({ conflicts: true })

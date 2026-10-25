@@ -17,6 +17,38 @@ async function workspace() {
 }
 
 describe("remote Git and trust ownership", () => {
+  it.each(["git_branches", "git_bootstrap"])("preserves upstream ref metadata and old-helper absence through %s", async (command) => {
+    const { uri } = await workspace()
+    vi.mocked(invoke).mockResolvedValueOnce({ status: "ready", root: "/project", version: "v" })
+    await invokeRemoteGit("git_detect", { path: uri })
+    const base = { upstream: "origin/topic", ahead: 0, behind: 0, isCurrent: false, gone: false }
+    const branches = { local: [
+      { ...base, name: "local", upstreamRef: "refs/heads/origin/topic" },
+      { ...base, name: "remote", upstreamRef: "refs/remotes/origin/topic" },
+      { ...base, name: "none", upstream: null, upstreamRef: null },
+      { ...base, name: "legacy" }
+    ], remote: ["origin/topic"], tags: [] }
+    const value = command === "git_bootstrap" ? { environment: { status: "ready", root: "/project", version: "v" }, branches, status: null } : branches
+    vi.mocked(invoke).mockResolvedValueOnce(value)
+    const result = await invokeRemoteGit(command, command === "git_bootstrap" ? { path: uri } : { repositoryRoot: uri })
+    expect(result).toEqual(command === "git_bootstrap" ? { ...value, environment: { status: "ready", root: uri, version: "v" } } : branches)
+  })
+
+  it("preserves the selected stash OID and refuses applying through a replaced owner", async () => {
+    const { owner, uri } = await workspace()
+    vi.mocked(invoke).mockResolvedValueOnce({ status: "ready", root: "/project", version: "v" })
+    await invokeRemoteGit("git_detect", { path: uri })
+    const oid = "a".repeat(40)
+    vi.mocked(invoke).mockResolvedValueOnce({ conflicts: false })
+    await invokeRemoteGit("git_stash_apply", { repositoryRoot: uri, index: 2, pop: false, oid })
+    expect(invoke).toHaveBeenLastCalledWith("host_request", { owner, operation: { method: "git", params: { workspace: "cap-1", repository_root: "/project", call: { command: "git_stash_apply", args: { index: 2, pop: false, oid } } } } })
+    vi.mocked(invoke).mockResolvedValueOnce({ canonicalPath: "/project", capabilityId: "cap-2" })
+    await registerRuntimeWorkspace({ ...owner, generation: 2 }, "/project", () => true)
+    vi.mocked(invoke).mockClear()
+    await expect(invokeRemoteGit("git_stash_apply", { repositoryRoot: uri, index: 2, pop: false, oid })).rejects.toThrow("Refresh Git")
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
   it("routes roots and mutations to the owning workspace and discards replaced responses", async () => {
     const { owner, uri } = await workspace()
     vi.mocked(invoke).mockResolvedValueOnce({ status: "ready", root: "/project", version: "git version 2.50" })

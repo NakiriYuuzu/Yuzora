@@ -1,4 +1,8 @@
 {
+  "fileRename": {
+    "busy": "這個檔案正在讀取、儲存或重新命名。請等待操作完成後再試。",
+    "destinationOpen": "目的地已有開啟的編輯器文件。請先關閉其分頁，再重新命名，以保留文件內容。"
+  },
   "contextMenu": {
     "cmHerdrMoveSpaceUp": "上移",
     "cmHerdrMoveSpaceDown": "下移",
@@ -160,12 +164,11 @@
   "unsavedDialog": {
     "closeTabTitle": "未儲存的變更",
     "closeTabDescription": "「{{name}}」有未儲存的變更。關閉前要儲存嗎？",
+    "closeSplitDescription": "此分割區中有檔案尚未儲存。關閉分割前要儲存嗎？",
     "switchWorkspaceTitle": "未儲存的變更",
     "switchWorkspaceDescription": "有開啟的檔案尚未儲存。切換工作區前要儲存嗎？",
     "exitTitle": "未儲存的變更",
     "exitDescription": "有開啟的檔案尚未儲存。Yuzora 不會保留草稿，關閉視窗後未儲存的內容就會消失。關閉前要儲存嗎？",
-    "closeSplitTitle": "未儲存的變更",
-    "closeSplitDescription": "只開在右側分割的檔案有未儲存的變更。關閉分割前要儲存嗎？",
     "save": "儲存",
     "saveAll": "全部儲存",
     "discard": "不儲存",
@@ -252,6 +255,7 @@
     "localNameTaken": "{{name}} 已存在。請輸入不同的本地分支名稱。",
     "alternateLocalTitle": "選擇本地分支名稱",
     "alternateLocalDescription": "{{derived}} 已存在。請為 {{remote}} 輸入不同的本地名稱。",
+    "reservedLocalDescription": "HEAD 是 Git 的保留名稱。請為 {{remote}} 輸入本地分支名稱。",
     "emptyTagsTitle": "沒有 Git 標籤",
     "emptyTagsDescription": "建立或抓取標籤後會顯示在這裡。",
     "resultsTags": "Git 標籤",
@@ -398,8 +402,9 @@
   },
   "workspaceSearch": {
     "heading": "工作區搜尋",
+    "failed": "無法完成搜尋，已找到的結果可能不完整。",
     "matchCaseAriaLabel": "區分大小寫",
-    "truncatedNotice": "已達 5,000 檔上限，請縮小範圍",
+    "truncatedNotice": "搜尋結果可能不完整，請縮小搜尋範圍。",
     "noResults": "沒有符合的結果"
   },
   "gitPanel": {
@@ -508,6 +513,7 @@
     "close": "關閉"
   },
   "gitMerge": {
+    "changed": "衝突或合併結果已變更。請檢查後重試；若衝突已改變，請重新開啟合併工具。",
     "title": "合併 {{path}}",
     "description": "左側是你的版本，右側是傳入的版本；中間的結果一開始是共同基底。",
     "loading": "正在載入衝突的各方版本…",

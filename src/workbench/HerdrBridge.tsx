@@ -46,10 +46,12 @@ export function HerdrBridge() {
     const current = (entry: RuntimeSubscription) => !cancelledRef.current && active.get(entry.scope) === entry
     const release = (entry: RuntimeSubscription) => {
       entry.subscriptionGeneration++
+      entry.connecting = false
       if (entry.refreshTimer) clearTimeout(entry.refreshTimer)
       if (entry.retryTimer) clearTimeout(entry.retryTimer)
       entry.refreshTimer = null
       entry.retryTimer = null
+      entry.rerun = false
       const id = entry.subscriptionId
       entry.subscriptionId = null
       useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
@@ -112,6 +114,7 @@ export function HerdrBridge() {
 
     const subscribe = async (entry: RuntimeSubscription) => {
       if (!current(entry) || entry.connecting || entry.retryTimer) return
+      if (useHerdrStore.getState().runtimesBySession[entry.scope]?.connectionState !== "ready") return
       const paneIds = [...new Set(useHerdrStore.getState().runtimesBySession[entry.scope]?.snapshot?.terminals
         .flatMap((terminal) => terminal.paneId ? [terminal.paneId] : []) ?? [])].sort()
       const paneKey = JSON.stringify(paneIds)
@@ -177,7 +180,9 @@ export function HerdrBridge() {
           useHerdrStore.getState().setEventsHealth(entry.scope, false, null)
           retry()
         }
-      } finally { entry.connecting = false }
+      } finally {
+        if (entry.subscriptionGeneration === generation) entry.connecting = false
+      }
     }
 
     const refresh = async (entry: RuntimeSubscription, force = false) => {
@@ -293,7 +298,11 @@ export function HerdrBridge() {
     })
     const unsubscribeFocus = useHerdrStore.subscribe((state, previous) => {
       for (const [runtimeScope, entry] of active) {
-        if (state.runtimesBySession[runtimeScope]?.snapshot !== previous.runtimesBySession[runtimeScope]?.snapshot) {
+        const runtime = state.runtimesBySession[runtimeScope]
+        const before = previous.runtimesBySession[runtimeScope]
+        if (before?.capabilities && !runtime?.capabilities) release(entry)
+        if (runtime?.snapshot !== before?.snapshot || runtime?.capabilities !== before?.capabilities
+          || runtime?.connectionState !== before?.connectionState) {
           void subscribe(entry)
         }
       }

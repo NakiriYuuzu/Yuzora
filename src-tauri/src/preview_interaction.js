@@ -1,4 +1,13 @@
 (() => {
+  // This standalone all-frame script mirrors keyboardSettingsStore's physical
+  // fallback for Shift/Alt chords without changing the binding wire format.
+  const physicalKeys = {
+    '`': 'Backquote', ',': 'Comma', '.': 'Period', ';': 'Semicolon', '/': 'Slash',
+    '[': 'BracketLeft', ']': 'BracketRight', '\\': 'Backslash', '-': 'Minus', TAB: 'Tab',
+  };
+  const physicalKeyCode = key => /^[0-9]$/.test(key) ? `Digit${key}` : /^[A-Z]$/.test(key) ? `Key${key}` : physicalKeys[key] ?? null;
+  const matchesKey = (binding, event) => binding.key === event.key.toUpperCase()
+    || ((binding.shift || binding.alt) && event.code === physicalKeyCode(binding.key));
   if (window.top !== window) {
     let bindings = [];
     window.addEventListener('message', event => {
@@ -6,7 +15,7 @@
     });
     document.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState('AltGraph') || event.target.closest?.('[role="dialog"], dialog[open], [data-shortcut-capture]')) return;
-      const binding = bindings.find(item => item.key === event.key.toUpperCase() && item.ctrl === event.ctrlKey && item.meta === event.metaKey && item.alt === event.altKey && item.shift === event.shiftKey);
+      const binding = bindings.find(item => matchesKey(item, event) && item.ctrl === event.ctrlKey && item.meta === event.metaKey && item.alt === event.altKey && item.shift === event.shiftKey);
       if (!binding) return;
       event.preventDefault(); event.stopImmediatePropagation();
       window.top.postMessage({ type: 'yuzora-tab-command', id: binding.id }, '*');
@@ -89,7 +98,7 @@
     doc.addEventListener('keydown', event => {
       if (event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState('AltGraph')) return;
       if (event.target.closest?.('[role="dialog"], dialog[open], [data-shortcut-capture]')) return;
-      const binding = state.bindings.find(item => item.key === event.key.toUpperCase() && item.ctrl === event.ctrlKey && item.meta === event.metaKey && item.alt === event.altKey && item.shift === event.shiftKey);
+      const binding = state.bindings.find(item => matchesKey(item, event) && item.ctrl === event.ctrlKey && item.meta === event.metaKey && item.alt === event.altKey && item.shift === event.shiftKey);
       if (!binding) return;
       event.preventDefault(); event.stopImmediatePropagation();
       if (state.commands.length < 8) state.commands.push(binding.id);

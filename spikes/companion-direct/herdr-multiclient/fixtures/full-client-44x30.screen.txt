@@ -1,0 +1,30 @@
+ · spike                    tab 1 │         
+ no agents                        │ switch  
+┌────────────────────┐┌────────────────────┐
+│sh-3.2$ printf 'A_F ││sh-3.2$             │
+│RAME_MARKER_ABCDEFG ││                    │
+│HIJKLMNOPQRSTUVWXYZ ││                    │
+│_0123456789_END\n'; ││                    │
+│ stty size          ││                    │
+│A_FRAME_MARKER_ABCD ││                    │
+│EFGHIJKLMNOPQRSTUVW ││                    │
+│XYZ_0123456789_END  ││                    │
+│40 120              ││                    │
+│sh-3.2$ stty size   ││                    │
+│40 120              ││                    │
+│sh-3.2$ stty size   ││                    │
+│30 44               ││                    │
+│sh-3.2$ echo FULL_C ││                    │
+│LIENT_MARKER; stty  ││                    │
+│size                ││                    │
+│FULL_CLIENT_MARKER  ││                    │
+│26 19               ││                    │
+│sh-3.2$             ││                    │
+│                    ││                    │
+│                    ││                    │
+│                    ││                    │
+│                    ││                    │
+│                    ││                    │
+│                    ││                    │
+│                    ││                    │
+└────────────────────┘└────────────────────┘

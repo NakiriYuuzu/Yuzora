@@ -73,3 +73,23 @@ describe("background document search", () => {
         expect(runSearchTask(Text.of(["needle needle"]), task({ action: "replace" })).changes).toBeUndefined()
     })
 })
+
+it.each([["^", 0], ["$", 3], ["(?=b)", 1]] as const)("keeps the sole %s zero-width match when Next wraps", (search, at) => {
+    const input = task({ from: at, to: at })
+    input.query = { ...input.query, search, regexp: true }
+    expect(runSearchTask(Text.of(["abc"]), input).ranges).toEqual([{ from: at, to: at }])
+})
+
+it("keeps true no-match and ordinary sole-match behavior", () => {
+    const input = task()
+    input.query = { ...input.query, search: "(?=z)", regexp: true }
+    expect(runSearchTask(Text.of(["abc"]), input).ranges).toEqual([])
+    expect(runSearchTask(Text.of(["needle"]), task({ from: 0, to: 6 })).ranges).toEqual([{ from: 0, to: 6 }])
+})
+
+it("does not add a sole-zero fallback to Replace or repeat ReplaceAll edits", () => {
+    const input = task({ action: "replace" })
+    input.query = { ...input.query, search: "^", regexp: true, replace: "> " }
+    expect(runSearchTask(Text.of(["abc"]), input)).toMatchObject({ changes: [{ from: 0, to: 0, insert: "> " }], ranges: [] })
+    expect(runSearchTask(Text.of(["abc"]), { ...input, action: "replaceAll" })).toMatchObject({ changes: [{ from: 0, to: 0, insert: "> " }], ranges: [] })
+})

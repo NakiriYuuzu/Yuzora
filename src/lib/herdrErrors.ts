@@ -68,3 +68,14 @@ export function describeHerdrError(error: unknown, t: Translate): DescribedHerdr
   if (!translated || translated === key || translated === code) return { code: null, detail: null, message: raw, raw }
   return { code, detail, message: translated, raw }
 }
+
+/** These snapshot-gate messages require fresh capabilities. They are hints to
+ * renegotiate, not proof that the current runtime is unsupported. */
+export function isHerdrSnapshotContractError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message === "herdr server protocol incompatible"
+    || message === "selected herdr schema lacks session.snapshot"
+    || message === "selected herdr schema lacks session.snapshot/tab.create"
+    || message === "herdr snapshot unavailable"
+    || message === "herdr server identity changed during capability discovery"
+}

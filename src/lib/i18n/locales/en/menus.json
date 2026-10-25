@@ -1,4 +1,8 @@
 {
+  "fileRename": {
+    "busy": "This file is being read, saved, or renamed. Wait for that operation to finish, then try again.",
+    "destinationOpen": "The destination has an open editor document. Close its tabs before renaming to preserve its content."
+  },
   "contextMenu": {
     "cmHerdrMoveSpaceUp": "Move Up",
     "cmHerdrMoveSpaceDown": "Move Down",
@@ -160,12 +164,11 @@
   "unsavedDialog": {
     "closeTabTitle": "Unsaved changes",
     "closeTabDescription": "\"{{name}}\" has unsaved changes. Save before closing?",
+    "closeSplitDescription": "Some files in this split have unsaved changes. Save before closing the split?",
     "switchWorkspaceTitle": "Unsaved changes",
     "switchWorkspaceDescription": "Some open files have unsaved changes. Save before switching workspace?",
     "exitTitle": "Unsaved changes",
     "exitDescription": "Some open files have unsaved changes. Yuzora does not keep drafts, so anything unsaved is lost once the window closes. Save before closing?",
-    "closeSplitTitle": "Unsaved changes",
-    "closeSplitDescription": "Some files open only in the right split have unsaved changes. Save before closing the split?",
     "save": "Save",
     "saveAll": "Save all",
     "discard": "Discard",
@@ -252,6 +255,7 @@
     "localNameTaken": "{{name}} already exists. Enter a different local branch name.",
     "alternateLocalTitle": "Choose a local branch name",
     "alternateLocalDescription": "{{derived}} already exists. Enter a different local name for {{remote}}.",
+    "reservedLocalDescription": "HEAD is reserved by Git. Enter a local branch name for {{remote}}.",
     "emptyTagsTitle": "No Git tags",
     "emptyTagsDescription": "Create or fetch tags to see them here.",
     "resultsTags": "Git tags",
@@ -400,8 +404,9 @@
   },
   "workspaceSearch": {
     "heading": "Workspace search",
+    "failed": "Could not finish searching. Results may be incomplete.",
     "matchCaseAriaLabel": "Match case",
-    "truncatedNotice": "Reached the 5,000-file limit — narrow your search",
+    "truncatedNotice": "Search results may be incomplete. Narrow your search.",
     "noResults": "No matching results"
   },
   "gitPanel": {
@@ -510,6 +515,7 @@
     "close": "Close"
   },
   "gitMerge": {
+    "changed": "The conflict or merge result changed. Review it and try again; reopen the merge tool if the conflict changed.",
     "title": "Merge {{path}}",
     "description": "Left: your version. Right: the incoming version. The result starts as the common base.",
     "loading": "Loading the conflicting versions…",

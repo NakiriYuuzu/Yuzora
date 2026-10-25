@@ -17,6 +17,14 @@ mod event_idle_tests;
 #[path = "perf_tests.rs"]
 mod perf_tests;
 
+#[cfg(unix)]
+#[path = "spawn_lock_tests.rs"]
+mod spawn_lock_tests;
+
+#[cfg(unix)]
+#[path = "bounded_wait_tests.rs"]
+mod bounded_wait_tests;
+
 fn frame(seq: u64, full: bool) -> HerdrWireFrame {
     HerdrWireFrame {
         kind: "terminal.frame".into(),
@@ -1106,6 +1114,7 @@ fn implemented_methods_exist_in_official_protocol22_schema() {
         include_str!("../../tests/fixtures/herdr-0.9.0-methods.json"),
         include_str!("../../tests/fixtures/herdr-0.9.1-methods.json"),
         include_str!("../../tests/fixtures/herdr-0.9.3-methods.json"),
+        include_str!("../../tests/fixtures/herdr-0.9.5-methods.json"),
     ] {
         let schema: serde_json::Value = serde_json::from_str(fixture).unwrap();
         assert_eq!(schema["protocol"], 22);
@@ -1646,6 +1655,43 @@ fn startup_and_named_session_start_share_one_launch_lock() {
         .count();
     assert_eq!(starts, 1);
     assert_eq!(spawn_count(&dir.path().join("server.invoked")), 1);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_named_session_start_counts_a_server_child_that_exits_once_it_is_up() {
+    // `status` decides before it answers slowly, and the server child comes up
+    // and exits while that status is still running.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("herdr");
+    write_executable_fixture(
+        &path,
+        r#"#!/bin/sh
+base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$1" = "--session" ]; then shift 2; fi
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  if [ -f "$base/server.ready" ]; then
+    answer='{"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":20,"compatible":true,"socket":"/tmp/herdr-fake.sock"}}'
+  else
+    answer='{"server":{"status":"not_running","running":false,"version":null,"protocol":null,"compatible":null,"socket":null}}'
+  fi
+  sleep 0.3
+  printf '%s\n' "$answer"
+  exit 0
+fi
+if [ "$1" = "server" ]; then
+  sleep 0.1
+  : > "$base/server.ready"
+  exit 0
+fi
+exit 2
+"#,
+    );
+    let manager = HerdrManager::with_binary(path);
+    let started = manager
+        .feature("default", HerdrFeatureRequest::SessionStart {})
+        .unwrap();
+    assert_eq!(started["started"], true);
 }
 
 #[test]
@@ -2749,6 +2795,65 @@ fn capabilities_do_not_claim_api_when_server_incompatible() {
 
 #[cfg(unix)]
 #[test]
+fn schema_probe_failures_are_not_reported_as_missing_snapshot_methods() {
+    for exits in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir
+            .path()
+            .join("fixture.sock")
+            .to_string_lossy()
+            .into_owned();
+        let status = serde_json::json!({
+            "client": { "version": "0.9.1", "channel": "test", "protocol": 22, "binary": "FAKE" },
+            "server": { "status": "running", "running": true, "version": "0.9.1", "protocol": 22, "compatible": true, "socket": socket },
+            "update": { "restart_needed": false }
+        }).to_string();
+        let sessions =
+            serde_json::json!({ "sessions": [{ "name": "default", "default": true, "running": true,
+            "session_dir": dir.path().join("session"), "socket_path": socket }] })
+            .to_string();
+        let binary =
+            write_fake_herdr_with_sessions(dir.path(), &status, "invalid-schema-json", &sessions);
+        if exits {
+            let script = std::fs::read_to_string(&binary).unwrap();
+            let original = "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"schema\" ] && [ \"$3\" = \"--json\" ]; then\n  cat <<'JSON'\ninvalid-schema-json\nJSON\n  exit 0\nfi";
+            let replacement = "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"schema\" ] && [ \"$3\" = \"--json\" ]; then\n  echo fixture-schema-probe-transient >&2\n  exit 42\nfi";
+            assert!(script.contains(original));
+            write_executable_fixture(&binary, &script.replace(original, replacement));
+        }
+        let manager = HerdrManager::with_binary(binary);
+        let caps = manager.discover_capabilities_for_session(Some("default"));
+        assert!(caps.server.running);
+        assert!(!caps.api.snapshot);
+        assert!(!caps.api.tab_create);
+        assert!(caps.api.methods.is_empty());
+        let reason = caps.api.reason.as_deref().unwrap();
+        assert!(reason.contains("herdr api schema failed:"), "{reason}");
+        assert!(!reason.contains("selected herdr schema lacks"), "{reason}");
+        assert!(caps
+            .terminal
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("herdr api schema failed:"));
+        if exits {
+            assert!(
+                reason.contains("fixture-schema-probe-transient"),
+                "{reason}"
+            );
+        }
+
+        let schema = r#"{"protocol":22,"schema_version":1,"methods":["session.snapshot","tab.create","session.ping"],"schemas":{"session.snapshot":{},"tab.create":{}}}"#;
+        write_fake_herdr_with_sessions(dir.path(), &status, schema, &sessions);
+        let recovered = manager.discover_capabilities_for_session(Some("default"));
+        assert!(recovered.api.snapshot);
+        assert!(recovered.api.tab_create);
+        assert!(recovered.api.reason.is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn capabilities_do_not_claim_methods_missing_from_schema() {
     let dir = tempfile::tempdir().unwrap();
     let binary = write_fake_herdr_with_sessions(
@@ -2852,6 +2957,8 @@ fn connector_reader_rejects_oversized_line_and_does_not_emit_frame() {
         stdin: Mutex::new(None),
         reader: Mutex::new(None),
         closed: Mutex::new(false),
+        released: AtomicBool::new(false),
+        on_event: None,
     });
     let (tx, rx) = mpsc::channel();
     let on_event: OnTerminalEvent =
@@ -3090,6 +3197,76 @@ fn parse_session_list_json_reads_exact_dto_fields() {
     assert_eq!(sessions[0].socket_path, "/tmp/herdr-default.sock");
     assert_eq!(sessions[1].name, "work");
     assert!(!sessions[1].running);
+}
+
+#[test]
+fn parse_session_list_json_keeps_connection_errors_only_for_unreachable_sessions() {
+    let value = serde_json::json!({
+        "sessions": [
+            { "name": "default", "default": true, "running": false, "session_dir": "/d", "socket_path": "/d.sock" },
+            { "name": "admin", "default": false, "running": false, "session_dir": "/a", "socket_path": "/a.sock",
+              "connection_error": " For an elevated server, use an administrator terminal. Access is denied. " },
+            { "name": "live", "default": false, "running": true, "session_dir": "/l", "socket_path": "/l.sock",
+              "connection_error": "stale" },
+            { "name": "blank", "default": false, "running": false, "session_dir": "/b", "socket_path": "/b.sock",
+              "connection_error": "  " }
+        ]
+    });
+    let sessions = parse_session_list_json(&value).unwrap();
+    let errors: Vec<_> = sessions
+        .iter()
+        .map(|s| s.connection_error.as_deref())
+        .collect();
+    assert_eq!(
+        errors,
+        [
+            None,
+            Some("For an elevated server, use an administrator terminal. Access is denied."),
+            None,
+            None
+        ]
+    );
+    // Reachable and stopped Sessions keep the pre-0.9.4 wire shape.
+    let wire = serde_json::to_value(&sessions).unwrap();
+    assert!(wire[0].get("connectionError").is_none());
+    assert_eq!(
+        wire[1]["connectionError"],
+        "For an elevated server, use an administrator terminal. Access is denied."
+    );
+    let message = session_not_running_message(&sessions[1]);
+    assert!(message.contains("'admin' is unreachable"), "{message}");
+    assert!(!message.contains("herdr session attach"), "{message}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreachable_session_is_never_stopped_or_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    // Unguarded, stop/delete would reach the fake and fail as unexpected args.
+    let binary = write_fake_herdr_with_sessions(
+        dir.path(),
+        r#"{"client":{"version":"0.0.0-fake","channel":"test","protocol":22,"binary":"FAKE"},"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":22,"compatible":true,"socket":"/tmp/admin.sock"},"update":{"restart_needed":false}}"#,
+        r#"{"protocol":22,"schema_version":1,"methods":["session.snapshot","tab.create"],"schemas":{"session.snapshot":{},"tab.create":{}}}"#,
+        r#"{"sessions":[{"name":"default","default":true,"running":false,"session_dir":"/tmp/default","socket_path":"/tmp/default.sock"},{"name":"admin","default":false,"running":false,"connection_error":"Access is denied.","session_dir":"/tmp/admin","socket_path":"/tmp/admin.sock"}]}"#,
+    );
+    let mgr = HerdrManager::with_binary(binary);
+    for request in [
+        HerdrFeatureRequest::SessionStop {},
+        HerdrFeatureRequest::SessionDelete {},
+    ] {
+        let error = mgr.feature("admin", request).unwrap_err();
+        assert_eq!(
+            error,
+            "herdr session 'admin' is unreachable: Access is denied."
+        );
+    }
+    let caps = mgr.capabilities_for_session(Some("admin"));
+    assert!(!caps.api.snapshot);
+    assert_eq!(
+        caps.api.reason.as_deref(),
+        Some("herdr session 'admin' is unreachable: Access is denied.")
+    );
+    assert_eq!(caps.terminal.reason, caps.api.reason);
 }
 
 #[cfg(unix)]

@@ -1,10 +1,10 @@
 import type {TFunction} from 'i18next'
 import {supportsWindowGlass} from '@/theme/windowGlass'
-export type SettingsSectionId='appearance'|'editor'|'keyboard'|'terminal'|'herdr'|'git'|'safety'|'logs'|'about'
+export type SettingsSectionId='appearance'|'editor'|'keyboard'|'terminal'|'herdr'|'git'|'safety'|'companion'|'logs'|'about'
 export const SETTINGS_GROUPS=[
   {id:'personal',sections:['appearance','editor','keyboard']},
   {id:'workspace',sections:['terminal','herdr','git']},
-  {id:'application',sections:['safety','logs','about']},
+  {id:'application',sections:['safety','companion','logs','about']},
 ] as const
 const fields:Partial<Record<SettingsSectionId,{ns:string;keys:string[]}>>={
   appearance:{ns:'workbench',keys:['settings.theme','settings.accentColor','settings.background','settings.windowGlass','settings.leftSidebarBackground','settings.rightSidebarBackground','settings.botAnimations','settings.language','settings.moveOpenedWorkspaceToTop']},
@@ -14,6 +14,7 @@ const fields:Partial<Record<SettingsSectionId,{ns:string;keys:string[]}>>={
   herdr:{ns:'workbench',keys:['herdrSettings.binarySource']},
   git:{ns:'workbench',keys:['gitSettings.detectionLabel','gitSettings.remoteCheckLabel']},
   safety:{ns:'workbench',keys:['settings.reconcileExternalChanges','settings.confirmDestructiveGitActions','settings.trustedWorkspaces']},
+  companion:{ns:'companion',keys:['experimental.label','tailscale.title','sessions.title','devices.title']},
   logs:{ns:'workbench',keys:['settings.logs.filters','settings.logs.actions','settings.logs.results']},
   about:{ns:'workbench',keys:['settings.currentVersion','settings.updates','updates:channelLabel']},
 }
@@ -32,6 +33,7 @@ const aliases:Record<string,string>={
   'settings.rightSidebarBackground':'右側欄 背景 邊框 霧面 sidebar background border glass',
   'updates:channelLabel':'beta prerelease preview stable channel 預發 預覽 穩定 更新 頻道',
   'settings.language':'語系 language locale',
+  'experimental.label':'手機 遠端 控制 配對 實驗 phone mobile remote control pairing tailscale experimental',
 }
 export function settingsSearchResults(query:string,t:TFunction) {
   const words=query.trim().toLocaleLowerCase().split(/\s+/)

@@ -65,22 +65,52 @@ impl HostStreamSession {
     }
 }
 
-async fn send<W: AsyncWrite + Unpin>(
-    output: &mut W,
-    request: &StreamRequest,
-) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    if bytes.len() >= MAX_FRAME_BYTES {
-        return Err("frame-too-large".into());
+struct Writing {
+    bytes: Vec<u8>,
+    written: usize,
+    deadline: tokio::time::Instant,
+}
+impl Writing {
+    fn new(request: &StreamRequest) -> Result<Self, String> {
+        let mut bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        if bytes.len() >= MAX_FRAME_BYTES {
+            return Err("frame-too-large".into());
+        }
+        bytes.push(b'\n');
+        Ok(Self {
+            bytes,
+            written: 0,
+            deadline: tokio::time::Instant::now() + Duration::from_secs(10),
+        })
     }
-    bytes.push(b'\n');
-    tokio::time::timeout(Duration::from_secs(10), async {
-        output.write_all(&bytes).await?;
-        output.flush().await
-    })
-    .await
-    .map_err(|_| "stream-write-timeout")?
-    .map_err(|e| e.to_string())
+
+    // write(), unlike write_all(), is cancellation-safe in select!. Record each
+    // completed chunk before yielding, so incoming frames never replay bytes.
+    async fn advance<W: AsyncWrite + Unpin>(&mut self, output: &mut W) -> Result<bool, String> {
+        if self.written < self.bytes.len() {
+            let count = output
+                .write(&self.bytes[self.written..])
+                .await
+                .map_err(|e| e.to_string())?;
+            if count == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).to_string());
+            }
+            self.written += count;
+            Ok(false)
+        } else {
+            output.flush().await.map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+    }
+}
+
+struct Pending {
+    id: String,
+    reply: Reply,
+    deadline: Option<tokio::time::Instant>,
+    // A peer may reply before our flush finishes. Do not expose success until
+    // the write also succeeds, and keep subsequent commands queued meanwhile.
+    early_outcome: Option<Outcome>,
 }
 
 fn parse(bytes: &[u8], owner: &ConnectionOwner) -> Result<StreamFrame, String> {
@@ -107,7 +137,8 @@ async fn run(
 ) -> Result<(), String> {
     let (read, mut write) = tokio::io::split(io);
     let mut read = BufReader::new(read);
-    let mut pending: Option<(String, Reply, tokio::time::Instant)> = None;
+    let mut pending: Option<Pending> = None;
+    let mut writing: Option<Writing> = None;
     let mut next_id = 0_u64;
     let stream_state = cancelled.clone();
     let host_state = host_cancelled.clone();
@@ -119,33 +150,55 @@ async fn run(
             let next = yuzora_host::wire::read_frame(&mut read);
             tokio::pin!(next);
             let bytes = loop {
-                let deadline = pending
+                let deadline = writing
                     .as_ref()
-                    .map(|p| p.2)
-                    .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(30));
+                    .map(|w| w.deadline)
+                    .or_else(|| pending.as_ref().and_then(|p| p.deadline));
                 tokio::select! {
                     biased;
-                    _ = tokio::time::sleep_until(deadline), if pending.is_some() => return Err("stream-request-timeout".into()),
-                    frame = &mut next => break frame?.ok_or("host-stream-ended")?,
+                    _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                        return Err(if writing.is_some() { "stream-write-timeout" } else { "stream-request-timeout" }.into());
+                    },
+                    completed = async { writing.as_mut().unwrap().advance(&mut write).await }, if writing.is_some() => {
+                        if completed? {
+                            writing = None;
+                            let request = pending.as_mut().unwrap();
+                            if let Some(outcome) = request.early_outcome.take() {
+                                let request = pending.take().unwrap();
+                                let _ = request.reply.send(result(outcome));
+                            } else {
+                                request.deadline = Some(tokio::time::Instant::now() + Duration::from_secs(15));
+                            }
+                        }
+                    },
                     request = requests.recv(), if pending.is_none() => {
                         let Some(request) = request else {return Ok(());};
                         if request.reply.is_closed() { continue; }
                         next_id += 1;
                         let id = next_id.to_string();
-                        send(&mut write,&StreamRequest {version:PROTOCOL_VERSION,owner:owner.clone(),id:id.clone(),operation:request.operation}).await?;
-                        pending = Some((id,request.reply,tokio::time::Instant::now()+Duration::from_secs(15)));
+                        writing = Some(Writing::new(&StreamRequest {version:PROTOCOL_VERSION,owner:owner.clone(),id:id.clone(),operation:request.operation})?);
+                        pending = Some(Pending {id,reply:request.reply,deadline:None,early_outcome:None});
                     },
+                    // Drain output even while input is backpressured. Keep this
+                    // same read future until its entire frame has been received.
+                    frame = &mut next => break frame?.ok_or("host-stream-ended")?,
                 }
             };
             let frame = parse(&bytes, &owner)?;
             match frame.payload {
                 StreamPayload::Reply { id, outcome } => {
-                    let (expected, reply, _) =
-                        pending.take().ok_or("unexpected-stream-response")?;
-                    if id != expected {
+                    let request = pending.as_mut().ok_or("unexpected-stream-response")?;
+                    if id != request.id {
                         return Err("stream-response-id-mismatch".into());
                     }
-                    let _ = reply.send(result(outcome));
+                    if writing.is_some() {
+                        if request.early_outcome.replace(outcome).is_some() {
+                            return Err("unexpected-stream-response".into());
+                        }
+                    } else {
+                        let request = pending.take().unwrap();
+                        let _ = request.reply.send(result(outcome));
+                    }
                 }
                 _ => on_frame(frame)?,
             }
@@ -442,6 +495,526 @@ pub async fn host_stream_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn early_reply_waits_for_flush_and_cannot_hide_write_failure() {
+        use futures_util::task::AtomicWaker;
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::task::{Context, Poll};
+        use tokio::io::{AsyncRead, ReadBuf};
+
+        struct FlushGate {
+            inner: tokio::io::DuplexStream,
+            state: Arc<AtomicU8>,
+            wake: Arc<AtomicWaker>,
+        }
+        impl AsyncRead for FlushGate {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.inner).poll_read(cx, buf)
+            }
+        }
+        impl AsyncWrite for FlushGate {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Pin::new(&mut self.inner).poll_write(cx, buf)
+            }
+            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                self.wake.register(cx.waker());
+                match self.state.load(Ordering::SeqCst) {
+                    0 => Poll::Pending,
+                    1 => Poll::Ready(Ok(())),
+                    _ => Poll::Ready(Err(std::io::Error::other("owned-flush-failed"))),
+                }
+            }
+            fn poll_shutdown(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Pin::new(&mut self.inner).poll_shutdown(cx)
+            }
+        }
+
+        for fail_flush in [false, true] {
+            let owner = ConnectionOwner {
+                host_id: "owned-flush".into(),
+                generation: 1,
+            };
+            let (client, peer) = tokio::io::duplex(4096);
+            let state = Arc::new(AtomicU8::new(0));
+            let wake = Arc::new(AtomicWaker::new());
+            let (requests, queued) = mpsc::channel(2);
+            let (_cancel, cancelled) = watch::channel(false);
+            let (_host, host_cancelled) = watch::channel(false);
+            let (events, mut observed) = mpsc::channel(1);
+            let task = tokio::spawn(run(
+                Box::new(FlushGate {
+                    inner: client,
+                    state: state.clone(),
+                    wake: wake.clone(),
+                }),
+                owner.clone(),
+                queued,
+                cancelled,
+                host_cancelled,
+                move |frame| events.try_send(frame).map_err(|e| e.to_string()),
+            ));
+            let (reply, mut response) = oneshot::channel();
+            requests
+                .try_send(Queued {
+                    operation: StreamCommand::Resize { cols: 80, rows: 24 },
+                    reply,
+                })
+                .unwrap();
+            let mut peer = BufReader::new(peer);
+            let bytes = tokio::time::timeout(
+                Duration::from_secs(1),
+                yuzora_host::wire::read_frame(&mut peer),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            let request: StreamRequest = serde_json::from_slice(&bytes).unwrap();
+            request.validate(&owner).unwrap();
+            for payload in [
+                StreamPayload::Reply {
+                    id: request.id,
+                    outcome: Outcome::Ok { value: Value::Null },
+                },
+                StreamPayload::Files {
+                    workspace_root: "owned".into(),
+                    paths: vec!["after-reply".into()],
+                    git_relevant: true,
+                },
+            ] {
+                let mut bytes = serde_json::to_vec(&StreamFrame {
+                    version: PROTOCOL_VERSION,
+                    owner: owner.clone(),
+                    payload,
+                })
+                .unwrap();
+                bytes.push(b'\n');
+                peer.get_mut().write_all(&bytes).await.unwrap();
+            }
+            // Seeing the following frame proves the ack was read while flush waits.
+            let frame = tokio::time::timeout(Duration::from_secs(1), observed.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(frame.payload, StreamPayload::Files { paths, .. } if paths == ["after-reply"])
+            );
+            assert!(matches!(
+                response.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            state.store(if fail_flush { 2 } else { 1 }, Ordering::SeqCst);
+            wake.wake();
+            let reply = tokio::time::timeout(Duration::from_secs(1), response)
+                .await
+                .unwrap();
+            drop(requests);
+            let status = tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .unwrap()
+                .unwrap();
+            if fail_flush {
+                assert!(reply.is_err(), "ack cannot conceal failed flush");
+                assert_eq!(status.unwrap_err(), "owned-flush-failed");
+            } else {
+                assert_eq!(reply.unwrap().unwrap(), Value::Null);
+                status.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simultaneous_backpressure_keeps_both_directions_live() {
+        use std::cell::Cell;
+
+        const CAPACITY: usize = 256;
+        let owner = ConnectionOwner {
+            host_id: "owned-two-way".into(),
+            generation: 1,
+        };
+        let payload = StreamPayload::Files {
+            workspace_root: "owned".into(),
+            paths: vec!["x".repeat(200)],
+            git_relevant: true,
+        };
+        let mut event = serde_json::to_vec(&StreamFrame {
+            version: PROTOCOL_VERSION,
+            owner: owner.clone(),
+            payload,
+        })
+        .unwrap();
+        event.push(b'\n');
+        assert!(CAPACITY < event.len() && event.len() <= CAPACITY * 2);
+        let (client, mut peer) = tokio::io::duplex(CAPACITY);
+        // The helper is already blocked emitting an event before it reads input.
+        peer.write_all(&event[..CAPACITY]).await.unwrap();
+        let (requests, queued) = mpsc::channel(1);
+        let (reply, response) = oneshot::channel();
+        requests
+            .try_send(Queued {
+                operation: StreamCommand::Input {
+                    text: Some("paste".repeat(256)),
+                    bytes_base64: None,
+                },
+                reply,
+            })
+            .unwrap();
+        let (_cancel, cancelled) = watch::channel(false);
+        let (_host, host_cancelled) = watch::channel(false);
+        let seen = Cell::new(0);
+        let actor = run(
+            Box::new(client),
+            owner.clone(),
+            queued,
+            cancelled,
+            host_cancelled,
+            |frame| {
+                let StreamPayload::Files { paths, .. } = frame.payload else {
+                    panic!("expected event");
+                };
+                if paths == ["end"] {
+                    return Err("owned-complete".into());
+                }
+                assert_eq!(paths, ["x".repeat(200)]);
+                seen.set(seen.get() + 1);
+                Ok(())
+            },
+        );
+        let peer = async {
+            peer.write_all(&event[CAPACITY..]).await.unwrap();
+            let mut peer = BufReader::new(peer);
+            let bytes = yuzora_host::wire::read_frame(&mut peer)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(bytes.len() > CAPACITY);
+            let request: StreamRequest = serde_json::from_slice(&bytes).unwrap();
+            request.validate(&owner).unwrap();
+            assert!(
+                matches!(request.operation, StreamCommand::Input { text: Some(text), .. } if text == "paste".repeat(256))
+            );
+            for payload in [
+                StreamPayload::Reply {
+                    id: request.id,
+                    outcome: Outcome::Ok { value: Value::Null },
+                },
+                StreamPayload::Files {
+                    workspace_root: "owned".into(),
+                    paths: vec!["end".into()],
+                    git_relevant: true,
+                },
+            ] {
+                let mut frame = serde_json::to_vec(&StreamFrame {
+                    version: PROTOCOL_VERSION,
+                    owner: owner.clone(),
+                    payload,
+                })
+                .unwrap();
+                frame.push(b'\n');
+                peer.get_mut().write_all(&frame).await.unwrap();
+            }
+        };
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(biased; actor, peer)
+        })
+        .await
+        .expect("both directions must progress without waiting for the10s write timeout");
+        assert_eq!(status.unwrap_err(), "owned-complete");
+        assert_eq!(response.await.unwrap().unwrap(), Value::Null);
+        assert_eq!(seen.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn ready_output_does_not_starve_a_queued_input() {
+        use std::cell::Cell;
+        use tokio::io::AsyncReadExt;
+
+        let owner = ConnectionOwner {
+            host_id: "owned-ready-burst".into(),
+            generation: 1,
+        };
+        let mut frame = serde_json::to_vec(&StreamFrame {
+            version: PROTOCOL_VERSION,
+            owner: owner.clone(),
+            payload: StreamPayload::Files {
+                workspace_root: "owned".into(),
+                paths: vec!["changed.ts".into()],
+                git_relevant: true,
+            },
+        })
+        .unwrap();
+        frame.push(b'\n');
+        const FRAMES: usize = 64;
+        let burst = frame.repeat(FRAMES);
+        let (client, mut peer) = tokio::io::duplex(burst.len() + 1024);
+        peer.write_all(&burst).await.unwrap();
+        let (requests, queued) = mpsc::channel(1);
+        let (reply, response) = oneshot::channel();
+        requests
+            .try_send(Queued {
+                operation: StreamCommand::Input {
+                    text: Some("\u{3}".into()),
+                    bytes_base64: None,
+                },
+                reply,
+            })
+            .unwrap();
+        let (_cancel, cancelled) = watch::channel(false);
+        let (_host, host_cancelled) = watch::channel(false);
+        let seen = Cell::new(0);
+        let result = run(
+            Box::new(client),
+            owner.clone(),
+            queued,
+            cancelled,
+            host_cancelled,
+            |_| {
+                seen.set(seen.get() + 1);
+                if seen.get() == FRAMES {
+                    Err("owned-burst-complete".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "owned-burst-complete");
+        let mut sent = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut sent))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            response.await.is_err(),
+            "fixture ends without acknowledging the command"
+        );
+        println!(
+            "STREAM_READY_BURST frames={} dispatchedBytes={}",
+            seen.get(),
+            sent.len()
+        );
+        assert!(
+            !sent.is_empty(),
+            "queued input was never dispatched while64frames were ready"
+        );
+        assert_eq!(sent.iter().filter(|byte| **byte == b'\n').count(), 1);
+        let request: StreamRequest = serde_json::from_slice(&sent).unwrap();
+        request.validate(&owner).unwrap();
+        assert_eq!(request.id, "1");
+        assert!(
+            matches!(request.operation, StreamCommand::Input { text: Some(text), bytes_base64: None } if text == "\u{3}")
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_input_and_resize_preserve_replies_during_ready_output() {
+        use std::cell::Cell;
+        use tokio::io::AsyncReadExt;
+
+        let owner = ConnectionOwner {
+            host_id: "owned-mixed-burst".into(),
+            generation: 2,
+        };
+        let mut bytes = Vec::new();
+        let mut append = |payload| {
+            bytes.extend(
+                serde_json::to_vec(&StreamFrame {
+                    version: PROTOCOL_VERSION,
+                    owner: owner.clone(),
+                    payload,
+                })
+                .unwrap(),
+            );
+            bytes.push(b'\n');
+        };
+        const EVENTS_PER_REPLY: usize = 16;
+        for id in 1..=STREAM_QUEUE_CAPACITY {
+            for _ in 0..EVENTS_PER_REPLY {
+                append(StreamPayload::Files {
+                    workspace_root: "owned".into(),
+                    paths: vec!["pulse".into()],
+                    git_relevant: true,
+                });
+            }
+            append(StreamPayload::Reply {
+                id: id.to_string(),
+                outcome: Outcome::Ok {
+                    value: serde_json::json!(id),
+                },
+            });
+        }
+        append(StreamPayload::Files {
+            workspace_root: "owned".into(),
+            paths: vec!["end".into()],
+            git_relevant: true,
+        });
+        let (client, mut peer) = tokio::io::duplex(bytes.len() + 1024);
+        peer.write_all(&bytes).await.unwrap();
+        let (requests, queued) = mpsc::channel(STREAM_QUEUE_CAPACITY);
+        let mut responses = Vec::new();
+        for index in 0..STREAM_QUEUE_CAPACITY {
+            let (reply, response) = oneshot::channel();
+            let operation = if index % 2 == 0 {
+                StreamCommand::Input {
+                    text: Some(format!("輸入-{index}-😀")),
+                    bytes_base64: None,
+                }
+            } else {
+                StreamCommand::Resize {
+                    cols: 80 + index as u16,
+                    rows: 24,
+                }
+            };
+            requests.try_send(Queued { operation, reply }).unwrap();
+            responses.push(response);
+        }
+        let (cancel, cancelled) = watch::channel(false);
+        let (host, host_cancelled) = watch::channel(false);
+        let events = Cell::new(0);
+        let result = run(
+            Box::new(client),
+            owner.clone(),
+            queued,
+            cancelled,
+            host_cancelled,
+            |frame| {
+                let StreamPayload::Files { paths, .. } = frame.payload else {
+                    panic!("expected event")
+                };
+                if paths == ["end"] {
+                    return Err("owned-burst-complete".into());
+                }
+                events.set(events.get() + 1);
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "owned-burst-complete");
+        for (index, response) in responses.into_iter().enumerate() {
+            assert_eq!(
+                response.await.unwrap().unwrap(),
+                serde_json::json!(index + 1)
+            );
+        }
+        let mut sent = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut sent))
+            .await
+            .unwrap()
+            .unwrap();
+        let commands: Vec<StreamRequest> = sent
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(commands.len(), STREAM_QUEUE_CAPACITY);
+        for (index, command) in commands.into_iter().enumerate() {
+            command.validate(&owner).unwrap();
+            assert_eq!(command.id, (index + 1).to_string());
+            match command.operation {
+                StreamCommand::Input {
+                    text: Some(text),
+                    bytes_base64: None,
+                } => {
+                    assert_eq!(index % 2, 0);
+                    assert_eq!(text, format!("輸入-{index}-😀"));
+                }
+                StreamCommand::Resize { cols, rows } => {
+                    assert_eq!(index % 2, 1);
+                    assert_eq!((cols, rows), (80 + index as u16, 24));
+                }
+                _ => panic!("unexpected command"),
+            }
+        }
+        assert_eq!(events.get(), EVENTS_PER_REPLY * STREAM_QUEUE_CAPACITY);
+        assert_eq!(cancel.receiver_count(), 0);
+        assert_eq!(host.receiver_count(), 0);
+        assert!(requests.is_closed());
+    }
+
+    #[tokio::test]
+    async fn abandoned_queued_inputs_are_not_replayed_before_live_input() {
+        use tokio::io::AsyncReadExt;
+
+        let owner = ConnectionOwner {
+            host_id: "owned-abandoned-input".into(),
+            generation: 3,
+        };
+        let mut frame = serde_json::to_vec(&StreamFrame {
+            version: PROTOCOL_VERSION,
+            owner: owner.clone(),
+            payload: StreamPayload::Files {
+                workspace_root: "owned".into(),
+                paths: vec!["end".into()],
+                git_relevant: true,
+            },
+        })
+        .unwrap();
+        frame.push(b'\n');
+        let (client, mut peer) = tokio::io::duplex(4096);
+        peer.write_all(&frame).await.unwrap();
+        let (requests, queued) = mpsc::channel(STREAM_QUEUE_CAPACITY);
+        for _ in 0..STREAM_QUEUE_CAPACITY - 1 {
+            let (reply, response) = oneshot::channel();
+            drop(response);
+            requests
+                .try_send(Queued {
+                    operation: StreamCommand::Input {
+                        text: Some("abandoned".into()),
+                        bytes_base64: None,
+                    },
+                    reply,
+                })
+                .unwrap();
+        }
+        let (reply, response) = oneshot::channel();
+        requests
+            .try_send(Queued {
+                operation: StreamCommand::Input {
+                    text: Some("live".into()),
+                    bytes_base64: None,
+                },
+                reply,
+            })
+            .unwrap();
+        let (_cancel, cancelled) = watch::channel(false);
+        let (_host, host_cancelled) = watch::channel(false);
+        let result = run(
+            Box::new(client),
+            owner.clone(),
+            queued,
+            cancelled,
+            host_cancelled,
+            |_| Err("owned-burst-complete".into()),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "owned-burst-complete");
+        assert!(response.await.is_err());
+        let mut sent = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut sent))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.iter().filter(|byte| **byte == b'\n').count(), 1);
+        let command: StreamRequest = serde_json::from_slice(&sent).unwrap();
+        command.validate(&owner).unwrap();
+        assert_eq!(command.id, "1");
+        assert!(
+            matches!(command.operation, StreamCommand::Input { text: Some(text), bytes_base64: None } if text == "live")
+        );
+    }
 
     #[cfg(unix)]
     #[allow(

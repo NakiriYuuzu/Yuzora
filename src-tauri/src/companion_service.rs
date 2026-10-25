@@ -1,0 +1,1106 @@
+//! Companion sidecar supervisor (plan 4.2). Yuzora owns the gateway process:
+//! it writes the init frame, relays admin events to the main window, persists
+//! device changes before they count, and stops the process on disable or exit.
+//! Never log or emit the init frame, the pairing URL or its QR code.
+
+use crate::{
+    companion_push::Push,
+    companion_store::{device_id, Devices},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    process::Stdio,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    sync::{mpsc, oneshot, watch},
+};
+
+/// The longest stderr record kept; what follows it in the same record is dropped.
+pub(crate) const STDERR_RECORD_BYTES: usize = 4096;
+
+/// A child's stderr one record at a time with bounded memory: a record without
+/// a newline cannot grow the buffer past `cap`, and bytes that are not UTF-8
+/// are replaced instead of ending the read (a stalled drain would block a
+/// chatty child on a full pipe). All state lives in the struct, so `next` is
+/// safe to use as a `select!` branch.
+pub(crate) struct RecordReader<R> {
+    reader: R,
+    record: Vec<u8>,
+    cap: usize,
+    /// The current record already hit `cap`; skip to its newline.
+    skipping: bool,
+}
+
+impl<R: AsyncBufRead + Unpin> RecordReader<R> {
+    pub(crate) fn new(reader: R, cap: usize) -> Self {
+        Self {
+            reader,
+            record: Vec::new(),
+            cap,
+            skipping: false,
+        }
+    }
+
+    /// `None` at EOF or on a read error.
+    pub(crate) async fn next(&mut self) -> Option<String> {
+        loop {
+            let Ok(chunk) = self.reader.fill_buf().await else {
+                return None;
+            };
+            if chunk.is_empty() {
+                // EOF: a last record without a newline still counts.
+                self.skipping = false;
+                return (!self.record.is_empty()).then(|| self.take());
+            }
+            let newline = chunk.iter().position(|b| *b == b'\n');
+            let body = &chunk[..newline.unwrap_or(chunk.len())];
+            let used = newline.map_or(chunk.len(), |at| at + 1);
+            if !self.skipping {
+                let kept = body.len().min(self.cap - self.record.len());
+                self.record.extend_from_slice(&body[..kept]);
+                self.skipping = kept < body.len();
+            }
+            self.reader.consume(used);
+            if newline.is_some() {
+                self.skipping = false;
+                return Some(self.take());
+            }
+        }
+    }
+
+    fn take(&mut self) -> String {
+        let line = String::from_utf8_lossy(&self.record).into_owned();
+        self.record.clear();
+        line.trim_end_matches('\r').to_string()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Timing {
+    command: Duration,
+    stop: Duration,
+    /// From spawn to `ready`; past it the gateway is stopped as failed.
+    ready: Duration,
+}
+const TIMING: Timing = Timing {
+    command: Duration::from_secs(5),
+    stop: Duration::from_secs(2),
+    ready: Duration::from_secs(15),
+};
+/// HERDR finds its sessions through HOME (and XDG on Linux); nothing else
+/// from the desktop environment, such as imported API keys, reaches the gateway.
+pub(crate) const ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "USERPROFILE",
+    "USERNAME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "TEMP",
+    "TMP",
+    "PATHEXT",
+    "ComSpec",
+];
+
+/// What only the gateway is given: a phone's read of a partial clone must not
+/// fetch objects from its remote. `GIT_NO_LAZY_FETCH` says so since git 2.44;
+/// older gits (Ubuntu 22.04 has 2.34) ignore it, but an empty
+/// `GIT_ALLOW_PROTOCOL` refuses every transport there too. The gateway runs
+/// git and HERDR clients only, so no terminal of the user inherits these.
+pub(crate) const GATEWAY_GIT_ENV: &[(&str, &str)] =
+    &[("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "")];
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Status {
+    #[default]
+    Disabled,
+    Starting,
+    Running {
+        port: u16,
+    },
+    Stopping,
+    Failed {
+        code: String,
+    },
+}
+
+pub struct Launch {
+    pub program: PathBuf,
+    /// The init frame without `devices`; they are read from disk at every start.
+    pub init: Value,
+}
+
+type Emit = Arc<dyn Fn(Value) + Send + Sync>;
+type Stopped = Arc<dyn Fn() + Send + Sync>;
+/// Resolves once nothing forwards to the gateway's port any more: the node's
+/// listener is closed, or the node is stopped when it would not confirm.
+pub type Closing = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+const SHUTDOWN_FRAME: &[u8] = b"{\"v\":1,\"type\":\"shutdown\"}\n";
+
+pub struct CompanionManager {
+    dir: PathBuf,
+    emit: Emit,
+    /// Runs after the gateway ends on its own (expiry, failure), not on a
+    /// requested stop, whose caller does its own cleanup.
+    stopped: Stopped,
+    /// Runs before a gateway lets go of its port or is killed for a failure:
+    /// until then the node forwards the tailnet to that port, and any local
+    /// process could bind it once it is free.
+    closing: OnceLock<Closing>,
+    push: Arc<Push>,
+    inner: Mutex<Inner>,
+    /// The running gateway's device list. Separate from `inner` so a slow
+    /// fsync never blocks status reads; always locked before `inner`.
+    store: Mutex<Option<Devices>>,
+    commands: tokio::sync::Mutex<()>,
+    timing: Timing,
+}
+
+#[derive(Default)]
+struct Inner {
+    status: Status,
+    generation: u64,
+    process: Option<Process>,
+    /// The loopback port the node proxies to, when init fixes one.
+    port: Option<u64>,
+    /// `policy.enableUntil` of the running gateway.
+    until: Option<String>,
+    ready: bool,
+    expired: bool,
+    last_error: Option<String>,
+    /// Set when this side ends the process; `on_exit` applies it as the outcome.
+    terminal: Option<Status>,
+    pending: Option<Pending>,
+    /// `peers()` callers waiting for their `peers.snapshot`, by request id.
+    /// Unlike `pending` these carry an id, so a late answer is never mistaken.
+    peer_waits: std::collections::HashMap<u64, oneshot::Sender<PeersSnapshot>>,
+    peer_seq: u64,
+}
+
+/// The phones connected to the running gateway, as it reported them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeersSnapshot {
+    pub peers: Vec<PeerRow>,
+    pub streams: Vec<StreamRow>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerRow {
+    pub peer_id: u64,
+    pub device_id: String,
+}
+/// An open control or full stream; `target` is the pane a control stream drives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamRow {
+    pub stream: String,
+    pub device_id: String,
+    pub peer_id: u64,
+    pub session: String,
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+struct Process {
+    input: mpsc::UnboundedSender<Vec<u8>>,
+    kill: Option<oneshot::Sender<()>>,
+    exited: watch::Receiver<bool>,
+}
+
+struct Pending {
+    want: Want,
+    reply: oneshot::Sender<Result<Value, String>>,
+}
+
+enum Want {
+    Pairing,
+    /// Approve, reject or cancel (`kind`) of this pairing.
+    Decision {
+        id: String,
+        kind: String,
+    },
+    /// Resolved by the event that reports this command's own change.
+    Device {
+        id: String,
+        done: &'static str,
+        frame: Value,
+    },
+}
+
+impl CompanionManager {
+    pub fn new(dir: PathBuf, emit: Emit, stopped: Stopped, push: Arc<Push>) -> Arc<Self> {
+        Arc::new(Self {
+            dir,
+            emit,
+            stopped,
+            closing: OnceLock::new(),
+            push,
+            inner: Mutex::default(),
+            store: Mutex::new(None),
+            commands: tokio::sync::Mutex::new(()),
+            timing: TIMING,
+        })
+    }
+
+    /// Set once, by whoever owns the node in front of the gateway.
+    pub fn on_closing(&self, closing: Closing) {
+        let _ = self.closing.set(closing);
+    }
+
+    pub fn status(&self) -> Status {
+        self.inner.lock().unwrap().status.clone()
+    }
+
+    pub fn push(&self) -> &Arc<Push> {
+        &self.push
+    }
+
+    /// When the running gateway stops itself, if one runs.
+    pub fn enable_until(&self) -> Option<String> {
+        self.inner.lock().unwrap().until.clone()
+    }
+
+    /// Nothing can write devices.json: stopped, and a halted process is gone.
+    pub fn idle(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.process.is_none() && matches!(inner.status, Status::Disabled | Status::Failed { .. })
+    }
+
+    /// Applies a device command to devices.json while no gateway can write
+    /// it. The store lock orders this after an event still being persisted.
+    pub fn edit_stopped(&self, frame: &Value) -> Result<(), String> {
+        let _store = self.store.lock().unwrap();
+        if !self.idle() {
+            return Err("companion-busy".into());
+        }
+        Devices::load(&self.dir)?.apply(frame)?;
+        if frame["type"] == "device.revoke" {
+            let revoked = frame["deviceId"].as_str().unwrap_or_default();
+            if self.push.forget(revoked) {
+                (self.emit)(self.push.event());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn devices(&self) -> Result<Vec<Value>, String> {
+        Ok(Devices::load(&self.dir)?
+            .all()
+            .iter()
+            .map(device_summary)
+            .collect())
+    }
+
+    pub fn start(self: &Arc<Self>, launch: Launch) -> Result<(), String> {
+        let expected = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.process.is_some()
+                || matches!(inner.status, Status::Starting | Status::Stopping)
+            {
+                return Err("companion-already-running".into());
+            }
+            inner.expired = false;
+            inner.status = Status::Starting;
+            inner.generation
+        };
+        (self.emit)(status_event(&Status::Starting));
+        self.spawn(launch, expected)
+    }
+
+    /// `expected` is the generation seen when this start was decided; a stop
+    /// that lands while the process is being created cancels it.
+    fn spawn(self: &Arc<Self>, launch: Launch, expected: u64) -> Result<(), String> {
+        let started = Devices::load(&self.dir).and_then(|devices| {
+            let mut frame = launch.init.clone();
+            frame["devices"] = json!(devices.all());
+            let mut bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            let mut command = tokio::process::Command::new(&launch.program);
+            command
+                .env_clear()
+                .envs(
+                    ENV_ALLOWLIST
+                        .iter()
+                        .filter_map(|key| std::env::var_os(key).map(|value| (*key, value))),
+                )
+                // Set here, not inherited: only the gateway runs git for a phone.
+                .envs(GATEWAY_GIT_ENV.iter().copied())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            #[cfg(windows)]
+            command.creation_flags(0x0800_0000);
+            let child = crate::process_kill::spawn_tokio(&mut command)
+                .map_err(|e| format!("companion-unavailable: {e}"))?;
+            Ok((devices, bytes, child))
+        });
+        let (devices, init, mut child) = match started {
+            Ok(started) => started,
+            Err(code) => {
+                let current = {
+                    let mut inner = self.inner.lock().unwrap();
+                    let current = inner.generation == expected && inner.status == Status::Starting;
+                    if current {
+                        inner.status = Status::Failed { code: code.clone() };
+                    }
+                    current
+                };
+                if current {
+                    (self.emit)(status_event(&Status::Failed { code: code.clone() }));
+                }
+                return Err(code);
+            }
+        };
+        let (input, mut frames) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (kill, killed) = oneshot::channel();
+        let (exited_tx, exited) = watch::channel(false);
+        let generation = {
+            let mut store = self.store.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
+            if inner.generation != expected || inner.status != Status::Starting {
+                // Stopped meanwhile: dropping the child kills it.
+                return Err("companion-cancelled".into());
+            }
+            *store = Some(devices);
+            inner.generation += 1;
+            inner.process = Some(Process {
+                input: input.clone(),
+                kill: Some(kill),
+                exited,
+            });
+            inner.port = launch.init["listeners"]["loopback"]["port"]
+                .as_u64()
+                .filter(|port| *port != 0);
+            inner.until = launch.init["policy"]["enableUntil"]
+                .as_str()
+                .map(str::to_owned);
+            inner.ready = false;
+            inner.last_error = None;
+            inner.terminal = None;
+            inner.generation
+        };
+        // A gateway that hangs before `ready` would leave the node forwarding to
+        // a port nothing listens on.
+        let watchdog = self.clone();
+        let deadline = self.timing.ready;
+        tokio::spawn(async move {
+            tokio::time::sleep(deadline).await;
+            let (status, kill) = {
+                let mut inner = watchdog.inner.lock().unwrap();
+                if inner.generation != generation || inner.ready || inner.terminal.is_some() {
+                    return;
+                }
+                let kill = halt(&mut inner, "companion-start-timeout");
+                (inner.status.clone(), kill)
+            };
+            (watchdog.emit)(status_event(&status));
+            watchdog.kill_after_closing(kill);
+        });
+        // The gateway gives up without init after five seconds.
+        let _ = input.send(init);
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        // Stdin stays open while the process lives: EOF is how the gateway
+        // learns that Yuzora crashed (on Unix it also watches its parent pid,
+        // for when another process kept a copy of this pipe).
+        tokio::spawn(async move {
+            while let Some(frame) = frames.recv().await {
+                if stdin.write_all(&frame).await.is_err() || stdin.flush().await.is_err() {
+                    break;
+                }
+            }
+        });
+        let reader = self.clone();
+        let (read_done, reader_finished) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            // The gateway stops itself after a one-second stdout stall, so this
+            // loop never waits on anything but the pipe.
+            let mut lines = BufReader::new(stdout);
+            let mut line = Vec::new();
+            let limit = yuzora_host::protocol::MAX_FRAME_BYTES as u64;
+            loop {
+                line.clear();
+                match (&mut lines)
+                    .take(limit + 1)
+                    .read_until(b'\n', &mut line)
+                    .await
+                {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                if line.len() as u64 > limit {
+                    break;
+                }
+                if let Ok(event) = serde_json::from_slice::<Value>(&line) {
+                    reader.on_event(generation, event);
+                }
+            }
+            let _ = read_done.send(());
+        });
+        tokio::spawn(async move {
+            let mut lines = RecordReader::new(BufReader::new(stderr), STDERR_RECORD_BYTES);
+            while let Some(line) = lines.next().await {
+                log_stderr(&line);
+            }
+        });
+        let waiter = self.clone();
+        tokio::spawn(async move {
+            let exited_alone = tokio::select! {
+                _ = child.wait() => true,
+                _ = killed => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    false
+                },
+            };
+            // Handle every event it wrote (ready, policy-expired, a startup
+            // error) before deciding what the exit means. A kill already decided.
+            if exited_alone {
+                let _ = tokio::time::timeout(Duration::from_secs(1), reader_finished).await;
+            }
+            let _ = exited_tx.send(true);
+            waiter.on_exit(generation);
+        });
+        Ok(())
+    }
+
+    fn on_event(self: &Arc<Self>, generation: u64, event: Value) {
+        // Held for the whole event so a newer process cannot swap the list
+        // between the generation check and the write.
+        let mut store = self.store.lock().unwrap();
+        {
+            let inner = self.inner.lock().unwrap();
+            // Once halted, nothing more this process says is acted on.
+            if inner.generation != generation
+                || matches!(inner.terminal, Some(Status::Failed { .. }))
+            {
+                return;
+            }
+        }
+        let kind = event["type"].as_str().unwrap_or_default().to_owned();
+        let mut outgoing = Vec::new();
+        // Taken from a gateway that halts; used once its events are out.
+        let mut kill = None;
+        let mut expiring = false;
+        match kind.as_str() {
+            "device.registered" | "device.updated" | "device.revoked" => {
+                let id = if kind == "device.revoked" {
+                    event["deviceId"].as_str().map(str::to_owned)
+                } else {
+                    device_id(&event["device"]).map(str::to_owned)
+                };
+                let saved = match (store.as_mut(), &id) {
+                    (Some(devices), Some(id)) if kind == "device.revoked" => devices.remove(id),
+                    (Some(devices), Some(_)) => devices.upsert(event["device"].clone()),
+                    _ => Err("companion-device-invalid".into()),
+                };
+                // Like the device list, off `inner`: it is a disk write.
+                let unsubscribed = kind == "device.revoked"
+                    && saved.is_ok()
+                    && id.as_deref().is_some_and(|id| self.push.forget(id));
+                let mut inner = self.inner.lock().unwrap();
+                match saved {
+                    // A device change that is not on disk would come back at
+                    // the next start. Stop the gateway rather than drift.
+                    Err(code) => {
+                        kill = halt(&mut inner, &code);
+                        outgoing.push(status_event(&inner.status));
+                    }
+                    Ok(()) => {
+                        let id = id.unwrap_or_default();
+                        resolve(
+                            &mut inner,
+                            |want| {
+                                matches!(want, Want::Device { id: wanted, done, frame } if *wanted == id && *done == kind
+                                && (kind != "device.updated" || reflects(frame, &event["device"])))
+                            },
+                            Ok(event.clone()),
+                        );
+                        outgoing.push(match kind.as_str() {
+                            "device.revoked" => event.clone(),
+                            _ => json!({"type": kind, "device": device_summary(&event["device"])}),
+                        });
+                        if unsubscribed {
+                            outgoing.push(self.push.event());
+                        }
+                    }
+                }
+            }
+            // The gateway already applied a tightening or neutral change but
+            // could not report it yet. Persist it now: a later stop would
+            // otherwise lose the retry and restore the old device at init.
+            "command.deferred" => {
+                let target = event["target"].as_str().unwrap_or_default().to_owned();
+                // A late deferral of a timed-out command must not complete
+                // the next command on the same device.
+                let frame = match &self.inner.lock().unwrap().pending {
+                    Some(Pending {
+                        want: Want::Device { id, frame, .. },
+                        ..
+                    }) if *id == target && frame["type"] == event["command"] => Some(frame.clone()),
+                    _ => None,
+                };
+                if let Some(frame) = frame {
+                    let saved = match store.as_mut() {
+                        Some(devices) => devices.apply(&frame),
+                        None => Err("companion-device-invalid".into()),
+                    };
+                    let mut inner = self.inner.lock().unwrap();
+                    match saved {
+                        Err(code) => {
+                            kill = halt(&mut inner, &code);
+                            outgoing.push(status_event(&inner.status));
+                        }
+                        Ok(()) => resolve(
+                            &mut inner,
+                            |want| matches!(want, Want::Device { id, frame, .. } if *id == target && frame["type"] == event["command"]),
+                            Ok(event.clone()),
+                        ),
+                    }
+                } else {
+                    // A reject or cancel the gateway applied but could not report yet.
+                    resolve(
+                        &mut self.inner.lock().unwrap(),
+                        |want| matches!(want, Want::Decision { id, kind } if *id == target && event["command"] == kind.as_str()),
+                        Ok(event.clone()),
+                    );
+                }
+                outgoing.push(event);
+            }
+            // A subscription is a credential: kept here, never forwarded.
+            "push.subscription" => {
+                let id = event["deviceId"].as_str().unwrap_or_default();
+                let known = store
+                    .as_ref()
+                    .is_some_and(|devices| devices.all().iter().any(|d| device_id(d) == Some(id)));
+                let changed = known
+                    && if event["subscription"].is_null() {
+                        // One browser's: the device's other endpoints stay.
+                        event["endpointId"]
+                            .as_str()
+                            .is_some_and(|endpoint| self.push.unsubscribe(id, endpoint))
+                    } else {
+                        self.push.subscription(id, &event["subscription"])
+                    };
+                if changed {
+                    self.push_devices();
+                    outgoing.push(self.push.event());
+                }
+                // A subscribe the phone waits for: tell the gateway whether it
+                // is on disk, after the set it can answer `push.status` from.
+                if let Some(request) = event["requestId"].as_u64() {
+                    self.notify(
+                        &json!({"v": 1, "type": "push.ack", "requestId": request, "stored": changed}),
+                    );
+                }
+            }
+            "push.request" => {
+                if let Some(job) = self.push.request(&event["deviceIds"], &event["payload"]) {
+                    let manager = self.clone();
+                    tokio::spawn(async move {
+                        // A subscription its push service dropped leaves the set.
+                        if manager.push.deliver(job).await {
+                            manager.push_devices();
+                            (manager.emit)(manager.push.event());
+                        }
+                    });
+                }
+            }
+            _ => {
+                let mut inner = self.inner.lock().unwrap();
+                match kind.as_str() {
+                    "ready" if inner.process.is_some() && inner.terminal.is_none() => {
+                        let port = event["ports"]["loopback"].as_u64().unwrap_or_default();
+                        // The node proxies to the configured port and nowhere else.
+                        if inner.port.is_some_and(|expected| expected != port) {
+                            kill = halt(&mut inner, "companion-port-mismatch");
+                        } else {
+                            inner.ready = true;
+                            inner.status = Status::Running { port: port as u16 };
+                        }
+                        outgoing.push(status_event(&inner.status));
+                    }
+                    "peers.snapshot" => {
+                        let wait = event["requestId"]
+                            .as_u64()
+                            .and_then(|id| inner.peer_waits.remove(&id));
+                        if let (Some(wait), Ok(snapshot)) =
+                            (wait, serde_json::from_value::<PeersSnapshot>(event))
+                        {
+                            let _ = wait.send(snapshot);
+                        }
+                    }
+                    "pairing.created" => {
+                        resolve(&mut inner, |want| matches!(want, Want::Pairing), Ok(event))
+                    }
+                    "pairing.state" => {
+                        let id = event["pairingId"].as_str().unwrap_or_default();
+                        resolve(
+                            &mut inner,
+                            |want| matches!(want, Want::Decision { id: wanted, kind } if wanted == id && decided(kind, &event)),
+                            Ok(event.clone()),
+                        );
+                        outgoing.push(event);
+                    }
+                    // Errors carry no request id; one arriving while a command
+                    // waits is reported to that command. State never depends on it.
+                    "error" => {
+                        let code = event["code"]
+                            .as_str()
+                            .unwrap_or("companion-error")
+                            .to_owned();
+                        if code == "policy-expired" {
+                            inner.expired = true;
+                            expiring = true;
+                        }
+                        if let Some(pending) = inner.pending.take() {
+                            let _ = pending.reply.send(Err(code.clone()));
+                        }
+                        inner.last_error = Some(code.clone());
+                        outgoing.push(json!({"type": "error", "code": code}));
+                    }
+                    _ => outgoing.push(event),
+                }
+            }
+        }
+        drop(store);
+        for event in outgoing {
+            (self.emit)(event);
+        }
+        self.kill_after_closing(kill);
+        if expiring {
+            self.shutdown_after_closing(generation);
+        }
+    }
+
+    /// A halted gateway is killed only once the node no longer forwards to its
+    /// port, so the failure is already published when the listener closes.
+    fn kill_after_closing(&self, kill: Option<oneshot::Sender<()>>) {
+        let Some(kill) = kill else { return };
+        let closing = self.closing.get().cloned();
+        tokio::spawn(async move {
+            if let Some(closing) = closing {
+                closing().await;
+            }
+            let _ = kill.send(());
+        });
+    }
+
+    /// A gateway whose policy expired keeps its port bound until it is told to
+    /// go. It is told once the node no longer forwards to it; the exit is then
+    /// handled as any expiry (not as a requested stop).
+    fn shutdown_after_closing(self: &Arc<Self>, generation: u64) {
+        let (manager, closing) = (self.clone(), self.closing.get().cloned());
+        tokio::spawn(async move {
+            if let Some(closing) = closing {
+                closing().await;
+            }
+            let inner = manager.inner.lock().unwrap();
+            if let Some(process) = inner
+                .process
+                .as_ref()
+                .filter(|_| inner.generation == generation)
+            {
+                let _ = process.input.send(SHUTDOWN_FRAME.to_vec());
+            }
+        });
+    }
+
+    /// No automatic restart: while a replacement would back off, the node would
+    /// forward the tailnet to a loopback port any local process could bind.
+    fn on_exit(self: &Arc<Self>, generation: u64) {
+        let (status, stopped) = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.generation != generation {
+                return;
+            }
+            // Output still buffered from this process, or from a child that
+            // outlived a kill, must not reach devices.json after this.
+            inner.generation += 1;
+            inner.process = None;
+            inner.until = None;
+            if let Some(pending) = inner.pending.take() {
+                let _ = pending.reply.send(Err("companion-exited".into()));
+            }
+            inner.peer_waits.clear();
+            let requested = inner.terminal == Some(Status::Disabled);
+            let status = if let Some(terminal) = inner.terminal.take() {
+                terminal
+            } else if inner.expired {
+                Status::Disabled
+            } else if !inner.ready {
+                Status::Failed {
+                    code: inner
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "companion-exited".into()),
+                }
+            } else {
+                Status::Failed {
+                    code: "companion-crashed".into(),
+                }
+            };
+            inner.status = status.clone();
+            (status, !requested)
+        };
+        (self.emit)(status_event(&status));
+        if stopped {
+            (self.stopped)();
+        }
+    }
+
+    /// Requested stop: shutdown frame, bounded wait, then kill.
+    pub async fn stop(&self) {
+        let exited = {
+            let mut inner = self.inner.lock().unwrap();
+            // Bumping the generation also cancels a scheduled restart.
+            let Some(process) = inner.process.as_mut() else {
+                inner.generation += 1;
+                inner.status = Status::Disabled;
+                drop(inner);
+                (self.emit)(status_event(&Status::Disabled));
+                return;
+            };
+            let _ = process.input.send(SHUTDOWN_FRAME.to_vec());
+            let kill = process.kill.take();
+            let exited = process.exited.clone();
+            inner.terminal = Some(Status::Disabled);
+            inner.status = Status::Stopping;
+            (exited, kill)
+        };
+        (self.emit)(status_event(&Status::Stopping));
+        let (mut exited, kill) = exited;
+        if tokio::time::timeout(self.timing.stop, exited.wait_for(|done| *done))
+            .await
+            .is_err()
+        {
+            if let Some(kill) = kill {
+                let _ = kill.send(());
+            }
+            let _ = tokio::time::timeout(self.timing.stop, exited.wait_for(|done| *done)).await;
+        }
+    }
+
+    /// Stops the gateway as failed from outside, when the node in front of it
+    /// is gone. Nothing is done unless a gateway runs.
+    pub fn fail(&self, code: &str) {
+        let (status, kill) = {
+            let mut inner = self.inner.lock().unwrap();
+            let live = matches!(inner.status, Status::Starting | Status::Running { .. });
+            if inner.process.is_none() || !live {
+                return;
+            }
+            let kill = halt(&mut inner, code);
+            (inner.status.clone(), kill)
+        };
+        (self.emit)(status_event(&status));
+        self.kill_after_closing(kill);
+    }
+
+    /// A failure that ended a gateway stays until something new starts. Called
+    /// as a sign-in or an enable begins, so neither sits beside the old one.
+    pub fn clear_failure(&self) {
+        let cleared = {
+            let mut inner = self.inner.lock().unwrap();
+            let stale = inner.process.is_none() && matches!(inner.status, Status::Failed { .. });
+            if stale {
+                inner.status = Status::Disabled;
+            }
+            stale
+        };
+        if cleared {
+            (self.emit)(status_event(&Status::Disabled));
+        }
+    }
+
+    /// Sends a command the gateway does not answer (`spaces.roots`,
+    /// `push.devices`). Only a gateway that runs gets it; the next start is
+    /// given the same state in its init frame.
+    pub fn notify(&self, frame: &Value) {
+        let inner = self.inner.lock().unwrap();
+        let Some(process) = inner
+            .process
+            .as_ref()
+            .filter(|_| matches!(inner.status, Status::Running { .. }))
+        else {
+            return;
+        };
+        if let Ok(mut bytes) = serde_json::to_vec(frame) {
+            bytes.push(b'\n');
+            let _ = process.input.send(bytes);
+        }
+    }
+
+    /// The gateway's `push` init field. A key made anew drops every
+    /// subscription: the UI and a gateway that runs are told, like for any
+    /// other change. Blocks on the OS credential store.
+    pub fn push_init(&self) -> Value {
+        let before = self.push.listing();
+        let init = self.push.init();
+        if self.push.listing() != before {
+            self.push_devices();
+            (self.emit)(self.push.event());
+        }
+        init
+    }
+
+    /// Tells the gateway which devices get notifications, and at which of
+    /// their endpoints (by id).
+    fn push_devices(&self) {
+        self.notify(&json!({"v": 1, "type": "push.devices", "devices": self.push.listing()}));
+    }
+
+    /// Admin commands carry no request id: run one at a time and match the
+    /// reply by its event type and device, or take the next error.
+    async fn request(&self, frame: Value, want: Want) -> Result<Value, String> {
+        let _turn = self.commands.lock().await;
+        let (reply, generation) = {
+            let mut inner = self.inner.lock().unwrap();
+            // Not while starting, stopping or halted, even with a live process.
+            let running = matches!(inner.status, Status::Running { .. });
+            let Some(process) = inner.process.as_ref().filter(|_| running) else {
+                return Err("companion-not-running".into());
+            };
+            let mut bytes = serde_json::to_vec(&frame).map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            process
+                .input
+                .send(bytes)
+                .map_err(|_| "companion-not-running".to_string())?;
+            let (reply, wait) = oneshot::channel();
+            inner.pending = Some(Pending { want, reply });
+            (wait, inner.generation)
+        };
+        match tokio::time::timeout(self.timing.command, reply).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("companion-exited".into()),
+            Err(_) => {
+                // Its late reply could be taken for the next command's, so
+                // this gateway is done.
+                let halted = {
+                    let mut inner = self.inner.lock().unwrap();
+                    inner.pending = None;
+                    (inner.generation == generation).then(|| {
+                        let kill = halt(&mut inner, "companion-timeout");
+                        (inner.status.clone(), kill)
+                    })
+                };
+                if let Some((status, kill)) = halted {
+                    (self.emit)(status_event(&status));
+                    self.kill_after_closing(kill);
+                }
+                Err("companion-timeout".into())
+            }
+        }
+    }
+
+    /// The phones connected now and their open streams, from the gateway
+    /// itself: `session.*` events are best effort and a reloaded UI never saw
+    /// the earlier ones. Does not queue with the other commands (its answer
+    /// carries its own id) and a missing answer fails only this call.
+    pub async fn peers(&self) -> Result<PeersSnapshot, String> {
+        let (reply, wait) = oneshot::channel();
+        let id = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.peer_seq += 1;
+            let id = inner.peer_seq;
+            let running = matches!(inner.status, Status::Running { .. });
+            let Some(process) = inner.process.as_ref().filter(|_| running) else {
+                return Err("companion-not-running".into());
+            };
+            let mut bytes =
+                serde_json::to_vec(&json!({"v": 1, "type": "peers.list", "requestId": id}))
+                    .map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            process
+                .input
+                .send(bytes)
+                .map_err(|_| "companion-not-running".to_string())?;
+            inner.peer_waits.insert(id, reply);
+            id
+        };
+        let answer = tokio::time::timeout(self.timing.command, wait).await;
+        self.inner.lock().unwrap().peer_waits.remove(&id);
+        match answer {
+            Ok(Ok(snapshot)) => Ok(snapshot),
+            Ok(Err(_)) => Err("companion-exited".into()),
+            Err(_) => Err("companion-timeout".into()),
+        }
+    }
+
+    /// Waits for the current start to reach `ready`, or to fail. The ready
+    /// deadline bounds it.
+    pub async fn until_ready(&self) -> Result<u16, String> {
+        let limit = tokio::time::Instant::now() + self.timing.ready + Duration::from_secs(5);
+        loop {
+            match self.status() {
+                Status::Running { port } => return Ok(port),
+                Status::Failed { code } => return Err(code),
+                Status::Disabled | Status::Stopping => return Err("companion-stopped".into()),
+                Status::Starting if tokio::time::Instant::now() >= limit => {
+                    return Err("companion-start-timeout".into())
+                }
+                Status::Starting => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    }
+
+    /// Returns the pairing id, URL and expiry. The URL carries the secret:
+    /// callers turn it into a QR code and drop it.
+    pub async fn pairing_create(&self, add_to_device: Option<String>) -> Result<Value, String> {
+        self.request(
+            json!({"v": 1, "type": "pairing.create", "path": "tailscale", "addToDevice": add_to_device}),
+            Want::Pairing,
+        )
+        .await
+    }
+
+    /// Approve, reject and cancel answer with `pairing.state`, a deferral or an
+    /// error. They queue like every admin command, so that error can never be
+    /// taken for another command's reply.
+    pub async fn pairing_decide(&self, kind: &str, pairing_id: &str) -> Result<Value, String> {
+        self.request(
+            json!({"v": 1, "type": kind, "pairingId": pairing_id}),
+            Want::Decision {
+                id: pairing_id.to_owned(),
+                kind: kind.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// `device.update`, `device.revoke` and `device.unlock`; resolves once the
+    /// change is persisted, or when the gateway defers its notification.
+    pub async fn device_command(&self, mut frame: Value) -> Result<Value, String> {
+        let id = frame["deviceId"]
+            .as_str()
+            .ok_or("companion-device-invalid")?
+            .to_owned();
+        let done = match frame["type"].as_str() {
+            Some("device.revoke") => "device.revoked",
+            Some("device.update" | "device.unlock") => "device.updated",
+            _ => return Err("companion-device-invalid".into()),
+        };
+        frame["v"] = json!(1);
+        let want = Want::Device {
+            id,
+            done,
+            frame: frame.clone(),
+        };
+        self.request(frame, want).await
+    }
+}
+
+fn resolve(inner: &mut Inner, matches: impl Fn(&Want) -> bool, result: Result<Value, String>) {
+    if inner.pending.as_ref().is_some_and(|p| matches(&p.want)) {
+        let _ = inner.pending.take().unwrap().reply.send(result);
+    }
+}
+
+/// Whether a `pairing.state` is this decision's outcome. An expiry noticed
+/// while handling the decision comes first and is followed by its error.
+fn decided(kind: &str, event: &Value) -> bool {
+    match kind {
+        "pairing.approve" => event["state"] == "approved",
+        "pairing.reject" => event["state"] == "rejected" && event["reason"] == "rejected",
+        "pairing.cancel" => event["state"] == "rejected" && event["reason"] == "cancelled",
+        _ => false,
+    }
+}
+
+/// Whether a `device.updated` snapshot carries this command's change. The
+/// gateway also reports background changes such as `lastSeen`, and it
+/// re-serializes timestamps, so `until` compares as an instant.
+fn reflects(frame: &Value, device: &Value) -> bool {
+    let until = |grants: &Value| {
+        grants["control"]["until"]
+            .as_str()
+            .map(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+    };
+    match frame["type"].as_str() {
+        Some("device.unlock") => device["locked"] == false,
+        Some("device.update") => {
+            let (label, grants) = (&frame["label"], &frame["grants"]);
+            (label.is_null() || device["label"] == *label)
+                && (grants.is_null()
+                    || (device["grants"]["full"] == grants["full"]
+                        && until(&device["grants"]) == until(grants)))
+        }
+        _ => false,
+    }
+}
+
+/// Marks the gateway failed and returns its kill handle: dropping it unsent
+/// kills the process, so the caller hands it to `kill_after_closing`.
+#[must_use]
+fn halt(inner: &mut Inner, code: &str) -> Option<oneshot::Sender<()>> {
+    if let Some(pending) = inner.pending.take() {
+        let _ = pending.reply.send(Err(code.into()));
+    }
+    let status = Status::Failed { code: code.into() };
+    inner.terminal = Some(status.clone());
+    inner.status = status;
+    inner.process.as_mut().and_then(|p| p.kill.take())
+}
+
+fn status_event(status: &Status) -> Value {
+    json!({"type": "status", "status": status})
+}
+
+/// What the UI may see of a device: no credential material.
+pub fn device_summary(device: &Value) -> Value {
+    json!({
+        "deviceId": device["deviceId"],
+        "label": device["label"],
+        "grants": device["grants"],
+        "locked": device["locked"],
+        "createdAt": device["createdAt"],
+        "lastSeen": device["lastSeen"],
+    })
+}
+
+fn log_stderr(line: &str) {
+    let message: String = line.chars().take(500).collect();
+    crate::logging::write_global(crate::logging::LogEvent {
+        level: "warn".to_string(),
+        kind: "debug".to_string(),
+        source: "companion".to_string(),
+        workspace_path: None,
+        event: "companion_stderr".to_string(),
+        message,
+        metadata: json!({}),
+    });
+}
+
+#[cfg(test)]
+mod tests;

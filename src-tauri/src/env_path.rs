@@ -8,6 +8,10 @@
 //! 掛掉的根因）。此模組在啟動最早期跑一次使用者的登入互動 shell，撈回真正的 PATH
 //! 併入本行程，並把 rc 檔 export、但 GUI 行程還缺的 env 以 fill-if-missing 補齊。
 
+#[cfg(all(test, unix))]
+#[path = "env_path_capture_tests.rs"]
+mod capture_tests;
+
 /// 從使用者的登入互動 shell 取回 PATH（併入本行程）與其餘 export 的 env
 /// （只補本行程還沒有的，不覆蓋既有值）。unix 專用；其他平台 no-op。
 ///
@@ -15,8 +19,8 @@
 /// 在單執行緒階段修改行程環境才安全。
 #[cfg(unix)]
 pub fn fix_gui_path() {
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::process::Command;
+    use std::time::Duration;
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
 
@@ -24,92 +28,37 @@ pub fn fix_gui_path() {
     // 設定，login 非互動 shell 讀不到——這正是要點。`-l` 讀 profile、`-c` 執行單行。
     // 輸出兩段用 marker 包夾，能從 rc 檔的雜訊輸出裡精準切出：PATH（`printf $PATH`）與
     // 整包 env（`awk ENVIRON` 以 `%c,0` 印成 `KEY=VALUE\0…`，NUL 分隔耐值裡的特殊字元）。
-    let mut child = match Command::new(&shell)
-        .args([
-            "-ilc",
-            "printf '__YZ_PATH_S__%s__YZ_PATH_E__' \"$PATH\"; \
+    let mut command = Command::new(&shell);
+    command.args([
+        "-ilc",
+        "printf '__YZ_PATH_S__%s__YZ_PATH_E__' \"$PATH\"; \
              awk 'BEGIN{printf \"__YZ_ENV_S__\"; \
              for (k in ENVIRON) printf \"%s=%s%c\", k, ENVIRON[k], 0; \
              printf \"__YZ_ENV_E__\"}'",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => {
-            eprintln!("[env_path] shell spawn 失敗，保留原 PATH: {e}");
+    ]);
+    // Drain while the shell runs: waiting for exit first can fill stdout, and
+    // waiting for EOF after exit can hang on a descendant retaining the pipe.
+    // One MiB includes the environment plus startup noise; oversized output
+    // falls back to the inherited environment rather than importing a prefix.
+    let captured = match yuzora_host::login_env::capture_output(
+        command,
+        Duration::from_secs(5),
+        1024 * 1024,
+    ) {
+        Ok(captured) => captured,
+        Err(error) => {
+            eprintln!("[env_path] login shell capture failed, PATH unchanged: {error}");
             log_path_fix(
                 "warn",
-                &format!("shell spawn failed, PATH unchanged: {e}"),
+                &format!("login shell capture failed, PATH unchanged: {error}"),
                 None,
             );
             return;
         }
     };
-
-    // Keep the bounded wait, but let a macOS child exit wake it immediately.
-    // Unsupported platforms or a failed registration retain the 50ms fallback.
-    #[cfg(target_os = "macos")]
-    let mut exit_notification = shell_exit_notification(child.id());
-
-    // Timeout 防呆：每次等待上限 50ms、總上限 5s，避免 rc 檔卡住時永久 block。
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let exited = loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => break true,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    break false;
-                }
-                #[cfg(target_os = "macos")]
-                wait_for_shell_exit(&mut exit_notification, Duration::from_millis(50));
-                #[cfg(not(target_os = "macos"))]
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                eprintln!("[env_path] shell try_wait 失敗，保留原 PATH: {e}");
-                log_path_fix(
-                    "warn",
-                    &format!("shell try_wait failed, PATH unchanged: {e}"),
-                    None,
-                );
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
-        }
-    };
-
-    if !exited {
-        eprintln!("[env_path] shell 逾時（5s），kill 並保留原 PATH");
-        log_path_fix("warn", "login shell timed out (5s), PATH unchanged", None);
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    }
-
-    // 讀成 bytes 再 lossy 轉字串：env 值理論上可能含非 UTF-8 位元組，若用
-    // read_to_string 會整個 Err 而連 PATH 修正也一起放棄。lossy 保留 NUL 與 marker
-    // （皆 ASCII），只把個別壞位元組換成替代字元，不影響純 ASCII 的 API key。
-    let mut raw = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        // 讀取同樣受 deadline 約束：shell 已結束，但 rc 檔啟動的背景程序可能
-        // 繼承 stdout、讓 EOF 永遠不來。
-        match read_probe_output(&mut pipe, deadline) {
-            Ok(output) => raw = output,
-            Err(e) => {
-                eprintln!("[env_path] 讀取 shell stdout 失敗，保留原 PATH: {e}");
-                log_path_fix(
-                    "warn",
-                    &format!("reading shell stdout failed, PATH unchanged: {e}"),
-                    None,
-                );
-                return;
-            }
-        }
-    }
+    // Keep the existing policy: usable markers from a nonzero shell exit are
+    // still imported; invalid UTF-8 bytes are replaced only by this GUI caller.
+    let raw = captured.stdout;
     let stdout = String::from_utf8_lossy(&raw);
 
     // ── PATH：marker 切值 + 保序去重併回 ──
@@ -172,115 +121,6 @@ pub fn fix_gui_path() {
             metadata: serde_json::json!({ "count": imported.len(), "keys": imported }),
         });
     }
-}
-
-/// 讀 probe 輸出直到結尾 marker、EOF 或 `deadline`。只靠 EOF 不夠：背景程序
-/// 持有 pipe 時 EOF 不會來，而結尾 marker 是 probe 印出的最後一段。
-#[cfg(unix)]
-fn read_probe_output(
-    pipe: &mut (impl std::io::Read + std::os::fd::AsRawFd),
-    deadline: std::time::Instant,
-) -> std::io::Result<Vec<u8>> {
-    use std::io::{Error, ErrorKind};
-    let fd = pipe.as_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(Error::last_os_error());
-    }
-    let end = ENV_END.as_bytes();
-    let mut raw = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        match pipe.read(&mut buf) {
-            Ok(0) => return Ok(raw),
-            Ok(n) => {
-                raw.extend_from_slice(&buf[..n]);
-                let tail = &raw[raw.len().saturating_sub(n + end.len())..];
-                if tail.windows(end.len()).any(|window| window == end) {
-                    return Ok(raw);
-                }
-            }
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    return Err(Error::new(
-                        ErrorKind::TimedOut,
-                        "shell output did not finish",
-                    ));
-                }
-                let mut poll_fd = libc::pollfd {
-                    fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let millis = remaining.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
-                // Wakes on data, EOF or error; the next read reports which.
-                unsafe { libc::poll(&mut poll_fd, 1, millis) };
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn shell_exit_notification(pid: u32) -> Option<std::os::fd::OwnedFd> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    // The queue is private to this wait and OwnedFd closes it on every return.
-    let fd = unsafe { libc::kqueue() };
-    if fd < 0 {
-        return None;
-    }
-    let queue = unsafe { OwnedFd::from_raw_fd(fd) };
-    let event = libc::kevent {
-        ident: pid as libc::uintptr_t,
-        filter: libc::EVFILT_PROC,
-        flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT,
-        fflags: libc::NOTE_EXIT,
-        data: 0,
-        udata: std::ptr::null_mut(),
-    };
-    // Register only the child owned by fix_gui_path. A child that has already
-    // exited can reject registration; the following try_wait still reaps it.
-    let registered = unsafe {
-        libc::kevent(
-            queue.as_raw_fd(),
-            &event,
-            1,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null(),
-        )
-    };
-    (registered == 0).then_some(queue)
-}
-
-#[cfg(target_os = "macos")]
-fn wait_for_shell_exit(queue: &mut Option<std::os::fd::OwnedFd>, duration: std::time::Duration) {
-    use std::os::fd::AsRawFd;
-    if let Some(notification) = queue.as_ref() {
-        let timeout = libc::timespec {
-            tv_sec: duration.as_secs() as libc::time_t,
-            tv_nsec: duration.subsec_nanos() as libc::c_long,
-        };
-        let mut event = std::mem::MaybeUninit::<libc::kevent>::uninit();
-        // The descriptor remains owned and the output buffer has one full slot.
-        let result = unsafe {
-            libc::kevent(
-                notification.as_raw_fd(),
-                std::ptr::null(),
-                0,
-                event.as_mut_ptr(),
-                1,
-                &timeout,
-            )
-        };
-        if result >= 0 {
-            return;
-        }
-        *queue = None;
-    }
-    std::thread::sleep(duration);
 }
 
 /// PATH 修正結果寫入 log 系統（source: env）——歷史上 exit 127（bunx not found）
@@ -459,91 +299,5 @@ mod tests {
         ] {
             assert!(should_import_env(k), "{k} 應可匯入");
         }
-    }
-
-    #[cfg(unix)]
-    fn spawn_probe(script: &str) -> std::process::Child {
-        std::process::Command::new("/bin/sh")
-            .args(["-c", script])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap()
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn probe_output_stops_at_end_marker_while_a_background_job_holds_the_pipe() {
-        // The shell exits at once; `sleep` inherits stdout and keeps it open.
-        let mut child = spawn_probe("sleep 5 & printf 'noise__YZ_ENV_S__A=1__YZ_ENV_E__'");
-        let mut pipe = child.stdout.take().unwrap();
-        let start = std::time::Instant::now();
-        let deadline = start + std::time::Duration::from_secs(3);
-        let raw = read_probe_output(&mut pipe, deadline).unwrap();
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
-        assert!(String::from_utf8_lossy(&raw).ends_with("__YZ_ENV_E__"));
-        child.wait().unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn probe_output_times_out_when_the_marker_never_arrives() {
-        let mut child = spawn_probe("sleep 5 & printf 'partial'");
-        let mut pipe = child.stdout.take().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
-        let error = read_probe_output(&mut pipe, deadline).unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        child.wait().unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn probe_output_returns_everything_at_eof() {
-        let mut child = spawn_probe("printf 'no marker at all'");
-        let mut pipe = child.stdout.take().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        assert_eq!(
-            read_probe_output(&mut pipe, deadline).unwrap(),
-            b"no marker at all"
-        );
-        child.wait().unwrap();
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn shell_exit_notification_observes_exit_and_keeps_child_reapable() {
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("0.05")
-            .spawn()
-            .unwrap();
-        let mut queue = shell_exit_notification(child.id());
-        assert!(queue.is_some());
-        let start = std::time::Instant::now();
-        wait_for_shell_exit(&mut queue, std::time::Duration::from_secs(1));
-        assert!(start.elapsed() < std::time::Duration::from_millis(900));
-        assert!(child.wait().unwrap().success());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn shell_exit_notification_preserves_timeout_then_observes_later_exit() {
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("0.15")
-            .spawn()
-            .unwrap();
-        let mut queue = shell_exit_notification(child.id());
-        assert!(queue.is_some());
-        wait_for_shell_exit(&mut queue, std::time::Duration::from_millis(10));
-        assert!(child.try_wait().unwrap().is_none());
-        wait_for_shell_exit(&mut queue, std::time::Duration::from_secs(1));
-        assert!(child.wait().unwrap().success());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn shell_exit_notification_failure_keeps_the_polling_fallback() {
-        assert!(shell_exit_notification(u32::MAX).is_none());
-        let start = std::time::Instant::now();
-        wait_for_shell_exit(&mut None, std::time::Duration::from_millis(10));
-        assert!(start.elapsed() >= std::time::Duration::from_millis(10));
     }
 }

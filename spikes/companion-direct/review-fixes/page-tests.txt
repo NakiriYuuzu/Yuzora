@@ -1,0 +1,13 @@
+bun test v1.3.14 (0d9b296a)
+
+spikes/companion-direct/tailscale/page.test.ts:
+(pass) capability page has same-origin scripts, strict CSP and explicit API checks [3.29ms]
+(pass) whoami preserves headers as JSON data, not executable HTML [0.93ms]
+(pass) manifest, SW and icons are same-origin; unknown paths/methods fail [1.39ms]
+(pass) registration decodes byte 32 and reports attachment/transports; get targets the chosen key [1.71ms]
+(pass) missing registration diagnostics are unknown, never falsely reported as BE=0 [0.12ms]
+
+ 5 pass
+ 0 fail
+ 28 expect() calls
+Ran 5 tests across 1 file. [19.00ms]

@@ -170,6 +170,35 @@ mod host {
             let path = files.canonical_root(workspace)?;
             self.execute_root(path, trust, workspace, requested_root, call)
         }
+        /// Runs `read` on the root `Detect`/`Bootstrap` opened for `workspace`,
+        /// after the checks every other command passes: it is the requested
+        /// root, still the same directory, and still trusted.
+        pub fn read_root<T>(
+            &mut self,
+            trust: &WorkspaceTrustState,
+            workspace: &str,
+            requested_root: Option<&str>,
+            read: impl FnOnce(&Path) -> Result<T, String>,
+        ) -> Result<T, String> {
+            let expected = self.roots.get(workspace).ok_or("git-repository-not-open")?;
+            // Git reports a Windows root as `C:/…` while the stored identity is
+            // canonical (`\\?\C:\…`), so compare canonical forms.
+            let same_root = requested_root.is_some_and(|requested| {
+                requested == expected.canonical_path
+                    || observe_identity(requested)
+                        .is_ok_and(|seen| seen.canonical_path == expected.canonical_path)
+            });
+            if !same_root {
+                return Err("git-repository-identity-mismatch".into());
+            }
+            let current =
+                observe_identity(&expected.canonical_path).map_err(|e| e.to_frontend())?;
+            if &current != expected {
+                return Err("git-repository-replaced".into());
+            }
+            trust.require_trusted_git(&expected.canonical_path)?;
+            read(Path::new(&expected.canonical_path))
+        }
         pub fn execute_root(
             &mut self,
             path: &str,
@@ -245,153 +274,141 @@ mod host {
                     serde_json::to_value(environment).map_err(|e| e.to_string())
                 };
             }
-            let expected = self.roots.get(workspace).ok_or("git-repository-not-open")?;
-            // Git reports a Windows root as `C:/…` while the stored identity is
-            // canonical (`\\?\C:\…`), so compare canonical forms.
-            let same_root = requested_root.is_some_and(|requested| {
-                requested == expected.canonical_path
-                    || observe_identity(requested)
-                        .is_ok_and(|seen| seen.canonical_path == expected.canonical_path)
-            });
-            if !same_root {
-                return Err("git-repository-identity-mismatch".into());
-            }
-            let current =
-                observe_identity(&expected.canonical_path).map_err(|e| e.to_frontend())?;
-            if &current != expected {
-                return Err("git-repository-replaced".into());
-            }
-            trust.require_trusted_git(&expected.canonical_path)?;
-            let root = Path::new(&expected.canonical_path);
-            fn value<T: Serialize>(result: Result<T, String>) -> Result<Value, String> {
-                serde_json::to_value(result?).map_err(|e| e.to_string())
-            }
-            match call {
-                GitCommand::Status { pathspec } => value(status_of(root, pathspec)),
-                GitCommand::Stage { paths } => value(stage(root, &paths)),
-                GitCommand::Unstage { paths } => value(unstage(root, &paths)),
-                GitCommand::Discard { paths, untracked } => {
-                    value(discard(root, &paths, &untracked))
+            self.read_root(trust, workspace, requested_root, |root| {
+                fn value<T: Serialize>(result: Result<T, String>) -> Result<Value, String> {
+                    serde_json::to_value(result?).map_err(|e| e.to_string())
                 }
-                GitCommand::Rollback {
-                    targets,
-                    delete_untracked_or_added,
-                } => value(rollback_paths(root, &targets, delete_untracked_or_added)),
-                GitCommand::Commit {
-                    message,
-                    amend_head,
-                } => value(commit_with_options(root, &message, amend_head.as_deref())),
-                GitCommand::Branches => value(branches(root)),
-                GitCommand::CreateBranch {
-                    name,
-                    start_point,
-                    smart,
-                } => value(switch_keeping_changes(
-                    root,
-                    smart.unwrap_or(false),
-                    start_point.as_deref(),
-                    || create_branch(root, &name, start_point.as_deref()),
-                )),
-                GitCommand::CheckoutDetached { rev, smart } => value(switch_keeping_changes(
-                    root,
-                    smart.unwrap_or(false),
-                    Some(&rev),
-                    || checkout_detached(root, &rev),
-                )),
-                GitCommand::Checkout { name, smart } => {
-                    let branch = format!("refs/heads/{name}");
-                    value(switch_keeping_changes(
+                match call {
+                    GitCommand::Status { pathspec } => value(status_of(root, pathspec)),
+                    GitCommand::Stage { paths } => value(stage(root, &paths)),
+                    GitCommand::Unstage { paths } => value(unstage(root, &paths)),
+                    GitCommand::Discard { paths, untracked } => {
+                        value(discard(root, &paths, &untracked))
+                    }
+                    GitCommand::Rollback {
+                        targets,
+                        delete_untracked_or_added,
+                    } => value(rollback_paths(root, &targets, delete_untracked_or_added)),
+                    GitCommand::Commit {
+                        message,
+                        amend_head,
+                    } => value(commit_with_options(root, &message, amend_head.as_deref())),
+                    GitCommand::Branches => value(branches(root)),
+                    GitCommand::CreateBranch {
+                        name,
+                        start_point,
+                        smart,
+                    } => value(switch_keeping_changes(
                         root,
                         smart.unwrap_or(false),
-                        Some(&branch),
-                        || checkout(root, &name),
-                    ))
-                }
-                GitCommand::CherryPick { hash } => value(cherry_pick(root, &hash)),
-                GitCommand::Fetch => {
-                    value(run_ok(root, &["fetch"], REMOTE_TIMEOUT, &[]).map(|_| ()))
-                }
-                GitCommand::Pull { mode } => {
-                    value(pull_args_with_mode(root, mode.as_deref()).and_then(|args| {
-                        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                        run_ok(root, &args, REMOTE_TIMEOUT, &editor_true()).map(|_| ())
-                    }))
-                }
-                GitCommand::Push {
-                    force_with_lease_oid,
-                    tags,
-                } => value(
-                    push_args_with_options(
+                        start_point.as_deref(),
+                        || create_branch(root, &name, start_point.as_deref()),
+                    )),
+                    GitCommand::CheckoutDetached { rev, smart } => value(switch_keeping_changes(
                         root,
-                        force_with_lease_oid.as_deref(),
-                        tags.unwrap_or(false),
-                    )
-                    .and_then(|args| {
-                        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                        run_ok(root, &args, REMOTE_TIMEOUT, &[]).map(|_| ())
-                    }),
-                ),
-                GitCommand::MergeBranch { name } => value(merge_branch(root, &name)),
-                GitCommand::RebaseOnto { upstream } => value(rebase_onto(root, &upstream)),
-                GitCommand::RenameBranch { old_name, new_name } => {
-                    value(rename_branch(root, &old_name, &new_name))
+                        smart.unwrap_or(false),
+                        Some(&rev),
+                        || checkout_detached(root, &rev),
+                    )),
+                    GitCommand::Checkout { name, smart } => {
+                        let branch = format!("refs/heads/{name}");
+                        value(switch_keeping_changes(
+                            root,
+                            smart.unwrap_or(false),
+                            Some(&branch),
+                            || checkout(root, &name),
+                        ))
+                    }
+                    GitCommand::CherryPick { hash } => value(cherry_pick(root, &hash)),
+                    GitCommand::Fetch => {
+                        value(run_ok(root, &["fetch"], REMOTE_TIMEOUT, &[]).map(|_| ()))
+                    }
+                    GitCommand::Pull { mode } => {
+                        value(pull_args_with_mode(root, mode.as_deref()).and_then(|args| {
+                            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                            run_ok(root, &args, REMOTE_TIMEOUT, &editor_true()).map(|_| ())
+                        }))
+                    }
+                    GitCommand::Push {
+                        force_with_lease_oid,
+                        tags,
+                    } => value(
+                        push_args_with_options(
+                            root,
+                            force_with_lease_oid.as_deref(),
+                            tags.unwrap_or(false),
+                        )
+                        .and_then(|args| {
+                            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                            run_ok(root, &args, REMOTE_TIMEOUT, &[]).map(|_| ())
+                        }),
+                    ),
+                    GitCommand::MergeBranch { name } => value(merge_branch(root, &name)),
+                    GitCommand::RebaseOnto { upstream } => value(rebase_onto(root, &upstream)),
+                    GitCommand::RenameBranch { old_name, new_name } => {
+                        value(rename_branch(root, &old_name, &new_name))
+                    }
+                    GitCommand::DeleteBranch { name, force } => {
+                        value(delete_branch(root, &name, force))
+                    }
+                    GitCommand::RevertCommit { hash } => value(revert_commit(root, &hash)),
+                    GitCommand::ResetBranch { hash, mode } => {
+                        value(reset_branch(root, &hash, &mode))
+                    }
+                    GitCommand::StashList => value(stash_list(root)),
+                    GitCommand::StashPush {
+                        message,
+                        include_untracked,
+                        keep_index,
+                    } => value(stash_push(
+                        root,
+                        message.as_deref(),
+                        include_untracked,
+                        keep_index,
+                    )),
+                    GitCommand::StashApply { index, oid, pop } => {
+                        value(stash_apply(root, index, &oid, pop))
+                    }
+                    GitCommand::StashDrop { index, oid } => value(stash_drop(root, index, &oid)),
+                    GitCommand::RemoteProbe => value(remote_probe(root, &[])),
+                    GitCommand::Diff {
+                        path,
+                        staged,
+                        orig_path,
+                    } => value(diff_content(root, &path, staged, orig_path.as_deref())),
+                    GitCommand::ConflictAbort { op } => value(conflict_abort(root, &op)),
+                    GitCommand::ConflictContinue { op } => value(conflict_continue(root, &op)),
+                    GitCommand::ConflictSkip { op } => value(conflict_skip(root, &op)),
+                    GitCommand::ConflictSides { path } => value(conflict_sides(root, &path)),
+                    GitCommand::ConflictResolve { paths, side } => {
+                        value(conflict_resolve(root, &paths, &side))
+                    }
+                    GitCommand::Log {
+                        cursor,
+                        limit,
+                        query,
+                        author,
+                        since,
+                        until,
+                    } => value(git_log::log_page(
+                        root,
+                        cursor.as_deref(),
+                        limit,
+                        query.as_deref(),
+                        author.as_deref(),
+                        since.as_deref(),
+                        until.as_deref(),
+                    )),
+                    GitCommand::CommitDetail { hash } => value(git_log::commit_detail(root, &hash)),
+                    GitCommand::LogAuthors => value(git_log::log_authors(root)),
+                    GitCommand::FileAtRev { rev, path } => {
+                        value(git_log::file_at_rev(root, &rev, &path))
+                    }
+                    GitCommand::Detect | GitCommand::Bootstrap | GitCommand::Discover => {
+                        unreachable!()
+                    }
                 }
-                GitCommand::DeleteBranch { name, force } => {
-                    value(delete_branch(root, &name, force))
-                }
-                GitCommand::RevertCommit { hash } => value(revert_commit(root, &hash)),
-                GitCommand::ResetBranch { hash, mode } => value(reset_branch(root, &hash, &mode)),
-                GitCommand::StashList => value(stash_list(root)),
-                GitCommand::StashPush {
-                    message,
-                    include_untracked,
-                    keep_index,
-                } => value(stash_push(
-                    root,
-                    message.as_deref(),
-                    include_untracked,
-                    keep_index,
-                )),
-                GitCommand::StashApply { index, oid, pop } => {
-                    value(stash_apply(root, index, &oid, pop))
-                }
-                GitCommand::StashDrop { index, oid } => value(stash_drop(root, index, &oid)),
-                GitCommand::RemoteProbe => value(remote_probe(root, &[])),
-                GitCommand::Diff {
-                    path,
-                    staged,
-                    orig_path,
-                } => value(diff_content(root, &path, staged, orig_path.as_deref())),
-                GitCommand::ConflictAbort { op } => value(conflict_abort(root, &op)),
-                GitCommand::ConflictContinue { op } => value(conflict_continue(root, &op)),
-                GitCommand::ConflictSkip { op } => value(conflict_skip(root, &op)),
-                GitCommand::ConflictSides { path } => value(conflict_sides(root, &path)),
-                GitCommand::ConflictResolve { paths, side } => {
-                    value(conflict_resolve(root, &paths, &side))
-                }
-                GitCommand::Log {
-                    cursor,
-                    limit,
-                    query,
-                    author,
-                    since,
-                    until,
-                } => value(git_log::log_page(
-                    root,
-                    cursor.as_deref(),
-                    limit,
-                    query.as_deref(),
-                    author.as_deref(),
-                    since.as_deref(),
-                    until.as_deref(),
-                )),
-                GitCommand::CommitDetail { hash } => value(git_log::commit_detail(root, &hash)),
-                GitCommand::LogAuthors => value(git_log::log_authors(root)),
-                GitCommand::FileAtRev { rev, path } => {
-                    value(git_log::file_at_rev(root, &rev, &path))
-                }
-                GitCommand::Detect | GitCommand::Bootstrap | GitCommand::Discover => unreachable!(),
-            }
+            })
         }
     }
 }
@@ -525,5 +542,103 @@ mod tests {
         assert!(git
             .execute_root(path, &trust, "ws", None, GitCommand::Branches)
             .is_err());
+    }
+
+    // Opens a granted repository named "ws"; returns its canonical root.
+    fn open_repo(
+        tmp: &std::path::Path,
+        trust: &WorkspaceTrustState,
+        git: &mut HostGit,
+        name: &str,
+    ) -> String {
+        let repo = tmp.join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        test_repo::init(&repo);
+        test_repo::write_and_commit(&repo, "a.txt", "1", "c1");
+        let path = repo.canonicalize().unwrap().to_str().unwrap().to_string();
+        trust.0.grant_for_tests(&path);
+        git.execute_root(&path, trust, "ws", None, GitCommand::Detect)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn read_root_runs_the_read_on_the_opened_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let mut git = HostGit::default();
+        let root = open_repo(tmp.path(), &trust, &mut git, "repo");
+        let seen = git
+            .read_root(&trust, "ws", Some(&root), |path| {
+                Ok(path.to_str().unwrap().to_string())
+            })
+            .unwrap();
+        assert_eq!(seen, root);
+        // The read's own error is passed through untouched.
+        assert_eq!(
+            git.read_root(&trust, "ws", Some(&root), |_| Err::<(), _>("boom".into()))
+                .unwrap_err(),
+            "boom"
+        );
+    }
+
+    #[test]
+    fn read_root_rejects_unopened_other_and_missing_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let mut git = HostGit::default();
+        let read = |_: &std::path::Path| -> Result<(), String> { panic!("read must not run") };
+        assert_eq!(
+            git.read_root(&trust, "ws", Some("/nowhere"), read)
+                .unwrap_err(),
+            "git-repository-not-open"
+        );
+        let root = open_repo(tmp.path(), &trust, &mut git, "repo");
+        let other = open_repo(tmp.path(), &trust, &mut HostGit::default(), "other");
+        for requested in [Some(other.as_str()), None] {
+            assert_eq!(
+                git.read_root(&trust, "ws", requested, read).unwrap_err(),
+                "git-repository-identity-mismatch"
+            );
+        }
+        // Another workspace key has no open root either.
+        assert_eq!(
+            git.read_root(&trust, "elsewhere", Some(&root), read)
+                .unwrap_err(),
+            "git-repository-not-open"
+        );
+    }
+
+    #[test]
+    fn read_root_rejects_a_trust_revoked_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let mut git = HostGit::default();
+        let root = open_repo(tmp.path(), &trust, &mut git, "repo");
+        trust.0.revoke(&root).unwrap();
+        let error = git
+            .read_root(&trust, "ws", Some(&root), |_| -> Result<(), String> {
+                panic!("read must not run")
+            })
+            .unwrap_err();
+        assert!(error.contains("untrustedWorkspace"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_root_rejects_a_replaced_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trust = WorkspaceTrustState::at(tmp.path().join("trust.json"));
+        let mut git = HostGit::default();
+        let root = open_repo(tmp.path(), &trust, &mut git, "repo");
+        std::fs::rename(&root, tmp.path().join("moved")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        assert_eq!(
+            git.read_root(&trust, "ws", Some(&root), |_| -> Result<(), String> {
+                panic!("read must not run")
+            })
+            .unwrap_err(),
+            "git-repository-replaced"
+        );
     }
 }

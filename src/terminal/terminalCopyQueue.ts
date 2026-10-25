@@ -15,6 +15,7 @@ interface QueueDependencies {
  * writes cannot be aborted, so a newer write must wait for the previous one.
  */
 export function createTerminalCopyQueue(dependencies: QueueDependencies) {
+  let nextRevision = 0
   let revision = 0
   let pending: (CopyJob & { revision: number }) | undefined
   let active: { job: CopyJob; controller: AbortController } | undefined
@@ -44,9 +45,13 @@ export function createTerminalCopyQueue(dependencies: QueueDependencies) {
     }
   }
   return {
-    copy(job: CopyJob) {
-      if (!job.text || !/\S/.test(job.text)) return
-      pending = { ...job, revision: ++revision }
+    // A snapshot may arrive asynchronously. Reserve its request order before
+    // reading, but only valid text supersedes an earlier copy.
+    reserve() { return ++nextRevision },
+    copy(job: CopyJob, requestedRevision = ++nextRevision) {
+      if (!job.text || !/\S/.test(job.text) || requestedRevision < revision) return
+      revision = requestedRevision
+      pending = { ...job, revision }
       void drain()
     },
     cancel(owner: object) {
