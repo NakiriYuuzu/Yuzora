@@ -69,8 +69,10 @@ export function effectiveBinding(id: AppCommandId, overrides: Overrides): string
 const TAB_COMMAND_ORDER = ["nextTab", "previousTab", "tab1", "tab2", "tab3", "tab4", "tab5", "tab6", "tab7", "tab8", "tab9"] as const
 export function tabShortcutBindings(): PreviewShortcutBinding[] {
     const mac = isMacPlatform()
-    return TAB_COMMAND_ORDER.map(id => {
-        const parts = (useKeyboardSettingsStore.getState().overrides[id] ?? defaultBindingFor(id, mac)).split("+")
+    const { overrides } = useKeyboardSettingsStore.getState()
+    // A shadowed default is unbound, so the native preview must not intercept it either.
+    return TAB_COMMAND_ORDER.filter(id => !isShadowedDefault(id, overrides, mac)).map(id => {
+        const parts = (overrides[id] ?? defaultBindingFor(id, mac)).split("+")
         return { id, key: parts.pop()!.toUpperCase(), ctrl: parts.includes("Ctrl") || (parts.includes("Mod") && !mac), meta: parts.includes("Mod") && mac, alt: parts.includes("Alt"), shift: parts.includes("Shift") }
     })
 }

@@ -108,6 +108,25 @@ describe("gitLogStore", () => {
         expect(useGitLogStore.getState().commits).toHaveLength(600)
     })
 
+    it("refreshSilently lets only the latest of overlapping refreshes publish", async () => {
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        const gitLogPage = ipc.gitLogPage as ReturnType<typeof vi.fn>
+        gitLogPage.mockResolvedValueOnce(page([mkCommit("a")], false))
+        await useGitLogStore.getState().loadFirstPage("/w")
+        const resolvers: ((p: LogPage) => void)[] = []
+        const pending = () => new Promise<LogPage>((r) => { resolvers.push(r) })
+        gitLogPage.mockImplementationOnce(pending).mockImplementationOnce(pending)
+        const older = useGitLogStore.getState().refreshSilently("/w")
+        const newer = useGitLogStore.getState().refreshSilently("/w")
+        const fresh = { ...mkCommit("a"), refs: [{ name: "origin/main", kind: "remote" as const }] }
+        resolvers[1](page([fresh], false))
+        await newer
+        resolvers[0](page([mkCommit("a")], false))
+        await older
+        expect(useGitLogStore.getState().commits[0].refs).toEqual([{ name: "origin/main", kind: "remote" }])
+    })
+
     it("refreshSilently drops the selection when that commit is gone", async () => {
         const { useGitLogStore } = await import("./gitLogStore")
         const ipc = await import("../lib/ipc")

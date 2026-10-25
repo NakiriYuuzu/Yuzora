@@ -74,6 +74,8 @@ const initialGitLogState = {
 // survives re-renders and store resets within a session.
 let generation = 0
 let activeRepositoryRoot: string | null = null
+// Silent refreshes leave `generation` alone; only the latest one may publish.
+let silentRefreshSeq = 0
 // Re-selecting the same commit still starts a new detail request owner.
 let detailGeneration = 0
 // Authors are repository-scoped, not filter/HEAD-scoped. Resolved results stay
@@ -199,6 +201,7 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
         const loadedCount = commits.length
         // One request cannot cover a longer window; refreshing would shrink it.
         if (loadedCount > LOG_REQUEST_LIMIT) return
+        const seq = ++silentRefreshSeq
         try {
             const page = await gitLogPage(
                 repositoryRoot,
@@ -210,7 +213,8 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
                 filters.until
             )
             // A reload, reset, or pagination that landed meanwhile owns the list now.
-            if (!responseMatches(repositoryRoot, gen) || get().loadingMore || get().commits.length !== loadedCount) return
+            if (!responseMatches(repositoryRoot, gen) || seq !== silentRefreshSeq
+                || get().loadingMore || get().commits.length !== loadedCount) return
             set((s) => {
                 const gone = s.selectedHash !== null && !page.commits.some((c) => c.hash === s.selectedHash)
                 return {

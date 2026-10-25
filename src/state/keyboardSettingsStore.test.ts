@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { bindingError, defaultBindingFor, dispatchAppShortcut, isShadowedDefault, isTerminalSafeCommand, normalizeBinding, loadKeyboardOverrides, KEYBOARD_STORAGE_KEY, useKeyboardSettingsStore } from "./keyboardSettingsStore"
+import { bindingError, defaultBindingFor, dispatchAppShortcut, isShadowedDefault, isTerminalSafeCommand, normalizeBinding, loadKeyboardOverrides, tabShortcutBindings, KEYBOARD_STORAGE_KEY, useKeyboardSettingsStore } from "./keyboardSettingsStore"
 
 beforeEach(() => {
     const values = new Map<string, string>()
@@ -140,6 +140,14 @@ it("keeps a persisted binding that a newly introduced default collides with; the
     expect(useKeyboardSettingsStore.getState().setBinding("toggleBrowser", "Mod+Shift+J")).toBe(true)
     expect(isShadowedDefault("workspaceSearch", useKeyboardSettingsStore.getState().overrides)).toBe(false)
 })
+it("does not hand a shadowed tab shortcut to the native preview", () => {
+    localStorage.setItem(KEYBOARD_STORAGE_KEY, JSON.stringify({ toggleBrowser: "Mod+1" }))
+    useKeyboardSettingsStore.setState({ overrides: loadKeyboardOverrides() })
+    const ids = tabShortcutBindings().map(binding => binding.id)
+    expect(ids).not.toContain("tab1")
+    expect(ids).toContain("tab2")
+})
+
 it("matches macOS Option-digit mode shortcuts even when event.key is a symbol", () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     const run = vi.fn()
