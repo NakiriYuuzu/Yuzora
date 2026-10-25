@@ -522,7 +522,7 @@ function LocalPane({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <PaneHeader title={t("sshPanel.sftpLocalTitle")} path={workspacePathForDisplay(cwd ?? "")}>
         <IconButton
-          label={t("sshPanel.sftpUp")}
+          label={t("sshPanel.sftpUpLocal")}
           onClick={() => parent && setCwd(parent)}
           disabled={!cwd || !parent || atRoot}
           icon={ArrowUp}
@@ -567,7 +567,7 @@ function LocalPane({
             >
               <button
                 type="button"
-                onClick={() => node.isDir && setCwd(node.path)}
+                onClick={(event) => event.detail <= 1 && node.isDir && setCwd(node.path)}
                 title={kind === "symlink" ? t("sshPanel.sftpSymlinkEntry", { name: node.name }) : node.name}
                 className="flex min-w-0 flex-1 items-center gap-[6px] text-left"
               >
@@ -724,7 +724,7 @@ function RemotePane({
     >
       <PaneHeader title={t("sshPanel.sftpRemoteTitle")} path={remote?.cwd ?? ""}>
         <IconButton
-          label={t("sshPanel.sftpUp")}
+          label={t("sshPanel.sftpUpRemote")}
           onClick={() => void navigateUp(hostId)}
           disabled={!remote || remote.cwd === "/" || remote.cwd === ""}
           icon={ArrowUp}
@@ -791,7 +791,7 @@ function RemotePane({
             >
               <button
                 type="button"
-                onClick={() => entry.isDir && navigateInto(entry)}
+                onClick={(event) => event.detail <= 1 && entry.isDir && navigateInto(entry)}
                 title={
                   entry.isSymlink
                     ? t("sshPanel.sftpSymlinkEntry", { name: entry.name })
