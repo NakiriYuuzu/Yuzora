@@ -510,6 +510,27 @@ it("opens the address for an already paired phone while running", async () => {
   expect(calls("companion_phone_link")).toHaveLength(1)
 })
 
+it("keeps the phone link closed while another action is in progress", async () => {
+  replies.companion_status = fx.overviewRunning
+  replies.companion_disable = () => new Promise(() => undefined)
+  render(<CompanionSettingsSection />)
+  const link = await screen.findByRole("button", { name: "Open on phone" })
+  expect(link).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Disable" }))
+  await waitFor(() => expect(link).toBeDisabled())
+})
+
+it("closes the phone link dialog once the Companion stops running", async () => {
+  replies.companion_status = fx.overviewRunning
+  replies.companion_phone_link = fx.phoneLink
+  Object.assign(URL, { createObjectURL: () => "blob:tauri://localhost/link", revokeObjectURL: () => undefined })
+  render(<CompanionSettingsSection />)
+  fireEvent.click(await screen.findByRole("button", { name: "Open on phone" }))
+  await screen.findByTestId("companion-phone-link-dialog")
+  act(() => useCompanionStore.getState().applyEvent({ type: "status", status: fx.statusStopping }))
+  await waitFor(() => expect(screen.queryByTestId("companion-phone-link-dialog")).not.toBeInTheDocument())
+})
+
 it("maps an enable failure with a detail to its guidance", async () => {
   replies.companion_status = signedIn()
   replies.companion_enable = { reject: "companion-net-start-failed: No such file or directory" }
@@ -623,4 +644,17 @@ it("revokes a device only after confirming, and unlocks a locked one", async () 
   fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }))
   await waitFor(() => expect(calls("companion_device_revoke")).toEqual([{ deviceId: fx.device.deviceId }]))
   expect(await screen.findByText("No paired phones.")).toBeInTheDocument()
+})
+
+it("keeps the phone link and pairing off until the node serves the Companion, even on a freshly opened card", async () => {
+  // The gateway is up (status running) but the node has not started serving it yet.
+  replies.companion_status = { ...fx.overviewRunning, net: { ...fx.netRunning, serving: false } }
+  render(<CompanionSettingsSection />)
+  const link = await screen.findByRole("button", { name: "Open on phone" })
+  expect(link).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Pair a phone" })).toBeDisabled()
+  replies.companion_status = fx.overviewRunning
+  act(() => useCompanionStore.getState().applyEvent({ type: "net", net: { ...fx.netRunning, serving: true } }))
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open on phone" })).toBeEnabled())
+  expect(screen.getByRole("button", { name: "Pair a phone" })).toBeEnabled()
 })

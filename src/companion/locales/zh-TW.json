@@ -121,7 +121,9 @@
     "git-not-repository": "這個 Space 的資料夾不是 Git 儲存庫。",
     "git-cursor-invalid": "歷史已變動，需要重新載入。",
     "git-failed": "Git 無法讀取這個儲存庫，請稍後再試。",
-    "push-unavailable": "桌面目前無法傳送通知。"
+    "push-unavailable": "桌面目前無法傳送通知。",
+    "push-store-failed": "桌面無法儲存這項通知設定，請再試一次。",
+    "push-unconfirmed": "桌面沒有及時確認通知設定，請再試一次。"
   },
   "home": {
     "refresh": "重新整理",

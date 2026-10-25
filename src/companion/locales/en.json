@@ -121,7 +121,9 @@
     "git-not-repository": "This Space's folder is not a Git repository.",
     "git-cursor-invalid": "The history changed, so it needs to load again.",
     "git-failed": "Git could not read this repository. Try again shortly.",
-    "push-unavailable": "The desktop can't send notifications right now."
+    "push-unavailable": "The desktop can't send notifications right now.",
+    "push-store-failed": "The desktop could not save this notification setting. Try again.",
+    "push-unconfirmed": "The desktop did not confirm the notification setting in time. Try again."
   },
   "home": {
     "refresh": "Refresh",

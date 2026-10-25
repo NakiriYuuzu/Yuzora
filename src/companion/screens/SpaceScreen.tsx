@@ -65,7 +65,7 @@ export function SpaceScreen({ session, workspaceId }: { session: string; workspa
               {agents.length === 0 ? <Message>{t("space.noAgents")}</Message> : <div className="overflow-hidden rounded-xl border bg-card"><AgentList agents={agents} /></div>}
             </TabsContent>
             <TabsContent value="git">
-              <GitTab session={session} workspaceId={workspaceId} reloadToken={reloadToken} />
+              <GitTab key={space.gitGeneration} session={session} workspaceId={workspaceId} reloadToken={reloadToken} />
             </TabsContent>
           </Tabs>
         )}

@@ -135,6 +135,19 @@ HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷
 
 <br />
 
+### Companion（實驗性）
+
+用手機控制 HERDR Agent：查看 Agent 狀態、瀏覽 Spaces、唯讀查看 Git 狀態、歷史與 diff；在桌面授權後才能送出輸入。Companion **預設關閉**，需到「設定 → Companion」手動開啟。
+
+- Yuzora 內建自己的 Tailscale 節點，這台電腦不必安裝 Tailscale App；手機則需要安裝 Tailscale 並登入同一個 tailnet，再以 HTTPS 開啟 Companion 頁面。
+- 手機以 QR code 配對：兩邊核對確認碼（SAS）後註冊 passkey，之後每次連線都要通過 passkey。
+
+> **警告：**啟用 Companion 等同授予這台電腦帳號遠端 shell 權限。取得操作授權的手機可以驅動你的 AI Agent，而 Agent 可以執行指令。請只在你信任的 tailnet 上、在需要的期間內啟用。
+
+設定方式、存取控制（ACL）建議與疑難排解見 [docs/operations.md](docs/operations.md)。
+
+<br />
+
 ## 下載
 
 正式版由 GitHub Actions 建置並發佈於 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)。未發布的 PR 候選版只提供 Actions artifacts。

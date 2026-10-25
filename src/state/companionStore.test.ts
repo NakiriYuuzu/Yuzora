@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest"
+import type { CompanionPeers } from "@/lib/companionIpc"
 import { companionFixtures as fx, companionInvoke, type CompanionReplies } from "@/test/companionFixtures"
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn() }))
@@ -9,7 +10,7 @@ let replies: CompanionReplies
 const store = () => useCompanionStore.getState()
 
 beforeEach(() => {
-  replies = { companion_status: fx.overviewRunning, companion_devices: [fx.device] }
+  replies = { companion_status: fx.overviewRunning, companion_devices: [fx.device], companion_peers: { peers: [], streams: [] } }
   ipc.invoke.mockReset().mockImplementation(companionInvoke(() => replies))
   useCompanionStore.setState({ overview: null, devices: [], peers: {}, streams: {}, streamSeq: {}, lastGitRead: {}, claims: [], settled: {}, enableError: null })
 })
@@ -174,4 +175,147 @@ it("keeps the last enable failure until the Companion runs, whichever way that i
   replies.companion_status = fx.overviewRunning
   await store().refresh()
   expect(store().enableError).toBeNull()
+})
+
+it("never commits a read an event overtook, and reads again later", async () => {
+  vi.useFakeTimers()
+  try {
+    useCompanionStore.setState({ overview: fx.overviewRunning, devices: [fx.device] })
+    let calls = 0
+    // Every early read still lists the device that the revoke removed.
+    replies.companion_devices = () => {
+      calls++
+      if (calls <= 3) store().applyEvent({ type: "device.revoked", deviceId: fx.device.deviceId })
+      return calls <= 3 ? [fx.device] : []
+    }
+    await store().refresh()
+    expect(calls).toBe(3)
+    expect(store().devices).toEqual([])
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(calls).toBe(4)
+    expect(store().devices).toEqual([])
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it("drops the streams of a phone whose session closed", () => {
+  store().applyEvent(control("6", 1, true))
+  store().applyEvent(full("9", 1, true))
+  store().applyEvent({ type: "session.closed", peerId: 7, deviceId: fx.device.deviceId, reason: "closed" })
+  expect(Object.keys(store().streams)).toEqual(["9"])
+})
+
+const snapshotOf = (peers: [number, string][] = [], streams: CompanionPeers["streams"] = []): CompanionPeers => ({ peers: peers.map(([peerId, deviceId]) => ({ peerId, deviceId })), streams })
+
+it("replaces the phones and streams the events built with the gateway's own list", async () => {
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  // A session.closed was dropped (peer 3 is gone) and a session.opened never arrived (peer 5).
+  store().applyEvent({ type: "session.opened", peerId: 3, deviceId: "gone" })
+  store().applyEvent(control("6", 1, true))
+  replies.companion_peers = fx.peersSnapshot
+  await store().reconcilePeers()
+  expect(store().peers).toEqual({ 3: fx.peersSnapshot.peers[0].deviceId })
+  expect(store().streams).toEqual({
+    12: { deviceId: fx.device.deviceId, peerId: 3, session: "work", target: "w:p", scope: "control" },
+    13: { deviceId: fx.device.deviceId, peerId: 3, session: "work", scope: "full" },
+  })
+  // Stream 6 was listed nowhere: a late open of it must not bring it back.
+  store().applyEvent(control("6", 1, true))
+  expect(Object.keys(store().streams).sort()).toEqual(["12", "13"])
+  // A listed stream is known to be open, and its close still counts.
+  store().applyEvent({ type: "control.state", deviceId: fx.device.deviceId, peerId: 3, stream: "12", seq: 2, session: "work", target: "w:p", takeover: false, open: false })
+  expect(Object.keys(store().streams)).toEqual(["13"])
+})
+
+it("corrects the phones when a webview reload lost every earlier event, on the first refresh", async () => {
+  replies.companion_peers = snapshotOf([[3, "dev-a"], [4, "dev-b"]])
+  await store().refresh()
+  expect(store().peers).toEqual({ 3: "dev-a", 4: "dev-b" })
+  expect(ipc.invoke).toHaveBeenCalledWith("companion_peers")
+})
+
+it("asks only a running gateway, and keeps what it has when the gateway cannot answer", async () => {
+  useCompanionStore.setState({ overview: fx.overviewOff, peers: { 3: "dev-a" } })
+  await store().reconcilePeers()
+  expect(ipc.invoke).not.toHaveBeenCalledWith("companion_peers")
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  replies.companion_peers = { reject: "companion-timeout" }
+  await store().reconcilePeers()
+  expect(store().peers).toEqual({ 3: "dev-a" })
+})
+
+it("reads the phones again when an event lands while it reads, and never undoes that event", async () => {
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  let reads = 0
+  replies.companion_peers = () => {
+    reads++
+    if (reads === 1) {
+      // The gateway answered before peer 8 connected; its event overtakes the answer.
+      store().applyEvent({ type: "session.opened", peerId: 8, deviceId: "dev-new" })
+      return snapshotOf([[3, "dev-a"]])
+    }
+    return snapshotOf([[3, "dev-a"], [8, "dev-new"]])
+  }
+  await store().reconcilePeers()
+  expect(reads).toBe(2)
+  expect(store().peers).toEqual({ 3: "dev-a", 8: "dev-new" })
+})
+
+it("commits nothing when every read was overtaken, leaving the event state", async () => {
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  let reads = 0
+  replies.companion_peers = () => {
+    reads++
+    store().applyEvent({ type: "session.opened", peerId: 100 + reads, deviceId: "dev-x" })
+    return snapshotOf([])
+  }
+  await store().reconcilePeers()
+  expect(reads).toBe(3)
+  expect(Object.keys(store().peers)).toEqual(["101", "102", "103"])
+})
+
+it("does not bring phones back once the gateway left running during the read", async () => {
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  replies.companion_peers = () => {
+    store().applyEvent({ type: "status", status: fx.statusStopping })
+    return snapshotOf([[3, "dev-a"]])
+  }
+  await store().reconcilePeers()
+  expect(store().peers).toEqual({})
+  // The same when the overview is re-read, not announced by an event.
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  replies.companion_peers = () => {
+    store().setOverview(fx.overviewOff)
+    return snapshotOf([[3, "dev-a"]])
+  }
+  await store().reconcilePeers()
+  expect(store().peers).toEqual({})
+})
+
+it("does not commit the list of a gateway that was replaced during the read", async () => {
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  let reads = 0
+  replies.companion_peers = () => {
+    reads++
+    // The first answer is the old gateway's; a restart lands before it is applied.
+    if (reads === 1) store().applyEvent({ type: "status", status: { state: "running", port: 47110 } })
+    return reads === 1 ? snapshotOf([[3, "old-gateway-phone"]]) : snapshotOf()
+  }
+  await store().reconcilePeers()
+  expect(reads).toBe(2)
+  expect(store().peers).toEqual({})
+})
+
+it("does not revive a stream the gateway listed and then dropped when its late open event shows up", async () => {
+  useCompanionStore.setState({ overview: fx.overviewRunning })
+  replies.companion_peers = fx.peersSnapshot
+  await store().reconcilePeers()
+  expect(Object.keys(store().streams).sort()).toEqual(["12", "13"])
+  // Its close event was lost; the next list no longer has it.
+  replies.companion_peers = snapshotOf([[3, fx.device.deviceId]], [fx.peersSnapshot.streams[1]])
+  await store().reconcilePeers()
+  expect(Object.keys(store().streams)).toEqual(["13"])
+  store().applyEvent({ type: "control.state", deviceId: fx.device.deviceId, peerId: 3, stream: "12", seq: 1, session: "work", target: "w:p", takeover: false, open: true })
+  expect(Object.keys(store().streams)).toEqual(["13"])
 })

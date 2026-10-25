@@ -27,6 +27,8 @@ pub enum CommandBody {
     Device(DeviceCommand),
     Spaces(SpacesRoots),
     Push(PushDevices),
+    PushAck(PushAck),
+    Peers(PeersList),
     Unknown,
 }
 
@@ -99,6 +101,31 @@ pub struct PushDevices {
     #[serde(rename = "type")]
     _kind: String,
     pub devices: Vec<PushDevice>,
+}
+
+/// `push.ack`: the desktop's answer to a `push.subscription` that carried a
+/// `requestId`. `stored: false` means it did not persist the subscription.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushAck {
+    #[serde(rename = "v")]
+    _v: u32,
+    #[serde(rename = "type")]
+    _kind: String,
+    pub request_id: u64,
+    pub stored: bool,
+}
+
+/// `peers.list`: asks which phones are connected now. Answered with
+/// `peers.snapshot` carrying the same `requestId`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PeersList {
+    #[serde(rename = "v")]
+    _v: u32,
+    #[serde(rename = "type")]
+    _kind: String,
+    pub request_id: u64,
 }
 
 /// Where a HERDR workspace lives on this machine, for read-only Git.
@@ -271,15 +298,53 @@ pub enum DeviceCommand {
 #[derive(Debug, PartialEq, Eq)]
 pub enum AdminResult {
     Applied,
+    /// The answer to `peers.list`: a reply event, not a deferral.
+    Peers {
+        request_id: u64,
+        peers: Vec<PeerInfo>,
+        streams: Vec<StreamInfo>,
+    },
     NotificationDeferred {
         command: &'static str,
         target: String,
     },
 }
+/// A phone connected now, as the authoritative `peers.snapshot` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerInfo {
+    pub peer_id: u64,
+    pub device_id: String,
+}
+/// An open control or full stream. `stream` is the key the `control.state` /
+/// `full.state` events use; `target` is the pane a control stream drives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamInfo {
+    pub stream: String,
+    pub device_id: String,
+    pub peer_id: u64,
+    pub session: String,
+    pub scope: Scope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
 impl AdminResult {
     pub fn deferred_event(self) -> Option<Event> {
         match self {
             Self::Applied => None,
+            Self::Peers {
+                request_id,
+                peers,
+                streams,
+            } => Some(Event {
+                v: 1,
+                body: EventBody::PeersSnapshot {
+                    request_id,
+                    peers,
+                    streams,
+                },
+            }),
             Self::NotificationDeferred { command, target } => Some(Event {
                 v: 1,
                 body: EventBody::CommandDeferred {
@@ -374,6 +439,12 @@ enum EventBody {
         device_id: String,
         reason: &'static str,
     },
+    #[serde(rename = "peers.snapshot", rename_all = "camelCase")]
+    PeersSnapshot {
+        request_id: u64,
+        peers: Vec<PeerInfo>,
+        streams: Vec<StreamInfo>,
+    },
     Ready {
         ports: Ports,
     },
@@ -423,6 +494,10 @@ enum EventBody {
         /// Only with `subscription: null`: the one endpoint to remove.
         #[serde(skip_serializing_if = "Option::is_none")]
         endpoint_id: Option<String>,
+        /// Only on a subscribe a phone waits for: the desktop answers it with
+        /// `push.ack` once the subscription is on disk.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u64>,
     },
     #[serde(rename = "push.request", rename_all = "camelCase")]
     PushRequest {
@@ -641,13 +716,18 @@ impl Event {
             body: EventBody::DeviceRevoked { device_id },
         }
     }
-    pub(crate) fn push_subscription(device_id: String, subscription: Subscription) -> Self {
+    pub(crate) fn push_subscription(
+        device_id: String,
+        subscription: Subscription,
+        request_id: u64,
+    ) -> Self {
         Self {
             v: 1,
             body: EventBody::PushSubscription {
                 device_id,
                 subscription: Some(subscription),
                 endpoint_id: None,
+                request_id: Some(request_id),
             },
         }
     }
@@ -658,6 +738,7 @@ impl Event {
                 device_id,
                 subscription: None,
                 endpoint_id: Some(endpoint_id),
+                request_id: None,
             },
         }
     }
@@ -698,6 +779,10 @@ pub async fn read<R: AsyncBufRead + Unpin>(
     let Some(frame) = read_frame_zeroizing(reader).await? else {
         return Ok(None);
     };
+    // serde derive also accepts positional JSON arrays for structs; commands are objects.
+    if frame.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'{') {
+        return Err("invalid-command");
+    }
     let envelope: Envelope = serde_json::from_slice(&frame).map_err(|_| "invalid-command")?;
     if envelope.v != 1 {
         return Err("unsupported-version");
@@ -717,6 +802,12 @@ pub async fn read<R: AsyncBufRead + Unpin>(
         }
         "push.devices" => {
             CommandBody::Push(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
+        }
+        "push.ack" => {
+            CommandBody::PushAck(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
+        }
+        "peers.list" => {
+            CommandBody::Peers(serde_json::from_slice(&frame).map_err(|_| "invalid-command")?)
         }
         "shutdown" => {
             let _: ShutdownFrame = serde_json::from_slice(&frame).map_err(|_| "invalid-command")?;

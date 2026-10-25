@@ -152,8 +152,10 @@ func TestLimitedLogCloseSaysWhatIsStillCounted(t *testing.T) {
 	}
 }
 
-// Failed TLS handshakes are what a tailnet peer that is not the owner can make
-// at will: 2000 of them stay within the limit and are summarised once.
+// Failed TLS handshakes stay within the limit and are summarised once, however
+// many there are. (Peers that are not the owner never get that far: they are
+// closed at accept, see admitListener. This checks the limiter itself, fed by
+// handshakes that fail for any other reason.)
 func TestServiceFloodOfFailedHandshakesIsRateLimited(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -169,6 +171,11 @@ func TestServiceFloodOfFailedHandshakesIsRateLimited(t *testing.T) {
 	defer svc.close()
 
 	const flood = 2000
+	count := func() int {
+		svc.logs.mu.Lock()
+		defer svc.logs.mu.Unlock()
+		return svc.logs.passed + svc.logs.dropped
+	}
 	for i := 0; i < flood; i++ {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
@@ -176,11 +183,11 @@ func TestServiceFloodOfFailedHandshakesIsRateLimited(t *testing.T) {
 		}
 		_, _ = c.Write([]byte("x"))
 		_ = c.Close()
-	}
-	count := func() int {
-		svc.logs.mu.Lock()
-		defer svc.logs.mu.Unlock()
-		return svc.logs.passed + svc.logs.dropped
+		// Stay below the connection cap: a connection closed for want of a
+		// slot never reaches the handshake this test counts.
+		if (i+1)%(maxConns/2) == 0 {
+			waitFor(t, "the handshakes so far", func() bool { return count() == i+1 })
+		}
 	}
 	waitFor(t, "the server to see every connection", func() bool { return count() == flood })
 	if got := stderr.countContaining("TLS handshake error"); got != connLogLines {

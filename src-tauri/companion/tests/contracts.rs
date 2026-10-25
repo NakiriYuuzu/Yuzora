@@ -345,6 +345,144 @@ fn supply_chain_exception_is_version_pinned_and_not_expired() {
 }
 
 #[test]
+fn p256_bigint_exception_is_pinned_and_production_never_holds_private_keys() {
+    let deadline = chrono::NaiveDate::from_ymd_opt(2027, 3, 31).unwrap();
+    assert!(
+        chrono::Utc::now().date_naive() <= deadline,
+        "crypto-bigint advisory exception expired: Yuzora maintainers must re-review"
+    );
+    let lock = normalize(include_str!("../Cargo.lock"));
+    assert_eq!(
+        lock.lines()
+            .filter(|line| *line == "name = \"crypto-bigint\"")
+            .count(),
+        1
+    );
+    assert!(lock.contains("name = \"crypto-bigint\"\nversion = \"0.5.5\""));
+    assert!(lock.contains("name = \"p256\"\nversion = \"0.13.2\""));
+    for config in [
+        include_str!("../deny.toml"),
+        include_str!("../.cargo/audit.toml"),
+    ] {
+        // The quoted id is the active ignore entry; comments never quote it.
+        assert!(config.contains("\"RUSTSEC-2026-0387\""));
+        for marker in [
+            "crypto-bigint 0.5.5",
+            "Yuzora maintainers",
+            "2027-03-31",
+            "ES256",
+        ] {
+            assert!(config.contains(marker), "missing {marker}");
+        }
+    }
+    // The exception holds only while production never touches private keys:
+    // none of these crates is a production dependency (in any manifest table
+    // form, under any rename) and no production source names secret-key types.
+    // yuzora-host is compiled into the gateway, so it is covered too.
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let companion_manifest = read_manifest(&manifest_dir.join("Cargo.toml"));
+    let host_manifest = read_manifest(&manifest_dir.join("../host/Cargo.toml"));
+    for manifest in [&companion_manifest, &host_manifest] {
+        for (key, value) in production_dependencies(manifest) {
+            let package = value
+                .get("package")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(&key);
+            for crate_name in P256_FAMILY {
+                assert!(
+                    key != *crate_name && package != *crate_name,
+                    "{crate_name} is a production dependency ({key})"
+                );
+            }
+        }
+    }
+    assert!(companion_manifest["dev-dependencies"]
+        .as_table()
+        .unwrap()
+        .contains_key("p256"));
+    let mut inspected = 0;
+    for root in [manifest_dir.join("src"), manifest_dir.join("../host/src")] {
+        let mut directories = vec![root];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+                if path.is_dir() {
+                    directories.push(path);
+                } else if name.ends_with(".rs")
+                    && name != "tests.rs"
+                    && !name.ends_with("_tests.rs")
+                    && name != "test_support.rs"
+                {
+                    let source = production_source(&std::fs::read_to_string(&path).unwrap());
+                    let code = source
+                        .lines()
+                        .filter(|line| !line.trim_start().starts_with("//"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    for forbidden in [
+                        "SigningKey",
+                        "SecretKey",
+                        "NonZeroScalar",
+                        "Scalar",
+                        "ecdh",
+                        "diffie_hellman",
+                        "crypto_bigint",
+                        "elliptic_curve",
+                    ] {
+                        assert!(
+                            !code.contains(forbidden),
+                            "{} names {forbidden}",
+                            path.display()
+                        );
+                    }
+                    inspected += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        inspected >= 40,
+        "production source scan found {inspected} files"
+    );
+}
+
+const P256_FAMILY: &[&str] = &["p256", "p384", "ecdsa", "elliptic-curve", "crypto-bigint"];
+
+fn read_manifest(path: &std::path::Path) -> toml::Table {
+    std::fs::read_to_string(path).unwrap().parse().unwrap()
+}
+
+// Every non-dev dependency entry: [dependencies], [build-dependencies] and the
+// same two under [target.<cfg>]. Entries are normalized to tables so inline,
+// dotted ([dependencies.name]) and renamed (`package = ...`) forms look alike.
+fn production_dependencies(manifest: &toml::Table) -> Vec<(String, toml::Value)> {
+    let mut tables = Vec::new();
+    for kind in ["dependencies", "build-dependencies"] {
+        tables.push(manifest.get(kind));
+    }
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values() {
+            for kind in ["dependencies", "build-dependencies"] {
+                tables.push(target.get(kind));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    for table in tables.into_iter().flatten() {
+        for (key, value) in table.as_table().unwrap() {
+            let value = if value.is_table() {
+                value.clone()
+            } else {
+                toml::Value::Table(toml::Table::new())
+            };
+            entries.push((key.clone(), value));
+        }
+    }
+    entries
+}
+
+#[test]
 fn auth_context_cannot_supply_cached_scope_authorization() {
     let session = normalize(include_str!("../src/session.rs"));
     let context = session
@@ -644,4 +782,69 @@ fn websocket_ownership_contract_catches_production_after_test_module_and_admin_o
         "admin.rs",
         &format!("{admin}\nfn other() {{ tokio::spawn(async {{}}); }}")
     ));
+}
+
+fn strip_comments(source: &str) -> String {
+    let mut out = String::new();
+    let mut rest = source;
+    while !rest.is_empty() {
+        if let Some(tail) = rest.strip_prefix("/*") {
+            rest = tail.split_once("*/").map_or("", |(_, after)| after);
+        } else if let Some(tail) = rest.strip_prefix("//") {
+            rest = tail.find('\n').map_or("", |n| &tail[n..]);
+        } else {
+            let ch = rest.chars().next().unwrap();
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// True only when `#![forbid(unsafe_code)]` is a live crate-level inner attribute
+/// in the leading attribute block, not commented out, quoted, or deeper in the file.
+fn forbids_unsafe_code(source: &str) -> bool {
+    let code = normalize(&strip_comments(source));
+    code.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take_while(|line| line.starts_with("#!["))
+        .any(|line| line == "#![forbid(unsafe_code)]")
+}
+
+#[test]
+fn forbid_unsafe_detection_ignores_comments_removals_and_weaker_lints() {
+    assert!(forbids_unsafe_code("#![forbid(unsafe_code)]\n\nmod a;\n"));
+    assert!(forbids_unsafe_code(
+        "//! doc\r\n#![forbid(unsafe_code)]\r\nmod a;\r\n"
+    ));
+    assert!(forbids_unsafe_code(
+        "#![deny(missing_docs)]\n#![forbid(unsafe_code)]\n"
+    ));
+    for broken in [
+        "// #![forbid(unsafe_code)]\nmod a;\n",
+        "/* #![forbid(unsafe_code)] */\nmod a;\n",
+        "/*\n#![forbid(unsafe_code)]\n*/\nmod a;\n",
+        "mod a;\n",
+        "#![deny(unsafe_code)]\nmod a;\n",
+        "#![allow(unsafe_code)]\nmod a;\n",
+        "// #![forbid(unsafe_code)]\n#![allow(unsafe_code)]\nmod a;\n",
+        "mod a;\n#![forbid(unsafe_code)]\n",
+        "const S: &str = \"#![forbid(unsafe_code)]\";\n",
+    ] {
+        assert!(!forbids_unsafe_code(broken), "{broken:?}");
+    }
+}
+
+#[test]
+fn gateway_crate_roots_forbid_unsafe_code() {
+    for (name, source) in [
+        ("src/main.rs", include_str!("../src/main.rs")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+    ] {
+        assert!(
+            forbids_unsafe_code(source),
+            "{name} must forbid unsafe_code"
+        );
+    }
 }

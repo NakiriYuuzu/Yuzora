@@ -123,6 +123,9 @@ fn host_error(error: String) -> &'static str {
     } else if error.starts_with("agent_blocked:") {
         // A blocked agent takes keys or terminal input, not a new prompt.
         "agent-blocked"
+    } else if error.starts_with("ioTimeout:") {
+        // An input write stopped moving; Host already tore the session down.
+        "stream-stalled"
     } else {
         "herdr-unavailable"
     }

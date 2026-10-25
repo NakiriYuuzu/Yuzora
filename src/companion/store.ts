@@ -18,11 +18,28 @@ export type Elevation = { scope: Scope; until: string; at: number }
 
 /** What the phone has read of one Space's repository; every part fills in as its view opens. */
 export type SpaceGit = {
+  /** The repository these reads are of (`gitGeneration` of the snapshot they were made under); a different one drops them all. */
+  generation?: string
   status?: GitStatus
   branches?: GitBranches
   log?: GitLog
   /** Commits are immutable, so a loaded one is never fetched again. */
   commits: Record<string, GitCommit>
+}
+/**
+ * The Git reads without those of `session`'s Spaces that `snapshot` no longer
+ * shows: gone, not shared any more, or mapped to another repository since they
+ * were read. `null` (the session is gone) drops all of the session's.
+ */
+export function pruneGit(git: Record<string, SpaceGit>, session: string, snapshot: Snapshot | null): Record<string, SpaceGit> {
+  const prefix = `${session}\0`
+  return Object.fromEntries(
+    Object.entries(git).filter(([key, entry]) => {
+      if (!key.startsWith(prefix)) return true
+      const space = snapshot?.workspaces.find((item) => item.id === key.slice(prefix.length))
+      return Boolean(space?.git) && space?.gitGeneration === entry.generation
+    }),
+  )
 }
 export type GitView = "changes" | "history" | "branches"
 export type SpaceTab = "agents" | "git"

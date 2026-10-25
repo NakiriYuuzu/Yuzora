@@ -25,7 +25,11 @@ impl StdioPipe {
         {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self(AsyncFd::with_interest(owned, interest)?))
+        // SAFETY: the AsyncFd takes ownership of `owned`, so the descriptor stays open and
+        // unchanged for the AsyncFd's whole lifetime and is closed only when it drops.
+        Ok(Self(unsafe {
+            AsyncFd::register_with_interest(owned, interest)?
+        }))
     }
 }
 impl AsyncRead for StdioPipe {

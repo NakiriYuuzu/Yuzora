@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import type { DiffFile, DiffLine } from "../lib/diff"
 
@@ -24,8 +25,8 @@ export function DiffText({ files }: { files: DiffFile[] }) {
             </p>
           )}
           {file.hunks.length > 0 && (
-            <div className="overflow-x-auto rounded-xl border bg-card py-1 font-mono text-xs leading-5">
-              <div className="min-w-max">
+            <ScrollArea orientation="horizontal" className="rounded-xl border bg-card">
+              <div className="min-w-max py-1 font-mono text-xs leading-5">
                 {file.hunks.map((hunk, hunkIndex) => (
                   <div key={hunkIndex}>
                     <div className="bg-muted px-3 py-0.5 text-muted-foreground">{hunk.header}</div>
@@ -33,7 +34,7 @@ export function DiffText({ files }: { files: DiffFile[] }) {
                   </div>
                 ))}
               </div>
-            </div>
+            </ScrollArea>
           )}
         </section>
       ))}

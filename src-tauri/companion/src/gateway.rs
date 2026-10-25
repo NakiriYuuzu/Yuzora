@@ -22,6 +22,7 @@ pub struct Gateway {
     pub(crate) spaces: Arc<crate::git_bridge::Spaces>,
     pub(crate) push: crate::push::Push,
     pub(crate) deferred_audit: Arc<Mutex<crate::audit::Deferred>>,
+    pub(crate) live_streams: crate::audit::LiveStreams,
     pub(crate) full_devices:
         Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Semaphore>>>,
 }
@@ -83,6 +84,7 @@ impl Gateway {
             )?),
             push: crate::push::Push::new(init)?,
             deferred_audit: Arc::new(Mutex::new(crate::audit::Deferred::default())),
+            live_streams: Default::default(),
             full_devices: Mutex::new(std::collections::HashMap::new()),
         }))
     }
@@ -142,6 +144,19 @@ impl Gateway {
                 }
                 Ok(AdminResult::Applied)
             }
+            CommandBody::PushAck(ack) => {
+                self.push.ack(ack.request_id, ack.stored);
+                Ok(AdminResult::Applied)
+            }
+            CommandBody::Peers(list) => Ok(AdminResult::Peers {
+                request_id: list.request_id,
+                peers: self
+                    .identity
+                    .lock()
+                    .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "Device unavailable"))?
+                    .peer_list(),
+                streams: crate::audit::live_list(&self.live_streams),
+            }),
             _ => Err((StatusCode::BAD_REQUEST, "Invalid admin command")),
         }
     }

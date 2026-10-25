@@ -39,6 +39,18 @@ describe("replace", () => {
     expect(await readdir(join(dir, "bin"))).toEqual(["sidecar"])
   })
 
+  it.skipIf(process.platform === "win32")("repairs a lost execute bit without rewriting identical content", async () => {
+    dir = await mkdtemp(join(tmpdir(), "yzc-replace-"))
+    const file = join(dir, "sidecar")
+    await replace(file, Buffer.from("same"), 0o755)
+    await chmod(file, 0o644)
+    await utimes(file, 1_000_000_000, 1_000_000_000)
+    expect(await replace(file, Buffer.from("same"), 0o755)).toBe(false)
+    const after = await stat(file)
+    expect(after.mode & 0o777).toBe(0o755)
+    expect(after.mtimeMs).toBe(1_000_000_000_000)
+  })
+
   it("writes changed content and leaves no temporary file", async () => {
     dir = await mkdtemp(join(tmpdir(), "yzc-replace-"))
     const file = join(dir, "notices.txt")

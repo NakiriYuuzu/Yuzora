@@ -1,18 +1,18 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { I18nextProvider } from "react-i18next"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { i18n } from "../i18n"
 import type { GitBranches, GitLog, GitLogCommit, GitStatus, Snapshot } from "../lib/protocol"
 import { RpcError } from "../lib/rpc"
-import { navigate, useCompanion } from "../store"
+import { navigate, pruneGit, useCompanion } from "../store"
 
 const client = vi.hoisted(() => ({ call: vi.fn() }))
 vi.mock("../client", () => ({ call: client.call, retryNow: vi.fn(), refresh: vi.fn() }))
 import { SpaceScreen } from "./SpaceScreen"
 
-const snapshot = (git: boolean, withAgent = false): Snapshot => ({
+const snapshot = (git: boolean, withAgent = false, gitGeneration?: string): Snapshot => ({
   session: "work",
-  workspaces: [{ id: "w1", label: "Yuzora", status: "idle", git }],
+  workspaces: [{ id: "w1", label: "Yuzora", status: "idle", git, ...(gitGeneration ? { gitGeneration } : {}) }],
   tabs: withAgent ? [{ id: "w1:t", workspaceId: "w1", label: "main" }] : [],
   panes: withAgent ? [{ id: "w1:p", tabId: "w1:t", workspaceId: "w1", status: "working", label: null, layout: null }] : [],
   agents: withAgent ? [{ paneId: "w1:p", name: "pi", agent: "pi", status: "working" }] : [],
@@ -218,6 +218,20 @@ describe("Git history", () => {
     await screen.findByText("Newest")
     expect(calls("git.log").map(([, params]) => (params as { cursor?: string }).cursor)).toEqual([undefined, undefined])
     expect(screen.queryByText("Merge feature")).toBeNull()
+  })
+
+  it("shows the new repository's history, not the cached one, when the desktop maps the Space elsewhere", async () => {
+    const other: GitLog = { commits: [commit("z", [], "Other repository")], hasMore: false, nextCursor: null }
+    answer({ "git.log": [first, other] })
+    useCompanion.setState({ snapshots: { work: snapshot(true, false, "g1") }, spaceView: { "work\0w1": { tab: "git", view: "history" } } })
+    renderSpace()
+    await screen.findByText("Merge feature")
+    // The next snapshot names another repository for the same Space.
+    const next = snapshot(true, false, "g2")
+    act(() => useCompanion.setState((state) => ({ snapshots: { work: next }, git: pruneGit(state.git, "work", next) })))
+    await screen.findByText("Other repository")
+    expect(screen.queryByText("Merge feature")).toBeNull()
+    expect(calls("git.log")).toHaveLength(2)
   })
 
   it("keeps the loaded commits and offers the load again when a page fails", async () => {

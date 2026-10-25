@@ -78,6 +78,12 @@ impl FakeHerdr {
             task,
         }
     }
+    /// From now on a control connector never reads its stdin. (Not every test
+    /// binary that includes this module uses it.)
+    #[allow(dead_code)]
+    pub fn stall_stdin(&self) {
+        std::fs::write(self.root.path().join("stall-stdin"), "").unwrap();
+    }
     pub fn children(&self) -> Vec<u32> {
         std::fs::read_to_string(self.root.path().join("children"))
             .unwrap_or_default()

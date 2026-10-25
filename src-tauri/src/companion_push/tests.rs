@@ -519,6 +519,33 @@ async fn companion_push_a_new_subscription_survives_the_old_ones_410() {
     );
 }
 
+#[tokio::test]
+async fn companion_push_a_renewed_subscription_on_the_same_endpoint_survives_the_old_keys_410() {
+    let (_root, wire, push) = ready(&[DEVICE_ID]);
+    wire.answer(&endpoint(0), 410);
+    let job = push
+        .request(&json!([DEVICE_ID]), &request_payload("p1"))
+        .unwrap();
+    // The browser renews: same endpoint, new auth secret, while the send with
+    // the old keys is in flight.
+    let mut renewed = subscription(0);
+    renewed["auth"] = json!("AAAAAAAAAAAAAAAAAAAAAA");
+    assert!(push.subscription(DEVICE_ID, &renewed));
+    // The 410 was for the old keys: nothing is deleted, nothing to report.
+    assert!(!push.deliver(job).await);
+    assert_eq!(
+        push.listing(),
+        json!([{"deviceId": DEVICE_ID, "endpoints": [endpoint_id(&endpoint(0))]}])
+    );
+    // The renewed keys, when they are the ones gone, do go.
+    wire.pass(Duration::from_secs(61));
+    let job = push
+        .request(&json!([DEVICE_ID]), &request_payload("p1"))
+        .unwrap();
+    assert!(push.deliver(job).await);
+    assert!(push.devices().is_empty());
+}
+
 #[test]
 fn companion_push_subscriptions_are_pruned_on_revoke_and_on_load() {
     let (root, wire, push) = ready(&[DEVICE_ID, OTHER_ID]);

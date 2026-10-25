@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { ArrowLeft, Maximize2, Minimize2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -31,6 +31,10 @@ export function PaneScreen({ session, pane }: { session: string; pane: string })
   const [control, setControl] = useState<ControlOpen | null>(null)
   const [conflict, setConflict] = useState(false)
   const controlling = control !== null
+  const controlRef = useRef(control)
+  useEffect(() => {
+    controlRef.current = control
+  }, [control])
 
   // Read-only observation while not controlling; reopened after every reconnect.
   useEffect(() => {
@@ -79,6 +83,14 @@ export function PaneScreen({ session, pane }: { session: string; pane: string })
       },
     })
   }, [terminal, control])
+
+  // Leaving the screen hands the pane back: the lease would otherwise outlive
+  // it, with no button left to release it. Reads the latest control from a
+  // ref so a re-run of the effect above never releases a live stream.
+  useEffect(() => () => {
+    const current = controlRef.current
+    if (current) void call("terminal.release", { stream: current.stream }).catch(() => undefined)
+  }, [])
 
   return (
     <Page

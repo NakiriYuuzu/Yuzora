@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net"
 	"net/http"
@@ -21,7 +22,8 @@ import (
 
 // localAPIRecorder is a LocalAPI behind the real tailscale.com/client/local
 // client. It records every request and issues the node's certificate only for
-// a request shaped like the one the sidecar means to make.
+// a request shaped like the one the sidecar means to make. WhoIs is answered
+// as the owner and left out of the record.
 type localAPIRecorder struct {
 	mu   sync.Mutex
 	seen []string
@@ -45,6 +47,12 @@ func newLocalAPIRecorder(t *testing.T) (*local.Client, *localAPIRecorder) {
 
 	rec := &localAPIRecorder{}
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The accept-time check asks WhoIs about the socket's own address, which
+		// no peer chooses; the owner answers it and it is not recorded.
+		if r.URL.Path == "/localapi/v0/whois" {
+			_ = json.NewEncoder(w).Encode(ownerWho())
+			return
+		}
 		rec.mu.Lock()
 		rec.seen = append(rec.seen, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 		rec.mu.Unlock()
