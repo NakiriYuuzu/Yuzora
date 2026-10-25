@@ -2,9 +2,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { I18nextProvider } from "react-i18next"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { i18n } from "../i18n"
-import type { GitCommit } from "../lib/protocol"
+import type { GitCommit, Snapshot } from "../lib/protocol"
 import { RpcError } from "../lib/rpc"
-import { useCompanion } from "../store"
+import { pruneGit, useCompanion } from "../store"
 
 const client = vi.hoisted(() => ({ call: vi.fn() }))
 vi.mock("../client", () => ({ call: client.call, retryNow: vi.fn() }))
@@ -97,4 +97,20 @@ it("keeps the commit on screen across a reconnect", async () => {
     expect(screen.getByRole("heading", { name: "Fix the sidebar" })).toBeInTheDocument()
     expect(screen.queryByText("Loading…")).toBeNull()
   }
+})
+
+it("reads the commit again once the Space is mapped to another repository", async () => {
+  const mapped = (gitGeneration: string): Snapshot => ({
+    session: "work", workspaces: [{ id: "w1", label: "Yuzora", status: "idle", git: true, gitGeneration }], tabs: [], panes: [], agents: [],
+  })
+  useCompanion.setState({ snapshots: { work: mapped("g1") } })
+  client.call.mockResolvedValue(detail)
+  renderCommit()
+  await screen.findByRole("heading", { name: "Fix the sidebar" })
+  client.call.mockRejectedValue(new RpcError("git-failed"))
+  // A refresh commits the remapped snapshot and drops the old repository's reads with it (client.ts).
+  await act(async () => useCompanion.setState((state) => ({ snapshots: { work: mapped("g2") }, git: pruneGit(state.git, "work", mapped("g2")) })))
+  expect(client.call).toHaveBeenCalledTimes(2)
+  expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument()
+  expect(screen.queryByText("Loading…")).toBeNull()
 })

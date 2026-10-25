@@ -8,14 +8,16 @@ import { LoadError } from "../components/LoadError"
 import { Message, Page, Progress } from "../components/Page"
 import { useLoad } from "../components/useLoad"
 import { loadCommit } from "../gitReads"
-import { formatWhen, spaceKey } from "../lib/git"
+import { formatWhen, gitGeneration, spaceKey } from "../lib/git"
 import { open, useCompanion } from "../store"
 
 /** One commit: message, author, parents and the files it changed; a file opens its diff. */
 export function CommitScreen({ session, workspaceId, hash }: { session: string; workspaceId: string; hash: string }) {
   const { t, i18n } = useTranslation()
   const load = useCallback(() => loadCommit(session, workspaceId, hash), [session, workspaceId, hash])
-  const { error, reload } = useLoad(load)
+  // A remapped Space drops the old repository's commits (pruneGit), so read it again from the new one.
+  const generation = useCompanion((state) => gitGeneration(state.snapshots[session], workspaceId))
+  const { error, reload } = useLoad(load, generation)
   const commit = useCompanion((state) => state.git[spaceKey(session, workspaceId)]?.commits[hash])
 
   return (

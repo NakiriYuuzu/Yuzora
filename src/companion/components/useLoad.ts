@@ -11,7 +11,7 @@ import { useCompanion } from "../store"
  * it then shows nothing from the moment the socket leaves "ready" until the new
  * result lands.
  */
-export function useLoad<T>(load: () => Promise<T>, token = 0, keepPrevious = true): { data: T | null; error: string | null; reload: () => void } {
+export function useLoad<T>(load: () => Promise<T>, token: unknown = 0, keepPrevious = true): { data: T | null; error: string | null; reload: () => void } {
   const ready = useCompanion((state) => state.socket === "ready")
   const epoch = useCompanion((state) => state.epoch)
   // The socket is "ready" again before hello bumps the epoch, so neither `ready` nor `epoch` tells two connections apart: `connection` counts every time the socket enters or leaves "ready", and a load's stamp carries it.
