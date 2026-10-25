@@ -211,6 +211,51 @@ describe("useSshStore connection lifecycle", () => {
         })
     })
 
+    it("asks for the passphrase of an encrypted key, then retries with it", async () => {
+        mockConnect.mockRejectedValueOnce("ssh-key-passphrase-required")
+        const key = useSshStore.getState().addHost(keyHost)
+        useSshStore.getState().beginConnect(key.id)
+        await vi.waitFor(() => expect(useSshStore.getState().pendingAuthHostId).toBe(key.id))
+        // Not an error banner: the host is waiting on the prompt, like a password host.
+        expect(useSshStore.getState().sessions[key.id]).toBeUndefined()
+        expect(mockConnect).toHaveBeenCalledTimes(1)
+
+        await useSshStore.getState().connect(key.id, "keypass")
+
+        expect(mockConnect).toHaveBeenLastCalledWith("10.0.0.5", 2222, "deploy", {
+            kind: "key",
+            keyPath: "/home/u/.ssh/id_ed25519",
+            passphrase: "keypass"
+        })
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]).toMatchObject({ status: "connected", sessionId: "sess-1" })
+        expect(localStorage.getItem(SSH_HOSTS_STORAGE_KEY) ?? "").not.toContain("keypass")
+    })
+
+    it("does not loop the passphrase prompt when a supplied passphrase is still refused", async () => {
+        mockConnect.mockRejectedValueOnce("ssh-key-passphrase-required")
+        const key = useSshStore.getState().addHost(keyHost)
+        await useSshStore.getState().connect(key.id, "keypass")
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]?.status).toBe("error")
+    })
+
+    it("keeps other key failures as plain errors instead of prompting", async () => {
+        mockConnect.mockRejectedValueOnce("無法讀取私鑰 /k：The key is corrupt")
+        const key = useSshStore.getState().addHost(keyHost)
+        await useSshStore.getState().connect(key.id)
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]?.status).toBe("error")
+    })
+
+    it("prompts only for the exact passphrase code, not a message that merely contains it", async () => {
+        mockConnect.mockRejectedValueOnce("無法讀取私鑰 /k/ssh-key-passphrase-required：The key is corrupt")
+        const key = useSshStore.getState().addHost(keyHost)
+        await useSshStore.getState().connect(key.id)
+        expect(useSshStore.getState().pendingAuthHostId).toBeNull()
+        expect(useSshStore.getState().sessions[key.id]?.status).toBe("error")
+    })
+
     it("beginConnect on an already-connected host just activates it", async () => {
         const a = useSshStore.getState().addHost(passwordHost)
         const b = useSshStore.getState().addHost({ ...passwordHost, name: "other" })

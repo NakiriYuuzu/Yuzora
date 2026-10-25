@@ -195,6 +195,17 @@ export async function forcePushWithLease(): Promise<void> {
     const root = actionableRoot()
     const branch = currentBranch()
     if (!root || !branch) return
+    // The lease names the remote commit shown now, read before the dialog opens.
+    // A bare --force-with-lease trusts the tracking ref, which autofetch advances
+    // without the user seeing the new commits. Unknown commit: never force.
+    // The backend still refuses a commit the branch has not integrated.
+    const seen = useGitStore.getState().branches?.local.find((entry) => entry.name === branch)?.pushOid
+    if (!seen) {
+        await useGitStore.getState().runOp("push-force", async () => {
+            throw new Error(t("gitActions.forcePushNoLease", { branch }))
+        })
+        return
+    }
     const ok = await requestAppConfirmation({
         title: t("gitActions.forcePushTitle"),
         description: t("gitActions.forcePushConfirm", { branch }),
@@ -203,7 +214,7 @@ export async function forcePushWithLease(): Promise<void> {
         destructive: true
     })
     if (!ok || actionableRoot() !== root) return
-    if (await useGitStore.getState().runOp("push-force", () => gitPush(root, { forceWithLease: true }))) {
+    if (await useGitStore.getState().runOp("push-force", () => gitPush(root, { forceWithLeaseOid: seen }))) {
         void logUserAction("git_push_force", `force push ${branch}`)
     }
 }

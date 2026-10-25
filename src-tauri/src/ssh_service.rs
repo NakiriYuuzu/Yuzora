@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use russh::client::{self, Handle};
-use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{load_secret_key, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use russh::Disconnect;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -22,6 +22,30 @@ use crate::path_capability::{self, PathCapabilityError, SafeLeafName, SafeRelati
 // fails fast instead of hanging the connect command indefinitely.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+
+// Stable code (not prose) so the frontend can ask for the key's passphrase and retry.
+const KEY_PASSPHRASE_REQUIRED: &str = "ssh-key-passphrase-required";
+
+fn load_client_key(key_path: &str, passphrase: Option<&str>) -> Result<PrivateKey, String> {
+    use russh::keys::{ssh_key, Error as KeyError};
+    load_secret_key(key_path, passphrase).map_err(|e| match e {
+        KeyError::KeyIsEncrypted => KEY_PASSPHRASE_REQUIRED.to_string(),
+        KeyError::SshKey(ssh_key::Error::Crypto) if passphrase.is_some() => {
+            format!("無法解開私鑰 {key_path}：密語不正確")
+        }
+        // PKCS#8 decoding without a passphrase fails as a DER parse error rather
+        // than KeyIsEncrypted, so recognise the encrypted envelope by its label.
+        _ if passphrase.is_none() && is_encrypted_pkcs8(key_path) => {
+            KEY_PASSPHRASE_REQUIRED.to_string()
+        }
+        e => format!("無法讀取私鑰 {key_path}：{e}"),
+    })
+}
+
+fn is_encrypted_pkcs8(key_path: &str) -> bool {
+    std::fs::read_to_string(key_path)
+        .is_ok_and(|pem| pem.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----"))
+}
 
 // PAM-backed servers often expose password login only as keyboard-interactive.
 // Answer one concealed password prompt, never reuse it as an OTP/MFA response.
@@ -1390,8 +1414,7 @@ impl SshManager {
                     passphrase,
                 } => {
                     // Failures are logged once by the timeout wrapper below.
-                    let key = load_secret_key(&key_path, passphrase.as_deref())
-                        .map_err(|e| format!("無法讀取私鑰 {key_path}：{e}"))?;
+                    let key = load_client_key(&key_path, passphrase.as_deref())?;
                     let hash = session
                         .best_supported_rsa_hash()
                         .await
@@ -2237,6 +2260,77 @@ mod tests {
             }
             _ => panic!("expected key auth"),
         }
+    }
+
+    // `ssh-keygen -t ed25519 -N 'correct horse'`; throwaway key, never trusted anywhere.
+    const ENCRYPTED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABADfH+3g/
+RQ+X8j6GW6j1UDAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAILj8C65TFrPhpMMA
+4fq2+VWLFwtf96Dj55GgNODYZ+duAAAAkALfmBybsef3SzO7fx+ohvp6goZvzxXL7xRLn1
+hepkhSWmJxF0n1GKI0qT+g9CuEy2ZXzQp6Yr+Jgmm/NZLjoEDnL+snGZe1D5YVS7n3qJi8
+RlIFL4c56Nuy9qT/sJP1m80d95UtVmCRrtHU1+PK3iUGJXkP8Yp4VwlScbNVvWahyauLFl
+tvqU1gDDpOIEsJtw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    // `openssl genpkey -algorithm ed25519 -aes-256-cbc -pass pass:yuzora-test`;
+    // throwaway PKCS#8 key, never trusted anywhere.
+    const ENCRYPTED_PKCS8_KEY: &str = "-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIGjMF8GCSqGSIb3DQEFDTBSMDEGCSqGSIb3DQEFDDAkBBCvQexx+4ZHej5OS54c
+v/B9AgIIADAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQBKgQQzCyyOyb3eYAU9aYJ
+MkGM1wRA+dgUGgTmc+iZf5s9FAPFthd0pfg0NQp8zX4dezYiFBO6VuijQYIE/Q6e
+1xJZALD4pmodL7Q26RM+lqC9zDaYQA==
+-----END ENCRYPTED PRIVATE KEY-----
+";
+
+    fn key_file(contents: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id_test");
+        std::fs::write(&path, contents).unwrap();
+        let path = path.to_str().unwrap().to_string();
+        (dir, path)
+    }
+
+    #[test]
+    fn encrypted_key_without_passphrase_asks_for_one_by_code() {
+        let (_dir, path) = key_file(ENCRYPTED_KEY);
+        assert_eq!(
+            load_client_key(&path, None).unwrap_err(),
+            KEY_PASSPHRASE_REQUIRED
+        );
+    }
+
+    #[test]
+    fn encrypted_key_loads_with_the_right_passphrase_only() {
+        let (_dir, path) = key_file(ENCRYPTED_KEY);
+        assert!(load_client_key(&path, Some("correct horse")).is_ok());
+        let wrong = load_client_key(&path, Some("wrong")).unwrap_err();
+        assert_ne!(wrong, KEY_PASSPHRASE_REQUIRED);
+        assert!(wrong.contains("密語不正確"), "{wrong}");
+    }
+
+    #[test]
+    fn encrypted_pkcs8_key_without_passphrase_asks_for_one_by_code() {
+        let (_dir, path) = key_file(ENCRYPTED_PKCS8_KEY);
+        assert_eq!(
+            load_client_key(&path, None).unwrap_err(),
+            KEY_PASSPHRASE_REQUIRED
+        );
+        assert!(load_client_key(&path, Some("yuzora-test")).is_ok());
+    }
+
+    #[test]
+    fn plain_key_needs_no_passphrase() {
+        let (_dir, path) = key_file(TEST_HOST_KEY);
+        assert!(load_client_key(&path, None).is_ok());
+    }
+
+    #[test]
+    fn unreadable_key_keeps_the_path_in_its_message() {
+        let (_dir, path) = key_file("not a key");
+        let message = load_client_key(&path, None).unwrap_err();
+        assert!(message.starts_with("無法讀取私鑰 "), "{message}");
+        assert!(message.contains(&path), "{message}");
     }
 
     #[test]

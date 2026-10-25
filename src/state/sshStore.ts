@@ -7,6 +7,8 @@ import type { SshAuthInput, SshAuthKind } from "@/lib/types"
 // only the non-sensitive connection descriptor lands in localStorage.
 export const SSH_HOSTS_STORAGE_KEY = "yuzora.hosts.ssh.v2"
 const LEGACY_SSH_HOSTS_STORAGE_KEY = "yuzora.ssh.hosts.v1"
+// Stable backend code (see ssh_service.rs) for a key that needs its passphrase.
+const KEY_PASSPHRASE_REQUIRED = "ssh-key-passphrase-required"
 const connectionAttempts = new Map<string, number>()
 let attemptToken = 0
 function nextAttempt(id: string): number {
@@ -46,7 +48,7 @@ interface SshStore {
     /** Session state keyed by host id (one live session per host in the MVP). */
     sessions: Record<string, SshSessionState>
     activeHostId: string | null
-    /** Host awaiting a password prompt (password auth only). */
+    /** Host awaiting a password (or encrypted-key passphrase) prompt. */
     pendingAuthHostId: string | null
 
     addHost: (input: NewSshHost) => SshHost
@@ -54,7 +56,8 @@ interface SshStore {
      * the new settings apply on the next connect. */
     updateHost: (id: string, input: NewSshHost) => void
     removeHost: (id: string) => void
-    /** Row click / cmOpenSsh entry point: prompts for a password or connects. */
+    /** Row click / cmOpenSsh entry point: prompts for a password or connects; a
+     * key host is prompted for its passphrase only once the key proves encrypted. */
     beginConnect: (id: string) => void
     connect: (id: string, secret?: string) => Promise<void>
     cancelPendingAuth: () => void
@@ -248,6 +251,15 @@ export const useSshStore = create<SshStore>()((set, get) => ({
             }))
         } catch (e) {
             if (connectionAttempts.get(id) !== attempt) return
+            if (host.authKind === "key" && !secret && String(e) === KEY_PASSPHRASE_REQUIRED) {
+                // Encrypted key: ask for the passphrase (never persisted) and retry through connect.
+                set((s) => {
+                    const sessions = { ...s.sessions }
+                    delete sessions[id]
+                    return { sessions, pendingAuthHostId: id }
+                })
+                return
+            }
             set((s) => ({
                 sessions: {
                     ...s.sessions,

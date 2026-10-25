@@ -27,7 +27,8 @@ vi.mock("@/lib/workspaceActions", () => ({
 }))
 
 vi.mock("@/lib/unsavedGuard", () => ({
-  confirmDiscardingUnsaved: vi.fn()
+  confirmDiscardingUnsaved: vi.fn(),
+  snapshotDirtyTabs: vi.fn()
 }))
 
 import {
@@ -44,8 +45,8 @@ import {
   herdrWorkspaceFocus,
   herdrWorktreeList
 } from "@/lib/herdrIpc"
-import { runtimeOwner } from "@/lib/herdrProvider"
-import { confirmDiscardingUnsaved } from "@/lib/unsavedGuard"
+import { canonicalRuntimeWorkspace, runtimeOwner } from "@/lib/herdrProvider"
+import { confirmDiscardingUnsaved, snapshotDirtyTabs, type DirtyTabsSnapshot } from "@/lib/unsavedGuard"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { herdrInitialState, isHerdrStartupPending, useHerdrStore } from "./herdrStore"
 import { useWorkspaceStore } from "./workspaceStore"
@@ -314,6 +315,7 @@ describe("herdrStore", () => {
     vi.mocked(herdrWorkspaceFocus).mockReset().mockResolvedValue(undefined)
     vi.mocked(herdrWorkspaceCreate).mockReset()
     vi.mocked(confirmDiscardingUnsaved).mockReset().mockResolvedValue(true)
+    vi.mocked(snapshotDirtyTabs).mockReset()
     vi.mocked(openWorkspaceAtPath).mockReset().mockResolvedValue(true)
   })
 
@@ -1541,7 +1543,8 @@ describe("herdrStore", () => {
       focus: true
     })
     expect(openWorkspaceAtPath).toHaveBeenCalledWith("/tmp/new", {
-      skipUnsavedGuard: true
+      skipUnsavedGuard: true,
+      shouldOpen: expect.any(Function)
     })
     expect(herdrTabRename).toHaveBeenCalledWith({
       sessionName: "default",
@@ -1644,6 +1647,178 @@ describe("herdrStore", () => {
     expect(useWorkspaceStore.getState().groups[0].tabs).toHaveLength(before.tabs)
     expect(useWorkspaceStore.getState().workspacePath).toBe(before.workspace)
   })
+  // A02-F1：建立 Space 的 IPC 等待期間，使用者可以切 Session／Space；過期的建立結果
+  // 不得再替換 Files 工作區或把新 Space 寫進當下所選 Session 的 selection。
+  const createdSpace = {
+    workspaceId: "ws-new",
+    label: "new",
+    path: "/tmp/new",
+    tabId: null,
+    terminalId: null,
+    paneId: null
+  }
+
+  async function startDeferredCreate(cwd: string) {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finishCreate!: (value: typeof createdSpace) => void
+    vi.mocked(herdrWorkspaceCreate).mockImplementation(
+      () => new Promise((resolve) => { finishCreate = resolve })
+    )
+    // Only the creating session already shows the new Space.
+    vi.mocked(herdrSnapshot).mockImplementation(async (session) =>
+      session === "default" ? snapshotWithWorkspace("ws-new", "new", cwd) : rawSnapshot
+    )
+    // Like the real openWorkspaceAtPath, drop the switch once shouldOpen turns false.
+    vi.mocked(openWorkspaceAtPath).mockImplementation(async (_path, options) => options?.shouldOpen?.() !== false)
+    const setSelectedSpaceId = vi.fn(useHerdrStore.getState().setSelectedSpaceId)
+    useHerdrStore.setState({ setSelectedSpaceId })
+    const creating = useHerdrStore.getState().createSpaceFromFolder(cwd, "new")
+    await vi.waitFor(() => expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1))
+    return { creating, setSelectedSpaceId, finishCreate: () => finishCreate(createdSpace) }
+  }
+
+  it("createSpaceFromFolder drops a stale create when another session is selected during workspace.create", async () => {
+    const { creating, setSelectedSpaceId, finishCreate } = await startDeferredCreate("/tmp/new")
+    await useHerdrStore.getState().selectSession("work")
+    const workSelection = useHerdrStore.getState().selectedSpaceBySession.work
+    finishCreate()
+
+    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    expect(setSelectedSpaceId).not.toHaveBeenCalled()
+    expect(useHerdrStore.getState().selectedSessionName).toBe("work")
+    expect(workSelection).toBe("ws-1")
+    expect(useHerdrStore.getState().selectedSpaceBySession.work).toBe(workSelection)
+    expect(useHerdrStore.getState().selectedSpaceId).toBe(workSelection)
+    // The newer selection owns Herdr focus: no rollback focus may steal it back.
+    expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/tmp/new", expect.objectContaining({
+      shouldOpen: expect.any(Function)
+    }))
+  })
+
+  it("createSpaceFromFolder does not select the new Space for a superseded create that needs no workspace switch", async () => {
+    const { creating, setSelectedSpaceId, finishCreate } = await startDeferredCreate("/Users/me/yuzora")
+    await useHerdrStore.getState().selectSession("work")
+    const workSelection = useHerdrStore.getState().selectedSpaceBySession.work
+    finishCreate()
+
+    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(setSelectedSpaceId).not.toHaveBeenCalled()
+    expect(workSelection).toBe("ws-1")
+    expect(useHerdrStore.getState().selectedSpaceBySession.work).toBe(workSelection)
+    expect(useHerdrStore.getState().selectedSpaceId).toBe(workSelection)
+  })
+
+  it("createSpaceFromFolder yields to a newer Space activation instead of replacing its workspace", async () => {
+    const { creating, setSelectedSpaceId, finishCreate } = await startDeferredCreate("/tmp/new")
+    const activating = useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // workspace.create focuses its new Space; the newer focus waits for it to
+    // settle so Herdr ends on the newer choice, not on the late create.
+    expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+    finishCreate()
+
+    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    await expect(activating).resolves.toMatchObject({ ok: true })
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
+    expect(setSelectedSpaceId).not.toHaveBeenCalled()
+    expect(vi.mocked(herdrWorkspaceFocus).mock.calls.map(([call]) => call.workspaceId)).toEqual(["ws-2"])
+    expect(vi.mocked(herdrWorkspaceFocus).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(herdrSnapshot).mock.invocationCallOrder.at(-2)!
+    )
+    // The stale create asked to switch Files, but its shouldOpen is already false.
+    const createSwitch = vi.mocked(openWorkspaceAtPath).mock.calls.find(([path]) => path === "/tmp/new")
+    expect(createSwitch?.[1]?.shouldOpen?.()).toBe(false)
+  })
+
+  it("createSpaceFromFolder never calls workspace.create once superseded while resolving the folder", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finishResolve: ((path: string) => void) | undefined
+    vi.mocked(canonicalRuntimeWorkspace).mockImplementationOnce(
+      () => new Promise((resolve) => { finishResolve = resolve })
+    )
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finishResolve).toBeDefined())
+    await useHerdrStore.getState().selectSession("work")
+    finishResolve?.("/tmp/new")
+
+    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    expect(herdrWorkspaceCreate).not.toHaveBeenCalled()
+  })
+
+  it("createSpaceFromFolder leaves focus and errors to the newer selection when its superseded switch fails", async () => {
+    const { creating, finishCreate } = await startDeferredCreate("/tmp/new")
+    vi.mocked(openWorkspaceAtPath).mockRejectedValue(new Error("switch failed"))
+    await useHerdrStore.getState().selectSession("work")
+    finishCreate()
+
+    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+    expect(useHerdrStore.getState().runtimesBySession.default?.errorMessage ?? null).not.toBe("switch failed")
+  })
+
+  it("createSpaceFromFolder rolls Herdr focus back when the guarded workspace switch itself is declined", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrWorkspaceCreate).mockResolvedValue(createdSpace)
+    vi.mocked(herdrSnapshot).mockResolvedValue(snapshotWithWorkspace("ws-new", "new", "/tmp/new"))
+    vi.mocked(openWorkspaceAtPath).mockResolvedValue(false)
+
+    await expect(
+      useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    ).resolves.toEqual({ ok: false, cancelled: true })
+    expect(herdrWorkspaceFocus).toHaveBeenCalledWith({ sessionName: "default", workspaceId: "ws-1" })
+  })
+
+  // A11b-F4：preflight 通過當下的未存狀態必須原樣交給 openWorkspaceAtPath，讓它在
+  // clearAll 前只重問「之後才出現」的編輯。
+  describe("hands the post-preflight unsaved baseline to the guarded workspace switch", () => {
+    const baseline: DirtyTabsSnapshot = new Map([["/Users/me/yuzora/a.ts", undefined]])
+
+    beforeEach(async () => {
+      vi.mocked(snapshotDirtyTabs).mockReturnValue(baseline)
+      await useHerdrStore.getState().refreshSessions()
+      await useHerdrStore.getState().bootstrap("default")
+    })
+
+    const expectBaselineAfterPreflight = (path: string) => {
+      expect(openWorkspaceAtPath).toHaveBeenCalledWith(path, expect.objectContaining({
+        skipUnsavedGuard: true,
+        unsavedBaseline: baseline
+      }))
+      expect(vi.mocked(snapshotDirtyTabs).mock.invocationCallOrder[0]).toBeGreaterThan(
+        vi.mocked(confirmDiscardingUnsaved).mock.invocationCallOrder[0]
+      )
+    }
+
+    it("activateSpace", async () => {
+      await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+      expectBaselineAfterPreflight("/Users/me/feature-x")
+    })
+
+    it("activateTab", async () => {
+      const agent = useHerdrStore.getState().agents().find((item) => item.workspaceId === "ws-2")!
+      await useHerdrStore.getState().activateAgent(agent)
+      expectBaselineAfterPreflight("/Users/me/feature-x")
+    })
+
+    it("createSpaceFromFolder", async () => {
+      vi.mocked(herdrWorkspaceCreate).mockResolvedValue(createdSpace)
+      vi.mocked(herdrSnapshot).mockResolvedValue(snapshotWithWorkspace("ws-new", "new", "/tmp/new"))
+      await useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+      expectBaselineAfterPreflight("/tmp/new")
+    })
+
+    it("restoreFocusedState", async () => {
+      useWorkspaceStore.setState({ workspacePath: "/Users/me/feature-x" })
+      await useHerdrStore.getState().restoreFocusedState("default")
+      expectBaselineAfterPreflight("/Users/me/yuzora")
+    })
+  })
+
   it("keeps focus and authoritative order when a pre-drop snapshot arrives late", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")

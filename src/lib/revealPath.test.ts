@@ -2,16 +2,17 @@ import { afterEach, expect, it, vi } from "vitest"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { useHostStore } from "@/state/hostStore"
 import { remoteFilePath } from "./runtimeIdentity"
-import { revealPathInSystem, systemRevealPath } from "./revealPath"
+import { openFileExternally, revealPathInSystem, systemRevealPath } from "./revealPath"
 
 const activateWorkspace = vi.hoisted(() => vi.fn())
 const openDirectory = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
-vi.mock("./ipc", () => ({ openWorkspaceDirectory: openDirectory, openWorkspace: activateWorkspace }))
+const openFile = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+vi.mock("./ipc", () => ({ openWorkspaceDirectory: openDirectory, openWorkspaceFile: openFile, openWorkspace: activateWorkspace }))
 const native = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 vi.mock("./hostIpc", () => ({ revealHostPath: native }))
 const opener = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: opener }))
-afterEach(() => { vi.restoreAllMocks(); useHostStore.setState({ hosts: {} }); opener.mockClear(); native.mockClear(); openDirectory.mockReset().mockResolvedValue(undefined); activateWorkspace.mockReset(); useWorkspaceStore.setState({ workspaceCapabilityId: null, workspacePath: null }) })
+afterEach(() => { vi.restoreAllMocks(); useHostStore.setState({ hosts: {} }); opener.mockClear(); native.mockClear(); openDirectory.mockReset().mockResolvedValue(undefined); openFile.mockReset().mockResolvedValue(undefined); activateWorkspace.mockReset(); useWorkspaceStore.setState({ workspaceCapabilityId: null, workspacePath: null }) })
 
 it("reveals WSL files in their connected distribution with Unicode and spaces intact", async () => {
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
@@ -125,4 +126,38 @@ it("bounds capability recovery to one renewal if native rejects the new grant to
   await expect(revealPathInSystem("/workspace", true)).rejects.toBe("workspace-capability-missing")
   expect(activateWorkspace).toHaveBeenCalledTimes(1)
   expect(openDirectory).toHaveBeenCalledTimes(2)
+})
+
+it("opens a workspace file in the system program through the workspace grant, never the opener plugin", async () => {
+  useWorkspaceStore.setState({ workspacePath: "/workspace", workspaceCapabilityId: "ws-current" })
+  await openFileExternally("/workspace/docs/中文 manual.pdf")
+  expect(openFile).toHaveBeenCalledWith("ws-current", "/workspace/docs/中文 manual.pdf")
+  expect(opener).not.toHaveBeenCalled()
+})
+
+it("refuses to open files outside the workspace or remote files without asking native", async () => {
+  useWorkspaceStore.setState({ workspacePath: "/workspace", workspaceCapabilityId: "ws-current" })
+  await expect(openFileExternally("/elsewhere/a.pdf")).rejects.toThrow("workspace")
+  await expect(openFileExternally(remoteFilePath("ssh-host", "/workspace/a.pdf"))).rejects.toThrow("workspace")
+  useWorkspaceStore.setState({ workspacePath: null, workspaceCapabilityId: null })
+  await expect(openFileExternally("/workspace/a.pdf")).rejects.toThrow("workspace")
+  expect(openFile).not.toHaveBeenCalled()
+})
+
+it("surfaces native refusals for a file without retrying them", async () => {
+  useWorkspaceStore.setState({ workspacePath: "/workspace", workspaceCapabilityId: "ws-current" })
+  openFile.mockRejectedValueOnce("Programs and scripts are not launched from here")
+  await expect(openFileExternally("/workspace/setup.exe")).rejects.toBe("Programs and scripts are not launched from here")
+  expect(activateWorkspace).not.toHaveBeenCalled()
+  expect(openFile).toHaveBeenCalledTimes(1)
+})
+
+it("renews an expired grant once when opening a file", async () => {
+  useWorkspaceStore.setState({ workspacePath: "/workspace", workspaceCapabilityId: "ws-old-process" })
+  openFile.mockRejectedValueOnce("workspace-capability-missing")
+  activateWorkspace.mockResolvedValue({ canonicalPath: "/workspace", capabilityId: "ws-fresh" })
+  await openFileExternally("/workspace/a.pdf")
+  expect(openFile).toHaveBeenNthCalledWith(1, "ws-old-process", "/workspace/a.pdf")
+  expect(openFile).toHaveBeenNthCalledWith(2, "ws-fresh", "/workspace/a.pdf")
+  expect(useWorkspaceStore.getState().workspaceCapabilityId).toBe("ws-fresh")
 })

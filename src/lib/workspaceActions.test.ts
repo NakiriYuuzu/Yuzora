@@ -14,6 +14,7 @@ vi.mock("@/editor/saveDocument", () => ({ saveDirtyTab: vi.fn() }))
 import { openWorkspaceAtPath, pickWorkspace } from "@/lib/workspaceActions"
 import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
 import { saveDirtyTab } from "@/editor/saveDocument"
+import { snapshotDirtyTabs } from "@/lib/unsavedGuard"
 import { useConfirmDialogStore } from "@/state/confirmDialogStore"
 import { useRecentWorkspacesStore } from "@/state/recentWorkspaces"
 import { saveWorkspaceSession } from "@/state/workspaceSession"
@@ -61,7 +62,11 @@ beforeEach(() => {
     })
     vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
     vi.mocked(startWatch).mockReset().mockResolvedValue(undefined)
-    vi.mocked(saveDirtyTab).mockReset().mockResolvedValue({ kind: "saved" })
+    // Like the real save: a written tab is clean again.
+    vi.mocked(saveDirtyTab).mockReset().mockImplementation(async (path) => {
+        useWorkspaceStore.getState().markDirty(path, false)
+        return { kind: "saved" }
+    })
     openPicker.mockReset().mockResolvedValue(null)
     useConfirmDialogStore.setState({ pending: null })
     useRecentWorkspacesStore.setState({ list: [] })
@@ -278,4 +283,164 @@ test("a superseded image-session restore never publishes a half-switched workspa
     expect(await opening).toBe(false)
     expect(useWorkspaceStore.getState().workspacePath).toBe("/current")
     expect(startWatch).not.toHaveBeenCalled()
+})
+
+// A11b-F4：preflight 只看「當下」的 dirty；之後 await openWorkspace（遠端可能數秒）
+// 期間新增的編輯，必須在 clearAll 丟棄舊工作區前再問一次。
+const cleanWorkspace = () =>
+    useWorkspaceStore.setState({
+        workspacePath: "/old",
+        activeGroupIndex: 0,
+        groups: [
+            {
+                activePath: "/old/a.ts",
+                tabs: [{ path: "/old/a.ts", name: "a.ts", dirty: false, externallyModified: false }]
+            }
+        ]
+    })
+
+function deferOpenWorkspace(): () => void {
+    let finish!: (value: Awaited<ReturnType<typeof openWorkspace>>) => void
+    vi.mocked(openWorkspace).mockImplementationOnce(
+        () => new Promise((resolve) => { finish = resolve })
+    )
+    return () => finish({ canonicalPath: "/canonical", capabilityId: "ws-capability" })
+}
+
+test("preflight 通過後、openWorkspace 等待期間才變 dirty：clearAll 前重新詢問，cancel 保留舊工作區與編輯", async () => {
+    cleanWorkspace()
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new")
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+    expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({ path: "/old/a.ts", dirty: true })
+    expect(saveDirtyTab).not.toHaveBeenCalled()
+    expect(startWatch).not.toHaveBeenCalled()
+})
+
+test("重新詢問選 cancel：open_workspace 已撤銷舊 grant，要把 capability 還給仍顯示的舊工作區", async () => {
+    cleanWorkspace()
+    useWorkspaceStore.setState({ workspaceCapabilityId: "ws-old" })
+    const finish = deferOpenWorkspace()
+    vi.mocked(openWorkspace).mockResolvedValueOnce({ canonicalPath: "/old", capabilityId: "ws-restored" })
+    const opening = openWorkspaceAtPath("/new")
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(vi.mocked(openWorkspace).mock.calls).toEqual([["/new"], ["/old"]])
+    expect(useWorkspaceStore.getState()).toMatchObject({ workspacePath: "/old", workspaceCapabilityId: "ws-restored" })
+    expect(useWorkspaceStore.getState().groups[0].tabs[0]).toMatchObject({ path: "/old/a.ts", dirty: true })
+})
+
+test("重新詢問選 cancel 時已被較新的開啟取代：不重新啟用舊工作區，以免撤銷較新的 grant", async () => {
+    cleanWorkspace()
+    useWorkspaceStore.setState({ workspaceCapabilityId: "ws-old" })
+    let current = true
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new", { shouldOpen: () => current })
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    current = false
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(openWorkspace).toHaveBeenCalledTimes(1)
+    expect(useWorkspaceStore.getState().workspaceCapabilityId).toBe("ws-old")
+})
+
+test("等待期間新增的 dirty：重新詢問選 save → 先存檔再切換", async () => {
+    cleanWorkspace()
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new")
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("save")
+    expect(await opening).toBe(true)
+    expect(saveDirtyTab).toHaveBeenCalledWith("/old/a.ts")
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/canonical")
+})
+
+test("等待期間新增的 dirty：重新詢問選 discard → 只問一次就切換", async () => {
+    cleanWorkspace()
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new")
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("discard")
+    expect(await opening).toBe(true)
+    expect(saveDirtyTab).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/canonical")
+})
+
+test("等待期間重新詢問後 shouldOpen 已失效：不切換工作區", async () => {
+    cleanWorkspace()
+    let current = true
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new", { shouldOpen: () => current })
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    current = false
+    useConfirmDialogStore.getState().respond("discard")
+    expect(await opening).toBe(false)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+})
+
+test("skipUnsavedGuard：呼叫端 preflight 之後新增的編輯同樣會被攔下", async () => {
+    cleanWorkspace()
+    // 呼叫端（HERDR 啟用路徑）preflight 通過當下的狀態；之後還有多趟 IPC。
+    const unsavedBaseline = snapshotDirtyTabs()
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new", { skipUnsavedGuard: true, unsavedBaseline })
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+})
+
+test("skipUnsavedGuard：preflight 已選 discard 的 dirty 分頁不會被重複詢問", async () => {
+    dirtyWorkspace()
+    const unsavedBaseline = snapshotDirtyTabs()
+    expect(await openWorkspaceAtPath("/new", { skipUnsavedGuard: true, unsavedBaseline })).toBe(true)
+    expect(useConfirmDialogStore.getState().pending).toBeNull()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/canonical")
+})
+
+test("skipUnsavedGuard 沒有帶 baseline：至少涵蓋進入之後新增的編輯", async () => {
+    cleanWorkspace()
+    const finish = deferOpenWorkspace()
+    const opening = openWorkspaceAtPath("/new", { skipUnsavedGuard: true })
+    await vi.waitFor(() => expect(openWorkspace).toHaveBeenCalledWith("/new"))
+    useWorkspaceStore.getState().markDirty("/old/a.ts", true)
+    finish()
+    await vi.waitFor(() => expect(useConfirmDialogStore.getState().pending).not.toBeNull())
+    useConfirmDialogStore.getState().respond("cancel")
+    expect(await opening).toBe(false)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/old")
+})
+
+test("skipUnsavedGuard 沒有帶 baseline：進入時已 dirty 的分頁視為呼叫端已處理", async () => {
+    dirtyWorkspace()
+    const opening = openWorkspaceAtPath("/new", { skipUnsavedGuard: true })
+    await vi.waitFor(() => expect(useWorkspaceStore.getState().workspacePath).toBe("/canonical"))
+    expect(useConfirmDialogStore.getState().pending).toBeNull()
+    expect(await opening).toBe(true)
 })

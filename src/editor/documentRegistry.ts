@@ -88,6 +88,12 @@ export function updateBuffer(path: string, content: string, generation: number, 
     }
 }
 
+// The unmounted editor buffer of a cached text document, synchronously.
+export function bufferContent(path: string): string | undefined {
+    const r = registry.get(documentKey(path))?.result
+    return r?.kind === "full" || r?.kind === "limited" ? r.content : undefined
+}
+
 // Retire every old token, including dropped documents, without retaining their
 // paths forever. A new base exceeds all issued generations so overlapping paths
 // remount and late pane flushes cannot match a reopened document's token.

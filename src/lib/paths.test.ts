@@ -11,6 +11,8 @@ import {
   nativePathParent,
   rebasePath,
   relativePathWithin,
+  samePathIdentity,
+  uncHost,
   workspacePathBasename,
   workspacePathForDisplay,
 } from "./paths"
@@ -39,6 +41,29 @@ describe("isAbsolutePath", () => {
     expect(isAbsolutePath("")).toBe(false)
     expect(isAbsolutePath(null)).toBe(false)
     expect(isAbsolutePath(undefined)).toBe(false)
+  })
+})
+
+describe("uncHost", () => {
+  it("names the host of UNC paths in every spelling", () => {
+    expect(uncHost("\\\\Server\\share\\a.txt")).toBe("server")
+    expect(uncHost("//server/share/a.txt")).toBe("server")
+    expect(uncHost("\\\\?\\UNC\\server\\share\\a.txt")).toBe("server")
+    expect(uncHost("\\\\host@SSL@443\\dav\\a.txt")).toBe("host@ssl@443")
+  })
+
+  it("reports device namespaces as hosts too", () => {
+    expect(uncHost("\\\\.\\pipe\\name")).toBe(".")
+    expect(uncHost("\\\\?\\Volume{0}\\a")).toBe("?")
+  })
+
+  it("keeps local, verbatim drive and WSL paths local", () => {
+    expect(uncHost("C:\\Users\\me")).toBeNull()
+    expect(uncHost("/home/me")).toBeNull()
+    expect(uncHost("\\\\?\\C:\\Users\\me")).toBeNull()
+    expect(uncHost("\\\\wsl.localhost\\Ubuntu\\home")).toBeNull()
+    expect(uncHost("\\\\WSL$\\Ubuntu\\home")).toBeNull()
+    expect(uncHost("\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home")).toBeNull()
   })
 })
 
@@ -74,6 +99,8 @@ describe("workspacePathBasename", () => {
     expect(workspacePathBasename("\\\\?\\C:\\Work\\專案 空間")).toBe("專案 空間")
     expect(workspacePathBasename("/Users/yuuzu/My Repo/")).toBe("My Repo")
     expect(workspacePathBasename("\\\\?\\UNC\\Server\\Share\\Repo\\")).toBe("Repo")
+    // Forward-slash verbatim UNC stays Windows even after its prefix is stripped.
+    expect(workspacePathBasename("//?/UNC/srv/share/w\\a.txt")).toBe("a.txt")
   })
 
   it("returns meaningful drive, share, and POSIX roots", () => {
@@ -353,5 +380,41 @@ describe("isSafeLeafName", () => {
     expect(isSafeLeafName(":foo")).toBe(false)
     expect(isSafeLeafName("\\\\server\\share\\a")).toBe(false)
     expect(isSafeLeafName("//server/share/a")).toBe(false)
+  })
+})
+
+describe("POSIX file names that contain a backslash", () => {
+  // `\` is an ordinary file-name character on POSIX; only Windows paths use it as a separator.
+  const root = "/w"
+  const path = "/w/a\\b.txt"
+
+  it("keeps the backslash inside one segment instead of splitting it", () => {
+    expect(relativePathWithin(root, path)).toBe("a\\b.txt")
+    expect(isSameOrDescendantPath("/w/a", path)).toBe(false)
+  })
+
+  it("does not alias the name onto the slash-separated path", () => {
+    expect(canonicalPathKey(path)).toBe(path)
+    expect(canonicalPathKey(path)).not.toBe(canonicalPathKey("/w/a/b.txt"))
+    expect(samePathIdentity(path, "/w/a/b.txt")).toBe(false)
+  })
+
+  it("takes the parent and the display name from forward slashes only", () => {
+    expect(nativePathParent(path)).toBe("/w")
+    expect(nativePathParent("/a\\b")).toBe("/")
+    expect(workspacePathBasename(path)).toBe("a\\b.txt")
+    expect(workspacePathBasename("/w/dir\\")).toBe("dir\\")
+  })
+
+  it("rebases the name unchanged", () => {
+    expect(rebasePath(root, "/x", path)).toBe("/x/a\\b.txt")
+  })
+
+  it("still treats the backslash as a separator for Windows paths", () => {
+    expect(relativePathWithin("C:\\w", "C:\\w\\a\\b.txt")).toBe("a/b.txt")
+    expect(relativePathWithin("\\\\?\\C:\\w", "C:\\w\\a\\b.txt")).toBe("a/b.txt")
+    expect(nativePathParent("C:\\w\\a\\b.txt")).toBe("C:\\w\\a")
+    expect(workspacePathBasename("C:\\w\\a\\b.txt")).toBe("b.txt")
+    expect(workspacePathBasename("//?/UNC/Server/Share/Repo")).toBe("Repo")
   })
 })

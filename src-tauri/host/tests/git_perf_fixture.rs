@@ -206,9 +206,14 @@ fn measure_status_on_large_fixture() {
 fn watcher_storm(root: &Path, files: usize) {
     let batches = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(Vec<String>, bool)>::new()));
     let seen = batches.clone();
-    let _watcher = yuzora_host::watcher::build_classified_watcher(root, move |paths, relevant| {
-        seen.lock().unwrap().push((paths, relevant));
-    })
+    // The fixture repository is the measured workspace, so Git may classify.
+    let _watcher = yuzora_host::watcher::build_classified_watcher(
+        root,
+        |_| true,
+        move |paths, relevant| {
+            seen.lock().unwrap().push((paths, relevant));
+        },
+    )
     .unwrap();
     std::thread::sleep(Duration::from_millis(500));
     for index in 0..files {
