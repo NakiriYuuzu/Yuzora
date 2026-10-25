@@ -93,6 +93,7 @@
     },
   },
   "patchedDependencies": {
+    "@codemirror/search@6.7.2": "patches/@codemirror%2Fsearch@6.7.2.patch",
     "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch",
   },
   "overrides": {

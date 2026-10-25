@@ -8,6 +8,7 @@ on:
       - 'src-tauri/companion-net/**'
       - 'src-tauri/host/**'
       - 'src-tauri/vendor/tiberius-0.12.3-yuzora/**'
+      - 'src-tauri/vendor/portable-pty-0.9.0-yuzora/**'
       - '.github/workflows/companion.yml'
 
 permissions:

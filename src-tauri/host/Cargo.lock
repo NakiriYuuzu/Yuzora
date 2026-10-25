@@ -1003,8 +1003,6 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 [[package]]
 name = "portable-pty"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e"
 dependencies = [
  "anyhow",
  "bitflags 1.3.2",
@@ -2254,6 +2252,7 @@ dependencies = [
  "chrono",
  "dirs",
  "encoding_rs",
+ "encoding_rs_io",
  "futures-util",
  "grep-matcher",
  "grep-regex",
