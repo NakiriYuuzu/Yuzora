@@ -576,6 +576,89 @@ describe("BranchPopover", () => {
         expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
     })
 
+    it.each([false, true])("does not treat a local upstream as a remote owner (current=%s)", async (isCurrent) => {
+        const local = [{ name: "consumer", upstream: "origin/topic", upstreamRef: "refs/heads/origin/topic", ahead: 0, behind: 0, isCurrent, gone: false }]
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        const option = screen.getByRole("option", { name: "origin/topic" })
+        fireEvent.click(option)
+        await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith("/w", "topic", "refs/remotes/origin/topic", false))
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
+    })
+
+    it.each(["refs/heads/origin/topic", null])("does not mark a non-remote upstream as Tracked (%s)", (upstreamRef) => {
+        const local = [{ name: "consumer", upstream: "origin/topic", upstreamRef, ahead: 0, behind: 0, isCurrent: false, gone: false }]
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        expect(within(screen.getByRole("option", { name: "origin/topic" })).queryByText("Tracked")).not.toBeInTheDocument()
+    })
+
+    it("selects the real remote owner despite a colliding local upstream", async () => {
+        const local = [
+            { name: "local-consumer", upstream: "origin/topic", upstreamRef: "refs/heads/origin/topic", ahead: 0, behind: 0, isCurrent: true, gone: false },
+            { name: "remote-consumer", upstream: "origin/topic", upstreamRef: "refs/remotes/origin/topic", ahead: 0, behind: 0, isCurrent: false, gone: false }
+        ]
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        const option = screen.getByRole("option", { name: "origin/topic" })
+        expect(within(option).getByText("Tracked")).toBeInTheDocument()
+        fireEvent.click(option)
+        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "remote-consumer", false))
+        expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+    })
+
+    it("treats explicit null as authoritative for remote activation", async () => {
+        const local = [{ name: "consumer", upstream: "origin/topic", upstreamRef: null, ahead: 0, behind: 0, isCurrent: true, gone: false }]
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/topic" }))
+        await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith("/w", "topic", "refs/remotes/origin/topic", false))
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
+    })
+
+    it("does not mutate for the current full-ref remote owner", async () => {
+        const local = [{ name: "consumer", upstream: "origin/topic", upstreamRef: "refs/remotes/origin/topic", ahead: 0, behind: 0, isCurrent: true, gone: false }]
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        await act(async () => fireEvent.click(screen.getByRole("option", { name: "origin/topic" })))
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
+        expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+    })
+
+    it("requires explicit local selection when multiple full refs own a remote", async () => {
+        const local = ["first", "second"].map((name) => ({ name, upstream: "origin/topic", upstreamRef: "refs/remotes/origin/topic", ahead: 0, behind: 0, isCurrent: false, gone: false }))
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/topic" }))
+        expect(await screen.findByText(/multiple local branches track origin\/topic/i)).toBeInTheDocument()
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
+        expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+    })
+
+    it("rechecks the full upstream namespace after an alternate-name dialog", async () => {
+        const local = [{ name: "topic", upstream: null, upstreamRef: null, ahead: 0, behind: 0, isCurrent: true, gone: false }]
+        useGitStore.setState({ branches: branches({ local, remote: ["origin/topic"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/topic" }))
+        expect(useTextInputDialogStore.getState().pending).not.toBeNull()
+        act(() => {
+            useGitStore.setState({ branches: branches({ local: [
+                ...local,
+                { name: "consumer", upstream: "origin/topic", upstreamRef: "refs/heads/origin/topic", ahead: 0, behind: 0, isCurrent: false, gone: false }
+            ], remote: ["origin/topic"] }) })
+            useTextInputDialogStore.getState().respond("from-origin")
+        })
+        await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith("/w", "from-origin", "refs/remotes/origin/topic", false))
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
+    })
+
     it("lists tag dates, groups by prefix, and searches full tag names only in Tags", () => {
         useGitStore.setState({
             branches: branches({
@@ -839,6 +922,62 @@ describe("BranchPopover", () => {
         act(() => useTextInputDialogStore.getState().respond("main"))
         expect(await screen.findByText(/main already exists/i)).toBeInTheDocument()
         expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+    })
+
+    it.each([null, "from-origin"])("requests a usable local name for direct remote HEAD (answer=%s)", async (answer) => {
+        useGitStore.setState({ branches: branches({ remote: ["origin/HEAD"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/HEAD" }))
+        expect(useTextInputDialogStore.getState().pending).toMatchObject({
+            title: "Choose a local branch name",
+            description: "HEAD is reserved by Git. Enter a local branch name for origin/HEAD.",
+            initialValue: ""
+        })
+        expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+        await act(async () => useTextInputDialogStore.getState().respond(answer))
+        if (answer) {
+            await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith("/w", answer, "refs/remotes/origin/HEAD", false))
+        } else {
+            expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+        }
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
+    })
+
+    it("creates nested remote HEAD names without prompting", async () => {
+        useGitStore.setState({ branches: branches({ remote: ["origin/feature/HEAD"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/feature/HEAD" }))
+        await waitFor(() => expect(ipc.gitCreateBranch).toHaveBeenCalledWith("/w", "feature/HEAD", "refs/remotes/origin/feature/HEAD", false))
+        expect(useTextInputDialogStore.getState().pending).toBeNull()
+    })
+
+    it("checks out an existing direct HEAD owner without prompting", async () => {
+        useGitStore.setState({ branches: branches({
+            local: [{ name: "owner", upstream: "origin/HEAD", upstreamRef: "refs/remotes/origin/HEAD", ahead: 0, behind: 0, isCurrent: false, gone: false }],
+            remote: ["origin/HEAD"]
+        }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/HEAD" }))
+        await waitFor(() => expect(ipc.gitCheckout).toHaveBeenCalledWith("/w", "owner", false))
+        expect(useTextInputDialogStore.getState().pending).toBeNull()
+        expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+    })
+
+    it("drops a direct HEAD name response after switching repositories", async () => {
+        useGitStore.setState({ branches: branches({ remote: ["origin/HEAD"] }) })
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        selectTab(/remote/i)
+        fireEvent.click(screen.getByRole("option", { name: "origin/HEAD" }))
+        expect(useTextInputDialogStore.getState().pending).not.toBeNull()
+        await act(async () => {
+            useGitStore.setState({ environment: { status: "ready", root: "/other", version: "2.50" } })
+            useTextInputDialogStore.getState().respond("from-origin")
+        })
+        expect(ipc.gitCreateBranch).not.toHaveBeenCalled()
+        expect(ipc.gitCheckout).not.toHaveBeenCalled()
     })
 
     it("cancelling create-from-tag does not start a branch", async () => {

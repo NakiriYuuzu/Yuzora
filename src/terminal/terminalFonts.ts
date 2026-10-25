@@ -1,5 +1,6 @@
 const CJK_FALLBACK = '"PingFang TC", "Microsoft JhengHei", "Noto Sans CJK TC", "Hiragino Sans", "Yu Gothic", monospace'
-const JETBRAINS_MONO = '"JetBrains Mono Variable", "JetBrains Mono"'
+export const BUNDLED_TERMINAL_FONT = '"JetBrains Mono Variable"'
+const JETBRAINS_MONO = `${BUNDLED_TERMINAL_FONT}, "JetBrains Mono"`
 
 export const TERMINAL_FONTS = [
   { id: 'jetbrains', name: 'JetBrains Mono', stack: `${JETBRAINS_MONO}, ${CJK_FALLBACK}` },
@@ -15,4 +16,9 @@ export function normalizeTerminalFontFamily(value: unknown): TerminalFontFamily 
 }
 export function terminalFontStack(value: TerminalFontFamily): string {
   return (TERMINAL_FONTS.find(font => font.id === value) ?? TERMINAL_FONTS[0]).stack
+}
+
+/** Keep the current fallback face stable until the bundled font can be applied. */
+export function terminalFallbackFontStack(value: TerminalFontFamily): string {
+  return terminalFontStack(value).replace(`${JETBRAINS_MONO}, `, '')
 }

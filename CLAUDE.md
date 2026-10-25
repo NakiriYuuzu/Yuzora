@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Yuzora：Tauri 2 + React 19 的 Agent Development Environment（ADE），融合 HERDR execution／terminal runtime；Spaces、named Sessions、Attention、Agents、編輯器、SSH/SFTP、資料庫、終端機與 git 共用同一個桌面工作面。GitHub：`NakiriYuuzu/Yuzora`。
 
+各 agent 共用的規則（Release 平台支援、shadcn first、Rust 建置目錄重用、Agent skills）只寫在 AGENTS.md，這裡直接匯入；本檔只放 Claude 補充內容。
+
+@AGENTS.md
+
 ## 指令
 
 以下 shell snippets 使用 Bash／Git Bash／WSL 語法。Windows PowerShell 請拆成多行，並用 `$env:NAME = ...` 設定環境變數。
@@ -28,6 +32,8 @@ cargo fmt --package yuzora -- --check
 ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json
 ```
 
+在 worktree／lane 或 `output/` 快照裡執行 cargo 前，先依 AGENTS.md「Rust 建置目錄重用」設定 `CARGO_TARGET_DIR`。
+
 資料庫 integration 測試（需 Docker；密碼為 fixture 專用，非機密）：
 
 ```bash
@@ -37,7 +43,7 @@ cd src-tauri && YUZORA_P8_DATABASE_PASSWORD='Yuzora-P8-Only-2026!' \
   cargo test --locked --test database_integration -- --ignored
 ```
 
-Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact push CI 成功才由 `release.yml` 自動建立 tag、建置及發布。macOS App 僅支援 Apple Silicon，不使用 Apple 簽章／公證；Stable 保留 Tauri updater 簽章。完整流程見 `docs/operations.md`，不手動推 release tag。
+Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact push CI 成功才由 `release.yml` 自動建立 tag、建置及發布。平台與簽章規則見 AGENTS.md「Release platform support」。完整流程見 `docs/operations.md`，不手動推 release tag。
 
 ## 架構
 
@@ -69,20 +75,6 @@ Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact 
 frontend checks（lint→typecheck→build）與 3 個 test shards 平行；固定名稱 `Frontend (lint · typecheck · test · build)` aggregator 要求全部成功。checks／各 shard 先建立 Pages/demo fixtures。另有三平台 `cargo check --locked --all-targets`＋macOS 上 fmt／clippy／`cargo test`＋Linux 真實資料庫 integration。
 
 **Clippy 是 exact baseline**（`.github/clippy-baseline.json`，fingerprint＝code/file/line/message/count）：任何 warning 的新增、消失、搬移都會 fail。修掉或新增 warning 後要同步更新該 JSON（腳本只驗證、不重產）。
-
-## Agent skills
-
-### Issue tracker
-
-工作項目與 PRD 追蹤於 GitHub `NakiriYuuzu/Yuzora` Issues。見 `docs/agents/issue-tracker.md`。
-
-### Triage labels
-
-使用五個 canonical triage roles：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。見 `docs/agents/triage-labels.md`。
-
-### Domain docs
-
-本 repo 採 single-context domain layout，以 `.yuuzu/CONTEXT.html` 與 `.yuuzu/adr/` 為權威來源。見 `docs/agents/domain.md`。
 
 ## 慣例與路徑
 

@@ -19,6 +19,7 @@ on:
       - 'src-tauri/host/**'
       - 'src-tauri/herdr-runtime.json'
       - 'src-tauri/vendor/tiberius-0.12.3-yuzora/**'
+      - 'src-tauri/vendor/portable-pty-0.9.0-yuzora/**'
       - 'scripts/prepare-host-resources*'
       - 'scripts/prepare-herdr-resources*'
       - 'scripts/verify-herdr-runtime.ts'

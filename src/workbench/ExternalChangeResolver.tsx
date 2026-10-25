@@ -45,6 +45,7 @@ export function openResolverForTab(groupIndex: number, path: string): void {
 
 export function ExternalChangeResolver() {
     const resolverPath = useUiStore((s) => s.resolverPath)
+    const session = useUiStore((s) => s.resolverNonce)
     if (!resolverPath) return null
-    return <Suspense fallback={null}><ResolverBody key={resolverPath} path={resolverPath} /></Suspense>
+    return <Suspense fallback={null}><ResolverBody key={`${session}:${resolverPath}`} path={resolverPath} session={session} /></Suspense>
 }

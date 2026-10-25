@@ -6,6 +6,16 @@ const table: DbTable = { catalog: "db", schema: "main", name: 'odd"table', kind:
 const metadata: DbColumn[] = [{ name: "id", type: "INTEGER", pk: true, notnull: true }, { name: "name", type: "TEXT", pk: false, notnull: false }]
 const row: DbValue[] = [{ kind: "integer", value: "9223372036854775807" }, { kind: "text", value: "O'Brien" }]
 describe("database editing", () => {
+    it.each([false, true])("keeps generated cells read-only, including NULL=%s", (isNull) => {
+        const generated = [metadata[0], { ...metadata[1], generated: true }]
+        const values: DbValue[] = [row[0], isNull ? { kind: "null" } : row[1]]
+        expect(() => buildCellUpdate("sqlite", table, generated, ["id", "name"], values, "name", { kind: "text", value: "changed" })).toThrow("readOnlyCell")
+    })
+    it("keeps ordinary columns and legacy metadata editable", () => {
+        const expected = buildCellUpdate("sqlite", table, metadata, ["id", "name"], row, "name", { kind: "text", value: "changed" })
+        const ordinary = metadata.map(column => ({ ...column, generated: false }))
+        expect(buildCellUpdate("sqlite", table, ordinary, ["id", "name"], row, "name", { kind: "text", value: "changed" })).toBe(expected)
+    })
     it("quotes identifiers and values, preserves large keys and guards the original cell", () => {
         expect(buildCellUpdate("sqlite", table, metadata, ["id", "name"], row, "name", { kind: "text", value: "'; DROP TABLE users; --" })).toBe(`UPDATE "main"."odd""table" SET "name" = '''; DROP TABLE users; --' WHERE "id" = 9223372036854775807 AND "name" = 'O''Brien' COLLATE BINARY`)
     })

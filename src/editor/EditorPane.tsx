@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 import { EditorState } from "@codemirror/state"
+import { historyField } from "@codemirror/commands"
 import { EditorView } from "@codemirror/view"
 import { FileX2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { buildExtensions, hasVeryLongLine } from "./cmExtensions"
 import { minimap, minimapCompartment } from "./minimap"
 import { conflictMarkers } from "./conflictMarkers"
-import { getDocument, updateBuffer, documentGeneration, saveDocumentContent } from "./documentRegistry"
+import { getCachedDocument, getDocument, updateBuffer, documentGeneration, saveDocumentContent, type RegistryEntry } from "./documentRegistry"
 import { getView, registerView, unregisterView } from "./viewRegistry"
 import { editorViewStateTracker, restoreEditorViewState } from "./editorViewState"
 import { maybeInterceptSave } from "../workbench/ExternalChangeResolver"
@@ -67,8 +68,15 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
     useEffect(() => {
         let disposed = false
         const generation = documentGeneration(path)
+        let documentEntry: RegistryEntry | undefined
+        const ownsDocument = (view: EditorView) => documentEntry !== undefined
+            && getView(path) === view
+            && useWorkspaceStore.getState().workspacePath === workspacePath
+            && documentGeneration(path) === generation
+            && getCachedDocument(path, workspacePath) === documentEntry
         void getDocument(path).then((entry) => {
             if (disposed) return
+            documentEntry = entry
             setResult(entry.result)
             const r = entry.result
             hydrateLineEnding(
@@ -128,12 +136,25 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
             const editorSettings = useEditorSettingsStore.getState()
             const reveal = useWorkspaceStore.getState().pendingReveal
             const revealPending = reveal?.path === path
+            // Let CodeMirror normalize the text before checking whether the saved
+            // history belongs to it. A replaced buffer must start a new history.
+            const doc = EditorState.create({ doc: content }).doc
+            const savedHistory = entry.editorHistory
             let state = EditorState.create({
-                doc: content,
+                doc,
                 extensions: [
                     ...buildExtensions(path, flags, () => markDirty(path, true), save, editorSettings.minimap),
                     conflictMarkers(),
-                    editorViewStateTracker(workspacePath, path)
+                    editorViewStateTracker(workspacePath, path),
+                    savedHistory?.doc.eq(doc) ? historyField.init(() => savedHistory.history) : [],
+                    EditorView.updateListener.of(update => {
+                        if (update.state.field(historyField) !== update.startState.field(historyField)
+                            && ownsDocument(update.view)) {
+                            // Keep the raw immutable field current for live renames,
+                            // without serializing the undo stack on each keystroke.
+                            entry.editorHistory = { doc: update.state.doc, history: update.state.field(historyField) }
+                        }
+                    })
                 ]
             })
             // Return to where this document was last left (tab, Space or
@@ -162,7 +183,12 @@ export function EditorPane({ path, groupIndex, onReady }: { path: string; groupI
             disposed = true
             const view = viewRef.current
             if (view) {
-                updateBuffer(path, view.state.doc.toString(), generation, workspacePath)
+                // Retired panes must not overwrite a replacement entry or a newer
+                // same-path view. Buffer and history share the same owner check.
+                if (ownsDocument(view)) {
+                    updateBuffer(path, view.state.doc.toString(), generation, workspacePath)
+                    documentEntry!.editorHistory = { doc: view.state.doc, history: view.state.field(historyField) }
+                }
                 // Pass this pane's own view so a split group that reused the path
                 // isn't unregistered out from under it (m4).
                 unregisterView(path, view)

@@ -21,24 +21,6 @@ export function dirtyTabPaths(): string[] {
     ]
 }
 
-/**
- * 關閉分割時會跟著右側 group 消失的未存檔案。左側仍開著同一路徑時，文件與
- * 編輯內容會保留，不必詢問。
- */
-export function dirtyPathsLostByClosingSplit(): string[] {
-    const [kept, ...removed] = useWorkspaceStore.getState().groups
-    if (!kept) return []
-    const keptPaths = new Set(kept.tabs.filter(isFileTab).map((tab) => tab.path))
-    return [
-        ...new Set(
-            removed
-                .flatMap((g) => g.tabs)
-                .filter((tab) => isFileTab(tab) && tab.dirty && !keptPaths.has(tab.path))
-                .map((tab) => tab.path)
-        )
-    ]
-}
-
 type UnsavedLabels = {
     title: string
     description: string
@@ -87,11 +69,6 @@ export function confirmDiscardingUnsavedSince(
     labels: UnsavedLabels
 ): Promise<boolean> {
     return confirmDiscardingPaths(() => dirtyPathsSince(snapshot), labels)
-}
-
-/** 關閉分割前的 dirty gate：只詢問會跟右側 group 一起消失的檔案。 */
-export function confirmClosingSplit(labels: UnsavedLabels): Promise<boolean> {
-    return confirmDiscardingPaths(dirtyPathsLostByClosingSplit, labels)
 }
 
 async function confirmDiscardingPaths(pendingPaths: () => string[], labels: UnsavedLabels): Promise<boolean> {

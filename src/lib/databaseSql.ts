@@ -175,13 +175,23 @@ function fail(
     return { ok: false, error: { code, message, position } }
 }
 
+// PostgreSQL's lexer accepts high-bit bytes in identifiers and tags. For UTF-8
+// SQL, scan non-ASCII UTF-16 units without changing source offsets.
+function isPostgresIdentifierStart(char: string | undefined): boolean {
+    return char !== undefined && /[A-Za-z_\u0080-\uFFFF]/.test(char)
+}
+
+function isPostgresIdentifierPart(char: string | undefined): boolean {
+    return char !== undefined && /[A-Za-z0-9_$\u0080-\uFFFF]/.test(char)
+}
+
 function dollarDelimiterAt(source: string, index: number): string | null {
-    if (source[index] !== "$" || isWordPart(source[index - 1])) return null
+    if (source[index] !== "$" || isPostgresIdentifierPart(source[index - 1])) return null
     if (source[index + 1] === "$") return "$$"
-    if (!/[A-Za-z_]/.test(source[index + 1] ?? "")) return null
+    if (!isPostgresIdentifierStart(source[index + 1])) return null
 
     let end = index + 2
-    while (/[A-Za-z0-9_]/.test(source[end] ?? "")) end += 1
+    while (source[end] !== "$" && isPostgresIdentifierPart(source[end])) end += 1
     return source[end] === "$" ? source.slice(index, end + 1) : null
 }
 
@@ -591,12 +601,17 @@ export function splitDatabaseSql(
             }
         }
 
-        if (isWordStart(char)) {
+        if (dialect === "postgres" ? isPostgresIdentifierStart(char) : isWordStart(char)) {
             const start = index
             index += 1
-            while (isWordPart(source[index])) index += 1
+            while (dialect === "postgres" ? isPostgresIdentifierPart(source[index]) : isWordPart(source[index])) index += 1
             mark(start, true)
-            const error = recordWord(source.slice(start, index).toUpperCase(), start)
+            const rawWord = source.slice(start, index)
+            // Unicode case folding must not turn an identifier into BEGIN or
+            // COMMIT (e.g. dotless i). PostgreSQL keywords are ASCII.
+            const word = dialect === "postgres" && /[\u0080-\uFFFF]/.test(rawWord)
+                ? rawWord : rawWord.toUpperCase()
+            const error = recordWord(word, start)
             if (error) return error
             continue
         }

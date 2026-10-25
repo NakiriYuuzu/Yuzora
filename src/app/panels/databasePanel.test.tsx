@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { EditorView } from "@codemirror/view"
 
 import { DatabasePanel, reorderColumns } from "@/app/panels/DatabasePanel"
@@ -16,6 +16,8 @@ import type {
 } from "@/lib/types"
 import { resultPageKey, useDbStore } from "@/state/dbStore"
 import * as dbStoreModule from "@/state/dbStore"
+import { useUiStore } from "@/state/uiStore"
+import { useAnyOverlayOpen } from "@/state/overlayStore"
 
 const originalUserAgent = navigator.userAgent
 
@@ -49,6 +51,8 @@ import {
   dbListTables,
   dbTableColumns,
   dbProfileCreate,
+  dbProfileOpen,
+  dbProfileForget,
   dbQueryCancel,
   dbQueryRun,
   dbResultPageNext,
@@ -188,6 +192,7 @@ beforeEach(() => {
   installLocalStorage()
   localStorage.clear()
   useDbStore.getState().reset()
+  useUiStore.setState({ mode: "database" })
   vi.clearAllMocks()
   mockList.mockResolvedValue([])
   vi.mocked(dbTableColumns).mockResolvedValue([
@@ -249,7 +254,42 @@ it("edits a table cell only after explicit save, then reloads the exact table", 
   expect(mockQueryRun.mock.calls[before + 1][0].statements[0].sql).toBe('SELECT * FROM "main"."people" LIMIT 100')
 })
 
-it("cancels a saving cell edit through its exact edit owner and keeps the dialog open to report it", async () => {
+it.each(["serverDisconnected", "connectionTerminated"] as const)("retains the cell draft and uncertain result after %s", async (failure) => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  const draft = "retained first line\nretained second line"
+  fireEvent.change(await screen.findByRole("textbox", { name: "Value" }), { target: { value: draft } })
+  const pending = deferred<DbQueryRun>()
+  let sent: DbQueryRunRequest | undefined
+  mockQueryRun.mockImplementationOnce(request => {
+    sent = request
+    return pending.promise
+  })
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await waitFor(() => expect(sent?.mode).toBe("tableCellMutation"))
+  await act(async () => {
+    if (failure === "serverDisconnected") pending.reject({ code: "serverDisconnected", message: "owned socket closed" })
+    else pending.resolve({
+      ...panelRunFromResult(sent!, { kind: "execute", affectedRows: null, effectOutcome: "unknown" }),
+      connectionTerminated: true,
+    })
+  })
+  await waitFor(() => expect(useDbStore.getState().connections).toHaveLength(0))
+  expect(screen.getByRole("dialog")).toBeVisible()
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue(draft)
+  expect(screen.getByText("The server did not confirm the change. Check the data before retrying.")).toBeVisible()
+  expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled()
+  expect(mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")).toHaveLength(1)
+})
+
+it.each([
+  ["rolledBack", false],
+  ["unknown", false],
+  ["unknown", true],
+] as const)("reports a cancelled cell edit with its actual %s effect (terminated=%s) and keeps the dialog open", async (effectOutcome, connectionTerminated) => {
   await useDbStore.getState().openConnection("/a.db")
   const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
   await useDbStore.getState().openTableQuery(table)
@@ -268,6 +308,7 @@ it("cancels a saving cell edit through its exact edit owner and keeps the dialog
   fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
   await waitFor(() => expect(request).toBeDefined())
   const sent = request!
+  expect(sent.mode).toBe("tableCellMutation")
   expect(sent.queryRunId).toContain(":edit:")
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
 
@@ -281,17 +322,18 @@ it("cancels a saving cell edit through its exact edit owner and keeps the dialog
   await act(async () => {
     settleRun({
       ...panelRunFromResult(sent, threeCol),
+      connectionTerminated,
       statements: [{
         statementExecutionId: `${sent.queryRunId}:statement:0` as never,
         statementIndex: 0,
         sql: sent.statements[0].sql,
-        effectOutcome: "unknown" as const,
+        effectOutcome,
         result: {
           kind: "cancelled" as const,
           error: {
             engine: "yuzora" as const,
             message: "query cancelled",
-            code: "cancelled",
+            code: connectionTerminated ? "cancelledConnectionTerminated" : "cancelled",
             position: null,
             detail: null,
             hint: null,
@@ -302,8 +344,167 @@ it("cancels a saving cell edit through its exact edit owner and keeps the dialog
     })
   })
 
-  expect(await screen.findByText("Save was cancelled. Refresh the table to confirm the current data.")).toBeVisible()
+  expect(await screen.findByText(effectOutcome === "rolledBack"
+    ? "Save was cancelled. Refresh the table to confirm the current data."
+    : "The server did not confirm the change. Check the data before retrying.")).toBeVisible()
   expect(screen.getByRole("dialog")).toBeVisible()
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue("carol")
+  if (connectionTerminated) {
+    expect(useDbStore.getState().connections).toHaveLength(0)
+    expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled()
+  }
+  expect(mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")).toHaveLength(1)
+})
+
+function CellOverlayProbe() {
+  const open = useAnyOverlayOpen()
+  return <output data-testid="cell-overlay">{String(open)}</output>
+}
+
+async function beginDeferredCellDraft(nullValue = false) {
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<><DatabasePanel /><CellOverlayProbe /></>)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  const draft = "original owner\nretained draft"
+  fireEvent.change(await screen.findByRole("textbox", { name: "Value" }), { target: { value: draft } })
+  if (nullValue) fireEvent.click(screen.getByRole("checkbox", { name: "NULL" }))
+  const pending = deferred<DbQueryRun>()
+  let sent: DbQueryRunRequest | undefined
+  mockQueryRun.mockImplementationOnce(request => {
+    sent = request
+    return pending.promise
+  })
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await waitFor(() => expect(sent).toBeDefined())
+  return { table, draft, pending, sent: sent! }
+}
+
+it("keeps the disconnected draft's profile label while falling back to another profile", async () => {
+  seedSameTargetProfiles()
+  const other = useDbStore.getState().queryBuckets[adminDescriptorId]
+  const { draft, pending, sent } = await beginDeferredCellDraft()
+  await act(async () => pending.reject({ code: "serverDisconnected", message: "owned disconnect" }))
+  expect(useDbStore.getState().activeDescriptorId).toBe(adminDescriptorId)
+  expect(useDbStore.getState().queryBuckets[adminDescriptorId]).toBe(other)
+  expect(screen.getByRole("dialog")).toHaveTextContent("Analytics reader")
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue(draft)
+  expect(screen.getByText("The server did not confirm the change. Check the data before retrying.")).toBeVisible()
+  expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled()
+  expect(mockQueryRun.mock.calls.filter(([request]) => request.queryRunId === sent.queryRunId)).toHaveLength(1)
+})
+
+it("settles a background cell save without refreshing the newly selected profile", async () => {
+  seedSameTargetProfiles()
+  const { draft, pending, sent } = await beginDeferredCellDraft()
+  act(() => useDbStore.getState().setActiveDescriptor(adminDescriptorId))
+  expect(screen.getByRole("dialog")).toHaveTextContent("Analytics reader")
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue(draft)
+  const count = mockQueryRun.mock.calls.length
+  await act(async () => pending.resolve(panelRunFromResult(sent, { kind: "execute", affectedRows: "1", effectOutcome: "committed" })))
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(useDbStore.getState().activeDescriptorId).toBe(adminDescriptorId)
+  expect(useDbStore.getState().queryBuckets[adminDescriptorId].sql).toBe("SELECT 'admin'")
+  expect(mockQueryRun).toHaveBeenCalledTimes(count)
+})
+
+it.each(["db-reconnected", "db-1"])("keeps an uncertain draft detached from a reconnected generation (%s) until explicitly dismissed", async (connectionId) => {
+  await useDbStore.getState().openConnection("/a.db")
+  const { table, draft, pending, sent } = await beginDeferredCellDraft()
+  await act(async () => pending.reject({ code: "serverDisconnected", message: "owned disconnect" }))
+  vi.mocked(dbProfileOpen).mockResolvedValueOnce({
+    descriptorId: sent.descriptorId,
+    connectionId: connectionId as never,
+    connectionGeneration: "next-generation" as never,
+    engine: "sqlite",
+  })
+  await act(async () => { await useDbStore.getState().openOrReconnectSavedConnection(sent.descriptorId) })
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue(draft)
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveAttribute("readonly")
+  expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled()
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  expect(mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")).toHaveLength(1)
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(mockQueryCancel).not.toHaveBeenCalled()
+  await act(async () => { await useDbStore.getState().openTableQuery(table) })
+  fireEvent.doubleClick(screen.getByText("alice"))
+  expect(await screen.findByRole("textbox", { name: "Value" })).toHaveValue("alice")
+  mockRunResultOnce({ kind: "execute", affectedRows: "1", effectOutcome: "committed" })
+  fireEvent.click(screen.getByRole("button", { name: /^Save$/ }))
+  await waitFor(() => expect(mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")).toHaveLength(2))
+  const edits = mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")
+  expect(edits[1][0]).toMatchObject({ connectionId, connectionGeneration: "next-generation" })
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+})
+
+it("retains a pending NULL draft across mode changes without leaving its portal or overlay visible", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const { draft, pending } = await beginDeferredCellDraft(true)
+  expect(screen.getByTestId("cell-overlay")).toHaveTextContent("true")
+  act(() => useUiStore.setState({ mode: "files" }))
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(screen.getByTestId("cell-overlay")).toHaveTextContent("false")
+  await act(async () => pending.reject({ code: "serverDisconnected", message: "owned disconnect while hidden" }))
+  expect(screen.queryByRole("dialog")).toBeNull()
+  act(() => useUiStore.setState({ mode: "database" }))
+  expect(screen.getByRole("dialog")).toBeVisible()
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue(draft)
+  expect(screen.getByRole("checkbox", { name: "NULL" })).toBeChecked()
+  expect(screen.getByText("The server did not confirm the change. Check the data before retrying.")).toBeVisible()
+  expect(screen.getByTestId("cell-overlay")).toHaveTextContent("true")
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(screen.getByTestId("cell-overlay")).toHaveTextContent("false")
+  expect(mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")).toHaveLength(1)
+})
+
+it.each(["success", "disconnect"] as const)("does not resurrect a removed profile when its cell save settles with %s", async (outcome) => {
+  await useDbStore.getState().openConnection("/a.db")
+  const { draft, pending, sent } = await beginDeferredCellDraft()
+  vi.mocked(dbProfileForget).mockResolvedValueOnce({ profiles: [], recovery: [] })
+  await act(async () => { await useDbStore.getState().removeSaved(sent.descriptorId) })
+  await act(async () => {
+    if (outcome === "disconnect") pending.reject({ code: "serverDisconnected", message: "owned disconnect after removal" })
+    else pending.resolve(panelRunFromResult(sent, { kind: "execute", affectedRows: "1", effectOutcome: "committed" }))
+  })
+  expect(useDbStore.getState().saved).toEqual([])
+  expect(useDbStore.getState().connections).toEqual([])
+  expect(useDbStore.getState().queryBuckets[sent.descriptorId]).toBeUndefined()
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue(draft)
+  expect(screen.getByRole("button", { name: /^Save$/ })).toBeDisabled()
+  expect(screen.getByText(outcome === "disconnect"
+    ? "The server did not confirm the change. Check the data before retrying."
+    : "The connection changed. Reopen the table before editing.")).toBeVisible()
+  expect(mockQueryRun.mock.calls.filter(([request]) => request.mode === "tableCellMutation")).toHaveLength(1)
+})
+
+it.each([false, true])("keeps generated values visible and read-only, including NULL=%s", async (isNull) => {
+  const columns = [
+    { name: "id", type: "INTEGER", pk: true, notnull: true, generated: false },
+    { name: "name", type: "TEXT", pk: false, notnull: false, generated: false },
+    { name: "virtual_name", type: "TEXT", pk: false, notnull: false, generated: true },
+    { name: "stored_name", type: "TEXT", pk: false, notnull: false, generated: true },
+  ]
+  vi.mocked(dbTableColumns).mockResolvedValue(columns)
+  await useDbStore.getState().openConnection("/a.db")
+  mockRunResultOnce({ ...threeCol, columns: columns.map(column => column.name), rows: [[
+    threeCol.rows[0][0], threeCol.rows[0][1],
+    isNull ? { kind: "null" } : { kind: "text", value: "ALICE" },
+    isNull ? { kind: "null" } : { kind: "text", value: "alice!" },
+  ]] })
+  await useDbStore.getState().openTableQuery({ catalog: "main", schema: "main", name: "people", kind: "table" })
+  render(<DatabasePanel />)
+  await waitFor(() => expect(screen.getByText("alice").closest("td")).toHaveAttribute("tabindex", "0"))
+  const generatedValues = isNull ? screen.getAllByText("NULL") : [screen.getByText("ALICE"), screen.getByText("alice!")]
+  expect(generatedValues).toHaveLength(2)
+  for (const value of generatedValues) {
+    expect(value).toBeVisible()
+    expect(value.closest("td")).not.toHaveAttribute("tabindex")
+    fireEvent.doubleClick(value)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  }
+  fireEvent.doubleClick(screen.getByText("alice"))
+  expect(screen.getByRole("textbox", { name: "Value" })).toHaveValue("alice")
 })
 
 it("keeps NULL cells in binary columns read-only", async () => {
@@ -896,6 +1097,215 @@ describe("DatabasePanel execution controls", () => {
   })
 })
 
+describe("DatabasePanel query navigation ownership", () => {
+  const rangeRects = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects")
+  const rangeBounds = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect")
+  beforeEach(() => {
+    // jsdom has no layout; these tests assert CM document/selection state, not
+    // pixel positions. Error navigation schedules CM's normal layout measure.
+    Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [] })
+    Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect() })
+  })
+  afterEach(() => {
+    cleanup()
+    if (rangeRects) Object.defineProperty(Range.prototype, "getClientRects", rangeRects)
+    else Reflect.deleteProperty(Range.prototype, "getClientRects")
+    if (rangeBounds) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeBounds)
+    else Reflect.deleteProperty(Range.prototype, "getBoundingClientRect")
+  })
+
+  it("does not recapture an old result's caret after cancelling its replacement", async () => {
+    const owner = await openWithStreamingResult()
+    const release = deferred<DbResultPage>()
+    mockResultSessionRelease.mockReturnValueOnce(release.promise)
+    mockQueryRun.mockClear()
+    render(<DatabasePanel />)
+    const editor = mountedEditorView()
+    const caret = editor.state.doc.length
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    act(() => editor.dispatch({ selection: { anchor: caret } }))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel running query" }))
+    await act(async () => release.resolve(panelWirePage(owner, { lifecycle: "released" })))
+
+    expect(mockQueryRun).not.toHaveBeenCalled()
+    expect(editor.state.selection.main).toMatchObject({ from: caret, to: caret })
+    const original = editor.state.doc.toString()
+    act(() => editor.dispatch(editor.state.replaceSelection("X")))
+    expect(editor.state.doc.toString()).toBe(original + "X")
+  })
+
+  it.each([
+    ["success", "pointer"], ["error", "pointer"],
+    ["success", "keyboard"], ["error", "keyboard"],
+  ] as const)("does not borrow old statement navigation for a preparing run's %s via %s", async (outcome, input) => {
+    await useDbStore.getState().openConnection("/a.db")
+    useDbStore.getState().setSql("SELECT 1;\nSELECT 2;")
+    await useDbStore.getState().runQuery()
+    const group = useDbStore.getState().queryBuckets["panel-profile"].runGroup!
+    const owner = Object.values(group.resultPages)[0].page.owner
+    const release = deferred<DbResultPage>()
+    const reply = deferred<DbQueryRun>()
+    mockResultSessionRelease.mockReturnValueOnce(release.promise)
+    mockQueryRun.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    if (input === "pointer") {
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Skipped" }), { button: 0, ctrlKey: false })
+    } else {
+      const first = screen.getByRole("tab", { name: "Statement 1: Rows" })
+      act(() => first.focus())
+      fireEvent.keyDown(first, { key: "ArrowRight" })
+      await waitFor(() => expect(screen.getByRole("tab", { name: "Statement 2: Skipped" })).toHaveAttribute("aria-selected", "true"))
+    }
+    const editor = mountedEditorView()
+    expect(editor.state.selection.main).toMatchObject({ from: 10, to: 19 })
+    await act(async () => release.resolve(panelWirePage(owner, { lifecycle: "released" })))
+    const request = mockQueryRun.mock.calls.at(-1)![0]
+    await act(async () => {
+      if (outcome === "success") reply.resolve(panelRunFromResult(request, threeCol))
+      else reply.reject({
+        code: "queryFailed", message: "query failed",
+        error: { engine: "postgres", message: "syntax error", code: "42601",
+          position: { offset: 2, line: null, column: null }, detail: null, hint: null, retryability: "notRetryable" },
+      })
+    })
+    if (outcome === "error") expect(screen.getByRole("alert")).toHaveTextContent("syntax error")
+    expect(editor.state.selection.main).toMatchObject({ from: 10, to: 19 })
+  })
+
+  it("keeps a caret moved while releasing the previous result when the new run starts", async () => {
+    const owner = await openWithStreamingResult()
+    const release = deferred<DbResultPage>()
+    const reply = deferred<DbQueryRun>()
+    mockResultSessionRelease.mockReturnValueOnce(release.promise)
+    mockQueryRun.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    const editor = mountedEditorView()
+    const caret = editor.state.doc.length
+    act(() => editor.dispatch({ selection: { anchor: caret } }))
+    await act(async () => release.resolve(panelWirePage(owner, { lifecycle: "released" })))
+    const admittedSelection = editor.state.selection.main
+    const request = mockQueryRun.mock.calls.at(-1)![0]
+    await act(async () => reply.resolve(panelRunFromResult(request, threeCol)))
+    expect(admittedSelection).toMatchObject({ from: caret, to: caret })
+    expect(editor.state.selection.main).toMatchObject({ from: caret, to: caret })
+  })
+
+  it.each([false, true])("positions a query error only before further editor interaction (moved=%s)", async (moved) => {
+    await useDbStore.getState().openConnection("/a.db")
+    useDbStore.getState().setSql("SELECT 1;")
+    const reply = deferred<DbQueryRun>()
+    mockQueryRun.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    const editor = mountedEditorView()
+    if (moved) act(() => editor.dispatch({ selection: { anchor: 9 } }))
+    await act(async () => reply.reject({
+      code: "queryFailed", message: "query failed",
+      error: { engine: "postgres", message: "syntax error", code: "42601",
+        position: { offset: 2, line: null, column: null }, detail: null, hint: null, retryability: "notRetryable" },
+    }))
+    expect(screen.getByRole("alert")).toHaveTextContent("syntax error")
+    expect(editor.state.selection.main).toMatchObject(moved ? { from: 9, to: 9 } : { from: 1, to: 2 })
+  })
+
+  it.each([
+    ["longer draft", "SELECT 222;\nSELECT 3;"],
+    ["same-length draft", "SELECT 2;"],
+    ["Unicode draft", "SELECT '雪😀';\nSELECT 3;"],
+  ])("preserves a %s and subsequent typing when the old query settles", async (_name, draft) => {
+    await useDbStore.getState().openConnection("/a.db")
+    useDbStore.getState().setSql("SELECT 1;")
+    const reply = deferred<DbQueryRun>()
+    mockQueryRun.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    const request = mockQueryRun.mock.calls.at(-1)![0]
+    const editor = mountedEditorView()
+    act(() => editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: draft },
+      selection: { anchor: draft.length },
+    }))
+    await act(async () => reply.resolve(panelRunFromResult(request, threeCol)))
+
+    expect(editor.state.selection.main).toMatchObject({ from: draft.length, to: draft.length })
+    act(() => editor.dispatch(editor.state.replaceSelection("X")))
+    expect(editor.state.doc.toString()).toBe(draft + "X")
+    expect(useDbStore.getState().queryBuckets["panel-profile"].sql).toBe(draft + "X")
+    expect(mockQueryRun).toHaveBeenCalledTimes(1)
+  })
+
+  it("preserves a moved caret when an unchanged query settles", async () => {
+    await useDbStore.getState().openConnection("/a.db")
+    useDbStore.getState().setSql("SELECT 1;\nSELECT 2;")
+    const reply = deferred<DbQueryRun>()
+    mockQueryRun.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    const request = mockQueryRun.mock.calls.at(-1)![0]
+    const editor = mountedEditorView()
+    act(() => editor.dispatch({ selection: { anchor: editor.state.doc.length } }))
+    await act(async () => reply.resolve(panelRunFromResult(request, threeCol)))
+    expect(editor.state.selection.main).toMatchObject({ from: 19, to: 19 })
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Statement 2: Skipped" }), { button: 0, ctrlKey: false })
+    expect(editor.state.selection.main).toMatchObject({ from: 10, to: 19 })
+  })
+
+  it("does not apply a statement tab's old offsets to a changed draft", async () => {
+    await useDbStore.getState().openConnection("/a.db")
+    useDbStore.getState().setSql("SELECT 1;\nSELECT 2;")
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    const tab = await screen.findByRole("tab", { name: "Statement 2: Skipped" })
+    const editor = mountedEditorView()
+    const draft = "SELECT 111;\nSELECT 222;"
+    act(() => editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: draft },
+      selection: { anchor: draft.length },
+    }))
+    fireEvent.mouseDown(tab, { button: 0, ctrlKey: false })
+    expect(tab).toHaveAttribute("aria-selected", "true")
+    expect(editor.state.selection.main).toMatchObject({ from: draft.length, to: draft.length })
+  })
+
+  it("preserves the caret across result page loading and completion", async () => {
+    const owner = await openWithStreamingResult()
+    const reply = deferred<DbResultPage>()
+    mockResultPageNext.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    const editor = mountedEditorView()
+    const caret = editor.state.doc.length
+    act(() => editor.dispatch({ selection: { anchor: caret } }))
+    fireEvent.click(screen.getByRole("button", { name: "Load next result page" }))
+    // Check both edges: loading itself publishes a new runGroup.
+    const loadingSelection = editor.state.selection.main
+    await act(async () => reply.resolve(panelWirePage(owner, {
+      pageIndex: 1, hasPrevious: true, lifecycle: "complete",
+    })))
+    expect(loadingSelection).toMatchObject({ from: caret, to: caret })
+    expect(editor.state.selection.main).toMatchObject({ from: caret, to: caret })
+  })
+
+  it("preserves the caret across cancellation while the query is pending", async () => {
+    await useDbStore.getState().openConnection("/a.db")
+    useDbStore.getState().setSql("SELECT 1;")
+    const reply = deferred<DbQueryRun>()
+    mockQueryRun.mockReturnValueOnce(reply.promise)
+    render(<DatabasePanel />)
+    fireEvent.click(screen.getByRole("button", { name: "Run all statements" }))
+    const request = mockQueryRun.mock.calls.at(-1)![0]
+    const editor = mountedEditorView()
+    act(() => editor.dispatch({ selection: { anchor: 9 } }))
+    fireEvent.click(screen.getByRole("button", { name: "Cancel running query" }))
+    const cancellingSelection = editor.state.selection.main
+    await act(async () => reply.resolve(panelRunFromResult(request, threeCol)))
+    expect(cancellingSelection).toMatchObject({ from: 9, to: 9 })
+    expect(editor.state.selection.main).toMatchObject({ from: 9, to: 9 })
+  })
+})
+
 describe("DatabasePanel structured query errors", () => {
   const structuredFailure = {
     code: "queryFailed",
@@ -1077,6 +1487,35 @@ describe("DatabasePanel result table", () => {
       { kind: "integer", value: "20" },
     ])
     expect(mockQueryRun).not.toHaveBeenCalled()
+  })
+
+  it.each(["complete", "streaming"] as const)("can cancel a preparing run with an old %s result", async (lifecycle) => {
+    await openWithCachedLifecycle(lifecycle)
+    let finish!: (page: DbResultPage) => void
+    const release = new Promise<DbResultPage>((resolve) => { finish = resolve })
+    const previous = useDbStore.getState().queryBuckets["panel-profile"].runGroup!
+    const owner = Object.values(previous.resultPages)[0].page.owner
+    mockResultSessionRelease.mockReturnValueOnce(release)
+    mockQueryRun.mockClear()
+    render(<DatabasePanel />)
+    let pending!: Promise<void>
+    act(() => {
+      useDbStore.getState().setSql("UPDATE users SET age = age + 1;")
+      pending = useDbStore.getState().runQuery()
+    })
+    try {
+      const cancel = screen.getByRole("button", { name: "Cancel running query" })
+      expect(cancel).toBeEnabled()
+      fireEvent.click(cancel)
+      expect(cancel).toBeDisabled()
+      await act(async () => { finish(panelWirePage(owner, { lifecycle: "released" })); await pending })
+      expect(mockQueryRun).not.toHaveBeenCalled()
+      expect(mockQueryCancel).not.toHaveBeenCalled()
+      expect(useDbStore.getState().queryBuckets["panel-profile"].running).toBe(false)
+      expect(screen.getByText("Result released")).toBeInTheDocument()
+    } finally {
+      await act(async () => { finish(panelWirePage(owner, { lifecycle: "released" })); await pending })
+    }
   })
 
   it.each([

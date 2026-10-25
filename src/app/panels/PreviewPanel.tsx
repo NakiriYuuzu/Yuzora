@@ -125,8 +125,8 @@ export function PreviewPanel() {
   } : null
   const previewRequest = previewTarget ? { kind: "preview" as const, ...previewTarget } : null
   const previewChromeContextMenu = previewRequest ? contextMenuHandler(previewRequest) : undefined
-  const canGoBack = previewTarget ? previewTargetCanGoBack(previewTarget) : false
-  const canGoForward = previewTarget ? previewTargetCanGoForward(previewTarget) : false
+  const canGoBack = usePreviewStore(() => previewTarget ? previewTargetCanGoBack(previewTarget) : false)
+  const canGoForward = usePreviewStore(() => previewTarget ? previewTargetCanGoForward(previewTarget) : false)
   const canReload = previewTarget ? previewTargetHasUrl(previewTarget) : false
   const frameWidth = nav.frame === "mobile" ? 390 : "100%"
 
@@ -142,7 +142,12 @@ export function PreviewPanel() {
   // so re-running on url change doesn't recreate it.
   useEffect(() => {
     if (!isTauri() || !external || !nav.url || !workspace || !renderedPreview.url) return
-    if (nativeNavigationSync?.url === nav.url) {
+    const previewState = usePreviewStore.getState()
+    const nativeSession = previewState.nativeSession
+    const hasNativeContinuity = previewState.nativeRequest === null
+      && nativeSession?.workspacePath === workspace
+      && nativeSession.currentUrl === nav.url
+    if (nativeNavigationSync?.url === nav.url && hasNativeContinuity) {
       consumedNativeNavigationRef.current = nativeNavigationSync
       usePreviewStore.getState().consumeNativeNavigationSync(
         workspace,
@@ -153,12 +158,11 @@ export function PreviewPanel() {
     const consumed = consumedNativeNavigationRef.current
     if (consumed) {
       consumedNativeNavigationRef.current = null
-      if (consumed.url === nav.url) return
+      if (consumed.url === nav.url && hasNativeContinuity) return
     }
     const host = webviewHostRef.current
     if (!host) return
     const targetUrl = nav.url
-    const nativeSession = usePreviewStore.getState().nativeSession
     const sessionId = (nativeSession?.workspacePath === workspace ? nativeSession.sessionId : null)
       ?? crypto.randomUUID()
     const requestToken = usePreviewStore.getState().beginNativeOpenRequest(workspace, targetUrl)
@@ -204,11 +208,15 @@ export function PreviewPanel() {
       }
       usePreviewStore.getState().recordNativeOpen(workspace, targetUrl, sessionId)
       usePreviewStore.getState().settleNativeRequest(requestToken)
+      if (nativeNavigationSync?.url === targetUrl) {
+        consumedNativeNavigationRef.current = nativeNavigationSync
+        usePreviewStore.getState().consumeNativeNavigationSync(workspace, nativeNavigationSync.token)
+      }
     })
     return () => {
       cancelled = true
     }
-  }, [external, nativeNavigationSync, nav.url, workspace, renderedPreview.url])
+  }, [external, nativeNavigationSync, nav.url, nav.reloadNonce, workspace, renderedPreview.url])
 
   // Close the webview when the preview is no longer showing an external URL, and
   // on unmount (the panel unmounts when another tab becomes active — a stray

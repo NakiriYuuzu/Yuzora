@@ -1,6 +1,7 @@
 import { expect, test, it, afterEach, describe } from "vitest"
 import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
 import * as ipcModule from "./ipc"
+
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import {
     openFile,

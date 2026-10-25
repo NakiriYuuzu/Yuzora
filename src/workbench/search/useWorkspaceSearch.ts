@@ -7,6 +7,7 @@ import { useWorkspaceStore } from "@/state/workspaceStore"
 interface UseWorkspaceSearch {
     events: SearchEvent[]
     loading: boolean
+    error: string | null
 }
 
 /**
@@ -30,11 +31,13 @@ export function useWorkspaceSearch(query: string, caseSensitive: boolean): UseWo
     const workspacePath = useWorkspaceStore((state) => state.workspacePath)
     const [events, setEvents] = useState<SearchEvent[]>([])
     const [loading, setLoading] = useState(false)
+    const [error, setError] = useState<string | null>(null)
 
     const trimmed = query.trim()
     const hadQuery = useRef(false)
 
     useEffect(() => {
+        setError(null)
         if (!workspacePath || trimmed.length < MIN_QUERY_LEN) {
             setEvents([])
             setLoading(false)
@@ -43,7 +46,9 @@ export function useWorkspaceSearch(query: string, caseSensitive: boolean): UseWo
             // (m6, front-end cancellation — no new command). Only when a query was
             // actually active, so first mount doesn't emit a spurious search.
             if (workspacePath && hadQuery.current) {
-                void searchWorkspace(workspacePath, "", caseSensitive, () => {})
+                void searchWorkspace(workspacePath, "", caseSensitive, () => {}).catch((error) => {
+                    console.warn("Workspace search cancellation failed", error)
+                })
             }
             hadQuery.current = false
             return
@@ -54,6 +59,7 @@ export function useWorkspaceSearch(query: string, caseSensitive: boolean): UseWo
         setEvents([])
         setLoading(true)
         let cancelled = false
+        let settled = false
         const buffer: SearchEvent[] = []
         let flushTimer: ReturnType<typeof setInterval> | null = null
         const flush = () => {
@@ -61,27 +67,33 @@ export function useWorkspaceSearch(query: string, caseSensitive: boolean): UseWo
             const batch = buffer.splice(0, buffer.length)
             setEvents((prev) => [...prev, ...batch])
         }
+        const finish = (failure: string | null = null) => {
+            if (cancelled || settled) return
+            settled = true
+            if (flushTimer !== null) {
+                clearInterval(flushTimer)
+                flushTimer = null
+            }
+            flush()
+            setLoading(false)
+            setError(failure)
+        }
         const timer = setTimeout(() => {
             flushTimer = setInterval(flush, FLUSH_MS)
             void searchWorkspace(workspacePath, trimmed, caseSensitive, (e) => {
-                if (cancelled) return
+                if (cancelled || settled) return
                 buffer.push(e)
-                if (e.type === "done") {
-                    if (flushTimer) {
-                        clearInterval(flushTimer)
-                        flushTimer = null
-                    }
-                    flush()
-                    setLoading(false)
-                }
+                if (e.type === "done") finish()
+            }).catch((error: unknown) => {
+                finish(error instanceof Error ? error.message : String(error))
             })
         }, 250)
         return () => {
             cancelled = true
             clearTimeout(timer)
-            if (flushTimer) clearInterval(flushTimer)
+            if (flushTimer !== null) clearInterval(flushTimer)
         }
     }, [workspacePath, trimmed, caseSensitive])
 
-    return { events, loading }
+    return { events, loading, error }
 }

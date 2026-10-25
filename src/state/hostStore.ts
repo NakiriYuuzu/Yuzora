@@ -126,7 +126,7 @@ export const useHostStore = create<HostState>((set, get) => {
         connectionWasClosed = true
         await close(hostId)
         if (!current(hostId, token, target)) throw new Error("Host setup was cancelled or its identity changed")
-        const config: HostConfig = { hostId, label, kind: target.kind, ...(target.kind === "wsl" ? { distro: target.distro } : {}), binary: prepared.binary, helper: prepared.helper, selection: { ...selection }, artifactIdentity: prepared.artifactIdentity, helperArtifactIdentity: prepared.artifactIdentity, verifiedAt: Date.now() }
+        const config: HostConfig = { hostId, label, kind: target.kind, ...(target.kind === "wsl" ? { distro: target.distro } : {}), binary: prepared.binary, helper: prepared.helper, selection: selection.source === "custom" ? { source: "custom", customPath: prepared.binary } : { ...selection }, artifactIdentity: prepared.artifactIdentity, helperArtifactIdentity: prepared.artifactIdentity, verifiedAt: Date.now() }
         const configs = { ...get().configs, [hostId]: config }
         window.localStorage.setItem(STORAGE, JSON.stringify(Object.values(configs)))
         registerRuntimeHost(prepared.connection, prepared.binary, label, target.kind)

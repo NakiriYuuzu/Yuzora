@@ -70,6 +70,8 @@ const initialGitLogState = {
 // survives re-renders and store resets within a session.
 let generation = 0
 let activeRepositoryRoot: string | null = null
+// Re-selecting the same commit still starts a new detail request owner.
+let detailGeneration = 0
 // Authors are repository-scoped, not filter/HEAD-scoped. Resolved results stay
 // in a process-session cache; in-flight promises are tracked per root so a
 // failed request can retry and a late A result cannot overwrite B.
@@ -235,6 +237,7 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
     },
 
     select: async (repositoryRoot, hash) => {
+        const detailGen = ++detailGeneration
         if (activeRepositoryRoot !== repositoryRoot) {
             // First selection after mount may precede loadFirstPage establishing
             // the epoch (rare); bind to the requested root so later responses
@@ -256,7 +259,7 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
         try {
             const detail = await gitCommitDetail(repositoryRoot, hash)
             // Ignore if the selection, list identity, or repository moved on.
-            if (get().selectedHash !== hash || !responseMatches(repositoryRoot, gen)) return
+            if (detailGen !== detailGeneration || get().selectedHash !== hash || !responseMatches(repositoryRoot, gen)) return
             set((s) => ({
                 detail,
                 detailLoading: false,
@@ -264,7 +267,7 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
                 detailCache: cacheDetail(s.detailCache, repositoryRoot, hash, detail)
             }))
         } catch (e) {
-            if (get().selectedHash !== hash || !responseMatches(repositoryRoot, gen)) return
+            if (detailGen !== detailGeneration || get().selectedHash !== hash || !responseMatches(repositoryRoot, gen)) return
             // Keep the list intact; only the detail pane shows this error.
             set({ detailError: String(e), detailLoading: false })
         }

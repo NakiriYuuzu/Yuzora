@@ -46,25 +46,49 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct GitProcessRegistry {
-    active: Mutex<HashSet<u32>>,
+    state: Mutex<GitProcessRegistryState>,
+}
+
+#[derive(Default)]
+struct GitProcessRegistryState {
+    closing: bool,
+    active: HashSet<u32>,
 }
 
 impl GitProcessRegistry {
-    pub fn register(&self, pid: u32) {
-        if let Ok(mut active) = self.active.lock() {
-            active.insert(pid);
+    pub fn register(&self, pid: u32) -> bool {
+        match self.state.lock() {
+            Ok(mut state) if !state.closing => {
+                state.active.insert(pid);
+                true
+            }
+            _ => false,
         }
     }
 
     pub fn unregister(&self, pid: u32) {
-        if let Ok(mut active) = self.active.lock() {
-            active.remove(&pid);
+        if let Ok(mut state) = self.state.lock() {
+            state.active.remove(&pid);
         }
     }
 
     pub fn drain(&self) -> Vec<u32> {
-        match self.active.lock() {
-            Ok(mut active) => active.drain().collect(),
+        match self.state.lock() {
+            Ok(mut state) => state.active.drain().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn is_closing(&self) -> bool {
+        self.state.lock().map(|state| state.closing).unwrap_or(true)
+    }
+
+    fn shutdown(&self) -> Vec<u32> {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.closing = true;
+                state.active.drain().collect()
+            }
             Err(_) => Vec::new(),
         }
     }
@@ -74,7 +98,8 @@ static ACTIVE_GIT_PROCESSES: LazyLock<GitProcessRegistry> =
     LazyLock::new(GitProcessRegistry::default);
 
 pub fn kill_all_processes() {
-    for pid in ACTIVE_GIT_PROCESSES.drain() {
+    // App exit closes admission permanently, including work queued before exit.
+    for pid in ACTIVE_GIT_PROCESSES.shutdown() {
         let _ = crate::process_kill::kill_tree_pid(pid);
     }
 }
@@ -115,7 +140,10 @@ pub fn detect_environment(path: &Path) -> GitEnvironment {
         &[],
     ) {
         Ok(out) if out.code == 0 => {
-            let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // Git writes one LF record terminator; preceding whitespace belongs to the path.
+            let root =
+                String::from_utf8_lossy(out.stdout.strip_suffix(b"\n").unwrap_or(&out.stdout))
+                    .into_owned();
             GitEnvironment::Ready { root, version }
         }
         _ => GitEnvironment::NotARepo,
@@ -284,8 +312,11 @@ fn git_command(
 /// larger blobs raise to `TooLarge` as well.
 pub const BLOB_READ_LIMIT: usize = crate::file_content::HARD_CAP_BYTES as usize + 1;
 
-pub(crate) fn register_process(pid: u32) {
-    ACTIVE_GIT_PROCESSES.register(pid);
+pub(crate) fn register_process(pid: u32) -> bool {
+    ACTIVE_GIT_PROCESSES.register(pid)
+}
+pub(crate) fn processes_shutting_down() -> bool {
+    ACTIVE_GIT_PROCESSES.is_closing()
 }
 pub(crate) fn unregister_process(pid: u32) {
     ACTIVE_GIT_PROCESSES.unregister(pid);
@@ -434,6 +465,7 @@ pub struct BranchInfo {
     /// otherwise the same-named branch on the push remote, which differs from the
     /// upstream in triangular workflows. `None` when no such ref exists.
     pub push_oid: Option<String>,
+    pub upstream_ref: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub is_current: bool,
@@ -772,6 +804,19 @@ fn push_args_with_env(root: &Path, env: &[(String, String)]) -> Result<Vec<Strin
         return Ok(vec!["push".into()]);
     }
     let branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    // A missing tracking ref does not mean that the branch has no upstream
+    // configuration. Preserve Git's push policy, including an invalid value.
+    let configured = run_git(
+        root,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+        DEFAULT_TIMEOUT,
+        env,
+    )?;
+    match configured.code {
+        0 => return Ok(vec!["push".into()]),
+        1 => {}
+        _ => return Err(git_err("config", &configured.stderr)),
+    }
     let remote = match push_remote(root, &branch, env)? {
         Some(remote) => remote,
         None => return Err("git push: no remote is configured for this repository".into()),
@@ -1663,7 +1708,7 @@ fn branches_with_env(root: &Path, env: &[(String, String)]) -> Result<BranchList
             "refs/heads",
             "refs/remotes",
             "refs/tags",
-            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)%00%(objectname)%00%(push)",
+            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)%00%(objectname)%00%(push)%00%(upstream)%00%(symref)",
         ],
         DEFAULT_TIMEOUT,
         env,
@@ -1679,7 +1724,7 @@ fn branches_with_env(root: &Path, env: &[(String, String)]) -> Result<BranchList
     let mut tags = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let f: Vec<&str> = line.split('\0').collect();
-        if f.len() < 7 {
+        if f.len() < 9 {
             continue;
         }
         if let Some(name) = f[0].strip_prefix("refs/heads/") {
@@ -1694,13 +1739,18 @@ fn branches_with_env(root: &Path, env: &[(String, String)]) -> Result<BranchList
                 },
                 // Filled below: remote-tracking refs are listed after local ones.
                 push_oid: None,
+                upstream_ref: if f[7].is_empty() {
+                    None
+                } else {
+                    Some(f[7].to_string())
+                },
                 ahead,
                 behind,
                 is_current: f[1] == "*",
                 gone,
             });
         } else if let Some(name) = f[0].strip_prefix("refs/remotes/") {
-            if !name.ends_with("/HEAD") {
+            if f[8].is_empty() || !name.ends_with("/HEAD") {
                 remote.push(name.to_string());
                 remote_oids.insert(name.to_string(), f[5].to_string());
             }
@@ -1774,8 +1824,7 @@ pub fn create_branch(root: &Path, name: &str, start_point: Option<&str>) -> Resu
     run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
     if let Some((_, Some(upstream))) = resolved {
         // Implicit upstream is product behavior for remote-tracking starts, but
-        // must not fail branch creation when the logical name is ambiguous or
-        // the remote is not configured.
+        // must not fail branch creation when the remote is not configured.
         let set_upstream = format!("--set-upstream-to={upstream}");
         let _ = run_ok(
             root,
@@ -1817,7 +1866,7 @@ pub fn remote_tracking_start_ref(root: &Path, spec: &str) -> Result<Option<Strin
     {
         return Ok(None);
     }
-    Ok(Some(logical.to_string()))
+    Ok(Some(name))
 }
 
 pub fn checkout(root: &Path, name: &str) -> Result<(), String> {
@@ -2275,7 +2324,7 @@ pub struct GitStashEntry {
 pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     let out = run_ok(
         root,
-        &["stash", "list", "-z", "--format=%gd%x1f%H%x1f%s%x1f%ct"],
+        &["stash", "list", "-z", "--format=%gd%x1f%H%x1f%ct%x1f%s"],
         DEFAULT_TIMEOUT,
         &[],
     )?;
@@ -2284,7 +2333,7 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
         .filter(|record| !record.is_empty())
         .map(|record| {
             let mut fields = record.splitn(4, '\u{1f}');
-            let (Some(name), Some(oid), Some(message), Some(time)) =
+            let (Some(name), Some(oid), Some(time), Some(message)) =
                 (fields.next(), fields.next(), fields.next(), fields.next())
             else {
                 return Err("git stash list: unexpected output".to_string());
@@ -2296,7 +2345,7 @@ pub fn stash_list(root: &Path) -> Result<Vec<GitStashEntry>, String> {
                 .ok_or_else(|| "git stash list: unexpected stash name".to_string())?;
             Ok(GitStashEntry {
                 index,
-                oid: oid.to_string(),
+                oid: crate::git_oid::GitOid::parse(oid)?.into_string(),
                 message: message.to_string(),
                 timestamp: time.trim().parse::<i64>().unwrap_or(0),
             })
@@ -3656,6 +3705,18 @@ pub mod test_repo {
 }
 
 #[cfg(test)]
+#[path = "git_unstage_lifecycle_tests.rs"]
+mod unstage_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "git_push_tracking_tests.rs"]
+mod push_tracking_tests;
+
+#[cfg(test)]
+#[path = "git_branch_tracking_tests.rs"]
+mod branch_tracking_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -4755,6 +4816,30 @@ mod tests {
         assert_eq!(outcome, GitOperationOutcome { conflicts: false });
         assert!(repo.join("m.txt").exists());
         assert_eq!(read_text(repo, "c.txt"), edited);
+    }
+
+    #[test]
+    fn stash_apply_rejects_non_matching_identity_without_mutating() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        test_repo::write_and_commit(repo, "a.txt", "base\n", "baseline");
+        std::fs::write(repo.join("a.txt"), "stashed\n").unwrap();
+        stash_push(repo, Some("field\u{1f}separator"), false, false).unwrap();
+        let original = stash_list(repo).unwrap();
+        assert!(original[0].message.contains("field\u{1f}separator"));
+        for invalid in [
+            "",
+            "stash@{0}",
+            "--index",
+            "abcdef12",
+            "gggggggggggggggggggggggggggggggggggggggg",
+        ] {
+            assert!(stash_apply(repo, 0, invalid, false).is_err());
+            assert_eq!(read_text(repo, "a.txt"), "base\n");
+            assert_eq!(stash_list(repo).unwrap(), original);
+            assert!(git_line(repo, &["status", "--porcelain"]).is_empty());
+        }
     }
 
     #[test]

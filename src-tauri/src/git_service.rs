@@ -912,6 +912,10 @@ pub mod test_repo {
 }
 
 #[cfg(test)]
+#[path = "git_root_identity_tests.rs"]
+mod root_identity_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -1,4 +1,6 @@
 import { logUserAction } from "@/features/logs/userAction"
+import { documentWorkspaceEpoch } from "@/editor/documentRegistry"
+import { containsFilePath } from "@/lib/fileRenameCoordinator"
 import i18n from "@/lib/i18n"
 import {
     clipboardReadFileList,
@@ -13,12 +15,13 @@ import { canonicalPathKey, isSameOrDescendantPath, nativePathParent } from "@/li
 import { parseRemoteFilePath } from "@/lib/runtimeIdentity"
 import { showAppMessage } from "@/state/appDialogStore"
 import { retargetOpenDocuments } from "@/state/contextMenuStore"
-import { useFileClipboardStore } from "@/state/fileClipboardStore"
+import { useFileClipboardStore, type FileClipboard } from "@/state/fileClipboardStore"
 import { useFileTreeStore } from "@/state/fileTreeStore"
 import { useWorkspaceStore } from "@/state/workspaceStore"
 import { wslDistroOf } from "./fileImportTarget"
 
 const t = (key: string, options?: Record<string, unknown>) => i18n.t(key, { ns: "menus", ...options })
+const pendingCuts = new Set<FileClipboard>()
 
 const KNOWN_ERRORS = [
     "copy-into-itself",
@@ -55,12 +58,28 @@ function currentWorkspace(workspacePath: string): boolean {
     return useWorkspaceStore.getState().workspacePath === workspacePath
 }
 
+function workspaceOwner(workspacePath: string): () => boolean {
+    const epoch = documentWorkspaceEpoch()
+    const capability = useWorkspaceStore.getState().workspaceCapabilityId
+    return () => currentWorkspace(workspacePath) && documentWorkspaceEpoch() === epoch
+        && useWorkspaceStore.getState().workspaceCapabilityId === capability
+}
+
 /** The folder a paste lands in: the clicked folder, the clicked file's folder, or the workspace root. */
 export function pasteTargetDir(workspacePath: string, target: { path: string; isDirectory: boolean } | null): string {
     if (!target) return workspacePath
     if (target.isDirectory) return target.path
     const parent = nativePathParent(target.path)
     return parent && isSameOrDescendantPath(workspacePath, parent) ? parent : workspacePath
+}
+
+// A WSL copy replaces its clipboard entry once with one carrying `osSnapshot`.
+// That is still the same clipboard action; a new copy or cut of the same paths is not.
+const snapshotSource = new WeakMap<FileClipboard, FileClipboard>()
+const clipboardAction = (entry: FileClipboard | null) => (entry && snapshotSource.get(entry)) ?? entry
+
+function sameClipboard(a: FileClipboard | null, b: FileClipboard | null): boolean {
+    return clipboardAction(a) === clipboardAction(b)
 }
 
 function samePaths(a: readonly string[], b: readonly string[]): boolean {
@@ -82,17 +101,22 @@ export async function copyFilesToClipboard(workspacePath: string, paths: string[
         // let the Explorer files still on it replace this copy at paste time.
         const osSnapshot = await clipboardReadFileList().catch(() => undefined)
         // A later copy owns the clipboard now; its own snapshot is on the way.
-        if (osSnapshot && useFileClipboardStore.getState().clipboard === entry) useFileClipboardStore.getState().setClipboard({ ...entry, osSnapshot })
+        if (osSnapshot && useFileClipboardStore.getState().clipboard === entry) {
+            const withSnapshot = { ...entry, osSnapshot }
+            snapshotSource.set(withSnapshot, entry)
+            useFileClipboardStore.getState().setClipboard(withSnapshot)
+        }
     }
     void logUserAction(mode === "cut" ? "file_cut" : "file_copy", `${mode} ${paths.length} item(s)`)
     if (parseRemoteFilePath(workspacePath)) return
     await clipboardWriteWorkspaceFiles(workspacePath, paths).catch(() => undefined)
 }
 
-async function landed(workspacePath: string, targetDir: string, changed: string[]): Promise<void> {
+async function landed(workspacePath: string, targetDir: string, changed: string[], current = () => currentWorkspace(workspacePath)): Promise<void> {
+    if (!current()) return
     const fileTree = useFileTreeStore.getState()
     await fileTree.invalidatePaths(workspacePath, changed)
-    if (!currentWorkspace(workspacePath)) return
+    if (!current()) return
     if (targetDir !== workspacePath && !useFileTreeStore.getState().trees[workspacePath]?.expandedDirs.has(targetDir)) {
         await fileTree.toggleDir(workspacePath, targetDir)
     }
@@ -109,12 +133,16 @@ export async function pasteFiles(
     target: { path: string; isDirectory: boolean } | null
 ): Promise<string[]> {
     if (!currentWorkspace(workspacePath)) return []
+    const current = workspaceOwner(workspacePath)
     const targetDir = pasteTargetDir(workspacePath, target)
     const remote = !!parseRemoteFilePath(workspacePath)
     const stored = useFileClipboardStore.getState().clipboard
     const internal = stored?.workspacePath === workspacePath ? stored : null
     // An SSH workspace reads the OS list only to say it cannot import it; local and WSL compare it.
     const osPaths = remote && !wslDistroOf(workspacePath) && internal ? [] : await clipboardReadFileList().catch(() => [] as string[])
+    // A WSL copy's snapshot lands as a new object of the same clipboard action.
+    const canDispatch = () => current() && sameClipboard(useFileClipboardStore.getState().clipboard, stored)
+    if (!canDispatch()) return []
     // A WSL copy whose snapshot is pending or unreadable is the newest clipboard action.
     const osUnchanged = internal !== null && (internal.osSnapshot === undefined
         ? !!wslDistroOf(workspacePath)
@@ -123,19 +151,30 @@ export async function pasteFiles(
     try {
         if (useInternal) {
             if (internal.mode === "cut") {
-                const moved = await fsMovePaths(workspacePath, internal.paths, targetDir)
-                internal.paths.forEach((from, index) => {
-                    if (moved[index] && moved[index] !== from) retargetOpenDocuments(from, moved[index])
-                })
-                // A cut is pasted once.
-                useFileClipboardStore.getState().setClipboard(null)
-                await landed(workspacePath, targetDir, [...internal.paths, ...moved])
-                void logUserAction("file_paste", `move ${moved.length} item(s)`)
+                // Repeated paste, including a newly cut alias of the same
+                // physical source, must not dispatch a second move in flight.
+                if ([...pendingCuts].some(cut => cut.paths.some(path => internal.paths.some(source =>
+                    containsFilePath(path, source) || containsFilePath(source, path))))) return []
+                pendingCuts.add(internal)
+                let moved: string[]
+                try {
+                    moved = await fsMovePaths(workspacePath, internal.paths, targetDir, canDispatch)
+                    if (!current() || !moved.length) return moved
+                    internal.paths.forEach((from, index) => {
+                        if (moved[index] && moved[index] !== from) retargetOpenDocuments(from, moved[index])
+                    })
+                    if (sameClipboard(useFileClipboardStore.getState().clipboard, internal)) {
+                        useFileClipboardStore.getState().setClipboard(null)
+                    }
+                } finally { pendingCuts.delete(internal) }
+                await landed(workspacePath, targetDir, [...internal.paths, ...moved], current)
+                void logUserAction("file_paste", `move ${moved.length} item(s)`, {}, workspacePath)
                 return moved
             }
-            const created = await fsCopyPaths(workspacePath, internal.paths, targetDir)
-            await landed(workspacePath, targetDir, created)
-            void logUserAction("file_paste", `copy ${created.length} item(s)`)
+            const created = await fsCopyPaths(workspacePath, internal.paths, targetDir, canDispatch)
+            if (!created.length) return created
+            await landed(workspacePath, targetDir, created, current)
+            void logUserAction("file_paste", `copy ${created.length} item(s)`, {}, workspacePath)
             return created
         }
         if (osPaths.length) {
@@ -143,18 +182,23 @@ export async function pasteFiles(
             if (remote && !distro) throw new Error("clipboard-import-remote-unsupported")
             const created = distro
                 ? await wslImportOsFiles(workspacePath, distro, targetDir, null)
-                : await fsPasteClipboardFiles(workspacePath, targetDir)
-            await landed(workspacePath, targetDir, created)
-            void logUserAction("file_paste", `import ${created.length} item(s)`)
+                : await fsPasteClipboardFiles(workspacePath, targetDir, canDispatch)
+            if (!created.length) return created
+            await landed(workspacePath, targetDir, created, current)
+            void logUserAction("file_paste", `import ${created.length} item(s)`, {}, workspacePath)
             return created
         }
         return []
     } catch (error) {
+        if (!current()) {
+            console.warn("File paste failed after its workspace changed", error)
+            return []
+        }
         // A failed batch keeps the entries it finished; show them so a retry
         // is not mistaken for a first paste.
         const touched = useInternal && internal.mode === "cut" ? [targetDir, ...internal.paths] : [targetDir]
         await useFileTreeStore.getState().invalidatePaths(workspacePath, touched).catch(() => undefined)
-        await reportError(error)
+        if (current()) await reportError(error)
         return []
     }
 }
@@ -166,14 +210,15 @@ export async function pasteFiles(
  */
 export async function importDroppedFiles(workspacePath: string, targetDir: string, paths: string[]): Promise<string[]> {
     if (!paths.length || !currentWorkspace(workspacePath)) return []
+    const current = workspaceOwner(workspacePath)
     try {
         const distro = wslDistroOf(workspacePath)
         if (parseRemoteFilePath(workspacePath) && !distro) throw new Error("clipboard-import-remote-unsupported")
         const created = distro
             ? await wslImportOsFiles(workspacePath, distro, targetDir, paths)
             : await fsImportDroppedPaths(workspacePath, paths, targetDir)
-        await landed(workspacePath, targetDir, created)
-        if (created[0] && currentWorkspace(workspacePath)) useFileClipboardStore.getState().select(workspacePath, created[0])
+        await landed(workspacePath, targetDir, created, current)
+        if (created[0] && current()) useFileClipboardStore.getState().select(workspacePath, created[0])
         void logUserAction("file_drop_import", `import ${created.length} item(s)`)
         return created
     } catch (error) {

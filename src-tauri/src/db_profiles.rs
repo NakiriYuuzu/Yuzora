@@ -506,6 +506,10 @@ pub struct ProfileDocument {
     pub version: u32,
     pub profiles: Vec<StoredProfile>,
     pub pending_operations: Vec<PendingOperation>,
+    // Migration receipts survive Forget when browser v1 cleanup failed.
+    // Only IDs are retained; this is not a restriction on normal profile edits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_consumed_descriptor_ids: Vec<DescriptorId>,
 }
 
 impl Default for ProfileDocument {
@@ -514,11 +518,19 @@ impl Default for ProfileDocument {
             version: PROFILE_REPOSITORY_VERSION,
             profiles: Vec::new(),
             pending_operations: Vec::new(),
+            legacy_consumed_descriptor_ids: Vec::new(),
         }
     }
 }
 
 impl ProfileDocument {
+    fn consume_legacy_descriptor(&mut self, descriptor_id: &DescriptorId) {
+        if !self.legacy_consumed_descriptor_ids.contains(descriptor_id) {
+            self.legacy_consumed_descriptor_ids
+                .push(descriptor_id.clone());
+        }
+    }
+
     fn profile_credential_is_consistent(profile: &StoredProfile) -> bool {
         let has_active_generation = profile.active_credential_generation.is_some();
         match &profile.target {
@@ -1754,6 +1766,15 @@ impl DatabaseProfiles {
         let mut document = self.repository.load()?;
         for profile in request.profiles {
             if document
+                .legacy_consumed_descriptor_ids
+                .contains(&profile.descriptor_id)
+            {
+                continue;
+            }
+            // Persist the receipt with the merged snapshot, including when a
+            // current profile already owns this ID. A later Forget keeps it.
+            document.consume_legacy_descriptor(&profile.descriptor_id);
+            if document
                 .profiles
                 .iter()
                 .any(|existing| existing.descriptor_id == profile.descriptor_id)
@@ -2063,6 +2084,8 @@ impl DatabaseProfiles {
         document
             .pending_operations
             .retain(|operation| operation.descriptor_id() != descriptor_id);
+        // Also cover profiles imported by an older version without receipts.
+        document.consume_legacy_descriptor(descriptor_id);
         self.repository.replace(document)?;
         Ok(())
     }

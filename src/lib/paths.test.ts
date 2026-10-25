@@ -182,6 +182,29 @@ describe("canonicalPathKey", () => {
 })
 
 describe("nativePathJoin / localPathJoin", () => {
+  it.each([
+    ["/repo", "\\a.txt"],
+    ["/repo", "a\\b.txt"],
+    ["/repo", "tail\\"],
+    ["/repo\\", "\\a.txt"],
+    ["//Case\\Host/share\\", "a\\b"],
+  ])("preserves POSIX literal separators under %s for %s", (root, leaf) => {
+    const path = `${root}/${leaf}`
+    expect(nativePathJoin(root, leaf)).toBe(path)
+    expect(workspacePathBasename(path)).toBe(leaf)
+    expect(nativePathParent(path)).toBe(root)
+    expect(canonicalPathKey(path)).toBe(path)
+    expect(canonicalPathKey(path)).not.toBe(canonicalPathKey(path.replace(/\\/g, "/")))
+    expect(relativePathWithin(root, path)).toBe(leaf)
+    expect(isSameOrDescendantPath(root, path)).toBe(true)
+    expect(rebasePath(root, "/target\\", path)).toBe(`/target\\/${leaf}`)
+  })
+
+  it("does not treat an embedded POSIX backslash as a directory boundary", () => {
+    expect(relativePathWithin("/repo/a", "/repo/a\\b.txt")).toBeNull()
+    expect(isSameOrDescendantPath("/repo/a", "/repo/a\\b.txt")).toBe(false)
+  })
+
   it("joins POSIX directories with a forward slash", () => {
     expect(nativePathJoin("/work/repo", "src")).toBe("/work/repo/src")
     expect(nativePathJoin("/work/repo/", "src/a.ts")).toBe("/work/repo/src/a.ts")
@@ -416,5 +439,17 @@ describe("POSIX file names that contain a backslash", () => {
     expect(nativePathParent("C:\\w\\a\\b.txt")).toBe("C:\\w\\a")
     expect(workspacePathBasename("C:\\w\\a\\b.txt")).toBe("b.txt")
     expect(workspacePathBasename("//?/UNC/Server/Share/Repo")).toBe("Repo")
+  })
+})
+
+describe("mixed-separator verbatim UNC paths", () => {
+  it("keeps the explicit Windows identity when extracting the basename", () => {
+    expect(workspacePathBasename(String.raw`//?/UNC/Server/Share\Dir\file.ts`)).toBe("file.ts")
+  })
+
+  it("keeps the immediate parent instead of falling back to the share root", () => {
+    expect(nativePathParent(String.raw`//?/UNC/Server/Share\Dir\file.ts`)).toBe(String.raw`//?/UNC/Server/Share\Dir`)
+    expect(nativePathParent(String.raw`//?/UNC/Server/Share\file.ts`)).toBe("//?/UNC/Server/Share")
+    expect(nativePathParent("//?/UNC/Server/Share")).toBe("//?/UNC/Server/Share")
   })
 })

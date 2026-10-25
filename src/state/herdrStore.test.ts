@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { act, cleanup, renderHook } from "@testing-library/react"
+import { useAgentHotkeys } from "@/app/workbench/useAgentHotkeys"
+import { agentMruKey, useAgentMruStore } from "./agentMruStore"
+import { useKeyboardSettingsStore } from "./keyboardSettingsStore"
+import { activateWorkbenchTab, currentWorkbenchAgentKey } from "@/lib/workbenchTabNavigation"
 
 vi.mock("@/lib/herdrProvider", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/herdrProvider")>(),
@@ -320,6 +325,173 @@ describe("herdrStore", () => {
     vi.mocked(openWorkspaceAtPath).mockReset().mockResolvedValue(true)
   })
 
+  describe("Agent MRU foreground tab navigation", () => {
+    beforeEach(() => {
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+      useAgentMruStore.setState({ keys: [] })
+      useKeyboardSettingsStore.setState({ overrides: {} })
+    })
+    afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+    async function prepare() {
+      await useHerdrStore.getState().refreshSessions()
+      await useHerdrStore.getState().bootstrap("default")
+      const runtime = useHerdrStore.getState().runtimesBySession.default!
+      const snapshot = runtime.snapshot!
+      const agents = snapshot.agents.map(agent => ({ ...agent, workspaceId: "ws-1", sessionName: "default" }))
+      const tabs = snapshot.tabs.map(tab => {
+        const agent = agents.find(item => item.tabId === tab.id)!
+        return { ...tab, workspaceId: "ws-1", paneId: agent.paneId, terminalId: agent.terminalId, sessionName: "default" }
+      })
+      const next = { ...snapshot, agents, tabs }
+      useHerdrStore.setState(state => ({ snapshot: next, runtimesBySession: { ...state.runtimesBySession, default: { ...runtime, snapshot: next, baseSnapshot: next } } }))
+      return { agents, tabs, a: agents[0], b: agents[1] }
+    }
+
+    it.each([false, true])("cycles back to A after real tab navigation to B with empty MRU=%s", async empty => {
+      const { agents, tabs, a, b } = await prepare()
+      await useHerdrStore.getState().activateAgent(b)
+      await useHerdrStore.getState().activateAgent(a)
+      const bPage = useWorkspaceStore.getState().groups[0].tabs.find(tab => tab.terminalId === b.terminalId)!
+      expect(bPage).toBeDefined()
+      if (empty) useAgentMruStore.setState({ keys: [] })
+      await activateWorkbenchTab(0, bPage, tabs[1])
+      expect(useWorkspaceStore.getState().groups[0].activePath).toBe(bPage.path)
+      let activating: ReturnType<ReturnType<typeof useHerdrStore.getState>["activateAgent"]> | undefined
+      renderHook(() => useAgentHotkeys({ agents, keyOf: agent => agentMruKey(agent.sessionName, agent.id), activate: agent => { activating = useHerdrStore.getState().activateAgent(agent) } }))
+      act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "`", code: "Backquote", altKey: true, bubbles: true, cancelable: true })))
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", bubbles: true }))
+        await activating
+      })
+      expect(herdrTabFocus).toHaveBeenLastCalledWith({ sessionName: "default", tabId: a.tabId })
+      expect(useAgentMruStore.getState().keys[0]).toBe(agentMruKey("default", a.id))
+      expect(confirmDiscardingUnsaved).not.toHaveBeenCalled()
+      expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    })
+
+    it("records only the precise Agent of a split pane", async () => {
+      const { a, tabs } = await prepare()
+      const split = { ...a, id: "split", paneId: "pane-split", terminalId: "term-split" }
+      useHerdrStore.setState(state => ({ runtimesBySession: { ...state.runtimesBySession, default: { ...state.runtimesBySession.default!, snapshot: { ...state.runtimesBySession.default!.snapshot!, agents: [a, split] } } } }))
+      expect(await useHerdrStore.getState().activateTab({ ...tabs[0], paneId: split.paneId, terminalId: split.terminalId }, { focusPane: true })).toEqual({ ok: true })
+      expect(useAgentMruStore.getState().keys).toEqual([agentMruKey("default", split.id)])
+      expect(herdrPaneFocus).toHaveBeenLastCalledWith({ sessionName: "default", paneId: split.paneId })
+    })
+
+    it.each(["mismatched", "ambiguous"])("does not guess an Agent for %s tab identity", async variant => {
+      const { a, tabs } = await prepare()
+      if (variant === "ambiguous") useHerdrStore.setState(state => ({ runtimesBySession: { ...state.runtimesBySession, default: { ...state.runtimesBySession.default!, snapshot: { ...state.runtimesBySession.default!.snapshot!, agents: [a, { ...a, id: "duplicate" }] } } } }))
+      await useHerdrStore.getState().activateTab(variant === "mismatched" ? { ...tabs[0], paneId: "wrong-pane" } : tabs[0])
+      expect(useAgentMruStore.getState().keys).toEqual([])
+    })
+
+    it.each(["rpc", "cancel"])("does not record a tab after %s failure", async failure => {
+      const { tabs } = await prepare()
+      const prior = [agentMruKey("other-session", "same-id")]
+      useAgentMruStore.setState({ keys: prior })
+      if (failure === "rpc") vi.mocked(herdrTabFocus).mockRejectedValueOnce(new Error("focus failed"))
+      else { useWorkspaceStore.setState({ workspacePath: "/other" }); vi.mocked(confirmDiscardingUnsaved).mockResolvedValueOnce(false) }
+      expect((await useHerdrStore.getState().activateTab(tabs[1])).ok).toBe(false)
+      expect(useAgentMruStore.getState().keys).toEqual(prior)
+    })
+
+    it("leaves MRU unchanged during background restore", async () => {
+      await prepare()
+      await useHerdrStore.getState().restoreFocusedState("default")
+      expect(useAgentMruStore.getState().keys).toEqual([])
+    })
+
+    it("cycles away from background-restored B without writing recency during restore", async () => {
+      const { agents, a, b } = await prepare()
+      useHerdrStore.setState(state => {
+        const runtime = state.runtimesBySession.default!
+        const snapshot = { ...runtime.snapshot!, focusedWorkspaceId: b.workspaceId, focusedTabId: b.tabId, focusedPaneId: b.paneId }
+        return { snapshot, runtimesBySession: { ...state.runtimesBySession, default: { ...runtime, snapshot, baseSnapshot: snapshot } } }
+      })
+      expect(await useHerdrStore.getState().restoreFocusedState("default")).toEqual({ ok: true })
+      const group = useWorkspaceStore.getState().groups[0]
+      expect(group.tabs.find(tab => tab.path === group.activePath)?.terminalId).toBe(b.terminalId)
+      expect(useAgentMruStore.getState().keys).toEqual([])
+      let activating: ReturnType<ReturnType<typeof useHerdrStore.getState>["activateAgent"]> | undefined
+      renderHook(() => useAgentHotkeys({ agents, getCurrentKey: currentWorkbenchAgentKey, keyOf: agent => agentMruKey(agent.sessionName, agent.id), activate: agent => { activating = useHerdrStore.getState().activateAgent(agent) } }))
+      act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "`", code: "Backquote", altKey: true, bubbles: true, cancelable: true })))
+      expect(useAgentMruStore.getState().keys).toEqual([])
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", bubbles: true }))
+        await activating
+      })
+      expect(herdrTabFocus).toHaveBeenLastCalledWith({ sessionName: "default", tabId: a.tabId })
+    })
+
+    it("records only the latest successful foreground activation", async () => {
+      const { a, tabs } = await prepare()
+      let finish!: () => void
+      vi.mocked(herdrWorkspaceFocus).mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+      const obsolete = useHerdrStore.getState().activateTab(tabs[1])
+      await vi.waitFor(() => expect(finish).toBeDefined())
+      const latest = useHerdrStore.getState().activateTab(tabs[0])
+      finish()
+      expect(await obsolete).toMatchObject({ ok: false, cancelled: true })
+      expect(await latest).toEqual({ ok: true })
+      expect(useAgentMruStore.getState().keys).toEqual([agentMruKey("default", a.id)])
+    })
+
+    it("namespaces identical Agent identities by the successfully selected Session", async () => {
+      const { a } = await prepare()
+      await useHerdrStore.getState().bootstrap("work")
+      const tab = useHerdrStore.getState().runtimesBySession.work!.snapshot!.tabs[0]
+      expect(await useHerdrStore.getState().activateTab({ ...tab, sessionName: "work" })).toEqual({ ok: true })
+      expect(useAgentMruStore.getState().keys).toEqual([agentMruKey("work", a.id)])
+    })
+
+    it("does not update Agent recency for an editor tab", async () => {
+      await prepare()
+      const path = "/Users/me/yuzora/code.ts"
+      useWorkspaceStore.getState().openTab(path)
+      const tab = useWorkspaceStore.getState().groups[0].tabs.find(item => item.path === path)!
+      await activateWorkbenchTab(0, tab)
+      expect(useAgentMruStore.getState().keys).toEqual([])
+    })
+
+    it.each(["moved", "removed"])("stale switcher uses live Agent identity when the selected Agent is %s but its tab survives", async variant => {
+      const { agents, a, b } = await prepare()
+      await useHerdrStore.getState().activateAgent(a)
+      let activating: ReturnType<ReturnType<typeof useHerdrStore.getState>["activateAgent"]> | undefined
+      const hook = renderHook(({ list }) => useAgentHotkeys({
+        agents: list, keyOf: agent => agentMruKey(agent.sessionName, agent.id),
+        activate: agent => { activating = useHerdrStore.getState().activateAgent(agent) }
+      }), { initialProps: { list: agents } })
+      act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "`", code: "Backquote", altKey: true, bubbles: true, cancelable: true })))
+      expect(hook.result.current.switcher?.items[1].id).toBe(b.id)
+      const replacement = { ...b, paneId: "pane-new", terminalId: "term-new" }
+      const list = variant === "moved" ? [a, replacement] : [a]
+      act(() => useHerdrStore.setState(state => ({ runtimesBySession: { ...state.runtimesBySession, default: { ...state.runtimesBySession.default!, snapshot: { ...state.runtimesBySession.default!.snapshot!, agents: list } } } })))
+      hook.rerender({ list })
+      expect(useHerdrStore.getState().runtimesBySession.default!.snapshot!.tabs.some(tab => tab.id === b.tabId)).toBe(true)
+      const before = { workspace: vi.mocked(herdrWorkspaceFocus).mock.calls.length, tab: vi.mocked(herdrTabFocus).mock.calls.length,
+        pane: vi.mocked(herdrPaneFocus).mock.calls.length, paths: useWorkspaceStore.getState().groups[0].tabs.map(tab => tab.path),
+        request: useHerdrStore.getState().paneFocusRequest, mru: useAgentMruStore.getState().keys }
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", bubbles: true }))
+        await activating
+      })
+      if (variant === "moved") {
+        expect(herdrPaneFocus).toHaveBeenLastCalledWith({ sessionName: "default", paneId: "pane-new" })
+        expect(useWorkspaceStore.getState().groups[0].tabs.some(tab => tab.terminalId === "term-new")).toBe(true)
+        expect(useWorkspaceStore.getState().groups[0].tabs.some(tab => tab.terminalId === b.terminalId)).toBe(false)
+        expect(useHerdrStore.getState().paneFocusRequest?.paneId).toBe("pane-new")
+      } else {
+        expect(herdrWorkspaceFocus).toHaveBeenCalledTimes(before.workspace)
+        expect(herdrTabFocus).toHaveBeenCalledTimes(before.tab)
+        expect(herdrPaneFocus).toHaveBeenCalledTimes(before.pane)
+        expect(useWorkspaceStore.getState().groups[0].tabs.map(tab => tab.path)).toEqual(before.paths)
+        expect(useHerdrStore.getState().paneFocusRequest).toEqual(before.request)
+        expect(useAgentMruStore.getState().keys).toEqual(before.mru)
+      }
+    })
+  })
+
   it("keeps a selected editor on the first background hydration without prior Space history", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
@@ -421,6 +593,101 @@ describe("herdrStore", () => {
     await oldBootstrap
     expect(useHerdrStore.getState().runtimesBySession[scope].capabilities).toEqual(newCaps)
     expect(useHerdrStore.getState().runtimesBySession[scope].connectionState).toBe("ready")
+  })
+
+  it("ignores a failed bootstrap after a newer helper generation has recovered", async () => {
+    const scope = '["wsl:ubuntu","default"]'
+    let rejectOld!: (error: Error) => void
+    const oldCaps = new Promise<typeof caps>((_resolve, reject) => { rejectOld = reject })
+    vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 1 })
+    vi.mocked(herdrCapabilities).mockReturnValueOnce(oldCaps)
+    const oldBootstrap = useHerdrStore.getState().bootstrap(scope)
+    vi.mocked(runtimeOwner).mockReturnValue({ hostId: "wsl:ubuntu", generation: 2 })
+    await useHerdrStore.getState().bootstrap(scope)
+    const recovered = useHerdrStore.getState().runtimesBySession[scope]
+    expect(recovered.connectionState).toBe("ready")
+    rejectOld(new Error("obsolete generation failed"))
+    await oldBootstrap
+    expect(useHerdrStore.getState().runtimesBySession[scope]).toBe(recovered)
+    expect(herdrCapabilities).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(["success", "failure"] as const)("ignores a same-owner refresh %s superseded by bootstrap", async outcome => {
+    const store = useHerdrStore.getState()
+    await store.refreshSessions()
+    await store.bootstrap("default")
+    const previous = useHerdrStore.getState().snapshot
+    let finishRead!: (value: typeof rawSnapshot) => void
+    let failRead!: (error: Error) => void
+    const oldRead = new Promise<typeof rawSnapshot>((resolve, reject) => { finishRead = resolve; failRead = reject })
+    vi.mocked(herdrSnapshot).mockReturnValueOnce(oldRead)
+    const refresh = store.refreshSnapshot("default")
+    let finishCaps!: (value: typeof caps) => void
+    vi.mocked(herdrCapabilities).mockReturnValueOnce(new Promise(resolve => { finishCaps = resolve }))
+    const bootstrap = store.bootstrap("default")
+    try {
+      if (outcome === "success") finishRead(rawSnapshot)
+      else failRead(new Error("obsolete refresh failed"))
+      await expect(refresh).resolves.toBe(false)
+      expect(useHerdrStore.getState().runtimesBySession.default).toMatchObject({ connectionState: "connecting", capabilities: null, snapshot: previous })
+    } finally {
+      finishCaps(caps)
+      await Promise.all([refresh, bootstrap])
+    }
+    expect(useHerdrStore.getState().connectionState).toBe("ready")
+  })
+
+  it("waits for an in-flight bootstrap before starting an ordinary refresh", async () => {
+    const store = useHerdrStore.getState()
+    await store.refreshSessions()
+    await store.bootstrap("default")
+    let finishCaps!: (value: typeof caps) => void
+    vi.mocked(herdrCapabilities).mockReturnValueOnce(new Promise(resolve => { finishCaps = resolve }))
+    const bootstrap = store.bootstrap("default")
+    const refresh = store.refreshSnapshot("default")
+    try {
+      expect(herdrSnapshot).toHaveBeenCalledTimes(1)
+      expect(useHerdrStore.getState().connectionState).toBe("connecting")
+    } finally {
+      finishCaps(caps)
+      await Promise.all([refresh, bootstrap])
+    }
+    expect(useHerdrStore.getState().connectionState).toBe("ready")
+    expect(herdrCapabilities).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([true, false])("does not publish a bootstrap snapshot captured before a workspace reorder (still active: %s)", async active => {
+    const store = useHerdrStore.getState()
+    await store.refreshSessions()
+    await store.bootstrap("default")
+    const changed = { ...rawSnapshot, version: "0.8.1" }
+    vi.mocked(herdrCapabilities).mockResolvedValue({ ...caps, server: { ...caps.server, version: "0.8.1" } })
+    let finishSnapshot!: (value: typeof rawSnapshot) => void
+    vi.mocked(herdrSnapshot).mockResolvedValueOnce(changed).mockReturnValueOnce(new Promise(resolve => { finishSnapshot = resolve }))
+    const refresh = store.refreshSnapshot("default")
+    await vi.waitFor(() => expect(herdrSnapshot).toHaveBeenCalledTimes(3))
+    store.setWorkspaceReordering("default", true)
+    expect(store.applyWorkspaceOrder("default", ["ws-2", "ws-1"])).toBe(true)
+    if (!active) store.setWorkspaceReordering("default", false)
+    const published: string[][] = []
+    const unsubscribe = useHerdrStore.subscribe((state, previous) => {
+      if (state.snapshot !== previous.snapshot) published.push(state.snapshot?.spaces.map(space => space.id) ?? [])
+    })
+    try {
+      finishSnapshot(changed)
+      await refresh
+      expect(published).not.toContainEqual(["ws-1", "ws-2"])
+      expect(useHerdrStore.getState().snapshot?.spaces.map(space => space.id)).toEqual(["ws-2", "ws-1"])
+    } finally {
+      unsubscribe()
+      store.setWorkspaceReordering("default", false)
+    }
+    vi.mocked(herdrSnapshot).mockResolvedValue({ ...changed, snapshot: { ...changed.snapshot,
+      workspaces: changed.snapshot.workspaces.slice().reverse().map((workspace, index) => ({ ...workspace, number: index + 1 }))
+    } })
+    await store.bootstrap("default")
+    expect(useHerdrStore.getState().connectionState).toBe("ready")
+    expect(useHerdrStore.getState().snapshot?.spaces.map(space => space.id)).toEqual(["ws-2", "ws-1"])
   })
 
   it("bootstraps capabilities + normalized snapshot for selected session", async () => {
@@ -1621,6 +1888,157 @@ describe("herdrStore", () => {
     expect(herdrWorkspaceCreate).toHaveBeenCalledTimes(1)
   })
 
+  it("does not let a late Space creation select its ID in another Session", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    await useHerdrStore.getState().bootstrap("work")
+    useHerdrStore.setState({ selectedSpaceBySession: { default: "ws-1", work: "ws-2" } })
+    let finishCreate!: (value: Awaited<ReturnType<typeof herdrWorkspaceCreate>>) => void
+    vi.mocked(herdrWorkspaceCreate).mockImplementationOnce(() => new Promise(resolve => { finishCreate = resolve }))
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finishCreate).toBeDefined())
+    await useHerdrStore.getState().selectSession("work")
+    useWorkspaceStore.getState().setWorkspace("/chosen-b")
+    useWorkspaceStore.getState().openTab("/chosen-b/keep.ts")
+    const selectedB = useHerdrStore.getState().selectedSpaceId
+    vi.mocked(herdrSnapshot).mockResolvedValueOnce(snapshotWithWorkspace("ws-new", "new", "/tmp/new"))
+    finishCreate({ workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null })
+    const result = await creating
+
+    expect(useHerdrStore.getState().selectedSessionName).toBe("work")
+    expect(useHerdrStore.getState().selectedSpaceId).toBe(selectedB)
+    expect(useHerdrStore.getState().selectedSpaceBySession.work).toBe(selectedB)
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/chosen-b")
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe("/chosen-b/keep.ts")
+    expect(result).toMatchObject({ ok: false, cancelled: true, space: { id: "ws-new" } })
+    expect(useHerdrStore.getState().runtimesBySession.default.snapshot?.spaces.some(space => space.id === "ws-new")).toBe(true)
+  })
+
+  it("does not let a late create overwrite automatic Session fallback", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    await useHerdrStore.getState().bootstrap("work")
+    let finishCreate!: (value: Awaited<ReturnType<typeof herdrWorkspaceCreate>>) => void
+    vi.mocked(herdrWorkspaceCreate).mockImplementationOnce(() => new Promise(resolve => { finishCreate = resolve }))
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finishCreate).toBeDefined())
+    // A partial inventory can omit native Sessions while remote Sessions are
+    // still listed. Refresh itself selects a fallback without selectSession().
+    vi.mocked(herdrSessions).mockResolvedValueOnce([sessions[1]])
+    await useHerdrStore.getState().refreshSessions()
+    const selectedB = useHerdrStore.getState().selectedSpaceId
+    vi.mocked(herdrSnapshot).mockResolvedValueOnce(snapshotWithWorkspace("ws-new", "new", "/tmp/new"))
+    finishCreate({ workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null })
+    const result = await creating
+    expect(useHerdrStore.getState().selectedSessionName).toBe("work")
+    expect(useHerdrStore.getState().selectedSpaceId).toBe(selectedB)
+    expect(useHerdrStore.getState().selectedSpaceBySession.work).toBe(selectedB)
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ ok: false, cancelled: true, space: { id: "ws-new" } })
+  })
+
+  it("keeps a newer same-Session focus after the old create and snapshot settle", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finishCreate!: (value: Awaited<ReturnType<typeof herdrWorkspaceCreate>>) => void
+    let finishSnapshot!: (value: Awaited<ReturnType<typeof herdrSnapshot>>) => void
+    vi.mocked(herdrWorkspaceCreate).mockImplementationOnce(() => new Promise(resolve => { finishCreate = resolve }))
+    const latest = { ...rawSnapshot, snapshot: {
+      ...rawSnapshot.snapshot,
+      focused_workspace_id: "ws-2",
+      workspaces: rawSnapshot.snapshot.workspaces.map(space => ({ ...space, focused: space.workspace_id === "ws-2" }))
+    } }
+    vi.mocked(herdrSnapshot)
+      .mockImplementationOnce(() => new Promise(resolve => { finishSnapshot = resolve }))
+      .mockResolvedValue(latest)
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finishCreate).toBeDefined())
+    const selecting = useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+    await Promise.resolve()
+    const focusBeforeCreate = vi.mocked(herdrWorkspaceFocus).mock.calls.length
+    finishCreate({ workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null })
+    await vi.waitFor(() => expect(finishSnapshot).toBeDefined())
+    const focusBeforeSnapshot = vi.mocked(herdrWorkspaceFocus).mock.calls.length
+    finishSnapshot(snapshotWithWorkspace("ws-new", "new", "/tmp/new"))
+    const [created, selected] = await Promise.all([creating, selecting])
+
+    expect(focusBeforeCreate).toBe(0)
+    expect(focusBeforeSnapshot).toBe(0)
+    expect(created).toMatchObject({ ok: false, cancelled: true, space: { id: "ws-new" } })
+    expect(selected.ok).toBe(true)
+    expect(herdrWorkspaceFocus).toHaveBeenCalledExactlyOnceWith({ sessionName: "default", workspaceId: "ws-2" })
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
+    expect(vi.mocked(openWorkspaceAtPath).mock.calls.every(([path]) => path !== "/tmp/new")).toBe(true)
+  })
+
+  it.each(["unsaved", "canonical"])("does not create after selection changes during %s preflight", async phase => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finish!: () => void
+    if (phase === "unsaved") {
+      vi.mocked(confirmDiscardingUnsaved).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(true) }))
+    } else {
+      vi.mocked(canonicalRuntimeWorkspace).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve("/tmp/new") }))
+    }
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    await useHerdrStore.getState().selectSession("work")
+    finish()
+    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    expect(herdrWorkspaceCreate).not.toHaveBeenCalled()
+    expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
+  it.each(["cancel", "reject"])("does not roll back another Session after a stale workspace open %s", async outcome => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    vi.mocked(herdrWorkspaceCreate).mockResolvedValue({ workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null })
+    vi.mocked(herdrSnapshot).mockImplementation(async sessionName => sessionName === "default"
+      ? snapshotWithWorkspace("ws-new", "new", "/tmp/new") : rawSnapshot)
+    let finishOpen!: () => void
+    let shouldOpen!: () => boolean
+    vi.mocked(openWorkspaceAtPath).mockImplementationOnce((_path, options) => new Promise((resolve, reject) => {
+      shouldOpen = options!.shouldOpen!
+      finishOpen = () => outcome === "cancel" ? resolve(false) : reject(new Error("obsolete open failed"))
+    }))
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finishOpen).toBeDefined())
+    await useHerdrStore.getState().selectSession("work")
+    const selectedB = useHerdrStore.getState().selectedSpaceId
+    const staleOpenAllowed = shouldOpen()
+    finishOpen()
+    const result = await creating
+    expect(staleOpenAllowed).toBe(false)
+    expect(result).toMatchObject({ ok: false, cancelled: true, space: { id: "ws-new" } })
+    expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
+    expect(useHerdrStore.getState().selectedSessionName).toBe("work")
+    expect(useHerdrStore.getState().selectedSpaceId).toBe(selectedB)
+  })
+
+  it("still reports failed confirmation of an applied create when selection was superseded", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    let finishCreate!: (value: Awaited<ReturnType<typeof herdrWorkspaceCreate>>) => void
+    vi.mocked(herdrWorkspaceCreate).mockImplementationOnce(() => new Promise(resolve => { finishCreate = resolve }))
+    const creating = useHerdrStore.getState().createSpaceFromFolder("/tmp/new", "new")
+    await vi.waitFor(() => expect(finishCreate).toBeDefined())
+    await useHerdrStore.getState().selectSession("work")
+    vi.mocked(herdrSnapshot).mockRejectedValue(new Error("snapshot offline"))
+    finishCreate({ workspaceId: "ws-new", label: "new", path: "/tmp/new", tabId: null, terminalId: null, paneId: null })
+    const result = await creating
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.cancelled).not.toBe(true)
+      expect(result.error).toContain("may have created the Space")
+      expect(result.error).toContain("do not create it again")
+    }
+    expect(useHerdrStore.getState().selectedSessionName).toBe("work")
+    expect(useHerdrStore.getState().selectedSpaceId).not.toBe("ws-new")
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
   it("does not report success when an applied workspace.create cannot refresh", async () => {
     await useHerdrStore.getState().refreshSessions()
     await useHerdrStore.getState().bootstrap("default")
@@ -1713,7 +2131,7 @@ describe("herdrStore", () => {
     const workSelection = useHerdrStore.getState().selectedSpaceBySession.work
     finishCreate()
 
-    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    await expect(creating).resolves.toMatchObject({ ok: false, cancelled: true })
     expect(setSelectedSpaceId).not.toHaveBeenCalled()
     expect(useHerdrStore.getState().selectedSessionName).toBe("work")
     expect(workSelection).toBe("ws-1")
@@ -1721,9 +2139,9 @@ describe("herdrStore", () => {
     expect(useHerdrStore.getState().selectedSpaceId).toBe(workSelection)
     // The newer selection owns Herdr focus: no rollback focus may steal it back.
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
-    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/tmp/new", expect.objectContaining({
-      shouldOpen: expect.any(Function)
-    }))
+    // The stale create never switches Files: it skips the switch, or asks with a shouldOpen that is already false.
+    const createSwitch = vi.mocked(openWorkspaceAtPath).mock.calls.find(([path]) => path === "/tmp/new")
+    expect(createSwitch?.[1]?.shouldOpen?.() ?? false).toBe(false)
   })
 
   it("createSpaceFromFolder does not select the new Space for a superseded create that needs no workspace switch", async () => {
@@ -1732,7 +2150,7 @@ describe("herdrStore", () => {
     const workSelection = useHerdrStore.getState().selectedSpaceBySession.work
     finishCreate()
 
-    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    await expect(creating).resolves.toMatchObject({ ok: false, cancelled: true })
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
     expect(setSelectedSpaceId).not.toHaveBeenCalled()
     expect(workSelection).toBe("ws-1")
@@ -1749,7 +2167,7 @@ describe("herdrStore", () => {
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
     finishCreate()
 
-    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    await expect(creating).resolves.toMatchObject({ ok: false, cancelled: true })
     await expect(activating).resolves.toMatchObject({ ok: true })
     expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
     expect(setSelectedSpaceId).not.toHaveBeenCalled()
@@ -1757,9 +2175,9 @@ describe("herdrStore", () => {
     expect(vi.mocked(herdrWorkspaceFocus).mock.invocationCallOrder[0]).toBeGreaterThan(
       vi.mocked(herdrSnapshot).mock.invocationCallOrder.at(-2)!
     )
-    // The stale create asked to switch Files, but its shouldOpen is already false.
+    // The stale create never switches Files: it skips the switch, or asks with a shouldOpen that is already false.
     const createSwitch = vi.mocked(openWorkspaceAtPath).mock.calls.find(([path]) => path === "/tmp/new")
-    expect(createSwitch?.[1]?.shouldOpen?.()).toBe(false)
+    expect(createSwitch?.[1]?.shouldOpen?.() ?? false).toBe(false)
   })
 
   it("createSpaceFromFolder never calls workspace.create once superseded while resolving the folder", async () => {
@@ -1784,7 +2202,7 @@ describe("herdrStore", () => {
     await useHerdrStore.getState().selectSession("work")
     finishCreate()
 
-    await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    await expect(creating).resolves.toMatchObject({ ok: false, cancelled: true })
     expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
     expect(useHerdrStore.getState().runtimesBySession.default?.errorMessage ?? null).not.toBe("switch failed")
   })

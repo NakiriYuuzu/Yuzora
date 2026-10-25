@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 const { check, getVersion, relaunch, updateHerdrProcesses, updateStopHerdr } = vi.hoisted(() => ({
   check: vi.fn(),
@@ -312,6 +312,45 @@ describe("Settings · About & Updates pane", () => {
     ).toBeInTheDocument()
     expect(install).not.toHaveBeenCalled()
     expect(relaunch).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])("explains a dirty-document blocked install retry and recovers after saving (Windows=%s)", async (windows) => {
+    setUserAgent(windows ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+    const install = vi.fn().mockRejectedValueOnce(new Error("fixture install failure")).mockResolvedValueOnce(undefined)
+    const download = vi.fn(async () => undefined)
+    check.mockResolvedValue({ version: "0.0.4", download, install })
+    await openInstallConfirmation()
+    const confirmLabel = windows ? "Stop HERDR and install" : "Install and restart"
+    const first = await screen.findByRole("alertdialog", { name: "Install update and restart?" })
+    if (windows) await within(first).findByText("0.9.3")
+    fireEvent.click(within(first).getByRole("button", { name: confirmLabel }))
+    const retry = await screen.findByRole("button", { name: "Retry installation" })
+    expect(install).toHaveBeenCalledTimes(1)
+    act(() => useWorkspaceStore.setState({ groups: [{
+      tabs: [{ path: "/tmp/dirty.ts", name: "dirty.ts", dirty: true, externallyModified: false }],
+      activePath: "/tmp/dirty.ts"
+    }] }))
+    fireEvent.click(retry)
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(updateStopHerdr).toHaveBeenCalledTimes(windows ? 1 : 0)
+    expect(relaunch).not.toHaveBeenCalled()
+    expect(screen.queryByRole("alertdialog", { name: "Install update and restart?" })).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent("Save or discard all unsaved documents before installing the update.")
+
+    act(() => useWorkspaceStore.setState({ groups: [{
+      tabs: [{ path: "/tmp/dirty.ts", name: "dirty.ts", dirty: false, externallyModified: false }],
+      activePath: "/tmp/dirty.ts"
+    }] }))
+    fireEvent.click(retry)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    const second = await screen.findByRole("alertdialog", { name: "Install update and restart?" })
+    if (windows) await within(second).findByText("0.9.3")
+    expect(install).toHaveBeenCalledTimes(1)
+    fireEvent.click(within(second).getByRole("button", { name: confirmLabel }))
+    await waitFor(() => expect(relaunch).toHaveBeenCalledTimes(1))
+    expect(install).toHaveBeenCalledTimes(2)
+    expect(download).toHaveBeenCalledTimes(1)
+    expect(updateStopHerdr).toHaveBeenCalledTimes(windows ? 2 : 0)
   })
 
   it("requires confirmation, supports cancel, then installs before relaunching", async () => {

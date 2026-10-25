@@ -53,6 +53,7 @@ interface UiState {
     ) => void
     openDiffInGitMode: (path: string) => void // FileTree 入口：selectGitFile+setMode("git")
     resolverPath: string | null               // external-change 解決器目標檔
+    resolverNonce: number
     openResolver: (path: string) => void
     closeResolver: () => void
     settingsOpen: boolean                      // Settings 對話框開關（單一真相，AppShell 訂閱）
@@ -101,6 +102,7 @@ export const uiInitialState = {
     gitChangePrimary: null as GitChangeKey | null,
     gitChangeAnchor: null as GitChangeKey | null,
     resolverPath: null,
+    resolverNonce: 0,
     settingsOpen: false,
     settingsSection: null,
     settingsLogSource: null,
@@ -332,7 +334,7 @@ export const useUiStore = create<UiState>()((set) => ({
                 origPath: null
             }
         }),
-    openResolver: (path) => set({ resolverPath: path }),
+    openResolver: (path) => set((s) => ({ resolverPath: path, resolverNonce: s.resolverNonce + 1 })),
     closeResolver: () => set({ resolverPath: null }),
     openSettings: (section, target) =>
         set((s) => {

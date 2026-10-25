@@ -574,7 +574,7 @@ export function SettingsDialog({
                       <ReleaseNotes markdown={availableUpdate.body} />
                     </div>
                   )}
-                  {installBlockedByDirty && updateStatus === "downloaded" && (
+                  {installBlockedByDirty && (updateStatus === "downloaded" || updateStatus === "install-error") && (
                     <p role="alert" className="mt-[9px] text-[11px] text-destructive">
                       {tw("settings.unsavedDocumentsBlockInstall")}
                     </p>

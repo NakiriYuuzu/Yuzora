@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { gitRollbackPaths, type GitRollbackResult } from "@/lib/ipc"
-import { isSameOrDescendantPath, nativePathJoin } from "@/lib/paths"
+import { isSameOrDescendantPath, isWindowsPath, nativePathJoin } from "@/lib/paths"
 import { useGitRollbackDialogStore } from "@/state/gitRollbackDialogStore"
 import { gitMutationsBlocked, useGitStore } from "@/state/gitStore"
 import { useUiStore } from "@/state/uiStore"
@@ -31,7 +31,7 @@ function absolutePath(root: string, path: string): string {
 }
 
 function preferredSep(root: string): string {
-    return root.includes("\\") || /^[A-Za-z]:/.test(root) ? "\\" : "/"
+    return isWindowsPath(root) ? "\\" : "/"
 }
 
 function tabMatchesRepoPath(tabPath: string, root: string, path: string): boolean {

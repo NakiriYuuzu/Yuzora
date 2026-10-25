@@ -607,6 +607,95 @@ describe("gitStore", () => {
         expect(useGitStore.getState().lastError).toBe(null)
     })
 
+    it.each([
+        ["fetch", "yes"], ["fetch", "error"],
+        ["aba", "yes"], ["aba", "error"],
+        ["settings", "yes"], ["settings", "error"],
+    ] as const)("retires remote probe after %s before late %s", async (replacement, response) => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ ...makeBootstrap(), remotePaused: false, remoteIncoming: "no", snapshotStale: false })
+        useGitStore.getState().setRemoteCheck({ mode: "probe", intervalSec: 60 })
+        let resolve!: (value: "yes") => void
+        let reject!: (error: Error) => void
+        vi.mocked(ipc.gitRemoteProbe).mockImplementationOnce(() => new Promise((ok, no) => { resolve = ok; reject = no }))
+        const oldCheck = useGitStore.getState().checkRemote()
+        if (replacement === "fetch") {
+            vi.mocked(ipc.gitStatus).mockResolvedValue(makeStatus())
+            const operation = useGitStore.getState().runOp("fetch", async () => {})
+            await vi.advanceTimersByTimeAsync(400)
+            expect(await operation).toBe(true)
+        } else if (replacement === "aba") {
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/other")).mockResolvedValueOnce(makeBootstrap("/w"))
+            await useGitStore.getState().detect("/other")
+            await useGitStore.getState().detect("/w")
+        } else {
+            useGitStore.getState().setRemoteCheck({ mode: "off", intervalSec: 60 })
+            useGitStore.getState().setRemoteCheck({ mode: "probe", intervalSec: 60 })
+        }
+        const expected = { remotePaused: useGitStore.getState().remotePaused, remoteIncoming: useGitStore.getState().remoteIncoming }
+        if (response === "yes") resolve("yes")
+        else reject(new Error("late failure"))
+        await oldCheck
+        expect(useGitStore.getState()).toMatchObject(expected)
+    })
+
+    it.each([
+        ["fetch", "error"], ["aba", "success"], ["settings", "error"],
+    ] as const)("retires autofetch after %s before late %s", async (replacement, response) => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ ...makeBootstrap(), remotePaused: false, snapshotStale: false })
+        useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
+        let resolve!: () => void
+        let reject!: (error: Error) => void
+        vi.mocked(ipc.gitFetch).mockImplementationOnce(() => new Promise((ok, no) => { resolve = ok; reject = no }))
+        const old = useGitStore.getState().checkRemote()
+        if (replacement === "fetch") {
+            vi.mocked(ipc.gitStatus).mockResolvedValue(makeStatus())
+            const operation = useGitStore.getState().runOp("fetch", async () => {})
+            await vi.advanceTimersByTimeAsync(400)
+            expect(await operation).toBe(true)
+        } else if (replacement === "aba") {
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/other")).mockResolvedValueOnce(makeBootstrap("/w"))
+            await useGitStore.getState().detect("/other")
+            await useGitStore.getState().detect("/w")
+        } else {
+            useGitStore.getState().setRemoteCheck({ mode: "off", intervalSec: 60 })
+            useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
+        }
+        const statusRequests = vi.mocked(ipc.gitStatus).mock.calls.length
+        if (response === "success") resolve()
+        else reject(new Error("late fetch failure"))
+        await old
+        expect(useGitStore.getState().remotePaused).toBe(false)
+        expect(ipc.gitStatus).toHaveBeenCalledTimes(statusRequests)
+    })
+
+    it("coalesces remote checks only within the current repository generation", async () => {
+        const { useGitStore } = await import("./gitStore")
+        const ipc = await import("../lib/ipc")
+        useGitStore.setState({ ...makeBootstrap(), remotePaused: false, snapshotStale: false })
+        useGitStore.getState().setRemoteCheck({ mode: "probe", intervalSec: 60 })
+        const releases: Array<(value: "yes" | "no") => void> = []
+        vi.mocked(ipc.gitRemoteProbe).mockImplementation(() => new Promise((resolve) => releases.push(resolve)))
+        const old = useGitStore.getState().checkRemote()
+        void useGitStore.getState().checkRemote()
+        expect(releases).toHaveLength(1)
+        vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/other"))
+        await useGitStore.getState().detect("/other")
+        const fresh = useGitStore.getState().checkRemote()
+        expect(releases).toHaveLength(2)
+        releases[0]("yes"); await old
+        void useGitStore.getState().checkRemote()
+        expect(releases).toHaveLength(2) // old finally cannot release the new owner
+        releases[1]("no"); await fresh
+        expect(useGitStore.getState().remoteIncoming).toBe("no")
+        vi.mocked(ipc.gitRemoteProbe).mockResolvedValue("yes")
+        await useGitStore.getState().checkRemote()
+        expect(useGitStore.getState().remoteIncoming).toBe("yes")
+    })
+
     it("checkRemote autofetch pauses silently when background gitStatus fails", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
@@ -865,6 +954,29 @@ describe("gitStore", () => {
     // #58 T4a：per-workspace git 快照（stale-while-revalidate）。切回已開過的
     // workspace 時先 hydrate 上次快照（零空白），背景 bootstrap 完成後覆蓋收斂。
     describe("workspace snapshots (#58 T4a)", () => {
+        it("preserves full upstream refs in hydration and replaces them with older helper payloads", async () => {
+            const { useGitStore } = await import("./gitStore")
+            const ipc = await import("../lib/ipc")
+            const base = { name: "consumer", upstream: "origin/topic", ahead: 0, behind: 0, isCurrent: true, gone: false }
+            const modern = { local: [{ ...base, upstreamRef: "refs/heads/origin/topic" }], remote: ["origin/topic"], tags: [] }
+            const legacy = { local: [{ ...base }], remote: ["origin/topic"], tags: [] }
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce({ ...makeBootstrap("/a"), branches: modern })
+            await useGitStore.getState().detect("/a")
+            vi.mocked(ipc.gitBootstrap).mockResolvedValueOnce(makeBootstrap("/b"))
+            await useGitStore.getState().detect("/b")
+            let release!: (value: GitBootstrapResult) => void
+            vi.mocked(ipc.gitBootstrap).mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+            const pending = useGitStore.getState().detect("/a")
+            expect(useGitStore.getState().branches).toEqual(modern)
+            release({ ...makeBootstrap("/a"), branches: legacy })
+            await pending
+            expect(useGitStore.getState().branches).toEqual(legacy)
+            expect(useGitStore.getState().branches!.local[0]).not.toHaveProperty("upstreamRef")
+            vi.mocked(ipc.gitBranches).mockResolvedValueOnce(modern)
+            await useGitStore.getState().loadBranches()
+            expect(useGitStore.getState().branches).toEqual(modern)
+        })
+
         function makeBranches(name: string) {
             return {
                 local: [{ name, upstream: null, ahead: 0, behind: 0, isCurrent: true, gone: false }],

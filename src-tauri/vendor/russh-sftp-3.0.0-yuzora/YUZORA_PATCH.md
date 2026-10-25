@@ -29,3 +29,9 @@ Deque capacity grows amortized and may exceed the entry count. The current SshMa
 Pending requests distinguish CLOSE from other replies. A dropped or timed-out CLOSE releases its response sender and keeps only acknowledgement metadata in the existing request map. The response loop removes that entry and returns one unit of capacity only for a validated Status Ok. Rejected or unexpected replies do not free capacity; unsolicited replies and unclaimed-HANDLE cleanup cannot decrement another live handle. Transport shutdown clears the map. Other request cancellation still removes its entry immediately.
 
 An unacknowledged CLOSE must retain its small metadata entry until a reply or transport shutdown; timeout alone cannot prove the remote handle was closed. This is intentional pending-operation state, with no detached waiter or timer retained. It does not establish a universal memory reduction. The close deadline and returned errors remain unchanged. Owned protocol, normal read/open/close, cancellation, timeout and disconnected-transport evidence is recorded in `.yuuzu/eval/performance-loop-2026-10-02/experiments/057-sftp-close-ack-accounting/`.
+
+## Closed-session observation
+
+`RawSftpSession::is_closed` and `SftpSession::is_closed` expose a snapshot of transport-worker termination. The response worker marks the shared response context closed before waking pending requests on shutdown; a closed outgoing queue also reports closed. Timeouts and ordinary SFTP error replies do not set this state.
+
+Yuzora uses this observation only when a new operation looks up its cached SFTP session. A stopped subsystem may be replaced on the still-live SSH transport. A failed operation keeps its original error and is never replayed, since a lost reply cannot prove whether a remote write occurred. Concurrent initializers preserve a live cache winner. Evidence is recorded in `.yuuzu/eval/perf-bug-loop-2026-10-20/experiments/006-sftp-dead-cache/`.

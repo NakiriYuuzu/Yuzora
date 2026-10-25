@@ -830,6 +830,50 @@ mod tests {
         );
     }
 
+    fn custom_path_probe(os: &str) -> HostProbe {
+        HostProbe {
+            os: os.into(),
+            arch: "x86_64".into(),
+            home: "/unused".into(),
+            installed_herdr: None,
+        }
+    }
+
+    #[test]
+    fn windows_custom_path_accepts_copy_as_path_without_changing_its_spelling() {
+        let info = custom_path_probe("windows");
+        for path in [
+            r"C:\Tools 空間\herdr.exe",
+            r"\\server\share\Tools 空間\herdr.exe",
+            r"\\?\C:\Tools\herdr.exe",
+            r"\\?\UNC\server\share\herdr.exe",
+        ] {
+            for input in [
+                path.to_string(),
+                format!("\"{path}\""),
+                format!("  \"{path}\"\t"),
+            ] {
+                assert_eq!(
+                    select_host_binary(&info, HerdrBinarySource::Custom, Some(&input), "unused")
+                        .unwrap(),
+                    path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn windows_custom_path_rejects_empty_and_non_absolute_paths() {
+        let info = custom_path_probe("windows");
+        for input in ["", "\"\"", "  ", "herdr.exe", "C:\\herdr.exe\0"] {
+            assert!(
+                select_host_binary(&info, HerdrBinarySource::Custom, Some(input), "unused")
+                    .is_err(),
+                "must reject {input:?}"
+            );
+        }
+    }
+
     #[test]
     fn host_source_is_explicit_and_missing_installed_does_not_fall_back() {
         let probe = HostProbe {

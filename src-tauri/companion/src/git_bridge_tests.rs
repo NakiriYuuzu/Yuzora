@@ -595,7 +595,7 @@ fn git_branches_list_refs_and_cap_each_list() {
     let pushed = git(&repo.dir, &["rev-parse", "HEAD~1"]).trim().to_owned();
     assert_eq!(
         *main,
-        json!({"name":"main","upstream":"origin/main","pushOid":pushed,"ahead":1,"behind":0,"isCurrent":true,"gone":false})
+        json!({"name":"main","upstream":"origin/main","pushOid":pushed,"upstreamRef":"refs/remotes/origin/main","ahead":1,"behind":0,"isCurrent":true,"gone":false})
     );
     let feature = local.iter().find(|b| b["name"] == "feature").unwrap();
     assert_eq!(feature["isCurrent"], false);

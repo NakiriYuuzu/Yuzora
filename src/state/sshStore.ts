@@ -236,7 +236,6 @@ export const useSshStore = create<SshStore>()((set, get) => ({
                 return
             }
             set((s) => ({
-                activeHostId: id,
                 sessions: {
                     ...s.sessions,
                     [id]: {

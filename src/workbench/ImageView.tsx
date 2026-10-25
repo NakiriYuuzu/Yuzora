@@ -107,16 +107,17 @@ export function ImageView({ path, generation }: { path: string; generation?: num
     // viewport (with a little padding).
     const fitZoom =
         dims && containerSize
-            ? Math.min(
-                  1,
-                  Math.max(MIN_ZOOM, (containerSize.w - 24) / dims.w),
-                  Math.max(MIN_ZOOM, (containerSize.h - 24) / dims.h)
+            ? Math.max(
+                  0,
+                  Math.min(1, (containerSize.w - 24) / dims.w, (containerSize.h - 24) / dims.h)
               )
             : 1
     const effectiveZoom = zoom === "fit" ? fitZoom : zoom
 
     function zoomBy(factor: number) {
-        setZoom(clampZoom(effectiveZoom * factor))
+        const nextZoom = clampZoom(effectiveZoom * factor)
+        if (factor < 1 && nextZoom >= effectiveZoom) return
+        setZoom(nextZoom)
     }
 
     // React (v17+) attaches wheel listeners passively at the root, so an

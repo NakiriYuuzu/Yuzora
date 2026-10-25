@@ -7,6 +7,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(all(test, unix))]
+#[path = "logging_settings_lifecycle_tests.rs"]
+mod settings_lifecycle_tests;
+
 const RETENTION_DAYS: i64 = 14;
 const MAX_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 const VALID_LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
@@ -400,12 +404,9 @@ pub fn read_log_level_from(path: &Path) -> String {
 }
 
 pub fn write_log_level_to(path: &Path, level: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
     let body = serde_json::json!({ "minLevel": level, "enabled": read_log_enabled_from(path) })
         .to_string();
-    std::fs::write(path, body).map_err(|e| e.to_string())
+    write_log_settings(path, body.as_bytes()).map_err(|e| e.to_string())
 }
 
 fn read_log_enabled_from(path: &Path) -> bool {
@@ -417,11 +418,46 @@ fn read_log_enabled_from(path: &Path) -> bool {
 }
 
 fn write_log_enabled_to(path: &Path, enabled: bool) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let body = serde_json::json!({ "minLevel": read_log_level_from(path), "enabled": enabled });
-    std::fs::write(path, body.to_string()).map_err(|e| e.to_string())
+    write_log_settings(path, body.to_string().as_bytes()).map_err(|e| e.to_string())
+}
+
+// App 設定以完整快照替換；提交前的短寫入或同步失敗不能破壞舊設定。
+fn write_log_settings(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let target = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => std::fs::canonicalize(path)?,
+        Ok(_) => path.to_path_buf(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(error) => return Err(error),
+    };
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // 不截斷原檔，且不利用可寫的 parent 繞過原檔的寫入限制。
+    // 此 handle 必須在 persist 前釋放，以免 Windows 阻擋替換。
+    let permissions = match std::fs::OpenOptions::new().write(true).open(&target) {
+        Ok(file) => Some(file.metadata()?.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".logging-")
+        .tempfile_in(parent)?;
+    temporary.write_all(body)?;
+    if let Some(permissions) = permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
+    #[cfg(all(test, unix))]
+    settings_lifecycle_tests::fail_write_at("sync")?;
+    temporary.as_file().sync_all()?;
+    #[cfg(all(test, unix))]
+    settings_lifecycle_tests::fail_write_at("persist")?;
+    #[cfg(all(test, unix))]
+    settings_lifecycle_tests::prepare_persist(&temporary)?;
+    temporary.persist(&target).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// 啟動期讀持久化設定並套用（lib.rs 呼叫一次）。無設定檔時 = 開啟、info。
