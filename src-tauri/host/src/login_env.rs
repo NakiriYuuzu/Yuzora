@@ -1,7 +1,7 @@
 //! Resolve account tooling locally on the host, without contaminating RPC stdout.
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -139,12 +139,13 @@ pub fn capture_output(
         let mut output = Zeroizing::new(Vec::new());
         let mut buffer = Zeroizing::new([0u8; 8192]);
         let mut leader_exited = false;
+        let mut eof = false;
         loop {
             if Instant::now() >= deadline {
                 return Err("environment-shell-timeout");
             }
             match reader.read(&mut *buffer) {
-                Ok(0) => {}
+                Ok(0) => eof = true,
                 Ok(size) => {
                     if size > limit.saturating_sub(output.len()) {
                         return Err("environment-output-limit");
@@ -169,7 +170,18 @@ pub fn capture_output(
                 leader_exited = true;
                 continue;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            if eof {
+                std::thread::sleep(Duration::from_millis(5));
+            } else {
+                // Wake as soon as more output arrives: a fixed sleep here caps
+                // the drain at one socket buffer per sleep.
+                let mut poll = libc::pollfd {
+                    fd: reader.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                unsafe { libc::poll(&mut poll, 1, 5) };
+            }
         }
     })();
     let status = child.finish()?;

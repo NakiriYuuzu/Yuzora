@@ -544,7 +544,10 @@ async fn failed_rollback_quarantine(abandon: bool, replace_generation: bool) {
         .expect("retired actor callbacks must not retain their own connection");
     }
     let independent = Connection::open(file.path()).unwrap();
-    independent.busy_timeout(Duration::ZERO).unwrap();
+    // A zero strong count is visible while the last owner's thread still runs
+    // the connection's close (which rolls the open transaction back), so wait
+    // a bounded time for the lock; a connection that retains it still fails.
+    independent.busy_timeout(Duration::from_secs(3)).unwrap();
     let write = independent.execute("INSERT INTO audit VALUES(99)", []);
     assert!(
         write.is_ok(),
