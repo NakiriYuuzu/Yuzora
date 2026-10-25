@@ -7,6 +7,8 @@ import type { AuthorEntry, CommitDetail, LogCommit } from "../lib/types"
 // appends another page. 200 matches the design's "load a healthy window, page on
 // scroll" intent without overwhelming the graph layout.
 const LOG_PAGE_SIZE = 200
+// The host clamps one log request to this many commits (MAX_LOG_LIMIT).
+const LOG_REQUEST_LIMIT = 500
 
 // Commit-detail cache cap. A simple bounded map (not a strict LRU): once full we
 // drop the oldest-inserted entry. Detail payloads are cheap and re-fetchable, so
@@ -40,6 +42,8 @@ interface GitLogState {
     detailCache: Map<string, CommitDetail>
 
     loadFirstPage: (repositoryRoot: string) => Promise<void>
+    /** Refetch the loaded window in place (ref decorations) without touching selection or `loading`. */
+    refreshSilently: (repositoryRoot: string) => Promise<void>
     loadMore: (repositoryRoot: string) => Promise<void>
     setFilters: (repositoryRoot: string, partial: Partial<LogFilters>) => void
     select: (repositoryRoot: string, hash: string) => Promise<void>
@@ -184,6 +188,40 @@ export const useGitLogStore = create<GitLogState>()((set, get) => ({
         } catch (e) {
             if (!responseMatches(repositoryRoot, gen)) return
             set({ listError: String(e), loading: false })
+        }
+    },
+
+    refreshSilently: async (repositoryRoot) => {
+        const { commits, loading, loadingMore, filters } = get()
+        // Only refresh a log that is loaded for this root; never start one nobody opened.
+        if (activeRepositoryRoot !== repositoryRoot || loading || loadingMore || commits.length === 0) return
+        const gen = generation
+        const loadedCount = commits.length
+        // One request cannot cover a longer window; refreshing would shrink it.
+        if (loadedCount > LOG_REQUEST_LIMIT) return
+        try {
+            const page = await gitLogPage(
+                repositoryRoot,
+                null,
+                Math.max(LOG_PAGE_SIZE, loadedCount),
+                filters.query || null,
+                filters.author,
+                filters.since,
+                filters.until
+            )
+            // A reload, reset, or pagination that landed meanwhile owns the list now.
+            if (!responseMatches(repositoryRoot, gen) || get().loadingMore || get().commits.length !== loadedCount) return
+            set((s) => {
+                const gone = s.selectedHash !== null && !page.commits.some((c) => c.hash === s.selectedHash)
+                return {
+                    commits: page.commits,
+                    hasMore: page.hasMore,
+                    nextCursor: page.nextCursor,
+                    ...(gone ? { selectedHash: null, detail: null, detailLoading: false, detailError: null } : {})
+                }
+            })
+        } catch {
+            // Silent by design: the visible list stays as it was.
         }
     },
 

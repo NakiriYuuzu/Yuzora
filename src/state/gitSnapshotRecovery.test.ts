@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest"
 vi.mock("@/lib/ipc", () => ({ gitBootstrap: vi.fn(), gitBranches: vi.fn(), gitStatus: vi.fn(), gitFetch: vi.fn(), gitRemoteProbe: vi.fn(), gitCommitDetail: vi.fn() }))
+vi.mock("./gitLogStore", () => ({ useGitLogStore: { getState: () => ({ refreshSilently: vi.fn(async () => undefined) }) } }))
 import { gitBranches, gitStatus } from "@/lib/ipc"
 import { clearGitSnapshots, initialGitState, useGitStore } from "./gitStore"
 

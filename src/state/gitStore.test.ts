@@ -53,6 +53,9 @@ vi.mock("../lib/ipc", () => ({
     gitDiscover: vi.fn(async () => ({ repositories: [], truncated: false }))
 }))
 
+const logMock = vi.hoisted(() => ({ refreshSilently: vi.fn(async () => undefined) }))
+vi.mock("./gitLogStore", () => ({ useGitLogStore: { getState: () => logMock } }))
+
 const trustMock = vi.hoisted(() => ({
     refreshStatus: vi.fn(async () => ({ state: "trusted" })),
     requestWorkspaceGrant: vi.fn(async () => true)
@@ -594,6 +597,26 @@ describe("gitStore", () => {
         expect(useGitStore.getState().busy).toBe(null)
     })
 
+    it("reloads the log refs after ops that move remote-tracking refs, not after others", async () => {
+        const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        for (const name of ["fetch", "pull", "pull-rebase", "push", "push-force"]) {
+            logMock.refreshSilently.mockClear()
+            const op = useGitStore.getState().runOp(name, async () => {})
+            await vi.advanceTimersByTimeAsync(1500)
+            expect(await op).toBe(true)
+            expect(logMock.refreshSilently).toHaveBeenCalledWith("/w")
+        }
+        logMock.refreshSilently.mockClear()
+        const stage = useGitStore.getState().runOp("stage", async () => {})
+        await vi.advanceTimersByTimeAsync(1500)
+        await stage
+        const rejected = useGitStore.getState().runOp("push", async () => { throw new Error("rejected") })
+        await vi.advanceTimersByTimeAsync(1500)
+        await rejected
+        expect(logMock.refreshSilently).not.toHaveBeenCalled()
+    })
+
     it("checkRemote probe mode sets remoteIncoming; failure pauses silently", async () => {
         const { useGitStore } = await import("./gitStore")
         const ipc = await import("../lib/ipc")
@@ -694,6 +717,15 @@ describe("gitStore", () => {
         vi.mocked(ipc.gitRemoteProbe).mockResolvedValue("yes")
         await useGitStore.getState().checkRemote()
         expect(useGitStore.getState().remoteIncoming).toBe("yes")
+    })
+
+    it("checkRemote autofetch silently refreshes the log refs after a successful fetch", async () => {
+        const { useGitStore } = await import("./gitStore")
+        useGitStore.setState({ environment: { status: "ready", root: "/w", version: "2.50.1" } })
+        useGitStore.getState().setRemoteCheck({ mode: "autofetch", intervalSec: 60 })
+        logMock.refreshSilently.mockClear()
+        await useGitStore.getState().checkRemote()
+        expect(logMock.refreshSilently).toHaveBeenCalledWith("/w")
     })
 
     it("checkRemote autofetch pauses silently when background gitStatus fails", async () => {

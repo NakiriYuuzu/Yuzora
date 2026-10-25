@@ -21,6 +21,7 @@ import { logUserAction } from "@/features/logs/userAction"
 import { gitConflictSides, gitStage, saveFile } from "@/lib/ipc"
 import type { GitConflictSides } from "@/lib/types"
 import { isWindowsPath, nativePathJoin } from "@/lib/paths"
+import { showsNativeTrafficLights } from "@/lib/platform"
 import { dirtyTabPaths } from "@/lib/unsavedGuard"
 import { requestAppConfirmation } from "@/state/appDialogStore"
 import { useGitConflictStore } from "@/state/gitConflictStore"
@@ -542,7 +543,11 @@ export function GitMergeTool() {
                     className="flex min-h-0 flex-col gap-[10px]"
                     onEscapeKeyDown={(event) => event.preventDefault()}
                 >
-                    <DialogHeader>
+                    {/* The dialog nearly fills the window, so AppKit's traffic lights overlay its title; same inset as DiffModal. */}
+                    <DialogHeader
+                        data-native-lights={showsNativeTrafficLights()}
+                        className="data-[native-lights=true]:pl-[75px]"
+                    >
                         <DialogTitle>{t("gitMerge.title", { path })}</DialogTitle>
                         <DialogDescription>{t("gitMerge.description")}</DialogDescription>
                     </DialogHeader>

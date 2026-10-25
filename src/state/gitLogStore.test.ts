@@ -65,6 +65,87 @@ describe("gitLogStore", () => {
         expect(ipc.gitLogPage).toHaveBeenCalledWith("/w", null, 200, null, null, null, null)
     })
 
+    it("refreshSilently updates refs but keeps selection, detail, loading and loaded count", async () => {
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        const gitLogPage = ipc.gitLogPage as ReturnType<typeof vi.fn>
+        const loaded = Array.from({ length: 250 }, (_, i) => mkCommit(`c${i}`))
+        gitLogPage.mockResolvedValueOnce(page(loaded.slice(0, 200), true))
+        await useGitLogStore.getState().loadFirstPage("/w")
+        gitLogPage.mockResolvedValueOnce(page(loaded.slice(200), false))
+        await useGitLogStore.getState().loadMore("/w")
+        await useGitLogStore.getState().select("/w", "c3")
+        const detail = useGitLogStore.getState().detail
+        expect(detail).not.toBeNull()
+        gitLogPage.mockClear()
+        const refreshed = loaded.map((c, i) => (i === 0 ? { ...c, refs: [{ name: "origin/main", kind: "remote" as const }] } : c))
+        gitLogPage.mockResolvedValueOnce(page(refreshed, false))
+        const run = useGitLogStore.getState().refreshSilently("/w")
+        expect(useGitLogStore.getState().loading).toBe(false)
+        await run
+        const s = useGitLogStore.getState()
+        expect(gitLogPage).toHaveBeenCalledWith("/w", null, 250, null, null, null, null)
+        expect(s.commits).toHaveLength(250)
+        expect(s.commits[0].refs).toEqual([{ name: "origin/main", kind: "remote" }])
+        expect(s.selectedHash).toBe("c3")
+        expect(s.detail).toBe(detail)
+    })
+
+    it("refreshSilently leaves a window longer than one request untouched", async () => {
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        const gitLogPage = ipc.gitLogPage as ReturnType<typeof vi.fn>
+        const loaded = Array.from({ length: 600 }, (_, i) => mkCommit(`c${i}`))
+        gitLogPage.mockResolvedValueOnce(page(loaded.slice(0, 200), true))
+        await useGitLogStore.getState().loadFirstPage("/w")
+        gitLogPage.mockResolvedValueOnce(page(loaded.slice(200, 400), true))
+        await useGitLogStore.getState().loadMore("/w")
+        gitLogPage.mockResolvedValueOnce(page(loaded.slice(400), false))
+        await useGitLogStore.getState().loadMore("/w")
+        gitLogPage.mockClear()
+        await useGitLogStore.getState().refreshSilently("/w")
+        expect(gitLogPage).not.toHaveBeenCalled()
+        expect(useGitLogStore.getState().commits).toHaveLength(600)
+    })
+
+    it("refreshSilently drops the selection when that commit is gone", async () => {
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        const gitLogPage = ipc.gitLogPage as ReturnType<typeof vi.fn>
+        gitLogPage.mockResolvedValueOnce(page([mkCommit("a"), mkCommit("b")], false))
+        await useGitLogStore.getState().loadFirstPage("/w")
+        await useGitLogStore.getState().select("/w", "b")
+        gitLogPage.mockResolvedValueOnce(page([mkCommit("a")], false))
+        await useGitLogStore.getState().refreshSilently("/w")
+        expect(useGitLogStore.getState().selectedHash).toBeNull()
+        expect(useGitLogStore.getState().detail).toBeNull()
+    })
+
+    it("refreshSilently does nothing for a root whose log is not loaded", async () => {
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        await useGitLogStore.getState().refreshSilently("/w")
+        expect(ipc.gitLogPage).not.toHaveBeenCalled()
+        await useGitLogStore.getState().loadFirstPage("/w")
+        ;(ipc.gitLogPage as ReturnType<typeof vi.fn>).mockClear()
+        await useGitLogStore.getState().refreshSilently("/other")
+        expect(ipc.gitLogPage).not.toHaveBeenCalled()
+    })
+
+    it("refreshSilently discards a response superseded by a root switch", async () => {
+        const { useGitLogStore } = await import("./gitLogStore")
+        const ipc = await import("../lib/ipc")
+        const gitLogPage = ipc.gitLogPage as ReturnType<typeof vi.fn>
+        await useGitLogStore.getState().loadFirstPage("/w")
+        let resolve!: (p: LogPage) => void
+        gitLogPage.mockImplementationOnce(() => new Promise<LogPage>((r) => { resolve = r }))
+        const run = useGitLogStore.getState().refreshSilently("/w")
+        useGitLogStore.getState().reset({ preserveAuthorSession: true })
+        resolve(page([mkCommit("stale")], false))
+        await run
+        expect(useGitLogStore.getState().commits).toEqual([])
+    })
+
     it("does not rescan authors on same-root first-page reloads or filter changes", async () => {
         const { useGitLogStore } = await import("./gitLogStore")
         const ipc = await import("../lib/ipc")

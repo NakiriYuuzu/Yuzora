@@ -24,6 +24,9 @@ vi.mock("@/lib/ipc", () => ({
     gitBranches: vi.fn(async () => ({ local: [], remote: [], tags: [] }))
 }))
 
+const logMock = vi.hoisted(() => ({ refreshSilently: vi.fn(async () => undefined) }))
+vi.mock("@/state/gitLogStore", () => ({ useGitLogStore: { getState: () => logMock } }))
+
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
     writeText: vi.fn(async () => undefined)
 }))
@@ -181,6 +184,14 @@ describe("BranchPopover", () => {
         render(<BranchPopover open onOpenChange={() => {}} />)
         fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }))
         await waitFor(() => expect(ipc.gitFetch).toHaveBeenCalled())
+        await waitFor(() => expect(logMock.refreshSilently).toHaveBeenCalled())
+    })
+
+    it("reloads the log refs after push", async () => {
+        render(<BranchPopover open onOpenChange={() => {}} />)
+        fireEvent.click(screen.getByRole("button", { name: /^push$/i }))
+        await waitFor(() => expect(ipc.gitPush).toHaveBeenCalled())
+        await waitFor(() => expect(logMock.refreshSilently).toHaveBeenCalled())
     })
 
     it("runs pull through runOp", async () => {
