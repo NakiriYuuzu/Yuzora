@@ -16,6 +16,7 @@ import { PREVIEW_TAB_PATH, useWorkspaceStore } from "../state/workspaceStore"
 import { isMarkdownPath } from "./MarkdownPreview"
 import { EditorPane } from "../editor/EditorPane"
 import { documentGeneration } from "../editor/documentRegistry"
+import { confirmClosingSplit } from "@/lib/unsavedGuard"
 import { TabBar } from "./TabBar"
 import { MarkdownPreview } from "./MarkdownPreview"
 import { ImageView, isImagePath } from "./ImageView"
@@ -41,6 +42,15 @@ export function EditorArea() {
     const splitRight = useWorkspaceStore((s) => s.splitRight)
     const closeSplit = useWorkspaceStore((s) => s.closeSplit)
     const setActiveGroup = useWorkspaceStore((s) => s.setActiveGroup)
+
+    async function onCloseSplit() {
+        const proceed = await confirmClosingSplit({
+            title: t("unsavedDialog.closeSplitTitle"),
+            description: t("unsavedDialog.closeSplitDescription"),
+            saveLabel: t("unsavedDialog.saveAll")
+        })
+        if (proceed) closeSplit()
+    }
 
     return (
         <div className="editor-groups flex min-h-0 min-w-0 flex-1">
@@ -81,7 +91,7 @@ export function EditorArea() {
                                                 ? t("editorArea.splitTitle")
                                                 : t("editorArea.closeSplitTitle")
                                         }
-                                        onClick={groups.length < 2 ? splitRight : closeSplit}
+                                        onClick={groups.length < 2 ? splitRight : () => void onCloseSplit()}
                                         className={cn(
                                             ACTION_BUTTON_CLASS,
                                             groups.length < 2 ? ACTION_IDLE_CLASS : ACTION_ACTIVE_CLASS
@@ -180,6 +190,7 @@ export function EditorArea() {
                                                 <ImageView
                                                     key={group.activePath}
                                                     path={group.activePath}
+                                                    generation={documentGeneration(group.activePath)}
                                                 />
                                             )
                                         }

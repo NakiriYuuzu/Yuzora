@@ -396,6 +396,11 @@ pub const REMOTE_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct BranchInfo {
     pub name: String,
     pub upstream: Option<String>,
+    /// Commit the remote-tracking ref this branch pushes to points at, as of this
+    /// listing. That is the upstream's ref for `push.default=upstream` and
+    /// otherwise the same-named branch on the push remote, which differs from the
+    /// upstream in triangular workflows. `None` when no such ref exists.
+    pub push_oid: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub is_current: bool,
@@ -535,34 +540,182 @@ fn git_config_value(
 /// `--set-upstream` (JetBrains/VS Code behaviour) instead of failing with
 /// "has no upstream branch".
 pub fn push_args(root: &Path) -> Result<Vec<String>, String> {
-    push_args_with_options(root, false, false)
+    push_args_with_options(root, None, false)
 }
 
-/// `push_args` plus `--force-with-lease` and/or `--follow-tags` (push the tags
+/// `push_args` plus a force-with-lease and/or `--follow-tags` (push the tags
 /// reachable from the pushed commits, JetBrains "push tags on current branch").
+/// `force_with_lease_oid` is the remote commit the caller last saw; the push
+/// only overwrites the remote branch while it still points there, and only if
+/// the current branch has integrated that commit.
 pub fn push_args_with_options(
     root: &Path,
-    force_with_lease: bool,
+    force_with_lease_oid: Option<&str>,
     tags: bool,
 ) -> Result<Vec<String>, String> {
-    push_args_with_options_env(root, force_with_lease, tags, &[])
+    push_args_with_options_env(root, force_with_lease_oid, tags, &[])
 }
 
 fn push_args_with_options_env(
     root: &Path,
-    force_with_lease: bool,
+    force_with_lease_oid: Option<&str>,
     tags: bool,
     env: &[(String, String)],
 ) -> Result<Vec<String>, String> {
-    let mut args = push_args_with_env(root, env)?;
+    let mut args = match force_with_lease_oid {
+        Some(expected) => force_push_args(root, expected, env)?,
+        None => push_args_with_env(root, env)?,
+    };
     // Options go right after the subcommand, before any remote/branch operands.
     if tags {
         args.insert(1, "--follow-tags".into());
     }
-    if force_with_lease {
-        args.insert(1, "--force-with-lease".into());
-    }
     Ok(args)
+}
+
+/// What `push.default` makes a plain `git push` of the current branch do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PushDefault {
+    /// Same-named branch on the push remote; refuses a differently named upstream.
+    Simple,
+    /// Same-named branch on the push remote.
+    Current,
+    /// The branch the current branch tracks.
+    Upstream,
+    Nothing,
+}
+
+fn push_default(root: &Path, env: &[(String, String)]) -> Result<PushDefault, String> {
+    match git_config_value(root, "push.default", env)?.as_deref() {
+        None | Some("simple") => Ok(PushDefault::Simple),
+        // `matching` pushes every shared branch; a force push only ever means the
+        // current one, so it is treated like `current`.
+        Some("current" | "matching") => Ok(PushDefault::Current),
+        Some("upstream" | "tracking") => Ok(PushDefault::Upstream),
+        Some("nothing") => Ok(PushDefault::Nothing),
+        Some(other) => Err(format!("git push: unsupported push.default '{other}'")),
+    }
+}
+
+/// A force push, spelled out as `--force-with-lease=<ref>:<expected> <remote>
+/// <branch>:<ref>`. Remote and ref come from the destination `git push` itself
+/// would choose, so the lease guards exactly the ref being overwritten, and the
+/// push cannot go anywhere else. Whenever either cannot be named, or `expected`
+/// is not a commit this branch has integrated, the push is refused instead of
+/// falling back to an unguarded force.
+fn force_push_args(
+    root: &Path,
+    expected: &str,
+    env: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    let expected = crate::git_oid::GitOid::parse(expected).map_err(|_| {
+        "git push: force with lease needs the full id of the remote commit it may overwrite"
+            .to_string()
+    })?;
+    let head = run_git(
+        root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        DEFAULT_TIMEOUT,
+        env,
+    )?;
+    if head.code != 0 {
+        return Err("git push: force with lease needs a checked-out branch".into());
+    }
+    let branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let merge =
+        git_config_value(root, &format!("branch.{branch}.merge"), env)?.ok_or_else(|| {
+            format!("git push: force with lease needs '{branch}' to track a remote branch")
+        })?;
+    let remote = push_remote(root, &branch, env)?
+        .ok_or_else(|| "git push: no remote is configured for this repository".to_string())?;
+    if git_config_value(root, &format!("remote.{remote}.push"), env)?.is_some() {
+        return Err(format!(
+            "git push: force with lease cannot tell where the push refspec of remote '{remote}' leads"
+        ));
+    }
+    let local_ref = format!("refs/heads/{branch}");
+    let upstream_remote = git_config_value(root, &format!("branch.{branch}.remote"), env)?
+        .unwrap_or_else(|| "origin".to_string());
+    let remote_ref = match push_default(root, env)? {
+        PushDefault::Nothing => {
+            return Err("git push: push.default is 'nothing', so there is no push destination".into())
+        }
+        PushDefault::Upstream if remote != upstream_remote => {
+            return Err(format!(
+                "git push: push.default is 'upstream' but '{branch}' pushes to '{remote}', not its upstream remote '{upstream_remote}'"
+            ))
+        }
+        PushDefault::Upstream => merge,
+        PushDefault::Simple if remote == upstream_remote && merge != local_ref => {
+            return Err(format!(
+                "git push: push.default is 'simple' and the upstream of '{branch}' has a different name; set push.default or the upstream first"
+            ))
+        }
+        PushDefault::Simple | PushDefault::Current => local_ref.clone(),
+    };
+    if !commit_was_integrated(root, &branch, &expected, env)? {
+        return Err(format!(
+            "git push: force with lease refused: the remote commit {} is not part of '{branch}' or its reflog, so it has not been integrated here (a fetch may have brought it in). Pull or rebase onto it first",
+            expected.short()
+        ));
+    }
+    Ok(vec![
+        "push".into(),
+        format!("--force-with-lease={remote_ref}:{}", expected.as_str()),
+        remote,
+        format!("{local_ref}:{remote_ref}"),
+    ])
+}
+
+/// Whether `commit` is reachable from the branch tip or from any commit the
+/// branch has pointed at (its reflog): the user built on it or has it locally
+/// because they did something with it. This is what `--force-if-includes`
+/// (git 2.30, and a no-op next to an explicit `--force-with-lease=<ref>:<expect>`)
+/// checks. A remote-tracking ref alone proves nothing: a background fetch moves
+/// it without the user ever having integrated what it brought in. A fetched
+/// commit that never made it into the branch is therefore not one to overwrite.
+fn commit_was_integrated(
+    root: &Path,
+    branch: &str,
+    commit: &crate::git_oid::GitOid,
+    env: &[(String, String)],
+) -> Result<bool, String> {
+    let local_ref = format!("refs/heads/{branch}");
+    let reflog = run_git(
+        root,
+        &[
+            "log",
+            "-g",
+            "--no-show-signature",
+            "--format=%H",
+            &local_ref,
+            "--",
+        ],
+        DEFAULT_TIMEOUT,
+        env,
+    )?;
+    if reflog.code != 0 {
+        return Err(git_err("log", &reflog.stderr));
+    }
+    // `commit` minus everything the branch has ever been: empty means contained.
+    let mut revisions = format!("{}\n^{local_ref}\n", commit.as_str());
+    let mut seen = HashSet::new();
+    for tip in String::from_utf8_lossy(&reflog.stdout).lines() {
+        if crate::git_oid::is_full_oid(tip) && seen.insert(tip) {
+            revisions.push_str(&format!("^{tip}\n"));
+        }
+    }
+    let out = run_git_with_stdin(
+        root,
+        &["rev-list", "--count", "--stdin"],
+        DEFAULT_TIMEOUT,
+        env,
+        revisions.as_bytes(),
+    )?;
+    if out.code != 0 {
+        return Err(git_err("rev-list", &out.stderr));
+    }
+    Ok(out.stdout.trim_ascii() == b"0")
 }
 
 fn push_args_with_env(root: &Path, env: &[(String, String)]) -> Result<Vec<String>, String> {
@@ -757,7 +910,20 @@ pub fn ensure_literal_path_scope(
             "git {operation} changed HEAD outside the requested path set"
         ));
     }
-    let allowed: HashSet<&str> = requested.iter().map(String::as_str).collect();
+    let mut allowed: HashSet<&str> = requested.iter().map(String::as_str).collect();
+    // Git pairs a deleted source with its new destination into one rename row, so
+    // the pairing appearing or disappearing is part of both paths' change. A copy
+    // leaves its source as an independent entry and is never paired this way.
+    for status in [before, after] {
+        for entry in status.staged.iter().chain(&status.unstaged) {
+            if let Some(orig_path) = entry.orig_path.as_deref().filter(|_| entry.status == "R") {
+                if requested.contains(&entry.path) || requested.iter().any(|p| p == orig_path) {
+                    allowed.insert(orig_path);
+                    allowed.insert(&entry.path);
+                }
+            }
+        }
+    }
     let extra: Vec<String> = mutated_status_paths(before, after)
         .into_iter()
         .filter(|path| !allowed.contains(path.as_str()))
@@ -845,6 +1011,18 @@ fn has_conflict_markers(bytes: &[u8]) -> bool {
 
 pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     let before = status_of(root, None)?;
+    // A staged rename is one row (its new path) but two index entries: restoring
+    // only the destination would leave the source's deletion staged. A staged copy
+    // keeps its source as a separate entry, which must stay as it is.
+    let mut targets = paths.to_vec();
+    for entry in &before.parsed.staged {
+        if let Some(orig_path) = entry.orig_path.as_ref().filter(|_| entry.status == "R") {
+            if paths.contains(&entry.path) && !targets.contains(orig_path) {
+                reject_lossy_path("unstage", orig_path)?;
+                targets.push(orig_path.clone());
+            }
+        }
+    }
     // An unborn branch has no HEAD for `restore --staged`. Remove only the
     // index entries; --cached preserves working files, including later edits.
     let mut args: Vec<&str> = if before.parsed.head_oid == "(initial)" {
@@ -852,10 +1030,10 @@ pub fn unstage(root: &Path, paths: &[String]) -> Result<(), String> {
     } else {
         vec!["restore", "--staged", "--"]
     };
-    args.extend(paths.iter().map(String::as_str));
+    args.extend(targets.iter().map(String::as_str));
     run_ok(root, &args, DEFAULT_TIMEOUT, &[])?;
     let after = status_of(root, None)?;
-    ensure_literal_path_scope("unstage", paths, &before.parsed, &after.parsed)
+    ensure_literal_path_scope("unstage", &targets, &before.parsed, &after.parsed)
 }
 
 /// Status paths are decoded lossily, so U+FFFD may stand for undecodable bytes and
@@ -1367,6 +1545,10 @@ pub fn parse_upstream_track(track: &str) -> (u32, u32, bool) {
 }
 
 pub fn branches(root: &Path) -> Result<BranchList, String> {
+    branches_with_env(root, &[])
+}
+
+fn branches_with_env(root: &Path, env: &[(String, String)]) -> Result<BranchList, String> {
     let out = run_git(
         root,
         &[
@@ -1374,24 +1556,28 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
             "refs/heads",
             "refs/remotes",
             "refs/tags",
-            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)",
+            "--format=%(refname)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track)%00%(creatordate:iso-strict)%00%(objectname)%00%(push)",
         ],
         DEFAULT_TIMEOUT,
-        &[],
+        env,
     )?;
     if out.code != 0 {
         return Err(git_err("for-each-ref", &out.stderr));
     }
     let mut local = Vec::new();
+    // Remote-tracking ref each local branch pushes to, parallel to `local`.
+    let mut push_refs = Vec::new();
     let mut remote = Vec::new();
+    let mut remote_oids = std::collections::HashMap::new();
     let mut tags = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let f: Vec<&str> = line.split('\0').collect();
-        if f.len() < 5 {
+        if f.len() < 7 {
             continue;
         }
         if let Some(name) = f[0].strip_prefix("refs/heads/") {
             let (ahead, behind, gone) = parse_upstream_track(f[3]);
+            push_refs.push(f[6].strip_prefix("refs/remotes/").unwrap_or("").to_string());
             local.push(BranchInfo {
                 name: name.to_string(),
                 upstream: if f[2].is_empty() {
@@ -1399,6 +1585,8 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
                 } else {
                     Some(f[2].to_string())
                 },
+                // Filled below: remote-tracking refs are listed after local ones.
+                push_oid: None,
                 ahead,
                 behind,
                 is_current: f[1] == "*",
@@ -1407,6 +1595,7 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
         } else if let Some(name) = f[0].strip_prefix("refs/remotes/") {
             if !name.ends_with("/HEAD") {
                 remote.push(name.to_string());
+                remote_oids.insert(name.to_string(), f[5].to_string());
             }
         } else if let Some(name) = f[0].strip_prefix("refs/tags/") {
             tags.push(TagInfo {
@@ -1414,6 +1603,46 @@ pub fn branches(root: &Path) -> Result<BranchList, String> {
                 date: f[4].to_string(),
             });
         }
+    }
+
+    // `%(push)` stays empty when git cannot name a single target for a `simple`
+    // push, which it nevertheless carries out by name when the push remote is not
+    // the upstream's (triangular workflow). `push.default=current` names that
+    // same-named branch on the push remote. Only the checked-out branch can be
+    // force pushed, so only it pays for the second look.
+    if let Some(index) = local
+        .iter()
+        .position(|branch| branch.is_current && branch.upstream.is_some())
+        .filter(|index| push_refs[*index].is_empty())
+    {
+        let refname = format!("refs/heads/{}", local[index].name);
+        let named = run_git(
+            root,
+            &[
+                "-c",
+                "push.default=current",
+                "for-each-ref",
+                &refname,
+                "--format=%(refname)%00%(push)",
+            ],
+            DEFAULT_TIMEOUT,
+            env,
+        )?;
+        if named.code == 0 {
+            if let Some(target) = String::from_utf8_lossy(&named.stdout)
+                .lines()
+                .filter_map(|line| line.split_once('\0'))
+                .find_map(|(name, target)| (name == refname).then_some(target))
+            {
+                push_refs[index] = target
+                    .strip_prefix("refs/remotes/")
+                    .unwrap_or("")
+                    .to_string();
+            }
+        }
+    }
+    for (branch, push_ref) in local.iter_mut().zip(&push_refs) {
+        branch.push_oid = remote_oids.get(push_ref).cloned();
     }
 
     Ok(BranchList {
@@ -2075,6 +2304,13 @@ pub struct GitConflictSides {
     pub ours: Option<GradedText>,
     pub theirs: Option<GradedText>,
     pub worktree: Option<GradedText>,
+    /// A text side whose decoded content cannot be written back byte-for-byte as
+    /// UTF-8 (non-UTF-8 bytes, or UTF-16): a text merge of it would corrupt the file.
+    pub lossy_encoding: bool,
+    /// A stage or the working-tree entry is a symbolic link. Its text is the link
+    /// target, and a merge written to the path would go through the link to
+    /// whatever it points at instead of replacing it.
+    pub symlink: bool,
 }
 
 pub fn conflict_sides(root: &Path, path: &str) -> Result<GitConflictSides, String> {
@@ -2090,13 +2326,41 @@ pub fn conflict_sides(root: &Path, path: &str) -> Result<GitConflictSides, Strin
         .find(|entry| entry.path == path)
         .map(|entry| entry.status.clone())
         .ok_or_else(|| format!("git: {path} is not in conflict"))?;
+    let base = show_object_checked(root, &format!(":1:{path}"))?;
+    let ours = show_object_checked(root, &format!(":2:{path}"))?;
+    let theirs = show_object_checked(root, &format!(":3:{path}"))?;
+    let worktree = read_worktree(root, path)?.map(|bytes| grade_bytes_checked(&bytes));
+    let sides = [&base, &ours, &theirs, &worktree];
+    let lossy_encoding = sides.iter().any(|side| matches!(side, Some((_, false))));
+    let symlink = conflict_involves_symlink(root, path)?;
+    let graded = |side: Option<(GradedText, bool)>| side.map(|(graded, _)| graded);
     Ok(GitConflictSides {
         code,
-        base: show_object(root, &format!(":1:{path}"))?,
-        ours: show_object(root, &format!(":2:{path}"))?,
-        theirs: show_object(root, &format!(":3:{path}"))?,
-        worktree: read_worktree(root, path)?.map(|bytes| grade_bytes(&bytes)),
+        base: graded(base),
+        ours: graded(ours),
+        theirs: graded(theirs),
+        worktree: graded(worktree),
+        lossy_encoding,
+        symlink,
     })
+}
+
+/// Whether an index stage of the unmerged `path` (mode 120000), or the entry Git
+/// left in the working tree, is a symbolic link.
+fn conflict_involves_symlink(root: &Path, path: &str) -> Result<bool, String> {
+    let out = run_ok(
+        root,
+        &["ls-files", "--stage", "-z", "--", path],
+        DEFAULT_TIMEOUT,
+        &[],
+    )?;
+    let staged = out
+        .stdout
+        .split(|byte| *byte == 0)
+        .any(|record| record.starts_with(b"120000 "));
+    let worktree = std::fs::symlink_metadata(root.join(path))
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    Ok(staged || worktree)
 }
 
 /// Index stages present for an unmerged path (`git ls-files --stage`).
@@ -2203,12 +2467,19 @@ pub fn editor_true() -> Vec<(String, String)> {
 /// types.ts DiffContent 契約。UTF-16 BOM 走 encoding_rs 解碼，避免
 /// from_utf8_lossy 把可讀 worktree 檔案變成亂碼。
 pub fn grade_bytes(bytes: &[u8]) -> GradedText {
+    grade_bytes_checked(bytes).0
+}
+
+/// `grade_bytes` plus whether the decoded text still stands for `bytes` when
+/// written back as UTF-8. False for UTF-16 (the write changes its encoding) and
+/// for bytes that are not valid UTF-8 (undecodable bytes became U+FFFD).
+fn grade_bytes_checked(bytes: &[u8]) -> (GradedText, bool) {
     if bytes.len() as u64 > crate::file_content::HARD_CAP_BYTES {
-        return GradedText::TooLarge;
+        return (GradedText::TooLarge, true);
     }
     let sniff = &bytes[..bytes.len().min(crate::file_content::FILE_ANALYSIS_BYTES)];
-    let content = match crate::file_content::analyze_byte_content(sniff) {
-        crate::file_content::ByteContent::Binary => return GradedText::Binary,
+    let (content, lossless) = match crate::file_content::analyze_byte_content(sniff) {
+        crate::file_content::ByteContent::Binary => return (GradedText::Binary, true),
         crate::file_content::ByteContent::Utf16Le | crate::file_content::ByteContent::Utf16Be => {
             let codec = if crate::file_content::analyze_byte_content(&bytes[..bytes.len().min(2)])
                 == crate::file_content::ByteContent::Utf16Be
@@ -2218,20 +2489,29 @@ pub fn grade_bytes(bytes: &[u8]) -> GradedText {
                 encoding_rs::UTF_16LE
             };
             let (cow, _, _) = codec.decode(bytes);
-            cow.into_owned()
+            (cow.into_owned(), false)
         }
-        crate::file_content::ByteContent::Text => String::from_utf8_lossy(bytes).into_owned(),
+        crate::file_content::ByteContent::Text => match String::from_utf8_lossy(bytes) {
+            std::borrow::Cow::Borrowed(valid) => (valid.to_owned(), true),
+            std::borrow::Cow::Owned(lossy) => (lossy, false),
+        },
     };
-    if bytes.len() as u64 > crate::file_content::FULL_FEATURE_MAX_BYTES {
+    let graded = if bytes.len() as u64 > crate::file_content::FULL_FEATURE_MAX_BYTES {
         GradedText::Limited { content }
     } else {
         GradedText::Full { content }
-    }
+    };
+    (graded, lossless)
 }
 
 /// Read and grade an object when it exists. Operational `git show` failures
 /// must reach the UI; a normal missing side is `None`.
 pub fn show_object(root: &Path, spec: &str) -> Result<Option<GradedText>, String> {
+    Ok(show_object_checked(root, spec)?.map(|(graded, _)| graded))
+}
+
+/// `show_object` plus the `grade_bytes_checked` losslessness flag.
+fn show_object_checked(root: &Path, spec: &str) -> Result<Option<(GradedText, bool)>, String> {
     // `show` already distinguishes a missing object from other failures. A
     // separate existence probe doubles process startup on every diff side.
     let out = match run_git_with_stdout_limit(
@@ -2241,7 +2521,7 @@ pub fn show_object(root: &Path, spec: &str) -> Result<Option<GradedText>, String
         &[],
         BLOB_READ_LIMIT,
     ) {
-        Err(error) if error == "git-output-limit" => return Ok(Some(GradedText::TooLarge)),
+        Err(error) if error == "git-output-limit" => return Ok(Some((GradedText::TooLarge, true))),
         other => other?,
     };
     if out.code != 0 {
@@ -2266,7 +2546,7 @@ pub fn show_object(root: &Path, spec: &str) -> Result<Option<GradedText>, String
             Err(git_err("show", &out.stderr))
         };
     }
-    Ok(Some(grade_bytes(&out.stdout)))
+    Ok(Some(grade_bytes_checked(&out.stdout)))
 }
 
 /// Read worktree bytes without following symlinks. Git stores a symlink's link
@@ -2825,6 +3105,105 @@ mod tests {
         let deleted = conflict_sides(repo, "d.txt").unwrap();
         assert!(deleted.theirs.is_none());
         assert!(conflict_sides(repo, "missing.txt").is_err());
+    }
+
+    /// `main` and `feature` both rewrite the second line of `c.txt` (raw bytes),
+    /// so merging `feature` into `main` conflicts.
+    fn conflicted_merge_of_bytes(base: &[u8], ours: &[u8], theirs: &[u8]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        let commit_bytes = |content: &[u8], message: &str| {
+            std::fs::write(repo.join("c.txt"), content).unwrap();
+            test_repo::git(repo, &["add", "c.txt"]);
+            test_repo::git(repo, &["commit", "-m", message]);
+        };
+        commit_bytes(base, "base");
+        test_repo::git(repo, &["switch", "-c", "feature"]);
+        commit_bytes(theirs, "theirs");
+        test_repo::git(repo, &["switch", "main"]);
+        commit_bytes(ours, "ours");
+        let merged = run_git(
+            repo,
+            &["merge", "feature"],
+            DEFAULT_TIMEOUT,
+            &test_repo::isolated_env(),
+        )
+        .unwrap();
+        assert_ne!(merged.code, 0, "the merge must conflict");
+        tmp
+    }
+
+    fn utf16le_with_bom(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    }
+
+    #[test]
+    fn conflict_sides_flag_text_a_utf8_rewrite_would_corrupt() {
+        let flagged = |tmp: &tempfile::TempDir| {
+            let sides = conflict_sides(tmp.path(), "c.txt").unwrap();
+            serde_json::to_value(&sides).unwrap()["lossyEncoding"].as_bool()
+        };
+        // Latin-1 / Big5 style bytes decode with U+FFFD and could not be written back.
+        let latin1 =
+            conflicted_merge_of_bytes(b"a\nbase\n", b"a\ncaf\xe9 ours\n", b"a\ncaf\xe9 theirs\n");
+        assert_eq!(flagged(&latin1), Some(true));
+        let big5 = conflicted_merge_of_bytes(
+            b"a\nbase\n",
+            b"a\n\xa4\xa4\xa4\xe5 ours\n",
+            b"a\n\xa4\xa4\xa4\xe5 theirs\n",
+        );
+        assert_eq!(flagged(&big5), Some(true));
+        // UTF-16 with a BOM decodes cleanly, yet a UTF-8 write would change its encoding.
+        let utf16 = conflicted_merge_of_bytes(
+            &utf16le_with_bom("a\nbase\n"),
+            &utf16le_with_bom("a\nours\n"),
+            &utf16le_with_bom("a\ntheirs\n"),
+        );
+        assert_eq!(flagged(&utf16), Some(true));
+        // Valid UTF-8 round-trips, multibyte text included.
+        let utf8 = conflicted_merge_of_bytes(
+            "a\nbase\n".as_bytes(),
+            "a\n中文 ours\n".as_bytes(),
+            "a\n中文 theirs\n".as_bytes(),
+        );
+        assert_eq!(flagged(&utf8), Some(false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conflict_sides_flag_symlink_conflicts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        let commit_link = |target: &str, message: &str| {
+            let _ = std::fs::remove_file(repo.join("l"));
+            std::os::unix::fs::symlink(target, repo.join("l")).unwrap();
+            test_repo::git(repo, &["add", "l"]);
+            test_repo::git(repo, &["commit", "-m", message]);
+        };
+        commit_link("base", "base");
+        test_repo::git(repo, &["switch", "-c", "feature"]);
+        commit_link("theirs", "theirs");
+        test_repo::git(repo, &["switch", "main"]);
+        commit_link("ours", "ours");
+        let merged = run_git(
+            repo,
+            &["merge", "feature"],
+            DEFAULT_TIMEOUT,
+            &test_repo::isolated_env(),
+        )
+        .unwrap();
+        assert_ne!(merged.code, 0, "the merge must conflict");
+        let flagged = |root: &Path, path: &str| {
+            let sides = conflict_sides(root, path).unwrap();
+            serde_json::to_value(&sides).unwrap()["symlink"].as_bool()
+        };
+        assert_eq!(flagged(repo, "l"), Some(true));
+        let text = conflicted_merge_of_bytes(b"a\nbase\n", b"a\nours\n", b"a\ntheirs\n");
+        assert_eq!(flagged(text.path(), "c.txt"), Some(false));
     }
 
     #[test]
@@ -3652,28 +4031,36 @@ mod tests {
         let (_tmp, work) = clone_with_bare_remote();
         let env = test_repo::isolated_env();
         assert_eq!(
-            push_args_with_options_env(&work, true, true, &env).unwrap(),
-            [
-                "push",
-                "--force-with-lease",
-                "--follow-tags",
-                "--set-upstream",
-                "origin",
-                "main"
-            ]
+            push_args_with_options_env(&work, None, true, &env).unwrap(),
+            ["push", "--follow-tags", "--set-upstream", "origin", "main"]
         );
         assert_eq!(
-            push_args_with_options_env(&work, false, false, &env).unwrap(),
+            push_args_with_options_env(&work, None, false, &env).unwrap(),
             push_args_with_env(&work, &env).unwrap()
         );
         test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
         assert_eq!(
-            push_args_with_options_env(&work, false, true, &env).unwrap(),
+            push_args_with_options_env(&work, None, true, &env).unwrap(),
             ["push", "--follow-tags"]
         );
         // The produced arguments really are accepted by git, tags included.
+        let seen = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
         test_repo::git(&work, &["tag", "-a", "v1", "-m", "v1"]);
-        test_repo::git(&work, &["push", "--force-with-lease", "--follow-tags"]);
+        let forced = push_args_with_options_env(&work, Some(&seen), true, &env).unwrap();
+        // Remote and refspec are explicit, so the lease and the push cannot disagree.
+        assert_eq!(
+            forced,
+            [
+                "push".to_string(),
+                "--follow-tags".to_string(),
+                format!("--force-with-lease=refs/heads/main:{seen}"),
+                "origin".to_string(),
+                "refs/heads/main:refs/heads/main".to_string()
+            ]
+        );
+        let forced: Vec<&str> = forced.iter().map(String::as_str).collect();
+        let pushed = run_git(&work, &forced, REMOTE_TIMEOUT, &env).unwrap();
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
         let remote_tags = run_git(
             &work,
             &["ls-remote", "--tags", "origin"],
@@ -3686,6 +4073,369 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&remote_tags.stdout)
         );
+    }
+
+    #[test]
+    fn force_push_does_not_overwrite_a_commit_fetched_after_the_remote_was_last_seen() {
+        let (tmp, work) = clone_with_bare_remote();
+        let env = test_repo::isolated_env();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        let remote = tmp.path().join("remote.git");
+        // What the UI showed when the user decided to force push.
+        let seen = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
+        // A teammate pushes, then the app's autofetch moves the tracking ref.
+        let other = tmp.path().join("other");
+        test_repo::git(tmp.path(), &["clone", "remote.git", "other"]);
+        test_repo::git(&other, &["config", "user.email", "t@t"]);
+        test_repo::git(&other, &["config", "user.name", "t"]);
+        test_repo::write_and_commit(&other, "b.txt", "2", "theirs");
+        test_repo::git(&other, &["push"]);
+        let theirs = git_line(&remote, &["rev-parse", "main"]);
+        test_repo::git(&work, &["fetch"]);
+        test_repo::git(&work, &["commit", "--amend", "-m", "rewritten"]);
+
+        let args = push_args_with_options_env(&work, Some(&seen), false, &env).unwrap();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let pushed = run_git(&work, &args, REMOTE_TIMEOUT, &env).unwrap();
+        assert_ne!(pushed.code, 0, "the lease must go stale: {}", pushed.stderr);
+        assert_eq!(git_line(&remote, &["rev-parse", "main"]), theirs);
+        assert_ne!(seen, theirs);
+    }
+
+    #[test]
+    fn force_push_with_the_remote_commit_that_was_seen_still_overwrites_it() {
+        let (tmp, work) = clone_with_bare_remote();
+        let env = test_repo::isolated_env();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        let seen = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
+        test_repo::git(&work, &["commit", "--amend", "-m", "rewritten"]);
+
+        let args = push_args_with_options_env(&work, Some(&seen), false, &env).unwrap();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let pushed = run_git(&work, &args, REMOTE_TIMEOUT, &env).unwrap();
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+        assert_eq!(
+            git_line(&tmp.path().join("remote.git"), &["rev-parse", "main"]),
+            git_line(&work, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn force_push_without_a_trusted_lease_fails_closed() {
+        let (_tmp, work) = clone_with_bare_remote();
+        let env = test_repo::isolated_env();
+        // No upstream: nothing says which remote branch the lease protects.
+        let seen = git_line(&work, &["rev-parse", "HEAD"]);
+        let error = push_args_with_options_env(&work, Some(&seen), false, &env).unwrap_err();
+        assert!(error.contains("track"), "{error}");
+
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        for bad in ["", "origin/main", "--force", "abc123"] {
+            let error = push_args_with_options_env(&work, Some(bad), false, &env).unwrap_err();
+            assert!(error.contains("force"), "{bad}: {error}");
+        }
+        // A well-formed id this repository has never seen cannot have been integrated.
+        assert!(push_args_with_options_env(&work, Some(&"1".repeat(40)), false, &env).is_err());
+
+        test_repo::git(&work, &["checkout", "--detach"]);
+        let error = push_args_with_options_env(&work, Some(&seen), false, &env).unwrap_err();
+        assert!(error.contains("checked-out"), "{error}");
+    }
+
+    /// Remote branch listing as the UI sees it, with fixture-isolated git config.
+    fn listed_branch(work: &Path, name: &str) -> serde_json::Value {
+        let list =
+            serde_json::to_value(branches_with_env(work, &test_repo::isolated_env()).unwrap())
+                .unwrap();
+        list["local"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| branch["name"] == name)
+            .unwrap()
+            .clone()
+    }
+
+    fn add_bare_remote(tmp: &Path, work: &Path, name: &str) -> std::path::PathBuf {
+        let bare = tmp.join(format!("{name}.git"));
+        std::fs::create_dir_all(&bare).unwrap();
+        test_repo::git(&bare, &["init", "--bare", "-b", "main"]);
+        test_repo::git(work, &["remote", "add", name, bare.to_str().unwrap()]);
+        bare
+    }
+
+    fn run_forced_push(work: &Path, seen: &str) -> GitOutput {
+        let env = test_repo::isolated_env();
+        let args = push_args_with_options_env(work, Some(seen), false, &env).unwrap();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_git(work, &args, REMOTE_TIMEOUT, &env).unwrap()
+    }
+
+    /// A teammate pushes one more commit to `origin`'s `main`; returns its id.
+    fn teammate_pushes(tmp: &Path) -> String {
+        let other = tmp.join("other");
+        test_repo::git(tmp, &["clone", "remote.git", "other"]);
+        test_repo::git(&other, &["config", "user.email", "t@t"]);
+        test_repo::git(&other, &["config", "user.name", "t"]);
+        test_repo::write_and_commit(&other, "b.txt", "2", "theirs");
+        test_repo::git(&other, &["push"]);
+        git_line(&tmp.join("remote.git"), &["rev-parse", "main"])
+    }
+
+    #[test]
+    fn force_push_refuses_a_commit_that_only_a_background_fetch_brought_in() {
+        let (tmp, work) = clone_with_bare_remote();
+        let env = test_repo::isolated_env();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        let theirs = teammate_pushes(tmp.path());
+        // Autofetch moves the tracking ref; the user never integrates the commit.
+        test_repo::git(&work, &["fetch"]);
+        test_repo::git(&work, &["commit", "--amend", "-m", "rewritten"]);
+        // What the UI would hand over now: the (advanced) tracking ref.
+        let seen = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
+        assert_eq!(seen, theirs);
+
+        let error = push_args_with_options_env(&work, Some(&seen), false, &env).unwrap_err();
+        assert!(error.contains("integrat"), "{error}");
+        assert_eq!(
+            git_line(&tmp.path().join("remote.git"), &["rev-parse", "main"]),
+            theirs
+        );
+    }
+
+    #[test]
+    fn force_push_is_allowed_once_the_fetched_commit_is_part_of_the_branch() {
+        let (tmp, work) = clone_with_bare_remote();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        let theirs = teammate_pushes(tmp.path());
+        test_repo::git(&work, &["fetch"]);
+        // Integrating it by hand (here: fast-forward) makes it the user's own history.
+        test_repo::git(&work, &["merge", "--ff-only", "origin/main"]);
+        test_repo::git(&work, &["commit", "--amend", "-m", "rewritten"]);
+        let seen = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
+        assert_eq!(seen, theirs);
+
+        let pushed = run_forced_push(&work, &seen);
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+        assert_eq!(
+            git_line(&tmp.path().join("remote.git"), &["rev-parse", "main"]),
+            git_line(&work, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn force_push_after_a_rebase_over_the_branchs_own_pushed_tip_still_works() {
+        let (tmp, work) = clone_with_bare_remote();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        test_repo::write_and_commit(&work, "mine.txt", "mine", "mine");
+        test_repo::git(&work, &["push"]);
+        let pushed_tip = git_line(&work, &["rev-parse", "HEAD"]);
+        // Rebase onto a new base: the pushed tip is no longer an ancestor of HEAD.
+        test_repo::git(&work, &["switch", "-c", "base", "HEAD~1"]);
+        test_repo::write_and_commit(&work, "base.txt", "base", "new base");
+        test_repo::git(&work, &["switch", "main"]);
+        test_repo::git(&work, &["rebase", "base"]);
+        assert_ne!(git_line(&work, &["rev-parse", "HEAD"]), pushed_tip);
+        let merge_base = run_git(
+            &work,
+            &["merge-base", "--is-ancestor", &pushed_tip, "HEAD"],
+            DEFAULT_TIMEOUT,
+            &[],
+        )
+        .unwrap();
+        assert_ne!(
+            merge_base.code, 0,
+            "the old tip must no longer be an ancestor"
+        );
+
+        let pushed = run_forced_push(&work, &pushed_tip);
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+        assert_eq!(
+            git_line(&tmp.path().join("remote.git"), &["rev-parse", "main"]),
+            git_line(&work, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn force_push_accepts_a_commit_below_a_tip_the_branch_used_to_have() {
+        let (_tmp, work) = clone_with_bare_remote();
+        let env = test_repo::isolated_env();
+        // `side` holds c1 -> P -> Q; `main` only ever sat at c1 and Q, never at P.
+        let c1 = git_line(&work, &["rev-parse", "HEAD"]);
+        test_repo::git(&work, &["switch", "-c", "side"]);
+        test_repo::write_and_commit(&work, "p.txt", "p", "p");
+        let p = git_line(&work, &["rev-parse", "HEAD"]);
+        test_repo::write_and_commit(&work, "q.txt", "q", "q");
+        test_repo::git(&work, &["switch", "main"]);
+        test_repo::git(&work, &["merge", "--ff-only", "side"]);
+        test_repo::git(&work, &["push", "origin", &format!("{p}:refs/heads/main")]);
+        test_repo::git(&work, &["branch", "--set-upstream-to=origin/main"]);
+        test_repo::git(&work, &["reset", "--hard", &c1]);
+        assert_eq!(
+            git_line(&work, &["rev-parse", "refs/remotes/origin/main"]),
+            p
+        );
+
+        assert!(push_args_with_options_env(&work, Some(&p), false, &env).is_ok());
+    }
+
+    #[test]
+    fn force_push_without_a_reflog_only_trusts_commits_in_the_branch_history() {
+        let (tmp, work) = clone_with_bare_remote();
+        let env = test_repo::isolated_env();
+        test_repo::git(&work, &["config", "core.logAllRefUpdates", "false"]);
+        std::fs::remove_dir_all(work.join(".git").join("logs")).unwrap();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        test_repo::write_and_commit(&work, "mine.txt", "mine", "mine");
+        let seen = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
+        // Ancestry alone is enough proof when the branch moved forward.
+        assert!(push_args_with_options_env(&work, Some(&seen), false, &env).is_ok());
+
+        // After a rewrite, without a reflog nothing proves the commit was seen.
+        let theirs = teammate_pushes(tmp.path());
+        test_repo::git(&work, &["fetch"]);
+        test_repo::git(&work, &["commit", "--amend", "-m", "rewritten"]);
+        let error = push_args_with_options_env(&work, Some(&theirs), false, &env).unwrap_err();
+        assert!(error.contains("integrat"), "{error}");
+    }
+
+    #[test]
+    fn force_push_in_a_triangular_workflow_leases_the_push_remote_not_the_upstream() {
+        let (tmp, work) = clone_with_bare_remote();
+        let upstream = tmp.path().join("remote.git");
+        let fork = add_bare_remote(tmp.path(), &work, "fork");
+        test_repo::git(&work, &["push", "origin", "main"]);
+        test_repo::git(&work, &["push", "fork", "main"]);
+        test_repo::git(&work, &["branch", "--set-upstream-to=origin/main"]);
+        test_repo::git(&work, &["config", "remote.pushDefault", "fork"]);
+        // Own work goes to the fork only, so the two tracking refs differ.
+        test_repo::write_and_commit(&work, "mine.txt", "mine", "mine");
+        test_repo::git(&work, &["push", "fork", "main"]);
+        let upstream_tip = git_line(&upstream, &["rev-parse", "main"]);
+        let fork_tip = git_line(&fork, &["rev-parse", "main"]);
+        assert_ne!(upstream_tip, fork_tip);
+        test_repo::git(&work, &["commit", "--amend", "-m", "mine, reworded"]);
+
+        // The UI hands over the commit of the ref that `git push` would update.
+        let seen = listed_branch(&work, "main")["pushOid"].clone();
+        assert_eq!(seen, fork_tip);
+        let pushed = run_forced_push(&work, &fork_tip);
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+        assert_eq!(
+            git_line(&fork, &["rev-parse", "main"]),
+            git_line(&work, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(git_line(&upstream, &["rev-parse", "main"]), upstream_tip);
+    }
+
+    /// `feature` tracks `origin/topic` but is pushed under its own name.
+    fn feature_tracking_a_differently_named_branch() -> (tempfile::TempDir, std::path::PathBuf) {
+        let (tmp, work) = clone_with_bare_remote();
+        test_repo::git(&work, &["push", "origin", "main"]);
+        test_repo::git(&work, &["push", "origin", "main:topic"]);
+        test_repo::git(&work, &["switch", "-c", "feature"]);
+        test_repo::write_and_commit(&work, "f.txt", "f", "feature work");
+        test_repo::git(&work, &["push", "origin", "feature"]);
+        test_repo::git(&work, &["fetch"]);
+        test_repo::git(&work, &["branch", "--set-upstream-to=origin/topic"]);
+        test_repo::git(
+            &work,
+            &["commit", "--amend", "-m", "feature work, reworded"],
+        );
+        (tmp, work)
+    }
+
+    #[test]
+    fn force_push_with_push_default_current_leases_the_branch_it_really_pushes() {
+        let (tmp, work) = feature_tracking_a_differently_named_branch();
+        let remote = tmp.path().join("remote.git");
+        test_repo::git(&work, &["config", "push.default", "current"]);
+        let topic = git_line(&remote, &["rev-parse", "topic"]);
+        let feature = git_line(&remote, &["rev-parse", "feature"]);
+        assert_ne!(topic, feature);
+
+        let seen = listed_branch(&work, "feature")["pushOid"].clone();
+        assert_eq!(
+            seen, feature,
+            "the lease follows the pushed branch, not the upstream"
+        );
+        let env = test_repo::isolated_env();
+        let args = push_args_with_options_env(&work, Some(&feature), false, &env).unwrap();
+        assert_eq!(
+            args,
+            [
+                "push".to_string(),
+                format!("--force-with-lease=refs/heads/feature:{feature}"),
+                "origin".to_string(),
+                "refs/heads/feature:refs/heads/feature".to_string()
+            ]
+        );
+        let pushed = run_forced_push(&work, &feature);
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+        assert_eq!(
+            git_line(&remote, &["rev-parse", "feature"]),
+            git_line(&work, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(git_line(&remote, &["rev-parse", "topic"]), topic);
+    }
+
+    #[test]
+    fn force_push_with_push_default_upstream_leases_the_upstream_branch() {
+        let (tmp, work) = feature_tracking_a_differently_named_branch();
+        let remote = tmp.path().join("remote.git");
+        test_repo::git(&work, &["config", "push.default", "upstream"]);
+        let topic = git_line(&remote, &["rev-parse", "topic"]);
+        let feature = git_line(&remote, &["rev-parse", "feature"]);
+
+        let seen = listed_branch(&work, "feature")["pushOid"].clone();
+        assert_eq!(seen, topic);
+        let pushed = run_forced_push(&work, &topic);
+        assert_eq!(pushed.code, 0, "{}", pushed.stderr);
+        assert_eq!(
+            git_line(&remote, &["rev-parse", "topic"]),
+            git_line(&work, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(git_line(&remote, &["rev-parse", "feature"]), feature);
+    }
+
+    #[test]
+    fn force_push_fails_closed_when_the_destination_cannot_be_named() {
+        let (tmp, work) = feature_tracking_a_differently_named_branch();
+        let env = test_repo::isolated_env();
+        let topic = git_line(&tmp.path().join("remote.git"), &["rev-parse", "topic"]);
+        let refuse = |expect: &str| {
+            let error = push_args_with_options_env(&work, Some(&topic), false, &env).unwrap_err();
+            assert!(error.contains(expect), "{error}");
+        };
+
+        // `simple` refuses a differently named upstream, so there is no single target.
+        refuse("simple");
+        test_repo::git(&work, &["config", "push.default", "nothing"]);
+        refuse("nothing");
+        test_repo::git(&work, &["config", "push.default", "current"]);
+        test_repo::git(
+            &work,
+            &["config", "remote.origin.push", "HEAD:refs/heads/elsewhere"],
+        );
+        refuse("push refspec");
+        test_repo::git(&work, &["config", "--unset", "remote.origin.push"]);
+
+        // `upstream` pushes to the upstream remote; another push remote contradicts it.
+        add_bare_remote(tmp.path(), &work, "fork");
+        test_repo::git(&work, &["config", "push.default", "upstream"]);
+        test_repo::git(&work, &["config", "branch.feature.pushRemote", "fork"]);
+        refuse("upstream");
+    }
+
+    #[test]
+    fn branches_report_the_commit_each_push_target_points_at() {
+        let (_tmp, work) = clone_with_bare_remote();
+        test_repo::git(&work, &["push", "--set-upstream", "origin", "main"]);
+        test_repo::git(&work, &["branch", "local-only"]);
+        let tracking = git_line(&work, &["rev-parse", "refs/remotes/origin/main"]);
+
+        assert_eq!(listed_branch(&work, "main")["pushOid"], tracking);
+        assert!(listed_branch(&work, "local-only")["pushOid"].is_null());
     }
 
     #[test]
@@ -3706,5 +4456,222 @@ mod tests {
             pull_args(root).unwrap()
         );
         assert!(pull_args_with_mode(root, Some("--upload-pack=x")).is_err());
+    }
+
+    // Git pairs a deleted `a.txt` with a new `b.txt` into one `R` status row, so
+    // stage/unstage must treat both paths as one change.
+    const RENAME_BODY: &str = "l1\nl2\nl3\nl4\nl5\nl6\n";
+
+    fn repo_with_rename_candidate() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        test_repo::init(repo);
+        std::fs::write(repo.join("a.txt"), RENAME_BODY).unwrap();
+        std::fs::write(repo.join("keep.txt"), "keep\n").unwrap();
+        test_repo::git(repo, &["add", "a.txt", "keep.txt"]);
+        test_repo::git(repo, &["commit", "-m", "c1"]);
+        tmp
+    }
+
+    #[test]
+    fn unstage_a_staged_rename_restores_both_paths_in_one_step() {
+        let tmp = repo_with_rename_candidate();
+        let repo = tmp.path();
+        test_repo::git(repo, &["mv", "a.txt", "b.txt"]);
+        // An unrelated staged change must stay staged.
+        std::fs::write(repo.join("keep.txt"), "keep edited\n").unwrap();
+        test_repo::git(repo, &["add", "keep.txt"]);
+        let renamed = status_of(repo, None).unwrap().parsed;
+        let row = renamed.staged.iter().find(|e| e.path == "b.txt").unwrap();
+        assert_eq!(row.orig_path.as_deref(), Some("a.txt"));
+
+        // The UI only knows the row's new path.
+        unstage(repo, &["b.txt".to_string()]).unwrap();
+
+        let after = status_of(repo, None).unwrap().parsed;
+        let staged: Vec<(&str, &str)> = after
+            .staged
+            .iter()
+            .map(|e| (e.path.as_str(), e.status.as_str()))
+            .collect();
+        assert_eq!(staged, [("keep.txt", "M")], "no half-applied rename");
+        assert_eq!(after.untracked, ["b.txt"]);
+        assert!(after
+            .unstaged
+            .iter()
+            .any(|e| e.path == "a.txt" && e.status == "D"));
+    }
+
+    #[test]
+    fn stage_pairing_a_staged_deletion_with_a_new_file_into_a_rename_succeeds() {
+        let tmp = repo_with_rename_candidate();
+        let repo = tmp.path();
+        test_repo::git(repo, &["rm", "-q", "a.txt"]);
+        std::fs::write(repo.join("b.txt"), RENAME_BODY).unwrap();
+
+        // `git add b.txt` succeeds; the rename pairing must not read as an
+        // out-of-scope change to `a.txt`.
+        stage(repo, &["b.txt".to_string()]).unwrap();
+
+        let after = status_of(repo, None).unwrap().parsed;
+        assert!(after.untracked.is_empty());
+        let row = after.staged.iter().find(|e| e.path == "b.txt").unwrap();
+        assert_eq!(row.status, "R");
+        assert_eq!(row.orig_path.as_deref(), Some("a.txt"));
+    }
+
+    #[test]
+    fn literal_scope_allows_a_rename_source_but_still_rejects_other_paths() {
+        use crate::git_status::{GitFileEntry, ParsedStatus};
+        let entry = |path: &str, orig: Option<&str>, status: &str| GitFileEntry {
+            path: path.to_string(),
+            orig_path: orig.map(str::to_string),
+            status: status.to_string(),
+        };
+        let before = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("a.txt", None, "D")],
+            untracked: vec!["b.txt".to_string()],
+            ..Default::default()
+        };
+        let paired = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("b.txt", Some("a.txt"), "R")],
+            ..Default::default()
+        };
+        let requested = ["b.txt".to_string()];
+        ensure_literal_path_scope("add", &requested, &before, &paired).unwrap();
+
+        // A rename source is only covered when its destination was requested.
+        let unrelated = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("a.txt", None, "D")],
+            untracked: vec!["b.txt".to_string(), "other.txt".to_string()],
+            ..Default::default()
+        };
+        let error = ensure_literal_path_scope("add", &requested, &before, &unrelated).unwrap_err();
+        assert!(error.contains("other.txt"), "{error}");
+        let error =
+            ensure_literal_path_scope("add", &["c.txt".to_string()], &before, &paired).unwrap_err();
+        assert!(
+            error.contains("a.txt") && error.contains("b.txt"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn literal_scope_pairing_works_from_either_end_of_a_rename_only() {
+        use crate::git_status::{GitFileEntry, ParsedStatus};
+        let entry = |path: &str, orig: Option<&str>, status: &str| GitFileEntry {
+            path: path.to_string(),
+            orig_path: orig.map(str::to_string),
+            status: status.to_string(),
+        };
+        // `a.txt` was copied to `b.txt` and then deleted from the worktree; staging
+        // that deletion turns `A b.txt` + ` D a.txt` into one rename row.
+        let before = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("b.txt", None, "A")],
+            unstaged: vec![entry("a.txt", None, "D")],
+            ..Default::default()
+        };
+        let renamed = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("b.txt", Some("a.txt"), "R")],
+            ..Default::default()
+        };
+        ensure_literal_path_scope("add", &["a.txt".to_string()], &before, &renamed).unwrap();
+        let error = ensure_literal_path_scope("add", &["c.txt".to_string()], &before, &renamed)
+            .unwrap_err();
+        assert!(
+            error.contains("a.txt") && error.contains("b.txt"),
+            "{error}"
+        );
+
+        // A copy leaves its source alone: requesting the copy must not cover the
+        // source's own staged change.
+        let before = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("a.txt", None, "M")],
+            untracked: vec!["b.txt".to_string()],
+            ..Default::default()
+        };
+        let source_lost_its_change = ParsedStatus {
+            head_oid: "h".to_string(),
+            staged: vec![entry("b.txt", Some("a.txt"), "C")],
+            ..Default::default()
+        };
+        let error = ensure_literal_path_scope(
+            "unstage",
+            &["b.txt".to_string()],
+            &before,
+            &source_lost_its_change,
+        )
+        .unwrap_err();
+        assert!(error.contains("a.txt"), "{error}");
+        let error = ensure_literal_path_scope(
+            "add",
+            &["a.txt".to_string()],
+            &before,
+            &source_lost_its_change,
+        )
+        .unwrap_err();
+        assert!(error.contains("b.txt"), "{error}");
+    }
+
+    #[test]
+    fn stage_a_deletion_that_pairs_with_an_already_staged_copy_into_a_rename_succeeds() {
+        let tmp = repo_with_rename_candidate();
+        let repo = tmp.path();
+        // a.txt is copied to b.txt, then removed from the worktree only.
+        std::fs::write(repo.join("b.txt"), RENAME_BODY).unwrap();
+        std::fs::remove_file(repo.join("a.txt")).unwrap();
+        stage(repo, &["b.txt".to_string()]).unwrap();
+        let before = status_of(repo, None).unwrap().parsed;
+        assert!(before
+            .staged
+            .iter()
+            .any(|e| e.path == "b.txt" && e.status == "A"));
+        assert!(before
+            .unstaged
+            .iter()
+            .any(|e| e.path == "a.txt" && e.status == "D"));
+
+        // Staging the deletion is what makes git report one rename row; the
+        // pairing shows up under `b.txt`, which was not asked for.
+        stage(repo, &["a.txt".to_string()]).unwrap();
+
+        let after = status_of(repo, None).unwrap().parsed;
+        let row = after.staged.iter().find(|e| e.path == "b.txt").unwrap();
+        assert_eq!(row.status, "R");
+        assert_eq!(row.orig_path.as_deref(), Some("a.txt"));
+        assert!(after.unstaged.is_empty());
+    }
+
+    #[test]
+    fn unstage_a_staged_copy_leaves_its_source_staged() {
+        let tmp = repo_with_rename_candidate();
+        let repo = tmp.path();
+        test_repo::git(repo, &["config", "status.renames", "copies"]);
+        // `b.txt` copies `a.txt`'s committed content while `a.txt` is modified, so
+        // git reports `C b.txt <- a.txt`.
+        std::fs::write(repo.join("a.txt"), format!("{RENAME_BODY}l7\n")).unwrap();
+        std::fs::write(repo.join("b.txt"), RENAME_BODY).unwrap();
+        test_repo::git(repo, &["add", "a.txt", "b.txt"]);
+        let staged = status_of(repo, None).unwrap().parsed.staged;
+        let copy = staged.iter().find(|e| e.path == "b.txt").unwrap();
+        assert_eq!(copy.status, "C");
+        assert_eq!(copy.orig_path.as_deref(), Some("a.txt"));
+
+        unstage(repo, &["b.txt".to_string()]).unwrap();
+
+        let after = status_of(repo, None).unwrap().parsed;
+        let staged: Vec<(&str, &str)> = after
+            .staged
+            .iter()
+            .map(|e| (e.path.as_str(), e.status.as_str()))
+            .collect();
+        assert_eq!(staged, [("a.txt", "M")], "the source keeps its staged edit");
+        assert_eq!(after.untracked, ["b.txt"]);
     }
 }

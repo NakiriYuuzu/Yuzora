@@ -211,6 +211,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   const elapsedMs = useDbStore((state) => queryFor(state, descriptorId).elapsedMs)
   const sortBy = useDbStore((state) => queryFor(state, descriptorId).sortBy)
   const runGroup = useDbStore((state) => queryFor(state, descriptorId).runGroup)
+  const transactionMayBeOpen = useDbStore((state) => queryFor(state, descriptorId).transactionMayBeOpen)
   const runQuery = useDbStore((s) => s.runQuery)
   const cancelQuery = useDbStore((s) => s.cancelQuery)
   const selectStatementTab = useDbStore((s) => s.selectStatementTab)
@@ -392,7 +393,7 @@ function DatabaseConsole({ descriptorId, connected }: { descriptorId: string; co
   )
 
   return (
-    <DatabaseCellEditing identity={identity} kind={activeConnection?.kind ?? "sqlite"} table={table} metadata={metadata} disabled={running || !!runGroup?.run?.transactionMayBeOpen}>
+    <DatabaseCellEditing identity={identity} kind={activeConnection?.kind ?? "sqlite"} table={table} metadata={metadata} disabled={running || !!transactionMayBeOpen}>
     <div className="database-console flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="database-profile-header flex shrink-0 items-center gap-2 border-b border-(--line-1) pl-4">
         <div

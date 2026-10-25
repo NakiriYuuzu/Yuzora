@@ -4,9 +4,10 @@ import { getDocument } from "../editor/documentRegistry"
 import { showActionError } from "../lib/actionFeedback"
 import { isOpenableFile } from "../lib/ipc"
 import i18n from "../lib/i18n"
-import { isAbsolutePath, nativePathJoin } from "../lib/paths"
+import { isAbsolutePath, nativePathJoin, uncHost } from "../lib/paths"
 import { isMacPlatform } from "../lib/platform"
 import type { HerdrSnapshot } from "../lib/herdrTypes"
+import { LOCAL_HOST_ID, parseRemoteFilePath, relativeRemoteHostPath, remoteFilePath } from "../lib/runtimeIdentity"
 import { usePreviewStore } from "../state/previewStore"
 import { useWorkspaceStore } from "../state/workspaceStore"
 
@@ -187,6 +188,50 @@ function decodeStrict(value: string): string | null {
     }
 }
 
+/** Owning host of a terminal's Session; absent or `local` means this computer. */
+type TerminalHost = string | null | undefined
+
+function isRemoteHost(hostId: TerminalHost): hostId is string {
+    return Boolean(hostId) && hostId !== LOCAL_HOST_ID
+}
+
+/** The cwd identity of a remote terminal, only when it belongs to `hostId` and is bound to a workspace. */
+function remoteCwdOf(cwd: string | null, hostId: string): { workspaceRoot: string } | null {
+    try {
+        const parsed = cwd ? parseRemoteFilePath(cwd) : null
+        return parsed?.hostId === hostId && parsed.workspaceRoot !== null ? { workspaceRoot: parsed.workspaceRoot } : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * File target for a path printed by a remote host's terminal. It is only ever
+ * that host's `yuzora-fs://` identity inside the cwd's workspace; anything the
+ * host cannot be proven to own yields no target rather than a local path.
+ */
+function remoteFileTarget(
+    path: string,
+    line: number | undefined,
+    column: number | undefined,
+    cwd: string | null,
+    hostId: string
+): TerminalFileTarget | null {
+    const base = remoteCwdOf(cwd, hostId)
+    if (!base || !cwd) return null
+    try {
+        if (isAbsolutePath(path)) {
+            if (relativeRemoteHostPath(base.workspaceRoot, path) === null) return null
+            return fileTarget(remoteFilePath(hostId, path, base.workspaceRoot), line, column)
+        }
+        if (!looksLikeRelativeFile(path)) return null
+        return fileTarget(nativePathJoin(cwd, stripLeadingDotSegments(path)), line, column)
+    } catch {
+        // `..` segments and malformed identities are not valid remote file identities.
+        return null
+    }
+}
+
 function parseHttpUrl(raw: string): TerminalUrlTarget | null {
     const trimmed = trimTrailingPunctuation(raw)
     if (!trimmed || hasDisallowedControlChars(trimmed)) return null
@@ -200,7 +245,7 @@ function parseHttpUrl(raw: string): TerminalUrlTarget | null {
     }
 }
 
-function parseFileUrl(raw: string): TerminalFileTarget | null {
+function parseFileUrl(raw: string, cwd: string | null, hostId: TerminalHost): TerminalFileTarget | null {
     const trimmed = trimTrailingPunctuation(raw)
     if (!trimmed || hasDisallowedControlChars(trimmed)) return null
     let parsed: URL
@@ -224,15 +269,17 @@ function parseFileUrl(raw: string): TerminalFileTarget | null {
     }
 
     if (!isAbsolutePath(localPath)) return null
+    if (isRemoteHost(hostId)) return remoteFileTarget(localPath, line, column, cwd, hostId)
     return fileTarget(localPath, line, column)
 }
 
-function parseFilePath(raw: string, cwd: string | null): TerminalFileTarget | null {
+function parseFilePath(raw: string, cwd: string | null, hostId: TerminalHost): TerminalFileTarget | null {
     const trimmed = trimTrailingPunctuation(raw)
     if (!trimmed || hasDisallowedControlChars(trimmed)) return null
     const { path, line, column } = splitLineColumn(trimmed)
     if (!path || hasDisallowedControlChars(path)) return null
 
+    if (isRemoteHost(hostId)) return remoteFileTarget(path, line, column, cwd, hostId)
     if (isAbsolutePath(path)) {
         return fileTarget(path, line, column)
     }
@@ -242,28 +289,30 @@ function parseFilePath(raw: string, cwd: string | null): TerminalFileTarget | nu
 
 export function classifyTerminalTargetToken(
     raw: string,
-    cwd: string | null
+    cwd: string | null,
+    hostId?: TerminalHost
 ): TerminalTarget | null {
     if (!raw || hasDisallowedControlChars(raw)) return null
     const scheme = schemeName(raw)
     if (scheme) {
         if (scheme === "http" || scheme === "https") return parseHttpUrl(raw)
-        if (scheme === "file") return parseFileUrl(raw)
-        if (isWindowsDrivePath(raw)) return parseFilePath(raw, cwd)
+        if (scheme === "file") return parseFileUrl(raw, cwd, hostId)
+        if (isWindowsDrivePath(raw)) return parseFilePath(raw, cwd, hostId)
         return null
     }
-    return parseFilePath(raw, cwd)
+    return parseFilePath(raw, cwd, hostId)
 }
 
 function pushMatch(
     matches: TerminalTargetMatch[],
     raw: string,
     start: number,
-    cwd: string | null
+    cwd: string | null,
+    hostId: TerminalHost
 ): void {
     const unwrapped = unwrapToken(raw)
     const candidate = unwrapped.text
-    const target = classifyTerminalTargetToken(candidate, cwd)
+    const target = classifyTerminalTargetToken(candidate, cwd, hostId)
     if (!target) return
     const consumed = trimTrailingPunctuation(candidate)
     if (!consumed) return
@@ -278,7 +327,8 @@ function pushMatch(
 
 export function findTerminalTargetsInText(
     text: string,
-    cwd: string | null
+    cwd: string | null,
+    hostId?: TerminalHost
 ): TerminalTargetMatch[] {
     if (!text || hasDisallowedControlChars(text)) return []
     const matches: TerminalTargetMatch[] = []
@@ -295,13 +345,13 @@ export function findTerminalTargetsInText(
                 index += 1
                 continue
             }
-            pushMatch(matches, text.slice(index + 1, close), index + 1, cwd)
+            pushMatch(matches, text.slice(index + 1, close), index + 1, cwd, hostId)
             index = close + 1
             continue
         }
         let end = index + 1
         while (end < text.length && !/\s/.test(text[end])) end += 1
-        pushMatch(matches, text.slice(index, end), index, cwd)
+        pushMatch(matches, text.slice(index, end), index, cwd, hostId)
         index = end
     }
     return matches
@@ -382,11 +432,27 @@ function mapOffsetsToRange(
     }
 }
 
+/** A remote pane's cwd as that host's file identity, rooted at the owning Space when it contains the cwd. */
+function remoteBaseCwd(hostId: string, cwd: string | undefined, spacePath: string | null | undefined): string | null {
+    if (!cwd) return null
+    try {
+        const space = spacePath ? parseRemoteFilePath(spacePath) : null
+        const root = space?.hostId === hostId && space.workspaceRoot !== null && relativeRemoteHostPath(space.workspaceRoot, cwd) !== null
+            ? space.workspaceRoot
+            : cwd
+        return remoteFilePath(hostId, cwd, root)
+    } catch {
+        return null
+    }
+}
+
 export function resolveHerdrTerminalBaseCwd(input: {
     snapshot: HerdrSnapshot | null | undefined
     terminalId: string
     paneId?: string | null
     workspaceId?: string | null
+    /** Host that owns the Session; the pane cwd is a path on that host, not on this computer. */
+    hostId?: TerminalHost
 }): string | null {
     const terminals = input.snapshot?.terminals ?? []
     const byTerminal = terminals.find((terminal) => terminal.terminalId === input.terminalId)
@@ -399,11 +465,12 @@ export function resolveHerdrTerminalBaseCwd(input: {
         )
         : undefined
     const exactCwd = [byPane?.cwd, byTerminal.cwd].find(isAbsolutePath)
+    const spaceId = byTerminal.workspaceId ?? byPane?.workspaceId ?? input.workspaceId ?? null
+    const space = spaceId ? input.snapshot?.spaces.find((item) => item.id === spaceId) : undefined
+    if (isRemoteHost(input.hostId)) return remoteBaseCwd(input.hostId, exactCwd, space?.path)
     if (exactCwd) return exactCwd
 
-    const spaceId = byTerminal.workspaceId ?? byPane?.workspaceId ?? input.workspaceId ?? null
     if (!spaceId) return null
-    const space = input.snapshot?.spaces.find((item) => item.id === spaceId)
     return isAbsolutePath(space?.path) ? space.path : null
 }
 
@@ -524,10 +591,26 @@ export function createTerminalTargetContextGate() {
     }
 }
 
+/**
+ * Whether hovering may stat `path` to decide on a link. On Windows a stat of a UNC
+ * path contacts its host (SMB or WebDAV, possibly with the user's NTLM credentials)
+ * and a device path opens the device, so pane output may only make Yuzora probe the
+ * host the open workspace already lives on. Other UNC paths are not linked.
+ */
+function mayProbeOnHover(path: string): boolean {
+    const host = uncHost(path)
+    if (host === null) return true
+    if (host === "." || host === "?") return false
+    const root = useWorkspaceStore.getState().workspacePath
+    return root !== null && uncHost(root) === host
+}
+
 export function createTerminalTargetLinkProvider(
     host: TerminalTargetBufferHost,
     options: {
         getCwd: () => string | null
+        /** Host owning the terminal's Session; file links never leave that host's file identity. */
+        getHostId?: () => string | null
         onActivate: (event: MouseEvent, target: TerminalTarget) => void
         onHover?: (target: TerminalTarget | null) => void
         isMac?: () => boolean
@@ -577,7 +660,7 @@ export function createTerminalTargetLinkProvider(
                 return
             }
             const cwd = options.getCwd()
-            const matches = findTerminalTargetsInText(collected.text, cwd)
+            const matches = findTerminalTargetsInText(collected.text, cwd, options.getHostId?.())
             if (matches.length === 0) {
                 callback(undefined)
                 return
@@ -587,7 +670,7 @@ export function createTerminalTargetLinkProvider(
                     match,
                     openable:
                         match.target.kind === "url" ||
-                        await checkOpenableFile(match.target.path)
+                        (mayProbeOnHover(match.target.path) && await checkOpenableFile(match.target.path))
                 }))
             )
             const latest = collectWrappedLine(host, bufferLineNumber)
@@ -642,6 +725,7 @@ export function installTerminalTargetOpen(
     terminal: Terminal,
     options: {
         getCwd: () => string | null
+        getHostId?: () => string | null
         isMac?: () => boolean
     }
 ): {
@@ -662,6 +746,7 @@ export function installTerminalTargetOpen(
     }
     const provider = createTerminalTargetLinkProvider(terminal, {
         getCwd: options.getCwd,
+        getHostId: options.getHostId,
         isMac: options.isMac,
         onActivate(event, target) {
             if (!isTerminalTargetOpenGesture(event, { mac: options.isMac?.() ?? isMacPlatform() })) {

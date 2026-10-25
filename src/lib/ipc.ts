@@ -103,6 +103,10 @@ export function openWorkspaceDirectory(workspaceId: string, path: string): Promi
     return invoke("open_workspace_directory", { workspaceId, path })
 }
 
+export function openWorkspaceFile(workspaceId: string, path: string): Promise<void> {
+    return invoke("open_workspace_file", { workspaceId, path })
+}
+
 export function searchWorkspaceFileNames(root: string, query: string): Promise<import("./fileNameSearchTypes").FileNameSearchResponse> {
     return invoke("search_workspace_file_names", { root, query })
 }
@@ -158,6 +162,8 @@ async function localMutation(workspace: string, paths: string[]) {
     const relative = paths.map(path => {
         const value = relativePathWithin(workspace, path)
         if (!value || value.includes("\0") || value.split("/").some(part => part === "." || part === ".." || !part)) throw new Error("path-outside-workspace")
+        // A POSIX name can contain `\`; the backend rejects it in relative paths, so refuse it here rather than send another path.
+        if (value.includes("\\")) throw new Error("unsupported-path-name")
         return value
     })
     return { workspaceCapabilityId: state.workspaceCapabilityId, relative }
@@ -395,10 +401,11 @@ export function gitPull(repositoryRoot: string, mode?: "merge" | "rebase"): Prom
     return invokeGit("git_pull_cmd", { repositoryRoot, mode: mode ?? null })
 }
 
-export function gitPush(repositoryRoot: string, options?: { forceWithLease?: boolean; tags?: boolean }): Promise<void> {
+/** `forceWithLeaseOid`: force push, but only over this remote commit (the one the user saw). */
+export function gitPush(repositoryRoot: string, options?: { forceWithLeaseOid?: string; tags?: boolean }): Promise<void> {
     return invokeGit("git_push_cmd", {
         repositoryRoot,
-        forceWithLease: options?.forceWithLease ?? false,
+        forceWithLeaseOid: options?.forceWithLeaseOid ?? null,
         tags: options?.tags ?? false,
     })
 }

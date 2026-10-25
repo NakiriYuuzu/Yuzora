@@ -184,6 +184,7 @@
     "binary": "二進位檔案，無法以文字編輯器開啟",
     "revealInSystem": "在系統中顯示",
     "openExternally": "以外部程式開啟",
+    "remoteOpenUnsupported": "遠端檔案無法用本機程式開啟。",
     "copyPath": "複製路徑"
   },
   "imageViewer": {

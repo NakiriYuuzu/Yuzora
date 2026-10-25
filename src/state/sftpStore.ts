@@ -108,6 +108,23 @@ async function reserveTransfer(sessionId: string): Promise<{ id: string; error: 
 const listings = new Map<string, symbol>()
 let transferEpoch = 0
 
+// The app confirm dialog holds a single request and cancels the one it replaces, so
+// overwrite prompts raised by parallel uploads are asked strictly one after another.
+// `stillWanted` runs when a prompt's turn comes and throws if its transfer died while queued.
+let overwritePrompts: Promise<unknown> = Promise.resolve()
+function confirmRemoteOverwrite(name: string, stillWanted: () => void): Promise<boolean> {
+    const asked = overwritePrompts.then(() => {
+        stillWanted()
+        return requestAppConfirmation({
+            title: i18n.t("panels:sshPanel.sftpOverwriteRemoteTitle"),
+            description: i18n.t("panels:sshPanel.sftpOverwriteRemoteConfirm", { name }),
+            kind: "warning"
+        })
+    })
+    overwritePrompts = asked.catch(() => undefined)
+    return asked
+}
+
 export const useSftpStore = create<SftpStore>()((set, get) => ({
     panelOpen: false,
     remote: {},
@@ -252,10 +269,9 @@ export const useSftpStore = create<SftpStore>()((set, get) => ({
             const expectedRevision = await sftpFileRevision(sessionId, remoteJoin(cwd, name), transferId)
             if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
             if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
-            if (expectedRevision !== null && !await requestAppConfirmation({
-                title: i18n.t("panels:sshPanel.sftpOverwriteRemoteTitle"),
-                description: i18n.t("panels:sshPanel.sftpOverwriteRemoteConfirm", { name }),
-                kind: "warning"
+            if (expectedRevision !== null && !await confirmRemoteOverwrite(name, () => {
+                if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")
+                if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
             })) throw new Error("sftp-transfer-cancelled")
             if (sessionIdOf(hostId) !== sessionId) throw new Error("sftp-connection-changed")
             if (get().transfers[transferId]?.cancelling) throw new Error("sftp-transfer-cancelled")

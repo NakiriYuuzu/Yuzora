@@ -40,7 +40,7 @@ const CHECKERBOARD_CLASS =
     "[background:repeating-conic-gradient(rgba(0,0,0,0.07)_0%_25%,transparent_0%_50%)_0_0/16px_16px] " +
     "dark:[background:repeating-conic-gradient(rgba(255,255,255,0.07)_0%_25%,transparent_0%_50%)_0_0/16px_16px]"
 
-export function ImageView({ path }: { path: string }) {
+export function ImageView({ path, generation }: { path: string; generation?: number }) {
     const { t } = useTranslation("panels")
     const containerRef = useRef<HTMLDivElement>(null)
     const workspacePath = useWorkspaceStore((s) => s.workspacePath)
@@ -62,9 +62,11 @@ export function ImageView({ path }: { path: string }) {
     const [loadError, setLoadError] = useState(false)
     const [remoteImage, setRemoteImage] = useState<{ path: string; src: string } | null>(null)
 
+    // The asset URL is otherwise identical after an external rewrite, so the
+    // WebView would keep showing the cached bitmap: version it by generation.
     const src = useMemo(() => parseRemoteFilePath(path)
         ? remoteImage?.path === path ? remoteImage.src : undefined
-        : convertFileSrc(path), [path, remoteImage])
+        : generation === undefined ? convertFileSrc(path) : `${convertFileSrc(path)}?v=${generation}`, [path, remoteImage, generation])
     const name = workspacePathBasename(path)
 
     // File size comes from the existing open_file metadata path (binary kind
@@ -92,7 +94,7 @@ export function ImageView({ path }: { path: string }) {
         return () => {
             disposed = true
         }
-    }, [path])
+    }, [path, generation])
 
     useEffect(() => {
         const container = containerRef.current
