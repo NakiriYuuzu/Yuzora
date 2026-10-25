@@ -20,6 +20,15 @@ const closedEarly = new Map<number, string>()
 const EARLY_CLOSURES = 16
 // Each session's event subscription, and its pending re-subscription.
 const eventStreams = new Map<string, number>()
+// Sessions whose first subscription is on its way; each holds a stream slot.
+const subscribing = new Set<string>()
+// The gateway caps one connection's streams across event subscriptions and
+// terminals, and a pane screen holds two terminal streams at once (its
+// observation while control opens): subscriptions leave them that room. A
+// session past it is still read, without live status until the next refresh.
+const TERMINAL_STREAMS = 2
+// The gateway's cap (read_bridge.rs MAX_STREAMS), should a hello not declare it.
+const STREAM_LIMIT = 8
 const reloads = new Map<string, ReturnType<typeof setTimeout>>()
 const lastReload = new Map<string, number>()
 // Events seen per session: a snapshot read across one is read again.
@@ -220,8 +229,7 @@ async function loadSession(name: string, resubscribe: boolean): Promise<boolean>
     }
     // Subscribe first: the snapshot that follows already includes anything the
     // subscription missed.
-    const subscribed = await call<{ stream: number }>("events.subscribe", { session: name })
-    eventStreams.set(name, subscribed.stream)
+    await subscribe(name)
     let snapshot: Snapshot
     let raced: boolean
     for (let retry = 0; ; retry++) {
@@ -240,6 +248,22 @@ async function loadSession(name: string, resubscribe: boolean): Promise<boolean>
       useCompanion.setState((state) => ({ sessionErrors: { ...state.sessionErrors, [name]: error.code } }))
     }
     return false
+  }
+}
+
+async function subscribe(name: string): Promise<void> {
+  const fresh = !eventStreams.has(name)
+  const limit = useCompanion.getState().hello?.capabilities?.limits.streams ?? STREAM_LIMIT
+  if (fresh && eventStreams.size + subscribing.size >= limit - TERMINAL_STREAMS) return
+  if (fresh) subscribing.add(name)
+  try {
+    const subscribed = await call<{ stream: number }>("events.subscribe", { session: name })
+    eventStreams.set(name, subscribed.stream)
+  } catch (error) {
+    // A terminal stream took the slot meanwhile; the snapshot does not need one.
+    if (!(error instanceof RpcError) || error.code !== "stream-limit") throw error
+  } finally {
+    if (fresh) subscribing.delete(name)
   }
 }
 

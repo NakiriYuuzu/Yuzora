@@ -15,7 +15,8 @@ export type Snapshot = {
   panes: { id: string | null; tabId: string | null; workspaceId: string | null; status: AgentStatus; label: string | null; layout: { cols: number; rows: number } | null }[]
   agents: { paneId: string | null; name: string | null; agent: string | null; status: AgentStatus }[]
 }
-export type Hello = { protocolVersion: number; serverTime: string; scopes: Scope[]; push: { vapidPublicKey: string } | null }
+/** `capabilities.limits.streams`: the streams one connection may hold, event subscriptions and terminals together. */
+export type Hello = { protocolVersion: number; serverTime: string; scopes: Scope[]; push: { vapidPublicKey: string } | null; capabilities?: { limits: { streams: number } } }
 export type StreamOpen = { stream: number; cols: number; rows: number }
 export type ControlOpen = StreamOpen & { until: string; target: string }
 

@@ -228,6 +228,35 @@ describe("refresh", () => {
     expect(fake.calls).toContain("stream.close")
     expect(useCompanion.getState().sessionErrors.old).toBeUndefined()
   })
+
+  it("leaves the gateway's stream room for a pane's terminal streams and still reads every session", async () => {
+    useCompanion.setState({ socket: "ready" })
+    connect()
+    const names = Array.from({ length: 9 }, (_, index) => `s${index}`)
+    fake.snapshots = Object.fromEntries(names.map((name) => [name, { ...snapshot(), session: name }]))
+    const subscribed: string[] = []
+    fake.answer = (method, params) => {
+      if (method !== "events.subscribe") return undefined
+      subscribed.push(params.session!)
+      return { stream: 20 + subscribed.length }
+    }
+    fake.sockets.at(-1)!.options.onReady({ serverTime: "2026-10-20T00:00:00Z", capabilities: { limits: { streams: 8 } } }, 1)
+    await vi.waitFor(() => expect(Object.keys(useCompanion.getState().snapshots).sort()).toEqual(names))
+    expect(subscribed).toEqual(names.slice(0, 6))
+    expect(useCompanion.getState().sessionErrors).toEqual({})
+  })
+
+  it("reads a session whose subscription the gateway refused for the stream limit", async () => {
+    useCompanion.setState({ socket: "ready" })
+    connect()
+    fake.snapshots = { work: snapshot("w1:p") }
+    fake.answer = (method) => {
+      if (method === "events.subscribe") throw new RpcError("stream-limit")
+    }
+    fake.sockets.at(-1)!.options.onReady({ serverTime: "2026-10-20T00:00:00Z", capabilities: { limits: { streams: 8 } } }, 1)
+    await vi.waitFor(() => expect(useCompanion.getState().snapshots.work).toBeDefined())
+    expect(useCompanion.getState().sessionErrors.work).toBeUndefined()
+  })
 })
 
 describe("the Git caches follow the snapshots", () => {
