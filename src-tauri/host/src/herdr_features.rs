@@ -377,6 +377,10 @@ impl HerdrManager {
         let mut child = process_kill::spawn_std(&mut command).map_err(|e| e.to_string())?;
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
+            // Read before the status: a server child that exits once its
+            // server is up must count as started, so only an exit the
+            // following status still reports as not running is a failure.
+            let exited = child.try_wait().map_err(|e| e.to_string())?.is_some();
             if let Ok(status) = run_herdr_json_with_session_timeout(
                 &binary,
                 &["status", "--json"],
@@ -405,7 +409,7 @@ impl HerdrManager {
                     return Ok(json!({"started": true, "name": name}));
                 }
             }
-            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            if exited {
                 return Err("herdr-session-start-failed".into());
             }
             if Instant::now() >= deadline {

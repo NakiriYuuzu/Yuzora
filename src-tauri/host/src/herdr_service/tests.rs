@@ -1659,6 +1659,43 @@ fn startup_and_named_session_start_share_one_launch_lock() {
 
 #[test]
 #[cfg(unix)]
+fn a_named_session_start_counts_a_server_child_that_exits_once_it_is_up() {
+    // `status` decides before it answers slowly, and the server child comes up
+    // and exits while that status is still running.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("herdr");
+    write_executable_fixture(
+        &path,
+        r#"#!/bin/sh
+base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$1" = "--session" ]; then shift 2; fi
+if [ "$1" = "status" ] && [ "$2" = "--json" ]; then
+  if [ -f "$base/server.ready" ]; then
+    answer='{"server":{"status":"running","running":true,"version":"0.0.0-fake","protocol":20,"compatible":true,"socket":"/tmp/herdr-fake.sock"}}'
+  else
+    answer='{"server":{"status":"not_running","running":false,"version":null,"protocol":null,"compatible":null,"socket":null}}'
+  fi
+  sleep 0.3
+  printf '%s\n' "$answer"
+  exit 0
+fi
+if [ "$1" = "server" ]; then
+  sleep 0.1
+  : > "$base/server.ready"
+  exit 0
+fi
+exit 2
+"#,
+    );
+    let manager = HerdrManager::with_binary(path);
+    let started = manager
+        .feature("default", HerdrFeatureRequest::SessionStart {})
+        .unwrap();
+    assert_eq!(started["started"], true);
+}
+
+#[test]
+#[cfg(unix)]
 fn startup_spawn_drops_the_pre_start_session_inventory() {
     let dir = tempfile::tempdir().unwrap();
     let manager = HerdrManager::with_binary(write_fake_herdr_startup(dir.path()));
