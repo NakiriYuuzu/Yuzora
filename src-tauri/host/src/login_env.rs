@@ -14,6 +14,10 @@ const END: &[u8] = b"\0YUZORA_ENV_END\0";
 const PROBE: &str =
     "printf '\\000YUZORA_ENV_START\\000'; /usr/bin/env -0; printf '\\000YUZORA_ENV_END\\000'";
 
+#[cfg(test)]
+#[path = "login_env_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 /// Call only before starting the helper's Tokio runtime or any other threads.
 /// The account's login environment stays on this host and is never returned by RPC.
 pub fn initialize() -> Result<(), &'static str> {
@@ -24,7 +28,7 @@ pub fn initialize() -> Result<(), &'static str> {
     }
     let mut command = Command::new(shell);
     command.args(["-ilc", PROBE]).current_dir(home);
-    let captured = capture(&mut command, Duration::from_secs(5), 256 * 1024)?;
+    let captured = capture(command, Duration::from_secs(5), 256 * 1024)?;
     for (key, value) in parse(&captured)? {
         if key == "PATH" {
             let path = merge_path(&value, std::env::var_os("PATH").as_deref());
@@ -38,72 +42,141 @@ pub fn initialize() -> Result<(), &'static str> {
     Ok(())
 }
 
-struct Probe(Child);
+/// Raw account-shell output. Callers retain their own exit-status and encoding policy.
+pub struct CapturedOutput {
+    pub stdout: Zeroizing<Vec<u8>>,
+    pub status: std::process::ExitStatus,
+}
+
+struct Probe(Option<Child>);
+impl Probe {
+    fn finish(&mut self) -> Result<std::process::ExitStatus, &'static str> {
+        let mut child = self.0.take().ok_or("environment-shell-already-reaped")?;
+        let pid = child.id() as libc::pid_t;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        // No try_wait has reaped this leader: its PID still pins our own PGID.
+        let signaled = unsafe { libc::killpg(pid, libc::SIGKILL) };
+        let signal_error = (signaled != 0).then(std::io::Error::last_os_error);
+        let reaped = crate::process_kill::reap_bounded(&mut child);
+        // macOS can return EPERM for an exited leader. Accept that only if
+        // observing the group below confirms it is entirely gone after reap.
+        if signal_error
+            .as_ref()
+            .is_some_and(|error| !matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EPERM)))
+        {
+            return Err("environment-shell-cleanup-signal-failed");
+        }
+        let status = reaped.map_err(|_| "environment-shell-cleanup-reap-failed")?;
+        // Never signal this now-reaped PID again. Only observe the original
+        // group until the same cleanup deadline; descendants may exit later.
+        loop {
+            if !crate::process_kill::process_group_exists(pid)
+                .map_err(|_| "environment-shell-cleanup-observe-failed")?
+            {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err(
+                    if signal_error.is_some_and(|error| error.raw_os_error() == Some(libc::EPERM)) {
+                        "environment-shell-cleanup-signal-failed"
+                    } else {
+                        "environment-shell-cleanup-timeout"
+                    },
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
 impl Drop for Probe {
     fn drop(&mut self) {
-        // Also end descendants retaining the capture socket on timeout/overflow.
-        if !matches!(self.0.try_wait(), Ok(Some(_))) {
-            unsafe {
-                libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+        if self.0.is_some() {
+            if let Err(error) = self.finish() {
+                eprintln!("[login_env] {error}");
             }
-            let _ = self.0.kill();
         }
-        let _ = self.0.wait();
     }
 }
 
 fn capture(
-    command: &mut Command,
+    command: Command,
     timeout: Duration,
     limit: usize,
 ) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    let captured = capture_output(command, timeout, limit)?;
+    if !captured.status.success() {
+        return Err("environment-shell-failed");
+    }
+    Ok(captured.stdout)
+}
+
+/// Drain a shell's stdout under one deadline and byte limit. The dedicated
+/// process group is terminated before reaping its leader, including on errors.
+/// Cleanup has a separate three-second bound. No environment values are logged.
+pub fn capture_output(
+    mut command: Command,
+    timeout: Duration,
+    limit: usize,
+) -> Result<CapturedOutput, &'static str> {
     let (mut reader, writer) = UnixStream::pair().map_err(|_| "environment-pipe-failed")?;
     reader
         .set_nonblocking(true)
         .map_err(|_| "environment-pipe-failed")?;
-    // WSL exec can retain a controlling terminal. A background process group
-    // alone makes interactive bash stop itself with SIGTTIN before the probe.
-    // A new session detaches that terminal while retaining group cancellation.
-    crate::process_kill::configure_new_group(command);
+    // Detach any controlling terminal while retaining a dedicated group.
+    crate::process_kill::configure_new_group(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(OwnedFd::from(writer)))
         .stderr(Stdio::null());
-    let mut child =
-        Probe(crate::process_kill::spawn_std(command).map_err(|_| "environment-shell-failed")?);
+    let mut child = Probe(Some(
+        crate::process_kill::spawn_std(&mut command).map_err(|_| "environment-shell-failed")?,
+    ));
+    // Command owns its Stdio descriptors too; do not retain a parent writer.
+    drop(command);
     let deadline = Instant::now() + timeout;
-    let mut output = Zeroizing::new(Vec::new());
-    let mut buffer = Zeroizing::new([0u8; 8192]);
-    loop {
-        if Instant::now() >= deadline {
-            return Err("environment-shell-timeout");
-        }
-        match reader.read(&mut *buffer) {
-            Ok(0) => match child.0.try_wait().map_err(|_| "environment-shell-failed")? {
-                Some(status) if status.success() => return Ok(output),
-                Some(_) => return Err("environment-shell-failed"),
-                None => std::thread::sleep(Duration::from_millis(5)),
-            },
-            Ok(size) => {
-                if output.len() + size > limit {
-                    return Err("environment-output-limit");
-                }
-                output.extend_from_slice(&buffer[..size]);
+    let captured = (|| {
+        let mut output = Zeroizing::new(Vec::new());
+        let mut buffer = Zeroizing::new([0u8; 8192]);
+        let mut leader_exited = false;
+        loop {
+            if Instant::now() >= deadline {
+                return Err("environment-shell-timeout");
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                // A shell's background children may retain stdout after it exits.
-                if let Some(status) = child.0.try_wait().map_err(|_| "environment-shell-failed")? {
-                    return if status.success() {
-                        Ok(output)
-                    } else {
-                        Err("environment-shell-failed")
-                    };
+            match reader.read(&mut *buffer) {
+                Ok(0) => {}
+                Ok(size) => {
+                    if size > limit.saturating_sub(output.len()) {
+                        return Err("environment-output-limit");
+                    }
+                    output.extend_from_slice(&buffer[..size]);
+                    continue;
                 }
-                std::thread::sleep(Duration::from_millis(5));
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return Err("environment-read-failed"),
             }
-            Err(_) => return Err("environment-read-failed"),
+            if leader_exited {
+                return Ok(output);
+            }
+            // Preserve the leader PID until cleanup has signalled the group.
+            if crate::process_kill::leader_exited_without_reaping(
+                child.0.as_ref().expect("owned unreaped child").id() as libc::pid_t,
+            )
+            .map_err(|_| "environment-shell-failed")?
+            {
+                // Writes can race the preceding WouldBlock. Once the leader
+                // has exited, drain again before accepting the captured bytes.
+                leader_exited = true;
+                continue;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
-    }
+    })();
+    let status = child.finish()?;
+    Ok(CapturedOutput {
+        stdout: captured?,
+        status,
+    })
 }
 
 fn parse(output: &[u8]) -> Result<Vec<(OsString, OsString)>, &'static str> {
@@ -172,7 +245,7 @@ mod tests {
     fn account_probe_detaches_from_the_parent_terminal_session() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "read -r pid comm state ppid pgid sid rest < /proc/self/stat; printf '\\000YUZORA_ENV_START\\000SID=%s\\000\\000YUZORA_ENV_END\\000' \"$sid\""]);
-        let vars = parse(&capture(&mut command, Duration::from_secs(2), 4096).unwrap()).unwrap();
+        let vars = parse(&capture(command, Duration::from_secs(2), 4096).unwrap()).unwrap();
         let parent_session = unsafe { libc::getsid(0) }.to_string();
         assert_ne!(vars[0].1, OsString::from(parent_session));
     }
@@ -181,7 +254,7 @@ mod tests {
     fn captures_nul_values_without_rpc_noise_or_losing_equals_and_unicode() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "printf 'rc noise\\n\\000YUZORA_ENV_START\\000PATH=/tools:/bin\\000TOKEN=a=b 中文\\nnext\\000\\000YUZORA_ENV_END\\000tail'"]);
-        let bytes = capture(&mut command, Duration::from_secs(2), 4096).unwrap();
+        let bytes = capture(command, Duration::from_secs(2), 4096).unwrap();
         let vars = parse(&bytes).unwrap();
         assert_eq!(
             vars,
@@ -197,9 +270,8 @@ mod tests {
     fn the_account_probe_spawns_through_the_spawn_lock() {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "printf 'probe'"]);
-        let (bytes, spawns) = crate::process_kill::trace_spawns(|| {
-            capture(&mut command, Duration::from_secs(2), 4096)
-        });
+        let (bytes, spawns) =
+            crate::process_kill::trace_spawns(|| capture(command, Duration::from_secs(2), 4096));
         assert_eq!(bytes.unwrap().as_slice(), b"probe");
         assert_eq!(spawns, ["/bin/sh -c printf 'probe'"]);
     }
@@ -209,13 +281,13 @@ mod tests {
         let mut hanging = Command::new("/bin/sh");
         hanging.args(["-c", "sleep 30"]);
         assert_eq!(
-            capture(&mut hanging, Duration::from_millis(50), 1024).unwrap_err(),
+            capture(hanging, Duration::from_millis(50), 1024).unwrap_err(),
             "environment-shell-timeout"
         );
         let mut flooding = Command::new("/bin/sh");
         flooding.args(["-c", "while :; do printf '1234567890'; done"]);
         assert_eq!(
-            capture(&mut flooding, Duration::from_secs(2), 1024).unwrap_err(),
+            capture(flooding, Duration::from_secs(2), 1024).unwrap_err(),
             "environment-output-limit"
         );
     }
