@@ -120,6 +120,10 @@
   "fileDrop": {
     "openAction": "開啟拖入的檔案"
   },
+  "openRequests": {
+    "openFileAction": "開啟檔案",
+    "openFolderAction": "開啟資料夾"
+  },
   "ssh": {
     "emptyTitle": "尚無主機",
     "emptyDescription": "新增主機以透過 SSH 或 SFTP 連線",

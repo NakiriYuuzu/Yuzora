@@ -100,6 +100,16 @@ export function openWorkspace(path: string): Promise<WorkspaceOpenResult> {
     return invoke("open_workspace", { path })
 }
 
+export interface OpenRequest {
+    path: string
+    kind: "file" | "directory"
+}
+
+/** Drains the files and folders the OS asked Yuzora to open (Finder, Dock, Explorer). */
+export function takeOpenRequests(): Promise<OpenRequest[]> {
+    return invoke("open_requests_take")
+}
+
 export function openWorkspaceDirectory(workspaceId: string, path: string): Promise<void> {
     return invoke("open_workspace_directory", { workspaceId, path })
 }

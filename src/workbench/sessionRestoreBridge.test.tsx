@@ -4,6 +4,7 @@ import indexHtml from "../../index.html?raw"
 
 import { getDocument } from "@/editor/documentRegistry"
 import { allowWorkspaceAssetScope } from "@/lib/ipc"
+import { launchOpenRequests, openRequestBatchesAccepted } from "@/lib/openRequests"
 import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 import { isWindowsPlatform } from "@/lib/platform"
 import { remoteFilePath } from "@/lib/runtimeIdentity"
@@ -32,6 +33,12 @@ vi.mock("@/lib/platform", () => ({ isWindowsPlatform: vi.fn(() => false) }))
 vi.mock("@/editor/documentRegistry", () => ({
   documentWorkspaceEpoch: () => 0,
   getDocument: vi.fn()
+}))
+
+// The batch the OS queued before launch (Finder / Dock / Explorer).
+vi.mock("@/lib/openRequests", () => ({
+  launchOpenRequests: vi.fn(),
+  openRequestBatchesAccepted: vi.fn()
 }))
 
 // The bridge awaits the asset-scope grant before opening restored image tabs
@@ -85,6 +92,8 @@ beforeEach(() => {
   vi.mocked(openWorkspaceAtPath).mockReset()
   vi.mocked(getDocument).mockReset().mockResolvedValue({} as never)
   vi.mocked(allowWorkspaceAssetScope).mockReset().mockResolvedValue(undefined)
+  vi.mocked(launchOpenRequests).mockReset().mockResolvedValue([])
+  vi.mocked(openRequestBatchesAccepted).mockReset().mockReturnValue(0)
 })
 
 afterEach(() => {
@@ -340,6 +349,8 @@ describe("SessionRestoreBridge 還原", () => {
     rememberRemoteWorkspace(root, "sftp")
     mockOpenResolves()
     render(<SessionRestoreBridge />)
+    // Launch open requests are awaited first; let the restore subscribe.
+    await act(async () => {})
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
     act(() => useSshStore.setState({ sessions: { other: { sessionId: "other-1" } as SshSessionState } }))
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
@@ -348,13 +359,28 @@ describe("SessionRestoreBridge 還原", () => {
     expect(openWorkspaceAtPath).toHaveBeenCalledWith(root, { shouldOpen: expect.any(Function) })
   })
 
-  it("does not replace the user's workspace when the deferred host connects", () => {
+  it("does not replace the user's workspace when the deferred host connects", async () => {
     const root = remoteFilePath("waiting", "/project")
     saveWorkspaceSession({ workspacePath: root, tabs: [root + "/main.ts"], activePath: null })
     rememberRemoteWorkspace(root, "sftp")
     render(<SessionRestoreBridge />)
+    await act(async () => {})
     act(() => useWorkspaceStore.getState().setWorkspace("/chosen"))
     act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await act(async () => {})
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+  })
+
+  it("gives way to files the OS opened while the deferred host was connecting", async () => {
+    const root = remoteFilePath("waiting", "/project")
+    saveWorkspaceSession({ workspacePath: root, tabs: [root + "/main.ts"], activePath: null })
+    rememberRemoteWorkspace(root, "sftp")
+    render(<SessionRestoreBridge />)
+    await act(async () => {})
+    // Open With handed over a file: it opens as a tab without setting a workspace.
+    vi.mocked(openRequestBatchesAccepted).mockReturnValue(1)
+    act(() => useSshStore.setState({ sessions: { waiting: { sessionId: "waiting-1" } as SshSessionState } }))
+    await act(async () => {})
     expect(openWorkspaceAtPath).not.toHaveBeenCalled()
   })
 
@@ -442,6 +468,35 @@ describe("SessionRestoreBridge 還原", () => {
     // 冷啟路徑自帶逐檔驗證還原，須關掉 workspaceActions 的 map 還原以免
     // 失效檔案的分頁被搶先開出來（#60 T4c）。
     expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false, shouldOpen: expect.any(Function) })
+  })
+
+  it("冷啟動帶資料夾開啟請求時不還原上次的 session，交給該資料夾取代", async () => {
+    useWorkspaceStore.setState({ sessionRestoreReady: false })
+    saveWorkspaceSession(SESSION)
+    mockOpenResolves()
+    vi.mocked(launchOpenRequests).mockResolvedValue([{ path: "/other", kind: "directory" }])
+    const el = insertSplash()
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(useWorkspaceStore.getState().sessionRestoreReady).toBe(true))
+    expect(splashDismissed(el)).toBe(true)
+    expect(openWorkspaceAtPath).not.toHaveBeenCalled()
+    expect(loadWorkspaceSession()).toEqual(SESSION)
+    document.getElementById("yz-splash")?.remove()
+  })
+
+  it("冷啟動只帶檔案開啟請求時照常還原，檔案稍後開進還原的 workspace", async () => {
+    useWorkspaceStore.setState({ sessionRestoreReady: false })
+    saveWorkspaceSession(SESSION)
+    mockOpenResolves()
+    vi.mocked(launchOpenRequests).mockResolvedValue([{ path: "/ws/notes.md", kind: "file" }])
+
+    render(<SessionRestoreBridge />)
+
+    await waitFor(() => expect(tabPaths()).toEqual(["/ws/a.ts", "/ws/b.ts"]))
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("/ws", { restoreSessionTabs: false, shouldOpen: expect.any(Function) })
+    expect(useWorkspaceStore.getState().sessionRestoreReady).toBe(true)
   })
 
   it("沒有 session 時完全不動（不呼叫 openWorkspaceAtPath）", async () => {
