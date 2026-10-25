@@ -10,7 +10,7 @@ import { useHerdrNativeStore } from "@/state/herdrNativeStore"
 import { Button } from "@/components/ui/button"
 import { useHerdrToolsStore, type HerdrTask, type HerdrToolsSelection } from "@/state/herdrToolsStore"
 import { useUiStore } from "@/state/uiStore"
-import { parseRuntimeScope, sessionScope } from "@/lib/herdrProvider"
+import { parseRuntimeScope, sessionConnectionError, sessionScope } from "@/lib/herdrProvider"
 import { herdrActionAvailability } from "@/lib/herdrActions"
 import { LOCAL_HOST_ID, runtimeKey } from "@/lib/runtimeIdentity"
 import { useHostStore } from "@/state/hostStore"
@@ -51,9 +51,11 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
   const paneId = !snapshot ? preferredPane ?? ""
     : [preferredPane, snapshot.focusedPaneId].find(id => id && spacePanes.some(pane => pane.paneId === id)) ?? spacePanes[0]?.paneId ?? ""
   const operation = useHerdrOperation(scope)
-  const starting = isHerdrStartupPending({ herdrStartup }, hostSessions.find(session => sessionScope(session) === scope))
-  const can = (method: string) => herdrActionAvailability(runtime, method, starting).ok
-  const reasonFor = (method: string) => { const state = herdrActionAvailability(runtime, method, starting); return state.ok ? null : state.reason }
+  const currentSession = hostSessions.find(session => sessionScope(session) === scope)
+  const starting = isHerdrStartupPending({ herdrStartup }, currentSession)
+  const unreachable = sessionConnectionError(currentSession)
+  const can = (method: string) => herdrActionAvailability(runtime, method, starting, unreachable).ok
+  const reasonFor = (method: string) => { const state = herdrActionAvailability(runtime, method, starting, unreachable); return state.ok ? null : state.reason }
   const messages = operation.result?.messages ?? (operation.result?.details as { messages?: string[] } | undefined)?.messages
   const diagnostic = operation.result?.type === "agent_explain" || operation.result?.type === "plugin_log_list"
   const resultAgent = operation.result?.agent
@@ -72,9 +74,8 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
   const go = (next: HerdrTask | undefined) => { setFromHome(next !== undefined); setTask(next) }
   const selectScope = (next: string) => { setScope(next); setRequestedWorkspace(""); void useHerdrStore.getState().bootstrap(next) }
   const hostOptions = [{ value: LOCAL_HOST_ID, label: t("local") }, ...Object.values(hostConfigs).map(host => ({ value: host.hostId, label: host.label, disabled: !hosts[host.hostId]?.connection }))]
-  const currentSession = hostSessions.find(session => sessionScope(session) === scope)
   const sessionOptions = [
-    ...hostSessions.map(session => ({ value: sessionScope(session)!, label: <>{session.name}{(isHerdrStartupPending({ herdrStartup }, session) || !session.running) && <span className="text-muted-foreground"> · {t(isHerdrStartupPending({ herdrStartup }, session) ? "workbench:herdrNav.connecting" : "stopped")}</span>}</> })),
+    ...hostSessions.map(session => ({ value: sessionScope(session)!, label: <>{session.name}{(isHerdrStartupPending({ herdrStartup }, session) || !session.running) && <span className="text-muted-foreground"> · {t(isHerdrStartupPending({ herdrStartup }, session) ? "workbench:herdrNav.connecting" : sessionConnectionError(session) ? "unreachable" : "stopped")}</span>}</> })),
     ...(currentSession ? [] : [{ value: scope, label: t("sessionNone") }]),
   ]
   const spaceOptions = snapshot?.spaces.map(space => ({ value: space.id, label: space.label })) ?? []
@@ -114,7 +115,7 @@ export default function HerdrToolsDialog({ selection }: { selection: HerdrToolsS
         <div ref={bodyRef} className="flex min-w-0 flex-col gap-4">
           {runtime?.errorMessage && <Alert><AlertTitle>{t("runtimeNotice")}</AlertTitle><AlertDescription>{runtime.errorMessage}</AlertDescription></Alert>}
           {!currentSession && <Alert><AlertTitle>{t("sessionNone")}</AlertTitle><AlertDescription>{t("noSessionHint")}</AlertDescription></Alert>}
-          {!task && <HerdrActionHome runtime={runtime} starting={starting} busy={operation.busy} onTask={next => go(next)}
+          {!task && <HerdrActionHome runtime={runtime} starting={starting} unreachable={unreachable} busy={operation.busy} onTask={next => go(next)}
             onNative={() => useHerdrNativeStore.getState().open({ sessionName: scope, paneId: paneId || undefined })}
             onNotifications={() => { useHerdrToolsStore.getState().close(); useUiStore.getState().openSettings("herdr") }} />}
           {task && TaskIcon && <div className="flex min-w-0 flex-col gap-3">

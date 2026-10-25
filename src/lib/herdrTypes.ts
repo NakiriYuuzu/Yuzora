@@ -71,6 +71,11 @@ export interface HerdrNamedSession {
   running: boolean
   sessionDir: string
   socketPath: string
+  /**
+   * HERDR 0.9.4+: the Session refused this client (for example an elevated
+   * Windows server), so it is listed as not running but may still be running.
+   */
+  connectionError?: string
 }
 
 export interface HerdrServerCapability {
