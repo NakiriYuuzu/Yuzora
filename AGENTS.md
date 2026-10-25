@@ -20,6 +20,23 @@ Rules:
 4. App-owned scrollable surfaces use `ScrollArea` from `@/components/ui/scroll-area`. Do not use bare `overflow-auto` / `overflow-y-auto` / `overflow-x-auto` as the scrollbar UI for content lists and reading panes.
 5. Exceptions that keep native / library overflow (not ScrollArea): structural `overflow-hidden` clipping, text truncate, native `<textarea>`, CodeMirror `.cm-scroller` / merge hosts, xterm viewports, iframe / native child webview documents, and intentional hidden-overflow chrome (e.g. tab strips with keyboard-only overflow navigation).
 
+## Rust 建置目錄重用
+
+`src-tauri`（app）與 `src-tauri/host`（host）是各自獨立的 Cargo 專案，各有自己的 target；分支上新增的 crate（例如 `companion`）也一樣。一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
+
+- 主 checkout（`yuzora/`）使用預設的 `target/`，不另外設定 `CARGO_TARGET_DIR`。
+- 不在主 checkout 的建置，包括 `../.yuzora-lanes/<lane>` worktree、`output/` 底下的原始碼快照，一律重用固定的 slot。不得以 lane 或 experiment 名稱建立新的 target：
+
+  ```bash
+  LANES="$(dirname "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")/.yuzora-lanes"
+  export CARGO_TARGET_DIR="$LANES/_targets/slot-1-app"   # host 用 slot-1-host；其他 crate 用 slot-1-<crate 目錄名>
+  ```
+
+- slot 只有 `slot-1`、`slot-2` 兩組。cargo 會對 target 目錄上鎖，出現 `Blocking waiting for file lock on build directory` 代表這個 slot 正在使用中，請改用 `slot-2`。兩組都在使用中就等待，不要建立 `slot-3` 或 lane 專屬的 target。
+- 不同 worktree 共用同一個 slot 時，第三方依賴可以直接重用，只有 yuzora 自己的 crate 會重新編譯。slot 裡的執行檔會被下一個使用者覆寫，量測或交付需要的 binary 請先複製出去。
+- 效能或評估迴圈不要每一輪都把整份 repo 複製到 `output/`，請改用 lane worktree 或 patch。必要的快照在量測完成後刪除，只保留報告與數據。
+- 開始 Rust build 前，如果 `df -h` 顯示可用空間低於 50 GB，先停下來向使用者回報，不要自行刪除其他 lane 或實驗的資料。
+
 ## Agent skills
 
 ### Issue tracker
