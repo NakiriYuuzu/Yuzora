@@ -536,6 +536,9 @@ pub struct ColumnInfo {
     pub col_type: String,
     pub notnull: bool,
     pub pk: bool,
+    /// None means the engine/helper did not provide generated-column metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<bool>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
@@ -779,6 +782,7 @@ pub struct QueryRun {
 pub enum QueryRunMode {
     Primary,
     Script,
+    TableCellMutation,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1326,7 +1330,7 @@ pub fn table_columns(
     }
     let mut stmt = conn
         .prepare(
-            "SELECT name, type, \"notnull\", pk \
+            "SELECT name, type, \"notnull\", pk, hidden \
              FROM pragma_table_xinfo(?1, ?2) ORDER BY cid",
         )
         .map_err(|error| sqlite_database_error(&error))?;
@@ -1337,6 +1341,7 @@ pub fn table_columns(
                 col_type: row.get(1)?,
                 notnull: row.get::<_, i64>(2)? != 0,
                 pk: row.get::<_, i64>(3)? != 0,
+                generated: Some(matches!(row.get::<_, i64>(4)?, 2 | 3)),
             })
         })
         .map_err(|error| sqlite_database_error(&error))?;
@@ -1356,19 +1361,30 @@ struct SqliteCompletionProbe<'a> {
 
 impl<'a> SqliteCompletionProbe<'a> {
     fn install(connection: &'a Connection) -> Option<Self> {
+        Self::install_with_veto(connection, || false)
+    }
+
+    fn install_with_veto(
+        connection: &'a Connection,
+        mut veto: impl FnMut() -> bool + Send + 'static,
+    ) -> Option<Self> {
         let committed = Arc::new(AtomicBool::new(false));
         let commit_flag = committed.clone();
+        let rolled_back = Arc::new(AtomicBool::new(false));
+        let prior_rollback = rolled_back.clone();
         if connection
             .commit_hook(Some(move || {
                 commit_flag.store(true, Ordering::SeqCst);
-                false
+                // A schema retry can roll back an internal attempt before
+                // committing. A subsequent rollback still overrides this hook.
+                prior_rollback.store(false, Ordering::SeqCst);
+                veto()
             }))
             .is_err()
         {
             return None;
         }
 
-        let rolled_back = Arc::new(AtomicBool::new(false));
         let rollback_flag = rolled_back.clone();
         if connection
             .rollback_hook(Some(move || rollback_flag.store(true, Ordering::SeqCst)))
@@ -2348,6 +2364,7 @@ async fn pg_table_columns(
                 col_type: data_type,
                 notnull: is_nullable.eq_ignore_ascii_case("NO"),
                 pk: is_primary_key,
+                generated: None,
             }
         })
         .collect())
@@ -2642,6 +2659,7 @@ async fn mssql_table_columns(
                 col_type: data_type.to_string(),
                 notnull: is_nullable.eq_ignore_ascii_case("NO"),
                 pk: is_primary_key,
+                generated: None,
             }
         })
         .collect())
@@ -4459,10 +4477,6 @@ impl ExecutionSettlementGuard {
         }
     }
 
-    fn settle(mut self) -> Result<crate::db_connection_actor::Settlement, ActorError> {
-        self.settle_with_policy(false)
-    }
-
     fn settle_with_policy(
         &mut self,
         terminate_if_cancelled: bool,
@@ -4690,11 +4704,21 @@ async fn network_run_materialized_unit(
             false,
         )),
         NetworkQueryStart::Rows { columns } => {
-            sessions
+            let admission = sessions
                 .lock()
-                .map_err(result_session_database_error)?
-                .begin_session(session_owner.clone(), columns)
-                .map_err(result_session_database_error)?;
+                .map_err(result_session_database_error)
+                .and_then(|mut sessions| {
+                    sessions
+                        .begin_session(session_owner.clone(), columns)
+                        .map_err(result_session_database_error)
+                });
+            if let Err(error) = admission {
+                // RowMeta already started a helper stream. Consume its terminal
+                // response before the next statement can reuse this worker.
+                let _ = worker.stop_streaming().await;
+                drain_helper_stream(worker).await;
+                return Err(error);
+            }
             let mut session_guard = SessionAbortGuard::new(sessions.clone(), session_owner.clone());
             let mut limit_reached = false;
             let mut affected_rows = None;
@@ -5413,16 +5437,10 @@ fn sqlite_run_primary_worker(
                 let page_index = match sessions
                     .lock()
                     .map_err(result_session_database_error)
-                    .and_then(|mut sessions| {
-                        match sessions
-                            .next(&session_owner)
-                            .map_err(result_session_database_error)?
-                        {
-                            NextPage::Continue { page_index } => Ok(page_index),
-                            NextPage::Cached(_) => {
-                                Err(continuation_database_error(ActorError::ConnectionBusy))
-                            }
-                        }
+                    .and_then(|sessions| {
+                        sessions
+                            .continuation_page_index(&session_owner)
+                            .map_err(result_session_database_error)
                     }) {
                     Ok(page_index) => page_index,
                     Err(_) => {
@@ -5467,7 +5485,11 @@ fn sqlite_run_primary_worker(
                             },
                         );
                         let _ = sessions.lock().map(|mut sessions| {
-                            let _ = sessions.finish_session(&session_owner, effect_outcome);
+                            let _ = sessions.finish_session_state(
+                                &session_owner,
+                                effect_outcome,
+                                ResultSessionLifecycle::Complete,
+                            );
                         });
                         let _ = settle_primary_guard(&mut settlement_guard);
                         let _ = respond_to.send(ResultContinuationAck {
@@ -5488,7 +5510,7 @@ fn sqlite_run_primary_worker(
                             ResultSessionLifecycle::Error
                         };
                         let _ = sessions.lock().map(|mut sessions| {
-                            let _ = sessions.finish_session_with_lifecycle(
+                            let _ = sessions.finish_session_state(
                                 &session_owner,
                                 EffectOutcome::Unknown,
                                 lifecycle,
@@ -5523,7 +5545,7 @@ fn sqlite_run_primary_worker(
             Some(ResultContinuationCommand::Cancel) => {
                 drop(rows);
                 let _ = sessions.lock().map(|mut sessions| {
-                    let _ = sessions.finish_session_with_lifecycle(
+                    let _ = sessions.finish_session_state(
                         &session_owner,
                         EffectOutcome::Unknown,
                         ResultSessionLifecycle::Cancelled,
@@ -5652,18 +5674,10 @@ fn mark_next_network_page_ready(
     sessions: &ResultSessionState,
     session_owner: &ResultSessionOwner,
 ) -> Result<(), DatabaseError> {
-    let mut sessions = sessions.lock().map_err(result_session_database_error)?;
-    let page_index = sessions
-        .next(session_owner)
-        .ok()
-        .and_then(|next| match next {
-            crate::db_result_session::NextPage::Continue { page_index } => Some(page_index),
-            _ => None,
-        })
-        .unwrap_or(1);
     sessions
-        .mark_page_ready(session_owner, page_index)
-        .map(|_| ())
+        .lock()
+        .map_err(result_session_database_error)?
+        .mark_next_page_ready(session_owner)
         .map_err(result_session_database_error)
 }
 
@@ -6357,6 +6371,9 @@ pub async fn query_run_in_state(
             Err(error) => Err(cleanup_server_disconnect(state, &identity, error)),
         };
     }
+    if request.mode == QueryRunMode::TableCellMutation {
+        return sqlite_cell_mutation::run(state.clone(), actor, request).await;
+    }
     let capability = match actor.handle() {
         DbHandle::RemoteSqlite(_) => return Err(unexpected_reply()),
         DbHandle::Sqlite(_) => CancelCapability::SqliteInterrupt,
@@ -6529,6 +6546,7 @@ pub async fn query_run_in_state(
     let mut stopped = false;
     let mut transaction_may_be_open = actor.transaction_may_be_open();
     let mut connection_terminated = false;
+    let mut terminate_if_cancelled = false;
     for (statement_index, unit) in request.statements.iter().enumerate() {
         let statement_execution_id =
             StatementExecutionId(format!("statement-{}", uuid::Uuid::new_v4()));
@@ -6557,34 +6575,47 @@ pub async fn query_run_in_state(
                 let sessions = sessions.clone();
                 let sql = unit.sql.clone();
                 let lease = lease_for_status.clone();
+                // The outer error: the worker could not read the real transaction
+                // state, so the run fails instead of reporting a stale flag.
                 tokio::task::spawn_blocking(move || match actor_for_worker.handle() {
                     DbHandle::Sqlite(connection) => {
                         let connection = connection
                             .lock()
                             .map_err(|_| sqlite_worker_error("SQLite connection lock failed"))?;
-                        let _cancellation = SqliteCancellationGuard::install(
-                            &connection,
-                            actor_for_worker.clone(),
-                            lease.clone(),
-                        )?;
-                        if actor_for_worker.is_terminating()
-                            || actor_for_worker.cancel_requested(&lease).unwrap_or(true)
-                        {
-                            return Err(cancelled_error());
-                        }
-                        let outcome = sqlite_run_materialized_unit(
-                            &connection,
-                            &sql,
-                            &sessions,
-                            session_owner,
-                        );
+                        let outcome = (|| {
+                            let _cancellation = SqliteCancellationGuard::install(
+                                &connection,
+                                actor_for_worker.clone(),
+                                lease.clone(),
+                            )?;
+                            if actor_for_worker.is_terminating()
+                                || actor_for_worker.cancel_requested(&lease).unwrap_or(true)
+                            {
+                                return Err(cancelled_error());
+                            }
+                            sqlite_run_materialized_unit(
+                                &connection,
+                                &sql,
+                                &sessions,
+                                session_owner,
+                            )
+                        })();
                         actor_for_worker.set_transaction_may_be_open(!connection.is_autocommit());
-                        outcome
+                        Ok(outcome)
                     }
-                    _ => Err(sqlite_worker_error("database connection engine mismatch")),
+                    _ => Ok(Err(sqlite_worker_error(
+                        "database connection engine mismatch",
+                    ))),
                 })
                 .await
                 .unwrap_or_else(|_| Err(sqlite_worker_error("SQLite worker task failed")))
+                .map_err(|error| {
+                    DatabaseOperationalError::new(
+                        DatabaseOperationalErrorCode::QueryFailed,
+                        "SQLite worker could not report its transaction state",
+                    )
+                    .with_database_error(error)
+                })?
                 .map(|(result, effect_outcome, stop)| P6UnitOutcome {
                     result,
                     effect_outcome,
@@ -6642,6 +6673,11 @@ pub async fn query_run_in_state(
             }
             Err(error) => {
                 stopped = true;
+                // Local result-state failures do not acknowledge a helper
+                // CancelQuery, even when cleanup consumed the stream's End.
+                terminate_if_cancelled |= matches!(actor.handle(), DbHandle::Postgres(_))
+                    && error.engine == DatabaseErrorEngine::Yuzora
+                    && error.code.as_deref() == Some("resultSessionState");
                 let result = if actor.cancel_requested(&lease_for_status).unwrap_or(false) {
                     StatementExecutionResult::Cancelled { error }
                 } else {
@@ -6659,7 +6695,16 @@ pub async fn query_run_in_state(
             }
         }
     }
-    settlement_guard.settle().map_err(actor_error)?;
+    let mut settlement_guard = settlement_guard;
+    let settlement = settlement_guard
+        .settle_with_policy(terminate_if_cancelled)
+        .map_err(actor_error)?;
+    if settlement.connection_termination_required {
+        if let DbHandle::Postgres(connection) = actor.handle() {
+            connection.worker().abort();
+            connection_terminated = true;
+        }
+    }
     let run = QueryRun {
         descriptor_id: owner.descriptor_id,
         connection_id: owner.connection_id,
@@ -7268,3 +7313,13 @@ pub mod integration_harness {
 
 #[cfg(test)]
 mod tests;
+
+mod sqlite_cell_mutation;
+
+#[cfg(test)]
+#[path = "db_service/sqlite_completion_tests.rs"]
+mod sqlite_completion_tests;
+
+#[cfg(test)]
+#[path = "db_service/sqlite_cell_mutation_tests.rs"]
+mod sqlite_cell_mutation_tests;
