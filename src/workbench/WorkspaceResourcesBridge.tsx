@@ -37,9 +37,10 @@ export function WorkspaceResourcesBridge() {
     useEffect(() => useWorkspaceStore.subscribe((state, previous) => {
         if (state.workspacePath === previous.workspacePath && sameFileOwners(state.groups, previous.groups)) return
         const open = new Set(state.groups.flatMap(group => group.tabs.filter(isFileTab).map(tab => tab.path)))
+        const leftWorkspace = state.workspacePath !== previous.workspacePath
         for (const group of previous.groups) for (const tab of group.tabs) {
-            if (isFileTab(tab) && (state.workspacePath !== previous.workspacePath || !open.has(tab.path))) {
-                dropDocument(tab.path, previous.workspacePath)
+            if (isFileTab(tab) && (leftWorkspace || !open.has(tab.path))) {
+                dropDocument(tab.path, previous.workspacePath, { keepHistory: leftWorkspace })
                 forgetRemoteFileRevision(tab.path)
                 useSvgPreviewStore.getState().forget(tab.path)
             }

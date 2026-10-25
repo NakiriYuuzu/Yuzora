@@ -44,12 +44,17 @@ export async function getDocument(path: string): Promise<RegistryEntry> {
     } finally { pendingReads.delete(read) }
 }
 
-export function dropDocument(path: string, workspace = useWorkspaceStore.getState().workspacePath) {
+export function dropDocument(
+    path: string,
+    workspace = useWorkspaceStore.getState().workspacePath,
+    options?: { keepHistory?: boolean }
+) {
     const key = documentKey(path, workspace)
     registry.delete(key)
     for (const read of pendingReads) if (read.key === key) pendingReads.delete(read)
-    // A closed document starts over with no undo history.
-    forgetEditorHistory(workspace, path)
+    // A closed document starts over with no undo history. Leaving its whole
+    // workspace keeps it for the return, like a tab switch.
+    if (!options?.keepHistory) forgetEditorHistory(workspace, path)
 }
 
 // Move a cached document from oldPath to newPath after a rename so a re-opened

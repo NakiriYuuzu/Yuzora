@@ -29,6 +29,9 @@ vi.mock("@/lib/ipc", async importOriginal => ({
         result: { kind: "full", content: "## Heading\n\nFirst paragraph\n\nSecond paragraph", size: 45, lineEnding: "lf" },
         accept: vi.fn()
     })),
+    openWorkspace: vi.fn(async (path: string) => ({ canonicalPath: path, capabilityId: `cap:${path}` })),
+    allowWorkspaceAssetScope: vi.fn(async () => {}),
+    startWatch: vi.fn(async () => {}),
     logEvent: vi.fn(async () => {})
 }))
 vi.mock("@/features/logs/userAction", () => ({ logUserAction: vi.fn(async () => {}) }))
@@ -37,6 +40,8 @@ vi.mock("@/app/panels/HerdrTerminalPage", () => ({ HerdrTerminalPage: () => null
 vi.mock("@/app/panels/PreviewPanel", () => ({ PreviewPanel: () => null }))
 
 import { EditorArea } from "./EditorArea"
+import { WorkspaceResourcesBridge } from "./WorkspaceResourcesBridge"
+import { openWorkspaceAtPath } from "@/lib/workspaceActions"
 
 const originalWorkspace = useWorkspaceStore.getState()
 const file = (path: string) => ({ path, name: path.split("/").at(-1)!, dirty: false, externallyModified: false })
@@ -139,6 +144,24 @@ it("does not bring back undo history after an inactive tab was closed", async ()
     act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
     await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
     expect(undo(getView("/w/a.txt")!)).toBe(false)
+})
+
+it("keeps the active editor's undo history through a workspace round trip (a Space switch)", async () => {
+    render(<><WorkspaceResourcesBridge /><EditorArea /></>)
+    await switchTo("/w/a.txt")
+    const first = getView("/w/a.txt")!
+    act(() => first.dispatch({ changes: { from: 0, insert: "edit " }, userEvent: "input.paste" }))
+    act(() => first.dispatch({ changes: { from: 0, to: "edit ".length }, userEvent: "input.paste" }))
+    const disk = first.state.doc.toString()
+    await act(async () => { expect(await openWorkspaceAtPath("/w2", { skipUnsavedGuard: true })).toBe(true) })
+    await waitFor(() => expect(getView("/w/a.txt")).toBeUndefined())
+    await act(async () => { expect(await openWorkspaceAtPath("/w", { skipUnsavedGuard: true })).toBe(true) })
+    act(() => useWorkspaceStore.getState().openTab("/w/a.txt", 0))
+    await waitFor(() => expect(getView("/w/a.txt")).toBeDefined())
+    const returned = getView("/w/a.txt")!
+    expect(returned.state.doc.toString()).toBe(disk)
+    act(() => { expect(undo(returned)).toBe(true) })
+    expect(returned.state.doc.toString()).toBe(`edit ${disk}`)
 })
 
 it("does not bring back undo history after an inactive document was reloaded", async () => {

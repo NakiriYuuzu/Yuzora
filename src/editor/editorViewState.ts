@@ -123,6 +123,19 @@ export function rememberEditorHistory(workspacePath: string | null, path: string
 }
 
 /**
+ * Records the undo history of every live editor among `paths` before a
+ * workspace switch drops their buffers, so returning to the workspace (a Space
+ * switch) keeps it like a tab switch does. The panes unmount only after the
+ * buffers are gone and can no longer record it themselves.
+ */
+export function rememberLiveEditorHistories(workspacePath: string | null, paths: Iterable<string>): void {
+    for (const path of paths) {
+        const live = getView(path)
+        if (live) rememberEditorHistory(workspacePath, path, live.state)
+    }
+}
+
+/**
  * Drops a document's recorded undo history. Its own pane skips recording when
  * the buffer is gone, but a history recorded earlier, when the document was
  * switched away from, has to be dropped with the buffer explicitly.

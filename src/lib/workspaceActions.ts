@@ -1,6 +1,7 @@
 import { chooseWorkspaceFolder } from "@/state/folderPickerStore"
 
 import { clearAll } from "@/editor/documentRegistry"
+import { rememberLiveEditorHistories } from "@/editor/editorViewState"
 import { logUserAction } from "@/features/logs/userAction"
 import i18n from "@/lib/i18n"
 import { allowWorkspaceAssetScope, openWorkspace, startWatch } from "@/lib/ipc"
@@ -127,6 +128,8 @@ async function openWorkspaceAtPathWithOutcome(
         unsavedBaseline = snapshotDirtyTabs()
         if (options?.shouldOpen && !options.shouldOpen()) return false
     }
+    const leaving = useWorkspaceStore.getState()
+    rememberLiveEditorHistories(leaving.workspacePath, leaving.groups.flatMap((group) => group.tabs.map((tab) => tab.path)))
     clearAll()
     const workspace = useWorkspaceStore.getState()
     workspace.setWorkspace(canonical, opened.capabilityId)
