@@ -24,10 +24,15 @@ export interface PreviewNativeNavigationSnapshot {
     url: string
     canGoBack: boolean
     canGoForward: boolean
+    /** `WKWebView.isLoading` / webkit `is_loading`; absent where the platform cannot tell (Windows). */
+    loading?: boolean | null
+    /** Length of the native back list; a committed navigation adds one entry. */
+    backCount?: number | null
 }
 
 export interface PreviewNativeSession {
     sessionId?: string
+    backCount?: number
     canGoBack?: boolean
     canGoForward?: boolean
     outerBackStack?: string[]
@@ -38,6 +43,39 @@ export interface PreviewNativeSession {
     forwardStack: string[]
 }
 
+/**
+ * A user-typed navigation the native webview has not resolved yet. The native
+ * layer exposes no load-failure event, so it is inferred from an idle snapshot
+ * (`loading === false`): a failed load commits no history entry, leaving the
+ * back-list length at `backCount` and the URL at `previous`. Any other idle
+ * snapshot (longer back list, or a different URL) resolves it as a success.
+ */
+export interface PreviewPendingNavigation {
+    requested: string
+    previous: string
+    /** Native back-list length when the navigation was requested. */
+    backCount: number
+    at: number
+}
+
+export interface PreviewNavigationFailure {
+    url: string
+    /** Normalized native URL and back-list length at failure time; a change means the failure is stale. */
+    nativeUrl: string
+    backCount: number
+}
+
+function normalizeUrl(rawUrl: string): string {
+    try {
+        return new URL(rawUrl).href
+    } catch {
+        return rawUrl
+    }
+}
+
+// Safety net: give up tracking a navigation that never resolves after this.
+const NAVIGATION_PENDING_EXPIRY_MS = 30_000
+
 export type PreviewNativeRequest =
     | { token: number; kind: "open"; workspacePath: string; url: string }
     | { token: number; kind: "close"; workspacePath: string | null }
@@ -46,6 +84,8 @@ interface PreviewState {
     nav: Record<string, PreviewNavState>
     nativeNavigationSyncs: Record<string, PreviewNativeNavigationSync>
     nativeNavigationSyncToken: number
+    pendingNavigations: Record<string, PreviewPendingNavigation>
+    navigationFailures: Record<string, PreviewNavigationFailure>
     nativeSession: PreviewNativeSession | null
     nativeRequestToken: number
     nativeRequest: PreviewNativeRequest | null
@@ -63,6 +103,7 @@ interface PreviewState {
     beginNativeCloseRequest: (workspace: string | null) => number
     nativeRequestIsCurrent: (token: number) => boolean
     settleNativeRequest: (token: number) => boolean
+    clearNavigationFailure: (workspace: string) => void
     reload: (workspace: string) => void
     setFrame: (workspace: string, frame: ResponsiveFrame) => void
     reset: () => void
@@ -72,6 +113,8 @@ export const previewInitialState = {
     nav: {} as Record<string, PreviewNavState>,
     nativeNavigationSyncs: {} as Record<string, PreviewNativeNavigationSync>,
     nativeNavigationSyncToken: 0,
+    pendingNavigations: {} as Record<string, PreviewPendingNavigation>,
+    navigationFailures: {} as Record<string, PreviewNavigationFailure>,
     nativeSession: null as PreviewNativeSession | null,
     nativeRequestToken: 0,
     nativeRequest: null as PreviewNativeRequest | null,
@@ -98,6 +141,14 @@ export function isLocalPreviewUrl(rawUrl: string | null): boolean {
     }
 }
 
+function clearedNavigationTracking(s: PreviewState, workspace: string) {
+    const pendingNavigations = { ...s.pendingNavigations }
+    const navigationFailures = { ...s.navigationFailures }
+    delete pendingNavigations[workspace]
+    delete navigationFailures[workspace]
+    return { pendingNavigations, navigationFailures }
+}
+
 function defaultNav(): PreviewNavState {
     return {
         url: null,
@@ -118,8 +169,13 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
         set((s) => {
             const nav = s.nav[workspace] ?? defaultNav()
             if (nav.url === url) return s
+            const backCount = s.nativeSession?.workspacePath === workspace ? s.nativeSession.backCount : undefined
             const nativeNavigationSyncs = { ...s.nativeNavigationSyncs }
             delete nativeNavigationSyncs[workspace]
+            const tracking = clearedNavigationTracking(s, workspace)
+            if (nav.url && typeof backCount === "number" && normalizeUrl(url) !== normalizeUrl(nav.url)) {
+                tracking.pendingNavigations[workspace] = { requested: url, previous: nav.url, backCount, at: Date.now() }
+            }
             return {
                 nav: {
                     ...s.nav,
@@ -130,7 +186,8 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
                         forwardStack: []
                     }
                 },
-                nativeNavigationSyncs
+                nativeNavigationSyncs,
+                ...tracking
             }
         })
         return true
@@ -153,7 +210,8 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
                         forwardStack: [nav.url, ...nav.forwardStack]
                     }
                 },
-                nativeNavigationSyncs
+                nativeNavigationSyncs,
+                ...clearedNavigationTracking(s, workspace)
             }
         }),
 
@@ -174,7 +232,8 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
                         forwardStack
                     }
                 },
-                nativeNavigationSyncs
+                nativeNavigationSyncs,
+                ...clearedNavigationTracking(s, workspace)
             }
         }),
 
@@ -207,6 +266,7 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
                     [workspace]: { url, token }
                 },
                 nativeNavigationSyncToken: token,
+                ...clearedNavigationTracking(s, workspace),
                 nativeSession: {
                     ...nativeSession,
                     currentUrl: url,
@@ -247,6 +307,7 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
                     [workspace]: { url, token }
                 },
                 nativeNavigationSyncToken: token,
+                ...clearedNavigationTracking(s, workspace),
                 nativeSession: {
                     ...nativeSession,
                     currentUrl: url,
@@ -295,7 +356,7 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
             }
         }),
 
-    receiveNativeNavigation: ({ sessionId, url, canGoBack, canGoForward }) => {
+    receiveNativeNavigation: ({ sessionId, url, canGoBack, canGoForward, loading, backCount: rawBackCount }) => {
         if (!isAllowedPreviewUrl(url)) return
         set((s) => {
             const session = s.nativeSession
@@ -304,15 +365,66 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
             const workspace = session.workspacePath
             const nav = s.nav[workspace]
             if (!nav || nav.url !== session.currentUrl) return s
+            const backCount = typeof rawBackCount === "number" ? rawBackCount : undefined
+            const nativeUrl = normalizeUrl(url)
+            const pending = s.pendingNavigations[workspace]?.requested === nav.url
+                ? s.pendingNavigations[workspace] : undefined
+            const expired = !!pending && Date.now() - pending.at > NAVIGATION_PENDING_EXPIRY_MS
+            // A longer back list means the requested page already committed, even if it is
+            // still loading subresources: the navigation succeeded.
+            const committed = !!pending && backCount !== undefined && backCount > pending.backCount
+            // In flight: the view may still report `previous` or the requested URL, so the
+            // optimistic nav stays put until it goes idle. History capabilities stay live
+            // so Back/Forward and the next navigate() act on the real native history.
+            if (pending && !expired && loading === true && !committed) {
+                if (session.canGoBack === canGoBack && session.canGoForward === canGoForward
+                    && session.backCount === backCount) return s
+                return { nativeSession: { ...session, canGoBack, canGoForward, backCount,
+                    outerForwardStack: canGoBack ? [] : session.outerForwardStack } }
+            }
+            const idle = loading === false && backCount !== undefined
+            const previousUrl = pending ? normalizeUrl(pending.previous) : null
+            // A failed provisional load never creates a history entry, so an idle view
+            // that is back on `previous` with an unchanged back list means it failed.
+            // A redirect or in-page link back to `previous` still grows the back list.
+            if (pending && !expired && idle && nativeUrl === previousUrl && backCount === pending.backCount) {
+                const token = s.nativeNavigationSyncToken + 1
+                const tracking = clearedNavigationTracking(s, workspace)
+                tracking.navigationFailures[workspace] = { url: pending.requested, nativeUrl, backCount }
+                // navigate()/recordNativeOpen() pushed `previous` as history that never happened.
+                return {
+                    nav: { ...s.nav, [workspace]: { ...nav, url,
+                        backStack: nav.backStack.at(-1) === url ? nav.backStack.slice(0, -1) : nav.backStack } },
+                    nativeSession: { ...session, currentUrl: url, canGoBack, canGoForward, backCount,
+                        backStack: session.backStack.at(-1) === url ? session.backStack.slice(0, -1) : session.backStack },
+                    nativeNavigationSyncs: { ...s.nativeNavigationSyncs, [workspace]: { url, token } },
+                    nativeNavigationSyncToken: token,
+                    ...tracking
+                }
+            }
+            const failure = s.navigationFailures[workspace]
+            // Native link clicks and toolbar history/reload never touch the store, so the
+            // alert is retired by the view moving on: loading again, another page, or history.
+            const failureStale = !!failure && (loading === true || nativeUrl !== failure.nativeUrl
+                || (backCount !== undefined && backCount !== failure.backCount))
+            // Loading keeps the navigation in flight unless it already committed; anything
+            // else that shows the view moved on (or cannot be judged, e.g. Windows) retires
+            // it without a failure.
+            const settled = !!pending && (expired || committed || (loading !== true
+                && (!idle || backCount !== pending.backCount || nativeUrl !== previousUrl)))
             const changedUrl = nav.url !== url
-            if (!changedUrl && session.canGoBack === canGoBack && session.canGoForward === canGoForward) return s
+            if (!changedUrl && !settled && !failureStale && session.canGoBack === canGoBack
+                && session.canGoForward === canGoForward && session.backCount === backCount) return s
             const token = s.nativeNavigationSyncToken + 1
+            const tracking = clearedNavigationTracking(s, workspace)
             return {
                 // The native browser owns its actual history, including redirects,
                 // replaceState and traversal. A snapshot never invents entries.
                 nav: { ...s.nav, [workspace]: { ...nav, url } },
-                nativeSession: { ...session, currentUrl: url, canGoBack, canGoForward,
+                nativeSession: { ...session, currentUrl: url, canGoBack, canGoForward, backCount,
                     outerForwardStack: canGoBack ? [] : session.outerForwardStack },
+                ...(settled ? { pendingNavigations: tracking.pendingNavigations } : {}),
+                ...(failureStale ? { navigationFailures: tracking.navigationFailures } : {}),
                 ...(changedUrl ? {
                     nativeNavigationSyncs: { ...s.nativeNavigationSyncs, [workspace]: { url, token } },
                     nativeNavigationSyncToken: token
@@ -355,6 +467,14 @@ export const usePreviewStore = create<PreviewState>()((set, get) => ({
         set({ nativeRequest: null })
         return true
     },
+
+    clearNavigationFailure: (workspace) =>
+        set((s) => {
+            if (!s.navigationFailures[workspace]) return s
+            const navigationFailures = { ...s.navigationFailures }
+            delete navigationFailures[workspace]
+            return { navigationFailures }
+        }),
 
     reload: (workspace) =>
         set((s) => {

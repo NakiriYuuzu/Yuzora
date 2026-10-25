@@ -78,6 +78,9 @@ function requestNativePreviewClose(
   })
 }
 
+// POSIX absolute, home-relative, file:, Windows drive (C:\\ or C:/) and UNC (leading backslash) paths.
+const LOCAL_PATH_INPUT = /^(?:[/~\\]|file:|[a-z]:[\\/])/i
+
 function normalizePreviewUrl(rawUrl: string): string {
   const schemeLessHostWithPort = /^(?:[^:/?#\s]+|\[[0-9a-f:.]+\]):\d+(?:[/?#]|$)/i
     .test(rawUrl)
@@ -102,6 +105,7 @@ export function PreviewPanel({ visible = true }: { visible?: boolean } = {}) {
   const navMap = usePreviewStore((s) => s.nav)
   const nativeSessionId = usePreviewStore((s) => s.nativeSession?.sessionId)
   const nativeNavigationSyncs = usePreviewStore((s) => s.nativeNavigationSyncs)
+  const loadFailure = usePreviewStore((s) => workspace ? s.navigationFailures[workspace] : undefined)
   const nav = workspace ? navMap[workspace] ?? EMPTY_NAV : EMPTY_NAV
   // EditorPanel (and this panel) stays mounted but CSS-hidden when the mode is not
   // "files"; a native webview isn't affected by `display:none`, so gate its
@@ -316,6 +320,10 @@ export function PreviewPanel({ visible = true }: { visible?: boolean } = {}) {
       setUrlError(null)
       return
     }
+    if (LOCAL_PATH_INPUT.test(raw)) {
+      setUrlError(tp("previewPanel.urlLocalPathError"))
+      return
+    }
     const normalized = normalizePreviewUrl(raw)
     if (usePreviewStore.getState().navigate(workspace, normalized)) {
       setUrlDraft(null)
@@ -424,8 +432,19 @@ export function PreviewPanel({ visible = true }: { visible?: boolean } = {}) {
           onChange={(event) => {
             setUrlDraft(event.currentTarget.value)
             setUrlError(null)
+            if (workspace) usePreviewStore.getState().clearNavigationFailure(workspace)
           }}
           onFocus={(event) => event.currentTarget.select()}
+          onMouseDown={(event) => {
+            // WebKit collapses the focus-time selection on mouseup; take over
+            // the first click so it leaves the whole URL selected.
+            // After a click into the native child webview WebKit keeps the input as
+            // activeElement while the document lost focus, so also require focus.
+            if (document.activeElement === event.currentTarget && document.hasFocus()) return
+            event.preventDefault()
+            event.currentTarget.focus()
+            event.currentTarget.select()
+          }}
           onBlur={() => {
             if (!urlError) setUrlDraft(null)
           }}
@@ -479,13 +498,13 @@ export function PreviewPanel({ visible = true }: { visible?: boolean } = {}) {
 
       </div>
 
-      {urlError ? (
+      {urlError || loadFailure ? (
         <div
           id="preview-url-error"
           role="alert"
           className="shrink-0 border-b border-[#f0c4c4] bg-[#fff1f1] px-[10px] py-[5px] text-[11px] text-[#b4232a]"
         >
-          {urlError}
+          {urlError ?? tp("previewPanel.loadFailed", { url: loadFailure?.url })}
         </div>
       ) : null}
 

@@ -6,6 +6,8 @@
     "urlLabel": "瀏覽器網址",
     "urlPlaceholder": "輸入網址…",
     "urlSchemeError": "瀏覽器網址必須使用 http:// 或 https://",
+    "urlLocalPathError": "這看起來是本機檔案路徑，無法直接開啟。工作區內的 HTML 檔案可在檔案樹對檔案按右鍵，選「在此預覽」來預覽。",
+    "loadFailed": "無法載入 {{url}}",
     "openExternally": "以瀏覽器開啟",
     "toggleResponsiveFrame": "切換響應式版面"
   },

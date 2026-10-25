@@ -217,7 +217,7 @@ describe("PreviewPanel", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 
-  it.each(["ftp://example.com", "file:///etc/passwd", "javascript:alert(1)"])(
+  it.each(["ftp://example.com", "javascript:alert(1)"])(
     "keeps %s out of navigation and exposes an accessible error",
     async (unsafeUrl) => {
       usePreviewStore.getState().navigate("/workspace", "http://localhost:5173")
@@ -234,6 +234,77 @@ describe("PreviewPanel", () => {
         .toBe("http://localhost:5173")
     }
   )
+
+  it.each(["/private/tmp/x.html", "~/notes.html", "file:///etc/passwd", "C:\\Users\\me\\a.html", "c:/a.html"])(
+    "refuses filesystem path %s and points to the file tree preview",
+    async (path) => {
+      usePreviewStore.getState().navigate("/workspace", "http://localhost:5173")
+      render(<PreviewPanel />)
+      const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))
+
+      fireEvent.change(input, { target: { value: path } })
+      fireEvent.keyDown(input, { key: "Enter" })
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Preview here")
+      expect(input).toHaveAttribute("aria-invalid", "true")
+      expect(usePreviewStore.getState().navForWorkspace("/workspace").url)
+        .toBe("http://localhost:5173")
+    }
+  )
+
+  it("shows an inline load error for a failed navigation and clears it on edit", async () => {
+    usePreviewStore.getState().navigate("/workspace", "http://localhost:5173")
+    render(<PreviewPanel />)
+    act(() => {
+      usePreviewStore.setState({ navigationFailures: { "/workspace": { url: "http://127.0.0.1:1/", nativeUrl: "http://localhost:5173/", backCount: 0 } } })
+    })
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load http://127.0.0.1:1/")
+    const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" }))
+    fireEvent.change(input, { target: { value: "localhost:3000" } })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("selects the whole URL on a mouse click that focuses the field, but not on later clicks", () => {
+    usePreviewStore.getState().navigate("/workspace", "http://localhost:5173/playground/second.html")
+    render(<PreviewPanel />)
+    const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" })) as HTMLInputElement
+
+    // WebKit's default mousedown focuses then mouseup collapses the selection; the
+    // handler must cancel that default so the focus-time select-all survives.
+    expect(fireEvent.mouseDown(input)).toBe(false)
+    expect(document.activeElement).toBe(input)
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(input.value.length)
+
+    input.setSelectionRange(3, 3)
+    expect(fireEvent.mouseDown(input)).toBe(true)
+    expect(input.selectionStart).toBe(3)
+  })
+
+  it("re-selects the URL when the input is still activeElement but the document lost focus", () => {
+    usePreviewStore.getState().navigate("/workspace", "http://localhost:5173/playground/second.html")
+    render(<PreviewPanel />)
+    const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" })) as HTMLInputElement
+    input.focus()
+    input.setSelectionRange(3, 3)
+    // Clicking into the native child webview leaves the input as activeElement.
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false)
+    try {
+      expect(fireEvent.mouseDown(input)).toBe(false)
+      expect(input.selectionStart).toBe(0)
+      expect(input.selectionEnd).toBe(input.value.length)
+    } finally {
+      hasFocus.mockRestore()
+    }
+  })
+
+  it("rejects UNC paths as local paths instead of navigating", () => {
+    render(<PreviewPanel />)
+    const input = screen.getByLabelText(i18n.t("previewPanel.urlLabel", { ns: "panels" })) as HTMLInputElement
+    fireEvent.change(input, { target: { value: "\\\\server\\share\\a.html" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(screen.getByRole("alert")).toHaveTextContent(i18n.t("previewPanel.urlLocalPathError", { ns: "panels" }))
+  })
 })
 
 describe("PreviewPanel native child-webview lifecycle (Tauri only)", () => {
