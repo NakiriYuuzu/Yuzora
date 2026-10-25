@@ -1236,8 +1236,8 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
     // Session while workspace.create is in flight supersedes this create.
     const creationGeneration = ++sessionSelectionGeneration
     const isLatestCreation = () => sessionSelectionGeneration === creationGeneration
+    let releaseSelection: (() => void) | undefined
     try {
-      const previousSpace = stateBefore.selectedSpaceBySession[sessionName] ?? null
       const currentWorkspace = useWorkspaceStore.getState().workspacePath
       const needsWorkspaceSwitch = Boolean(cwd && !pathsMatch(cwd, currentWorkspace))
 
@@ -1252,6 +1252,13 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
         if (!proceed) return { ok: false, cancelled: true }
         unsavedBaseline = snapshotDirtyTabs()
       }
+
+      // workspace.create focuses the new Space in Herdr, so it joins the focus
+      // queue: a newer Space or Agent focus runs only after this create settles
+      // and stays authoritative.
+      releaseSelection = await acquireSelection()
+      if (!isLatestCreation()) return { ok: false, cancelled: true }
+      const previousSpace = get().selectedSpaceBySession[sessionName] ?? null
 
       let created
       try {
@@ -1327,6 +1334,7 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       set((state) => withRuntime(state, sessionName, { errorMessage: null }))
       return { ok: true, space }
     } finally {
+      releaseSelection?.()
       spaceCreationInFlight.delete(sessionName)
     }
   },

@@ -398,6 +398,9 @@ function MergeEditors({ path, texts, onDone }: { path: string; texts: MergeTexts
         }
         const ok = await runOp("conflict-merge", async () => {
             if (becameSymlink) throw new Error(t("gitMerge.symlink"))
+            // The confirmation above can stay open while the path is swapped,
+            // so check again right before the write; an unreadable path fails closed.
+            if ((await gitConflictSides(root, path)).symlink) throw new Error(t("gitMerge.symlink"))
             await saveFile(absolute, content)
             await gitStage(root, [path])
         })

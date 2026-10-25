@@ -275,7 +275,8 @@ fn read_rest(file: &mut std::fs::File, mut prefix: Vec<u8>, size: u64) -> Result
 /// Some places cannot host that swap — a read-only directory around a writable
 /// file, a single-file bind mount, a file owned by someone else. The original is
 /// still untouched at that point, so the save falls back to the in-place write
-/// it always used. A failure while writing the scratch bytes (for example a
+/// it always used. A file with an access control list keeps that write too: the
+/// swap would replace the ACL with the directory's defaults. A failure while writing the scratch bytes (for example a
 /// full disk) is returned instead, because an in-place write would truncate.
 /// A path with no existing file has nothing to lose.
 fn replace_file_atomically(path: &Path, content: &[u8]) -> Result<(), String> {
@@ -298,11 +299,78 @@ fn replace_file_atomically(path: &Path, content: &[u8]) -> Result<(), String> {
         .write(true)
         .open(&target)
         .map_err(write_err)?;
+    if has_extended_acl(&target) {
+        return std::fs::write(&target, content).map_err(write_err);
+    }
     match swap_in_scratch_file(&target, &metadata, content) {
         Ok(()) => Ok(()),
         Err(SwapError::Unavailable) => std::fs::write(&target, content).map_err(write_err),
         Err(SwapError::Failed(error)) => Err(write_err(error)),
     }
+}
+
+/// Whether `path` carries an access control list beyond its mode bits. An
+/// answer the platform cannot give counts as yes, which keeps the in-place write.
+#[cfg(target_os = "linux")]
+fn has_extended_acl(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: both strings are NUL-terminated; a null buffer of size 0 only
+    // asks for the attribute's size.
+    let size = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            b"system.posix_acl_access\0".as_ptr().cast(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    // Linux stores an ACL with entries beyond the mode bits in this attribute;
+    // ENOTSUP is a filesystem without extended attributes.
+    size >= 0
+        || !matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENODATA | libc::ENOTSUP)
+        )
+}
+
+#[cfg(target_os = "macos")]
+fn has_extended_acl(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    const ACL_TYPE_EXTENDED: libc::c_int = 0x0000_0100;
+    const ACL_FIRST_ENTRY: libc::c_int = 0;
+    extern "C" {
+        fn acl_get_file(path: *const libc::c_char, kind: libc::c_int) -> *mut libc::c_void;
+        fn acl_get_entry(
+            acl: *mut libc::c_void,
+            entry_id: libc::c_int,
+            entry: *mut *mut libc::c_void,
+        ) -> libc::c_int;
+        fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+    }
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: libSystem's POSIX.1e ACL API with a NUL-terminated path; the ACL
+    // it returns is released with acl_free and the entry is never used.
+    unsafe {
+        let acl = acl_get_file(path.as_ptr(), ACL_TYPE_EXTENDED);
+        if acl.is_null() {
+            // ENOENT: the file has no extended ACL.
+            return std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT);
+        }
+        let mut entry = std::ptr::null_mut();
+        let any = acl_get_entry(acl, ACL_FIRST_ENTRY, &mut entry) == 0;
+        acl_free(acl);
+        any
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn has_extended_acl(_path: &Path) -> bool {
+    false
 }
 
 enum SwapError {
@@ -1001,6 +1069,35 @@ mod tests {
             before,
             "an in-place write truncates the original before the new bytes land"
         );
+    }
+
+    // The swap cannot carry an ACL over, and renaming the scratch file over the
+    // original would drop it: a user the ACL denied could read the saved file.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn save_file_keeps_an_access_control_list_in_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("acl.txt");
+        fs::write(&p, "old").unwrap();
+        assert!(!has_extended_acl(&p));
+        #[cfg(target_os = "macos")]
+        let added = std::process::Command::new("/bin/chmod")
+            .args(["+a", "user:nobody deny read"])
+            .arg(&p)
+            .status();
+        #[cfg(target_os = "linux")]
+        let added = std::process::Command::new("setfacl")
+            .args(["-m", "u:nobody:---"])
+            .arg(&p)
+            .status();
+        // A filesystem or image without ACL support has nothing to keep.
+        if !added.is_ok_and(|status| status.success()) {
+            return;
+        }
+        assert!(has_extended_acl(&p));
+        write_file(p.to_str().unwrap(), "new").unwrap();
+        assert!(has_extended_acl(&p), "the save dropped the file's ACL");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "new");
     }
 
     // 寫入途中的讀者只能看到完整舊檔或完整新檔；就地 truncate 會讓它讀到空檔或半檔。

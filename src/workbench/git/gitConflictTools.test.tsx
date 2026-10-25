@@ -14,7 +14,7 @@ vi.mock("@/lib/unsavedGuard", () => ({ dirtyTabPaths: vi.fn(() => []) }))
 import * as ipc from "@/lib/ipc"
 import { dirtyTabPaths } from "@/lib/unsavedGuard"
 import { useAppDialogStore } from "@/state/appDialogStore"
-import type { GitStatus } from "@/lib/types"
+import type { GitConflictSides, GitStatus } from "@/lib/types"
 import { useGitConflictStore } from "@/state/gitConflictStore"
 import { initialGitState, useGitStore } from "@/state/gitStore"
 import { canMergeConflict, conflictSideChanges } from "./conflictSides"
@@ -219,6 +219,61 @@ describe("GitMergeTool", () => {
         expect(useAppDialogStore.getState().pending).toBeNull()
         expect(ipc.saveFile).not.toHaveBeenCalled()
         expect(ipc.gitStage).not.toHaveBeenCalled()
+    })
+
+    describe("re-checks again at the write, after the replace confirmation", () => {
+        const sides = {
+            code: "UU",
+            lossyEncoding: false, symlink: false,
+            base: { kind: "full", content: "1\n2\n" },
+            ours: { kind: "full", content: "1\nO\n" },
+            theirs: { kind: "full", content: "1\nT\n" },
+            worktree: { kind: "full", content: "1\n<<<<<<< ours\nO\n=======\nT\n>>>>>>> theirs\n" }
+        } as const
+
+        async function applyThroughConfirmation(atWrite: () => Promise<GitConflictSides>) {
+            vi.mocked(ipc.gitConflictSides)
+                .mockResolvedValueOnce(sides)
+                // Resolved by hand meanwhile, so Apply asks before replacing it.
+                .mockResolvedValueOnce({ ...sides, worktree: { kind: "full", content: "1\nmine\n" } })
+                .mockImplementationOnce(atWrite)
+            let failure: unknown = null
+            runOp.mockImplementationOnce(async (_name, fn) => {
+                try {
+                    await fn()
+                    return true
+                } catch (error) {
+                    failure = error
+                    return false
+                }
+            })
+            useGitConflictStore.setState({ mergePath: "m.txt" })
+            render(<GitMergeTool />)
+            await screen.findByText("1 changes, 1 conflicts left")
+            const result = document.querySelector<HTMLElement>("[data-merge-pane='result']")!
+            fireEvent.click(within(result).getByRole("button", { name: "Theirs »" }))
+            await screen.findByText("0 changes, 0 conflicts left")
+            fireEvent.click(screen.getByRole("button", { name: "Apply" }))
+            await waitFor(() => expect(useAppDialogStore.getState().pending?.description).toMatch(/manual resolutions/))
+            act(() => useAppDialogStore.getState().respond(true))
+            await waitFor(() => expect(failure).not.toBeNull())
+            return failure
+        }
+
+        it("refuses when the path became a symlink while the confirmation was open", async () => {
+            const failure = await applyThroughConfirmation(async () => ({ ...sides, symlink: true }))
+            expect(String(failure)).toMatch(/symbolic links/)
+            expect(ipc.gitConflictSides).toHaveBeenCalledTimes(3)
+            expect(ipc.saveFile).not.toHaveBeenCalled()
+            expect(ipc.gitStage).not.toHaveBeenCalled()
+        })
+
+        it("fails closed when the path can no longer be read", async () => {
+            const failure = await applyThroughConfirmation(async () => { throw new Error("conflict sides unavailable") })
+            expect(String(failure)).toMatch(/conflict sides unavailable/)
+            expect(ipc.saveFile).not.toHaveBeenCalled()
+            expect(ipc.gitStage).not.toHaveBeenCalled()
+        })
     })
 
     async function resolveAndApply(worktree: string) {

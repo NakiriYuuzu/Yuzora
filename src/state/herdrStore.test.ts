@@ -1713,17 +1713,24 @@ describe("herdrStore", () => {
 
   it("createSpaceFromFolder yields to a newer Space activation instead of replacing its workspace", async () => {
     const { creating, setSelectedSpaceId, finishCreate } = await startDeferredCreate("/tmp/new")
-    await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
-    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
-    vi.mocked(openWorkspaceAtPath).mockClear()
+    const activating = useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: "ws-2" })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // workspace.create focuses its new Space; the newer focus waits for it to
+    // settle so Herdr ends on the newer choice, not on the late create.
+    expect(herdrWorkspaceFocus).not.toHaveBeenCalled()
     finishCreate()
 
     await expect(creating).resolves.toEqual({ ok: false, cancelled: true })
+    await expect(activating).resolves.toMatchObject({ ok: true })
+    expect(useHerdrStore.getState().selectedSpaceId).toBe("ws-2")
     expect(setSelectedSpaceId).not.toHaveBeenCalled()
     expect(vi.mocked(herdrWorkspaceFocus).mock.calls.map(([call]) => call.workspaceId)).toEqual(["ws-2"])
+    expect(vi.mocked(herdrWorkspaceFocus).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(herdrSnapshot).mock.invocationCallOrder.at(-2)!
+    )
     // The stale create asked to switch Files, but its shouldOpen is already false.
-    const [, options] = vi.mocked(openWorkspaceAtPath).mock.calls[0]
-    expect(options?.shouldOpen?.()).toBe(false)
+    const createSwitch = vi.mocked(openWorkspaceAtPath).mock.calls.find(([path]) => path === "/tmp/new")
+    expect(createSwitch?.[1]?.shouldOpen?.()).toBe(false)
   })
 
   it("createSpaceFromFolder never calls workspace.create once superseded while resolving the folder", async () => {

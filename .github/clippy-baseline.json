@@ -16,21 +16,21 @@
   {
     "code": "clippy::bool_assert_comparison",
     "file": "src/fs_service.rs",
-    "line": 836,
+    "line": 904,
     "message": "used `assert_eq!` with a literal bool",
     "count": 1
   },
   {
     "code": "clippy::bool_assert_comparison",
     "file": "src/fs_service.rs",
-    "line": 837,
+    "line": 905,
     "message": "used `assert_eq!` with a literal bool",
     "count": 1
   },
   {
     "code": "clippy::bool_assert_comparison",
     "file": "src/fs_service.rs",
-    "line": 838,
+    "line": 906,
     "message": "used `assert_eq!` with a literal bool",
     "count": 1
   },
