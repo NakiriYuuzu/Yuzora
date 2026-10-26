@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { buildCellUpdate, isBinaryDbColumn, parseEditedDbValue } from "@/lib/databaseEditing"
 import { dbObjectRefKey } from "@/lib/databaseSql"
+import { keepsSelectAllFromPage } from "@/lib/selectAll"
 import { formatDbValue, type DbColumn, type DbConnectionIdentity, type DbKind, type DbTable, type DbValue } from "@/lib/types"
 import { queryFor, useDbStore } from "@/state/dbStore"
 import { useUiStore } from "@/state/uiStore"
@@ -91,8 +92,10 @@ export function DatabaseCellEditing({ children, identity, profileName, kind, tab
                 onInteractOutside={event => { if (busy) event.preventDefault() }}
                 onEscapeKeyDown={event => { if (busy) event.preventDefault() }}
                 // Select-all outside a text field (e.g. the NULL checkbox) would highlight the whole page behind the dialog.
+                // macOS sends ⌘A through the Edit menu instead of a key press; EditHistoryBridge honours this attribute there.
+                data-contain-select-all
                 onKeyDown={event => {
-                    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && !(event.target instanceof HTMLElement && event.target.matches("input:not([type=checkbox]), textarea, [contenteditable]"))) event.preventDefault()
+                    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && keepsSelectAllFromPage(event.target)) event.preventDefault()
                 }}
             >
                 <DialogHeader><DialogTitle>{t("editCell", { column: editing?.column.name })}</DialogTitle><DialogDescription>{t("editCellDescription", { table: editing?.table.name, profile: editing?.profileName })}</DialogDescription></DialogHeader>

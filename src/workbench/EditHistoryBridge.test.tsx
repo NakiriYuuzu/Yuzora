@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state"
 import { EditorView } from "@codemirror/view"
 
 const events = vi.hoisted(() => ({
-    handler: null as ((event: { payload: "undo" | "redo" }) => void) | null
+    handler: null as ((event: { payload: "undo" | "redo" | "selectAll" }) => void) | null
 }))
 const ipc = vi.hoisted(() => ({ editHistoryNative: vi.fn(async (_action: string) => {}) }))
 
@@ -86,4 +86,43 @@ it("leaves the action native when a child Browser webview owns keyboard focus ov
     events.handler!({ payload: "undo" })
     expect(ipc.editHistoryNative).toHaveBeenCalledWith("undo")
     expect(editor.state.doc.toString()).toBe("alpha beta")
+})
+
+it("drops a Select All that would only highlight the page behind a marked dialog", () => {
+    render(<EditHistoryBridge />)
+    const dialog = document.createElement("div")
+    dialog.setAttribute("data-contain-select-all", "")
+    const checkbox = document.createElement("button")
+    checkbox.setAttribute("role", "checkbox")
+    const value = document.createElement("textarea")
+    dialog.append(checkbox, value)
+    const outside = document.createElement("button")
+    document.body.append(dialog, outside)
+    vi.spyOn(document, "hasFocus").mockReturnValue(true)
+
+    checkbox.focus()
+    events.handler!({ payload: "selectAll" })
+    expect(ipc.editHistoryNative).not.toHaveBeenCalled()
+
+    value.focus()
+    events.handler!({ payload: "selectAll" })
+    expect(ipc.editHistoryNative).toHaveBeenLastCalledWith("selectAll")
+
+    ipc.editHistoryNative.mockClear()
+    outside.focus()
+    events.handler!({ payload: "selectAll" })
+    expect(ipc.editHistoryNative).toHaveBeenLastCalledWith("selectAll")
+})
+
+it("leaves Select All native when a child Browser webview owns keyboard focus", () => {
+    render(<EditHistoryBridge />)
+    const dialog = document.createElement("div")
+    dialog.setAttribute("data-contain-select-all", "")
+    const checkbox = document.createElement("button")
+    dialog.append(checkbox)
+    document.body.append(dialog)
+    checkbox.focus()
+    vi.spyOn(document, "hasFocus").mockReturnValue(false)
+    events.handler!({ payload: "selectAll" })
+    expect(ipc.editHistoryNative).toHaveBeenCalledWith("selectAll")
 })
