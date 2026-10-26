@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { EditorView } from "@codemirror/view"
 
 import { DatabasePanel, reorderColumns } from "@/app/panels/DatabasePanel"
+import { keepsSelectAllFromPage } from "@/lib/selectAll"
 import { formatDbValue } from "@/lib/types"
 import { pointerDrag, stubElementFromPoint } from "@/test/pointerDrag"
 import * as dbTypes from "@/lib/types"
@@ -449,6 +450,9 @@ it("keeps Mod+A from selecting the page behind the cell dialog unless a text fie
   expect(fireEvent.keyDown(screen.getByRole("checkbox", { name: "NULL" }), { key: "A", ctrlKey: true })).toBe(false)
   expect(fireEvent.keyDown(value, { key: "a", metaKey: true })).toBe(true)
   expect(fireEvent.keyDown(screen.getByRole("checkbox", { name: "NULL" }), { key: "a" })).toBe(true)
+  // macOS sends ⌘A through the Edit menu instead; EditHistoryBridge asks the same question of the focused element.
+  expect(keepsSelectAllFromPage(screen.getByRole("checkbox", { name: "NULL" }))).toBe(true)
+  expect(keepsSelectAllFromPage(value)).toBe(false)
 })
 
 it("retains a pending NULL draft across mode changes without leaving its portal or overlay visible", async () => {

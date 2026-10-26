@@ -16,8 +16,10 @@ export { invoke }
 export const isWorkbenchWindowActive = () => invoke<boolean>("workbench_is_window_active")
 
 export type EditHistoryAction = "undo" | "redo"
-/** macOS: sends an Edit menu Undo/Redo that no editor took to the native responder chain. */
-export const editHistoryNative = (action: EditHistoryAction) => invoke<void>("edit_history_native", { action })
+/** A macOS Edit menu action the frontend sees before WebKit (src-tauri/src/edit_menu.rs). */
+export type EditMenuAction = EditHistoryAction | "selectAll"
+/** macOS: sends an Edit menu action the frontend left alone to the native responder chain. */
+export const editHistoryNative = (action: EditMenuAction) => invoke<void>("edit_history_native", { action })
 
 import type {
     DeleteProgress,
