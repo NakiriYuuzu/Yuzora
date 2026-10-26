@@ -7997,7 +7997,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora"
-version = "0.0.19"
+version = "0.1.0-beta.1"
 dependencies = [
  "aes-gcm",
  "arboard",
@@ -8061,7 +8061,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-host"
-version = "0.0.19"
+version = "0.1.0-beta.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
