@@ -12,6 +12,7 @@ import {
     gitStatus
 } from "../lib/ipc"
 import type { BranchList, DiscoveredRepository, GitEnvironment, GitStatus, RemoteProbe } from "../lib/types"
+import { useGitLogStore } from "./gitLogStore"
 
 export type RemoteCheckMode = "off" | "probe" | "autofetch"
 export interface RemoteCheckConfig {
@@ -34,6 +35,8 @@ export interface RunOpOptions {
     /** Runs only after `fn` succeeds and before post-mutation refresh. */
     afterMutationBeforeRefresh?: () => void | Promise<void>
 }
+
+const REMOTE_REF_OPS = new Set(["fetch", "pull", "pull-rebase", "push", "push-force"])
 
 // Ring-buffer cap — matches the prototype's "keep recent history" intent
 // without unbounded growth.
@@ -868,6 +871,8 @@ export const useGitStore = create<GitState>()((set, get) => ({
                         // Mutation already succeeded; hook failure must not invert runOp.
                     }
                 }
+                // These move remote-tracking refs without moving HEAD, so the log would keep stale labels.
+                if (REMOTE_REF_OPS.has(name)) void useGitLogStore.getState().refreshSilently(capturedRoot)
             }
             foregroundError = null
             set({ lastError: null })
@@ -949,7 +954,11 @@ export const useGitStore = create<GitState>()((set, get) => ({
                 if (flight.isCurrent()) set({ remoteIncoming })
             } else {
                 await gitFetch(root, true)
-                if (flight.isCurrent()) await get().refreshQuiet()
+                if (flight.isCurrent()) {
+                    await get().refreshQuiet()
+                    // Autofetch moves remote-tracking refs too.
+                    if (flight.isCurrent()) void useGitLogStore.getState().refreshSilently(root)
+                }
             }
         } catch {
             if (flight.isCurrent()) set({ remotePaused: true })

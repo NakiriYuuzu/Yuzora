@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks"
 
 import { enqueueNativePreviewOperation } from "../preview/nativePreviewQueue"
@@ -271,5 +271,200 @@ describe("usePreviewStore", () => {
         await new Promise((resolve) => setTimeout(resolve, 0))
 
         expect(calls.some((call) => call.cmd === "preview_close")).toBe(true)
+    })
+
+    describe("navigation failure detection", () => {
+        const A = "https://example.com/a"
+        const X = "https://example.com/x"
+        const snap = (url: string, over: Record<string, unknown> = {}) => ({
+            sessionId: "s1", url, canGoBack: true, canGoForward: false, loading: false, backCount: 0, ...over
+        })
+        const receive = (event: ReturnType<typeof snap>) => usePreviewStore.getState().receiveNativeNavigation(event)
+        const failureOf = () => usePreviewStore.getState().navigationFailures["/ws/a"]
+
+        beforeEach(() => {
+            vi.useFakeTimers()
+            useWorkspaceStore.setState({ workspacePath: "/ws/a" })
+            const s = usePreviewStore.getState()
+            s.navigate("/ws/a", A)
+            s.recordNativeOpen("/ws/a", A, "s1")
+            // The first idle snapshot teaches the store the native back-list length.
+            receive(snap(A))
+            s.navigate("/ws/a", X)
+            s.recordNativeOpen("/ws/a", X, "s1")
+        })
+        afterEach(() => vi.useRealTimers())
+
+        it("reports a failure when the idle view is back on the previous page with no new history", () => {
+            receive(snap(A))
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toMatchObject({ url: X })
+            expect(state.nav["/ws/a"].url).toBe(A)
+            expect(state.nav["/ws/a"].backStack).toEqual([])
+            expect(state.nativeSession?.currentUrl).toBe(A)
+            expect(state.nativeSession?.backStack).toEqual([])
+            expect(state.pendingNavigations["/ws/a"]).toBeUndefined()
+        })
+
+        it("detects a real failure even when the webview has forward history", () => {
+            receive(snap(A, { canGoForward: true }))
+            expect(failureOf()).toMatchObject({ url: X })
+        })
+
+        it("keeps the navigation pending while the view is loading, then reports the failure", () => {
+            receive(snap(X, { loading: true }))
+            vi.advanceTimersByTime(10_000)
+            receive(snap(A, { loading: true }))
+            expect(failureOf()).toBeUndefined()
+            expect(usePreviewStore.getState().pendingNavigations["/ws/a"]).toBeDefined()
+            receive(snap(A))
+            expect(failureOf()).toMatchObject({ url: X })
+            expect(usePreviewStore.getState().nav["/ws/a"].backStack).toEqual([])
+        })
+
+        it("treats a page that committed while still loading as success, so a Back is no failure", () => {
+            receive(snap(X, { loading: true, backCount: 1 }))
+            expect(usePreviewStore.getState().pendingNavigations["/ws/a"]).toBeUndefined()
+            receive(snap(A, { canGoForward: true, backCount: 0 }))
+            expect(failureOf()).toBeUndefined()
+            expect(usePreviewStore.getState().nav["/ws/a"].url).toBe(A)
+        })
+
+        it("keeps history capabilities live while the requested page is still loading", () => {
+            receive(snap(X, { loading: true, canGoBack: false, canGoForward: true }))
+            const state = usePreviewStore.getState()
+            expect(state.nativeSession).toMatchObject({ canGoBack: false, canGoForward: true, backCount: 0 })
+            expect(state.nav["/ws/a"].url).toBe(X)
+            expect(state.pendingNavigations["/ws/a"]).toBeDefined()
+        })
+
+        it("bases a navigation typed during a committed load on the fresh back-list length", () => {
+            const C = "https://example.com/c"
+            receive(snap(X, { loading: true, backCount: 1 }))
+            usePreviewStore.getState().navigate("/ws/a", C)
+            usePreviewStore.getState().recordNativeOpen("/ws/a", C, "s1")
+            expect(usePreviewStore.getState().pendingNavigations["/ws/a"]).toMatchObject({ backCount: 1 })
+            receive(snap(X, { backCount: 1 }))
+            expect(failureOf()).toMatchObject({ url: C })
+        })
+
+        it("does not report a slow load that keeps reporting the requested URL", () => {
+            for (let i = 0; i < 5; i++) { vi.advanceTimersByTime(5000); receive(snap(X, { loading: true })) }
+            expect(failureOf()).toBeUndefined()
+            expect(usePreviewStore.getState().nav["/ws/a"].url).toBe(X)
+        })
+
+        it("treats a committed load as success and ignores a later in-page return to the previous URL", () => {
+            receive(snap(X, { backCount: 1 }))
+            expect(usePreviewStore.getState().pendingNavigations["/ws/a"]).toBeUndefined()
+            vi.advanceTimersByTime(5000)
+            // An in-page link / JS router goes back to A: history grows, still no failure.
+            receive(snap(A, { backCount: 2 }))
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toBeUndefined()
+            expect(state.nav["/ws/a"].url).toBe(A)
+            expect(state.nav["/ws/a"].backStack).toEqual([A])
+        })
+
+        it("does not treat a server redirect back to the previous URL as a failure", () => {
+            receive(snap(A, { backCount: 1 }))
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toBeUndefined()
+            expect(state.pendingNavigations["/ws/a"]).toBeUndefined()
+            expect(state.nav["/ws/a"].backStack).toEqual([A])
+        })
+
+        it("does not track a re-entry that differs from the current page only by a trailing slash", () => {
+            usePreviewStore.getState().reset()
+            useWorkspaceStore.setState({ workspacePath: "/ws/a" })
+            const s = usePreviewStore.getState()
+            s.navigate("/ws/a", "http://localhost:3000/")
+            s.recordNativeOpen("/ws/a", "http://localhost:3000/", "s1")
+            receive(snap("http://localhost:3000/"))
+            s.navigate("/ws/a", "http://localhost:3000")
+            expect(usePreviewStore.getState().pendingNavigations["/ws/a"]).toBeUndefined()
+            s.recordNativeOpen("/ws/a", "http://localhost:3000", "s1")
+            receive(snap("http://localhost:3000/"))
+            expect(failureOf()).toBeUndefined()
+        })
+
+        it("compares URLs normalized when judging a failure", () => {
+            usePreviewStore.getState().reset()
+            useWorkspaceStore.setState({ workspacePath: "/ws/a" })
+            const s = usePreviewStore.getState()
+            s.navigate("/ws/a", "http://localhost:3000")
+            s.recordNativeOpen("/ws/a", "http://localhost:3000", "s1")
+            receive(snap("http://localhost:3000/"))
+            s.navigate("/ws/a", "http://localhost:3000/x")
+            s.recordNativeOpen("/ws/a", "http://localhost:3000/x", "s1")
+            receive(snap("http://localhost:3000/"))
+            expect(failureOf()).toMatchObject({ url: "http://localhost:3000/x" })
+        })
+
+        it("never reports a failure for snapshots without loading/backCount (Windows shape)", () => {
+            receive({ sessionId: "s1", url: A, canGoBack: true, canGoForward: false } as ReturnType<typeof snap>)
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toBeUndefined()
+            expect(state.pendingNavigations["/ws/a"]).toBeUndefined()
+        })
+
+        it("does not start tracking before the native back count is known", () => {
+            usePreviewStore.getState().reset()
+            const s = usePreviewStore.getState()
+            s.navigate("/ws/a", A)
+            s.recordNativeOpen("/ws/a", A, "s1")
+            s.navigate("/ws/a", X)
+            expect(usePreviewStore.getState().pendingNavigations["/ws/a"]).toBeUndefined()
+        })
+
+        it("treats a back after commit (requested URL still ahead) as normal navigation", () => {
+            receive(snap(X, { backCount: 1 }))
+            receive(snap(A, { canGoBack: false, canGoForward: true, backCount: 0 }))
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toBeUndefined()
+            expect(state.nav["/ws/a"].url).toBe(A)
+        })
+
+        it("stops tracking silently after the expiry window", () => {
+            vi.advanceTimersByTime(31_000)
+            receive(snap(A))
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toBeUndefined()
+            expect(state.pendingNavigations["/ws/a"]).toBeUndefined()
+        })
+
+        it("treats a redirect to a third URL as success", () => {
+            receive(snap("https://example.com/login", { backCount: 1 }))
+            const state = usePreviewStore.getState()
+            expect(state.navigationFailures["/ws/a"]).toBeUndefined()
+            expect(state.nav["/ws/a"].url).toBe("https://example.com/login")
+            expect(state.pendingNavigations["/ws/a"]).toBeUndefined()
+        })
+
+        it.each([
+            ["the view loads again", () => snap(A, { loading: true })],
+            ["the view moves to another page", () => snap("https://example.com/other")],
+            ["the native history changes", () => snap(A, { backCount: 1 })]
+        ])("retires a stale failure when %s", (_label, next) => {
+            receive(snap(A))
+            expect(failureOf()).toBeDefined()
+            receive(snap(A)) // an identical idle snapshot keeps the alert
+            expect(failureOf()).toBeDefined()
+            receive(next())
+            expect(failureOf()).toBeUndefined()
+        })
+
+        it("clears the failure on the next navigation, history move or explicit clear", () => {
+            receive(snap(A))
+            usePreviewStore.getState().clearNavigationFailure("/ws/a")
+            expect(failureOf()).toBeUndefined()
+
+            usePreviewStore.getState().navigate("/ws/a", "https://example.com/y")
+            usePreviewStore.getState().recordNativeOpen("/ws/a", "https://example.com/y", "s1")
+            receive(snap(A))
+            expect(failureOf()).toMatchObject({ url: "https://example.com/y" })
+            usePreviewStore.getState().navigate("/ws/a", "https://example.com/z")
+            expect(failureOf()).toBeUndefined()
+        })
     })
 })

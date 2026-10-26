@@ -103,8 +103,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSImage", "NSResponder", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSString"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKNavigation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSData", "NSString"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKBackForwardList", "WKBackForwardListItem", "WKWebView", "WKNavigation"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0.2"

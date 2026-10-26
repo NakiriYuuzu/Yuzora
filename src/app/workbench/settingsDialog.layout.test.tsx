@@ -105,6 +105,11 @@ describe("Settings dialog layout at constrained height", () => {
     expect(screen.getByRole("tab", { name: "About & Updates" })).toBeInTheDocument()
   })
 
+  it("keeps WebKit autofill suggestions off the search box", () => {
+    render(<SettingsDialog open onOpenChange={() => {}} theme="light" onThemeChange={() => {}} />)
+    expect(screen.getByRole("textbox", { name: "Search settings" })).toHaveAttribute("autocomplete", "off")
+  })
+
   it("supports vertical navigation, search focus and Escape clearing", async () => {
     const onOpenChange = vi.fn()
     render(<SettingsDialog open onOpenChange={onOpenChange} theme="light" onThemeChange={() => {}} />)

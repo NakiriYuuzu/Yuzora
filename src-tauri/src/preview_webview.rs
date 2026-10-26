@@ -204,6 +204,18 @@ pub struct PreviewNavigationSnapshot {
     url: String,
     can_go_back: bool,
     can_go_forward: bool,
+    // `None` where the platform cannot report them (Windows); the frontend then
+    // never infers a load failure.
+    loading: Option<bool>,
+    back_count: Option<u32>,
+}
+
+struct NativeSnapshot {
+    url: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    loading: Option<bool>,
+    back_count: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -218,7 +230,7 @@ enum NavigationAction {
 fn native_snapshot(
     view: tauri::webview::PlatformWebview,
     action: NavigationAction,
-) -> Result<(String, bool, bool), String> {
+) -> Result<NativeSnapshot, String> {
     #[cfg(target_os = "macos")]
     unsafe {
         let view: &objc2_web_kit::WKWebView = &*view.inner().cast();
@@ -236,11 +248,17 @@ fn native_snapshot(
             .and_then(|url| url.absoluteString())
             .ok_or("Preview URL unavailable")?
             .to_string();
-        Ok((url, view.canGoBack(), view.canGoForward()))
+        Ok(NativeSnapshot {
+            url,
+            can_go_back: view.canGoBack(),
+            can_go_forward: view.canGoForward(),
+            loading: Some(view.isLoading()),
+            back_count: u32::try_from(view.backForwardList().backList().count()).ok(),
+        })
     }
     #[cfg(target_os = "linux")]
     {
-        use webkit2gtk::WebViewExt;
+        use webkit2gtk::{BackForwardListExt, WebViewExt};
         let view = view.inner();
         match action {
             NavigationAction::Read => {}
@@ -248,7 +266,15 @@ fn native_snapshot(
             NavigationAction::Forward => view.go_forward(),
         }
         let url = view.uri().ok_or("Preview URL unavailable")?.to_string();
-        Ok((url, view.can_go_back(), view.can_go_forward()))
+        Ok(NativeSnapshot {
+            url,
+            can_go_back: view.can_go_back(),
+            can_go_forward: view.can_go_forward(),
+            loading: Some(view.is_loading()),
+            back_count: view
+                .back_forward_list()
+                .and_then(|list| u32::try_from(list.back_list().len()).ok()),
+        })
     }
     #[cfg(windows)]
     unsafe {
@@ -269,7 +295,14 @@ fn native_snapshot(
         view.Source(&mut source).map_err(|e| e.to_string())?;
         let url = source.to_string().map_err(|e| e.to_string());
         windows_sys::Win32::System::Com::CoTaskMemFree(source.0.cast());
-        Ok((url?, back.as_bool(), forward.as_bool()))
+        // WebView2 exposes no history count, so failure detection stays off.
+        Ok(NativeSnapshot {
+            url: url?,
+            can_go_back: back.as_bool(),
+            can_go_forward: forward.as_bool(),
+            loading: None,
+            back_count: None,
+        })
     }
 }
 
@@ -310,7 +343,7 @@ async fn read_or_navigate(
             let _ = sender.send(result);
         })
         .map_err(|e| e.to_string())?;
-    let (url, can_go_back, can_go_forward) = receiver.await.map_err(|e| e.to_string())??;
+    let snapshot = receiver.await.map_err(|e| e.to_string())??;
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     if guard
         .as_ref()
@@ -318,12 +351,14 @@ async fn read_or_navigate(
     {
         return Err("Preview owner changed".into());
     }
-    parse_web_url(&url)?;
+    parse_web_url(&snapshot.url)?;
     Ok(PreviewNavigationSnapshot {
         session_id: owner.unwrap_or_default(),
-        url,
-        can_go_back,
-        can_go_forward,
+        url: snapshot.url,
+        can_go_back: snapshot.can_go_back,
+        can_go_forward: snapshot.can_go_forward,
+        loading: snapshot.loading,
+        back_count: snapshot.back_count,
     })
 }
 

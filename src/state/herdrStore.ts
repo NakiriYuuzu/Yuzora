@@ -1313,6 +1313,11 @@ export const useHerdrStore = create<HerdrState>((set, get) => ({
       // released in the finally below.
       releaseSelection = await acquireSelection()
       if (!isLatestCreation()) return { ok: false, cancelled: true }
+      // Snapshot the Space being left before the editor switches workspace, as
+      // activateSpace does; otherwise a stale snapshot can reselect a terminal.
+      if (stateBefore.selectedSessionName && stateBefore.selectedSpaceId) {
+        useWorkspaceStore.getState().rememberSpaceNavigation(stateBefore.selectedSessionName, stateBefore.selectedSpaceId)
+      }
       const previousSpace = runtimeOf(get(), sessionName).snapshot?.focusedWorkspaceId ??
         get().selectedSpaceBySession[sessionName] ?? null
 

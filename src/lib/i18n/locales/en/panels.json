@@ -6,6 +6,8 @@
     "urlLabel": "Browser URL",
     "urlPlaceholder": "Enter a URL…",
     "urlSchemeError": "Browser URLs must use http:// or https://",
+    "urlLocalPathError": "This looks like a local file path and cannot be opened directly. Workspace HTML files can be previewed by right-clicking them in the file tree and choosing \"Preview here\".",
+    "loadFailed": "Could not load {{url}}",
     "openExternally": "Open in browser",
     "toggleResponsiveFrame": "Toggle responsive frame"
   },
@@ -24,7 +26,8 @@
     "sftpConnect": "Connect",
     "sftpLocalTitle": "Local",
     "sftpRemoteTitle": "Remote",
-    "sftpUp": "Up one level",
+    "sftpUpLocal": "Local: up one level",
+    "sftpUpRemote": "Remote: up one level",
     "sftpRefresh": "Refresh",
     "sftpNewFolder": "New folder",
     "sftpUploadFolder": "Upload folder",

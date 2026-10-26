@@ -32,6 +32,7 @@ export function HerdrNotificationBridge() {
         if (previousRuntime.baseSnapshot !== runtime.baseSnapshot) continue
         if ((item.kind === "done" && !settings.done) || (item.kind === "blocked" && !settings.blocked)) continue
         const agent = runtime?.snapshot?.agents.find(agent => agent.paneId === item.paneId)
+        const tab = agent?.tabId ? runtime.snapshot?.tabs?.find(tab => tab.id === agent.tabId) : undefined
         const workspace = useWorkspaceStore.getState()
         const activeGroup = workspace.groups[workspace.activeGroupIndex]
         const activeTab = activeGroup?.tabs.find(tab => tab.path === activeGroup.activePath)
@@ -41,7 +42,9 @@ export function HerdrNotificationBridge() {
           || (activeTab?.kind === "herdr-terminal" && herdrPageMatchesSnapshotSession(activeTab.herdrSessionId, item.sessionName, defaultScope)
             && ((agent?.tabId && activeTab.herdrTabId === agent.tabId) || activeTab.paneId === item.paneId))
         )) continue
-        const title = i18n.t(item.kind === "done" ? "herdrTools:agentDone" : "herdrTools:agentBlocked", { name: item.title ?? item.displayAgent ?? item.paneId })
+        // herdrNormalize falls back to terminalId/paneId for agent.name; that is an id, not a name.
+        const agentName = agent && agent.name !== agent.terminalId && agent.name !== agent.paneId ? agent.name : undefined
+        const title = i18n.t(item.kind === "done" ? "herdrTools:agentDone" : "herdrTools:agentBlocked", { name: item.title ?? item.displayAgent ?? agent?.title ?? agent?.displayAgent ?? agentName ?? tab?.label ?? item.paneId })
         const description = `${item.sessionName} · ${item.workspaceId ?? ""}`
         if (settings.toast) toast(title, { id: item.key, description, action: agent ? { label: i18n.t("herdrTools:open"), onClick: () => { void useHerdrStore.getState().activateAgent({ ...agent, sessionName: item.sessionName }) } } : undefined })
         if (settings.system) {

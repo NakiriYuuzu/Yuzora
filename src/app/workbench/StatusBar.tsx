@@ -41,11 +41,13 @@ export function StatusBar() {
   const [branchOpen, setBranchOpen] = useState(false);
 
   const ready = environment?.status === "ready";
-  const branchName = !ready
-    ? "main"
-    : status?.detached
+  // Not a repository, Git missing, or still loading: no branch to show, so no
+  // placeholder either.
+  const branchName = !ready || !status
+    ? null
+    : status.detached
       ? status.headOid.slice(0, 7)
-      : (status?.branch ?? "main");
+      : status.branch;
 
   const ahead = status?.ahead ?? 0;
   const behind = status?.behind ?? 0;
@@ -115,16 +117,15 @@ export function StatusBar() {
     ? t(`statusBar.lineEnding.${lineEnding}`)
     : null;
 
-  const branchButton = (
+  const branchButton = branchName !== null && (
     <button
       type="button"
       title={branchName}
-      disabled={!ready}
-      aria-expanded={ready ? branchOpen : undefined}
-      aria-haspopup={ready ? "dialog" : undefined}
+      aria-expanded={branchOpen}
+      aria-haspopup="dialog"
       onClick={() => setBranchOpen((v) => !v)}
       onContextMenu={contextMenuHandler({ kind: "status", repositoryRoot: ready ? environment.root : null })}
-      className="flex h-[22px] min-w-0 max-w-[35%] shrink items-center gap-[6px] whitespace-nowrap rounded-[7px] px-[9px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)] disabled:cursor-default disabled:hover:bg-transparent"
+      className="flex h-[22px] min-w-0 max-w-[35%] shrink items-center gap-[6px] whitespace-nowrap rounded-[7px] px-[9px] transition-colors duration-150 hover:bg-[rgba(var(--yz-accent-rgb),0.14)]"
     >
       <span className="size-[7px] shrink-0 rounded-full bg-(--yz-accent)" aria-hidden="true" />
       <GitBranch className="size-[12px] shrink-0" aria-hidden="true" />
@@ -134,17 +135,17 @@ export function StatusBar() {
       >
         {branchName}
       </span>
-      {ready && ahead > 0 && (
+      {ahead > 0 && (
         <span className="ml-[4px]" style={{ color: "var(--status-m)" }}>
           ↑{ahead}
         </span>
       )}
-      {ready && showBehindCount && (
+      {showBehindCount && (
         <span className="ml-[5px]" style={{ color: "#c8521f" }}>
           ↓{behind}
         </span>
       )}
-      {ready && showIncomingDot && (
+      {showIncomingDot && (
         <span className="ml-[5px]" style={{ color: "#c8521f" }}>
           ↓•
         </span>
@@ -163,11 +164,9 @@ export function StatusBar() {
     >
       <span className="rounded-[6px] px-[6px] font-medium text-(--ink-1)">Yuzora</span>
 
-      {ready ? (
+      {ready && branchButton ? (
         <BranchPopover open={branchOpen} onOpenChange={setBranchOpen} trigger={branchButton} />
-      ) : (
-        branchButton
-      )}
+      ) : null}
 
       {/* §6 L1260 changed count — amber text, square dot (hidden at 0) */}
       {ready && changedCount > 0 && (

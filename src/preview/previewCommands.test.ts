@@ -108,6 +108,25 @@ describe("previewCommands", () => {
     expect(usePreviewStore.getState().navForWorkspace("/ws/a").reloadNonce).toBe(0)
   })
 
+  it("retires a load-failure alert on native Back, Forward and Reload", async () => {
+    const preview = usePreviewStore.getState()
+    preview.navigate("/ws/a", "https://example.com/first")
+    preview.recordNativeOpen("/ws/a", "https://example.com/first", "s1")
+    preview.receiveNativeNavigation({
+      sessionId: "s1", url: "https://example.com/first",
+      canGoBack: true, canGoForward: true, loading: false, backCount: 1,
+    })
+    const failure = { url: "https://down.test/", nativeUrl: "https://example.com/first", backCount: 1 }
+    for (const run of [goBackPreview, goForwardPreview, reloadPreview]) {
+      usePreviewStore.setState({ navigationFailures: { "/ws/a": failure } })
+      expect(await run(target())).toBe("completed")
+      expect(usePreviewStore.getState().navigationFailures["/ws/a"]).toBeUndefined()
+    }
+    expect(commandMocks.previewBack).toHaveBeenCalledTimes(1)
+    expect(commandMocks.previewForward).toHaveBeenCalledTimes(1)
+    expect(commandMocks.previewReload).toHaveBeenCalledTimes(1)
+  })
+
   it("queues Forward behind a pending native open and revalidates before IPC", async () => {
     let resolveOpen!: () => void
     const openGate = new Promise<void>((resolve) => {

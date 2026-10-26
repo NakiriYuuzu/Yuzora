@@ -10,6 +10,7 @@
   "keyboardScope": "App shortcuts only. Mod means Command on macOS and Ctrl on Windows/Linux. Type a chord such as Mod+Shift+K. App commands such as the command palette, settings, sidebar, tools, Browser and mode switches also work while a terminal or text field has focus, so on Windows/Linux their Ctrl chords (for example Ctrl+K) no longer reach the terminal; rebind them here to give the key back. Editor editing/save keys keep their native bindings. Tab navigation shortcuts also work in terminal inputs.",
   "commands": {
     "commandPalette": "Command palette",
+    "workspaceSearch": "Search workspace",
     "newTerminal": "New terminal tab",
     "settings": "Open settings",
     "toggleSidebar": "Toggle sidebar",
@@ -46,6 +47,7 @@
   "search": "Search shortcuts",
   "apply": "Apply",
   "reset": "Restore defaults",
+  "unbound": "Unbound (its default key is used by another command)",
   "errors": {
     "invalid": "Use Mod/Ctrl/Alt/Shift plus one letter, digit, punctuation key Tab or F1–F12.",
     "reserved": "This shortcut is reserved for editing or the system.",

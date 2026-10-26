@@ -420,11 +420,16 @@ describe("StatusBar", () => {
     expect(screen.queryByText(/MB/)).not.toBeInTheDocument();
   });
 
-  it("無 repo 時分支段維持 placeholder 且不可點", () => {
+  it("尚未載入 Git 狀態時不顯示分支", () => {
     render(<StatusBar />);
-    const branch = screen.getByText("main").closest("button");
-    expect(branch).not.toBeNull();
-    expect(branch).toBeDisabled();
+    expect(screen.queryByText("main")).not.toBeInTheDocument();
+  });
+
+  it("非 Git 儲存庫時隱藏分支段", () => {
+    useGitStore.setState({ environment: { status: "notARepo" }, status: null });
+    render(<StatusBar />);
+    expect(screen.queryByText("main")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "main" })).not.toBeInTheDocument();
   });
 
   it("顯示真實分支名與 ahead 計數", () => {

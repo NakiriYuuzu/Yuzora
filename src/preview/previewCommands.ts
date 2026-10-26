@@ -87,6 +87,8 @@ export async function goBackPreview(
       && state.nativeSession.canGoBack !== undefined) {
       if (state.nativeRequest !== null || state.nativeSession.currentUrl !== target.url) return cancelled()
       if (!state.nativeSession.canGoBack) return traverseOuterHistory(target.workspacePath, "back")
+      // Native history moves never pass through the store; retire a load-failure alert here.
+      state.clearNavigationFailure(target.workspacePath)
       await nativePreviewBack(state.nativeSession.sessionId)
       // The next native snapshot acknowledges the actual URL and capabilities.
       return completed()
@@ -142,6 +144,7 @@ export async function goForwardPreview(
       && state.nativeSession.canGoForward !== undefined) {
       if (state.nativeRequest !== null || state.nativeSession.currentUrl !== target.url) return cancelled()
       if (!state.nativeSession.canGoForward) return traverseOuterHistory(target.workspacePath, "forward")
+      state.clearNavigationFailure(target.workspacePath)
       await nativePreviewForward(state.nativeSession.sessionId)
       // The next native snapshot acknowledges the actual URL and capabilities.
       return completed()
@@ -209,6 +212,8 @@ export async function reloadPreview(
     ) return cancelled()
 
     const requestGeneration = state.nativeRequestToken
+    // A fast reload can finish between two snapshots, so clear the alert explicitly.
+    state.clearNavigationFailure(target.workspacePath)
     await nativePreviewReload()
     const latest = usePreviewStore.getState()
     if (

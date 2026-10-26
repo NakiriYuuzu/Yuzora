@@ -312,7 +312,7 @@ export function SettingsDialog({
           <div className="settings-heading"><DialogTitle>{td("title")}</DialogTitle><DialogDescription>{td("subtitle")}</DialogDescription></div>
           <InputGroup className="settings-search" data-design="settings-search" data-design-label={td("search")}>
             <InputGroupAddon><Search aria-hidden="true"/></InputGroupAddon>
-            <InputGroupInput ref={searchRef} aria-label={td("search")} placeholder={td("searchPlaceholder")} value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{
+            <InputGroupInput ref={searchRef} autoComplete="off" spellCheck={false} aria-label={td("search")} placeholder={td("searchPlaceholder")} value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{
               if(event.key==='Enter'&&searchResults[0]&&!event.nativeEvent.isComposing){event.preventDefault();openSearchResult(searchResults[0])}
             }}/>
             {!query&&<InputGroupAddon align="inline-end" aria-hidden="true"><Kbd className="settings-search-kbd">{isWindows?"Ctrl F":"⌘F"}</Kbd></InputGroupAddon>}

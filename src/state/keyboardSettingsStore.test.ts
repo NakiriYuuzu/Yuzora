@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { bindingError, dispatchAppShortcut, normalizeBinding, loadKeyboardOverrides, KEYBOARD_STORAGE_KEY, useKeyboardSettingsStore } from "./keyboardSettingsStore"
+import { bindingError, defaultBindingFor, dispatchAppShortcut, isShadowedDefault, isTerminalSafeCommand, normalizeBinding, loadKeyboardOverrides, tabShortcutBindings, KEYBOARD_STORAGE_KEY, useKeyboardSettingsStore } from "./keyboardSettingsStore"
 
 beforeEach(() => {
     const values = new Map<string, string>()
@@ -91,6 +91,16 @@ describe("app shortcut bindings", () => {
         expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "Dead", code: "Semicolon", altKey: true }), "commandPalette", run)).toBe(true)
         expect(run).toHaveBeenCalledOnce()
     })
+    it("binds workspace search to Mod+Shift+F as a terminal-safe, rebindable command", () => {
+        expect(defaultBindingFor("workspaceSearch", false)).toBe("Mod+Shift+F")
+        expect(isTerminalSafeCommand("workspaceSearch")).toBe(true)
+        expect(bindingError("workspaceSearch", "Mod+Shift+F", {})).toBeNull()
+        expect(bindingError("commandPalette", "Mod+Shift+F", {})).toBe("conflict")
+        expect(useKeyboardSettingsStore.getState().setBinding("workspaceSearch", "Mod+Shift+J")).toBe(true)
+        const run = vi.fn()
+        expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "F", ctrlKey: true, shiftKey: true }), "workspaceSearch", run)).toBe(false)
+        expect(dispatchAppShortcut(new KeyboardEvent("keydown", { key: "J", ctrlKey: true, shiftKey: true }), "workspaceSearch", run)).toBe(true)
+    })
     it("persists overrides and clears them when restoring defaults", () => {
         useKeyboardSettingsStore.getState().setBinding("commandPalette", "Mod+Shift+J")
         expect(loadKeyboardOverrides()).toEqual({ commandPalette: "Mod+Shift+J" })
@@ -112,6 +122,32 @@ it("preserves a valid reassignment across reload and rejects actual duplicate ch
     localStorage.setItem(KEYBOARD_STORAGE_KEY, JSON.stringify({ newTerminal: "Ctrl+J", commandPalette: "Ctrl+J" }))
     expect(loadKeyboardOverrides()).toEqual({})
 })
+it("keeps a persisted binding that a newly introduced default collides with; the default command is unbound", () => {
+    localStorage.setItem(KEYBOARD_STORAGE_KEY, JSON.stringify({ toggleBrowser: "Mod+Shift+F" }))
+    const overrides = loadKeyboardOverrides()
+    expect(overrides).toEqual({ toggleBrowser: "Mod+Shift+F" })
+    expect(isShadowedDefault("workspaceSearch", overrides)).toBe(true)
+    expect(isShadowedDefault("toggleBrowser", overrides)).toBe(false)
+    useKeyboardSettingsStore.setState({ overrides })
+    const press = () => new KeyboardEvent("keydown", { key: "F", ctrlKey: true, shiftKey: true })
+    const browser = vi.fn()
+    const search = vi.fn()
+    expect(dispatchAppShortcut(press(), "workspaceSearch", search)).toBe(false)
+    expect(dispatchAppShortcut(press(), "toggleBrowser", browser)).toBe(true)
+    expect(search).not.toHaveBeenCalled()
+    expect(browser).toHaveBeenCalledOnce()
+    // Rebinding the winner frees the default again.
+    expect(useKeyboardSettingsStore.getState().setBinding("toggleBrowser", "Mod+Shift+J")).toBe(true)
+    expect(isShadowedDefault("workspaceSearch", useKeyboardSettingsStore.getState().overrides)).toBe(false)
+})
+it("does not hand a shadowed tab shortcut to the native preview", () => {
+    localStorage.setItem(KEYBOARD_STORAGE_KEY, JSON.stringify({ toggleBrowser: "Mod+1" }))
+    useKeyboardSettingsStore.setState({ overrides: loadKeyboardOverrides() })
+    const ids = tabShortcutBindings().map(binding => binding.id)
+    expect(ids).not.toContain("tab1")
+    expect(ids).toContain("tab2")
+})
+
 it("matches macOS Option-digit mode shortcuts even when event.key is a symbol", () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     const run = vi.fn()
@@ -169,14 +205,15 @@ it.each(["Windows", "Linux"])("preserves Mod/Ctrl conflict semantics on %s", pla
     expect(useKeyboardSettingsStore.getState().overrides).toEqual({})
 })
 
-it("reloads a macOS Control override and safely filters it on other platforms without rewriting storage", () => {
+it("reloads a macOS Control override on other platforms without rewriting storage; it shadows the colliding default", () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
     expect(useKeyboardSettingsStore.getState().setBinding("settings", "Ctrl+K")).toBe(true)
     const stored = localStorage.getItem(KEYBOARD_STORAGE_KEY)
     expect(loadKeyboardOverrides()).toEqual({ settings: "Ctrl+K" })
     for (const platform of ["Windows", "Linux"]) {
         vi.spyOn(navigator, "userAgent", "get").mockReturnValue(platform)
-        expect(loadKeyboardOverrides()).toEqual({})
+        // Ctrl+K is Mod+K here, the commandPalette default: the user's binding wins.
+        expect(loadKeyboardOverrides()).toEqual({ settings: "Ctrl+K" })
         expect(localStorage.getItem(KEYBOARD_STORAGE_KEY)).toBe(stored)
     }
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")

@@ -53,6 +53,8 @@ import { useDatabaseCellEditing } from "./databaseCellEditingContext"
 import type { EditingContext } from "./databaseCellEditingContext"
 
 const EMPTY_COLUMNS: DbColumn[] = []
+// Mirrors RESULT_PAGE_ROWS in src-tauri/host/src/db_result_session.rs.
+const RESULT_PAGE_ROWS = 500
 
 // Only this text leaf re-renders on the 100ms running-query clock.
 function QueryElapsed({ running, runningQueryRunId, runningStartedAt, runGroupStatus, elapsedMs }: {
@@ -953,6 +955,7 @@ function ResultSessionPage({
           onSort={onSort}
           footer={footer}
           resetKey={page.pageIndex}
+          rowOffset={page.pageIndex * RESULT_PAGE_ROWS}
         />
       </div>
     </div>
@@ -1052,10 +1055,12 @@ function isNumericValue(value: DbValue | undefined): boolean {
 
 // Stable visible rows keep their DOM and skip rebuilding cells on scroll/footer updates.
 const ResultRow = memo(function ResultRow({
-  row, rowIndex, rowHeight, columns, order, numericColumns, editing, editHint, readOnlyHint,
+  row, rowIndex, rowNumber, rowHeight, columns, order, numericColumns, editing, editHint, readOnlyHint,
 }: {
   row: DbValue[]
   rowIndex: number
+  /** Display number in the whole result, not just this page. */
+  rowNumber: number
   rowHeight: number
   columns: string[]
   order: number[]
@@ -1070,7 +1075,7 @@ const ResultRow = memo(function ResultRow({
         aria-hidden="true"
         className="sticky left-0 border-r border-b border-(--line-1) bg-(--paper-1) px-2 text-right text-[11px] text-(--ink-4) tabular-nums group-hover/row:text-(--ink-2)"
       >
-        {rowIndex + 1}
+        {rowNumber}
       </td>
       {order.map((origIdx) => {
         const v = row[origIdx]
@@ -1110,7 +1115,8 @@ const ResultTable = memo(function ResultTable({
   sortBy,
   onSort,
   footer,
-  resetKey
+  resetKey,
+  rowOffset = 0
 }: {
   columns: string[]
   rows: DbValue[][]
@@ -1120,6 +1126,8 @@ const ResultTable = memo(function ResultTable({
   footer?: ReactNode
   /** Changing it (e.g. a new result page) scrolls back to the first row. */
   resetKey?: number
+  /** Rows on earlier result pages, so the gutter numbers continue across pages. */
+  rowOffset?: number
 }) {
   const { t } = useTranslation("panels")
   const { t: workbench } = useTranslation("databaseWorkbench")
@@ -1195,7 +1203,7 @@ const ResultTable = memo(function ResultTable({
     return false
   }), [columns, rows])
   const spanWithGutter = columns.length + 1
-  const gutterWidth = `${Math.max(2, String(rows.length).length) + 2}ch`
+  const gutterWidth = `${Math.max(2, String(rowOffset + rows.length).length) + 2}ch`
 
   return (
     <div className="flex h-full flex-col">
@@ -1255,6 +1263,7 @@ const ResultTable = memo(function ResultTable({
                 key={start + ri}
                 row={row}
                 rowIndex={start + ri}
+                rowNumber={rowOffset + start + ri + 1}
                 rowHeight={rowHeight}
                 columns={columns}
                 order={displayOrder}

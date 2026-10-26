@@ -1108,6 +1108,60 @@ describe("herdrStore", () => {
     expect(useWorkspaceStore.getState().groups[0].activePath).toBe("yuzora://herdr/default/term-1")
   })
 
+  it("A -> create Space from folder -> A returns to the file tab selected after a HERDR tab activation (#154)", async () => {
+    await useHerdrStore.getState().refreshSessions()
+    await useHerdrStore.getState().bootstrap("default")
+    const a = useHerdrStore.getState().spaces().find((space) => space.id === "ws-1")!
+    // Mirror the real openWorkspaceAtPath: replace the workspace, then reopen
+    // the persisted file tabs and select the remembered one.
+    const sessions: Record<string, { tabs: string[]; activePath: string | null }> = {}
+    vi.mocked(openWorkspaceAtPath).mockImplementation(async (path) => {
+      const leaving = useWorkspaceStore.getState()
+      if (leaving.workspacePath) sessions[leaving.workspacePath] = {
+        tabs: leaving.groups[0].tabs.filter((tab) => tab.kind !== "herdr-terminal").map((tab) => tab.path),
+        activePath: leaving.groups[0].activePath
+      }
+      useWorkspaceStore.getState().setWorkspace(path)
+      const entry = sessions[path]
+      if (entry) {
+        for (const tab of entry.tabs) useWorkspaceStore.getState().openTab(tab, 0)
+        if (entry.activePath && entry.tabs.includes(entry.activePath)) useWorkspaceStore.getState().setActiveTab(0, entry.activePath)
+      }
+      return true
+    })
+    useWorkspaceStore.setState({ spaceNavigation: {}, workspacePath: a.path })
+    await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: a.id, path: a.path })
+    const file = `${a.path}/src/util.py`
+    useWorkspaceStore.getState().openTab(file)
+    // Activating the HERDR tab snapshots the Space with the terminal active...
+    const terminal = useHerdrStore.getState().tabs().find((tab) => tab.workspaceId === a.id)!
+    await useHerdrStore.getState().activateTab(terminal)
+    // ...and going back to the file does not refresh that snapshot.
+    useWorkspaceStore.getState().setActiveTab(0, file)
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe(file)
+
+    vi.mocked(herdrWorkspaceCreate).mockResolvedValue({
+      workspaceId: "ws-new", label: "second", path: "/tmp/second", tabId: "tab-new", terminalId: "term-new", paneId: "pane-new"
+    })
+    const refreshed = structuredClone(rawSnapshot)
+    refreshed.snapshot.workspaces.push({
+      workspace_id: "ws-new", number: 2, label: "second", focused: true, pane_count: 1, tab_count: 1,
+      active_tab_id: "tab-new", agent_status: "idle",
+      worktree: { checkout_path: "/tmp/second", is_linked_worktree: false, repo_key: "k", repo_name: "yuzora", repo_root: "/tmp/second" }
+    })
+    refreshed.snapshot.tabs.push({
+      tab_id: "tab-new", workspace_id: "ws-new", number: 3, label: "second", focused: true, pane_count: 1, agent_status: "idle"
+    })
+    vi.mocked(herdrSnapshot).mockResolvedValueOnce(refreshed)
+    expect((await useHerdrStore.getState().createSpaceFromFolder("/tmp/second", "second")).ok).toBe(true)
+    expect(useWorkspaceStore.getState().workspacePath).toBe("/tmp/second")
+
+    vi.mocked(herdrSnapshot).mockResolvedValue(refreshed)
+    await useHerdrStore.getState().activateSpace({ sessionName: "default", workspaceId: a.id, path: a.path })
+    expect(useWorkspaceStore.getState().groups[0].tabs.map((tab) => tab.path)).toContain(file)
+    expect(useWorkspaceStore.getState().groups[0].activePath).toBe(file)
+  })
+
   it("opens an external Agent terminal without asking for a file workspace", async () => {
     const snapshotWithoutWorkspacePaths = structuredClone(rawSnapshot)
     for (const workspace of snapshotWithoutWorkspacePaths.snapshot.workspaces) {

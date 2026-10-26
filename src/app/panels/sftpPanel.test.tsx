@@ -1108,7 +1108,7 @@ describe("SftpPanel SFTP browser (F5)", () => {
             ])
             const localPane = screen.getByTestId("sftp-local-pane-body").parentElement
             expect(localPane).toBeTruthy()
-            fireEvent.click(within(localPane!).getByRole("button", { name: "Up one level" }))
+            fireEvent.click(within(localPane!).getByRole("button", { name: "Local: up one level" }))
             await screen.findByText("picked.txt")
             fireEvent.click(screen.getByRole("button", { name: "Upload picked.txt" }))
             await act(async () => {
@@ -1180,5 +1180,57 @@ describe("SftpPanel SFTP browser (F5)", () => {
             })
         })
         expect(ipcMock.sftpUpload).not.toHaveBeenCalled()
+    })
+})
+
+describe("SftpPanel click-to-enter and pane labels", () => {
+    it("enters a remote folder on a single click but ignores the second click of a double-click", async () => {
+        const dir = (name: string) => ({ name, path: `/home/u/${name}`, isDir: true, isSymlink: false, size: 0 })
+        ipcMock.sftpListDir.mockImplementation(async (_session: string, path: string | null) =>
+            path === "/home/u/files"
+                ? { cwd: path, entries: [dir("subdir")] }
+                : { cwd: "/home/u", entries: [dir("files")] })
+        const { hostB } = await connectTwoHosts()
+        act(() => useSftpStore.getState().setPanelOpen(true))
+        render(<SftpPanel />)
+
+        fireEvent.click(await screen.findByRole("button", { name: "files" }), { detail: 1 })
+        await screen.findByRole("button", { name: "subdir" })
+        expect(useSftpStore.getState().remote[hostB.id]?.cwd).toBe("/home/u/files")
+        // The second click of the double-click lands on the new listing's row.
+        fireEvent.click(screen.getByRole("button", { name: "subdir" }), { detail: 2 })
+        await act(async () => { await Promise.resolve() })
+        expect(useSftpStore.getState().remote[hostB.id]?.cwd).toBe("/home/u/files")
+        expect(ipcMock.sftpListDir).not.toHaveBeenCalledWith(expect.anything(), "/home/u/files/subdir")
+    })
+
+    it("ignores the second click of a double-click in the local pane too", async () => {
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        ipcMock.listDir.mockImplementation(async (path: string) =>
+            path === "/ws/files"
+                ? [{ name: "subdir", path: "/ws/files/subdir", isDir: true, kind: "directory" }]
+                : [{ name: "files", path: "/ws/files", isDir: true, kind: "directory" }])
+        await connectTwoHosts()
+        act(() => {
+            useWorkspaceStore.setState({ workspacePath: "/ws" })
+            useSftpStore.getState().setPanelOpen(true)
+        })
+        render(<SftpPanel />)
+
+        fireEvent.click(await screen.findByRole("button", { name: "files" }), { detail: 1 })
+        const sub = await screen.findByRole("button", { name: "subdir" })
+        fireEvent.click(sub, { detail: 2 })
+        await act(async () => { await Promise.resolve() })
+        expect(ipcMock.listDir).not.toHaveBeenCalledWith("/ws/files/subdir")
+        expect(screen.getByTestId("sftp-local-pane-body")).toHaveAttribute("data-sftp-pane-cwd", "/ws/files")
+    })
+
+    it("labels the two up buttons by side", async () => {
+        ipcMock.sftpListDir.mockResolvedValue({ cwd: "/home/u", entries: [] })
+        await connectTwoHosts()
+        act(() => useSftpStore.getState().setPanelOpen(true))
+        render(<SftpPanel />)
+        expect(await screen.findByRole("button", { name: "Local: up one level" })).toBeInTheDocument()
+        expect(screen.getByRole("button", { name: "Remote: up one level" })).toBeInTheDocument()
     })
 })

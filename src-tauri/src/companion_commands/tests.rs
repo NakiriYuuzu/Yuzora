@@ -1646,7 +1646,13 @@ async fn companion_a_halt_while_the_node_is_told_to_serve_waits_for_the_answer()
     // The halt ended the gateway while the node was serving: not an enabled
     // Companion, and the caller's own teardown follows the halt's.
     assert_eq!(enabled.unwrap_err(), "companion-timeout");
-    let mut order = settled(&flow, "gw:dead-at-node-shutdown").await;
+    // The enable's teardown sends the gateway a shutdown frame while the halt
+    // kills it; whether the gateway reads (and logs) the frame first is timing.
+    let mut order: Vec<String> = settled(&flow, "gw:dead-at-node-shutdown")
+        .await
+        .into_iter()
+        .filter(|line| line != "gw:shutdown")
+        .collect();
     order[10] = "<gateway>".into();
     assert_eq!(
         order[5..],

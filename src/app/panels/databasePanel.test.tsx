@@ -438,6 +438,19 @@ it.each(["db-reconnected", "db-1"])("keeps an uncertain draft detached from a re
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
 })
 
+it("keeps Mod+A from selecting the page behind the cell dialog unless a text field has focus", async () => {
+  await useDbStore.getState().openConnection("/a.db")
+  const table = { catalog: "main", schema: "main", name: "people", kind: "table" as const }
+  await useDbStore.getState().openTableQuery(table)
+  render(<DatabasePanel />)
+  fireEvent.doubleClick(screen.getByText("alice"))
+  const value = await screen.findByRole("textbox", { name: "Value" })
+  expect(fireEvent.keyDown(screen.getByRole("checkbox", { name: "NULL" }), { key: "a", metaKey: true })).toBe(false)
+  expect(fireEvent.keyDown(screen.getByRole("checkbox", { name: "NULL" }), { key: "A", ctrlKey: true })).toBe(false)
+  expect(fireEvent.keyDown(value, { key: "a", metaKey: true })).toBe(true)
+  expect(fireEvent.keyDown(screen.getByRole("checkbox", { name: "NULL" }), { key: "a" })).toBe(true)
+})
+
 it("retains a pending NULL draft across mode changes without leaving its portal or overlay visible", async () => {
   await useDbStore.getState().openConnection("/a.db")
   const { draft, pending } = await beginDeferredCellDraft(true)
@@ -1727,6 +1740,10 @@ describe("DatabasePanel result session controls", () => {
       lifecycle: "complete",
     }))
     await waitFor(() => expect(screen.getByText("Page 2")).toBeInTheDocument())
+    // The gutter continues the numbering of page 1 (500 rows) instead of restarting at 1.
+    expect(document.querySelector('tr[aria-rowindex="2"] td')?.textContent).toBe("501")
+    // The gutter is sized for the largest displayed number (501 → 3 digits + 2), not the 1-row page.
+    expect(document.querySelector('th[aria-hidden="true"][style*="ch"]')?.getAttribute("style")).toContain("width: 5ch")
     expect(previousButton).toBeEnabled()
     expect(nextButton).toBeDisabled()
     expect(releaseButton).toBeDisabled()

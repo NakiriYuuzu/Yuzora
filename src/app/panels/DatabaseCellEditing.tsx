@@ -87,7 +87,14 @@ export function DatabaseCellEditing({ children, identity, profileName, kind, tab
     return <CellEditingContext value={context}>
         {children}
         <Dialog open={editing !== null && visible} onOpenChange={open => { if (!open && !busy && visible) setEditing(null) }}>
-            <DialogContent onInteractOutside={event => { if (busy) event.preventDefault() }} onEscapeKeyDown={event => { if (busy) event.preventDefault() }}>
+            <DialogContent
+                onInteractOutside={event => { if (busy) event.preventDefault() }}
+                onEscapeKeyDown={event => { if (busy) event.preventDefault() }}
+                // Select-all outside a text field (e.g. the NULL checkbox) would highlight the whole page behind the dialog.
+                onKeyDown={event => {
+                    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a" && !(event.target instanceof HTMLElement && event.target.matches("input:not([type=checkbox]), textarea, [contenteditable]"))) event.preventDefault()
+                }}
+            >
                 <DialogHeader><DialogTitle>{t("editCell", { column: editing?.column.name })}</DialogTitle><DialogDescription>{t("editCellDescription", { table: editing?.table.name, profile: editing?.profileName })}</DialogDescription></DialogHeader>
                 <FieldGroup>
                     <Field><FieldLabel htmlFor="database-cell-value">{t("value")}</FieldLabel><Textarea id="database-cell-value" value={text} onChange={event => setText(event.target.value)} disabled={busy || isNull} readOnly={!liveOwner} className="min-h-32 font-mono" autoFocus /></Field>
