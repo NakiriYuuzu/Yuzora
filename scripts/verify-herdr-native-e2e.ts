@@ -9,7 +9,7 @@ import { removeRuntimeFixture } from "./runtime-fixture-cleanup"
 // Local acceptance of the production host PTY transport, not a mocked browser.
 // All commands target our temporary config and named Session, including cleanup.
 const binary = await realpath(process.argv[2] ?? "src-tauri/resources/herdr/macos-aarch64/herdr")
-const helper = await realpath(process.argv[3] ?? "src-tauri/host/target/debug/yuzora-host")
+const helper = await realpath(process.argv[3] ?? "src-tauri/target/debug/yuzora-host")
 const evidence = await realpath(await mkdtemp("/tmp/yuzora-native-e2e-evidence-"))
 const root = await realpath(await mkdtemp("/tmp/yz-native-"))
 const session = "native-e2e"

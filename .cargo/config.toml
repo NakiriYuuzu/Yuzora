@@ -1,0 +1,5 @@
+[build]
+# Keep the pre-workspace build directory: CI, release scripts and the Tauri
+# bundle paths read src-tauri/target. Relative to the parent of this .cargo
+# directory, the repository root.
+target-dir = "src-tauri/target"

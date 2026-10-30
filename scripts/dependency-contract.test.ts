@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
 type Manifest = {
@@ -42,7 +42,7 @@ describe("dependency upgrade contracts", () => {
   })
 
   it("pins Bun consistently and supplies supported Node to frontend build jobs", () => {
-    const files = ["ci", "release", "recover-stable-release", "host", "herdr-compatibility", "deploy-pages"]
+    const files = ["ci", "release", "recover-stable-release", "host", "companion", "herdr-compatibility", "deploy-pages"]
     const workflows = JSON.parse(execFileSync("bun", ["-e", `
       const result = {};
       for (const name of ${JSON.stringify(files)}) {
@@ -65,6 +65,29 @@ describe("dependency upgrade contracts", () => {
       const setup = workflows[file].jobs[job].steps?.find(step => step.uses?.startsWith("actions/setup-node@"))
       expect(setup?.with?.["node-version"], `${file}/${job}`).toBe(nodeVersion)
       expect(setup?.with?.["package-manager-cache"]).toBe(false)
+    }
+  })
+
+  // A [patch] that no longer matches the requirement only warns and Cargo
+  // quietly resolves crates.io instead, so the lock must still hold every
+  // vendored crate as a path package.
+  it("resolves every vendored crate from its src-tauri/vendor patch", () => {
+    const workspace = readFileSync("Cargo.toml", "utf8").replaceAll("\r\n", "\n")
+    const lock = readFileSync("Cargo.lock", "utf8").replaceAll("\r\n", "\n")
+    expect(lock).not.toContain("[[patch.unused]]")
+    const packages = lock.split("[[package]]\n").slice(1).map((entry) => ({
+      name: entry.match(/^name = "([^"]+)"$/m)?.[1],
+      version: entry.match(/^version = "([^"]+)"$/m)?.[1],
+      source: entry.match(/^source = "([^"]+)"$/m)?.[1],
+    }))
+    const vendored = readdirSync("src-tauri/vendor", { withFileTypes: true }).filter((entry) => entry.isDirectory())
+    expect(vendored.length).toBeGreaterThan(0)
+    for (const { name: directory } of vendored) {
+      const manifest = readFileSync(`src-tauri/vendor/${directory}/Cargo.toml`, "utf8").replaceAll("\r\n", "\n")
+      const name = manifest.match(/^\[package\][\s\S]*?^name = "([^"]+)"$/m)?.[1]
+      const version = manifest.match(/^\[package\][\s\S]*?^version = "([^"]+)"$/m)?.[1]
+      expect(workspace, directory).toContain(`\n${name} = { path = "src-tauri/vendor/${directory}" }\n`)
+      expect(packages.filter((entry) => entry.name === name), directory).toEqual([{ name, version, source: undefined }])
     }
   })
 })

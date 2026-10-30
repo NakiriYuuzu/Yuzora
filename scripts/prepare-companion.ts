@@ -242,7 +242,7 @@ export async function prepareCompanion(triple: string, release: boolean): Promis
   const build = Bun.spawn([
     "cargo", "build", "--locked", ...(release ? ["--release"] : []),
     "--target", triple, "--target-dir", targetDir,
-    "--manifest-path", resolve(repo, "src-tauri/companion/Cargo.toml"),
+    "-p", "yuzora-companion",
   ], { cwd: repo, stdout: "inherit", stderr: "inherit" })
   if (await build.exited !== 0) throw new Error(`Companion build failed for ${triple}`)
   const suffix = triple.includes("windows") ? ".exe" : ""

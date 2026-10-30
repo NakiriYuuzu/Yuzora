@@ -15,6 +15,56 @@ fn forbidden_dependency(lock: &str) -> Option<&'static str> {
     .find(|package| lock.contains(&format!("name = \"{package}\"\n")))
 }
 
+// The workspace lock also holds the app's dependencies, so the lock checks see
+// only the packages reachable from the gateway: every lock edge (all targets,
+// dev and build, features enabled anywhere in the workspace) from
+// yuzora-companion, rendered as `name`/`version` entries. Extra edges can only
+// add packages, never hide one.
+fn companion_lock() -> String {
+    let lock: toml::Table = normalize(include_str!("../../../Cargo.lock"))
+        .parse()
+        .unwrap();
+    let packages = lock["package"].as_array().unwrap();
+    let field = |index: usize, key: &str| packages[index].get(key).and_then(toml::Value::as_str);
+    let find = |reference: &str| {
+        let mut parts = reference.split(' ');
+        let name = parts.next();
+        let version = parts.next();
+        let source = parts.next().map(|source| source.trim_matches(['(', ')']));
+        let found: Vec<usize> = (0..packages.len())
+            .filter(|&index| {
+                field(index, "name") == name
+                    && version.is_none_or(|version| field(index, "version") == Some(version))
+                    && source.is_none_or(|source| field(index, "source") == Some(source))
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "unresolved lock reference {reference}");
+        found[0]
+    };
+    let mut seen = vec![false; packages.len()];
+    let mut pending = vec![find("yuzora-companion")];
+    let mut rendered = String::new();
+    while let Some(index) = pending.pop() {
+        if std::mem::replace(&mut seen[index], true) {
+            continue;
+        }
+        rendered += &format!(
+            "[[package]]\nname = \"{}\"\nversion = \"{}\"\n",
+            field(index, "name").unwrap(),
+            field(index, "version").unwrap()
+        );
+        for dependency in packages[index]
+            .get("dependencies")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            pending.push(find(dependency.as_str().unwrap()));
+        }
+    }
+    rendered
+}
+
 #[test]
 fn dependency_features_remain_minimal() {
     let manifest = normalize(include_str!("../Cargo.toml"));
@@ -24,7 +74,22 @@ fn dependency_features_remain_minimal() {
     assert!(manifest.contains(
         "rand = { version = \"=0.10.3\", default-features = false, features = [\"sys_rng\"] }"
     ));
-    assert_eq!(forbidden_dependency(include_str!("../Cargo.lock")), None);
+    assert_eq!(forbidden_dependency(&companion_lock()), None);
+}
+
+#[test]
+fn companion_lock_follows_the_gateway_subgraph_only() {
+    let lock = companion_lock();
+    for package in ["yuzora-companion", "yuzora-host", "axum", "webauthn_rp"] {
+        assert!(
+            lock.contains(&format!("name = \"{package}\"\n")),
+            "{package}"
+        );
+    }
+    // The app's SSH stack (and its AWS-LC provider) is in the workspace lock
+    // but must not leak into the gateway's subgraph.
+    assert!(include_str!("../../../Cargo.lock").contains("name = \"russh\""));
+    assert!(!lock.contains("name = \"russh\"\n"));
 }
 
 #[test]
@@ -311,7 +376,7 @@ fn supply_chain_exception_is_version_pinned_and_not_expired() {
         chrono::Utc::now().date_naive() <= deadline,
         "RSA advisory exception expired: Yuzora maintainers must re-review"
     );
-    let lock = normalize(include_str!("../Cargo.lock"));
+    let lock = companion_lock();
     assert_eq!(
         lock.lines()
             .filter(|line| *line == "name = \"rsa\"")
@@ -321,7 +386,8 @@ fn supply_chain_exception_is_version_pinned_and_not_expired() {
     assert!(lock.contains("name = \"rsa\"\nversion = \"0.9.10\""));
     for config in [
         include_str!("../deny.toml"),
-        include_str!("../.cargo/audit.toml"),
+        include_str!("../../../deny.toml"),
+        include_str!("../../../.cargo/audit.toml"),
     ] {
         for marker in [
             "RUSTSEC-2023-0071",
@@ -344,6 +410,30 @@ fn supply_chain_exception_is_version_pinned_and_not_expired() {
     assert!(workflow.contains("cargo-audit --version 0.22.2"));
 }
 
+// Workspace-wide ignores (root deny.toml, .cargo/audit.toml) also cover the
+// app's advisories, so the gateway subgraph has its own advisory gate that may
+// ignore only the two reviewed exceptions; the rsa they cover is pinned to
+// 0.9.10 by supply_chain_exception_is_version_pinned_and_not_expired.
+#[test]
+fn gateway_advisory_gate_ignores_only_the_two_reviewed_exceptions() {
+    let config: toml::Table = normalize(include_str!("../deny.toml")).parse().unwrap();
+    let mut ignored: Vec<&str> = config["advisories"]["ignore"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| match entry {
+            toml::Value::String(id) => id.as_str(),
+            entry => entry["id"].as_str().unwrap(),
+        })
+        .collect();
+    ignored.sort_unstable();
+    assert_eq!(ignored, ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387"]);
+    let workflow = normalize(include_str!("../../../.github/workflows/companion.yml"));
+    assert!(workflow.contains(
+        "--manifest-path src-tauri/companion/Cargo.toml --config src-tauri/companion/deny.toml check advisories bans"
+    ));
+}
+
 #[test]
 fn p256_bigint_exception_is_pinned_and_production_never_holds_private_keys() {
     let deadline = chrono::NaiveDate::from_ymd_opt(2027, 3, 31).unwrap();
@@ -351,7 +441,7 @@ fn p256_bigint_exception_is_pinned_and_production_never_holds_private_keys() {
         chrono::Utc::now().date_naive() <= deadline,
         "crypto-bigint advisory exception expired: Yuzora maintainers must re-review"
     );
-    let lock = normalize(include_str!("../Cargo.lock"));
+    let lock = companion_lock();
     assert_eq!(
         lock.lines()
             .filter(|line| *line == "name = \"crypto-bigint\"")
@@ -362,7 +452,8 @@ fn p256_bigint_exception_is_pinned_and_production_never_holds_private_keys() {
     assert!(lock.contains("name = \"p256\"\nversion = \"0.13.2\""));
     for config in [
         include_str!("../deny.toml"),
-        include_str!("../.cargo/audit.toml"),
+        include_str!("../../../deny.toml"),
+        include_str!("../../../.cargo/audit.toml"),
     ] {
         // The quoted id is the active ignore entry; comments never quote it.
         assert!(config.contains("\"RUSTSEC-2026-0387\""));

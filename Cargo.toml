@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "src-tauri/host",
+    "src-tauri/companion",
+    "crates/yuzora-core",
+]
+# Spikes keep their own manifests (and workspaces) outside this one.
+exclude = ["spikes"]
+
+# Vendored crates are patched in, not path dependencies: Cargo makes path
+# dependencies inside a member directory workspace members, and `exclude`
+# cannot override an explicit member such as `src-tauri`. See each crate's
+# patch notes under src-tauri/vendor.
+[patch.crates-io]
+# Keep Browser children outside the App asset scope.
+tauri = { path = "src-tauri/vendor/tauri-2.12.0-yuzora" }
+# Keep pending channel-open cancellation safe.
+russh = { path = "src-tauri/vendor/russh-0.62.7-yuzora" }
+# Close a directory handle when a listing fails or is dropped.
+russh-sftp = { path = "src-tauri/vendor/russh-sftp-3.0.0-yuzora" }
+tiberius = { path = "src-tauri/vendor/tiberius-0.12.3-yuzora" }
+# Open macOS PTY descriptors with O_CLOEXEC.
+portable-pty = { path = "src-tauri/vendor/portable-pty-0.9.0-yuzora" }
+
+# Dependencies are rarely stepped through in a debugger; dropping their debug
+# info shrinks dev and test builds and shortens linking.
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+# Keep default panic unwinding (Host catch_unwind, app worker errors) and
+# codegen units for build time.
