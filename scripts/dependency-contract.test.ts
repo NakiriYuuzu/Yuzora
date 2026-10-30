@@ -80,9 +80,12 @@ describe("dependency upgrade contracts", () => {
       version: entry.match(/^version = "([^"]+)"$/m)?.[1],
       source: entry.match(/^source = "([^"]+)"$/m)?.[1],
     }))
+    // The workspace-wide supply-chain job must also run when only vendored code changes.
+    const companionWorkflow = readFileSync(".github/workflows/companion.yml", "utf8").replaceAll("\r\n", "\n")
     const vendored = readdirSync("src-tauri/vendor", { withFileTypes: true }).filter((entry) => entry.isDirectory())
     expect(vendored.length).toBeGreaterThan(0)
     for (const { name: directory } of vendored) {
+      expect(companionWorkflow, directory).toContain(`\n      - 'src-tauri/vendor/${directory}/**'\n`)
       const manifest = readFileSync(`src-tauri/vendor/${directory}/Cargo.toml`, "utf8").replaceAll("\r\n", "\n")
       const name = manifest.match(/^\[package\][\s\S]*?^name = "([^"]+)"$/m)?.[1]
       const version = manifest.match(/^\[package\][\s\S]*?^version = "([^"]+)"$/m)?.[1]

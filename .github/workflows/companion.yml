@@ -7,12 +7,18 @@ on:
       - 'src-tauri/companion/**'
       - 'src-tauri/companion-net/**'
       - 'src-tauri/host/**'
+      # The supply-chain job audits the whole workspace, so app manifest and
+      # vendored-crate changes that keep the lock unchanged still run it.
+      - 'src-tauri/Cargo.toml'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'deny.toml'
       - '.cargo/**'
       - 'src-tauri/vendor/tiberius-0.12.3-yuzora/**'
       - 'src-tauri/vendor/portable-pty-0.9.0-yuzora/**'
+      - 'src-tauri/vendor/russh-0.62.7-yuzora/**'
+      - 'src-tauri/vendor/russh-sftp-3.0.0-yuzora/**'
+      - 'src-tauri/vendor/tauri-2.12.0-yuzora/**'
       - '.github/workflows/companion.yml'
 
 permissions:
