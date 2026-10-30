@@ -10,6 +10,7 @@ on:
       # The supply-chain job audits the whole workspace, so app manifest and
       # vendored-crate changes that keep the lock unchanged still run it.
       - 'src-tauri/Cargo.toml'
+      - 'crates/*/Cargo.toml'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'deny.toml'

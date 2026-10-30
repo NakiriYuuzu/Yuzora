@@ -80,8 +80,16 @@ describe("dependency upgrade contracts", () => {
       version: entry.match(/^version = "([^"]+)"$/m)?.[1],
       source: entry.match(/^source = "([^"]+)"$/m)?.[1],
     }))
-    // The workspace-wide supply-chain job must also run when only vendored code changes.
+    // The workspace-wide supply-chain job must also run when only a member manifest
+    // or vendored code changes, even if the lock stays the same.
     const companionWorkflow = readFileSync(".github/workflows/companion.yml", "utf8").replaceAll("\r\n", "\n")
+    const members = [...(workspace.match(/^members = \[([\s\S]*?)\]$/m)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1])
+    expect(members.length).toBeGreaterThan(0)
+    for (const member of members) {
+      const parent = member.includes("/") ? member.slice(0, member.lastIndexOf("/")) : undefined
+      const patterns = [`${member}/**`, `${member}/Cargo.toml`, ...(parent ? [`${parent}/*/Cargo.toml`] : [])]
+      expect(patterns.some((pattern) => companionWorkflow.includes(`\n      - '${pattern}'\n`)), member).toBe(true)
+    }
     const vendored = readdirSync("src-tauri/vendor", { withFileTypes: true }).filter((entry) => entry.isDirectory())
     expect(vendored.length).toBeGreaterThan(0)
     for (const { name: directory } of vendored) {
