@@ -22,7 +22,7 @@ import {
     openPdfDocument,
     readPdfBytes
 } from "./pdfDocument"
-import { BundledBinaryDataFactory } from "./pdfResources"
+import { BundledBinaryDataFactory, wasmUrl } from "./pdfResources"
 
 const remotePdf = remoteFilePath("devbox", "/home/me/docs/spec.pdf", "/home/me/docs")
 
@@ -115,7 +115,8 @@ describe("openPdfDocument", () => {
             data: bytes,
             worker: pdfWorker,
             BinaryDataFactory: BundledBinaryDataFactory,
-            useWorkerFetch: false
+            useWorkerFetch: false,
+            wasmUrl
         })
 
         handle.destroy()

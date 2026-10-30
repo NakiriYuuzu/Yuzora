@@ -52,6 +52,16 @@ export default defineConfig(({ mode }) => ({
   build: {
     // Gzip estimates for every chunk only lengthen each production build.
     reportCompressedSize: false,
+    rolldownOptions: {
+      output: {
+        // pdf.js imports its JS image-decoder fallback by its fixed file name
+        // (see wasmUrl in src/workbench/pdfResources.ts), so that asset keeps it.
+        assetFileNames: ({ names }) =>
+          names.some((name) => name.endsWith("_nowasm_fallback.js"))
+            ? "assets/pdfjs/[name][extname]"
+            : "assets/[name]-[hash][extname]",
+      },
+    },
   },
   resolve: {
     alias: {
