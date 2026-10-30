@@ -3,6 +3,8 @@
 // file is a lazy chunk holding a data URL: loading it is a same-origin dynamic
 // import, which `script-src 'self'` already allows on every platform, so no
 // fetch of the custom app scheme (or connect-src change) is involved.
+import openJpegFallback from "pdfjs-dist/wasm/openjpeg_nowasm_fallback.js?url"
+
 import { decodeBase64 } from "./pdfDocument"
 
 type LazyDataUrl = () => Promise<string>
@@ -27,6 +29,15 @@ const wasm = import.meta.glob<string>(
 function byFileName(modules: Record<string, LazyDataUrl>): Map<string, LazyDataUrl> {
     return new Map(Object.entries(modules).map(([path, load]) => [path.slice(path.lastIndexOf("/") + 1), load]))
 }
+
+/**
+ * `wasmUrl` for getDocument. When openjpeg.wasm does not compile (WKWebView's
+ * JavaScriptCore keeps relaxed SIMD off), the worker imports
+ * `${wasmUrl}openjpeg_nowasm_fallback.js` itself, bypassing the factory, so
+ * that file ships as a same-origin asset under its own name (see
+ * assetFileNames in vite.config.ts) and loads only on that path.
+ */
+export const wasmUrl = openJpegFallback.slice(0, openJpegFallback.lastIndexOf("/") + 1)
 
 const tables: Record<string, Map<string, LazyDataUrl>> = {
     cMapUrl: byFileName(cMaps),

@@ -70,7 +70,7 @@ function loadPdfJs() {
 
 /** Parses PDF bytes on a dedicated worker; `destroy` releases both. */
 export async function openPdfDocument(bytes: Uint8Array): Promise<PdfDocumentHandle> {
-    const [pdfjs, { BundledBinaryDataFactory }] = await Promise.all([loadPdfJs(), import("./pdfResources")])
+    const [pdfjs, { BundledBinaryDataFactory, wasmUrl }] = await Promise.all([loadPdfJs(), import("./pdfResources")])
     // pdf.js sees tauri://localhost as cross-origin (its URL origin is "null")
     // and would wrap workerSrc in a blob: URL that CSP worker-src 'self'
     // rejects, silently falling back to parsing on the main thread. Hand it a
@@ -81,7 +81,8 @@ export async function openPdfDocument(bytes: Uint8Array): Promise<PdfDocumentHan
         data: bytes,
         worker: pdfWorker,
         BinaryDataFactory: BundledBinaryDataFactory,
-        useWorkerFetch: false
+        useWorkerFetch: false,
+        wasmUrl
     })
     // With a supplied port pdf.js never hears about a worker that fails to
     // start, and task.destroy() would wait on it forever: fail the load and

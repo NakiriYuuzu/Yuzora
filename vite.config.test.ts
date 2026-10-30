@@ -47,6 +47,20 @@ describe("Vitest environment projects", () => {
   });
 });
 
+describe("pdf.js decoder fallback assets", () => {
+  it("keeps the file name pdf.js imports the JS fallback by", async () => {
+    const config = await (typeof viteConfig === "function"
+      ? viteConfig({ command: "build", mode: "production" })
+      : viteConfig);
+    const output = config.build?.rolldownOptions?.output;
+    const assetFileNames = Array.isArray(output) ? undefined : output?.assetFileNames;
+    if (typeof assetFileNames !== "function") throw new Error("assetFileNames is not a function");
+    const asset = (name: string) => ({ type: "asset" as const, names: [name], originalFileNames: [], source: "" });
+    expect(assetFileNames(asset("openjpeg_nowasm_fallback.js"))).toBe("assets/pdfjs/[name][extname]");
+    expect(assetFileNames(asset("index.css"))).toBe("assets/[name]-[hash][extname]");
+  });
+});
+
 describe("client env exposure", () => {
   it("never exposes the updater signing key to the client bundle", async () => {
     const config = await (typeof viteConfig === "function"
