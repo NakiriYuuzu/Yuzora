@@ -82,4 +82,4 @@ frontend checks（lint→typecheck→build）與 3 個 test shards 平行；固�
 - Git 寫入（add／commit／push 等）僅在使用者明確下令時執行。
 - 規劃／執行制度：`.yuuzu/`——`specs/`（計畫）、`adr/`（架構決策）、`eval/`（驗收）、`memory/lessons.html`（教訓），配合 yuuzu-plan／yuuzu-dev skills。
 - 結案報告：`docs/html/<題目>-<YYYY-MM-DD>.html`。
-- MSSQL driver 是 vendored patch：`src-tauri/vendor/tiberius-0.12.3-yuzora`（Cargo.toml path dependency）。
+- MSSQL driver 是 vendored patch：`src-tauri/vendor/tiberius-0.12.3-yuzora`（根 `Cargo.toml` 的 `[patch.crates-io]`）。

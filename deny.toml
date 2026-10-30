@@ -15,8 +15,11 @@
 # production. Test software authenticators use test-only RSA keys.
 # Adding production private-key operations invalidates this exception.
 # App: rsa 0.10.0-rc.18 through russh signs with the user's RSA key file during
-# SSH authentication, a private-key operation this rationale does not cover.
-# Keeping the app covered is pending the user's decision.
+# SSH authentication, a private-key operation the gateway rationale does not
+# cover. Accepted risk (yuuzu, 2026-10-30): no patched rsa release exists, and
+# dropping russh's rsa feature would break RSA keys and RSA-only hosts. Track
+# RustCrypto/RSA#626; move to a patched rsa, or to ssh-agent signing, once one
+# is available. Owner: yuuzu; review-by: 2027-03-31.
 #
 # RUSTSEC-2026-0387: crypto-bigint 0.5.5 via webauthn_rp 0.3.0 -> p256 0.13.2 (ES256) /
 # p384 0.13.1 (ES384) -> elliptic-curve 0.13. Production uses them ONLY to verify
@@ -26,29 +29,30 @@
 # immediately if production private-key operations are added.
 #
 # App (Tauri) dependencies below were first audited when the crates merged into
-# one workspace; none is in the Host, gateway or core subgraph.
+# one workspace; none is in the Host, gateway or core subgraph. Approved by
+# yuuzu on 2026-10-30; owner: yuuzu; review-by: 2027-03-31.
 # RUSTSEC-2026-0367/-0368/-0369 (zip <9: SUID bits, symlink targets and
 # permissions through symlinks during ZipArchive::extract). The app's zip 8.6.0
 # only writes the log export archive (ZipWriter); only tests read archives and
 # the app's code never calls extract. tauri-plugin-updater's zip 4.6.1 extracts on Windows
 # only, after the update signature check, and Yuzora publishes no zipped
-# updater artifact. Fix by moving the app to zip >=9 and an updater release on
-# zip >=9.
+# updater artifact. Fix by moving the app to zip >=9 (separate PR) and an
+# updater release on zip >=9.
 # RUSTSEC-2024-0370 (proc-macro-error, unmaintained): build-time proc macro of
 # the Linux GTK stack (glib-macros), no safe upgrade; leaves with Tauri (P11).
 # RUSTSEC-2026-0370/-0371/-0372 (zvariant, zbus_names, zvariant_derive,
 # unmaintained as standalone crates): Linux D-Bus through zbus 5 (notifications,
 # opener, single instance, secret-service keyring), no safe upgrade yet.
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "gateway: rsa 0.9.10 verification-only (VAPID ES256); app: russh rsa 0.10.0-rc.18 SSH private-key signing, pending user decision; owner: Yuzora maintainers; review-by: 2027-03-31" },
+    { id = "RUSTSEC-2023-0071", reason = "gateway: rsa 0.9.10 verification-only (VAPID ES256); app: russh rsa 0.10.0-rc.18 SSH private-key signing, accepted risk (yuuzu 2026-10-30; no patched release, track RustCrypto/RSA#626); owner: Yuzora maintainers; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via p256 0.13.2 verification-only (WebAuthn ES256 over public inputs); owner: Yuzora maintainers; review-by: 2027-03-31; reassess at p256 >=0.14 / crypto-bigint >=0.7.6" },
-    { id = "RUSTSEC-2026-0367", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: Yuzora maintainers; review-by: 2027-03-31; fix with zip >=9" },
-    { id = "RUSTSEC-2026-0368", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: Yuzora maintainers; review-by: 2027-03-31; fix with zip >=9" },
-    { id = "RUSTSEC-2026-0369", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: Yuzora maintainers; review-by: 2027-03-31; fix with zip >=9" },
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: Yuzora maintainers; review-by: 2027-03-31; leaves with Tauri (P11)" },
-    { id = "RUSTSEC-2026-0370", reason = "zvariant 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: Yuzora maintainers; review-by: 2027-03-31" },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: Yuzora maintainers; review-by: 2027-03-31" },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: Yuzora maintainers; review-by: 2027-03-31" },
+    { id = "RUSTSEC-2026-0367", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
+    { id = "RUSTSEC-2026-0368", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
+    { id = "RUSTSEC-2026-0369", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: yuuzu; review-by: 2027-03-31; leaves with Tauri (P11)" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
 ]
 
 [licenses]
@@ -64,7 +68,8 @@ confidence-threshold = 0.8
 # shipped versions: tauri-utils -> dom_query -> cssparser / selectors (MPL-2.0)
 # and arboard -> clipboard-win -> error-code (BSL-1.0, Windows). Neither
 # license is allowed globally; a version change requires review, and the
-# MPL-2.0 notice and source availability apply to them as well.
+# MPL-2.0 notice and source availability apply to them as well. Approved by
+# yuuzu on 2026-10-30.
 exceptions = [
     { name = "option-ext", version = "=0.2.0", allow = ["MPL-2.0"] },
     { name = "cssparser", version = "=0.37.0", allow = ["MPL-2.0"] },
