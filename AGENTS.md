@@ -22,14 +22,14 @@ Rules:
 
 ## Rust 建置目錄重用
 
-`src-tauri`（app）與 `src-tauri/host`（host）是各自獨立的 Cargo 專案，各有自己的 target；分支上新增的 crate（例如 `companion`）也一樣。一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
+`src-tauri`（app）、`src-tauri/host`（host）與 `src-tauri/companion`（gateway）同屬根目錄的 Cargo workspace，共用一份 `Cargo.lock` 與一個 target（根 `.cargo/config.toml` 設為 `src-tauri/target`；`companion:prepare` 另用其下的 `src-tauri/target/companion`，和 app 的建置分開）。一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
 
 - 主 checkout（`yuzora/`）使用預設的 `target/`，不另外設定 `CARGO_TARGET_DIR`。
 - 不在主 checkout 的建置，包括 `../.yuzora-lanes/<lane>` worktree、`output/` 底下的原始碼快照，一律重用固定的 slot。不得以 lane 或 experiment 名稱建立新的 target：
 
   ```bash
   LANES="$(dirname "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")/.yuzora-lanes"
-  export CARGO_TARGET_DIR="$LANES/_targets/slot-1-app"   # host 用 slot-1-host；其他 crate 用 slot-1-<crate 目錄名>
+  export CARGO_TARGET_DIR="$LANES/_targets/slot-1-app"   # workspace 的所有 crate 共用這個 slot，不再依 crate 分 slot
   ```
 
 - slot 只有 `slot-1`、`slot-2` 兩組。cargo 會對 target 目錄上鎖，出現 `Blocking waiting for file lock on build directory` 代表這個 slot 正在使用中，請改用 `slot-2`。兩組都在使用中就等待，不要建立 `slot-3` 或 lane 專屬的 target。

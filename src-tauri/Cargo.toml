@@ -4,6 +4,7 @@ version = "0.1.0-beta.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -55,11 +56,11 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 libc = "0.2"
 rusqlite = { version = "0.40.1", features = ["bundled", "hooks"] }
 # Keep pending channel-open cancellation safe; see the vendor patch notes.
-russh = { version = "=0.62.7", path = "vendor/russh-0.62.7-yuzora" }
+russh = "=0.62.7"
 # ssh_service opens an SFTP subsystem over the existing russh channel (F5); the
 # crate is stream-based (feeds off channel.into_stream()) so it stays version-
 # independent of russh itself.
-russh-sftp = { version = "=3.0.0", path = "vendor/russh-sftp-3.0.0-yuzora" }
+russh-sftp = "=3.0.0"
 # tauri bundles tokio; ssh_service needs select!/timeout which async_runtime
 # doesn't re-export, so name tokio directly (already resolved in the lock).
 tokio = { version = "1.53.3", features = ["macros", "time", "sync", "net", "process", "io-util", "io-std", "rt"] }
@@ -73,7 +74,7 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system"] 
 # can't get installed and panic builder(). PG NUMERIC uses the custom lossless
 # binary decoder in db_service; webpki-roots supplies the PG TLS root store.
 tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
-tiberius = { version = "0.12.3", path = "vendor/tiberius-0.12.3-yuzora", default-features = false, features = ["tds73", "rustls", "chrono"] }
+tiberius = { version = "=0.12.3", default-features = false, features = ["tds73", "rustls", "chrono"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
 webpki-roots = "1.0.10"
@@ -88,10 +89,6 @@ tauri-plugin-notification = "2"
 
 [dev-dependencies]
 tauri = { version = "=2.12.0", features = ["test"] }
-
-[patch.crates-io]
-# Keep Browser children outside the App asset scope; see the vendor patch notes.
-tauri = { path = "vendor/tauri-2.12.0-yuzora" }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2.12.0"
@@ -108,13 +105,3 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKBa
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0.2"
-
-# Dependencies are rarely stepped through in a debugger; dropping their debug
-# info shrinks dev and test builds and shortens linking.
-[profile.dev.package."*"]
-debug = false
-
-[profile.release]
-strip = "symbols"
-lto = "thin"
-# Keep default panic unwinding and codegen units for worker errors and build time.

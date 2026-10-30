@@ -306,7 +306,7 @@ jobs:
       # Swatinem/rust-cache@v2.9.2
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          workspaces: src-tauri
+          workspaces: ". -> src-tauri/target"
 
       # actions/setup-go@v7.0.0; companion:prepare builds the Companion network
       # sidecar. No Go module or build cache is restored for release builds.

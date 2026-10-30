@@ -7,8 +7,18 @@ on:
       - 'src-tauri/companion/**'
       - 'src-tauri/companion-net/**'
       - 'src-tauri/host/**'
+      # The supply-chain job audits the whole workspace, so app manifest and
+      # vendored-crate changes that keep the lock unchanged still run it.
+      - 'src-tauri/Cargo.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.cargo/**'
       - 'src-tauri/vendor/tiberius-0.12.3-yuzora/**'
       - 'src-tauri/vendor/portable-pty-0.9.0-yuzora/**'
+      - 'src-tauri/vendor/russh-0.62.7-yuzora/**'
+      - 'src-tauri/vendor/russh-sftp-3.0.0-yuzora/**'
+      - 'src-tauri/vendor/tauri-2.12.0-yuzora/**'
       - '.github/workflows/companion.yml'
 
 permissions:
@@ -31,11 +41,11 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          toolchain: 1.96.0
+          toolchain: 1.98.1
           components: rustfmt, clippy
-      - run: cargo fmt --manifest-path src-tauri/companion/Cargo.toml -- --check
-      - run: cargo clippy --locked --all-targets --manifest-path src-tauri/companion/Cargo.toml -- -D warnings
-      - run: cargo test --locked --manifest-path src-tauri/companion/Cargo.toml
+      - run: cargo fmt -p yuzora-companion -- --check
+      - run: cargo clippy --locked --all-targets -p yuzora-companion -- -D warnings
+      - run: cargo test --locked -p yuzora-companion
         env:
           RUST_BACKTRACE: 1
       - name: Reject native TLS dependencies
@@ -43,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           for p in openssl openssl-sys aws-lc-sys aws-lc-rs native-tls; do
-            if output=$(cargo tree --locked --manifest-path src-tauri/companion/Cargo.toml -i "$p" 2>&1); then
+            if output=$(cargo tree --locked -p yuzora-companion -i "$p" 2>&1); then
               printf '%s\n' "$output"
               exit 1
             fi
@@ -110,14 +120,18 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          toolchain: 1.96.0
+          toolchain: 1.98.1
       - name: Install pinned supply-chain tools
         run: |
           cargo install --locked --root "$RUNNER_TEMP/yzc-tools" cargo-deny --version 0.20.2
           cargo install --locked --root "$RUNNER_TEMP/yzc-tools" cargo-audit --version 0.22.2
-      - name: Deny licenses, banned packages, advisories and sources
-        working-directory: src-tauri/companion
+      # The workspace shares one Cargo.lock. The root check covers every member
+      # with the app's exceptions; the gateway check sees only the gateway
+      # subgraph with its own two advisory exceptions and native-TLS bans.
+      - name: Deny licenses, banned packages, advisories and sources (workspace)
         run: '"$RUNNER_TEMP/yzc-tools/bin/cargo-deny" --locked check'
-      - name: Audit (documented RSA verification-only exception)
-        working-directory: src-tauri/companion
+      - name: Deny advisories and native TLS packages in the gateway subgraph
+        run: '"$RUNNER_TEMP/yzc-tools/bin/cargo-deny" --locked --manifest-path src-tauri/companion/Cargo.toml --config src-tauri/companion/deny.toml check advisories bans'
+      # cargo-audit reads the whole lock and ignores by id only.
+      - name: Audit the workspace lock (documented exceptions in .cargo/audit.toml)
         run: '"$RUNNER_TEMP/yzc-tools/bin/cargo-audit" audit'

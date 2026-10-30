@@ -284,7 +284,7 @@ Merge 後刪除已完成的短期 branch；release tag 與長期維護 branch �
 
 Release PR 除了一般 PR gate，還必須符合 [`docs/operations.md`](../operations.md)：
 
-- 三份 version 與 `src-tauri/Cargo.lock` 一致。
+- 三份 version 與根目錄 `Cargo.lock` 一致。
 - `CHANGELOG.md` 有對應版本使用者說明。
 - Release／updater contract checks 通過。
 - Tag 尚未存在。

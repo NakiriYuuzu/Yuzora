@@ -14,7 +14,7 @@ type RawSnapshot = { snapshot: { panes: { pane_id: string }[]; workspaces: { lab
 // Explicit opt-in executable E2E. All subprocess homes/config, Sessions and git writes
 // belong to the unique temporary fixture; never inherits an active HERDR socket.
 const binary = await realpath(process.argv[2] ?? "src-tauri/resources/herdr/macos-aarch64/herdr")
-const helper = await realpath(process.argv[3] ?? "src-tauri/host/target/debug/yuzora-host")
+const helper = await realpath(process.argv[3] ?? "src-tauri/target/debug/yuzora-host")
 const root = await realpath(await mkdtemp("/tmp/yz-fe-"))
 const session = "feature-e2e"
 const repo = join(root, "repo")

@@ -46,14 +46,14 @@ export async function prepareHostResources(target: keyof typeof HOST_TARGETS, bu
   const herdrName = `herdr${suffix}`
   const herdrRoot = resolve(repo, "src-tauri/resources/herdr")
   await prepareTarget(herdrRoot, resource)
-  const build = Bun.spawn(["cargo", builder, "--locked", "--release", "--target", triple, "--manifest-path", resolve(repo, "src-tauri/host/Cargo.toml")], { cwd: repo, stdout: "inherit", stderr: "inherit" })
+  const build = Bun.spawn(["cargo", builder, "--locked", "--release", "--target", triple, "-p", "yuzora-host"], { cwd: repo, stdout: "inherit", stderr: "inherit" })
   if (await build.exited !== 0) throw new Error(`Helper build failed for ${target}`)
   const version = (JSON.parse(await readFile(resolve(repo, "src-tauri/tauri.conf.json"), "utf8")) as { version: string }).version
   const cargo = await readFile(resolve(repo, "src-tauri/host/Cargo.toml"), "utf8")
   if (!cargo.includes(`version = "${version}"`)) throw new Error("Helper and desktop versions differ")
   await mkdir(resolve(root, target), { recursive: true })
   for (const [name, source] of [
-    [helperName, resolve(repo, "src-tauri/host/target", triple, `release/${helperName}`)],
+    [helperName, resolve(repo, "src-tauri/target", triple, `release/${helperName}`)],
     ...resource.files.map(file => [file.path, resolve(herdrRoot, target, file.path)])
   ]) {
     const destination = resolve(root, target, name)

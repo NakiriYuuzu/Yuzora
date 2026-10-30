@@ -1,3 +1,13 @@
+# Gateway-only gate: advisories and native-TLS bans over the gateway subgraph.
+# The gateway is a workspace member with the single root Cargo.lock, so this
+# file runs with the gateway as the sole graph root:
+#   cargo deny --locked --manifest-path src-tauri/companion/Cargo.toml \
+#     --config src-tauri/companion/deny.toml check advisories bans
+# The root deny.toml covers every member (licenses, sources, advisories with
+# the app's exceptions); none of those app exceptions applies here, and the
+# app's aws-lc-rs (through russh) stays out of these bans until P11.
+# Only the two reviewed exceptions below may be ignored here (tests/contracts.rs).
+
 [advisories]
 # Owner: Yuzora maintainers; review-by: 2027-03-31.
 # rsa 0.9.10: production WebAuthn RS256 performs public-key signature
@@ -16,20 +26,10 @@ ignore = [
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via p256 0.13.2 verification-only (WebAuthn ES256 over public inputs); owner: Yuzora maintainers; review-by: 2027-03-31; reassess at p256 >=0.14 / crypto-bigint >=0.7.6" },
 ]
 
-[licenses]
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "OpenSSL", "0BSD", "CC0-1.0", "CDLA-Permissive-2.0"]
-# Private first-party workspace crates are not distributed as third-party code.
-private = { ignore = true }
-confidence-threshold = 0.8
-# Existing yuzora-host -> dirs -> dirs-sys -> option-ext, unchanged crate.
-# MPL is file-level copyleft; this exception is NOT a blanket MPL allowance.
-# Phase 8 packaging must include MPL-2.0 notice and source availability details.
-exceptions = [{ name = "option-ext", version = "=0.2.0", allow = ["MPL-2.0"] }]
-
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# The first-party ../host path follows the repository's independent-crate layout.
+# The first-party ../host path dependency is a workspace member without a version.
 allow-wildcard-paths = true
 deny = [
     { name = "openssl" },
@@ -39,9 +39,3 @@ deny = [
     { name = "aws-lc-fips-sys" },
     { name = "native-tls" },
 ]
-
-[sources]
-unknown-registry = "deny"
-unknown-git = "deny"
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []

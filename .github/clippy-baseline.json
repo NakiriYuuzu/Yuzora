@@ -1,91 +1,91 @@
 [
   {
     "code": "clippy::await_holding_lock",
-    "file": "src/db_profiles/tests.rs",
+    "file": "src-tauri/src/db_profiles/tests.rs",
     "line": 278,
     "message": "this `MutexGuard` is held across an await point",
     "count": 1
   },
   {
     "code": "clippy::await_holding_lock",
-    "file": "src/db_profiles/tests.rs",
+    "file": "src-tauri/src/db_profiles/tests.rs",
     "line": 284,
     "message": "this `MutexGuard` is held across an await point",
     "count": 1
   },
   {
     "code": "clippy::bool_assert_comparison",
-    "file": "src/fs_service.rs",
+    "file": "src-tauri/src/fs_service.rs",
     "line": 904,
     "message": "used `assert_eq!` with a literal bool",
     "count": 1
   },
   {
     "code": "clippy::bool_assert_comparison",
-    "file": "src/fs_service.rs",
+    "file": "src-tauri/src/fs_service.rs",
     "line": 905,
     "message": "used `assert_eq!` with a literal bool",
     "count": 1
   },
   {
     "code": "clippy::bool_assert_comparison",
-    "file": "src/fs_service.rs",
+    "file": "src-tauri/src/fs_service.rs",
     "line": 906,
     "message": "used `assert_eq!` with a literal bool",
     "count": 1
   },
   {
     "code": "clippy::field_reassign_with_default",
-    "file": "src/db_profiles/tests.rs",
+    "file": "src-tauri/src/db_profiles/tests.rs",
     "line": 984,
     "message": "field assignment outside of initializer for an instance created with Default::default()",
     "count": 1
   },
   {
     "code": "clippy::field_reassign_with_default",
-    "file": "src/db_profiles/tests.rs",
+    "file": "src-tauri/src/db_profiles/tests.rs",
     "line": 997,
     "message": "field assignment outside of initializer for an instance created with Default::default()",
     "count": 1
   },
   {
     "code": "clippy::manual_contains",
-    "file": "src/ssh_service.rs",
+    "file": "src-tauri/src/ssh_service.rs",
     "line": 3513,
     "message": "using `contains()` instead of `iter().any()` is more efficient",
     "count": 1
   },
   {
     "code": "clippy::needless_borrow",
-    "file": "src/ssh_service.rs",
+    "file": "src-tauri/src/ssh_service.rs",
     "line": 3499,
     "message": "this expression creates a reference which is immediately dereferenced by the compiler",
     "count": 1
   },
   {
     "code": "clippy::suspicious_open_options",
-    "file": "src/ssh_service.rs",
+    "file": "src-tauri/src/ssh_service.rs",
     "line": 501,
     "message": "file opened with `create`, but `truncate` behavior not defined",
     "count": 2
   },
   {
     "code": "clippy::useless_conversion",
-    "file": "src/db_profiles.rs",
+    "file": "src-tauri/src/db_profiles.rs",
     "line": 1867,
     "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
     "count": 2
   },
   {
     "code": "clippy::useless_conversion",
-    "file": "src/db_profiles.rs",
+    "file": "src-tauri/src/db_profiles.rs",
     "line": 1963,
     "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
     "count": 2
   },
   {
     "code": "clippy::useless_conversion",
-    "file": "src/db_profiles.rs",
+    "file": "src-tauri/src/db_profiles.rs",
     "line": 2359,
     "message": "useless conversion to the same type: `secrecy::SecretBox<str>`",
     "count": 2

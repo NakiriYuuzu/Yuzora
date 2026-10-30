@@ -172,21 +172,21 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - `package.json` version。
 - `src-tauri/tauri.conf.json` version。
 - `src-tauri/Cargo.toml` version。
-- 更新後的 `src-tauri/Cargo.lock`。
-- `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新 helper 的 `Cargo.lock` 及桌面 lockfile 內的 path dependency entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
-- `src-tauri/companion/Cargo.toml` 版本與桌面一致，並更新 `src-tauri/companion/Cargo.lock`（含其中的 `yuzora-companion` 與 `yuzora-host` entry）；`verify-version-consistency.ts` 會拒絕不一致。
+- 更新後的根目錄 `Cargo.lock`（workspace 唯一的 lockfile，含 `yuzora`、`yuzora-host`、`yuzora-companion` 的 entry）。
+- `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新根 `Cargo.lock` 的 `yuzora-host` entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
+- `src-tauri/companion/Cargo.toml` 版本與桌面一致，並更新根 `Cargo.lock` 的 `yuzora-companion` entry；`verify-version-consistency.ts` 會拒絕不一致。
 - `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
 - 必要的 release／updater contract 修改與測試。
 
 `CHANGELOG.md` 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由該版本章節自動產生，因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
 
-修改 `src-tauri/Cargo.toml` version 後，先讓 Cargo 更新 root package 的 lockfile entry，再確認 `src-tauri/Cargo.lock` 沒有意外的 dependency 變動：
+修改上述 `Cargo.toml` version 後，先讓 Cargo 更新根 `Cargo.lock` 中這些 workspace member 的 entry（在 workspace 內執行任一 cargo 指令都會更新整份 lock），再確認根 `Cargo.lock` 沒有意外的 dependency 變動：
 
 ```bash
 cd src-tauri
 cargo check
 cd ..
-git diff -- src-tauri/Cargo.lock
+git diff -- Cargo.lock
 ```
 
 ### Release contract preflight
@@ -792,7 +792,7 @@ CI 檢查：
 - macOS／Windows candidate 與 Release `build` 在建置前以 `actions/setup-go` 讀取 `src-tauri/companion-net/go.mod` 安裝 Go；Release 的 action 以完整 SHA 固定且不還原 Go 快取。release contract（`bun run check:beta-release`、`check:updater-release`）要求這兩處都有以完整 SHA 固定、讀取該 `go.mod`、且位於第一個 `tauri build` 之前的 `setup-go` 步驟；`scripts/prepare-herdr-resources.test.ts` 鎖定兩個 `externalBin` 與 Linux resource map（含 `companion-net/`）。升級 Go 時只改 `go.mod`（`setup-go` 優先讀 `toolchain` 行，沒有才讀 `go` 行），並確認 `companion.yml` 與 candidate 仍以同一版本通過。
 - macOS candidate 會確認 `Contents/MacOS/yuzora-companion` 與 `Contents/MacOS/yuzora-companion-net` 都是 arm64，且 `Contents/Resources/companion-web/index.html`、`Contents/Resources/companion-net/THIRD_PARTY_NOTICES.txt` 存在。Release 的 macOS 建置在封裝驗證後有相同的檢查步驟。Windows MSI verifier（`scripts/verify-windows-runtime-payload.ps1`）解包後要求 `yuzora-companion.exe` 與 `yuzora-companion-net.exe` 各恰好一份（Tauri 打包時移除 `externalBin` 的 target triple，安裝在 app 執行檔旁），且 `companion-web\index.html`、`companion-net\THIRD_PARTY_NOTICES.txt` 存在。release contract（`scripts/release-contract.ts`）對這三處的強制內容：macOS 兩處的步驟須為 `shell: bash`、只在 macOS 執行、不得設 `continue-on-error`，且 `run` 的非註解行須逐行完整包含上述四個 `test` 斷言，同時任一非註解行都不得含有 `||`、`set +`（含行中如 `true; set +e`）、作為單字的 `exit`（含 `exit;`）或 `exec`；Windows verifier 的非註解行須逐行完整包含兩個 `foreach` 與兩個 `Count -ne 1` 斷言（改成 `-gt 1` 或以 `#` 註解掉都會失敗），且 `Get-OneFile` 以外不得出現 `return`，也不得出現 `if ($false)`。這是靜態比對，不會執行腳本；以 `if false; then … fi`、heredoc 等結構包住斷言的寫法不在偵測範圍內，仍需由審查把關。
 - `companion.yml` 的 `net` job 在 macOS、Windows、Linux 以 `CGO_ENABLED=0`（等同出貨設定）執行 `gofmt -l`（須無輸出）、`go vet ./...`、`go test ./...`，再以固定版本（`golang.org/x/vuln/cmd/govulncheck@v1.9.0`）、與出貨相同的 `-tags ts_omit_webclient` 執行 `govulncheck ./...`；可達的標準庫或依賴弱點使 job 失敗（exit 3，不得以 `|| true` 吞掉；`contracts.rs` 檢查版本已固定、tags 與 `toolchain` 下限）。Windows job 先設定 `core.autocrlf=false`，避免 CRLF checkout 使 gofmt 誤報；Go 測試以 `t.TempDir()` 建立 state 目錄，因為 sidecar 要求絕對路徑，而 `/tmp/...` 這類字面路徑在 Windows 沒有磁碟代號、不算絕對路徑。此 workflow 只在相關路徑的 pull request 觸發，不是 required check。
-- `companion.yml` 的 `supply-chain` job 以固定版本（`cargo-deny` 0.20.2、`cargo-audit` 0.22.2）對 gateway 的 `Cargo.lock` 執行 `cargo-deny --locked check` 與 `cargo-audit audit`。目前有兩筆已審查的例外，各有負責人與 review-by 2027-03-31，且皆限於「只驗證簽章、沒有私鑰運算」：RUSTSEC-2023-0071（`rsa` 0.9.10，WebAuthn RS256 驗證）與 RUSTSEC-2026-0387（`crypto-bigint` 0.5.5，經 `webauthn_rp` 的 `p256`／`p384` 驗證 ES256／ES384）。例外列在 `src-tauri/companion/deny.toml` 與 `.cargo/audit.toml`，`tests/contracts.rs` 會檢查日期未過期、版本鎖定，且 production 相依與原始碼沒有 `p256`／`p384`／`ecdsa`／`elliptic-curve`／`crypto-bigint` 的簽章或私鑰用法；新增 production 私鑰運算會使例外失效。
+- `companion.yml` 的 `supply-chain` job 以固定版本（`cargo-deny` 0.20.2、`cargo-audit` 0.22.2）在 repository 根目錄執行三項：`cargo-deny --locked check`（根 `deny.toml`，涵蓋所有 workspace member 與唯一的根 `Cargo.lock`）；gateway 子圖的 `cargo-deny --locked --manifest-path src-tauri/companion/Cargo.toml --config src-tauri/companion/deny.toml check advisories bans`（只允許下述兩筆例外，並禁用原生 TLS 套件）；`cargo-audit audit`（讀整份 lock、只能以 ID 忽略，所以根 `.cargo/audit.toml` 的例外對所有 member 生效）。gateway 有兩筆已審查的例外，各有負責人與 review-by 2027-03-31，且皆限於「只驗證簽章、沒有私鑰運算」：RUSTSEC-2023-0071（`rsa` 0.9.10，WebAuthn RS256 驗證）與 RUSTSEC-2026-0387（`crypto-bigint` 0.5.5，經 `webauthn_rp` 的 `p256`／`p384` 驗證 ES256／ES384）。這兩筆列在 `src-tauri/companion/deny.toml`、根 `deny.toml` 與根 `.cargo/audit.toml`；根目錄另有 app（Tauri）依賴的例外，不套用到 gateway 子圖的檢查，其中 RUSTSEC-2023-0071 在根目錄也涵蓋 app 經 russh 的 `rsa` 0.10.0-rc.18，處理方式尚待決定。`tests/contracts.rs` 會檢查日期未過期、版本鎖定、gateway 子圖的檢查只忽略這兩筆，且 production 相依與原始碼沒有 `p256`／`p384`／`ecdsa`／`elliptic-curve`／`crypto-bigint` 的簽章或私鑰用法；新增 production 私鑰運算會使例外失效。
 - 本機 `go test` 若因 cgo 無法連結 Xcode SDK 而失敗，改用 `CGO_ENABLED=0 go test ./...`（與出貨及 CI 設定相同）。
 
 App、獨立 Host 與 Companion 的 Cargo release profile 都使用 `strip = "symbols"` 與 thin LTO，保留預設 panic unwinding（worker 錯誤傳遞與 Host `catch_unwind` 需要）及 codegen units，不強制單一 codegen unit。Host 準備腳本在 build 後複製 binary 並計算 manifest hash，沒有額外 strip 步驟；不可在產生 manifest 後再 strip。剝除符號會降低 release backtrace 的可讀性；實際大小與 CI build 時間須由下一次候選 build 量測，不能將未執行的 LTO 節省量視為已驗證。

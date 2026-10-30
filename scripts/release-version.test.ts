@@ -23,15 +23,13 @@ describe("release version classification", () => {
 
   it.each([
     ["src-tauri/companion/Cargo.toml", "yuzora-companion"],
-    ["src-tauri/companion/Cargo.lock", "yuzora-companion"],
-    ["src-tauri/companion/Cargo.lock", "yuzora-host"],
+    ["Cargo.lock", "yuzora-companion"],
   ])("rejects companion version drift in %s (%s)", (path, name) => {
     const root = mkdtempSync(join(tmpdir(), "yuzora-companion-version-"))
     try {
       for (const file of [
-        "package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml",
-        "src-tauri/Cargo.lock", "src-tauri/host/Cargo.toml", "src-tauri/host/Cargo.lock",
-        "src-tauri/companion/Cargo.toml", "src-tauri/companion/Cargo.lock",
+        "package.json", "src-tauri/tauri.conf.json", "src-tauri/Cargo.toml", "Cargo.lock",
+        "src-tauri/host/Cargo.toml", "src-tauri/companion/Cargo.toml",
       ]) {
         cpSync(file, join(root, file), { recursive: true })
       }
@@ -76,10 +74,8 @@ describe("version consistency across checkout line endings", () => {
       "src-tauri/tauri.conf.json": JSON.stringify({ version }),
       "src-tauri/Cargo.toml": `[package]\nname = "yuzora"\nversion = "${version}"\n`,
       "src-tauri/host/Cargo.toml": `[package]\nname = "yuzora-host"\nversion = "${version}"\n`,
-      "src-tauri/Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora"\nversion = "${rootVersion}"\n`,
-      "src-tauri/host/Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora-host"\nversion = "${hostVersion}"\n`,
       "src-tauri/companion/Cargo.toml": `[package]\nname = "yuzora-companion"\nversion = "${version}"\n`,
-      "src-tauri/companion/Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora-companion"\nversion = "${version}"\n\n[[package]]\nname = "yuzora-host"\nversion = "${version}"\n`,
+      "Cargo.lock": `version = 4\n\n[[package]]\nname = "yuzora"\nversion = "${rootVersion}"\n\n[[package]]\nname = "yuzora-companion"\nversion = "${version}"\n\n[[package]]\nname = "yuzora-host"\nversion = "${hostVersion}"\n`,
     }
     for (const [path, content] of Object.entries(files)) {
       writeFileSync(join(root, path), content.replaceAll("\n", lineEnding))
@@ -100,7 +96,7 @@ describe("version consistency across checkout line endings", () => {
     const root = fixture(lineEnding, "0.0.18", "0.0.17")
     try {
       expect(() => verifyVersionConsistency(root, `v${version}`)).toThrow(
-        "Cargo.lock root package version 0.0.18 != 0.0.19\nhost Cargo.lock package version 0.0.17 != 0.0.19",
+        "Cargo.lock app package version 0.0.18 != 0.0.19\nCargo.lock host package version 0.0.17 != 0.0.19",
       )
     } finally {
       rmSync(root, { recursive: true, force: true })

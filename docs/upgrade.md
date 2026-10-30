@@ -19,7 +19,7 @@
 | 區域 | Manifest | Lockfile |
 |---|---|---|
 | Root app | `package.json` | `bun.lock` |
-| Tauri/Rust | `src-tauri/Cargo.toml` | `src-tauri/Cargo.lock` |
+| Rust workspace（app、Host、Companion） | 根 `Cargo.toml` 與各 member 的 `Cargo.toml` | 根 `Cargo.lock` |
 | Remotion site | `site-remotion/package.json` | `site-remotion/bun.lock` |
 | CodeMirror performance spike | `spikes/cm6-perf/package.json` | `spikes/cm6-perf/bun.lock` |
 | CodeMirror LSP spike | `spikes/cm6-lsp/package.json` | `spikes/cm6-lsp/bun.lock` |
@@ -87,14 +87,12 @@ bun pm ls
 bun install --frozen-lockfile --dry-run --ignore-scripts --no-progress
 ```
 
-Rust 使用：
+Rust 使用（在 repository 根目錄執行；workspace 只有一份 lock，`cargo update` 會更新所有 member 的依賴，即使加上 `--manifest-path src-tauri/Cargo.toml` 也一樣；只想動單一 crate 時用 `cargo update -p <crate>`）：
 
 ```bash
-cargo metadata --manifest-path src-tauri/Cargo.toml \
-  --format-version 1 --locked
+cargo metadata --format-version 1 --locked
 
-cargo update --manifest-path src-tauri/Cargo.toml \
-  --dry-run --verbose
+cargo update --dry-run --verbose
 ```
 
 `cargo update --dry-run` 只回答目前 semver constraints 內可更新什麼。若要判斷 major upgrade，還必須查 crates.io 最新 non-yanked stable 版本與 upstream changelog。
@@ -301,12 +299,14 @@ bunx tsc --noEmit -p tsconfig.json
 
 ### 8.2 Rust更新與驗證
 
+在 repository 根目錄執行；`cargo update` 會更新整個 workspace 的 lock：
+
 ```bash
-cargo update --manifest-path src-tauri/Cargo.toml
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo update --manifest-path src-tauri/Cargo.toml --dry-run --verbose
+cargo update
+cargo check --locked --workspace --all-targets
+cargo fmt -p yuzora -p yuzora-host -p yuzora-companion -- --check
+cargo test --locked --workspace
+cargo update --dry-run --verbose
 ```
 
 最後一個 dry run應顯示 `Locking 0 packages`。仍被列為 available的 transitive crates，需要用 `cargo tree --invert <crate>@<version>` 確認是哪個父套件限制，不要任意 force incompatible resolution。
