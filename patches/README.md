@@ -63,3 +63,34 @@ bundles, run `bun patch --commit node_modules/@xterm/xterm` (delete the `.bun-ta
 hunk it adds to the patch file), then remove `node_modules/@xterm/xterm`, run
 `bun install --frozen-lockfile`, grep the installed bundles for `XBg`, and rerun the two
 tests and the fixture above.
+
+# xterm 6.0.0: reflow without scrollback (frozen terminal after a resize)
+
+All HERDR terminals use `scrollback: 0` (`HerdrTerminalPage`, `HerdrNativeDialog`,
+`MachineInteractiveDialog`) and HERDR full frames paint every cell, so every row is full
+width for xterm's reflow, including the blank rows below the output. When the terminal
+shrinks while the cursor is still high on the screen (for example a fresh `clear`
+followed by a few lines, then a larger font or a narrower pane), `Buffer._reflowSmaller`
+moves the cursor to the last row and then raises `ybase` to 1 without the maximum the
+`ybase > 0` branch already checks. Without scrollback that maximum is 0, so the viewport
+points one row past the buffer. If the terminal later grows while the cursor is on the
+last row (the output has filled the smaller screen), the buffer ends up one row short:
+the next write to the bottom row throws `TypeError ... setCellFromCodepoint` inside
+xterm's write timer, the write callback never runs and `TerminalOutputQueue` stops
+forever. The terminal shows stale or garbled output while HERDR keeps running. (If the
+cursor is higher when it grows, the extra `ybase` only leaves one hidden row.) Upstream
+master still has this code.
+
+The patch applies the same limit to the `ybase === 0` branch. With scrollback the limit
+is unchanged in practice; without it `ybase` stays 0 and the rows that no longer fit are
+dropped from the top (HERDR repaints them with the next full frame).
+
+Files changed by the patch: `src/common/buffer/Buffer.ts` and both bundles (search for
+`this.lines.pop()):(this.ybase<Math.min`).
+
+Test: `src/terminal/xtermScrollbackFreeResize.test.ts` (real `Terminal` behind
+`TerminalOutputQueue`, wired like `HerdrTerminalPage`; HERDR-style painted full frames
+80x24 with 7 lines -> 60x20 filled to the last row -> 100x30). Without the fix it fails
+on `baseY` and on the write callback that never comes back, with the `TypeError` above.
+When upgrading xterm, re-apply this change
+together with the two above and grep the installed bundles for the search string.
