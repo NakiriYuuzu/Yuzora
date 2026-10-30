@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { useTranslation } from "react-i18next"
 import { ChevronRight, LogOut, RefreshCw } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yuzora/shared/components/ui/button"
 import { logout, refresh } from "../client"
 import { AgentList } from "../components/AgentList"
 import { ConnectionPill } from "../components/ConnectionPill"

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect } from "react"
 import { I18nextProvider, useTranslation } from "react-i18next"
 import { X } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yuzora/shared/components/ui/button"
 import { noteActivity, refresh, retryNow } from "./client"
 import { i18n } from "./i18n"
 import { spaceKey } from "./lib/git"

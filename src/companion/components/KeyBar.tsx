@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yuzora/shared/components/ui/button"
 import { KEY_BAR } from "../lib/keys"
 import type { AgentKey } from "../lib/protocol"
 

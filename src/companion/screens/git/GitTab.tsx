@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@yuzora/shared/components/ui/tabs"
 import { spaceKey } from "../../lib/git"
 import { setSpaceView, useCompanion, type GitView } from "../../store"
 import { BranchesView } from "./BranchesView"

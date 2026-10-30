@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { KeyRound } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yuzora/shared/components/ui/button"
 import { abortLogout, connect } from "../client"
 import { Message, Page } from "../components/Page"
 import { api } from "../lib/api"

@@ -71,7 +71,7 @@ export default defineConfig({
   base: "/",
   publicDir: false,
   plugins: [react(), tailwindcss(), companionShell()],
-  resolve: { alias: { "@": path.resolve(repo, "src") } },
+  resolve: { alias: { "@yuzora/shared": path.resolve(repo, "packages/shared/src") } },
   build: {
     outDir: STAGING,
     emptyOutDir: true,

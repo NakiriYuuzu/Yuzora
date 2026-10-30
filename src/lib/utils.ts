@@ -1,6 +1,2 @@
-import { clsx, type ClassValue } from "clsx"
-import { twMerge } from "tailwind-merge"
-
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
-}
+// Shared with the Companion PWA: the source lives in packages/shared.
+export { cn } from "../../packages/shared/src/lib/utils"

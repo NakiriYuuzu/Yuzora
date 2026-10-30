@@ -1,5 +1,5 @@
-import type { GraphRow } from "@/workbench/git/graphLayout"
-import { LANE_COLORS } from "@/workbench/git/logColors"
+import type { GraphRow } from "@yuzora/shared/workbench/git/graphLayout"
+import { LANE_COLORS } from "@yuzora/shared/workbench/git/logColors"
 
 // The desktop's LogGraph geometry (src/workbench/git/LogGraph.tsx), one small SVG per row.
 const LANE_X0 = 10

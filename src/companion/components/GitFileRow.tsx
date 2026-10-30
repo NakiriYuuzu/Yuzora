@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { ChevronRight } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn } from "@yuzora/shared/lib/utils"
 import { splitPath } from "../lib/git"
 
 // Same colors as the desktop's Git file list.

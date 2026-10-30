@@ -3,18 +3,18 @@
 
 @import "tailwindcss" source(none);
 @source "./";
-@source "../components/ui/alert-dialog.tsx";
-@source "../components/ui/badge.tsx";
-@source "../components/ui/button.tsx";
-@source "../components/ui/checkbox.tsx";
-@source "../components/ui/input.tsx";
-@source "../components/ui/scroll-area.tsx";
-@source "../components/ui/tabs.tsx";
-@source "../components/ui/textarea.tsx";
+@source "../../packages/shared/src/components/ui/alert-dialog.tsx";
+@source "../../packages/shared/src/components/ui/badge.tsx";
+@source "../../packages/shared/src/components/ui/button.tsx";
+@source "../../packages/shared/src/components/ui/checkbox.tsx";
+@source "../../packages/shared/src/components/ui/input.tsx";
+@source "../../packages/shared/src/components/ui/scroll-area.tsx";
+@source "../../packages/shared/src/components/ui/tabs.tsx";
+@source "../../packages/shared/src/components/ui/textarea.tsx";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@xterm/xterm/css/xterm.css";
-@import "../styles/tokens.css";
+@import "../../packages/shared/src/styles/tokens.css";
 
 /* Latin subsets only: the shell stays a handful of files for the gateway's
    static rate limit and the precache. Other scripts use the system fallback. */

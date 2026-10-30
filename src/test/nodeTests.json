@@ -1,7 +1,9 @@
 [
   "frontend-ci.test.ts",
   "host-ci.test.ts",
+  "packages/shared/src/workbench/git/graphLayout.test.ts",
   "scripts/build-local-installers.test.ts",
+  "scripts/companion-import-closure.test.ts",
   "scripts/finalize-updater-metadata.test.ts",
   "scripts/legacy-cleanup.test.ts",
   "scripts/macos-release-assets.test.ts",
@@ -112,7 +114,6 @@
   "src/workbench/git/fileMetadata.test.ts",
   "src/workbench/git/gitChangeSelection.test.ts",
   "src/workbench/git/gitWorkingFile.test.ts",
-  "src/workbench/git/graphLayout.test.ts",
   "src/workbench/herdrBridgePolicy.test.ts",
   "src/workbench/stallTelemetry.test.ts",
   "tauriCsp.test.ts",

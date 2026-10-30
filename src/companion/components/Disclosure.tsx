@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react"
 import { ChevronRight } from "lucide-react"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { cn } from "@/lib/utils"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@yuzora/shared/components/ui/collapsible"
+import { cn } from "@yuzora/shared/lib/utils"
 
 /** A card that starts folded and shows `count` next to its title. */
 export function Disclosure({ title, count, children }: { title: string; count: number; children: ReactNode }) {

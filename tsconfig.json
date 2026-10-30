@@ -22,9 +22,10 @@
 
     /* Path aliases */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@yuzora/shared/*": ["./packages/shared/src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "packages/shared/src"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

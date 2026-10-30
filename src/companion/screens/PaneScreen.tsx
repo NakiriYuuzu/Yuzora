@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { ArrowLeft, Maximize2, Minimize2 } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yuzora/shared/components/ui/button"
 import { call, listen, observe } from "../client"
 import { ConnectionPill } from "../components/ConnectionPill"
 import { Message, Page, Progress } from "../components/Page"

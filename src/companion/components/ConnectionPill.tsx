@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { cn } from "@/lib/utils"
+import { cn } from "@yuzora/shared/lib/utils"
 import { retryNow } from "../client"
 import { useCompanion } from "../store"
 

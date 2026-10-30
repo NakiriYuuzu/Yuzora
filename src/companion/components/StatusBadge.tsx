@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next"
-import { cn } from "@/lib/utils"
+import { cn } from "@yuzora/shared/lib/utils"
 import type { AgentStatus } from "../lib/protocol"
 
 // Same colors as the desktop sidebar (space-agent-sidebar.css).

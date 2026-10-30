@@ -1,6 +1,6 @@
 import { useCallback } from "react"
 import { useTranslation } from "react-i18next"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yuzora/shared/components/ui/button"
 import { BackButton } from "../components/BackButton"
 import { ConnectionPill } from "../components/ConnectionPill"
 import { GitFileRow } from "../components/GitFileRow"

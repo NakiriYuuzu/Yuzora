@@ -56,6 +56,7 @@ export default defineConfig(({ mode }) => ({
   resolve: {
     alias: {
 "@": path.resolve(import.meta.dirname, "./src"),
+"@yuzora/shared": path.resolve(import.meta.dirname, "./packages/shared/src"),
     },
   },
   test: {

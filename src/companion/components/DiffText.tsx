@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { cn } from "@/lib/utils"
+import { ScrollArea } from "@yuzora/shared/components/ui/scroll-area"
+import { cn } from "@yuzora/shared/lib/utils"
 import type { DiffFile, DiffLine } from "../lib/diff"
 
 const LINE_TONE: Record<"add" | "del" | "context", string> = {

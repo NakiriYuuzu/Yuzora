@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { ScrollArea } from "./scroll-area"
 
 describe("ScrollArea composition", () => {
   it("keeps content layout classes on an inner content wrapper owned by the viewport", () => {

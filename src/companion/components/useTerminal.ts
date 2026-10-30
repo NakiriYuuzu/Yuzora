@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Terminal } from "@xterm/xterm"
-import { buildXtermTheme, xtermMinimumContrastRatio } from "@/terminal/xtermTheme"
+import { buildXtermTheme, xtermMinimumContrastRatio } from "@yuzora/shared/terminal/xtermTheme"
 
 const FONT_SIZE = 13
 const FONT_FAMILY = "'JetBrains Mono Variable', ui-monospace, Menlo, monospace"

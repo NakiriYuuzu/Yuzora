@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
-import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
+import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@yuzora/shared/components/ui/alert-dialog"
+import { Button } from "@yuzora/shared/components/ui/button"
 
 /** A controlled confirmation that stays open while its async action runs. */
 export function ConfirmDialog({ title, description, children, confirmLabel, busy = false, disabled = false, onConfirm, onCancel }: {
