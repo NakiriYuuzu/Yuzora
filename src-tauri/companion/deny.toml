@@ -5,7 +5,7 @@
 #     --config src-tauri/companion/deny.toml check advisories bans
 # The root deny.toml covers every member (licenses, sources, advisories with
 # the app's exceptions); none of those app exceptions applies here, and the
-# app's aws-lc-rs (through russh) stays out of these bans until P11.
+# app's aws-lc-rs (through russh) stays out of these bans.
 # Only the two reviewed exceptions below may be ignored here (tests/contracts.rs).
 
 [advisories]

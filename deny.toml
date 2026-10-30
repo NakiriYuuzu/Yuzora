@@ -5,7 +5,7 @@
 # would also hide a gateway hit. The gateway therefore has its own advisories
 # gate (only its two reviewed exceptions) and native-TLS bans over its own
 # subgraph, because the app's SSH stack (russh) still pulls aws-lc-rs; see
-# src-tauri/companion/deny.toml. The app-wide bans wait for P11 (Tauri removal).
+# src-tauri/companion/deny.toml.
 
 [advisories]
 # Owner: Yuzora maintainers; review-by: 2027-03-31.
@@ -36,9 +36,9 @@
 # zip 9.1.3. The remaining hit is tauri-plugin-updater's zip 4.6.1, which
 # extracts on Windows only, after the update signature check, and Yuzora
 # publishes no zipped updater artifact. Drop these once the updater moves to
-# zip >=9, or when Tauri leaves in P11.
+# zip >=9.
 # RUSTSEC-2024-0370 (proc-macro-error, unmaintained): build-time proc macro of
-# the Linux GTK stack (glib-macros), no safe upgrade; leaves with Tauri (P11).
+# the Linux GTK stack (glib-macros), no safe upgrade yet.
 # RUSTSEC-2026-0370/-0371/-0372 (zvariant, zbus_names, zvariant_derive,
 # unmaintained as standalone crates): Linux D-Bus through zbus 5 (notifications,
 # opener, single instance, secret-service keyring), no safe upgrade yet.
@@ -48,7 +48,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "updater zip 4.6.1 extracts signed Windows updates only (the app is on zip 9.1.3); owner: yuuzu; review-by: 2027-03-31; drop when the updater moves to zip >=9" },
     { id = "RUSTSEC-2026-0368", reason = "updater zip 4.6.1 extracts signed Windows updates only (the app is on zip 9.1.3); owner: yuuzu; review-by: 2027-03-31; drop when the updater moves to zip >=9" },
     { id = "RUSTSEC-2026-0369", reason = "updater zip 4.6.1 extracts signed Windows updates only (the app is on zip 9.1.3); owner: yuuzu; review-by: 2027-03-31; drop when the updater moves to zip >=9" },
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: yuuzu; review-by: 2027-03-31; leaves with Tauri (P11)" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names 4 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
