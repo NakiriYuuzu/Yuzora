@@ -5,7 +5,7 @@
 # would also hide a gateway hit. The gateway therefore has its own advisories
 # gate (only its two reviewed exceptions) and native-TLS bans over its own
 # subgraph, because the app's SSH stack (russh) still pulls aws-lc-rs; see
-# src-tauri/companion/deny.toml. The app-wide bans wait for P11 (Tauri removal).
+# src-tauri/companion/deny.toml.
 
 [advisories]
 # Owner: Yuzora maintainers; review-by: 2027-03-31.
@@ -32,24 +32,23 @@
 # one workspace; none is in the Host or gateway subgraph. Approved by
 # yuuzu on 2026-10-30; owner: yuuzu; review-by: 2027-03-31.
 # RUSTSEC-2026-0367/-0368/-0369 (zip <9: SUID bits, symlink targets and
-# permissions through symlinks during ZipArchive::extract). The app's zip 8.6.0
-# only writes the log export archive (ZipWriter); only tests read archives and
-# the app's code never calls extract. tauri-plugin-updater's zip 4.6.1 extracts on Windows
-# only, after the update signature check, and Yuzora publishes no zipped
-# updater artifact. Fix by moving the app to zip >=9 (separate PR) and an
-# updater release on zip >=9.
+# permissions through symlinks during ZipArchive::extract). The app itself is on
+# zip 9.1.3. The remaining hit is tauri-plugin-updater's zip 4.6.1, which
+# extracts on Windows only, after the update signature check, and Yuzora
+# publishes no zipped updater artifact. Drop these once the updater moves to
+# zip >=9.
 # RUSTSEC-2024-0370 (proc-macro-error, unmaintained): build-time proc macro of
-# the Linux GTK stack (glib-macros), no safe upgrade; leaves with Tauri (P11).
+# the Linux GTK stack (glib-macros), no safe upgrade yet.
 # RUSTSEC-2026-0370/-0371/-0372 (zvariant, zbus_names, zvariant_derive,
 # unmaintained as standalone crates): Linux D-Bus through zbus 5 (notifications,
 # opener, single instance, secret-service keyring), no safe upgrade yet.
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "gateway: rsa 0.9.10 verification-only (VAPID ES256); app: russh rsa 0.10.0-rc.18 SSH private-key signing, accepted risk (yuuzu 2026-10-30; no patched release, track RustCrypto/RSA#626); owner: Yuzora maintainers; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via p256 0.13.2 verification-only (WebAuthn ES256 over public inputs); owner: Yuzora maintainers; review-by: 2027-03-31; reassess at p256 >=0.14 / crypto-bigint >=0.7.6" },
-    { id = "RUSTSEC-2026-0367", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
-    { id = "RUSTSEC-2026-0368", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
-    { id = "RUSTSEC-2026-0369", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: yuuzu; review-by: 2027-03-31; leaves with Tauri (P11)" },
+    { id = "RUSTSEC-2026-0367", reason = "updater zip 4.6.1 extracts signed Windows updates only (the app is on zip 9.1.3); owner: yuuzu; review-by: 2027-03-31; drop when the updater moves to zip >=9" },
+    { id = "RUSTSEC-2026-0368", reason = "updater zip 4.6.1 extracts signed Windows updates only (the app is on zip 9.1.3); owner: yuuzu; review-by: 2027-03-31; drop when the updater moves to zip >=9" },
+    { id = "RUSTSEC-2026-0369", reason = "updater zip 4.6.1 extracts signed Windows updates only (the app is on zip 9.1.3); owner: yuuzu; review-by: 2027-03-31; drop when the updater moves to zip >=9" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names 4 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
