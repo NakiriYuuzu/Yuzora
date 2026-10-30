@@ -11,7 +11,7 @@ describe("release profiles", () => {
   })
 
   // Cargo ignores profiles outside the workspace root manifest.
-  it.each(["src-tauri/Cargo.toml", "src-tauri/host/Cargo.toml", "src-tauri/companion/Cargo.toml", "crates/yuzora-core/Cargo.toml"])(
+  it.each(["src-tauri/Cargo.toml", "src-tauri/host/Cargo.toml", "src-tauri/companion/Cargo.toml"])(
     "%s leaves profiles to the workspace manifest",
     async (path) => {
       const manifest = await readFile(path, "utf8")

@@ -19,7 +19,7 @@
 | 區域 | Manifest | Lockfile |
 |---|---|---|
 | Root app | `package.json` | `bun.lock` |
-| Rust workspace（app、Host、Companion、core） | 根 `Cargo.toml` 與各 member 的 `Cargo.toml` | 根 `Cargo.lock` |
+| Rust workspace（app、Host、Companion） | 根 `Cargo.toml` 與各 member 的 `Cargo.toml` | 根 `Cargo.lock` |
 | Remotion site | `site-remotion/package.json` | `site-remotion/bun.lock` |
 | CodeMirror performance spike | `spikes/cm6-perf/package.json` | `spikes/cm6-perf/bun.lock` |
 | CodeMirror LSP spike | `spikes/cm6-lsp/package.json` | `spikes/cm6-lsp/bun.lock` |
@@ -304,7 +304,7 @@ bunx tsc --noEmit -p tsconfig.json
 ```bash
 cargo update
 cargo check --locked --workspace --all-targets
-cargo fmt -p yuzora -p yuzora-host -p yuzora-companion -p yuzora-core -- --check
+cargo fmt -p yuzora -p yuzora-host -p yuzora-companion -- --check
 cargo test --locked --workspace
 cargo update --dry-run --verbose
 ```

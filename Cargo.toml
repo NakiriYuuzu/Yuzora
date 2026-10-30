@@ -4,7 +4,6 @@ members = [
     "src-tauri",
     "src-tauri/host",
     "src-tauri/companion",
-    "crates/yuzora-core",
 ]
 # Spikes keep their own manifests (and workspaces) outside this one.
 exclude = ["spikes"]

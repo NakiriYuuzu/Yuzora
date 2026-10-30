@@ -1,5 +1,5 @@
-# Workspace supply-chain policy: every member (app, Host, Companion gateway,
-# core) and the single root Cargo.lock. Run from the repository root:
+# Workspace supply-chain policy: every member (app, Host, Companion gateway)
+# and the single root Cargo.lock. Run from the repository root:
 #   cargo deny --locked check
 # Advisory ids are ignored for the whole graph, so the app's exceptions below
 # would also hide a gateway hit. The gateway therefore has its own advisories
@@ -29,7 +29,7 @@
 # immediately if production private-key operations are added.
 #
 # App (Tauri) dependencies below were first audited when the crates merged into
-# one workspace; none is in the Host, gateway or core subgraph. Approved by
+# one workspace; none is in the Host or gateway subgraph. Approved by
 # yuuzu on 2026-10-30; owner: yuuzu; review-by: 2027-03-31.
 # RUSTSEC-2026-0367/-0368/-0369 (zip <9: SUID bits, symlink targets and
 # permissions through symlinks during ZipArchive::extract). The app's zip 8.6.0

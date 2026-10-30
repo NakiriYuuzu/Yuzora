@@ -22,7 +22,7 @@ Rules:
 
 ## Rust 建置目錄重用
 
-`src-tauri`（app）、`src-tauri/host`（host）、`src-tauri/companion`（gateway）與 `crates/yuzora-core` 同屬根目錄的 Cargo workspace，共用一份 `Cargo.lock` 與一個 target（根 `.cargo/config.toml` 設為 `src-tauri/target`；`companion:prepare` 另用其下的 `src-tauri/target/companion`，和 app 的建置分開）。一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
+`src-tauri`（app）、`src-tauri/host`（host）與 `src-tauri/companion`（gateway）同屬根目錄的 Cargo workspace，共用一份 `Cargo.lock` 與一個 target（根 `.cargo/config.toml` 設為 `src-tauri/target`；`companion:prepare` 另用其下的 `src-tauri/target/companion`，和 app 的建置分開）。一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
 
 - 主 checkout（`yuzora/`）使用預設的 `target/`，不另外設定 `CARGO_TARGET_DIR`。
 - 不在主 checkout 的建置，包括 `../.yuzora-lanes/<lane>` worktree、`output/` 底下的原始碼快照，一律重用固定的 slot。不得以 lane 或 experiment 名稱建立新的 target：

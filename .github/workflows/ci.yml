@@ -140,7 +140,7 @@ jobs:
       - name: Compile all targets with locked dependencies
         if: runner.os != 'macOS'
         working-directory: src-tauri
-        run: cargo check --locked --all-targets -p yuzora -p yuzora-core
+        run: cargo check --locked --all-targets -p yuzora
 
       # Run the platform-independent quality gates once instead of repeating
       # the same fmt, clippy, and unit-test work on every compile runner.
@@ -148,7 +148,7 @@ jobs:
       - name: Format check
         if: runner.os == 'macOS'
         working-directory: src-tauri
-        run: cargo fmt -p yuzora -p yuzora-host -p yuzora-companion -p yuzora-core -- --check
+        run: cargo fmt -p yuzora -p yuzora-host -p yuzora-companion -- --check
 
       - name: Clippy (exact warning baseline)
         if: runner.os == 'macOS'
@@ -157,15 +157,10 @@ jobs:
         # recorded debt. Any added, removed, moved, or changed warning fails.
         run: ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json
 
-      # New workspace crates carry no warning debt.
-      - name: Clippy (yuzora-core, no warnings)
-        if: runner.os == 'macOS'
-        run: cargo clippy --locked --all-targets -p yuzora-core -- -D warnings
-
       - name: Rust tests
         if: runner.os == 'macOS'
         working-directory: src-tauri
-        run: cargo test --locked -p yuzora -p yuzora-core
+        run: cargo test --locked -p yuzora
 
       # Windows compiles the remote facade; real WSL GUI acceptance is separate.
       - name: Herdr transport tests
