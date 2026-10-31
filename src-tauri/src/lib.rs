@@ -23,6 +23,7 @@ pub mod git_oid;
 pub mod git_service;
 pub mod git_status;
 pub mod git_watch;
+pub mod herdr_core_service;
 mod herdr_machines;
 pub mod herdr_service;
 mod herdr_startup;
@@ -223,6 +224,9 @@ pub fn run() {
     builder
         .on_webview_event(preview_webview::forward_preview_file_drop)
         .on_webview_event(file_clipboard::record_native_drop)
+        // A reloaded main WebView leaves herdr-core viewers behind; Tauri's channels do not
+        // fail for a replaced page, so release them when the page starts loading.
+        .on_page_load(herdr_core_service::on_page_load)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
@@ -346,6 +350,20 @@ pub fn run() {
                     .inner()
                     .clone(),
             );
+            // Experimental herdr-core runtime: with its switch off (the default) nothing is
+            // connected and no core is started.
+            let herdr_core_switch = app
+                .state::<runtime_preferences::RuntimePreferencesState>()
+                .herdr_core();
+            app.manage(herdr_core_service::HerdrCoreState::launch(
+                app.handle().clone(),
+                app.path().app_data_dir()?.join("herdr-core"),
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .or_else(packaged_resource_dir_from_current_exe),
+                herdr_core_switch,
+            ));
             app.manage(companion_commands::CompanionState::new(
                 app.handle(),
                 app.path().app_data_dir()?.join("companion"),
@@ -579,6 +597,24 @@ pub fn run() {
             herdr_machines::herdr_machine_interactive_open,
             herdr_service::herdr_events_subscribe,
             herdr_service::herdr_events_release,
+            herdr_core_service::herdr_core_status,
+            herdr_core_service::herdr_core_set_enabled,
+            herdr_core_service::herdr_core_set_session,
+            herdr_core_service::herdr_core_terminal_list,
+            herdr_core_service::herdr_core_terminal_run,
+            herdr_core_service::herdr_core_terminal_close,
+            herdr_core_service::herdr_core_attach,
+            herdr_core_service::herdr_core_input,
+            herdr_core_service::herdr_core_resize,
+            herdr_core_service::herdr_core_focus,
+            herdr_core_service::herdr_core_facts,
+            herdr_core_service::herdr_core_credit,
+            herdr_core_service::herdr_core_detach,
+            herdr_core_service::herdr_core_release_all,
+            herdr_core_service::herdr_core_layout_get,
+            herdr_core_service::herdr_core_layout_apply,
+            herdr_core_service::herdr_core_events_subscribe,
+            herdr_core_service::herdr_core_events_release,
             companion_commands::companion_status,
             companion_commands::companion_experimental_set,
             companion_commands::companion_enable,
@@ -629,6 +665,11 @@ pub fn run() {
                 app.state::<herdr_service::HerdrState>()
                     .0
                     .release_all_connectors();
+                // Only Yuzora's own herdr-core viewers and connection — never the core
+                // itself. Bounded, and a no-op once released: both exit events reach here.
+                app.state::<herdr_core_service::HerdrCoreState>()
+                    .0
+                    .release_all_within(herdr_core_service::EXIT_RELEASE_DEADLINE);
                 // Bounded, and a no-op once stopped: both exit events reach here.
                 app.state::<companion_commands::CompanionState>().shutdown();
                 if !database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
@@ -720,6 +761,8 @@ mod command_inventory_tests {
             "app.state::<path_capability::SelectedPathState>().clear()",
             "app.state::<herdr_service::HerdrState>()",
             "release_all_connectors()",
+            "app.state::<herdr_core_service::HerdrCoreState>()",
+            "release_all_within(herdr_core_service::EXIT_RELEASE_DEADLINE)",
             "app.state::<companion_commands::CompanionState>().shutdown()",
             "database_shutdown_started.swap(true, std::sync::atomic::Ordering::AcqRel)",
             "shutdown_database_runtime_on_dedicated_thread(database_profiles)",
@@ -746,6 +789,18 @@ mod command_inventory_tests {
         assert!(
             child_cleanup < database_shutdown,
             "background child cleanup must start before bounded database shutdown"
+        );
+        // herdr-core viewers and connection are released (not the core) between the two,
+        // after the HERDR connectors.
+        let herdr_connectors = run_source.find("release_all_connectors()").unwrap();
+        let herdr_core_release = run_source
+            .find("release_all_within(herdr_core_service::EXIT_RELEASE_DEADLINE)")
+            .unwrap();
+        assert!(
+            child_cleanup < herdr_core_release
+                && herdr_connectors < herdr_core_release
+                && herdr_core_release < database_shutdown,
+            "herdr-core release must sit between child cleanup and database shutdown"
         );
         // graceful_exit 先寫再清理：後面任何一步 hang 或 panic 都不該讓「這次有
         // 正常走到 exit handler」的證據消失。
@@ -780,6 +835,38 @@ mod command_inventory_tests {
             assert!(
                 run_source.contains(cmd),
                 "missing runtime preference command: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn herdr_core_commands_are_registered() {
+        let source = include_str!("lib.rs");
+        let run_source = source.split("#[cfg(test)]").next().unwrap();
+        for command in [
+            "status",
+            "set_enabled",
+            "set_session",
+            "terminal_list",
+            "terminal_run",
+            "terminal_close",
+            "attach",
+            "input",
+            "resize",
+            "focus",
+            "facts",
+            "credit",
+            "detach",
+            "release_all",
+            "layout_get",
+            "layout_apply",
+            "events_subscribe",
+            "events_release",
+        ] {
+            let registration = format!("herdr_core_service::herdr_core_{command},");
+            assert!(
+                run_source.lines().any(|line| line.trim() == registration),
+                "missing herdr-core command registration: {registration}"
             );
         }
     }
