@@ -30,9 +30,10 @@ use super::frame::{self, Decoder, Dir, Frame};
 use super::paths::Endpoint;
 use super::rpc;
 use crate::herdr_transport::{
-    bind_local_listener, connect_local_stream, poll_local_stream_read, wait_local_readable,
-    LocalListener, LocalStream, LocalStreamRead, LocalWaitProfile,
+    bind_local_listener, connect_local_stream, LocalListener, LocalStream, LocalStreamRead,
 };
+#[cfg(unix)]
+use crate::herdr_transport::{poll_local_stream_read, wait_local_readable, LocalWaitProfile};
 
 /// One DATA frame at most, like the core's.
 const CHUNK: usize = 32 * 1024;
@@ -441,29 +442,39 @@ struct Conn<'a> {
     silenced: bool,
 }
 
-/// Windows: the core's writes, on a thread of their own.
+/// Windows: the core's pipe I/O, on threads of their own, the way an asynchronous core
+/// always has a read posted and writes apart from it.
 ///
-/// With a nonblocking server end, every client test in CI timed out waiting for the ~760-byte
-/// `hello` reply: the pipe buffer is 512 bytes, and the client only reads what `PeekNamedPipe`
-/// reports. So the pipe stays blocking here, and a blocking write waits for the client to drain
-/// it. That write runs apart from the reads, like a real core's: the client's own writes
-/// (credit from its reader thread among them) are always read, whatever the core is sending.
-/// Reads never block either, since `poll_local_stream_read` only takes what is there.
+/// The fake core first peeked and wrote from a nonblocking server end, like the Unix one. In CI,
+/// the pipe's 512-byte buffer then let nothing larger through in either direction: every client
+/// test timed out waiting for the ~760-byte `hello` reply, and later a 64 KiB input frame never
+/// left the client. Here the pipe stays blocking, a read is always waiting for what the client
+/// writes, and a write waits for the client to drain the pipe without holding up those reads.
 #[cfg(windows)]
-struct PipeWriter {
+struct PipeIo {
+    stream: Arc<LocalStream>,
     queue: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    incoming: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    /// Read but not yet handed to the connection.
+    unread: Vec<u8>,
     failed: Arc<Mutex<Option<io::Error>>>,
     stop: Arc<AtomicBool>,
 }
 
 #[cfg(windows)]
-impl PipeWriter {
-    fn start(stream: Arc<LocalStream>) -> PipeWriter {
+impl PipeIo {
+    /// One read takes a whole input frame (64 KiB of bytes and its header).
+    const READ: usize = 128 * 1024;
+
+    fn start(stream: LocalStream) -> PipeIo {
+        use std::io::Read;
+        let stream = Arc::new(stream);
         let (queue, chunks) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (arrived, incoming) = std::sync::mpsc::channel();
         let failed = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let (failed, stop) = (failed.clone(), stop.clone());
+            let (stream, failed, stop) = (stream.clone(), failed.clone(), stop.clone());
             thread::spawn(move || {
                 for chunk in chunks {
                     if stop.load(Ordering::Acquire) {
@@ -476,11 +487,56 @@ impl PipeWriter {
                 }
             });
         }
-        PipeWriter {
+        {
+            let stream = stream.clone();
+            thread::spawn(move || loop {
+                let mut buf = vec![0u8; Self::READ];
+                match (&*stream).read(&mut buf) {
+                    // The client hung up: the channel closing says so.
+                    Ok(0) => return,
+                    Ok(n) => {
+                        buf.truncate(n);
+                        if arrived.send(Ok(buf)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = arrived.send(Err(e));
+                        return;
+                    }
+                }
+            });
+        }
+        PipeIo {
+            stream,
             queue: Some(queue),
+            incoming,
+            unread: Vec::new(),
             failed,
             stop,
         }
+    }
+
+    /// What `poll_local_stream_read` reports on Unix, from what the reader thread got.
+    fn poll(&mut self, buf: &mut [u8]) -> io::Result<LocalStreamRead> {
+        use std::sync::mpsc::TryRecvError;
+        if self.unread.is_empty() {
+            match self.incoming.try_recv() {
+                Ok(Ok(bytes)) => self.unread = bytes,
+                Ok(Err(e))
+                    if is_hangup(&e) || matches!(e.raw_os_error(), Some(109 | 232 | 233)) =>
+                {
+                    return Ok(LocalStreamRead::Closed)
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(TryRecvError::Empty) => return Ok(LocalStreamRead::Pending),
+                Err(TryRecvError::Disconnected) => return Ok(LocalStreamRead::Closed),
+            }
+        }
+        let n = self.unread.len().min(buf.len());
+        buf[..n].copy_from_slice(&self.unread[..n]);
+        self.unread.drain(..n);
+        Ok(LocalStreamRead::Data(n))
     }
 
     /// Hands what `conn` has to send to the writer. Fails once a write did.
@@ -499,11 +555,20 @@ impl PipeWriter {
 }
 
 #[cfg(windows)]
-impl Drop for PipeWriter {
-    /// The connection is over: what is still queued is never sent.
+impl Drop for PipeIo {
+    /// The connection is over: what is still queued is never sent, and disconnecting the pipe
+    /// ends the waiting read and write, so the client sees it go at once.
     fn drop(&mut self) {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
         self.stop.store(true, Ordering::Release);
         self.queue.take();
+        let LocalStream::NamedPipe(pipe) = &*self.stream;
+        // SAFETY: the handle stays open for the call: `self.stream` holds it.
+        unsafe {
+            windows_sys::Win32::System::Pipes::DisconnectNamedPipe(
+                pipe.as_handle().as_raw_handle() as _,
+            );
+        }
     }
 }
 
@@ -511,9 +576,7 @@ fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
     #[cfg(unix)]
     stream.set_nonblocking(true)?;
     #[cfg(windows)]
-    let stream = Arc::new(stream);
-    #[cfg(windows)]
-    let writer = PipeWriter::start(stream.clone());
+    let mut io = PipeIo::start(stream);
     let mut conn = Conn {
         shared,
         mode: Mode::Plain,
@@ -530,7 +593,11 @@ fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
             return Ok(());
         }
         let mut busy = false;
-        match poll_local_stream_read(&stream, &mut buf)? {
+        #[cfg(unix)]
+        let got = poll_local_stream_read(&stream, &mut buf)?;
+        #[cfg(windows)]
+        let got = io.poll(&mut buf)?;
+        match got {
             LocalStreamRead::Data(n) => {
                 busy = true;
                 lock(&shared.inner).stats.bytes_in += n as u64;
@@ -546,7 +613,7 @@ fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
         #[cfg(unix)]
         let flushed = conn.flush(&stream);
         #[cfg(windows)]
-        let flushed = writer.take(&mut conn);
+        let flushed = io.take(&mut conn);
         match flushed {
             Ok(wrote) => busy |= wrote,
             // The client hung up while the core was answering (a call still in flight when
@@ -558,12 +625,15 @@ fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
             Err(e) => return Err(e),
         }
         if !busy || !conn.out.is_empty() {
+            #[cfg(unix)]
             wait_local_readable(
                 &stream,
                 Some(Instant::now() + Duration::from_millis(2)),
                 LocalWaitProfile::Interactive,
                 0,
             )?;
+            #[cfg(windows)]
+            thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -859,7 +929,7 @@ impl Conn<'_> {
     }
 
     /// Writes as much as the socket takes. Returns whether anything was written. (Windows hands
-    /// `out` to a [`PipeWriter`] instead.)
+    /// `out` to a [`PipeIo`] instead.)
     #[cfg(unix)]
     fn flush(&mut self, stream: &LocalStream) -> io::Result<bool> {
         let mut wrote = false;
