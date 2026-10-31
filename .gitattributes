@@ -1,4 +1,6 @@
 src-tauri/resources/herdr/LICENSE-HERDR.txt text eol=lf
+src-tauri/resources/herdr-core/LICENSE-HERDR-CORE.txt text eol=lf
+src-tauri/resources/herdr-core/THIRD-PARTY-NOTICES-HERDR-CORE.txt text eol=lf
 src-tauri/resources/host/LICENSE-HERDR.txt text eol=lf
 src-tauri/resources/legacy-cleanup/*.sh text eol=lf
 patches/*.patch text eol=lf -whitespace

@@ -1,0 +1,182 @@
+{
+  "comment": "S8 pins (2026-10-30). Downloaded via the upstream HTTPS+SHA-256 manifest (no GitHub releases exist; only tags). Windows file lists from the S8 Windows CI (runs 40943785331, 40944895981; archive SHA-256 matched both the manifest and this file). P0 S4 (2026-10-30): pinned version moved 0.1.13 -> 0.1.14. `bundled` is now 0.1.14 (macOS entry downloaded and verified in S4; Windows entry is pending S2 CI and only carries the archive SHA-256 declared by the upstream manifest, not yet verified by a download). The former `bundled` entry (0.1.13) is kept unchanged as `previous`; S8's ci/windows.yml still reads `.bundled` expecting 0.1.13 and must read `.previous` instead.",
+  "bundled": {
+    "version": "0.1.14",
+    "generation": 1,
+    "tag": "v0.1.14",
+    "source_commit": "29e6d375623de40cb4820e0894aa131ba057b796",
+    "manifest_url": "https://releases.herdr.dev/core/0.1.14/manifest.json",
+    "latest_json_url": "https://releases.herdr.dev/core/latest.json",
+    "targets": {
+      "macos-aarch64": {
+        "url": "https://releases.herdr.dev/core/0.1.14/herdr-core-macos-aarch64.tar.gz",
+        "archive_sha256": "ca524329d2e0630219550055dcc71f42aafd85fba356e0d543d6f51244487970",
+        "archive_bytes": 2310772,
+        "files": [
+          {
+            "path": "herdr-core",
+            "sha256": "29e9184ec5094d302b130983ebc13c3210f04470233393f16e4a91ecb167a307",
+            "bytes": 5029184,
+            "signature": "adhoc,linker-signed (no Developer ID)"
+          }
+        ]
+      },
+      "windows-x86_64": {
+        "url": "https://releases.herdr.dev/core/0.1.14/herdr-core-windows-x86_64.zip",
+        "archive_sha256": "e7cf9e5ed025ed2f4a0cb3fa88ac93a8f2165dc7172064d1df4d56db4d54cffd",
+        "archive_bytes": 3572268,
+        "files": [
+          {
+            "path": "conpty/conpty.dll",
+            "sha256": "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8",
+            "bytes": 109920,
+            "signature": "Authenticode Valid (CN=Microsoft Corporation)"
+          },
+          {
+            "path": "conpty/x64/OpenConsole.exe",
+            "sha256": "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160",
+            "bytes": 1066296,
+            "signature": "Authenticode Valid (CN=Microsoft Corporation)"
+          },
+          {
+            "path": "herdr-core.exe",
+            "sha256": "38c8d18421cf99039bbc2f9f2fa627a12deba3f86ebb297f6122bf137a06d984",
+            "bytes": 7731488,
+            "signature": "Authenticode Valid (CN=herdr)"
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+            "sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b",
+            "bytes": 1116,
+            "signature": "none (text file)"
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
+            "sha256": "e7fbaadee6ab20c28b87730a510ee5f5815d8fb4bd88d1d54d282dc2a74c0726",
+            "bytes": 23176,
+            "signature": "none (text file)"
+          }
+        ],
+        "source": "P0 S2 CI run 41081887161 (manifest SHA-256 verified before extraction)"
+      }
+    }
+  },
+  "previous": {
+    "version": "0.1.13",
+    "generation": 1,
+    "tag": "v0.1.13",
+    "source_commit": "88fe4e752debdc6ff6689eaa153d7f95819835a4",
+    "manifest_url": "https://releases.herdr.dev/core/0.1.13/manifest.json",
+    "latest_json_url": "https://releases.herdr.dev/core/latest.json",
+    "targets": {
+      "macos-aarch64": {
+        "url": "https://releases.herdr.dev/core/0.1.13/herdr-core-macos-aarch64.tar.gz",
+        "archive_sha256": "fc1ffba3820b93b0e2faa5394a64b9ff5528f135611b6034469d81c0fa1c37aa",
+        "archive_bytes": 2310522,
+        "files": [
+          {
+            "path": "herdr-core",
+            "sha256": "47b9c1e5ba99bc42590ee4fc18cb658cd88a5e9c75b7d9e08e94e8fef32d4d80",
+            "bytes": 5029184,
+            "signature": "adhoc,linker-signed (no Developer ID)"
+          }
+        ]
+      },
+      "windows-x86_64": {
+        "url": "https://releases.herdr.dev/core/0.1.13/herdr-core-windows-x86_64.zip",
+        "archive_sha256": "1b2998c72d6f36a600ca1d0d00be0389bac66b7f900e5e2e6dc6209c2abd5551",
+        "files": [
+          {
+            "path": "herdr-core.exe",
+            "sha256": "e30aa5e14eb79e5f30232cf7321945101cbb68db69f5fc3848d203493eef4850",
+            "bytes": 7731488,
+            "signature": "Authenticode Valid (CN=herdr)"
+          },
+          {
+            "path": "conpty/conpty.dll",
+            "sha256": "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8",
+            "bytes": 109920,
+            "signature": "Authenticode Valid (CN=Microsoft Corporation)"
+          },
+          {
+            "path": "conpty/x64/OpenConsole.exe",
+            "sha256": "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160",
+            "bytes": 1066296,
+            "signature": "Authenticode Valid (CN=Microsoft Corporation)"
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+            "sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b",
+            "bytes": 1116,
+            "signature": "none (text file)"
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
+            "sha256": "e7fbaadee6ab20c28b87730a510ee5f5815d8fb4bd88d1d54d282dc2a74c0726",
+            "bytes": 23176,
+            "signature": "none (text file)"
+          }
+        ],
+        "archive_bytes": 3572541
+      }
+    }
+  },
+  "older": {
+    "version": "0.1.11",
+    "generation": 1,
+    "tag": "v0.1.11",
+    "manifest_url": "https://releases.herdr.dev/core/0.1.11/manifest.json",
+    "targets": {
+      "macos-aarch64": {
+        "url": "https://releases.herdr.dev/core/0.1.11/herdr-core-macos-aarch64.tar.gz",
+        "archive_sha256": "cd314925cd848e222b5e23561a751b2377a2ae3874ff0110463ad486baf8eff4",
+        "archive_bytes": 2310248,
+        "files": [
+          {
+            "path": "herdr-core",
+            "sha256": "38cc20dbd79ea278d8ac1c59b110d61f682311168a04d7f49e0ed9e9846ce46a",
+            "bytes": 5029184,
+            "signature": "adhoc,linker-signed (no Developer ID)"
+          }
+        ]
+      },
+      "windows-x86_64": {
+        "url": "https://releases.herdr.dev/core/0.1.11/herdr-core-windows-x86_64.zip",
+        "archive_sha256": "662b2286a733a51980f840e3e9141d4fc8b7f6ea34ad022e4e5298315af997aa",
+        "archive_bytes": 3561676,
+        "files": [
+          {
+            "path": "herdr-core.exe",
+            "sha256": "1af6b7bc0372e5158fdd625dc1ec042de87337c0d351476681ab41b6acffca6d",
+            "bytes": 7699744,
+            "signature": "Authenticode Valid (CN=herdr)"
+          },
+          {
+            "path": "conpty/conpty.dll",
+            "sha256": "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8",
+            "bytes": 109920,
+            "signature": "Authenticode Valid (CN=Microsoft Corporation)"
+          },
+          {
+            "path": "conpty/x64/OpenConsole.exe",
+            "sha256": "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160",
+            "bytes": 1066296,
+            "signature": "Authenticode Valid (CN=Microsoft Corporation)"
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+            "sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b",
+            "bytes": 1116,
+            "signature": "none (text file)"
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
+            "sha256": "e7fbaadee6ab20c28b87730a510ee5f5815d8fb4bd88d1d54d282dc2a74c0726",
+            "bytes": 23176,
+            "signature": "none (text file)"
+          }
+        ]
+      }
+    }
+  }
+}

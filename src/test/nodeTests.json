@@ -6,6 +6,7 @@
   "scripts/legacy-cleanup.test.ts",
   "scripts/macos-release-assets.test.ts",
   "scripts/prepare-companion.test.ts",
+  "scripts/prepare-herdr-core-resources.test.ts",
   "scripts/prepare-herdr-resources.test.ts",
   "scripts/prepare-host-resources.test.ts",
   "scripts/prepare-updater-metadata.test.ts",

@@ -347,6 +347,18 @@ pub(crate) fn write_local_all_until(
     bytes: &[u8],
     deadline: Instant,
 ) -> io::Result<()> {
+    write_local_all_until_shared(stream, bytes, deadline)
+}
+
+/// [`write_local_all_until`] for a stream a reader thread also holds: a `&`
+/// handle writes through the same `Write for &Stream` impl. Callers serialize
+/// their own writers (one frame or line must not interleave with another).
+pub(crate) fn write_local_all_until_shared(
+    stream: &LocalStream,
+    bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut stream = stream;
     prepare_local_stream(stream)?;
     let mut offset = 0usize;
     let mut attempt = 0u32;
@@ -394,6 +406,36 @@ pub(crate) fn write_local_all_until(
         }
     }
     Ok(())
+}
+
+/// Ends both directions of a connection at once: the peer sees the end now, and a reader
+/// sleeping in `poll` wakes up instead of waiting out its slice. Data already written is
+/// still delivered. Unix only; a named pipe client has no half-close and ends when dropped.
+pub(crate) fn shutdown_local_stream(stream: &LocalStream) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsFd, AsRawFd};
+        let LocalStream::UdSocket(socket) = stream;
+        // SAFETY: the borrowed socket stays alive for the call; shutdown does not close or
+        // take ownership of the descriptor. A failure (already shut down) changes nothing.
+        let _ = unsafe { libc::shutdown(socket.as_fd().as_raw_fd(), libc::SHUT_RDWR) };
+    }
+    #[cfg(windows)]
+    {
+        let _ = stream;
+    }
+}
+
+/// Blocks until `stream` may be readable or `deadline` passes (Unix: `poll`;
+/// Windows: the `profile` back-off). Spurious wake-ups are normal; callers
+/// re-poll with [`poll_local_stream_read`].
+pub(crate) fn wait_local_readable(
+    stream: &LocalStream,
+    deadline: Option<Instant>,
+    profile: LocalWaitProfile,
+    attempt: u32,
+) -> io::Result<()> {
+    wait_local_ready(stream, false, deadline, profile, attempt)
 }
 
 fn deadline_exceeded(deadline: Option<Instant>) -> bool {
