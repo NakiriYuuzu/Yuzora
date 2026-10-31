@@ -1056,6 +1056,17 @@ mod scenarios {
         core.terminal_close("t9").unwrap();
         assert_eq!(fake.count("terminal.rm"), rms);
         assert_eq!(core.terminal_close("").unwrap_err().code, "invalid_input");
+        // A kill that failed is reported even when `terminal.rm` is unavailable as well (here
+        // both are refused for a terminal on another machine): closing did not happen.
+        let kills = fake.count("terminal.kill");
+        assert_eq!(
+            core.terminal_close("box/t7").unwrap_err().code,
+            "unsupported"
+        );
+        assert_eq!(
+            (fake.count("terminal.kill"), fake.count("terminal.rm")),
+            (kills, rms)
+        );
         core.apply_config(false, "yuzora");
     }
 

@@ -590,14 +590,16 @@ impl HerdrCore {
             _ => {}
         }
         // `terminal.rm` is optional, and refuses a terminal that is still live: when the kill
-        // failed for another reason, that is the error worth reporting.
+        // failed for another reason, that is the error worth reporting, also when there is no
+        // `terminal.rm` to try.
         match session.rpc("terminal.rm", params) {
-            Ok(_) | Err(ClientError::Unsupported(_)) => Ok(()),
+            Ok(_) => Ok(()),
             Err(e) if CoreError::from_client(&e).is_not_found() => Ok(()),
-            Err(e) => Err(match killed {
-                Err(kill_error) => CoreError::from_client(&kill_error),
-                Ok(_) => CoreError::from_client(&e),
-            }),
+            Err(e) => match killed {
+                Err(kill_error) => Err(CoreError::from_client(&kill_error)),
+                Ok(_) if matches!(e, ClientError::Unsupported(_)) => Ok(()),
+                Ok(_) => Err(CoreError::from_client(&e)),
+            },
         }
     }
 
