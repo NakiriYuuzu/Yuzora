@@ -783,8 +783,8 @@ impl HerdrCore {
         drain_viewers(&mut lock(&self.shared.inner))
     }
 
-    /// Test seam: the registered attaches and subscriptions.
-    #[cfg(test)]
+    /// Test seam: the registered attaches and subscriptions (the scenarios using it are Unix-only).
+    #[cfg(all(test, unix))]
     pub(super) fn registered(&self) -> (usize, usize) {
         let inner = lock(&self.shared.inner);
         (

@@ -829,10 +829,11 @@ mod tests {
             ]
         );
         assert_eq!(env["HC_SESSION"], "yuzora");
-        assert_eq!(
-            env["HC_SOCKET"],
-            "/Users/test/.local/state/herdr-core/yuzora/yuzora.sock"
-        );
+        assert_eq!(env["HC_SOCKET"], ep.socket.to_string_lossy());
+        // Compared by components: a Windows host joins this macOS path with `\`.
+        assert!(ep
+            .socket
+            .ends_with(".local/state/herdr-core/yuzora/yuzora.sock"));
         // Only HC_SESSION / HC_SOCKET of the HC_* names survive, and as ours.
         let hc_like: Vec<&String> = env
             .keys()

@@ -23,7 +23,12 @@ use super::testkit::{
 fn connect(core: &FakeCore) -> (Session, Arc<Recorder>) {
     let recorder = Arc::new(Recorder::default());
     let session = Session::connect(&core.endpoint(), SessionConfig::default(), recorder.clone())
-        .expect("connect to the fake core");
+        .unwrap_or_else(|e| {
+            panic!(
+                "connect to the fake core: {e:?}; {}",
+                core.stats().summary()
+            )
+        });
     (session, recorder)
 }
 
@@ -106,7 +111,12 @@ fn incompatible_cores_are_refused_with_the_reason() {
         )
         .err()
         .expect("refused");
-        assert_eq!(err, ClientError::Incompatible(refusal));
+        assert_eq!(
+            err,
+            ClientError::Incompatible(refusal),
+            "{}",
+            core.stats().summary()
+        );
         assert_eq!(err.code(), "incompatible");
     }
     // A newer core than the bundled one is used.
@@ -905,7 +915,12 @@ fn an_attach_answered_after_its_timeout_is_closed_again_at_the_core() {
         ..SessionConfig::default()
     };
     let session = Session::connect(&core.endpoint(), config, Arc::new(Recorder::default()))
-        .expect("connect to the fake core");
+        .unwrap_or_else(|e| {
+            panic!(
+                "connect to the fake core: {e:?}; {}",
+                core.stats().summary()
+            )
+        });
     let sink = Arc::new(Collect::default());
     let started = Instant::now();
     let result = session.attach(&request("t1"), sink.clone());
@@ -965,7 +980,12 @@ fn attaches_the_core_never_answers_do_not_pile_up_state_until_the_session_ends()
         ..SessionConfig::default()
     };
     let session = Session::connect(&core.endpoint(), config, Arc::new(Recorder::default()))
-        .expect("connect to the fake core");
+        .unwrap_or_else(|e| {
+            panic!(
+                "connect to the fake core: {e:?}; {}",
+                core.stats().summary()
+            )
+        });
     let before = session.holders();
     let sinks: Vec<Arc<Collect>> = (0..20).map(|_| Arc::new(Collect::default())).collect();
     thread::scope(|scope| {

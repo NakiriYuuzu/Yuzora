@@ -366,7 +366,8 @@ fn herdr_core_the_commands_act_as_the_build_they_run_in() {
     );
 
     // And the commands hand over to those two without a say in it.
-    let source = include_str!("../herdr_core_service.rs");
+    // A Windows checkout has CRLF line endings.
+    let source = include_str!("../herdr_core_service.rs").replace("\r\n", "\n");
     for (command, helper) in [
         ("pub async fn herdr_core_set_enabled", "change_enabled("),
         ("pub async fn herdr_core_set_session", "change_session("),

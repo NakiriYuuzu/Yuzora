@@ -138,9 +138,22 @@ pub(crate) struct Stats {
     /// Unix-only test of `Session::close` reads it.
     #[cfg_attr(not(unix), allow(dead_code))]
     pub client_hangups: usize,
+    /// What a failed connect reports: connections accepted, bytes read and written, and why
+    /// the accept loop or a connection ended early.
+    pub accepted: usize,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub ended: Vec<String>,
 }
 
 impl Stats {
+    pub fn summary(&self) -> String {
+        format!(
+            "fake core: accepted {}, read {} B, wrote {} B, calls {:?}, ended {:?}",
+            self.accepted, self.bytes_in, self.bytes_out, self.calls, self.ended
+        )
+    }
+
     pub fn credit_total(&self, channel: u32) -> u64 {
         self.credits
             .get(&channel)
@@ -359,16 +372,26 @@ fn write_doc(inner: &mut Inner, name: &str, value: Value) -> u64 {
 
 fn accept_loop(listener: LocalListener, shared: Arc<Shared>) {
     loop {
-        let Ok(stream) = listener.accept() else {
-            return;
+        let stream = match listener.accept() {
+            Ok(stream) => stream,
+            Err(e) => {
+                lock(&shared.inner).stats.ended.push(format!("accept: {e}"));
+                return;
+            }
         };
         if shared.stop.load(Ordering::Acquire) {
             return;
         }
-        let born = lock(&shared.inner).kill_generation;
+        let born = {
+            let mut inner = lock(&shared.inner);
+            inner.stats.accepted += 1;
+            inner.kill_generation
+        };
         let shared = shared.clone();
         thread::spawn(move || {
-            let _ = serve(stream, &shared, born);
+            if let Err(e) = serve(stream, &shared, born) {
+                lock(&shared.inner).stats.ended.push(format!("serve: {e}"));
+            }
         });
     }
 }
@@ -432,6 +455,7 @@ fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
         match poll_local_stream_read(&stream, &mut buf)? {
             LocalStreamRead::Data(n) => {
                 busy = true;
+                lock(&shared.inner).stats.bytes_in += n as u64;
                 conn.ingest(&buf[..n]);
             }
             LocalStreamRead::Pending => {}
@@ -761,6 +785,7 @@ impl Conn<'_> {
                 Ok(0) => break,
                 Ok(n) => {
                     self.out.drain(..n);
+                    lock(&self.shared.inner).stats.bytes_out += n as u64;
                     wrote = true;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
