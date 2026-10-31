@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::traits::{Listener as _, Stream as _};
+use interprocess::local_socket::traits::Listener as _;
+#[cfg(unix)]
+use interprocess::local_socket::traits::Stream as _;
 use serde_json::{json, Value};
 
 use super::client::{
@@ -348,14 +350,19 @@ impl FakeCore {
 impl Drop for FakeCore {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
-        // Wake the blocking accept.
-        let _ = connect_local_stream(
+        // Wake the blocking accept, and keep that connection open until the acceptor has seen
+        // it: on Windows `accept` drops a client that already hung up and goes on waiting.
+        let wake = connect_local_stream(
             &self.path.to_string_lossy(),
             Instant::now() + Duration::from_secs(2),
         );
         if let Some(acceptor) = self.acceptor.take() {
-            let _ = acceptor.join();
+            // Nothing woke it: leave the thread blocked rather than this test.
+            if wake.is_ok() {
+                let _ = acceptor.join();
+            }
         }
+        drop(wake);
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -434,8 +441,79 @@ struct Conn<'a> {
     silenced: bool,
 }
 
+/// Windows: the core's writes, on a thread of their own.
+///
+/// With a nonblocking server end, every client test in CI timed out waiting for the ~760-byte
+/// `hello` reply: the pipe buffer is 512 bytes, and the client only reads what `PeekNamedPipe`
+/// reports. So the pipe stays blocking here, and a blocking write waits for the client to drain
+/// it. That write runs apart from the reads, like a real core's: the client's own writes
+/// (credit from its reader thread among them) are always read, whatever the core is sending.
+/// Reads never block either, since `poll_local_stream_read` only takes what is there.
+#[cfg(windows)]
+struct PipeWriter {
+    queue: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    failed: Arc<Mutex<Option<io::Error>>>,
+    stop: Arc<AtomicBool>,
+}
+
+#[cfg(windows)]
+impl PipeWriter {
+    fn start(stream: Arc<LocalStream>) -> PipeWriter {
+        let (queue, chunks) = std::sync::mpsc::channel::<Vec<u8>>();
+        let failed = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let (failed, stop) = (failed.clone(), stop.clone());
+            thread::spawn(move || {
+                for chunk in chunks {
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if let Err(e) = (&*stream).write_all(&chunk) {
+                        *lock(&failed) = Some(e);
+                        return;
+                    }
+                }
+            });
+        }
+        PipeWriter {
+            queue: Some(queue),
+            failed,
+            stop,
+        }
+    }
+
+    /// Hands what `conn` has to send to the writer. Fails once a write did.
+    fn take(&self, conn: &mut Conn<'_>) -> io::Result<bool> {
+        if let Some(e) = lock(&self.failed).take() {
+            return Err(e);
+        }
+        if conn.out.is_empty() {
+            return Ok(false);
+        }
+        let out = std::mem::take(&mut conn.out);
+        lock(&conn.shared.inner).stats.bytes_out += out.len() as u64;
+        let _ = self.queue.as_ref().map(|queue| queue.send(out));
+        Ok(true)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PipeWriter {
+    /// The connection is over: what is still queued is never sent.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.queue.take();
+    }
+}
+
 fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
+    #[cfg(unix)]
     stream.set_nonblocking(true)?;
+    #[cfg(windows)]
+    let stream = Arc::new(stream);
+    #[cfg(windows)]
+    let writer = PipeWriter::start(stream.clone());
     let mut conn = Conn {
         shared,
         mode: Mode::Plain,
@@ -465,7 +543,11 @@ fn serve(stream: LocalStream, shared: &Shared, born: u64) -> io::Result<()> {
             }
         }
         busy |= conn.pump();
-        match conn.flush(&stream) {
+        #[cfg(unix)]
+        let flushed = conn.flush(&stream);
+        #[cfg(windows)]
+        let flushed = writer.take(&mut conn);
+        match flushed {
             Ok(wrote) => busy |= wrote,
             // The client hung up while the core was answering (a call still in flight when
             // it closed): the same event as reading its end.
@@ -776,7 +858,9 @@ impl Conn<'_> {
         moved
     }
 
-    /// Writes as much as the socket takes. Returns whether anything was written.
+    /// Writes as much as the socket takes. Returns whether anything was written. (Windows hands
+    /// `out` to a [`PipeWriter`] instead.)
+    #[cfg(unix)]
     fn flush(&mut self, stream: &LocalStream) -> io::Result<bool> {
         let mut wrote = false;
         let mut socket = stream;
