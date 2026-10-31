@@ -36,6 +36,8 @@ src-tauri/resources/herdr/macos-x86_64/*
 !src-tauri/resources/herdr/macos-x86_64/.gitkeep
 src-tauri/resources/herdr/windows-x86_64/*
 !src-tauri/resources/herdr/windows-x86_64/.gitkeep
+src-tauri/resources/herdr-core/macos-aarch64/
+src-tauri/resources/herdr-core/windows-x86_64/
 /logs/
 *.log
 *.local

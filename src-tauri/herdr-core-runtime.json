@@ -1,0 +1,63 @@
+{
+  "version": "0.1.14",
+  "generation": 1,
+  "sourceTag": "v0.1.14",
+  "sourceCommit": "29e6d375623de40cb4820e0894aa131ba057b796",
+  "manifestUrl": "https://releases.herdr.dev/core/0.1.14/manifest.json",
+  "licenses": [
+    {
+      "path": "LICENSE-HERDR-CORE.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "source": "herdrdev/herdr-core@v0.1.14:LICENSE"
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES-HERDR-CORE.txt",
+      "sha256": "b80a5042844922c489864d2ec2ebec523c3d5818865c9a45a649355ba1552d03",
+      "source": "herdrdev/herdr-core@v0.1.14:crates/herdr-core/THIRD-PARTY-NOTICES"
+    }
+  ],
+  "targets": {
+    "macos-aarch64": {
+      "id": "macos-aarch64",
+      "destination": "macos-aarch64",
+      "format": "tar.gz",
+      "url": "https://releases.herdr.dev/core/0.1.14/herdr-core-macos-aarch64.tar.gz",
+      "archiveSha256": "ca524329d2e0630219550055dcc71f42aafd85fba356e0d543d6f51244487970",
+      "files": [
+        {
+          "path": "herdr-core",
+          "sha256": "29e9184ec5094d302b130983ebc13c3210f04470233393f16e4a91ecb167a307"
+        }
+      ]
+    },
+    "windows-x86_64": {
+      "id": "windows-x86_64",
+      "destination": "windows-x86_64",
+      "format": "zip",
+      "url": "https://releases.herdr.dev/core/0.1.14/herdr-core-windows-x86_64.zip",
+      "archiveSha256": "e7cf9e5ed025ed2f4a0cb3fa88ac93a8f2165dc7172064d1df4d56db4d54cffd",
+      "files": [
+        {
+          "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
+          "sha256": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"
+        },
+        {
+          "path": "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md",
+          "sha256": "e7fbaadee6ab20c28b87730a510ee5f5815d8fb4bd88d1d54d282dc2a74c0726"
+        },
+        {
+          "path": "conpty/conpty.dll",
+          "sha256": "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8"
+        },
+        {
+          "path": "conpty/x64/OpenConsole.exe",
+          "sha256": "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160"
+        },
+        {
+          "path": "herdr-core.exe",
+          "sha256": "38c8d18421cf99039bbc2f9f2fa627a12deba3f86ebb297f6122bf137a06d984"
+        }
+      ]
+    }
+  }
+}
