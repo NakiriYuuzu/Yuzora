@@ -28,7 +28,8 @@
 //!   loading a page ([`on_page_load`], hooked in `lib.rs`), and again by the frontend's own
 //!   `herdr_core_release_all` at start-up. An attach or subscription still waiting for its
 //!   answer when the page started loading is not registered yet, so it is released as it
-//!   registers instead, and rejects with `page_replaced`.
+//!   registers instead, and rejects with `page_replaced`. Its page is the one loaded when the
+//!   command came in, before it waited for a blocking thread.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -120,6 +121,22 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || operation(core))
         .await
         .map_err(|e| CoreError::internal(e.to_string()))?
+}
+
+/// [`blocking`] for work that belongs to the page loaded now: the page is taken when this is
+/// called, not when a blocking thread gets to the work, so a reload in between still counts
+/// against the page that asked.
+fn blocking_for_page<T: Send + 'static>(
+    state: &HerdrCoreState,
+    operation: impl FnOnce(Arc<HerdrCore>, u64) -> Result<T, CoreError> + Send + 'static,
+) -> impl std::future::Future<Output = Result<T, CoreError>> {
+    let core = state.0.clone();
+    let page = core.page();
+    async move {
+        tauri::async_runtime::spawn_blocking(move || operation(core, page))
+            .await
+            .map_err(|e| CoreError::internal(e.to_string()))?
+    }
 }
 
 // ---------------------------------------------------------------------------------- control plane
@@ -308,7 +325,7 @@ pub async fn herdr_core_attach(
     display: Option<DisplayFactsArg>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<AttachInfo, CoreError> {
-    blocking(&state, move |core| {
+    blocking_for_page(&state, move |core, page| {
         let request = AttachRequest {
             terminal,
             cols,
@@ -316,7 +333,7 @@ pub async fn herdr_core_attach(
             history: history.unwrap_or(DEFAULT_HISTORY),
             display: display.unwrap_or_default().into(),
         };
-        core.attach(&request, channel_sender(on_data))
+        core.attach_from_page(page, &request, channel_sender(on_data))
     })
     .await
 }
@@ -493,8 +510,11 @@ pub async fn herdr_core_events_subscribe(
     state: tauri::State<'_, HerdrCoreState>,
     on_event: Channel<CoreEvent>,
 ) -> Result<String, CoreError> {
-    blocking(&state, move |core| {
-        core.subscribe(Arc::new(move |event| on_event.send(event.clone()).is_ok()))
+    blocking_for_page(&state, move |core, page| {
+        core.subscribe_from_page(
+            page,
+            Arc::new(move |event| on_event.send(event.clone()).is_ok()),
+        )
     })
     .await
 }

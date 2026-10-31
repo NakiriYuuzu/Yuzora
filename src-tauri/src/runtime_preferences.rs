@@ -5,6 +5,7 @@
 //! Every setter reads the file again, changes its own field and writes the file back, so
 //! flipping one switch never resets another, and an installed Yuzora and a debug build that
 //! share this file (same app identifier, same app data dir) do not undo each other's fields.
+//! A lock file held across that read and write keeps two processes from interleaving them.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,8 @@ use tauri::Manager;
 use crate::host_service::HostTarget;
 
 const RUNTIME_PREFERENCES_FILE: &str = "runtime-preferences.json";
+/// Locked by a setter, not the file itself: that file is replaced by a rename on every write.
+const RUNTIME_PREFERENCES_LOCK: &str = "runtime-preferences.lock";
 pub const PREFERENCES_UNWRITABLE_ERROR: &str = "runtime-preferences-unwritable";
 pub const WSL_DISABLED_ERROR: &str = "wsl-runtime-disabled-open-settings";
 
@@ -176,6 +179,23 @@ fn read_for_update(dir: &Path) -> Result<RuntimePreferences, String> {
     }
 }
 
+/// Held while a setter reads, changes and writes the file. The in-process mutex only orders
+/// this process's setters; an installed app and a debug build each have their own, and
+/// without this lock both could read the same old file and the later write would drop the
+/// other's change. Released when the returned file is dropped.
+fn lock_for_update(dir: &Path) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("failed to create preferences dir: {e}"))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(RUNTIME_PREFERENCES_LOCK))
+        .map_err(|e| format!("failed to open the preferences lock: {e}"))?;
+    file.lock()
+        .map_err(|e| format!("failed to lock preferences: {e}"))?;
+    Ok(file)
+}
+
 /// Read, change one field, write back. `apply` runs on the file's contents and on this
 /// process's copy, so the copy only ever changes the field a setter changed: another
 /// process's edit to a different field does not leak into this process's gates.
@@ -185,6 +205,7 @@ pub fn update(
     apply: impl Fn(&mut RuntimePreferences),
 ) -> Result<RuntimePreferences, String> {
     let mut current = state.0.lock().unwrap();
+    let _held = lock_for_update(dir)?;
     let mut next = read_for_update(dir)?;
     apply(&mut next);
     save_to(dir, &next)?;
@@ -518,6 +539,45 @@ mod tests {
         assert!(after_core.wsl_enabled);
         assert!(!after_core.herdr_core_enabled);
         assert_eq!(load_from(dir.path()), after_core);
+    }
+
+    #[test]
+    fn herdr_core_a_setter_waits_for_another_process_mid_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        // The installed app is mid-update: it holds the lock and has read the file.
+        let held = lock_for_update(&path).unwrap();
+        let mut theirs = read_for_update(&path).unwrap();
+        // A debug build (its own process, so its own state and mutex) flips its switch.
+        let (done, finished) = std::sync::mpsc::channel();
+        let debug_build = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let state = state_of(RuntimePreferences::default());
+                let result = set_herdr_core_enabled(&path, &state, true, true);
+                let _ = done.send(());
+                result
+            })
+        };
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "it waits for the update in progress"
+        );
+        theirs.herdr_core_enabled = true;
+        save_to(&path, &theirs).unwrap();
+        drop(held);
+        debug_build.join().unwrap().unwrap();
+        let on_disk = load_from(&path);
+        assert!(
+            on_disk.herdr_core_enabled,
+            "the installed app's change stays"
+        );
+        assert!(
+            on_disk.herdr_core_enabled_dev,
+            "and so does the debug build's"
+        );
     }
 
     #[test]

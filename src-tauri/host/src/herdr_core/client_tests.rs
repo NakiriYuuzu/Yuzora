@@ -1338,6 +1338,50 @@ fn a_request_that_names_another_machine_is_never_sent() {
     assert!(core.stats().calls.contains(&"terminal.run".to_string()));
 }
 
+#[test]
+fn a_terminal_on_another_machine_is_never_attached_or_named() {
+    let core = FakeCore::start();
+    let (session, _) = connect(&core);
+    // The core lists a connected machine's terminals as `machine/t7`.
+    assert_eq!(
+        session
+            .attach(&request("box/t7"), Arc::new(Collect::default()))
+            .err(),
+        Some(ClientError::Unsupported("terminal.attach".into()))
+    );
+    let named = [
+        ("terminal.get", json!({"terminal": "box/t7"})),
+        (
+            "terminal.send",
+            json!({"terminal": "box/t7", "text": "ls\r"}),
+        ),
+        ("terminal.run", json!({"cwd": "/a", "parent": "box/t7"})),
+        ("terminal.run", json!({"cwd": "/a", "caller": "box/t1"})),
+    ];
+    for (method, params) in &named {
+        assert!(session.hello().has(method), "{method} is declared");
+        assert_eq!(
+            session.rpc(method, params.clone()),
+            Err(ClientError::Unsupported((*method).into())),
+            "{method} {params}"
+        );
+    }
+    let calls = core.stats().calls;
+    assert!(
+        !calls.iter().any(|c| [
+            "terminal.attach",
+            "terminal.get",
+            "terminal.send",
+            "terminal.run"
+        ]
+        .contains(&c.as_str())),
+        "none of them was sent: {calls:?}"
+    );
+    // This core's own terminals are addressed as before.
+    let _ = session.rpc("terminal.get", json!({"terminal": "t7"}));
+    assert!(core.stats().calls.contains(&"terminal.get".to_string()));
+}
+
 // ---------------------------------------------------------------------------------- layout json
 
 #[test]

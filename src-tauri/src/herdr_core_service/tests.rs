@@ -158,6 +158,18 @@ fn herdr_core_blocking_adapter_reports_a_panicking_operation_as_an_internal_erro
 }
 
 #[test]
+fn herdr_core_page_work_belongs_to_the_page_that_asked_not_the_one_loaded_when_it_runs() {
+    let core = HerdrCore::new(Deps::production(|_| {}));
+    let state = HerdrCoreState(Arc::new(core));
+    let asked_on = state.0.page();
+    // Scheduled, not run yet: the page reloads before a blocking thread gets to the work.
+    let pending = blocking_for_page(&state, |_, page| Ok(page));
+    state.0.release_for_reload();
+    assert_ne!(state.0.page(), asked_on);
+    assert_eq!(tauri::async_runtime::block_on(pending), Ok(asked_on));
+}
+
+#[test]
 fn herdr_core_every_command_is_registered_in_lib() {
     let lib = include_str!("../lib.rs");
     let run_source = lib.split("#[cfg(test)]").next().unwrap();

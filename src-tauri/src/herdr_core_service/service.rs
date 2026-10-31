@@ -628,14 +628,20 @@ impl HerdrCore {
     ///
     /// The viewer belongs to the page that is loaded when this is called: if the main WebView
     /// starts loading another one before the core has answered, the viewer is released again
-    /// and this fails with `page_replaced`.
+    /// and this fails with `page_replaced`. (Commands use [`HerdrCore::attach_from_page`]: they
+    /// take the page before waiting for a blocking thread.)
+    #[cfg(test)]
     pub fn attach(
         &self,
         request: &AttachRequest,
         send: AttachSend,
     ) -> Result<AttachInfo, CoreError> {
-        let page = lock(&self.shared.inner).page;
-        self.attach_from_page(page, request, send)
+        self.attach_from_page(self.page(), request, send)
+    }
+
+    /// The page loaded now: what an attach or subscription belongs to.
+    pub(super) fn page(&self) -> u64 {
+        lock(&self.shared.inner).page
     }
 
     /// [`HerdrCore::attach`] for a call that began when the loaded page was number `page`.
@@ -806,9 +812,9 @@ impl HerdrCore {
     /// Like an attach, it belongs to the page that is loaded when this is called, and fails
     /// with `page_replaced` (registering nothing, telling the sink nothing) if another page
     /// has started loading by the time it would be registered.
+    #[cfg(test)]
     pub fn subscribe(&self, sink: EventSink) -> Result<String, CoreError> {
-        let page = lock(&self.shared.inner).page;
-        self.subscribe_from_page(page, sink)
+        self.subscribe_from_page(self.page(), sink)
     }
 
     /// [`HerdrCore::subscribe`] for a call that began when the loaded page was number `page`.

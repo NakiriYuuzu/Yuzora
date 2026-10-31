@@ -1291,11 +1291,17 @@ impl Session {
     /// session ends while the answer is being handled, this still returns the attach, already
     /// ended: the sink gets [`AttachEnd::Session`] and input fails with
     /// [`ClientError::Closed`].
+    ///
+    /// A terminal on another machine (`machine/t7`) is [`ClientError::Unsupported`], and
+    /// nothing is sent.
     pub fn attach(
         &self,
         request: &AttachRequest,
         sink: Arc<dyn AttachSink>,
     ) -> Result<Attach, ClientError> {
+        if on_another_machine(&request.terminal) {
+            return Err(ClientError::Unsupported("terminal.attach".into()));
+        }
         let mut params = json!({
             "terminal": request.terminal,
             "cols": request.cols,
@@ -1439,12 +1445,28 @@ impl Drop for Session {
 ///   `machine.rename` and `machine.rm` change their list, `machine.exec` runs programs there.
 ///   Only `machine.list` reads (prefix `machine.`, for the same reason as `file.`);
 /// * a request that names another machine (`on`, whatever its value) reaches past this core,
-///   and remote machines are not part of the first round (`terminal.run`, `doc.*`, ...).
+///   and remote machines are not part of the first round (`terminal.run`, `doc.*`, ...);
+/// * so does one that names a terminal on another machine (see [`on_another_machine`]).
 fn denied(method: &str, params: &Value) -> bool {
     matches!(method, "server.stop" | "server.restart")
         || method.starts_with("file.")
         || (method.starts_with("machine.") && method != "machine.list")
         || params.get("on").is_some()
+        || TERMINAL_PARAMS.iter().any(|key| {
+            params
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(on_another_machine)
+        })
+}
+
+/// The parameters upstream's schema gives a terminal address in.
+const TERMINAL_PARAMS: &[&str] = &["terminal", "parent", "children_of", "caller"];
+
+/// A connected machine's terminals are listed as `machine/t7`; this core's own are `t7`.
+/// Sending such an address would reach that machine, which the first round does not.
+fn on_another_machine(address: &str) -> bool {
+    address.contains('/')
 }
 
 struct SessionDocIo<'a> {
