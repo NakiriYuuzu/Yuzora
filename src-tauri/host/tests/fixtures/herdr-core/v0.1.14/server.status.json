@@ -1,0 +1,14 @@
+{
+  "core": {
+    "id": "e8961876ef510ca7f1e42de858c639d8",
+    "name": "s8-host"
+  },
+  "finished": 0,
+  "holder": null,
+  "holders": [],
+  "installed_by": null,
+  "live": 0,
+  "pid": 36240,
+  "uptime_ms": 14835,
+  "version": "0.1.14"
+}

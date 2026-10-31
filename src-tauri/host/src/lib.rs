@@ -17,6 +17,7 @@ pub mod git_status;
 pub mod git_watch;
 pub mod herdr_backend;
 pub mod herdr_command;
+pub mod herdr_core;
 pub mod herdr_limits;
 pub mod herdr_machines;
 pub mod herdr_runtime;

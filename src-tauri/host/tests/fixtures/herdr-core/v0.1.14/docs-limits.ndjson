@@ -1,0 +1,16 @@
+{"binary_sha256":"29e9184ec5094d302b130983ebc13c3210f04470233393f16e4a91ecb167a307","description":"1 MiB limit at the exact boundary, delete with null, stale writer after delete, doc survives a core restart (after_restart_version note added by the restart phase)","fixture":"docs-limits.ndjson","platform":"macos","recorded_by":"s8-probe","version":"0.1.14"}
+{"note":{"accepted_bytes":1048576,"refused_bytes":1048577,"refused_error":{"kind":"invalid_params","message":"document exceeds 1 MiB of JSON"}},"t_ms":109}
+{"note":{"big_doc_bytes":1048576,"big_doc_version":1},"t_ms":393}
+{"conn":"C","dir":"out","mode":"plain","msg":{"id":1,"jsonrpc":"2.0","method":"doc.set","params":{"name":"yuzora-s8c-l","value":null,"version":1}},"t_ms":393}
+{"conn":"C","dir":"in","mode":"plain","msg":{"id":1,"jsonrpc":"2.0","result":{"version":2}},"t_ms":399}
+{"conn":"C","dir":"out","mode":"plain","msg":{"id":2,"jsonrpc":"2.0","method":"doc.get","params":{"name":"yuzora-s8c-l"}},"t_ms":399}
+{"conn":"C","dir":"in","mode":"plain","msg":{"id":2,"jsonrpc":"2.0","result":{"value":null,"version":2}},"t_ms":400}
+{"conn":"C","dir":"out","mode":"plain","msg":{"id":3,"jsonrpc":"2.0","method":"doc.set","params":{"name":"yuzora-s8c-l","value":{"x":1},"version":0}},"t_ms":400}
+{"conn":"C","dir":"in","mode":"plain","msg":{"error":{"code":-32000,"data":{"hint":"read doc.get and retry with its version","kind":"conflict"},"message":"document \"yuzora-s8c-l\" is at version 2, not 0"},"id":3,"jsonrpc":"2.0"},"t_ms":400}
+{"conn":"C","dir":"out","mode":"plain","msg":{"id":4,"jsonrpc":"2.0","method":"doc.get","params":{"name":"t7"}},"t_ms":400}
+{"conn":"C","dir":"in","mode":"plain","msg":{"error":{"code":-32602,"data":{"hint":"see `hc schema`","kind":"invalid_params"},"message":"bad name \"t7\": use 1-32 of a-z 0-9 - _ . starting with a letter or digit, not shaped like an id (t7)"},"id":4,"jsonrpc":"2.0"},"t_ms":401}
+{"note":{"after_delete":{"value":null,"version":2},"delete_version":2},"t_ms":401}
+{"conn":"C","dir":"out","mode":"plain","msg":{"id":5,"jsonrpc":"2.0","method":"server.status","params":{}},"t_ms":401}
+{"conn":"C","dir":"in","mode":"plain","msg":{"id":5,"jsonrpc":"2.0","result":{"core":{"id":"e8961876ef510ca7f1e42de858c639d8","name":"s8-host"},"finished":10,"holder":{"current":true,"instance":"016ae77d858edd78c15100fea61319a7","pid":36822,"terminals":0},"holders":[{"current":true,"instance":"016ae77d858edd78c15100fea61319a7","pid":36822,"terminals":0}],"installed_by":null,"live":0,"pid":36240,"uptime_ms":86827,"version":"0.1.14"}},"t_ms":402}
+{"note":{"doc_names":["yuzora-s8c","yuzora-s8c-l"],"pid_before_restart":36240},"t_ms":402}
+{"note":{"after_restart_spaces":3,"after_restart_version":3,"pid_after_restart":37113},"t_ms":0}
