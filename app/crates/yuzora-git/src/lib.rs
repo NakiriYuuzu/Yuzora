@@ -120,7 +120,7 @@ export function merge(repo: string, target: string, options?: { noFf?: boolean; 
 export function rebase(repo: string, upstream: string, options?: { onto?: string; branch?: string; rebaseMerges?: boolean; updateRefs?: boolean; autosquash?: boolean; keepEmpty?: boolean; root?: boolean }): Promise<Outcome>;
 /** continue | abort | skip | quit for the merge, rebase, cherry-pick or revert in progress. */
 export function sequencer(repo: string, action: string): Promise<Outcome>;
-export function fetch(repo: string, options?: { remote?: string; prune?: boolean; token?: string }): Promise<Outcome>;
+export function fetch(repo: string, options?: { remote?: string; prune?: boolean; token?: string; auto?: boolean }): Promise<Outcome>;
 export function pull(repo: string, options?: { remote?: string; branch?: string; method?: string; noFf?: boolean; squash?: boolean; noCommit?: boolean; noVerify?: boolean; token?: string }): Promise<Outcome>;
 /** Where the current branch would push and the commits it would send. */
 export function pushPreview(repo: string): Promise<any>;

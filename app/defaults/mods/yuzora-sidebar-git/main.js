@@ -43,9 +43,10 @@ export default class SidebarGit extends View {
   // moves come back through the watcher (↑↓ in the branch button).
   autoFetch(cx) {
     const minutes = Number(gitSettings().autoFetchMinutes ?? 0), repo = this.repo;
-    if (!minutes || !repo || this.busy || this.st?.trust || Date.now() - this.fetchedAt < minutes * 60000) return;
+    // Only once status came back trusted (the engine refuses otherwise too).
+    if (!minutes || !repo || !this.st || this.st.trust || this.busy || Date.now() - this.fetchedAt < minutes * 60000) return;
     this.fetchedAt = Date.now();
-    cx.spawn(async () => { try { await fetch(repo.id, {}); } catch {} });
+    cx.spawn(async () => { try { await fetch(repo.id, { auto: true }); } catch {} });
   }
 
   // A new place: open its repo and follow it until the place changes.

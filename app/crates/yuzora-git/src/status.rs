@@ -266,7 +266,7 @@ pub fn read(repo: &Repo, force: bool) -> GitResult<Value> {
     if force {
         repo.status.lock().unwrap_or_else(|e| e.into_inner()).dirty(Scope::All);
     }
-    let pending = crate::trust::pending(repo);
+    let pending = crate::trust::pending(repo)?;
     if !pending.is_empty() {
         let mut v = snapshot(repo);
         v["trust"] = json!(pending);

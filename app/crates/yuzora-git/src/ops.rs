@@ -481,7 +481,18 @@ pub fn sequencer(repo: &Repo, action: &str) -> GitResult<Value> {
 // ---- fetch, pull, push ----
 
 pub fn fetch(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> {
-    let mut cmd = Git::read(["fetch"]).timeout(LONG_TIMEOUT).cancel(cancel);
+    // `auto`: a fetch nobody asked for (Settings › Git › auto fetch). It waits
+    // for a trusted folder and runs no hooks (fetch runs reference-transaction);
+    // a fetch the person starts runs as it would in a terminal.
+    let auto = o.get("auto").and_then(Value::as_bool).unwrap_or(false);
+    if auto {
+        let pending = crate::trust::pending(repo)?;
+        if !pending.is_empty() {
+            return Err(GitError::Other(format!("the folder isn't trusted ({})", pending.join(", "))));
+        }
+    }
+    let args: &[&str] = if auto { &["-c", "core.hooksPath=/dev/null", "fetch"] } else { &["fetch"] };
+    let mut cmd = Git::read(args.iter().copied()).timeout(LONG_TIMEOUT).cancel(cancel);
     match o.get("remote").and_then(Value::as_str).filter(|r| !r.is_empty()) {
         Some(r) => cmd = cmd.arg(r),
         None => cmd = cmd.arg("--all"),
