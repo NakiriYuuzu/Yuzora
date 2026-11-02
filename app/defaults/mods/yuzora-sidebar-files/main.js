@@ -296,7 +296,8 @@ export default class FilesSidebar extends View {
 
   toggleSearch(cx) {
     this.searching = !this.searching;
-    if (this.searching) this.searchInput.focus();
+    // Results kept while closed may be from other settings or files: look again.
+    if (this.searching) { this.searchInput.focus(); this.search(cx); }
     cx.notify();
   }
 

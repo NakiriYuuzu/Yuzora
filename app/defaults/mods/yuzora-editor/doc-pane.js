@@ -3,11 +3,11 @@
 // test keeps them so). Props: {path, on?, line?, column?, opened?}.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { theme, settings, panes, focused, agents, watchFolder, notify, setShared, nextCommand, home, props, window as win } from "herdr";
+import { theme, settings, panes, focused, agents, watchFolder, notify, shared, setShared, nextCommand, home, props, window as win } from "herdr";
 import { t, tokens } from "yuzora:core";
 import {
   openDocument, releaseDocument, documentState, documentChanged, saveDocument, reloadDocument, keepMine,
-  checkDisk, focusDocument, gotoLine, notePane, find, findStep, endFind, replaceOne, replaceAll, unsavedCount, Editor, Markdown,
+  checkDisk, focusDocument, gotoLine, notePane, find, findStep, endFind, replaceOne, replaceAll, unsavedCount, startedAt, Editor, Markdown,
 } from "yuzora:files";
 
 const PANES = new Set(["yuzora-editor", "yuzora-markdown"]);
@@ -15,6 +15,10 @@ const AGENT_WINDOW = 3 * 60 * 1000;
 // A line to go to and focus on open apply only this soon after the pane was
 // opened, never again later (a restart, a change made by an agent).
 const OPEN_WINDOW = 10 * 1000;
+// Lines gone to for panes opened by hand (a line, no `opened`), by request:
+// the layout restores those props on every start.
+const WENT = "yuzora.files.went";
+const WENT_KEEP = 7 * 24 * 60 * 60 * 1000;
 
 const parent = path => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
@@ -49,7 +53,12 @@ export class DocPane extends View {
     this.doc = this.path ? openDocument(this.path, { on: this.on }) : null;
     this.state = this.doc ? documentState(this.doc) : null;
     this.wasDirty = false;
-    this.until = (p.opened ?? 0) + OPEN_WINDOW;
+    // Opened by hand (pane.split with a line, no `opened`): new unless this
+    // request went to its line in an earlier run (a restored pane). The same
+    // request again in this run goes again.
+    this.went = p.line && p.opened == null ? `${this.on ?? ""}\n${this.path}\n${p.line}:${p.column ?? 1}` : null;
+    const wentAt = this.went ? shared(WENT)?.[this.went] : null;
+    this.until = this.went ? (wentAt != null && wentAt < startedAt() ? 0 : Date.now() + OPEN_WINDOW) : (p.opened ?? 0) + OPEN_WINDOW;
     this.fresh = Date.now() < this.until;
     this.goto = p.line && this.fresh ? { line: p.line, column: p.column ?? 1 } : null;
     // A line to go to is in the source (this pane only; the saved choice stays).
@@ -133,6 +142,11 @@ export class DocPane extends View {
     const ready = s.phase === "ready" && s.owner === this.owner && this.view === "source";
     if (ready && this.goto) {
       gotoLine(this.doc, this.goto.line, this.goto.column);
+      if (this.went) {
+        const now = Date.now(), all = shared(WENT) ?? {};
+        const kept = Object.fromEntries(Object.entries(all).filter(([, at]) => now - at < WENT_KEEP));
+        setShared(WENT, { ...kept, [this.went]: now });
+      }
       this.goto = null; this.fresh = false;
     } else if (ready && this.fresh) {
       focusDocument(this.doc);

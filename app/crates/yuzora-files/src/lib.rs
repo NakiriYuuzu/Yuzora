@@ -63,6 +63,8 @@ export interface EditorLook { font_family?: string; font_size?: number;
 
 /** The yuzora-files crate's version (Yuzora's). */
 export function version(): string;
+/** When the app started (ms since the epoch): something recorded before it was from an earlier run. */
+export function startedAt(): number;
 /** The language a file is highlighted as, by its name. */
 export function languageFor(path: string): Language | null;
 export function languages(): Language[];
@@ -255,12 +257,17 @@ fn null(_: ()) -> HostValue {
 }
 
 /// The `yuzora:files` module.
+/// When the app started: the module is made as the app starts.
+static STARTED_AT: LazyLock<u64> = LazyLock::new(docs::now_ms);
+
 pub fn host_module() -> HostModule {
+    LazyLock::force(&STARTED_AT);
     HostModule::new(NAME)
         .declarations(DECLARATIONS)
         .function("version", |_| {
             Ok(HostValue::Str(yuzora_core::VERSION.into()))
         })
+        .function("startedAt", |_| Ok(HostValue::Number(*STARTED_AT as f64)))
         .function("languageFor", |a| {
             Ok(Lang::detect(a.string(0)?)
                 .map(language)

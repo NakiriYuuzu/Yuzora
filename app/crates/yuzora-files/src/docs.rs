@@ -270,7 +270,7 @@ pub struct DocView {
     _subscriptions: Vec<Subscription>,
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -622,9 +622,10 @@ impl DocView {
                     }
                     Err(WriteError::Conflict(now)) => {
                         // What is there now: a conflict to resolve, or a file gone.
+                        // Read even under the same stamp: the bytes may be what changed.
                         doc.conflict = now.is_some();
                         doc.deleted = now.is_none();
-                        drop(doc.check_disk(cx));
+                        drop(doc.look_at_disk(true, cx));
                         Saved {
                             ok: false,
                             conflict: true,
@@ -668,6 +669,12 @@ impl DocView {
     /// Looks at the file on disk: a clean document follows a change made
     /// elsewhere; a dirty one is marked as in conflict.
     pub fn check_disk(&mut self, cx: &mut Context<Self>) -> oneshot::Receiver<()> {
+        self.look_at_disk(false, cx)
+    }
+
+    /// [`Self::check_disk`]; `read`: compare the content even when the stamp
+    /// is the same (a save was refused for its bytes).
+    fn look_at_disk(&mut self, read: bool, cx: &mut Context<Self>) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
         if self.checking || self.saving || self.phase == Phase::Loading {
             let _ = tx.send(());
@@ -690,7 +697,7 @@ impl DocView {
         cx.spawn(async move |this, cx| {
             let probe = blocking(move || match fsops::stat(&key.path, key.on.as_deref()) {
                 Ok(None) => Probe::Missing,
-                Ok(Some(stamp)) if Some(stamp) == disk => Probe::Same,
+                Ok(Some(stamp)) if Some(stamp) == disk && !read => Probe::Same,
                 Ok(Some(_)) => match fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES)
                 {
                     Ok(file) if file.hash == disk_hash => Probe::Touched(file.stamp),
@@ -1238,6 +1245,41 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
+    }
+
+    #[gpui::test]
+    fn keep_mine_resolves_a_change_the_stamp_did_not_show(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "mine ", cx);
+        // Same length, and the clock put back: only the bytes tell.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, "two\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        drop(view.update(cx, |doc, cx| doc.save(false, cx)));
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two\n");
+        cx.update(|cx| {
+            let doc = view.read(cx);
+            assert!(doc.conflict);
+            assert_eq!(
+                doc.incoming.as_ref().map(|f| f.text.as_str()),
+                Some("two\n")
+            );
+        });
+        // Keeping mine takes what is there as the base, so the next save writes.
+        view.update(cx, |doc, cx| doc.keep_mine(cx));
+        drop(view.update(cx, |doc, cx| doc.save(false, cx)));
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
+        cx.update(|cx| assert!(!view.read(cx).conflict && !view.read(cx).dirty));
     }
 
     #[gpui::test]

@@ -75,6 +75,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 - 同一個檔案已有 pane 顯示時，`pane.focus` 過去；否則把 focused pane 往右分割，沒有 focused pane 時開新 tab。
 - pane 不知道自己的 pane id，所以每次編輯器取得焦點時，用 `focused().pane` 記到文件上（`notePane`），之後才能 focus 回來。圖片沒有文件：側欄在 `pane.split` 之後記下取得焦點的新 pane，下次開同一張圖時 focus 過去（只記得從側欄開的圖片）。
 - 帶 `line` 開 `.md`（例如內容搜尋的結果）時以原始碼開啟並跳到該行；預覽／原始碼的偏好不變。
+- 跳行與聚焦只在開啟後 10 秒內套用（props 的 `opened`），重啟還原 pane 時不再跳。手動 `pane.split` 只帶 `line`、沒有 `opened` 時也會跳：跳過的請求（機器＋路徑＋行列）記在 `shared("yuzora.files.went")`，紀錄早於這次啟動（`startedAt()`）就是重啟還原的 pane，不再跳也不搶焦點；同一次執行裡再開同樣的請求則照跳。紀錄保留 7 天。
 
 ### 共享狀態
 
@@ -122,6 +123,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
   - `l5-06-git-marks.png`：在 app 外修改 README.md、刪掉 package.json，樹即時更新（`M`、檔案消失）。
   - `l5-07-goto-line.png`：`pane.split` 帶 `line: 15, column: 7` 開檔，游標在 Ln 15, Col 7，編輯器取得焦點。
   - `l5-08-markdown-goto-line.png`：帶 `line: 20` 開 `.md`，以原始碼開啟、游標在 Ln 20。
+  - `l5-10-goto-line-by-hand.png`：`pane.split` 只帶 `line: 15, column: 7`（沒有 `opened`）開檔，游標在 Ln 15, Col 7；重啟後這個 pane 停在 Ln 1，焦點留在原本的 pane。
   - `l5-09-image-actual-size.png`：2400×1600 的圖以 100% 顯示（下方 pane，暫時的 probe mod），從左上角原尺寸排版、可捲動，不再置中裁切。
 - 沒有在實機驗的（需要鍵盤或滑鼠；未取得 computer-use 授權）：輸入後的未儲存標記與存檔、衝突橫幅、⌘F 搜尋取代、右鍵選單、樹的展開、側欄搜尋、Markdown 原始碼切換、「<Agent> 也在改」。其中存檔與衝突判斷有 `fsops` 單元測試，互動本身都沒有在實機驗過。
 
