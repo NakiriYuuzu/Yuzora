@@ -116,10 +116,13 @@ Function RemoveTauriApp
 FunctionEnd
 
 Section "Yuzora"
-  ; Only into an empty folder or Yuzora's own (/D= can point anywhere).
+  ; Only into an empty folder or the one Yuzora is installed in, as its
+  ; uninstall entry says: /D= can point anywhere, and a file that happens to
+  ; be named yuzora.png proves nothing.
   ${DirState} "$INSTDIR" $R0
+  ReadRegStr $R1 HKCU "${UNINST_KEY}" "InstallLocation"
   ${If} $R0 == 1
-  ${AndIfNot} ${FileExists} "$INSTDIR\yuzora.png"
+  ${AndIf} $R1 != $INSTDIR
     MessageBox MB_ICONSTOP "$(NotEmpty) $INSTDIR" /SD IDOK
     SetErrorLevel 2
     Quit

@@ -122,7 +122,13 @@ impl Beta1 {
         };
         let webkit = cfg!(target_os = "macos").then(|| home.join("Library/WebKit").join(TAURI_ID));
         let found = Beta1::at(data_root.join(TAURI_ID), home.join(".yuzora"), webkit, Box::new(KeyringLegacy));
-        (found.data.is_dir() || found.dot.is_dir()).then_some(found)
+        found.left_anything().then_some(found)
+    }
+
+    /// Whether any of its folders is there: the WebKit one alone (a language
+    /// picked, nothing else) counts too.
+    pub fn left_anything(&self) -> bool {
+        self.data.is_dir() || self.dot.is_dir() || self.webkit.as_deref().is_some_and(Path::is_dir)
     }
 
     /// A JSON file of beta.1's (`path` under [`Beta1::data`] or [`Beta1::dot`]).
@@ -519,6 +525,19 @@ mod tests {
         let fresh = root.join("fresh");
         assert_eq!(run(&[&Db], None, &fresh, &store), vec![("db".into(), Status::NoBeta1)]);
         assert!(!fresh.join(STATE_FILE).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn webkit_data_alone_is_a_beta1_install() {
+        let root = temp("left");
+        let at = |webkit: Option<PathBuf>| Beta1::at(root.join("data"), root.join("dot"), webkit, Box::new(MemoryLegacy::default()));
+        assert!(!at(None).left_anything());
+        assert!(!at(Some(root.join("WebKit"))).left_anything());
+        std::fs::create_dir_all(root.join("WebKit")).unwrap();
+        assert!(at(Some(root.join("WebKit"))).left_anything());
+        std::fs::create_dir_all(root.join("dot")).unwrap();
+        assert!(at(None).left_anything());
         std::fs::remove_dir_all(root).unwrap();
     }
 

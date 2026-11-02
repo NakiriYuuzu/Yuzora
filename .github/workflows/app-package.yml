@@ -145,13 +145,16 @@ jobs:
           # (`! cmd` never stops a bash -e script, so these spell it out.)
           if reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.yuuzu.yuzora' 2>/dev/null; then exit 1; fi
           if reg query 'HKCU\Environment' /v Path | grep -iF "Programs\\Yuzora"; then exit 1; fi
-          # /D= at a folder with other files in it: refused, the folder as it was.
+          # /D= at a folder with other files in it, even one named like
+          # Yuzora's marker: refused, the folder as it was.
           shared=$(mktemp -d)
           echo theirs > "$shared/theirs.txt"
+          echo theirs > "$shared/yuzora.png"
           status=0
           ./dist/Yuzora-windows-x64-setup.exe /S "/D=$(cygpath -w "$shared")" || status=$?
           [ "$status" = 2 ]
           [ "$(cat "$shared/theirs.txt")" = theirs ]
+          [ "$(cat "$shared/yuzora.png")" = theirs ]
           [ ! -e "$shared/yuzora.exe" ]
       - name: Check the Linux folder and its installer
         if: runner.os == 'Linux'
