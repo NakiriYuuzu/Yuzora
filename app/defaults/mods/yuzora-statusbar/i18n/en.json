@@ -1,6 +1,10 @@
 {
-  "summary": "{panes} panes · {spaces} spaces",
+  "summary": "{panes} panes · {spaces} Spaces",
   "agents": "{count} agents",
-  "needs": "{count} need you",
-  "palette": "Commands"
+  "needs": "{count} need a reply",
+  "branch": { "open": "Open Git" },
+  "core": "HERDR {version} · {machines}",
+  "local": "This computer",
+  "palette": "Commands",
+  "palette_key": "{key} Commands"
 }

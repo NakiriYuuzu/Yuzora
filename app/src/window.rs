@@ -3852,6 +3852,8 @@ impl AppWindow {
     /// (on hover: drawn over the terminal, so it never resizes).
     fn frame_pane(&self, n: &Node, f: &PaneFrame, on: bool, inner: AnyElement, cx: &mut Context<Self>) -> AnyElement {
         let line = if on { f.focus.as_ref().or(f.border.as_ref()) } else { f.border.as_ref() };
+        // yuzora(L1): a pane whose agent needs a reply takes the layout's `blocked` border.
+        let line = crate::yuzora::shell::frame_line(f, line, n.terminal().and_then(|a| self.model.status(a)));
         let group = SharedString::from(format!("pane-{}", n.id));
         let mut el = div().size_full().relative().flex().flex_col().overflow_hidden().group(group.clone());
         if let Some(r) = f.radius {

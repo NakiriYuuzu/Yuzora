@@ -12,6 +12,8 @@
 use gpui_shell::policy::Policy;
 use std::path::{Path, PathBuf};
 
+pub mod shell;
+
 /// The name people see (window title, setup screen).
 pub const APP_NAME: &str = "Yuzora";
 /// macOS bundle id, also the Linux/Wayland app id and Windows AppUserModelID.
@@ -41,7 +43,8 @@ pub fn app_home() -> PathBuf {
 fn init_once() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        yuzora_core::remote::set_hc_program(crate::core_bin::path());
+        // Asked on every call: this runs before the setup screen installs or picks a core.
+        yuzora_core::remote::set_hc_program(crate::core_bin::path);
         yuzora_core::js::set_refresh_hook(|| crate::mods::request(crate::mods::Request::Refresh));
     });
 }
@@ -56,6 +59,7 @@ pub fn host_modules(mod_name: &str) -> Vec<gpui_shell::HostModule> {
         yuzora_ssh::host_module(),
         yuzora_files::host_module(),
         yuzora_settings::host_module(),
+        yuzora_perf::host_module(),
     ]
 }
 
@@ -126,7 +130,7 @@ mod tests {
         }
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         let d = declarations();
         assert!(d.contains("declare module \"yuzora:core\"") && d.contains("declare module \"yuzora:git\""));
     }

@@ -1028,6 +1028,21 @@ with these differences.
   on NakiriYuuzu/Yuzora, and the app doesn't update itself from Herdr.
 
 <!-- yuzora:lane:L1:start -->
+### The workspace shell
+
+- The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
+  a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
+  A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+- Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
+  `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
+- `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`
+  (each Space's initial and color; when `changed`, write `kept` back to that shared key so the color stays),
+  `agentBrand(app, key)`, `gitStatus(cwd, {on})`.
+- A mod shows a number on its mode in the mode bar with `setShared("yuzora.badge.<workspace|files|git|database|ssh>", n)`
+  (null hides it), and text in the status bar with `setShared("yuzora.status.<lane>", {text, tone})`
+  (tone: muted, working, blocked, done or accent).
+- The agent states' shapes are `mods/yuzora-sidebar-workspace/status/<working|blocked|done|idle|unknown>.svg`;
+  tint them with `tokens().status.<state>.mark`.
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
@@ -1064,3 +1079,15 @@ with these differences.
 
 <!-- yuzora:lane:L7:start -->
 <!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+### Resource usage
+
+- The chip in the bottom-right corner is `yuzora-perf`: what this computer's Yuzora uses (the app, its herdr-core
+  with the terminals and agents in it, and the tools the app starts). `yuzora-perf.toggle` (a key in keys.json, or
+  `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
+- `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
+  callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
+  core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
+  `{cpu, memory, count}`: cpu is one core = 100, summed; memory is RSS in bytes. The categories add up to total.
+<!-- yuzora:lane:L8:end -->

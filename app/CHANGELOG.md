@@ -6,6 +6,11 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- 工作區側欄：Spaces／Agents 分頁、每台機器的 scope chip（LED 顯示連線狀態）、「需要注意」區，以及機器 → Space → worktree → Agent 的樹；Agent 狀態同時以顏色與形狀表示。
+- 模式列顯示各模式的徽章數；tab 列每個 tab 帶 Space 徽章與狀態，「＋ 新增 pane」可把工具 pane、終端機、Agent 混合分割進同一個 tab。
+- pane 標頭與外框：focus 時邊框變亮，Agent 需要回覆時邊框與標頭轉為琥珀色；狀態列顯示 pane／Space／Agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本。
+- 歡迎、新功能、意見回饋畫面改為 Yuzora 品牌；介面字型改用系統字型。
+- 視窗右下角顯示這台電腦上 Yuzora 的 CPU 與記憶體用量（App 本體、herdr-core 的終端機與 Agent、Yuzora 啟動的工具），點擊展開各類明細；取樣出問題時顯示 ⚠。
 - 資料庫：側欄「資料庫」模式支援 PostgreSQL、SQL Server、SQLite 連線（密碼存在系統鑰匙圈）、資料庫切換與 schema 樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）與 SQL 分頁；SQL pane 可執行選取或整段、多個結果集、取消與歷史紀錄。
 
 ## [0.1.12] - 2026-11-02

@@ -88,6 +88,11 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 ## Lane 補充
 
 <!-- yuzora:lane:L1:start -->
+### L1 實機驗證
+
+- `shot` 只拍最後畫出的畫面；視窗被遮住時是舊畫面。用同一組隔離環境變數再執行一次 app 執行檔，會把既有視窗帶到前面（`raise`），再 `shot`。
+- 隔離 home 第一次啟動會開 welcome；先在 `<home>/shared.json` 寫入 `"frame.welcomed": "skipped"` 可略過。
+- 熱載入只在檔案內容改變時觸發；只改 `i18n/*.json` 不會重讀字串，要連同 `main.js` 一起改或重啟。
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
@@ -109,3 +114,10 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 
 <!-- yuzora:lane:L7:start -->
 <!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+### L8 實機驗證
+
+- popover 截圖：用同一組隔離環境變數執行 `herdr-app do yuzora-perf.toggle` 打開（再執行一次關閉），等下一次重畫後 `shot`。
+- 取樣只在視窗位於前景時進行；`shot` 前先把視窗帶到前面（再執行一次 app），否則 chip 會停在上一個樣本，並記為 `skipped_no_focus`。
+<!-- yuzora:lane:L8:end -->

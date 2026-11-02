@@ -7,6 +7,7 @@
     13
   ],
   "theme": "yuzora-dark",
+  "ui_font": ".SystemUIFont",
   "background": "canvas",
   "terminal_padding": [
     12,
@@ -106,7 +107,7 @@
           },
           "window_drag": true,
           "content": {
-            "mod": "tabs"
+            "mod": "yuzora-shell-tabs"
           }
         },
         {
@@ -133,9 +134,13 @@
                     "width": 1,
                     "color": "ring"
                   },
+                  "blocked": {
+                    "width": 1,
+                    "color": "#8a6420"
+                  },
                   "header": {
                     "content": {
-                      "mod": "pane"
+                      "mod": "yuzora-shell-pane"
                     },
                     "height": 28,
                     "position": "top",
@@ -181,13 +186,30 @@
         },
         {
           "id": "status",
-          "type": "block",
+          "type": "row",
           "size": {
             "px": 26
           },
-          "content": {
-            "mod": "yuzora-statusbar"
-          }
+          "resizable": false,
+          "children": [
+            {
+              "id": "yuzora-statusbar",
+              "type": "block",
+              "content": {
+                "mod": "yuzora-statusbar"
+              }
+            },
+            {
+              "id": "yuzora-perf",
+              "type": "block",
+              "size": {
+                "px": 150
+              },
+              "content": {
+                "mod": "yuzora-perf"
+              }
+            }
+          ]
         }
       ]
     }

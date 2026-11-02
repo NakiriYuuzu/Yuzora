@@ -3819,6 +3819,7 @@ dependencies = [
  "yuzora-db",
  "yuzora-files",
  "yuzora-git",
+ "yuzora-perf",
  "yuzora-settings",
  "yuzora-shell",
  "yuzora-ssh",
@@ -10574,6 +10575,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "yuzora-perf"
+version = "0.1.0-beta.2"
+dependencies = [
+ "async-channel",
+ "libc",
+ "serde",
+ "serde_json",
+ "sysinfo 0.37.2",
+ "yuzora-core",
+]
+
+[[package]]
 name = "yuzora-settings"
 version = "0.1.0-beta.2"
 dependencies = [
@@ -10584,6 +10597,10 @@ dependencies = [
 name = "yuzora-shell"
 version = "0.1.0-beta.2"
 dependencies = [
+ "async-channel",
+ "gethostname",
+ "serde",
+ "serde_json",
  "yuzora-core",
 ]
 

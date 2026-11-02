@@ -46,6 +46,13 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 各 lane 只改自己的標記區塊（規則見 `docs/beta2/lanes.md`）。
 
 <!-- yuzora:lane:L1:start -->
+#### L1 外殼工作區
+
+- 文件：`docs/beta2/shell.md`。mods：`yuzora-sidebar-workspace`、`yuzora-modebar`、`yuzora-statusbar`、`yuzora-shell-tabs`（tab 列＋新增 pane 選單）、`yuzora-shell-pane`（pane 標頭）；crate `yuzora-shell`（`workspace()`、`spaceBadges()`、`hostname()`、`agentBrand()`、`gitStatus()`）。
+- 側欄模型在 Rust（`app/crates/yuzora-shell/src/workspace.rs`，純函式＋單元測試），mod 只負責畫。改分組、排序或計數先改測試。
+- 5 種 agent 狀態形狀是 `yuzora-sidebar-workspace/status/*.svg`，其他 mod 以路徑引用，不要複製；顏色取 `tokens().status.<狀態>.mark`。
+- 上游改動只有 `PaneFrame.blocked`（`app/src/layout.rs`、`app/src/window.rs` 各一處，邏輯在 `app/src/yuzora/shell.rs`）與 welcome／whatsnew／feedback 的品牌字樣，都標 `// yuzora(L1):`。
+- 實機假 agent：`printf '\033]7501;state=blocked:app=codex\033\\'; exec sleep 100000`（state 可為 working／blocked／done／idle）。
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
@@ -68,6 +75,15 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 
 <!-- yuzora:lane:L7:start -->
 <!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+#### L8 效能監控
+
+- 文件：`docs/beta2/perf.md`。mod：`yuzora-perf`（右下角 chip＋popover，指令 `yuzora-perf.toggle`）；crate `yuzora-perf`（`tick()`、`state()`）。
+- 聚合與分類在 `app/crates/yuzora-perf/src/tree.rs`（純函式＋單元測試）。三類加總＝總量是不變式，改分類先改測試。
+- herdr-core 的 server 在行程樹裡的位置不固定（由 app 的 `hc connect` 啟動時是 app 的孫行程，否則在 launchd 底下），也可能同時有好幾個。一律用 app 的 `hc server status --json` 取 `pid` 與 `holders` 辨識；只在 app 底下有 `hc` 子行程時才問，因為沒有 core 時 `hc server status` 會自己啟動一個。
+- 取樣只在 worker thread。量單次取樣成本：用 app 的隔離環境變數執行 `cargo run --release -p yuzora-perf --example cost -- <app pid>`。
+<!-- yuzora:lane:L8:end -->
 
 ## Release platform support
 
