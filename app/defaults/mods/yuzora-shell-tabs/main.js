@@ -3,18 +3,28 @@
 // shown) a close button; + opens Herdr's new-tab menu. "New pane ▾" mixes a tool pane
 // (yuzora:core panes(): mods whose mod.json says "yuzora": {"pane": …}), a terminal or an
 // agent into the shown tab, right of or below the focused pane. Window buttons where
-// the system draws none. Opened as a popup with props { menu: "pane" } it draws that menu.
+// the system draws none. Opened as a popup with props { menu: "pane" } it draws that menu;
+// the command "yuzora-shell-tabs.new-pane" opens it.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, panes, focused, knownAgents, run, openOverlay, closeOverlay, props, theme, window, layout, settings, shared, setShared } from "herdr";
+import { spaces, panes, focused, knownAgents, run, openOverlay, closeOverlay, props, theme, window, layout, settings, shared, setShared, nextCommand } from "herdr";
 import { t, tokens, panes as toolPanes } from "yuzora:core";
-import { spaceBadge } from "yuzora:shell";
+import { spaceBadges } from "yuzora:shell";
 
 const SELF = "yuzora-shell-tabs";
 const STATUS = "mods/yuzora-sidebar-workspace/status";
 const AGENTS = "yuzora.shell.agents"; // machine -> the agents knownAgents() last listed
 const SPLIT = "yuzora.shell.split"; // "right" | "down": where the new-pane menu puts things
+
+// Spaces' badges (initial and kept color). The colors live in shared state; a Space seen the
+// first time gets one and it's written back, so every mod and every restart agree.
+const COLORS = "yuzora.space.colors";
+function badgesOf(list) {
+  const r = spaceBadges(list.map((s) => ({ id: s.id, name: s.name })), shared(COLORS));
+  if (r.changed) setShared(COLORS, r.kept);
+  return r.badges;
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -42,7 +52,13 @@ export function placeIn(f, space, dir) {
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
-    if (props()?.menu !== "pane") return;
+    if (props()?.menu !== "pane") {
+      // "yuzora-shell-tabs.new-pane" (a key in keys.json, or herdr-app do) opens the new-pane menu.
+      cx.spawn(async () => {
+        for (;;) if ((await nextCommand()) === "new-pane") this.openPaneMenu("dialog");
+      });
+      return;
+    }
     const machine = spaces().find((s) => s.active)?.machine ?? null;
     const where = machine ?? "";
     this.agents = shared(AGENTS)?.[where] ?? [];
@@ -56,6 +72,11 @@ export default class Tabs extends View {
   }
 
   // ---- the new-pane menu ------------------------------------------------------
+
+  // Under the pointer from the button; centered from a key or script (nothing to point at).
+  openPaneMenu(kind = "popup") {
+    openOverlay({ mod: SELF, kind, width: 280, ...(kind === "popup" ? { height: 520 } : {}), props: { menu: "pane" } });
+  }
 
   menuRow(th, id, icon, label, action, hint = "", enabled = true) {
     return h_flex().id(id).h(30).px(9).gap(10).rounded(6).items_center().flex_none()
@@ -102,7 +123,7 @@ export default class Tabs extends View {
   render() {
     const th = theme(), tk = tokens();
     if (props()?.menu === "pane") return this.menu(th, tk);
-    const sp = spaces(), ps = panes();
+    const sp = spaces(), ps = panes(), badges = badgesOf(sp);
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, child, tip, action, w = 28) => div().id(id).w(w).h(26).flex_none().flex().items_center().justify_center().rounded(6)
       .text_color(th.muted).hover((s) => s.bg(th.hover).text_color(th.foreground)).tooltip(tip)
@@ -112,7 +133,7 @@ export default class Tabs extends View {
       const on = s.active && c.active;
       const mine = ps.filter((p) => p.tab === c.id);
       const name = tabName(c, mine);
-      const badge = spaceBadge(s.id, s.name);
+      const badge = badges[s.id];
       const first = i > 0 && shown[i - 1].s.id !== s.id;
       return h_flex().id(`tab-${c.id}`).h(26).px(8).gap(6).rounded(6).items_center().flex_none().text_size(12.5)
         .when(first, (el) => el.ml(6))
@@ -153,7 +174,7 @@ export default class Tabs extends View {
       .child(h_flex().id("pane-add").h(26).px(8).gap(6).flex_none().items_center().rounded(6).border(1).border_color(th.input)
         .text_size(12.5).text_color(th.foreground).hover((s) => s.bg(th.hover))
         .on_mouse_down("left", stop)
-        .on_click(() => openOverlay({ mod: SELF, kind: "popup", width: 280, height: 520, props: { menu: "pane" } }))
+        .on_click(() => this.openPaneMenu())
         .child(svg(`mods/${SELF}/pane-add.svg`).size(14).text_color(th.muted))
         .child(t("pane.add"))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).text_color(th.dim)))

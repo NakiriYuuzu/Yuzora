@@ -23,6 +23,8 @@ pub struct Input {
     pub scope: Option<String>,
     /// Folded rows' ids, as the rows give them (`m:…`, `s:…`, `w:…`).
     pub folded: Vec<String>,
+    /// The Space colors given out so far (`shared("yuzora.space.colors")`).
+    pub colors: Value,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -87,18 +89,25 @@ pub struct Machine {
     pub layout: Option<String>,
 }
 
+/// One of `hc machine ls --json`'s machines. Read leniently: a field of
+/// another type than expected (`via` is a flag there) is left out rather than
+/// failing the whole sidebar.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Host {
+    #[serde(deserialize_with = "lenient")]
     pub name: String,
+    #[serde(deserialize_with = "lenient")]
     pub state: Option<String>,
+    #[serde(deserialize_with = "lenient")]
     pub target: Option<String>,
-    pub via: Option<String>,
+    #[serde(deserialize_with = "lenient")]
     pub temporary: bool,
 }
 
-/// What a Space's badge shows: its initial and color.
-pub type BadgeFn<'a> = dyn FnMut(&str, &str) -> (String, String) + 'a;
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+    Ok(serde_json::from_value(Value::deserialize(d)?).unwrap_or_default())
+}
 
 /// An agent's brand for its badge color (`tokens().agents`), from what it
 /// reported (`app`: "claude-code") or its program table key ("claude").
@@ -218,8 +227,11 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// The whole model for one render.
-pub fn build(input: &Input, badge: &mut BadgeFn<'_>) -> Value {
+/// The whole model for one render; Space colors from `palette`
+/// (`tokens().space_badges`) and what `input.colors` kept.
+pub fn build(input: &Input, palette: &[String]) -> Value {
+    let named: Vec<(String, String)> = input.spaces.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
+    let (badges, _, _) = crate::badges::badges(&named, &input.colors, palette);
     let cx = Ctx {
         panes: input.panes.iter().map(|p| (p.pane.as_str(), p)).collect(),
         folded: input.folded.iter().map(String::as_str).collect(),
@@ -284,7 +296,6 @@ pub fn build(input: &Input, badge: &mut BadgeFn<'_>) -> Value {
             "led": led(m.is_none(), h, layout(m)),
             "state": h.and_then(|h| h.state.clone()),
             "target": h.and_then(|h| h.target.clone()),
-            "via": h.and_then(|h| h.via.clone()),
             "spaces": spaces, "agents": agents, "blocked": blocked,
         }));
         for s in input.spaces.iter().filter(|s| &s.machine.clone().filter(|x| !x.is_empty()) == m) {
@@ -298,10 +309,10 @@ pub fn build(input: &Input, badge: &mut BadgeFn<'_>) -> Value {
             let id = format!("s:{}", s.id);
             let space_open = cx.open(&id);
             if machine_open {
-                let (initial, color) = badge(&s.id, &s.name);
+                let badge = &badges[&s.id];
                 rows.push(json!({
                     "kind": "space", "id": id, "space": s.id, "name": s.name, "machine": m,
-                    "initial": initial, "color": color, "active": s.active,
+                    "initial": badge["initial"], "color": badge["color"], "active": s.active,
                     "status": s.status.as_deref().map(|w| status_word(Some(w))),
                     "branches": branches.len(), "agents": mine.len(),
                     "blocked": count(&mine, "blocked"), "done": count(&mine, "done"),
@@ -381,8 +392,8 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
-    fn badge() -> impl FnMut(&str, &str) -> (String, String) {
-        |id: &str, name: &str| (name.chars().next().unwrap_or('?').to_uppercase().collect(), format!("#{id}"))
+    fn palette() -> Vec<String> {
+        ["#a", "#b", "#c"].map(String::from).to_vec()
     }
 
     fn world() -> Value {
@@ -408,7 +419,12 @@ mod tests {
                 { "address": "lab/t9", "pane": "lab/p1", "space": "lab/s1", "space_name": "infra", "tab": "lab/t1", "status": "idle", "program": { "key": "shell", "name": "" }, "title": "bash", "seq": 1 }
             ],
             "machines": [{ "name": null, "layout": "ready" }, { "name": "lab", "layout": "ready" }],
-            "hosts": [{ "name": "lab", "state": "connected", "target": "yuzu@lab" }, { "name": "box", "state": "unreachable" }, { "name": "tmp", "temporary": true }]
+            "hosts": [
+                { "name": "lab", "state": "connected", "target": "yuzu@lab", "via": false },
+                { "name": "box", "state": "unreachable", "via": true },
+                { "name": "tmp", "temporary": true }
+            ],
+            "colors": { "s2": "#c" }
         })
     }
 
@@ -432,7 +448,7 @@ mod tests {
 
     #[test]
     fn the_tree_nests_machines_spaces_worktrees_and_agents() {
-        let tree = build(&input(world()), &mut badge());
+        let tree = build(&input(world()), &palette());
         assert_eq!(
             kinds(&tree),
             [
@@ -444,7 +460,10 @@ mod tests {
         let rows = tree["rows"].as_array().unwrap();
         let yuzora = &rows[1];
         assert_eq!((yuzora["branches"].as_u64(), yuzora["agents"].as_u64(), yuzora["blocked"].as_u64()), (Some(2), Some(3), Some(1)));
-        assert_eq!((yuzora["initial"].as_str(), yuzora["color"].as_str()), (Some("Y"), Some("#s1")));
+        // s2 kept #c; s1 and lab/s1 get the least used ones, in order.
+        assert_eq!((yuzora["initial"].as_str(), yuzora["color"].as_str()), (Some("Y"), Some("#a")));
+        assert_eq!(rows[7]["color"], "#c");
+        assert_eq!(rows[12]["color"], "#b");
         assert_eq!(rows[5]["blocked"], 1);
         assert_eq!(rows[5]["branch"], true);
         // No branch there: the worktree is named after its folder.
@@ -458,7 +477,7 @@ mod tests {
 
     #[test]
     fn machines_light_up_by_connection_and_layout() {
-        let tree = build(&input(world()), &mut badge());
+        let tree = build(&input(world()), &palette());
         let leds: Vec<(Value, Value)> = tree["scopes"].as_array().unwrap().iter().map(|s| (s["machine"].clone(), s["led"].clone())).collect();
         assert_eq!(leds, [(json!(null), json!("on")), (json!("box"), json!("off")), (json!("lab"), json!("on"))]);
         assert_eq!(led(false, None, Some("loading")), "busy");
@@ -471,7 +490,7 @@ mod tests {
 
     #[test]
     fn attention_lists_blocked_then_done_latest_first() {
-        let tree = build(&input(world()), &mut badge());
+        let tree = build(&input(world()), &palette());
         let who: Vec<&str> = tree["attention"].as_array().unwrap().iter().map(|a| a["address"].as_str().unwrap()).collect();
         assert_eq!(who, ["t3a", "t2a", "t1b"]);
         assert_eq!(tree["counts"]["blocked"], 2);
@@ -481,7 +500,7 @@ mod tests {
 
     #[test]
     fn the_flat_list_puts_the_urgent_first_and_keeps_herdrs_order_otherwise() {
-        let tree = build(&input(world()), &mut badge());
+        let tree = build(&input(world()), &palette());
         assert_eq!(tree["flat_order"], json!(["t2a", "t3a", "t1b", "t1a", "lab/t9"]));
         assert_eq!(tree["agents"][0]["space_name"], "yuzora");
     }
@@ -490,7 +509,7 @@ mod tests {
     fn a_scope_shows_one_machine_and_a_gone_one_shows_all() {
         let mut w = world();
         w["scope"] = json!("lab");
-        let tree = build(&input(w.clone()), &mut badge());
+        let tree = build(&input(w.clone()), &palette());
         assert_eq!(kinds(&tree), ["machine:lab", "space:infra", "worktree:infra", "agent:lab/t9"]);
         assert_eq!(tree["scope"], "lab");
         assert_eq!(tree["counts"]["agents"], 1);
@@ -499,12 +518,12 @@ mod tests {
         assert_eq!(tree["scopes"][2]["active"], true);
 
         w["scope"] = json!("");
-        let tree = build(&input(w.clone()), &mut badge());
+        let tree = build(&input(w.clone()), &palette());
         assert_eq!(tree["scope"], "");
         assert_eq!(tree["counts"]["spaces"], 2);
 
         w["scope"] = json!("gone");
-        let tree = build(&input(w), &mut badge());
+        let tree = build(&input(w), &palette());
         assert!(tree["scope"].is_null());
         assert_eq!(tree["counts"]["spaces"], 3);
     }
@@ -513,7 +532,7 @@ mod tests {
     fn folding_hides_children_but_keeps_the_agent_order() {
         let mut w = world();
         w["folded"] = json!(["s:s1", "w:s2\u{1f}main", "m:lab"]);
-        let tree = build(&input(w), &mut badge());
+        let tree = build(&input(w), &palette());
         assert_eq!(kinds(&tree), ["machine:local", "space:yuzora", "space:herdr-bridge", "worktree:main", "machine:box", "machine:lab"]);
         assert_eq!(tree["rows"][1]["open"], false);
         assert_eq!(tree["rows"][3]["open"], false);
@@ -536,8 +555,19 @@ mod tests {
     }
 
     #[test]
+    fn hosts_with_unexpected_fields_still_read() {
+        let hosts: Vec<Host> = serde_json::from_value(json!([
+            { "name": "lab", "state": "connected", "via": "ssh lab", "target": 4, "temporary": "yes", "extra": [1] },
+            { "name": null, "state": { "x": 1 } }
+        ]))
+        .unwrap();
+        assert_eq!((hosts[0].name.as_str(), hosts[0].state.as_deref(), hosts[0].target.as_deref(), hosts[0].temporary), ("lab", Some("connected"), None, false));
+        assert_eq!((hosts[1].name.as_str(), hosts[1].state.as_deref()), ("", None));
+    }
+
+    #[test]
     fn an_empty_world_still_has_this_computer() {
-        let tree = build(&Input::default(), &mut badge());
+        let tree = build(&Input::default(), &palette());
         assert_eq!(kinds(&tree), ["machine:local"]);
         assert_eq!(tree["scopes"].as_array().unwrap().len(), 1);
     }

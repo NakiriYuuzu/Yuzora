@@ -8,11 +8,20 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, spaces, props, run, theme } from "herdr";
+import { panes, spaces, props, run, theme, shared, setShared } from "herdr";
 import { t, tokens, panes as toolPanes } from "yuzora:core";
-import { spaceBadge } from "yuzora:shell";
+import { spaceBadges } from "yuzora:shell";
 
 const STATUS = "mods/yuzora-sidebar-workspace/status";
+
+// Spaces' badges (initial and kept color). The colors live in shared state; a Space seen the
+// first time gets one and it's written back, so every mod and every restart agree.
+const COLORS = "yuzora.space.colors";
+function badgesOf(list) {
+  const r = spaceBadges(list.map((s) => ({ id: s.id, name: s.name })), shared(COLORS));
+  if (r.changed) setShared(COLORS, r.kept);
+  return r.badges;
+}
 
 const base = (path) => (path ?? "").replace(/[/\\]+$/, "").split(/[/\\]/).pop() || path;
 
@@ -42,8 +51,9 @@ export default class PaneHeader extends View {
     const th = theme(), tk = tokens();
     const p = panes().find((x) => x.pane === props()?.pane);
     if (!p) return div();
-    const space = spaces().find((s) => s.tabs.some((c) => c.id === p.tab));
-    const badge = space ? spaceBadge(space.id, space.name) : null;
+    const sp = spaces();
+    const space = sp.find((s) => s.tabs.some((c) => c.id === p.tab));
+    const badge = space ? badgesOf(sp)[space.id] : null;
     const d = describe(p, p.mod ? toolPanes() : []);
     const st = p.mod ? null : p.status;
     const blocked = st === "blocked";

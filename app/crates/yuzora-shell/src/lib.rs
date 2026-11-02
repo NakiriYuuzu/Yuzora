@@ -5,7 +5,7 @@
 //! a new function only needs adding here, with its line in [`DECLARATIONS`].
 //!
 //! - [`workspace`]: the workspace sidebar's tree, attention list and scopes.
-//! - [`badges`]: a Space's badge (initial and kept color), for every header.
+//! - [`badges`]: Spaces' badges (initial and kept color), for every header.
 //! - [`git`]: a folder's branch and ahead/behind for the status bar.
 
 pub mod badges;
@@ -13,7 +13,7 @@ pub mod git;
 pub mod workspace;
 
 use yuzora_core::host::{arg, error, opt_str, to_host};
-use yuzora_core::{HostModule, HostObject, HostValue};
+use yuzora_core::{HostModule, HostValue};
 
 /// The import specifier: `yuzora:shell`.
 pub const NAME: &str = "yuzora:shell";
@@ -29,7 +29,7 @@ export interface WorkspaceAgent {
   icon: string | null; tint: boolean; status: AgentState; focused: boolean; pinned: boolean; machine: string | null;
 }
 export type WorkspaceRow =
-  | { kind: "machine"; id: string; machine: string | null; open: boolean; led: "on" | "busy" | "off"; state: string | null; target: string | null; via: string | null; spaces: number; agents: number; blocked: number }
+  | { kind: "machine"; id: string; machine: string | null; open: boolean; led: "on" | "busy" | "off"; state: string | null; target: string | null; spaces: number; agents: number; blocked: number }
   | { kind: "space"; id: string; space: string; name: string; machine: string | null; initial: string; color: string; active: boolean; status: AgentState | null; branches: number; agents: number; blocked: number; done: number; folder: string; open: boolean }
   | { kind: "worktree"; id: string; space: string; label: string; branch: boolean; folder: string | null; agents: number; blocked: number; open: boolean }
   | WorkspaceAgent;
@@ -49,28 +49,49 @@ export interface WorkspaceTree {
 }
 /** The yuzora-shell crate's version (Yuzora's). */
 export function version(): string;
-/** A Space's badge: the first letter of its name and a color it keeps (tokens().space_badges, kept in Yuzora's settings.json shell.space_colors). */
-export function spaceBadge(id: string, name: string): SpaceBadge;
-/** The workspace sidebar's model from Herdr's live lists: spaces(), panes(), agents(), machines(), and hc machine ls --json's machines as hosts. folded: row ids. */
-export function workspace(input: { spaces: unknown[]; panes: unknown[]; agents: unknown[]; machines?: unknown[]; hosts?: unknown[]; scope?: string | null; folded?: string[] }): WorkspaceTree;
+/** This computer's name without its domain ("yuzu-mbp"), or null: the sidebar's "this computer" row. */
+export function hostname(): string | null;
+/** Spaces' badges: the first letter of each name and a color it keeps. Colors come from tokens().space_badges; pass
+ *  shared("yuzora.space.colors") as kept. A Space not in it gets the least used color, and changed is true: write
+ *  kept back with setShared("yuzora.space.colors", kept) so every mod and restart keeps it. Writes nothing itself. */
+export function spaceBadges(spaces: { id: string; name: string }[], kept?: unknown): { badges: Record<string, SpaceBadge>; kept: Record<string, string>; changed: boolean };
+/** The workspace sidebar's model from Herdr's live lists: spaces(), panes(), agents(), machines(), and hc machine ls --json's machines as hosts.
+ *  folded: row ids. colors: shared("yuzora.space.colors"), as spaceBadges takes it. */
+export function workspace(input: { spaces: unknown[]; panes: unknown[]; agents: unknown[]; machines?: unknown[]; hosts?: unknown[]; scope?: string | null; folded?: string[]; colors?: unknown }): WorkspaceTree;
 /** An agent's brand from what it reported (app) or its program key: "claude", "codex", "pi", "gemini", or null. */
 export function agentBrand(app: string | null, key: string | null): string | null;
 /** A folder's branch, ahead/behind and changed files, here or on a machine (10 s); null outside a repo. */
 export function gitStatus(cwd: string, options?: { on?: string | null }): Promise<GitSummary | null>;
 "#;
 
+/// A host name without its domain; None when there's nothing left.
+fn short_host(name: &str) -> Option<String> {
+    Some(name.trim().split('.').next().unwrap_or_default().to_owned()).filter(|s| !s.is_empty())
+}
+
+/// A Space as `spaceBadges` takes it.
+#[derive(serde::Deserialize)]
+struct Named {
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
 /// The `yuzora:shell` module.
 pub fn host_module() -> HostModule {
     HostModule::new(NAME)
         .declarations(DECLARATIONS)
         .function("version", |_| Ok(HostValue::Str(yuzora_core::VERSION.into())))
-        .function("spaceBadge", |a| {
-            let (initial, color) = badges::badge(a.string(0)?, a.get(1).and_then(HostValue::as_str).unwrap_or_default());
-            Ok(HostObject::new().field("initial", initial).field("color", color).into())
+        .function("hostname", |_| Ok(short_host(&gethostname::gethostname().to_string_lossy()).map_or(HostValue::Null, HostValue::from)))
+        .function("spaceBadges", |a| {
+            let spaces: Vec<Named> = serde_json::from_value(arg(a, 0)).map_err(|e| error(format!("spaceBadges: {e}")))?;
+            let spaces: Vec<(String, String)> = spaces.into_iter().map(|s| (s.id, s.name)).collect();
+            let (badges, kept, changed) = badges::badges(&spaces, &arg(a, 1), &badges::palette());
+            Ok(to_host(&serde_json::json!({ "badges": badges, "kept": kept, "changed": changed })))
         })
         .function("workspace", |a| {
             let input: workspace::Input = serde_json::from_value(arg(a, 0)).map_err(|e| error(format!("workspace: {e}")))?;
-            Ok(to_host(&workspace::build(&input, &mut badges::badge)))
+            Ok(to_host(&workspace::build(&input, &badges::palette())))
         })
         .function("agentBrand", |a| {
             let app = a.get(0).and_then(HostValue::as_str);
@@ -107,6 +128,9 @@ mod tests {
         assert_eq!(m.name(), "yuzora:shell");
         assert_eq!(m.call("version", &HostArguments::new([])).unwrap(), HostValue::Str(yuzora_core::VERSION.into()));
         assert!(m.is_async("gitStatus"));
+        assert_eq!(short_host("yuzu-mbp.local\n"), Some("yuzu-mbp".into()));
+        assert_eq!(short_host(".local"), None);
+        assert!(matches!(m.call("hostname", &HostArguments::new([])).unwrap(), HostValue::Str(_) | HostValue::Null));
     }
 
     #[test]
@@ -120,10 +144,31 @@ mod tests {
     #[test]
     fn the_workspace_function_takes_herdrs_lists() {
         let m = host_module();
-        // No spaces: no badge is asked for, so nothing is written to the app home.
-        let input = to_host(&json!({ "spaces": [], "panes": [], "agents": [], "machines": [{ "name": null, "layout": "ready" }] }));
+        let input = to_host(&json!({
+            "spaces": [{ "id": "s1", "name": "yuzora" }], "panes": [], "agents": [],
+            "machines": [{ "name": null, "layout": "ready" }],
+            "hosts": [{ "name": "lab", "state": "connected", "via": true }],
+            "colors": { "s1": "#123456" }
+        }));
         let tree = yuzora_core::host::from_host(&m.call("workspace", &HostArguments::new([input])).unwrap());
         assert_eq!(tree["rows"][0]["kind"], "machine");
+        assert_eq!(tree["rows"][1]["color"], "#123456");
         assert!(m.call("workspace", &HostArguments::new([to_host(&json!({ "spaces": 3 }))])).is_err());
+    }
+
+    #[test]
+    fn space_badges_come_back_with_what_to_keep() {
+        let m = host_module();
+        let call = |spaces: serde_json::Value, kept: serde_json::Value| {
+            yuzora_core::host::from_host(&m.call("spaceBadges", &HostArguments::new([to_host(&spaces), to_host(&kept)])).unwrap())
+        };
+        let first = call(json!([{ "id": "s1", "name": "yuzora" }, { "id": "s2", "name": "~" }]), json!(null));
+        assert_eq!(first["badges"]["s1"]["initial"], "Y");
+        assert_eq!(first["badges"]["s2"]["initial"], "~");
+        assert_eq!(first["changed"], true);
+        let again = call(json!([{ "id": "s1", "name": "yuzora" }, { "id": "s2", "name": "~" }]), first["kept"].clone());
+        assert_eq!(again["changed"], false);
+        assert_eq!(again["badges"], first["badges"]);
+        assert!(m.call("spaceBadges", &HostArguments::new([HostValue::Str("x".into())])).is_err());
     }
 }

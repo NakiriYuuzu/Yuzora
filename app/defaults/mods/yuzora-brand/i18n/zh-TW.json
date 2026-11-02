@@ -1,3 +1,5 @@
 {
-  "name": "Yuzora"
+  "name": "Yuzora",
+  "search": "搜尋指令",
+  "search_key": "搜尋指令 {key}"
 }

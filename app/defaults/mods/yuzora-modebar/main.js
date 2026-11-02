@@ -1,15 +1,17 @@
 // The sidebar's mode bar: switches the yuzora-sidebar stack, shows each mode's badge,
 // opens settings. Owned by lane L1.
 // A mode's badge is shared("yuzora.badge.<mode>"): a number, or null for none. Each lane
-// sets its own; the workspace mode's (agents waiting for a reply) is amber.
+// sets its own; the workspace mode's (agents waiting for a reply, every machine) is amber
+// and set here, since the mode bar is always drawn and the workspace sidebar isn't.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { layout, run, theme, shared } from "herdr";
+import { agents, layout, run, theme, shared, setShared } from "herdr";
 import { t, tokens } from "yuzora:core";
 
 const STACK = "yuzora-sidebar";
 const MODES = ["workspace", "files", "git", "database", "ssh"];
+const WAITING = "yuzora.badge.workspace";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -28,6 +30,8 @@ export function badgeText(value) {
 export default class Modebar extends View {
   render() {
     const th = theme(), tk = tokens();
+    const waiting = agents().filter((a) => a.status === "blocked").length || null;
+    if (shared(WAITING) !== waiting) setShared(WAITING, waiting);
     const active = find(layout(), STACK)?.active ?? `${STACK}-workspace`;
     const button = (mode) => {
       const child = `${STACK}-${mode}`, on = active === child;

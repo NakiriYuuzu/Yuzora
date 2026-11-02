@@ -5,14 +5,23 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, panes, machines, focused, updates, keys, window, theme, run, shared } from "herdr";
+import { spaces, agents, panes, machines, focused, updates, keys, window, theme, run, shared, setShared } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { spaceBadge, gitStatus } from "yuzora:shell";
+import { spaceBadges, gitStatus } from "yuzora:shell";
 
 // The lanes' status keys, in lane order (yuzora.status.<lane>).
 export const LANES = ["shell", "git", "db", "database", "ssh", "files", "settings", "release"];
 const TONES = ["muted", "working", "blocked", "done", "accent"];
 const STATUS = "mods/yuzora-sidebar-workspace/status";
+
+// Spaces' badges (initial and kept color). The colors live in shared state; a Space seen the
+// first time gets one and it's written back, so every mod and every restart agree.
+const COLORS = "yuzora.space.colors";
+function badgesOf(list) {
+  const r = spaceBadges(list.map((s) => ({ id: s.id, name: s.name })), shared(COLORS));
+  if (r.changed) setShared(COLORS, r.kept);
+  return r.badges;
+}
 
 function shortcut(action) {
   const k = keys().find((b) => b.section === "global" && b.action === action);
@@ -59,7 +68,7 @@ export default class Statusbar extends View {
 
   render() {
     const th = theme(), tk = tokens();
-    const sp = spaces(), list = agents(), ps = panes();
+    const sp = spaces(), list = agents(), ps = panes(), badges = badgesOf(sp);
     const waiting = list.filter((a) => a.status === "blocked");
     const working = list.some((a) => a.status === "working");
     const f = focused();
@@ -67,7 +76,7 @@ export default class Statusbar extends View {
     const key = this.key();
     const git = key ? this.git[key] : null;
     const branch = git?.branch ?? ps.find((p) => p.pane === f?.pane)?.branch ?? null;
-    const badge = space ? spaceBadge(space.id, space.name) : null;
+    const badge = space ? badges[space.id] : null;
     const core = updates()?.core?.version;
     const where = machines().map((m) => m.name ?? t("local")).join(" / ");
     const lanes = LANES.map((lane) => [lane, shared(`yuzora.status.${lane}`)]).filter(([, s]) => s && typeof s.text === "string" && s.text);

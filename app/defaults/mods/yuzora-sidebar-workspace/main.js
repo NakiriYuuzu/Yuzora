@@ -3,18 +3,19 @@
 // "needs attention" (agents blocked or done unseen); and the tree
 // machine → Space → worktree → agent. The model comes from yuzora:shell's
 // workspace(); this file only draws it. Opened as a popup with props
-// { menu: "add" | "tools" } it draws that menu instead.
+// { menu: "add" | "tools" } it draws that menu instead. Commands
+// "yuzora-sidebar-workspace.spaces|agents|add|tools" switch the tab or open a menu.
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, agents, machines, hc, exec, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props } from "herdr";
+import { spaces, panes, agents, machines, hc, run, theme, shared, setAgentOrder, openOverlay, closeOverlay, props, nextCommand } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { workspace } from "yuzora:shell";
+import { workspace, hostname } from "yuzora:shell";
 
 const SELF = "yuzora-sidebar-workspace";
 const STATUS = `mods/${SELF}/status`;
 const CHROME = "mods/workspace-chrome";
-const BADGE = "yuzora.badge.workspace";
+const COLORS = "yuzora.space.colors"; // Spaces' badge colors (see yuzora:shell spaceBadges)
 
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) ?? "null") ?? fallback; } catch { return fallback; }
@@ -30,21 +31,26 @@ export default class SidebarWorkspace extends View {
   init(_props, cx) {
     if (props()?.menu) return;
     this.view = load("view", "spaces");
-    this.scope = load("scope", null);
+    this.scope = load("scope", null); // the chip picked; a machine away for now shows every machine
     this.folded = new Set(load("folded", []));
     this.hosts = [];
-    this.host = null;
+    this.host = hostname();
     this.pressed = null; // the Space being dragged: { space, machine, index }
     this.over = null;
-    cx.spawn(async (cx) => {
-      try {
-        const r = await exec("hostname", []);
-        if (r.code === 0) this.host = r.stdout.trim().split(".")[0] || null;
-      } catch {}
-      cx.notify();
-    });
     this.refreshHosts(cx);
     cx.timer.every(15000, (cx) => this.refreshHosts(cx));
+    // "yuzora-sidebar-workspace.<command>": spaces / agents (the tabs), add / tools (the menus).
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "spaces" || c === "agents") { this.view = c; this.save(); cx.notify(); }
+        else if (c === "add" || c === "tools") this.popup(c)();
+      }
+    });
+  }
+
+  popup(menu) {
+    return () => openOverlay({ mod: SELF, kind: "popup", width: 240, height: menu === "add" ? 180 : 110, props: { menu } });
   }
 
   // Each machine's connection (and target), for the LEDs. Herdr's machines() says only
@@ -53,7 +59,8 @@ export default class SidebarWorkspace extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await hc(["machine", "ls", "--json"]);
-        if (r.code === 0) this.hosts = JSON.parse(r.stdout).machines ?? [];
+        const list = r.code === 0 ? JSON.parse(r.stdout).machines : null;
+        if (Array.isArray(list)) this.hosts = list;
       } catch {}
       cx.notify();
     });
@@ -126,13 +133,12 @@ export default class SidebarWorkspace extends View {
     const button = (id, icon, tip, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(5)
       .text_color(th.muted).hover((s) => s.bg(th.hover).text_color(th.foreground)).tooltip(tip).on_click(action)
       .child(svg(icon).size(14));
-    const popup = (menu, height) => () => openOverlay({ mod: SELF, kind: "popup", width: 240, height, props: { menu } });
     return h_flex().h(32).flex_none().pl(8).pr(6).gap(2).items_center()
       .child(h_flex().flex_1().gap(12).items_center()
         .child(tab("spaces", t("tab.spaces"), tree.counts.spaces))
         .child(tab("agents", t("tab.agents"), tree.counts.agents)))
-      .child(button("tools", `${CHROME}/layers.svg`, t("tools.title"), popup("tools", 110)))
-      .child(button("add", `${CHROME}/plus.svg`, t("add"), popup("add", 180)));
+      .child(button("tools", `${CHROME}/layers.svg`, t("tools.title"), this.popup("tools")))
+      .child(button("add", `${CHROME}/plus.svg`, t("add"), this.popup("add")));
   }
 
   led(th, tk, led) {
@@ -240,6 +246,7 @@ export default class SidebarWorkspace extends View {
       .when(r.blocked > 0, (el) => el.child(div().flex_none().text_size(11).text_color(tk.status.blocked.color).child(t("pending", { count: r.blocked }))))
       .child(div().id(`fold-${r.id}`).size(18).flex_none().flex().items_center().justify_center().rounded(4).text_color(th.dim)
         .hover((s) => s.bg(th.selected).text_color(th.foreground))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a fold, not the start of a drag
         .on_click((_e, cx) => { cx.stop_propagation(); this.toggle(r.id, cx); })
         .child(svg(`${CHROME}/chevron-${r.open ? "down" : "right"}.svg`).size(11)));
   }
@@ -259,19 +266,18 @@ export default class SidebarWorkspace extends View {
   }
 
   tree(th, tk, tree) {
-    if (!tree.rows.some((r) => r.kind === "space")) {
+    if (tree.counts.spaces === 0) {
       return v_flex().flex_1().min_h(0).px(6).pt(4)
         .children(tree.rows.map((r) => this.machineRow(th, tk, r)))
         .child(v_flex().px(8).pt(10).gap(8).text_size(12).text_color(th.dim)
           .child(t("empty.spaces"))
           .child(h_flex().id("empty-new").h(28).px(10).gap(6).items_center().rounded(6).border(1).border_color(th.border).bg(th.popover)
             .text_color(th.foreground).cursor_pointer().hover((s) => s.bg(th.hover))
-            .on_click(() => run("space.new"))
+            .on_click(() => run("space.new", { machine: tree.scope ?? "" }))
             .child(svg(`${CHROME}/plus.svg`).size(12)).child(t("menu.new_space"))));
     }
     const index = new Map(spaces().map((s, i) => [s.id, i + 1])); // space.move takes a place in spaces()
     return v_flex().id("tree").flex_1().min_h(0).px(6).pt(4).pb(10).overflow_y_scrollbar()
-      .on_mouse_up("left", (_e, cx) => { if (this.pressed) { this.pressed = null; this.over = null; cx.notify(); } })
       .children(tree.rows.map((r) => {
         if (r.kind === "space") r.index = index.get(r.space) ?? 0;
         if (r.kind === "machine") return this.machineRow(th, tk, r);
@@ -287,16 +293,24 @@ export default class SidebarWorkspace extends View {
       .children(tree.agents.map((ag) => this.agentRow(th, tk, ag, 8, [ag.space_name, ag.worktree].filter(Boolean).join(" · "))));
   }
 
+  // A drag that ends anywhere but on a Space (or leaves the sidebar) is dropped.
+  dropDrag(cx) {
+    if (!this.pressed) return;
+    this.pressed = null;
+    this.over = null;
+    cx.notify();
+  }
+
   render() {
     const th = theme(), tk = tokens();
     if (props()?.menu) return this.menu(th);
-    const tree = workspace({ spaces: spaces(), panes: panes(), agents: agents(), machines: machines(), hosts: this.hosts, scope: this.scope, folded: [...this.folded] });
-    if (tree.scope !== this.scope) { this.scope = tree.scope; this.save(); }
+    const input = { spaces: spaces(), panes: panes(), agents: agents(), machines: machines(), hosts: this.hosts, scope: this.scope, folded: [...this.folded], colors: shared(COLORS) };
+    let tree;
+    try { tree = workspace(input); } catch { tree = workspace({ ...input, hosts: [] }); } // a host list hc changed the shape of
     setAgentOrder(this.view === "agents" ? tree.flat_order : tree.order);
-    // The mode bar's badge: everyone waiting for a reply, on every machine.
-    const waiting = tree.total.blocked || null;
-    if ((shared(BADGE) ?? null) !== waiting) setShared(BADGE, waiting);
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
+      .on_mouse_up("left", (_e, cx) => this.dropDrag(cx))
+      .on_hover((hovered, cx) => { if (!hovered) this.dropDrag(cx); })
       .child(this.header(th, tk, tree))
       .child(div().h(1).flex_none().bg(th.divider ?? th.border))
       .child(this.scopes(th, tk, tree))
