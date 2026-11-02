@@ -560,7 +560,13 @@ pub fn push_preview(repo: &Repo) -> GitResult<Value> {
     let remotes: Vec<String> = repo.text(Git::read(["remote"]))?.lines().map(str::to_owned).collect();
     let (remote, target) = match &upstream {
         Some(u) => {
-            let (r, t) = u.split_once('/').unwrap_or((u, &branch));
+            // A remote's name may have slashes (`team/origin`): the longest
+            // configured one the ref starts with, then the branch.
+            let named = remotes.iter().filter(|r| u.len() > r.len() && u.starts_with(r.as_str()) && u.as_bytes()[r.len()] == b'/').max_by_key(|r| r.len());
+            let (r, t) = match named {
+                Some(r) => (r.as_str(), &u[r.len() + 1..]),
+                None => u.split_once('/').unwrap_or((u, &branch)),
+            };
             (r.to_owned(), t.to_owned())
         }
         None => (remotes.first().cloned().unwrap_or_else(|| "origin".into()), branch.clone()),
@@ -1304,5 +1310,20 @@ mod tests {
         assert_eq!(got.len(), 3, "{got:?}");
         let pos = |h: &String| got.iter().position(|x| x == h).unwrap();
         assert!(got.contains(&side) && pos(&parent) < pos(&child), "{got:?}");
+    }
+
+    #[test]
+    fn a_remote_with_a_slash_in_its_name_is_pushed_to_whole() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let bare = tempfile::tempdir().unwrap();
+        let bare = bare.path().to_string_lossy().into_owned();
+        s.git(&["init", "-q", "--bare", &bare]);
+        s.git(&["remote", "add", "team/origin", &bare]);
+        s.git(&["push", "-q", "-u", "team/origin", "main"]);
+        s.commit("a.txt", "2\n", "second");
+        let p = push_preview(&s.repo).unwrap();
+        assert_eq!((p["remote"].as_str(), p["target"].as_str()), (Some("team/origin"), Some("main")), "{p}");
+        assert_eq!(p["commits"].as_array().unwrap().len(), 1, "{p}");
     }
 }

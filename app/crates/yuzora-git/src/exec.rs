@@ -11,7 +11,8 @@
 //!   soon as a folder is focused, and a repo's own config must not get a
 //!   program run that way (there is no trusted-folder check yet);
 //! - writes take the repo's write lock first, so two of ours never race;
-//! - a call can be cancelled or time out: the whole process group is killed;
+//! - a call can be cancelled or time out: everything it started is killed
+//!   (its process group; on Windows, the job object it runs in);
 //! - long pathspecs go through `--pathspec-from-file` (see [`pathspec`]).
 //!
 //! Another machine goes through herdr-core: `hc exec --json --on <machine>
@@ -363,9 +364,22 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
     {
         use std::os::windows::process::CommandExt as _;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        c.creation_flags(CREATE_NO_WINDOW);
+        // Suspended until it is in its job (see `job`).
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        c.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
     let mut child = c.spawn().map_err(|e| GitError::Spawn(format!("cannot run {}: {e}", place.git)))?;
+    #[cfg(windows)]
+    let tree: Tree = match job::adopt(&child) {
+        Ok(job) => job,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(GitError::Spawn(format!("cannot start {}: {e}", place.git)));
+        }
+    };
+    #[cfg(not(windows))]
+    let tree: Tree = ();
     if let Some(input) = cmd.stdin.clone() {
         let mut w = child.stdin.take().expect("piped stdin");
         std::thread::spawn(move || {
@@ -390,7 +404,7 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
                 Some(s) if !stopped => {
                     if !s(&chunk) {
                         stopped = true;
-                        kill(&mut child);
+                        kill(&mut child, &tree);
                     }
                 }
                 Some(_) => {}
@@ -418,11 +432,11 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
                 Err(e) => return Err(GitError::Spawn(e.to_string())),
             }
             if cmd.cancel.as_ref().is_some_and(Cancel::is_cancelled) {
-                kill(&mut child);
+                kill(&mut child, &tree);
                 return Err(GitError::Cancelled);
             }
             if start.elapsed() > cmd.timeout {
-                kill(&mut child);
+                kill(&mut child, &tree);
                 return Err(GitError::TimedOut { seconds: cmd.timeout.as_secs_f64() });
             }
         }
@@ -444,7 +458,14 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
 }
 
-fn kill(child: &mut std::process::Child) {
+/// What a kill reaches besides git: on Windows the job it runs in (the
+/// process group does it elsewhere).
+#[cfg(windows)]
+type Tree = Option<job::Job>;
+#[cfg(not(windows))]
+type Tree = ();
+
+fn kill(child: &mut std::process::Child, tree: &Tree) {
     #[cfg(unix)]
     {
         // The group first (hooks, ssh, credential helpers), then git itself.
@@ -454,8 +475,95 @@ fn kill(child: &mut std::process::Child) {
             libc::kill(-pid, libc::SIGKILL);
         }
     }
+    #[cfg(windows)]
+    if let Some(job) = tree {
+        job.terminate();
+    }
+    let _ = tree;
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Windows has no process group to kill: git runs in a job object, so a
+/// cancel or a timeout ends the hooks, ssh and helpers it started too. It is
+/// started suspended and only runs once it is in the job, so nothing it
+/// starts can slip out first. The job is not killed on close: a helper git
+/// leaves running on purpose (a credential cache) outlives a normal exit.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle as _;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject};
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    pub struct Job(HANDLE);
+
+    // SAFETY: a job handle may be used and closed from any thread.
+    unsafe impl Send for Job {}
+
+    impl Job {
+        pub fn terminate(&self) {
+            // SAFETY: a job handle we own.
+            unsafe { TerminateJobObject(self.0, 1) };
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closed once, here.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Puts a child started suspended into a new job, then lets it run. No
+    /// job (it couldn't be made): it runs, and a kill ends git alone. Err:
+    /// it couldn't be resumed.
+    pub fn adopt(child: &std::process::Child) -> std::io::Result<Option<Job>> {
+        // SAFETY: plain calls on handles we own or that the child owns.
+        let job = unsafe {
+            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if h.is_null() {
+                None
+            } else if AssignProcessToJobObject(h, child.as_raw_handle() as HANDLE) == 0 {
+                CloseHandle(h);
+                None
+            } else {
+                Some(Job(h))
+            }
+        };
+        if resume(child.id()) { Ok(job) } else { Err(std::io::Error::last_os_error()) }
+    }
+
+    /// Resumes the threads of a process started suspended (std doesn't hand
+    /// out its main thread).
+    fn resume(pid: u32) -> bool {
+        // SAFETY: a snapshot and thread handles we open and close here; the
+        // entry is sized as the API asks.
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut e: THREADENTRY32 = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut resumed = false;
+            let mut more = Thread32First(snap, &mut e) != 0;
+            while more {
+                if e.th32OwnerProcessID == pid {
+                    let t = OpenThread(THREAD_SUSPEND_RESUME, 0, e.th32ThreadID);
+                    if !t.is_null() {
+                        resumed |= ResumeThread(t) != u32::MAX;
+                        CloseHandle(t);
+                    }
+                }
+                more = Thread32Next(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+            resumed
+        }
+    }
 }
 
 /// One stream read on its own thread into a channel.
@@ -699,5 +807,23 @@ mod tests {
         assert_eq!(run(&place, Git::write(["--version"]).cancel(Some(cancel))), Err(GitError::Cancelled));
         drop(held);
         assert!(run(&place, Git::write(["--version"])).unwrap().ok());
+    }
+
+    #[test]
+    fn a_cancelled_call_leaves_nothing_it_started_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::local(dir.path().to_string_lossy());
+        // git starts a shell that writes a file a second later, unless the
+        // cancel ended it too (a hook, ssh or a credential helper).
+        let cancel = Cancel::new();
+        let c2 = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            c2.cancel();
+        });
+        let stopped = run(&place, Git::read(["-c", "alias.late=!sleep 1; echo late > late.txt", "late"]).cancel(Some(cancel)));
+        assert_eq!(stopped, Err(GitError::Cancelled));
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(!dir.path().join("late.txt").exists(), "what git started outlived the cancel");
     }
 }

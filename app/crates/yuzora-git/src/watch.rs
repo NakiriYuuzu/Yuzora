@@ -8,7 +8,9 @@
 //!   directory (a build writing into `target/` refreshes nothing);
 //! - objects, logs, locks and the fsmonitor daemon's files: nothing.
 //!
-//! A machine's repo isn't watched; its views refresh on a timer.
+//! A machine's repo isn't watched; its views refresh on a timer. A repo no
+//! view has called or waited on for [`crate::repo::IDLE`] stops being
+//! watched until the next call.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,6 +147,10 @@ fn run(repo: Weak<Repo>, rx: mpsc::Receiver<notify::Result<notify::Event>>, root
         }
         let Some(repo) = repo.upgrade() else { return };
         repo.expire_waiters();
+        // No view uses it: let go until the next call.
+        if repo.release_if_idle() {
+            return;
+        }
         if due.is_some_and(|d| Instant::now() >= d) {
             due = None;
             let c = std::mem::take(&mut change);

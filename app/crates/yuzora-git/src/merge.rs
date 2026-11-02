@@ -157,6 +157,11 @@ pub struct ConflictSession {
     file: Option<Vec<u8>>,
 }
 
+/// Whether lines end with their last (no lines: nothing is missing).
+fn ends_line(ls: &[&[u8]]) -> bool {
+    ls.last().is_none_or(|l| l.ends_with(b"\n"))
+}
+
 fn stages(repo: &Repo, path: &str) -> GitResult<String> {
     repo.run(Git::read(["ls-files", "-s", "-z", "--", path]))?.text()
 }
@@ -210,6 +215,8 @@ impl ConflictSession {
                     "kind": match c.kind { Kind::Equal => "equal", Kind::Ours => "ours", Kind::Theirs => "theirs", Kind::Same => "same", Kind::Conflict => "conflict" },
                     "base": text(&b, &c.base), "ours": text(&o, &c.ours), "theirs": text(&t, &c.theirs),
                     "at": [c.base.start, c.ours.start, c.theirs.start],
+                    // Whether each side's last line here ends: a file's last line may not.
+                    "eol": { "base": ends_line(&b[c.base.clone()]), "ours": ends_line(&o[c.ours.clone()]), "theirs": ends_line(&t[c.theirs.clone()]) },
                     "auto": auto,
                 })
             })
@@ -255,13 +262,16 @@ impl ConflictSession {
                 out.extend_from_slice(l);
             }
         };
-        let text_lines = |s: &str| -> Vec<Vec<u8>> {
+        // `end`: whether the last line ends. Lines inside the file always do
+        // (`put` ends the line before the next); a file's last may not.
+        let text_lines = |s: &str, end: bool| -> Vec<Vec<u8>> {
             if s.is_empty() {
                 return Vec::new();
             }
             // A final newline ends the last line; it doesn't start another.
             let s = s.strip_suffix('\n').unwrap_or(s);
-            s.split('\n').map(|l| [l.as_bytes(), eol].concat()).collect()
+            let n = s.split('\n').count();
+            s.split('\n').enumerate().map(|(i, l)| if i + 1 < n || end { [l.as_bytes(), eol].concat() } else { l.as_bytes().to_vec() }).collect()
         };
         for (i, c) in self.chunks.iter().enumerate() {
             let choice = choices.get(i.to_string());
@@ -281,7 +291,7 @@ impl ConflictSession {
                 (Some("auto"), Kind::Conflict) => {
                     let join = |ls: &[&[u8]]| ls.iter().map(|l| String::from_utf8_lossy(diff::strip_eol(l)).into_owned()).collect::<Vec<_>>().join("\n");
                     let merged = auto_resolve(&join(&b[c.base.clone()]), &join(&o[c.ours.clone()]), &join(&t[c.theirs.clone()])).ok_or_else(|| GitError::Other(format!("chunk {i} can't be resolved automatically")))?;
-                    let ls = text_lines(&merged);
+                    let ls = text_lines(&merged, ends_line(&o[c.ours.clone()]) && ends_line(&t[c.theirs.clone()]));
                     put(&ls.iter().map(Vec::as_slice).collect::<Vec<_>>());
                 }
                 (None, _) if choice.and_then(|c| c.get("text")).is_some() => {}
@@ -299,7 +309,8 @@ impl ConflictSession {
                 (Some(other), _) => return Err(GitError::Other(format!("unknown choice {other}"))),
             }
             if let Some(text) = choice.and_then(|c| c.get("text")).and_then(Value::as_str) {
-                let ls = text_lines(text);
+                // Edited text says itself whether its last line ends.
+                let ls = text_lines(text, text.ends_with('\n'));
                 put(&ls.iter().map(Vec::as_slice).collect::<Vec<_>>());
             }
         }
@@ -507,5 +518,27 @@ mod tests {
             let entry = s.git(&["ls-files", "-s", "link"]);
             assert!(entry.starts_with("120000 ") && entry.contains(" 0\t"), "{entry}");
         }
+    }
+
+    #[test]
+    fn a_file_without_a_final_newline_keeps_it_that_way() {
+        let s = scratch();
+        s.commit("f.txt", "top\nmid", "base");
+        s.git(&["switch", "-q", "-c", "other"]);
+        s.commit("f.txt", "top\nTHEIRS", "theirs");
+        s.git(&["switch", "-q", "main"]);
+        s.commit("f.txt", "top\nOURS", "ours");
+        assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        let v = c.view();
+        let last = v["chunks"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["eol"], json!({ "base": false, "ours": false, "theirs": false }), "{v}");
+        let i = last["index"].as_u64().unwrap().to_string();
+        let text = |t: &str| String::from_utf8(c.result(&json!({ i.clone(): { "text": t } }), false).unwrap()).unwrap();
+        assert_eq!(text("MINE"), "top\nMINE");
+        assert_eq!(text("MINE\n"), "top\nMINE\n");
+        assert_eq!(String::from_utf8(c.result(&json!({ i.clone(): "ours" }), false).unwrap()).unwrap(), "top\nOURS");
+        // Inside the file a chunk still ends its line.
+        assert_eq!(v["chunks"][0]["eol"]["ours"], true, "{v}");
     }
 }

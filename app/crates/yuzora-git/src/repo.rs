@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,10 @@ use crate::exec::{self, Git, GitError, GitResult, Place};
 /// How long a waiter waits before it is answered anyway, so a view that went
 /// away leaves nothing behind for longer than this.
 pub const WAIT_LIMIT: Duration = Duration::from_secs(25);
+
+/// A repo no view has called or waited on for this long stops being watched
+/// until the next call (views wait on `changed` all the time they are open).
+pub const IDLE: Duration = Duration::from_secs(120);
 
 pub struct Repo {
     pub id: String,
@@ -32,6 +36,12 @@ pub struct Repo {
     /// One status refresh at a time.
     pub refreshing: Mutex<()>,
     pub watch: Mutex<Option<crate::watch::Watch>>,
+    /// How long no view may call or wait before the watcher lets go (ms).
+    pub idle_after: AtomicU64,
+    /// When a view last called.
+    used: Mutex<Instant>,
+    /// The watcher let go for that: the next call starts it again.
+    unwatched: AtomicBool,
     pub blame: Mutex<crate::lru::Lru<String, Arc<serde_json::Value>>>,
 }
 
@@ -48,6 +58,9 @@ impl Repo {
             status: Mutex::default(),
             refreshing: Mutex::default(),
             watch: Mutex::default(),
+            idle_after: AtomicU64::new(IDLE.as_millis() as u64),
+            used: Mutex::new(Instant::now()),
+            unwatched: AtomicBool::new(false),
             blame: Mutex::new(crate::lru::Lru::new(10)),
         }
     }
@@ -109,6 +122,30 @@ impl Repo {
     /// Answers waiters older than [`WAIT_LIMIT`] (called on a timer).
     pub fn expire_waiters(&self) {
         expire(&mut self.waiters.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
+    /// A view called: if the watcher let go meanwhile, it starts again and
+    /// what changed unwatched counts as changed.
+    fn used(self: &Arc<Self>) {
+        *self.used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        let restart = self.watch.lock().unwrap_or_else(|e| e.into_inner()).is_none() && self.unwatched.swap(false, Ordering::SeqCst);
+        if restart {
+            crate::watch::start(self);
+            self.invalidate_refs();
+        }
+    }
+
+    /// The watcher's tick: with no view calling or waiting for
+    /// `idle_after`, it lets go (true: it should stop).
+    pub fn release_if_idle(&self) -> bool {
+        let mut w = self.watch.lock().unwrap_or_else(|e| e.into_inner());
+        let idle_after = Duration::from_millis(self.idle_after.load(Ordering::SeqCst));
+        if w.is_none() || !self.waiters.lock().unwrap_or_else(|e| e.into_inner()).is_empty() || self.used.lock().unwrap_or_else(|e| e.into_inner()).elapsed() < idle_after {
+            return false;
+        }
+        self.unwatched.store(true, Ordering::SeqCst);
+        *w = None;
+        true
     }
 
     pub fn git_path(&self, rel: &str) -> String {
@@ -265,7 +302,9 @@ pub fn repo_id(on: Option<&str>, root: &str) -> String {
 
 /// The repo with this id (it has to have been opened).
 pub fn get(id: &str) -> GitResult<Arc<Repo>> {
-    registry().lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned().ok_or_else(|| GitError::Other(format!("no open repository {id}")))
+    let r = registry().lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned().ok_or_else(|| GitError::Other(format!("no open repository {id}")))?;
+    r.used();
+    Ok(r)
 }
 
 /// The repo holding `cwd` (here, or on machine `on`), opened once and shared.
@@ -283,8 +322,10 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     };
     let id = repo_id(probe.on.as_deref(), root);
     let mut all = registry().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(r) = all.get(&id) {
-        return Ok(r.clone());
+    if let Some(r) = all.get(&id).cloned() {
+        drop(all);
+        r.used();
+        return Ok(r);
     }
     let place = Place { root: root.to_owned(), on: probe.on.clone(), git, write_lock: Arc::default() };
     let repo = Arc::new(Repo::new(id.clone(), place, git_dir.to_owned(), common.to_owned()));
@@ -483,5 +524,26 @@ pub(crate) mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn a_repo_no_view_uses_stops_being_watched_until_one_does() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let r = open(s.root(), None).unwrap();
+        let watching = |r: &Repo| r.watch.lock().unwrap().is_some();
+        assert!(watching(&r));
+        r.idle_after.store(100, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while watching(&r) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!watching(&r), "nobody uses it, and it is still watched");
+        // The next call watches again, and what it missed counts as changed.
+        r.idle_after.store(IDLE.as_millis() as u64, Ordering::SeqCst);
+        let g = r.generation();
+        let again = get(&r.id).unwrap();
+        assert!(watching(&again) && again.generation() > g);
+        close(&r.id);
     }
 }

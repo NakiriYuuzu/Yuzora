@@ -56,7 +56,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - 其他由 repo 設定指定程式的讀取：commit 詳情的簽章檢查（`%G?`）把 repo 本地設定的 `gpg.program`／`gpg.{openpgp,ssh,x509}.program` 換回使用者全域／系統的值或 git 預設（`signature_programs`）；blame 帶 `--no-textconv`；status 的 numstat 帶 `--no-ext-diff --no-textconv`，建立 patch 的 diff 帶 `--no-ext-diff`。diff 讀 blob 用 `cat-file --filters`，會照 repo 設定跑 smudge filter（例如 git-lfs），只在使用者打開 diff 時發生，與 checkout 相同。
 - 信任資料夾（`trust.rs`）：repo 自己的設定（`.git/config`、它 include 的檔案、worktree 設定）若指定了 git 會執行的程式（`filter.*.clean/smudge/process`、`core.sshCommand`／`gitProxy`／`askPass`／`alternateRefsCommand`、指向程式的 `core.fsmonitor`（`true` 是 git 自己的 daemon，不算）、credential helper、`remote.*.uploadpack/receivepack/vcs`、`protocol.*.allow`、`merge.*.driver`、`diff.*.command/textconv`、`gpg.*program`、`gpg.ssh.defaultKeyCommand`、`!` 開頭的 `submodule.*.update`），`status` 不跑 git，只回傳已知內容和 `trust`（那些 key）；側欄顯示「要信任這個資料夾嗎？」，按下後記在 `<app home>/yuzora/git/trusted.json`。自動 fetch 由引擎擋（`fetch {auto: true}` 在未信任時直接拒絕），而且一律不跑 hook（`core.hooksPath` 指向 app 自己的空目錄；fetch 會觸發 reference-transaction）、不遞迴 submodule（`--no-recurse-submodules`）。信任檢查也看已 checkout 的 submodule 自己的設定（`git submodule foreach --recursive`），橫幅以 `路徑: key` 列出。設定讀不到時當成未信任。hook 本身不列入信任條件：status 不跑 hook，而 husky 等工具會在許多 repo 設定 `core.hooksPath`。使用者全域／系統設定的程式（例如全域安裝的 git-lfs）不需要信任。未信任時 `yuzora:git` 對這個 repo 的其他呼叫（log、diff、merge、stage、commit、fetch…）一律在引擎拒絕（`trust::check`，錯誤以 `untrusted folder` 開頭），各 pane 顯示這個錯誤，等同 IntelliJ 的 Safe mode；只有 `status`（顯示提示）與 `trust`（回答）例外。
 - 寫入指令先拿 repo 層級的寫入鎖（等待中可取消）；讀取不拿。
-- 取消與逾時：本機行程開在自己的 process group，取消或逾時就 `kill(-pid, SIGKILL)` 整棵樹。讀取預設 60 秒，fetch／pull／push 等網路操作 600 秒；輸出上限 64 MiB。
+- 取消與逾時：本機行程開在自己的 process group，取消或逾時就 `kill(-pid, SIGKILL)` 整棵樹。Windows 沒有 process group：git 先以暫停狀態啟動，放進自己的 job object 後才恢復執行，取消或逾時用 `TerminateJobObject` 結束 hook、ssh、credential helper 等所有子孫行程。讀取預設 60 秒，fetch／pull／push 等網路操作 600 秒；輸出上限 64 MiB。
 - pathspec 超過 7600 bytes 改用 `--pathspec-from-file=- --pathspec-file-nul`（指令不支援時退回不帶路徑、讀全部）。
 - 遠端 space：同一個執行器改走 `hc exec --json --on <machine> --cwd --timeout --env … [--stdin] -- git …`（`yuzora_core::remote`）。
 - 輸出可以邊讀邊解析（`run_streaming`），log 用這條路。
@@ -64,7 +64,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 ### Status（`status.rs`、`watch.rs`）
 
 - `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）。全量刷新時這幾個讀取並行執行。
-- watcher（notify，300 ms debounce）把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
+- watcher（notify，300 ms debounce）只在有 view 使用 repo 時運作：超過 2 分鐘沒有任何呼叫、也沒有 `changed()` 在等，就停掉 watcher；下一次呼叫會重新啟動，並把整個 repo 視為已變更。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
 - 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。
 - `.git` 的操作狀態（rebase-merge／rebase-apply、MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、BISECT_LOG）直接讀檔，對應 IntelliJ 的 `GitRepositoryReader`。
 

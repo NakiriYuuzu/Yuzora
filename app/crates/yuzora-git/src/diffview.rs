@@ -444,12 +444,18 @@ impl DiffSession {
         if sel.covers_all(&self.changes) || self.changes.is_empty() {
             unstage_paths(&self.repo, &p)?;
         } else {
+            // The result is built from this HEAD: once another client
+            // committed, it would stage a change nobody made.
+            let before = self.orig.as_deref().unwrap_or(&self.path);
+            if blob(&self.repo, &format!("HEAD:{before}"))? != self.left {
+                return Err(GitError::other("HEAD moved since this diff was read; reload it"));
+            }
             let (l, r) = self.sides();
             let content = combine(&l, &r, &self.changes, sel, Pick::Revert);
             // A staged deletion has no index entry: it comes back as HEAD had it.
             let mode = match &self.index_entry {
                 Some(e) => e.0.clone(),
-                None => head_mode(&self.repo, self.orig.as_deref().unwrap_or(&self.path))?.unwrap_or_else(|| "100644".into()),
+                None => head_mode(&self.repo, before)?.unwrap_or_else(|| "100644".into()),
             };
             write_index(&self.repo, &self.path, &content, &mode)?;
         }
@@ -661,5 +667,18 @@ mod tests {
         d.stage(&lines(&[], &[0])).unwrap();
         let entry = s.git(&["ls-files", "-s", "link"]);
         assert!(entry.starts_with("120000 "), "{entry}");
+    }
+
+    #[test]
+    fn a_partial_unstage_refuses_once_head_moved_under_it() {
+        let s = scratch();
+        s.commit("f.txt", "a\nb\nc\nd\ne\nf\ng\nh\n", "base");
+        s.write("f.txt", "a\nB\nc\nd\ne\nf\ng\nH\n");
+        s.git(&["add", "--", "f.txt"]);
+        let st = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Staged).unwrap();
+        // Another client commits what was staged: the index is the same, HEAD is not.
+        s.git(&["commit", "-qm", "elsewhere"]);
+        assert!(st.unstage(&sel_all(&[0])).is_err());
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "", "a stale unstage staged a change");
     }
 }

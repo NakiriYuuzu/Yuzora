@@ -190,7 +190,8 @@ export default class GitMerge extends View {
 
   // What the Result column shows for a chunk: the lines it will write, or null while a conflict is open.
   resultOf(c) {
-    const ch = this.choices[c.index], lines = (s) => (s === "" ? [] : s.split("\n"));
+    // A final "\n" ends the last line; it doesn't start another.
+    const ch = this.choices[c.index], lines = (s) => (s === "" ? [] : s.replace(/\n$/, "").split("\n"));
     if (ch === undefined) return c.kind === "conflict" ? null : c.kind === "theirs" ? c.theirs : c.ours;
     if (typeof ch === "object") return lines(ch.text);
     switch (ch) {
@@ -200,6 +201,21 @@ export default class GitMerge extends View {
       case "both": return [...c.ours, ...c.theirs];
       case "both-theirs-first": return [...c.theirs, ...c.ours];
       default: return lines(c.auto ?? "");
+    }
+  }
+
+  // Whether the chunk's result ends its last line: only a file's last line may not.
+  endsLine(c) {
+    const ch = this.choices[c.index], e = c.eol ?? {};
+    const side = (k) => e[k] !== false;
+    if (ch === undefined) return side(c.kind === "theirs" ? "theirs" : "ours");
+    if (typeof ch === "object") return ch.text.endsWith("\n");
+    switch (ch) {
+      case "theirs": case "base": return side(ch);
+      case "both": return side(c.theirs.length ? "theirs" : "ours");
+      case "both-theirs-first": return side(c.ours.length ? "ours" : "theirs");
+      case "auto": return side("ours") && side("theirs");
+      default: return side("ours");
     }
   }
 
@@ -250,9 +266,16 @@ export default class GitMerge extends View {
   startEdit(i, cx) {
     const c = this.session.chunks[i];
     this.editing = i;
+    this.editEnds = this.endsLine(c);
     this.edit.set_value((this.resultOf(c) ?? c.ours).join("\n"));
     cx.spawn(async (cx) => { await cx.sleep(30); this.edit.focus(); });
     cx.notify();
+  }
+
+  // The box shows lines; the text sent ends its last line as the source did.
+  useEdit(cx) {
+    const value = this.edit.value();
+    this.choose(this.editing, { text: this.editEnds && !value.endsWith("\n") ? `${value}\n` : value }, cx);
   }
 
   stopEdit(cx) {
@@ -564,7 +587,7 @@ export default class GitMerge extends View {
       .child(div().id("edit-box").rounded(6).border_1().border_color(th.border).bg(th.background).px(8).py(6).text_size(12).cursor_text()
         .font_family(settings().font_family ?? "JetBrains Mono").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(this.edit).w_full()))
       .child(h_flex().gap(6)
-        .child(this.button("edit-use", t("edit.use"), true, th, (cx) => this.choose(this.editing, { text: this.edit.value() }, cx), true))
+        .child(this.button("edit-use", t("edit.use"), true, th, (cx) => this.useEdit(cx), true))
         .child(this.button("edit-cancel", t("cancel"), true, th, (cx) => this.stopEdit(cx))));
     return v_flex().flex_1().min_h(0)
       .child(this.fileToolbar(th))
