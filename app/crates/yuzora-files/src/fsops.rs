@@ -645,7 +645,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
     {
         Ok(f) => f,
         // A directory that cannot hold a scratch file around a writable file:
-        // the backup goes to the temporary folder.
+        // the backup goes to a folder of the app's own.
         Err(e)
             if original.is_some()
                 && matches!(
@@ -653,7 +653,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
                     io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
                 ) =>
         {
-            return write_in_place(target, bytes, &scratch_path(&std::env::temp_dir()));
+            return write_in_place(target, bytes, &private_backups()?);
         }
         Err(e) => return Err(e),
     };
@@ -664,7 +664,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
         // The swap would change the owner: write in place instead.
         drop(file);
         let _ = std::fs::remove_file(&scratch);
-        return write_in_place(target, bytes, &scratch);
+        return write_in_place(target, bytes, dir);
     }
     let staged = (|| {
         file.write_all(bytes)?;
@@ -687,28 +687,34 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Writes `bytes` over `target` in place (its inode, owner and links stay),
-/// for a file that cannot be swapped. Its old content is first copied to
-/// `backup`, readable by its owner only, and kept there until the new content
-/// is complete: a failed write puts the old content back, and when even that
-/// fails the error names the backup.
-fn write_in_place(target: &Path, bytes: &[u8], backup: &Path) -> io::Result<()> {
-    write_in_place_with(target, bytes, backup, write_synced)
+/// for a file that cannot be swapped. Its old content is first copied to a
+/// new backup in `backups` and kept there until the new content is complete:
+/// a failed write puts the old content back, and when even that fails the
+/// error names the backup.
+fn write_in_place(target: &Path, bytes: &[u8], backups: &Path) -> io::Result<()> {
+    write_in_place_with(target, bytes, backups, overwrite)
 }
 
 fn write_in_place_with(
     target: &Path,
     bytes: &[u8],
-    backup: &Path,
+    backups: &Path,
     write: impl Fn(&Path, &[u8]) -> io::Result<()>,
 ) -> io::Result<()> {
     let old = std::fs::read(target)?;
-    write(backup, &old)?;
+    let (backup, mut file) = new_backup(backups)?;
+    if let Err(e) = file.write_all(&old).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&backup);
+        return Err(e);
+    }
+    drop(file);
     let Err(e) = write(target, bytes) else {
-        let _ = std::fs::remove_file(backup);
+        let _ = std::fs::remove_file(&backup);
         return Ok(());
     };
     if write(target, &old).is_ok() {
-        let _ = std::fs::remove_file(backup);
+        let _ = std::fs::remove_file(&backup);
         return Err(e);
     }
     Err(io::Error::new(
@@ -717,13 +723,44 @@ fn write_in_place_with(
     ))
 }
 
-/// Writes and fsyncs a whole file; one it creates is its owner's only.
-fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+/// A backup file made in `dir`: always a new file (never an existing path or
+/// a link left there), its owner's only, written through the handle given.
+fn new_backup(dir: &Path) -> io::Result<(PathBuf, std::fs::File)> {
+    let mut taken = None;
+    for _ in 0..8 {
+        let path = scratch_path(dir);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => taken = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(taken.unwrap_or_else(|| io::Error::other("no free backup name")))
+}
+
+/// The app's own backup folder (`<app home>/backups/files`, its owner's
+/// only), for files whose folder cannot hold one.
+fn private_backups() -> io::Result<PathBuf> {
+    let dir = yuzora_core::paths::app_home().join("backups").join("files");
+    std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+/// Writes over a file that is there (never creates one) and fsyncs it.
+fn overwrite(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -1288,41 +1325,52 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = put(&d, "f.txt", b"old content\n");
         let target = Path::new(&f);
-        let backup = Path::new(&p(&d, "backup")).to_owned();
+        let backups = d.path().join("backups");
+        std::fs::create_dir(&backups).unwrap();
+        let left = || std::fs::read_dir(&backups).unwrap().count();
         // Done: the new content, and no backup left.
-        write_in_place(target, b"new\n", &backup).unwrap();
+        write_in_place(target, b"new\n", &backups).unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"new\n");
-        assert!(!backup.exists());
+        assert_eq!(left(), 0);
         // The write fails halfway (say the disk filled up): the old content is put back.
         let failing = std::cell::Cell::new(true);
         let flaky = |path: &Path, bytes: &[u8]| {
-            if path == target && bytes == b"newer\n" && failing.replace(false) {
+            if bytes == b"newer\n" && failing.replace(false) {
                 std::fs::write(path, b"ne")?;
                 return Err(io::Error::other("no space left"));
             }
-            write_synced(path, bytes)
+            overwrite(path, bytes)
         };
-        let err = write_in_place_with(target, b"newer\n", &backup, flaky).unwrap_err();
+        let err = write_in_place_with(target, b"newer\n", &backups, flaky).unwrap_err();
         assert_eq!(err.to_string(), "no space left");
         assert_eq!(std::fs::read(target).unwrap(), b"new\n");
-        assert!(!backup.exists());
+        assert_eq!(left(), 0);
         // Putting it back fails too: the backup stays, and the error says where.
-        let broken = |path: &Path, bytes: &[u8]| {
-            if path == target {
-                std::fs::write(path, b"")?;
-                return Err(io::Error::other("no space left"));
-            }
-            write_synced(path, bytes)
+        let broken = |path: &Path, _: &[u8]| {
+            std::fs::write(path, b"")?;
+            Err(io::Error::other("no space left"))
         };
-        let err = write_in_place_with(target, b"newer\n", &backup, broken).unwrap_err();
-        assert!(err.to_string().contains(&backup.display().to_string()));
+        let err = write_in_place_with(target, b"newer\n", &backups, broken).unwrap_err();
+        let backup = std::fs::read_dir(&backups)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(err.to_string().ends_with(&backup.display().to_string()));
         assert_eq!(std::fs::read(&backup).unwrap(), b"new\n");
+        assert!(is_scratch_name(
+            &backup.file_name().unwrap().to_string_lossy()
+        ));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // A backup is always a new file, never one already there.
+        let (path, _) = new_backup(&backups).unwrap();
+        assert!(path != backup && path.exists());
     }
 
     #[test]

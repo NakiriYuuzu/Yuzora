@@ -32,7 +32,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 - 一個檔案（機器＋路徑）在整個 app 只有一份 `DocView`（GPUI global 的 registry），所有 pane 共用。`openDocument` 每呼叫一次加一個參考，`releaseDocument` 減一。
 - **只有一個 pane 畫編輯器**（owner）。同一個檔案在另一個 pane 開啟時顯示「在這裡編輯」，按下才接手；避免同一個 GPUI entity 在同一個 frame 被畫兩次。
 - 載入：`fsops::read_text`，換行正規化為 LF，記住原本是 LF／CRLF 與 BOM，存檔時還原。
-- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去，保留權限與 owner；資料夾不能建暫存檔、或 owner 保不住時退回就地寫入：先把舊內容備份（同資料夾，或資料夾不可寫時放暫存資料夾；只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容，連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。
+- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去，保留權限與 owner；資料夾不能建暫存檔、或 owner 保不住時退回就地寫入：先把舊內容備份（同資料夾，資料夾不可寫時放 app home 的 `backups/files`（0700）；一律新建檔案（O_EXCL，不寫進既有路徑或 symlink），只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容，連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。
 - **外部變更**：本機用 herdr 的 `watchFolder`（檔案所在資料夾）＋15 秒輪詢，遠端 5 秒輪詢，呼叫 `checkDisk`。stamp 變了才讀內容並比對 hash：
   - 內容相同（touch）：只更新 stamp。
   - 沒有未儲存變更：自動重新載入，保留游標與捲動位置。
