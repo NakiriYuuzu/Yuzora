@@ -104,8 +104,10 @@ export default class Statusbar extends View {
         .child(div().max_w(180).truncate().child(branch))
         .when(git?.ahead > 0, (el) => el.child(div().text_color(tk.diff.added).child(`↑${git.ahead}`)))
         .when(git?.behind > 0, (el) => el.child(div().text_color(tk.diff.removed).child(`↓${git.behind}`)))))
-      .children(lanes.map(([lane, s]) => item(`lane-${lane}`).min_w(0).max_w(240).text_color(tone(s.tone)).child(div().truncate().child(s.text))))
-      .child(div().flex_1().min_w(0))
+      // The lanes' texts share what's left and shorten (then clip), so HERDR and the palette key stay in view.
+      .child(h_flex().id("lanes").flex_1().min_w(0).gap(14).items_center().overflow_x_hidden()
+        .children(lanes.map(([lane, s]) => h_flex().id(`lane-${lane}`).min_w(0).max_w(240).flex_shrink(1).items_center()
+          .text_color(tone(s.tone)).tooltip(s.text).child(div().min_w(0).truncate().child(s.text)))))
       .child(item("core").max_w(320).child(div().truncate().child(core ? t("core", { version: core, machines: where }) : where)))
       .child(item("palette").cursor_pointer().text_color(th.dim).hover((s) => s.text_color(th.foreground))
         .on_click(() => run("app.palette"))

@@ -17,6 +17,11 @@ const STATUS = `mods/${SELF}/status`;
 const CHROME = "mods/workspace-chrome";
 const COLORS = "yuzora.space.colors"; // Spaces' badge colors (see yuzora:shell spaceBadges)
 
+// Machines other than this one that have Spaces: the add menu offers a new Space on each.
+function remoteMachines() {
+  return [...new Set(spaces().map((s) => s.machine).filter(Boolean))].sort();
+}
+
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) ?? "null") ?? fallback; } catch { return fallback; }
 }
@@ -49,8 +54,12 @@ export default class SidebarWorkspace extends View {
     });
   }
 
+  // As tall as its rows (30px each, a 9px rule in the add menu), at most 360: past that it scrolls.
   popup(menu) {
-    return () => openOverlay({ mod: SELF, kind: "popup", width: 240, height: menu === "add" ? 180 : 110, props: { menu } });
+    return () => {
+      const height = menu === "add" ? 10 + (3 + remoteMachines().length) * 30 + 9 : 10 + 3 * 30;
+      openOverlay({ mod: SELF, kind: "popup", width: 240, height: Math.min(360, height), props: { menu } });
+    };
   }
 
   // Each machine's connection (and target), for the LEDs. Herdr's machines() says only
@@ -100,7 +109,7 @@ export default class SidebarWorkspace extends View {
     const space = spaces().find((s) => s.active);
     let rows;
     if (which === "add") {
-      const remote = [...new Set(spaces().map((s) => s.machine).filter(Boolean))].sort();
+      const remote = remoteMachines();
       rows = [
         this.menuRow(th, "m-space", `${CHROME}/plus.svg`, t("menu.new_space"), () => run("space.new")),
         ...remote.map((m) => this.menuRow(th, `m-space-${m}`, `${CHROME}/server.svg`, t("menu.new_space_on", { machine: m }), () => run("space.new", { machine: m }))),
@@ -116,7 +125,7 @@ export default class SidebarWorkspace extends View {
         this.menuRow(th, "m-help", `${CHROME}/file-text.svg`, t("tools.help"), () => run("app.help")),
       ];
     }
-    return v_flex().id("menu").w_full().p(5).bg(th.popover).text_size(12.5).children(rows);
+    return v_flex().id("menu").size_full().p(5).bg(th.popover).text_size(12.5).overflow_y_scrollbar().children(rows);
   }
 
   // ---- the sidebar ---------------------------------------------------------
@@ -160,16 +169,18 @@ export default class SidebarWorkspace extends View {
       .children(tree.scopes.map((s) => chip(`scope-${s.machine ?? "local"}`, s.machine ?? t("machine.local_bare"), s.led, s.active, s.machine ?? "")));
   }
 
+  // At most 5 rows tall (26px each, 2px apart); more scroll inside, so the tree stays in view.
   attention(th, tk, tree) {
     const a = tk.attention;
-    return v_flex().flex_none().mx(8).mt(8).p(8).gap(2).rounded(8).bg(a.background).border(1).border_color(a.border)
+    return v_flex().flex_none().mx(8).mt(8).p(8).rounded(8).bg(a.background).border(1).border_color(a.border)
       .child(div().px(2).pb(4).text_size(11.5).font_semibold().text_color(a.text).child(t("attention", { count: tree.attention.length })))
-      .children(tree.attention.map((ag) => h_flex().id(`att-${ag.address}`).h(26).px(4).gap(8).items_center().rounded(5)
-        .text_size(12).text_color(tk.text.strong).cursor_pointer().hover((s) => s.bg(th.hover))
-        .on_click(() => run("pane.focus", { pane: ag.pane }))
-        .child(mark(tk, ag.status))
-        .child(div().flex_1().min_w(0).truncate().child(`${ag.name} · ${t(`status.${ag.status}`)}`))
-        .child(div().flex_none().max_w(90).truncate().text_size(11).text_color(th.muted).child(ag.space_name))));
+      .child(v_flex().id("attention-list").gap(2).max_h(5 * 26 + 4 * 2).overflow_y_scrollbar()
+        .children(tree.attention.map((ag) => h_flex().id(`att-${ag.address}`).h(26).flex_none().px(4).gap(8).items_center().rounded(5)
+          .text_size(12).text_color(tk.text.strong).cursor_pointer().hover((s) => s.bg(th.hover))
+          .on_click(() => run("pane.focus", { pane: ag.pane }))
+          .child(mark(tk, ag.status))
+          .child(div().flex_1().min_w(0).truncate().child(`${ag.name} · ${t(`status.${ag.status}`)}`))
+          .child(div().flex_none().max_w(90).truncate().text_size(11).text_color(th.muted).child(ag.space_name)))));
   }
 
   agentBadge(th, tk, ag) {

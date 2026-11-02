@@ -19,7 +19,8 @@
     "agents": "Agents",
     "checking": "正在檢查已安裝的 Agent…",
     "failed": "無法列出 Agent",
-    "not_installed": "未安裝"
+    "not_installed": "未安裝",
+    "needs_space": "需要先有 Space"
   },
   "window": {
     "minimize": "最小化",

@@ -19,7 +19,8 @@
     "agents": "Agents",
     "checking": "Checking installed agents…",
     "failed": "Couldn't list agents",
-    "not_installed": "not installed"
+    "not_installed": "not installed",
+    "needs_space": "Needs a Space"
   },
   "window": {
     "minimize": "Minimize",
