@@ -126,7 +126,10 @@ jobs:
         env:
           HERDR_SHOT_NATIVE_TEST: "1"
         run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
+      # check opens a hidden window, which needs a window server. On Linux the
+      # tests above render every shipped mod headless (shipped_initial_descriptions).
       - name: Yuzora mods
+        if: runner.os == 'macOS'
         run: scripts/yuzora/check-mods
       - name: Check release packaging
         if: matrix.platform == 'linux-x86_64'

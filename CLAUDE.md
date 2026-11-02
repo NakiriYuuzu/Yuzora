@@ -74,7 +74,7 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 
 ## CI 守門
 
-- `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置、`cargo test --locked`、yuzora crates、`check-mods`，Linux 另跑 packaging 與文件檢查。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
+- `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置與 `cargo test --locked`；macOS 另跑 yuzora crates、`check-mods`（check 需要視窗伺服器）與 shot_pixels，Linux 另跑 packaging 與文件檢查。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
 - `ci.yml`（Tauri）：只改 `app/**`、`docs/beta2/**` 的 PR 不觸發。frontend checks 與 test shards 平行，`Frontend (lint · typecheck · test · build)` aggregator；三平台 `cargo check`＋macOS fmt／clippy／`cargo test`＋Linux 資料庫 integration。**Clippy 是 exact baseline**（`.github/clippy-baseline.json`），warning 新增、消失、搬移都會 fail。
 
 ## 慣例與路徑
