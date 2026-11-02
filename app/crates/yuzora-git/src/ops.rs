@@ -372,7 +372,10 @@ pub fn compare(repo: &Repo, a: &str, b: &str) -> GitResult<Value> {
         Ok(parse_list(&out))
     };
     let files = repo.text(Git::read(["diff", "--name-status", "-z", "-M", &format!("{a}...{b}"), "--"]))?;
-    Ok(json!({ "a": a, "b": b, "onlyB": list(&format!("{a}..{b}"))?, "onlyA": list(&format!("{b}..{a}"))?, "files": crate::log::parse_name_status(&files) }))
+    // `files` is what b changed since the merge base: a file's diff is base → b.
+    let base = repo.run(Git::read(["merge-base", a, b]))?;
+    let base = base.ok().then(|| base.stdout_text().trim().to_owned()).filter(|h| !h.is_empty());
+    Ok(json!({ "a": a, "b": b, "base": base, "onlyB": list(&format!("{a}..{b}"))?, "onlyA": list(&format!("{b}..{a}"))?, "files": crate::log::parse_name_status(&files) }))
 }
 
 /// `META_FORMAT_LIST` records as `{hash, subject, author, time}`.
@@ -1149,5 +1152,23 @@ mod tests {
         set_config(&s.repo, "user.signingKey", None, false).unwrap();
         assert!(config(&s.repo).unwrap()["local"]["signingKey"].is_null());
         assert!(set_config(&s.repo, "core.editor", Some("vi"), false).is_err(), "only identity keys");
+    }
+
+    #[test]
+    fn compare_lists_both_sides_and_the_merge_base() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let base = s.repo.text(Git::read(["rev-parse", "HEAD"])).unwrap().trim().to_owned();
+        s.git(&["switch", "-q", "-c", "feature"]);
+        s.commit("b.txt", "b\n", "on feature");
+        s.git(&["switch", "-q", "main"]);
+        s.commit("a.txt", "2\n", "on main");
+        let c = compare(&s.repo, "main", "feature").unwrap();
+        assert_eq!(c["base"], base.as_str());
+        assert_eq!(c["onlyB"][0]["subject"], "on feature");
+        assert_eq!(c["onlyA"][0]["subject"], "on main");
+        let files = c["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "only b's side: {files:?}");
+        assert_eq!(files[0]["path"], "b.txt");
     }
 }

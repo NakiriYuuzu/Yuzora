@@ -501,7 +501,8 @@ impl LogSession {
 
     fn refresh_if_refs_moved(self: &Arc<Self>) {
         let moved = self.data.read().is_ok_and(|d| !d.loading && d.refs_generation != self.repo.refs_generation());
-        if moved {
+        // A closed log's last `wait` must not read the whole log for nobody.
+        if moved && try_get(self.id).is_some() {
             self.start(true);
         }
     }
@@ -815,8 +816,11 @@ pub fn try_get(id: u64) -> Option<Arc<LogSession>> {
 }
 
 pub fn close(id: u64) {
-    if let Some(s) = sessions().lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
+    let closed = sessions().lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    if let Some(s) = closed {
         s.cancel.lock().unwrap_or_else(|e| e.into_inner()).cancel();
+        // Pending waits return now, and their next call finds no log.
+        s.bump();
     }
 }
 
@@ -975,6 +979,25 @@ mod tests {
         assert_eq!(d["subject"], "third");
         assert_eq!(d["files"][0]["path"], "a.txt");
         close(log.id);
+    }
+
+    #[test]
+    fn a_closed_log_wakes_its_waiters_and_stays_closed() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let log = open(s.repo.clone(), Filter::default());
+        wait_loaded(&log);
+        let since = log.generation();
+        let pending = log.wait(since);
+        close(log.id);
+        assert!(crate::repo::tests::futures_lite_block(pending) > since, "close wakes a pending wait");
+        // Refs move after the close: nothing reloads.
+        s.commit("a.txt", "2\n", "second");
+        s.repo.invalidate_refs();
+        log.refresh_if_refs_moved();
+        assert!(!log.data.read().unwrap().loading);
+        assert_eq!(log.info()["rows"], 1);
+        assert!(get(log.id).is_err());
     }
 
     #[test]

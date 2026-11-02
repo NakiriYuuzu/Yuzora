@@ -556,4 +556,21 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         assert_eq!(v["counts"]["staged"], 1, "the rename stays");
         assert_eq!(v["counts"]["untracked"], 1);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_never_runs_the_repos_fsmonitor_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let marker = format!("{}/ran", s.dir.path().display());
+        let hook = format!("{}/fsmonitor.sh", s.dir.path().display());
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{marker}'\n")).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        s.git(&["config", "core.fsmonitor", &hook]);
+        s.write("a.txt", "2\n");
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["counts"]["unstaged"], 1);
+        assert!(!std::path::Path::new(&marker).exists(), "status ran the repo's fsmonitor program");
+    }
 }

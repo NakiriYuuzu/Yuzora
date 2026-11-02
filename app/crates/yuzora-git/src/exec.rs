@@ -7,6 +7,9 @@
 //! - reads set `GIT_OPTIONAL_LOCKS=0` (and don't refresh the index from
 //!   `diff`), so a status never fights a rebase in a terminal for
 //!   `index.lock`, and never writes under `.git` for the watcher to see;
+//! - reads turn `core.fsmonitor` off: the sidebar runs status on its own as
+//!   soon as a folder is focused, and a repo's own config must not get a
+//!   program run that way (there is no trusted-folder check yet);
 //! - writes take the repo's write lock first, so two of ours never race;
 //! - a call can be cancelled or time out: the whole process group is killed;
 //! - long pathspecs go through `--pathspec-from-file` (see [`pathspec`]).
@@ -257,6 +260,8 @@ pub fn base_args(kind: Kind) -> Vec<String> {
     if kind == Kind::Read {
         // `diff` would otherwise refresh stat info into the index.
         a.extend(["-c".into(), "diff.autoRefreshIndex=false".into()]);
+        // A repo's config can name an fsmonitor program; reads run unasked.
+        a.extend(["-c".into(), "core.fsmonitor=false".into()]);
     }
     a
 }
@@ -590,6 +595,8 @@ mod tests {
         let base = base_args(Kind::Read);
         assert!(base.windows(2).any(|w| w == ["-c", "core.quotepath=false"]));
         assert!(base.windows(2).any(|w| w == ["-c", "log.showSignature=false"]));
+        assert!(base.windows(2).any(|w| w == ["-c", "core.fsmonitor=false"]));
+        assert!(!base_args(Kind::Write).iter().any(|a| a.starts_with("core.fsmonitor")));
     }
 
     #[test]
