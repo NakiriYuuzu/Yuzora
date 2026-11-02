@@ -105,7 +105,9 @@ impl Repo {
     }
 
     /// Resolves once the generation is past `since`, or after [`WAIT_LIMIT`].
-    pub fn wait(&self, since: u64) -> impl std::future::Future<Output = u64> + Send + use<> {
+    /// Waiting counts as using the repo (a log pane only ever waits).
+    pub fn wait(self: &Arc<Self>, since: u64) -> impl std::future::Future<Output = u64> + Send + use<> {
+        self.used();
         let (tx, rx) = async_channel::bounded(1);
         let now = self.generation();
         if now > since {
@@ -124,14 +126,22 @@ impl Repo {
         expire(&mut self.waiters.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
-    /// A view called: if the watcher let go meanwhile, it starts again and
-    /// what changed unwatched counts as changed.
+    /// A view called or waits: if the watcher let go meanwhile, it starts
+    /// again and what changed unwatched counts as changed. On its own
+    /// thread: calls arrive on the UI thread, and a recursive watch can walk
+    /// a whole work tree (inotify).
     fn used(self: &Arc<Self>) {
         *self.used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         let restart = self.watch.lock().unwrap_or_else(|e| e.into_inner()).is_none() && self.unwatched.swap(false, Ordering::SeqCst);
         if restart {
-            crate::watch::start(self);
-            self.invalidate_refs();
+            let repo = self.clone();
+            let spawned = std::thread::Builder::new().name("yuzora-git-watch-start".into()).spawn(move || {
+                crate::watch::start(&repo);
+                repo.invalidate_refs();
+            });
+            if spawned.is_err() {
+                self.unwatched.store(true, Ordering::SeqCst);
+            }
         }
     }
 
@@ -543,7 +553,69 @@ pub(crate) mod tests {
         r.idle_after.store(IDLE.as_millis() as u64, Ordering::SeqCst);
         let g = r.generation();
         let again = get(&r.id).unwrap();
-        assert!(watching(&again) && again.generation() > g);
+        assert!(wait_until(|| watching(&again) && again.generation() > g));
+        close(&r.id);
+    }
+
+    /// Lets the repo's watcher go as an idle repo's would.
+    fn release_now(r: &Repo) {
+        r.idle_after.store(100, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while r.watch.lock().unwrap().is_some() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(r.watch.lock().unwrap().is_none(), "not released");
+        r.idle_after.store(IDLE.as_millis() as u64, Ordering::SeqCst);
+    }
+
+    fn wait_until(what: impl Fn() -> bool) -> bool {
+        let until = Instant::now() + Duration::from_secs(5);
+        while !what() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        what()
+    }
+
+    #[test]
+    fn a_log_view_alone_brings_its_watcher_back_and_hears_commits() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let r = open(s.root(), None).unwrap();
+        release_now(&r);
+        // Only the log pane looks at the repo: logWait in a loop, never repo::get.
+        let log = crate::log::open(r.clone(), crate::log::Filter::default());
+        let wait = |log: &Arc<crate::log::LogSession>| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (l, g) = (log.clone(), log.generation());
+            std::thread::spawn(move || {
+                let _ = tx.send(futures_lite_block(l.wait(g)) > g);
+            });
+            rx
+        };
+        // Waiting counts as using it: the watcher comes back, and what it
+        // missed counts as changed.
+        assert_eq!(wait(&log).recv_timeout(Duration::from_secs(5)), Ok(true), "a log view alone never got its watcher back");
+        assert!(wait_until(|| r.watch.lock().unwrap().is_some()));
+        let heard = wait(&log);
+        std::thread::sleep(Duration::from_millis(400));
+        s.commit("a.txt", "2\n", "second");
+        assert_eq!(heard.recv_timeout(Duration::from_secs(5)), Ok(true), "the log missed a commit");
+        crate::log::close(log.id);
+        close(&r.id);
+    }
+
+    #[test]
+    fn a_watcher_starts_again_off_the_calling_thread() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let r = open(s.root(), None).unwrap();
+        release_now(&r);
+        // Calls arrive on the UI thread; walking a big work tree must not.
+        let me = std::thread::current().id();
+        get(&r.id).unwrap();
+        assert!(wait_until(|| r.watch.lock().unwrap().is_some()));
+        let on = crate::watch::started_on(&r.id);
+        assert!(on.is_some() && on != Some(me), "restarted on the caller's thread");
         close(&r.id);
     }
 }

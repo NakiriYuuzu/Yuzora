@@ -488,14 +488,17 @@ fn kill(child: &mut std::process::Child, tree: &Tree) {
 /// cancel or a timeout ends the hooks, ssh and helpers it started too. It is
 /// started suspended and only runs once it is in the job, so nothing it
 /// starts can slip out first. The job is not killed on close: a helper git
-/// leaves running on purpose (a credential cache) outlives a normal exit.
+/// leaves running on purpose (a credential cache) outlives a normal exit,
+/// and one that asks to leave the job (CREATE_BREAKAWAY_FROM_JOB) may, as a
+/// process can leave its group on unix. A browser a credential helper
+/// starts for a sign-in is in the job: cancelling that fetch closes it.
 #[cfg(windows)]
 mod job {
     use std::os::windows::io::AsRawHandle as _;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next};
-    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject};
     use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
     pub struct Job(HANDLE);
@@ -507,6 +510,18 @@ mod job {
         pub fn terminate(&self) {
             // SAFETY: a job handle we own.
             unsafe { TerminateJobObject(self.0, 1) };
+        }
+
+        /// Whether a program that asks to leave the job may (tests).
+        #[cfg(test)]
+        pub fn lets_breakaway(&self) -> bool {
+            use windows_sys::Win32::System::JobObjects::{JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, QueryInformationJobObject};
+            // SAFETY: a job handle we own and a struct of the size given.
+            unsafe {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                let ok = QueryInformationJobObject(self.0, JobObjectExtendedLimitInformation, &mut info as *mut _ as *mut _, std::mem::size_of_val(&info) as u32, std::ptr::null_mut());
+                ok != 0 && info.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_BREAKAWAY_OK != 0
+            }
         }
     }
 
@@ -524,6 +539,13 @@ mod job {
         // SAFETY: plain calls on handles we own or that the child owns.
         let job = unsafe {
             let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if !h.is_null() {
+                // A program that asks to leave (CREATE_BREAKAWAY_FROM_JOB)
+                // may: it would fail to start otherwise.
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+                SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32);
+            }
             if h.is_null() {
                 None
             } else if AssignProcessToJobObject(h, child.as_raw_handle() as HANDLE) == 0 {
@@ -825,5 +847,46 @@ mod tests {
         assert_eq!(stopped, Err(GitError::Cancelled));
         std::thread::sleep(Duration::from_millis(3500));
         assert!(!dir.path().join("late.txt").exists(), "what git started outlived the cancel");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_program_that_asks_to_leave_the_job_may() {
+        use std::os::windows::process::CommandExt as _;
+        // Suspended, as run_local starts git.
+        let mut child = Command::new("cmd").args(["/c", "exit"]).creation_flags(0x0800_0000 | 0x0000_0004).spawn().unwrap();
+        let job = job::adopt(&child).unwrap().expect("a job");
+        let _ = child.wait();
+        // CREATE_BREAKAWAY_FROM_JOB would fail inside it otherwise; on unix a
+        // process can leave its group as well.
+        assert!(job.lets_breakaway());
+    }
+
+    /// What the job costs per call on Windows (a thread snapshot to resume
+    /// git): `cargo test -p yuzora-git --lib -- --ignored --nocapture windows_job_cost`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn windows_job_cost() {
+        use std::os::windows::process::CommandExt as _;
+        let n = 100;
+        let (mut spawn, mut adopt) = (Duration::ZERO, Duration::ZERO);
+        for _ in 0..n {
+            let t = Instant::now();
+            let mut child = Command::new("cmd").args(["/c", "exit"]).creation_flags(0x0800_0000 | 0x0000_0004).spawn().unwrap();
+            spawn += t.elapsed();
+            let t = Instant::now();
+            let _job = job::adopt(&child).unwrap();
+            adopt += t.elapsed();
+            let _ = child.wait();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::local(dir.path().to_string_lossy());
+        let t = Instant::now();
+        for _ in 0..n {
+            run(&place, Git::read(["--version"])).unwrap();
+        }
+        let git = t.elapsed();
+        eprintln!("JOB COST per call: spawn {:?}, job+snapshot+resume {:?}, whole `git --version` {:?}", spawn / n, adopt / n, git / n);
     }
 }

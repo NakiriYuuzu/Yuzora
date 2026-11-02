@@ -559,16 +559,23 @@ pub fn push_preview(repo: &Repo) -> GitResult<Value> {
     let upstream = upstream.ok().then(|| upstream.stdout_text().trim().to_owned()).filter(|u| !u.is_empty());
     let remotes: Vec<String> = repo.text(Git::read(["remote"]))?.lines().map(str::to_owned).collect();
     let (remote, target) = match &upstream {
-        Some(u) => {
-            // A remote's name may have slashes (`team/origin`): the longest
-            // configured one the ref starts with, then the branch.
-            let named = remotes.iter().filter(|r| u.len() > r.len() && u.starts_with(r.as_str()) && u.as_bytes()[r.len()] == b'/').max_by_key(|r| r.len());
-            let (r, t) = match named {
-                Some(r) => (r.as_str(), &u[r.len() + 1..]),
-                None => u.split_once('/').unwrap_or((u, &branch)),
-            };
-            (r.to_owned(), t.to_owned())
-        }
+        Some(u) => match push_dest(repo, &branch)? {
+            // As git names them: a remote's name may have slashes or be
+            // another's prefix (`a`, `a/b`), so `a/b/main` alone can't tell.
+            Some((r, t)) => {
+                let t = t.or_else(|| u.strip_prefix(&format!("{r}/")).map(str::to_owned)).unwrap_or_else(|| branch.clone());
+                (r, t)
+            }
+            None => {
+                // The longest configured remote the ref starts with, then the branch.
+                let named = remotes.iter().filter(|r| u.len() > r.len() && u.starts_with(r.as_str()) && u.as_bytes()[r.len()] == b'/').max_by_key(|r| r.len());
+                let (r, t) = match named {
+                    Some(r) => (r.as_str(), &u[r.len() + 1..]),
+                    None => u.split_once('/').unwrap_or((u, &branch)),
+                };
+                (r.to_owned(), t.to_owned())
+            }
+        },
         None => (remotes.first().cloned().unwrap_or_else(|| "origin".into()), branch.clone()),
     };
     let range = match &upstream {
@@ -583,6 +590,17 @@ pub fn push_preview(repo: &Repo) -> GitResult<Value> {
     let tags = repo.run(Git::read(["log", "--simplify-by-decoration", "--decorate-refs=refs/tags", "--format=%D", &range]))?.stdout_text();
     let tags: Vec<&str> = tags.lines().flat_map(|l| l.split(", ")).filter_map(|t| t.strip_prefix("tag: ")).collect();
     Ok(json!({ "branch": branch, "remote": remote, "target": target, "remotes": remotes, "upstream": upstream, "commits": commits, "newBranch": upstream.is_none(), "protected": crate::settings::is_protected(&target), "tags": tags }))
+}
+
+/// The remote `branch` pushes to, and the branch there when git names one
+/// (`%(push:remotename)`, `%(push:remoteref)`).
+fn push_dest(repo: &Repo, branch: &str) -> GitResult<Option<(String, Option<String>)>> {
+    let full = format!("refs/heads/{branch}");
+    let out = repo.run(Git::read(["for-each-ref", "--format=%(refname)%00%(push:remotename)%00%(push:remoteref)", &full]))?.stdout_text();
+    Ok(out.lines().find_map(|l| {
+        let f: Vec<&str> = l.split('\0').collect();
+        (f.len() == 3 && f[0] == full && !f[1].is_empty()).then(|| (f[1].to_owned(), f[2].strip_prefix("refs/heads/").map(str::to_owned)))
+    }))
 }
 
 pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> {
@@ -1325,5 +1343,25 @@ mod tests {
         let p = push_preview(&s.repo).unwrap();
         assert_eq!((p["remote"].as_str(), p["target"].as_str()), (Some("team/origin"), Some("main")), "{p}");
         assert_eq!(p["commits"].as_array().unwrap().len(), 1, "{p}");
+    }
+
+    #[test]
+    fn the_push_remote_is_the_one_git_pushes_to_even_when_names_nest() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let (a, ab) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (ap, abp) = (a.path().to_string_lossy().into_owned(), ab.path().to_string_lossy().into_owned());
+        s.git(&["init", "-q", "--bare", &ap]);
+        s.git(&["init", "-q", "--bare", &abp]);
+        s.git(&["remote", "add", "a", &ap]);
+        s.git(&["remote", "add", "a/b", &abp]);
+        // main tracks b/main on remote a: `@{push}` is a/b/main.
+        s.git(&["push", "-q", "a", "main:b/main"]);
+        s.git(&["fetch", "-q", "a"]);
+        s.git(&["config", "branch.main.remote", "a"]);
+        s.git(&["config", "branch.main.merge", "refs/heads/b/main"]);
+        s.git(&["config", "push.default", "upstream"]);
+        let p = push_preview(&s.repo).unwrap();
+        assert_eq!((p["remote"].as_str(), p["target"].as_str()), (Some("a"), Some("b/main")), "{p}");
     }
 }

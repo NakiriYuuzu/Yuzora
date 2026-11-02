@@ -91,6 +91,8 @@ fn git_noise(rel: &str) -> bool {
 
 /// Starts watching a local repo; the watch lives in `repo.watch`.
 pub fn start(repo: &Arc<Repo>) {
+    #[cfg(test)]
+    starts().lock().unwrap().push((repo.id.clone(), std::thread::current().id()));
     let (tx, rx) = mpsc::channel();
     let Ok(mut watcher) = notify::recommended_watcher(tx) else { return };
     let root = PathBuf::from(&repo.place.root);
@@ -113,6 +115,19 @@ pub fn start(repo: &Arc<Repo>) {
     if spawned.is_ok() {
         *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch { _watcher: watcher, stop });
     }
+}
+
+/// Which thread started each watch (tests).
+#[cfg(test)]
+fn starts() -> &'static std::sync::Mutex<Vec<(String, std::thread::ThreadId)>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<Vec<(String, std::thread::ThreadId)>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// The thread that last started this repo's watch (tests).
+#[cfg(test)]
+pub fn started_on(id: &str) -> Option<std::thread::ThreadId> {
+    starts().lock().unwrap().iter().rev().find(|(r, _)| r == id).map(|(_, t)| *t)
 }
 
 fn run(repo: Weak<Repo>, rx: mpsc::Receiver<notify::Result<notify::Event>>, root: PathBuf, git_dirs: Vec<PathBuf>, stop: Arc<AtomicBool>) {

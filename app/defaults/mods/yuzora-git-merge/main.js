@@ -273,9 +273,10 @@ export default class GitMerge extends View {
   }
 
   // The box shows lines; the text sent ends its last line as the source did.
+  // An emptied box drops the chunk ("" is no line; one blank line is "\n").
   useEdit(cx) {
     const value = this.edit.value();
-    this.choose(this.editing, { text: this.editEnds && !value.endsWith("\n") ? `${value}\n` : value }, cx);
+    this.choose(this.editing, { text: value !== "" && this.editEnds && !value.endsWith("\n") ? `${value}\n` : value }, cx);
   }
 
   stopEdit(cx) {
