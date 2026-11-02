@@ -8,3 +8,28 @@ publish.workspace = true
 
 [dependencies]
 yuzora-core = { path = "../yuzora-core" }
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-base = { path = "../../vendor/gpui-kit/crates/base" }
+gpui-shell = { path = "../../vendor/gpui-kit/crates/shell" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# One runtime of our own drives every driver; host futures only await a channel.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures-channel = "0.3"
+async-channel = "2"
+# PostgreSQL over rustls (ring, the provider the app already carries).
+tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "1"
+# SQL Server through Yuzora's patched tiberius (app/vendor/tiberius-0.12.3-yuzora).
+tiberius = { version = "=0.12.3", default-features = false, features = ["tds73", "rustls", "chrono"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+chrono = "0.4"
+uuid = { version = "1", default-features = false }
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }

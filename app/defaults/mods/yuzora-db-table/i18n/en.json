@@ -1,0 +1,25 @@
+{
+  "title": "Table",
+  "pick": "Pick a table or view in the Database sidebar.",
+  "loading": "Loading…",
+  "tab": { "data": "Data", "structure": "Structure", "sql": "SQL" },
+  "run": "Run ⌘↵",
+  "stop": "Stop",
+  "run_sql_tip": "Run the SQL (the selection when there is one)",
+  "refresh_tip": "Read the rows again",
+  "sql_hint": "⌘↵ / Ctrl+Enter runs this SQL (the selection when there is one); the rows show under Data.",
+  "done": "Done",
+  "affected": "{count} rows affected",
+  "result_rows": "Result {n} · {count} rows",
+  "result_affected": "Result {n} · {count} affected",
+  "structure": {
+    "columns": "Columns · {count}",
+    "indexes": "Indexes · {count}",
+    "foreign_keys": "Foreign keys · {count}",
+    "name": "Name",
+    "type": "Type",
+    "nullable": "Null",
+    "default": "Default",
+    "key": "Key"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "error": {
+    "cancelled": "已取消",
+    "missing": "缺少 {field}",
+    "no_connection": "找不到連線 {id}",
+    "no_job": "這個查詢已不存在",
+    "ssh_pending": "經 SSH 主機 {host} 連線會在 SSH lane 合併後提供；清除通道設定即可直接連線"
+  },
+  "edit": {
+    "no_key": "唯讀：這個資料表沒有主鍵",
+    "no_info": "唯讀：無法讀取資料表的主鍵（{error}）",
+    "null_key": "有一列的主鍵是 NULL，無法找到該列來更新"
+  },
+  "grid": {
+    "modified": "{count} 個儲存格已修改",
+    "rows": "{count} 列",
+    "rows_loading": "{count} 列…",
+    "rows_capped": "前 {count} 列",
+    "showing": "顯示 {first}–{last}",
+    "loaded": "已載入 {count}",
+    "writing": "寫回中…",
+    "discard": "捨棄",
+    "write": "寫回"
+  }
+}
