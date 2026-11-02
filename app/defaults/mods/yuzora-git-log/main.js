@@ -480,7 +480,7 @@ export default class GitLog extends View {
       .when(Boolean(this.p.title), (el) => el.child(div().h(28).flex_none().px(10).flex().items_center().font_semibold().truncate().child(this.p.title)))
       .child(this.toolbar(th))
       .when(this.dd, (el) => el.child(this.dropdown(th)))
-      .child((side ? h_flex() : v_flex()).flex_1().min_h(0)
+      .child((side ? h_flex().items_stretch() : v_flex()).flex_1().min_h(0)
         .child(rows)
         .when(Boolean(detail), (el) => el.child(this.detailPanel(th, side, mono, fs))))
       .child(this.footer(th, parts, info?.loading ? t(`stage.${info.stage || "start"}`) : null));
@@ -513,7 +513,7 @@ export default class GitLog extends View {
         .child(div().px(8).h(20).flex().items_center().rounded(4).bg(th.raised).font_family(mono).text_size(11).child(a))
         .child(div().text_color(th.dim).child("↔"))
         .child(div().px(8).h(20).flex().items_center().rounded(4).bg(th.raised).font_family(mono).text_size(11).child(b)))
-      .child((side ? h_flex() : v_flex()).flex_1().min_h(0)
+      .child((side ? h_flex().items_stretch() : v_flex()).flex_1().min_h(0)
         .child(v_flex().flex_1().min_w(0).min_h(0)
           .child(h_flex().flex_1().min_h(0).child(column("cmp-a", a, c.onlyA)).child(div().w(1).h_full().flex_none().bg(th.divider ?? th.border)).child(column("cmp-b", b, c.onlyB)))
           .child(div().h(26).flex_none().px(10).flex().items_center().border_t(1).border_color(th.divider ?? th.border).text_size(11.5).text_color(th.muted).child(t("detail.files", { count: c.files.length })))
