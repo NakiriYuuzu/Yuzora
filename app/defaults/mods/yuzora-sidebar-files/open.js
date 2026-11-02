@@ -1,0 +1,51 @@
+// Opening a file in the right pane, and small path helpers.
+import { panes, focused, run } from "herdr";
+import { kindOf, documentFor, focusDocument, gotoLine } from "yuzora:files";
+
+export const join = (dir, name) => (dir.endsWith("/") ? dir + name : `${dir}/${name}`);
+export const parent = path => {
+  const i = path.lastIndexOf("/");
+  return i > 0 ? path.slice(0, i) : i === 0 ? "/" : "";
+};
+export const base = path => path.slice(path.lastIndexOf("/") + 1);
+/** `path` relative to `root` ("" for root itself), or null outside it. */
+export const rel = (root, path) => {
+  if (path === root) return "";
+  const prefix = root.endsWith("/") ? root : root + "/";
+  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
+};
+
+const COLORS = {
+  tsx: "#60a5fa", jsx: "#60a5fa", ts: "#e5c07b", mts: "#e5c07b", cts: "#e5c07b", js: "#e5c07b", mjs: "#e5c07b", cjs: "#e5c07b",
+  css: "#f472b6", scss: "#f472b6", md: "#93c5fd", mdx: "#93c5fd", json: "#86d17a", jsonc: "#86d17a",
+  rs: "#f08a5d", py: "#60a5fa", go: "#7dd3fc", toml: "#9ca3af", yaml: "#f87171", yml: "#f87171",
+  html: "#f08a5d", sh: "#86d17a", zsh: "#86d17a", bash: "#86d17a", sql: "#a78bfa",
+  png: "#c678dd", jpg: "#c678dd", jpeg: "#c678dd", gif: "#c678dd", webp: "#c678dd", svg: "#c678dd", ico: "#c678dd",
+  lock: "#6f7078",
+};
+export const fileColor = name => {
+  const dot = name.lastIndexOf(".");
+  return (dot > 0 && COLORS[name.slice(dot + 1).toLowerCase()]) || "#8b8b94";
+};
+
+const MOD = { image: "yuzora-files-image", markdown: "yuzora-markdown", text: "yuzora-editor" };
+
+/**
+ * Opens a file: focuses the pane already showing it, else splits the focused
+ * pane to the right (a new tab when no pane has focus). `at`: {line, column}.
+ */
+export function openFile(path, on, at = {}) {
+  const kind = kindOf(path);
+  const open = kind === "image" ? null : documentFor(path, { on });
+  if (open?.pane && panes().some(p => p.pane === open.pane)) {
+    run("pane.focus", { pane: open.pane });
+    if (at.line) gotoLine(open.doc, at.line, at.column ?? 1);
+    else focusDocument(open.doc);
+    return;
+  }
+  const props = { path, on: on ?? null, opened: Date.now(), ...(at.line ? { line: at.line, column: at.column ?? 1 } : {}) };
+  const f = focused();
+  const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
+  if (pane) run("pane.split", { direction: "right", pane: pane.pane, mod: MOD[kind], props });
+  else run("tab.new", { name: base(path), mod: MOD[kind], props });
+}

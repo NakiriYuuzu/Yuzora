@@ -1,0 +1,55 @@
+{
+  "pane": {
+    "title": "Markdown 預覽",
+    "markdown": "Markdown 預覽"
+  },
+  "header": {
+    "unsaved": "有未儲存的變更",
+    "preview": "預覽",
+    "source": "原始碼",
+    "readonly": "唯讀",
+    "agent": "{agent} 也在改"
+  },
+  "banner": {
+    "conflict": "你有未儲存的變更時，這個檔案在磁碟上被修改了。",
+    "reload": "重新載入（捨棄我的）",
+    "keep": "保留我的",
+    "overwrite": "覆寫",
+    "deleted": "這個檔案已在磁碟上被刪除或移動。",
+    "restore": "重新儲存",
+    "remote": "這個版本中，其他機器上的檔案為唯讀。",
+    "not_utf8": "不是 UTF-8 文字，已用唯讀開啟。",
+    "large": "大型檔案：已關閉語法上色與摺疊。"
+  },
+  "find": {
+    "open": "尋找（⌘F）",
+    "placeholder": "尋找",
+    "replace_placeholder": "取代",
+    "count": "{current} / {total}",
+    "none": "沒有結果",
+    "case": "大小寫須相符",
+    "prev": "上一個（Shift+Enter）",
+    "next": "下一個（Enter）",
+    "close": "關閉（Esc）",
+    "toggle_replace": "取代",
+    "replace": "取代",
+    "replace_all": "全部"
+  },
+  "message": {
+    "no_file": "這裡沒有檔案。請從檔案側欄開啟。",
+    "loading": "正在開啟…",
+    "failed": "無法開啟這個檔案。{error}",
+    "binary": "這是二進位檔，無法以文字顯示。",
+    "too_large": "檔案太大（超過 16 MB），無法在這裡開啟。"
+  },
+  "status": {
+    "unsaved": "{count} 個未儲存"
+  },
+  "toast": {
+    "kept": "{name} 有未儲存的變更",
+    "kept_body": "變更會保留在記憶體中直到 Yuzora 結束：重新開啟檔案即可找回。"
+  },
+  "error": {
+    "save": "無法儲存 {name}"
+  }
+}

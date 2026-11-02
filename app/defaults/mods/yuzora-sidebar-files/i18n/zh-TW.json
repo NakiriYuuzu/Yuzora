@@ -1,5 +1,64 @@
 {
   "title": "檔案",
   "description": "檔案樹",
-  "placeholder": "由 {lane} lane 實作。"
+  "local": "本機",
+  "remote": {
+    "readonly": "這個版本的遠端檔案為唯讀"
+  },
+  "action": {
+    "new_file": "新增檔案",
+    "new_folder": "新增資料夾",
+    "refresh": "重新整理",
+    "collapse": "全部收合",
+    "search": "搜尋檔案",
+    "hidden": "顯示隱藏檔"
+  },
+  "edit": {
+    "new-file": "新檔案名稱",
+    "new-folder": "新資料夾名稱",
+    "rename": "重新命名為",
+    "hint": "Enter 確認 · Esc 取消"
+  },
+  "empty": {
+    "no_folder": "這個 Space 沒有資料夾。",
+    "loading": "正在載入檔案…",
+    "no_files": "這裡沒有檔案。",
+    "limited": "每個資料夾最多顯示 {count} 個項目。"
+  },
+  "search": {
+    "placeholder": "搜尋…",
+    "names": "檔名",
+    "content": "內容",
+    "none": "沒有符合的結果。",
+    "no_rg": "在其他機器上搜尋內容，需要那台機器安裝 ripgrep（rg）。",
+    "truncated": "只顯示前 {count} 筆結果。"
+  },
+  "menu": {
+    "open": "開啟",
+    "terminal": "在終端機開啟",
+    "new_file": "新增檔案…",
+    "new_folder": "新增資料夾…",
+    "rename": "重新命名…",
+    "trash": "刪除到垃圾桶",
+    "copy_path": "複製路徑",
+    "copy_relative": "複製相對路徑",
+    "reveal_mac": "在 Finder 中顯示",
+    "reveal_windows": "在檔案總管中顯示",
+    "reveal": "在檔案管理員中顯示"
+  },
+  "toast": {
+    "trashed": "已將 {name} 移到垃圾桶"
+  },
+  "error": {
+    "list": "無法開啟這個資料夾",
+    "name": "無法使用這個名稱",
+    "new-file": "無法建立檔案",
+    "new-folder": "無法建立資料夾",
+    "rename": "無法重新命名",
+    "trash": "無法移到垃圾桶",
+    "reveal": "無法在檔案管理員中顯示"
+  },
+  "status": {
+    "unsaved": "{count} 個未儲存"
+  }
 }
