@@ -41,7 +41,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
   - 只改權限（chmod 不動大小與時間）：本機檢查也比對權限位元，變了才重新判斷能不能寫，編輯器跟著切換唯讀。
 - **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案，標頭顯示該 agent 的名稱（Claude Code 用設計稿的 `#2a201c`／`#e8a27f`）。
 - 關閉有未儲存變更的 pane：buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回；Yuzora 結束才會遺失。
-- 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。
+- 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。重新讀取時（外部變更、Reload），檔案變成二進位或超過上限就不再顯示編輯器，未存的修改一併丟掉，不會再被存回去；大小跨過 2 MiB 時重建編輯器，上色與摺疊跟著開或關。
 - 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。
 
 ### 上色（`highlight/`）
@@ -57,7 +57,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 ### Markdown 與圖片
 
 - `Markdown` 元件跟著文件的文字版本（每次編輯或重新載入加一）重畫，游標閃爍不會讓它重抓全文；同一份文件在原始碼與預覽間切換時即時同步。
-- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做（畫面只讀快取，10 秒後重新檢查），所以圖片在檢查回來後才出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。連結只開 http、https、mailto。
+- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做（畫面只讀快取，10 秒後重新檢查），所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。連結只開 http、https、mailto。
 - 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色仍是 One Dark。
 - 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG，「符合」與「100%」（原尺寸，比 pane 大時可捲動）、淺色背景；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
 
@@ -105,14 +105,14 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 遠端 Space
 
-- 讀取與瀏覽：`listDir`、`gitStatus`、`findFiles`（`git ls-files`，扣掉工作樹已刪除的檔案／`rg --files`／`find`）、`grep`（遠端 `rg`）、開檔、圖片，都走 `yuzora_core::remote`（`hc exec --on`，各自的 timeout）。遠端既沒有 git 也沒有 rg 時，`find` 不認得 ignore 檔：`findFiles` 回傳 `unfiltered: true`，側欄提示結果包含被忽略的檔案。
+- 讀取與瀏覽：`listDir`、`gitStatus`、`findFiles`（`git ls-files`，扣掉工作樹已刪除的檔案／`rg --files`／`find`）、`grep`（遠端 `rg`）、開檔、圖片，都走 `yuzora_core::remote`（`hc exec --on`，各自的 timeout）。遠端 `stat` 只在確認不存在時才回報「不存在」：往上找到第一個存在的資料夾，而且能進入。路上有進不去的資料夾時回傳錯誤，文件不會被標成已刪除，與本機相同。遠端既沒有 git 也沒有 rg 時，`find` 不認得 ignore 檔：`findFiles` 回傳 `unfiltered: true`，側欄提示結果包含被忽略的檔案。
 - **寫入未做**（存檔、新增、重新命名、刪除）。`createFile`／`createFolder`／`rename` 帶機器名稱一律拒絕，存檔回 `remote`：
   - 原因：`hc exec` 只能把資料放在 argv 或 stdout，沒有 stdin，也沒有「比對後才寫入」的原子操作。用 base64 塞進 argv 會碰到 `ARG_MAX`，也沒辦法安全做衝突檢查；做半套反而可能蓋掉 agent 剛寫的內容。
   - 後續計畫：L4 的 SFTP session（`yuzora:ssh`）合併後，遠端存檔改走 SFTP：寫暫存檔 → `stat` 比對 → rename，與本機相同的衝突語意；新增、重新命名、刪除也用 SFTP。沒有 SSH 設定的機器（只透過 herdr-core 連線）再評估 `hc` 是否提供檔案寫入 API。
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（103 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
+- `cargo test --locked -p yuzora-files`（107 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：

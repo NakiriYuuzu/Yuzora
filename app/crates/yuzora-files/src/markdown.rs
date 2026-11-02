@@ -134,6 +134,10 @@ struct ImageChecks {
     wanted: HashSet<PathBuf>,
     /// A check is queued or running.
     busy: bool,
+    /// A frame drew an image it couldn't show (yet).
+    missing: bool,
+    /// A redraw to look at missing images again is waiting.
+    timer: bool,
 }
 
 impl ImageChecks {
@@ -145,10 +149,12 @@ impl ImageChecks {
                 if at.elapsed() > RECHECK {
                     self.wanted.insert(path.to_owned());
                 }
+                self.missing |= !ok;
                 ok
             }
             None => {
                 self.wanted.insert(path.to_owned());
+                self.missing = true;
                 false
             }
         }
@@ -247,6 +253,26 @@ impl MarkdownView {
         .detach();
     }
 
+    /// While a frame shows a missing image, draws again once its answer is
+    /// old enough to be looked at again: the file may have been made since.
+    fn recheck_later(&self, cx: &mut Context<Self>) {
+        let images = self.images.clone();
+        {
+            let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
+            if self.remote || checks.timer || !checks.missing {
+                return;
+            }
+            checks.missing = false;
+            checks.timer = true;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RECHECK).await;
+            images.lock().unwrap_or_else(|e| e.into_inner()).timer = false;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
     /// Redraws when the text changed, not on every cursor blink of the
     /// editor, or when a rename moved the folder images load from.
     fn watch(doc: &Entity<DocView>, cx: &mut Context<Self>) -> Subscription {
@@ -324,6 +350,7 @@ impl Render for MarkdownView {
         let remote = self.remote;
         let images = self.images.clone();
         self.check_images(cx);
+        self.recheck_later(cx);
         div().size_full().min_h_0().px(px(18.)).py(px(14.)).child(
             TextView::markdown(ElementId::Name(self.id.clone()), text)
                 .style(self.style(cx))
@@ -495,6 +522,44 @@ mod tests {
             .insert(a.to_owned(), (true, Instant::now() - RECHECK * 2));
         assert!(checks.answer(a));
         assert!(checks.wanted.contains(a));
+    }
+
+    #[gpui::test]
+    fn a_missing_image_is_looked_for_again_unasked(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "![x](x.png)\n").unwrap();
+        let key = docs::DocKey {
+            on: None,
+            path: dir.path().join("a.md").to_string_lossy().into_owned(),
+        };
+        let id = cx.update(|cx| docs::open(key, cx));
+        cx.run_until_parked();
+        let doc = cx.update(|cx| docs::get(id, cx).unwrap());
+        let colors = Colors::from_props(&HostValue::Null);
+        let view = cx.new(|cx| MarkdownView::new(doc, "md".into(), colors, cx));
+        let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = redraws.clone();
+        cx.update(|cx| {
+            cx.observe(&view, move |_, _| count.set(count.get() + 1))
+                .detach()
+        });
+        // A frame drew the image before the file was there.
+        let image = dir.path().join("x.png");
+        view.update(cx, |v, cx| {
+            v.images.lock().unwrap().answer(&image);
+            v.recheck_later(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(redraws.get(), 0);
+        cx.executor().advance_clock(RECHECK);
+        cx.run_until_parked();
+        assert_eq!(redraws.get(), 1, "no redraw to look for it again");
+        // No frame showed a missing image since: no more redraws.
+        view.update(cx, |v, cx| v.recheck_later(cx));
+        cx.executor().advance_clock(RECHECK * 3);
+        cx.run_until_parked();
+        assert_eq!(redraws.get(), 1);
     }
 
     #[test]

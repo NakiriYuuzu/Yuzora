@@ -500,22 +500,38 @@ impl DocView {
                 self.phase = Phase::Failed(e);
             }
             Ok(file) => {
-                self.facts = Facts::from_file(&self.key, &file);
-                self.disk = Some(file.stamp);
-                self.disk_hash = file.hash;
                 self.deleted = false;
                 self.conflict = false;
                 self.incoming = None;
                 self.error = None;
                 self.phase = Phase::Ready;
-                if self.facts.editable_text() {
-                    self.baseline = Rope::from(file.text.as_str());
-                    self.set_text(file.text, cx);
-                }
-                self.sync_readonly(cx);
+                self.took(file, cx);
             }
         }
         self.bump(cx);
+    }
+
+    /// Takes in a file read from disk. One that is no longer text to edit,
+    /// or that crossed the size highlighting stops at, gets a new editor (or
+    /// none): the old one's text and setup don't fit it.
+    fn took(&mut self, file: TextFile, cx: &mut Context<Self>) {
+        let large = self.facts.large;
+        self.facts = Facts::from_file(&self.key, &file);
+        self.disk = Some(file.stamp);
+        self.disk_hash = file.hash;
+        if !self.facts.editable_text() || self.facts.large != large {
+            self.state = None;
+            self._subscriptions.clear();
+            self.pending = None;
+            self.baseline = Rope::from("");
+            self.dirty = false;
+            self.rev += 1;
+        }
+        if self.facts.editable_text() {
+            self.baseline = Rope::from(file.text.as_str());
+            self.set_text(file.text, cx);
+        }
+        self.sync_readonly(cx);
     }
 
     /// The editor follows the file's read-only state as it changes.
@@ -852,14 +868,7 @@ impl DocView {
                 } else {
                     self.conflict = false;
                     self.incoming = None;
-                    self.facts = Facts::from_file(&self.key, &file);
-                    self.disk = Some(file.stamp);
-                    self.disk_hash = file.hash;
-                    if self.facts.editable_text() {
-                        self.baseline = Rope::from(file.text.as_str());
-                        self.set_text(file.text, cx);
-                    }
-                    self.sync_readonly(cx);
+                    self.took(file, cx);
                 }
                 self.bump(cx);
             }
@@ -1301,6 +1310,62 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).dirty && !view.read(cx).conflict));
+    }
+
+    #[gpui::test]
+    fn reloading_a_file_that_became_binary_drops_the_edit(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "mine ", cx);
+        let binary = b"\0\x01\x02 not text \xff\0";
+        std::fs::write(&path, binary).unwrap();
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(view.read(cx).conflict && view.read(cx).dirty));
+        // Reload drops the edit: nothing is left to save over the file.
+        view.update(cx, |doc, cx| doc.reload(cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let doc = view.read(cx);
+            assert!(doc.facts.binary && !doc.dirty && !doc.conflict && doc.state.is_none());
+        });
+        let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+        cx.run_until_parked();
+        assert!(!futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!(std::fs::read(&path).unwrap(), binary);
+    }
+
+    #[gpui::test]
+    fn a_large_file_that_shrinks_is_highlighted_again(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        let line = "fn a() {}\n";
+        let big = line.repeat(highlight::MAX_HIGHLIGHT_BYTES / line.len() + 1);
+        std::fs::write(&path, &big).unwrap();
+        let (view, window) = editing(&path, cx);
+        let language = |cx: &mut gpui::TestAppContext| {
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                doc.state.as_ref().map(|s| s.read(cx).language_name())
+            })
+        };
+        assert_eq!(language(cx).as_deref(), Some(""), "plain text while large");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        // The next draw builds the editor again, highlighted and with folding.
+        window
+            .update(cx, |_, window, cx| {
+                view.update(cx, |doc, cx| {
+                    doc.prepare(Look::default(), true, "One Dark".into(), window, cx)
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(language(cx).as_deref(), Some("rust"));
+        cx.update(|cx| assert_eq!(view.read(cx).text(cx).as_ref(), "fn main() {}\n"));
     }
 
     #[gpui::test]

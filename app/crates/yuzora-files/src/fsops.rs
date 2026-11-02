@@ -75,8 +75,20 @@ if [ "$#" -gt 0 ]; then
 fi
 exit 0"#;
 
-/// Exit 4 when `$1` does not exist; else prints `size mtime-seconds`.
-const STAT_SCRIPT: &str = r#"[ -e "$1" ] || exit 4
+/// Exit 4 when `$1` does not exist; else prints `size mtime-seconds`. Not
+/// there only when the nearest folder above that is there can be looked
+/// into: a shut folder on the way is an error (exit 6), as it is here.
+const STAT_SCRIPT: &str = r#"if [ ! -e "$1" ]; then
+  p=$1
+  while d=$(dirname -- "$p") && [ "$d" != "$p" ]; do
+    if [ -e "$d" ]; then
+      if [ -d "$d" ] && [ ! -x "$d" ]; then echo "cannot look inside $d" >&2; exit 6; fi
+      exit 4
+    fi
+    p=$d
+  done
+  exit 4
+fi
 stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1""#;
 
 /// `$1` file, `$2` max+1, `$3` max. Exit 4 missing, 5 not a regular file.
@@ -1192,6 +1204,21 @@ mod tests {
         assert_eq!(remote.len, local.len);
         assert_eq!(remote.mtime_ms, local.mtime_ms / 1000 * 1000);
         assert_eq!(stat_sh(&p(&d, "nope"), None), Ok(None));
+        assert_eq!(stat_sh(&p(&d, "no/folder/either"), None), Ok(None));
+        assert_eq!(stat_sh(&format!("{f}/x"), None), Ok(None));
+        // A shut folder on the way: not "deleted", as stat() here says.
+        use std::os::unix::fs::PermissionsExt as _;
+        let shut = p(&d, "shut");
+        std::fs::create_dir(&shut).unwrap();
+        let inside = put(&d, "shut/a.txt", b"x");
+        let mode = |m: u32| std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(m));
+        mode(0o000).unwrap();
+        if std::fs::metadata(&inside).is_err() {
+            assert!(stat(&inside, None).is_err());
+            assert!(stat_sh(&inside, None).is_err());
+            assert!(stat_sh(&format!("{inside}/deeper"), None).is_err());
+        }
+        mode(0o755).unwrap();
         assert_eq!(
             parse_stamp("12 34\n"),
             Some(Stamp {
