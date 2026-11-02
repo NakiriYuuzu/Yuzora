@@ -10436,6 +10436,7 @@ dependencies = [
  "gpui-pre",
  "gpui-shell",
  "ignore",
+ "libc",
  "regex",
  "serde",
  "serde_json",

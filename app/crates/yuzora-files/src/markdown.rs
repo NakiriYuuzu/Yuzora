@@ -247,10 +247,15 @@ impl MarkdownView {
         .detach();
     }
 
-    /// Redraws when the text changed, not on every cursor blink of the editor.
+    /// Redraws when the text changed, not on every cursor blink of the
+    /// editor, or when a rename moved the folder images load from.
     fn watch(doc: &Entity<DocView>, cx: &mut Context<Self>) -> Subscription {
         cx.observe(doc, |this: &mut Self, doc, cx| {
-            if doc.read(cx).rev() != this.rev {
+            let base = Self::base_of(&doc, cx);
+            if base != this.base {
+                this.base = base;
+                cx.notify();
+            } else if doc.read(cx).rev() != this.rev {
                 cx.notify();
             }
         })
@@ -392,6 +397,30 @@ pub fn markdown_component(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn images_follow_a_rename_of_the_folder(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (docs_dir, notes_dir) = (dir.path().join("docs"), dir.path().join("notes"));
+        std::fs::create_dir(&docs_dir).unwrap();
+        std::fs::write(docs_dir.join("a.md"), "![x](x.png)\n").unwrap();
+        let path = |p: &Path| p.to_string_lossy().into_owned();
+        let key = docs::DocKey {
+            on: None,
+            path: path(&docs_dir.join("a.md")),
+        };
+        let id = cx.update(|cx| docs::open(key, cx));
+        cx.run_until_parked();
+        let doc = cx.update(|cx| docs::get(id, cx).unwrap());
+        let colors = Colors::from_props(&HostValue::Null);
+        let view = cx.new(|cx| MarkdownView::new(doc, "md".into(), colors, cx));
+        cx.update(|cx| assert_eq!(view.read(cx).base.as_deref(), Some(docs_dir.as_path())));
+        let rx = cx.update(|cx| docs::rename(path(&docs_dir), path(&notes_dir), None, cx));
+        cx.run_until_parked();
+        assert_eq!(futures::executor::block_on(rx).unwrap(), Ok(()));
+        cx.update(|cx| assert_eq!(view.read(cx).base.as_deref(), Some(notes_dir.as_path())));
+    }
 
     #[test]
     fn images_load_from_the_file_folder_and_never_from_the_network() {

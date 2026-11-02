@@ -366,7 +366,7 @@ export default class FilesSidebar extends View {
     if (!rows.length) return div().p(12).text_size(12).text_color(th.dim).child(here.loading ? t("empty.loading") : t("empty.no_files"));
     const fs = tk.file_status ?? {};
     const markColor = m => m === "A" ? fs.added : m === "D" || m === "U" ? fs.deleted : m === "?" ? fs.untracked : fs.modified;
-    return v_flex().flex_1().min_h(0).relative()
+    const tree = v_flex().flex_1().min_h(0).relative()
       .child(uniform_list("tree", rows.length, i => rows[i].rel, range => rows.slice(range.start, range.end).map(row => {
         const m = this.mark(row), sel = row.rel === this.selected;
         return h_flex().h(25).pl(6 + row.depth * 13 + 6).pr(12).mx(6).gap(6).items_center().rounded(5)
@@ -381,6 +381,11 @@ export default class FilesSidebar extends View {
         .on_item_secondary_click((key, e, cx) => this.openMenu(key, e, cx)))
       .child(Scrollbar.vertical("tree").absolute().inset_0())
       .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))));
+    // The folder could not be listed again: the rows are from before.
+    if (!here.error) return tree;
+    return v_flex().flex_1().min_h(0)
+      .child(div().flex_none().px(12).pb(6).text_size(11.5).text_color(th.blocked).child(here.error))
+      .child(tree);
   }
 
   renderSearch(th) {

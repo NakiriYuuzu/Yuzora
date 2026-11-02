@@ -827,10 +827,66 @@ pub fn rename(from: &str, to: &str, on: Option<&str>) -> Result<(), String> {
     if machine(on).is_some() {
         return Err(REMOTE_READ_ONLY.into());
     }
-    if std::fs::symlink_metadata(to).is_ok() && !same_entry_other_case(from, to) {
-        return Err(format!("{to} already exists"));
+    let moved = if same_entry_other_case(from, to) {
+        std::fs::rename(from, to)
+    } else {
+        rename_no_replace(Path::new(from), Path::new(to))
+    };
+    moved.map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => format!("{to} already exists"),
+        _ => format!("cannot rename {from}: {e}"),
+    })
+}
+
+/// A rename that never replaces what is at `to`: in one system call where
+/// there is one, so nothing made there meanwhile is lost; elsewhere (or on a
+/// file system without it) `to` is looked at first.
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    if let Some(done) = rename_excl(from, to) {
+        return done;
     }
-    std::fs::rename(from, to).map_err(|e| format!("cannot rename {from}: {e}"))
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(io::ErrorKind::AlreadyExists.into());
+    }
+    std::fs::rename(from, to)
+}
+
+/// `renamex_np(RENAME_EXCL)` / `renameat2(RENAME_NOREPLACE)`; `None` when the
+/// file system can't.
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+fn rename_excl(from: &Path, to: &Path) -> Option<io::Result<()>> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let c = |p: &Path| CString::new(p.as_os_str().as_bytes());
+    let (Ok(a), Ok(b)) = (c(from), c(to)) else {
+        return Some(Err(io::ErrorKind::InvalidInput.into()));
+    };
+    // SAFETY: two NUL-terminated paths that outlive the call.
+    #[cfg(target_os = "macos")]
+    let done = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let done = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if done == 0 {
+        return Some(Ok(()));
+    }
+    let e = io::Error::last_os_error();
+    match e.raw_os_error() {
+        Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS) => None,
+        _ => Some(Err(e)),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+fn rename_excl(_from: &Path, _to: &Path) -> Option<io::Result<()>> {
+    None
 }
 
 /// `to` is `from` spelled with other letter case, on a file system that folds case.
@@ -1484,6 +1540,38 @@ mod tests {
         rename(&f, &moved, None).unwrap();
         assert!(Path::new(&moved).exists() && !Path::new(&f).exists());
         assert!(rename(&p(&d, "ghost"), &p(&d, "x"), None).is_err());
+    }
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    #[test]
+    fn the_system_refuses_a_rename_onto_something_there() {
+        // No look first: what appears at `to` just before the move stays.
+        let d = tempfile::tempdir().unwrap();
+        let (mine, theirs) = (put(&d, "a.txt", b"mine"), put(&d, "b.txt", b"theirs"));
+        let e = rename_excl(Path::new(&mine), Path::new(&theirs))
+            .expect("this file system has it")
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&theirs).unwrap(), b"theirs");
+        assert_eq!(std::fs::read(&mine).unwrap(), b"mine");
+        // An empty folder too (a plain rename replaces it).
+        let (one, two) = (p(&d, "one"), p(&d, "two"));
+        std::fs::create_dir(&one).unwrap();
+        std::fs::create_dir(&two).unwrap();
+        let e = rename_excl(Path::new(&one), Path::new(&two))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert!(Path::new(&one).is_dir());
+        let free = p(&d, "c.txt");
+        rename_excl(Path::new(&mine), Path::new(&free))
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(&free).unwrap(), b"mine");
+        assert_eq!(
+            rename(&free, &theirs, None),
+            Err(format!("{theirs} already exists"))
+        );
     }
 
     #[test]
