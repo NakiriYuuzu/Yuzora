@@ -26,5 +26,6 @@
   "pushForce": "Force push",
   "running": "Pushing…",
   "done": "Pushed",
-  "doneUpdated": "Updated and pushed"
+  "doneUpdated": "Updated and pushed",
+  "noRemote": "This repository has no remote. Add one under Repository › Remotes, then push."
 }

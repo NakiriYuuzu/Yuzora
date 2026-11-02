@@ -218,7 +218,9 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 
 ## 已知限制與後續
 
-- **側欄沒開過時沒有徽章**：herdr 只在 stack 子節點第一次顯示時建立 mod，`yuzora.badge.git`／`yuzora.status.git` 要等 Git 模式開過一次才開始更新（之後切到別的模式仍會持續）。需要 L1／殼層在啟動時建立側欄各模式，或由狀態列自己訂閱。
+- **側欄沒開過時沒有徽章**（實機確認：重啟後停在工作區模式，shared 裡沒有任何 git key；切到 Git 模式一次後才出現，之後切走仍會持續更新）：herdr 只在 stack 子節點第一次顯示時建立 mod，`yuzora.badge.git`／`yuzora.status.git` 要等 Git 模式開過一次才開始更新（之後切到別的模式仍會持續）。需要 L1／殼層在啟動時建立側欄各模式，或由狀態列自己訂閱。
+- **三欄合併的欄寬**：欄寬用字元數估算，視窗 1280 寬時 Theirs 欄會被裁掉一部分（可橫向捲動）；要改成依可用寬度分配。
+- **popup／dialog 的截圖**：herdr CLI 沒辦法帶 props 開 overlay，分支 popup 與 push 對話框的實機截圖是開在分頁裡（`tab.new --mod`）。
 - **信任只在 Git 側欄**：repo 本地設定會自動執行程式時，Git 側欄先問再讀，但使用者主動的操作照常執行，終端機與其他模式也不受影響。整個 app 的信任模型要由殼層（L1）提供，Git 再改用它。
 - **遠端 repo 沒有 watcher**：靠 `changed()` 約 25 秒逾時輪詢一次 status。
 - **持久化 log index**：未做；圖只依賴 `RawCommit`，第二階段來源可以換成 index（見〈Log〉）。

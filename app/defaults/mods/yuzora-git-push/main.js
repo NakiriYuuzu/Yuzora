@@ -85,6 +85,8 @@ export default class GitPush extends View {
       .child(div().text_size(14).font_semibold().child(t("title")));
     if (this.error) return root.child(div().text_color(th.ansi1).child(this.error)).child(h_flex().child(div().flex_1()).child(this.button("close", t("close"), false, true, th, () => this.close())));
     if (!p) return root.child(div().text_color(th.dim).child(t("loading")));
+    // Nowhere to push: say so instead of offering an origin that isn't there.
+    if (!p.remotes.length) return root.child(div().text_color(th.muted).child(t("noRemote"))).child(h_flex().child(div().flex_1()).child(this.button("close", t("close"), false, true, th, () => this.close())));
     const protectedForce = p.protected && this.force;
     const target = this.target.value().trim() || p.target;
     return root

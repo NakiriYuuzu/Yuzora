@@ -26,5 +26,6 @@
   "pushForce": "強制推送",
   "running": "推送中…",
   "done": "已推送",
-  "doneUpdated": "已更新並推送"
+  "doneUpdated": "已更新並推送",
+  "noRemote": "這個 repo 沒有 remote。先到「儲存庫 › 遠端」新增一個，再 push。"
 }
