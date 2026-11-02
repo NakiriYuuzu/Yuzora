@@ -1,0 +1,201 @@
+<div> width:1440px height:900px background:#131417 color:#e4e4e7 font-size:12.5px
+  <div> width:248px
+    <dc-import> 
+  <div> flex:1
+    <header> height:36px gap:6px padding:0 6px
+      <div> gap:4px
+        <button> height:26px gap:6px padding:0 8px border-radius:6px background:#232428 border:1px solid #34353a
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          <span> width:14px height:14px border-radius:3px background:#1f9d86 color:#fff font-size:9px font-weight:700
+            "H"
+          "主工作"
+          <span> width:6px height:6px border-radius:50% background:#f5b453
+          <span> color:#8b8b94
+            "×"
+        <button> height:26px gap:6px padding:0 8px border-radius:6px color:#a1a1aa
+          <span> width:14px height:14px border-radius:3px background:#8a5cf0 color:#fff font-size:9px font-weight:700
+            "I"
+          "部署"
+        <button> width:26px height:26px color:#a1a1aa font-size:15px
+          "+"
+      <div> flex:1
+      <button> height:26px gap:6px padding:0 8px border-radius:6px border:1px solid #2c2d32 color:#d4d4d8
+        <svg>
+        "新增 pane"
+        <span> color:#8b8b94
+          "▾"
+      <button> width:28px height:26px color:#a1a1aa border-radius:6px
+        <svg>
+      <button> width:28px height:26px color:#a1a1aa border-radius:6px
+        <svg>
+      <span> width:1px height:16px background:#2a2b30
+      <button> width:30px height:26px color:#8b8b94
+        "—"
+      <button> width:30px height:26px color:#8b8b94
+        <svg>
+      <button> width:30px height:26px color:#8b8b94
+        "✕"
+    <div> flex:1 grid-template-columns:1.15fr 1fr gap:6px padding:0 6px 6px
+      <section> border:1px solid #55565c border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <svg>
+          <span> font-weight:600
+            "Claude Code"
+          <span> color:#8b8b94
+            "yuzora · feat/gpui-dock"
+          <div> flex:1
+          <span> color:#86d17a font-size:11.5px
+            "● 工作中"
+          <span> font-size:10px font-weight:600 padding:1px 5px border-radius:4px background:#222327 color:#a1a1aa
+            "CONTROLLER"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:10px 12px font-size:12px color:#c9c9cf
+          <div> color:#f4f4f5
+            "> 把 SpaceAgentTree 的模式切換移到側欄底部 icon row"
+          <div> height:6px
+          <div> 
+            <span> color:#4ade80
+              "⏺"
+            "Read(src/app/AppShell.tsx)"
+          <div> 
+            <span> color:#4ade80
+              "⏺"
+            "Update(src/app/workbench/SpaceAgentTree.tsx)"
+          <div> color:#8b8b94
+            "⎿"
+            <span> color:#86d17a
+              "+64"
+            <span> color:#f08a8a
+              "−21"
+          <div> 
+            <span> color:#f5b453
+              "⏺"
+            "Write(src/app/workbench/SidebarModeBar.tsx)"
+          <div> 
+            <span> color:#4ade80
+              "⏺"
+            "Bash(bun run test src/app/workbench)"
+          <div> color:#8b8b94
+            "⎿ 58 passed · 2 running"
+          <div> height:6px
+          <div> color:#e8a27f
+            "✻ Working…"
+            <span> color:#8b8b94
+              "(esc to interrupt)"
+          <div> height:8px
+          <div> padding:5px 0
+            <span> color:#f4f4f5
+              "❯"
+            <span> width:8px height:14px background:#e4e4e7
+      <section> border:1px solid #8a6420 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px background:#1d1a14 border-radius:6px 6px 0 0 font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#1f9d86 color:#fff font-size:9.5px font-weight:700
+            "H"
+          <svg>
+          <span> font-weight:600
+            "Claude Code"
+          <span> color:#8b8b94
+            "herdr-bridge · main"
+          <div> flex:1
+          <span> color:#f5b453 font-size:11.5px
+            "▲ 需要回覆"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:10px 12px font-size:12px color:#c9c9cf
+          <div> 
+            <span> color:#4ade80
+              "⏺"
+            "Update(src/protocol/v22.rs)"
+            <span> color:#86d17a
+              "+18"
+          <div> height:6px
+          <div> border:1px solid #5a4318 border-radius:6px padding:8px 10px background:#1d1a14
+            <div> color:#f4f4f5
+              "Bash command"
+            <div> color:#f5b453
+              "cargo test --locked -p herdr-bridge"
+            <div> color:#8b8b94
+              "Do you want to proceed?"
+            <div> color:#f4f4f5
+              "❯ 1. Yes"
+            <div> 
+              "2. Yes, and don't ask again for cargo test"
+            <div> 
+              "3. No, and tell Claude what to do differently"
+      <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <svg>
+          <span> font-weight:600
+            "Browser"
+          <span> flex:1 height:20px padding:0 8px border-radius:4px background:#131417 font-size:11.5px color:#a1a1aa
+            "localhost:1420"
+          <button> height:20px padding:0 8px border-radius:4px background:#1f2a3d color:#93c5fd font-size:11.5px
+            "選取元素"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:10px gap:8px background:#0f1012
+          <div> flex:1 grid-template-columns:74px 1fr gap:6px padding:6px border-radius:6px background:#131417 border:1px solid #24252a
+            <div> gap:4px padding:4px border-radius:4px background:#17181b
+              <div> height:6px border-radius:2px background:#3a3b40
+              <div> height:6px border-radius:2px background:#3a3b40
+              <div> height:6px border-radius:2px background:#3a3b40
+              <div> flex:1
+              <div> height:12px border-radius:3px background:#26272c
+            <div> grid-template-columns:1fr 1fr gap:4px
+              <div> border-radius:3px background:#1b1c1f
+              <div> border-radius:3px background:#1b1c1f
+          <div> gap:8px font-size:12px
+            <span> color:#93c5fd
+              "nav.sidebar-mode-bar"
+            <span> color:#8b8b94
+              "248×44"
+            <div> flex:1
+            <button> height:24px padding:0 10px border-radius:5px background:#e4e4e7 color:#131417 font-weight:600
+              "複製上下文"
+      <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <svg>
+          <span> font-weight:600
+            "Diff"
+          <span> color:#8b8b94 font-size:11.5px
+            "SpaceAgentTree.tsx"
+          <span> color:#86d17a font-size:11.5px
+            "+64"
+          <span> color:#f08a8a font-size:11.5px
+            "−21"
+          <div> flex:1
+          <span> font-size:11px color:#8b8b94
+            "即時更新"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 font-size:11.5px
+          <sc-for> 
+            <div> 
+              <span> width:36px color:#6f7078
+                "{{d.n}}"
+              <span> width:12px color:{{d.sc}}
+                "{{d.s}}"
+              <span> color:{{d.c}}
+                "{{d.t}}"
+    <footer> height:26px gap:14px padding:0 10px font-size:11.5px color:#a1a1aa
+      <span> 
+        "4 panes · 2 Spaces"
+      <span> 
+        "● 5 agents"
+      <span> color:#f5b453
+        "▲ 2 需要回覆"
+      <span> 
+        "Y ⎇ feat/gpui-dock ↑2"
+      <div> flex:1
+      <span> 
+        "HERDR 0.9.5 · 本機 / wsl / lab-01"
+      <span> color:#8b8b94
+        "Ctrl+Shift+P 指令"

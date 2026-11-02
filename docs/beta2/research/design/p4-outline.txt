@@ -1,0 +1,224 @@
+<div> width:1440px height:900px background:#131417 color:#e4e4e7 font-size:12.5px
+  <div> width:248px
+    <dc-import> 
+  <div> flex:1
+    <header> height:36px gap:6px padding:0 6px
+      <div> gap:4px
+        <button> height:26px gap:6px padding:0 8px border-radius:6px color:#a1a1aa
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "主工作"
+          <span> width:6px height:6px border-radius:50% background:#f5b453
+        <button> height:26px gap:6px padding:0 8px border-radius:6px background:#232428 border:1px solid #34353a
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "資料遷移"
+          <span> color:#8b8b94
+            "×"
+        <button> width:26px height:26px color:#a1a1aa font-size:15px
+          "+"
+      <div> flex:1
+      <button> height:26px gap:6px padding:0 8px border-radius:6px border:1px solid #2c2d32 color:#d4d4d8
+        "＋ 新增 pane"
+        <span> color:#8b8b94
+          "▾"
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <span> width:1px height:16px background:#2a2b30
+      <button> width:30px height:26px color:#8b8b94
+        "—"
+      <button> width:30px height:26px color:#8b8b94
+        <svg>
+      <button> width:30px height:26px color:#8b8b94
+        "✕"
+    <div> flex:1 grid-template-columns:1fr 1fr gap:6px padding:0 6px 6px
+      <section> border:1px solid #55565c border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <svg>
+          <span> font-weight:600
+            "local-pg"
+          <span> color:#8b8b94 font-size:11.5px
+            "yuzora_dev · public.agent_sessions"
+          <div> padding:2px border-radius:5px background:#222327
+            <button> height:18px padding:0 8px border-radius:3px background:#34353a font-size:11px
+              "資料"
+            <button> height:18px padding:0 8px border-radius:3px font-size:11px color:#a1a1aa
+              "結構"
+            <button> height:18px padding:0 8px border-radius:3px font-size:11px color:#a1a1aa
+              "SQL"
+          <div> flex:1
+          <button> height:20px padding:0 10px border-radius:4px background:#e4e4e7 color:#131417 font-weight:600 font-size:11.5px
+            "執行 ⌘↵"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> height:30px padding:0 12px gap:6px font-size:12px background:#151619
+          <span> color:#c678dd
+            "SELECT"
+          "id, agent, space, host, state, updated_at"
+          <span> color:#c678dd
+            "FROM"
+          "agent_sessions"
+          <span> color:#c678dd
+            "ORDER BY"
+          "updated_at"
+          <span> color:#c678dd
+            "DESC"
+          ";"
+        <div> flex:1 font-size:12.5px
+          <div> grid-template-columns:60px 1.1fr 1fr 110px 130px 170px height:28px padding:0 12px background:#1c1d21 color:#a1a1aa font-size:11.5px font-weight:600
+            <span> 
+              "id"
+            <span> 
+              "agent"
+            <span> 
+              "space"
+            <span> 
+              "host"
+            <span> 
+              "state"
+            <span> 
+              "updated_at ↓"
+          <sc-for> 
+            <div> 
+              <span> color:#8b8b94
+                "{{r.id}}"
+              <span> 
+                "{{r.agent}}"
+              <span> gap:6px
+                <span> 
+                  "{{r.initial}}"
+                "{{r.space}}"
+              <span> color:#a1a1aa
+                "{{r.host}}"
+              <sc-if> 
+                <span> 
+                  <input> width:110px height:22px padding:0 6px border-radius:3px border:1.5px solid #60a5fa background:#131417 color:#e4e4e7 font-size:12px
+              <sc-if> 
+                <span> font-size:12px color:{{r.sc}}
+                  "{{r.state}}"
+              <span> font-size:12px color:#a1a1aa
+                "{{r.at}}"
+        <div> height:28px gap:12px padding:0 12px font-size:11.5px color:#a1a1aa
+          <span> 
+            "2,104 列 · 顯示 1–8 · 18 ms"
+          <span> color:#f5b453
+            "1 個儲存格已修改"
+          <div> flex:1
+          <button> height:20px padding:0 8px border-radius:4px border:1px solid #34353a
+            "捨棄"
+          <button> height:20px padding:0 8px border-radius:4px background:#60a5fa color:#0b1220 font-weight:600
+            "寫回"
+      <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <span> font-size:10px font-weight:700 color:#fbbf24
+            "SQL"
+          <span> font-weight:600
+            "0007_agent_sessions.sql"
+          <span> color:#8b8b94
+            "migrations"
+          <div> flex:1
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:8px 12px font-size:12px color:#d4d4d8
+          <div> 
+            <span> color:#6f7078
+              "1"
+            <span> color:#c678dd
+              "ALTER TABLE"
+            "agent_sessions"
+          <div> 
+            <span> color:#6f7078
+              "2"
+            <span> color:#c678dd
+              "ADD COLUMN"
+            "seen_at"
+            <span> color:#e5c07b
+              "timestamptz"
+            ";"
+          <div> 
+            <span> color:#6f7078
+              "3"
+          <div> 
+            <span> color:#6f7078
+              "4"
+            <span> color:#8b8f98
+              "-- done = idle 且未查看"
+          <div> 
+            <span> color:#6f7078
+              "5"
+            <span> color:#c678dd
+              "CREATE VIEW"
+            "v_attention"
+            <span> color:#c678dd
+              "AS"
+          <div> 
+            <span> color:#6f7078
+              "6"
+            <span> color:#c678dd
+              "SELECT"
+            "*"
+            <span> color:#c678dd
+              "FROM"
+            "agent_sessions"
+          <div> 
+            <span> color:#6f7078
+              "7"
+            <span> color:#c678dd
+              "WHERE"
+            "state"
+            <span> color:#c678dd
+              "IN"
+            "("
+            <span> color:#98c379
+              "'blocked'"
+            ","
+            <span> color:#98c379
+              "'done'"
+            ");"
+      <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <svg>
+          <span> font-weight:600
+            "Claude Code"
+          <span> color:#8b8b94
+            "yuzora · feat/gpui-dock"
+          <div> flex:1
+          <span> color:#86d17a font-size:11.5px
+            "● 工作中"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:10px 12px font-size:12px color:#c9c9cf
+          <div> color:#f4f4f5
+            "> 幫 agent_sessions 加 seen_at，並建立 v_attention view"
+          <div> 
+            <span> color:#4ade80
+              "⏺"
+            "Write(migrations/0007_agent_sessions.sql)"
+          <div> 
+            <span> color:#4ade80
+              "⏺"
+            "Bash(psql -f migrations/0007_agent_sessions.sql)"
+          <div> color:#8b8b94
+            "⎿ ALTER TABLE · CREATE VIEW"
+          <div> color:#e8a27f
+            "✻ Working…"
+    <footer> height:26px gap:14px padding:0 10px font-size:11.5px color:#a1a1aa
+      <span> 
+        "3 panes · yuzora"
+      <span> 
+        "● 5 agents"
+      <span> color:#f5b453
+        "▲ 2 需要回覆"
+      <span> 
+        "PostgreSQL 16 · local-pg"
+      <div> flex:1
+      <span> 
+        "HERDR 0.9.5"
+      <span> color:#8b8b94
+        "Ctrl+Shift+P 指令"

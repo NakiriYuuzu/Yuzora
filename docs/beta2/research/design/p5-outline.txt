@@ -1,0 +1,179 @@
+<div> width:1440px height:900px background:#131417 color:#e4e4e7 font-size:12.5px
+  <div> width:248px
+    <dc-import> 
+  <div> flex:1
+    <header> height:36px gap:6px padding:0 6px
+      <div> gap:4px
+        <button> height:26px gap:6px padding:0 8px border-radius:6px color:#a1a1aa
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "主工作"
+          <span> width:6px height:6px border-radius:50% background:#f5b453
+        <button> height:26px gap:6px padding:0 8px border-radius:6px background:#232428 border:1px solid #34353a
+          <span> width:14px height:14px border-radius:3px background:#8a5cf0 color:#fff font-size:9px font-weight:700
+            "I"
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "部署"
+          <span> color:#8b8b94
+            "×"
+        <button> width:26px height:26px color:#a1a1aa font-size:15px
+          "+"
+      <div> flex:1
+      <button> height:26px gap:6px padding:0 8px border-radius:6px border:1px solid #2c2d32 color:#d4d4d8
+        "＋ 新增 pane"
+        <span> color:#8b8b94
+          "▾"
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <span> width:1px height:16px background:#2a2b30
+      <button> width:30px height:26px color:#8b8b94
+        "—"
+      <button> width:30px height:26px color:#8b8b94
+        <svg>
+      <button> width:30px height:26px color:#8b8b94
+        "✕"
+    <div> flex:1 grid-template-columns:1fr 1fr gap:6px padding:0 6px 6px
+      <section> border:1px solid #55565c border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <svg>
+          <span> font-weight:600
+            "SFTP"
+          <span> color:#8b8b94
+            "本機 ↔ lab-01"
+          <div> flex:1
+          <span> font-size:11.5px color:#93c5fd
+            "↑ 1 進行中 · 62%"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 grid-template-columns:1fr 40px 1fr
+          <div> 
+            <div> height:28px gap:6px padding:0 10px font-size:12px
+              <span> width:6px height:6px border-radius:50% background:#4ade80
+              <b> font-weight:600
+                "本機"
+              <span> font-size:11.5px color:#a1a1aa
+                "~/yuzora/target/release"
+            <sc-for> 
+              <div> 
+                <span> gap:8px
+                  <span> 
+                  <span> 
+                    "{{f.name}}"
+                <span> font-size:11px color:#a1a1aa
+                  "{{f.size}}"
+          <div> gap:8px
+            <button> width:28px height:28px border-radius:6px background:#e4e4e7 color:#131417 font-weight:700
+              "→"
+            <button> width:28px height:28px border-radius:6px border:1px solid #34353a color:#d4d4d8 font-weight:700
+              "←"
+          <div> 
+            <div> height:28px gap:6px padding:0 10px font-size:12px
+              <span> width:6px height:6px border-radius:50% background:#4ade80
+              <b> font-weight:600
+                "lab-01"
+              <span> font-size:11.5px color:#a1a1aa
+                "/srv/yuzora/releases"
+            <sc-for> 
+              <div> 
+                <span> gap:8px
+                  <span> 
+                  <span> 
+                    "{{f.name}}"
+                <span> font-size:11px color:#a1a1aa
+                  "{{f.size}}"
+        <div> height:32px gap:10px padding:0 12px font-size:12px
+          <span> color:#93c5fd font-weight:700
+            "↑"
+          <span> font-size:11.5px
+            "build-artifacts.tar.zst"
+          <span> flex:1 height:5px border-radius:3px background:#26272b
+            <span> width:62% height:5px background:#93c5fd
+          <span> font-size:11px color:#a1a1aa
+            "184 / 296 MB · 續傳"
+      <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#8a5cf0 color:#fff font-size:9.5px font-weight:700
+            "I"
+          <svg>
+          <span> font-weight:600
+            "bash"
+          <span> color:#8b8b94
+            "infra · lab-01 · SSH"
+          <div> flex:1
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:10px 12px font-size:12px color:#a1a1aa
+          <div> 
+            <span> color:#86d17a
+              "yuzu@lab-01"
+            ":"
+            <span> color:#93c5fd
+              "/srv/yuzora"
+            "$ sudo nginx -t"
+          <div> 
+            "nginx: configuration file /etc/nginx/nginx.conf test is successful"
+          <div> 
+            <span> color:#86d17a
+              "yuzu@lab-01"
+            ":"
+            <span> color:#93c5fd
+              "/srv/yuzora"
+            "$ df -h /srv"
+          <div> 
+            "/dev/nvme0n1p2 466G 284G 182G 61% /srv"
+          <div> 
+            <span> color:#86d17a
+              "yuzu@lab-01"
+            ":"
+            <span> color:#93c5fd
+              "/srv/yuzora"
+            "$"
+            <span> width:7px height:14px background:#e4e4e7
+      <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <svg>
+          <span> font-weight:600
+            "zsh"
+          <span> color:#8b8b94
+            "yuzora · 本機"
+          <div> flex:1
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 padding:10px 12px font-size:12px color:#a1a1aa
+          <div> 
+            <span> color:#86d17a
+              "➜"
+            <span> color:#93c5fd
+              "yuzora"
+            "bun run tauri:build"
+          <div> 
+            "Finished `release` profile in 3m 12s"
+          <div> 
+            "Bundling Yuzora-macos-aarch64.dmg"
+          <div> color:#86d17a
+            "✓ target/release/bundle ready"
+          <div> 
+            <span> color:#86d17a
+              "➜"
+            <span> color:#93c5fd
+              "yuzora"
+            <span> width:7px height:14px background:#e4e4e7
+    <footer> height:26px gap:14px padding:0 10px font-size:11.5px color:#a1a1aa
+      <span> 
+        "3 panes · 2 Spaces · 2 主機"
+      <span> 
+        "● 5 agents"
+      <span> color:#f5b453
+        "▲ 2 需要回覆"
+      <span> 
+        "lab-01 · ED25519 已驗證"
+      <div> flex:1
+      <span> 
+        "HERDR 0.9.5"
+      <span> color:#8b8b94
+        "Ctrl+Shift+P 指令"

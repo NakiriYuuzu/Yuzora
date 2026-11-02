@@ -984,3 +984,66 @@ including a small herdr-core skill you can install with the user's permission.
 - One mod per idea. Don't edit `AGENTS.md` or the `.d.ts` files (the app
   rewrites them). Don't touch other mods unless the request
   needs it.
+
+## Yuzora
+
+<!-- yuzora: everything below is Yuzora's; the rest of this file is Herdr's. -->
+
+This window is **Yuzora**, built on the Herdr app: everything above holds,
+with these differences.
+
+- This folder is Yuzora's home, `~/.config/yuzora` (`YUZORA_APP_HOME` picks
+  another), never Herdr's `~/.config/herdr-app`. The command line is the app
+  itself (`Yuzora.app/Contents/MacOS/Yuzora status`, `... do <command>`). A
+  `herdr-app` on PATH may be the official Herdr app, which answers for its
+  own window, not this one.
+- Yuzora keeps its spaces and tabs in herdr-core's `yuzora` layout document,
+  so Herdr and Yuzora on one core don't overwrite each other's arrangement.
+  Terminals are herdr-core's and both apps see them.
+- The default layout is `layouts/yuzora.json`: a 248px sidebar whose stack
+  `yuzora-sidebar` holds five modes (`yuzora-sidebar-workspace`, `-files`,
+  `-git`, `-database`, `-ssh`), the `yuzora-modebar` under it switching them
+  with `layout.select {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}`,
+  and the tab bar, the active tab and `yuzora-statusbar` on the right. It is
+  shipped: clone it before changing its structure, as with Herdr's layouts.
+- Theme `yuzora-dark`. Design values a theme has no name for (diff colors,
+  agent brand colors, Space badge colors, the agent states' shapes, sizes)
+  come from `tokens()`.
+- Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
+  `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
+  timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
+  `yuzora:ssh`, `yuzora:files`, `yuzora:settings`. Their types are in
+  `yuzora.d.ts` beside `herdr.d.ts` (rewritten on every start).
+- Text: a Yuzora mod keeps its strings in `mods/<mod>/i18n/en.json` and
+  `zh-TW.json` and shows them with `t("key", {name: value})`. The language is
+  `general.locale` in `yuzora/settings.json`: `"system"` (the default), `"en"`
+  or `"zh-TW"`.
+- A mod offers itself as a tool pane (the new-pane menu) or a settings page
+  in its own `mod.json`: `"yuzora": {"pane": {"title": "pane.title"}}`,
+  `"yuzora": {"settings": {"title": "settings.title", "section": "git"}}`.
+- Yuzora's own settings are `yuzora/settings.json`, one section per area;
+  `settings.json` above stays the person's look, sounds and fonts. Passwords
+  and keys live in the system's credential store, never in these files.
+- Nothing goes to herdr.dev: telemetry is off, feedback opens a GitHub issue
+  on NakiriYuuzu/Yuzora, and the app doesn't update itself from Herdr.
+
+<!-- yuzora:lane:L1:start -->
+<!-- yuzora:lane:L1:end -->
+
+<!-- yuzora:lane:L2:start -->
+<!-- yuzora:lane:L2:end -->
+
+<!-- yuzora:lane:L3:start -->
+<!-- yuzora:lane:L3:end -->
+
+<!-- yuzora:lane:L4:start -->
+<!-- yuzora:lane:L4:end -->
+
+<!-- yuzora:lane:L5:start -->
+<!-- yuzora:lane:L5:end -->
+
+<!-- yuzora:lane:L6:start -->
+<!-- yuzora:lane:L6:end -->
+
+<!-- yuzora:lane:L7:start -->
+<!-- yuzora:lane:L7:end -->
