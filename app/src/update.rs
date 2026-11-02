@@ -40,7 +40,7 @@ fn find_root() -> Option<PathBuf> {
         (bundle.extension()? == "app").then(|| bundle.to_path_buf())
     } else {
         // The release folder holds the binary and its icon; cargo's target/ doesn't.
-        dir.join(crate::yuzora::release::MARKER).is_file().then(|| dir.to_path_buf()) // yuzora(L7): Yuzora's package
+        crate::yuzora::release::is_install(dir).then(|| dir.to_path_buf()) // yuzora(L7): Yuzora's package, and only it
     }
 }
 

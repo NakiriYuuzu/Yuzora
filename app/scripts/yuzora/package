@@ -103,10 +103,13 @@ else
   dir="$work/yuzora"
   mkdir -p "$dir"
   if [[ $os == windows ]]; then cp "$program" "$dir/yuzora.exe"; else cp "$program" "$dir/yuzora"; chmod 755 "$dir/yuzora"; fi
-  # Also how the app knows it's an installed release (src/yuzora/release.rs, MARKER).
   cp assets/icons/yuzora.png "$dir/yuzora.png"
   cp LICENSE THIRD-PARTY-NOTICES "$dir/"
   [[ $os == linux ]] && install -m 755 distribution/yuzora/linux/install "$dir/install"
+  # How the app knows it's an installed release, and only that folder
+  # (src/yuzora/release.rs, is_install): everything in it, by name.
+  names=$(cd "$dir" && ls -A)
+  printf '%s\nyuzora.package\n' "$names" > "$dir/yuzora.package"
   notices=yuzora
   tar -czf "$archive" -C "$work" yuzora
   if [[ $os == windows ]]; then

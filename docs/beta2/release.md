@@ -85,7 +85,7 @@
 ```
 
 - **通道**：`stable` 只收非 pre-release、版本不帶 `-` 的 release；`beta` 兩者都收。beta build 預設 beta、stable build 預設 stable；Yuzora `settings.json` 的 `update` section（`{"channel": "stable" | "beta"}`）可以改。這個 section 屬 L7；設定 UI 由 L6 接（見 §10）。改成 stable 時，已經下載好、等著重啟套用的 beta 會在下一次檢查、結束或啟動時丟掉，不會套用（`staged_version` 的 L7 接點）。
-- **只有安裝好的 release build 會檢查**（`HERDR_APP_RELEASE`＋安裝形狀：macOS 是 `.app`，其他平台是有 `yuzora.png` 的資料夾）。從原始碼建置的不會連網。
+- **只有安裝好的 release build 會檢查**（`HERDR_APP_RELEASE`＋安裝形狀：macOS 是 `.app`；其他平台是有 `yuzora.package` 的資料夾，而且資料夾裡只有這份清單列出的東西，避免把解壓到使用者資料夾上的封包當成安裝、更新時整個資料夾被換掉）。從原始碼建置的不會連網。
 - **版本比較**：上游 `newer()` 把 pre-release 當字串比，`beta.10` 會排在 `beta.9` 前面。已修正為 semver 規則（`release::prerelease_cmp`，`update.rs` 一行改動）。
 - **錯誤處理**：任何一步失敗都只記 log、30 分鐘後重試（上游 RETRY）；GitHub API 403（每小時 60 次的未驗證上限）也是。一個 IP 後面很多台 app 時可能偶爾撞到上限，之後再評估改走 `releases/latest/download`。
 - **測試伺服器**：`YUZORA_UPDATE_URL=<base>` 讓任何 build（包括 release build）改向一個仿 GitHub 路徑的伺服器檢查（`<base>/repos/NakiriYuuzu/Yuzora/releases`、`<base>/NakiriYuuzu/Yuzora/releases/download/v<version>/…`）。簽章照樣必須由信任的金鑰簽。

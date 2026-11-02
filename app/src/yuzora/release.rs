@@ -22,9 +22,20 @@ use std::path::{Path, PathBuf};
 /// The folder or bundle inside an update archive.
 pub const PACKED: &str = if cfg!(target_os = "macos") { "Yuzora.app" } else { "yuzora" };
 
-/// Beside the program in a Linux or Windows release folder (cargo's target/
-/// has none): how the app knows it's an installed release.
-pub const MARKER: &str = "yuzora.png";
+/// Beside the program in a Linux or Windows release folder: the names of
+/// everything the package put there, one per line (scripts/yuzora/package).
+pub const PACKAGE_LIST: &str = "yuzora.package";
+
+/// Whether `dir` is an installed Linux or Windows release: it has the
+/// package's list and nothing that isn't on it. An update swaps the whole
+/// folder (and removes the old one), so a package unpacked over a folder
+/// with other files in it never updates itself; cargo's target/ has no list.
+pub fn is_install(dir: &Path) -> bool {
+    let Ok(list) = std::fs::read_to_string(dir.join(PACKAGE_LIST)) else { return false };
+    let names: std::collections::HashSet<&str> = list.lines().filter(|name| !name.is_empty()).collect();
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    !names.is_empty() && entries.into_iter().all(|entry| entry.ok().is_some_and(|e| e.file_name().to_str().is_some_and(|n| n == PACKAGE_LIST || names.contains(n))))
+}
 
 /// The program in an installed or unpacked app (`app`: the bundle or folder).
 pub fn exe_in(app: &Path) -> PathBuf {
@@ -101,6 +112,25 @@ mod tests {
         }
         assert!(!exe.to_string_lossy().contains("herdr"));
         assert!(["macos-aarch64", "macos-x86_64", "linux-x86_64", "linux-aarch64", "windows-x86_64", "windows-aarch64"].contains(&target().as_str()));
+    }
+
+    #[test]
+    fn only_a_folder_holding_just_its_package_is_an_install() {
+        let dir = std::env::temp_dir().join(format!("yuzora-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["yuzora", "yuzora.png", "LICENSE"] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        assert!(!is_install(&dir), "no list: cargo's target/, or a folder with a yuzora.png");
+        std::fs::write(dir.join(PACKAGE_LIST), "LICENSE\nyuzora\nyuzora.package\nyuzora.png\n").unwrap();
+        assert!(is_install(&dir));
+        std::fs::write(dir.join("notes.txt"), "someone's").unwrap();
+        assert!(!is_install(&dir), "unpacked over someone's folder");
+        std::fs::remove_file(dir.join("notes.txt")).unwrap();
+        std::fs::write(dir.join(PACKAGE_LIST), "\n").unwrap();
+        assert!(!is_install(&dir), "an empty list");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

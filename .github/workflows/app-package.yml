@@ -134,6 +134,8 @@ jobs:
           ./dist/Yuzora-windows-x64-setup.exe /S
           [ "$("$dir/yuzora.exe" --version | tr -d '\r')" = "herdr-app $version" ]
           [ -f "$dir/yuzora.png" ]
+          # The folder holds exactly what its package list names (src/yuzora/release.rs, is_install).
+          [ "$(ls -A "$dir" | sort)" = "$(tr -d '\r' < "$dir/yuzora.package" | sort)" ]
           [ -f "$dir-uninstall/uninstall.exe" ]
           reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.yuuzu.yuzora' /v DisplayVersion | grep -F "$version"
           reg query 'HKCU\Environment' /v Path | grep -iF "Programs\\Yuzora"
@@ -166,6 +168,7 @@ jobs:
           [ "$("$work/home/.local/bin/yuzora" --version)" = "herdr-app $version" ]
           grep -qx 'StartupWMClass=dev.yuuzu.yuzora' "$work/home/.local/share/applications/dev.yuuzu.yuzora.desktop"
           [ -f "$work/home/.local/share/yuzora/yuzora.png" ]
+          [ "$(ls -A "$work/home/.local/share/yuzora" | sort)" = "$(sort "$work/home/.local/share/yuzora/yuzora.package")" ]
           # Again over itself (an update by hand).
           HOME="$work/home" XDG_DATA_HOME= "$work/yuzora/install"
           [ "$("$work/home/.local/bin/yuzora" --version)" = "herdr-app $version" ]
