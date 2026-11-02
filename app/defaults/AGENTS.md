@@ -1035,8 +1035,8 @@ with these differences.
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
 - Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
   `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
-- `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadge(id, name)` (a Space's initial and color;
-  colors are kept in `yuzora/settings.json` under `shell.space_colors`, edit one to pick another),
+- `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`
+  (each Space's initial and color; when `changed`, write `kept` back to that shared key so the color stays),
   `agentBrand(app, key)`, `gitStatus(cwd, {on})`.
 - A mod shows a number on its mode in the mode bar with `setShared("yuzora.badge.<workspace|files|git|database|ssh>", n)`
   (null hides it), and text in the status bar with `setShared("yuzora.status.<lane>", {text, tone})`

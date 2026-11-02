@@ -13,7 +13,7 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `app/defaults/mods/yuzora-shell-tabs/` | tab 列與「＋ 新增 pane ▾」選單 |
 | `app/defaults/mods/yuzora-shell-pane/` | pane 標頭 |
 | `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
-| `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列（L0 留下，未改） |
+| `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列：標誌與搜尋（開指令面板） |
 | `app/defaults/layouts/yuzora.json` | 預設 layout：改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型 |
 | `app/defaults/themes/yuzora-dark.json`、`app/defaults/yuzora/tokens.json` | theme 與 tokens |
 | `app/defaults/frame/{welcome,whatsnew,feedback}/` | 上游畫面，只改品牌字樣（見「上游改動」） |
@@ -24,14 +24,23 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 
 | 函式 | 用途 |
 | --- | --- |
-| `workspace({spaces, panes, agents, machines, hosts, scope, folded})` | 側欄的整個模型：machine → Space → worktree → agent 的列、需要注意清單（blocked 優先，再來是 done，各自新的在前）、scope chips（每台機器的 LED 與數量）、Agents 分頁的扁平清單（最急的在前，其餘照 Herdr 順序），以及給 `setAgentOrder` 的順序。純函式，有單元測試 |
-| `spaceBadge(id, name)` | Space 徽章：名稱第一個字母或數字（大寫）＋顏色。顏色取自 `tokens().space_badges`，第一次看到的 Space 拿目前最少用的顏色，存在 Yuzora `settings.json` 的 `shell.space_colors`，重啟後不變，使用者也可以手改 |
+| `workspace({spaces, panes, agents, machines, hosts, scope, folded, colors})` | 側欄的整個模型：machine → Space → worktree → agent 的列、需要注意清單（blocked 優先，再來是 done，各自新的在前）、scope chips（每台機器的 LED 與數量）、Agents 分頁的扁平清單（最急的在前，其餘照 Herdr 順序），以及給 `setAgentOrder` 的順序。純函式，有單元測試 |
+| `spaceBadges(spaces, kept)` | 每個 Space 的徽章：名稱第一個字母或數字（大寫）＋顏色。顏色取自 `tokens().space_badges`，`kept` 是 `shared("yuzora.space.colors")`（`{space id: 顏色}`）；沒有顏色的 Space 拿目前最少用的顏色，回傳 `changed: true` 與新的 `kept`，呼叫端寫回同一個 key。純函式，不寫檔 |
+| `hostname()` | 這台電腦的名稱（去掉網域），側欄「這台電腦」列使用 |
 | `agentBrand(app, key)` | agent 品牌（`claude`／`codex`／`pi`／`gemini`），決定徽章色 |
 | `gitStatus(cwd, {on})` | 一次 `git status --porcelain=v2 --branch`（本機或 `hc exec --on`，10 秒上限）：branch、upstream、ahead、behind、changed、conflicted；不在 repo 時回傳 null。不加鎖、不用 fsmonitor，不會在 `.git` 寫東西 |
 
-worktree 的分組依 agent 所在 pane 的 branch；不在 git 裡的 agent 以資料夾名稱分組。
+worktree 的分組依 agent 所在 pane 的 branch；不在 git 裡的 agent 以資料夾名稱分組。`hosts` 照 `hc machine ls --json` 的樣子傳入；欄位型別不符（例如 `via` 是布林）只會略過該欄位，不會讓整個側欄失敗。
 
-**其他 lane 可用**：`spaceBadge` 讓各 lane 的側欄標頭、pane 與 L1 畫出同樣的 Space 徽章（例如 L5 檔案模式、L2 Git 模式的「Y」方塊）。
+**其他 lane 可用**：`spaceBadges` 讓各 lane 的側欄標頭、pane 與 L1 畫出同樣的 Space 徽章（例如 L5 檔案模式、L2 Git 模式的「Y」方塊）：
+
+```js
+const r = spaceBadges(spaces().map((s) => ({ id: s.id, name: s.name })), shared("yuzora.space.colors"));
+if (r.changed) setShared("yuzora.space.colors", r.kept);
+const badge = r.badges[spaceId]; // { initial, color }
+```
+
+同一份 `kept` 算出的結果固定，所以多個 mod 同時寫回也一致。
 
 ## 共享狀態
 
@@ -39,7 +48,8 @@ L1 寫的 key：
 
 | key | 內容 |
 | --- | --- |
-| `yuzora.badge.workspace` | 等待回覆（blocked）的 agent 數，全部機器；0 時為 null |
+| `yuzora.badge.workspace` | 等待回覆（blocked）的 agent 數，全部機器；0 時為 null。由模式列計算（它一直在畫面上，工作區側欄不一定） |
+| `yuzora.space.colors` | 每個 Space 的徽章色（`{space id: "#rrggbb"}`）。tab 列、pane 標頭、狀態列在出現新 Space 時寫入；移除的 Space 保留顏色（遠端機器暫時離線，回來時顏色不變） |
 | `yuzora.shell.agents` | 各機器 `knownAgents()` 的上次結果（新增 pane 選單先顯示，再背景更新） |
 | `yuzora.shell.split` | 新增 pane 選單放在 `right` 或 `down` |
 
@@ -55,7 +65,10 @@ L1 讀的 key：
 - **blocked 外框**：上游的 pane frame 只有 `border` 與 `focus`。L1 在 `PaneFrame` 加了 `blocked`（`{width, color}`），agent 需要回覆時優先使用（即使該 pane 有 focus，因為那裡需要人）。標頭底色 `#1d1a14` 由 `yuzora-shell-pane` 自己畫。工具 pane 沒有 agent，不會變色。
 - **狀態形狀**：每種狀態同時用顏色與形狀表示（工作中綠點、需要回覆琥珀三角、完成未查看藍菱形、閒置空心圓、未知虛線圓）。GPUI 沒有 CSS 旋轉與三角形 border，所以 5 種形狀做成 SVG（`yuzora-sidebar-workspace/status/`），以 tokens 的 `status.<x>.mark` 上色。
 - **設定齒輪**：L6 的設定框架合併前，先開上游的 `app.settings`。
-- **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。
+- **鍵盤與腳本入口**：`yuzora-shell-tabs.new-pane` 開新增 pane 選單（沒有滑鼠位置可對齊，所以置中顯示；點按鈕時則開在游標下）；`yuzora-sidebar-workspace.spaces`／`agents` 切換分頁，`add`／`tools` 開對應選單。可綁進 `keys.json`（`"alt-n": "yuzora-shell-tabs:new-pane"`），也可用 `herdr-app do yuzora-shell-tabs.new-pane`。
+- **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。放開在其他地方或拖出側欄就取消。
+- **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動、離線）時先顯示全部，機器回來後自動回到該機器。
+- **Space 徽章色放 shared state**：不寫 Yuzora `settings.json`，所以測試與 render 不會碰 app home 以外的檔案，也不會蓋掉別的設定；L6 若要在外觀頁讓使用者改色，改寫 `yuzora.space.colors` 即可。
 - **字型**：見下節。
 
 ## 字型
@@ -100,18 +113,34 @@ scripts/yuzora/check-mods
 printf '\033]7501;state=blocked:app=codex\033\\'; exec sleep 100000
 ```
 
-工具 pane 用一個只放在測試 app home、不出貨的示範 mod（`mod.json` 宣告 `"yuzora": {"pane": …}`）。截圖在 `docs/beta2/evidence/l1-*.png`。
+工具 pane 用一個只放在測試 app home、不出貨的示範 mod（`mod.json` 宣告 `"yuzora": {"pane": …}`）。遠端機器用同一台電腦上另一個隔離的 hc session 模擬：
+
+```bash
+hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
+```
+
+截圖在 `docs/beta2/evidence/`：
+
+| 檔案 | 內容 |
+| --- | --- |
+| `l1-workspace.png` | 本機＋lab-01 的樹、scope chips、需要注意、模式列徽章、tab 列、pane 標頭、狀態列（含其他 lane 的狀態） |
+| `l1-scope-after-restart.png` | 選 lab-01 後重啟，scope 仍在 |
+| `l1-blocked-and-badge.png` | 側欄在 Git 模式時新增 blocked agent：工作區徽章變 3、pane 琥珀外框與標頭 |
+| `l1-agents-tab.png` | Agents 分頁（最急的在前） |
+| `l1-new-pane-menu.png` | 「新增 pane」選單（由 `yuzora-shell-tabs.new-pane` 開啟） |
+| `l1-mixed-split-after-restart.png` | 終端機與工具 pane 混合分割，重啟後保留 |
+| `l1-welcome.png` | welcome 的 Yuzora 品牌字樣 |
 
 ## 待辦
 
 - 隨 app 打包 Inter（與 Noto Sans TC 的取捨），見「字型」。
 - light theme（`yuzora-light`）。
-- 設計稿品牌列的搜尋（⌘K）與第二顆按鈕：`yuzora-brand` 尚未加入。
+- 設計稿品牌列的第二顆按鈕用途未定（搜尋已加入，開指令面板）。
 - pane 標頭的 `repo` 目前是 pane 目前資料夾的名稱；在 repo 子資料夾時不是 repo 名稱。
 - 設計稿 tab 列右側兩顆圖示按鈕的用途未定，暫時做成「在右側／下方開終端機」。
 
 ## 後續整合
 
-- **L6**：設定框架合併後，模式列齒輪改開 Yuzora 的設定（`yuzora-modebar/main.js` 的 `app.settings`）。`shell.space_colors` 可以出現在外觀設定頁。
-- **L2–L5**：側欄模式的標頭可用 `spaceBadge()` 畫 Space 徽章；徽章數與狀態列文字照「共享狀態」的 key 寫入。工具 pane 在 `mod.json` 宣告 `"yuzora": {"pane": …}` 就會出現在「＋ 新增 pane」選單。
+- **L6**：設定框架合併後，模式列齒輪改開 Yuzora 的設定（`yuzora-modebar/main.js` 的 `app.settings`）。外觀設定頁可編輯 `yuzora.space.colors`（Space 徽章色）。
+- **L2–L5**：側欄模式的標頭可用 `spaceBadges()` 畫 Space 徽章（用法見上）；徽章數與狀態列文字照「共享狀態」的 key 寫入。工具 pane 在 `mod.json` 宣告 `"yuzora": {"pane": …}` 就會出現在「＋ 新增 pane」選單。
 - **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。
