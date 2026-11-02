@@ -2,7 +2,8 @@
 //! (docs/beta2/release.md, "beta.1 → beta.2"). Added by L7.
 //!
 //! The old app's files and credentials are only ever read: they stay as they
-//! were, so the Tauri app still works if someone goes back to it. Each lane
+//! were, so the Tauri app still works if someone goes back to it (SQLite
+//! still notes its read lock in a WAL database's `-shm`; the data stays). Each lane
 //! brings its own part with an [`Importer`], into its own section of Yuzora's
 //! settings.json and its own secrets namespace: `db` (L3), `ssh` (L4),
 //! `general` (L6). [`run`] runs each importer once and remembers it in
@@ -192,28 +193,46 @@ pub fn db_account(descriptor: &str, generation: &str) -> String {
 }
 
 /// WebKit's localStorage: `WebsiteData/Default/<hash>/<hash>/LocalStorage/
-/// localstorage.sqlite3`, one per page origin. The app's own (`tauri://`)
-/// comes first, then the rest, newest first (a development server's page).
+/// localstorage.sqlite3`, one per page origin. Only the app's own page
+/// counts: beta.1's preview pane opened web pages in the same data store, so
+/// any site could have left a `yuzora.hosts.ssh.v2` of its own.
 fn webkit_local_storage(webkit: &Path, key: &str) -> Result<Option<String>, String> {
-    let mut stores: Vec<(bool, std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut stores: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     let default = webkit.join("WebsiteData/Default");
     let Ok(tops) = std::fs::read_dir(&default) else { return Ok(None) };
     for top in tops.flatten() {
         let Ok(frames) = std::fs::read_dir(top.path()) else { continue };
         for frame in frames.flatten() {
+            if !std::fs::read(frame.path().join("origin")).is_ok_and(|o| is_app_origin(&o)) {
+                continue;
+            }
             let db = frame.path().join("LocalStorage/localstorage.sqlite3");
             let Ok(meta) = std::fs::metadata(&db) else { continue };
-            let tauri = std::fs::read(frame.path().join("origin")).is_ok_and(|o| o.windows(5).any(|w| w == b"tauri"));
-            stores.push((tauri, meta.modified().unwrap_or(std::time::UNIX_EPOCH), db));
+            stores.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), db));
         }
     }
-    stores.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-    for (_, _, db) in stores {
+    stores.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, db) in stores {
         if let Some(value) = sqlite_item(&db, key)? {
             return Ok(Some(value));
         }
     }
     Ok(None)
+}
+
+/// Whether WebKit's `origin` file says `tauri://localhost` for both the top
+/// and the frame origin. Each origin is its protocol and host (a u32 length,
+/// 1 for 8-bit characters, the characters) and then 0 for no port; anything
+/// else, an iframe in the app included, isn't the app's page.
+fn is_app_origin(file: &[u8]) -> bool {
+    let mut one = Vec::new();
+    for part in ["tauri", "localhost"] {
+        one.extend((part.len() as u32).to_le_bytes());
+        one.push(1);
+        one.extend(part.as_bytes());
+    }
+    one.push(0);
+    file.len() == 2 * one.len() && file.chunks(one.len()).all(|origin| origin == one)
 }
 
 /// `ItemTable.value` for `key`: WebKit keeps it as UTF-16LE.
@@ -505,21 +524,28 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn reads_webkit_local_storage_preferring_the_apps_own_page() {
+    fn reads_only_the_apps_own_webkit_local_storage() {
         let root = temp("webkit");
         let webkit = root.join("WebKit");
         let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).map(|b| format!("{b:02X}")).collect::<String>();
-        let store = |hash: &str, origin: &[u8], value: &str| {
+        let store = |hash: &str, origin: &[u8], key: &str, value: &str| {
             let frame = webkit.join("WebsiteData/Default").join(hash).join(hash);
             std::fs::create_dir_all(frame.join("LocalStorage")).unwrap();
             std::fs::write(frame.join("origin"), origin).unwrap();
-            let sql = format!("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB NOT NULL ON CONFLICT FAIL); INSERT INTO ItemTable VALUES ('yuzora:language', X'{}');", utf16(value));
+            let sql = format!("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB NOT NULL ON CONFLICT FAIL); INSERT INTO ItemTable VALUES ('{key}', X'{}');", utf16(value));
             let ok = std::process::Command::new("/usr/bin/sqlite3").arg(frame.join("LocalStorage/localstorage.sqlite3")).arg(sql).status().unwrap();
             assert!(ok.success());
         };
-        store("a", b"\x05tauri\x09localhost", "zh-TW");
+        // What WebKit writes for tauri://localhost, as the top and the frame origin.
+        let app = b"\x05\0\0\0\x01tauri\x09\0\0\0\x01localhost\0";
+        let site = b"\x05\0\0\0\x01https\x0d\0\0\0\x01tauri.example\0";
+        store("a", &[&app[..], app].concat(), "yuzora:language", "zh-TW");
         std::thread::sleep(std::time::Duration::from_millis(20));
-        store("b", b"\x04http\x09localhost", "en");
+        // Newer pages the preview pane opened, with keys of the app's.
+        store("b", &[&site[..], site].concat(), "yuzora:language", "en");
+        store("c", &[&site[..], site].concat(), "yuzora.hosts.ssh.v2", "[{\"host\":\"planted\"}]");
+        store("d", &[&app[..], site].concat(), "yuzora.hosts.ssh.v2", "[{\"host\":\"framed\"}]");
+        store("e", b"\x05tauri\x09localhost", "yuzora.hosts.ssh.v2", "[{\"host\":\"odd\"}]");
         let old = Beta1::at(root.join("data"), root.join("dot"), Some(webkit), Box::new(MemoryLegacy::default()));
         assert_eq!(old.local_storage("yuzora:language").unwrap().as_deref(), Some("zh-TW"));
         assert_eq!(old.local_storage("yuzora.hosts.ssh.v2").unwrap(), None);

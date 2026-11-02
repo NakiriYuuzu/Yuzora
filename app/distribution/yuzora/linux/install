@@ -28,7 +28,15 @@ if [ "$here" != "$home" ]; then
   rm -rf "$home"
   mv "$home.install" "$home"
 fi
-ln -sfn "$home/yuzora" "$bin/yuzora"
+# Only a link to a Yuzora folder (or nothing) is replaced, never your own `yuzora`.
+link="$bin/yuzora"
+if [ ! -e "$link" ] && [ ! -L "$link" ]; then
+  ln -s "$home/yuzora" "$link"
+elif [ -L "$link" ] && case $(readlink "$link") in */yuzora/yuzora) true ;; *) false ;; esac; then
+  ln -sfn "$home/yuzora" "$link"
+else
+  echo "yuzora: $link isn't Yuzora's link, so it was left as it is; the app is $home/yuzora" >&2
+fi
 cp "$home/yuzora.png" "$data/icons/hicolor/512x512/apps/$id.png"
 cat > "$data/applications/$id.desktop" <<EOF
 [Desktop Entry]

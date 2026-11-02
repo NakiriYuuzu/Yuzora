@@ -53,9 +53,21 @@ pub fn checks_app(root: Option<PathBuf>) -> Option<PathBuf> {
     root.filter(|_| option_env!("HERDR_APP_RELEASE").is_some() || std::env::var_os(URL_ENV).is_some())
 }
 
+/// Whether a staged `version` may still be applied: the channel this install
+/// follows now takes it (upstream's `staged_version` asks).
+pub fn keeps(version: &str) -> bool {
+    keeps_on(Channel::chosen(), version)
+}
+
+fn keeps_on(channel: Channel, version: &str) -> bool {
+    channel.takes(version, false)
+}
+
 /// Upstream's `check`, for Yuzora: Ok(Some(version)) once a newer version is
 /// downloaded, checked and staged beside `root`.
 pub fn check(root: &Path) -> Result<Option<String>, String> {
+    // Drops a stage that's off the channel now, and its "Restart" with it.
+    let _ = crate::update::staged_version(root);
     let Some(found) = find(&Source::from_env(), Channel::chosen(), env!("CARGO_PKG_VERSION"), &keys())? else {
         return Ok(None);
     };
@@ -259,5 +271,13 @@ mod tests {
             assert_eq!(checks_app(Some(PathBuf::from("/Applications/Yuzora.app"))), None);
         }
         assert_eq!(checks_app(None), None);
+    }
+
+    #[test]
+    fn a_beta_staged_before_picking_stable_is_not_kept() {
+        assert!(keeps_on(Channel::Beta, "0.2.0-beta.1"));
+        assert!(keeps_on(Channel::Beta, "0.2.0"));
+        assert!(keeps_on(Channel::Stable, "0.2.0"));
+        assert!(!keeps_on(Channel::Stable, "0.2.0-beta.1"));
     }
 }

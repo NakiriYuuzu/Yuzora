@@ -81,11 +81,11 @@
   └─ 設定畫面顯示「重新啟動」；重啟或下次結束時交換（上游 swap/apply）
 ```
 
-- **通道**：`stable` 只收非 pre-release、版本不帶 `-` 的 release；`beta` 兩者都收。beta build 預設 beta、stable build 預設 stable；Yuzora `settings.json` 的 `update` section（`{"channel": "stable" | "beta"}`）可以改。這個 section 屬 L7；設定 UI 由 L6 接（見 §10）。
+- **通道**：`stable` 只收非 pre-release、版本不帶 `-` 的 release；`beta` 兩者都收。beta build 預設 beta、stable build 預設 stable；Yuzora `settings.json` 的 `update` section（`{"channel": "stable" | "beta"}`）可以改。這個 section 屬 L7；設定 UI 由 L6 接（見 §10）。改成 stable 時，已經下載好、等著重啟套用的 beta 會在下一次檢查、結束或啟動時丟掉，不會套用（`staged_version` 的 L7 接點）。
 - **只有安裝好的 release build 會檢查**（`HERDR_APP_RELEASE`＋安裝形狀：macOS 是 `.app`，其他平台是有 `yuzora.png` 的資料夾）。從原始碼建置的不會連網。
 - **版本比較**：上游 `newer()` 把 pre-release 當字串比，`beta.10` 會排在 `beta.9` 前面。已修正為 semver 規則（`release::prerelease_cmp`，`update.rs` 一行改動）。
 - **錯誤處理**：任何一步失敗都只記 log、30 分鐘後重試（上游 RETRY）；GitHub API 403（每小時 60 次的未驗證上限）也是。一個 IP 後面很多台 app 時可能偶爾撞到上限，之後再評估改走 `releases/latest/download`。
-- **測試伺服器**：`YUZORA_UPDATE_URL=<base>` 讓任何 build 改向一個仿 GitHub 路徑的伺服器檢查（`<base>/repos/NakiriYuuzu/Yuzora/releases`、`<base>/NakiriYuuzu/Yuzora/releases/download/v<version>/…`）。簽章照樣必須由信任的金鑰簽。
+- **測試伺服器**：`YUZORA_UPDATE_URL=<base>` 讓任何 build（包括 release build）改向一個仿 GitHub 路徑的伺服器檢查（`<base>/repos/NakiriYuuzu/Yuzora/releases`、`<base>/NakiriYuuzu/Yuzora/releases/download/v<version>/…`）。簽章照樣必須由信任的金鑰簽。
 - **網路連線**：release build 每小時連 `api.github.com` 與 `github.com`（Yuzora 更新），以及 `releases.herdr.dev`（herdr-core 的版本，D3 保留上游 core 通道）。從原始碼建置的 app 兩者都不連。
 
 ### manifest：`yuzora-update.json`
@@ -194,7 +194,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 `app/crates/yuzora-core/src/migrate.rs`（touches yuzora-core，只新增）：
 
-- **只讀**：beta.1 的檔案、localStorage、credential store 都只讀不寫，回到 beta.1 仍可使用。
+- **只讀**：beta.1 的檔案、localStorage、credential store 的內容都只讀不寫，回到 beta.1 仍可使用。唯一的例外是 SQLite 本身：localStorage 是 WAL 模式，`sqlite3 -readonly` 讀取時仍會在 `-shm` 記錄讀取鎖，但不會改動資料。
 - **`Beta1`**：找出 beta.1 留下的資料。
 
   | 資料 | 位置 | API |
@@ -204,7 +204,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
   | SSH host key | `~/.yuzora/known_hosts.json` | `known_hosts()` |
   | SSH 主機（`yuzora.hosts.ssh.v2`）、語系（`yuzora:language`）、外觀、終端機、編輯器、按鍵 | WebView localStorage | `local_storage(key)` |
 
-  `<data>` 是 Tauri 的 app data（macOS `~/Library/Application Support/dev.yuuzu.yuzora`、Windows `%APPDATA%\dev.yuuzu.yuzora`）。localStorage 在 macOS 是 WebKit 的 SQLite（`~/Library/WebKit/dev.yuuzu.yuzora/WebsiteData/Default/<hash>/<hash>/LocalStorage/localstorage.sqlite3`，值為 UTF-16LE），以系統內建的 `/usr/bin/sqlite3 -readonly` 讀，優先取 `tauri://` origin 的那份。**Windows 是 WebView2 的 LevelDB，目前讀不到**：SSH 主機與 localStorage 裡的設定在 Windows 要使用者重新設定。beta.1 本來就不存 SSH 密碼與 passphrase。
+  `<data>` 是 Tauri 的 app data（macOS `~/Library/Application Support/dev.yuuzu.yuzora`、Windows `%APPDATA%\dev.yuuzu.yuzora`）。localStorage 在 macOS 是 WebKit 的 SQLite（`~/Library/WebKit/dev.yuuzu.yuzora/WebsiteData/Default/<hash>/<hash>/LocalStorage/localstorage.sqlite3`，值為 UTF-16LE），以系統內建的 `/usr/bin/sqlite3 -readonly` 讀，**只讀 top 與 frame origin 都正好是 `tauri://localhost` 的那份**：beta.1 的預覽窗格用同一個資料區開外部網頁，任何網站都能在自己的 origin 留下同名的 key（例如假的 `yuzora.hosts.ssh.v2`）。**Windows 是 WebView2 的 LevelDB，目前讀不到**：SSH 主機與 localStorage 裡的設定在 Windows 要使用者重新設定。beta.1 本來就不存 SSH 密碼與 passphrase。
 - **`Importer`**：每條 lane 實作一個，`section()` 是它在 Yuzora `settings.json` 的 section，也是 `yuzora_core::secrets` 的 namespace。`import(from, into)` 讀 `Beta1`、合併進 `into.value()`（不要覆蓋使用者已在 beta.2 設好的內容）、用 `into.set_secret()` 存密碼，回傳 `Imported { items, left }`（`left` 是沒帶過來的項目，給使用者看）。
 - **`run(importers, from, yuzora_dir, secrets)`**：每個 importer 只跑一次，記在 `<yuzora dir>/migrations.json`；失敗的下次再跑；`version()` 提高時重跑一次。沒有 beta.1 資料時什麼都不記。
 - 測試涵蓋：讀 beta.1 格式（含 keychain account 格式）、執行一次與重跑、失敗重試、版本提升、其他 section 不受影響、beta.1 檔案位元組不變、macOS localStorage（以 sqlite3 建的 fixture）。

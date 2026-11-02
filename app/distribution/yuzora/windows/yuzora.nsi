@@ -62,6 +62,16 @@ LangString OldApp ${LANG_ENGLISH} "An older Yuzora (0.1.0-beta.1 or before, inst
 LangString OldApp ${LANG_TRADCHINESE} "這台電腦還裝著舊版 Yuzora（0.1.0-beta.1 以前，為所有使用者安裝）。要現在移除嗎？你的資料會保留，新版 Yuzora 可以把它帶過來。"
 LangString NotOurs ${LANG_ENGLISH} "This doesn't look like a Yuzora folder, so nothing in it was removed:"
 LangString NotOurs ${LANG_TRADCHINESE} "這看起來不是 Yuzora 的資料夾，所以裡面的檔案都沒有移除："
+LangString NotEmpty ${LANG_ENGLISH} "Yuzora needs a folder of its own: updates replace the whole folder, and uninstalling removes it. This folder already has other files in it:"
+LangString NotEmpty ${LANG_TRADCHINESE} "Yuzora 需要自己專用的資料夾：更新會替換整個資料夾，解除安裝也會把它刪掉。這個資料夾裡已經有其他檔案："
+
+; Removes what the app made beside its folder (src/update.rs) only when it's
+; Yuzora's: MARK is a file only Yuzora puts there.
+!macro RemoveIfOurs DIR MARK
+  ${If} ${FileExists} "${DIR}\${MARK}"
+    RMDir /r "${DIR}"
+  ${EndIf}
+!macroend
 
 Function .onInit
   ${GetParameters} $R0
@@ -106,10 +116,19 @@ Function RemoveTauriApp
 FunctionEnd
 
 Section "Yuzora"
+  ; Only into an empty folder or Yuzora's own (/D= can point anywhere).
+  ${DirState} "$INSTDIR" $R0
+  ${If} $R0 == 1
+  ${AndIfNot} ${FileExists} "$INSTDIR\yuzora.png"
+    MessageBox MB_ICONSTOP "$(NotEmpty) $INSTDIR" /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
   ; A running Yuzora keeps its program busy: move the old folder aside and
-  ; install fresh (the old one goes on the next install or update).
+  ; install fresh. The old one is removed below; the files the running app
+  ; still holds stay until the next install or update.
   ${If} ${FileExists} "$INSTDIR\yuzora.exe"
-    RMDir /r "$INSTDIR.old"
+    !insertmacro RemoveIfOurs "$INSTDIR.old" "yuzora.exe"
     ClearErrors
     Delete "$INSTDIR\yuzora.exe"
     ${If} ${Errors}
@@ -119,10 +138,10 @@ Section "Yuzora"
   SetOutPath "$INSTDIR"
   File /r "${SRC}\*.*"
   ; What the app staged for the version this replaces (src/update.rs).
-  RMDir /r "$INSTDIR.new"
+  !insertmacro RemoveIfOurs "$INSTDIR.new" "yuzora.png"
   Delete "$INSTDIR.new.json"
-  RMDir /r "$INSTDIR.download"
-  RMDir /r "$INSTDIR.old"
+  !insertmacro RemoveIfOurs "$INSTDIR.download" "app.tar.gz"
+  !insertmacro RemoveIfOurs "$INSTDIR.old" "yuzora.exe"
 
   SetOutPath "$INSTDIR-uninstall"
   File "/oname=path.ps1" "${PATHPS1}"
@@ -162,9 +181,9 @@ Section "Uninstall"
   Pop $2
   Delete "$SMPROGRAMS\${APP}.lnk"
   RMDir /r "$1"
-  RMDir /r "$1.old"
-  RMDir /r "$1.new"
-  RMDir /r "$1.download"
+  !insertmacro RemoveIfOurs "$1.old" "yuzora.exe"
+  !insertmacro RemoveIfOurs "$1.new" "yuzora.png"
+  !insertmacro RemoveIfOurs "$1.download" "app.tar.gz"
   Delete "$1.new.json"
   DeleteRegKey HKCU "${UNINST_KEY}"
   Delete "$INSTDIR\path.ps1"

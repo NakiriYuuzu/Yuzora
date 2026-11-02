@@ -65,6 +65,12 @@ jobs:
         shell: bash
         working-directory: app
     steps:
+      # A default Windows checkout gives the bash scripts (and the version
+      # read from Cargo.toml) CRLF line endings.
+      - name: Keep LF line endings
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The root .gitmodules: app/vendor/ghostty.
@@ -139,6 +145,14 @@ jobs:
           # (`! cmd` never stops a bash -e script, so these spell it out.)
           if reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.yuuzu.yuzora' 2>/dev/null; then exit 1; fi
           if reg query 'HKCU\Environment' /v Path | grep -iF "Programs\\Yuzora"; then exit 1; fi
+          # /D= at a folder with other files in it: refused, the folder as it was.
+          shared=$(mktemp -d)
+          echo theirs > "$shared/theirs.txt"
+          status=0
+          ./dist/Yuzora-windows-x64-setup.exe /S "/D=$(cygpath -w "$shared")" || status=$?
+          [ "$status" = 2 ]
+          [ "$(cat "$shared/theirs.txt")" = theirs ]
+          [ ! -e "$shared/yuzora.exe" ]
       - name: Check the Linux folder and its installer
         if: runner.os == 'Linux'
         run: |
@@ -149,6 +163,12 @@ jobs:
           [ "$("$work/home/.local/bin/yuzora" --version)" = "herdr-app $version" ]
           grep -qx 'StartupWMClass=dev.yuuzu.yuzora' "$work/home/.local/share/applications/dev.yuuzu.yuzora.desktop"
           [ -f "$work/home/.local/share/yuzora/yuzora.png" ]
+          # Someone's own `yuzora` on PATH stays.
+          mkdir -p "$work/other/.local/bin"
+          printf '#!/bin/sh\necho mine\n' > "$work/other/.local/bin/yuzora"
+          HOME="$work/other" XDG_DATA_HOME= "$work/yuzora/install"
+          [ "$(cat "$work/other/.local/bin/yuzora")" = "$(printf '#!/bin/sh\necho mine')" ]
+          [ -x "$work/other/.local/share/yuzora/yuzora" ]
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: yuzora-${{ matrix.target }}

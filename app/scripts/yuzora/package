@@ -79,6 +79,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 dist=${YUZORA_DIST:-dist}
 mkdir -p "$dist"
+dist=$(cd "$dist" && pwd)
 archive="$dist/yuzora-$version-$target.tar.gz"
 
 if [[ $os == macos ]]; then
@@ -122,7 +123,7 @@ else
         "-DVERSION=$version" "-DVIVERSION=$core.$n" \
         "-DSRC=$(to_win "$dir")" "-DICON=$(to_win "$PWD/assets/icons/yuzora.ico")" \
         "-DPATHPS1=$(to_win "$PWD/distribution/yuzora/windows/path.ps1")" \
-        "-DOUT=$(to_win "$PWD/$dist/Yuzora-windows-x64-setup.exe")" \
+        "-DOUT=$(to_win "$dist/Yuzora-windows-x64-setup.exe")" \
         "$(to_win "$PWD/distribution/yuzora/windows/yuzora.nsi")"
       echo "package: $dist/Yuzora-windows-x64-setup.exe ($(sha256 "$dist/Yuzora-windows-x64-setup.exe"))"
     else

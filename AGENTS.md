@@ -74,7 +74,7 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 - manifest：`bun app/scripts/yuzora/manifest.ts yuzora|tauri <dist>`；測試在 `app/` 下 `bun test scripts/yuzora/`。
 - **私鑰永遠不進 repo；PR 與打包 workflow 不讀任何 signing secret**。簽章只在發布步驟。不新增、不放寬任何安全例外。
 - `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release，不改 `release.yml`。
-- 本機測完整更新流程：debug build 加 `YUZORA_UPDATE_URL=<仿 GitHub 路徑的測試伺服器>` 與 `YUZORA_UPDATE_TEST_KEY=<一次性公鑰>`（只有 debug build 會讀），一律在 lanes.md 的隔離環境下跑。
+- 本機測完整更新流程：debug build 加 `YUZORA_UPDATE_URL=<仿 GitHub 路徑的測試伺服器>` 與 `YUZORA_UPDATE_TEST_KEY=<一次性公鑰>`（測試金鑰只有 debug build 會讀；`YUZORA_UPDATE_URL` 任何 build 都會讀，但簽章一樣只認信任的金鑰），一律在 lanes.md 的隔離環境下跑。
 - beta.1 資料遷移：`yuzora_core::migrate`。beta.1 的資料只讀不寫；各 lane 實作自己的 `Importer`。
 <!-- yuzora:lane:L7:end -->
 

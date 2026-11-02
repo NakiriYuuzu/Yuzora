@@ -431,12 +431,23 @@ pub(crate) fn newer(a: &str, b: &str) -> bool {
 
 /// A receipt is published only after the archive and its executable were verified.
 /// Legacy stages without one are left for the normal checker to download again.
-fn staged_version(root: &Path) -> Option<String> {
+pub(crate) fn staged_version(root: &Path) -> Option<String> { // yuzora(L7): pub(crate), Yuzora's check looks first
     let staged = beside(root, ".new");
     let receipt = beside(root, ".new.json");
     let version = std::fs::read(&receipt).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|value| value["version"].as_str().map(str::to_owned));
     let version = version?;
+    // yuzora(L7): a beta staged before the person picked stable is never applied.
+    if !crate::yuzora::release::update::keeps(&version) {
+        tracing::info!("update: {version} is not on this install's update channel; discarding it");
+        let _ = std::fs::remove_file(receipt);
+        let _ = std::fs::remove_dir_all(staged);
+        let mut ready = READY.lock().unwrap();
+        if ready.as_deref() == Some(version.as_str()) {
+            *ready = None;
+        }
+        return None;
+    }
     if version_of(&staged).as_deref() != Some(&version) {
         tracing::warn!("update: staged executable does not match its verified manifest; discarding it");
         let _ = std::fs::remove_file(receipt);
@@ -730,6 +741,8 @@ mod tests {
         std::fs::remove_dir_all(work).unwrap();
     }
 
+    // yuzora(L7): checks herdr.dev's Herdr.app, so it can't pass with Yuzora's
+    // names; .github/workflows/app-package.yml checks Yuzora's package.
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "downloads the current release; runs real codesign on isolated bundles"]
