@@ -1,0 +1,22 @@
+{
+  "group": "Yuzora",
+  "app": "應用程式",
+  "privacy": {
+    "heading": "你的資料",
+    "title": "Yuzora 不收集任何資料",
+    "about": "關於你、你的終端機、檔案或專案的任何內容，都不會離開這台電腦傳給 Yuzora 或 Herdr。",
+    "usage": "使用資料",
+    "usage_about": "Herdr 每天的匿名使用報告在 Yuzora 中一律關閉，不受 settings.json 或環境變數影響。",
+    "off": "關閉",
+    "feedback": "意見回饋",
+    "feedback_about": "「Send feedback」會在瀏覽器開一則 GitHub issue，由你自己看過後送出。",
+    "network": "Yuzora 只在你要求時連線（遠端機器、資料庫、git），以及每小時檢查更新：Yuzora 從 GitHub Releases、herdr-core 從它的更新來源。檢查更新不會送出你的檔案或使用資料。"
+  },
+  "updates": {
+    "app_off": "這份 Yuzora 不會自我更新（例如從原始碼建置）：新版本請到 GitHub Releases 下載。",
+    "footer": "每小時檢查一次 Yuzora（GitHub Releases）與 herdr-core，有新版會在角落提示；Yuzora 的更新在下次重新啟動時套用。終端機由 herdr-core 執行，更新期間會持續運作。"
+  },
+  "alerts": {
+    "default_sound": "內建音效"
+  }
+}
