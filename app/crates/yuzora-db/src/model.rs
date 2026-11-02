@@ -48,6 +48,18 @@ impl Cell {
         }
     }
 
+    /// What an inline edit of this cell makes of `text`: a number that still
+    /// reads as its kind stays that kind (SQLite keeps what is bound in a
+    /// column without affinity), anything else is text for the server.
+    pub fn edited(&self, text: String) -> Cell {
+        let same_kind = match self {
+            Cell::Int(_) => text.parse().ok().map(Cell::Int),
+            Cell::Float(_) => text.parse::<f64>().ok().filter(|f| f.is_finite()).map(Cell::Float),
+            _ => None,
+        };
+        same_kind.unwrap_or_else(|| Cell::text(text))
+    }
+
     /// Sort order: NULL first, numbers by value (also numeric text), then text.
     /// Integers and decimal text compare exactly, never through `f64`.
     pub fn compare(&self, other: &Cell, numeric: bool) -> Ordering {

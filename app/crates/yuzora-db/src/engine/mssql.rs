@@ -97,9 +97,10 @@ impl MsConn {
             .rows(
                 "SELECT s.name, o.name, RTRIM(o.type), \
                         CASE WHEN o.type = 'U' THEN (SELECT SUM(p.rows) FROM sys.partitions p \
-                                                     WHERE p.object_id = o.object_id AND p.index_id IN (0, 1)) END \
+                                                     WHERE p.object_id = o.object_id AND p.index_id IN (0, 1)) END, \
+                        OBJECT_NAME(o.parent_object_id) \
                  FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id \
-                 WHERE o.is_ms_shipped = 0 AND o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'SO')",
+                 WHERE o.is_ms_shipped = 0 AND o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'SO', 'TR', 'TA')",
                 &[],
             )
             .await?;
@@ -110,10 +111,13 @@ impl MsConn {
                 "V" => ObjectKind::View,
                 "P" => ObjectKind::Procedure,
                 "SO" => ObjectKind::Sequence,
+                "TR" | "TA" => ObjectKind::Trigger,
                 _ => ObjectKind::Function,
             };
             let rows = if kind == ObjectKind::Table { r.try_get::<i64, _>(3).map_err(query_error)? } else { None };
-            objects.push(DbObject { schema: text(r, 0)?, name: text(r, 1)?, kind, rows, detail: String::new() });
+            // A trigger's detail is its table.
+            let detail = if kind == ObjectKind::Trigger { text(r, 4)? } else { String::new() };
+            objects.push(DbObject { schema: text(r, 0)?, name: text(r, 1)?, kind, rows, detail });
         }
         sql::sort_objects(&mut objects);
         Ok(objects)

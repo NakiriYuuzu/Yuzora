@@ -549,6 +549,26 @@ fn sqlite_describes_generated_columns_as_not_writable() {
 }
 
 #[test]
+fn sqlite_an_edited_number_keeps_its_type_in_a_column_without_affinity() {
+    let db = TempDb::new("CREATE TABLE loose (id INTEGER PRIMARY KEY, v); INSERT INTO loose VALUES (1, 5), (2, 1.5);");
+    run(async {
+        let mut conn = db.open().await;
+        let t = ObjectRef { schema: String::new(), name: "loose".into() };
+        let rows = query(&mut conn, "SELECT v FROM loose ORDER BY id").await.unwrap().last().rows.clone();
+        // What the grid makes of "7" and "2.5" typed over them.
+        let edits = [
+            RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("v".into(), rows[0][0].edited("7".into()))] },
+            RowEdit { key: vec![("id".into(), Cell::Int(2))], changes: vec![("v".into(), rows[1][0].edited("2.5".into()))] },
+        ];
+        assert_eq!(conn.apply_edits(&t, &edits).await, Ok(2));
+        assert_eq!(db.peek("SELECT typeof(v), v FROM loose ORDER BY id"), [
+            ["Text(\"integer\")", "Integer(7)"],
+            ["Text(\"real\")", "Real(2.5)"]
+        ]);
+    });
+}
+
+#[test]
 fn sqlite_read_only_refuses_writes() {
     let db = TempDb::new("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'a');");
     run(async {
@@ -724,6 +744,11 @@ fn postgres_lists_databases_and_the_objects_a_role_may_see() {
             Some((ObjectKind::Function, "delay_seconds double precision"))
         );
         assert_eq!(find("audit", "record_dml_target").map(|o| o.kind), Some(ObjectKind::Function));
+        assert_eq!(
+            find("alpha", "dml_target_audit").map(|o| (o.kind, o.detail.as_str())),
+            Some((ObjectKind::Trigger, "dml_target")),
+            "a trigger, with its table"
+        );
         assert!(find("audit", "dml_log_id_seq").is_some_and(|o| o.kind == ObjectKind::Sequence));
         assert!(
             objects.iter().all(|o| !matches!(o.schema.as_str(), "pg_catalog" | "information_schema")
@@ -1042,6 +1067,28 @@ fn postgres_write_back_waits_for_a_transaction_left_open() {
 }
 
 #[test]
+fn postgres_splits_scripts_the_way_the_sessions_string_mode_reads_them() {
+    only_with!("postgres");
+    run(async {
+        let mut conn = pg().await;
+        query(&mut conn, "CREATE TEMP TABLE yz_keep (v int); INSERT INTO yz_keep VALUES (1)").await.unwrap();
+        // With standard_conforming_strings off, `\'` is a quote inside the string:
+        // the DELETE is text, not a statement.
+        query(&mut conn, "SET standard_conforming_strings = off").await.unwrap();
+        let out = query(&mut conn, "SELECT 'it\\'; DELETE FROM yz_keep; SELECT 2'; SELECT 3").await.unwrap();
+        assert_eq!(texts(&out.results[0].rows[0]), ["it'; DELETE FROM yz_keep; SELECT 2"]);
+        assert_eq!(scalar(&mut conn, "SELECT count(*) FROM yz_keep").await, "1");
+        // Turned off by the script itself, it holds for the statements after.
+        query(&mut conn, "SET standard_conforming_strings = on").await.unwrap();
+        query(&mut conn, "SET standard_conforming_strings = off; SELECT 'a\\'; DELETE FROM yz_keep; SELECT 1'")
+            .await
+            .unwrap();
+        assert_eq!(scalar(&mut conn, "SELECT count(*) FROM yz_keep").await, "1");
+        query(&mut conn, "SET standard_conforming_strings = on").await.unwrap();
+    });
+}
+
+#[test]
 fn postgres_writes_text_back_as_the_columns_type() {
     only_with!("postgres");
     run(async {
@@ -1282,6 +1329,11 @@ fn mssql_lists_databases_and_objects() {
         assert_eq!(find("alpha", "shared_name_view").map(|o| o.kind), Some(ObjectKind::View));
         assert_eq!(find("alpha", "long_query").map(|o| o.kind), Some(ObjectKind::Procedure));
         assert_eq!(find("audit", "dml_log").map(|o| o.kind), Some(ObjectKind::Table));
+        assert_eq!(
+            find("alpha", "dml_target_audit").map(|o| (o.kind, o.detail.as_str())),
+            Some((ObjectKind::Trigger, "dml_target")),
+            "a trigger, with its table"
+        );
         assert!(objects.iter().all(|o| o.schema != "sys" && o.schema != "INFORMATION_SCHEMA"));
         assert!(objects.windows(2).all(|w| w[0].schema <= w[1].schema));
         let alpha: Vec<_> = objects.iter().filter(|o| o.schema == "alpha").map(|o| o.kind).collect();
@@ -1525,6 +1577,16 @@ fn mssql_a_stop_pressed_before_the_statement_keeps_it_from_running() {
         conn.canceller().cancel().await;
         assert_eq!(conn.execute("UPDATE #stop SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
         assert_eq!(scalar(&mut conn, "SELECT v FROM #stop").await, "1");
+    });
+}
+
+#[test]
+fn mssql_go_lines_may_carry_block_comments() {
+    only_with!("mssql");
+    run(async {
+        let mut conn = ms().await;
+        let out = query(&mut conn, "SELECT 1 AS a\nGO /* next batch */\nSELECT 2 AS b").await.unwrap();
+        assert_eq!(out.results.iter().map(|r| texts(&r.rows[0])).collect::<Vec<_>>(), [["1"], ["2"]]);
     });
 }
 

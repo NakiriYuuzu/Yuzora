@@ -34,6 +34,9 @@ pub struct PgConn {
     client: Client,
     version: String,
     canceller: PgCanceller,
+    /// `standard_conforming_strings` was off when last asked: `\` escapes in
+    /// ordinary strings too.
+    backslash: bool,
 }
 
 /// Asks the server to stop what the connection is running (a second, short
@@ -105,7 +108,7 @@ impl PgConn {
         let full: String = row.get(0);
         let version = format!("PostgreSQL {}", full.split_whitespace().next().unwrap_or(&full));
         let canceller = PgCanceller { token: client.cancel_token(), tls, cancelled: Arc::new(AtomicBool::new(false)) };
-        Ok(Self { client, version, canceller })
+        Ok(Self { client, version, canceller, backslash: false })
     }
 
     pub fn server_version(&self) -> String {
@@ -135,7 +138,8 @@ impl PgConn {
     }
 
     pub async fn objects(&mut self) -> DbResult<Vec<DbObject>> {
-        // `fn` and `proc` keep a function apart from a foreign table ('f').
+        // `fn` and `proc` keep a function apart from a foreign table ('f'); a
+        // trigger's detail is its table (constraint triggers are internal).
         const USER_SCHEMA: &str = "n.nspname <> 'information_schema' AND n.nspname !~ '^pg_(catalog|toast|temp)' \
                                    AND has_schema_privilege(n.oid, 'USAGE')";
         let sql = format!(
@@ -149,7 +153,11 @@ impl PgConn {
              FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
              WHERE p.prokind IN ('f', 'p') AND {USER_SCHEMA} \
                AND NOT EXISTS (SELECT 1 FROM pg_depend d \
-                               WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')"
+                               WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e') \
+             UNION ALL \
+             SELECT n.nspname::text, t.tgname::text, 'trigger', NULL::float8, c.relname::text \
+             FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE NOT t.tgisinternal AND {USER_SCHEMA}"
         );
         let rows = self.client.query(sql.as_str(), &[]).await.map_err(query_error)?;
         let mut objects: Vec<DbObject> = rows
@@ -161,6 +169,7 @@ impl PgConn {
                     "m" => ObjectKind::MaterializedView,
                     "S" => ObjectKind::Sequence,
                     "proc" => ObjectKind::Procedure,
+                    "trigger" => ObjectKind::Trigger,
                     _ => ObjectKind::Function,
                 };
                 DbObject {
@@ -304,17 +313,48 @@ impl PgConn {
 
     pub async fn execute(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
-        for statement in sql::split(sql, Engine::Postgres) {
-            // A stop pressed between two statements (or before the first) has
-            // no query to land on.
-            if self.canceller.cancelled.load(Ordering::SeqCst) || sink.cancelled() {
-                return Err(DbError::Cancelled);
+        // Whether `\` escapes in an ordinary string is the session's setting:
+        // asked when the script holds one, and again after a statement that
+        // may change it, the rest then split anew.
+        let mut backslash = sql.contains('\\') && self.backslash_escapes().await;
+        let mut from = 0;
+        'script: loop {
+            for statement in sql::split_with(&sql[from..], Engine::Postgres, backslash) {
+                // A stop pressed between two statements (or before the first) has
+                // no query to land on.
+                if self.canceller.cancelled.load(Ordering::SeqCst) || sink.cancelled() {
+                    return Err(DbError::Cancelled);
+                }
+                if !self.run(&statement.text, sink).await? {
+                    break 'script;
+                }
+                let rest = from + statement.range.end;
+                if sql[rest..].contains('\\')
+                    && sql::may_change_string_escapes(&statement.text)
+                    && self.backslash_escapes().await != backslash
+                {
+                    backslash = !backslash;
+                    from = rest;
+                    continue 'script;
+                }
             }
-            if !self.run(&statement.text, sink).await? {
-                break;
-            }
+            return Ok(());
         }
         Ok(())
+    }
+
+    /// Whether the session reads `\` in an ordinary string as an escape
+    /// (`standard_conforming_strings = off`). A failed transaction answers
+    /// nothing: what it was last time.
+    async fn backslash_escapes(&mut self) -> bool {
+        if let Ok(messages) = self.client.simple_query("SHOW standard_conforming_strings").await {
+            let off = messages.iter().find_map(|m| match m {
+                SimpleQueryMessage::Row(r) => r.get(0).map(|v| v == "off"),
+                _ => None,
+            });
+            self.backslash = off.unwrap_or(self.backslash);
+        }
+        self.backslash
     }
 
     /// One statement. `false`: the sink had enough, the rest of the script is not run.

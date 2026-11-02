@@ -69,6 +69,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - SQL 分頁在同一條連線上留著尚未結束的交易時，不會寫回（`edit.open_transaction`），修改仍保留為待寫回。原因是 PostgreSQL 會忽略寫回的 BEGIN，寫回的 COMMIT 會連分頁自己的修改一起提交；SQL Server 的巢狀 COMMIT 只會把計數減一，之後分頁一 ROLLBACK，寫回就跟著消失。判斷方式：PostgreSQL 看 `now() = statement_timestamp()`，SQL Server 看 `@@TRANCOUNT`，SQLite 看 autocommit。
 - 底部顯示「N 個儲存格已修改 · 捨棄 · 寫回」。寫回在一個交易內，每列用 primary key 定位，每列影響的列數必須剛好是 1，否則整筆 rollback 並顯示錯誤。key 是 NULL 的列拒絕寫回。
 - PostgreSQL 用文字格式參數寫回（server 依欄位型別解析），所以 numeric、interval、enum、array 等都能原文 round-trip。
+- 數字儲存格改成同一類的數字時，寫回的仍是數字：整數儲存格要能讀成 i64，浮點儲存格要能讀成有限的 f64（`Cell::edited`）。其他情況都以文字寫回，由伺服器轉換或拒絕。這是因為 SQLite 沒有型別（或 BLOB affinity）的欄位不會轉換型別，用文字寫回會把整數 5 變成文字 `'7'`。整數儲存格改成 `7.5` 仍然送文字，因為 SQL Server 收到 float 參數時，會在 int 欄位把它靜默截斷成 7。
 
 ## 引擎
 
@@ -80,6 +81,8 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 沒指定資料庫時依序試 `postgres`、與使用者同名的資料庫，只有遇到 SQLSTATE `3D000`、`42501`、`55000` 才換下一個。
 - 欄位型別用 `prepare` 取得；值用 `simple_query_raw` 讀文字格式，所以 numeric、interval、inet、enum、array、JSON 大整數都照伺服器的原文顯示。
 - 取消用 cancel token，連線用的 TLS connector 也用在 cancel 上。連線在取消後可以繼續使用。
+- 切句會照 session 的 `standard_conforming_strings`。設定為 off 時，一般字串裡的 `\'` 也是跳脫，所以字串裡的 `;` 不會被當成分隔，不會把字串的一部分當成另一句執行。腳本含 `\` 時才用 `SHOW` 查詢這個設定；執行到提到這個設定的語句，或 `RESET`、`DISCARD`、結束交易的語句（`COMMIT`、`ROLLBACK`…）之後會再查一次，模式變了就重新切剩下的腳本。交易已失敗時查不到，就沿用上次的結果。編輯器的「游標所在的句子」查不到 session，一律照 on 切。
+- schema 樹會列出 trigger（`pg_trigger`，不含外鍵等約束內部用的 trigger），說明欄是所屬的表。
 - TLS 照 libpq 的語意：
 
 | 模式 | 行為 |
@@ -96,9 +99,10 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 ### SQL Server
 
 - 使用 Yuzora 的 tiberius 0.12.3 patch（`app/vendor/tiberius-0.12.3-yuzora`）。
-- 只在單獨一行的 `GO` 切 batch，`GO 5` 這種帶次數的寫法不支援。一個 batch 可以有多個結果集。
+- 只在單獨一行的 `GO` 切 batch，後面可以接 `--` 或 `/* */` 註解；`GO 5` 這種帶次數的寫法不支援。一個 batch 可以有多個結果集。
 - 一個 batch 的 affected 是所有非結果集 DONE 計數的總和，可能包含 trigger 或 procedure 內部的筆數。
 - 寫回用 `UPDATE …; SELECT ROWCOUNT_BIG();` 確認每列剛好影響一列，不受 trigger 影響。
+- schema 樹會列出 DML trigger（`sys.objects` 的 `TR`、`TA`），說明欄是所屬的表。
 - 資料表 pane 產生的 SELECT、COUNT 與寫回都用三段式名稱 `[db].[schema].[table]`，db 是連線開啟時的 `DB_NAME()`（`Conn::database`）。所以 SQL 分頁在同一條連線上 `USE` 別的資料庫，也不會讀到或改到那邊同名的表。
 - tiberius 沒有 attention API，所以取消（包括達到列數上限提早停止）的做法是斷開 socket，下一次使用時重新連線；之前在連線上用 `USE` 切換的資料庫狀態會遺失。
 - TLS 對應：

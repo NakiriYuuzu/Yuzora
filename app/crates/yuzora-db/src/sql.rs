@@ -21,6 +21,12 @@ pub struct Statement {
 /// PostgreSQL dollar quotes) never end one. A stretch of only comments and
 /// blanks is not a statement; a comment ahead of a statement belongs to it.
 pub fn split(sql: &str, engine: Engine) -> Vec<Statement> {
+    split_with(sql, engine, false)
+}
+
+/// [`split`], for a PostgreSQL session where `\` escapes in ordinary
+/// strings too (`standard_conforming_strings = off`) when `backslash`.
+pub fn split_with(sql: &str, engine: Engine, backslash: bool) -> Vec<Statement> {
     let b = sql.as_bytes();
     let mut out = Vec::new();
     let mut start = 0;
@@ -55,9 +61,8 @@ pub fn split(sql: &str, engine: Engine) -> Vec<Statement> {
             b'\'' => {
                 seg.has_content = true;
                 let escapes = engine == Engine::Postgres
-                    && i > 0
-                    && matches!(b[i - 1], b'e' | b'E')
-                    && (i < 2 || !is_word_byte(b[i - 2], engine));
+                    && (backslash
+                        || i > 0 && matches!(b[i - 1], b'e' | b'E') && (i < 2 || !is_word_byte(b[i - 2], engine)));
                 i = skip_quoted(b, i, b'\'', escapes);
             }
             b'"' => {
@@ -119,6 +124,23 @@ pub fn statement_at(sql: &str, offset: usize, engine: Engine) -> Option<Statemen
 /// (`INSERT`, `UPDATE`, `DELETE`…), judged by its first word. A `CREATE
 /// TABLE` or `SET` has no such count, whatever the driver says.
 pub fn changes_rows(statement: &str) -> bool {
+    matches!(
+        first_word(statement).as_str(),
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "COPY" | "WITH" | "FETCH" | "MOVE" | "EXECUTE" | "EXEC"
+    )
+}
+
+/// Whether a PostgreSQL statement may change how the session reads `\` in
+/// ordinary strings: one naming `standard_conforming_strings`, or one that
+/// takes settings back (`RESET`, `DISCARD`, and ending a transaction, which
+/// undoes a `SET LOCAL` or a rolled back `SET`).
+pub fn may_change_string_escapes(statement: &str) -> bool {
+    statement.to_ascii_lowercase().contains("standard_conforming_strings")
+        || matches!(first_word(statement).as_str(), "RESET" | "DISCARD" | "ROLLBACK" | "ABORT" | "COMMIT" | "END")
+}
+
+/// The statement's first word, upper case, past leading comments.
+fn first_word(statement: &str) -> String {
     let b = statement.as_bytes();
     let mut i = 0;
     loop {
@@ -136,11 +158,7 @@ pub fn changes_rows(statement: &str) -> bool {
         }
     }
     let word = b[i..].iter().take_while(|c| c.is_ascii_alphabetic()).count();
-    let word = statement[i..i + word].to_ascii_uppercase();
-    matches!(
-        word.as_str(),
-        "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "COPY" | "WITH" | "FETCH" | "MOVE" | "EXECUTE" | "EXEC"
-    )
+    statement[i..i + word].to_ascii_uppercase()
 }
 
 /// The sidebar's order: schema, then tables before views before routines…, then name.
@@ -341,8 +359,8 @@ fn skip_dollar_quoted(b: &[u8], i: usize) -> Option<usize> {
     })
 }
 
-/// If the line starting at `i` is only `GO` (any case, blanks around, a `--`
-/// comment after), where it ends (before its newline).
+/// If the line starting at `i` is only `GO` (any case, blanks around, `/* */`
+/// and `--` comments after), where it ends (before its newline).
 fn go_line(b: &[u8], i: usize) -> Option<usize> {
     let blank = |c: u8| c == b' ' || c == b'\t';
     let mut j = i;
@@ -353,8 +371,15 @@ fn go_line(b: &[u8], i: usize) -> Option<usize> {
         return None;
     }
     j += 2;
-    while j < b.len() && blank(b[j]) {
-        j += 1;
+    loop {
+        while j < b.len() && blank(b[j]) {
+            j += 1;
+        }
+        if b.get(j) == Some(&b'/') && b.get(j + 1) == Some(&b'*') {
+            j = skip_block_comment(b, j, true);
+        } else {
+            break;
+        }
     }
     match b.get(j) {
         None | Some(b'\n') | Some(b'\r') => Some(j),
@@ -461,6 +486,41 @@ mod tests {
         // A column or table named end_date is not END.
         let t2 = "CREATE TRIGGER t AFTER INSERT ON a BEGIN UPDATE b SET end_date = 1; END";
         assert_eq!(texts(&format!("{t2}; SELECT 1"), Engine::Sqlite), [t2, "SELECT 1"]);
+    }
+
+    #[test]
+    fn go_lines_may_carry_comments() {
+        let ms = |sql| texts(sql, Engine::Mssql);
+        assert_eq!(ms("SELECT 1\nGO /* next batch */\nSELECT 2"), ["SELECT 1", "SELECT 2"]);
+        assert_eq!(ms("SELECT 1\ngo\t/* a */ /* b */ -- c\r\nSELECT 2"), ["SELECT 1", "SELECT 2"]);
+        assert_eq!(ms("SELECT 1\nGO /* spans\nlines */\nSELECT 2"), ["SELECT 1", "SELECT 2"]);
+        // Something after the comment: not a GO line.
+        assert_eq!(ms("SELECT 1\nGO /* x */ SELECT 2"), ["SELECT 1\nGO /* x */ SELECT 2"]);
+    }
+
+    #[test]
+    fn postgres_backslashes_escape_in_ordinary_strings_when_the_session_says_so() {
+        let sql = "SELECT 'it\\'; DELETE FROM t; SELECT 2'; SELECT 3";
+        assert_eq!(
+            split_with(sql, Engine::Postgres, true).into_iter().map(|s| s.text).collect::<Vec<_>>(),
+            ["SELECT 'it\\'; DELETE FROM t; SELECT 2'", "SELECT 3"]
+        );
+        // standard_conforming_strings on (the default): `\` is just a character.
+        assert_eq!(texts(sql, Engine::Postgres), ["SELECT 'it\\'", "DELETE FROM t", "SELECT 2'; SELECT 3"]);
+        // Identifiers and dollar quotes never take backslash escapes.
+        assert_eq!(
+            split_with("SELECT \"a\\\"; SELECT $$\\$$; SELECT 3", Engine::Postgres, true)
+                .into_iter()
+                .map(|s| s.text)
+                .collect::<Vec<_>>(),
+            ["SELECT \"a\\\"", "SELECT $$\\$$", "SELECT 3"]
+        );
+        // After these the session is asked again.
+        for statement in ["set standard_conforming_strings = off", "RESET ALL", "DISCARD ALL", "rollback", "COMMIT"] {
+            assert!(may_change_string_escapes(statement), "{statement}");
+        }
+        assert!(!may_change_string_escapes("SET search_path = app"));
+        assert!(!may_change_string_escapes("SELECT 'reset'"));
     }
 
     #[test]
