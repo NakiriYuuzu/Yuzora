@@ -30,7 +30,7 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `agentBrand(app, key)` | agent 品牌（`claude`／`codex`／`pi`／`gemini`），決定徽章色 |
 | `gitStatus(cwd, {on})` | 一次 `git status --porcelain=v2 --branch`（本機或 `hc exec --on`，10 秒上限）：branch、upstream、ahead、behind、changed、conflicted；不在 repo 時回傳 null。不加鎖、不用 fsmonitor，不會在 `.git` 寫東西 |
 
-worktree 的分組依 agent 所在 pane 的 branch；不在 git 裡的 agent 以資料夾名稱分組。`hosts` 照 `hc machine ls --json` 的樣子傳入；欄位型別不符（例如 `via` 是布林）只會略過該欄位，不會讓整個側欄失敗。
+worktree 的分組依 agent 所在 pane 的 branch 與資料夾；不在 git 裡的 agent 以資料夾名稱分組。同一個 Space 裡兩個資料夾剛好在同名 branch 時是兩列，各自帶資料夾名稱（列的 `detail`），「＋」開在該列自己的資料夾。`hosts` 照 `hc machine ls --json` 的樣子傳入；欄位型別不符（例如 `via` 是布林）只會略過該欄位，不會讓整個側欄失敗。
 
 **其他 lane 可用**：`spaceBadges` 讓各 lane 的側欄標頭、pane 與 L1 畫出同樣的 Space 徽章（例如 L5 檔案模式、L2 Git 模式的「Y」方塊）：
 
@@ -67,7 +67,8 @@ L1 讀的 key：
 - **設定齒輪**：L6 的設定框架合併前，先開上游的 `app.settings`。
 - **鍵盤與腳本入口**：`yuzora-shell-tabs.new-pane` 開新增 pane 選單（沒有滑鼠位置可對齊，所以置中顯示；點按鈕時則開在游標下）；`yuzora-sidebar-workspace.spaces`／`agents` 切換分頁，`add`／`tools` 開對應選單。可綁進 `keys.json`（`"alt-n": "yuzora-shell-tabs:new-pane"`），也可用 `herdr-app do yuzora-shell-tabs.new-pane`。
 - **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。放開在其他地方或拖出側欄就取消。
-- **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動、離線）時先顯示全部，機器回來後自動回到該機器。
+- **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動還沒列出）或離線（LED 熄滅）時先顯示全部，機器回來後自動回到該機器；連線中（LED 琥珀）時維持原 scope。
+- **新增 pane 選單的高度**：依工具 pane 與 agent 數量（上次 `knownAgents()` 的快取）決定，最高 520px；超過時位置切換列固定、下方清單捲動。
 - **Space 徽章色放 shared state**：不寫 Yuzora `settings.json`，所以測試與 render 不會碰 app home 以外的檔案，也不會蓋掉別的設定；L6 若要在外觀頁讓使用者改色，改寫 `yuzora.space.colors` 即可。
 - **字型**：見下節。
 

@@ -250,11 +250,18 @@ pub fn build(input: &Input, palette: &[String]) -> Value {
     remote.dedup();
     let machines: Vec<Option<String>> = std::iter::once(None).chain(remote.into_iter().map(Some)).collect();
 
-    // A scope naming a machine that's gone shows everything.
+    let host = |m: &Option<String>| m.as_ref().and_then(|n| input.hosts.iter().find(|h| &h.name == n));
+    let layout = |m: &Option<String>| input.machines.iter().find(|x| x.name.as_ref().filter(|n| !n.is_empty()) == m.as_ref()).and_then(|x| x.layout.as_deref());
+
+    // A scope naming a machine that's gone or offline shows everything (until it's back).
     let scope: Option<Option<String>> = match &input.scope {
         None => None,
         Some(s) if s.is_empty() => Some(None),
-        Some(s) => machines.iter().any(|m| m.as_deref() == Some(s)).then(|| Some(s.clone())),
+        Some(s) => machines
+            .iter()
+            .find(|m| m.as_deref() == Some(s))
+            .filter(|m| led(false, host(m), layout(m)) != "off")
+            .cloned(),
     };
     let in_scope = |m: &Option<String>| scope.as_ref().is_none_or(|s| s == m);
     let space_machine: HashMap<&str, Option<String>> = input.spaces.iter().map(|s| (s.id.as_str(), s.machine.clone().filter(|m| !m.is_empty()))).collect();
@@ -267,9 +274,6 @@ pub fn build(input: &Input, palette: &[String]) -> Value {
         let agents: Vec<&Agent> = input.agents.iter().filter(|a| space_machine.get(a.space.as_str()) == Some(m)).collect();
         (spaces, agents.len(), count(&agents, "blocked"))
     };
-    let host = |m: &Option<String>| m.as_ref().and_then(|n| input.hosts.iter().find(|h| &h.name == n));
-    let layout = |m: &Option<String>| input.machines.iter().find(|x| x.name.as_ref().filter(|n| !n.is_empty()) == m.as_ref()).and_then(|x| x.layout.as_deref());
-
     let scopes: Vec<Value> = machines
         .iter()
         .map(|m| {
@@ -320,25 +324,29 @@ pub fn build(input: &Input, palette: &[String]) -> Value {
                 }));
             }
             let open = machine_open && space_open;
-            // Worktrees in the order their first agent comes.
+            // Worktrees (a branch or folder name in one folder) in the order their first agent
+            // comes. The same branch in two folders is two rows, each saying which folder.
             let mut groups: Vec<(String, bool, Option<String>, Vec<&Agent>)> = Vec::new();
             for a in &mine {
                 let (key, is_branch, cwd) = cx.worktree(a);
-                match groups.iter_mut().find(|g| g.0 == key) {
+                match groups.iter_mut().find(|g| g.0 == key && g.2 == cwd) {
                     Some(g) => g.3.push(a),
                     None => groups.push((key, is_branch, cwd, vec![a])),
                 }
             }
-            for (key, is_branch, cwd, list) in groups {
+            let shared: HashSet<&str> = groups.iter().enumerate().filter(|(i, g)| groups[..*i].iter().any(|o| o.0 == g.0)).map(|(_, g)| g.0.as_str()).collect();
+            for (key, is_branch, cwd, list) in &groups {
                 order.extend(list.iter().map(|a| a.address.clone()));
                 if !open {
                     continue;
                 }
-                let id = format!("w:{}\u{1f}{key}", s.id);
+                let id = format!("w:{}\u{1f}{key}\u{1f}{}", s.id, cwd.as_deref().unwrap_or_default());
                 let wt_open = cx.open(&id);
+                // Told apart by the folder's name (the whole path when that is the label already).
+                let detail = shared.contains(key.as_str()).then(|| cwd.as_deref().map(|c| if *is_branch { base(c) } else { c })).flatten();
                 rows.push(json!({
-                    "kind": "worktree", "id": id, "space": s.id, "label": key, "branch": is_branch,
-                    "folder": cwd, "agents": list.len(), "blocked": count(&list, "blocked"), "open": wt_open,
+                    "kind": "worktree", "id": id, "space": s.id, "label": key, "branch": is_branch, "detail": detail,
+                    "folder": cwd, "agents": list.len(), "blocked": count(list, "blocked"), "open": wt_open,
                 }));
                 if wt_open {
                     rows.extend(list.iter().map(|a| cx.agent(a)));
@@ -523,15 +531,64 @@ mod tests {
         assert_eq!(tree["counts"]["spaces"], 2);
 
         w["scope"] = json!("gone");
-        let tree = build(&input(w), &palette());
+        let tree = build(&input(w.clone()), &palette());
         assert!(tree["scope"].is_null());
         assert_eq!(tree["counts"]["spaces"], 3);
+
+        // Offline (box is unreachable, lab's layout can't be read): every machine until it's back.
+        w["scope"] = json!("box");
+        assert!(build(&input(w.clone()), &palette())["scope"].is_null());
+        w["scope"] = json!("lab");
+        w["machines"][1]["layout"] = json!("unavailable");
+        w["hosts"][0]["state"] = json!("disconnected");
+        assert!(build(&input(w.clone()), &palette())["scope"].is_null());
+        // Still connecting: the scope holds.
+        w["hosts"][0]["state"] = json!("connecting");
+        assert_eq!(build(&input(w), &palette())["scope"], "lab");
+    }
+
+    #[test]
+    fn the_same_branch_in_two_folders_is_two_worktrees() {
+        let tree = build(
+            &input(json!({
+                "spaces": [{ "id": "s1", "name": "mono", "tabs": [{ "id": "t1" }] }],
+                "panes": [
+                    { "pane": "p1", "tab": "t1", "cwd": "/r/api", "branch": "main" },
+                    { "pane": "p2", "tab": "t1", "cwd": "/r/web", "branch": "main" },
+                    { "pane": "p3", "tab": "t1", "cwd": "/r/api", "branch": "main" },
+                    { "pane": "p4", "tab": "t1", "cwd": "/r/docs", "branch": "feat" }
+                ],
+                "agents": [
+                    { "address": "a1", "pane": "p1", "space": "s1" },
+                    { "address": "a2", "pane": "p2", "space": "s1" },
+                    { "address": "a3", "pane": "p3", "space": "s1" },
+                    { "address": "a4", "pane": "p4", "space": "s1" }
+                ]
+            })),
+            &palette(),
+        );
+        let wt: Vec<(Value, Value, Value)> = tree["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "worktree")
+            .map(|r| (r["label"].clone(), r["detail"].clone(), r["folder"].clone()))
+            .collect();
+        assert_eq!(
+            wt,
+            [
+                (json!("main"), json!("api"), json!("/r/api")),
+                (json!("main"), json!("web"), json!("/r/web")),
+                (json!("feat"), json!(null), json!("/r/docs")),
+            ]
+        );
+        assert_eq!(tree["order"], json!(["a1", "a3", "a2", "a4"]));
     }
 
     #[test]
     fn folding_hides_children_but_keeps_the_agent_order() {
         let mut w = world();
-        w["folded"] = json!(["s:s1", "w:s2\u{1f}main", "m:lab"]);
+        w["folded"] = json!(["s:s1", "w:s2\u{1f}main\u{1f}/r/bridge", "m:lab"]);
         let tree = build(&input(w), &palette());
         assert_eq!(kinds(&tree), ["machine:local", "space:yuzora", "space:herdr-bridge", "worktree:main", "machine:box", "machine:lab"]);
         assert_eq!(tree["rows"][1]["open"], false);

@@ -255,9 +255,13 @@ export default class SidebarWorkspace extends View {
     const count = r.blocked > 0 ? t("pending", { count: r.blocked }) : String(r.agents);
     return h_flex().id(`row-${r.id}`).h(26).flex_none().pl(18).pr(6).gap(8).items_center().rounded(6)
       .cursor_pointer().hover((s) => s.bg(th.hover))
+      .when(Boolean(r.folder), (el) => el.tooltip(r.folder))
       .on_click((_e, cx) => this.toggle(r.id, cx))
       .child(svg(`${CHROME}/${r.branch ? "branch" : "folder"}.svg`).size(12).flex_none().text_color(th.dim))
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(tk.text.soft).child(r.label || "—"))
+      .child(h_flex().flex_1().min_w(0).gap(5).items_center().text_size(11.5)
+        .child(div().min_w(0).truncate().text_color(tk.text.soft).child(r.label || "—"))
+        // The same branch in two folders: which folder this one is.
+        .when(Boolean(r.detail), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(th.dim).child(r.detail))))
       .child(div().flex_none().text_size(11).text_color(r.blocked > 0 ? tk.status.blocked.color : th.dim).child(count))
       .child(div().id(`wt-new-${r.id}`).size(18).flex_none().flex().items_center().justify_center().rounded(4).text_color(th.dim)
         .hover((s) => s.bg(th.selected).text_color(th.foreground)).tooltip(t("worktree.new"))

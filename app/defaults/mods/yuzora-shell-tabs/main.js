@@ -26,6 +26,17 @@ function badgesOf(list) {
   return r.badges;
 }
 
+// The agents the new-pane menu offers: the installed ones, then two to install.
+export function choicesOf(agents) {
+  return [...agents.filter((a) => a.installed), ...agents.filter((a) => !a.installed).slice(0, 2)];
+}
+
+// The new-pane menu's height for so many tool panes and agents (rows are 30px), at most
+// 520: past that its list scrolls.
+export function menuHeight(tools, agents) {
+  return Math.min(520, 10 + 32 + 26 + Math.max(tools, 1) * 30 + 11 + 30 + 26 + Math.max(agents, 1) * 30 + 4);
+}
+
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -61,7 +72,7 @@ export default class Tabs extends View {
     }
     const machine = spaces().find((s) => s.active)?.machine ?? null;
     const where = machine ?? "";
-    this.agents = shared(AGENTS)?.[where] ?? [];
+    this.agents = this.cachedAgents();
     cx.spawn(async (cx) => {
       try {
         this.agents = await knownAgents({ on: machine });
@@ -73,9 +84,17 @@ export default class Tabs extends View {
 
   // ---- the new-pane menu ------------------------------------------------------
 
+  // The active Space's machine's agents, as knownAgents() last listed them.
+  cachedAgents() {
+    return shared(AGENTS)?.[spaces().find((s) => s.active)?.machine ?? ""] ?? [];
+  }
+
   // Under the pointer from the button; centered from a key or script (nothing to point at).
+  // As tall as its rows when the agents were listed before; the most otherwise.
   openPaneMenu(kind = "popup") {
-    openOverlay({ mod: SELF, kind, width: 280, ...(kind === "popup" ? { height: 520 } : {}), props: { menu: "pane" } });
+    const cached = this.cachedAgents();
+    const height = cached.length ? menuHeight(toolPanes().length, choicesOf(cached).length) : 520;
+    openOverlay({ mod: SELF, kind, width: 280, height, props: { menu: "pane" } });
   }
 
   menuRow(th, id, icon, label, action, hint = "", enabled = true) {
@@ -100,22 +119,23 @@ export default class Tabs extends View {
       .text_color(dir === value ? tk.text.strong : th.muted).cursor_pointer()
       .on_click(() => setShared(SPLIT, value)).child(t(`menu.${id}`));
     const tools = toolPanes();
-    const installed = this.agents.filter((a) => a.installed);
-    const choices = [...installed, ...this.agents.filter((a) => !a.installed).slice(0, 2)];
-    return v_flex().id("pane-menu").w_full().p(5).bg(th.popover).text_size(12.5)
-      .child(h_flex().h(32).px(9).gap(6).items_center().text_size(11.5).text_color(th.dim)
+    const choices = choicesOf(this.agents);
+    // The place pills stay put; the list under them scrolls when it's taller than the menu.
+    return v_flex().id("pane-menu").size_full().p(5).bg(th.popover).text_size(12.5)
+      .child(h_flex().h(32).flex_none().px(9).gap(6).items_center().text_size(11.5).text_color(th.dim)
         .child(div().flex_1().child(t("menu.where"))).child(pill("right", "right")).child(pill("down", "down")))
-      .child(label(t("menu.tools")))
-      .children(tools.map((p) => this.menuRow(th, `tool-${p.mod}`, icon(p.icon, true, th.muted), p.label,
-        () => open({ mod: p.mod, props: p.props ?? {} }))))
-      .when(tools.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t("menu.no_tools"))))
-      .child(div().h(1).mx(4).my(5).bg(th.border))
-      .child(this.menuRow(th, "terminal", icon("icons/shell.svg", true, th.muted), t("menu.terminal"), () => open({})))
-      .child(label(t("menu.agents")))
-      .children(choices.map((a) => this.menuRow(th, `agent-${a.key}`, icon(a.icon, a.tint, th.foreground), a.name,
-        () => (at.split ? run("terminal.open", { argv: a.run, place: dir }) : run("tab.new", { ...at.tab, name: a.name, argv: a.run })),
-        a.installed ? "" : t("menu.not_installed"), a.installed)))
-      .when(this.agents.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t(this.failed ? "menu.failed" : "menu.checking"))));
+      .child(v_flex().id("pane-menu-list").flex_1().min_h(0).overflow_y_scrollbar()
+        .child(label(t("menu.tools")))
+        .children(tools.map((p) => this.menuRow(th, `tool-${p.mod}`, icon(p.icon, true, th.muted), p.label,
+          () => open({ mod: p.mod, props: p.props ?? {} }))))
+        .when(tools.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t("menu.no_tools"))))
+        .child(div().h(1).mx(4).my(5).bg(th.border))
+        .child(this.menuRow(th, "terminal", icon("icons/shell.svg", true, th.muted), t("menu.terminal"), () => open({})))
+        .child(label(t("menu.agents")))
+        .children(choices.map((a) => this.menuRow(th, `agent-${a.key}`, icon(a.icon, a.tint, th.foreground), a.name,
+          () => (at.split ? run("terminal.open", { argv: a.run, place: dir }) : run("tab.new", { ...at.tab, name: a.name, argv: a.run })),
+          a.installed ? "" : t("menu.not_installed"), a.installed)))
+        .when(this.agents.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t(this.failed ? "menu.failed" : "menu.checking")))));
   }
 
   // ---- the bar --------------------------------------------------------------------

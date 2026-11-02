@@ -31,7 +31,7 @@ export interface WorkspaceAgent {
 export type WorkspaceRow =
   | { kind: "machine"; id: string; machine: string | null; open: boolean; led: "on" | "busy" | "off"; state: string | null; target: string | null; spaces: number; agents: number; blocked: number }
   | { kind: "space"; id: string; space: string; name: string; machine: string | null; initial: string; color: string; active: boolean; status: AgentState | null; branches: number; agents: number; blocked: number; done: number; folder: string; open: boolean }
-  | { kind: "worktree"; id: string; space: string; label: string; branch: boolean; folder: string | null; agents: number; blocked: number; open: boolean }
+  | { kind: "worktree"; id: string; space: string; label: string; branch: boolean; detail: string | null; folder: string | null; agents: number; blocked: number; open: boolean }
   | WorkspaceAgent;
 export interface WorkspaceTree {
   /** The scope in effect: null = every machine, "" = this computer. */
