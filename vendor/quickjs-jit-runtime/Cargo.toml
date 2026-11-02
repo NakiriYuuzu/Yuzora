@@ -1,0 +1,69 @@
+# HERDR: quickjs-jit's `jit` crate at our pinned rev 96593cd with
+# longbridge/quickjs-jit#38 applied (src/lib.rs, marked HERDR:). Only the
+# library: tests, benches and binaries stay upstream. Drop once merged.
+[package]
+name = "quickjs-jit-runtime"
+version = "0.12.11"
+authors = ["Mees Delzenne <mees.delzenne@gmail.com>", "K. <kayo@illumium.org>"]
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+description = "Tiered JIT runtime for the quickjs-jit distribution"
+repository = "https://github.com/longbridge/rquickjs.git"
+build = "build.rs"
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+name = "rquickjs_jit"
+
+[build-dependencies]
+rquickjs-sys = { package = "quickjs-jit-sys", version = "=0.12.11", git = "https://github.com/longbridge/quickjs-jit", rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393", features = ["jit-abi"] }
+
+[dependencies]
+rustc-hash = "2.1"
+rquickjs-core = { package = "quickjs-jit-core", version = "=0.12.11", git = "https://github.com/longbridge/quickjs-jit", rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393", features = ["jit-abi", "loader"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+[target.'cfg(all(target_endian = "little", any(target_os = "linux", target_os = "macos"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+libc = "0.2"
+
+[target.'cfg(all(target_endian = "little", target_os = "windows", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Memory",
+  "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+cranelift-codegen = { version = "0.116", optional = true, features = ["x86", "arm64", "enable-serde"] }
+cranelift-frontend = { version = "0.116", optional = true }
+cranelift-module = { version = "0.116", optional = true }
+cranelift-object = { version = "0.116", optional = true }
+cranelift-native = { version = "0.116", optional = true }
+gimli = { version = "0.31", optional = true, default-features = false, features = ["write", "std"] }
+postcard = { version = "1", optional = true, default-features = false, features = ["alloc"] }
+target-lexicon = { version = "0.13", optional = true }
+
+[features]
+default = []
+bindgen = ["rquickjs-core/bindgen"]
+parallel = ["rquickjs-core/parallel"]
+compiler = [
+  "dep:cranelift-codegen",
+  "dep:cranelift-frontend",
+  "dep:cranelift-module",
+  "dep:cranelift-object",
+  "dep:cranelift-native",
+  "dep:gimli",
+  "dep:postcard",
+  "dep:target-lexicon",
+]
+test-support = ["rquickjs-core/jit-test-support"]

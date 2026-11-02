@@ -1,0 +1,46 @@
+#!/bin/bash
+# Sign a packaged app or DMG; no notarization wait on the update release path.
+# APPLE_CERTIFICATE_P12 is a base64-encoded Developer ID Application .p12.
+set -euo pipefail
+
+app=${1:?usage: mac-sign app-or-dmg}
+if [[ $app != *.dmg && -z ${APPLE_CERTIFICATE_P12:-} && -z ${APPLE_CERTIFICATE_PASSWORD:-} ]]; then
+  codesign --force --sign - "$app"
+  exit 0
+fi
+: "${APPLE_CERTIFICATE_P12:?missing certificate}"
+: "${APPLE_CERTIFICATE_PASSWORD:?missing certificate password}"
+
+umask 077
+work=$(mktemp -d)
+keychain="$work/signing.keychain-db"
+searched=()
+while IFS= read -r entry; do
+  searched+=("$entry")
+done < <(security list-keychains -d user | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+cleanup() {
+  security list-keychains -d user -s "${searched[@]}" >/dev/null 2>&1 || true
+  security delete-keychain "$keychain" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$work/certificate.p12"
+password=$(openssl rand -hex 32)
+security create-keychain -p "$password" "$keychain"
+security set-keychain-settings -lut 21600 "$keychain"
+security unlock-keychain -p "$password" "$keychain"
+security import "$work/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+# codesign finds the identity and its chain only in searched keychains.
+security list-keychains -d user -s "$keychain" "${searched[@]}"
+identity=$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2; exit}')
+[[ -n $identity ]] || { echo 'mac-sign: no Developer ID Application identity found' >&2; exit 1; }
+if [[ $app == *.dmg ]]; then
+  codesign --force --timestamp --keychain "$keychain" --sign "$identity" "$app"
+else
+  # QuickJS uses MAP_JIT; hardened runtime otherwise blocks hot mod code.
+  codesign --force --options runtime --timestamp --entitlements "$(dirname "$0")/macos-entitlements.plist" --keychain "$keychain" --sign "$identity" "$app"
+fi
+codesign --verify --deep --strict "$app"

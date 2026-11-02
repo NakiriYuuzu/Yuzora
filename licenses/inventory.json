@@ -1,0 +1,196 @@
+{
+  "inputs": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/ghostty-sys/Cargo.toml",
+    "defaults/icons/LICENSES.md",
+    "vendor/gpui-kit/Cargo.toml",
+    "vendor/gpui-kit/LICENSE-APACHE",
+    "vendor/gpui-kit/crates/base/Cargo.toml",
+    "vendor/gpui-kit/crates/base/LICENSE-APACHE",
+    "vendor/gpui-kit/crates/base/examples/native/Cargo.toml",
+    "vendor/gpui-kit/crates/base/examples/wasm/Cargo.toml",
+    "vendor/gpui-kit/crates/fps/Cargo.toml",
+    "vendor/gpui-kit/crates/shell/Cargo.toml",
+    "vendor/gpui-kit/crates/shell/rquickjs-compat/Cargo.toml",
+    "vendor/gpui-pre-apple/Cargo.toml",
+    "vendor/gpui-pre-apple/LICENSE-APACHE",
+    "vendor/gpui-pre-linux/Cargo.toml",
+    "vendor/gpui-pre-linux/LICENSE-APACHE",
+    "vendor/gpui-pre-macos/Cargo.toml",
+    "vendor/gpui-pre-macos/LICENSE-APACHE",
+    "vendor/gpui-pre-wgpu/Cargo.toml",
+    "vendor/gpui-pre-wgpu/LICENSE-APACHE",
+    "vendor/gpui-pre-windows/Cargo.toml",
+    "vendor/gpui-pre-windows/LICENSE-APACHE",
+    "vendor/gpui-pre/Cargo.toml",
+    "vendor/gpui-pre/LICENSE-APACHE",
+    "vendor/quickjs-jit-runtime/Cargo.toml",
+    "vendor/quickjs-jit-runtime/LICENSE",
+    "vendor/taffy/Cargo.toml",
+    "about.toml",
+    "scripts/notices.ts",
+    "scripts/notices.hbs",
+    "licenses/inventory.json",
+    "licenses/README.md",
+    "crates/ghostty-sys/build.rs",
+    "vendor/ghostty/build.zig.zon",
+    "vendor/ghostty/src/build/GhosttyZig.zig",
+    "vendor/ghostty/src/build/GhosttyLibVt.zig",
+    "vendor/ghostty/pkg/highway/build.zig.zon",
+    "vendor/ghostty/pkg/wuffs/build.zig.zon",
+    "vendor/ghostty/pkg/wuffs/build.zig",
+    "vendor/ghostty/pkg/simdutf/vendor/simdutf.h",
+    "vendor/ghostty/pkg/simdutf/vendor/simdutf.cpp"
+  ],
+  "components": [
+    {
+      "name": "Ghostty (libghostty-vt)",
+      "source": "https://github.com/ghostty-org/ghostty/tree/291fd050b9e9c293c8adb6a140742649b7e42d3a",
+      "files": [
+        "vendor/ghostty/LICENSE"
+      ]
+    },
+    {
+      "name": "QuickJS / quickjs-ng (embedded by quickjs-jit-sys)",
+      "source": "https://github.com/longbridge/quickjs-jit/tree/96593cd7a54440ac060a391b8baea7e9a3cf1393/sys/quickjs",
+      "files": [
+        "licenses/QuickJS.txt",
+        "licenses/QuickJS-source.txt"
+      ]
+    },
+    {
+      "name": "QuickJS JIT runtime",
+      "source": "https://github.com/longbridge/quickjs-jit",
+      "files": [
+        "vendor/quickjs-jit-runtime/LICENSE"
+      ]
+    },
+    {
+      "name": "Taffy",
+      "source": "https://github.com/DioxusLabs/taffy/tree/v0.13.0",
+      "files": [
+        "vendor/taffy/LICENSE"
+      ]
+    },
+    {
+      "name": "uucode and its Unicode data / UTF-8 decoder",
+      "source": "https://github.com/jacobsandlund/uucode/tree/9d55524551411b493cca41ca06363625d90aff1e",
+      "files": [
+        "licenses/uucode.txt",
+        "licenses/uucode-LICENSE_Bjoern_Hoehrmann.txt",
+        "licenses/uucode-LICENSE_unicode.txt"
+      ]
+    },
+    {
+      "name": "Wuffs (Ghostty Kitty graphics)",
+      "source": "Copyright 2017 The Wuffs Authors. https://deps.files.ghostty.org/wuffs-7411f488fe2e2c205c3d3b3d28638b7356522930.tar.gz",
+      "files": [
+        "licenses/Wuffs-LICENSE.txt",
+        "licenses/Wuffs-LICENSE-MIT.txt",
+        "licenses/Wuffs-LICENSE-APACHE.txt"
+      ]
+    },
+    {
+      "name": "Highway (Ghostty SIMD)",
+      "source": "https://github.com/google/highway/tree/66486a10623fa0d72fe91260f96c892e41aceb06",
+      "files": [
+        "licenses/highway.txt",
+        "licenses/highway-BSD3.txt"
+      ]
+    },
+    {
+      "name": "simdutf 9.0.0 (Ghostty's amalgamated source)",
+      "source": "https://github.com/simdutf/simdutf/tree/v9.0.0",
+      "files": [
+        "licenses/simdutf.txt",
+        "licenses/simdutf-TH.txt"
+      ]
+    },
+    {
+      "name": "Zig 0.16.0 standard library and compiler runtime",
+      "source": "https://github.com/ziglang/zig/tree/0.16.0",
+      "files": [
+        "licenses/Zig.txt"
+      ]
+    },
+    {
+      "name": "musl (where statically included by the toolchain)",
+      "source": "Zig 0.16.0 lib/libc/musl/COPYRIGHT; official Linux app builds use system glibc, not musl.",
+      "files": [
+        "licenses/musl.txt"
+      ]
+    },
+    {
+      "name": "Unicode data",
+      "source": "https://www.unicode.org/license.txt",
+      "files": [
+        "licenses/Unicode.txt"
+      ]
+    },
+    {
+      "name": "Lucide / Feather icons (defaults/icons and shipped mods)",
+      "source": "https://github.com/lucide-icons/lucide",
+      "files": [
+        "defaults/icons/LICENSE-Lucide.txt"
+      ]
+    },
+    {
+      "name": "LobeHub icons",
+      "source": "https://github.com/lobehub/lobe-icons",
+      "files": [
+        "defaults/icons/LICENSE-LobeHub.txt"
+      ]
+    },
+    {
+      "name": "Simple Icons brand icons",
+      "source": "https://simpleicons.org; brands remain their owners' trademarks.",
+      "files": [
+        "licenses/CC0-1.0.txt"
+      ]
+    },
+    {
+      "name": "Geist and Geist Mono fonts",
+      "source": "https://github.com/vercel/geist-font",
+      "files": [
+        "assets/fonts/OFL.txt"
+      ]
+    },
+    {
+      "name": "JetBrains Mono fonts",
+      "source": "https://github.com/JetBrains/JetBrainsMono",
+      "files": [
+        "assets/fonts/OFL-JetBrainsMono.txt"
+      ]
+    },
+    {
+      "name": "Symbols Nerd Font",
+      "source": "https://github.com/ryanoasis/nerd-fonts",
+      "files": [
+        "assets/fonts/LICENSE-SymbolsNerdFont.txt"
+      ]
+    },
+    {
+      "name": "Pixelated MS Sans Serif fonts (Herdr 98)",
+      "source": "https://github.com/jdan/98.css; unchanged font conversion.",
+      "files": [
+        "defaults/mods/win98/fonts/LICENSE-MSSansSerif.txt",
+        "licenses/CC-BY-SA-3.0.txt"
+      ]
+    },
+    {
+      "name": "PxPlus IBM VGA font (Herdr 98)",
+      "source": "https://int10h.org/oldschool-pc-fonts/",
+      "files": [
+        "defaults/mods/win98/fonts/LICENSE-PxPlus.txt"
+      ]
+    },
+    {
+      "name": "Herdr logo artwork",
+      "source": "Ram path adapted from https://github.com/herdrdev/herdr/blob/HEAD/assets/logo.svg (Apache-2.0). Herdr 98 artwork is drawn by defaults/mods/win98/art/generate.ts, under the app's Apache-2.0 license.",
+      "files": [
+        "LICENSE"
+      ]
+    }
+  ]
+}

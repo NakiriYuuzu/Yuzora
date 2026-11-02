@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Linux UI regression: paste/copy follow a peek's keyboard focus, not its source pane.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+export HERDR_APP_SANDBOX="peek-paste-test-$$"
+root="/var/tmp/herdr-app-$HERDR_APP_SANDBOX"
+sandbox() { scripts/sandbox "$@"; }
+trap 'sandbox down' EXIT
+sandbox up
+export DISPLAY=$(<"$root/display")
+parent=$(sandbox do space.new '{"name":"paste-test"}' | jq -r .terminal)
+probe='process.stdin.setRawMode(true);
+process.stdout.write("\x1b[?2004hREADY\r\n");
+let received = Buffer.alloc(0);
+process.stdin.on("data", chunk => {
+  received = Buffer.concat([received, chunk]);
+  const start = received.indexOf("\x1b[200~");
+  const end = received.indexOf("\x1b[201~");
+  if (start >= 0 && end >= 0) {
+    const text = received.subarray(start + 6, end);
+    const result = text.length < 100 ? text.toString() : `length=${text.length} all_x=${text.every(b => b === 120)}`;
+    process.stdout.write(`\r\nPASTE:${result}\r\n`);
+    received = received.subarray(end + 6);
+  } else if (received.includes(22)) {
+    process.stdout.write("\r\nCTRL_V\r\n");
+    received = Buffer.alloc(0);
+  }
+});'
+child=$(sandbox hc run --bg --name peek-child bun -e "$probe" | jq -r .address)
+wait_for() {
+  local expected=$1
+  for _ in {1..100}; do
+    if sandbox hc read "$child" --lines 30 | grep -Fq "$expected"; then return; fi
+    sleep 0.1
+  done
+  echo "missing from peek: $expected" >&2
+  sandbox hc read "$child" --lines 30
+  sandbox hc read "$parent" --lines 30
+  sandbox status
+  return 1
+}
+wait_for READY
+# The app learns about a newly spawned terminal through its event stream.
+for _ in {1..100}; do
+  if sandbox do terminal.peek "{\"terminal\":\"$child\"}"; then break; fi
+  sleep 0.1
+done
+sandbox click 400 300
+printf 'COMMAND_SENTINEL' | xsel --clipboard --input
+sandbox do terminal.paste
+wait_for 'PASTE:COMMAND_SENTINEL'
+printf 'KEY_SENTINEL' | xsel --clipboard --input
+sandbox key V Control_L Shift_L
+wait_for 'PASTE:KEY_SENTINEL'
+sandbox do terminal.paste_image
+wait_for CTRL_V
+# A raw bracketed-paste reader verifies there is no app-side clipping.
+printf '%*s' 100000 '' | tr ' ' x | xsel --clipboard --input
+sandbox do terminal.paste
+wait_for 'PASTE:length=100000 all_x=true'
+# The default 1280x820 sandbox window: select READY on the peek's first row.
+sandbox drag 145 156 205 156
+sandbox do terminal.copy
+[[ $(xsel --clipboard --output) == READY ]]
+printf 'stale clipboard' | xsel --clipboard --input
+sandbox key C Control_L Shift_L
+[[ $(xsel --clipboard --output) == READY ]]
+sandbox do terminal.right_click '{"to":"program"}'
+for _ in {1..100}; do
+  if [[ $(sandbox hc get "$child" | jq -r '.labels["herdr.right-click"]') == program ]]; then break; fi
+  sleep 0.1
+done
+[[ $(sandbox hc get "$child" | jq -r '.labels["herdr.right-click"]') == program ]]
+[[ $(sandbox hc get "$parent" | jq -r '.labels["herdr.right-click"]') == null ]]
+if sandbox hc read "$parent" --lines 30 | grep -Eq 'SENTINEL|PASTE:|CTRL_V'; then
+  echo 'input leaked into the parent terminal' >&2
+  exit 1
+fi
+echo 'peek paste/copy/image/right-click targeting and 100KB paste passed'
