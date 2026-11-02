@@ -1,14 +1,32 @@
-//! The little Git the shell shows: a folder's branch, how far it is ahead of
-//! and behind its upstream, and how many files changed (the status bar's
-//! "⎇ feat/dock ↑2"). One `git status --porcelain=v2 --branch` here or on a
-//! machine (`hc exec --on`). Everything else Git is lane L2's (`yuzora:git`).
+//! The little Git the shell shows: a folder's branch and how far it is ahead
+//! of and behind its upstream (the status bar's "⎇ feat/dock ↑2"), here or on
+//! a machine (`hc exec --on`). Everything else Git is lane L2's (`yuzora:git`).
+//!
+//! The status bar asks on its own as soon as a terminal `cd`s into a folder,
+//! so it only reads refs, config and commits. `git status` would look at the
+//! working tree and run what the repo's own config names there (a clean
+//! filter, an fsmonitor hook); a partial clone would fetch a missing commit
+//! with the repo's ssh command, so there the walk runs with `--no-lazy-fetch`
+//! (git 2.44 and later) or not at all. Changed and conflicted files need
+//! `git status`: they stay null until the folder is trusted (L2's check).
 
 use serde_json::{Value, json};
 use std::time::Duration;
-use yuzora_core::remote::{ExecError, ExecRequest};
+use yuzora_core::remote::{ExecError, ExecOutput, ExecRequest};
 
-/// A status bar look shouldn't wait on a slow disk or machine for long.
+/// A status bar look shouldn't wait on a slow disk or machine for long (each step).
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Before every step: no optional locks and no fsmonitor, so a look writes
+/// nothing under `.git` (that would wake every folder watch on the repo).
+const BASE: [&str; 3] = ["--no-optional-locks", "-c", "core.fsmonitor=false"];
+
+/// Config keys that make a remote a promisor one: git fetches what's missing from it.
+const PROMISOR: &str = r"^(extensions\.partialclone|remote\..+\.(promisor|partialclonefilter))$";
+
+/// The upstream and how far apart: `name\0ahead 2, behind 1` (for-each-ref's
+/// plumbing words, never translated).
+const UPSTREAM: &str = "--format=%(upstream:short)%00%(upstream:track,nobracket)";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
@@ -17,9 +35,10 @@ pub struct Summary {
     pub upstream: Option<String>,
     pub ahead: u64,
     pub behind: u64,
-    /// Tracked files with staged or unstaged changes (untracked ones aren't asked for).
-    pub changed: u64,
-    pub conflicted: u64,
+    /// Files with staged or unstaged changes, and conflicted ones: `None` until
+    /// the folder is trusted (they need `git status`).
+    pub changed: Option<u64>,
+    pub conflicted: Option<u64>,
 }
 
 impl Summary {
@@ -31,86 +50,217 @@ impl Summary {
     }
 }
 
-/// The arguments: no optional locks and no fsmonitor, so a look writes nothing
-/// under `.git` (that would wake every folder watch on the repo).
-pub fn args() -> Vec<&'static str> {
-    vec!["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch", "--untracked-files=no"]
+/// The steps' arguments after `git`.
+pub fn args<'a>(step: &[&'a str]) -> Vec<&'a str> {
+    BASE.iter().copied().chain(step.iter().copied()).collect()
 }
 
-/// Reads `git status --porcelain=v2 --branch`.
-pub fn parse(out: &str) -> Summary {
-    let mut s = Summary::default();
-    for line in out.lines() {
-        if let Some(head) = line.strip_prefix("# branch.head ") {
-            s.branch = (head != "(detached)").then(|| head.to_owned());
-        } else if let Some(up) = line.strip_prefix("# branch.upstream ") {
-            s.upstream = Some(up.to_owned());
-        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
-            let mut it = ab.split_whitespace().map(|n| n.trim_start_matches(['+', '-']).parse::<u64>().unwrap_or(0));
-            s.ahead = it.next().unwrap_or(0);
-            s.behind = it.next().unwrap_or(0);
-        } else if line.starts_with("1 ") || line.starts_with("2 ") {
-            s.changed += 1;
-        } else if line.starts_with("u ") {
-            s.conflicted += 1;
+/// Reads `for-each-ref` with [`UPSTREAM`]: the upstream (`None` without one)
+/// and ahead/behind (nothing when it's gone or even).
+pub fn parse_upstream(out: &str) -> (Option<String>, u64, u64) {
+    let line = out.lines().next().unwrap_or_default();
+    let (name, track) = line.split_once('\0').unwrap_or((line, ""));
+    let (mut ahead, mut behind) = (0, 0);
+    for part in track.split(", ") {
+        if let Some(n) = part.strip_prefix("ahead ") {
+            ahead = n.parse().unwrap_or(0);
+        } else if let Some(n) = part.strip_prefix("behind ") {
+            behind = n.parse().unwrap_or(0);
         }
     }
-    s
+    ((!name.is_empty()).then(|| name.to_owned()), ahead, behind)
 }
 
 /// `cwd`'s summary (on `machine`, else here); `None` when it isn't in a repo.
 /// Blocking: call from a worker thread.
 pub fn status(cwd: &str, machine: Option<String>) -> Result<Option<Summary>, ExecError> {
-    let req = ExecRequest::new("git", args()).cwd(Some(cwd)).on(machine).timeout(TIMEOUT).max_output(1 << 20);
-    let out = yuzora_core::remote::run(&req)?;
-    Ok((out.code == 0).then(|| parse(&out.stdout_text())))
+    let git = |step: &[&str]| -> Result<ExecOutput, ExecError> {
+        let req = ExecRequest::new("git", args(step)).cwd(Some(cwd)).on(machine.clone()).timeout(TIMEOUT).max_output(1 << 16);
+        yuzora_core::remote::run(&req)
+    };
+    let head = git(&["symbolic-ref", "-q", "HEAD"])?;
+    let mut s = Summary::default();
+    let full = match head.code {
+        0 => head.stdout_text().trim_end().to_owned(),
+        1 => return Ok(Some(s)), // detached
+        _ => return Ok(None),
+    };
+    s.branch = Some(full.strip_prefix("refs/heads/").unwrap_or(&full).to_owned());
+    // 1 is "no such key"; anything else might be one.
+    let promisor = git(&["config", "--get-regexp", PROMISOR])?.code != 1;
+    let upstream = if promisor { git(&["--no-lazy-fetch", "for-each-ref", UPSTREAM, full.as_str()])? } else { git(&["for-each-ref", UPSTREAM, full.as_str()])? };
+    if upstream.code == 0 {
+        (s.upstream, s.ahead, s.behind) = parse_upstream(&upstream.stdout_text());
+    }
+    Ok(Some(s))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
-    fn reads_branch_upstream_and_counts() {
-        let out = "# branch.oid 1234\n# branch.head feat/gpui-dock\n# branch.upstream origin/feat/gpui-dock\n# branch.ab +2 -1\n\
-                   1 .M N... 100644 100644 100644 a b src/a.rs\n1 A. N... 0 100644 100644 0 b src/b.rs\n\
-                   2 R. N... 100644 100644 100644 a b R100 new\told\nu UU N... 1 2 3 4 a b c d conflict.rs\n";
-        let s = parse(out);
-        assert_eq!(s.branch.as_deref(), Some("feat/gpui-dock"));
-        assert_eq!(s.upstream.as_deref(), Some("origin/feat/gpui-dock"));
-        assert_eq!((s.ahead, s.behind, s.changed, s.conflicted), (2, 1, 3, 1));
+    fn reads_upstream_and_how_far_apart() {
+        assert_eq!(parse_upstream("origin/feat/gpui-dock\0ahead 2, behind 1\n"), (Some("origin/feat/gpui-dock".into()), 2, 1));
+        assert_eq!(parse_upstream("origin/main\0behind 3\n"), (Some("origin/main".into()), 0, 3));
+        assert_eq!(parse_upstream("origin/main\0gone\n"), (Some("origin/main".into()), 0, 0));
+        assert_eq!(parse_upstream("origin/main\0\n"), (Some("origin/main".into()), 0, 0));
+        assert_eq!(parse_upstream("\0\n"), (None, 0, 0));
+        assert_eq!(parse_upstream(""), (None, 0, 0));
+        let s = Summary { ahead: 2, ..Summary::default() };
         assert_eq!(s.to_json()["ahead"], 2);
+        assert_eq!(s.to_json()["changed"], Value::Null);
     }
 
     #[test]
-    fn detached_and_unpublished_branches() {
-        let s = parse("# branch.oid abc\n# branch.head (detached)\n");
-        assert_eq!(s, Summary::default());
-        let s = parse("# branch.oid (initial)\n# branch.head main\n");
-        assert_eq!(s.branch.as_deref(), Some("main"));
-        assert_eq!(s.upstream, None);
-        assert_eq!(s.ahead, 0);
+    fn every_step_writes_nothing_under_git() {
+        for step in [&["symbolic-ref", "-q", "HEAD"][..], &["for-each-ref", UPSTREAM][..]] {
+            let a = args(step);
+            assert!(a.contains(&"--no-optional-locks") && a.contains(&"core.fsmonitor=false"));
+            assert!(!a.contains(&"status"));
+        }
     }
 
-    #[test]
-    fn a_status_writes_nothing_under_git() {
-        let a = args();
-        assert!(a.contains(&"--no-optional-locks") && a.contains(&"core.fsmonitor=false"));
+    /// A folder under the temp dir, gone when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("yuzora-shell-git-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> String {
+            self.0.to_string_lossy().into_owned()
+        }
+
+        /// Git as the test sets it up: none of this computer's own config.
+        fn git(&self, args: &[&str]) -> String {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(&self.0)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim_end().to_owned()
+        }
+
+        fn write(&self, file: &str, text: &str) {
+            std::fs::write(self.0.join(file), text).unwrap();
+        }
+
+        /// A script that leaves `marker` behind when it runs.
+        #[cfg(unix)]
+        fn program(&self, name: &str, marker: &Path, then: &str) -> String {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.0.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\ntouch '{}'\n{then}\n", marker.display())).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn git_here() -> bool {
+        std::process::Command::new("git").arg("--version").output().is_ok_and(|o| o.status.success())
     }
 
     #[test]
     fn asks_a_real_repo_and_says_none_outside_one() {
-        let dir = std::env::temp_dir().join(format!("yuzora-shell-git-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.to_string_lossy().into_owned();
-        // No git on this machine: nothing to check.
-        let Ok(none) = status(&path, None) else { return };
-        assert_eq!(none, None);
-        let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
-        git(&["init", "-q", "-b", "trunk"]);
-        let s = status(&path, None).unwrap().unwrap();
+        if !git_here() {
+            return;
+        }
+        let dir = Scratch::new("plain");
+        assert_eq!(status(&dir.path(), None).unwrap(), None);
+        dir.git(&["init", "-q", "-b", "trunk"]);
+        let s = status(&dir.path(), None).unwrap().unwrap();
         assert_eq!(s.branch.as_deref(), Some("trunk"));
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!((s.upstream, s.ahead, s.behind), (None, 0, 0));
+        dir.write("a.txt", "1\n");
+        dir.git(&["add", "a.txt"]);
+        dir.git(&["commit", "-qm", "one"]);
+        dir.git(&["checkout", "-q", "--detach"]);
+        assert_eq!(status(&dir.path(), None).unwrap(), Some(Summary::default()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_repos_own_filter_never_runs() {
+        if !git_here() {
+            return;
+        }
+        let dir = Scratch::new("filter");
+        dir.git(&["init", "-q", "-b", "feat/dock"]);
+        dir.write("a.txt", "1\n");
+        dir.git(&["add", "a.txt"]);
+        dir.git(&["commit", "-qm", "one"]);
+        dir.git(&["branch", "base"]);
+        dir.write("a.txt", "2\n");
+        dir.git(&["commit", "-qam", "two"]);
+        // base gets a commit of its own: one ahead, one behind.
+        let side = dir.git(&["commit-tree", "-p", "base", "-m", "side", "base^{tree}"]);
+        dir.git(&["update-ref", "refs/heads/base", &side]);
+        dir.git(&["branch", "-q", "-u", "base"]);
+        // A clean filter in the repo's own config, on a file that changed since.
+        let marker = dir.0.join("ran");
+        let clean = dir.program("clean.sh", &marker, "cat");
+        dir.git(&["config", "filter.evil.clean", &clean]);
+        std::fs::write(dir.0.join(".git/info/attributes"), "* filter=evil\n").unwrap();
+        dir.write("a.txt", "3\n");
+        let s = status(&dir.path(), None).unwrap().unwrap();
+        assert_eq!(s.branch.as_deref(), Some("feat/dock"));
+        assert_eq!((s.upstream.as_deref(), s.ahead, s.behind), (Some("base"), 1, 1));
+        assert_eq!((s.changed, s.conflicted), (None, None));
+        assert!(!marker.exists(), "the status bar's look ran the repo's clean filter");
+        // What it used to ask does run it: the marker would have caught it.
+        dir.git(&["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch", "--untracked-files=no"]);
+        assert!(marker.exists(), "git status didn't run the filter, so this test proves nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_partial_clones_missing_commit_is_not_fetched() {
+        if !git_here() {
+            return;
+        }
+        let dir = Scratch::new("promisor");
+        dir.git(&["init", "-q", "-b", "trunk"]);
+        dir.write("a.txt", "1\n");
+        dir.git(&["add", "a.txt"]);
+        dir.git(&["commit", "-qm", "one"]);
+        // The upstream points at a commit the clone doesn't have; its remote
+        // is a promisor whose ssh command is the repo's own.
+        let marker = dir.0.join("ran");
+        let ssh = dir.program("ssh.sh", &marker, "exit 1");
+        for (key, value) in [
+            ("remote.origin.url", "ssh://example.invalid/x"),
+            ("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"),
+            ("remote.origin.promisor", "true"),
+            ("core.sshCommand", ssh.as_str()),
+            ("branch.trunk.remote", "origin"),
+            ("branch.trunk.merge", "refs/heads/main"),
+        ] {
+            dir.git(&["config", key, value]);
+        }
+        let gone = dir.git(&["commit-tree", "-p", "HEAD", "-m", "gone", "HEAD^{tree}"]);
+        dir.git(&["update-ref", "refs/remotes/origin/main", &gone]);
+        std::fs::remove_file(dir.0.join(format!(".git/objects/{}/{}", &gone[..2], &gone[2..]))).unwrap();
+        let s = status(&dir.path(), None).unwrap().unwrap();
+        assert_eq!(s.branch.as_deref(), Some("trunk"));
+        assert_eq!((s.ahead, s.behind), (0, 0));
+        assert!(!marker.exists(), "the status bar's look fetched with the repo's ssh command");
+        // Walking to it the plain way does fetch: the marker would have caught it.
+        dir.git(&["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]);
+        assert!(marker.exists(), "rev-list didn't fetch, so this test proves nothing");
     }
 }
