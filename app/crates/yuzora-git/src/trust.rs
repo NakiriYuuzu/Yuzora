@@ -4,11 +4,14 @@
 //! would run: a clean filter during status, an ssh command or credential
 //! helper during fetch. Until the person trusts the folder, nothing runs on
 //! its own there (IntelliJ's Safe mode and VS Code's Restricted Mode stop
-//! Git the same way). The person's own (global, system) config is theirs and
-//! needs no trust. What reads override anyway (fsmonitor, signature
-//! programs, textconv) doesn't count, and neither do hooks: status runs
-//! none, and auto fetch runs with them off (husky and the like set
-//! `core.hooksPath` in many repos; they run when the person commits).
+//! Git the same way), and every other call on the repo is refused. The
+//! person's own (global, system) config is theirs and needs no trust.
+//! Reads override some of these anyway (fsmonitor, signature programs,
+//! textconv), but writes would run them, so they count. Editors don't (the
+//! engine always sets GIT_EDITOR and GIT_SEQUENCE_EDITOR), nor does a pager
+//! (output never goes to a terminal), nor hooks: status runs none, auto
+//! fetch runs with them off, and husky and the like set `core.hooksPath` in
+//! many repos for the commits the person makes.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -19,7 +22,19 @@ use crate::exec::{Git, GitError, GitResult};
 use crate::repo::Repo;
 
 /// Config keys (lowercased by git) that name a program run without asking.
-const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow)$";
+const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow|merge\..+\.driver|diff\..+\.(command|textconv)|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
+
+/// Whether a matched key's value runs something: fsmonitor `true` is git's
+/// own daemon, and a submodule's update mode is a command only after `!`.
+fn names_program(key: &str, value: &str) -> bool {
+    if key == "core.fsmonitor" {
+        return !matches!(value.trim().to_ascii_lowercase().as_str(), "" | "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0");
+    }
+    if key.starts_with("submodule.") && key.ends_with(".update") {
+        return value.trim_start().starts_with('!');
+    }
+    true
+}
 
 /// Stands for the keys when the config couldn't be read: the gate stays shut.
 const UNREADABLE: &str = "(unreadable config)";
@@ -34,7 +49,7 @@ pub fn no_hooks_dir() -> String {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`.
 pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
-    let out = repo.run(Git::read(["config", "--show-scope", "-z", "--name-only", "--get-regexp", PROGRAMS]))?;
+    let out = repo.run(Git::read(["config", "--show-scope", "-z", "--get-regexp", PROGRAMS]))?;
     if !out.ok() {
         // 1 with nothing printed: no key matched. Anything else: unknown.
         return Ok(if out.code == 1 && out.stdout.is_empty() { Vec::new() } else { vec![UNREADABLE.into()] });
@@ -43,7 +58,7 @@ pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
     if repo.exists(&repo.abs(".gitmodules")) {
         // Each checked-out submodule, nested ones too: a `sub` record names it.
         // 1 is "no key"; any other failure is an `err` record (gate shut).
-        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --name-only --get-regexp '{PROGRAMS}'; c=$?; if [ $c -gt 1 ]; then printf 'err\\0%s\\0' $c; fi");
+        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --get-regexp '{PROGRAMS}'; c=$?; if [ $c -gt 1 ]; then printf 'err\\0%s\\0' $c; fi");
         let out = repo.run(Git::read(["submodule", "foreach", "--recursive", "--quiet", &script]))?;
         if !out.ok() {
             keys.insert(UNREADABLE.into());
@@ -53,8 +68,9 @@ pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
     Ok(keys.into_iter().collect())
 }
 
-/// `scope\0key\0` records (an include counts as the file that includes it):
-/// the repo-level keys, as `path: key` once a `sub` record named a submodule.
+/// `scope\0key\nvalue\0` records (an include counts as the file that
+/// includes it; a key alone is a boolean): the repo-level keys whose values
+/// run something, as `path: key` once a `sub` record named a submodule.
 fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
     let text = String::from_utf8_lossy(out);
     let parts: Vec<&str> = text.split('\0').collect();
@@ -66,11 +82,11 @@ fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
             "err" => {
                 keys.insert(format!("{place}: {UNREADABLE}"));
             }
-            "local" | "worktree" if place.is_empty() => {
-                keys.insert(c[1].to_owned());
-            }
             "local" | "worktree" => {
-                keys.insert(format!("{place}: {}", c[1]));
+                let (key, value) = c[1].split_once('\n').unwrap_or((c[1], "true"));
+                if names_program(key, value) {
+                    keys.insert(if place.is_empty() { key.to_owned() } else { format!("{place}: {key}") });
+                }
             }
             _ => {}
         }
@@ -139,6 +155,17 @@ mod tests {
         s.git(&["config", "core.alternateRefsCommand", "true"]);
         assert_eq!(pending(&s.repo).unwrap(), vec!["core.alternaterefscommand".to_string()]);
         s.git(&["config", "--unset", "core.alternateRefsCommand"]);
+        // Git's own fsmonitor daemon and a plain update mode run nothing of the repo's.
+        s.git(&["config", "core.fsmonitor", "true"]);
+        s.git(&["config", "submodule.x.update", "rebase"]);
+        assert!(pending(&s.repo).unwrap().is_empty());
+        s.git(&["config", "core.fsmonitor", "/tmp/hook"]);
+        s.git(&["config", "submodule.x.update", "!touch /tmp/x"]);
+        s.git(&["config", "merge.lock.driver", "true"]);
+        assert_eq!(pending(&s.repo).unwrap(), vec!["core.fsmonitor".to_string(), "merge.lock.driver".into(), "submodule.x.update".into()]);
+        for k in ["core.fsmonitor", "submodule.x.update", "merge.lock.driver"] {
+            s.git(&["config", "--unset", k]);
+        }
         // A clean filter in the repo's own config, used by its attributes.
         let marker = format!("{}/ran", s.dir.path().display());
         let program = format!("{}/clean.sh", s.dir.path().display());
