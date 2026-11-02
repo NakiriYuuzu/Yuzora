@@ -1,0 +1,7 @@
+{
+  "place": "none",
+  "title": "General",
+  "yuzora": {
+    "settings": { "title": "page.title", "icon": "mods/yuzora-settings-general/icon.svg", "order": 0, "section": "general" }
+  }
+}
