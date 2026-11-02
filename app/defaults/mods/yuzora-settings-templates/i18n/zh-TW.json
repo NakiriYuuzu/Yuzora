@@ -81,6 +81,7 @@
   "issues": {
     "name_empty": "請取個名稱。",
     "name_invalid": "不能含 / 或 \\ 與控制字元，不能以 . 開頭，最多 200 位元組。",
+    "name_windows": "Windows 的檔名不能含 < > : \" | ? *，不能以空白或句點結尾，也不能是 CON、NUL、COM1 這類裝置名稱。",
     "command_empty": "模板必須有指令。",
     "multiline": "只能一行：標頭是逐行讀取的。",
     "quoted": "值會照字面使用：引號也會變成內容的一部分。",

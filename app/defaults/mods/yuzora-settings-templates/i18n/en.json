@@ -81,6 +81,7 @@
   "issues": {
     "name_empty": "Give it a name.",
     "name_invalid": "No / or \\ or control characters, not starting with a dot, up to 200 bytes.",
+    "name_windows": "A Windows file name can't have < > : \" | ? *, end in a space or dot, or be a device name like CON, NUL or COM1.",
     "command_empty": "A template needs a command.",
     "multiline": "One line only: the header is line by line.",
     "quoted": "Values are taken literally: the quotes become part of it.",

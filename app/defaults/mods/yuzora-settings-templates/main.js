@@ -86,7 +86,7 @@ export default class Templates extends View {
 
   recheck(cx) {
     if (!this.editing) return;
-    this.issues = checkTemplate(this.inputs.name.value().trim(), this.fields(), this.body.value());
+    this.issues = checkTemplate(this.inputs.name.value().trim(), this.fields(), this.body.value(), this.machine);
     cx.notify();
   }
 

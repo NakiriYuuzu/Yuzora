@@ -177,6 +177,31 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && !name.chars().any(|c| matches!(c, '/' | '\\') || c.is_control())
 }
 
+/// A name Windows can give a file: none of `< > : " | ? *`, no trailing
+/// space or dot, not a device name (`CON`, `NUL`, `COM1`… with any extension).
+/// Only this computer's saves on Windows need it: elsewhere hc runs these names.
+pub fn windows_name(name: &str) -> bool {
+    const DEVICES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+        "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let device = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
+    !name.contains(['<', '>', ':', '"', '|', '?', '*']) && !name.ends_with([' ', '.']) && !DEVICES.contains(&device.as_str())
+}
+
+/// [`check`] for a save on this computer: on Windows, also a name Windows takes.
+pub fn check_here(name: &str, fields: &Value, body: &str) -> Vec<Issue> {
+    check_for(name, fields, body, cfg!(windows))
+}
+
+fn check_for(name: &str, fields: &Value, body: &str, windows: bool) -> Vec<Issue> {
+    let mut issues = check(name, fields, body);
+    if windows && valid_name(name) && !windows_name(name) {
+        issues.insert(0, Issue::new("name", "name_windows", true));
+    }
+    issues
+}
+
 /// Key names `hc keys` takes (`enter`, `esc`, `ctrl+c`, `alt+x`, `f5`, `a`…),
 /// space-separated. Unknown ones only warn: hc may know more than this list.
 fn known_keys(value: &str) -> bool {
@@ -389,7 +414,7 @@ impl From<std::io::Error> for SaveError {
 /// - `previous`: the old name when renamed; that file goes to the trash
 ///   once the new one is written.
 pub fn save(dir: &Path, name: &str, text: &str, expected: Option<&str>, previous: Option<&str>) -> Result<(), SaveError> {
-    if !valid_name(name) || previous.is_some_and(|p| !valid_name(p)) {
+    if !valid_name(name) || previous.is_some_and(|p| !valid_name(p)) || (cfg!(windows) && !windows_name(name)) {
         return Err(SaveError::Name);
     }
     // Yuzora's saves one at a time; another program's edit is caught by
@@ -602,9 +627,18 @@ mod tests {
         assert_eq!(codes("", json!({ "command": "pi" }), "b"), [("name".into(), "name_empty", true)]);
         assert_eq!(codes("a/b", json!({ "command": "pi" }), "b"), [("name".into(), "name_invalid", true)]);
         assert_eq!(codes(".x", json!({ "command": "pi" }), "b")[0].1, "name_invalid");
-        for name in ["my review", "審查", "-x"] {
+        for name in ["my review", "審查", "-x", "review:fast"] {
             assert!(codes(name, json!({ "command": "pi" }), "b").is_empty(), "hc runs {name}");
         }
+        // Saved on a Windows computer, the name must be a Windows file name too.
+        let here = |name: &str| check_for(name, &json!({ "command": "pi" }), "b", true).into_iter().map(|i| i.code).collect::<Vec<_>>();
+        for name in ["review:fast", "a?b", "trailing.", "trailing ", "CON", "nul.backup", "com1"] {
+            assert_eq!(here(name), ["name_windows"], "{name}");
+        }
+        for name in ["review", "審查", "my review", "console", "com10"] {
+            assert!(here(name).is_empty(), "{name}");
+        }
+        assert!(check_for("review:fast", &json!({ "command": "pi" }), "b", false).is_empty(), "elsewhere hc runs it");
         assert_eq!(codes("ok", json!({}), "b"), [("command".into(), "command_empty", true)]);
         assert_eq!(codes("ok", json!({ "command": "pi\nrm" }), "b"), [("command".into(), "multiline", true)]);
         assert_eq!(codes("ok", json!({ "command": "\"pi\"" }), "b"), [("command".into(), "quoted", false)]);

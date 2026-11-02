@@ -52,7 +52,7 @@ export function templatesDir(): string;
 /** Every template on a machine (null: this computer), read from its folder as hc reads it. */
 export function listTemplates(machine?: string | null): Promise<TemplateList>;
 /** What stops a template from saving (level error) or may not do what was meant (warning). */
-export function checkTemplate(name: string, fields: TemplateFields, body: string): TemplateIssue[];
+export function checkTemplate(name: string, fields: TemplateFields, body: string, machine?: string | null): TemplateIssue[];
 /** The file a template saves as: the fields, the header lines kept from the file (others), the body. */
 export function templateText(fields: TemplateFields, others: [string, string][], body: string): string;
 /** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | old_kept (renamed; the old file is still there) | io | remote, message}. */
@@ -385,7 +385,9 @@ pub fn host_module() -> HostModule {
             background(move || list_templates(machine))
         })
         .function("checkTemplate", |a| {
-            let issues = templates::check(a.string(0)?, &arg(a, 1), a.string(2).unwrap_or_default());
+            // Saved on this computer (no machine): its own file name rules too (Windows).
+            let check = if machine_arg(a, 3).is_none() { templates::check_here } else { templates::check };
+            let issues = check(a.string(0)?, &arg(a, 1), a.string(2).unwrap_or_default());
             Ok(to_host(&Value::Array(issues.iter().map(templates::Issue::to_json).collect())))
         })
         .function("templateText", |a| Ok(templates::render(&arg(a, 0), &others_arg(&arg(a, 1)), a.string(2).unwrap_or_default()).into()))
