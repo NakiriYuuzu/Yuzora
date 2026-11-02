@@ -269,8 +269,13 @@ export default class FilesSidebar extends View {
           if (this.searchMode === "name") {
             const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200 });
             if (seq !== this.searchSeq) return;
-            this.results = found.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
-            this.searchNote = found.length ? null : t("search.none");
+            this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
+            const notes = [
+              found.matches.length ? null : t("search.none"),
+              found.truncated ? t("search.partial", { count: "200,000" }) : null,
+              found.unfiltered ? t("search.unfiltered", { machine: here.on }) : null,
+            ].filter(Boolean);
+            this.searchNote = notes.length ? notes.join(" ") : null;
           } else {
             const found = await grep(here.root, query, { on: here.on, hidden: this.hidden, limit: 500 });
             if (seq !== this.searchSeq) return;
@@ -327,7 +332,11 @@ export default class FilesSidebar extends View {
         .child(action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }))
         .child(action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx)))
         .child(action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching))
-        .child(action("hidden", "eye", t("action.hidden"), (_e, cx) => { this.hidden = !this.hidden; localStorage.setItem("hidden", this.hidden ? "1" : "0"); this.version++; cx.notify(); }, this.hidden)))
+        .child(action("hidden", "eye", t("action.hidden"), (_e, cx) => {
+          this.hidden = !this.hidden; localStorage.setItem("hidden", this.hidden ? "1" : "0"); this.version++;
+          if (this.searching) this.search(cx);
+          cx.notify();
+        }, this.hidden)))
       .when(Boolean(this.edit), el => el.child(this.renderEdit(th)))
       .child(this.searching ? this.renderSearch(th) : this.renderTree(th, tk));
   }

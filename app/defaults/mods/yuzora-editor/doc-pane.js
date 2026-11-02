@@ -46,13 +46,14 @@ export class DocPane extends View {
     this.path = p.path ?? null;
     this.on = p.on ?? null;
     this.owner = `${this.kind()}-${Math.random().toString(36).slice(2, 10)}`;
-    this.view = this.kind() === "markdown" ? (localStorage.getItem("view") ?? "preview") : "source";
     this.doc = this.path ? openDocument(this.path, { on: this.on }) : null;
     this.state = this.doc ? documentState(this.doc) : null;
     this.wasDirty = false;
     this.until = (p.opened ?? 0) + OPEN_WINDOW;
     this.fresh = Date.now() < this.until;
     this.goto = p.line && this.fresh ? { line: p.line, column: p.column ?? 1 } : null;
+    // A line to go to is in the source (this pane only; the saved choice stays).
+    this.view = this.kind() === "markdown" && !this.goto ? (localStorage.getItem("view") ?? "preview") : "source";
     this.handle = cx.focus_handle();
     this.finding = false; this.replacing = false; this.caseSensitive = false;
     this.findInput = InputState.new({ placeholder: t("find.placeholder") });
@@ -275,7 +276,7 @@ export class DocPane extends View {
     if (s.tooLarge) return this.message(th, t("message.too_large"));
     if (this.view === "preview") {
       return div().flex_1().min_h(0).child(Markdown.new(`md-${this.owner}`, { doc: this.doc,
-        colors: { foreground: "#f4f4f5", body: "#c9c9cf", muted: th.muted, link: "#61afef", code: th.raised, border: th.border } }));
+        colors: { foreground: th.foreground, body: th.foreground, muted: th.muted, link: th.ansi4, code: th.raised, border: th.border } }));
     }
     return div().flex_1().min_h(0).child(Editor.new(`ed-${this.owner}`, { doc: this.doc, owner: this.owner, status: true, ...this.look(th) }));
   }

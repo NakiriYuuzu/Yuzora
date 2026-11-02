@@ -20,37 +20,56 @@ const RG_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A hit's line is cut to this many characters.
 const TEXT_CHARS: usize = 300;
 
-/// The files under `$1` (NUL-separated, relative): git's list in a work tree,
-/// else ripgrep's, else find's. `$2` is 1 to include hidden files.
+/// The files under `$1` (relative): git's list in a work tree, else
+/// ripgrep's, else find's. `$2` is 1 to include hidden files. Prints the
+/// tool's name, then NUL-terminated paths; git's are followed by an empty
+/// entry and the tracked files deleted from the work tree. find knows no
+/// ignore files.
 const LIST_SCRIPT: &str = r#"cd -- "$1" 2>/dev/null || { echo "cannot open $1" >&2; exit 3; }
 g() { git --no-optional-locks -c core.fsmonitor=false "$@"; }
 if command -v git >/dev/null 2>&1 && [ "$(g rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
-  g ls-files -co --exclude-standard -z; exit $?
+  printf 'git\0'
+  g ls-files -co --exclude-standard -z || exit $?
+  printf '\0'
+  g ls-files -d -z; exit $?
 fi
 if command -v rg >/dev/null 2>&1; then
+  printf 'rg\0'
   if [ "$2" = 1 ]; then exec rg --files --null --hidden -g '!.git'; fi
   exec rg --files --null -g '!.git'
 fi
+printf 'find\0'
 exec find . -type f -not -path '*/.git/*' -print0"#;
 
 // ---- the file list ----
 
+/// The files found under a folder.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileList {
+    /// Relative, `/`-separated, sorted.
+    pub files: Vec<String>,
+    /// There were more than the limit.
+    pub truncated: bool,
+    /// Ignore files were not applied: the machine has neither git nor ripgrep.
+    pub unfiltered: bool,
+}
+
 /// Files under `root` (relative, `/`-separated), honoring `.gitignore` and
-/// `.ignore`, never `.git`; hidden files only when `hidden`. At most `limit`;
-/// the flag says there were more.
+/// `.ignore` (see [`FileList::unfiltered`]), never `.git`; hidden files only
+/// when `hidden`. At most `limit`.
 pub fn list_files(
     root: &str,
     on: Option<&str>,
     hidden: bool,
     limit: usize,
-) -> Result<(Vec<String>, bool), String> {
+) -> Result<FileList, String> {
     match machine(on) {
         Some(m) => list_sh(root, Some(m), hidden, limit),
         None => list_local(root, hidden, limit),
     }
 }
 
-fn list_local(root: &str, hidden: bool, limit: usize) -> Result<(Vec<String>, bool), String> {
+fn list_local(root: &str, hidden: bool, limit: usize) -> Result<FileList, String> {
     let base = Path::new(root);
     if !base.is_dir() {
         return Err(format!("cannot read {root}: not a folder"));
@@ -75,7 +94,11 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<(Vec<String>, bo
             continue;
         }
         if files.len() >= limit {
-            return Ok((files, true));
+            return Ok(FileList {
+                files,
+                truncated: true,
+                unfiltered: false,
+            });
         }
         files.push(
             rel.components()
@@ -84,15 +107,13 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<(Vec<String>, bo
                 .join("/"),
         );
     }
-    Ok((files, false))
+    Ok(FileList {
+        files,
+        ..FileList::default()
+    })
 }
 
-fn list_sh(
-    root: &str,
-    on: Option<&str>,
-    hidden: bool,
-    limit: usize,
-) -> Result<(Vec<String>, bool), String> {
+fn list_sh(root: &str, on: Option<&str>, hidden: bool, limit: usize) -> Result<FileList, String> {
     let out = run_sh(
         on,
         LIST_SCRIPT,
@@ -102,7 +123,12 @@ fn list_sh(
     )?;
     // find and rg exit non-zero for an unreadable corner or an empty tree and
     // still print what they found.
-    if out.stdout.is_empty() && !matches!(out.code, 0 | 1) {
+    let listed = out
+        .stdout
+        .iter()
+        .position(|b| *b == 0)
+        .is_some_and(|tag| tag + 1 < out.stdout.len());
+    if !listed && !matches!(out.code, 0 | 1) {
         return Err(failure(&out, "listing the files"));
     }
     let capped = out.stdout.len() as u64 >= LIST_MAX_OUTPUT;
@@ -110,16 +136,22 @@ fn list_sh(
     if capped && let Some(nul) = bytes.iter().rposition(|b| *b == 0) {
         bytes = &bytes[..=nul];
     }
-    let (files, cut) = parse_file_list(bytes, hidden, limit);
-    Ok((files, cut || capped))
+    let mut list = parse_file_list(bytes, hidden, limit);
+    list.truncated |= capped;
+    Ok(list)
 }
 
-/// NUL-separated paths from git, rg or find: `./` dropped, `.git` and (unless
-/// `hidden`) dot-files left out, sorted, cut to `limit`.
-fn parse_file_list(out: &[u8], hidden: bool, limit: usize) -> (Vec<String>, bool) {
-    let mut files: Vec<String> = out
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
+/// What [`LIST_SCRIPT`] prints: the tool, then paths with `./` dropped,
+/// git's deleted files, `.git` and (unless `hidden`) dot-files left out;
+/// sorted, cut to `limit`.
+fn parse_file_list(out: &[u8], hidden: bool, limit: usize) -> FileList {
+    let mut entries = out.split(|b| *b == 0);
+    let tool = entries.next().unwrap_or_default();
+    let listed: Vec<&[u8]> = entries.by_ref().take_while(|p| !p.is_empty()).collect();
+    let gone: HashSet<&[u8]> = entries.filter(|p| !p.is_empty()).collect();
+    let mut files: Vec<String> = listed
+        .into_iter()
+        .filter(|p| !gone.contains(p))
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .map(|p| {
             p.strip_prefix("./")
@@ -133,7 +165,11 @@ fn parse_file_list(out: &[u8], hidden: bool, limit: usize) -> (Vec<String>, bool
     files.sort();
     let truncated = files.len() > limit;
     files.truncate(limit);
-    (files, truncated)
+    FileList {
+        files,
+        truncated,
+        unfiltered: tool == b"find",
+    }
 }
 
 // ---- fuzzy matching ----
@@ -856,10 +892,10 @@ mod tests {
     fn list_files_honors_ignore_files_and_skips_git() {
         let d = tree();
         let root = d.path().to_string_lossy().into_owned();
-        let (files, truncated) = list_files(&root, None, false, 100).unwrap();
-        assert_eq!(files, ["README.md", "src/a b.rs", "src/main.rs"]);
-        assert!(!truncated);
-        let (all, _) = list_files(&root, None, true, 100).unwrap();
+        let list = list_files(&root, None, false, 100).unwrap();
+        assert_eq!(list.files, ["README.md", "src/a b.rs", "src/main.rs"]);
+        assert!(!list.truncated && !list.unfiltered);
+        let all = list_files(&root, None, true, 100).unwrap().files;
         assert_eq!(
             all,
             [
@@ -871,14 +907,14 @@ mod tests {
                 "src/main.rs"
             ]
         );
-        let (cut, truncated) = list_files(&root, None, false, 2).unwrap();
-        assert_eq!((cut.len(), truncated), (2, true));
-        assert!(!list_files(&root, None, false, 3).unwrap().1);
+        let cut = list_files(&root, None, false, 2).unwrap();
+        assert_eq!((cut.files.len(), cut.truncated), (2, true));
+        assert!(!list_files(&root, None, false, 3).unwrap().truncated);
         assert!(list_files(&format!("{root}/nope"), None, false, 10).is_err());
         assert!(list_files(&format!("{root}/README.md"), None, false, 10).is_err());
         assert_eq!(
             list_files(&format!("{root}/empty"), None, false, 10).unwrap(),
-            (vec![], false)
+            FileList::default()
         );
     }
 
@@ -891,20 +927,25 @@ mod tests {
         std::os::unix::fs::symlink(d.path().join("real/f.txt"), d.path().join("link.txt")).unwrap();
         std::os::unix::fs::symlink(d.path().join("real"), d.path().join("dirlink")).unwrap();
         std::os::unix::fs::symlink(d.path().join("gone"), d.path().join("dangling")).unwrap();
-        let (files, _) = list_files(&d.path().to_string_lossy(), None, false, 10).unwrap();
+        let files = list_files(&d.path().to_string_lossy(), None, false, 10)
+            .unwrap()
+            .files;
         assert_eq!(files, ["link.txt", "real/f.txt"]);
     }
 
     #[test]
     fn file_lists_from_git_rg_and_find_are_normalized() {
         let out =
-            b"./src/a.rs\0b.rs\0.git/HEAD\0./.git/config\0.github/ci.yml\0src/.hidden/x\0\0z.rs\0";
+            b"rg\0./src/a.rs\0b.rs\0.git/HEAD\0./.git/config\0.github/ci.yml\0src/.hidden/x\0z.rs\0";
         assert_eq!(
             parse_file_list(out, false, 100),
-            (vec!["b.rs".into(), "src/a.rs".into(), "z.rs".into()], false)
+            FileList {
+                files: vec!["b.rs".into(), "src/a.rs".into(), "z.rs".into()],
+                ..FileList::default()
+            }
         );
         assert_eq!(
-            parse_file_list(out, true, 100).0,
+            parse_file_list(out, true, 100).files,
             [
                 ".github/ci.yml",
                 "b.rs",
@@ -913,15 +954,23 @@ mod tests {
                 "z.rs"
             ]
         );
+        let cut = parse_file_list(out, true, 2);
         assert_eq!(
-            parse_file_list(out, true, 2),
+            (cut.files, cut.truncated),
             (vec![".github/ci.yml".into(), "b.rs".into()], true)
         );
-        assert_eq!(parse_file_list(b"", true, 2), (vec![], false));
+        assert_eq!(parse_file_list(b"", true, 2), FileList::default());
         assert_eq!(
-            parse_file_list("\u{76ee}\u{9304}/\u{6a94}.rs\0".as_bytes(), false, 5).0,
+            parse_file_list("rg\0\u{76ee}\u{9304}/\u{6a94}.rs\0".as_bytes(), false, 5).files,
             ["\u{76ee}\u{9304}/\u{6a94}.rs"]
         );
+        // git: the tracked files deleted from the work tree follow an empty entry.
+        let git = b"git\0a.rs\0gone.rs\0b.rs\0\0gone.rs\0";
+        assert_eq!(parse_file_list(git, false, 10).files, ["a.rs", "b.rs"]);
+        assert_eq!(parse_file_list(b"git\0\0", false, 10), FileList::default());
+        // find applies no ignore file.
+        assert!(parse_file_list(b"find\0./a\0", false, 10).unfiltered);
+        assert!(!parse_file_list(b"git\0a\0\0", false, 10).unfiltered);
     }
 
     /// Runs the remote list script with a PATH of the named tools only.
@@ -957,9 +1006,10 @@ mod tests {
         if let Some(find) = tool("find") {
             let (out, code) = run_list_script(&[("find", &find)], d.path(), true);
             assert_eq!(code, 0);
-            let (files, _) = parse_file_list(&out, true, 100);
+            let list = parse_file_list(&out, true, 100);
+            assert!(list.unfiltered);
             assert_eq!(
-                files,
+                list.files,
                 [
                     ".config/app.toml",
                     ".env",
@@ -971,7 +1021,7 @@ mod tests {
                     "src/main.rs"
                 ]
             );
-            let (files, _) = parse_file_list(&out, false, 100);
+            let files = parse_file_list(&out, false, 100).files;
             assert!(files.iter().all(|f| !f.starts_with('.')));
         }
         // `echo` standing in for rg shows how it is called.
@@ -979,12 +1029,12 @@ mod tests {
             let (out, code) = run_list_script(&[("rg", &echo)], d.path(), false);
             assert_eq!(
                 (String::from_utf8_lossy(&out).trim_end(), code),
-                ("--files --null -g !.git", 0)
+                ("rg\0--files --null -g !.git", 0)
             );
             let (out, _) = run_list_script(&[("rg", &echo)], d.path(), true);
             assert_eq!(
                 String::from_utf8_lossy(&out).trim_end(),
-                "--files --null --hidden -g !.git"
+                "rg\0--files --null --hidden -g !.git"
             );
         }
         let (out, code) = run_list_script(&[], &d.path().join("nope"), false);
@@ -1008,11 +1058,22 @@ mod tests {
             .status()
             .unwrap();
         assert!(init.success());
+        // A tracked file deleted from the work tree is not listed.
+        std::fs::write(d.path().join("gone.rs"), "x").unwrap();
+        let add = Command::new(&git)
+            .args(["add", "--", "gone.rs"])
+            .current_dir(d.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(add.success());
+        std::fs::remove_file(d.path().join("gone.rs")).unwrap();
         let root = d.path().to_string_lossy().into_owned();
         // Untracked but not ignored files are listed; ignored ones are not.
-        let (files, truncated) = list_sh(&root, None, true, 100).unwrap();
+        let list = list_sh(&root, None, true, 100).unwrap();
         assert_eq!(
-            files,
+            list.files,
             [
                 ".config/app.toml",
                 ".env",
@@ -1022,11 +1083,14 @@ mod tests {
                 "src/main.rs"
             ]
         );
-        assert!(!truncated);
-        let (files, _) = list_sh(&root, None, false, 100).unwrap();
+        assert!(!list.truncated && !list.unfiltered);
+        let files = list_sh(&root, None, false, 100).unwrap().files;
         assert_eq!(files, ["README.md", "src/a b.rs", "src/main.rs"]);
-        let (cut, truncated) = list_sh(&root, None, false, 1).unwrap();
-        assert_eq!((cut, truncated), (vec!["README.md".to_owned()], true));
+        let cut = list_sh(&root, None, false, 1).unwrap();
+        assert_eq!(
+            (cut.files, cut.truncated),
+            (vec!["README.md".to_owned()], true)
+        );
         // Same answer as the local walk.
         assert_eq!(
             list_local(&root, false, 100).unwrap(),

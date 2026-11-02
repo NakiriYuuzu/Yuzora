@@ -179,21 +179,22 @@ pub fn new_code_editor(
     cx: &mut App,
 ) -> Entity<EditorState> {
     let language = options.lang.map(Lang::id).unwrap_or("");
-    let state = cx.new(|cx| {
+    // The text goes in as the default value, which needs no window: this runs
+    // while a component is drawn, and the parse waits for the editor's first render.
+    let text = options.text.to_owned();
+    cx.new(|cx| {
         let mut state = EditorState::new(window, cx)
             .language(language)
             .line_number(options.line_numbers)
             .folding(options.folding)
             .soft_wrap(options.soft_wrap)
-            .searchable(false);
+            .searchable(false)
+            .default_value(text);
         state.set_readonly(options.readonly, cx);
         state.set_editor_style(look.editor_style());
         state.set_highlighter_factory(highlight::highlighter_factory(), cx);
         state
-    });
-    let text = options.text.to_owned();
-    state.update(cx, |state, cx| state.set_value(text, window, cx));
-    state
+    })
 }
 
 /// The frame an editor is drawn in: fills its parent, takes the person's

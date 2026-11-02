@@ -590,7 +590,11 @@ impl DocView {
         }
         let rope = state.read(cx).text().clone();
         let text = rope.to_string();
-        let expected = if force { None } else { self.disk };
+        let expected = if force {
+            None
+        } else {
+            self.disk.map(|stamp| (stamp, self.disk_hash))
+        };
         let (path, eol, bom) = (self.key.path.clone(), self.facts.eol, self.facts.bom);
         self.saving = true;
         self.bump(cx);

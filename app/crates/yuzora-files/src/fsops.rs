@@ -88,12 +88,8 @@ printf '%s\n' "$s"
 [ "${s%% *}" -gt "$3" ] && exit 0
 head -c "$2" -- "$1""#;
 
-const CREATE_FILE_SCRIPT: &str = r#"if [ -e "$1" ] || [ -L "$1" ]; then echo "already exists" >&2; exit 17; fi
-set -C
-: > "$1""#;
-
-const RENAME_SCRIPT: &str = r#"if [ -e "$2" ] || [ -L "$2" ]; then echo "already exists" >&2; exit 17; fi
-mv -- "$1" "$2""#;
+/// Changes to files on another machine wait for SFTP (lane L4).
+const REMOTE_READ_ONLY: &str = "files on another machine are read-only in this version";
 
 /// One directory entry.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -563,8 +559,9 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
 // ---- write ----
 
 /// Saves `text` (LF) to a file on this machine, in `eol` and with a BOM when
-/// `bom`. With `expected`, a file whose stamp differs (or that is gone) is not
-/// touched: `Conflict` carries its current stamp. The write goes to a scratch
+/// `bom`. With `expected` (the stamp and [`content_hash`] last read), a file
+/// whose stamp differs, that is gone, or whose bytes changed under the same
+/// stamp (a coarse clock) is not touched: `Conflict` carries its current stamp. The write goes to a scratch
 /// file in the same directory that is fsynced and renamed over the target, so
 /// a failed save leaves the old content; mode (and owner) are kept. A symlink
 /// is written through. Another machine is the caller's to refuse
@@ -574,13 +571,17 @@ pub fn write_text(
     text: &str,
     eol: Eol,
     bom: bool,
-    expected: Option<Stamp>,
+    expected: Option<(Stamp, u64)>,
 ) -> Result<Stamp, WriteError> {
     let io_err = |e: io::Error| WriteError::Io(format!("cannot write {path}: {e}"));
     let target = resolve_link(Path::new(path)).map_err(io_err)?;
-    if let Some(want) = expected {
+    if let Some((want, hash)) = expected {
         let now = stat_local(&target).map_err(WriteError::Io)?;
         if now != Some(want) {
+            return Err(WriteError::Conflict(now));
+        }
+        // The same length as read: reading it again is bounded.
+        if content_hash(&std::fs::read(&target).map_err(io_err)?) != hash {
             return Err(WriteError::Conflict(now));
         }
     }
@@ -695,65 +696,38 @@ fn keep_owner(file: &std::fs::File, original: &std::fs::Metadata) -> bool {
 
 // ---- create, rename, remove ----
 
-/// A new empty file; an error when the path exists.
+/// A new empty file; an error when the path exists. This machine only.
 pub fn create_file(path: &str, on: Option<&str>) -> Result<(), String> {
-    match machine(on) {
-        Some(m) => {
-            let out = run_sh(Some(m), CREATE_FILE_SCRIPT, &[path], LIST_TIMEOUT, 4 << 10)?;
-            if out.code == 0 {
-                Ok(())
-            } else {
-                Err(failure(&out, "creating the file"))
-            }
-        }
-        None => std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map(drop)
-            .map_err(|e| format!("cannot create {path}: {e}")),
+    if machine(on).is_some() {
+        return Err(REMOTE_READ_ONLY.into());
     }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(drop)
+        .map_err(|e| format!("cannot create {path}: {e}"))
 }
 
-/// A new folder; an error when the path exists or its parent does not.
+/// A new folder; an error when the path exists or its parent does not. This
+/// machine only.
 pub fn create_dir(path: &str, on: Option<&str>) -> Result<(), String> {
-    match machine(on) {
-        Some(m) => mkdir_on(path, Some(m)),
-        None => std::fs::create_dir(path).map_err(|e| format!("cannot create {path}: {e}")),
+    if machine(on).is_some() {
+        return Err(REMOTE_READ_ONLY.into());
     }
+    std::fs::create_dir(path).map_err(|e| format!("cannot create {path}: {e}"))
 }
 
-fn mkdir_on(path: &str, on: Option<&str>) -> Result<(), String> {
-    let req = ExecRequest::new("mkdir", ["--", path])
-        .on(on)
-        .timeout(LIST_TIMEOUT)
-        .max_output(4 << 10);
-    let out = remote::run(&req).map_err(|e| e.to_string())?;
-    if out.code == 0 {
-        Ok(())
-    } else {
-        Err(failure(&out, "creating the folder"))
-    }
-}
-
-/// Moves `from` to `to`; an error when `to` exists (a change of case only is fine).
+/// Moves `from` to `to`; an error when `to` exists (a change of case only is
+/// fine). This machine only.
 pub fn rename(from: &str, to: &str, on: Option<&str>) -> Result<(), String> {
-    match machine(on) {
-        Some(m) => {
-            let out = run_sh(Some(m), RENAME_SCRIPT, &[from, to], LIST_TIMEOUT, 4 << 10)?;
-            if out.code == 0 {
-                Ok(())
-            } else {
-                Err(failure(&out, "renaming"))
-            }
-        }
-        None => {
-            if std::fs::symlink_metadata(to).is_ok() && !same_entry_other_case(from, to) {
-                return Err(format!("{to} already exists"));
-            }
-            std::fs::rename(from, to).map_err(|e| format!("cannot rename {from}: {e}"))
-        }
+    if machine(on).is_some() {
+        return Err(REMOTE_READ_ONLY.into());
     }
+    if std::fs::symlink_metadata(to).is_ok() && !same_entry_other_case(from, to) {
+        return Err(format!("{to} already exists"));
+    }
+    std::fs::rename(from, to).map_err(|e| format!("cannot rename {from}: {e}"))
 }
 
 /// `to` is `from` spelled with other letter case, on a file system that folds case.
@@ -1206,7 +1180,7 @@ mod tests {
             "one\ntwo\nthree\n",
             read.eol,
             read.bom,
-            Some(read.stamp),
+            Some((read.stamp, read.hash)),
         )
         .unwrap();
         assert_eq!(
@@ -1214,8 +1188,9 @@ mod tests {
             b"\xef\xbb\xbfone\r\ntwo\r\nthree\r\n"
         );
         assert_eq!(stat(&f, None).unwrap(), Some(stamp));
-        // The new stamp is what the next save expects.
-        write_text(&f, "x\n", Eol::Lf, false, Some(stamp)).unwrap();
+        // The new stamp (and the bytes written) are what the next save expects.
+        let written = content_hash(b"\xef\xbb\xbfone\r\ntwo\r\nthree\r\n");
+        write_text(&f, "x\n", Eol::Lf, false, Some((stamp, written))).unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"x\n");
     }
 
@@ -1223,18 +1198,36 @@ mod tests {
     fn write_text_refuses_to_overwrite_a_changed_file() {
         let d = tempfile::tempdir().unwrap();
         let f = put(&d, "f.txt", b"mine\n");
-        let stamp = stat(&f, None).unwrap().unwrap();
+        let read = (stat(&f, None).unwrap().unwrap(), content_hash(b"mine\n"));
         std::fs::write(&f, b"somebody else wrote more\n").unwrap();
         let now = stat(&f, None).unwrap();
         assert_eq!(
-            write_text(&f, "x", Eol::Lf, false, Some(stamp)),
+            write_text(&f, "x", Eol::Lf, false, Some(read)),
             Err(WriteError::Conflict(now))
         );
         assert_eq!(std::fs::read(&f).unwrap(), b"somebody else wrote more\n");
+        // Other bytes of the same length under the same stamp (a clock too
+        // coarse to tell): a conflict as well.
+        let same = put(&d, "same.txt", b"mine\n");
+        let before = std::fs::metadata(&same).unwrap().modified().unwrap();
+        let read = (stat(&same, None).unwrap().unwrap(), content_hash(b"mine\n"));
+        std::fs::write(&same, b"ours\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&same)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        assert_eq!(stat(&same, None).unwrap(), Some(read.0));
+        assert_eq!(
+            write_text(&same, "x", Eol::Lf, false, Some(read)),
+            Err(WriteError::Conflict(Some(read.0)))
+        );
+        assert_eq!(std::fs::read(&same).unwrap(), b"ours\n");
         // Gone, with a stamp to compare against: a conflict too.
         std::fs::remove_file(&f).unwrap();
         assert_eq!(
-            write_text(&f, "x", Eol::Lf, false, Some(stamp)),
+            write_text(&f, "x", Eol::Lf, false, Some(read)),
             Err(WriteError::Conflict(None))
         );
         assert!(!Path::new(&f).exists());
@@ -1346,29 +1339,22 @@ mod tests {
         assert_eq!(names(&entries), ["README.md"]);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn the_remote_create_and_rename_scripts_refuse_existing_targets() {
+    fn files_on_another_machine_are_not_changed() {
         let d = tempfile::tempdir().unwrap();
         let f = p(&d, "a b.txt");
-        let run =
-            |script: &str, args: &[&str]| run_sh(None, script, args, LIST_TIMEOUT, 4096).unwrap();
-        assert_eq!(run(CREATE_FILE_SCRIPT, &[&f]).code, 0);
-        assert!(Path::new(&f).exists());
-        assert_eq!(run(CREATE_FILE_SCRIPT, &[&f]).code, 17);
+        let refused = Err(REMOTE_READ_ONLY.to_owned());
+        assert_eq!(create_file(&f, Some("box")), refused);
+        assert_eq!(create_dir(&f, Some("box")), refused);
+        assert_eq!(rename(&f, &p(&d, "c.txt"), Some("box")), refused);
+        assert!(!Path::new(&f).exists());
+        // An empty machine name is this machine.
+        create_file(&f, Some("")).unwrap();
         assert_eq!(
             create_file(&f, Some("")),
             Err(format!("cannot create {f}: File exists (os error 17)"))
         );
-        let other = put(&d, "o", b"keep");
-        assert_eq!(run(RENAME_SCRIPT, &[&f, &other]).code, 17);
-        assert_eq!(std::fs::read(&other).unwrap(), b"keep");
-        assert_eq!(run(RENAME_SCRIPT, &[&f, &p(&d, "-moved")]).code, 0);
-        assert!(Path::new(&p(&d, "-moved")).exists());
-        let sub = p(&d, "sub");
-        mkdir_on(&sub, None).unwrap();
-        assert!(mkdir_on(&sub, None).is_err());
-        assert!(mkdir_on(&p(&d, "no/parent"), None).is_err());
+        assert!(create_dir(&p(&d, "no/parent"), None).is_err());
     }
 
     #[test]

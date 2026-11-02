@@ -74,6 +74,7 @@ export function listDir(path: string, options?: On & { limit?: number }): Promis
 /** git status for the repo `cwd` is in; null outside a repo. Writes nothing under .git. */
 export function gitStatus(cwd: string, options?: On): Promise<GitMarks | null>;
 export function stat(path: string, options?: On): Promise<{ len: number; mtime_ms: number } | null>;
+/** New file, new folder, rename: this machine only for now (a machine in `on` is refused). */
 export function createFile(path: string, options?: On): Promise<null>;
 export function createFolder(path: string, options?: On): Promise<null>;
 export function rename(from: string, to: string, options?: On): Promise<null>;
@@ -82,8 +83,10 @@ export function trash(path: string): Promise<null>;
 /** Shows it in Finder / the file manager / Explorer (this machine only). */
 export function reveal(path: string): null;
 export function copyText(text: string): null;
-/** Fuzzy file-name search under root (.gitignore honored); the listing is cached for 15 s. */
-export function findFiles(root: string, query: string, options?: On & { hidden?: boolean; limit?: number; fresh?: boolean }): Promise<{ path: string; score: number; indices: number[] }[]>;
+/** Fuzzy file-name search under root (.gitignore honored); the listing is cached for 15 s.
+ *  `truncated`: only the first 200,000 files were searched. `unfiltered`: the machine has
+ *  neither git nor ripgrep, so ignored files are included. */
+export function findFiles(root: string, query: string, options?: On & { hidden?: boolean; limit?: number; fresh?: boolean }): Promise<{ matches: { path: string; score: number; indices: number[] }[]; truncated: boolean; unfiltered: boolean }>;
 /** Content search: ripgrep where it is installed, else a built-in search on this machine; `available` is false on another machine without rg. */
 export function grep(root: string, query: string, options?: On & { regex?: boolean; caseSensitive?: boolean; hidden?: boolean; limit?: number }): Promise<{ available: boolean; hits: GrepHit[]; truncated: boolean; files: number }>;
 
@@ -210,7 +213,7 @@ fn with_doc<R>(
 }
 
 /// (root, machine, hidden) → when it was listed, and the files.
-type Listings = HashMap<(String, Option<String>, bool), (Instant, Arc<Vec<String>>)>;
+type Listings = HashMap<(String, Option<String>, bool), (Instant, Arc<search::FileList>)>;
 static LISTINGS: LazyLock<Mutex<Listings>> = LazyLock::new(Default::default);
 const LISTING_TTL: Duration = Duration::from_secs(15);
 const LISTING_LIMIT: usize = 200_000;
@@ -220,7 +223,7 @@ fn listing(
     on: Option<&str>,
     hidden: bool,
     fresh: bool,
-) -> Result<Arc<Vec<String>>, String> {
+) -> Result<Arc<search::FileList>, String> {
     let key = (root.to_owned(), on.map(str::to_owned), hidden);
     if !fresh
         && let Some((at, files)) = LISTINGS.lock().unwrap_or_else(|e| e.into_inner()).get(&key)
@@ -228,8 +231,7 @@ fn listing(
     {
         return Ok(files.clone());
     }
-    let (files, _) = search::list_files(root, on, hidden, LISTING_LIMIT)?;
-    let files = Arc::new(files);
+    let files = Arc::new(search::list_files(root, on, hidden, LISTING_LIMIT)?);
     let mut cache = LISTINGS.lock().unwrap_or_else(|e| e.into_inner());
     cache.retain(|_, (at, _)| at.elapsed() < LISTING_TTL);
     cache.insert(key, (Instant::now(), files.clone()));
@@ -363,8 +365,12 @@ pub fn host_module() -> HostModule {
             );
             Ok(job(
                 move || {
-                    let files = listing(&root, on.as_deref(), hidden, fresh)?;
-                    Ok(search::fuzzy_filter(&query, &files, limit))
+                    let list = listing(&root, on.as_deref(), hidden, fresh)?;
+                    Ok(serde_json::json!({
+                        "matches": search::fuzzy_filter(&query, &list.files, limit),
+                        "truncated": list.truncated,
+                        "unfiltered": list.unfiltered,
+                    }))
                 },
                 json,
             ))

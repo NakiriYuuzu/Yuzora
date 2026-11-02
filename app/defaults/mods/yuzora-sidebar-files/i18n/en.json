@@ -31,7 +31,9 @@
     "content": "Contents",
     "none": "No matches.",
     "no_rg": "Searching contents on another machine needs ripgrep (rg) there.",
-    "truncated": "Showing the first {count} matches."
+    "truncated": "Showing the first {count} matches.",
+    "partial": "Searched the first {count} files only.",
+    "unfiltered": "No git or ripgrep on {machine}: ignored files are included."
   },
   "menu": {
     "open": "Open",

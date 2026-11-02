@@ -7,18 +7,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Hsla, Image, ImageFormat, ImageSource, IntoElement,
-    ObjectFit, ParentElement as _, SharedString, Styled as _, StyledImage as _, Window, div, img,
-    px,
+    AnyElement, App, Context, ElementId, Hsla, Image, ImageFormat, ImageSource,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
 };
 use yuzora_core::HostValue;
-use yuzora_core::remote::ExecRequest;
 
 use crate::docs::blocking;
+use crate::fsops::{failure, machine, run_sh};
 use crate::highlight;
 
 /// Images above this are not shown.
 pub const MAX_IMAGE_BYTES: u64 = 32 << 20;
+
+/// Reads `$1` on another machine, up to `$2` bytes: a regular file only, as
+/// here (a FIFO would wait, a device never ends).
+const READ_SCRIPT: &str = r#"[ -e "$1" ] || { echo "no such file: $1" >&2; exit 4; }
+[ -f "$1" ] || exit 5
+exec head -c "$2" -- "$1""#;
 
 /// The format a file's extension names, if it is an image the viewer shows.
 pub fn format_of(path: &str) -> Option<ImageFormat> {
@@ -37,7 +43,7 @@ pub fn format_of(path: &str) -> Option<ImageFormat> {
 }
 
 fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
-    match on {
+    match machine(on) {
         None => {
             // Looked at before opening: a FIFO would wait, a device never ends.
             let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
@@ -56,31 +62,28 @@ fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
             }
             Ok(bytes)
         }
-        Some(machine) => {
-            let out = yuzora_core::remote::run(
-                &ExecRequest::new(
-                    "head",
-                    [
-                        "-c".to_owned(),
-                        (MAX_IMAGE_BYTES + 1).to_string(),
-                        "--".to_owned(),
-                        path.to_owned(),
-                    ],
-                )
-                .on(Some(machine))
-                .timeout(Duration::from_secs(30))
-                .max_output(MAX_IMAGE_BYTES + 1),
-            )
-            .map_err(|e| e.to_string())?;
-            if out.code != 0 {
-                return Err(out.stderr_text().trim().to_owned());
-            }
-            if out.stdout.len() as u64 > MAX_IMAGE_BYTES {
-                return Err("too_large".into());
-            }
-            Ok(out.stdout)
-        }
+        Some(m) => read_sh(path, Some(m)),
     }
+}
+
+fn read_sh(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
+    let upto = (MAX_IMAGE_BYTES + 1).to_string();
+    let out = run_sh(
+        on,
+        READ_SCRIPT,
+        &[path, &upto],
+        Duration::from_secs(30),
+        MAX_IMAGE_BYTES + 1,
+    )?;
+    match out.code {
+        0 => {}
+        5 => return Err("unsupported".into()),
+        _ => return Err(failure(&out, "reading the image")),
+    }
+    if out.stdout.len() as u64 > MAX_IMAGE_BYTES {
+        return Err("too_large".into());
+    }
+    Ok(out.stdout)
 }
 
 enum Loaded {
@@ -228,24 +231,48 @@ pub fn image_component(
                     muted,
                 )
             });
-            let picture = match look.fit {
-                Fit::Contain => picture
-                    .max_w_full()
-                    .max_h_full()
-                    .object_fit(ObjectFit::ScaleDown),
-                Fit::Actual => picture.object_fit(ObjectFit::None),
-            };
-            div()
-                .flex()
-                .size_full()
-                .min_h_0()
-                .items_center()
-                .justify_center()
-                .overflow_hidden()
-                .p(px(12.))
-                .when_some(look.checker, |el, c| el.bg(c))
-                .child(picture)
-                .into_any_element()
+            match look.fit {
+                Fit::Contain => div()
+                    .flex()
+                    .size_full()
+                    .min_h_0()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .p(px(12.))
+                    .when_some(look.checker, |el, c| el.bg(c))
+                    .child(
+                        picture
+                            .max_w_full()
+                            .max_h_full()
+                            .object_fit(ObjectFit::ScaleDown),
+                    )
+                    .into_any_element(),
+                // Its own size, centered while it fits, scrolled both ways when not.
+                Fit::Actual => div()
+                    .id(SharedString::from(format!(
+                        "yuzora-image-scroll-{}",
+                        args.id()
+                    )))
+                    .flex()
+                    .items_start()
+                    .size_full()
+                    .min_h_0()
+                    .overflow_scroll()
+                    .when_some(look.checker, |el, c| el.bg(c))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .min_w_full()
+                            .min_h_full()
+                            .items_center()
+                            .justify_center()
+                            .p(px(12.))
+                            .child(picture.flex_none()),
+                    )
+                    .into_any_element(),
+            }
         }
     }
 }
@@ -279,5 +306,26 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(read("/dev/zero", None).unwrap_err(), "unsupported");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_reads_take_regular_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a b.png");
+        std::fs::write(&p, [1u8, 2, 3]).unwrap();
+        // The script run here, as it runs on the other machine.
+        assert_eq!(read_sh(p.to_str().unwrap(), None).unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            read_sh(dir.path().to_str().unwrap(), None).unwrap_err(),
+            "unsupported"
+        );
+        assert_eq!(read_sh("/dev/zero", None).unwrap_err(), "unsupported");
+        let missing = dir.path().join("missing.png");
+        assert!(
+            read_sh(missing.to_str().unwrap(), None)
+                .unwrap_err()
+                .starts_with("no such file")
+        );
     }
 }

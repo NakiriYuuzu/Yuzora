@@ -31,7 +31,9 @@
     "content": "內容",
     "none": "沒有符合的結果。",
     "no_rg": "在其他機器上搜尋內容，需要那台機器安裝 ripgrep（rg）。",
-    "truncated": "只顯示前 {count} 筆結果。"
+    "truncated": "只顯示前 {count} 筆結果。",
+    "partial": "只搜尋了前 {count} 個檔案。",
+    "unfiltered": "{machine} 沒有 git 和 ripgrep：結果包含被忽略的檔案。"
   },
   "menu": {
     "open": "開啟",

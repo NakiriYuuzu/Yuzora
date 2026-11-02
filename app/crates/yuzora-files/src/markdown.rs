@@ -3,13 +3,16 @@
 //! the document, so it follows every keystroke in whichever editor has it.
 //!
 //! Images: relative paths load from the file's folder (local files only),
-//! and only regular files up to the image pane's size limit. Network, UNC
+//! and only regular files up to the image pane's size limit, checked on a
+//! worker (an image shows once its check is back). Network, UNC
 //! (`//host/share`), inline (`data:`) images and those of a file on another
 //! machine are not fetched. Links: only http,
 //! https and mailto open, in the system's browser or mail app.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageSource, IntoElement,
@@ -115,6 +118,51 @@ fn loadable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= crate::image::MAX_IMAGE_BYTES)
 }
 
+/// A path's answer is looked at again after this long.
+const RECHECK: Duration = Duration::from_secs(10);
+
+/// Which of a preview's images may be shown. Drawing only reads it; the
+/// files are looked at on a worker after the frame.
+#[derive(Default)]
+struct ImageChecks {
+    /// Whether each path is [`loadable`], and when that was found.
+    known: HashMap<PathBuf, (bool, Instant)>,
+    /// Paths drawn without an answer, or with an old one.
+    wanted: HashSet<PathBuf>,
+    /// A check is queued or running.
+    busy: bool,
+}
+
+impl ImageChecks {
+    /// The answer for `path` so far (not shown while unknown); asks for a
+    /// check when there is none or it is old.
+    fn answer(&mut self, path: &Path) -> bool {
+        match self.known.get(path) {
+            Some(&(ok, at)) => {
+                if at.elapsed() > RECHECK {
+                    self.wanted.insert(path.to_owned());
+                }
+                ok
+            }
+            None => {
+                self.wanted.insert(path.to_owned());
+                false
+            }
+        }
+    }
+
+    /// Records answers; true when one changed what is shown.
+    fn record(&mut self, answers: Vec<(PathBuf, bool)>) -> bool {
+        let now = Instant::now();
+        let mut changed = false;
+        for (path, ok) in answers {
+            let before = self.known.insert(path, (ok, now)).map(|(was, _)| was);
+            changed |= before != Some(ok);
+        }
+        changed
+    }
+}
+
 /// One preview pane's view.
 pub struct MarkdownView {
     doc: Entity<DocView>,
@@ -127,6 +175,7 @@ pub struct MarkdownView {
     /// The text shown and the document revision it is from.
     text: SharedString,
     rev: u64,
+    images: Arc<Mutex<ImageChecks>>,
     _watch: Subscription,
 }
 
@@ -144,8 +193,55 @@ impl MarkdownView {
             highlighter: highlight::code_block_highlighter(Arc::new(SyntaxPalette::one_dark())),
             text: SharedString::default(),
             rev: u64::MAX,
+            images: Arc::default(),
             _watch: watch,
         }
+    }
+
+    /// After this frame (whose layout asks for the images), looks at the
+    /// files it had no answer for, then redraws if one may now be shown.
+    fn check_images(&self, cx: &mut Context<Self>) {
+        let images = self.images.clone();
+        {
+            let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
+            if self.remote || checks.busy {
+                return;
+            }
+            checks.busy = true;
+        }
+        cx.spawn(async move |this, cx| {
+            let mut changed = false;
+            // Frames drawn meanwhile may ask for more.
+            loop {
+                let wanted: Vec<PathBuf> = {
+                    let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
+                    if checks.wanted.is_empty() {
+                        checks.busy = false;
+                        break;
+                    }
+                    checks.wanted.drain().collect()
+                };
+                let answers = docs::blocking(move || {
+                    wanted
+                        .into_iter()
+                        .map(|path| {
+                            let ok = loadable(&path);
+                            (path, ok)
+                        })
+                        .collect()
+                })
+                .await
+                .unwrap_or_default();
+                changed |= images
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .record(answers);
+            }
+            if changed {
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
     }
 
     /// Redraws when the text changed, not on every cursor blink of the editor.
@@ -218,13 +314,23 @@ impl Render for MarkdownView {
         let text = self.text.clone();
         let base = self.base.clone();
         let remote = self.remote;
+        let images = self.images.clone();
+        self.check_images(cx);
         div().size_full().min_h_0().px(px(18.)).py(px(14.)).child(
             TextView::markdown(ElementId::Name(self.id.clone()), text)
                 .style(self.style(cx))
                 .shared_code_block_highlighter(self.highlighter.clone())
                 .image_source(move |uri: &SharedUri| {
                     match image_path(uri.as_ref(), base.as_deref()) {
-                        Some(path) if !remote && loadable(&path) => ImageSource::from(path),
+                        Some(path)
+                            if !remote
+                                && images
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .answer(&path) =>
+                        {
+                            ImageSource::from(path)
+                        }
                         _ => missing_image(),
                     }
                 })
@@ -269,6 +375,7 @@ pub fn markdown_component(
             v.remote = doc.read(cx).key.on.is_some();
             v.doc = doc;
             v.rev = u64::MAX;
+            v.images = Arc::default();
             cx.notify();
         }
         if v.colors != colors {
@@ -325,6 +432,28 @@ mod tests {
             std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
             assert!(!loadable(&link));
         }
+    }
+
+    #[test]
+    fn image_answers_wait_for_a_check_and_are_looked_at_again() {
+        let mut checks = ImageChecks::default();
+        let (a, b) = (Path::new("/r/a.png"), Path::new("/r/b.png"));
+        assert!(!checks.answer(a));
+        assert!(!checks.answer(b));
+        assert_eq!(checks.wanted.len(), 2);
+        checks.wanted.clear();
+        assert!(checks.record(vec![(a.to_owned(), true), (b.to_owned(), false)]));
+        assert!(checks.answer(a));
+        assert!(!checks.answer(b));
+        assert!(checks.wanted.is_empty());
+        // The same answers again change nothing shown.
+        assert!(!checks.record(vec![(a.to_owned(), true), (b.to_owned(), false)]));
+        // An old answer is still used while it is checked again.
+        checks
+            .known
+            .insert(a.to_owned(), (true, Instant::now() - RECHECK * 2));
+        assert!(checks.answer(a));
+        assert!(checks.wanted.contains(a));
     }
 
     #[test]

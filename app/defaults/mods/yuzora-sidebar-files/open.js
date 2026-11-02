@@ -29,6 +29,10 @@ export const fileColor = name => {
 };
 
 const MOD = { image: "yuzora-files-image", markdown: "yuzora-markdown", text: "yuzora-editor" };
+// Image panes opened from here, by file: an image has no document to note its pane.
+// An image pane keeps its file, so a live pane of that mod still shows it.
+const imagePanes = new Map();
+const imageKey = (path, on) => `${on ?? ""}\0${path}`;
 
 /**
  * Opens a file: focuses the pane already showing it, else splits the focused
@@ -36,6 +40,11 @@ const MOD = { image: "yuzora-files-image", markdown: "yuzora-markdown", text: "y
  */
 export function openFile(path, on, at = {}) {
   const kind = kindOf(path);
+  if (kind === "image") {
+    const shown = imagePanes.get(imageKey(path, on));
+    if (shown && panes().some(p => p.pane === shown && p.mod === MOD.image)) { run("pane.focus", { pane: shown }); return; }
+    imagePanes.delete(imageKey(path, on));
+  }
   const open = kind === "image" ? null : documentFor(path, { on });
   if (open?.pane && panes().some(p => p.pane === open.pane)) {
     run("pane.focus", { pane: open.pane });
@@ -48,4 +57,9 @@ export function openFile(path, on, at = {}) {
   const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
   if (pane) run("pane.split", { direction: "right", pane: pane.pane, mod: MOD[kind], props });
   else run("tab.new", { name: base(path), mod: MOD[kind], props });
+  // The new pane has focus now.
+  if (kind === "image") {
+    const opened = focused()?.pane;
+    if (opened && opened !== pane?.pane && panes().some(p => p.pane === opened && p.mod === MOD.image)) imagePanes.set(imageKey(path, on), opened);
+  }
 }
