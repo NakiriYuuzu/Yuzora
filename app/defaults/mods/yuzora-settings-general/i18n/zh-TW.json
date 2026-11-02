@@ -1,0 +1,52 @@
+{
+  "page": {
+    "title": "一般",
+    "about": "語言、外觀，以及 Yuzora 開啟時要做的事。"
+  },
+  "language": {
+    "heading": "語言",
+    "title": "顯示語言",
+    "about": "目前顯示：{current}。「跟隨系統」依電腦的語言決定，任何中文語系都顯示繁體中文。",
+    "system": "跟隨系統",
+    "names": { "en": "English", "zh-TW": "繁體中文" }
+  },
+  "look": {
+    "heading": "外觀",
+    "about": "套用到目前的版面：每個版面各自記住淺色與深色主題。",
+    "appearance": "明暗",
+    "appearance_about": "固定淺色或深色，或跟著系統目前的設定。",
+    "system": "跟隨系統",
+    "light": "淺色",
+    "dark": "深色",
+    "theme_dark": "深色主題",
+    "theme_light": "淺色主題",
+    "ui_font": "介面字型",
+    "font": "終端機字型",
+    "font_size": "終端機字級",
+    "layout_font": "這個版面有自己的設定；你的選擇會用在其他版面。",
+    "default_font": "預設（{font}）",
+    "zoom": "縮放",
+    "zoom_about": "全部一起縮放：終端機、面板、文字。",
+    "reset": "重設",
+    "search": "輸入以搜尋",
+    "none": "沒有符合的項目。"
+  },
+  "startup": {
+    "heading": "Yuzora 開啟時",
+    "sidebar": "側欄",
+    "sidebar_about": "一開始顯示的側欄模式。",
+    "modes": {
+      "last": "上次的模式",
+      "workspace": "工作區",
+      "files": "檔案",
+      "git": "Git",
+      "database": "資料庫",
+      "ssh": "SSH"
+    }
+  },
+  "security": {
+    "heading": "終端機剪貼簿",
+    "clipboard": "允許程式寫入剪貼簿",
+    "clipboard_about": "終端機裡的程式（包括遠端）可以用 OSC 52 把文字放進剪貼簿。關閉後只有你自己複製的內容會進剪貼簿。讀取剪貼簿一律不允許。"
+  }
+}
