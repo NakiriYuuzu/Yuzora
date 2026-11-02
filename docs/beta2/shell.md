@@ -1,0 +1,117 @@
+# L1 外殼＋工作區
+
+lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列、pane 標頭與外框、狀態列、「＋ 新增 pane」選單（混合分割），以及 `yuzora-dark` theme、tokens 與上游畫面的品牌字樣。設計依據是設計稿 p1–p6，特別是 p6 的工作區模式。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
+
+## 範圍與檔案
+
+| 路徑 | 內容 |
+| --- | --- |
+| `app/crates/yuzora-shell/` | `yuzora:shell`：工作區樹模型、Space 徽章色、git 摘要 |
+| `app/src/yuzora/shell.rs` | app 端 glue：pane 外框的 `blocked` 邊框 |
+| `app/defaults/mods/yuzora-sidebar-workspace/` | 側欄工作區模式；`status/*.svg` 是 5 種 agent 狀態的形狀，其他 L1 mod 也引用 |
+| `app/defaults/mods/yuzora-modebar/` | 模式列：切換 5 個模式、徽章、設定齒輪 |
+| `app/defaults/mods/yuzora-shell-tabs/` | tab 列與「＋ 新增 pane ▾」選單 |
+| `app/defaults/mods/yuzora-shell-pane/` | pane 標頭 |
+| `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
+| `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列（L0 留下，未改） |
+| `app/defaults/layouts/yuzora.json` | 預設 layout：改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型 |
+| `app/defaults/themes/yuzora-dark.json`、`app/defaults/yuzora/tokens.json` | theme 與 tokens |
+| `app/defaults/frame/{welcome,whatsnew,feedback}/` | 上游畫面，只改品牌字樣（見「上游改動」） |
+
+## `yuzora:shell`
+
+完整的 TypeScript 宣告在 app home 的 `yuzora.d.ts`（來源 `crates/yuzora-shell/src/lib.rs` 的 `DECLARATIONS`）。
+
+| 函式 | 用途 |
+| --- | --- |
+| `workspace({spaces, panes, agents, machines, hosts, scope, folded})` | 側欄的整個模型：machine → Space → worktree → agent 的列、需要注意清單（blocked 優先，再來是 done，各自新的在前）、scope chips（每台機器的 LED 與數量）、Agents 分頁的扁平清單（最急的在前，其餘照 Herdr 順序），以及給 `setAgentOrder` 的順序。純函式，有單元測試 |
+| `spaceBadge(id, name)` | Space 徽章：名稱第一個字母或數字（大寫）＋顏色。顏色取自 `tokens().space_badges`，第一次看到的 Space 拿目前最少用的顏色，存在 Yuzora `settings.json` 的 `shell.space_colors`，重啟後不變，使用者也可以手改 |
+| `agentBrand(app, key)` | agent 品牌（`claude`／`codex`／`pi`／`gemini`），決定徽章色 |
+| `gitStatus(cwd, {on})` | 一次 `git status --porcelain=v2 --branch`（本機或 `hc exec --on`，10 秒上限）：branch、upstream、ahead、behind、changed、conflicted；不在 repo 時回傳 null。不加鎖、不用 fsmonitor，不會在 `.git` 寫東西 |
+
+worktree 的分組依 agent 所在 pane 的 branch；不在 git 裡的 agent 以資料夾名稱分組。
+
+**其他 lane 可用**：`spaceBadge` 讓各 lane 的側欄標頭、pane 與 L1 畫出同樣的 Space 徽章（例如 L5 檔案模式、L2 Git 模式的「Y」方塊）。
+
+## 共享狀態
+
+L1 寫的 key：
+
+| key | 內容 |
+| --- | --- |
+| `yuzora.badge.workspace` | 等待回覆（blocked）的 agent 數，全部機器；0 時為 null |
+| `yuzora.shell.agents` | 各機器 `knownAgents()` 的上次結果（新增 pane 選單先顯示，再背景更新） |
+| `yuzora.shell.split` | 新增 pane 選單放在 `right` 或 `down` |
+
+L1 讀的 key：
+
+- 模式列：`yuzora.badge.<workspace|files|git|database|ssh>`，number 或 null；超過 99 顯示 `99+`。workspace 用琥珀色，其餘用藍色。
+- 狀態列：`yuzora.status.<lane>`（`{text, tone?}`，tone 為 `muted`、`working`、`blocked`、`done`、`accent`），依序讀 `shell`、`git`、`db`、`database`、`ssh`、`files`、`settings`、`release`。lane 名稱若有不同，請在整合時告知 L1 補進 `LANES`（`yuzora-statusbar/main.js`）。
+
+## 設計決策
+
+- **tab 列列出所有 Space 的 tab**：設計稿 p1 的 tab 列同時有不同 Space 的 tab（以徽章區分），所以 tab 列依 Space 順序列出每個 Space 的 tab，Space 之間留一點間距；點別的 Space 的 tab 會一併切換 Space（`tab.select` 本來就如此）。一個 tab 仍只屬於一個 Space，不做跨 Space 的組合 tab。已收起（settled）的 tab 不顯示，除非正在看它。
+- **「＋」與「＋ 新增 pane ▾」**：「＋」開上游的 `new-menu`（新 tab：終端機、agent、新 Space、worktree）。「新增 pane」在目前的 tab 內混合分割：工具 pane（`yuzora:core` 的 `panes()`）用 `pane.split {direction, pane, mod, props}`、終端機用 `pane.split {direction, pane}`、agent 用 `terminal.open {argv, place}`；位置（右側／下方）在選單頂端切換。沒有 focus 的 pane（還沒有 Space，或 focus 在 layout 的終端機 block）時改開新 tab。
+- **blocked 外框**：上游的 pane frame 只有 `border` 與 `focus`。L1 在 `PaneFrame` 加了 `blocked`（`{width, color}`），agent 需要回覆時優先使用（即使該 pane 有 focus，因為那裡需要人）。標頭底色 `#1d1a14` 由 `yuzora-shell-pane` 自己畫。工具 pane 沒有 agent，不會變色。
+- **狀態形狀**：每種狀態同時用顏色與形狀表示（工作中綠點、需要回覆琥珀三角、完成未查看藍菱形、閒置空心圓、未知虛線圓）。GPUI 沒有 CSS 旋轉與三角形 border，所以 5 種形狀做成 SVG（`yuzora-sidebar-workspace/status/`），以 tokens 的 `status.<x>.mark` 上色。
+- **設定齒輪**：L6 的設定框架合併前，先開上游的 `app.settings`。
+- **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。
+- **字型**：見下節。
+
+## 字型
+
+設計稿用 Inter＋Noto Sans TC。授權與打包方式已確認：
+
+- Inter 與 Noto Sans TC 都是 SIL Open Font License 1.1，可以隨 app 散布，需附授權文字。
+- herdr-app 會在啟動時載入 mod 的 `fonts/` 或 app home `fonts/` 下的 `.ttf`／`.otf`（Herdr 98 的字型就是這樣帶的）；`build.rs` 會把 `defaults/` 打包進執行檔。
+- 這台機器與 repo 都沒有這兩套字型，取得需要從外部下載；Noto Sans TC 可變字型約 12 MB，打包會讓執行檔與 repo 明顯變大。
+
+所以 beta.2 先**退回系統字型**：`yuzora.json` 的 `ui_font` 設為 `.SystemUIFont`（GPUI 的系統 UI 字型：macOS 為 SF Pro，中文由系統字型 fallback 到蘋方；Windows 為 Segoe UI；Linux 為系統預設 sans）。終端機字型不變（JetBrains Mono）。要改用 Inter 時：把 `InterVariable.ttf` 與 OFL 授權放進 `defaults/mods/yuzora-brand/fonts/`，`ui_font` 改為 `Inter`，並在 `THIRD-PARTY-NOTICES` 補上授權（列在待辦）。
+
+## 上游改動
+
+全部以 `// yuzora(L1):` 註記：
+
+| 檔案 | 改動 |
+| --- | --- |
+| `app/src/layout.rs` | `PaneFrame` 新增 `blocked: Option<Line>` 欄位 |
+| `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框 |
+| `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
+| `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora |
+| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 路徑改為 `~/.config/yuzora` |
+| `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
+| `app/defaults/frame/feedback/main.js` | 送出後的感謝文字 |
+| `app/defaults/frame/welcome/yuzora.png` | 新檔：Yuzora 圖示（160px，由 `assets/icons/yuzora.png` 縮圖） |
+
+保留不改：welcome 的「從 Herdr TUI 搬設定」段落（指的是 Herdr TUI）、`Herdr 98`（layout 名稱）、`herdr-core`。settings frame 歸 L6。
+
+## 驗證
+
+```bash
+cd app
+cargo test --locked -p yuzora-shell        # 樹模型、徽章色、git 解析、HostModule 宣告
+cargo test --locked --bin herdr-app yuzora # blocked 邊框、layout 引用的 mod 都有出貨
+scripts/yuzora/check-mods
+```
+
+實機以 lanes.md 的隔離方式執行（暫存 `YUZORA_APP_HOME`、`HC_SESSION`），用 OSC 7501 假 agent 造出各種狀態：
+
+```bash
+printf '\033]7501;state=blocked:app=codex\033\\'; exec sleep 100000
+```
+
+工具 pane 用一個只放在測試 app home、不出貨的示範 mod（`mod.json` 宣告 `"yuzora": {"pane": …}`）。截圖在 `docs/beta2/evidence/l1-*.png`。
+
+## 待辦
+
+- 隨 app 打包 Inter（與 Noto Sans TC 的取捨），見「字型」。
+- light theme（`yuzora-light`）。
+- 設計稿品牌列的搜尋（⌘K）與第二顆按鈕：`yuzora-brand` 尚未加入。
+- pane 標頭的 `repo` 目前是 pane 目前資料夾的名稱；在 repo 子資料夾時不是 repo 名稱。
+- 設計稿 tab 列右側兩顆圖示按鈕的用途未定，暫時做成「在右側／下方開終端機」。
+
+## 後續整合
+
+- **L6**：設定框架合併後，模式列齒輪改開 Yuzora 的設定（`yuzora-modebar/main.js` 的 `app.settings`）。`shell.space_colors` 可以出現在外觀設定頁。
+- **L2–L5**：側欄模式的標頭可用 `spaceBadge()` 畫 Space 徽章；徽章數與狀態列文字照「共享狀態」的 key 寫入。工具 pane 在 `mod.json` 宣告 `"yuzora": {"pane": …}` 就會出現在「＋ 新增 pane」選單。
+- **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。
