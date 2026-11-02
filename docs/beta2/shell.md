@@ -68,7 +68,9 @@ L1 讀的 key：
 - **鍵盤與腳本入口**：`yuzora-shell-tabs.new-pane` 開新增 pane 選單（沒有滑鼠位置可對齊，所以置中顯示；點按鈕時則開在游標下）；`yuzora-sidebar-workspace.spaces`／`agents` 切換分頁，`add`／`tools` 開對應選單。可綁進 `keys.json`（`"alt-n": "yuzora-shell-tabs:new-pane"`），也可用 `herdr-app do yuzora-shell-tabs.new-pane`。
 - **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。放開在其他地方或拖出側欄就取消。
 - **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動還沒列出）或離線（LED 熄滅）時先顯示全部，機器回來後自動回到該機器；連線中（LED 琥珀）時維持原 scope。
-- **新增 pane 選單的高度**：依工具 pane 與 agent 數量（上次 `knownAgents()` 的快取）決定，最高 520px；超過時位置切換列固定、下方清單捲動。
+- **新增 pane 選單的高度**：依工具 pane 與 agent 數量（上次 `knownAgents()` 的快取）決定，最高 520px；超過時位置切換列固定、下方清單捲動。還沒有 Space 時工具 pane 停用並註明「需要先有 Space」（`tab.new` 可以替終端機或 agent 順便建立 Space，mod 不行）。
+- **側欄的＋選單**依列數決定高度（最高 360px，超過時捲動）；「需要注意」最多 5 列高，更多時在框內捲動，下方的樹不會被擠出畫面。
+- **狀態列**：各 lane 的狀態文字共用中間剩下的寬度，太長就截短（再不夠就裁掉），右側的 HERDR 版本與指令面板快捷鍵一定看得到。
 - **Space 徽章色放 shared state**：不寫 Yuzora `settings.json`，所以測試與 render 不會碰 app home 以外的檔案，也不會蓋掉別的設定；L6 若要在外觀頁讓使用者改色，改寫 `yuzora.space.colors` 即可。
 - **字型**：見下節。
 
@@ -92,7 +94,7 @@ L1 讀的 key：
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
 | `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora |
-| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 路徑改為 `~/.config/yuzora` |
+| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確） |
 | `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
 | `app/defaults/frame/feedback/main.js` | 送出後的感謝文字 |
 | `app/defaults/frame/welcome/yuzora.png` | 新檔：Yuzora 圖示（160px，由 `assets/icons/yuzora.png` 縮圖） |
@@ -144,4 +146,5 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 
 - **L6**：設定框架合併後，模式列齒輪改開 Yuzora 的設定（`yuzora-modebar/main.js` 的 `app.settings`）。外觀設定頁可編輯 `yuzora.space.colors`（Space 徽章色）。
 - **L2–L5**：側欄模式的標頭可用 `spaceBadges()` 畫 Space 徽章（用法見上）；徽章數與狀態列文字照「共享狀態」的 key 寫入。工具 pane 在 `mod.json` 宣告 `"yuzora": {"pane": …}` 就會出現在「＋ 新增 pane」選單。
+- **L8**：狀態列最右端（指令面板快捷鍵右邊）保留給 L8 的 `yuzora-perf`，由 L8 把 layout 的 `status` 節點改成 row。L1 維持 `status` 的 id 與 26px 高度，不在快捷鍵右邊加東西；`yuzora-statusbar` 根元素的背景（`theme().chrome`）或上緣分隔線（1px，`theme().divider ?? theme().border`）若要改，要在 PR 註明讓 L8 對齊。
 - **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。

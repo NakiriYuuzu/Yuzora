@@ -7,8 +7,8 @@ import { spaces, run, theme, props, closeOverlay, setShared, shared, hc, appHome
 const I = (name) => `frame/welcome/${name}.svg`;
 const W = (name) => `mods/workspace-chrome/${name}.svg`;
 const PAGES = 4;
-// yuzora(L1): Yuzora's home and name.
-const ASK = "Read ~/.config/yuzora/AGENTS.md, then tell me what you can change in Yuzora.";
+// yuzora(L1): Yuzora's name, and its home wherever YUZORA_APP_HOME / XDG_CONFIG_HOME put it.
+const ask = () => `Read ${appHome()}/AGENTS.md, then tell me what you can change in Yuzora.`;
 const MIGRATE = "Read `herdr-app --skill`, then migrate my keybinds and settings from ~/.config/herdr/config.toml";
 const APPEARANCES = [
   [null, "System"],
@@ -438,7 +438,7 @@ export default class Welcome extends View {
         ),
       )
       .child(this.title(t, "Make it yours", "Every part of this window is a layout or a mod: plain files your agent can change or add to. Give it this line to start:"))
-      .child(this.copyLine(t, ASK))
+      .child(this.copyLine(t, ask())) // yuzora(L1): the app home's AGENTS.md
       .child(this.para(t, "Then ask for anything: \u201cmove the sidebar to the right\u201d, \u201ca panel with my pull requests\u201d."))
       .child(
         v_flex()

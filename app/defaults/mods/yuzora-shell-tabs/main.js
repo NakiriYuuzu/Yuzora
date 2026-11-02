@@ -126,8 +126,9 @@ export default class Tabs extends View {
         .child(div().flex_1().child(t("menu.where"))).child(pill("right", "right")).child(pill("down", "down")))
       .child(v_flex().id("pane-menu-list").flex_1().min_h(0).overflow_y_scrollbar()
         .child(label(t("menu.tools")))
-        .children(tools.map((p) => this.menuRow(th, `tool-${p.mod}`, icon(p.icon, true, th.muted), p.label,
-          () => open({ mod: p.mod, props: p.props ?? {} }))))
+        // A tool pane needs a Space to go in (tab.new can start one for a terminal, not for a mod).
+      .children(tools.map((p) => this.menuRow(th, `tool-${p.mod}`, icon(p.icon, true, th.muted), p.label,
+          () => open({ mod: p.mod, props: p.props ?? {} }), at.split || space ? "" : t("menu.needs_space"), Boolean(at.split || space))))
         .when(tools.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t("menu.no_tools"))))
         .child(div().h(1).mx(4).my(5).bg(th.border))
         .child(this.menuRow(th, "terminal", icon("icons/shell.svg", true, th.muted), t("menu.terminal"), () => open({})))
