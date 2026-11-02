@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Value, json};
 
 use crate::diff::{self, Change};
-use crate::diffview::blob;
+use crate::diffview::{blob, worktree, write_index};
 use crate::exec::{Git, GitError, GitResult};
 use crate::lru::Lru;
 use crate::repo::Repo;
@@ -151,6 +151,25 @@ pub struct ConflictSession {
     /// As displayed: theirs.
     pub theirs: Option<Vec<u8>>,
     pub chunks: Vec<Chunk>,
+    /// The conflict's index entries and work tree file when this was read:
+    /// resolving checks them.
+    stages: String,
+    file: Option<Vec<u8>>,
+}
+
+fn stages(repo: &Repo, path: &str) -> GitResult<String> {
+    repo.run(Git::read(["ls-files", "-s", "-z", "--", path]))?.text()
+}
+
+/// Whether the conflicted entries are links: all of them, none, or a mix
+/// (`None`) that only taking a whole side can settle.
+fn links(stages: &str) -> Option<bool> {
+    let modes: Vec<bool> = stages.split('\0').filter_map(|e| e.split(' ').next()).filter(|m| !m.is_empty()).map(|m| m == "120000").collect();
+    match (modes.iter().any(|&l| l), modes.iter().all(|&l| l)) {
+        (false, _) => Some(false),
+        (true, true) => Some(true),
+        (true, false) => None,
+    }
 }
 
 impl ConflictSession {
@@ -166,8 +185,9 @@ impl ConflictSession {
         let (lb, lo, lt) = (diff::lines(base.as_deref().unwrap_or(empty)), diff::lines(ours.as_deref().unwrap_or(empty)), diff::lines(theirs.as_deref().unwrap_or(empty)));
         let [nb, no, nt] = number([&lb, &lo, &lt]);
         let chunks = merge3(&nb, &no, &nt);
+        let (stages, file) = (stages(&repo, path)?, worktree(&repo, path));
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Ok(ConflictSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path: path.to_owned(), swapped, base, ours, theirs, chunks })
+        Ok(ConflictSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path: path.to_owned(), swapped, base, ours, theirs, chunks, stages, file })
     }
 
     fn sides(&self) -> [Vec<&[u8]>; 3] {
@@ -239,6 +259,8 @@ impl ConflictSession {
             if s.is_empty() {
                 return Vec::new();
             }
+            // A final newline ends the last line; it doesn't start another.
+            let s = s.strip_suffix('\n').unwrap_or(s);
             s.split('\n').map(|l| [l.as_bytes(), eol].concat()).collect()
         };
         for (i, c) in self.chunks.iter().enumerate() {
@@ -286,9 +308,24 @@ impl ConflictSession {
 
     /// Writes the result and marks the file resolved (`git add`).
     pub fn resolve(&self, choices: &Value) -> GitResult<Value> {
+        // Edited in another editor or resolved elsewhere: don't write over it.
+        if stages(&self.repo, &self.path)? != self.stages || worktree(&self.repo, &self.path) != self.file {
+            return Err(GitError::other("the file changed since this conflict was read; reload it"));
+        }
         let content = self.result(choices, false)?;
-        self.repo.write_file(&self.repo.abs(&self.path), &content)?;
-        self.repo.run(Git::write(["add", "--", &self.path]))?.into_result()?;
+        match links(&self.stages) {
+            Some(false) => {
+                self.repo.write_file(&self.repo.abs(&self.path), &content)?;
+                self.repo.run(Git::write(["add", "--", &self.path]))?.into_result()?;
+            }
+            Some(true) => {
+                // The content is the link's target: record a link and let git
+                // write it to the work tree.
+                write_index(&self.repo, &self.path, content.strip_suffix(b"\n").unwrap_or(&content), "120000")?;
+                self.repo.run(Git::write(["checkout", "--", &self.path]))?.into_result()?;
+            }
+            None => return Err(GitError::other("a file and a symbolic link conflict here: take one side as a whole")),
+        }
         self.repo.invalidate(Scope::All);
         Ok(json!({ "ok": true }))
     }
@@ -405,5 +442,70 @@ mod tests {
         assert_eq!(v["chunks"][0]["theirs"], json!(["upstream"]));
         accept(&s.repo, &["f.txt".into()], "ours").unwrap();
         assert_eq!(s.read("f.txt"), "mine\n");
+    }
+
+    fn conflicted() -> crate::repo::testing::Scratch {
+        let s = scratch();
+        s.commit("f.txt", "top\nmid\nend\n", "base");
+        s.git(&["switch", "-q", "-c", "other"]);
+        s.commit("f.txt", "top\nTHEIRS\nend\nadded\n", "theirs");
+        s.git(&["switch", "-q", "main"]);
+        s.commit("f.txt", "TOP\nOURS\nend\n", "ours");
+        assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+        s
+    }
+
+    #[test]
+    fn a_resolution_is_refused_once_the_conflict_changed_under_it() {
+        let s = conflicted();
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        // Edited in another editor, still in conflict.
+        s.write("f.txt", "edited elsewhere\n");
+        assert!(c.resolve(&json!({ "0": "ours" })).is_err());
+        assert_eq!(s.read("f.txt"), "edited elsewhere\n");
+        // Marked resolved elsewhere.
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        s.git(&["add", "--", "f.txt"]);
+        assert!(c.resolve(&json!({ "0": "ours" })).is_err());
+        assert_eq!(s.read("f.txt"), "edited elsewhere\n");
+    }
+
+    #[test]
+    fn chunk_text_ending_in_a_newline_adds_no_blank_line() {
+        let s = conflicted();
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        let with = c.result(&json!({ "0": { "text": "MINE\n" } }), false).unwrap();
+        assert_eq!(String::from_utf8(with).unwrap(), "MINE\nend\nadded\n");
+        let without = c.result(&json!({ "0": { "text": "MINE" } }), false).unwrap();
+        assert_eq!(String::from_utf8(without).unwrap(), "MINE\nend\nadded\n");
+        let blank = c.result(&json!({ "0": { "text": "\n" } }), false).unwrap();
+        assert_eq!(String::from_utf8(blank).unwrap(), "\nend\nadded\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_conflict_stays_a_link_whichever_side_is_taken() {
+        use std::os::unix::fs::symlink;
+        for side in ["ours", "theirs"] {
+            let s = scratch();
+            let link = |to: &str| {
+                let p = format!("{}/link", s.root());
+                let _ = std::fs::remove_file(&p);
+                symlink(to, &p).unwrap();
+                s.git(&["add", "--", "link"]);
+                s.git(&["commit", "-qm", to]);
+            };
+            link("base");
+            s.git(&["switch", "-q", "-c", "other"]);
+            link("THEIRS");
+            s.git(&["switch", "-q", "main"]);
+            link("OURS");
+            assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+            let c = ConflictSession::load(s.repo.clone(), "link").unwrap();
+            c.resolve(&json!({ "0": side })).unwrap();
+            assert_eq!(std::fs::read_link(format!("{}/link", s.root())).unwrap().to_string_lossy(), side.to_uppercase());
+            let entry = s.git(&["ls-files", "-s", "link"]);
+            assert!(entry.starts_with("120000 ") && entry.contains(" 0\t"), "{entry}");
+        }
     }
 }

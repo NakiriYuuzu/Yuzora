@@ -113,9 +113,10 @@ pub fn commit_checks(repo: &Repo, amend: bool) -> GitResult<Value> {
         warnings.push(json!({ "kind": "identity" }));
     }
     crate::status::refresh(repo)?;
-    let (detached, op, conflicts, staged): (bool, String, usize, Vec<String>) = {
+    // Deletions are something to commit, with no file to look at.
+    let (detached, op, conflicts, staged, deleted): (bool, String, usize, Vec<String>, bool) = {
         let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
-        (c.branch.detached, c.operation.kind.clone(), c.tracked.values().filter(|e| e.conflict).count(), c.tracked.values().filter(|e| e.x != '.' && e.x != 'D').map(|e| e.path.clone()).collect())
+        (c.branch.detached, c.operation.kind.clone(), c.tracked.values().filter(|e| e.conflict).count(), c.tracked.values().filter(|e| e.x != '.' && e.x != 'D').map(|e| e.path.clone()).collect(), c.tracked.values().any(|e| e.x == 'D'))
     };
     if conflicts > 0 {
         warnings.push(json!({ "kind": "conflicts", "count": conflicts }));
@@ -123,7 +124,7 @@ pub fn commit_checks(repo: &Repo, amend: bool) -> GitResult<Value> {
     if crate::settings::flag("warnDetachedHead") && (detached || op == "rebasing") {
         warnings.push(json!({ "kind": if op == "rebasing" { "rebasing" } else { "detached" } }));
     }
-    if staged.is_empty() && !amend {
+    if staged.is_empty() && !deleted && !amend {
         warnings.push(json!({ "kind": "nothing" }));
     }
     if crate::settings::flag("largeFileWarn") && !repo.place.is_remote() {
@@ -724,12 +725,23 @@ pub fn cherry_pick(repo: &Repo, hashes: &[String], o: &Value) -> GitResult<Value
     Ok(with_conflicts(repo, out))
 }
 
+/// Parents before children, whatever the commit dates say: a topological
+/// walk from the selection down to a common ancestor of it, kept to the
+/// selected commits.
 fn oldest_first(repo: &Repo, hashes: &[String]) -> GitResult<Vec<String>> {
     if hashes.len() < 2 {
         return Ok(hashes.to_vec());
     }
-    let out = repo.text(Git::read(["rev-list", "--no-walk=sorted", "--reverse", "--topo-order"]).args(hashes.iter().cloned()))?;
-    Ok(out.lines().map(str::to_owned).collect())
+    let full = repo.text(Git::read(["rev-parse", "--end-of-options"]).args(hashes.iter().map(|h| format!("{h}^{{commit}}"))))?;
+    let full: Vec<String> = full.lines().map(str::to_owned).collect();
+    let mut walk = Git::read(["rev-list", "--topo-order", "--reverse"]).args(full.iter().cloned());
+    // Unrelated histories have no common ancestor: walk all of it.
+    let base = repo.run(Git::read(["merge-base", "--octopus"]).args(full.iter().cloned()))?;
+    if base.ok() {
+        walk = walk.arg(format!("^{}^@", base.stdout_text().trim()));
+    }
+    let mut wanted: HashSet<&str> = full.iter().map(String::as_str).collect();
+    Ok(repo.text(walk)?.lines().filter(|h| wanted.remove(h)).map(str::to_owned).collect())
 }
 
 pub fn revert(repo: &Repo, hashes: &[String], o: &Value) -> GitResult<Value> {
@@ -1258,5 +1270,39 @@ mod tests {
         assert_eq!(v["blocked"], true, "{v}");
         assert!(s.git(&["stash", "list"]).contains("keep me"), "the person's stash was popped");
         assert!(!std::path::Path::new(&format!("{}/b.txt", s.root())).exists());
+    }
+
+    #[test]
+    fn a_staged_deletion_alone_is_something_to_commit() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.git(&["rm", "-q", "a.txt"]);
+        let checks = commit_checks(&s.repo, false).unwrap();
+        assert!(checks.as_array().unwrap().iter().all(|w| w["kind"] != "nothing"), "{checks}");
+    }
+
+    #[test]
+    fn selected_commits_go_parents_first_whatever_their_dates_say() {
+        let s = scratch();
+        let at = |file: &str, date: &str| {
+            s.write(file, date);
+            s.git(&["add", "--", file]);
+            let out = s.repo.run(Git::write(["commit", "-q", "-m", file]).env("GIT_COMMITTER_DATE", date)).unwrap();
+            assert!(out.ok(), "{}", out.stderr_text());
+            s.git(&["rev-parse", "HEAD"]).trim().to_owned()
+        };
+        let root = at("r.txt", "2025-01-01T00:00:00");
+        // The child says it was committed before its parent.
+        let parent = at("p.txt", "2030-01-01T00:00:00");
+        let child = at("c.txt", "2020-01-01T00:00:00");
+        assert_eq!(oldest_first(&s.repo, &[child.clone(), parent.clone()]).unwrap(), [parent.clone(), child.clone()]);
+        assert_eq!(oldest_first(&s.repo, &[child.clone(), root.clone(), parent.clone()]).unwrap(), [root.clone(), parent.clone(), child.clone()]);
+        // A commit on another branch is kept, and the line stays in order.
+        s.git(&["switch", "-q", "-c", "side", &root]);
+        let side = at("s.txt", "2040-01-01T00:00:00");
+        let got = oldest_first(&s.repo, &[child.clone(), side.clone(), parent.clone()]).unwrap();
+        assert_eq!(got.len(), 3, "{got:?}");
+        let pos = |h: &String| got.iter().position(|x| x == h).unwrap();
+        assert!(got.contains(&side) && pos(&parent) < pos(&child), "{got:?}");
     }
 }

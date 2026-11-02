@@ -101,7 +101,7 @@ pub fn index_entry(repo: &Repo, path: &str) -> GitResult<Option<(String, String)
     Ok(None)
 }
 
-fn worktree(repo: &Repo, path: &str) -> Option<Vec<u8>> {
+pub(crate) fn worktree(repo: &Repo, path: &str) -> Option<Vec<u8>> {
     let abs = repo.abs(path);
     if !repo.place.is_remote() && std::fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
         // A link's content in git is its target.
@@ -367,13 +367,29 @@ pub fn combine(left: &[&[u8]], right: &[&[u8]], changes: &[Change], sel: &Select
 }
 
 /// Writes `content` as the path's index entry.
-fn write_index(repo: &Repo, path: &str, content: &[u8], mode: &str) -> GitResult<()> {
-    let oid = repo.text(Git::write(["hash-object", "-w", "--stdin", &format!("--path={path}")]).stdin(content.to_vec()))?;
+pub(crate) fn write_index(repo: &Repo, path: &str, content: &[u8], mode: &str) -> GitResult<()> {
+    // A link's target is stored as is; files go through their filters.
+    let filters = if mode == "120000" { "--no-filters".to_owned() } else { format!("--path={path}") };
+    let oid = repo.text(Git::write(["hash-object", "-w", "--stdin", &filters]).stdin(content.to_vec()))?;
     repo.run(Git::write(["update-index", "--add", "--cacheinfo", &format!("{mode},{},{path}", oid.trim())]))?.into_result()?;
     Ok(())
 }
 
+/// The mode of a path in `HEAD`, if it is there.
+fn head_mode(repo: &Repo, path: &str) -> GitResult<Option<String>> {
+    let out = repo.run(Git::read(["ls-tree", "-z", "--full-tree", "HEAD", "--", path]))?;
+    if !out.ok() {
+        return Ok(None);
+    }
+    let text = out.text()?;
+    // <mode> <type> <oid>\t<path>
+    Ok(text.split('\0').find_map(|e| e.split_once('\t').filter(|(_, p)| *p == path).and_then(|(meta, _)| meta.split(' ').next()).map(str::to_owned)))
+}
+
 fn new_file_mode(repo: &Repo, path: &str) -> &'static str {
+    if is_link(repo, path, None) {
+        return "120000";
+    }
     #[cfg(unix)]
     if !repo.place.is_remote() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -430,7 +446,11 @@ impl DiffSession {
         } else {
             let (l, r) = self.sides();
             let content = combine(&l, &r, &self.changes, sel, Pick::Revert);
-            let mode = self.index_entry.as_ref().map(|e| e.0.clone()).unwrap_or_else(|| "100644".into());
+            // A staged deletion has no index entry: it comes back as HEAD had it.
+            let mode = match &self.index_entry {
+                Some(e) => e.0.clone(),
+                None => head_mode(&self.repo, self.orig.as_deref().unwrap_or(&self.path))?.unwrap_or_else(|| "100644".into()),
+            };
             write_index(&self.repo, &self.path, &content, &mode)?;
         }
         self.repo.invalidate(Scope::Paths(p));
@@ -617,5 +637,29 @@ mod tests {
         let d = DiffSession::load(s.repo.clone(), odd.into(), None, Mode::Unstaged).unwrap();
         d.discard(&sel_all(&[0])).unwrap();
         assert_eq!(s.read(odd), "1\n2\n", "restored, not deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_some_lines_keeps_what_kind_of_file_it_was() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let s = scratch();
+        s.write("run.sh", "#!/bin/sh\necho 1\necho 2\n");
+        std::fs::set_permissions(format!("{}/run.sh", s.root()), std::fs::Permissions::from_mode(0o755)).unwrap();
+        s.git(&["add", "-A"]);
+        s.git(&["commit", "-qm", "files"]);
+        let lines = |del: &[usize], add: &[usize]| Selection::from_json(&json!([]), &json!({ "0": { "del": del, "add": add } }));
+        // Unstaging part of a staged deletion brings back an executable.
+        s.git(&["rm", "-q", "run.sh"]);
+        let st = DiffSession::load(s.repo.clone(), "run.sh".into(), None, Mode::Staged).unwrap();
+        st.unstage(&lines(&[0], &[])).unwrap();
+        let entry = s.git(&["ls-files", "-s", "run.sh"]);
+        assert!(entry.starts_with("100755 "), "{entry}");
+        // Part of a new link is still a link.
+        symlink("a\nb", format!("{}/link", s.root())).unwrap();
+        let d = DiffSession::load(s.repo.clone(), "link".into(), None, Mode::Unstaged).unwrap();
+        d.stage(&lines(&[], &[0])).unwrap();
+        let entry = s.git(&["ls-files", "-s", "link"]);
+        assert!(entry.starts_with("120000 "), "{entry}");
     }
 }
