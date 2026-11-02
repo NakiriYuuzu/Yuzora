@@ -1,0 +1,15 @@
+{
+  "status": {
+    "working": "Working",
+    "blocked": "Needs reply",
+    "done": "Done · unseen",
+    "idle": "Idle",
+    "unknown": "Unknown"
+  },
+  "split_right": "Split right",
+  "split_down": "Split down",
+  "zoom": "Zoom",
+  "unzoom": "Unzoom",
+  "close": "Close pane",
+  "shell": "Terminal"
+}

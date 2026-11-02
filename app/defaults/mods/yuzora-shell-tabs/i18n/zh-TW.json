@@ -1,0 +1,35 @@
+{
+  "tab": {
+    "new": "新增 tab",
+    "close": "關閉 tab",
+    "terminal": "終端機"
+  },
+  "pane": {
+    "add": "新增 pane",
+    "split_right": "在右側開終端機",
+    "split_down": "在下方開終端機",
+    "no_pane": "先選一個 pane 才能分割"
+  },
+  "menu": {
+    "where": "放在",
+    "right": "右側",
+    "down": "下方",
+    "tools": "工具 pane",
+    "no_tools": "還沒有安裝工具 pane。",
+    "terminal": "新終端機",
+    "agents": "Agents",
+    "checking": "正在檢查已安裝的 Agent…",
+    "failed": "無法列出 Agent",
+    "not_installed": "未安裝",
+    "needs_space": "需要先有 Space"
+  },
+  "window": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "close": "關閉視窗"
+  },
+  "panel": {
+    "files": "檔案",
+    "changes": "變更"
+  }
+}
