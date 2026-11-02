@@ -27,6 +27,7 @@ pub mod rebase;
 pub mod repo;
 pub mod settings;
 pub mod status;
+pub mod trust;
 pub mod watch;
 
 use std::collections::HashMap;
@@ -54,6 +55,8 @@ export interface Status {
   staged: FileChange[]; unstaged: FileChange[]; untracked: FileChange[]; conflicts: { path: string; kind: string }[];
   counts: { staged: number; unstaged: number; untracked: number; conflicts: number; total: number };
   stash: number; truncated: boolean; numstatSkipped: boolean;
+  /** Set while the repo's own config names programs (filters, ssh, credentials) and its folder isn't trusted: no git ran. */
+  trust?: string[];
 }
 export interface Outcome { ok: boolean; output?: string; conflicts?: string[]; operation?: string; [k: string]: unknown }
 export interface LogFilter { branches?: string[]; users?: string[]; since?: string; until?: string; paths?: string[]; text?: string; regex?: boolean; matchCase?: boolean; hashes?: string[]; range?: string; noMerges?: boolean; follow?: boolean }
@@ -65,6 +68,8 @@ export function version(): string;
 export function open(cwd: string, on?: string | null): Promise<RepoInfo>;
 /** Status, refreshed by dirty scope (force: read everything again). */
 export function status(repo: string, options?: { force?: boolean }): Promise<Status>;
+/** Trusts the repo's folder: git may run the programs its own config names (see Status.trust). */
+export function trust(repo: string): Promise<Outcome>;
 /** Resolves with the repo's generation once it is past `since` (at most ~25 s). */
 export function changed(repo: string, since: number): Promise<number>;
 /** git add -A of paths (all when empty). */
@@ -313,13 +318,8 @@ pub fn host_module() -> HostModule {
             Ok(HostValue::Null)
         });
 
-    m = repo_fn(m, "status", |r, a| {
-        if a.first().and_then(|o| o.get("force")).and_then(Value::as_bool).unwrap_or(false) {
-            r.status.lock().unwrap_or_else(|e| e.into_inner()).dirty(status::Scope::All);
-        }
-        status::refresh(&r)?;
-        Ok(status::snapshot(&r))
-    });
+    m = repo_fn(m, "status", |r, a| status::read(&r, a.first().and_then(|o| o.get("force")).and_then(Value::as_bool).unwrap_or(false)));
+    m = repo_fn(m, "trust", |r, _| trust::trust(&r));
     m = repo_fn(m, "stage", |r, a| ops::stage(&r, &strings(&a[0])));
     m = repo_fn(m, "unstage", |r, a| ops::unstage(&r, &strings(&a[0])));
     m = repo_fn(m, "discard", |r, a| ops::discard(&r, &strings(&a[0]), a.get(1).and_then(Value::as_bool).unwrap_or(false)));

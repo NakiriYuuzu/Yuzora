@@ -86,6 +86,8 @@ pub struct StatusCache {
     pub untracked_lines: HashMap<String, u32>,
     /// Ignored directories, so the watcher can skip a build writing into them.
     pub ignored_dirs: Vec<String>,
+    /// Submodule paths: a change inside one is a change of its gitlink.
+    pub gitlinks: Vec<String>,
     pub stash: u32,
     pub operation: Operation,
     pub loaded: bool,
@@ -257,6 +259,23 @@ pub fn parse_numstat(out: &[u8]) -> HashMap<String, Stat> {
     m
 }
 
+/// The `status` call: the cache brought up to date (`force`: all of it read
+/// again). While the repo's own config names programs and its folder isn't
+/// trusted, no git runs: what is known so far, with `trust` listing them.
+pub fn read(repo: &Repo, force: bool) -> GitResult<Value> {
+    if force {
+        repo.status.lock().unwrap_or_else(|e| e.into_inner()).dirty(Scope::All);
+    }
+    let pending = crate::trust::pending(repo);
+    if !pending.is_empty() {
+        let mut v = snapshot(repo);
+        v["trust"] = json!(pending);
+        return Ok(v);
+    }
+    refresh(repo)?;
+    Ok(snapshot(repo))
+}
+
 /// Brings the cache up to date (a no-op when nothing is dirty).
 pub fn refresh(repo: &Repo) -> GitResult<()> {
     let _one = repo.refreshing.lock().unwrap_or_else(|e| e.into_inner());
@@ -311,7 +330,9 @@ fn full(repo: &Repo) -> GitResult<()> {
     };
     let lines = count_untracked(repo, untracked.iter());
     let operation = crate::repo::operation(repo);
+    let gitlinks = gitlinks(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
+    c.gitlinks = gitlinks;
     c.branch = st.branch;
     c.stash = st.stash;
     c.tracked = st.entries.into_iter().map(|e| (e.path.clone(), e)).collect();
@@ -326,11 +347,24 @@ fn full(repo: &Repo) -> GitResult<()> {
     Ok(())
 }
 
+/// The submodule paths `.gitmodules` lists.
+fn gitlinks(repo: &Repo) -> Vec<String> {
+    let out = repo.run(Git::read(["config", "--file", ".gitmodules", "-z", "--get-regexp", r"^submodule\..*\.path$"])).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
+    // `-z`: `key\nvalue\0` per entry.
+    String::from_utf8_lossy(&out).split('\0').filter_map(|e| e.split_once('\n')).map(|(_, v)| v.trim_end_matches('/').to_owned()).filter(|v| !v.is_empty()).collect()
+}
+
 fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     {
+        let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
+        // git reports a submodule's own files as its gitlink, so ask for that.
+        for p in &mut paths {
+            if let Some(g) = c.gitlinks.iter().find(|g| p.starts_with(g.as_str()) && p.as_bytes().get(g.len()) == Some(&b'/')) {
+                *p = g.clone();
+            }
+        }
         // Renames, adds and deletes are re-read with the rest, so a rename is
         // still seen as one when only one of its sides changed.
-        let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
         for e in c.tracked.values() {
             if matches!(e.x, 'A' | 'D' | 'R' | 'C') {
                 paths.push(e.path.clone());
@@ -572,5 +606,27 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         refresh(&s.repo).unwrap();
         assert_eq!(snapshot(&s.repo)["counts"]["unstaged"], 1);
         assert!(!std::path::Path::new(&marker).exists(), "status ran the repo's fsmonitor program");
+    }
+
+    #[test]
+    fn a_change_inside_a_submodule_refreshes_its_gitlink() {
+        let lib = scratch();
+        lib.commit("f.txt", "1\n", "lib");
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "sub"]);
+        s.git(&["commit", "-qm", "sub"]);
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["counts"]["total"], 0);
+        assert_eq!(s.repo.status.lock().unwrap().gitlinks, vec!["sub".to_string()]);
+        // What the watcher sees is the file inside; the change is the gitlink's.
+        s.write("sub/f.txt", "2\n");
+        s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["unstaged"][0]["path"], "sub");
+        s.write("sub/f.txt", "1\n");
+        s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["counts"]["total"], 0, "the old gitlink entry stayed");
     }
 }

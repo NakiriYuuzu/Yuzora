@@ -124,6 +124,11 @@ impl Repo {
         read_file(&self.place, path)
     }
 
+    /// At most `limit` bytes of a file, so a huge one is never read whole.
+    pub fn read_file_head(&self, path: &str, limit: usize) -> Option<Vec<u8>> {
+        read_file_head(&self.place, path, limit)
+    }
+
     pub fn exists(&self, path: &str) -> bool {
         exists(&self.place, path)
     }
@@ -199,6 +204,18 @@ pub fn read_file(place: &Place, path: &str) -> Option<Vec<u8>> {
     }
 }
 
+pub fn read_file_head(place: &Place, path: &str, limit: usize) -> Option<Vec<u8>> {
+    if place.is_remote() {
+        let out = remote_sh(place, r#"head -c "$2" -- "$1""#, &[path, &limit.to_string()], None).ok()?;
+        out.ok().then_some(out.stdout)
+    } else {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path).ok()?.take(limit as u64).read_to_end(&mut bytes).ok()?;
+        Some(bytes)
+    }
+}
+
 pub fn exists(place: &Place, path: &str) -> bool {
     if place.is_remote() {
         remote_sh(place, r#"test -e "$1""#, &[path], None).is_ok_and(|o| o.ok())
@@ -207,13 +224,17 @@ pub fn exists(place: &Place, path: &str) -> bool {
     }
 }
 
+/// Writes a file; a symlink in the way is replaced, never written through.
 pub fn write_file(place: &Place, path: &str, bytes: &[u8]) -> GitResult<()> {
     if place.is_remote() {
-        let out = remote_sh(place, r#"mkdir -p "$(dirname -- "$1")" && cat > "$1""#, &[path], Some(bytes.to_vec()))?;
+        let out = remote_sh(place, r#"if [ -L "$1" ]; then rm -f -- "$1"; fi; mkdir -p "$(dirname -- "$1")" && cat > "$1""#, &[path], Some(bytes.to_vec()))?;
         out.into_result().map(|_| ())
     } else {
         if let Some(dir) = Path::new(path).parent() {
             std::fs::create_dir_all(dir).map_err(GitError::other)?;
+        }
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            std::fs::remove_file(path).map_err(|e| GitError::Other(format!("cannot replace {path}: {e}")))?;
         }
         std::fs::write(path, bytes).map_err(|e| GitError::Other(format!("cannot write {path}: {e}")))
     }

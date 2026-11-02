@@ -62,5 +62,9 @@
   "menu.diff": "Show diff",
   "menu.copy": "Copy path",
   "menu.discardSure": "Discard: click again to confirm",
-  "history.short": "History"
+  "history.short": "History",
+  "trust.title": "Trust this folder?",
+  "trust.body": "This repository's own Git config names programs Git would run on its own: {keys}. Yuzora reads its Git status only once you trust the folder.",
+  "trust.button": "Trust and read",
+  "trust.status": "untrusted folder"
 }

@@ -74,8 +74,9 @@ pub fn discard(repo: &Repo, paths: &[String], rollback: bool) -> GitResult<Value
         };
         repo.run(cmd.pathspec(&tracked))?.into_result()?;
     }
-    if !untracked.is_empty() {
-        repo.run(Git::write(["clean", "-f", "-q"]).pathspec(&untracked))?.into_result()?;
+    // clean takes no --pathspec-from-file: a long list goes in runs.
+    for run in crate::exec::pathspec_runs(&untracked) {
+        repo.run(Git::write(["clean", "-f", "-q", "--"]).args(run.iter().cloned()))?.into_result()?;
     }
     repo.invalidate(Scope::Paths(paths.to_vec()));
     Ok(json!({ "ok": true }))
@@ -135,7 +136,8 @@ pub fn commit_checks(repo: &Repo, amend: bool) -> GitResult<Value> {
     if crate::settings::flag("warnCrlf") && !repo.place.is_remote() {
         let autocrlf = repo.run(Git::read(["config", "--get", "core.autocrlf"]))?.stdout_text();
         if autocrlf.trim().is_empty() || autocrlf.trim() == "false" {
-            let crlf: Vec<&String> = staged.iter().filter(|p| std::fs::read(repo.abs(p)).is_ok_and(|b| b.len() < (4 << 20) && !b[..b.len().min(8000)].contains(&0) && b.windows(2).any(|w| w == b"\r\n"))).take(20).collect();
+            let small = |p: &String| std::fs::metadata(repo.abs(p)).is_ok_and(|m| m.is_file() && m.len() < (4 << 20));
+            let crlf: Vec<&String> = staged.iter().filter(|p| small(p) && std::fs::read(repo.abs(p)).is_ok_and(|b| !b[..b.len().min(8000)].contains(&0) && b.windows(2).any(|w| w == b"\r\n"))).take(20).collect();
             if !crlf.is_empty() {
                 warnings.push(json!({ "kind": "crlf", "files": crlf }));
             }
@@ -306,13 +308,33 @@ pub fn checkout(repo: &Repo, target: &str, smart: bool, force: bool) -> GitResul
         v["blocked"] = json!(!out.ok() && blocked_by_changes(&out.stderr_text()));
         return Ok(v);
     }
+    let top = |repo: &Repo| -> GitResult<String> { Ok(repo.run(Git::read(["rev-parse", "-q", "--verify", "refs/stash"]))?.stdout_text().trim().to_owned()) };
+    let before = top(repo)?;
     let stash = repo.run(Git::write(["stash", "push", "--include-untracked", "-m", &format!("yuzora: smart checkout of {target}")]))?;
     if !stash.ok() {
         return Err(GitError::Failed { code: stash.code, message: stash.stderr_text() });
     }
+    // "No local changes to save" (what blocked git isn't stashable, such as
+    // an assume-unchanged file): no stash of ours, so nothing to pop.
+    let ours = top(repo)?;
+    if ours.is_empty() || ours == before {
+        done(repo, true);
+        let mut v = outcome(&out);
+        v["blocked"] = json!(true);
+        return Ok(v);
+    }
     let switched = repo.run(cmd)?;
-    let pop = repo.run(Git::write(["stash", "pop", "--index"]))?;
-    let pop = if !pop.ok() && pop.stderr_text().contains("--index") { repo.run(Git::write(["stash", "pop"]))? } else { pop };
+    // Pop ours only: if something else stashed meanwhile, apply it and keep it.
+    let pop_args: &[&str] = if top(repo)? == ours { &["stash", "pop"] } else { &["stash", "apply"] };
+    let with_index = |index: bool| {
+        let mut c = Git::write(pop_args.iter().copied());
+        if index {
+            c = c.arg("--index");
+        }
+        if pop_args[1] == "apply" { c.arg(ours.clone()) } else { c }
+    };
+    let pop = repo.run(with_index(true))?;
+    let pop = if !pop.ok() && pop.stderr_text().contains("--index") { repo.run(with_index(false))? } else { pop };
     let mut v = outcome(&switched);
     v["stashed"] = json!(true);
     v["restored"] = json!(pop.ok());
@@ -450,6 +472,9 @@ pub fn sequencer(repo: &Repo, action: &str) -> GitResult<Value> {
         cmd = crate::rebase::with_editor(cmd);
     }
     let out = repo.run(cmd)?;
+    if verb == "rebase" && crate::repo::operation(repo).kind.is_empty() {
+        crate::rebase::forget(repo);
+    }
     Ok(with_conflicts(repo, out))
 }
 
@@ -1171,5 +1196,49 @@ mod tests {
         let files = c["files"].as_array().unwrap();
         assert_eq!(files.len(), 1, "only b's side: {files:?}");
         assert_eq!(files[0]["path"], "b.txt");
+    }
+
+    #[test]
+    fn discard_takes_paths_literally_and_cleans_long_lists() {
+        let s = scratch();
+        s.commit("pages/[id].tsx", "a\n", "first");
+        s.commit("pages/i.tsx", "b\n", "second");
+        s.write("pages/[id].tsx", "changed\n");
+        s.write("pages/i.tsx", "kept\n");
+        s.write("pages/[ab].txt", "new\n");
+        s.write("pages/a.txt", "mine\n");
+        discard(&s.repo, &["pages/[id].tsx".into(), "pages/[ab].txt".into()], false).unwrap();
+        assert_eq!(std::fs::read_to_string(format!("{}/pages/i.tsx", s.root())).unwrap(), "kept\n", "a glob match was restored");
+        assert!(std::path::Path::new(&format!("{}/pages/a.txt", s.root())).exists(), "a glob match was deleted");
+        assert!(!std::path::Path::new(&format!("{}/pages/[ab].txt", s.root())).exists());
+        // More untracked files than one command line holds.
+        let many: Vec<String> = (0..400).map(|i| format!("dir/a-rather-long-untracked-file-name-number-{i:04}.txt")).collect();
+        for p in &many {
+            s.write(p, "x\n");
+        }
+        assert!(crate::exec::pathspec_runs(&many).len() > 1);
+        s.repo.invalidate(Scope::All); // the watcher's job in the app
+        discard(&s.repo, &many, false).unwrap();
+        assert!(many.iter().all(|p| !std::path::Path::new(&format!("{}/{p}", s.root())).exists()));
+    }
+
+    #[test]
+    fn smart_checkout_never_pops_a_stash_it_did_not_make() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.git(&["switch", "-q", "-c", "other"]);
+        s.commit("a.txt", "2\n", "on other");
+        s.git(&["switch", "-q", "main"]);
+        // The person's own stash, older.
+        s.write("b.txt", "mine\n");
+        s.git(&["add", "b.txt"]);
+        s.git(&["stash", "push", "-q", "-m", "keep me"]);
+        // A change git won't stash: assume-unchanged, yet modified.
+        s.git(&["update-index", "--assume-unchanged", "a.txt"]);
+        s.write("a.txt", "local\n");
+        let v = checkout(&s.repo, "other", true, false).unwrap();
+        assert_eq!(v["blocked"], true, "{v}");
+        assert!(s.git(&["stash", "list"]).contains("keep me"), "the person's stash was popped");
+        assert!(!std::path::Path::new(&format!("{}/b.txt", s.root())).exists());
     }
 }

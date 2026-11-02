@@ -824,32 +824,28 @@ pub fn close(id: u64) {
     }
 }
 
-/// `-c` overrides for the signature programs the repo's own config names.
-/// Checking a signature (`%G?`) runs one, and a folder's `.git/config` must
-/// not choose it (there is no trusted-folder check yet); the person's own
-/// (global or system) choice, else git's default, is used instead.
+/// `-c` overrides for the signature programs. Checking a signature (`%G?`)
+/// runs one, and a folder's `.git/config` must not choose it (there is no
+/// trusted-folder check yet): the person's own choice (global, else system
+/// config), else git's default, always wins. Nothing the repo's config says
+/// is read here.
 pub fn signature_programs(repo: &Repo) -> Vec<String> {
-    const DEFAULTS: [(&str, &str); 4] = [("gpg.program", "gpg"), ("gpg.openpgp.program", "gpg"), ("gpg.ssh.program", "ssh-keygen"), ("gpg.x509.program", "gpgsm")];
-    let out = repo.run(Git::read(["config", "--show-scope", "--get-regexp", r"^gpg\.(openpgp\.|ssh\.|x509\.)?program$"])).ok().filter(|o| o.ok()).map(|o| o.stdout_text()).unwrap_or_default();
-    // `<scope>\t<key> <value>`, lowest scope first: the last line of a key wins.
-    let mut last: HashMap<String, (bool, String)> = HashMap::new();
-    let mut outside: HashMap<String, String> = HashMap::new();
-    for line in out.lines() {
-        let Some((scope, rest)) = line.split_once('\t') else { continue };
-        let (key, value) = rest.split_once(' ').unwrap_or((rest, ""));
-        let repo_own = matches!(scope, "local" | "worktree");
-        if !repo_own {
-            outside.insert(key.to_owned(), value.to_owned());
-        }
-        last.insert(key.to_owned(), (repo_own, value.to_owned()));
-    }
-    let mut args = Vec::new();
-    for (key, default) in DEFAULTS {
-        if last.get(key).is_some_and(|(repo_own, _)| *repo_own) {
-            args.extend(["-c".to_owned(), format!("{key}={}", outside.get(key).map_or(default, String::as_str))]);
-        }
-    }
-    args
+    let scope = |flag: &str| -> HashMap<String, String> {
+        let out = repo.run(Git::read(["config", flag, "--includes", "-z", "--get-regexp", r"^gpg\."])).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
+        // `-z`: `key\nvalue\0` per entry; the last one of a key wins.
+        String::from_utf8_lossy(&out).split('\0').filter_map(|e| e.split_once('\n')).map(|(k, v)| (k.to_lowercase(), v.to_owned())).collect()
+    };
+    let (global, system) = (scope("--global"), scope("--system"));
+    let pick = |keys: &[&str], default: &str| -> String {
+        [&global, &system].iter().find_map(|m| keys.iter().find_map(|k| m.get(*k).cloned())).unwrap_or_else(|| default.to_owned())
+    };
+    let openpgp = pick(&["gpg.openpgp.program", "gpg.program"], "gpg");
+    let ssh = pick(&["gpg.ssh.program"], "ssh-keygen");
+    let x509 = pick(&["gpg.x509.program"], "gpgsm");
+    [("gpg.program", &openpgp), ("gpg.openpgp.program", &openpgp), ("gpg.ssh.program", &ssh), ("gpg.x509.program", &x509)]
+        .into_iter()
+        .flat_map(|(k, v)| ["-c".to_owned(), format!("{k}={v}")])
+        .collect()
 }
 
 /// One commit's details: message, people, signature and changed files.
@@ -1030,7 +1026,8 @@ mod tests {
         let out = s.repo.run(Git::write(["hash-object", "-t", "commit", "-w", "--stdin"]).stdin(object.into_bytes())).unwrap();
         let hash = out.stdout_text().trim().to_owned();
         s.git(&["config", "gpg.program", &program]);
-        assert_eq!(signature_programs(&s.repo)[1], "gpg.program=gpg");
+        let args = signature_programs(&s.repo);
+        assert!(!args.iter().any(|a| a.contains("fake-gpg")), "{args:?}");
         let d = details(&s.repo, &hash).unwrap();
         assert_eq!(d["subject"], "signed");
         assert!(!std::path::Path::new(&marker).exists(), "details ran the repo's gpg.program");

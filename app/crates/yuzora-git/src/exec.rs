@@ -186,6 +186,24 @@ pub fn pathspec_len(paths: &[String]) -> usize {
     paths.iter().map(|p| p.len() + 1).sum()
 }
 
+/// `paths` in runs that each fit in [`PATHSPEC_LIMIT`], for commands that
+/// take no `--pathspec-from-file` (clean) and must never fall back to all.
+pub fn pathspec_runs(paths: &[String]) -> Vec<&[String]> {
+    let mut runs = Vec::new();
+    let (mut start, mut len) = (0, 0);
+    for (i, p) in paths.iter().enumerate() {
+        if i > start && len + p.len() + 1 > PATHSPEC_LIMIT {
+            runs.push(&paths[start..i]);
+            (start, len) = (i, 0);
+        }
+        len += p.len() + 1;
+    }
+    if start < paths.len() {
+        runs.push(&paths[start..]);
+    }
+    runs
+}
+
 /// What git printed and how it ended.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Output {
@@ -283,6 +301,9 @@ pub fn environment(kind: Kind, remote: bool, own: &[(String, String)]) -> Vec<(S
         ("GIT_MERGE_AUTOEDIT".into(), "no".into()),
         // Hooks can tell they run under Yuzora, as IntelliJ's do.
         ("YUZORA_GIT".into(), "1".into()),
+        // Paths are file names, never globs: `pages/[id].tsx` must not
+        // also match `pages/i.tsx`.
+        ("GIT_LITERAL_PATHSPECS".into(), "1".into()),
     ];
     if kind == Kind::Read {
         env.push(("GIT_OPTIONAL_LOCKS".into(), "0".into()));
@@ -586,6 +607,7 @@ mod tests {
     fn reads_and_writes_carry_their_environment() {
         let read = environment(Kind::Read, false, &[]);
         assert!(read.contains(&("GIT_OPTIONAL_LOCKS".into(), "0".into())));
+        assert!(read.contains(&("GIT_LITERAL_PATHSPECS".into(), "1".into())));
         assert!(read.contains(&("LANGUAGE".into(), String::new())));
         let write = environment(Kind::Write, true, &[("GIT_EDITOR".into(), "helper".into())]);
         assert!(!write.iter().any(|(k, _)| k == "GIT_OPTIONAL_LOCKS"));

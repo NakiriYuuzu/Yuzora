@@ -94,6 +94,11 @@ pub fn todo_list(repo: &Repo, base: &str) -> GitResult<Value> {
 
 /// Runs `git rebase -i <base>` with the pane's todo and messages.
 pub fn run(repo: &Repo, base: &str, entries: &[Entry], update_refs: bool) -> GitResult<Value> {
+    // The messages of a stopped rebase are still waiting in DIR.
+    let op = crate::repo::operation(repo);
+    if !op.kind.is_empty() {
+        return Err(GitError::Other(format!("cannot start a rebase while {}", op.kind)));
+    }
     let todo = todo_text(entries)?;
     let dir = repo.git_path(DIR);
     crate::repo::remove_path(&repo.place, &dir)?;
@@ -124,6 +129,11 @@ pub fn run(repo: &Repo, base: &str, entries: &[Entry], update_refs: bool) -> Git
     repo.invalidate_refs();
     let text = [out.stdout_text(), out.stderr_text()].join("\n").trim().to_owned();
     Ok(json!({ "ok": out.ok(), "output": text, "stopped": !op.kind.is_empty(), "conflicts": conflicts, "operation": op.kind }))
+}
+
+/// Drops the messages of a rebase that ended, so a later one never uses them.
+pub fn forget(repo: &Repo) {
+    let _ = crate::repo::remove_path(&repo.place, &repo.git_path(DIR));
 }
 
 /// Rewrites one commit's message without touching the work tree or index:
@@ -230,6 +240,22 @@ mod tests {
         assert_eq!(log, "A and B together\nadd c\n");
         assert!(!std::path::Path::new(&s.repo.abs("d.txt")).exists());
         assert!(!std::path::Path::new(&s.repo.git_path(DIR)).exists(), "cleaned up");
+    }
+
+    #[test]
+    fn a_stopped_rebase_keeps_its_messages_until_it_ends() {
+        let s = scratch();
+        let base = s.commit("base.txt", "0\n", "base");
+        let a = s.commit("a.txt", "a\n", "add a");
+        let b = s.commit("b.txt", "b\n", "add b");
+        let r = run(&s.repo, &base, &[entry("edit", &a, None), entry("reword", &b, Some("B, later"))], false).unwrap();
+        assert_eq!(r["stopped"], true, "{r}");
+        let msg = format!("{}/msg-{b}", s.repo.git_path(DIR));
+        // A second start is refused and leaves the pending message alone.
+        assert!(run(&s.repo, &base, &[entry("pick", &a, None)], false).is_err());
+        assert!(std::path::Path::new(&msg).exists());
+        crate::ops::sequencer(&s.repo, "abort").unwrap();
+        assert!(!std::path::Path::new(&s.repo.git_path(DIR)).exists(), "an abort leaves stale messages");
     }
 
     #[test]

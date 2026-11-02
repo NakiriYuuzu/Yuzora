@@ -5,7 +5,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, v_virtual_list, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, settings as gitSettings } from "yuzora:git";
+import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, settings as gitSettings } from "yuzora:git";
 
 // Where the Git mode looks: the focused pane's folder, else the space's.
 function location() {
@@ -43,7 +43,7 @@ export default class SidebarGit extends View {
   // moves come back through the watcher (↑↓ in the branch button).
   autoFetch(cx) {
     const minutes = Number(gitSettings().autoFetchMinutes ?? 0), repo = this.repo;
-    if (!minutes || !repo || this.busy || Date.now() - this.fetchedAt < minutes * 60000) return;
+    if (!minutes || !repo || this.busy || this.st?.trust || Date.now() - this.fetchedAt < minutes * 60000) return;
     this.fetchedAt = Date.now();
     cx.spawn(async () => { try { await fetch(repo.id, {}); } catch {} });
   }
@@ -111,9 +111,11 @@ export default class SidebarGit extends View {
   // The mode bar's badge and the status bar's Git part.
   publish() {
     const st = this.st, n = this.changedFiles();
-    const badge = st ? (n || null) : null;
+    const badge = st && !st.trust ? (n || null) : null;
     let status = null;
-    if (st) {
+    if (st?.trust) {
+      status = { text: `⎇ ${t("trust.status")}`, tone: "blocked" };
+    } else if (st) {
       const b = st.branch;
       const name = b.detached ? (b.oid ?? "").slice(0, 8) : b.head ?? "";
       const sync = `${b.ahead ? ` ↑${b.ahead}` : ""}${b.behind ? ` ↓${b.behind}` : ""}`;
@@ -398,6 +400,24 @@ export default class SidebarGit extends View {
       return v_flex().id("root").size_full().bg(th.chrome).text_color(th.foreground).text_size(12.5)
         .child(header)
         .child(div().px(12).pt(4).text_size(11.5).text_color(th.dim).child(this.error ?? t("loading")));
+    }
+
+    // The repo's own config names programs git would run on its own: nothing
+    // reads it until the person trusts the folder.
+    if (st.trust) {
+      const repo = this.repo;
+      return v_flex().id("root").size_full().bg(th.chrome).text_color(th.foreground).text_size(12.5)
+        .child(header)
+        .child(v_flex().mx(8).p(10).gap(8).rounded(6).border_1().border_color(th.blocked).bg(th.raised)
+          .child(div().font_semibold().child(t("trust.title")))
+          .child(div().text_size(11.5).text_color(th.muted).child(t("trust.body", { keys: st.trust.join(", ") })))
+          .child(div().id("trust").h(24).px(10).flex().items_center().justify_center().rounded(4).cursor_pointer()
+            .bg(th.accent).text_color(th.background).hover((s) => s.text_color(th.foreground))
+            .on_click((_e, cx) => cx.spawn(async (cx) => {
+              try { await trust(repo.id); } catch (e) { this.error = String(e); }
+              await this.reload(cx, true);
+            }))
+            .child(t("trust.button"))));
     }
 
     const branch = h_flex().id("branch").mx(8).mb(6).h(28).px(8).gap(6).flex_none().items_center().rounded(6).border_1().border_color(th.border)

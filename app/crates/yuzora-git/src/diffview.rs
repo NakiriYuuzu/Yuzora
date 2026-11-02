@@ -88,8 +88,9 @@ pub fn blob(repo: &Repo, spec: &str) -> GitResult<Option<Vec<u8>>> {
 
 /// The stage-0 index entry of a path: (mode, oid).
 pub fn index_entry(repo: &Repo, path: &str) -> GitResult<Option<(String, String)>> {
-    let out = repo.run(Git::read(["ls-files", "-s", "--", path]).env("GIT_LITERAL_PATHSPECS", "1"))?.text()?;
-    for line in out.lines() {
+    // `-z`: names with quotes, tabs or newlines come unquoted.
+    let out = repo.run(Git::read(["ls-files", "-s", "-z", "--", path]))?.text()?;
+    for line in out.split('\0') {
         // <mode> <oid> <stage>\t<path>
         let (meta, p) = line.split_once('\t').unwrap_or((line, ""));
         let f: Vec<&str> = meta.split(' ').collect();
@@ -106,7 +107,12 @@ fn worktree(repo: &Repo, path: &str) -> Option<Vec<u8>> {
         // A link's content in git is its target.
         return std::fs::read_link(&abs).ok().map(|t| t.to_string_lossy().into_owned().into_bytes());
     }
-    repo.read_file(&abs)
+    // One byte past the limit is enough to call it too large.
+    repo.read_file_head(&abs, MAX_SIDE + 1)
+}
+
+fn is_link(repo: &Repo, path: &str, index_mode: Option<&str>) -> bool {
+    index_mode == Some("120000") || (!repo.place.is_remote() && std::fs::symlink_metadata(repo.abs(path)).is_ok_and(|m| m.file_type().is_symlink()))
 }
 
 impl DiffSession {
@@ -441,10 +447,21 @@ impl DiffSession {
         }
         let (l, r) = self.sides();
         let abs = self.repo.abs(&self.path);
-        if sel.covers_all(&self.changes) && self.left.is_none() {
+        let all = sel.covers_all(&self.changes);
+        let p = vec![self.path.clone()];
+        if all && self.left.is_none() {
             crate::repo::remove_path(&self.repo.place, &abs)?;
+        } else if all {
+            // Back to the index: git restores the type, mode and filters.
+            self.repo.run(Git::write(["restore", "--worktree"]).pathspec(&p))?.into_result()?;
+        } else if is_link(&self.repo, &self.path, self.index_entry.as_ref().map(|e| e.0.as_str())) {
+            return Err(GitError::other("a symbolic link changes as a whole: discard all of it"));
         } else {
             let content = combine(&l, &r, &self.changes, sel, Pick::Revert);
+            if self.right.is_none() && self.left.is_some() {
+                // A deleted file comes back as git had it (mode, type) first.
+                self.repo.run(Git::write(["restore", "--worktree"]).pathspec(&p))?.into_result()?;
+            }
             self.repo.write_file(&abs, &content)?;
         }
         self.repo.invalidate(Scope::Paths(vec![self.path.clone()]));
@@ -565,5 +582,40 @@ mod tests {
         assert!(del.right.is_none());
         del.stage(&sel_all(&[0])).unwrap();
         assert!(s.git(&["diff", "--cached", "--name-status"]).contains("D\tgone.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discarding_a_link_or_a_deleted_file_restores_what_git_had() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let s = scratch();
+        s.write("a", "target a\n");
+        s.write("b", "keep b\n");
+        symlink("a", format!("{}/link", s.root())).unwrap();
+        s.write("run.sh", "#!/bin/sh\necho 1\necho 2\n");
+        std::fs::set_permissions(format!("{}/run.sh", s.root()), std::fs::Permissions::from_mode(0o755)).unwrap();
+        s.git(&["add", "-A"]);
+        s.git(&["commit", "-qm", "files"]);
+        // The link now points at b: discarding puts the link back, b is untouched.
+        std::fs::remove_file(format!("{}/link", s.root())).unwrap();
+        symlink("b", format!("{}/link", s.root())).unwrap();
+        let d = DiffSession::load(s.repo.clone(), "link".into(), None, Mode::Unstaged).unwrap();
+        d.discard(&sel_all(&[0])).unwrap();
+        assert_eq!(std::fs::read_link(format!("{}/link", s.root())).unwrap().to_string_lossy(), "a");
+        assert_eq!(s.read("b"), "keep b\n", "the discard wrote through the link");
+        // A deleted executable comes back executable.
+        std::fs::remove_file(format!("{}/run.sh", s.root())).unwrap();
+        let d = DiffSession::load(s.repo.clone(), "run.sh".into(), None, Mode::Unstaged).unwrap();
+        d.discard(&sel_all(&[0])).unwrap();
+        let m = std::fs::symlink_metadata(format!("{}/run.sh", s.root())).unwrap();
+        assert!(m.is_file() && m.permissions().mode() & 0o111 != 0, "{m:?}");
+        // Names git would quote are still found in the index.
+        let odd = "say \"hi\"\tnow.txt";
+        s.commit(odd, "1\n2\n", "odd name");
+        assert!(index_entry(&s.repo, odd).unwrap().is_some());
+        s.write(odd, "1\n");
+        let d = DiffSession::load(s.repo.clone(), odd.into(), None, Mode::Unstaged).unwrap();
+        d.discard(&sel_all(&[0])).unwrap();
+        assert_eq!(s.read(odd), "1\n2\n", "restored, not deleted");
     }
 }
