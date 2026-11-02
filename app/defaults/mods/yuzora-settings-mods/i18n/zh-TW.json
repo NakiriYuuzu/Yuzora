@@ -63,6 +63,7 @@
   "install_go": "我信任它，安裝",
   "installed": "已安裝。新的 mod 會自動載入。",
   "install_errors": {
+    "stale": "這份安裝計畫已經失效，請重新選擇資料夾。",
     "not_a_mod": "這個資料夾沒有 main.js，也沒有 mods/ 或 layouts/ 資料夾。",
     "inside_home": "這個資料夾已經在 Yuzora 的主資料夾裡。",
     "too_big": "這個資料夾太大，不像是 mod（超過 2000 個檔案或 64 MB）。",

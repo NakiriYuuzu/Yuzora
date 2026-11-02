@@ -44,7 +44,7 @@ export interface ModEntry {
   pane: boolean; settings: boolean; source: "shipped" | "edited" | "clone" | "personal";
 }
 export interface LayoutEntry { name: string; path: string; valid: boolean; shipped: boolean; cloned_from: { name: string; version: string } | null; preview: string | null; source: "shipped" | "clone" | "personal" }
-export interface InstallPlan { kind: "mod" | "bundle"; source: string; mods: { from: string; as: string }[]; layouts: { from: string; as: string }[]; keys: boolean; reaches: ("programs" | "network" | "files")[]; files: number; bytes: number }
+export interface InstallPlan { kind: "mod" | "bundle"; source: string; mods: { from: string; as: string }[]; layouts: { from: string; as: string }[]; keys: boolean; reaches: ("programs" | "network" | "files")[]; files: number; bytes: number; token: string }
 /** The yuzora-settings crate's version (Yuzora's). */
 export function version(): string;
 /** herdr-core's templates folder on this computer. */
@@ -71,8 +71,8 @@ export function appStatus(): Promise<Outcome>;
 export function checkMod(name: string): Promise<Outcome>;
 /** What installing a folder would do (nothing is written). */
 export function planInstall(path: string): Promise<Outcome & { plan?: InstallPlan }>;
-/** Installs a mod folder, or a shared layout with its mods, never overwriting. */
-export function installFolder(path: string): Promise<Outcome & { plan?: InstallPlan }>;
+/** Installs the files planInstall read (plan.token: the latest plan), never overwriting: what was shown is what's installed, whatever the folder holds now. code stale: plan again. */
+export function installFolder(token: string): Promise<Outcome & { plan?: InstallPlan }>;
 /** Opens a folder (or shows a file) in the system's file manager. */
 export function reveal(path: string): null;
 /** general.startup: the sidebar mode to show when the window opens (a yuzora-sidebar child), or null for the last one. */
@@ -301,6 +301,38 @@ fn install_outcome(r: Result<mods::Plan, mods::InstallError>) -> Value {
     }
 }
 
+/// The latest install plan shown, with the files it read: installFolder
+/// writes these, never the folder as it is by then.
+static PLANNED: std::sync::Mutex<Option<(String, mods::Plan)>> = std::sync::Mutex::new(None);
+
+fn plan_install(path: &str) -> Value {
+    match mods::plan(std::path::Path::new(path), &yuzora_core::paths::app_home()) {
+        Ok(plan) => {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let token = format!("{}-{}", session(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            let mut shown = plan.to_json();
+            shown["token"] = json!(token);
+            *PLANNED.lock().unwrap_or_else(|e| e.into_inner()) = Some((token, plan));
+            json!({ "ok": true, "plan": shown })
+        }
+        Err(e) => failed(e.code(), e),
+    }
+}
+
+fn install_planned(token: &str) -> Value {
+    let planned = {
+        let mut slot = PLANNED.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.take() {
+            Some((t, plan)) if t == token => plan,
+            other => {
+                *slot = other;
+                return failed("stale", "plan again");
+            }
+        }
+    };
+    install_outcome(mods::write(&planned, &yuzora_core::paths::app_home()).map(|()| planned))
+}
+
 fn reveal(path: &str) -> Result<(), HostError> {
     let p = std::path::Path::new(path);
     if !p.exists() {
@@ -404,11 +436,11 @@ pub fn host_module() -> HostModule {
         })
         .async_function("planInstall", |a| {
             let path = a.string(0)?.to_owned();
-            background(move || install_outcome(mods::plan(std::path::Path::new(&path), &yuzora_core::paths::app_home())))
+            background(move || plan_install(&path))
         })
         .async_function("installFolder", |a| {
-            let path = a.string(0)?.to_owned();
-            background(move || install_outcome(mods::install(std::path::Path::new(&path), &yuzora_core::paths::app_home())))
+            let token = a.string(0)?.to_owned();
+            background(move || install_planned(&token))
         })
         .function("reveal", |a| {
             reveal(a.string(0)?)?;

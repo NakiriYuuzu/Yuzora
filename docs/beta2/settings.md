@@ -97,7 +97,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 頁面 props：`{machine?, edit?}`。`edit` 為模板名稱時，清單讀完直接開該模板的表單；`""` 開新增表單（給其他 lane 的「新增模板」入口用）。
 
-寫檔時已知欄位依固定順序輸出，編輯器沒有的欄位原樣保留在後面；寫入走暫存檔＋rename，並比對開啟時讀到的內容（被別處改過就拒絕，`changed`）。改名時先寫新檔，再把舊檔移到垃圾桶；舊檔移不走時回 `old_kept`（新檔已存好，兩個檔案都在），頁面當作已儲存並提示。
+寫檔時已知欄位依固定順序輸出，編輯器沒有的欄位原樣保留在後面；寫入走暫存檔，並比對開啟時讀到的內容（被別處改過就拒絕，`changed`）。同一個 app 的存檔一次一個；編輯在 rename 前一刻再比對一次；新名稱（新增或改名）用 hard link 放上去，名稱在這之間被佔用就回 `exists`，不會蓋掉（不支援 hard link 的檔案系統才退回 rename）。遠端腳本同樣處理（`ln`、`mv` 前再比對）。改名時先寫新檔，再把舊檔移到垃圾桶；舊檔移不走時回 `old_kept`（新檔已存好，兩個檔案都在），頁面當作已儲存並提示。
 
 模板是 symlink（例如用 stow 管理的 dotfiles）時：編輯寫進它指向的檔案，連結保留；移到垃圾桶移走的是連結本身，不動原檔。本機與遠端一致。
 
@@ -137,9 +137,10 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - check：`<app> check <home>/mods/<name>`（90 秒）。在 app home 內的 mod 上跑 check 是 AGENTS.md 的標準做法；它寫入的 helper 檔不會讓 shipped mod 變成 edited。
 - clone：`mod.clone {name, as}`／`layout.clone {name, as}`（layout clone 會直接切換過去）。
 - 還原內建：layout 用 `layout.reset {name}`。mod 沒有對應指令：`yuzora_settings::mods::reset_mod` 先把 edited 的資料夾移到 `<name>-edited`（與啟動時相同），再寫回 shipped 檔案。它需要 app 交出內嵌的 shipped 檔案（`set_shipped_mods(crate::mods::DEFAULT_MODS)`），目前尚未串接（見後續整合），所以 UI 只說明「下次啟動會還原」，不顯示按鈕。
-- 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder`。
+- 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder(plan.token)`。
+  - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。
   - 一個 mod 資料夾（有 `main.js`），或 shared layout 的資料夾（`layouts/*.json`＋`mods/*/`）。
-  - 不覆寫：名稱被占用就用 `-2`、`-3`…，並把 `mods/<舊名>/` 路徑與 `mod: "<舊名>"` 改寫成新名稱（與 `mod.clone` 相同規則），layout 內引用也一起改。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
+  - 不覆寫：名稱被占用就用 `-2`、`-3`…（連結、壞掉的連結也算占用），並把 `mods/<資料夾原名>/` 路徑與 `mod: "<資料夾原名>"` 改寫成安裝的名稱（`my mod` 裝成 `my-mod` 時也改；冒號前後可有任意空白），layout 內引用也一起改。寫入時 mod 資料夾用 `create_dir`、每個檔案用 `create_new`，名稱在這之間被占用就失敗，不會跟著連結寫到 home 外。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
   - 不複製 `.git`、`node_modules`、隱藏檔、根目錄的 `RECIPE.md`／`preview.png`；超過 2000 個檔案或 64 MB 拒絕；來源在 app home 內拒絕；失敗時刪掉這次寫入的東西。
   - `keys.json` 不自動合併（AGENTS.md 要求替換既有按鍵前先問人），提示使用者自行處理。
 

@@ -392,36 +392,45 @@ pub fn save(dir: &Path, name: &str, text: &str, expected: Option<&str>, previous
     if !valid_name(name) || previous.is_some_and(|p| !valid_name(p)) {
         return Err(SaveError::Name);
     }
+    // Yuzora's saves one at a time; another program's edit is caught by
+    // comparing again right before the file is replaced.
+    static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     let target = dir.join(format!("{name}.md"));
     let source = previous.filter(|p| *p != name).map(|p| dir.join(format!("{p}.md")));
-    match expected {
-        None => {
-            if target.exists() {
-                return Err(SaveError::Exists);
-            }
-        }
-        Some(expected) => {
-            let from = source.as_ref().unwrap_or(&target);
-            let now = std::fs::read(from).map(|b| String::from_utf8_lossy(&b).into_owned()).map_err(|_| SaveError::Changed)?;
-            if now != expected {
-                return Err(SaveError::Changed);
-            }
-            if source.is_some() && target.exists() {
-                return Err(SaveError::Exists);
-            }
-        }
+    let occupied = |p: &Path| std::fs::symlink_metadata(p).is_ok();
+    let same = |p: &Path| expected.is_some_and(|e| std::fs::read(p).is_ok_and(|b| String::from_utf8_lossy(&b) == e));
+    // A name that must not be there yet: a new template, or a rename's new name.
+    let fresh = expected.is_none() || source.is_some();
+    if expected.is_some() && !same(source.as_ref().unwrap_or(&target)) {
+        return Err(SaveError::Changed);
+    }
+    if fresh && occupied(&target) {
+        return Err(SaveError::Exists);
     }
     std::fs::create_dir_all(dir)?;
     // An edit of a linked template (dotfiles) writes the file it points at,
     // keeping the link.
-    let linked = source.is_none() && std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    let linked = !fresh && std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
     let target = if linked { std::fs::canonicalize(&target)? } else { target };
     let tmp = target.with_file_name(format!(".{name}.md.tmp-{}", std::process::id()));
     std::fs::write(&tmp, text)?;
-    if let Err(e) = std::fs::rename(&tmp, &target) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
-    }
+    let placed = if fresh {
+        // A hard link fails when the name was taken meanwhile, where a rename
+        // would replace it; a rename only where links aren't possible.
+        match std::fs::hard_link(&tmp, &target) {
+            Ok(()) => Ok(()),
+            Err(_) if occupied(&target) => Err(SaveError::Exists),
+            Err(_) => std::fs::rename(&tmp, &target).map_err(SaveError::from),
+        }
+    } else if !same(&target) {
+        Err(SaveError::Changed)
+    } else {
+        std::fs::rename(&tmp, &target).map_err(SaveError::from)
+    };
+    // Still there after a link or a refusal; gone after a rename.
+    let _ = std::fs::remove_file(&tmp);
+    placed?;
     if let Some(old) = source {
         crate::trash::trash(&old).map_err(SaveError::OldKept)?;
     }
@@ -472,19 +481,33 @@ name=$1; text=$2; mode=$3; expected=$4; previous=$5
 mkdir -p "$d" || exit 6
 f="$d/$name.md"; src=$f
 if [ -n "$previous" ] && [ "$previous" != "$name" ]; then src="$d/$previous.md"; fi
+same() {{ cur=$(cat "$1" 2>/dev/null; printf x); cur=${{cur%x}}; [ -f "$1" ] && [ "$cur" = "$expected" ]; }}
+taken() {{ [ -e "$f" ] || [ -L "$f" ]; }}
 if [ "$mode" = new ]; then
-  [ -e "$f" ] && exit 4
+  taken && exit 4
 else
-  [ -f "$src" ] || exit 5
-  cur=$(cat "$src"; printf x); cur=${{cur%x}}
-  [ "$cur" = "$expected" ] || exit 5
-  if [ "$src" != "$f" ] && [ -e "$f" ]; then exit 4; fi
+  same "$src" || exit 5
+  if [ "$src" != "$f" ] && taken; then exit 4; fi
 fi
 if [ "$src" = "$f" ] && [ -L "$f" ]; then
+  # A linked template (dotfiles): the file it points at gets the edit.
+  same "$f" || exit 5
   printf '%s' "$text" > "$f" || exit 6
 else
   tmp="$d/.$name.md.tmp.$$"
-  printf '%s' "$text" > "$tmp" && mv -f "$tmp" "$f" || {{ rm -f "$tmp"; exit 6; }}
+  printf '%s' "$text" > "$tmp" || {{ rm -f "$tmp"; exit 6; }}
+  if [ "$mode" = new ] || [ "$src" != "$f" ]; then
+    # A new name: ln fails when it was taken meanwhile, where mv would replace it.
+    if ! ln "$tmp" "$f" 2>/dev/null; then
+      if taken; then rm -f "$tmp"; exit 4; fi
+      mv "$tmp" "$f" || {{ rm -f "$tmp"; exit 6; }}
+    fi
+    rm -f "$tmp"
+  else
+    # An edit: compared again right before the file is replaced.
+    same "$f" || {{ rm -f "$tmp"; exit 5; }}
+    mv -f "$tmp" "$f" || {{ rm -f "$tmp"; exit 6; }}
+  fi
 fi
 if [ "$src" != "$f" ]; then trash_file "$src" || exit 7; fi
 "#
@@ -638,6 +661,10 @@ mod tests {
         assert!(matches!(save(&d, "taken", two, Some(two), Some("rev")), Err(SaveError::Exists)));
         assert!(matches!(save(&d, "gone", two, Some(two), Some("missing")), Err(SaveError::Changed)));
         assert!(d.join("rev.md").exists(), "a refused rename leaves the file");
+        // (A rename that succeeds would put rev.md in this computer's trash: not here.)
+        save(&d, "fresh", two, None, None).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| !n.starts_with('.')), "no temporary file left: {names:?}");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -679,7 +706,7 @@ mod tests {
         let d = tmp("sh");
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for tool in ["cat", "mkdir", "mv", "rm", "date"] {
+        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln"] {
             let found = ["/bin", "/usr/bin"].iter().map(|p| Path::new(p).join(tool)).find(|p| p.exists()).unwrap();
             std::os::unix::fs::symlink(found, bin.join(tool)).unwrap();
         }

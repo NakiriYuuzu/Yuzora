@@ -63,6 +63,7 @@
   "install_go": "I trust it: install",
   "installed": "Installed. New mods load on their own.",
   "install_errors": {
+    "stale": "That plan is out of date: pick the folder again.",
     "not_a_mod": "That folder has no main.js, and no mods/ or layouts/ folder.",
     "inside_home": "That folder is already in Yuzora's home.",
     "too_big": "That folder is too big to be a mod (over 2000 files or 64 MB).",

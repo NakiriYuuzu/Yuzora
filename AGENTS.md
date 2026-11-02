@@ -67,7 +67,7 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 - mods：`yuzora-settings-general`、`-templates`、`-mods`（設定頁）與 `-launch`（「從模板啟動」對話框，`place: none`）。
 - 上游改動只有 `app/defaults/frame/settings/main.js` 帶 `// yuzora(L6):` 的行；邏輯在新檔 `frame/settings/yuzora.js`，字串在 `frame/settings/i18n/`。
 - 測試：`cargo test --locked -p yuzora-settings`；mods 用 `scripts/yuzora/check-mods yuzora-settings-general yuzora-settings-templates yuzora-settings-launch yuzora-settings-mods`；frame 由 `app/src/mods/render_tests.rs` 守，測試環境沒有任何 Yuzora 設定頁，frame 在 `settingsPages()` 為空時也要照常畫出。
-- 測遠端模板腳本時不得碰到真正的垃圾桶：測試的 PATH 只放 cat／mkdir／mv／rm／date。
+- 測遠端模板腳本時不得碰到真正的垃圾桶：測試的 PATH 只放 cat／mkdir／mv／rm／date／ln。
 - 設計與決策：`docs/beta2/settings.md`。
 <!-- yuzora:lane:L6:end -->
 

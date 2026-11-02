@@ -156,7 +156,8 @@ export default class Mods extends View {
     if (!i?.plan || i.busy) return;
     i.busy = true;
     cx.spawn(async (cx) => {
-      const r = await installFolder(i.path);
+      // The files the plan read, whatever the folder holds by now.
+      const r = await installFolder(i.plan.token);
       this.install = r.ok ? { path: i.path, plan: r.plan, done: true } : { path: i.path, error: r.code, message: r.message };
       this.refresh(cx);
     });

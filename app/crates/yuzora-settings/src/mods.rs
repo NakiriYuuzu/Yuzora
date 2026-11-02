@@ -266,6 +266,9 @@ pub struct Plan {
     pub reaches: Vec<&'static str>,
     pub files: usize,
     pub bytes: u64,
+    /// What gets written, as read when planned: (path under the home, bytes).
+    /// [`write`] writes these, so what's installed is what was shown.
+    pub pieces: Vec<(PathBuf, Vec<u8>)>,
 }
 
 impl Plan {
@@ -349,6 +352,16 @@ fn files_in(dir: &Path, root: bool, out: &mut Vec<PathBuf>) -> std::io::Result<(
     Ok(())
 }
 
+/// Something is at `path`: a file, a folder, or a link (even a broken one).
+fn occupied(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+/// The folder's own name, as its code and layouts refer to it.
+fn folder_name(dir: &Path) -> String {
+    dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 /// A folder name as a mod name: anything but letters, digits, `-` and `_` becomes `-`.
 fn mod_name(dir: &Path) -> String {
     let raw = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -389,7 +402,7 @@ pub fn plan(source: &Path, home: &Path) -> Result<Plan, InstallError> {
         }
         plan.kind = "bundle";
         plan.keys = source.join("keys.json").is_file();
-        let taken = |n: &str| home.join("layouts").join(format!("{n}.json")).exists();
+        let taken = |n: &str| occupied(&home.join("layouts").join(format!("{n}.json")));
         let mut chosen: Vec<String> = Vec::new();
         for l in layouts {
             let base = l.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -405,27 +418,47 @@ pub fn plan(source: &Path, home: &Path) -> Result<Plan, InstallError> {
     let mut chosen: Vec<String> = Vec::new();
     for dir in mod_dirs {
         let base = mod_name(&dir);
-        let name = free_name(|n| home.join("mods").join(n).exists() || chosen.iter().any(|c| c == n) || (n != base && bundled.iter().any(|b| b == n)), &base);
+        let name = free_name(|n| occupied(&home.join("mods").join(n)) || chosen.iter().any(|c| c == n) || (n != base && bundled.iter().any(|b| b == n)), &base);
         chosen.push(name.clone());
         plan.mods.push((dir, name));
     }
-    let mut files = Vec::new();
-    for (dir, _) in &plan.mods {
+    // References name the folder as it is (`mods/my mod/`), installed as `my-mod`.
+    let renames: Vec<(String, String)> = plan.mods.iter().map(|(d, to)| (folder_name(d), to.clone())).filter(|(a, b)| a != b).collect();
+    // (read from, written to under the home, the renames its text gets): a
+    // mod's files rename only the mod itself, layouts every renamed mod.
+    let mut entries: Vec<(PathBuf, PathBuf, Vec<(String, String)>)> = Vec::new();
+    for (dir, to) in &plan.mods {
+        let mut files = Vec::new();
         files_in(dir, true, &mut files).map_err(|_| InstallError::TooBig)?;
+        let own: Vec<(String, String)> = renames.iter().filter(|(a, _)| *a == folder_name(dir)).cloned().collect();
+        for f in files {
+            let rel = f.strip_prefix(dir).map_err(std::io::Error::other)?.to_path_buf();
+            entries.push((f, Path::new("mods").join(to).join(rel), own.clone()));
+        }
     }
-    files.extend(plan.layouts.iter().map(|(p, _)| p.clone()));
-    plan.files = files.len();
+    for (file, to) in &plan.layouts {
+        entries.push((file.clone(), Path::new("layouts").join(format!("{to}.json")), renames.clone()));
+    }
+    plan.files = entries.len();
+    if plan.files > MAX_FILES || entries.iter().map(|(f, ..)| std::fs::metadata(f).map_or(0, |m| m.len())).sum::<u64>() > MAX_BYTES {
+        return Err(InstallError::TooBig);
+    }
     let mut reaches = std::collections::BTreeSet::new();
-    for f in &files {
-        let size = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
-        plan.bytes += size;
-        if plan.files > MAX_FILES || plan.bytes > MAX_BYTES {
+    for (from, to, renames) in entries {
+        let bytes = std::fs::read(&from)?;
+        let bytes = match std::str::from_utf8(&bytes) {
+            Ok(text) if !renames.is_empty() => renames.iter().fold(text.to_owned(), |t, (a, b)| rewrite(&t, a, b)).into_bytes(),
+            _ => bytes,
+        };
+        plan.bytes += bytes.len() as u64;
+        if plan.bytes > MAX_BYTES {
             return Err(InstallError::TooBig);
         }
-        let is_code = f.extension().is_some_and(|e| matches!(e.to_str(), Some("js" | "mjs" | "ts")));
-        if is_code && let Ok(text) = std::fs::read_to_string(f) {
-            reaches.extend(reach(&text));
+        let is_code = to.extension().is_some_and(|e| matches!(e.to_str(), Some("js" | "mjs" | "ts")));
+        if is_code && let Ok(text) = std::str::from_utf8(&bytes) {
+            reaches.extend(reach(text));
         }
+        plan.pieces.push((to, bytes));
     }
     plan.reaches = reaches.into_iter().collect();
     Ok(plan)
@@ -448,57 +481,31 @@ pub fn reach(code: &str) -> Vec<&'static str> {
     out
 }
 
-fn copy_dir(from: &Path, to: &Path, root: bool, renames: &[(String, String)]) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for e in std::fs::read_dir(from)? {
-        let e = e?;
-        let name = e.file_name().to_string_lossy().into_owned();
-        if skipped(&name, root) {
-            continue;
-        }
-        let ty = e.file_type()?;
-        let dest = to.join(&name);
-        if ty.is_dir() {
-            copy_dir(&e.path(), &dest, false, renames)?;
-        } else if ty.is_file() {
-            copy_file(&e.path(), &dest, renames)?;
-        }
-    }
-    Ok(())
-}
-
-fn copy_file(from: &Path, to: &Path, renames: &[(String, String)]) -> std::io::Result<()> {
-    let bytes = std::fs::read(from)?;
-    match std::str::from_utf8(&bytes) {
-        Ok(text) if !renames.is_empty() => std::fs::write(to, renames.iter().fold(text.to_owned(), |t, (a, b)| rewrite(&t, a, b))),
-        _ => std::fs::write(to, bytes),
-    }
-}
-
-/// Installs what [`plan`] decides (planned again, so nothing changed since).
-/// A failure removes what this install wrote.
-pub fn install(source: &Path, home: &Path) -> Result<Plan, InstallError> {
-    let plan = plan(source, home)?;
-    let renames: Vec<(String, String)> = plan.mods.iter().map(|(d, to)| (mod_name(d), to.clone())).filter(|(a, b)| a != b).collect();
+/// Writes what `plan` read, never over anything: each mod folder is made new
+/// and each file created new, so a name taken since (a link, even a broken
+/// one, included) fails instead of being followed or replaced. A failure
+/// removes what this install wrote.
+pub fn write(plan: &Plan, home: &Path) -> Result<(), InstallError> {
+    use std::io::Write as _;
     let mut written: Vec<PathBuf> = Vec::new();
     let result = (|| -> std::io::Result<()> {
-        for (dir, to) in &plan.mods {
-            let target = home.join("mods").join(to);
-            if target.exists() {
-                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{to} appeared meanwhile")));
-            }
-            written.push(target.clone());
-            let own: Vec<(String, String)> = renames.iter().filter(|(a, _)| *a == mod_name(dir)).cloned().collect();
-            copy_dir(dir, &target, true, &own)?;
-        }
+        std::fs::create_dir_all(home.join("mods"))?;
         std::fs::create_dir_all(home.join("layouts"))?;
-        for (file, to) in &plan.layouts {
-            let target = home.join("layouts").join(format!("{to}.json"));
-            if target.exists() {
-                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{to}.json appeared meanwhile")));
+        for (_, to) in &plan.mods {
+            let target = home.join("mods").join(to);
+            std::fs::create_dir(&target)?;
+            written.push(target);
+        }
+        for (to, bytes) in &plan.pieces {
+            let path = home.join(to);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
             }
-            written.push(target.clone());
-            copy_file(file, &target, &renames)?;
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+            if to.starts_with("layouts") {
+                written.push(path);
+            }
+            file.write_all(bytes)?;
         }
         Ok(())
     })();
@@ -508,6 +515,13 @@ pub fn install(source: &Path, home: &Path) -> Result<Plan, InstallError> {
         }
         return Err(e.into());
     }
+    Ok(())
+}
+
+/// [`plan`], then [`write`].
+pub fn install(source: &Path, home: &Path) -> Result<Plan, InstallError> {
+    let plan = plan(source, home)?;
+    write(&plan, home)?;
     Ok(plan)
 }
 
@@ -625,6 +639,59 @@ mod tests {
         assert!(!home.join("mods/board-2/RECIPE.md").exists() && !home.join("mods/board-2/.git").exists());
         assert!(matches!(plan(&home.join("mods/board"), &home), Err(InstallError::Inside)));
         assert!(matches!(plan(&root.join("share"), &home), Err(InstallError::NotAMod)));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn writes_what_was_planned_not_what_changed_since() {
+        let root = tmp("install-snapshot");
+        let home = root.join("home");
+        let src = root.join("share/board");
+        write(&src.join("main.js"), "shown");
+        let p = plan(&src, &home).unwrap();
+        write(&src.join("main.js"), r#"exec("rm")"#);
+        write(&src.join("extra.js"), "added");
+        super::write(&p, &home).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join("mods/board/main.js")).unwrap(), "shown");
+        assert!(!home.join("mods/board/extra.js").exists());
+        assert!(super::write(&p, &home).is_err(), "never over what's there");
+        assert_eq!(std::fs::read_to_string(home.join("mods/board/main.js")).unwrap(), "shown");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn references_name_the_folder_as_it_was() {
+        let root = tmp("install-spaced");
+        let home = root.join("home");
+        let src = root.join("share");
+        write(&src.join("mods/my mod/main.js"), r#"svg("mods/my mod/icon.svg")"#);
+        write(&src.join("layouts/deck.json"), r#"{"mod": "my mod"}"#);
+        let p = install(&src, &home).unwrap();
+        assert_eq!(p.to_json()["mods"], json!([{ "from": "my mod", "as": "my-mod" }]));
+        assert_eq!(std::fs::read_to_string(home.join("mods/my-mod/main.js")).unwrap(), r#"svg("mods/my-mod/icon.svg")"#);
+        assert_eq!(std::fs::read_to_string(home.join("layouts/deck.json")).unwrap(), r#"{"mod": "my-mod"}"#);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A broken link where a layout would go is taken: nothing is written
+    /// through it, outside the home.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_way_is_never_followed() {
+        let root = tmp("install-link");
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join("layouts")).unwrap();
+        std::fs::create_dir_all(home.join("mods")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside.json"), home.join("layouts/deck.json")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside-mod"), home.join("mods/side")).unwrap();
+        let src = root.join("share");
+        write(&src.join("layouts/deck.json"), r#"{"mod":"side"}"#);
+        write(&src.join("mods/side/main.js"), "s");
+        let p = install(&src, &home).unwrap();
+        assert_eq!(p.to_json()["layouts"], json!([{ "from": "deck", "as": "deck-2" }]));
+        assert_eq!(p.to_json()["mods"], json!([{ "from": "side", "as": "side-2" }]));
+        assert!(!root.join("outside.json").exists() && !root.join("outside-mod").exists());
+        assert_eq!(std::fs::read_to_string(home.join("layouts/deck-2.json")).unwrap(), r#"{"mod":"side-2"}"#);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
