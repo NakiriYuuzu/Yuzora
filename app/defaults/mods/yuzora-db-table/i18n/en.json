@@ -2,7 +2,11 @@
   "title": "Table",
   "pick": "Pick a table or view in the Database sidebar.",
   "loading": "Loading…",
-  "tab": { "data": "Data", "structure": "Structure", "sql": "SQL" },
+  "tab": {
+    "data": "Data",
+    "structure": "Structure",
+    "sql": "SQL"
+  },
   "run": "Run ⌘↵",
   "stop": "Stop",
   "run_sql_tip": "Run the SQL (the selection when there is one)",
@@ -21,5 +25,8 @@
     "nullable": "Null",
     "default": "Default",
     "key": "Key"
-  }
+  },
+  "unsaved": "{count} edited cells aren't written back yet",
+  "unsaved_drop": "Discard and go on",
+  "unsaved_keep": "Keep editing"
 }

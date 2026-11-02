@@ -201,9 +201,13 @@ pub fn host_module() -> HostModule {
             let config = connection_config(a, 0)?;
             let password = a.get(1).and_then(HostValue::as_str).map(str::to_owned);
             Ok(spawn(async move {
+                let before = config::get(&config.id).ok();
                 let saved = config::save(config, password.as_deref())?;
-                // New settings: reconnect on next use.
-                session::disconnect(&saved.id);
+                // Connecting differently: reconnect on next use. A rename
+                // leaves open connections (and their running work) alone.
+                if password.is_some() || before.is_none_or(|b| !b.connects_like(&saved)) {
+                    session::disconnect(&saved.id);
+                }
                 Ok(saved)
             }))
         })
@@ -282,7 +286,6 @@ pub fn host_module() -> HostModule {
         .function("release", |a| {
             let owner = a.string(0)?;
             session::release_owner(owner);
-            session::forget_jobs(owner);
             grid::release(&format!("{owner}:"));
             editor::release(&format!("{owner}:"));
             Ok(HostValue::Null)

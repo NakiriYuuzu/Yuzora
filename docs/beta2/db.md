@@ -50,28 +50,96 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 ## 查詢與結果集
 
 - 一個工作（job）跑一段 SQL，可以有多個 statement，每個 statement 一個結果集（有列的、或只有 affected 的）。
+- 一個 pane（owner）只顯示最新的工作：開新工作時，同一個 owner 還在跑的工作會被取消，舊工作和它的結果集一起釋放。`release(owner)` 也會先取消，再關連線。
+- 開表時 `COUNT(*)` 在列讀完後、工作結束前執行，所以按「停止」也能停掉 count。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
-- 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。超過時停止讀取並標成 truncated，畫面顯示「已載入 N 列（上限）」。
+- 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
 - 排序在用戶端，只排已讀進來的列（排的是檢視的索引，不搬資料）。被截斷的結果要完整排序，請在 SQL 加 `ORDER BY`。
 - 開表時另外跑一次 `COUNT(*)`（MSSQL 是 `COUNT_BIG`），狀態列顯示「X 列 · 顯示 a–b · N ms」。
 
 ## 編輯與寫回
 
 - 只有「開表」產生的結果集可以編輯，而且資料表必須有 primary key；沒有就停用並顯示原因（`edit.no_key`）。
-- 雙擊或 Enter 編輯，⌘⌫ 設 NULL，Esc 取消。改回原值等於沒改。
+- 雙擊或 Enter 編輯，⌘⌫ 設 NULL，Esc 取消。打開編輯框卻沒改內容就離開，不算修改；改回原值也等於沒改。
+- 編輯框只有一行：含換行的文字和二進位值不能在表格內編輯（底部會說明），請在 SQL 分頁用 `UPDATE`。
+- 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「捨棄並繼續」或「繼續編輯」。
+- 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。
 - 底部顯示「N 個儲存格已修改 · 捨棄 · 寫回」。寫回在一個交易內，每列用 primary key 定位，每列影響的列數必須剛好是 1，否則整筆 rollback 並顯示錯誤。key 是 NULL 的列拒絕寫回。
 - PostgreSQL 用文字格式參數寫回（server 依欄位型別解析），所以 numeric、interval、enum、array 等都能原文 round-trip。
 
 ## 引擎
 
-（引擎細節、TLS 對應、效能數字：見下一節，隨引擎實作補上。）
+三個引擎對上都是 `engine::Conn`，`execute(sql, &mut dyn RowSink)` 以每批 512 列交出結果；`RowSink::rows` 回 `false` 時引擎停止讀取。引擎自己產生的錯誤訊息走 crate 的 i18n（`engine.*`），伺服器回的訊息照原文顯示，並保留 SQLSTATE／Msg 編號、DETAIL、HINT、POSITION。
+
+### PostgreSQL
+
+- tokio-postgres 0.7＋tokio-postgres-rustls，rustls 用 ring provider，不呼叫 `install_default`。
+- 沒指定資料庫時依序試 `postgres`、與使用者同名的資料庫，只有遇到 SQLSTATE `3D000`、`42501`、`55000` 才換下一個。
+- 欄位型別用 `prepare` 取得；值用 `simple_query_raw` 讀文字格式，所以 numeric、interval、inet、enum、array、JSON 大整數都照伺服器的原文顯示。
+- 取消用 cancel token，連線用的 TLS connector 也用在 cancel 上。連線在取消後可以繼續使用。
+- TLS 照 libpq 的語意：
+
+| 模式 | 行為 |
+| --- | --- |
+| `disable` | 不用 TLS |
+| `prefer` | 伺服器支援就用 TLS，不驗憑證 |
+| `require` | 一定要 TLS，不驗憑證鏈（仍驗 handshake 簽章） |
+| `verify-ca` | 驗憑證鏈，不驗主機名稱 |
+| `verify-full` | 驗憑證鏈與主機名稱 |
+
+  信任的根憑證是 webpki roots，再加上連線設定的 CA 檔（PEM，可以有多張，`~` 會展開）。
+- rustls 不接受本身是 CA 的伺服器憑證（`openssl req -x509` 自簽的通常就是這種），也不接受 X.509 v1 憑證；遇到時錯誤訊息會說明，請改用由 CA 簽發的伺服器憑證，或改用 `require`。
+
+### SQL Server
+
+- 使用 Yuzora 的 tiberius 0.12.3 patch（`app/vendor/tiberius-0.12.3-yuzora`）。
+- 只在單獨一行的 `GO` 切 batch，`GO 5` 這種帶次數的寫法不支援。一個 batch 可以有多個結果集。
+- 一個 batch 的 affected 是所有非結果集 DONE 計數的總和，可能包含 trigger 或 procedure 內部的筆數。
+- 寫回用 `UPDATE …; SELECT ROWCOUNT_BIG();` 確認每列剛好影響一列，不受 trigger 影響。
+- tiberius 沒有 attention API，所以取消（包括達到列數上限提早停止）的做法是斷開 socket，下一次使用時重新連線；之前在連線上用 `USE` 切換的資料庫狀態會遺失。
+- TLS 對應：
+
+| 模式 | 行為 |
+| --- | --- |
+| `disable` | `NotSupported` |
+| `prefer` | `Off`：只加密登入。tiberius 在 `On` 遇到不強制加密的伺服器會 panic |
+| `require` | `Required`，信任伺服器憑證 |
+| `verify-ca`／`verify-full` | `Required`，有 CA 檔就用 `trust_cert_ca`。tiberius 固定會檢查主機名稱，所以 `verify-ca` 實際上等同 `verify-full` |
+
+- named instance 一定要指定 port（沒有 SQL Browser）。
+- `smalldatetime` 與 `datetime` 一律顯示成 `datetime`，因為 tiberius 分不出 nullable 的兩者。
+
+### SQLite
+
+- rusqlite（bundled）。所有工作都在 `spawn_blocking` 中執行，列以 channel 送回；取消用 `InterruptHandle`。
+- 檔案必須已經存在，不會自動建立。`read_only` 用 `SQLITE_OPEN_READ_ONLY` 開啟，`busy_timeout` 是 5 秒。
+- schema 樹只列 `main` 資料庫的物件。外鍵名稱是合成的（`fk_<id>`）。
+- 切句時會把 `CREATE TRIGGER … BEGIN … END;` 當成一整句。
+
+### DDL
+
+結構分頁的 DDL 是用系統目錄重建的近似結果：PostgreSQL 與 SQL Server 不含 storage options、partitioning、owner。view、procedure、function 取自資料庫本身保存的定義（`pg_get_viewdef`、`OBJECT_DEFINITION`），SQLite 取自 `sqlite_schema.sql`。
+
+## 效能
+
+量測方式：debug build 的測試 binary，`cargo test -p yuzora-db --test engines -- --ignored --nocapture --test-threads=1`。fixture 是 `tests/database/docker-compose.yml`。資料經過 `RowSink` 收集，這也是 grid 讀資料的同一條路徑。
+
+| 引擎 | 讀取量 | 第一批 | 總時間 | 吞吐 | 列資料記憶體 |
+| --- | --- | --- | --- | --- | --- |
+| PostgreSQL | 從 1,000,000 列的 `generate_series` 讀到約 100k 列後停止 | 38 ms | 148–162 ms | 62 萬–67 萬列／秒 | 約 15.5 MiB（161 B／列） |
+| SQL Server | 約 100k 列後停止 | 4.7–5.1 ms | 590–594 ms | 約 17 萬列／秒 | 約 13.5 MiB（140 B／列） |
+| SQLite | 1,000,000 列 | 0.4 ms | 439–478 ms | 209 萬–228 萬列／秒 | 約 101 MiB（105 B／列） |
+
+grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果大小無關。預設上限是 100,000 列。PostgreSQL 一列約 161 B，所以一個裝滿的結果集大約 16 MB。
 
 ## 已知限制
 
-- SSH tunnel 等 L4。
-- SQL Server 的 named instance 需要指定 port（沒有用 SQL Browser）。
+- SSH tunnel：等 L4。
+- SQL Server：named instance 需要指定 port；取消會斷線重連；`GO n` 不支援。
 - 排序只排已載入的列。
 - 「其他物件」（function、procedure、sequence、trigger）只列在 schema 樹，還不能開啟定義。
+- 含換行的文字與二進位值不能在表格內編輯。
+- `yuzora.status.db`、`yuzora.badge.database` 是共用狀態，會寫進 `shared.json`。App 重開後，在側欄的資料庫模式重新繪製之前，狀態列可能還顯示上一次的值。
 
 ## 後續整合
 

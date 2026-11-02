@@ -44,7 +44,7 @@ where
     runtime().spawn(work);
 }
 
-/// Runs `work` to completion on the runtime from a plain thread (tests, `Drop`).
+/// Runs `work` to completion on the runtime from a plain thread (tests).
 pub fn block_on<F: Future>(work: F) -> F::Output {
     runtime().block_on(work)
 }

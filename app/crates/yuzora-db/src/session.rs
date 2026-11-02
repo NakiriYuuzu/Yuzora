@@ -91,8 +91,13 @@ fn pool() -> MutexGuard<'static, HashMap<Key, Arc<Live>>> {
 }
 
 fn live(key: &Key) -> Arc<Live> {
-    pool()
-        .entry(key.clone())
+    let mut pool = pool();
+    if key.2 == META && !pool.contains_key(key) {
+        // The sidebar browses one database of a connection at a time: the
+        // catalog connection to the one it left goes.
+        pool.retain(|(c, d, o), _| !(o == META && c == &key.0 && d != &key.1));
+    }
+    pool.entry(key.clone())
         .or_insert_with(|| Arc::new(Live { conn: Default::default(), canceller: Mutex::new(None) }))
         .clone()
 }
@@ -146,7 +151,11 @@ pub async fn lease(connection: &str, database: Option<&str>, owner: &str) -> DbR
         *guard = None;
     }
     if guard.is_none() {
-        let spec = config::get(connection).and_then(|c| spec_for(c, database));
+        // The credential store may block (a keychain prompt): not on a worker.
+        let (id, db) = (connection.to_owned(), database.map(str::to_owned));
+        let spec = tokio::task::spawn_blocking(move || config::get(&id).and_then(|c| spec_for(c, db.as_deref())))
+            .await
+            .unwrap_or_else(|e| Err(DbError::Io(e.to_string())));
         set_status(connection, |s| {
             if s.state != State::Connected {
                 s.state = State::Connecting;
@@ -182,8 +191,10 @@ fn canceller(connection: &str, database: Option<&str>, owner: &str) -> Option<Ca
     c
 }
 
-/// Closes every connection `owner` holds (a pane closed).
+/// Ends everything `owner` (a pane) has: its running work is cancelled, its
+/// jobs and results forgotten, its connections closed.
 pub fn release_owner(owner: &str) {
+    supersede(owner);
     pool().retain(|(_, _, o), _| o != owner);
     results::release_owner(owner);
 }
@@ -258,6 +269,8 @@ fn jobs() -> MutexGuard<'static, (JobId, HashMap<JobId, Job>)> {
 }
 
 fn new_job(connection: &str, database: Option<&str>, owner: &str) -> JobId {
+    // A pane shows its newest job only: the ones before it stop and go.
+    supersede(owner);
     let mut all = jobs();
     let id = all.0;
     all.0 += 1;
@@ -326,6 +339,7 @@ pub async fn job_after(id: JobId, seen: u64) -> DbResult<JobState> {
             None
         } else {
             let (tx, rx) = async_channel::bounded(1);
+            job.watchers.retain(|w| !w.is_closed());
             job.watchers.push(tx);
             Some(rx)
         }
@@ -354,9 +368,23 @@ pub fn cancel(id: JobId) {
     }
 }
 
-/// Forgets finished jobs of `owner` (keeps their results).
-pub fn forget_jobs(owner: &str) {
-    jobs().1.retain(|_, j| j.owner != owner || j.running);
+/// Cancels `owner`'s running jobs and forgets all of them with their results.
+/// A job still winding down finds itself gone: it stops reading and keeps
+/// nothing it makes after this (see [`JobSink::start`]).
+fn supersede(owner: &str) {
+    let ids: Vec<JobId> = jobs().1.iter().filter(|(_, j)| j.owner == owner).map(|(id, _)| *id).collect();
+    for id in &ids {
+        cancel(*id);
+    }
+    let gone: Vec<Job> = {
+        let mut all = jobs();
+        ids.iter().filter_map(|id| all.1.remove(id)).collect()
+    };
+    for job in gone {
+        for r in job.results {
+            results::release(r);
+        }
+    }
 }
 
 /// Feeds one job's statements into results.
@@ -376,6 +404,10 @@ impl JobSink {
     fn start(&mut self) -> Arc<Mutex<ResultSet>> {
         let set = results::create(&self.owner, &self.statement);
         let id = results::lock(&set).id;
+        if !jobs().1.contains_key(&self.job) {
+            // Superseded or released: nobody will look at this one.
+            results::release(id);
+        }
         update_job(self.job, |j| j.results.push(id));
         self.current = Some(set.clone());
         set
@@ -471,9 +503,9 @@ pub fn start_query(connection: &str, database: Option<&str>, owner: &str, sql: &
             Ok(mut l) => l.conn().execute(&sql, &mut sink).await,
             Err(e) => Err(e),
         };
-        let ok = outcome.is_ok();
+        // In the history before the job reads as finished.
+        crate::history::record(&connection, &sql, started.elapsed().as_millis() as u64, outcome.is_ok());
         finish_job(id, outcome, &mut sink);
-        crate::history::record(&connection, &sql, started.elapsed().as_millis() as u64, ok);
     });
     id
 }
@@ -499,7 +531,8 @@ pub fn open_table(
                 return;
             }
         };
-        let limit = max_rows() as u64;
+        // One row past the cap, so a capped table reads as truncated.
+        let limit = max_rows() as u64 + 1;
         let sql = engine::select_sql(engine, &table, order.as_ref().map(|(c, d)| (c.as_str(), *d)), limit);
         let info = describe(&connection, database.as_deref(), &table).await;
         let mut sink = JobSink::new(id, &owner, &sql);
@@ -530,21 +563,19 @@ pub fn open_table(
             }
             r.version += 1;
         }
-        finish_job(id, outcome, &mut sink);
-        // The row count, after the rows: a slow count never delays them.
-        let mut one = FirstCell(None);
-        let counted = l.conn().execute(&engine::count_sql(engine, &table), &mut one).await;
-        drop(l);
-        if let (Ok(()), Some(n), Some(set)) = (counted, one.0, last_result(id)) {
-            let rid = {
+        // The row count, after the rows (a slow count never delays them) and
+        // while the job still runs, so Stop reaches it too.
+        if outcome.is_ok() && !job_cancelled(id) {
+            let mut one = FirstCell(None);
+            let counted = l.conn().execute(&engine::count_sql(engine, &table), &mut one).await;
+            if let (Ok(()), Some(n), Some(set)) = (counted, one.0, last_result(id)) {
                 let mut r = results::lock(&set);
                 r.total = n.display().trim().parse().ok();
                 r.version += 1;
-                r.id
-            };
-            results::changed(rid);
-            update_job(id, |_| {});
+            }
         }
+        drop(l);
+        finish_job(id, outcome, &mut sink);
     });
     id
 }
@@ -602,15 +633,21 @@ pub fn row_edits(set: &ResultSet) -> DbResult<(EditTarget, Vec<RowEdit>)> {
 /// its values.
 pub async fn write_back(result: ResultId) -> DbResult<u64> {
     let set = results::get(result).ok_or_else(|| DbError::NotFound(String::new()))?;
-    let (target, edits) = {
+    let prepared = {
         let mut r = results::lock(&set);
-        let out = row_edits(&r)?;
-        r.writing = true;
-        r.write_error = None;
+        let out = row_edits(&r).map(|(target, edits)| (target, edits, r.edits.clone()));
+        match &out {
+            Ok(_) => {
+                r.writing = true;
+                r.write_error = None;
+            }
+            Err(e) => r.write_error = Some(e.to_string()),
+        }
         r.version += 1;
         out
     };
     results::changed(result);
+    let (target, edits, written) = prepared?;
     let outcome = match lease(&target.connection, target.database.as_deref(), &target.owner).await {
         Ok(mut l) => l.conn().apply_edits(&target.table, &edits).await,
         Err(e) => Err(e),
@@ -619,7 +656,7 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
         let mut r = results::lock(&set);
         r.writing = false;
         match &outcome {
-            Ok(_) => r.commit_edits(),
+            Ok(_) => r.commit_edits(&written),
             Err(e) => r.write_error = Some(e.to_string()),
         }
         r.version += 1;

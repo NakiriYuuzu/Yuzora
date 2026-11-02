@@ -46,7 +46,12 @@ export default class DbQuery extends View {
   }
 
   conn() {
-    return connections().find((c) => c.id === this.connection) ?? null;
+    const now = Date.now();
+    if (!this.conns || now - this.connsAt > 1000) {
+      this.conns = connections();
+      this.connsAt = now;
+    }
+    return this.conns.find((c) => c.id === this.connection) ?? null;
   }
 
   loadDbs(cx) {
@@ -127,7 +132,7 @@ export default class DbQuery extends View {
       : st?.cancelled ? t("cancelled") : st?.error ? t("failed") : st ? t("finished", { ms: st.elapsedMs }) : "";
     return h_flex().h(28).flex_none().gap(6).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
       .child(chip("conn", conn?.name ?? t("pick_connection"), "conn"))
-      .when(Boolean(conn), (el) => el.child(chip("db", this.database ?? conn.database ?? t("default_db"), "db")))
+      .when(Boolean(conn), (el) => el.child(chip("db", this.database || conn.database || t("default_db"), "db")))
       .child(chip("history", t("history"), "history"))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(st?.error ? th.blocked : th.dim).child(status))
       .child(running

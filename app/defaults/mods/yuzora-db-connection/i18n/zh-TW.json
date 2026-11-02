@@ -49,5 +49,8 @@
     "saving": "儲存中…",
     "delete": "刪除",
     "confirm_delete": "確定刪除？"
+  },
+  "error": {
+    "port": "Port 必須是 1 到 65535 的整數"
   }
 }

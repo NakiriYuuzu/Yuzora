@@ -102,6 +102,8 @@ struct Editing {
     /// Index into the result's `rows` (not the view).
     row: usize,
     column: usize,
+    /// What the editor opened with: left as it was, nothing is edited.
+    initial: String,
     input: Entity<InputState>,
     _events: Subscription,
 }
@@ -121,6 +123,8 @@ pub struct Grid {
     resizing: Option<(usize, f32, f32)>,
     focus: FocusHandle,
     colors: Colors,
+    /// Why the last cell asked for couldn't be edited here.
+    notice: Option<String>,
     _watch: Option<Task<()>>,
 }
 
@@ -175,6 +179,7 @@ impl Grid {
             resizing: None,
             focus: cx.focus_handle(),
             colors: Colors::from_props(None),
+            notice: None,
             _watch: None,
         }
     }
@@ -191,6 +196,7 @@ impl Grid {
         self.anchor = None;
         self.head = None;
         self.editing = None;
+        self.notice = None;
         self.resizing = None;
         self.list = UniformListScrollHandle::new();
         self.hscroll = ScrollHandle::new();
@@ -253,6 +259,7 @@ impl Grid {
             self.anchor = Some(pos);
         }
         self.head = Some(pos);
+        self.notice = None;
         self.list.scroll_to_item(pos.0, ScrollStrategy::Nearest);
         cx.notify();
     }
@@ -293,14 +300,28 @@ impl Grid {
 
     fn start_editing(&mut self, pos: Pos, window: &mut Window, cx: &mut Context<Self>) {
         let Some(set) = self.set.clone() else { return };
-        let (row, value) = {
+        let outcome = {
             let r = results::lock(&set);
             if !r.editable() || r.writing || pos.0 >= r.len() || pos.1 >= r.columns.len() {
                 return;
             }
             let row = r.row_index(pos.0);
-            let value = r.cell(row, pos.1).filter(|c| !c.is_null()).map(|c| c.display().into_owned()).unwrap_or_default();
-            (row, value)
+            // The editor is one line of text: a value it can't hold whole
+            // (line breaks, bytes) would come back changed.
+            let cell = r.cell(row, pos.1);
+            if cell.is_some_and(|c| matches!(c, Cell::Bytes(_)) || matches!(c, Cell::Text(s) if s.contains(['\n', '\r']))) {
+                Err(t("grid.not_inline", &[]))
+            } else {
+                Ok((row, cell.filter(|c| !c.is_null()).map(|c| c.display().into_owned()).unwrap_or_default()))
+            }
+        };
+        let (row, value) = match outcome {
+            Ok(found) => found,
+            Err(why) => {
+                self.notice = Some(why);
+                cx.notify();
+                return;
+            }
         };
         self.commit_editing(cx);
         let input = cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
@@ -316,7 +337,7 @@ impl Grid {
             InputEvent::Blur => this.commit_editing(cx),
             _ => {}
         });
-        self.editing = Some(Editing { row, column: pos.1, input, _events: events });
+        self.editing = Some(Editing { row, column: pos.1, initial: value, input, _events: events });
         cx.notify();
     }
 
@@ -324,13 +345,13 @@ impl Grid {
     fn commit_editing(&mut self, cx: &mut Context<Self>) {
         let (Some(editing), Some(set)) = (self.editing.take(), self.set.clone()) else { return };
         let value = editing.input.read(cx).value().to_string();
+        if value == editing.initial {
+            // Opened and left: a NULL stays NULL, 5 stays the number 5.
+            return cx.notify();
+        }
         let id = {
             let mut r = results::lock(&set);
-            let was_null = r.cell(editing.row, editing.column).is_some_and(Cell::is_null);
-            // An untouched NULL stays NULL rather than becoming ''.
-            if !(was_null && value.is_empty()) {
-                r.set_edit(editing.row, editing.column, Cell::text(value));
-            }
+            r.set_edit(editing.row, editing.column, Cell::text(value));
             r.id
         };
         results::changed(id);
@@ -628,6 +649,7 @@ impl Grid {
             .when(edits == 0 && r.write_error.is_none(), |d| {
                 d.when_some(r.not_editable.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
             })
+            .when_some(self.notice.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
             .when_some(r.error.clone().filter(|_| r.columns.is_empty()), |d, e| {
                 d.child(div().min_w_0().truncate().text_color(c.error).child(e))
             })

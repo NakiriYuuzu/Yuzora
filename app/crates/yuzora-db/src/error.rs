@@ -42,23 +42,6 @@ impl fmt::Display for DbError {
 
 impl std::error::Error for DbError {}
 
-impl DbError {
-    /// A stable name for scripts (`error.kind`).
-    pub fn kind(&self) -> &'static str {
-        match self {
-            DbError::Config(_) => "config",
-            DbError::Connect(_) => "connect",
-            DbError::Tls(_) => "tls",
-            DbError::Query(_) => "query",
-            DbError::Cancelled => "cancelled",
-            DbError::NotFound(_) => "not_found",
-            DbError::NotEditable(_) => "not_editable",
-            DbError::Secret(_) => "secret",
-            DbError::Io(_) => "io",
-        }
-    }
-}
-
 impl From<yuzora_core::secrets::SecretError> for DbError {
     fn from(e: yuzora_core::secrets::SecretError) -> Self {
         DbError::Secret(e.to_string())

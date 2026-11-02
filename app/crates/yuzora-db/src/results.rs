@@ -151,11 +151,15 @@ impl ResultSet {
         self.version += 1;
     }
 
-    /// Makes written edits the rows' values.
-    pub fn commit_edits(&mut self) {
-        for ((row, column), value) in std::mem::take(&mut self.edits) {
+    /// Makes the `written` edits the rows' values. An edit made while they
+    /// were being written stays pending.
+    pub fn commit_edits(&mut self, written: &BTreeMap<(u32, u32), Cell>) {
+        for (&(row, column), value) in written {
             if let Some(cell) = self.rows.get_mut(row as usize).and_then(|r| r.get_mut(column as usize)) {
-                *cell = value;
+                *cell = value.clone();
+            }
+            if self.edits.get(&(row, column)) == Some(value) {
+                self.edits.remove(&(row, column));
             }
         }
         if let Some(sort) = self.sort {
@@ -312,9 +316,12 @@ mod tests {
         r.set_edit(0, 1, Cell::text("b"));
         assert!(r.edits.is_empty());
         r.set_edit(1, 1, Cell::text("x"));
-        r.commit_edits();
+        let written = r.edits.clone();
+        r.set_edit(2, 1, Cell::text("during"));
+        r.commit_edits(&written);
         assert_eq!(r.rows[1][1], Cell::text("x"));
-        assert!(r.edits.is_empty());
+        assert_eq!(r.edits.len(), 1, "an edit made while writing stays pending");
+        assert!(r.is_edited(2, 1));
     }
 
     #[test]

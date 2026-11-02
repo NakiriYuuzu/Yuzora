@@ -9,7 +9,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, props, nextCommand, shared, setShared, focused } from "herdr";
 import { t } from "yuzora:core";
-import { connections, openTable, query, job, cancel, release, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
+import { connections, openTable, query, job, cancel, release, result, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
 import { gridColors, highlight } from "./ui.js";
 
 const OPEN = "yuzora.db.open";
@@ -28,6 +28,7 @@ export default class DbTable extends View {
     this.info = null;
     this.infoError = null;
     this.sql = "";
+    this.confirm = null; // {count, action}: unsaved edits stand in the way of action
     this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
       for (;;) {
@@ -38,9 +39,9 @@ export default class DbTable extends View {
         else if (c === "stop") this.stop();
       }
     });
-    const tab = focused()?.tab;
-    const map = shared(TAB_PANES) ?? {};
-    if (tab && !map[tab]) setShared(TAB_PANES, { ...map, [tab]: this.key });
+    // The newest table pane of a tab is the one the sidebar reuses there.
+    this.tabId = focused()?.tab ?? null;
+    if (this.tabId) setShared(TAB_PANES, { ...(shared(TAB_PANES) ?? {}), [this.tabId]: this.key });
     if (this.target) this.load(cx);
     cx.spawn(async (cx) => {
       for (;;) {
@@ -52,10 +53,28 @@ export default class DbTable extends View {
 
   async close() {
     release(this.key);
+    const map = shared(TAB_PANES) ?? {};
+    const mine = Object.keys(map).filter((tab) => map[tab] === this.key);
+    if (mine.length) setShared(TAB_PANES, Object.fromEntries(Object.entries(map).filter(([tab]) => !mine.includes(tab))));
   }
 
   conn() {
-    return this.target ? connections().find((c) => c.id === this.target.connection) ?? null : null;
+    if (!this.target) return null;
+    const now = Date.now();
+    if (!this.conns || now - this.connsAt > 1000) {
+      this.conns = connections();
+      this.connsAt = now;
+    }
+    return this.conns.find((c) => c.id === this.target.connection) ?? null;
+  }
+
+  /** Runs `action`, or first asks to drop the shown result's unsaved edits. */
+  guard(action) {
+    const st = this.state;
+    const current = st?.results[Math.min(this.shown, Math.max(0, st.results.length - 1))];
+    const count = current ? result(current.id)?.edits ?? 0 : 0;
+    if (count) this.confirm = { count, action };
+    else action();
   }
 
   load(cx, order) {
@@ -109,8 +128,11 @@ export default class DbTable extends View {
     if (this.state?.running) return;
     if (this.tab === "sql") this.runSql(cx);
     else if (this.target) {
-      this.sql = "";
-      this.load(cx);
+      this.guard(() => {
+        this.sql = "";
+        this.load(cx);
+      });
+      cx.notify();
     }
   }
 
@@ -119,10 +141,13 @@ export default class DbTable extends View {
     const text = editorText(`${this.key}:sql`);
     const sql = (text?.selection?.trim() ? text.selection : text?.text ?? "").trim();
     if (!sql) return;
-    this.sql = sql;
-    this.tab = "data";
-    this.shown = 0;
-    this.watch(cx, query(this.target.connection, this.target.database, this.key, sql));
+    this.guard(() => {
+      this.sql = sql;
+      this.tab = "data";
+      this.shown = 0;
+      this.watch(cx, query(this.target.connection, this.target.database, this.key, sql));
+    });
+    cx.notify();
   }
 
   stop() {
@@ -134,10 +159,26 @@ export default class DbTable extends View {
     const o = shared(OPEN);
     if (!o || o.key !== this.key || o.seq === this.seq) return;
     this.seq = o.seq;
-    this.target = o.target;
-    this.sql = "";
-    this.tab = "data";
-    this.load(cx);
+    this.guard(() => {
+      this.target = o.target;
+      this.sql = "";
+      this.tab = "data";
+      this.load(cx);
+    });
+  }
+
+  /** Unsaved edits would be lost: drop them and go on, or stay. */
+  confirmBar(th) {
+    const c = this.confirm;
+    const button = (id, text, danger, onClick) => div().id(id).h(20).px(10).flex().flex_none().items_center().rounded(4).text_size(11.5).cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(onClick)
+      .when(danger, (el) => el.border_1().border_color(th.input).text_color(th.blocked))
+      .when(!danger, (el) => el.bg(th.solid).text_color(th.solid_foreground).font_semibold())
+      .child(text);
+    return h_flex().h(30).flex_none().px(12).gap(8).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(div().flex_1().min_w(0).truncate().text_color(th.blocked).child(t("unsaved", { count: c.count })))
+      .child(button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { this.confirm = null; c.action(); cx.notify(); }))
+      .child(button("keep-edits", t("unsaved_keep"), false, (_e, cx) => { this.confirm = null; cx.notify(); }));
   }
 
   toolbar(th, conn) {
@@ -241,6 +282,6 @@ export default class DbTable extends View {
     if (!this.target) return root.child(div().p(16).text_size(12).text_color(th.dim).child(t("pick")));
     const conn = this.conn();
     const content = this.tab === "structure" ? this.structure(th) : this.tab === "sql" ? this.sqlTab(th) : this.data(th);
-    return root.child(this.toolbar(th, conn)).child(content);
+    return root.child(this.toolbar(th, conn)).when(Boolean(this.confirm), (el) => el.child(this.confirmBar(th))).child(content);
   }
 }

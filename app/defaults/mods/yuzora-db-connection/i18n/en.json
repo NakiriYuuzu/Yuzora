@@ -49,5 +49,8 @@
     "saving": "Saving…",
     "delete": "Delete",
     "confirm_delete": "Delete for good?"
+  },
+  "error": {
+    "port": "The port is a whole number from 1 to 65535"
   }
 }

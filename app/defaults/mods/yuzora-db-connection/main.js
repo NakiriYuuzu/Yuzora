@@ -30,7 +30,7 @@ export default class ConnectionDialog extends View {
     }
     this.password = InputState.new({ placeholder: this.editing ? t("field.password_keep") : "" });
     this.password.set_masked(true);
-    this.password.on("change", (_e, cx) => { this.passwordTouched = true; this.test = null; cx.notify(); });
+    this.password.on("change", (_e, cx) => { this.test = null; cx.notify(); });
     this.password.on("submit", (_e, cx) => this.save(cx));
     this.inputs.name.focus();
     this.handle = cx.focus_handle();
@@ -53,9 +53,16 @@ export default class ConnectionDialog extends View {
     return { ...f, port: port === "" ? null : Number(port), name: String(f.name ?? "").trim() };
   }
 
+  /** The typed password; editing, an empty field keeps the saved one. */
   pwd() {
     const value = this.password.value();
-    return this.passwordTouched || !this.editing ? value : null;
+    return this.editing && !value ? null : value;
+  }
+
+  /** A port that isn't a whole number from 1 to 65535 is an error, not the default. */
+  portError() {
+    const port = String(this.form.port ?? "").trim();
+    return port === "" || (/^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535) ? null : t("error.port");
   }
 
   /** Editing pointed the connection at another server or login, or weakened its TLS: the saved password stays behind (config.rs `password_may_follow`). */
@@ -76,6 +83,8 @@ export default class ConnectionDialog extends View {
 
   save(cx) {
     if (this.busy) return;
+    this.error = this.portError();
+    if (this.error) return cx.notify();
     this.busy = "save";
     this.error = null;
     cx.notify();
@@ -93,6 +102,9 @@ export default class ConnectionDialog extends View {
 
   runTest(cx) {
     if (this.busy) return;
+    this.error = this.portError();
+    this.test = null;
+    if (this.error) return cx.notify();
     this.busy = "test";
     this.test = null;
     cx.notify();
@@ -175,7 +187,7 @@ export default class ConnectionDialog extends View {
         .child(label(t("field.user"))).child(field("user"))
         .child(label(t("field.password")))
         .child(Input.new(this.password).h(32).px(10).rounded(7).border_1().border_color(th.input).bg(th.background).text_size(12.5).text_color(th.foreground))
-        .when(this.editing && !this.passwordTouched && this.moved(), (el) => el.child(div().pt(6).text_size(11).text_color(th.blocked).child(t("field.password_retype"))))
+        .when(this.editing && this.pwd() === null && this.moved(), (el) => el.child(div().pt(6).text_size(11).text_color(th.blocked).child(t("field.password_retype"))))
         .child(toggle("save-password", f.savePassword, t("field.save_password"), () => { f.savePassword = !f.savePassword; }))
         .child(label(t("field.database"))).child(field("database"))
         .child(label(t("field.ssl")))

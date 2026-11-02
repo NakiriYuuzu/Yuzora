@@ -69,6 +69,19 @@ pub enum SslMode {
     VerifyFull,
 }
 
+impl SslMode {
+    /// The name settings and the connection form use.
+    pub fn id(self) -> &'static str {
+        match self {
+            SslMode::Disable => "disable",
+            SslMode::Prefer => "prefer",
+            SslMode::Require => "require",
+            SslMode::VerifyCa => "verify-ca",
+            SslMode::VerifyFull => "verify-full",
+        }
+    }
+}
+
 /// Where an SSH tunnel would start (L4's `yuzora_ssh::tunnel`): the saved SSH
 /// host's id. Kept and shown, not used yet: see docs/beta2/db.md, "SSH tunnel".
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +138,13 @@ impl ConnectionConfig {
         self.port.or(self.engine.default_port()).unwrap_or(0)
     }
 
+    /// Connects the same way as `other`: everything but the name and whether
+    /// the password is saved.
+    pub fn connects_like(&self, other: &ConnectionConfig) -> bool {
+        let plain = |c: &ConnectionConfig| ConnectionConfig { name: String::new(), save_password: true, ..c.clone() };
+        plain(self) == plain(other)
+    }
+
     /// Whether the password saved for `self` may be sent for `edited`: the
     /// same engine, server, login and tunnel, over TLS at least as strict
     /// (and checked against the same CA). Anything else needs it typed again.
@@ -160,7 +180,8 @@ impl ConnectionConfig {
 
     /// Refuses what no engine could connect with.
     pub fn validate(&self) -> DbResult<()> {
-        let missing = |field: &str| Err(DbError::Config(crate::i18n::t("error.missing", &[("field", field.into())])));
+        let missing =
+            |field: &str| Err(DbError::Config(crate::i18n::t("error.missing", &[("field", crate::i18n::t(&format!("field.{field}"), &[]))])));
         if self.name.trim().is_empty() {
             return missing("name");
         }
@@ -187,13 +208,21 @@ fn parse(section: &Value) -> Vec<ConnectionConfig> {
         .unwrap_or_default()
 }
 
-fn store_list(list: &[ConnectionConfig]) -> DbResult<()> {
+/// Rewrites the saved list in place: an entry this version can't read (a
+/// hand edit gone wrong) stays as it is rather than vanishing on the next save.
+fn store(update: impl FnOnce(&mut Vec<Value>)) -> DbResult<()> {
     let mut section = yuzora_core::settings::section(SECTION);
     if !section.is_object() {
         section = json!({});
     }
-    section["connections"] = serde_json::to_value(list).map_err(|e| DbError::Io(e.to_string()))?;
+    let mut list = section.get("connections").and_then(Value::as_array).cloned().unwrap_or_default();
+    update(&mut list);
+    section["connections"] = Value::Array(list);
     yuzora_core::settings::set_section(SECTION, section).map_err(DbError::from)
+}
+
+fn has_id(entry: &Value, id: &str) -> bool {
+    entry.get("id").and_then(Value::as_str) == Some(id)
 }
 
 pub fn get(id: &str) -> DbResult<ConnectionConfig> {
@@ -208,20 +237,22 @@ pub fn get(id: &str) -> DbResult<ConnectionConfig> {
 /// another server or login (see [`keep_password`]).
 pub fn save(mut config: ConnectionConfig, password: Option<&str>) -> DbResult<ConnectionConfig> {
     config.validate()?;
-    let mut list = load();
+    let list = load();
     if config.id.is_empty() {
         config.id = new_id(&list);
     }
-    let mut moved = false;
-    match list.iter_mut().find(|c| c.id == config.id) {
-        Some(existing) => {
-            moved = !existing.password_may_follow(&config);
-            *existing = config.clone();
-        }
-        None => list.push(config.clone()),
+    let moved = list.iter().find(|c| c.id == config.id).is_some_and(|c| !c.password_may_follow(&config));
+    if moved {
+        // Gone before the new server is stored, so the two are never read together.
+        secrets().delete(&secret_key(&config.id))?;
+        unsaved().remove(&config.id);
     }
+    let value = serde_json::to_value(&config).map_err(|e| DbError::Io(e.to_string()))?;
+    store(|list| match list.iter_mut().find(|v| has_id(v, &config.id)) {
+        Some(entry) => *entry = value,
+        None => list.push(value),
+    })?;
     keep_password(&*secrets(), &mut unsaved(), &config, password, moved)?;
-    store_list(&list)?;
     Ok(config)
 }
 
@@ -260,9 +291,7 @@ fn keep_password(
 }
 
 pub fn delete(id: &str) -> DbResult<()> {
-    let mut list = load();
-    list.retain(|c| c.id != id);
-    store_list(&list)?;
+    store(|list| list.retain(|v| !has_id(v, id)))?;
     unsaved().remove(id);
     secrets().delete(&secret_key(id))?;
     Ok(())

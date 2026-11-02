@@ -2,7 +2,11 @@
   "title": "資料表",
   "pick": "在資料庫側欄選一個資料表或 view。",
   "loading": "載入中…",
-  "tab": { "data": "資料", "structure": "結構", "sql": "SQL" },
+  "tab": {
+    "data": "資料",
+    "structure": "結構",
+    "sql": "SQL"
+  },
   "run": "執行 ⌘↵",
   "stop": "停止",
   "run_sql_tip": "執行 SQL（有選取時只執行選取範圍）",
@@ -21,5 +25,8 @@
     "nullable": "可為 NULL",
     "default": "預設值",
     "key": "主鍵"
-  }
+  },
+  "unsaved": "還有 {count} 個儲存格尚未寫回",
+  "unsaved_drop": "捨棄並繼續",
+  "unsaved_keep": "繼續編輯"
 }

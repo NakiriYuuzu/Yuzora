@@ -157,12 +157,6 @@ impl Conn {
     pub async fn apply_edits(&mut self, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {
         each!(self, c => c.apply_edits(table, edits).await)
     }
-
-    /// `SELECT * FROM <table>` in this engine's quoting, at most `limit` rows,
-    /// ordered by `order` (column, descending) when given.
-    pub fn select_sql(&self, table: &ObjectRef, order: Option<(&str, bool)>, limit: u64) -> String {
-        select_sql(self.engine(), table, order, limit)
-    }
 }
 
 /// An identifier quoted for `engine`.
