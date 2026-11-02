@@ -319,6 +319,9 @@ impl ConflictSession {
 
     /// Writes the result and marks the file resolved (`git add`).
     pub fn resolve(&self, choices: &Value) -> GitResult<Value> {
+        // `conflictOpen` checked trust; `git add` of the result runs the
+        // config's filters, which may have changed since.
+        crate::trust::check(&self.repo)?;
         // Edited in another editor or resolved elsewhere: don't write over it.
         if stages(&self.repo, &self.path)? != self.stages || worktree(&self.repo, &self.path) != self.file {
             return Err(GitError::other("the file changed since this conflict was read; reload it"));
@@ -479,6 +482,17 @@ mod tests {
         s.git(&["add", "--", "f.txt"]);
         assert!(c.resolve(&json!({ "0": "ours" })).is_err());
         assert_eq!(s.read("f.txt"), "edited elsewhere\n");
+    }
+
+    #[test]
+    fn an_open_conflict_stops_once_its_folder_needs_trust() {
+        let s = conflicted();
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        // `git add` of the result would run the clean filter the config gained.
+        s.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
+        let r = c.resolve(&json!({ "0": "ours" }));
+        assert!(r.as_ref().is_err_and(|e| e.to_string().starts_with(crate::trust::UNTRUSTED)), "{r:?}");
+        assert!(s.git(&["ls-files", "-u"]).contains("f.txt"), "still in conflict");
     }
 
     #[test]

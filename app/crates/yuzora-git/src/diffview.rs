@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::diff::{self, Change, Whitespace};
 use crate::exec::{Git, GitError, GitResult};
 use crate::lru::Lru;
-use crate::repo::Repo;
+use crate::repo::{PathKind, Repo};
 use crate::status::Scope;
 
 /// Bigger sides aren't diffed (shown as "too large").
@@ -103,16 +103,16 @@ pub fn index_entry(repo: &Repo, path: &str) -> GitResult<Option<(String, String)
 
 pub(crate) fn worktree(repo: &Repo, path: &str) -> Option<Vec<u8>> {
     let abs = repo.abs(path);
-    if !repo.place.is_remote() && std::fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
-        // A link's content in git is its target.
-        return std::fs::read_link(&abs).ok().map(|t| t.to_string_lossy().into_owned().into_bytes());
+    match repo.kind(&abs) {
+        // A link's content in git is its target (on a machine too: `cat` reads through it).
+        Ok(PathKind::Link(target)) => Some(target),
+        // One byte past the limit is enough to call it too large.
+        _ => repo.read_file_head(&abs, MAX_SIDE + 1),
     }
-    // One byte past the limit is enough to call it too large.
-    repo.read_file_head(&abs, MAX_SIDE + 1)
 }
 
 fn is_link(repo: &Repo, path: &str, index_mode: Option<&str>) -> bool {
-    index_mode == Some("120000") || (!repo.place.is_remote() && std::fs::symlink_metadata(repo.abs(path)).is_ok_and(|m| m.file_type().is_symlink()))
+    index_mode == Some("120000") || matches!(repo.kind(&repo.abs(path)), Ok(PathKind::Link(_)))
 }
 
 impl DiffSession {
@@ -386,19 +386,12 @@ fn head_mode(repo: &Repo, path: &str) -> GitResult<Option<String>> {
     Ok(text.split('\0').find_map(|e| e.split_once('\t').filter(|(_, p)| *p == path).and_then(|(meta, _)| meta.split(' ').next()).map(str::to_owned)))
 }
 
-fn new_file_mode(repo: &Repo, path: &str) -> &'static str {
-    if is_link(repo, path, None) {
-        return "120000";
-    }
-    #[cfg(unix)]
-    if !repo.place.is_remote() {
-        use std::os::unix::fs::PermissionsExt as _;
-        if std::fs::metadata(repo.abs(path)).is_ok_and(|m| m.permissions().mode() & 0o111 != 0) {
-            return "100755";
-        }
-    }
-    let _ = (repo, path);
-    "100644"
+fn new_file_mode(repo: &Repo, path: &str) -> GitResult<&'static str> {
+    Ok(match repo.kind(&repo.abs(path))? {
+        PathKind::Link(_) => "120000",
+        PathKind::File { exec: true } => "100755",
+        _ => "100644",
+    })
 }
 
 impl DiffSession {
@@ -418,6 +411,9 @@ impl DiffSession {
         if self.mode != Mode::Unstaged {
             return Err(GitError::other("only an unstaged diff can be staged"));
         }
+        // `diffOpen` checked trust, but the repo's config may have gained a
+        // program since (writes run filters).
+        crate::trust::check(&self.repo)?;
         self.check_index()?;
         let p = vec![self.path.clone()];
         if sel.covers_all(&self.changes) || (self.changes.is_empty() && self.left != self.right) {
@@ -426,7 +422,10 @@ impl DiffSession {
         } else {
             let (l, r) = self.sides();
             let content = combine(&l, &r, &self.changes, sel, Pick::Apply);
-            let mode = self.index_entry.as_ref().map(|e| e.0.clone()).unwrap_or_else(|| new_file_mode(&self.repo, &self.path).to_owned());
+            let mode = match &self.index_entry {
+                Some(e) => e.0.clone(),
+                None => new_file_mode(&self.repo, &self.path)?.to_owned(),
+            };
             write_index(&self.repo, &self.path, &content, &mode)?;
         }
         self.repo.invalidate(Scope::Paths(p));
@@ -438,6 +437,7 @@ impl DiffSession {
         if self.mode != Mode::Staged {
             return Err(GitError::other("only a staged diff can be unstaged"));
         }
+        crate::trust::check(&self.repo)?;
         self.check_index()?;
         let mut p = vec![self.path.clone()];
         p.extend(self.orig.clone());
@@ -468,6 +468,7 @@ impl DiffSession {
         if self.mode != Mode::Unstaged {
             return Err(GitError::other("only unstaged changes can be discarded"));
         }
+        crate::trust::check(&self.repo)?;
         if worktree(&self.repo, &self.path) != self.right {
             return Err(GitError::other("the file changed since this diff was read; reload it"));
         }
@@ -589,6 +590,52 @@ mod tests {
         let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
         d.discard(&sel_all(&[1])).unwrap();
         assert_eq!(s.read("f.txt"), "a\nB\nc\nd\ne\nf\ng\nh\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_links_and_programs_on_a_machine_keep_their_type_when_partly_staged() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("base.txt", "x\n", "base");
+        let remote = crate::repo::testing::on_machine(&s);
+        let root = std::path::Path::new(s.root());
+        s.write("target.txt", "one\ntwo\nthree\n");
+        std::os::unix::fs::symlink("target.txt", root.join("link")).unwrap();
+        s.write("run.sh", "#!/bin/sh\necho one\necho two\n");
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let first = Selection::from_json(&json!([]), &json!({ "0": { "add": [0] } }));
+        // A link's content in git is its target, there as here.
+        let link = DiffSession::load(remote.clone(), "link".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!(link.right.as_deref(), Some(&b"target.txt"[..]));
+        link.stage(&first).unwrap();
+        // Part of a new program is staged as a program.
+        let run = DiffSession::load(remote.clone(), "run.sh".into(), None, Mode::Unstaged).unwrap();
+        run.stage(&first).unwrap();
+        let staged = s.git(&["ls-files", "-s", "--", "link", "run.sh"]);
+        assert!(staged.lines().any(|l| l.starts_with("120000 ") && l.ends_with("\tlink")), "{staged}");
+        assert!(staged.lines().any(|l| l.starts_with("100755 ") && l.ends_with("\trun.sh")), "{staged}");
+        assert_eq!(s.git(&["show", ":link"]), "target.txt");
+    }
+
+    #[test]
+    fn an_open_diff_stops_once_its_folder_needs_trust() {
+        let s = scratch();
+        s.commit("f.txt", "a\nb\n", "base");
+        s.commit("g.txt", "1\n", "g");
+        s.write("f.txt", "a\nB\n");
+        s.write("g.txt", "2\n");
+        s.git(&["add", "--", "g.txt"]);
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
+        let st = DiffSession::load(s.repo.clone(), "g.txt".into(), None, Mode::Staged).unwrap();
+        // The pane was open when the repo's config gained a program
+        // (`git lfs install --local`, say): staging would run it.
+        s.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
+        for r in [d.stage(&sel_all(&[0])), d.discard(&sel_all(&[0])), st.unstage(&sel_all(&[0]))] {
+            assert!(r.as_ref().is_err_and(|e| e.to_string().starts_with(crate::trust::UNTRUSTED)), "{r:?}");
+        }
+        assert_eq!(s.read("f.txt"), "a\nB\n");
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "g.txt\n");
     }
 
     #[test]

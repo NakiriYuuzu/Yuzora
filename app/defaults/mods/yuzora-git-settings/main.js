@@ -6,7 +6,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme } from "herdr";
 import { t } from "yuzora:core";
-import { settings as read, setSettings } from "yuzora:git";
+import { settings as read, setSettings, checkPattern } from "yuzora:git";
 
 const GROUPS = [
   { id: "general", items: [
@@ -91,7 +91,8 @@ export default class GitSettings extends View {
       return;
     }
     if (it.regex) {
-      try { new RegExp(raw); } catch { this.error = { key: it.key, text: t("regex.invalid") }; cx.notify(); return; }
+      // Checked by the engine: JavaScript's RegExp also takes look-around, which the engine can't read.
+      if (checkPattern(raw) !== null) { this.error = { key: it.key, text: t("regex.invalid") }; cx.notify(); return; }
     }
     if (raw !== (this.s[it.key] ?? "")) this.set(cx, { [it.key]: raw });
     else if (this.error) { this.error = null; cx.notify(); }

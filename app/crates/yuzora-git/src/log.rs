@@ -443,7 +443,7 @@ impl LogSession {
                 let input: String = batch.iter().map(|h| to_hex(h) + "\n").collect();
                 let mut got = Vec::new();
                 let mut p = MetaParser::default();
-                let r = me.repo.run(Git::read(["log", "--no-walk=unsorted", "--stdin", "--encoding=UTF-8", META_FORMAT]).stdin(input.into_bytes()));
+                let r = crate::trust::check(&me.repo).and_then(|()| me.repo.run(Git::read(["log", "--no-walk=unsorted", "--stdin", "--encoding=UTF-8", META_FORMAT]).stdin(input.into_bytes())));
                 if let Ok(out) = r {
                     p.feed(&out.stdout, |c, m| got.push((c.hash, Arc::new(m))));
                 }
@@ -522,13 +522,18 @@ impl LogSession {
         self.bump();
         let me = self.clone();
         let _ = std::thread::Builder::new().name("yuzora-git-log".into()).spawn(move || {
-            let r = if !me.filter.is_empty() {
-                me.load_filtered(&cancel)
-            } else if refresh && me.try_join(&cancel).unwrap_or(false) {
-                Ok(())
-            } else {
-                me.load_all(&cancel)
-            };
+            // Opening, refreshing and following refs all start here, outside
+            // `repo_fn`: the folder's trust first (a partial clone fetches
+            // what a log reads with the repo's own ssh command).
+            let r = crate::trust::check(&me.repo).and_then(|()| {
+                if !me.filter.is_empty() {
+                    me.load_filtered(&cancel)
+                } else if refresh && me.try_join(&cancel).unwrap_or(false) {
+                    Ok(())
+                } else {
+                    me.load_all(&cancel)
+                }
+            });
             let mut d = me.data.write().unwrap_or_else(|e| e.into_inner());
             d.loading = false;
             if let Err(e) = r {
@@ -1129,6 +1134,42 @@ mod tests {
         let t = Instant::now();
         crate::status::refresh(&repo).unwrap();
         println!("status: full refresh {:?}", t.elapsed());
+        close(log.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_untrusted_partial_clone_reads_no_log_until_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.commit("a.txt", "2\n", "second");
+        // A promisor remote fetched with the repo's own ssh command, and a
+        // tree the clone lacks: a path-filtered log fetches it.
+        let marker = s.dir.path().join("fetched");
+        let ssh = s.dir.path().join("ssh.sh");
+        std::fs::write(&ssh, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display())).unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (key, value) in [("remote.origin.url", "ssh://example.invalid/x"), ("remote.origin.promisor", "true"), ("core.sshCommand", ssh.to_str().unwrap())] {
+            s.git(&["config", key, value]);
+        }
+        let tree = s.git(&["rev-parse", "HEAD~1^{tree}"]).trim().to_owned();
+        std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &tree[..2], &tree[2..]))).unwrap();
+        let filter = Filter { paths: vec!["a.txt".into()], ..Filter::default() };
+        let log = open(s.repo.clone(), filter.clone());
+        wait_loaded(&log);
+        assert!(!marker.exists(), "the log fetched with the repo's ssh command before the folder was trusted");
+        assert!(log.info()["error"].as_str().is_some_and(|e| e.starts_with(crate::trust::UNTRUSTED)), "{}", log.info());
+        // Refreshing (logRefresh, refs moving) is refused the same way.
+        log.start(true);
+        wait_loaded(&log);
+        assert!(!marker.exists(), "a refresh fetched before the folder was trusted");
+        close(log.id);
+        // Trusted, the same log does fetch: the marker would have caught it.
+        crate::trust::trust(&s.repo).unwrap();
+        let log = open(s.repo.clone(), filter);
+        wait_loaded(&log);
+        assert!(marker.exists(), "the log didn't fetch, so this test proves nothing");
         close(log.id);
     }
 }

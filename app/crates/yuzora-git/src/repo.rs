@@ -180,6 +180,11 @@ impl Repo {
         exists(&self.place, path)
     }
 
+    /// What a path is (a link and its target, a program), here or on the machine.
+    pub fn kind(&self, path: &str) -> GitResult<PathKind> {
+        kind(&self.place, path)
+    }
+
     /// Writes a file (the work tree or `.git`), here or on the machine.
     pub fn write_file(&self, path: &str, bytes: &[u8]) -> GitResult<()> {
         write_file(&self.place, path, bytes)
@@ -261,6 +266,51 @@ pub fn read_file_head(place: &Place, path: &str, limit: usize) -> Option<Vec<u8>
         std::fs::File::open(path).ok()?.take(limit as u64).read_to_end(&mut bytes).ok()?;
         Some(bytes)
     }
+}
+
+/// What git would record for a work-tree path.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PathKind {
+    Missing,
+    File { exec: bool },
+    /// A symbolic link; its target is its content in git.
+    Link(Vec<u8>),
+}
+
+pub fn kind(place: &Place, path: &str) -> GitResult<PathKind> {
+    if place.is_remote() {
+        // `cat` there reads through a link, so ask first: `l` and the
+        // target, `x` or `f` for a file, nothing when it's gone.
+        let out = remote_sh(place, r#"if [ -L "$1" ]; then printf l; readlink -- "$1"; elif [ -f "$1" ] && [ -x "$1" ]; then printf x; elif [ -e "$1" ]; then printf f; fi"#, &[path], None)?;
+        if !out.ok() {
+            return Err(GitError::Remote(format!("cannot look at {path}: {}", out.stderr_text().trim())));
+        }
+        let mut b = out.stdout;
+        return Ok(match b.first() {
+            Some(b'l') => {
+                b.remove(0);
+                if b.last() == Some(&b'\n') {
+                    b.pop();
+                }
+                PathKind::Link(b)
+            }
+            Some(b'x') => PathKind::File { exec: true },
+            Some(_) => PathKind::File { exec: false },
+            None => PathKind::Missing,
+        });
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return Ok(PathKind::Missing) };
+    if meta.file_type().is_symlink() {
+        return Ok(std::fs::read_link(path).map_or(PathKind::Missing, |t| PathKind::Link(t.to_string_lossy().into_owned().into_bytes())));
+    }
+    #[cfg(unix)]
+    let exec = {
+        use std::os::unix::fs::PermissionsExt as _;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    };
+    #[cfg(not(unix))]
+    let exec = false;
+    Ok(PathKind::File { exec })
 }
 
 pub fn exists(place: &Place, path: &str) -> bool {
@@ -461,6 +511,45 @@ pub mod testing {
         let git_dir = format!("{root}/.git");
         let repo = Arc::new(Repo::new(repo_id(None, &root), place, git_dir.clone(), git_dir));
         Scratch { dir, repo }
+    }
+
+    /// The scratch repo as one `on` a machine: every git call and file look
+    /// goes through `hc exec`, answered by a stand-in that runs it here.
+    #[cfg(unix)]
+    pub fn on_machine(s: &Scratch) -> Arc<Repo> {
+        static HC: OnceLock<std::path::PathBuf> = OnceLock::new();
+        let hc = HC.get_or_init(|| {
+            use std::os::unix::fs::PermissionsExt;
+            let path = std::env::temp_dir().join(format!("yuzora-git-test-hc-{}", std::process::id()));
+            // `hc exec --json --on M --timeout T --cwd DIR [--env K=V]... [--stdin] -- program args...`
+            let script = r#"#!/bin/sh
+[ "$1" = exec ] || exit 2
+shift
+cwd=. stdin=0
+while [ $# -gt 0 ] && [ "$1" != -- ]; do
+  case "$1" in
+    --cwd) cwd=$2; shift 2 ;;
+    --env) export "$2"; shift 2 ;;
+    --on|--timeout) shift 2 ;;
+    --stdin) stdin=1; shift ;;
+    *) shift ;;
+  esac
+done
+shift
+out=$(mktemp) err=$(mktemp)
+if [ "$stdin" = 1 ]; then (cd "$cwd" && "$@") >"$out" 2>"$err"; else (cd "$cwd" && "$@") </dev/null >"$out" 2>"$err"; fi
+code=$?
+printf '{"code":%d,"stdout":"%s","stderr":"%s"}\n' "$code" "$(base64 <"$out" | tr -d '\n')" "$(base64 <"$err" | tr -d '\n')"
+rm -f "$out" "$err"
+"#;
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        });
+        let hc = hc.clone();
+        yuzora_core::remote::set_hc_program(move || hc.clone());
+        let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..s.repo.place.clone() };
+        Arc::new(Repo::new(repo_id(Some("test-machine"), &place.root), place, s.repo.git_dir.clone(), s.repo.common_dir.clone()))
     }
 }
 

@@ -99,9 +99,21 @@ pub fn executable() -> String {
 }
 
 /// Whether a branch matches the protected-branches pattern (force push refused).
+/// A pattern the engine can't read protects every branch: one written for
+/// JavaScript (look-around) would otherwise protect none.
 pub fn is_protected(branch: &str) -> bool {
-    let pattern = text("protectedBranches");
-    !pattern.trim().is_empty() && regex::Regex::new(pattern.trim()).is_ok_and(|r| r.is_match(branch))
+    protects(&text("protectedBranches"), branch)
+}
+
+fn protects(pattern: &str, branch: &str) -> bool {
+    !pattern.trim().is_empty() && regex::Regex::new(pattern.trim()).map_or(true, |r| r.is_match(branch))
+}
+
+/// Why the engine can't read a pattern, or `None`. The settings page asks
+/// this, not JavaScript's RegExp: that takes more than the engine does.
+pub fn pattern_error(pattern: &str) -> Option<String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() { None } else { regex::Regex::new(pattern).err().map(|e| e.to_string()) }
 }
 
 #[cfg(test)]
@@ -115,6 +127,15 @@ mod tests {
         assert_eq!(d["updateMethod"], "merge");
         assert_eq!(d["largeFileMb"], 50);
         assert!(regex::Regex::new(d["protectedBranches"].as_str().unwrap()).unwrap().is_match("main"));
+    }
+
+    #[test]
+    fn a_pattern_the_engine_cant_read_protects_every_branch() {
+        assert!(protects("^(main|release/.*)$", "main") && !protects("^(main|release/.*)$", "feature/x"));
+        assert!(!protects("  ", "main"), "empty protects none");
+        // JavaScript takes look-ahead; Rust's regex doesn't. Refusing every
+        // force push beats allowing them to the branches it meant.
+        assert!(protects("^(?!wip/).*", "main") && protects("^(?!wip/).*", "wip/x"));
     }
 
     #[test]

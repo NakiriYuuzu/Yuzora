@@ -177,8 +177,10 @@ export function rebaseInteractive(repo: string, base: string, entries: Record<st
 export function rewordInMemory(repo: string, hash: string, message: string): Promise<Outcome>;
 /** The git section of Yuzora's settings, defaults filled in. */
 export function settings(): Record<string, any>;
-/** Merges values into the git settings (known keys only). */
+/** Merges values into the git settings (known keys only); refuses a protected-branches pattern the engine can't read. */
 export function setSettings(values: Record<string, unknown>): void;
+/** Why the engine can't read a regular expression (its dialect, not JavaScript's), or null. */
+export function checkPattern(pattern: string): string | null;
 "#;
 
 fn err(e: impl std::fmt::Display) -> HostError {
@@ -315,6 +317,11 @@ pub fn host_module() -> HostModule {
             };
             if let Value::Object(v) = values {
                 for (k, x) in v {
+                    if k == "protectedBranches"
+                        && let Some(e) = x.as_str().and_then(settings::pattern_error)
+                    {
+                        return Err(err(GitError::Other(format!("not a regular expression git can use: {e}"))));
+                    }
                     if known.get(&k).is_some() {
                         current.insert(k, x);
                     }
@@ -322,7 +329,8 @@ pub fn host_module() -> HostModule {
             }
             yuzora_core::settings::set_section_at(&settings::file(), settings::SECTION, Value::Object(current)).map_err(err)?;
             Ok(HostValue::Null)
-        });
+        })
+        .function("checkPattern", |a| Ok(settings::pattern_error(a.string(0)?).map_or(HostValue::Null, HostValue::Str)));
 
     m = repo_fn(m, "status", |r, a| status::read(&r, a.first().and_then(|o| o.get("force")).and_then(Value::as_bool).unwrap_or(false)));
     m = repo_fn(m, "trust", |r, _| trust::trust(&r));
@@ -476,6 +484,19 @@ mod tests {
         assert!(m.is_async("status") && m.is_async("open") && !m.is_async("logRows"));
         let settings = json_of(&m.call("settings", &HostArguments::new([])).unwrap());
         assert_eq!(settings["forceWithLease"], true);
+    }
+
+    #[test]
+    fn settings_refuse_a_pattern_the_engine_cant_read() {
+        let m = host_module();
+        // Look-ahead: JavaScript's RegExp takes it, the engine's regex doesn't.
+        let ahead = "^(?!wip/).*";
+        let check = |p: &str| m.call("checkPattern", &HostArguments::new([HostValue::Str(p.into())]));
+        assert!(matches!(check(ahead), Ok(HostValue::Str(_))), "{:?}", check(ahead));
+        assert_eq!(check("^(main|release/.*)$").unwrap(), HostValue::Null);
+        let values = to_host(&json!({ "protectedBranches": ahead }));
+        assert!(m.call("setSettings", &HostArguments::new([values])).is_err());
+        assert_ne!(settings::text("protectedBranches"), ahead);
     }
 
     #[test]
