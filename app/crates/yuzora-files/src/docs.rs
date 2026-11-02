@@ -165,6 +165,7 @@ fn moved(from: &str, to: &str, cx: &mut App) {
         docs.by_key.insert(new_key.clone(), id);
         view.update(cx, |doc, cx| {
             doc.key = new_key;
+            doc.relang(cx);
             doc.bump(cx);
         });
     }
@@ -547,6 +548,20 @@ impl DocView {
             self.set_text(file.text, cx);
         }
         self.sync_readonly(cx);
+    }
+
+    /// A new name may mean another language: the badge and the editor's
+    /// highlighting follow it, the text and its history stay.
+    fn relang(&mut self, cx: &mut Context<Self>) {
+        let lang = Lang::detect(&self.key.path);
+        if lang == self.facts.lang {
+            return;
+        }
+        self.facts.lang = lang;
+        if let Some(state) = &self.state {
+            let name = lang.filter(|_| !self.facts.large).map_or("", Lang::id);
+            state.update(cx, |s, cx| s.set_highlighter(name, cx));
+        }
     }
 
     /// The editor follows the file's read-only state as it changes.
@@ -1573,6 +1588,35 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(rename_to(&b, cx), Ok(()));
         assert!(b.exists());
+    }
+
+    #[gpui::test]
+    fn a_rename_to_another_extension_changes_the_language(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("notes.txt"), dir.path().join("main.rs"));
+        std::fs::write(&from, "fn main() {}\n").unwrap();
+        let (view, window) = editing(&from, cx);
+        type_text(&view, window, "// ", cx);
+        let language = |cx: &mut gpui::TestAppContext| {
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                (
+                    doc.facts.lang,
+                    doc.state.as_ref().unwrap().read(cx).language_name(),
+                )
+            })
+        };
+        assert_eq!(language(cx), (None, "".into()));
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let rx = cx.update(|cx| rename(path(&from), path(&to), None, cx));
+        cx.run_until_parked();
+        assert_eq!(futures::executor::block_on(rx).unwrap(), Ok(()));
+        assert_eq!(language(cx), (Some(Lang::Rust), "rust".into()));
+        // The same editor: the unsaved edit is still there.
+        cx.update(|cx| {
+            assert!(view.read(cx).dirty);
+            assert_eq!(view.read(cx).text(cx).as_ref(), "// fn main() {}\n");
+        });
     }
 
     #[cfg(unix)]

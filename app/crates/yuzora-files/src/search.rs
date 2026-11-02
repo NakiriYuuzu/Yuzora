@@ -3,6 +3,7 @@
 //! herdr-core machine (`on: Some(machine)`, POSIX paths).
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -19,6 +20,8 @@ const GREP_MAX_OUTPUT: u64 = 8 << 20;
 const RG_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// A hit's line is cut to this many characters.
 const TEXT_CHARS: usize = 300;
+/// The built-in search skips files larger than this.
+const GREP_FILE_MAX: u64 = 2 << 20;
 
 /// The files under `$1` (relative): git's list in a work tree, else
 /// ripgrep's, else find's. `$2` is 1 to include hidden files. Prints the
@@ -591,13 +594,18 @@ pub fn grep_local(
             break;
         }
         if !entry.file_type().is_some_and(|t| t.is_file())
-            || entry.metadata().map_or(true, |m| m.len() > 2 << 20)
+            || entry.metadata().map_or(true, |m| m.len() > GREP_FILE_MAX)
         {
             continue;
         }
-        let Ok(bytes) = std::fs::read(entry.path()) else {
-            result.skipped = true;
-            continue;
+        // It may have grown since: never more than the limit is read.
+        let bytes = match read_at_most(entry.path(), GREP_FILE_MAX) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => continue,
+            Err(_) => {
+                result.skipped = true;
+                continue;
+            }
         };
         if bytes[..bytes.len().min(8 << 10)].contains(&0) {
             continue;
@@ -709,6 +717,15 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
         files: files.len(),
         skipped: false,
     }
+}
+
+/// A file's bytes if it holds at most `cap`; reads one byte past it at most.
+fn read_at_most(path: &Path, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= cap).then_some(bytes))
 }
 
 /// Characters of `text` that start before byte `byte`.
@@ -994,6 +1011,21 @@ mod tests {
         if !seen {
             assert_eq!(shut_out, (1, true, 1, true));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_built_in_search_reads_no_more_than_its_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.txt");
+        std::fs::write(&f, "0123456789").unwrap();
+        assert_eq!(
+            read_at_most(&f, 10).unwrap().as_deref(),
+            Some(&b"0123456789"[..])
+        );
+        assert_eq!(read_at_most(&f, 9).unwrap(), None);
+        // A file that keeps growing (one being written) is not read whole.
+        assert_eq!(read_at_most(Path::new("/dev/zero"), 16).unwrap(), None);
     }
 
     #[test]
