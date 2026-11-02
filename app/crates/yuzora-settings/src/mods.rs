@@ -385,46 +385,69 @@ fn choose(bases: &[String], taken: impl Fn(&str) -> bool) -> Vec<String> {
     chosen
 }
 
+/// What's really in `dir` (folders or files), never through a link: a link
+/// could lead out of the folder the person picked. A linked `dir` has nothing.
+fn real_entries(dir: &Path, folders: bool) -> Vec<PathBuf> {
+    if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
+        return Vec::new();
+    }
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| if folders { t.is_dir() } else { t.is_file() }))
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    out
+}
+
+fn real_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+}
+
+/// A layout name Windows can give a file: its forbidden characters become
+/// `-`, a trailing space or dot goes (device names get `-2` in [`choose`]).
+fn windows_safe(name: &str) -> String {
+    let safe: String = name.chars().map(|c| if matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\') || c.is_control() { '-' } else { c }).collect();
+    let safe = safe.trim_end_matches([' ', '.']);
+    if safe.is_empty() { "layout".to_owned() } else { safe.to_owned() }
+}
+
 /// Reads a folder and decides where each piece goes, without writing anything.
 pub fn plan(source: &Path, home: &Path) -> Result<Plan, InstallError> {
+    plan_for(source, home, cfg!(windows))
+}
+
+/// [`plan`] for a home on Windows (`windows`) or elsewhere: names Windows
+/// can't have as files (`CON.json`, `a:b.json`) are renamed there.
+fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallError> {
     let source = std::fs::canonicalize(source)?;
     let home_real = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     if source.starts_with(&home_real) {
         return Err(InstallError::Inside);
     }
     let mut plan = Plan { source: source.clone(), ..Plan::default() };
-    let mod_dirs: Vec<PathBuf> = if source.join("main.js").is_file() {
+    let windows_ok = |n: &str| !windows || crate::templates::windows_name(n);
+    let mod_dirs: Vec<PathBuf> = if real_file(&source.join("main.js")) {
         plan.kind = "mod";
         vec![source.clone()]
     } else {
-        let mut dirs: Vec<PathBuf> = std::fs::read_dir(source.join("mods"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.join("main.js").is_file())
-            .collect();
-        dirs.sort();
-        let mut layouts: Vec<PathBuf> = std::fs::read_dir(source.join("layouts"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "json"))
-            .collect();
-        layouts.sort();
+        let dirs: Vec<PathBuf> = real_entries(&source.join("mods"), true).into_iter().filter(|p| real_file(&p.join("main.js"))).collect();
+        let layouts: Vec<PathBuf> = real_entries(&source.join("layouts"), false).into_iter().filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
         if dirs.is_empty() && layouts.is_empty() {
             return Err(InstallError::NotAMod);
         }
         plan.kind = "bundle";
         plan.keys = source.join("keys.json").is_file();
-        let bases: Vec<String> = layouts.iter().map(|l| l.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()).collect();
-        let names = choose(&bases, |n| occupied(&home.join("layouts").join(format!("{n}.json"))));
+        let stem = |l: &PathBuf| l.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let bases: Vec<String> = layouts.iter().map(|l| if windows { windows_safe(&stem(l)) } else { stem(l) }).collect();
+        let names = choose(&bases, |n| occupied(&home.join("layouts").join(format!("{n}.json"))) || !windows_ok(n));
         plan.layouts = layouts.into_iter().zip(names).collect();
         dirs
     };
     let bases: Vec<String> = mod_dirs.iter().map(|d| mod_name(d)).collect();
-    let names = choose(&bases, |n| occupied(&home.join("mods").join(n)));
+    let names = choose(&bases, |n| occupied(&home.join("mods").join(n)) || !windows_ok(n));
     plan.mods = mod_dirs.into_iter().zip(names).collect();
     // References name the folder as it is (`mods/my mod/`), installed as `my-mod`.
     let renames: Vec<(String, String)> = plan.mods.iter().map(|(d, to)| (folder_name(d), to.clone())).filter(|(a, b)| a != b).collect();
@@ -735,6 +758,48 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("layouts/deck-2.json")).unwrap(), r#"{"type":"block","content":{"mod":"side-2"},"preview":"x"}"#);
         assert_eq!(std::fs::read_to_string(home.join("mods/side-2/main.js")).unwrap(), r#"image("mods/side-2/a.png")"#);
         assert_eq!(std::fs::read_to_string(home.join("layouts/deck.json")).unwrap(), "{}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_windows_home_gets_names_windows_can_have() {
+        let root = tmp("install-windows");
+        let home = root.join("home");
+        let src = root.join("share");
+        write(&src.join("layouts/CON.json"), r#"{"mod":"nul"}"#);
+        write(&src.join("layouts/a:b.json"), "{}");
+        write(&src.join("mods/nul/main.js"), r#"svg("mods/nul/i.svg")"#);
+        let p = plan_for(&src, &home, true).unwrap();
+        assert_eq!(p.to_json()["layouts"], json!([{ "from": "CON", "as": "CON-2" }, { "from": "a:b", "as": "a-b" }]));
+        assert_eq!(p.to_json()["mods"], json!([{ "from": "nul", "as": "nul-2" }]));
+        let deck = p.pieces.iter().find(|(to, _)| to.ends_with("CON-2.json")).unwrap();
+        assert_eq!(deck.1, br#"{"mod":"nul-2"}"#);
+        let elsewhere = plan_for(&src, &home, false).unwrap();
+        assert_eq!(elsewhere.to_json()["layouts"], json!([{ "from": "CON", "as": "CON" }, { "from": "a:b", "as": "a:b" }]));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Links inside the picked folder never lead the install out of it.
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_never_reaches_through_a_link() {
+        let root = tmp("install-reach");
+        let home = root.join("home");
+        let src = root.join("share");
+        write(&root.join("outside/mod/main.js"), "secret");
+        write(&root.join("outside/deck.json"), "secret");
+        write(&src.join("mods/real/main.js"), "r");
+        std::os::unix::fs::symlink(root.join("outside/mod"), src.join("mods/linked")).unwrap();
+        std::fs::create_dir_all(src.join("layouts")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside/deck.json"), src.join("layouts/deck.json")).unwrap();
+        let p = plan(&src, &home).unwrap();
+        assert_eq!(p.to_json()["mods"], json!([{ "from": "real", "as": "real" }]));
+        assert_eq!(p.to_json()["layouts"], json!([]));
+        assert!(p.pieces.iter().all(|(_, b)| b != b"secret"));
+        let only_links = root.join("links");
+        std::fs::create_dir_all(&only_links).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), only_links.join("mods")).unwrap();
+        assert!(matches!(plan(&only_links, &home), Err(InstallError::NotAMod)), "a linked mods/ is none");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

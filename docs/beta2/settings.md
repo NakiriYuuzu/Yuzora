@@ -103,7 +103,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 ### 其他 machine
 
-透過 `hc exec --on <machine> -- sh -c <script> sh <args…>`（`yuzora_core::remote`，20 秒）：列表、寫入、移到垃圾桶都是固定的 sh 腳本，資料只當 positional 參數傳入，不拼進腳本。`hc exec` 沒有 stdin，內容只能走參數：存檔時開啟時讀到的內容改傳 POSIX `cksum`（遠端用 `cksum` 比對），新內容上限 12 KiB（Windows 命令列 32,767 字元、Linux 單一參數 128 KiB，含引號跳脫），超過回 `too_big`。遠端的垃圾桶依序用 `gio trash`、`trash` 指令，否則手動寫 freedesktop Trash（`files/`＋`info/*.trashinfo`，`Path=` 依規格做 URL 編碼，用 `od`）。Windows 遠端（沒有 sh、模板在 `%APPDATA%`）不支援。
+透過 `hc exec --on <machine> -- sh -c <script> sh <args…>`（`yuzora_core::remote`，20 秒）。列表時超過 1 MiB 的檔案不帶內容（與本機相同），最後輸出結尾記號；`exec` 輸出上限 8 MiB 截斷時看不到記號，頁面顯示錯誤而不是少掉後面的模板。列表、寫入、移到垃圾桶都是固定的 sh 腳本，資料只當 positional 參數傳入，不拼進腳本。`hc exec` 沒有 stdin，內容只能走參數：存檔時開啟時讀到的內容改傳 POSIX `cksum`（遠端用 `cksum` 比對），新內容上限 12 KiB（Windows 命令列 32,767 字元、Linux 單一參數 128 KiB，含引號跳脫），超過回 `too_big`。遠端的垃圾桶依序用 `gio trash`、`trash` 指令，否則手動寫 freedesktop Trash（`files/`＋`info/*.trashinfo`，`Path=` 依規格做 URL 編碼，用 `od`）。Windows 遠端（沒有 sh、模板在 `%APPDATA%`）不支援。
 
 ### 垃圾桶（本機）
 
@@ -141,6 +141,8 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
   - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。
   - 一個 mod 資料夾（有 `main.js`），或 shared layout 的資料夾（`layouts/*.json`＋`mods/*/`）。
   - 不覆寫：名稱被占用就用 `-2`、`-3`…（連結、壞掉的連結也算占用；同一包裡的名稱不分大小寫比對，`Foo` 與 `foo` 在 Windows／macOS 是同一個資料夾），並把 `mods/<資料夾原名>/` 路徑與 `mod: "<資料夾原名>"` 改寫成安裝的名稱（`my mod` 裝成 `my-mod` 時也改；冒號前後可有任意空白），layout 內引用也一起改。寫入時 mod 資料夾用 `create_dir`、每個檔案用 `create_new`，名稱在這之間被占用就失敗，不會跟著連結寫到 home 外。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
+  - 不經過連結：`mods/`、`layouts/` 本身或其中的 mod 資料夾、layout 檔是連結時都略過，檔案層的連結也不複製，不會讀到所選資料夾外的東西。
+  - home 在 Windows 時，layout 名稱的 `< > : " | ? *` 換成 `-`，`CON`／`NUL` 等裝置名稱加 `-2`（mod 名稱本來就只有英數與 `-`／`_`）。
   - 不複製 `.git`、`node_modules`、隱藏檔、根目錄的 `RECIPE.md`／`preview.png`；超過 2000 個檔案或 64 MB 拒絕；來源在 app home 內拒絕；失敗時刪掉這次寫入的東西。
   - `keys.json` 不自動合併（AGENTS.md 要求替換既有按鍵前先問人），提示使用者自行處理。
 

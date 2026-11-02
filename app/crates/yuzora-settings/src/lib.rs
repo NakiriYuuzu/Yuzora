@@ -133,10 +133,10 @@ fn list_templates(machine: Option<String>) -> Value {
             (Some(dir.to_string_lossy().into_owned()), listed)
         }
         Some(m) => match sh(m, templates::REMOTE_LIST, &[]) {
-            Ok(out) if out.code == 0 => {
-                let (dir, entries) = templates::parse_remote_list(&out.stdout_text());
-                (Some(dir), Ok(entries))
-            }
+            Ok(out) if out.code == 0 => match templates::parse_remote_list(&out.stdout_text()) {
+                Some((dir, entries)) => (Some(dir), Ok(entries)),
+                None => (None, Err("the list was cut short: more than exec's 8 MiB of templates".to_owned())),
+            },
             Ok(out) => (None, Err(out.stderr_text().trim().to_owned())),
             Err(e) => (None, Err(e["message"].as_str().unwrap_or_default().to_owned())),
         },

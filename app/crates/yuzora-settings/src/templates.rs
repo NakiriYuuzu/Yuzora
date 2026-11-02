@@ -474,14 +474,18 @@ pub fn trash(dir: &Path, name: &str) -> std::io::Result<()> {
 // ---- another machine, through `hc exec --on` and its sh ----------------------
 
 /// The folder (first line), then each `.md` file as `\x1e<file>\x1f<text>`.
+/// A file past MAX_FILE (1 MiB) is listed without its text, as here; `\035`
+/// ends the listing, so a listing cut at exec's output cap never reads as whole.
 pub const REMOTE_LIST: &str = r#"d="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-core/templates"
 printf '%s\n' "$d"
-[ -d "$d" ] || exit 0
-for f in "$d"/*.md; do
-  [ -f "$f" ] || continue
-  printf '\036%s\037' "${f##*/}"
-  cat "$f"
-done
+if [ -d "$d" ]; then
+  for f in "$d"/*.md; do
+    [ -f "$f" ] || continue
+    printf '\036%s\037' "${f##*/}"
+    if [ $(( $(wc -c < "$f") )) -le 1048576 ]; then cat "$f"; fi
+  done
+fi
+printf '\035'
 "#;
 
 /// A move to the trash on that machine: gio, a `trash` command (macOS 15+
@@ -577,8 +581,10 @@ trash_file "$f" || exit 7
     )
 }
 
-/// Reads [`REMOTE_LIST`]'s output: the folder and the templates in it.
-pub fn parse_remote_list(out: &str) -> (String, Vec<Entry>) {
+/// Reads [`REMOTE_LIST`]'s output: the folder and the templates in it, or
+/// `None` when it doesn't end as the script ends it (cut short).
+pub fn parse_remote_list(out: &str) -> Option<(String, Vec<Entry>)> {
+    let out = out.strip_suffix('\u{1d}')?;
     let (dir, rest) = out.split_once('\n').unwrap_or((out, ""));
     let dir = dir.trim_end_matches('/').to_owned();
     let mut entries: Vec<Entry> = rest
@@ -591,7 +597,7 @@ pub fn parse_remote_list(out: &str) -> (String, Vec<Entry>) {
         })
         .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    (dir, entries)
+    Some((dir, entries))
 }
 
 #[cfg(test)]
@@ -759,12 +765,14 @@ mod tests {
 
     #[test]
     fn reads_another_machines_listing() {
-        let out = "/home/p/.config/herdr-core/templates\n\u{1e}rev.md\u{1f}---\ncommand: pi\n---\nhi\n\u{1e}bad.md\u{1f}oops";
-        let (dir, l) = parse_remote_list(out);
+        let out = "/home/p/.config/herdr-core/templates\n\u{1e}rev.md\u{1f}---\ncommand: pi\n---\nhi\n\u{1e}bad.md\u{1f}oops\u{1d}";
+        let (dir, l) = parse_remote_list(out).unwrap();
         assert_eq!(dir, "/home/p/.config/herdr-core/templates");
         assert_eq!(l.iter().map(|e| (e.name.as_str(), e.ok())).collect::<Vec<_>>(), [("bad", false), ("rev", true)]);
         assert_eq!(l[1].path, "/home/p/.config/herdr-core/templates/rev.md");
-        assert_eq!(parse_remote_list("/d\n").1, []);
+        assert_eq!(parse_remote_list("/d\n\u{1d}").unwrap().1, []);
+        assert!(parse_remote_list(&out[..out.len() - 10]).is_none(), "a listing cut short is no listing");
+        assert!(REMOTE_LIST.contains(&MAX_FILE.to_string()), "the same limit as here");
     }
 
     /// The remote scripts on this machine's sh, with a throwaway config home
@@ -776,7 +784,7 @@ mod tests {
         let d = tmp("sh");
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od", "cksum"] {
+        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od", "cksum", "wc"] {
             let found = ["/bin", "/usr/bin"].iter().map(|p| Path::new(p).join(tool)).find(|p| p.exists()).unwrap();
             std::os::unix::fs::symlink(found, bin.join(tool)).unwrap();
         }
@@ -801,13 +809,13 @@ mod tests {
         assert_eq!(sh(&save, &["rev", "x", "old", &cksum(text.trim_end().as_bytes()), ""]).status.code(), Some(5), "trailing newlines count");
         assert_eq!(sh(&save, &["rev", text, "old", &sum, ""]).status.code(), Some(0));
         let out = sh(REMOTE_LIST, &[]);
-        let (dir, l) = parse_remote_list(&String::from_utf8_lossy(&out.stdout));
+        let (dir, l) = parse_remote_list(&String::from_utf8_lossy(&out.stdout)).unwrap();
         assert!(dir.ends_with("config/herdr-core/templates"));
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].text, text);
         // Rename: the new file is written, the old one leaves the folder.
         assert_eq!(sh(&save, &["review", text, "old", &sum, "rev"]).status.code(), Some(0));
-        let names = |out: std::process::Output| parse_remote_list(&String::from_utf8_lossy(&out.stdout)).1.into_iter().map(|e| e.name).collect::<Vec<_>>();
+        let names = |out: std::process::Output| parse_remote_list(&String::from_utf8_lossy(&out.stdout)).unwrap().1.into_iter().map(|e| e.name).collect::<Vec<_>>();
         assert_eq!(names(sh(REMOTE_LIST, &[])), ["review"]);
         assert_eq!(sh(&remote_trash_script(), &["review"]).status.code(), Some(0));
         assert_eq!(sh(&remote_trash_script(), &["review"]).status.code(), Some(3));
