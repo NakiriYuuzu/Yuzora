@@ -1,0 +1,203 @@
+# Yuzora v0.1.0-beta.2: package the app in app/ for every platform it ships
+# on (scripts/yuzora/package), check each package the way people will use it,
+# and keep the files as workflow artifacts for 7 days. See
+# docs/beta2/release.md.
+#
+# Artifacts only. Nothing here creates a tag or a release, touches main, or
+# reads a signing secret: the update manifest comes out unsigned, and
+# release.yml (the Tauri app's, which publishes on every push to main) is not
+# involved. Publishing beta.2 is a separate step the maintainer authorizes.
+#
+# No build cache: the repository's caches are already past GitHub's 10 GB,
+# and release targets for four platforms would push out the ones app-ci.yml
+# and the Tauri workflows restore. A cold release build is the price; it
+# runs only when packaging changes, after merges, or by hand.
+name: App package
+
+on:
+  push:
+    branches: [beta2/integration]
+    paths: &package-paths
+      - 'app/assets/icons/**'
+      - 'app/distribution/yuzora/**'
+      - 'app/scripts/yuzora/**'
+      - 'app/src/main.rs'
+      - 'app/src/update.rs'
+      - 'app/src/yuzora/release.rs'
+      - 'app/src/yuzora/release/**'
+      - '.github/workflows/app-package.yml'
+  pull_request:
+    branches: [beta2/integration]
+    paths: *package-paths
+  # Before a release, or to check the Windows build (app-ci.yml has none).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  # In the cache key: ghostty-sys can't tell when Zig changes.
+  ZIG_VERSION: 0.16.0
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  package:
+    name: Package ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: macos-aarch64, runner: macos-15 }
+          - { target: windows-x86_64, runner: windows-2022 }
+          # The oldest Ubuntu we can: the app links the system's glibc.
+          - { target: linux-x86_64, runner: ubuntu-22.04 }
+          - { target: linux-aarch64, runner: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.runner }}
+    # Cold: ghostty, gpui and every crate in release mode.
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The root .gitmodules: app/vendor/ghostty.
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libfontconfig-dev libfreetype-dev libdbus-1-dev
+      # bindgen's libclang: the runner image's LLVM. NSIS ships on the image.
+      - name: Windows build dependencies
+        if: runner.os == 'Windows'
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
+      - name: Build and pack
+        run: scripts/yuzora/package
+
+      # Each package, opened the way people will open it.
+      - name: Check the macOS app and disk image
+        if: runner.os == 'macOS'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          work=$(mktemp -d)
+          tar -xzf "dist/yuzora-$version-macos-aarch64.tar.gz" -C "$work"
+          app="$work/Yuzora.app"
+          [ "$(lipo -archs "$app/Contents/MacOS/Yuzora")" = arm64 ]
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dvv "$app" 2>&1 | grep -qx 'Signature=adhoc'
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = dev.yuuzu.yuzora ]
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")" = Yuzora ]
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version" ]
+          [ "$("$app/Contents/MacOS/Yuzora" --version)" = "herdr-app $version" ]
+          mnt="$work/mnt"; mkdir "$mnt"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" dist/Yuzora-macos-aarch64.dmg
+          codesign --verify --deep --strict "$mnt/Yuzora.app"
+          [ "$(readlink "$mnt/Applications")" = /Applications ]
+          hdiutil detach "$mnt"
+      - name: Check the Windows installer
+        if: runner.os == 'Windows'
+        # Git Bash would turn /S and /v into drive paths.
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          dir="$LOCALAPPDATA/Programs/Yuzora"
+          ./dist/Yuzora-windows-x64-setup.exe /S
+          [ "$("$dir/yuzora.exe" --version | tr -d '\r')" = "herdr-app $version" ]
+          [ -f "$dir/yuzora.png" ]
+          [ -f "$dir-uninstall/uninstall.exe" ]
+          reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.yuuzu.yuzora' /v DisplayVersion | grep -F "$version"
+          reg query 'HKCU\Environment' /v Path | grep -iF "Programs\\Yuzora"
+          [ -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/Yuzora.lnk" ]
+          # Again over itself (an update by hand), then away: _?= waits for it.
+          ./dist/Yuzora-windows-x64-setup.exe /S
+          "$dir-uninstall/uninstall.exe" /S "_?=$(cygpath -w "$dir-uninstall")"
+          [ ! -e "$dir" ]
+          # (`! cmd` never stops a bash -e script, so these spell it out.)
+          if reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.yuuzu.yuzora' 2>/dev/null; then exit 1; fi
+          if reg query 'HKCU\Environment' /v Path | grep -iF "Programs\\Yuzora"; then exit 1; fi
+      - name: Check the Linux folder and its installer
+        if: runner.os == 'Linux'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          work=$(mktemp -d)
+          tar -xzf dist/yuzora-$version-${{ matrix.target }}.tar.gz -C "$work"
+          HOME="$work/home" XDG_DATA_HOME= "$work/yuzora/install"
+          [ "$("$work/home/.local/bin/yuzora" --version)" = "herdr-app $version" ]
+          grep -qx 'StartupWMClass=dev.yuuzu.yuzora' "$work/home/.local/share/applications/dev.yuuzu.yuzora.desktop"
+          [ -f "$work/home/.local/share/yuzora/yuzora.png" ]
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: yuzora-${{ matrix.target }}
+          path: app/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The update manifest for these packages, unsigned (the release signs it).
+  manifest:
+    name: Update manifest
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: app/dist
+          merge-multiple: true
+      - name: Manifest tests
+        run: bun test scripts/yuzora/
+      - name: Write the manifest
+        run: |
+          cp CHANGELOG.md dist/changelog.md
+          bun scripts/yuzora/manifest.ts yuzora dist
+          ls -la dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: yuzora-update-unsigned
+          path: |
+            app/dist/yuzora-update.json
+            app/dist/changelog.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # One stable name for every platform.
+  done:
+    name: App (package)
+    needs: [package, manifest]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.package.result }}" = success ] && [ "${{ needs.manifest.result }}" = success ]'

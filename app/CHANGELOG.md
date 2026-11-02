@@ -6,6 +6,8 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- App 改由 Yuzora 的 GitHub Releases 自我更新：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，下次重新啟動時套用。beta 版預設走 beta 通道，可在 `yuzora/settings.json` 的 `update.channel` 改成 `stable`。
+- 安裝檔：macOS 是 `Yuzora-macos-aarch64.dmg`（僅 Apple Silicon，ad-hoc 簽章，第一次開啟要在「隱私權與安全性」按「仍要打開」）、Windows 是免系統管理員權限的 `Yuzora-windows-x64-setup.exe`、Linux 是 tar.gz 加 `install`。命令列程式叫 `yuzora`。
 
 ## [0.1.12] - 2026-11-02
 <!-- spotlight macos -->

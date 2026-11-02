@@ -144,7 +144,21 @@ Not started.
 <!-- yuzora:lane:L7:start -->
 ### L7 · Release and updates
 
-Not started.
+beta.2 packages, made by `app/scripts/yuzora/package` and checked by `.github/workflows/app-package.yml` (nothing is published yet):
+
+| Platform | Download | Installs to |
+| --- | --- | --- |
+| macOS (Apple Silicon only) | `Yuzora-macos-aarch64.dmg`: drag Yuzora onto Applications | `/Applications/Yuzora.app`; the app adds `~/.local/bin/yuzora` |
+| Windows x64 | `Yuzora-windows-x64-setup.exe` (no admin rights needed) | `%LOCALAPPDATA%\Programs\Yuzora`, with `yuzora` on your PATH |
+| Linux x86_64 / aarch64 | `yuzora-<version>-linux-<arch>.tar.gz`, then run `yuzora/install` | `~/.local/share/yuzora` and `~/.local/bin/yuzora` |
+
+- **macOS: no Apple Developer ID signature, no notarization** (ad-hoc signature only). Gatekeeper blocks the first open: in System Settings › Privacy & Security, click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
+- **Windows: no Authenticode signature.** SmartScreen may warn; choose More info › Run anyway.
+- **Updates.** An installed Yuzora checks this repository's GitHub Releases every hour, downloads a newer version next to itself and switches to it when it restarts. The update manifest must be signed with the release key and every file must match its SHA-256, or nothing is installed. Beta builds follow the beta channel (pre-releases and stable releases), stable builds the stable one; `"update": {"channel": "stable"}` in `~/.config/yuzora/yuzora/settings.json` picks another.
+- **Coming from 0.1.0-beta.1.** When a beta.2 release offers it, beta.1's own updater (Settings › Updates, preview channel) moves you to beta.2; otherwise use the downloads above. beta.1's data stays where it was. Bringing connections and settings over isn't wired up yet, so set them up again for now. On Windows, the installer offers to remove the old all-users install.
+- The command line program is `yuzora` (the same commands as `herdr-app`). Yuzora never puts `herdr-app` on your PATH, so an official Herdr install keeps its own.
+
+Design, keys and the release steps: [docs/beta2/release.md](docs/beta2/release.md).
 <!-- yuzora:lane:L7:end -->
 
 ## License

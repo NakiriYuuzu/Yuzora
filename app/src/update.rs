@@ -40,12 +40,12 @@ fn find_root() -> Option<PathBuf> {
         (bundle.extension()? == "app").then(|| bundle.to_path_buf())
     } else {
         // The release folder holds the binary and its icon; cargo's target/ doesn't.
-        dir.join("herdr-app.svg").is_file().then(|| dir.to_path_buf())
+        dir.join(crate::yuzora::release::MARKER).is_file().then(|| dir.to_path_buf()) // yuzora(L7): Yuzora's package
     }
 }
 
 /// The folder or bundle name inside a release tarball.
-const PACKED: &str = if cfg!(target_os = "macos") { "Herdr.app" } else { "herdr-app" };
+const PACKED: &str = crate::yuzora::release::PACKED; // yuzora(L7): Yuzora.app / yuzora
 
 fn beside(root: &Path, suffix: &str) -> PathBuf {
     let mut name = root.file_name().unwrap_or_default().to_os_string();
@@ -117,9 +117,9 @@ pub fn set_core(version: Option<String>, managed: Option<String>) {
 }
 
 fn checks_app() -> Option<PathBuf> {
-    // yuzora: no app self-update from herdr.dev (L7 adds GitHub Releases).
+    // yuzora(L7): never from herdr.dev; Yuzora's GitHub releases (src/yuzora/release/update.rs).
     if crate::yuzora::APP_SELF_UPDATE_OFF {
-        return None;
+        return crate::yuzora::release::update::checks_app(root());
     }
     root().filter(|_| option_env!("HERDR_APP_RELEASE").is_some() || std::env::var_os("HERDR_RELEASES_URL").is_some())
 }
@@ -270,6 +270,10 @@ pub fn update_core() {
 
 /// Downloads the latest release if it's newer. Ok(Some): a version is ready.
 fn check(root: &Path) -> Result<Option<String>, String> {
+    // yuzora(L7): a signed manifest from Yuzora's GitHub releases, staged by `stage` below.
+    if crate::yuzora::APP_SELF_UPDATE_OFF {
+        return crate::yuzora::release::update::check(root);
+    }
     check_from(root, &releases())
 }
 
@@ -287,14 +291,20 @@ fn check_from(root: &Path, releases: &str) -> Result<Option<String>, String> {
     {
         crate::update_notes::cache(&text);
     }
-    let staged = beside(root, ".new");
-    if staged_version(root).as_deref() == Some(version) {
-        return Ok(Some(version.to_owned()));
-    }
     let entry = &manifest["targets"][target()];
     let (Some(url), Some(sha)) = (entry["url"].as_str(), entry["sha256"].as_str()) else {
         return Ok(None);
     };
+    stage(root, version, url, sha) // yuzora(L7): split out, Yuzora's check stages the same way
+}
+
+/// Downloads `url` (checked against `sha`), unpacks it and puts it beside
+/// `root` as `version`, unless that's already staged. yuzora(L7): split out of check_from.
+pub(crate) fn stage(root: &Path, version: &str, url: &str, sha: &str) -> Result<Option<String>, String> {
+    let staged = beside(root, ".new");
+    if staged_version(root).as_deref() == Some(version) {
+        return Ok(Some(version.to_owned()));
+    }
     tracing::info!("downloading Herdr {version}");
     let work = beside(root, ".download");
     let _ = std::fs::remove_dir_all(&work);
@@ -389,11 +399,7 @@ fn run(cmd: &mut Command) -> Result<(), String> {
 }
 
 fn exe_in(app: &Path) -> PathBuf {
-    if cfg!(target_os = "macos") {
-        app.join("Contents/MacOS/Herdr")
-    } else {
-        app.join(format!("herdr-app{}", std::env::consts::EXE_SUFFIX))
-    }
+    crate::yuzora::release::exe_in(app) // yuzora(L7): Yuzora.app/Contents/MacOS/Yuzora, yuzora[.exe]
 }
 
 /// What `herdr-app --version` says in this folder or bundle (`0.2.0`).
@@ -416,7 +422,7 @@ pub(crate) fn newer(a: &str, b: &str) -> bool {
     match ca.cmp(&cb) {
         std::cmp::Ordering::Equal => match (pa, pb) {
             (None, Some(_)) => true,
-            (Some(x), Some(y)) => x > y,
+            (Some(x), Some(y)) => crate::yuzora::release::prerelease_cmp(x, y).is_gt(), // yuzora(L7): beta.10 after beta.9
             _ => false,
         },
         o => o == std::cmp::Ordering::Greater,
@@ -537,10 +543,11 @@ fn relaunch_expected(expected: Option<&str>) -> bool {
 fn relaunch_expected(expected: Option<&str>) -> bool {
     let Some(root) = root() else { return false };
     // LaunchServices need not preserve the startup guard or an isolated home.
+    // yuzora(L7): Yuzora's program names (src/yuzora/release.rs, exe_in).
     let open = if cfg!(target_os = "macos") {
-        if expected.is_some() { "exec \"$1/Contents/MacOS/Herdr\"" } else { "open \"$1\"" }
+        if expected.is_some() { "exec \"$1/Contents/MacOS/Yuzora\"" } else { "open \"$1\"" }
     } else {
-        "exec \"$1/herdr-app\""
+        "exec \"$1/yuzora\""
     };
     let script = format!("while kill -0 \"$0\" 2>/dev/null; do sleep 0.1; done; {open}");
     let spawned = {

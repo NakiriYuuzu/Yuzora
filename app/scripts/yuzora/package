@@ -1,0 +1,136 @@
+#!/bin/bash
+# yuzora(L7): Yuzora's release packages for this machine, or for another
+# supported Rust target (docs/beta2/release.md):
+#
+#   scripts/yuzora/package [<triple>]
+#
+# Into dist/ ($YUZORA_DIST picks another folder), version from Cargo.toml:
+#
+#   macOS    yuzora-<version>-macos-aarch64.tar.gz   update archive: Yuzora.app
+#            Yuzora-macos-aarch64.dmg                download (scripts/yuzora/mac-dmg)
+#   Windows  yuzora-<version>-windows-x86_64.tar.gz  update archive: yuzora\yuzora.exe
+#            Yuzora-windows-x64-setup.exe            installer (NSIS; needs makensis)
+#   Linux    yuzora-<version>-linux-<arch>.tar.gz    yuzora/ and its install script
+#
+# The Cargo program stays herdr-app; packages call it Yuzora / yuzora.
+# macOS is Apple Silicon only and ad-hoc signed: no Developer ID, no
+# notarization (AGENTS.md, "Release platform support"). Only these builds
+# check for updates (HERDR_APP_RELEASE at build time, src/update.rs).
+# Nothing here signs anything for the updater: scripts/yuzora/manifest.ts
+# writes the manifest, and the release signs it (docs/beta2/release.md).
+#
+# YUZORA_PACKAGE_BIN=<herdr-app binary> packs that binary instead of building
+# (checking the packaging without a release build).
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+fail() { echo "package: $*" >&2; exit 1; }
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+[[ -n $version ]] || fail "no version in Cargo.toml"
+
+triple=${1:-}
+if [[ -n $triple ]]; then
+  case "$triple" in
+    *-linux-*) os=linux ;;
+    *-apple-darwin) os=macos ;;
+    *-windows-*) os=windows ;;
+    *) fail "unsupported target $triple" ;;
+  esac
+  arch=${triple%%-*}
+else
+  case "$(uname -s)" in
+    Linux) os=linux ;;
+    Darwin) os=macos ;;
+    MINGW* | MSYS* | CYGWIN*) os=windows ;;
+    *) fail "unsupported OS $(uname -s)" ;;
+  esac
+  arch=$(uname -m)
+fi
+case "$arch" in
+  x86_64 | amd64) arch=x86_64 ;;
+  arm64 | aarch64) arch=aarch64 ;;
+  *) fail "unsupported CPU $arch" ;;
+esac
+# AGENTS.md: the macOS app is Apple Silicon only, never Intel or universal.
+[[ $os == macos && $arch != aarch64 ]] && fail "Yuzora's macOS app is Apple Silicon only"
+[[ $os == windows && $arch != x86_64 ]] && fail "Yuzora's Windows app is x64 only"
+target="$os-$arch"
+
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+
+echo "package: Yuzora $version for $target"
+for notice in LICENSE THIRD-PARTY-NOTICES; do
+  [[ -s $notice ]] || fail "$notice is missing or empty"
+done
+
+exe=herdr-app
+[[ $os == windows ]] && exe=herdr-app.exe
+if [[ -n ${YUZORA_PACKAGE_BIN:-} ]]; then
+  program=$YUZORA_PACKAGE_BIN
+else
+  # Only release builds update themselves (src/update.rs).
+  HERDR_APP_RELEASE=1 cargo build --release --locked ${triple:+--target "$triple"}
+  program=${CARGO_TARGET_DIR:-target}${triple:+/$triple}/release/$exe
+fi
+[[ -f $program ]] || fail "no program at $program"
+
+if [[ $os == linux ]]; then export TMPDIR=${TMPDIR:-/var/tmp}; fi
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+dist=${YUZORA_DIST:-dist}
+mkdir -p "$dist"
+archive="$dist/yuzora-$version-$target.tar.gz"
+
+if [[ $os == macos ]]; then
+  app="$work/Yuzora.app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  cp "$program" "$app/Contents/MacOS/Yuzora"
+  chmod 755 "$app/Contents/MacOS/Yuzora"
+  [[ $(lipo -archs "$app/Contents/MacOS/Yuzora") == arm64 ]] || fail "the macOS program must be arm64 only, not: $(lipo -archs "$app/Contents/MacOS/Yuzora")"
+  cp assets/icons/Yuzora.icns "$app/Contents/Resources/Yuzora.icns"
+  cp LICENSE THIRD-PARTY-NOTICES "$app/Contents/Resources/"
+  sed "s/@VERSION@/$version/g" distribution/yuzora/macos/Info.plist > "$app/Contents/Info.plist"
+  plutil -lint "$app/Contents/Info.plist" >/dev/null
+  # Ad hoc: macOS runs it, Gatekeeper still asks on first open (README).
+  codesign --force --sign - "$app"
+  codesign --verify --deep --strict "$app"
+  notices=Yuzora.app/Contents/Resources
+  # No AppleDouble (._*) files from extended attributes.
+  COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work" Yuzora.app
+  scripts/yuzora/mac-dmg "$app" "$dist/Yuzora-macos-aarch64.dmg"
+else
+  dir="$work/yuzora"
+  mkdir -p "$dir"
+  if [[ $os == windows ]]; then cp "$program" "$dir/yuzora.exe"; else cp "$program" "$dir/yuzora"; chmod 755 "$dir/yuzora"; fi
+  # Also how the app knows it's an installed release (src/yuzora/release.rs, MARKER).
+  cp assets/icons/yuzora.png "$dir/yuzora.png"
+  cp LICENSE THIRD-PARTY-NOTICES "$dir/"
+  [[ $os == linux ]] && install -m 755 distribution/yuzora/linux/install "$dir/install"
+  notices=yuzora
+  tar -czf "$archive" -C "$work" yuzora
+  if [[ $os == windows ]]; then
+    makensis=${MAKENSIS:-$(command -v makensis || true)}
+    [[ -z $makensis && -x "/c/Program Files (x86)/NSIS/makensis.exe" ]] && makensis="/c/Program Files (x86)/NSIS/makensis.exe"
+    if [[ -n $makensis ]]; then
+      core=${version%%-*}
+      pre=${version#"$core"}
+      # File properties want four numbers: <x.y.z>.<beta number>, stable 65535.
+      n=65535
+      [[ $pre =~ ^-beta\.([0-9]+)$ ]] && n=${BASH_REMATCH[1]}
+      to_win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
+      "$makensis" -V2 -INPUTCHARSET UTF8 \
+        "-DVERSION=$version" "-DVIVERSION=$core.$n" \
+        "-DSRC=$(to_win "$dir")" "-DICON=$(to_win "$PWD/assets/icons/yuzora.ico")" \
+        "-DPATHPS1=$(to_win "$PWD/distribution/yuzora/windows/path.ps1")" \
+        "-DOUT=$(to_win "$PWD/$dist/Yuzora-windows-x64-setup.exe")" \
+        "$(to_win "$PWD/distribution/yuzora/windows/yuzora.nsi")"
+      echo "package: $dist/Yuzora-windows-x64-setup.exe ($(sha256 "$dist/Yuzora-windows-x64-setup.exe"))"
+    else
+      echo "package: no makensis, so no installer (the update archive is enough to test)" >&2
+    fi
+  fi
+fi
+
+tar -xOf "$archive" "$notices/THIRD-PARTY-NOTICES" | cmp - THIRD-PARTY-NOTICES
+tar -xOf "$archive" "$notices/LICENSE" | cmp - LICENSE
+echo "package: $archive ($(sha256 "$archive"))"

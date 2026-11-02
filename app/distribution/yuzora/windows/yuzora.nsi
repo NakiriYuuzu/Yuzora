@@ -1,0 +1,173 @@
+; yuzora(L7): Yuzora's Windows installer (docs/beta2/release.md), built by
+; scripts/yuzora/package:
+;
+;   makensis -DVERSION=0.1.0-beta.2 -DVIVERSION=0.1.0.2 -DSRC=<yuzora folder>
+;            -DICON=<yuzora.ico> -DPATHPS1=<path.ps1> -DOUT=<setup.exe> yuzora.nsi
+;
+; For one person, no admin: %LOCALAPPDATA%\Programs\Yuzora, the folder the
+; app updates in place (src/update.rs); Yuzora in the Start menu; `yuzora` on
+; the user PATH; an entry in Settings > Apps. The uninstaller sits beside it
+; in Yuzora-uninstall, because an update replaces the whole Yuzora folder.
+; Running it again replaces the app; an open Yuzora keeps running from the
+; old folder until it quits. Your data (%USERPROFILE%\.config\yuzora) stays.
+;
+; Command line: /S silent, /D=<folder> elsewhere. The Tauri updater of Yuzora
+; 0.1.0-beta.1 and older runs it as `/P /UPDATE /R /ARGS ...` to move people
+; to this app: /P only shows progress, /R opens Yuzora afterwards.
+
+Unicode true
+ManifestDPIAware true
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+
+!include "MUI2.nsh"
+!include "FileFunc.nsh"
+!include "LogicLib.nsh"
+
+!define APP "Yuzora"
+!define ID "dev.yuuzu.yuzora"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${ID}"
+!define POWERSHELL "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
+; The Tauri app's MSI (0.0.18 to 0.1.0-beta.1), src-tauri/src/nsis_migration.rs.
+!define TAURI_UPGRADE_CODE "{A5829978-F7B9-5882-B5BB-B8521FCEBF5F}"
+
+Name "${APP}"
+OutFile "${OUT}"
+InstallDir "$LOCALAPPDATA\Programs\${APP}"
+BrandingText "${APP} ${VERSION}"
+VIProductVersion "${VIVERSION}"
+
+Var Passive
+Var Relaunch
+
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
+!define MUI_ABORTWARNING
+!insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipWhenPassive
+!define MUI_FINISHPAGE_RUN "$INSTDIR\yuzora.exe"
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "English"
+!insertmacro MUI_LANGUAGE "TradChinese"
+
+VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "${APP}"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductVersion" "${VERSION}"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "FileVersion" "${VERSION}"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "${APP} installer"
+VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "Apache-2.0"
+
+LangString OldApp ${LANG_ENGLISH} "An older Yuzora (0.1.0-beta.1 or before, installed for all users) is still on this PC. Remove it now? Your data stays, and the new Yuzora can bring it over."
+LangString OldApp ${LANG_TRADCHINESE} "這台電腦還裝著舊版 Yuzora（0.1.0-beta.1 以前，為所有使用者安裝）。要現在移除嗎？你的資料會保留，新版 Yuzora 可以把它帶過來。"
+LangString NotOurs ${LANG_ENGLISH} "This doesn't look like a Yuzora folder, so nothing in it was removed:"
+LangString NotOurs ${LANG_TRADCHINESE} "這看起來不是 Yuzora 的資料夾，所以裡面的檔案都沒有移除："
+
+Function .onInit
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/P" $R1
+  ${IfNot} ${Errors}
+    StrCpy $Passive 1
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $R0 "/R" $R1
+  ${IfNot} ${Errors}
+    StrCpy $Relaunch 1
+  ${EndIf}
+  ${If} $Passive == 1
+    SetAutoClose true
+  ${EndIf}
+FunctionEnd
+
+Function SkipWhenPassive
+  ${If} $Passive == 1
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function .onInstSuccess
+  ${If} $Relaunch == 1
+    Exec '"$INSTDIR\yuzora.exe"'
+  ${EndIf}
+FunctionEnd
+
+; The Tauri app installed with its MSI (per machine): offer to remove it, so
+; the Start menu has one Yuzora. msiexec asks for admin rights itself.
+Function RemoveTauriApp
+  System::Call 'msi::MsiEnumRelatedProductsW(w "${TAURI_UPGRADE_CODE}", i 0, i 0, w .R8) i .R7'
+  ${If} $R7 != 0
+    Return
+  ${EndIf}
+  MessageBox MB_YESNO|MB_ICONQUESTION "$(OldApp)" /SD IDNO IDNO done
+  ExecWait '"$SYSDIR\msiexec.exe" /x $R8 /passive /norestart' $R6
+  DetailPrint "msiexec /x $R8: $R6"
+  done:
+FunctionEnd
+
+Section "Yuzora"
+  ; A running Yuzora keeps its program busy: move the old folder aside and
+  ; install fresh (the old one goes on the next install or update).
+  ${If} ${FileExists} "$INSTDIR\yuzora.exe"
+    RMDir /r "$INSTDIR.old"
+    ClearErrors
+    Delete "$INSTDIR\yuzora.exe"
+    ${If} ${Errors}
+      Rename "$INSTDIR" "$INSTDIR.old"
+    ${EndIf}
+  ${EndIf}
+  SetOutPath "$INSTDIR"
+  File /r "${SRC}\*.*"
+  ; What the app staged for the version this replaces (src/update.rs).
+  RMDir /r "$INSTDIR.new"
+  Delete "$INSTDIR.new.json"
+  RMDir /r "$INSTDIR.download"
+  RMDir /r "$INSTDIR.old"
+
+  SetOutPath "$INSTDIR-uninstall"
+  File "/oname=path.ps1" "${PATHPS1}"
+  WriteUninstaller "$INSTDIR-uninstall\uninstall.exe"
+  SetOutPath "$INSTDIR"
+  CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\yuzora.exe"
+  nsExec::Exec '"${POWERSHELL}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR-uninstall\path.ps1" -Add "$INSTDIR"'
+  Pop $0
+  DetailPrint "PATH: $0"
+
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Yuuzu"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\yuzora.exe"
+  WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${UNINST_KEY}" "URLInfoAbout" "https://github.com/NakiriYuuzu/Yuzora"
+  WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR-uninstall\uninstall.exe"'
+  WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR-uninstall\uninstall.exe" /S'
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" $0
+
+  Call RemoveTauriApp
+SectionEnd
+
+Section "Uninstall"
+  ; $INSTDIR is the uninstaller's own folder, <app folder>-uninstall.
+  StrCpy $0 $INSTDIR "" -10
+  StrCpy $1 $INSTDIR -10
+  ${If} $0 != "-uninstall"
+  ${OrIfNot} ${FileExists} "$1\yuzora.png"
+    MessageBox MB_ICONEXCLAMATION "$(NotOurs) $1" /SD IDOK
+    Abort
+  ${EndIf}
+  nsExec::Exec '"${POWERSHELL}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\path.ps1" -Remove "$1"'
+  Pop $2
+  Delete "$SMPROGRAMS\${APP}.lnk"
+  RMDir /r "$1"
+  RMDir /r "$1.old"
+  RMDir /r "$1.new"
+  RMDir /r "$1.download"
+  Delete "$1.new.json"
+  DeleteRegKey HKCU "${UNINST_KEY}"
+  Delete "$INSTDIR\path.ps1"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir "$INSTDIR"
+SectionEnd
