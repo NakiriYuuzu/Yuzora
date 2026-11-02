@@ -41,7 +41,8 @@ pub fn app_home() -> PathBuf {
 fn init_once() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        yuzora_core::remote::set_hc_program(crate::core_bin::path());
+        // Asked on every call: this runs before the setup screen installs or picks a core.
+        yuzora_core::remote::set_hc_program(crate::core_bin::path);
         yuzora_core::js::set_refresh_hook(|| crate::mods::request(crate::mods::Request::Refresh));
     });
 }
