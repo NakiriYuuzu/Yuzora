@@ -472,6 +472,10 @@ impl RowSink for JobSink {
         }
         self.finish(None);
     }
+
+    fn cancelled(&self) -> bool {
+        job_cancelled(self.job)
+    }
 }
 
 fn finish_job(id: JobId, outcome: DbResult<()>, sink: &mut JobSink) {
@@ -523,23 +527,27 @@ pub fn open_table(
     let (connection, database, owner, table) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), table.clone());
     runtime::spawn(async move {
-        let engine = match config::get(&connection) {
-            Ok(c) => c.engine,
+        let (engine, read_only) = match config::get(&connection) {
+            Ok(c) => (c.engine, c.read_only),
             Err(e) => {
                 let mut sink = JobSink::new(id, &owner, "");
                 finish_job(id, Err(e), &mut sink);
                 return;
             }
         };
-        // One row past the cap, so a capped table reads as truncated.
-        let limit = max_rows() as u64 + 1;
-        let sql = engine::select_sql(engine, &table, order.as_ref().map(|(c, d)| (c.as_str(), *d)), limit);
         let info = describe(&connection, database.as_deref(), &table).await;
-        let mut sink = JobSink::new(id, &owner, &sql);
         let mut l = match lease(&connection, database.as_deref(), &owner).await {
             Ok(l) => l,
-            Err(e) => return finish_job(id, Err(e), &mut sink),
+            Err(e) => return finish_job(id, Err(e), &mut JobSink::new(id, &owner, "")),
         };
+        // In the database the pane's connection was opened in, whatever its
+        // SQL tab has `USE`d since (SQL Server).
+        let home = l.conn().database().map(str::to_owned);
+        // One row past the cap, so a capped table reads as truncated.
+        let limit = max_rows() as u64 + 1;
+        let order = order.as_ref().map(|(c, d)| (c.as_str(), *d));
+        let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
+        let mut sink = JobSink::new(id, &owner, &sql);
         let outcome = l.conn().execute(&sql, &mut sink).await;
         // The key as column positions; no key (or a key column not in the
         // result) means read-only, with the reason shown.
@@ -549,6 +557,7 @@ pub fn open_table(
             let positions: Option<Vec<usize>> =
                 names.iter().map(|n| r.columns.iter().position(|c| &c.name == n)).collect();
             match (info.as_ref(), positions) {
+                _ if read_only => r.not_editable = Some(crate::i18n::t("edit.read_only", &[])),
                 (Err(e), _) => r.not_editable = Some(crate::i18n::t("edit.no_info", &[("error", e.to_string())])),
                 (Ok(_), Some(key)) if !key.is_empty() => {
                     r.edit = Some(EditTarget {
@@ -567,7 +576,7 @@ pub fn open_table(
         // while the job still runs, so Stop reaches it too.
         if outcome.is_ok() && !job_cancelled(id) {
             let mut one = FirstCell(None);
-            let counted = l.conn().execute(&engine::count_sql(engine, &table), &mut one).await;
+            let counted = l.conn().execute(&engine::count_sql(engine, home.as_deref(), &table), &mut one).await;
             if let (Ok(()), Some(n), Some(set)) = (counted, one.0, last_result(id)) {
                 let mut r = results::lock(&set);
                 r.total = n.display().trim().parse().ok();

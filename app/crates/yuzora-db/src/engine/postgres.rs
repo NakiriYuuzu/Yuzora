@@ -303,8 +303,9 @@ impl PgConn {
     pub async fn execute(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
         for statement in sql::split(sql, Engine::Postgres) {
-            // A stop pressed between two statements has no query to land on.
-            if self.canceller.cancelled.load(Ordering::SeqCst) {
+            // A stop pressed between two statements (or before the first) has
+            // no query to land on.
+            if self.canceller.cancelled.load(Ordering::SeqCst) || sink.cancelled() {
                 return Err(DbError::Cancelled);
             }
             if !self.run(&statement.text, sink).await? {

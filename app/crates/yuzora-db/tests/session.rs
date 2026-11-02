@@ -1,7 +1,9 @@
 //! The session layer end to end on SQLite, the way the panes drive it: a saved
 //! connection, a script, a table read with its count and key, cells edited and
 //! written back in one transaction (and rolled back when a row is gone), the
-//! row cap, a cancelled query, and releasing a pane.
+//! row cap, a cancelled query (also one stopped before its connection was
+//! there), a read-only connection, and releasing a pane. With the SQL Server
+//! fixture, also a table pane whose SQL tab `USE`d another database.
 //!
 //! One test: the app home is process-wide (`YUZORA_APP_HOME`).
 
@@ -138,5 +140,83 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
     let history = yuzora_db::history::list(id);
     assert_eq!(history.first().map(|h| h.sql.as_str()), Some("select 1 + 1"));
 
+    // Stop pressed while the pane still waits for its connection: the
+    // statement never runs, not even one that returns no rows.
+    let held = runtime::block_on(session::lease(id, None, "pane")).unwrap();
+    let job = session::start_query(id, None, "pane", "update people set note = 'too late'");
+    std::thread::sleep(Duration::from_millis(100));
+    session::cancel(job);
+    drop(held);
+    let stopped = wait(job);
+    assert!(stopped.cancelled && stopped.error.is_none(), "{stopped:?}");
+    assert_eq!(rows(id, "select note from people"), [["NULL"]]);
+
+    // A read-only connection offers no editing, and says why.
+    let ro = config::save(
+        serde_json::from_value::<ConnectionConfig>(json!({"name": "lite-ro", "engine": "sqlite", "path": file, "readOnly": true}))
+            .unwrap(),
+        None,
+    )
+    .unwrap();
+    let state = wait(session::open_table(&ro.id, None, "ro", &table("people"), None));
+    assert!(!state.results[0].editable, "{:?}", state.results[0]);
+    assert_eq!(state.results[0].not_editable, Some(yuzora_db::i18n::t("edit.read_only", &[])));
+
+    sql_server_tables_stay_in_the_panes_database();
+
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// With the fixture (`YUZORA_DATABASE_TEST_ENGINES` naming mssql): the table
+/// pane's SQL tab `USE`s another database on the pane's connection, and the
+/// table it shows, counts and writes back stays the one it opened.
+fn sql_server_tables_stay_in_the_panes_database() {
+    if !std::env::var("YUZORA_DATABASE_TEST_ENGINES").is_ok_and(|v| v.split(',').any(|e| e.trim() == "mssql")) {
+        eprintln!("skipped: mssql is not in YUZORA_DATABASE_TEST_ENGINES");
+        return;
+    }
+    let password = std::env::var("YUZORA_P8_DATABASE_PASSWORD").unwrap_or_else(|_| "Yuzora-P8-Only-2026!".to_owned());
+    let saved = config::save(
+        serde_json::from_value::<ConnectionConfig>(json!({
+            "name": "ms", "engine": "mssql", "host": "127.0.0.1", "port": 51433,
+            "user": "sa", "database": "yuzora_p8", "ssl": "prefer"
+        }))
+        .unwrap(),
+        Some(&password),
+    )
+    .unwrap();
+    let ms = saved.id.as_str();
+    let name = format!("yz_pane_ctx_{}", std::process::id());
+    let remove_both = format!(
+        "IF OBJECT_ID(N'yuzora_p8.dbo.{name}') IS NOT NULL DROP TABLE yuzora_p8.dbo.{name};\n\
+         IF OBJECT_ID(N'tempdb.dbo.{name}') IS NOT NULL DROP TABLE tempdb.dbo.{name};"
+    );
+    run(ms, "setup", &remove_both);
+    run(
+        ms,
+        "setup",
+        &format!(
+            "CREATE TABLE yuzora_p8.dbo.{name} (id int PRIMARY KEY, v nvarchar(10));\n\
+             INSERT INTO yuzora_p8.dbo.{name} VALUES (1, N'home');\n\
+             CREATE TABLE tempdb.dbo.{name} (id int PRIMARY KEY, v nvarchar(10));\n\
+             INSERT INTO tempdb.dbo.{name} VALUES (1, N'other');"
+        ),
+    );
+
+    run(ms, "ms-pane", "USE tempdb");
+    let t: ObjectRef = serde_json::from_value(json!({"schema": "dbo", "name": name})).unwrap();
+    let state = wait(session::open_table(ms, None, "ms-pane", &t, None));
+    assert_eq!(state.error, None);
+    let summary = &state.results[0];
+    assert_eq!((summary.rows, summary.total, summary.editable), (1, Some(1), true), "{summary:?}");
+    let set = results::get(summary.id).unwrap();
+    let v = results::lock(&set).columns.iter().position(|c| c.name == "v").unwrap();
+    assert_eq!(results::lock(&set).cell(0, v), Some(&Cell::Text("home".into())));
+    results::lock(&set).set_edit(0, v, Cell::Text("edited".into()));
+    assert_eq!(runtime::block_on(session::write_back(summary.id)).unwrap(), 1);
+    assert_eq!(rows(ms, &format!("select v from yuzora_p8.dbo.{name}")), [["edited"]]);
+    assert_eq!(rows(ms, &format!("select v from tempdb.dbo.{name}")), [["other"]]);
+
+    session::release_owner("ms-pane");
+    run(ms, "setup", &remove_both);
 }

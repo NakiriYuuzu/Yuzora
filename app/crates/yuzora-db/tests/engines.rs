@@ -136,6 +136,21 @@ fn mismatch(message: &str, n: u64) -> bool {
     yuzora_db::i18n::t("engine.key_mismatch", &[("count", n.to_string())]).split("{key}").all(|part| message.contains(part))
 }
 
+/// A sink whose stop was pressed before anything ran (the pane's Stop while
+/// its connection was still opening).
+struct Stopped;
+
+impl RowSink for Stopped {
+    fn columns(&mut self, _: Vec<Column>) {}
+    fn rows(&mut self, _: Vec<Vec<Cell>>) -> bool {
+        false
+    }
+    fn done(&mut self, _: Option<u64>) {}
+    fn cancelled(&self) -> bool {
+        true
+    }
+}
+
 fn password() -> String {
     std::env::var("YUZORA_P8_DATABASE_PASSWORD").unwrap_or_else(|_| "Yuzora-P8-Only-2026!".to_owned())
 }
@@ -480,6 +495,19 @@ fn sqlite_cancel_interrupts_a_running_query() {
         assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
         assert!(!conn.is_closed());
         assert_eq!(scalar(&mut conn, "SELECT 1").await, "1");
+    });
+}
+
+#[test]
+fn sqlite_a_stop_pressed_before_the_statement_keeps_it_from_running() {
+    let db = TempDb::new("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);");
+    run(async {
+        let mut conn = db.open().await;
+        // The pane's stop reached the connection's canceller, then the statement came.
+        conn.canceller().cancel().await;
+        assert_eq!(conn.execute("UPDATE t SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
+        assert_eq!(db.peek("SELECT v FROM t"), [["Integer(1)"]]);
+        assert_eq!(scalar(&mut conn, "SELECT v FROM t").await, "1", "the connection goes on");
     });
 }
 
@@ -927,6 +955,18 @@ fn postgres_cancel_stops_a_long_query_and_the_connection_goes_on() {
             assert!(!conn.is_closed());
             assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
         }
+    });
+}
+
+#[test]
+fn postgres_a_stop_pressed_before_the_statement_keeps_it_from_running() {
+    only_with!("postgres");
+    run(async {
+        let mut conn = pg().await;
+        query(&mut conn, "CREATE TEMP TABLE yz_stop (v int); INSERT INTO yz_stop VALUES (1)").await.unwrap();
+        conn.canceller().cancel().await;
+        assert_eq!(conn.execute("UPDATE yz_stop SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
+        assert_eq!(scalar(&mut conn, "SELECT v FROM yz_stop").await, "1");
     });
 }
 
@@ -1402,6 +1442,61 @@ fn mssql_batches_rows_and_drops_the_socket_when_the_sink_stops_early() {
         assert!(conn.is_closed());
         assert_eq!(scalar(&mut conn, "SELECT 42").await, "42");
         assert!(!conn.is_closed());
+    });
+}
+
+#[test]
+fn mssql_a_stop_pressed_before_the_statement_keeps_it_from_running() {
+    only_with!("mssql");
+    run(async {
+        let mut conn = ms().await;
+        query(&mut conn, "CREATE TABLE #stop (v int); INSERT INTO #stop VALUES (1)").await.unwrap();
+        conn.canceller().cancel().await;
+        assert_eq!(conn.execute("UPDATE #stop SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
+        assert_eq!(scalar(&mut conn, "SELECT v FROM #stop").await, "1");
+    });
+}
+
+#[test]
+fn mssql_table_sql_stays_in_the_connections_database_after_a_use() {
+    only_with!("mssql");
+    run(async {
+        // The same table in the connection's database and in tempdb.
+        let mut conn = ms_sa("yuzora_p8").await;
+        let name = format!("yz_ctx_{}", std::process::id());
+        let remove_both = format!(
+            "IF OBJECT_ID(N'yuzora_p8.dbo.{name}') IS NOT NULL DROP TABLE yuzora_p8.dbo.{name};\n\
+             IF OBJECT_ID(N'tempdb.dbo.{name}') IS NOT NULL DROP TABLE tempdb.dbo.{name};"
+        );
+        query(&mut conn, &remove_both).await.unwrap();
+        query(
+            &mut conn,
+            &format!(
+                "CREATE TABLE yuzora_p8.dbo.{name} (id int PRIMARY KEY, v nvarchar(10));\n\
+                 INSERT INTO yuzora_p8.dbo.{name} VALUES (1, N'home');\n\
+                 CREATE TABLE tempdb.dbo.{name} (id int PRIMARY KEY, v nvarchar(10));\n\
+                 INSERT INTO tempdb.dbo.{name} VALUES (1, N'other');"
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(conn.database(), Some("yuzora_p8"));
+
+        // A script moves the session; the table's SQL names where it was opened.
+        query(&mut conn, "USE tempdb").await.unwrap();
+        assert_eq!(scalar(&mut conn, "SELECT DB_NAME()").await, "tempdb");
+        let table = ms_object("dbo", &name);
+        let db = conn.database().map(str::to_owned);
+        let select = yuzora_db::engine::select_sql(Engine::Mssql, db.as_deref(), &table, None, 10);
+        assert_eq!(grid(&mut conn, &select).await, [["1", "home"]]);
+        let count = yuzora_db::engine::count_sql(Engine::Mssql, db.as_deref(), &table);
+        assert_eq!(scalar(&mut conn, &count).await, "1");
+        let edit = RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("v".into(), text("edited"))] };
+        assert_eq!(conn.apply_edits(&table, &[edit]).await.unwrap(), 1);
+        assert_eq!(scalar(&mut conn, &format!("SELECT v FROM yuzora_p8.dbo.{name}")).await, "edited");
+        assert_eq!(scalar(&mut conn, &format!("SELECT v FROM tempdb.dbo.{name}")).await, "other");
+
+        query(&mut conn, &remove_both).await.unwrap();
     });
 }
 

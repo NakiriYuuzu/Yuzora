@@ -34,6 +34,9 @@ pub struct MsConn {
     spec: ConnectSpec,
     client: Option<Tds>,
     version: String,
+    /// `DB_NAME()` when connected: what the table pane's SQL names, so a
+    /// script's `USE` elsewhere doesn't move it.
+    database: String,
     canceller: MsCanceller,
 }
 
@@ -55,12 +58,18 @@ impl MsConn {
         let version = scalar(&mut client, "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128))")
             .await
             .map_err(|e| DbError::Connect(e.to_string()))?;
+        let database = scalar(&mut client, "SELECT DB_NAME()").await.map_err(|e| DbError::Connect(e.to_string()))?;
         Ok(Self {
             spec: spec.clone(),
             client: Some(client),
             version: format!("SQL Server {version}"),
+            database,
             canceller: MsCanceller { stop: Arc::new(watch::channel(0).0) },
         })
+    }
+
+    pub fn database(&self) -> &str {
+        &self.database
     }
 
     pub fn server_version(&self) -> String {
@@ -267,6 +276,9 @@ impl MsConn {
         let batches = sql::split(sql, Engine::Mssql);
         // Subscribed before anything else: a cancel from here on counts.
         let mut stop = self.canceller.stop.subscribe();
+        if sink.cancelled() {
+            return Err(DbError::Cancelled);
+        }
         let client = self.take_client().await?;
         let work = Box::pin(run_batches(client, batches, sink));
         let cancelled = Box::pin(stop.changed());
@@ -300,7 +312,7 @@ impl MsConn {
             }
         }
         let mut client = self.take_client().await?;
-        match write_rows(&mut client, table, &edits).await {
+        match write_rows(&mut client, &self.database, table, &edits).await {
             Ok(written) => {
                 self.client = Some(client);
                 Ok(written)
@@ -460,6 +472,9 @@ enum Flow {
 
 async fn run_batches(mut client: Tds, batches: Vec<Statement>, sink: &mut dyn RowSink) -> (Tds, Flow) {
     for batch in &batches {
+        if sink.cancelled() {
+            return (client, Flow::Failed(DbError::Cancelled, true));
+        }
         match run_batch(&mut client, &batch.text, sink).await {
             Ok(true) => {}
             Ok(false) => return (client, Flow::Enough),
@@ -727,7 +742,7 @@ impl<'a> Param<'a> {
 /// `UPDATE [s].[t] SET [a] = @P1 WHERE [k] = @P2; SELECT ROWCOUNT_BIG();`:
 /// changes first, then the key. The count is the `UPDATE`'s own (a trigger's
 /// writes do not add to it).
-fn update_sql(table: &ObjectRef, edit: &RowEdit) -> String {
+fn update_sql(database: &str, table: &ObjectRef, edit: &RowEdit) -> String {
     let quote = |c: &str| super::quote_ident(Engine::Mssql, c);
     let mut n = 0;
     let mut assign = |(column, _): &(String, Cell)| {
@@ -738,7 +753,7 @@ fn update_sql(table: &ObjectRef, edit: &RowEdit) -> String {
     let keys: Vec<_> = edit.key.iter().map(&mut assign).collect();
     format!(
         "UPDATE {} SET {} WHERE {}; SELECT ROWCOUNT_BIG();",
-        super::qualified(Engine::Mssql, table),
+        super::qualified_in(Engine::Mssql, Some(database), table),
         set.join(", "),
         keys.join(" AND ")
     )
@@ -746,7 +761,12 @@ fn update_sql(table: &ObjectRef, edit: &RowEdit) -> String {
 
 /// Runs the edits in one transaction. On error, whether the connection is
 /// still usable (so the caller can roll back).
-async fn write_rows(client: &mut Tds, table: &ObjectRef, edits: &[&RowEdit]) -> Result<u64, (DbError, bool)> {
+async fn write_rows(
+    client: &mut Tds,
+    database: &str,
+    table: &ObjectRef,
+    edits: &[&RowEdit],
+) -> Result<u64, (DbError, bool)> {
     let fail = |e: TdsError| (query_error(e.clone()), !fatal(&e));
     // The transaction commands are batches: run as an RPC (`execute`) the server
     // objects that the transaction count changed.
@@ -755,7 +775,7 @@ async fn write_rows(client: &mut Tds, table: &ObjectRef, edits: &[&RowEdit]) -> 
     for edit in edits {
         let params: Vec<Param<'_>> = edit.changes.iter().chain(&edit.key).map(|(_, c)| Param::of(c)).collect();
         let refs: Vec<&dyn ToSql> = params.iter().map(Param::sql).collect();
-        let sql = update_sql(table, edit);
+        let sql = update_sql(database, table, edit);
         let rows = client.query(sql, &refs).await.map_err(fail)?.into_first_result().await.map_err(fail)?;
         let changed = rows.first().and_then(|r| r.try_get::<i64, _>(0).ok().flatten()).unwrap_or(-1);
         if changed != 1 {
@@ -923,8 +943,8 @@ mod tests {
             changes: vec![("name".into(), Cell::text("n")), ("age".into(), Cell::Null)],
         };
         assert_eq!(
-            update_sql(&t("dbo", "people"), &edit),
-            "UPDATE [dbo].[people] SET [name] = @P1, [age] = @P2 WHERE [id] = @P3 AND [a]]b] = @P4; SELECT ROWCOUNT_BIG();"
+            update_sql("app", &t("dbo", "people"), &edit),
+            "UPDATE [app].[dbo].[people] SET [name] = @P1, [age] = @P2 WHERE [id] = @P3 AND [a]]b] = @P4; SELECT ROWCOUNT_BIG();"
         );
     }
 

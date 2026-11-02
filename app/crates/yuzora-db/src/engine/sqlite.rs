@@ -138,6 +138,10 @@ impl LiteConn {
 
     pub async fn execute(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
+        // Armed above: a stop from here on interrupts; one from before is the sink's.
+        if sink.cancelled() {
+            return Err(DbError::Cancelled);
+        }
         let statements = sql::split(sql, Engine::Sqlite);
         let (tx, mut rx) = mpsc::channel::<Msg>(4);
         let stop = Arc::new(AtomicBool::new(false));

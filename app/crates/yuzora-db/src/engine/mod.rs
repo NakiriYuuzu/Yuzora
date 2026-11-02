@@ -56,6 +56,12 @@ pub trait RowSink: Send {
     fn rows(&mut self, rows: Vec<Vec<Cell>>) -> bool;
     /// The statement finished; `affected` for one that changed rows.
     fn done(&mut self, affected: Option<u64>);
+    /// Stop was pressed. Engines look once their own cancel is armed and
+    /// before each statement, so a stop pressed before a statement started
+    /// (while the connection was still opening) still holds.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// Rows are handed to the sink in batches of this many.
@@ -125,6 +131,15 @@ impl Conn {
         each!(self, c => c.is_closed())
     }
 
+    /// The database the connection was opened in (SQL Server, where a
+    /// script's `USE` can move the session elsewhere).
+    pub fn database(&self) -> Option<&str> {
+        match self {
+            Conn::Mssql(c) => Some(c.database()),
+            Conn::Postgres(_) | Conn::Sqlite(_) => None,
+        }
+    }
+
     pub fn canceller(&self) -> Canceller {
         match self {
             Conn::Postgres(c) => Canceller::Postgres(c.canceller()),
@@ -176,21 +191,39 @@ pub fn qualified(engine: Engine, object: &ObjectRef) -> String {
     }
 }
 
-pub fn select_sql(engine: Engine, table: &ObjectRef, order: Option<(&str, bool)>, limit: u64) -> String {
-    let order = order
-        .map(|(c, desc)| format!(" ORDER BY {}{}", quote_ident(engine, c), if desc { " DESC" } else { "" }))
-        .unwrap_or_default();
-    match engine {
-        Engine::Mssql => format!("SELECT TOP ({limit}) * FROM {}{order};", qualified(engine, table)),
-        _ => format!("SELECT * FROM {}{order} LIMIT {limit};", qualified(engine, table)),
+/// `qualified`, in `database` too when it is given (SQL Server's
+/// `[db].[schema].[name]`). Temporary tables (no schema) stay as they are.
+pub fn qualified_in(engine: Engine, database: Option<&str>, object: &ObjectRef) -> String {
+    match database.filter(|_| !object.schema.is_empty()) {
+        Some(db) => format!("{}.{}", quote_ident(engine, db), qualified(engine, object)),
+        None => qualified(engine, object),
     }
 }
 
-/// `SELECT count(*)` of a table in `engine`'s quoting.
-pub fn count_sql(engine: Engine, table: &ObjectRef) -> String {
+/// A table's rows; `database` from [`Conn::database`].
+pub fn select_sql(
+    engine: Engine,
+    database: Option<&str>,
+    table: &ObjectRef,
+    order: Option<(&str, bool)>,
+    limit: u64,
+) -> String {
+    let order = order
+        .map(|(c, desc)| format!(" ORDER BY {}{}", quote_ident(engine, c), if desc { " DESC" } else { "" }))
+        .unwrap_or_default();
+    let table = qualified_in(engine, database, table);
     match engine {
-        Engine::Mssql => format!("SELECT COUNT_BIG(*) FROM {};", qualified(engine, table)),
-        _ => format!("SELECT count(*) FROM {};", qualified(engine, table)),
+        Engine::Mssql => format!("SELECT TOP ({limit}) * FROM {table}{order};"),
+        _ => format!("SELECT * FROM {table}{order} LIMIT {limit};"),
+    }
+}
+
+/// `SELECT count(*)` of a table in `engine`'s quoting; `database` as for [`select_sql`].
+pub fn count_sql(engine: Engine, database: Option<&str>, table: &ObjectRef) -> String {
+    let table = qualified_in(engine, database, table);
+    match engine {
+        Engine::Mssql => format!("SELECT COUNT_BIG(*) FROM {table};"),
+        _ => format!("SELECT count(*) FROM {table};"),
     }
 }
 
@@ -208,9 +241,14 @@ mod tests {
         assert_eq!(quote_ident(Engine::Mssql, "a]b"), "[a]]b]");
         assert_eq!(qualified(Engine::Sqlite, &t("", "x")), "\"x\"");
         assert_eq!(
-            select_sql(Engine::Postgres, &t("public", "agent_sessions"), Some(("updated_at", true)), 500),
+            select_sql(Engine::Postgres, None, &t("public", "agent_sessions"), Some(("updated_at", true)), 500),
             "SELECT * FROM \"public\".\"agent_sessions\" ORDER BY \"updated_at\" DESC LIMIT 500;"
         );
-        assert_eq!(select_sql(Engine::Mssql, &t("dbo", "t"), None, 10), "SELECT TOP (10) * FROM [dbo].[t];");
+        assert_eq!(select_sql(Engine::Mssql, None, &t("dbo", "t"), None, 10), "SELECT TOP (10) * FROM [dbo].[t];");
+        assert_eq!(
+            select_sql(Engine::Mssql, Some("app]db"), &t("dbo", "t"), None, 10),
+            "SELECT TOP (10) * FROM [app]]db].[dbo].[t];"
+        );
+        assert_eq!(count_sql(Engine::Mssql, Some("app"), &t("", "#t")), "SELECT COUNT_BIG(*) FROM [#t];");
     }
 }
