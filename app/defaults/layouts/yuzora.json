@@ -186,13 +186,30 @@
         },
         {
           "id": "status",
-          "type": "block",
+          "type": "row",
           "size": {
             "px": 26
           },
-          "content": {
-            "mod": "yuzora-statusbar"
-          }
+          "resizable": false,
+          "children": [
+            {
+              "id": "yuzora-statusbar",
+              "type": "block",
+              "content": {
+                "mod": "yuzora-statusbar"
+              }
+            },
+            {
+              "id": "yuzora-perf",
+              "type": "block",
+              "size": {
+                "px": 150
+              },
+              "content": {
+                "mod": "yuzora-perf"
+              }
+            }
+          ]
         }
       ]
     }
