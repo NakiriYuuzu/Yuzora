@@ -7,7 +7,7 @@ import { props, closeOverlay, theme } from "herdr";
 import { t } from "yuzora:core";
 import { connections, engines, saveConnection, deleteConnection, testConnection } from "yuzora:db";
 
-const SSL_MODES = ["disable", "prefer", "require", "verify-ca", "verify-full"];
+const SSL_MODES = ["disable", "prefer", "require", "verify-ca", "verify-full"]; // weakest to strictest
 const TEXT_FIELDS = ["name", "host", "port", "user", "database", "instance", "path", "caFile"];
 
 export default class ConnectionDialog extends View {
@@ -58,14 +58,16 @@ export default class ConnectionDialog extends View {
     return this.passwordTouched || !this.editing ? value : null;
   }
 
-  /** Editing pointed the connection at another server or login: the saved password stays behind. */
+  /** Editing pointed the connection at another server or login, or weakened its TLS: the saved password stays behind (config.rs `password_may_follow`). */
   moved() {
     const a = this.original;
     if (!a) return false;
     const b = this.config();
     const port = (c) => c.port ?? this.engines.find((e) => e.id === c.engine)?.defaultPort ?? null;
     const same = (x, y) => String(x ?? "").trim().toLowerCase() === String(y ?? "").trim().toLowerCase();
-    return a.engine !== b.engine || !same(a.host, b.host) || port(a) !== port(b) || (a.user ?? "") !== (b.user ?? "") || !same(a.instance, b.instance);
+    const verifies = a.ssl === "verify-ca" || a.ssl === "verify-full";
+    return a.engine !== b.engine || !same(a.host, b.host) || port(a) !== port(b) || (a.user ?? "") !== (b.user ?? "") || !same(a.instance, b.instance)
+      || SSL_MODES.indexOf(b.ssl) < SSL_MODES.indexOf(a.ssl) || (verifies && String(a.caFile ?? "").trim() !== String(b.caFile ?? "").trim());
   }
 
   close() {

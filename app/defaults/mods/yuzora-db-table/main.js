@@ -1,8 +1,10 @@
 // A table pane: Data (the rows, editable when the table has a primary key),
 // Structure (columns, indexes, foreign keys, DDL) and SQL (this table's
 // query, ⌘↵ runs it). Owned by lane L3.
-// props: {key, connection, database, schema, name, kind}. The sidebar
+// props: {key, connection, database, schema, name, kind, tab}. The sidebar
 // retargets an open pane through shared "yuzora.db.open" ({key, target, seq}).
+// Commands (keys, or `herdr-app do yuzora-db-table.<command>`): data,
+// structure, sql (show that tab), run (refresh, or run the SQL tab), stop.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, props, nextCommand, shared, setShared, focused } from "herdr";
@@ -19,7 +21,7 @@ export default class DbTable extends View {
     this.key = p?.key ?? `dbt-${Date.now().toString(36)}`;
     this.target = p?.connection && p?.name ? { connection: p.connection, database: p.database ?? null, schema: p.schema ?? "", name: p.name, kind: p.kind ?? "table" } : null;
     this.seq = shared(OPEN)?.seq ?? 0;
-    this.tab = "data";
+    this.tab = TABS.includes(p?.tab) ? p.tab : "data";
     this.jobId = null;
     this.state = null;
     this.shown = 0; // index into state.results
@@ -27,8 +29,14 @@ export default class DbTable extends View {
     this.infoError = null;
     this.sql = "";
     this.handle = cx.focus_handle();
-    cx.spawn(async () => {
-      for (;;) if ((await nextCommand()) === "focus") this.handle.focus();
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "focus") this.handle.focus();
+        else if (TABS.includes(c)) { this.tab = c; cx.notify(); }
+        else if (c === "run") this.run(cx);
+        else if (c === "stop") this.stop();
+      }
     });
     const tab = focused()?.tab;
     const map = shared(TAB_PANES) ?? {};

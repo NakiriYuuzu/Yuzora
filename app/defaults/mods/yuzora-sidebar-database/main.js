@@ -1,9 +1,11 @@
 // The sidebar's Database mode: saved connections, a database picker and the
 // schema tree. Owned by lane L3. Clicking a table opens it in the tab's
 // yuzora-db-table pane (one per tab); "SQL" opens a yuzora-db-query pane.
+// Commands (keys, or `herdr-app do yuzora-sidebar-database.<command>`): next,
+// prev (show the next or previous connection), refresh, add, query.
 import { View, div, svg, uniform_list } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { theme, run, shared, setShared, focused, panes, openOverlay } from "herdr";
+import { theme, run, shared, setShared, focused, panes, openOverlay, nextCommand } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { connections, connect, databases, objects } from "yuzora:db";
 
@@ -44,6 +46,21 @@ export default class SidebarDatabase extends View {
     this.busy = {};
     const active = shared(ACTIVE);
     if (active?.connection) cx.spawn(async (cx) => { await this.load(active.connection, active.database ?? null, cx); });
+    cx.spawn(async (cx) => {
+      for (;;) this.command(await nextCommand(), cx);
+    });
+  }
+
+  command(c, cx) {
+    const { conn, database } = this.active();
+    const list = this.conns();
+    if ((c === "next" || c === "prev") && list.length) {
+      const step = c === "next" ? 1 : -1;
+      const i = list.findIndex((x) => x.id === conn?.id);
+      this.select(list[i < 0 ? (step > 0 ? 0 : list.length - 1) : (i + step + list.length) % list.length], null, cx);
+    } else if (c === "refresh" && conn) cx.spawn(async (cx) => { await this.load(conn.id, database, cx, true); });
+    else if (c === "add") this.openDialog(null);
+    else if (c === "query" && conn) this.openQuery(conn, database);
   }
 
   conns() {

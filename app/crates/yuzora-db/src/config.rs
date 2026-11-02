@@ -57,7 +57,8 @@ impl Engine {
 /// `require` encrypts without checking the certificate, the `verify-*` modes
 /// check it (PostgreSQL's names; SQL Server maps them onto encrypt / trust
 /// server certificate).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Ordered weakest to strictest, which [`ConnectionConfig::password_may_follow`] relies on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SslMode {
     Disable,
@@ -124,15 +125,19 @@ impl ConnectionConfig {
         self.port.or(self.engine.default_port()).unwrap_or(0)
     }
 
-    /// Whether a password saved for `self` may be sent to `other`: the same
-    /// engine, server, login and tunnel. Anything else needs it typed again.
-    pub fn same_server(&self, other: &ConnectionConfig) -> bool {
-        self.engine == other.engine
-            && self.host.trim().eq_ignore_ascii_case(other.host.trim())
-            && self.port() == other.port()
-            && self.user == other.user
-            && self.instance.trim().eq_ignore_ascii_case(other.instance.trim())
-            && self.ssh == other.ssh
+    /// Whether the password saved for `self` may be sent for `edited`: the
+    /// same engine, server, login and tunnel, over TLS at least as strict
+    /// (and checked against the same CA). Anything else needs it typed again.
+    pub fn password_may_follow(&self, edited: &ConnectionConfig) -> bool {
+        let verifies = matches!(self.ssl, SslMode::VerifyCa | SslMode::VerifyFull);
+        self.engine == edited.engine
+            && self.host.trim().eq_ignore_ascii_case(edited.host.trim())
+            && self.port() == edited.port()
+            && self.user == edited.user
+            && self.instance.trim().eq_ignore_ascii_case(edited.instance.trim())
+            && self.ssh == edited.ssh
+            && edited.ssl >= self.ssl
+            && (!verifies || self.ca_file.trim() == edited.ca_file.trim())
     }
 
     /// `~` in a SQLite path is the home folder.
@@ -210,7 +215,7 @@ pub fn save(mut config: ConnectionConfig, password: Option<&str>) -> DbResult<Co
     let mut moved = false;
     match list.iter_mut().find(|c| c.id == config.id) {
         Some(existing) => {
-            moved = !existing.same_server(&config);
+            moved = !existing.password_may_follow(&config);
             *existing = config.clone();
         }
         None => list.push(config.clone()),
@@ -279,13 +284,13 @@ fn unsaved() -> std::sync::MutexGuard<'static, HashMap<String, String>> {
 }
 
 /// The password saved under `config.id`, only while `config` still points at
-/// the server and login it was saved for (see [`ConnectionConfig::same_server`]).
+/// the server and login it was saved for (see [`ConnectionConfig::password_may_follow`]).
 pub fn saved_password_for(config: &ConnectionConfig) -> DbResult<Option<String>> {
     if config.id.is_empty() || config.engine == Engine::Sqlite {
         return Ok(None);
     }
     match get(&config.id) {
-        Ok(saved) if saved.same_server(config) => password(&config.id),
+        Ok(saved) if saved.password_may_follow(config) => password(&config.id),
         _ => Ok(None),
     }
 }
@@ -345,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_password_only_follows_the_same_server_and_login() {
+    fn a_saved_password_only_follows_the_same_server_login_and_tls() {
         let saved: ConnectionConfig = serde_json::from_value(json!({
             "id": "c1", "name": "pg", "engine": "postgres", "host": "DB.local", "user": "app"
         }))
@@ -354,18 +359,29 @@ mod tests {
         edit.name = "renamed".into();
         edit.host = " db.local ".into();
         edit.port = Some(5432);
-        assert!(saved.same_server(&edit), "name, case and the default port spelled out are the same server");
+        edit.ssl = SslMode::VerifyFull;
+        assert!(saved.password_may_follow(&edit), "name, case, the default port spelled out and stricter TLS are the same server");
         for change in [
             |c: &mut ConnectionConfig| c.host = "evil.example".into(),
             |c: &mut ConnectionConfig| c.port = Some(6432),
             |c: &mut ConnectionConfig| c.user = "postgres".into(),
             |c: &mut ConnectionConfig| c.engine = Engine::Mssql,
             |c: &mut ConnectionConfig| c.ssh = Some(SshTunnel { host: "jump".into() }),
+            |c: &mut ConnectionConfig| c.ssl = SslMode::Disable,
         ] {
             let mut other = saved.clone();
             change(&mut other);
-            assert!(!saved.same_server(&other), "{other:?}");
+            assert!(!saved.password_may_follow(&other), "{other:?}");
         }
+        let mut verified = saved.clone();
+        verified.ssl = SslMode::VerifyFull;
+        verified.ca_file = "/etc/ca.pem".into();
+        let mut weaker = verified.clone();
+        weaker.ssl = SslMode::Require;
+        let mut other_ca = verified.clone();
+        other_ca.ca_file = "/tmp/mine.pem".into();
+        assert!(!verified.password_may_follow(&weaker), "a weaker TLS mode needs the password again");
+        assert!(!verified.password_may_follow(&other_ca), "so does trusting another CA");
     }
 
     #[test]

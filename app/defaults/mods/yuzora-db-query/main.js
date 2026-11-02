@@ -1,7 +1,9 @@
 // A SQL query pane: an editor on top (⌘↵ runs the selection, else the
 // statement under the cursor; ⇧⌘↵ runs everything), results below, one tab
 // per statement that returned rows or changed some. Owned by lane L3.
-// props: {key, connection, database}. Without them it asks for a connection.
+// props: {key, connection, database, sql}. Without a connection it asks for
+// one; sql is the editor's first text. Commands (keys, or `herdr-app do
+// yuzora-db-query.<command>`): run, run_all, stop.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, props, nextCommand } from "herdr";
@@ -20,9 +22,15 @@ export default class DbQuery extends View {
     this.menu = null; // "conn" | "db" | "history"
     this.dbs = [];
     this.split = 0.45;
+    this.initial = typeof p?.sql === "string" ? p.sql : "";
     this.handle = cx.focus_handle();
-    cx.spawn(async () => {
-      for (;;) if ((await nextCommand()) === "focus") this.handle.focus();
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "focus") this.handle.focus();
+        else if (c === "run" || c === "run_all") this.run(cx, c === "run_all");
+        else if (c === "stop" && this.state?.running) cancel(this.jobId);
+      }
     });
     if (this.connection) this.loadDbs(cx);
     cx.spawn(async (cx) => {
@@ -197,7 +205,7 @@ export default class DbQuery extends View {
       .child(this.toolbar(th, conn))
       .child(v_flex().flex_1().min_h(0)
         .child(div().flex_none().h(Math.max(80, Math.round((this.height ?? 480) * this.split))).border_b(1).border_color(th.divider ?? th.border)
-          .child(SqlEditor.new(`${this.key}:sql`, { engine: conn?.engine, value: "" })))
+          .child(SqlEditor.new(`${this.key}:sql`, { engine: conn?.engine, value: this.initial })))
         .child(this.results(th)))
       .when(Boolean(menu), (el) => el.child(menu));
   }

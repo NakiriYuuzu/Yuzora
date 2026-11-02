@@ -12,7 +12,7 @@
     "user": "使用者",
     "password": "密碼",
     "password_keep": "留空表示沿用已儲存的密碼",
-    "password_retype": "伺服器或帳號已變更，已存的密碼不會送過去，請重新輸入。",
+    "password_retype": "伺服器、帳號或 TLS 設定已變更，不會送出已存的密碼，請重新輸入。",
     "save_password": "把密碼存在系統鑰匙圈",
     "database": "資料庫（留空：伺服器預設）",
     "ssl": "TLS",
