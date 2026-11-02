@@ -12,7 +12,8 @@ import { connections, databases, query, job, cancel, release, history, clearHist
 import { gridColors } from "./ui.js";
 
 export default class DbQuery extends View {
-  init(p, cx) {
+  init(_props, cx) {
+    const p = props() ?? {};
     this.key = p?.key ?? `dbq-${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}`;
     this.connection = p?.connection ?? null;
     this.database = p?.database ?? null;

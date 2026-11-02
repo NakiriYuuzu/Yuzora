@@ -32,7 +32,7 @@
     "disable": "Unencrypted. Only on a network you trust.",
     "prefer": "Encrypted when the server offers it; the certificate isn't checked.",
     "require": "Always encrypted; the certificate isn't checked.",
-    "verify-ca": "Encrypted, and the certificate must chain to a trusted CA.",
+    "verify-ca": "Encrypted, and the certificate must chain to the CA file below; the host name isn't checked (SQL Server checks it anyway).",
     "verify-full": "Encrypted; the certificate must chain to a trusted CA and name this host."
   },
   "ssh": {

@@ -17,7 +17,8 @@ const TAB_PANES = "yuzora.db.tabPanes";
 const TABS = ["data", "structure", "sql"];
 
 export default class DbTable extends View {
-  init(p, cx) {
+  init(_props, cx) {
+    const p = props() ?? {};
     this.key = p?.key ?? `dbt-${Date.now().toString(36)}`;
     this.target = p?.connection && p?.name ? { connection: p.connection, database: p.database ?? null, schema: p.schema ?? "", name: p.name, kind: p.kind ?? "table" } : null;
     this.seq = shared(OPEN)?.seq ?? 0;

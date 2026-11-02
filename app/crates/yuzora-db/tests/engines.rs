@@ -544,12 +544,14 @@ fn postgres_connects_with_every_tls_mode() {
             assert!(conn.server_version().starts_with("PostgreSQL 16."), "{}", conn.server_version());
         }
 
-        // The fixture's certificate is self-signed: with no CA given, no verified connection.
-        for ssl in [SslMode::VerifyCa, SslMode::VerifyFull] {
-            let err = Conn::connect(&pg_spec("yuzora_full", ssl)).await.err().unwrap();
-            let DbError::Tls(message) = &err else { panic!("{ssl:?}: expected a TLS error, got {err:?}") };
-            assert!(message.contains("invalid peer certificate"), "{message}");
-        }
+        // The fixture's certificate is self-signed: with no CA given, no verified
+        // connection. verify-ca doesn't even try: it trusts only a given CA.
+        let err = Conn::connect(&pg_spec("yuzora_full", SslMode::VerifyFull)).await.err().unwrap();
+        let DbError::Tls(message) = &err else { panic!("expected a TLS error, got {err:?}") };
+        assert!(message.contains("invalid peer certificate"), "{message}");
+        let err = Conn::connect(&pg_spec("yuzora_full", SslMode::VerifyCa)).await.err().unwrap();
+        let ca_required = yuzora_db::i18n::t("engine.ca_required", &[]);
+        assert!(matches!(&err, DbError::Config(m) | DbError::Tls(m) if m == &ca_required), "{err:?}");
 
         // The fixture's certificate is also a CA (`CA:TRUE`), which rustls refuses
         // as a server certificate even when it is the trusted root: the message

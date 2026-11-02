@@ -190,6 +190,10 @@ impl ConnectionConfig {
             Engine::Sqlite => Ok(()),
             _ if self.host.trim().is_empty() => missing("host"),
             _ if self.user.trim().is_empty() => missing("user"),
+            // verify-ca trusts the given CA alone (engine/tls.rs).
+            Engine::Postgres if self.ssl == SslMode::VerifyCa && self.ca_file.trim().is_empty() => {
+                Err(DbError::Config(crate::i18n::t("engine.ca_required", &[])))
+            }
             _ => Ok(()),
         }
     }

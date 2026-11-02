@@ -42,6 +42,7 @@
     "ca_unusable": "{path} 內的憑證無法使用：{error}",
     "ca_empty": "{path} 裡沒有 PEM 憑證",
     "key_mismatch": "{key} 這一列比對到 {count} 列，而不是剛好一列；沒有寫入任何資料",
-    "instance_port": "執行個體 {instance} 需要指定 port：不支援透過 SQL Browser 查詢。請輸入該執行個體的 TCP port。"
+    "instance_port": "執行個體 {instance} 需要指定 port：不支援透過 SQL Browser 查詢。請輸入該執行個體的 TCP port。",
+    "ca_required": "verify-ca 只用你提供的 CA 驗證憑證：請選擇 CA 檔，或改用 verify-full"
   }
 }

@@ -11,9 +11,11 @@
 //! | `verify-ca`   | always              | checked           | no        |
 //! | `verify-full` | always              | checked           | checked   |
 //!
-//! The roots are the Mozilla set plus the PEM file of `ca_file`. Handshake
-//! signatures are verified in every mode: a certificate that is not checked
-//! still has to prove it owns its key.
+//! `verify-full` trusts the Mozilla roots plus the PEM file of `ca_file`.
+//! `verify-ca` trusts `ca_file` alone and needs one: with the public roots and
+//! no name check, any certificate a public CA issued for any domain would
+//! pass. Handshake signatures are verified in every mode: a certificate that
+//! is not checked still has to prove it owns its key.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,9 +58,12 @@ fn client_config(ssl: SslMode, ca_file: &str) -> DbResult<ClientConfig> {
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AnyCertificate(provider)))
             .with_no_client_auth(),
-        SslMode::VerifyFull => builder.with_root_certificates(roots(ca_file)?).with_no_client_auth(),
+        SslMode::VerifyFull => builder.with_root_certificates(roots(ca_file, true)?).with_no_client_auth(),
         SslMode::VerifyCa => {
-            let inner = WebPkiServerVerifier::builder_with_provider(Arc::new(roots(ca_file)?), provider)
+            if ca_file.trim().is_empty() {
+                return Err(DbError::Tls(crate::i18n::t("engine.ca_required", &[])));
+            }
+            let inner = WebPkiServerVerifier::builder_with_provider(Arc::new(roots(ca_file, false)?), provider)
                 .build()
                 .map_err(|e| DbError::Tls(e.to_string()))?;
             builder.dangerous().with_custom_certificate_verifier(Arc::new(ChainOnly(inner))).with_no_client_auth()
@@ -66,10 +71,12 @@ fn client_config(ssl: SslMode, ca_file: &str) -> DbResult<ClientConfig> {
     })
 }
 
-/// The trusted roots: Mozilla's plus every certificate in `ca_file`.
-fn roots(ca_file: &str) -> DbResult<RootCertStore> {
+/// The trusted roots: every certificate in `ca_file`, and Mozilla's when `public`.
+fn roots(ca_file: &str, public: bool) -> DbResult<RootCertStore> {
     let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if public {
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
     let path = ca_file.trim();
     if path.is_empty() {
         return Ok(roots);
@@ -199,9 +206,12 @@ mod tests {
 
     #[test]
     fn every_mode_builds_a_connector() {
-        for ssl in [SslMode::Disable, SslMode::Prefer, SslMode::Require, SslMode::VerifyCa, SslMode::VerifyFull] {
+        for ssl in [SslMode::Disable, SslMode::Prefer, SslMode::Require, SslMode::VerifyFull] {
             assert!(connector(ssl, "").is_ok(), "{ssl:?}");
         }
+        // Public roots without a name check would let any public certificate through.
+        let err = connector(SslMode::VerifyCa, "").err().unwrap();
+        assert_eq!(err, DbError::Tls(crate::i18n::t("engine.ca_required", &[])));
     }
 
     #[test]
@@ -299,8 +309,8 @@ mod tests {
         let ca = Some("ca.pem");
         assert_eq!(handshake(SslMode::VerifyCa, ca, "localhost"), Ok(()));
         assert_eq!(handshake(SslMode::VerifyCa, ca, "db.invalid"), Ok(()));
-        assert!(unknown_issuer(handshake(SslMode::VerifyCa, None, "db.invalid")));
         assert!(unknown_issuer(handshake(SslMode::VerifyCa, Some("other-ca.pem"), "db.invalid")));
+        // Without a CA there is nothing to trust (every_mode_builds_a_connector).
     }
 
     #[test]

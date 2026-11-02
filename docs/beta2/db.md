@@ -84,10 +84,10 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 | `disable` | 不用 TLS |
 | `prefer` | 伺服器支援就用 TLS，不驗憑證 |
 | `require` | 一定要 TLS，不驗憑證鏈（仍驗 handshake 簽章） |
-| `verify-ca` | 驗憑證鏈，不驗主機名稱 |
-| `verify-full` | 驗憑證鏈與主機名稱 |
+| `verify-ca` | 驗憑證鏈，不驗主機名稱；只信任連線設定的 CA 檔，所以 CA 檔必填 |
+| `verify-full` | 驗憑證鏈與主機名稱；信任 webpki roots 加上連線設定的 CA 檔 |
 
-  信任的根憑證是 webpki roots，再加上連線設定的 CA 檔（PEM，可以有多張，`~` 會展開）。
+  CA 檔是 PEM，可以有多張，`~` 會展開。`verify-ca` 不使用公開根憑證：不驗主機名稱又信任公開 CA，等於任何網域的公開憑證都能通過。
 - rustls 不接受本身是 CA 的伺服器憑證（`openssl req -x509` 自簽的通常就是這種），也不接受 X.509 v1 憑證；遇到時錯誤訊息會說明，請改用由 CA 簽發的伺服器憑證，或改用 `require`。
 
 ### SQL Server

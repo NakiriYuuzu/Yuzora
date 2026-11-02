@@ -42,6 +42,7 @@
     "ca_unusable": "{path} holds an unusable certificate: {error}",
     "ca_empty": "{path} holds no PEM certificate",
     "key_mismatch": "The row with {key} matched {count} rows instead of exactly one; nothing was written",
-    "instance_port": "The instance {instance} needs its port: looking it up through SQL Browser isn't supported. Enter the instance's TCP port."
+    "instance_port": "The instance {instance} needs its port: looking it up through SQL Browser isn't supported. Enter the instance's TCP port.",
+    "ca_required": "verify-ca checks the certificate against your CA only: choose its CA file, or use verify-full"
   }
 }
