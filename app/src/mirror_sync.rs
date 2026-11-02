@@ -73,7 +73,8 @@ fn rpc_error(error: anyhow::Error) -> Outcome {
 
 fn read(core: &Core, machine: &str, timeout: Duration) -> Result<(Document, u64), Outcome> {
     let on = (!machine.is_empty()).then_some(machine);
-    let result = core.call_timeout("doc.get", json!({"name":"herdr-app", "on":on}), timeout).map_err(rpc_error)?;
+    // yuzora: Yuzora's own layout document, not Herdr's "herdr-app".
+    let result = core.call_timeout("doc.get", json!({"name":crate::yuzora::CORE_DOCUMENT, "on":on}), timeout).map_err(rpc_error)?;
     let document = if result["value"].is_null() {
         Document::default()
     } else {
@@ -91,7 +92,8 @@ pub fn round_timeout(core: &Core, work: Work, timeout: Duration) -> (String, Out
     let on = (!work.machine.is_empty()).then_some(work.machine.as_str());
     let deadline = std::time::Instant::now() + timeout;
     let result = match work.write {
-        Some(document) => match core.call_timeout("doc.set", json!({"name":"herdr-app", "on":on, "version":work.version, "value":document}), timeout) {
+        // yuzora: Yuzora's own layout document.
+        Some(document) => match core.call_timeout("doc.set", json!({"name":crate::yuzora::CORE_DOCUMENT, "on":on, "version":work.version, "value":document}), timeout) {
             Ok(v) => match v["version"].as_u64() {
                 Some(version) => Outcome::Written(document, version),
                 None => Outcome::Undecodable("Layout write returned no version".into()),

@@ -1,0 +1,10 @@
+[package]
+name = "yuzora-settings"
+description = "Yuzora L6: Settings and extensions: the settings frame, mods and herdr-core templates management."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }

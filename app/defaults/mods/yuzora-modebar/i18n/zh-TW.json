@@ -1,0 +1,10 @@
+{
+  "mode": {
+    "workspace": "工作區",
+    "files": "檔案",
+    "git": "Git",
+    "database": "資料庫",
+    "ssh": "SSH / SFTP"
+  },
+  "settings": "設定"
+}

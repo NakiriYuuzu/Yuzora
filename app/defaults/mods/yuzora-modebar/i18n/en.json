@@ -1,0 +1,10 @@
+{
+  "mode": {
+    "workspace": "Workspace",
+    "files": "Files",
+    "git": "Git",
+    "database": "Database",
+    "ssh": "SSH / SFTP"
+  },
+  "settings": "Settings"
+}

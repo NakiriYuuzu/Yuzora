@@ -20,6 +20,11 @@ build/
 .vite/
 .scaffold/
 /target/
+app/target/
+# yuzora: `herdr-app check` writes these into the folder it checks; check a
+# copy (see docs/beta2/lanes.md), never ship them from app/defaults.
+app/defaults/**/gpui-kit.d.ts
+app/defaults/**/jsconfig.json
 src-tauri/target/
 src-tauri/host/target/
 src-tauri/companion/target/

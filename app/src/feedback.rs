@@ -9,6 +9,10 @@ const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const ENDPOINT: &str = "https://telemetry.herdr.dev/v1/feedback";
 
 fn endpoint() -> Option<String> {
+    // yuzora: feedback is a GitHub issue (yuzora::open_feedback), never herdr.dev.
+    if crate::yuzora::TELEMETRY_OFF {
+        return None;
+    }
     std::env::var("HERDR_FEEDBACK_URL").ok().filter(|u| !u.is_empty())
         .or_else(|| option_env!("HERDR_APP_RELEASE").map(|_| ENDPOINT.to_owned()))
 }

@@ -36,6 +36,8 @@ mod update_notes;
 mod vt;
 mod win32_keys;
 mod window;
+// yuzora: Yuzora's branding, modules and switches (src/yuzora/mod.rs).
+mod yuzora;
 
 use gpui::*;
 
@@ -58,7 +60,7 @@ The terminals run in herdr-core (`hc`), which keeps them alive when the
 window closes. `hc --help`: start, read, wait on and talk to terminals and
 agents. The app shows them and arranges them in spaces and tabs.
 
-Home: ~/.config/herdr-app (HERDR_APP_HOME picks another).
+Home: ~/.config/yuzora (YUZORA_APP_HOME picks another).
 ";
 
 /// A Windows window app has no console: answers to `herdr-app ls` and the
@@ -206,14 +208,15 @@ pub fn open_main(core: std::sync::Arc<hc::Core>, requests: async_channel::Receiv
                 // macOS: always see-through, so a layout can draw its own title bar
                 // live; the app drags the window (window/titlebar.rs).
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Herdr".into()),
+                    title: Some(yuzora::APP_NAME.into()), // yuzora: window title
                     // Windows: hidden for good (it can't change live); the app draws it.
                     appears_transparent: cfg!(any(target_os = "macos", windows)),
                     traffic_light_position: cfg!(target_os = "macos").then(|| point(px(12.0), px(7.0))),
                 }),
                 app_owns_titlebar_drag: cfg!(target_os = "macos"),
                 // Herdr Dev and other side-by-side builds get their own dock icon.
-                app_id: Some(std::env::var("HERDR_APP_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "herdr-app".into())),
+                // yuzora: Yuzora's app id (YUZORA_APP_ID for side-by-side builds).
+                app_id: Some(std::env::var("YUZORA_APP_ID").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| yuzora::BUNDLE_ID.into())),
                 ..Default::default()
             };
             cx.open_window(options, |window, cx| cx.new(|cx| window::AppWindow::new(core, requests, window, cx)))

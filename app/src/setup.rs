@@ -15,11 +15,10 @@ use gpui::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-const ICON: &[u8] = include_bytes!("../assets/icons/herdr-ui-icon-clean.png");
-#[cfg(not(windows))]
-const APP_INSTALL: &str = "curl -fsSL https://releases.herdr.dev/app/install.sh | sh";
-#[cfg(windows)]
-const APP_INSTALL: &str = "powershell -c \"irm https://releases.herdr.dev/app/install.ps1 | iex\"";
+// yuzora: Yuzora's icon on the setup screen.
+const ICON: &[u8] = include_bytes!("../assets/icons/yuzora.png");
+// yuzora: Yuzora updates come from its GitHub releases, not herdr.dev.
+const APP_INSTALL: &str = crate::yuzora::RELEASES_URL;
 #[cfg(not(windows))]
 const CORE_INSTALL: &str = "curl -fsSL https://releases.herdr.dev/core/install.sh | sh";
 #[cfg(windows)]
@@ -48,8 +47,8 @@ pub struct Setup {
 pub fn open(need: Need, requests: async_channel::Receiver<Request>, cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(620.0), px(460.0)), cx))),
-        titlebar: Some(TitlebarOptions { title: Some("Herdr".into()), ..Default::default() }),
-        app_id: Some("herdr-app".into()),
+        titlebar: Some(TitlebarOptions { title: Some(crate::yuzora::APP_NAME.into()), ..Default::default() }), // yuzora:
+        app_id: Some(crate::yuzora::BUNDLE_ID.into()), // yuzora:
         ..Default::default()
     };
     let icon = Arc::new(Image::from_bytes(ImageFormat::Png, ICON.to_vec()));

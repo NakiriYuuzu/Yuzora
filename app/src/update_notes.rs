@@ -183,6 +183,10 @@ fn preview_media(url: &str) -> bool {
 }
 
 fn fetch_media(notes: &[Note]) {
+    // yuzora: no update-notes media from media.herdr.dev.
+    if crate::yuzora::UPDATE_NOTES_MEDIA_OFF {
+        return;
+    }
     let dir = path("update-notes-media");
     if std::fs::create_dir_all(&dir).is_err() { return; }
     for media in notes.iter().flat_map(|n| &n.items).flat_map(|item| &item.media) {

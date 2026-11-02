@@ -80,7 +80,7 @@ async function clip(scene: string, v: string) {
   const script = join(root, "scripts/notes-clips", scene + ".sh");
   if (!await Bun.file(script).exists()) throw new Error(`unknown scene: ${scene}`);
   const name = `notes-clip-${scene}-${process.pid}`;
-  const env = { ...process.env, HERDR_APP_SANDBOX: name, HERDR_APP_HOME: `/var/tmp/herdr-app-${name}/home` };
+  const env = { ...process.env, HERDR_APP_SANDBOX: name, YUZORA_APP_HOME: `/var/tmp/herdr-app-${name}/home` }; // yuzora: Yuzora reads only YUZORA_APP_HOME
   const frames = await mkdtemp("/var/tmp/herdr-notes-frames-");
   const pointerFile = join(frames, "pointer.json");
   const crop = (await Bun.$`bash ${script} crop`.cwd(root).quiet().text()).trim();

@@ -49,8 +49,8 @@ pub fn note_fonts(cx: &gpui::App) {
 /// The app's home: `$HERDR_APP_HOME` (tests, experiments), else
 /// `$XDG_CONFIG_HOME/herdr-app`, else `~/.config/herdr-app`, on every OS.
 pub fn app_dir() -> PathBuf {
-    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    env("HERDR_APP_HOME").unwrap_or_else(|| env("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")).join("herdr-app"))
+    // yuzora: ~/.config/yuzora ($YUZORA_APP_HOME), never Herdr's home.
+    crate::yuzora::app_home()
 }
 
 pub fn mods_dir() -> PathBuf {
@@ -72,6 +72,7 @@ pub fn write_workspace() -> std::io::Result<()> {
     write_if_changed(&dir.join("herdr.d.ts"), DECLARATIONS)?;
     let types = gpui_shell::type_declarations(&gpui_shell::FrozenComponentRegistry::default());
     write_if_changed(&dir.join("gpui-kit.d.ts"), &types)?;
+    crate::yuzora::write_workspace(&dir)?; // yuzora: yuzora.d.ts
     let _ = std::fs::remove_dir_all(frame_dir());
     for (path, bytes) in FRAME_MODS {
         let file = frame_dir().join(path);
@@ -1135,9 +1136,10 @@ fn capabilities() -> Capabilities {
 /// What mods may touch, and the `herdr` module they import. Also used by `herdr-app check`.
 pub fn install_policy() -> async_channel::Receiver<Request> {
     gpui_shell::policy::update_default(|p| {
-        p.with_capabilities(capabilities())
+        let p = p.with_capabilities(capabilities())
             .with_host_module(module(Instance { name: String::new(), props: Value::Null }, 0))
-            .expect("herdr module is valid")
+            .expect("herdr module is valid");
+        crate::yuzora::with_modules(p, "") // yuzora: the yuzora:* modules
     });
     let (tx, rx) = async_channel::unbounded();
     let _ = REQUESTS.set(tx);
@@ -1170,6 +1172,7 @@ pub fn prepare_load(inst: &Instance) -> u64 {
         .with_storage_path(dir.join(file))
         .with_host_module(module(inst.clone(), copy))
         .expect("herdr module is valid");
+    let policy = crate::yuzora::with_modules(policy, &inst.name); // yuzora: the yuzora:* modules
     gpui_shell::policy::set_default(policy);
     copy
 }

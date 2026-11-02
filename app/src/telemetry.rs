@@ -85,6 +85,10 @@ fn env_off() -> Option<&'static str> {
 }
 
 fn read_env_off() -> Option<&'static str> {
+    // yuzora: Yuzora collects and sends nothing, whatever settings.json says.
+    if crate::yuzora::TELEMETRY_OFF {
+        return Some("Yuzora");
+    }
     let set = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
     let truthy = |v: String| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
     if set("DO_NOT_TRACK").is_some_and(truthy) {
@@ -99,6 +103,10 @@ fn read_env_off() -> Option<&'static str> {
 
 /// Where reports go, if this build sends at all.
 fn endpoint() -> Option<String> {
+    // yuzora: no endpoint at all, not even a test server.
+    if crate::yuzora::TELEMETRY_OFF {
+        return None;
+    }
     match std::env::var("HERDR_TELEMETRY_URL").ok().filter(|u| !u.is_empty()) {
         Some(url) => Some(url),
         None => option_env!("HERDR_APP_RELEASE").map(|_| ENDPOINT.to_owned()),

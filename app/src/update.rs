@@ -117,6 +117,10 @@ pub fn set_core(version: Option<String>, managed: Option<String>) {
 }
 
 fn checks_app() -> Option<PathBuf> {
+    // yuzora: no app self-update from herdr.dev (L7 adds GitHub Releases).
+    if crate::yuzora::APP_SELF_UPDATE_OFF {
+        return None;
+    }
     root().filter(|_| option_env!("HERDR_APP_RELEASE").is_some() || std::env::var_os("HERDR_RELEASES_URL").is_some())
 }
 

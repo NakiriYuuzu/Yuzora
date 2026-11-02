@@ -100,7 +100,7 @@ export function checkMarkdown(file: string, source: string, ref: Reference): str
 }
 
 async function run(binary: string, arg: string): Promise<string> {
-  const result = Bun.spawnSync([resolve(binary), arg], { env: { ...process.env, HERDR_APP_HOME: resolve("target/docs-no-window") } });
+  const result = Bun.spawnSync([resolve(binary), arg], { env: { ...process.env, YUZORA_APP_HOME: resolve("target/docs-no-window") } }); // yuzora: Yuzora reads only YUZORA_APP_HOME
   if (result.exitCode !== 0) throw new Error(`${binary} ${arg}: ${result.stderr.toString()}`);
   return result.stdout.toString();
 }

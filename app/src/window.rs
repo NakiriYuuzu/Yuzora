@@ -135,6 +135,7 @@ fn launch_failure(record: &Value, output: &str) -> Option<String> {
 /// sidebar, tab bar).
 const LAYOUTS: &[(&str, &str)] = &[
     ("main", include_str!("../defaults/layouts/main.json")),
+    ("yuzora", include_str!("../defaults/layouts/yuzora.json")), // yuzora: the default layout
     ("terminals", include_str!("../defaults/layouts/terminals.json")),
     ("win98", include_str!("../defaults/layouts/win98.json")),
 ];
@@ -562,7 +563,8 @@ impl AppWindow {
         // A layout whose mods are gone (Zen, T4, ADE after the update took
         // theirs) starts on Herdr's instead of a wall of "did not load".
         let gone = name.as_deref().map(missing_mods).unwrap_or_default();
-        w.load_layout(if gone.is_empty() { name.as_deref().unwrap_or("main") } else { "main" });
+        // yuzora: a fresh install starts on Yuzora's layout.
+        w.load_layout(if gone.is_empty() { name.as_deref().unwrap_or(crate::yuzora::DEFAULT_LAYOUT) } else { "main" });
         w.apply_look(window, cx);
         w.show_layout_notes(window, cx);
         if let (Some(n), false) = (&name, gone.is_empty()) {
@@ -3215,6 +3217,10 @@ impl AppWindow {
                 return;
             }
             "app.feedback" => {
+                // yuzora: feedback opens a GitHub issue; nothing goes to herdr.dev.
+                if crate::yuzora::open_feedback(Self::owned(a, "message"), cx) {
+                    return;
+                }
                 let from = Self::owned(a, "from").unwrap_or_else(|| "person".into());
                 if !matches!(from.as_str(), "person" | "agent") {
                     return self.fail("from must be person or agent");

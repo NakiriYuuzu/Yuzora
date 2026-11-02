@@ -82,7 +82,7 @@ while True:
 def env():
     e = dict(os.environ)
     e.update(
-        HERDR_APP_HOME=f"{ROOT}/home",
+        YUZORA_APP_HOME=f"{ROOT}/home",  # yuzora: Yuzora reads only YUZORA_APP_HOME
         HC_SESSION=SESSION,  # Short name avoids macOS socket-path limits.
         XDG_STATE_HOME=f"{ROOT}/state",
         PYTHONIOENCODING="utf-8",

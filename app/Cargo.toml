@@ -1,16 +1,21 @@
 [workspace]
-members = ["crates/ghostty-sys"]
-exclude = ["vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext"]
+# yuzora: crates/* is ghostty-sys plus the yuzora-* crates; `cargo build` and
+# `cargo test` cover all of them. The yuzora vendor patches stay out like the rest.
+members = ["crates/*"]
+default-members = [".", "crates/*"]
+exclude = ["vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext", "vendor/russh-0.62.7-yuzora", "vendor/russh-sftp-3.0.0-yuzora", "vendor/tiberius-0.12.3-yuzora"]
 resolver = "2"
 
 [workspace.package]
+# yuzora: one version for the app and every yuzora-* crate.
+version = "0.1.0-beta.2"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
 
 [package]
 name = "herdr-app"
-version = "0.1.12"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -35,6 +40,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 fancy-regex = "0.19"
 notify = "7"
 sha2 = "0.10"
+# yuzora: the Yuzora crates, wired in by src/yuzora/mod.rs only. Lanes change
+# their own crate's Cargo.toml, never this list.
+yuzora-core = { path = "crates/yuzora-core" }
+yuzora-shell = { path = "crates/yuzora-shell" }
+yuzora-git = { path = "crates/yuzora-git" }
+yuzora-db = { path = "crates/yuzora-db" }
+yuzora-ssh = { path = "crates/yuzora-ssh" }
+yuzora-files = { path = "crates/yuzora-files" }
+yuzora-settings = { path = "crates/yuzora-settings" }
 
 [[test]]
 name = "shot_pixels"
@@ -86,6 +100,13 @@ xim-ctext = { path = "vendor/xim-ctext" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 # Our copy: a flex item's min-content was measured even when unused (HERDR:).
 taffy = { path = "vendor/taffy" }
+# yuzora: Yuzora's own patches, copied from src-tauri/vendor (each has a
+# README.yuzora.md). Unused until a lane crate depends on the crate.
+# Keep pending channel-open cancellation safe.
+russh = { path = "vendor/russh-0.62.7-yuzora" }
+# Close a directory handle when a listing fails or is dropped.
+russh-sftp = { path = "vendor/russh-sftp-3.0.0-yuzora" }
+tiberius = { path = "vendor/tiberius-0.12.3-yuzora" }
 
 # Our copy: the JIT copied all its call feedback on every refresh scan and
 # threw it away, ~40% of the main thread with a mod of many small

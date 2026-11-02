@@ -23,7 +23,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 name=${HERDR_APP_SANDBOX:-sandbox}
 root=/var/tmp/herdr-app-$name
 bin=${HERDR_APP_BIN:-$here/../target/debug/herdr-app}
-export HC_SESSION=herdr-app-$name HERDR_APP_HOME=$root/home
+# yuzora: Yuzora reads only YUZORA_APP_HOME (also below).
+export HC_SESSION=herdr-app-$name YUZORA_APP_HOME=$root/home
 # The core's state (machines, terminals) lives and dies with the sandbox:
 # a machine added in one run must not follow the next one there.
 export XDG_STATE_HOME=$root/state
@@ -33,7 +34,7 @@ export HERDR_APP_NO_SOUND=1
 # The private X display, once started (Weston picks the number).
 if [[ -f $root/display ]]; then export DISPLAY=$(cat "$root/display"); fi
 
-ours() { { tr '\0' '\n' <"/proc/$1/environ"; } 2>/dev/null | grep -qx "HERDR_APP_HOME=$HERDR_APP_HOME"; }
+ours() { { tr '\0' '\n' <"/proc/$1/environ"; } 2>/dev/null | grep -qx "YUZORA_APP_HOME=$YUZORA_APP_HOME"; }
 
 start_display() {
   mkdir -p "$root"
@@ -70,7 +71,7 @@ stop_window() {
 start_window() {
   (cd "$here/.." && cargo build)
   start_display
-  mkdir -p "$HERDR_APP_HOME" "$root/bin"
+  mkdir -p "$YUZORA_APP_HOME" "$root/bin"
   # Opening a link would reach the real browser: log it instead (`scripts/sandbox opened`).
   for opener in xdg-open open; do
     printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%q\n' "$root/opened" >"$root/bin/$opener"

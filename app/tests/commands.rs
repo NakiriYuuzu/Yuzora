@@ -9,7 +9,7 @@ fn commands_need_no_window_or_app_home() {
     ));
     let output = Command::new(env!("CARGO_BIN_EXE_herdr-app"))
         .arg("commands")
-        .env("HERDR_APP_HOME", &home)
+        .env("YUZORA_APP_HOME", &home) // yuzora: Yuzora reads only YUZORA_APP_HOME
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));

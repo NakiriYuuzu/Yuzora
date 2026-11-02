@@ -1,5 +1,12 @@
 # Herdr changelog
 
+<!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
+## [0.1.0-beta.2] - 2026-11-02
+
+### New
+- Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
+- 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+
 ## [0.1.12] - 2026-11-02
 <!-- spotlight macos -->
 
