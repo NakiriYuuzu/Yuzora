@@ -1,0 +1,28 @@
+#!/bin/bash
+# Points ~/.local/bin/herdr-app at this checkout's release build and adds the
+# launcher entry with the Herdr icon. Re-run after moving the checkout.
+set -euo pipefail
+
+[[ $(uname -s) == Linux ]] || { echo 'This installer is for Linux.' >&2; exit 1; }
+cd "$(dirname "$0")/.."
+cargo build --release
+
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+mkdir -p "$HOME/.local/bin" "$data/applications" "$data/icons/hicolor/scalable/apps"
+ln -sfn "$PWD/target/release/herdr-app" "$HOME/.local/bin/herdr-app"
+cp assets/icons/herdr-ui-icon-clean.svg "$data/icons/hicolor/scalable/apps/herdr-app.svg"
+cat > "$data/applications/herdr-app.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Herdr
+Comment=Terminals and coding agents that keep running
+Exec=$HOME/.local/bin/herdr-app
+Icon=herdr-app
+Terminal=false
+Categories=Development;
+StartupWMClass=herdr-app
+EOF
+update-desktop-database "$data/applications" 2>/dev/null || true
+# A stale icon cache hides new icons until it's rebuilt.
+[[ -f $data/icons/hicolor/icon-theme.cache ]] && gtk-update-icon-cache -f -t "$data/icons/hicolor" >/dev/null 2>&1 || true
+echo "Installed herdr-app. Quit and reopen Herdr to use the new build."

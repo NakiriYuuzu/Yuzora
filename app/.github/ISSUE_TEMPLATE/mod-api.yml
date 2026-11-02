@@ -1,0 +1,17 @@
+name: A mod can't do this yet
+description: A missing API, event or setting prevents your mod from working.
+body:
+  - type: textarea
+    id: building
+    attributes:
+      label: What did you try to build?
+      description: Show your mod or a small example if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: missing
+    attributes:
+      label: What is missing?
+      description: What does Herdr need to expose so your mod can do it?
+    validations:
+      required: true

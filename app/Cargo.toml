@@ -1,0 +1,103 @@
+[workspace]
+members = ["crates/ghostty-sys"]
+exclude = ["vendor/gpui-kit", "vendor/gpui-pre", "vendor/gpui-pre-wgpu", "vendor/gpui-pre-apple", "vendor/gpui-pre-linux", "vendor/gpui-pre-macos", "vendor/gpui-pre-windows", "vendor/taffy", "vendor/quickjs-jit-runtime", "vendor/zed-xim", "vendor/xim-ctext"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package]
+name = "herdr-app"
+version = "0.1.12"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ghostty-sys = { path = "crates/ghostty-sys" }
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["render-to-image"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-shell = { path = "vendor/gpui-kit/crates/shell" }
+gpui-base = { path = "vendor/gpui-kit/crates/base" }
+anyhow = "1"
+async-channel = "2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "tiff", "bmp"] }
+png = "0.17"
+ttf-parser = "0.25"
+smallvec = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+fancy-regex = "0.19"
+notify = "7"
+sha2 = "0.10"
+
+[[test]]
+name = "shot_pixels"
+path = "tests/shot_pixels.rs"
+harness = false
+
+[dev-dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+gpui-shell = { path = "vendor/gpui-kit/crates/shell", features = ["render-test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu = { package = "gpui-pre-wgpu", path = "vendor/gpui-pre-wgpu", features = ["test-support"] }
+skrifa = "=0.44.0"
+swash = "=0.2.10"
+tiny-skia = { version = "=0.11.4", default-features = false, features = ["std", "simd"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux = { package = "gpui-pre-linux", version = "=0.3.8", features = ["render-to-image"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos = { package = "gpui-pre-macos", version = "=0.3.8", features = ["render-to-image"] }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+gpui_windows = { package = "gpui-pre-windows", version = "=0.3.8", features = ["render-to-image"] }
+uds_windows = "1.2"
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Console", "Win32_Media_Multimedia"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+# gpui-shell's LLRT modules must share its quickjs-jit VM; gpui-kit's own workspace does the same.
+[patch.crates-io]
+# HERDR: production frame capture without test-support dependencies.
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }
+rquickjs = { path = "vendor/gpui-kit/crates/shell/rquickjs-compat" }
+# Our copy: an idle window stops waking every vsync (patches marked HERDR:).
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+# Our copy: snapping a maximized window to a half kept its old size (HERDR:).
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
+# HERDR: XIM's Latin-1/COMPOUND_TEXT must decode without panicking.
+zed-xim = { path = "vendor/zed-xim" }
+xim-ctext = { path = "vendor/xim-ctext" }
+# Our copy: Windows completes dead keys through native text input (HERDR:).
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+# Our copy: a flex item's min-content was measured even when unused (HERDR:).
+taffy = { path = "vendor/taffy" }
+
+# Our copy: the JIT copied all its call feedback on every refresh scan and
+# threw it away, ~40% of the main thread with a mod of many small
+# object-returning functions (longbridge/quickjs-jit#38, HERDR:).
+[patch."https://github.com/longbridge/quickjs-jit"]
+quickjs-jit-runtime = { path = "vendor/quickjs-jit-runtime" }
+
+# With --target (CI builds Intel Macs on Apple Silicon), stripping a macOS
+# proc-macro loses what rustc loads from it: "can't find crate". Build-time
+# code only; the app itself is still stripped.
+[profile.release.build-override]
+strip = "none"
+
+[profile.dev.package."*"]
+opt-level = 2

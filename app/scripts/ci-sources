@@ -1,0 +1,66 @@
+#!/bin/bash
+# Lets CI reuse a cached target/ for our own and vendored crates.
+#
+# Cargo judges those by file times, and a fresh checkout makes every file
+# new, so a restored build would redo them all (gpui-kit, taffy, ghostty...).
+#
+#   scripts/ci-sources record    after a build: note every file's content
+#                                (git blob ids, submodules too) in target/
+#   scripts/ci-sources restore   after checking out and restoring target/:
+#                                files whose content matches the note get an
+#                                old time (fresh to Cargo), the rest stay new,
+#                                and folders that lost a file are made new
+#
+# Only content decides: a file with any change, or one the note doesn't know,
+# keeps its checkout time and rebuilds.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+note=target/.ci-sources
+old=200001010000
+
+sources() { git ls-files -s --recurse-submodules | awk -F'\t' '{ split($1, a, " "); print a[2] "\t" $2 }'; }
+
+case "${1:-}" in
+  record)
+    mkdir -p target
+    sources > "$note"
+    ;;
+  restore)
+    if [[ ! -f $note ]]; then
+      if [[ -e target ]]; then
+        echo "ci-sources: no note in target/, everything builds"
+        exit 0
+      fi
+      # No cached build: everything builds anyway, but give every file the
+      # old time first. Cargo remembers the newest file time of crates whose
+      # build script names no inputs, and later restores give old times.
+      echo "ci-sources: no cached build, everything builds"
+      mkdir target
+      sources > "$note"
+    fi
+    now=$(mktemp)
+    trap 'rm -f "$now"' EXIT
+    sources > "$now"
+    # Same path, same blob: unchanged.
+    # (macOS awk can't print NUL: one name per line, tr makes them NUL-separated.)
+    awk -F'\t' 'NR == FNR { seen[$2] = $1; next } seen[$2] == $1 { print $2 }' "$note" "$now" \
+      | tr '\n' '\0' | xargs -0 -r touch -h -t "$old"
+    # Folders: old too, except those that lost a file (Cargo scans watched
+    # folders, so a deletion has to show).
+    git ls-files --recurse-submodules | awk -F/ '{ p = ""; for (i = 1; i < NF; i++) { p = p (i > 1 ? "/" : "") $i; print p } }' \
+      | sort -u | tr '\n' '\0' | xargs -0 -r touch -h -t "$old"
+    awk -F'\t' 'NR == FNR { seen[$2] = 1; next } !($2 in seen) { print $2 }' "$now" "$note" \
+      | while IFS= read -r gone; do
+          dir=$(dirname "$gone")
+          while [[ $dir != . && ! -d $dir ]]; do dir=$(dirname "$dir"); done
+          [[ $dir == . ]] || touch "$dir"
+        done
+    kept=$(awk -F'\t' 'NR == FNR { seen[$2] = $1; next } seen[$2] == $1' "$note" "$now" | wc -l)
+    echo "ci-sources: $kept of $(wc -l < "$now") files unchanged since the cached build"
+    ;;
+  *)
+    echo "usage: scripts/ci-sources record|restore" >&2
+    exit 1
+    ;;
+esac

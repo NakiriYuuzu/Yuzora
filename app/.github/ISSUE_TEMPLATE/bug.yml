@@ -1,0 +1,43 @@
+name: Bug
+description: Something broke in Herdr or a shipped layout or mod.
+labels: [bug]
+body:
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened?
+      description: Remove secrets and personal data from logs or screenshots.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Herdr version
+      description: Find it in Settings or run herdr-app --version.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: e.g. Ubuntu 24.04 x86-64, macOS 15 ARM64, Windows 11 x64
+    validations:
+      required: true
+  - type: input
+    id: layout
+    attributes:
+      label: Layout name
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
