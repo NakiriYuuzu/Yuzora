@@ -50,6 +50,9 @@ yuzora-ssh = { path = "crates/yuzora-ssh" }
 yuzora-files = { path = "crates/yuzora-files" }
 yuzora-settings = { path = "crates/yuzora-settings" }
 yuzora-perf = { path = "crates/yuzora-perf" }
+# yuzora(L7): checks the update manifest's signature (src/yuzora/release/manifest.rs).
+# L7 has no crate of its own; zero dependencies, MIT.
+minisign-verify = "0.3"
 
 [[test]]
 name = "shot_pixels"
