@@ -55,6 +55,11 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - 讀取一律帶 `-c core.fsmonitor=false`：側欄一聚焦資料夾就自動跑 status，repo 自己的 `.git/config` 不能藉 fsmonitor hook 在使用者沒有任何動作時執行程式（`status_never_runs_the_repos_fsmonitor_program` 守住）。代價是設定了 fsmonitor 的大 repo，背景 status 會慢一些。
 - 其他由 repo 設定指定程式的讀取：commit 詳情的簽章檢查（`%G?`）把 repo 本地設定的 `gpg.program`／`gpg.{openpgp,ssh,x509}.program` 換回使用者全域／系統的值或 git 預設（`signature_programs`）；blame 帶 `--no-textconv`；status 的 numstat 帶 `--no-ext-diff --no-textconv`，建立 patch 的 diff 帶 `--no-ext-diff`。diff 讀 blob 用 `cat-file --filters`，會照 repo 設定跑 smudge filter（例如 git-lfs），只在使用者打開 diff 時發生，與 checkout 相同。
 - 信任資料夾（`trust.rs`）：repo 自己的設定（`.git/config`、它 include 的檔案、worktree 設定）若指定了 git 會執行的程式（`filter.*.clean/smudge/process`、`core.sshCommand`／`gitProxy`／`askPass`／`alternateRefsCommand`、指向程式的 `core.fsmonitor`（`true` 是 git 自己的 daemon，不算）、credential helper、`remote.*.uploadpack/receivepack/vcs`、`protocol.*.allow`、`merge.*.driver`、`diff.*.command/textconv`、`gpg.*program`、`gpg.ssh.defaultKeyCommand`、`!` 開頭的 `submodule.*.update`），`status` 不跑 git，只回傳已知內容和 `trust`（那些 key）；側欄顯示「要信任這個資料夾嗎？」，按下後記在 `<app home>/yuzora/git/trusted.json`。自動 fetch 由引擎擋（`fetch {auto: true}` 在未信任時直接拒絕），而且一律不跑 hook（`core.hooksPath` 指向 app 自己的空目錄；fetch 會觸發 reference-transaction）、不遞迴 submodule（`--no-recurse-submodules`）。信任檢查也看已 checkout 的 submodule 自己的設定（`git submodule foreach --recursive`），橫幅以 `路徑: key` 列出。設定讀不到時當成未信任。hook 本身不列入信任條件：status 不跑 hook，而 husky 等工具會在許多 repo 設定 `core.hooksPath`。使用者全域／系統設定的程式（例如全域安裝的 git-lfs）不需要信任。未信任時 `yuzora:git` 對這個 repo 的其他呼叫（log、diff、merge、stage、commit、fetch…）一律在引擎拒絕（`trust::check`，錯誤以 `untrusted folder` 開頭），各 pane 顯示這個錯誤，等同 IntelliJ 的 Safe mode；只有 `status`（顯示提示）與 `trust`（回答）例外。
+- 共用的信任 API（`yuzora_core::git_trust`）：上面的偵測（`PROGRAMS`、`names_program`、submodule 掃描）與信任清單放在 yuzora-core，給狀態列（L1）、檔案樹（L5）等也會自己跑 git 的地方共用；yuzora-git 用自己的執行器呼叫它，行為不變。
+  - `pending(machine, top)`：回傳空清單才可以跑 `status`、`diff` 這類會比對工作樹或 index 的指令；`Err`（git 跑不起來）也當成不安全。`top` 是那台機器上 `git rev-parse --show-toplevel` 的輸出，遠端走 `hc exec --on`。
+  - `is_trusted(machine, top)`：只讀信任清單，不跑 git。
+  - 未信任時仍可以執行的指令（前面加 `READ_FLAGS`，也就是 `--no-optional-locks -c core.fsmonitor=false`）：只讀 refs 與 commit、不碰 index 與工作樹的指令，例如 `rev-parse`、`symbolic-ref`、`for-each-ref`、`rev-list --left-right --count`、`config --get`。
+  - 必須先信任的指令：`status`、`diff`、`diff-files`、`diff-index`、`ls-files -m`，任何寫入工作樹或 index 的指令，以及 `fetch`、`pull`、`push`。
 - 寫入指令先拿 repo 層級的寫入鎖（等待中可取消）；讀取不拿。
 - 取消與逾時：本機行程開在自己的 process group，取消或逾時就 `kill(-pid, SIGKILL)` 整棵樹。Windows 沒有 process group：git 先以暫停狀態啟動，放進自己的 job object 後才恢復執行，取消或逾時用 `TerminateJobObject` 結束 hook、ssh、credential helper 等所有子孫行程。讀取預設 60 秒，fetch／pull／push 等網路操作 600 秒；輸出上限 64 MiB。
 - pathspec 超過 7600 bytes 改用 `--pathspec-from-file=- --pathspec-file-nul`（指令不支援時退回不帶路徑、讀全部）。
@@ -221,7 +226,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - **側欄沒開過時沒有徽章**（實機確認：重啟後停在工作區模式，shared 裡沒有任何 git key；切到 Git 模式一次後才出現，之後切走仍會持續更新）：herdr 只在 stack 子節點第一次顯示時建立 mod，`yuzora.badge.git`／`yuzora.status.git` 要等 Git 模式開過一次才開始更新（之後切到別的模式仍會持續）。需要 L1／殼層在啟動時建立側欄各模式，或由狀態列自己訂閱。
 - **三欄合併的欄寬**：欄寬用字元數估算，視窗 1280 寬時 Theirs 欄會被裁掉一部分（可橫向捲動）；要改成依可用寬度分配。
 - **popup／dialog 的截圖**：herdr CLI 沒辦法帶 props 開 overlay，分支 popup 與 push 對話框的實機截圖是開在分頁裡（`tab.new --mod`）。
-- **信任只管 Git**：repo 本地設定會自動執行程式時，Git 的所有操作都先等信任，但終端機與其他模式不受影響。整個 app 的信任模型要由殼層（L1）提供，Git 再改用它。
+- **信任只管 Git**：repo 本地設定會自動執行程式時，Git 的所有操作都先等信任，但終端機與其他模式不受影響。狀態列（L1）與檔案樹（L5）的 git 呼叫要改用 `yuzora_core::git_trust`（#194 合併後）。整個 app 的信任模型要由殼層（L1）提供，Git 再改用它。
 - **遠端 repo 沒有 watcher**：靠 `changed()` 約 25 秒逾時輪詢一次 status。
 - **持久化 log index**：未做；圖只依賴 `RawCommit`，第二階段來源可以換成 index（見〈Log〉）。
 - **記憶體內編輯**只有 reword。

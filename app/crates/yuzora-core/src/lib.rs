@@ -11,6 +11,7 @@
 //! - [`js`]: the `yuzora:core` module itself.
 
 pub mod discovery;
+pub mod git_trust;
 pub mod host;
 pub mod i18n;
 pub mod js;

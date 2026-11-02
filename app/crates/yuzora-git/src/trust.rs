@@ -12,35 +12,19 @@
 //! (output never goes to a terminal), nor hooks: status runs none, auto
 //! fetch runs with them off, and husky and the like set `core.hooksPath` in
 //! many repos for the commits the person makes.
+//!
+//! The check and the trusted list are `yuzora_core::git_trust`, shared with
+//! the status bar and the file tree; this keeps the list under
+//! [`crate::settings::own_dir`] and runs git through the engine.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use serde_json::Value;
+use yuzora_core::git_trust;
 
 use crate::exec::{Git, GitError, GitResult};
 use crate::repo::Repo;
-
-/// Config keys (lowercased by git) that name a program run without asking.
-const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow|merge\..+\.driver|diff\..+\.(command|textconv)|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
-
-/// Whether a matched key's value runs something: fsmonitor as a boolean is
-/// git's own daemon, and a submodule's update mode is a command only after
-/// `!`. Only the exact values git takes that way pass (no trimming, ASCII
-/// case as git compares); anything else counts.
-fn names_program(key: &str, value: &str) -> bool {
-    let any = |list: &[&str]| list.iter().any(|v| value.eq_ignore_ascii_case(v));
-    if key == "core.fsmonitor" {
-        return !any(&["", "true", "false", "yes", "no", "on", "off", "1", "0"]);
-    }
-    if key.starts_with("submodule.") && key.ends_with(".update") {
-        return !any(&["checkout", "rebase", "merge", "none"]);
-    }
-    true
-}
-
-/// Stands for the keys when the config couldn't be read: the gate stays shut.
-const UNREADABLE: &str = "(unreadable config)";
 
 /// An empty folder of ours for `core.hooksPath` when hooks must not run.
 pub fn no_hooks_dir() -> String {
@@ -52,57 +36,16 @@ pub fn no_hooks_dir() -> String {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`.
 pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
-    let out = repo.run(Git::read(["config", "--show-scope", "-z", "--get-regexp", PROGRAMS]))?;
-    if !out.ok() {
-        // 1 with nothing printed: no key matched. Anything else: unknown.
-        return Ok(if out.code == 1 && out.stdout.is_empty() { Vec::new() } else { vec![UNREADABLE.into()] });
-    }
-    let mut keys = repo_keys(&out.stdout, "");
-    if repo.exists(&repo.abs(".gitmodules")) {
-        // Each checked-out submodule, nested ones too: a `sub` record names it.
-        // 1 is "no key"; any other failure is an `err` record (gate shut).
-        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --get-regexp '{PROGRAMS}'; c=$?; if [ $c -gt 1 ]; then printf 'err\\0%s\\0' $c; fi");
-        let out = repo.run(Git::read(["submodule", "foreach", "--recursive", "--quiet", &script]))?;
-        if !out.ok() {
-            keys.insert(UNREADABLE.into());
-        }
-        keys.extend(repo_keys(&out.stdout, "?"));
-    }
-    Ok(keys.into_iter().collect())
+    git_trust::repo_programs(repo.exists(&repo.abs(".gitmodules")), |args| repo.run(Git::read(args.iter().copied())).map(|out| (out.code, out.stdout)))
 }
 
-/// `scope\0key\nvalue\0` records (an include counts as the file that
-/// includes it; a key alone is a boolean): the repo-level keys whose values
-/// run something, as `path: key` once a `sub` record named a submodule.
-fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
-    let text = String::from_utf8_lossy(out);
-    let parts: Vec<&str> = text.split('\0').collect();
-    let mut place = first.to_owned();
-    let mut keys = BTreeSet::new();
-    for c in parts.chunks(2).filter(|c| c.len() == 2) {
-        match c[0] {
-            "sub" => place = c[1].to_owned(),
-            "err" => {
-                keys.insert(format!("{place}: {UNREADABLE}"));
-            }
-            "local" | "worktree" => {
-                let (key, value) = c[1].split_once('\n').unwrap_or((c[1], "true"));
-                if names_program(key, value) {
-                    keys.insert(if place.is_empty() { key.to_owned() } else { format!("{place}: {key}") });
-                }
-            }
-            _ => {}
-        }
-    }
-    keys
-}
-
+/// `trusted.json` (`git_trust::trusted_file` outside tests).
 fn file() -> PathBuf {
     crate::settings::own_dir().join("git").join("trusted.json")
 }
 
 fn trusted() -> BTreeSet<String> {
-    std::fs::read_to_string(file()).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.into_iter().collect()).unwrap_or_default()
+    git_trust::trusted_from(&file())
 }
 
 /// What keeps git from running on its own in this repo: its program keys,
@@ -131,14 +74,7 @@ pub const UNTRUSTED: &str = "untrusted folder: trust it in the Git sidebar first
 
 /// Trusts the repo's folder (here or on its machine) from now on.
 pub fn trust(repo: &Repo) -> GitResult<Value> {
-    let mut all = trusted();
-    all.insert(repo.id.clone());
-    let path = file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(GitError::other)?;
-    }
-    let list: Vec<&String> = all.iter().collect();
-    std::fs::write(&path, serde_json::to_string_pretty(&list).unwrap_or_default()).map_err(GitError::other)?;
+    git_trust::trust_at(&file(), &repo.id).map_err(GitError::other)?;
     repo.invalidate(crate::status::Scope::All);
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -147,6 +83,7 @@ pub fn trust(repo: &Repo) -> GitResult<Value> {
 mod tests {
     use super::*;
     use crate::repo::testing::scratch;
+    use yuzora_core::git_trust::{UNREADABLE, names_program};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
