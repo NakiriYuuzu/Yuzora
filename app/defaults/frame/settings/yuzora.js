@@ -84,10 +84,10 @@ export function herdr(section, overlay) {
   run("app.settings", { section });
 }
 
-/** The group in the nav: a heading, then one row per page. */
+/** The group in the nav: a heading, then one row per page (nothing without pages). */
 export function group(th, current, pick) {
   const list = pages();
-  if (!list.length) return null;
+  if (!list.length) return div();
   return v_flex()
     .gap(2)
     .pb(10)
