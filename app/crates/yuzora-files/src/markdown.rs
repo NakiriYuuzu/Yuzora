@@ -35,11 +35,16 @@ pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
     let path = url.strip_prefix("file://").unwrap_or(url);
     let path = path.split(['?', '#']).next().unwrap_or(path);
     let path = percent_decode(path);
-    // `//host/share/x.png` is a network path on Windows.
-    if path.starts_with("//") || path.starts_with("\\\\") {
+    // `//host/share/x.png` is a network path on Windows, whichever slashes.
+    let slashed = path.replace('\\', "/");
+    if slashed.starts_with("//") {
         return None;
     }
     let path = Path::new(&path);
+    // Drive letters, `\\?\`, `\\.\` and UNC prefixes (Windows only).
+    if path.components().any(|c| matches!(c, std::path::Component::Prefix(p) if !matches!(p.kind(), std::path::Prefix::Disk(_)))) {
+        return None;
+    }
     if path.is_absolute() {
         return Some(path.to_path_buf());
     }
@@ -300,6 +305,9 @@ mod tests {
         assert_eq!(image_path("//host/share/a.png", Some(base)), None);
         assert_eq!(image_path("file:////host/share/a.png", Some(base)), None);
         assert_eq!(image_path("\\\\host\\share\\a.png", Some(base)), None);
+        assert_eq!(image_path("/\\host/share/a.png", Some(base)), None);
+        assert_eq!(image_path("\\/host/share/a.png", Some(base)), None);
+        assert_eq!(image_path("%5C%5Chost%5Cshare%5Ca.png", Some(base)), None);
     }
 
     #[test]

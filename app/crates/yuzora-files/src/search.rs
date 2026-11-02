@@ -23,8 +23,9 @@ const TEXT_CHARS: usize = 300;
 /// The files under `$1` (NUL-separated, relative): git's list in a work tree,
 /// else ripgrep's, else find's. `$2` is 1 to include hidden files.
 const LIST_SCRIPT: &str = r#"cd -- "$1" 2>/dev/null || { echo "cannot open $1" >&2; exit 3; }
-if command -v git >/dev/null 2>&1 && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
-  exec git ls-files -co --exclude-standard -z
+g() { git --no-optional-locks -c core.fsmonitor=false "$@"; }
+if command -v git >/dev/null 2>&1 && [ "$(g rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+  g ls-files -co --exclude-standard -z; exit $?
 fi
 if command -v rg >/dev/null 2>&1; then
   if [ "$2" = 1 ]; then exec rg --files --null --hidden -g '!.git'; fi

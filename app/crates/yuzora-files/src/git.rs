@@ -28,8 +28,10 @@ pub struct GitStatus {
 /// The status of the work tree around `cwd`; `None` when `cwd` is not inside
 /// one (or git is not there).
 pub fn status(cwd: &str, on: Option<&str>, limit: usize) -> Result<Option<GitStatus>, String> {
+    // Never an fsmonitor command (it would run per call) nor an index lock.
     let git = |args: &[&str]| {
-        let req = ExecRequest::new("git", args.iter().copied())
+        let hardened = ["--no-optional-locks", "-c", "core.fsmonitor=false"];
+        let req = ExecRequest::new("git", hardened.iter().chain(args).copied())
             .on(on)
             .cwd(Some(cwd))
             .timeout(TIMEOUT)
@@ -45,9 +47,6 @@ pub fn status(cwd: &str, on: Option<&str>, limit: usize) -> Result<Option<GitSta
         return Ok(None);
     }
     let out = match git(&[
-        "--no-optional-locks",
-        "-c",
-        "core.fsmonitor=false",
         "status",
         "--porcelain=v1",
         "-z",
