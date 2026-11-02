@@ -33,7 +33,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 目錄：`databases(id)`、`objects(id, db)`、`describe(id, db, {schema, name})`。
 - 查詢：`query(id, db, owner, sql) → jobId`、`openTable(id, db, owner, table, order?) → jobId`、`job(jobId, seen?)`（長輪詢：版本超過 `seen` 或 250 ms 後回傳）、`cancel(jobId)`、`result(resultId)`。
 - 生命週期：`release(owner)` 關掉 owner（pane key）的連線、工作、結果集、grid 與 editor。pane 的 `close()` 必須呼叫。
-- 歷史：`history(id)`、`clearHistory(id)`；存在 app home 的 `db-history.json`，每個連線最多 200 筆、每筆最多 20,000 字，只存 SQL 不存結果。
+- 歷史：`history(id)`、`clearHistory(id)`；存在 app home 的 `db-history.json`，每個連線最多 200 筆、每筆最多 20,000 字，只存 SQL 不存結果。檔案權限是 0600（只有擁有者能讀）。含 `password`、`passwd`、`pwd=`、`secret`、`identified by` 的 SQL 整段都不記錄（`history::carries_credentials`）。這個範圍刻意放寬，所以查 `password_hash` 欄位的查詢也不會進歷史。
 - 元件：`DataGrid.new(id, {result, colors})`、`SqlEditor.new(id, {engine, value, readonly})`。注意是 `X.new(...)`，不是 `new X(...)`。
 - 編輯器：`editorText(id)`（全文、選取、游標所在的句子）、`setEditorText(id, text)`、`editorAction(id)`（等 ⌘↵，回傳 `"run"`）。
 

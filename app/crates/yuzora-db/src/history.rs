@@ -1,5 +1,7 @@
 //! Query history per saved connection: `<app home>/yuzora/db-history.json`,
-//! newest first, at most [`KEEP`] entries each. Statements only, never results.
+//! newest first, at most [`KEEP`] entries each. Statements only, never results,
+//! and never one that may carry a credential ([`carries_credentials`]). The
+//! file is readable by its owner only.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,13 +38,26 @@ fn store_at(file: &Path, all: &HashMap<String, Vec<Entry>>) -> std::io::Result<(
         std::fs::create_dir_all(dir)?;
     }
     let tmp = file.with_extension(format!("json.tmp-{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_string(all).unwrap_or_default())?;
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    std::io::Write::write_all(&mut open.open(&tmp)?, serde_json::to_string(all).unwrap_or_default().as_bytes())?;
     std::fs::rename(&tmp, file)
+}
+
+/// SQL that may hold a password or secret in clear: `CREATE ROLE … PASSWORD`,
+/// `CREATE LOGIN … WITH PASSWORD`, `… SECRET =`, a connection string's `PWD=`,
+/// user mapping options. Such a script is not kept at all (too broad on
+/// purpose: a query about a `password_hash` column is left out too).
+pub fn carries_credentials(sql: &str) -> bool {
+    let sql = sql.to_ascii_lowercase();
+    ["password", "passwd", "pwd=", "pwd =", "secret", "identified by"].iter().any(|w| sql.contains(w))
 }
 
 pub fn record_at(file: &Path, connection: &str, sql: &str, elapsed_ms: u64, ok: bool) {
     let sql = sql.trim();
-    if sql.is_empty() {
+    if sql.is_empty() || carries_credentials(sql) {
         return;
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -103,6 +118,33 @@ mod tests {
         clear_at(&file, "a");
         assert!(list_at(&file, "a").is_empty());
         assert_eq!(list_at(&file, "b").len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn statements_carrying_credentials_stay_out_and_the_file_is_the_owners() {
+        let dir = std::env::temp_dir().join(format!("yuzora-db-history-secret-{}", std::process::id()));
+        let file = dir.join("db-history.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        record_at(&file, "a", "select 1", 1, true);
+        for sql in [
+            "ALTER ROLE app PASSWORD 'hunter2'",
+            "create login lab with password = N'hunter2'",
+            "CREATE DATABASE SCOPED CREDENTIAL c WITH IDENTITY = 'u', SECRET = 'hunter2'",
+            "CREATE USER MAPPING FOR app SERVER s OPTIONS (user 'u', Password 'hunter2')",
+            "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=lab;UID=sa;PWD=hunter2;', 'SELECT 1')",
+            "select 2;\nalter user app with password 'hunter2';",
+        ] {
+            record_at(&file, "a", sql, 1, true);
+        }
+        let kept: Vec<_> = list_at(&file, "a").into_iter().map(|e| e.sql).collect();
+        assert_eq!(kept, ["select 1"]);
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("hunter2"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
