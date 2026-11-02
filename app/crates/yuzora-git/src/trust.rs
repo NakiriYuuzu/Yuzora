@@ -24,14 +24,17 @@ use crate::repo::Repo;
 /// Config keys (lowercased by git) that name a program run without asking.
 const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow|merge\..+\.driver|diff\..+\.(command|textconv)|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
 
-/// Whether a matched key's value runs something: fsmonitor `true` is git's
-/// own daemon, and a submodule's update mode is a command only after `!`.
+/// Whether a matched key's value runs something: fsmonitor as a boolean is
+/// git's own daemon, and a submodule's update mode is a command only after
+/// `!`. Only the exact values git takes that way pass (no trimming, ASCII
+/// case as git compares); anything else counts.
 fn names_program(key: &str, value: &str) -> bool {
+    let any = |list: &[&str]| list.iter().any(|v| value.eq_ignore_ascii_case(v));
     if key == "core.fsmonitor" {
-        return !matches!(value.trim().to_ascii_lowercase().as_str(), "" | "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0");
+        return !any(&["", "true", "false", "yes", "no", "on", "off", "1", "0"]);
     }
     if key.starts_with("submodule.") && key.ends_with(".update") {
-        return value.trim_start().starts_with('!');
+        return !any(&["checkout", "rebase", "merge", "none"]);
     }
     true
 }
@@ -162,6 +165,9 @@ mod tests {
         s.git(&["config", "core.fsmonitor", "/tmp/hook"]);
         s.git(&["config", "submodule.x.update", "!touch /tmp/x"]);
         s.git(&["config", "merge.lock.driver", "true"]);
+        // What git would read as a hook path, though it looks like a boolean.
+        assert!(names_program("core.fsmonitor", "true\u{a0}") && names_program("core.fsmonitor", " true") && names_program("core.fsmonitor", "2"));
+        assert!(!names_program("core.fsmonitor", "TRUE") && names_program("submodule.x.update", " rebase"));
         assert_eq!(pending(&s.repo).unwrap(), vec!["core.fsmonitor".to_string(), "merge.lock.driver".into(), "submodule.x.update".into()]);
         for k in ["core.fsmonitor", "submodule.x.update", "merge.lock.driver"] {
             s.git(&["config", "--unset", k]);
