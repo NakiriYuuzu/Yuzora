@@ -20,8 +20,8 @@ const LOCAL = "local";
 
 // Plain data xdg-open may have (its handler is an editor), and names it never gets
 // whatever their content looks like (a browser, a launcher or an interpreter would run them).
-const PLAIN = new Set(["text/plain", "text/markdown", "text/csv", "text/x-log", "text/xml", "application/xml", "application/json", "application/toml", "application/yaml", "application/x-yaml", "inode/x-empty"]);
-const RUNNABLE = /\.(desktop|sh|bash|zsh|fish|py|pl|rb|php|js|mjs|html?|xhtml|svg|jar|appimage|run|bin|exe|msi|bat|cmd|com|ps1|vbs|lnk|deb|rpm|flatpakref)$/i;
+const PLAIN = new Set(["text/plain", "text/markdown", "text/csv", "text/x-log", "application/json", "application/toml", "application/yaml", "application/x-yaml", "inode/x-empty"]);
+const RUNNABLE = /\.(desktop|sh|bash|zsh|fish|py|pl|rb|php|js|mjs|html?|xhtml|xml|xsl|xslt|svg|jar|appimage|run|bin|exe|msi|bat|cmd|com|ps1|vbs|lnk|deb|rpm|flatpakref)$/i;
 
 // A text editor, never the file's default app: a host's .bat, .terminal, .desktop or
 // .jar must not run here. xdg-open goes by type, so on Linux it only gets plain data.

@@ -88,7 +88,7 @@ cd app && cargo test --locked -p yuzora-ssh
 - 後續整合（合併後由總指揮串接）：
   - L1：狀態列讀 `shared("yuzora.status.ssh")`、模式列讀 `shared("yuzora.badge.ssh")`。問題對話框目前由 SSH 側欄與 SFTP pane 輪詢開啟；若其他 lane 以互動模式連線（例如 L3 想在 DB 側欄內觸發），需要一個常駐的地方（L1 外殼）呼叫 `prompts()`／`claimPrompt()` 開啟 `yuzora-ssh-prompt`。
   - L3：`yuzora_ssh::tunnel` 連遠端 DB（L3 crate 加 `yuzora-ssh` 依賴）。
-  - L5：「開啟遠端檔案」目前用文字編輯器開啟暫存檔（macOS `open -t`、Windows `notepad`、Linux 只有 `xdg-mime` 判定為純資料（`text/plain`、JSON、YAML…白名單）且副檔名不是可執行類（`.desktop`、`.sh`、`.html`、`.jar`…）才交給 `xdg-open`，其他類型提示使用者自己用編輯器開；不用檔案的預設程式，免得主機上的 `.bat`、`.terminal` 在本機執行）；L5 編輯器合併後可改成開 L5 的編輯器 pane（`openRemote` 回傳的 `local` 路徑不變）。
+  - L5：「開啟遠端檔案」目前用文字編輯器開啟暫存檔（macOS `open -t`、Windows `notepad`、Linux 只有 `xdg-mime` 判定為純資料（`text/plain`、JSON、YAML…白名單；XML 常交給瀏覽器，不在內）且副檔名不是可執行類（`.desktop`、`.sh`、`.html`、`.xml`、`.jar`…）才交給 `xdg-open`，其他類型提示使用者自己用編輯器開；不用檔案的預設程式，免得主機上的 `.bat`、`.terminal` 在本機執行）；L5 編輯器合併後可改成開 L5 的編輯器 pane（`openRemote` 回傳的 `local` 路徑不變）。
 - 未支援：`Match exec`／`localnetwork`／`tagged` 等條件（視為不成立）、`CertificateFile`／host 憑證（`@cert-authority`）、`CanonicalizeHostname`、`ControlMaster`、`${ENV}` 展開、SFTP 斷點續傳的內容比對（僅以大小判斷，同 OpenSSH）。
 - ProxyJump 的第一段照它自己的設定（包含它自己的 ProxyJump），後續各段忽略自己的 ProxyJump／ProxyCommand（同 OpenSSH `-J`）。
 - Windows：agent 走 `\\.\pipe\openssh-ssh-agent`／Pageant；整合測試只在 Unix 跑，Windows 未實機驗證。
