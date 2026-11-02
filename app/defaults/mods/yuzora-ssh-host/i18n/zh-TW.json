@@ -15,7 +15,6 @@
   "jump": "ProxyJump（選填）",
   "jumpPlaceholder": "user@bastion:22",
   "password": "密碼（選填，存在系統鑰匙圈）",
-  "passwordKept": "已儲存密碼。輸入新密碼即可取代。",
   "save": "儲存",
   "delete": "刪除",
   "cancel": "取消",

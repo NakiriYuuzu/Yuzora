@@ -1,22 +1,31 @@
 // SFTP: this computer and a host side by side, each browsed on its own.
 // → / ← (or dragging rows across, or dropping files from the desktop on the
 // host's side) queue transfers; the queue shows progress, speed, resume,
-// cancel and retry. Double-clicking a host's file opens it in its default
-// app and uploads every save. Opened with props { host, name } (the SSH
+// cancel and retry. Double-clicking a host's file opens it in a text editor
+// and uploads every save. Opened with props { host, name } (the SSH
 // sidebar's Open SFTP, or the new-pane menu, which asks for a host). Owned by lane L4.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { theme, props, exec, window, openOverlay, notify } from "herdr";
+import { theme, props, exec, window, openOverlay, notify, shared, setShared } from "herdr";
 import { t, getSetting, setSetting } from "yuzora:core";
 import {
   hosts, connect, list, mkdir, rename, remove, transfer, transfers, cancelTransfer, retryTransfer, clearTransfers,
-  openRemote, edits, stopEdit, overwriteEdit, prompts, claimPrompt, localHome,
+  openRemote, edits, stopEdit, overwriteEdit, prompts, claimPrompt, localHome, status,
 } from "yuzora:ssh";
 
 const I = (name) => `mods/yuzora-sidebar-ssh/icons/${name}.svg`;
 // Errors read "`yuzora:ssh.<fn>`: [code] text"; people see the text.
 const message = (e) => String(e?.message ?? e).replace(/^(Error: )?(`[^`]*`: )?\[[a-z-]+\] /, "");
 const LOCAL = "local";
+
+// The status line and mode badge, set only when they change (the sidebar does the same:
+// whichever of the two is open keeps them current).
+function publish() {
+  const active = transfers().filter((x) => x.state === "running" || x.state === "queued").length;
+  for (const [key, value] of [["yuzora.status.ssh", status()], ["yuzora.badge.ssh", active || null]]) {
+    if (JSON.stringify(shared(key) ?? null) !== JSON.stringify(value)) setShared(key, value);
+  }
+}
 
 export function size(n) {
   if (n == null) return "";
@@ -86,6 +95,7 @@ export default class Sftp extends View {
   // Questions, transfer progress, and listings to refresh when a transfer lands.
   tick(cx) {
     showPrompts();
+    publish();
     const all = transfers().filter((x) => x.host === this.hostId());
     let changed = all.some((x) => x.state === "running" || x.state === "queued");
     for (const x of all) {
@@ -159,7 +169,7 @@ export default class Sftp extends View {
     if (!chosen.length || !dest.listing || !this.host) return;
     const names = new Set(dest.listing.entries.map((e) => e.name));
     const clash = chosen.map((p) => p.split(/[\\/]/).filter(Boolean).pop()).filter((n) => names.has(n));
-    const go = () => {
+    const go = (cx) => {
       for (const p of chosen) {
         try {
           transfer({ host: this.host, direction: from === LOCAL ? "upload" : "download", from: p, toDir: dest.path, preserve: this.preserve });
@@ -171,7 +181,7 @@ export default class Sftp extends View {
       cx.notify();
     };
     if (clash.length) this.confirm = { text: t("confirm.overwrite", { names: clash.join(", ") }), label: t("confirm.overwriteButton"), action: go };
-    else go();
+    else go(cx);
     cx.notify();
   }
 
@@ -180,7 +190,8 @@ export default class Sftp extends View {
       try {
         const ed = await openRemote(this.host, entry.path);
         const platform = window()?.platform;
-        const [cmd, args] = platform === "macos" ? ["open", [ed.local]] : platform === "windows" ? ["explorer", [ed.local]] : ["xdg-open", [ed.local]];
+        // A text editor, not the file's default app: a host's .bat or .terminal must not run here.
+        const [cmd, args] = platform === "macos" ? ["open", ["-t", ed.local]] : platform === "windows" ? ["notepad", [ed.local]] : ["xdg-open", [ed.local]];
         await exec(cmd, args).catch(() => null);
       } catch (e) {
         notify({ title: t("edit.failed", { name: entry.name }), body: message(e), level: "error" });
@@ -226,7 +237,7 @@ export default class Sftp extends View {
       text: t(chosen.length === 1 ? "confirm.deleteOne" : "confirm.deleteMany", { count: chosen.length, name: chosen[0].split(/[\\/]/).filter(Boolean).pop() }),
       label: t("confirm.deleteButton"),
       danger: true,
-      action: () => {
+      action: (cx) => {
         this.confirm = null;
         cx.spawn(async (cx) => {
           for (const p of chosen) {
@@ -543,7 +554,8 @@ export default class Sftp extends View {
             .child(div().id("sftp-confirm-yes").h(24).px(10).flex().items_center().rounded(5).text_size(12).font_medium().cursor_pointer()
               .when(Boolean(confirm.danger), (el) => el.border(1).border_color(th.blocked).text_color(th.blocked))
               .when(!confirm.danger, (el) => el.bg(th.solid).text_color(th.solid_foreground))
-              .on_click(() => confirm.action())
+              // A confirm runs later, on its own click: that click's cx, not the one that asked.
+              .on_click((_e, cx) => confirm.action(cx))
               .child(confirm.label)),
         ),
       )

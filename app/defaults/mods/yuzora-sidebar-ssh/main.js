@@ -28,8 +28,6 @@ export default class SidebarSsh extends View {
     this.list = [];
     this.selected = shared(SELECTED) ?? null;
     this.busy = {};
-    this.lastStatus = "";
-    this.lastBadge = null;
     this.reload(cx);
     cx.timer.every(10000, (cx) => this.reload(cx));
     // Questions, the status line and live states: cheap calls, redrawn only on change.
@@ -71,18 +69,12 @@ export default class SidebarSsh extends View {
     });
   }
 
+  // The status line and mode badge, set only when they change (the SFTP pane does the
+  // same: whichever is open keeps them current, and a value left from the last run goes).
   publish() {
-    const st = status();
-    const text = JSON.stringify(st);
-    if (text !== this.lastStatus) {
-      this.lastStatus = text;
-      setShared("yuzora.status.ssh", st);
-    }
     const active = transfers().filter((x) => x.state === "running" || x.state === "queued").length;
-    const badge = active || null;
-    if (badge !== this.lastBadge) {
-      this.lastBadge = badge;
-      setShared("yuzora.badge.ssh", badge);
+    for (const [key, value] of [["yuzora.status.ssh", status()], ["yuzora.badge.ssh", active || null]]) {
+      if (JSON.stringify(shared(key) ?? null) !== JSON.stringify(value)) setShared(key, value);
     }
   }
 

@@ -241,49 +241,81 @@ impl Login<'_> {
     async fn keyboard(&self, handle: &mut Handle<Client>, needed_input: &mut bool) -> Result<Step> {
         let store = password_key(&self.def.id);
         let mut stored = self.secret(&store);
-        let mut reply = handle.authenticate_keyboard_interactive_start(self.user(), None::<String>).await.map_err(transport)?;
-        for _round in 0..6 {
-            match reply {
-                Kbd::Success => return Ok(Step::Success),
-                Kbd::Failure { remaining_methods, partial_success: true } => return Ok(Step::Partial(methods(&remaining_methods))),
-                Kbd::Failure { remaining_methods, .. } => return Ok(Step::Failed(Some(methods(&remaining_methods)))),
-                Kbd::InfoRequest { name, instructions, prompts } => {
-                    let lone_password = prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo);
-                    let responses: Vec<String> = if prompts.is_empty() {
-                        Vec::new()
-                    } else if lone_password && let Some(pw) = stored.take() {
-                        vec![pw.to_string()]
-                    } else if let Some(asker) = self.prompts {
-                        let mut p = self.prompt("keyboard");
-                        p.name = Some(name).filter(|s| !s.is_empty());
-                        p.instructions = Some(instructions).filter(|s| !s.is_empty());
-                        p.questions = prompts.iter().map(|q| Question { text: q.prompt.clone(), echo: q.echo }).collect();
-                        p.can_remember = lone_password;
-                        match asker.ask(p, PROMPT_TIMEOUT).await {
-                            Some(Answer::Responses { values, remember }) => {
-                                if remember && lone_password && let Some(v) = values.first() {
-                                    self.remember(&store, v);
-                                }
-                                values.iter().map(|v| v.to_string()).collect()
-                            }
-                            Some(Answer::Secret { value, remember }) => {
-                                if remember && lone_password {
-                                    self.remember(&store, &value);
-                                }
-                                vec![value.to_string()]
-                            }
-                            None => return Err(SshError::text(ErrorKind::Timeout, "prompt-timeout", &[])),
-                            Some(_) => return Err(SshError::text(ErrorKind::Cancelled, "cancelled", &[])),
+        // A lone password to keep, kept only once the host has taken it.
+        let mut keep: Option<Zeroizing<String>> = None;
+        // A kept password the host refuses, or a mistyped one, asks again (like `password`).
+        for attempt in 0..3 {
+            let mut answered = false;
+            let mut reply = handle.authenticate_keyboard_interactive_start(self.user(), None::<String>).await.map_err(transport)?;
+            for _round in 0..6 {
+                match reply {
+                    Kbd::Success => {
+                        self.keep(&store, keep.take());
+                        return Ok(Step::Success);
+                    }
+                    Kbd::Failure { remaining_methods, partial_success: true } => {
+                        self.keep(&store, keep.take());
+                        return Ok(Step::Partial(methods(&remaining_methods)));
+                    }
+                    Kbd::Failure { remaining_methods, .. } => {
+                        keep = None;
+                        if answered && attempt < 2 && self.prompts.is_some() {
+                            break;
                         }
-                    } else {
-                        *needed_input = true;
-                        vec![String::new(); prompts.len()]
-                    };
-                    reply = handle.authenticate_keyboard_interactive_respond(responses).await.map_err(transport)?;
+                        return Ok(Step::Failed(Some(methods(&remaining_methods))));
+                    }
+                    Kbd::InfoRequest { name, instructions, prompts } => {
+                        let lone_password = prompts.len() == 1 && is_password_prompt(&prompts[0].prompt, prompts[0].echo);
+                        let responses: Vec<String> = if prompts.is_empty() {
+                            Vec::new()
+                        } else if lone_password && let Some(pw) = stored.take() {
+                            answered = true;
+                            vec![pw.to_string()]
+                        } else if let Some(asker) = self.prompts {
+                            answered = true;
+                            let mut p = self.prompt("keyboard");
+                            p.name = Some(name).filter(|s| !s.is_empty());
+                            p.instructions = Some(instructions).filter(|s| !s.is_empty());
+                            p.questions = prompts.iter().map(|q| Question { text: q.prompt.clone(), echo: q.echo }).collect();
+                            p.can_remember = lone_password;
+                            p.retry = attempt > 0;
+                            match asker.ask(p, PROMPT_TIMEOUT).await {
+                                Some(Answer::Responses { values, remember }) => {
+                                    if remember && lone_password {
+                                        keep = values.first().cloned();
+                                    }
+                                    values.iter().map(|v| v.to_string()).collect()
+                                }
+                                Some(Answer::Secret { value, remember }) => {
+                                    if remember && lone_password {
+                                        keep = Some(value.clone());
+                                    }
+                                    vec![value.to_string()]
+                                }
+                                None => return Err(SshError::text(ErrorKind::Timeout, "prompt-timeout", &[])),
+                                Some(_) => return Err(SshError::text(ErrorKind::Cancelled, "cancelled", &[])),
+                            }
+                        } else {
+                            // Nobody to ask: leave without answering (blank answers would
+                            // count as a failed login against the account).
+                            *needed_input = true;
+                            return Ok(Step::Failed(None));
+                        };
+                        reply = handle.authenticate_keyboard_interactive_respond(responses).await.map_err(transport)?;
+                    }
                 }
+            }
+            if !answered {
+                break;
             }
         }
         Ok(Step::Failed(None))
+    }
+
+    fn keep(&self, store: &SecretKey, value: Option<Zeroizing<String>>) {
+        if let Some(v) = value {
+            self.remember(store, &v);
+        }
     }
 
     async fn password(&self, handle: &mut Handle<Client>, needed_input: &mut bool) -> Result<Step> {

@@ -113,8 +113,7 @@ async fn upload(sftp: &SftpSession, local: &PathBuf, remote: &str) -> Result<Sta
     f.write_all(&data).await.map_err(SshError::io)?;
     f.shutdown().await.map_err(SshError::io)?;
     let _ = f.close().await;
-    let _ = sftp.remove_file(remote.to_owned()).await;
-    sftp.rename(part, remote.to_owned()).await.map_err(SshError::sftp)?;
+    crate::transfer::replace(sftp, &part, remote).await?;
     if let Some(mode) = mode {
         let mut attrs = FileAttributes::empty();
         attrs.permissions = Some(mode & 0o7777);
@@ -129,12 +128,14 @@ fn now_ms() -> u64 {
 
 impl Manager {
     /// Downloads a host's file for editing and starts watching it; the local copy's path is in the result.
-    pub async fn open_remote(self: &Arc<Self>, host: &str, remote: &str) -> Result<EditInfo> {
+    pub async fn open_remote(self: &Arc<Self>, host: &str, path: &str) -> Result<EditInfo> {
         let session = self.session(host, Interaction::Ask).await?;
-        if let Some(e) = self.edits.list().into_iter().find(|e| e.host == session.host_id && e.remote == remote && e.state != "stopped") {
+        let sftp = session.sftp().await?;
+        // Saves go to the file a link points at; replacing the link would leave that file as it was.
+        let remote = &sftp.canonicalize(path.to_owned()).await.unwrap_or_else(|_| path.to_owned());
+        if let Some(e) = self.edits.list().into_iter().find(|e| e.host == session.host_id && e.remote == *remote && e.state != "stopped") {
             return Ok(e);
         }
-        let sftp = session.sftp().await?;
         let meta = sftp.metadata(remote.to_owned()).await.map_err(SshError::sftp)?;
         if meta.is_dir() {
             return Err(SshError::text(ErrorKind::Invalid, "edit-folder", &[]));
@@ -145,7 +146,7 @@ impl Manager {
         let id = self.edits.next.fetch_add(1, Ordering::Relaxed) + 1;
         let dir = self.ctx.temp.join("edit").join(format!("{}-{id}", std::process::id()));
         tokio::fs::create_dir_all(&dir).await.map_err(SshError::io)?;
-        let name = base_name(remote);
+        let name = base_name(path);
         let local = dir.join(if crate::sftp::check_name(&name).is_ok() { name } else { "file".into() });
         let mut data = Vec::new();
         let mut f = sftp.open_with_flags(remote.to_owned(), OpenFlags::READ).await.map_err(SshError::sftp)?;

@@ -161,6 +161,12 @@ impl Queue {
         match self.find(id) {
             Some(j) if matches!(j.info().state, State::Queued | State::Running) => {
                 j.cancel.store(true, Ordering::Relaxed);
+                j.edit(|i| {
+                    if i.state == State::Queued {
+                        i.state = State::Cancelled;
+                        i.finished_at = Some(now_ms());
+                    }
+                });
                 true
             }
             _ => false,
@@ -227,10 +233,12 @@ fn local_plan(from: &Path, to: String) -> Result<Plan> {
         for e in entries {
             let name = e.file_name().to_string_lossy().into_owned();
             let path = e.path();
-            // Links are followed, as scp and sftp do; broken ones are skipped.
+            // A link to a file brings the file; a link to a folder is skipped (as
+            // `sftp put -R` does), so a link loop can't copy a tree over and over.
             let Ok(m) = std::fs::metadata(&path) else { continue };
+            let linked = e.file_type().is_ok_and(|t| t.is_symlink());
             let target = remote_join(&remote, &name);
-            if m.is_dir() {
+            if m.is_dir() && !linked {
                 plan.dirs.push((target.clone(), mode(&m)));
                 stack.push((path, target));
             } else if m.is_file() {
@@ -259,14 +267,15 @@ async fn remote_plan(sftp: &SftpSession, from: &str, to: PathBuf) -> Result<Plan
             }
             let remote = remote_join(&dir, &name);
             let mut m = e.metadata();
-            if m.is_symlink() {
+            let linked = m.is_symlink();
+            if linked {
                 match sftp.metadata(remote.clone()).await {
                     Ok(t) => m = t,
                     Err(_) => continue,
                 }
             }
             let target = local.join(&name);
-            if m.is_dir() {
+            if m.is_dir() && !linked {
                 plan.dirs.push((path(&target), m.permissions.map(|p| p & 0o7777)));
                 stack.push((remote, target));
             } else if m.is_regular() {
@@ -279,6 +288,34 @@ async fn remote_plan(sftp: &SftpSession, from: &str, to: PathBuf) -> Result<Plan
 
 fn part_name(to: &str) -> String {
     format!("{to}{PART}")
+}
+
+/// Puts `part` where `to` is. SFTP v3's rename refuses an existing target, so
+/// the old file steps aside first and comes back if the rename still fails:
+/// a failed replace never leaves the host without the file.
+pub(crate) async fn replace(sftp: &SftpSession, part: &str, to: &str) -> Result<()> {
+    if sftp.rename(part.to_owned(), to.to_owned()).await.is_ok() {
+        return Ok(());
+    }
+    match sftp.symlink_metadata(to.to_owned()).await {
+        Ok(m) if m.is_dir() => return Err(SshError::text(ErrorKind::Invalid, "exists", &[("name", base_name(to))])),
+        Ok(_) => {}
+        // Nothing there: the rename failed for another reason; say why.
+        Err(_) => return sftp.rename(part.to_owned(), to.to_owned()).await.map_err(SshError::sftp),
+    }
+    let aside = format!("{to}.yuzora-old");
+    let _ = sftp.remove_file(aside.clone()).await;
+    sftp.rename(to.to_owned(), aside.clone()).await.map_err(SshError::sftp)?;
+    match sftp.rename(part.to_owned(), to.to_owned()).await {
+        Ok(()) => {
+            let _ = sftp.remove_file(aside).await;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = sftp.rename(aside, to.to_owned()).await;
+            Err(SshError::sftp(e))
+        }
+    }
 }
 
 async fn upload_file(sftp: &SftpSession, job: &Job, item: &Item, preserve: bool) -> Result<()> {
@@ -307,13 +344,7 @@ async fn upload_file(sftp: &SftpSession, job: &Job, item: &Item, preserve: bool)
     }
     remote.shutdown().await.map_err(SshError::io)?;
     let _ = remote.close().await;
-    // SFTP v3 rename refuses an existing target.
-    if let Ok(m) = sftp.symlink_metadata(item.to.clone()).await
-        && !m.is_dir()
-    {
-        sftp.remove_file(item.to.clone()).await.map_err(SshError::sftp)?;
-    }
-    sftp.rename(part, item.to.clone()).await.map_err(SshError::sftp)?;
+    replace(sftp, &part, &item.to).await?;
     if preserve {
         let mut attrs = FileAttributes::empty();
         attrs.permissions = item.mode;
@@ -427,7 +458,16 @@ impl Manager {
             finished_at: None,
         };
         let job = Arc::new(Job { spec: TransferSpec { host: def.id, ..spec }, info: Mutex::new(info), done: AtomicU64::new(0), cancel: AtomicBool::new(false), speed: Mutex::new((Instant::now(), 0, 0.0)) });
-        self.transfers.jobs.lock().unwrap_or_else(|e| e.into_inner()).push(job.clone());
+        {
+            let mut jobs = self.transfers.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            // A double click (or a second drag) of the same thing is the transfer already
+            // under way: two writers on one `.part` would lose the file.
+            let mine = job.info();
+            if let Some(same) = jobs.iter().map(|j| j.info()).find(|i| i.host == mine.host && i.to == mine.to && matches!(i.state, State::Queued | State::Running)) {
+                return Ok(same.id);
+            }
+            jobs.push(job.clone());
+        }
         self.start(job);
         Ok(id)
     }

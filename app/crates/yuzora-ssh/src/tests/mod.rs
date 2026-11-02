@@ -175,6 +175,68 @@ async fn keyboard_interactive_asks_every_question() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyboard_password_is_kept_only_once_the_host_takes_it() {
+    let w = TestWorld::new("it-kbd-kept");
+    let fx = Fixture::start(&w.root, &w.root.join("srv"), Options { keyboard_password: true, ..Default::default() }).await;
+    w.write_ssh_config(&fx.config("lab", ""));
+    fx.trust_in(&w.context().known_hosts);
+    let key = SecretKey::new("ssh", "password:ssh:lab");
+    let m = Manager::new(w.context());
+
+    // Nobody to ask, nothing kept: no blank answers (a failed login on the account), just "needs input".
+    let e = m.session("lab", Interaction::Never).await.err().unwrap();
+    assert_eq!(e.kind, ErrorKind::NeedsInput, "{e}");
+    assert_eq!(fx.answers.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    // A mistyped password with "remember" is asked again and never kept.
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = n.clone();
+    let asked = answer_with(&m, move |_| {
+        let first = count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+        let value = if first { "typo" } else { PASSWORD };
+        Answer::Responses { values: vec![Zeroizing::new(value.into())], remember: first }
+    });
+    let s = m.session("lab", Interaction::Ask).await.unwrap();
+    assert_eq!(s.method, "keyboard-interactive");
+    assert_eq!(*asked.lock().unwrap(), ["keyboard", "keyboard"]);
+    assert_eq!(w.secrets.get(&key).unwrap(), None);
+    m.disconnect("lab").await;
+    drop(asked);
+
+    // A kept password the host no longer takes: asked again; the new one is kept once it works.
+    w.secrets.set(&key, "an old password").unwrap();
+    let m = Manager::new(w.context());
+    let asked = answer_with(&m, |_| Answer::Responses { values: vec![Zeroizing::new(PASSWORD.into())], remember: true });
+    m.session("lab", Interaction::Ask).await.unwrap();
+    assert_eq!(*asked.lock().unwrap(), ["keyboard"]);
+    assert_eq!(w.secrets.get(&key).unwrap().as_deref(), Some(PASSWORD));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_key_alias_is_looked_up_without_the_port() {
+    let w = TestWorld::new("it-alias");
+    let fx = Fixture::start(&w.root, &w.root.join("srv"), Options::default()).await;
+    w.write_ssh_config(&fx.config("db", "  HostKeyAlias db.internal\n"));
+    w.secrets.set(&SecretKey::new("ssh", "password:ssh:db"), PASSWORD).unwrap();
+    let known = w.context().known_hosts;
+    // OpenSSH records an alias as written, never as [alias]:port.
+    let algorithm = fx.host_key.algorithm();
+    crate::known_hosts::trust(&known, "db.internal", 22, algorithm.as_str(), &fixture::public_b64(&fx.host_key)).unwrap();
+    let m = Manager::new(w.context());
+    assert!(!m.session("db", Interaction::Never).await.unwrap().verified.newly_trusted);
+    m.disconnect("db").await;
+
+    // Another key under that alias is a changed key, not a first contact.
+    let other = w.root.join("other_ed25519");
+    fixture::keygen(&other, "");
+    let other = russh::keys::load_secret_key(&other, None).unwrap();
+    std::fs::remove_file(&known).unwrap();
+    crate::known_hosts::trust(&known, "db.internal", 22, algorithm.as_str(), &fixture::public_b64(other.public_key())).unwrap();
+    let e = m.session("db", Interaction::Never).await.err().unwrap();
+    assert_eq!(e.kind, ErrorKind::HostKeyChanged, "{e}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tunnel_forwards_local_connections_through_the_host() {
     let w = TestWorld::new("it-tunnel");
     let fx = Fixture::start(&w.root, &w.root.join("srv"), Options::default()).await;
@@ -298,7 +360,11 @@ async fn uploads_resume_a_part_and_keep_mode_and_time() {
     // A broken earlier upload left the first MiB.
     std::fs::write(srv.join("build-artifacts.tar.zst.part"), &data[..1024 * 1024]).unwrap();
 
-    let id = m.enqueue(TransferSpec { host: "lab".into(), direction: Direction::Upload, from: src.to_string_lossy().into(), to_dir: srv.to_string_lossy().into(), preserve: true }).unwrap();
+    let spec = TransferSpec { host: "lab".into(), direction: Direction::Upload, from: src.to_string_lossy().into(), to_dir: srv.to_string_lossy().into(), preserve: true };
+    let id = m.enqueue(spec.clone()).unwrap();
+    // A second click on the same file is the same transfer, not a second writer on its .part.
+    assert_eq!(m.enqueue(spec).unwrap(), id);
+    assert_eq!(m.transfers.list().len(), 1);
     let info = wait_transfer(&m, id).await;
     assert_eq!(info.state, State::Done, "{:?}", info.error);
     assert!(info.resumed);
@@ -416,4 +482,20 @@ async fn an_opened_file_uploads_its_saves_and_stops_on_a_conflict() {
     }
     assert_eq!(std::fs::read_to_string(&remote).unwrap(), "mine\n");
     assert!(m.edits.stop(ed.id));
+
+    // Through a link: saves land in the file it points at, and the link stays a link.
+    std::fs::create_dir_all(srv.join("sites-available")).unwrap();
+    std::fs::write(srv.join("sites-available/default"), "listen 80;\n").unwrap();
+    std::os::unix::fs::symlink("sites-available/default", srv.join("default")).unwrap();
+    let ed = m.open_remote("lab", srv.join("default").to_str().unwrap()).await.unwrap();
+    assert!(ed.local.ends_with("default"));
+    std::fs::write(&ed.local, "listen 8080;\n").unwrap();
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if m.edits.list().iter().any(|e| e.id == ed.id && e.uploads >= 1) {
+            break;
+        }
+    }
+    assert_eq!(std::fs::read_to_string(srv.join("sites-available/default")).unwrap(), "listen 8080;\n");
+    assert!(std::fs::symlink_metadata(srv.join("default")).unwrap().file_type().is_symlink());
 }

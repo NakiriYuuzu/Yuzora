@@ -18,6 +18,9 @@ use sha1::Sha1;
 
 use crate::config::wildcard_match;
 
+/// One read-modify-write at a time: two hosts trusted at once both stay recorded.
+static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Decodes standard base64 with or without padding.
 const BASE64: GeneralPurpose = GeneralPurpose::new(&alphabet::STANDARD, GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent));
 
@@ -173,6 +176,7 @@ pub fn check(files: &[PathBuf], host: &str, port: u16, algorithm: &str, key: &st
 /// same lookup name and algorithm, then appends "lookup_name algorithm key". Creates parent
 /// dirs; 0600 on unix; write to a temp file in the same dir and rename; other lines kept byte-for-byte.
 pub fn trust(path: &Path, host: &str, port: u16, algorithm: &str, key: &str) -> io::Result<()> {
+    let _one_writer = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let name = lookup_name(host, port);
     for field in [name.as_str(), algorithm, key] {
         if field.is_empty() || field.contains(|c: char| c.is_whitespace() || c.is_control()) {
@@ -195,6 +199,7 @@ pub fn trust(path: &Path, host: &str, port: u16, algorithm: &str, key: &str) -> 
 
 /// Removes line `line` only if it still reads `raw`; same temp+rename. Ok(false) when it changed.
 pub fn remove_line(path: &Path, line: usize, raw: &str) -> io::Result<bool> {
+    let _one_writer = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let old = read_or_empty(path)?;
     let mut out = Vec::with_capacity(old.len());
     let mut removed = false;

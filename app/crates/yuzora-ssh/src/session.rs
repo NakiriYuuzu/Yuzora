@@ -235,6 +235,21 @@ struct HostState {
     error: Option<SshError>,
 }
 
+/// Clears a host's "connecting" when its connect future is dropped unfinished.
+struct Connecting<'a> {
+    states: &'a Mutex<HashMap<String, HostState>>,
+    id: String,
+    settled: bool,
+}
+
+impl Drop for Connecting<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            lock(self.states).remove(&self.id);
+        }
+    }
+}
+
 /// Every session, the questions they ask, and what runs on them.
 pub struct Manager {
     pub ctx: Context,
@@ -243,8 +258,6 @@ pub struct Manager {
     sessions: Mutex<HashMap<String, Arc<HostSession>>>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     states: Mutex<HashMap<String, HostState>>,
-    /// The last host verified, for the status bar: (name, key kind).
-    last_verified: Mutex<Option<(String, String)>>,
     pub(crate) transfers: crate::transfer::Queue,
     pub(crate) tunnels: crate::tunnel::Registry,
     pub(crate) edits: crate::edit::Registry,
@@ -269,7 +282,6 @@ impl Manager {
             sessions: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
             states: Mutex::new(HashMap::new()),
-            last_verified: Mutex::new(None),
             transfers: Default::default(),
             tunnels: Default::default(),
             edits: Default::default(),
@@ -307,13 +319,14 @@ impl Manager {
             }
         }
         lock(&self.states).insert(def.id.clone(), HostState { connecting: true, error: None });
+        let mut connecting = Connecting { states: &self.states, id: def.id.clone(), settled: false };
         let result = self.connect(&def, interaction, 0).await.map(Arc::new);
+        connecting.settled = true;
         let mut states = lock(&self.states);
         match &result {
             Ok(s) => {
                 states.insert(def.id.clone(), HostState::default());
                 lock(&self.sessions).insert(def.id.clone(), s.clone());
-                *lock(&self.last_verified) = Some((def.name.clone(), s.verified.kind.clone()));
             }
             Err(e) => {
                 states.insert(def.id.clone(), HostState { connecting: false, error: Some(e.clone()) });
@@ -398,12 +411,8 @@ impl Manager {
             let name = self.lookup(id).map(|d| d.name).unwrap_or_else(|_| id.clone());
             return Some((t("status.connecting", &[("host", name)]), "working"));
         }
-        let open = lock(&self.sessions).values().any(|s| !s.is_closed());
-        let last = lock(&self.last_verified).clone();
-        match last {
-            Some((host, kind)) if open => Some((t("status.verified", &[("host", host), ("kind", kind)]), "done")),
-            _ => None,
-        }
+        let newest = lock(&self.sessions).values().filter(|s| !s.is_closed()).max_by_key(|s| s.connected_at).map(|s| (s.label.clone(), s.verified.kind.clone()));
+        newest.map(|(host, kind)| (t("status.verified", &[("host", host), ("kind", kind)]), "done"))
     }
 
     async fn connect(&self, def: &HostDef, interaction: Interaction, depth: usize) -> Result<HostSession> {
@@ -458,7 +467,8 @@ impl Manager {
             host_id: def.id.clone(),
             label: def.name.clone(),
             lookup: r.host_key_alias.clone().unwrap_or_else(|| r.hostname.clone()),
-            port: r.port,
+            // OpenSSH looks a HostKeyAlias up as written, never as [alias]:port.
+            port: if r.host_key_alias.is_some() { 22 } else { r.port },
             files,
             own_file: self.ctx.known_hosts.clone(),
             strict: r.strict_host_key_checking,

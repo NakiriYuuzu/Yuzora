@@ -15,7 +15,6 @@
   "jump": "ProxyJump (optional)",
   "jumpPlaceholder": "user@bastion:22",
   "password": "Password (optional, kept in the system keychain)",
-  "passwordKept": "A password is stored. Type a new one to replace it.",
   "save": "Save",
   "delete": "Delete",
   "cancel": "Cancel",

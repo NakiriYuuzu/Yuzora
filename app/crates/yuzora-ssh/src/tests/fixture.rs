@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
@@ -39,6 +40,8 @@ pub fn public_b64(key: &PublicKey) -> String {
 pub struct Options {
     /// Ask keyboard-interactive (password + code) instead of accepting passwords.
     pub keyboard: bool,
+    /// Ask keyboard-interactive for the password alone (as PAM does).
+    pub keyboard_password: bool,
     pub authorized: Vec<PublicKey>,
 }
 
@@ -46,6 +49,8 @@ pub struct Fixture {
     pub port: u16,
     pub host_key: PublicKey,
     pub has_sftp: bool,
+    /// keyboard-interactive answers the server has received.
+    pub answers: Arc<AtomicUsize>,
     _server: tokio::task::JoinHandle<()>,
 }
 
@@ -57,6 +62,7 @@ impl Drop for Fixture {
 
 struct Shared {
     options: Options,
+    answers: Arc<AtomicUsize>,
     sftp: Option<PathBuf>,
     root: PathBuf,
 }
@@ -80,7 +86,8 @@ impl server::Handler for Conn {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
-        Ok(if !self.shared.options.keyboard && user == USER && password == PASSWORD { Auth::Accept } else { Auth::reject() })
+        let o = &self.shared.options;
+        Ok(if !o.keyboard && !o.keyboard_password && user == USER && password == PASSWORD { Auth::Accept } else { Auth::reject() })
     }
 
     async fn auth_publickey_offered(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
@@ -92,14 +99,18 @@ impl server::Handler for Conn {
     }
 
     async fn auth_keyboard_interactive<'a>(&'a mut self, user: &str, _sub: &str, response: Option<server::Response<'a>>) -> Result<Auth, Self::Error> {
-        if !self.shared.options.keyboard || user != USER {
+        let o = &self.shared.options;
+        if !(o.keyboard || o.keyboard_password) || user != USER {
             return Ok(Auth::reject());
         }
+        let expected: &[&str] = if o.keyboard { &[PASSWORD, CODE] } else { &[PASSWORD] };
         Ok(match response {
-            None => Auth::Partial { name: "fixture".into(), instructions: "".into(), prompts: vec![("Password:".into(), false), ("Verification code:".into(), true)].into() },
+            None if o.keyboard => Auth::Partial { name: "fixture".into(), instructions: "".into(), prompts: vec![("Password:".into(), false), ("Verification code:".into(), true)].into() },
+            None => Auth::Partial { name: "".into(), instructions: "".into(), prompts: vec![("Password:".into(), false)].into() },
             Some(r) => {
+                self.shared.answers.fetch_add(1, Ordering::Relaxed);
                 let answers: Vec<String> = r.map(|b| String::from_utf8_lossy(&b).into_owned()).collect();
-                if answers == [PASSWORD, CODE] { Auth::Accept } else { Auth::reject() }
+                if answers == expected { Auth::Accept } else { Auth::reject() }
             }
         })
     }
@@ -168,11 +179,12 @@ impl Fixture {
         let has_sftp = sftp.is_some();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let mut server = FixtureServer(Arc::new(Shared { options, sftp, root: root.to_path_buf() }));
+        let answers = Arc::new(AtomicUsize::new(0));
+        let mut server = FixtureServer(Arc::new(Shared { options, answers: answers.clone(), sftp, root: root.to_path_buf() }));
         let task = tokio::spawn(async move {
             let _ = server.run_on_socket(config, &listener).await;
         });
-        Fixture { port, host_key, has_sftp, _server: task }
+        Fixture { port, host_key, has_sftp, answers, _server: task }
     }
 
     /// `Host <alias>` lines reaching this server as the fixture user.

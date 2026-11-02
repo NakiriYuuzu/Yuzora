@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 
 /// What to forward.
@@ -252,12 +252,14 @@ impl Manager {
         tokio::spawn(async move {
             let mut stopped_accept = stopped.clone();
             loop {
-                let (socket, _) = tokio::select! {
+                let accepted = tokio::select! {
                     _ = stopped_accept.wait_for(|s| *s) => break,
-                    accepted = listener.accept() => match accepted {
-                        Ok(a) => a,
-                        Err(_) => continue,
-                    },
+                    accepted = listener.accept() => accepted,
+                };
+                let Ok((socket, _)) = accepted else {
+                    // Out of descriptors and the like: wait instead of spinning.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
                 };
                 let (me, inner, spec, host_id) = (me.clone(), inner.clone(), spec.clone(), host_id.clone());
                 let mut stopped_conn = stopped.clone();

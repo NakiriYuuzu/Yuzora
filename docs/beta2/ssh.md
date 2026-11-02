@@ -30,12 +30,12 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 ## 決策
 
 1. **自己實作 SSH，不靠 OpenSSH 子行程。** SFTP、tunnel、延遲與 host key 提示都需要一條長駐、可共用的連線；用 russh（vendored patch）在 Rust 層做。終端機例外：「新終端機」仍交給 herdr-core（machine）或本機 OpenSSH（`ssh <alias>`），與使用者自己打指令的行為一致。
-2. **known_hosts：讀 `~/.ssh`，只寫 Yuzora 自己的檔。** 檢查時合併 Yuzora 的 `<app home>/yuzora/known_hosts` 與 ssh config 指定的 `UserKnownHostsFile`／`GlobalKnownHostsFile`（預設 `~/.ssh/known_hosts{,2}`、`/etc/ssh/ssh_known_hosts{,2}`），語意同 OpenSSH：任何一行相符即信任、同演算法不同金鑰為「已變更」、`@revoked` 一律拒絕。新金鑰或使用者接受的變更只寫進 Yuzora 的檔（同主機同演算法的舊行會被取代）。`~/.ssh` 永遠不寫；已知主機管理只能刪 Yuzora 的項目，`~/.ssh` 的項目唯讀並提示 `ssh-keygen -R`。
+2. **known_hosts：讀 `~/.ssh`，只寫 Yuzora 自己的檔。** 檢查時合併 Yuzora 的 `<app home>/yuzora/known_hosts` 與 ssh config 指定的 `UserKnownHostsFile`／`GlobalKnownHostsFile`（預設 `~/.ssh/known_hosts{,2}`、`/etc/ssh/ssh_known_hosts{,2}`），語意同 OpenSSH：任何一行相符即信任、同演算法不同金鑰為「已變更」、`@revoked` 一律拒絕。新金鑰或使用者接受的變更只寫進 Yuzora 的檔（同主機同演算法的舊行會被取代）。`~/.ssh` 永遠不寫；已知主機管理只能刪 Yuzora 的項目，`~/.ssh` 的項目唯讀並提示 `ssh-keygen -R`。設了 `HostKeyAlias` 時照 OpenSSH 以 alias 原字串查找與記錄（不加 `[alias]:port`）。
 3. **StrictHostKeyChecking 照 ssh config。** `ask`（預設）問使用者；`yes` 拒絕未知金鑰；`no`／`accept-new` 自動記錄新金鑰。金鑰變更一律要使用者明確接受（沒人能問時直接拒絕）。
 4. **連線途中的問題用佇列，不用兩段式連線。** keyboard-interactive（例如 OTP）的問題綁在同一條連線上，無法「失敗後重連再帶答案」。所以 connect 時 Rust 端註冊問題並等待（180 秒逾時），mod 端輪詢 `prompts()`，用 `claimPrompt()` 保證同一題只開一個對話框；對話框不回答就關閉會取消該題。
-5. **密碼與密語只在使用者勾選「記住」時存進系統鑰匙圈**（`yuzora_core::secrets`，namespace `ssh`，id `password:<host id>`、`passphrase:<key path>`）。設定檔只存 profile 的非機密欄位。
-6. **非互動連線（給其他 lane 的 tunnel）不問人。** 主機金鑰未信任或需要密碼時立即失敗（`host-key-unknown`、`needs-input`），訊息請使用者先從 SSH 側欄連一次。這避免 L3 的資料庫連線卡在一個沒人看得到的問題上。
-7. **續傳以 `.part` 檔大小為準**（同 `sftp reget`／`reput`）：傳輸寫到 `<目的>.part`，完成才 rename；失敗或取消後，重試（或同一個傳輸再來一次）會從 `.part` 的大小接續，UI 顯示「續傳」。`.part` 比來源大時重新開始。
+5. **密碼與密語只在使用者勾選「記住」、且主機接受之後才存進系統鑰匙圈**（`yuzora_core::secrets`，namespace `ssh`，id `password:<host id>`、`passphrase:<key path>`）。設定檔只存 profile 的非機密欄位。已存的密碼被主機拒絕時（改過密碼），password 與 keyboard-interactive 都會回頭問人。
+6. **非互動連線（給其他 lane 的 tunnel）不問人。** 主機金鑰未信任或需要密碼時立即失敗（`host-key-unknown`、`needs-input`；keyboard-interactive 不送空白答案，免得被算成一次登入失敗），訊息請使用者先從 SSH 側欄連一次。這避免 L3 的資料庫連線卡在一個沒人看得到的問題上。
+7. **續傳以 `.part` 檔大小為準**（同 `sftp reget`／`reput`）：傳輸寫到 `<目的>.part`，完成才 rename；失敗或取消後，重試（或同一個傳輸再來一次）會從 `.part` 的大小接續，UI 顯示「續傳」。`.part` 比來源大時重新開始。目標已存在時（SFTP v3 的 rename 不能覆蓋），舊檔先改名成 `<目的>.yuzora-old`，rename 成功才刪、失敗就改回來，所以失敗不會讓主機上少一個檔。同一來源到同一目的地的傳輸還在排隊或進行時，再排一次會回傳原本的 id（雙擊、重複拖放不會兩個人寫同一個 `.part`）。資料夾裡指向資料夾的 symlink 不跟隨（同 `sftp get -R`），指向檔案的照樣傳。已知限制：`.part` 不分是不是 Yuzora 留下的，別的程式留下同名 `.part` 也會被接續。
 8. **主機與使用者名稱擋掉 shell 字元。** 跟 OpenSSH 一樣，profile、`dest:` 目的地與 ProxyCommand 展開的 `%h`／`%r` 不得含空白、控制字元、`'"$\;&<>|(){}` 與反引號，也不得以 `-` 開頭；`sshArgv` 一律在目的地前加 `--`。開啟遠端檔的本機複本放在 app home 的 `yuzora/tmp/ssh/edit/`，不放共用的 `/tmp`。
 9. **russh 用 `ring` 而非預設的 `aws-lc-rs`**：`ring` 已在 app 的 lock 中，且不需要 cmake。`rsa` feature 保留（RSA 金鑰與只有 RSA 的主機）；其 RUSTSEC-2023-0071 已在 root `deny.toml`／`.cargo/audit.toml` 以「app: russh rsa」接受，本 lane 沒有新增任何例外。app workspace 目前沒有 cargo-deny／audit 關卡。
 
@@ -50,7 +50,7 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 - 編輯：`openRemote(host, path)`、`edits()`、`stopEdit(id)`、`overwriteEdit(id)`。
 - 已知主機：`knownHosts()`、`removeKnownHost(file, line, raw)`。
 - tunnel：`openTunnel(host, remoteHost, remotePort, localPort?)`、`tunnels()`、`closeTunnel(id)`。
-- 狀態：`status()` 回傳 `{text, tone}`，側欄與 SFTP pane 以 `setShared("yuzora.status.ssh", …)` 發布；`yuzora.badge.ssh` 是進行中＋排隊中的傳輸數（沒有時為 `null`）。
+- 狀態：`status()` 回傳 `{text, tone}`，側欄與 SFTP pane 以 `setShared("yuzora.status.ssh", …)` 發布（值改變才寫；兩者任一開著就會更新，也會清掉上一輪留下的值）；`yuzora.badge.ssh` 是進行中＋排隊中的傳輸數（沒有時為 `null`）。
 - 錯誤以 `"[code] message"` 拋出，code 見 `ErrorKind::code`（`host-key-unknown`、`needs-input`、`auth-failed`…），message 依語系。
 
 ## Tunnel API（給 L3）
@@ -88,7 +88,7 @@ cd app && cargo test --locked -p yuzora-ssh
 - 後續整合（合併後由總指揮串接）：
   - L1：狀態列讀 `shared("yuzora.status.ssh")`、模式列讀 `shared("yuzora.badge.ssh")`。問題對話框目前由 SSH 側欄與 SFTP pane 輪詢開啟；若其他 lane 以互動模式連線（例如 L3 想在 DB 側欄內觸發），需要一個常駐的地方（L1 外殼）呼叫 `prompts()`／`claimPrompt()` 開啟 `yuzora-ssh-prompt`。
   - L3：`yuzora_ssh::tunnel` 連遠端 DB（L3 crate 加 `yuzora-ssh` 依賴）。
-  - L5：「開啟遠端檔案」目前用系統預設程式開啟暫存檔；L5 編輯器合併後可改成開 L5 的編輯器 pane（`openRemote` 回傳的 `local` 路徑不變）。
+  - L5：「開啟遠端檔案」目前用文字編輯器開啟暫存檔（macOS `open -t`、Windows `notepad`、Linux `xdg-open`；不用檔案的預設程式，免得主機上的 `.bat`、`.terminal` 在本機執行）；L5 編輯器合併後可改成開 L5 的編輯器 pane（`openRemote` 回傳的 `local` 路徑不變）。
 - 未支援：`Match exec`／`localnetwork`／`tagged` 等條件（視為不成立）、`CertificateFile`／host 憑證（`@cert-authority`）、`CanonicalizeHostname`、`ControlMaster`、`${ENV}` 展開、SFTP 斷點續傳的內容比對（僅以大小判斷，同 OpenSSH）。
 - ProxyJump 的第一段照它自己的設定（包含它自己的 ProxyJump），後續各段忽略自己的 ProxyJump／ProxyCommand（同 OpenSSH `-J`）。
 - Windows：agent 走 `\\.\pipe\openssh-ssh-agent`／Pageant；整合測試只在 Unix 跑，Windows 未實機驗證。
