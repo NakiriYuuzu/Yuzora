@@ -428,6 +428,39 @@ async fn downloads_resume_and_bring_whole_folders() {
     assert_eq!(std::fs::read_to_string(down.join("logs/old/a.log")).unwrap(), "old");
 }
 
+/// A save made the moment the file opens (before the watcher's task first runs,
+/// which one thread makes certain) and keeping the size (so only the content, not
+/// the clock, can tell) still goes up.
+#[tokio::test(flavor = "current_thread")]
+async fn a_save_right_after_opening_is_uploaded() {
+    let w = TestWorld::new("it-edit-quick");
+    let srv = w.root.join("srv");
+    let fx = Fixture::start(&w.root, &srv, Options::default()).await;
+    if !fx.has_sftp {
+        eprintln!("skipped: no OpenSSH sftp-server on this machine");
+        return;
+    }
+    w.write_ssh_config(&fx.config("lab", ""));
+    fx.trust_in(&w.context().known_hosts);
+    w.secrets.set(&SecretKey::new("ssh", "password:ssh:lab"), PASSWORD).unwrap();
+    let m = Manager::new(w.context());
+    let remote = srv.join("app.env");
+    std::fs::write(&remote, "MODE=dev\n").unwrap();
+
+    let ed = m.open_remote("lab", remote.to_str().unwrap()).await.unwrap();
+    let opened = std::fs::metadata(&ed.local).unwrap().modified().unwrap();
+    std::fs::write(&ed.local, "MODE=prd\n").unwrap();
+    // As a coarse clock leaves it: the save keeps the time the download had.
+    std::fs::File::options().write(true).open(&ed.local).unwrap().set_times(std::fs::FileTimes::new().set_modified(opened)).unwrap();
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if m.edits.list()[0].uploads >= 1 {
+            break;
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&remote).unwrap(), "MODE=prd\n", "{:?}", m.edits.list());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_opened_file_uploads_its_saves_and_stops_on_a_conflict() {
     let w = TestWorld::new("it-edit");

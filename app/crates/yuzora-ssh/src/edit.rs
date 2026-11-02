@@ -10,6 +10,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -94,9 +95,22 @@ impl Registry {
     }
 }
 
-fn local_stamp(path: &PathBuf) -> Option<(SystemTime, u64)> {
+/// Files up to this size are also told apart by their content.
+const HASHED_BYTES: u64 = 1 << 20;
+
+/// What a local save changes: modified time and size, and for small files a hash
+/// of the content. The clock alone misses a same-size save made within its
+/// granularity (a few ms on Linux, 1–2 s on HFS+ or FAT).
+type LocalStamp = (SystemTime, u64, Option<u64>);
+
+fn local_stamp(path: &PathBuf) -> Option<LocalStamp> {
     let m = std::fs::metadata(path).ok()?;
-    Some((m.modified().ok()?, m.len()))
+    let hash = (m.len() <= HASHED_BYTES).then(|| std::fs::read(path).ok()).flatten().map(|data| {
+        let mut h = std::hash::DefaultHasher::new();
+        data.hash(&mut h);
+        h.finish()
+    });
+    Some((m.modified().ok()?, m.len(), hash))
 }
 
 async fn remote_stamp(sftp: &SftpSession, path: &str) -> Result<Stamp> {
@@ -153,6 +167,9 @@ impl Manager {
         f.read_to_end(&mut data).await.map_err(SshError::io)?;
         let _ = f.close().await;
         tokio::fs::write(&local, &data).await.map_err(SshError::io)?;
+        // Taken now, before anyone gets the path: a save right after this is a change,
+        // not the starting point (the watcher's task may first run after it).
+        let mut seen = local_stamp(&local);
         let (stop, mut stopped) = watch::channel(false);
         let (force, mut forced) = watch::channel(0u64);
         let edit = Arc::new(Edit {
@@ -165,8 +182,7 @@ impl Manager {
         let me = self.clone();
         let (host_id, remote) = (session.host_id.clone(), remote.to_owned());
         tokio::spawn(async move {
-            let mut seen = local_stamp(&local);
-            let mut pending: Option<(SystemTime, u64)> = None;
+            let mut pending: Option<LocalStamp> = None;
             loop {
                 let overwrite = tokio::select! {
                     _ = stopped.wait_for(|s| *s) => break,

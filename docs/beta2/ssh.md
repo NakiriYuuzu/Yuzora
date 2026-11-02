@@ -14,7 +14,7 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 | `prompt.rs` | 連線途中要問使用者的問題佇列（新金鑰、金鑰變更、密碼、密語、keyboard-interactive），任何 mod 都能 claim 並回答 |
 | `sftp.rs` | 雙欄瀏覽：本機與遠端同一種 entry 形狀；新增資料夾、重新命名、刪除（資料夾遞迴）；拒絕 `/`、`~` 等根目錄與不合法名稱 |
 | `transfer.rs` | 傳輸佇列：檔案或整個資料夾、同時 3 個、進度／速度／取消／重試、`.part` 續傳、保留權限與時間 |
-| `edit.rs` | 開啟遠端檔案：下載到暫存資料夾並 watch，每次存檔自動上傳；主機上的檔案被別人改過就暫停並標示衝突 |
+| `edit.rs` | 開啟遠端檔案：下載到暫存資料夾並 watch，每次存檔自動上傳；主機上的檔案被別人改過就暫停並標示衝突。存檔以 mtime＋大小判斷，1 MiB 以下再比內容 hash（時鐘粒度粗時同長度的存檔也抓得到）；基準在回傳本機路徑前就取好 |
 | `tunnel.rs` | `ssh -L` 本機轉送，給 L3 連遠端 DB（見下方 API） |
 | `runtime.rs` | crate 自己的 tokio runtime；它回傳的 future 可在任何 executor 上 await |
 | `js.rs` | `yuzora:ssh` HostModule 與 TypeScript 宣告 |
