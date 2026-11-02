@@ -284,7 +284,14 @@ fn keep_password(
             store.delete(&key)?;
             unsaved.remove(&config.id);
         }
-        (false, None) => store.delete(&key)?,
+        (false, None) => {
+            // A blank field keeps the password: out of the store, but this
+            // session still connects with it.
+            if let Some(p) = store.get(&key)? {
+                unsaved.insert(config.id.clone(), p);
+            }
+            store.delete(&key)?;
+        }
         (true, None) => {
             if let Some(p) = unsaved.remove(&config.id) {
                 store.set(&key, &p)?;
@@ -441,6 +448,11 @@ mod tests {
         keep_password(&store, &mut unsaved, &c, None, false).unwrap();
         assert_eq!(store.get(&key).unwrap().as_deref(), Some("typed"), "turning saving on keeps the typed one");
         assert!(unsaved.is_empty());
+
+        c.save_password = false;
+        keep_password(&store, &mut unsaved, &c, None, false).unwrap();
+        assert_eq!(store.get(&key).unwrap(), None, "turning saving off takes it out of the store");
+        assert_eq!(unsaved.get("c1").map(String::as_str), Some("typed"), "and this session still has it");
     }
 
     #[test]
