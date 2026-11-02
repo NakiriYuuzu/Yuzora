@@ -42,7 +42,8 @@ pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
     let mut keys = repo_keys(&out.stdout, "");
     if repo.exists(&repo.abs(".gitmodules")) {
         // Each checked-out submodule, nested ones too: a `sub` record names it.
-        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --name-only --get-regexp '{PROGRAMS}' || true");
+        // 1 is "no key"; any other failure is an `err` record (gate shut).
+        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --name-only --get-regexp '{PROGRAMS}'; c=$?; if [ $c -gt 1 ]; then printf 'err\\0%s\\0' $c; fi");
         let out = repo.run(Git::read(["submodule", "foreach", "--recursive", "--quiet", &script]))?;
         if !out.ok() {
             keys.insert(UNREADABLE.into());
@@ -62,6 +63,9 @@ fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
     for c in parts.chunks(2).filter(|c| c.len() == 2) {
         match c[0] {
             "sub" => place = c[1].to_owned(),
+            "err" => {
+                keys.insert(format!("{place}: {UNREADABLE}"));
+            }
             "local" | "worktree" if place.is_empty() => {
                 keys.insert(c[1].to_owned());
             }
@@ -177,5 +181,12 @@ mod tests {
         let sub = crate::repo::open(&format!("{}/vendor/lib", s.root()), None).unwrap();
         sub.run(Git::write(["config", "filter.evil.clean", "cat"])).unwrap();
         assert_eq!(pending(&s.repo).unwrap(), vec!["vendor/lib: filter.evil.clean".to_string()]);
+        // A submodule config git can't read keeps the gate shut too.
+        let config = format!("{}/config", sub.git_dir);
+        let mut text = std::fs::read_to_string(&config).unwrap();
+        text.push_str("[broken\n");
+        std::fs::write(&config, text).unwrap();
+        let keys = pending(&s.repo).unwrap_or_else(|_| vec![UNREADABLE.into()]);
+        assert!(keys.iter().any(|k| k.contains(UNREADABLE)), "{keys:?}");
     }
 }
