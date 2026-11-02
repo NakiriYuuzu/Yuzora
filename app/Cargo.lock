@@ -10187,6 +10187,7 @@ dependencies = [
  "base64",
  "gpui-shell",
  "keyring",
+ "libc",
  "serde",
  "serde_json",
  "sys-locale",
