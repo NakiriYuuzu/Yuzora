@@ -26,7 +26,9 @@ export default class ImagePane extends View {
         try {
           for (;;) {
             const changed = await watchFolder(dir);
-            if (changed.some(c => c === this.path || c === dir)) this.probe(cx);
+            // The file itself changed: shown again even if its size and time did not.
+            if (changed.includes(this.path)) { this.rev++; this.probe(cx); }
+            else if (changed.includes(dir)) this.probe(cx);
           }
         } catch {}
       });
@@ -34,12 +36,17 @@ export default class ImagePane extends View {
     cx.timer.every(this.on ? 10000 : 30000, cx => this.probe(cx));
   }
 
-  // Shows the file again when its size or time changed.
+  // Shows the file again when its size or time changed. Another machine
+  // reports whole seconds: a rewrite in the same second keeps the stamp, so
+  // a new stamp there is read once more after that second is over.
   probe(cx) {
     cx.spawn(async cx => {
       const s = await stat(this.path, { on: this.on }).catch(() => null);
       const key = s ? `${s.len}:${s.mtime_ms}` : "missing";
-      if (this.stamp !== null && key !== this.stamp) this.rev++;
+      if (key !== this.stamp) {
+        if (this.stamp !== null) this.rev++;
+        if (this.on && s) cx.timer.after(2500, cx => { this.rev++; cx.notify(); });
+      }
       this.size = s?.len ?? null;
       this.stamp = key;
       cx.notify();

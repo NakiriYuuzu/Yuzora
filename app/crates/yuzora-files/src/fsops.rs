@@ -415,6 +415,28 @@ pub fn read_text(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFil
     }
 }
 
+/// A file here this process cannot write: no write bit, or opening it to
+/// write is refused (owner, ACL, a read-only mount).
+fn readonly_of(path: &Path, meta: &std::fs::Metadata) -> bool {
+    meta.permissions().readonly() || std::fs::OpenOptions::new().write(true).open(path).is_err()
+}
+
+/// A file's permission bits here (on Windows, its read-only flag): cheap to
+/// compare, for noticing a chmod, which moves neither size nor time.
+pub fn mode(path: &str) -> Option<u32> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    return Some(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()));
+    #[cfg(not(unix))]
+    return Some(u32::from(meta.permissions().readonly()));
+}
+
+/// Whether this process cannot write the file here. Opens it to write (not
+/// writing anything), so ask only after [`mode`] changed.
+pub fn readonly(path: &str) -> bool {
+    std::fs::metadata(path).map_or(true, |m| readonly_of(Path::new(path), &m))
+}
+
 /// A `TextFile` that carries only what a stat knows.
 fn blank(stamp: Stamp, readonly: bool) -> TextFile {
     TextFile {
@@ -487,8 +509,7 @@ fn read_local(path: &str, max_bytes: u64) -> Result<TextFile, String> {
     let mut file = std::fs::File::open(path).map_err(err)?;
     let meta = file.metadata().map_err(err)?;
     let stamp = stamp_of(&meta);
-    let readonly = meta.permissions().readonly()
-        || std::fs::OpenOptions::new().write(true).open(path).is_err();
+    let readonly = readonly_of(Path::new(path), &meta);
     if stamp.len > max_bytes {
         return Ok(TextFile {
             too_large: true,

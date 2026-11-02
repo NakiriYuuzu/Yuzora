@@ -159,7 +159,8 @@ export default class FilesSidebar extends View {
       return;
     }
     this.open.add(folder); this.version++;
-    if (this.entries.has(folder) || this.pending.has(folder)) { cx.notify(); return; }
+    // Listed again on every open: what is kept from before shows meanwhile.
+    if (this.pending.has(folder)) { cx.notify(); return; }
     const here = this.here;
     this.pending.add(folder);
     cx.spawn(async cx => {

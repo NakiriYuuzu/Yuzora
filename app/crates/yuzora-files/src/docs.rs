@@ -254,6 +254,11 @@ enum Probe {
     Missing,
     /// Same content, new timestamp (a touch, or our own write seen late).
     Touched(Stamp),
+    /// Same stamp, other permission bits: whether it can be written now.
+    Access {
+        mode: u32,
+        readonly: bool,
+    },
     Changed(TextFile),
     Failed(String),
 }
@@ -298,6 +303,8 @@ pub struct DocView {
     baseline: Rope,
     disk: Option<Stamp>,
     disk_hash: u64,
+    /// The permission bits last seen ([`fsops::mode`]), here only.
+    disk_mode: Option<u32>,
     /// What a check found on disk while there were unsaved changes.
     incoming: Option<TextFile>,
     dirty: bool,
@@ -380,6 +387,7 @@ impl DocView {
             baseline: Rope::new(),
             disk: None,
             disk_hash: 0,
+            disk_mode: None,
             incoming: None,
             dirty: false,
             conflict: false,
@@ -670,6 +678,7 @@ impl DocView {
                     Ok(stamp) => {
                         doc.disk = Some(stamp);
                         doc.disk_hash = hash;
+                        doc.facts.size = stamp.len;
                         doc.baseline = rope;
                         doc.conflict = false;
                         doc.deleted = false;
@@ -755,10 +764,21 @@ impl DocView {
         };
         let key = self.key.clone();
         let base = self.disk;
+        let mode = self.disk_mode;
         cx.spawn(async move |this, cx| {
             let probe = blocking(move || match fsops::stat(&key.path, key.on.as_deref()) {
                 Ok(None) => Probe::Missing,
-                Ok(Some(stamp)) if Some(stamp) == disk && !read => Probe::Same,
+                // Unchanged, unless only its permissions were (a chmod moves
+                // neither size nor time).
+                Ok(Some(stamp)) if Some(stamp) == disk && !read => {
+                    match key.on.is_none().then(|| fsops::mode(&key.path)).flatten() {
+                        Some(now) if Some(now) != mode => Probe::Access {
+                            mode: now,
+                            readonly: fsops::readonly(&key.path),
+                        },
+                        _ => Probe::Same,
+                    }
+                }
                 Ok(Some(_)) => match fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES)
                 {
                     Ok(file) if file.hash == disk_hash => Probe::Touched(file.stamp),
@@ -795,6 +815,15 @@ impl DocView {
                 if !self.deleted {
                     self.deleted = true;
                     self.external_at = Some(now_ms());
+                    self.bump(cx);
+                }
+            }
+            Probe::Access { mode, readonly } => {
+                self.disk_mode = Some(mode);
+                let readonly = readonly || self.facts.not_utf8 || self.key.on.is_some();
+                if readonly != self.facts.readonly {
+                    self.facts.readonly = readonly;
+                    self.sync_readonly(cx);
                     self.bump(cx);
                 }
             }
@@ -1358,6 +1387,44 @@ mod tests {
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
         cx.run_until_parked();
         cx.update(|cx| assert!(!view.read(cx).deleted));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn the_editor_follows_a_change_of_permissions(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, _window) = editing(&path, cx);
+        let check = |cx: &mut gpui::TestAppContext| {
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                let editor = !doc.state.as_ref().unwrap().read(cx).is_editable();
+                assert_eq!(editor, doc.facts.readonly);
+                doc.facts.readonly
+            })
+        };
+        assert!(!check(cx));
+        // chmod moves neither the size nor the time.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(check(cx));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!check(cx));
+    }
+
+    #[gpui::test]
+    fn a_save_updates_the_size(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "longer ", cx);
+        drop(view.update(cx, |doc, cx| doc.save(false, cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(view.read(cx).facts.size, "longer one\n".len() as u64));
     }
 
     #[cfg(unix)]
