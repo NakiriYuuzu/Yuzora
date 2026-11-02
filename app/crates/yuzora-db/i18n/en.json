@@ -20,6 +20,28 @@
     "loaded": "{count} loaded",
     "writing": "Writing…",
     "discard": "Discard",
-    "write": "Write back"
+    "write": "Write back",
+    "not_inline": "Line breaks and binary values can't be edited in the grid; use an UPDATE in the SQL tab"
+  },
+  "field": {
+    "name": "name",
+    "path": "SQLite file",
+    "host": "host",
+    "user": "user"
+  },
+  "engine": {
+    "timeout": "Timed out after {s}s connecting to {target}",
+    "tls_failed": "TLS ({mode}) with {target} failed: {error}",
+    "ca_as_server": "The server's certificate is marked as a CA, which rustls does not accept as a server certificate. Give the server a certificate that is not a CA (signed by your CA), or use the require mode.",
+    "lost": "The connection to the server was lost: {error}",
+    "sqlite_missing": "The SQLite file {path} does not exist",
+    "worker_stopped": "The SQLite worker stopped: {error}",
+    "no_object": "There is no table or view named {name}",
+    "ca_unreadable": "Can't read the CA file {path}: {error}",
+    "ca_not_pem": "{path} is not a PEM certificate file: {error}",
+    "ca_unusable": "{path} holds an unusable certificate: {error}",
+    "ca_empty": "{path} holds no PEM certificate",
+    "key_mismatch": "The row with {key} matched {count} rows instead of exactly one; nothing was written",
+    "instance_port": "The instance {instance} needs its port: looking it up through SQL Browser isn't supported. Enter the instance's TCP port."
   }
 }

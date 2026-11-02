@@ -20,6 +20,28 @@
     "loaded": "已載入 {count}",
     "writing": "寫回中…",
     "discard": "捨棄",
-    "write": "寫回"
+    "write": "寫回",
+    "not_inline": "含換行或二進位的值無法在表格內編輯，請在 SQL 分頁用 UPDATE"
+  },
+  "field": {
+    "name": "名稱",
+    "path": "SQLite 檔案",
+    "host": "主機",
+    "user": "使用者"
+  },
+  "engine": {
+    "timeout": "連線到 {target} 逾時（{s} 秒）",
+    "tls_failed": "與 {target} 的 TLS（{mode}）失敗：{error}",
+    "ca_as_server": "伺服器憑證被標記為 CA，rustls 不接受 CA 憑證當伺服器憑證。請改用由你的 CA 簽發、本身不是 CA 的伺服器憑證，或改用 require 模式。",
+    "lost": "與伺服器的連線中斷：{error}",
+    "sqlite_missing": "SQLite 檔案 {path} 不存在",
+    "worker_stopped": "SQLite 工作執行緒已停止：{error}",
+    "no_object": "沒有名為 {name} 的資料表或 view",
+    "ca_unreadable": "無法讀取 CA 檔 {path}：{error}",
+    "ca_not_pem": "{path} 不是 PEM 憑證檔：{error}",
+    "ca_unusable": "{path} 內的憑證無法使用：{error}",
+    "ca_empty": "{path} 裡沒有 PEM 憑證",
+    "key_mismatch": "{key} 這一列比對到 {count} 列，而不是剛好一列；沒有寫入任何資料",
+    "instance_port": "執行個體 {instance} 需要指定 port：不支援透過 SQL Browser 查詢。請輸入該執行個體的 TCP port。"
   }
 }

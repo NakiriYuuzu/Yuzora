@@ -10537,6 +10537,7 @@ name = "yuzora-db"
 version = "0.1.0-beta.2"
 dependencies = [
  "async-channel",
+ "bytes",
  "chrono",
  "futures-channel",
  "futures-util",
