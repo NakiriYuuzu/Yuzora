@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and showing mods
+    url: https://discord.gg/PsgRfzmUDg
+    about: Ask in Discord or show what you built.
+  - name: Share a layout
+    url: https://herdr.dev/layouts
+    about: Publish a layout with the GitHub topic herdr-layout.
+  - name: Report a vulnerability privately
+    url: https://github.com/herdrdev/herdr-app/security/advisories/new
+    about: Don't post security details in a public issue.

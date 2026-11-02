@@ -60,8 +60,9 @@ export default defineConfig(({ mode }) => ({
   },
   test: {
     globals: true,
-    // Spike tests run under `bun test` (bun:test), not vitest.
-    exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**"],
+    // Spike tests run under `bun test` (bun:test), not vitest. app/ (the
+    // herdr-based beta.2 app) tests itself with cargo and bun.
+    exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**", "app/**"],
     projects: [
       {
         extends: true,
@@ -78,7 +79,7 @@ export default defineConfig(({ mode }) => ({
           environment: "jsdom",
           setupFiles: "./src/test/setup.ts",
           // Only proven DOM-free tests opt out; new tests keep the safe default.
-          exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**", ...nodeTests],
+          exclude: [...configDefaults.exclude, "**/.superpowers/**", "output/**", "spikes/companion-direct/**", "app/**", ...nodeTests],
         },
       },
     ],

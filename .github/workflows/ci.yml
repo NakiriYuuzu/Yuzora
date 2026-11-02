@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+    # The beta.2 app in app/ has its own workflow (app-ci.yml); a PR that
+    # touches only it and its docs has nothing for the Tauri app to check.
+    paths-ignore:
+      - 'app/**'
+      - 'docs/beta2/**'
+      - '.gitmodules'
+      - '.github/workflows/app-ci.yml'
 
 permissions:
   contents: read

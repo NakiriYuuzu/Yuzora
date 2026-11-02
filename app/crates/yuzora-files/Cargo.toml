@@ -1,0 +1,10 @@
+[package]
+name = "yuzora-files"
+description = "Yuzora L5: Files and the editor: the file tree, search, watchers, code editor and Markdown preview."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }

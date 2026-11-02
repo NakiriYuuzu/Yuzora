@@ -1,0 +1,155 @@
+# Yuzora v0.1.0-beta.2: build and test the herdr-based app in app/ (its own
+# Cargo workspace, lock and target). Steps follow upstream's
+# app/.github/workflows/ci.yml on the two platforms beta.2 starts with; the
+# Tauri app keeps ci.yml. See docs/beta2/architecture.md.
+#
+# Caches: only pushes to beta2/integration save them, so PR caches can't evict
+# the ones every lane PR restores. setup-zig caches separately.
+name: App CI
+
+on:
+  push:
+    branches: [beta2/integration]
+    paths: &app-paths
+      - 'app/**'
+      - '.gitmodules'
+      - '.github/workflows/app-ci.yml'
+  pull_request:
+    branches: [beta2/integration]
+    paths: *app-paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  # In the cache key: ghostty-sys can't tell when Zig changes.
+  ZIG_VERSION: 0.16.0
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  CARGO_INCREMENTAL: "0"
+  SAVE_CACHES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/beta2/integration' }}
+
+jobs:
+  platform-tests:
+    name: App ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, runner: ubuntu-22.04 }
+          - { platform: macos-aarch64, runner: macos-15 }
+    runs-on: ${{ matrix.runner }}
+    # Upstream allows 45; a cold cache here also builds ghostty and gpui.
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The root .gitmodules: app/vendor/ghostty.
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      # Keyed by what the dependencies build from (yuzora-* crates are sources,
+      # not dependencies), so a source-only push restores an exact hit.
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/target
+          key: app-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --no-run
+      - name: Note the sources the cache was built from
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: scripts/ci-sources record
+      - name: Save build cache
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *cache-paths
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Tests
+        run: |
+          only=()
+          if [ "$RUNNER_OS" != Linux ]; then
+            for t in tests/*.rs; do
+              name=$(basename "$t" .rs)
+              [ "$name" = shot_pixels ] || only+=(--test "$name")
+            done
+            only+=(--bins)
+          fi
+          threads=()
+          if [ "$RUNNER_OS" = Linux ]; then
+            threads=(-- --test-threads 4)
+          fi
+          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${only[@]}" "${threads[@]}"
+      # The run above narrows to the app's own targets off Linux.
+      - name: Yuzora crates
+        if: runner.os != 'Linux'
+        run: |
+          pkgs=()
+          for c in crates/yuzora-*; do pkgs+=(-p "$(basename "$c")"); done
+          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${pkgs[@]}"
+      - name: Screenshot pixels
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        env:
+          HERDR_SHOT_NATIVE_TEST: "1"
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
+      # check opens a hidden window, which needs a window server. On Linux the
+      # tests above render every shipped mod headless (shipped_initial_descriptions).
+      - name: Yuzora mods
+        if: runner.os == 'macOS'
+        run: scripts/yuzora/check-mods
+      - name: Check release packaging
+        if: matrix.platform == 'linux-x86_64'
+        run: python3 -m unittest discover -s scripts -p test_distribution.py
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.platform == 'linux-x86_64'
+        with:
+          bun-version: 1.4.2
+      - name: Check documentation
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          bun test scripts/docs.test.ts
+          bun scripts/docs.ts check
+
+  # One stable name for every platform.
+  app:
+    name: App (build · test)
+    needs: platform-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.platform-tests.result }}" = success ]'

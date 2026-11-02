@@ -1,0 +1,10 @@
+[package]
+name = "yuzora-ssh"
+description = "Yuzora L4: SSH hosts, SFTP transfers and tunnels (other lanes reach remote databases through its tunnels)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }

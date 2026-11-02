@@ -1,0 +1,142 @@
+<div> width:1440px height:900px background:#131417 color:#e4e4e7 font-size:12.5px
+  <div> width:248px
+    <dc-import> 
+  <div> flex:1
+    <header> height:36px gap:6px padding:0 6px
+      <div> gap:4px
+        <button> height:26px gap:6px padding:0 8px border-radius:6px color:#a1a1aa
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "主工作"
+          <span> width:6px height:6px border-radius:50% background:#f5b453
+        <button> height:26px gap:6px padding:0 8px border-radius:6px background:#232428 border:1px solid #34353a
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "審查"
+          <span> color:#8b8b94
+            "×"
+        <button> width:26px height:26px color:#a1a1aa font-size:15px
+          "+"
+      <div> flex:1
+      <button> height:26px gap:6px padding:0 8px border-radius:6px border:1px solid #2c2d32 color:#d4d4d8
+        "＋ 新增 pane"
+        <span> color:#8b8b94
+          "▾"
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <span> width:1px height:16px background:#2a2b30
+      <button> width:30px height:26px color:#8b8b94
+        "—"
+      <button> width:30px height:26px color:#8b8b94
+        <svg>
+      <button> width:30px height:26px color:#8b8b94
+        "✕"
+    <div> flex:1 grid-template-columns:1.35fr 1fr gap:6px padding:0 6px 6px
+      <section> border:1px solid #55565c border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <svg>
+          <span> font-weight:600
+            "Diff"
+          <span> font-size:11.5px color:#c9c9cf
+            "src/app/AppShell.tsx"
+          <span> color:#86d17a font-size:11.5px
+            "+38"
+          <span> color:#f08a8a font-size:11.5px
+            "−12"
+          <span> color:#8b8b94 font-size:11.5px
+            "未暫存"
+          <div> flex:1
+          <div> padding:2px border-radius:5px background:#222327
+            <button> height:18px padding:0 6px border-radius:3px background:#34353a font-size:11px
+              "並排"
+            <button> height:18px padding:0 6px border-radius:3px font-size:11px color:#a1a1aa
+              "合併"
+          <button> height:20px padding:0 8px border-radius:4px border:1px solid #34353a font-size:11px
+            "暫存 hunk"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 grid-template-columns:1fr 1fr font-size:11.5px
+          <div> 
+            <sc-for> 
+              <div> 
+                <span> width:36px color:#6f7078
+                  "{{l.n}}"
+                <span> color:{{l.c}}
+                  "{{l.t}}"
+          <div> 
+            <sc-for> 
+              <div> 
+                <span> width:36px color:#6f7078
+                  "{{r.n}}"
+                <span> color:{{r.c}}
+                  "{{r.t}}"
+      <div> gap:6px
+        <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+          <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+            <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+              "Y"
+            <span> font-weight:600
+              "提交紀錄 · 分支圖"
+            <div> flex:1
+            <span> font-size:11px color:#8b8b94
+              "所有分支"
+            <button> width:20px height:20px color:#8b8b94
+              "×"
+          <div> flex:1 padding:6px 4px
+            <sc-for> 
+              <div> 
+                <span> width:44px height:26px
+                  <span> width:2px background:#4f6bed
+                  <span> 
+                  <span> 
+                <span> flex:1 gap:6px
+                  <span> 
+                    "{{c.ref}}"
+                  <span> 
+                    "{{c.msg}}"
+                <span> font-size:11px color:#8b8b94 padding:0 6px
+                  "{{c.sha}}"
+        <section> border:1px solid #8a6420 border-radius:6px background:#17181b
+          <div> height:28px gap:7px padding:0 6px 0 8px background:#1d1a14 border-radius:6px 6px 0 0 font-size:12px
+            <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+              "Y"
+            <svg>
+            <span> font-weight:600
+              "Codex"
+            <span> color:#8b8b94
+              "fix/sftp-resume"
+            <div> flex:1
+            <span> color:#f5b453 font-size:11.5px
+              "▲ 需要回覆"
+            <button> width:20px height:20px color:#8b8b94
+              "×"
+          <div> flex:1 padding:10px 12px font-size:12px color:#c9c9cf
+            <div> 
+              "Patch ready · src-tauri/src/ssh_service.rs"
+            <div> color:#f08a8a
+              "- let offset = 0;"
+            <div> color:#86d17a
+              "+ let offset = remote.stat(&path)?.size;"
+            <div> height:6px
+            <div> color:#f5b453
+              "Apply this patch? [y]es / [n]o / [e]dit"
+            <div> 
+              <span> width:7px height:14px background:#e4e4e7
+    <footer> height:26px gap:14px padding:0 10px font-size:11.5px color:#a1a1aa
+      <span> 
+        "3 panes · yuzora"
+      <span> 
+        "● 5 agents"
+      <span> color:#f5b453
+        "▲ 2 需要回覆"
+      <span> 
+        "⎇ feat/gpui-dock ↑2 · 4 變更"
+      <div> flex:1
+      <span> 
+        "HERDR 0.9.5"
+      <span> color:#8b8b94
+        "Ctrl+Shift+P 指令"

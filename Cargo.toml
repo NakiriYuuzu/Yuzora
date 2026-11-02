@@ -5,8 +5,9 @@ members = [
     "src-tauri/host",
     "src-tauri/companion",
 ]
-# Spikes keep their own manifests (and workspaces) outside this one.
-exclude = ["spikes"]
+# Spikes keep their own manifests (and workspaces) outside this one. app/ is
+# the herdr-based v0.1.0-beta.2 app: its own workspace, lock and target.
+exclude = ["spikes", "app"]
 
 # Vendored crates are patched in, not path dependencies: Cargo makes path
 # dependencies inside a member directory workspace members, and `exclude`

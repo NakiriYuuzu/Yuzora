@@ -1,0 +1,14 @@
+Cargo dependencies
+==================
+Generated with cargo-about 0.9.3. Includes all platforms and build/dev dependencies.
+
+{{#each licenses}}
+----------------------------------------------------------------------
+{{name}} ({{id}})
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}{{#if crate.repository}} — {{crate.repository}}{{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

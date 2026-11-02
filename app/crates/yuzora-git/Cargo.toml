@@ -1,0 +1,10 @@
+[package]
+name = "yuzora-git"
+description = "Yuzora L2: Git, modelled on IntelliJ IDEA Community: status, staging, commit, branches, log graph, diff and merge."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }

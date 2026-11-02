@@ -1,0 +1,52 @@
+#!/bin/bash
+# Timed, non-publishing experiment on the exact signed release bundle.
+set -euo pipefail
+
+archive=${1:?usage: mac-notary-test archive.tar.gz}
+: "${APPLE_API_KEY:?missing notary API private key}"
+: "${APPLE_API_KEY_ID:?missing notary API key ID}"
+: "${APPLE_API_ISSUER:?missing notary API issuer}"
+work=$(mktemp -d)
+start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+started=$SECONDS
+finish() {
+  result=$1
+  {
+    echo "### macOS notarization test: $(basename "$archive")"
+    echo "- Started: $start"
+    echo "- Finished: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "- Elapsed: $((SECONDS - started)) seconds"
+    echo "- Exit status: $result (does not gate publishing)"
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  rm -rf "$work"
+}
+trap 'finish "$?"' EXIT
+umask 077
+printf '%s' "$APPLE_API_KEY" > "$work/key.p8"
+auth=(--key "$work/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+tar -xzf "$archive" -C "$work"
+codesign --verify --deep --strict "$work/Herdr.app"
+# Authority lines only appear at verbosity 2.
+signature=$(codesign -dvv "$work/Herdr.app" 2>&1)
+[[ $signature == *"Authority=Developer ID Application:"* ]] || { echo 'notary test requires a Developer ID signature' >&2; exit 1; }
+ditto -c -k --keepParent "$work/Herdr.app" "$work/Herdr.zip"
+xcrun notarytool submit "$work/Herdr.zip" "${auth[@]}" --output-format json | tee "$work/submission.json"
+id=$(jq -er '.id' "$work/submission.json")
+printf '\nSubmission: %s\n' "$id" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+# Leave time in the job for Apple's log and the end timestamp even on timeout.
+status=0
+xcrun notarytool wait "$id" "${auth[@]}" --timeout 30m || status=$?
+# Apple's report is useful for both successful and rejected submissions.
+if xcrun notarytool log "$id" "${auth[@]}" "$work/notary-log.json"; then
+  jq . "$work/notary-log.json"
+  {
+    echo '```json'
+    jq . "$work/notary-log.json"
+    echo '```'
+  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+else
+  echo 'Apple has no notary log yet.' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+fi
+trap - EXIT
+finish "$status"
+exit "$status"

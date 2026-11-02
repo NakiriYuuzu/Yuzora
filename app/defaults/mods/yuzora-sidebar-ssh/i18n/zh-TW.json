@@ -1,0 +1,5 @@
+{
+  "title": "SSH / SFTP",
+  "description": "主機、SFTP 與通道",
+  "placeholder": "由 {lane} lane 實作。"
+}

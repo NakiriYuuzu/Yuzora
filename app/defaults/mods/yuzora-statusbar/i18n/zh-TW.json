@@ -1,0 +1,6 @@
+{
+  "summary": "{panes} 個 pane · {spaces} 個 Space",
+  "agents": "{count} 個 Agent",
+  "needs": "{count} 個需要回覆",
+  "palette": "指令"
+}

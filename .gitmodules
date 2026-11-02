@@ -1,0 +1,3 @@
+[submodule "app/vendor/ghostty"]
+	path = app/vendor/ghostty
+	url = https://github.com/ghostty-org/ghostty
