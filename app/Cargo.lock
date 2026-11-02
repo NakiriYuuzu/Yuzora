@@ -10210,6 +10210,13 @@ dependencies = [
 name = "yuzora-git"
 version = "0.1.0-beta.2"
 dependencies = [
+ "async-channel",
+ "gpui-pre",
+ "libc",
+ "notify",
+ "regex",
+ "serde_json",
+ "tempfile",
  "yuzora-core",
 ]
 

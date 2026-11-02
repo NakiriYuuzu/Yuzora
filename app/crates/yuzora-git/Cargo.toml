@@ -6,5 +6,18 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# Only crates already in app/Cargo.lock: the third-party set (and so
+# THIRD-PARTY-NOTICES) stays as it is. The diff algorithms are our own.
 [dependencies]
 yuzora-core = { path = "../yuzora-core" }
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+async-channel = "2"
+notify = "7"
+regex = "1"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
