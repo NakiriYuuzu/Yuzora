@@ -121,13 +121,15 @@ export default class Templates extends View {
     cx.spawn(async (cx) => {
       const r = await saveTemplate(machine, name, this.fields(), e.others, this.body.value(), e.expected, e.original);
       this.saving = false;
+      // Another machine or template may be open by now: close only this form.
+      const same = this.editing === e;
       if (r.ok || r.code === "old_kept") {
         // old_kept: renamed, but the old file is still there beside the new one.
-        this.editing = null;
+        if (same) this.editing = null;
         this.message = r.ok ? { text: t("saved", { name }), tone: "ok" } : { text: t("errors.old_kept", { name, old: e.original }), tone: "warning" };
         this.reload(cx);
       } else {
-        this.message = { text: this.why(r, name), tone: "error", changed: r.code === "changed" };
+        this.message = { text: this.why(r, name), tone: "error", changed: same && r.code === "changed" };
       }
       cx.notify();
     });

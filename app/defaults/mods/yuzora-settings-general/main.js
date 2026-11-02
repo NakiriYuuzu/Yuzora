@@ -264,7 +264,8 @@ export default class General extends View {
         .child(title(th, t("page.title"), t("page.about")))
         .child(this.language(th))
         .child(this.look(th))
-        .child(this.startup(th))
+        // Only once something opens the window on it (the mode bar sets this flag).
+        .when(Boolean(shared("yuzora.startup.honored")), (el) => el.child(this.startup(th)))
         .child(this.security(th, cx)),
     );
   }

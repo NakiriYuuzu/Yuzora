@@ -36,13 +36,15 @@ pub fn installed(home: &Path) -> BTreeMap<String, Files> {
     std::fs::read_to_string(home.join("installed.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
+/// Every file under `dir`, as Herdr lists a mod, except that a link is one
+/// entry, never followed (a link back up would loop; one out could be huge).
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         if e.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
         let path = e.path();
-        if path.is_dir() {
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
             walk(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
             out.push(rel.to_string_lossy().replace('\\', "/"));
@@ -587,6 +589,21 @@ mod tests {
         assert!(as_shipped(&d, &files));
         write(&d.join("extra.js"), "y");
         assert!(!as_shipped(&d, &files));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_is_not_followed() {
+        let d = tmp("loop");
+        write(&d.join("main.js"), "x");
+        std::os::unix::fs::symlink(&d, d.join("again")).unwrap();
+        let files: Files = [("main.js".to_owned(), fingerprint(b"x"))].into();
+        let mut found = Vec::new();
+        walk(&d, &d, &mut found);
+        found.sort();
+        assert_eq!(found, ["again", "main.js"], "the link is one entry");
+        assert!(!as_shipped(&d, &files), "a link that wasn't shipped is an edit");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
