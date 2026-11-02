@@ -36,7 +36,9 @@ pub fn no_hooks_dir() -> String {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`.
 pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
-    git_trust::repo_programs(repo.exists(&repo.abs(".gitmodules")), |args| repo.run(Git::read(args.iter().copied())).map(|out| (out.code, out.stdout)))
+    git_trust::repo_programs(repo.exists(&repo.abs(".gitmodules")), |args| {
+        repo.run(Git::read(args.iter().copied()).max_output(git_trust::ANSWER_CAP + 1)).map(|out| git_trust::whole(out.code, out.stdout))
+    })
 }
 
 /// `trusted.json` (`git_trust::trusted_file` outside tests).

@@ -10,6 +10,7 @@
 //! - [`host`]: helpers for a lane's `host_module()`.
 //! - [`js`]: the `yuzora:core` module itself.
 //! - [`migrate`]: bringing data over from the Tauri app (0.1.0-beta.1 and older; L7).
+//! - [`git_trust`]: whether git may run on its own in a folder (a repo's own programs, trusted folders; L2).
 
 pub mod discovery;
 pub mod git_trust;

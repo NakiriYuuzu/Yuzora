@@ -56,10 +56,21 @@ pub const READ_FLAGS: [&str; 3] = ["--no-optional-locks", "-c", "core.fsmonitor=
 /// How long [`programs_in`] may take, submodules included.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most an answer to [`repo_programs`] may hold. Ask a runner for one
+/// byte more and pass what it gave through [`whole`].
+pub const ANSWER_CAP: usize = 8 << 20;
+
+/// A runner's answer as [`repo_programs`] takes it: one past
+/// [`ANSWER_CAP`] was cut short somewhere, maybe on a record's edge with the
+/// key that counts unread, so it counts as git failing (the gate stays shut).
+pub fn whole(code: i32, stdout: Vec<u8>) -> (i32, Vec<u8>) {
+    if stdout.len() > ANSWER_CAP { (-1, Vec::new()) } else { (code, stdout) }
+}
+
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`. `run`
 /// runs git with these arguments in the repository's top level and answers
-/// its exit code and stdout; `gitmodules`: the top level has a
+/// its exit code and stdout, through [`whole`]; `gitmodules`: the top level has a
 /// `.gitmodules`. A config git can't read counts as [`UNREADABLE`].
 pub fn repo_programs<E>(gitmodules: bool, mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
     let (code, out) = run(&["config", "--show-scope", "-z", "--get-regexp", PROGRAMS])?;
@@ -115,8 +126,8 @@ pub fn programs_in(machine: Option<&str>, top: &str) -> Result<Vec<String>, Stri
     // Over there, `submodule foreach` costs one call and prints nothing without submodules.
     let gitmodules = machine.is_some() || Path::new(top).join(".gitmodules").exists();
     repo_programs(gitmodules, |args| {
-        let req = ExecRequest::new("git", READ_FLAGS.iter().copied().chain(args.iter().copied())).on(machine).cwd(Some(top)).timeout(TIMEOUT);
-        remote::run(&req).map(|o| (o.code, o.stdout)).map_err(|e| e.to_string())
+        let req = ExecRequest::new("git", READ_FLAGS.iter().copied().chain(args.iter().copied())).on(machine).cwd(Some(top)).timeout(TIMEOUT).max_output(ANSWER_CAP as u64 + 1);
+        remote::run(&req).map(|o| whole(o.code, o.stdout)).map_err(|e| e.to_string())
     })
 }
 
@@ -235,5 +246,28 @@ mod tests {
         trust_at(&file, &folder_id(None, &top)).unwrap();
         assert_eq!(pending_from(&file, Some(""), &top), Ok(Vec::new()));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_cut_short_keeps_the_gate_shut() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap().success());
+        // Keys that match but run nothing, more than any answer may carry,
+        // then a filter: cut short, the filter would go unseen.
+        let config = dir.join(".git/config");
+        let mut text = std::fs::read_to_string(&config).unwrap();
+        text.push_str("[core]\n");
+        text.push_str(&"\tfsmonitor = true\n".repeat(400_000));
+        text.push_str("[filter \"evil\"]\n\tclean = cat\n");
+        std::fs::write(&config, text).unwrap();
+        let top = std::fs::canonicalize(&dir).unwrap().to_string_lossy().into_owned();
+        let got = pending_from(&dir.join("trusted.json"), None, &top);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // Cut anywhere, a record may end whole and the filter go unseen: a
+        // cut answer is never read as a whole one.
+        assert_eq!(got, Ok(vec![UNREADABLE.to_string()]));
     }
 }
