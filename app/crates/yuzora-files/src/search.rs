@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::Value;
-use yuzora_core::remote::{self, ExecError, ExecRequest};
+use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 use crate::fsops::{failure, machine, run_sh};
 
@@ -52,6 +52,8 @@ pub struct FileList {
     pub truncated: bool,
     /// Ignore files were not applied: the machine has neither git nor ripgrep.
     pub unfiltered: bool,
+    /// A folder could not be read: files may be missing.
+    pub skipped: bool,
 }
 
 /// Files under `root` (relative, `/`-separated), honoring `.gitignore` and
@@ -82,7 +84,12 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<FileList, String
         .filter_entry(|e| e.file_name() != ".git")
         .build();
     let mut files = Vec::new();
-    for entry in walk.flatten() {
+    let mut skipped = false;
+    for entry in walk {
+        let Ok(entry) = entry else {
+            skipped = true;
+            continue;
+        };
         // A symlink to a file counts; a link to a folder is not followed.
         let file = entry.file_type().is_some_and(|t| {
             t.is_file() || (t.is_symlink() && entry.path().metadata().is_ok_and(|m| m.is_file()))
@@ -97,6 +104,7 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<FileList, String
             return Ok(FileList {
                 files,
                 truncated: true,
+                skipped,
                 unfiltered: false,
             });
         }
@@ -109,6 +117,7 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<FileList, String
     }
     Ok(FileList {
         files,
+        skipped,
         ..FileList::default()
     })
 }
@@ -121,16 +130,25 @@ fn list_sh(root: &str, on: Option<&str>, hidden: bool, limit: usize) -> Result<F
         LIST_TIMEOUT,
         LIST_MAX_OUTPUT,
     )?;
+    read_listing(&out, hidden, limit)
+}
+
+/// What [`LIST_SCRIPT`] printed and how it ended.
+fn read_listing(out: &ExecOutput, hidden: bool, limit: usize) -> Result<FileList, String> {
     // find and rg exit non-zero for an unreadable corner or an empty tree and
     // still print what they found.
-    let listed = out
-        .stdout
-        .iter()
-        .position(|b| *b == 0)
-        .is_some_and(|tag| tag + 1 < out.stdout.len());
+    let tag = out.stdout.iter().position(|b| *b == 0);
+    let listed = tag.is_some_and(|tag| tag + 1 < out.stdout.len());
     if !listed && !matches!(out.code, 0 | 1) {
-        return Err(failure(&out, "listing the files"));
+        return Err(failure(out, "listing the files"));
     }
+    // rg's 1 is "no files"; any other tool's, or rg's 2, an error on the way.
+    let tool = &out.stdout[..tag.unwrap_or(0)];
+    let failed = if tool == b"rg" {
+        out.code > 1
+    } else {
+        out.code != 0
+    };
     let capped = out.stdout.len() as u64 >= LIST_MAX_OUTPUT;
     let mut bytes = &out.stdout[..];
     if capped && let Some(nul) = bytes.iter().rposition(|b| *b == 0) {
@@ -138,6 +156,7 @@ fn list_sh(root: &str, on: Option<&str>, hidden: bool, limit: usize) -> Result<F
     }
     let mut list = parse_file_list(bytes, hidden, limit);
     list.truncated |= capped;
+    list.skipped = listed && failed;
     Ok(list)
 }
 
@@ -169,6 +188,7 @@ fn parse_file_list(out: &[u8], hidden: bool, limit: usize) -> FileList {
         files,
         truncated,
         unfiltered: tool == b"find",
+        skipped: false,
     }
 }
 
@@ -380,6 +400,8 @@ pub struct GrepResult {
     pub truncated: bool,
     /// Files with a hit among `hits`.
     pub files: usize,
+    /// A file or folder could not be read: hits may be missing.
+    pub skipped: bool,
 }
 
 /// Whether `rg` runs there. Asked once per machine; a machine that could not
@@ -481,6 +503,7 @@ fn grep_with(
             hits: Vec::new(),
             truncated: false,
             files: 0,
+            skipped: false,
         });
     }
     let argv = pre
@@ -511,6 +534,7 @@ fn grep_with(
     if !matches!(out.code, 0 | 1) && result.hits.is_empty() {
         return Err(failure(&out, "ripgrep"));
     }
+    result.skipped = !matches!(out.code, 0 | 1);
     Ok(result)
 }
 
@@ -530,6 +554,7 @@ pub fn grep_local(
         hits: Vec::new(),
         truncated: false,
         files: 0,
+        skipped: false,
     };
     if query.is_empty() {
         return Ok(result);
@@ -556,7 +581,11 @@ pub fn grep_local(
         .filter_entry(|e| e.file_name() != ".git")
         .build();
     let deadline = std::time::Instant::now() + GREP_TIMEOUT;
-    for entry in walk.flatten() {
+    for entry in walk {
+        let Ok(entry) = entry else {
+            result.skipped = true;
+            continue;
+        };
         if std::time::Instant::now() >= deadline {
             result.truncated = true;
             break;
@@ -567,6 +596,7 @@ pub fn grep_local(
             continue;
         }
         let Ok(bytes) = std::fs::read(entry.path()) else {
+            result.skipped = true;
             continue;
         };
         if bytes[..bytes.len().min(8 << 10)].contains(&0) {
@@ -677,6 +707,7 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
         hits,
         truncated,
         files: files.len(),
+        skipped: false,
     }
 }
 
@@ -933,6 +964,62 @@ mod tests {
             .unwrap()
             .files;
         assert_eq!(files, ["link.txt", "real/f.txt"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shut_folder_here_is_said_to_be_skipped() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().to_string_lossy().into_owned();
+        std::fs::write(d.path().join("a.txt"), "main\n").unwrap();
+        let shut = d.path().join("shut");
+        std::fs::create_dir(&shut).unwrap();
+        std::fs::write(shut.join("b.txt"), "main\n").unwrap();
+        let open = || {
+            let list = list_files(&root, None, false, 100).unwrap();
+            let grep = grep_local(&root, "main", false, false, false, 100).unwrap();
+            (
+                list.files.len(),
+                list.skipped,
+                grep.hits.len(),
+                grep.skipped,
+            )
+        };
+        assert_eq!(open(), (2, false, 2, false));
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let seen = std::fs::read_dir(&shut).is_ok();
+        let shut_out = open();
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !seen {
+            assert_eq!(shut_out, (1, true, 1, true));
+        }
+    }
+
+    #[test]
+    fn a_listing_cut_short_by_an_error_says_so() {
+        let ended = |stdout: &[u8], code: i32| {
+            let out = ExecOutput {
+                code,
+                stdout: stdout.to_vec(),
+                stderr: b"Permission denied".to_vec(),
+            };
+            read_listing(&out, false, 100)
+        };
+        let whole = ended(b"rg\0a.rs\0", 0).unwrap();
+        assert_eq!((whole.files.len(), whole.skipped), (1, false));
+        // rg's 2, or any failure of find or git after some files: partial.
+        for (out, code) in [
+            (&b"rg\0a.rs\0"[..], 2),
+            (b"find\0./a.rs\0", 1),
+            (b"git\0a.rs\0\0", 128),
+        ] {
+            let list = ended(out, code).unwrap();
+            assert_eq!((list.files, list.skipped), (vec!["a.rs".to_owned()], true));
+        }
+        // rg's 1 with nothing listed is an empty tree; other failures with nothing are errors.
+        assert_eq!(ended(b"rg\0", 1).unwrap(), FileList::default());
+        assert_eq!(ended(b"rg\0", 2), Err("Permission denied".to_owned()));
     }
 
     #[test]
@@ -1260,7 +1347,8 @@ mod tests {
             GrepResult {
                 hits: vec![],
                 truncated: false,
-                files: 0
+                files: 0,
+                skipped: false
             }
         );
         // 2 with nothing found is an error with rg's words...
@@ -1270,7 +1358,8 @@ mod tests {
         assert!(bad.unwrap_err().contains("exit 2"));
         // ...but with hits (an unreadable file elsewhere) the hits stand.
         let (partial, _) = with_fake_rg(RG_FIXTURE, "rg: ./secret: Permission denied\n", 2, 100);
-        assert_eq!(partial.unwrap().hits.len(), 3);
+        let partial = partial.unwrap();
+        assert_eq!((partial.hits.len(), partial.skipped), (3, true));
         let (cut, _) = with_fake_rg(RG_FIXTURE, "", 0, 1);
         let cut = cut.unwrap();
         assert_eq!((cut.hits.len(), cut.truncated), (1, true));

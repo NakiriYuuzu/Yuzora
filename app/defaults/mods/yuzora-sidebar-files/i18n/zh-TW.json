@@ -33,7 +33,8 @@
     "no_rg": "在其他機器上搜尋內容，需要那台機器安裝 ripgrep（rg）。",
     "truncated": "只顯示前 {count} 筆結果。",
     "partial": "只搜尋了前 {count} 個檔案。",
-    "unfiltered": "{machine} 沒有 git 和 ripgrep：結果包含被忽略的檔案。"
+    "unfiltered": "{machine} 沒有 git 和 ripgrep：結果包含被忽略的檔案。",
+    "skipped": "有些檔案或資料夾無法讀取，結果可能不完整。"
   },
   "menu": {
     "open": "開啟",

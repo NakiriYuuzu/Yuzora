@@ -42,7 +42,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 - **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案，標頭顯示該 agent 的名稱（Claude Code 用設計稿的 `#2a201c`／`#e8a27f`）。
 - 關閉有未儲存變更的 pane：buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回；Yuzora 結束才會遺失。
 - 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。重新讀取時（外部變更、Reload），檔案變成二進位或超過上限就不再顯示編輯器，未存的修改一併丟掉，不會再被存回去；大小跨過 2 MiB 時重建編輯器，上色與摺疊跟著開或關。
-- 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。
+- 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。文件還在載入時輸入的查詢會記住，編輯器建立後再套用。
 
 ### 上色（`highlight/`）
 
@@ -63,11 +63,11 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 
 ### 側欄（`yuzora-sidebar-files`）
 
-- 跟隨目前 focused pane 的 Space 與 cwd（沿用上游 `files` mod 的定位方式）；focused 的是工具 pane（沒有 cwd）時保留原本的資料夾。在 repo 裡時以 `git rev-parse --show-toplevel` 為根。
+- 跟隨目前 focused pane 的 Space 與 cwd（沿用上游 `files` mod 的定位方式）；focused 的是工具 pane（沒有 cwd）時保留原本的資料夾。在 repo 裡時以 `git rev-parse --show-toplevel` 為根。換到別的資料夾時，取消正在輸入的新增或重新命名（它屬於原本的資料夾）；搜尋開著時，在新的根目錄重跑。
 - 頂部：Space 徽章（`tokens().space_badges` 依 Space 順序取色、名稱首字）、「本機」或機器名、`路徑 · 分支`。
 - 動作列：新增檔案、新增資料夾、重新整理、全部收合、搜尋、顯示隱藏檔（記在 localStorage；切換時重跑搜尋）。
 - 樹：`uniform_list` 虛擬捲動，每個資料夾最多 2000 項、總共 20000 列；git 標記 M／A／D／U／?，收合的資料夾若含變更顯示 `•`。`watchFolder` 監看根目錄＋10 秒重新整理；收合過的資料夾再展開時，先顯示上次的內容並重新列出。根目錄重新列出失敗時（被刪除或沒有權限），樹上方顯示錯誤，下面是上次列出的內容。
-- 搜尋：檔名（模糊比對，`.gitignore` 生效，清單快取 15 秒，最多列 200,000 個檔案，超過時提示「只搜尋了前 200,000 個檔案」）與內容（有 `rg` 就用 ripgrep；本機沒有時改用內建搜尋：`ignore`＋`regex`、同樣的規則；遠端沒有 `rg` 時顯示提示）。點內容結果會開檔並跳到該行。
+- 搜尋：檔名（模糊比對，`.gitignore` 生效，清單快取 15 秒，最多列 200,000 個檔案，超過時提示「只搜尋了前 200,000 個檔案」）與內容（有 `rg` 就用 ripgrep；本機沒有時改用內建搜尋：`ignore`＋`regex`、同樣的規則；遠端沒有 `rg` 時顯示提示）。有檔案或資料夾讀不到時（ripgrep exit 2、`find` 或 git 失敗、本機走訪錯誤），保留找到的結果並提示「有些檔案或資料夾無法讀取，結果可能不完整」。點內容結果會開檔並跳到該行。
 - 右鍵：同一個 mod 以 popup 開啟自己（`props().menu`）。開啟、在終端機開啟、新增檔案／資料夾、重新命名、刪除到垃圾桶、複製路徑／相對路徑、在 Finder（檔案總管／檔案管理員）中顯示。新增與重新命名透過 `shared("yuzora.files.request")` 交回主側欄，在樹上方顯示輸入列。重新命名不會覆蓋已存在的檔案或資料夾：macOS 與 Linux 用一次系統呼叫完成（`renamex_np(RENAME_EXCL)`／`renameat2(RENAME_NOREPLACE)`），檢查與搬移之間不會被別的程式搶先建立同名檔案；其他平台與不支援的檔案系統則先檢查目標。重新命名後，開著的文件（該檔案或資料夾底下的）會換到新路徑，pane 繼續顯示，不會被當成已刪除；語言（上色）沿用開檔時的判斷。
 
 ### 開檔
@@ -112,7 +112,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（107 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
+- `cargo test --locked -p yuzora-files`（110 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：

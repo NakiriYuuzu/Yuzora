@@ -78,7 +78,9 @@ export default class FilesSidebar extends View {
     this.entries = new Map(); this.open = new Set(saved?.open); this.pending = new Set();
     this.marks = {}; this.dirMarks = new Map(); this.selected = saved?.selected ?? null; this.version++;
     this.watching = null;
-    // Results belong to the folder they were found in.
+    // A name being typed is for the folder it was started in.
+    this.edit = null;
+    // Results belong to the folder they were found in: the search runs again there.
     this.searchSeq++; this.results = []; this.searchNote = null;
     if (this.here?.cwd) this.reload(cx);
   }
@@ -97,7 +99,10 @@ export default class FilesSidebar extends View {
         if (!this.current(here)) return;
         here.top = git?.top ?? null; here.branch = git?.branch ?? null;
         here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0;
-        if (!here.root) here.root = here.top ?? here.cwd;
+        if (!here.root) {
+          here.root = here.top ?? here.cwd;
+          if (this.searching) this.search(cx);
+        }
         this.setMarks(git?.marks ?? {}, here);
         for (const folder of ["", ...[...this.open].sort()]) {
           if (!this.current(here)) return;
@@ -275,13 +280,19 @@ export default class FilesSidebar extends View {
               found.matches.length ? null : t("search.none"),
               found.truncated ? t("search.partial", { count: "200,000" }) : null,
               found.unfiltered ? t("search.unfiltered", { machine: here.on }) : null,
+              found.skipped ? t("search.skipped") : null,
             ].filter(Boolean);
             this.searchNote = notes.length ? notes.join(" ") : null;
           } else {
             const found = await grep(here.root, query, { on: here.on, hidden: this.hidden, limit: 500 });
             if (seq !== this.searchSeq) return;
             this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root: here.root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
-            this.searchNote = !found.available ? t("search.no_rg") : found.hits.length ? (found.truncated ? t("search.truncated", { count: found.hits.length }) : null) : t("search.none");
+            const notes = !found.available ? [t("search.no_rg")] : [
+              found.hits.length ? null : t("search.none"),
+              found.truncated ? t("search.truncated", { count: found.hits.length }) : null,
+              found.skipped ? t("search.skipped") : null,
+            ].filter(Boolean);
+            this.searchNote = notes.length ? notes.join(" ") : null;
           }
         } catch (e) { if (seq === this.searchSeq) { this.results = []; this.searchNote = String(e?.message ?? e); } }
         cx.notify();

@@ -330,6 +330,8 @@ pub struct DocView {
     look: Look,
     status_bar: bool,
     theme_name: SharedString,
+    /// The find bar's query and case sensitivity, for an editor made later.
+    searching: Option<(String, bool)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -407,6 +409,7 @@ impl DocView {
             look: Look::default(),
             status_bar: true,
             theme_name: SharedString::new_static("One Dark"),
+            searching: None,
             _subscriptions: Vec::new(),
         }
     }
@@ -648,6 +651,10 @@ impl DocView {
             .push(cx.subscribe(&state, Self::on_input));
         self._subscriptions
             .push(cx.observe(&state, |_, _, cx| cx.notify()));
+        // A query typed before there was an editor (still loading) applies now.
+        if let Some((query, case_sensitive)) = self.searching.clone() {
+            state.update(cx, |s, cx| s.set_search_query(query, !case_sensitive, cx));
+        }
         self.state = Some(state);
         self.dirty = self.compute_dirty(cx);
         // Scripts waiting on this (a line to go to, focus on open) can act now.
@@ -959,6 +966,7 @@ impl DocView {
     // Search: gpui-base's engine, driven by the script's own find bar.
 
     pub fn find(&mut self, query: &str, case_sensitive: bool, cx: &mut Context<Self>) {
+        self.searching = (!query.is_empty()).then(|| (query.to_owned(), case_sensitive));
         let Some(state) = self.state.clone() else {
             return;
         };
@@ -989,6 +997,7 @@ impl DocView {
     }
 
     pub fn end_find(&mut self, cx: &mut Context<Self>) {
+        self.searching = None;
         if let Some(state) = self.state.clone() {
             state.update(cx, |s, cx| s.close_search(cx));
         }
@@ -1310,6 +1319,42 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).dirty && !view.read(cx).conflict));
+    }
+
+    #[gpui::test]
+    fn a_find_typed_before_the_editor_applies_to_it(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one two\ntwo\n").unwrap();
+        let key = DocKey {
+            on: None,
+            path: path.to_string_lossy().into_owned(),
+        };
+        let id = cx.update(|cx| open(key, cx));
+        cx.run_until_parked();
+        let view = cx.update(|cx| get(id, cx).unwrap());
+        view.update(cx, |doc, cx| doc.find("two", false, cx));
+        cx.update(|cx| assert!(view.read(cx).state.is_none()));
+        let window = cx.add_window(|_, _| gpui::Empty);
+        window
+            .update(cx, |_, window, cx| {
+                view.update(cx, |doc, cx| {
+                    doc.prepare(Look::default(), true, "One Dark".into(), window, cx)
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let matches = |cx: &mut gpui::TestAppContext| {
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                let state = doc.state.as_ref().unwrap().read(cx);
+                state.search_session().matcher.len()
+            })
+        };
+        assert_eq!(matches(cx), 2);
+        // Ended: a later editor starts without it.
+        view.update(cx, |doc, cx| doc.end_find(cx));
+        cx.update(|cx| assert!(view.read(cx).searching.is_none()));
     }
 
     #[gpui::test]

@@ -88,10 +88,11 @@ export function reveal(path: string): null;
 export function copyText(text: string): null;
 /** Fuzzy file-name search under root (.gitignore honored); the listing is cached for 15 s.
  *  `truncated`: only the first 200,000 files were searched. `unfiltered`: the machine has
- *  neither git nor ripgrep, so ignored files are included. */
-export function findFiles(root: string, query: string, options?: On & { hidden?: boolean; limit?: number; fresh?: boolean }): Promise<{ matches: { path: string; score: number; indices: number[] }[]; truncated: boolean; unfiltered: boolean }>;
-/** Content search: ripgrep where it is installed, else a built-in search on this machine; `available` is false on another machine without rg. */
-export function grep(root: string, query: string, options?: On & { regex?: boolean; caseSensitive?: boolean; hidden?: boolean; limit?: number }): Promise<{ available: boolean; hits: GrepHit[]; truncated: boolean; files: number }>;
+ *  neither git nor ripgrep, so ignored files are included. `skipped`: a folder could not be read. */
+export function findFiles(root: string, query: string, options?: On & { hidden?: boolean; limit?: number; fresh?: boolean }): Promise<{ matches: { path: string; score: number; indices: number[] }[]; truncated: boolean; unfiltered: boolean; skipped: boolean }>;
+/** Content search: ripgrep where it is installed, else a built-in search on this machine; `available` is false on another machine without rg.
+ *  `skipped`: a file or folder could not be read, so hits may be missing. */
+export function grep(root: string, query: string, options?: On & { regex?: boolean; caseSensitive?: boolean; hidden?: boolean; limit?: number }): Promise<{ available: boolean; hits: GrepHit[]; truncated: boolean; files: number; skipped: boolean }>;
 
 /** Opens (or shares) the document for a file and starts loading it. Pair with releaseDocument. */
 export function openDocument(path: string, options?: On): number;
@@ -385,6 +386,7 @@ pub fn host_module() -> HostModule {
                         "matches": search::fuzzy_filter(&query, &list.files, limit),
                         "truncated": list.truncated,
                         "unfiltered": list.unfiltered,
+                        "skipped": list.skipped,
                     }))
                 },
                 json,
@@ -415,12 +417,14 @@ pub fn host_module() -> HostModule {
                         .field("hits", HostValue::Array(Vec::new()))
                         .field("truncated", false)
                         .field("files", 0)
+                        .field("skipped", false)
                         .into(),
                     Some(r) => HostObject::new()
                         .field("available", true)
                         .field("hits", json(&r.hits))
                         .field("truncated", r.truncated)
                         .field("files", r.files)
+                        .field("skipped", r.skipped)
                         .into(),
                 },
             ))
