@@ -46,6 +46,7 @@
     "mkdirFailed": "無法建立資料夾",
     "renameFailed": "無法重新命名",
     "failed": "無法開啟 {name}",
+    "openYourself": "已複製到 {path}。請用編輯器開啟，每次存檔都會傳回主機。",
     "watching": "本機編輯中 · 存檔即上傳",
     "uploaded": "已上傳 {count} 次",
     "overwrite": "覆寫",

@@ -18,6 +18,17 @@ const I = (name) => `mods/yuzora-sidebar-ssh/icons/${name}.svg`;
 const message = (e) => String(e?.message ?? e).replace(/^(Error: )?(`[^`]*`: )?\[[a-z-]+\] /, "");
 const LOCAL = "local";
 
+// A text editor, never the file's default app: a host's .bat, .terminal, .desktop or
+// .jar must not run here. xdg-open goes by type, so on Linux it only gets text.
+async function openInEditor(path) {
+  const platform = window()?.platform;
+  if (platform === "macos") return exec("open", ["-t", path]).catch(() => null);
+  if (platform === "windows") return exec("notepad", [path]).catch(() => null);
+  const mime = (await exec("xdg-mime", ["query", "filetype", path]).catch(() => null))?.stdout?.trim() ?? "";
+  if (/^(text\/|inode\/x-empty$|application\/(json|xml|toml|yaml|x-yaml|javascript)$)/.test(mime)) return exec("xdg-open", [path]).catch(() => null);
+  notify({ title: t("edit.openYourself", { path }) });
+}
+
 // The status line and mode badge, set only when they change (the sidebar does the same:
 // whichever of the two is open keeps them current).
 function publish() {
@@ -189,10 +200,7 @@ export default class Sftp extends View {
     cx.spawn(async (cx) => {
       try {
         const ed = await openRemote(this.host, entry.path);
-        const platform = window()?.platform;
-        // A text editor, not the file's default app: a host's .bat or .terminal must not run here.
-        const [cmd, args] = platform === "macos" ? ["open", ["-t", ed.local]] : platform === "windows" ? ["notepad", [ed.local]] : ["xdg-open", [ed.local]];
-        await exec(cmd, args).catch(() => null);
+        await openInEditor(ed.local);
       } catch (e) {
         notify({ title: t("edit.failed", { name: entry.name }), body: message(e), level: "error" });
       }

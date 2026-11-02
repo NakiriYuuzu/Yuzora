@@ -46,6 +46,7 @@
     "mkdirFailed": "Couldn't create the folder",
     "renameFailed": "Couldn't rename",
     "failed": "Couldn't open {name}",
+    "openYourself": "Copied to {path}. Open it in an editor; every save goes back to the host.",
     "watching": "Editing locally · saves upload",
     "uploaded": "Uploaded {count}×",
     "overwrite": "Overwrite",
