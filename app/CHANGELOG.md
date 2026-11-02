@@ -6,6 +6,10 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- 工作區側欄：Spaces／Agents 分頁、每台機器的 scope chip（LED 顯示連線狀態）、「需要注意」區，以及機器 → Space → worktree → Agent 的樹；Agent 狀態同時以顏色與形狀表示。
+- 模式列顯示各模式的徽章數；tab 列每個 tab 帶 Space 徽章與狀態，「＋ 新增 pane」可把工具 pane、終端機、Agent 混合分割進同一個 tab。
+- pane 標頭與外框：focus 時邊框變亮，Agent 需要回覆時邊框與標頭轉為琥珀色；狀態列顯示 pane／Space／Agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本。
+- 歡迎、新功能、意見回饋畫面改為 Yuzora 品牌；介面字型改用系統字型。
 - Git（以 IntelliJ IDEA 為基準）：側欄 Git 模式可暫存、提交（amend、sign-off、略過 hooks、訊息歷史與範本）、推送；diff pane 可暫存或捨棄單一 hunk 或選取的行；提交紀錄與分支圖、篩選與右鍵操作；分支 popup（smart checkout、merge、rebase、比較）；三方合併解衝突；互動式 rebase；Annotate；stash、tag、remote、worktree、patch 管理；Git 設定頁。
 
 ## [0.1.12] - 2026-11-02

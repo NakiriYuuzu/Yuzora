@@ -2,5 +2,9 @@
   "summary": "{panes} 個 pane · {spaces} 個 Space",
   "agents": "{count} 個 Agent",
   "needs": "{count} 個需要回覆",
-  "palette": "指令"
+  "branch": { "open": "開啟 Git" },
+  "core": "HERDR {version} · {machines}",
+  "local": "本機",
+  "palette": "指令",
+  "palette_key": "{key} 指令"
 }

@@ -108,7 +108,10 @@ beta.2 is built in parallel lanes, each owning its own directories. Scope and ru
 <!-- yuzora:lane:L1:start -->
 ### L1 · Shell and workspace
 
-Not started.
+The workspace sidebar (machines → Spaces → worktrees → agents, needs attention, scope chips per machine), the mode
+bar with each mode's badge, the tab bar whose "+ New pane" menu mixes tool panes, terminals and agents into one tab,
+pane headers (amber while an agent needs a reply) and the status bar. `yuzora:shell` (`app/crates/yuzora-shell`)
+holds the sidebar's model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->

@@ -96,7 +96,7 @@ export default class Feedback extends View {
       .when(!preview.available, (el) => el.child(div().flex_none().px(24).pb(12).text_size(13).text_color(t.accent).child("This build was made from source and doesn't send feedback. Use a release build.")))
       .child(v_flex().id("feedback-body").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).flex_1().flex_shrink(1).min_h(0).overflow_y_scrollbar().px(24).gap(10)
         .when(props()?.from === "agent", (el) => el.child(div().p(10).rounded(7).bg(t.raised).text_color(t.accent).text_size(14).child("Drafted by an agent: read it before sending")))
-        .when(this.sent, (el) => el.child(div().py(20).text_size(16).text_color(t.foreground).child("Sent. Thanks for helping us improve Herdr.")))
+        .when(this.sent, (el) => el.child(div().py(20).text_size(16).text_color(t.foreground).child("Sent. Thanks for helping us improve Yuzora."))) // yuzora(L1): the app's name.
         .when(!this.sent, (el) => el
           .child(label("Your message (up to 4000 characters). Paste or drop screenshots, up to 3."))
           .child(field(Textarea.new(this.message)).h(130))

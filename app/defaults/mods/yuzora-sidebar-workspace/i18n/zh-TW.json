@@ -1,5 +1,46 @@
 {
   "title": "工作區",
-  "description": "Spaces、Session 與 Agents",
-  "placeholder": "由 {lane} lane 實作。"
+  "description": "Spaces、機器與 Agents",
+  "tab": { "spaces": "Spaces", "agents": "Agents" },
+  "add": "新增 Space 或連線機器",
+  "tools": {
+    "title": "HERDR 工具",
+    "palette": "指令面板",
+    "layout": "下一個 layout",
+    "help": "HERDR 說明"
+  },
+  "menu": {
+    "new_space": "新增 Space",
+    "new_space_on": "在 {machine} 新增 Space",
+    "worktree": "新增 worktree…",
+    "machine": "連線機器…"
+  },
+  "scope": { "all": "全部" },
+  "attention": "需要注意 · {count}",
+  "status": {
+    "working": "工作中",
+    "blocked": "需要回覆",
+    "done": "完成·未查看",
+    "idle": "閒置",
+    "unknown": "未知"
+  },
+  "machine": {
+    "local": "本機 · {host}",
+    "local_bare": "本機",
+    "add_space": "在這台機器新增 Space",
+    "fold": "收合 {name}",
+    "unfold": "展開 {name}"
+  },
+  "space": {
+    "branch": "1 分支",
+    "branches": "{count} 分支",
+    "agent": "1 Agent",
+    "agents": "{count} Agents"
+  },
+  "pending": "{count} 待回覆",
+  "worktree": { "new": "在這裡開新終端機" },
+  "empty": {
+    "spaces": "還沒有 Space。",
+    "agents": "還沒有 Agent。Agent 回報狀態後會出現在這裡。"
+  }
 }

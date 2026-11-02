@@ -10233,6 +10233,10 @@ dependencies = [
 name = "yuzora-shell"
 version = "0.1.0-beta.2"
 dependencies = [
+ "async-channel",
+ "gethostname",
+ "serde",
+ "serde_json",
  "yuzora-core",
 ]
 
