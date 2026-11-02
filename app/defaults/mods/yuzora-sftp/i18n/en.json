@@ -1,0 +1,54 @@
+{
+  "pane": {
+    "title": "SFTP"
+  },
+  "noHost": "Pick a host:",
+  "local": "Local",
+  "between": "Local ↔ {host}",
+  "running": "↑ {count} running · {pct}%",
+  "hidden": "Hidden files",
+  "preserve": "Keep permissions & times",
+  "connecting": "Connecting to {host}…",
+  "loading": "Loading…",
+  "empty": "Empty folder",
+  "retry": "Retry",
+  "cancel": "Cancel",
+  "tip": {
+    "home": "Home folder",
+    "parent": "Up one folder",
+    "refresh": "Refresh",
+    "mkdir": "New folder",
+    "rename": "Rename",
+    "delete": "Delete",
+    "upload": "Upload the selection to the host",
+    "download": "Download the selection here"
+  },
+  "confirm": {
+    "overwrite": "Replace {names} in the destination?",
+    "overwriteButton": "Replace",
+    "deleteButton": "Delete",
+    "deleteFailed": "Couldn't delete",
+    "deleteOne": "Delete {name}? This can't be undone.",
+    "deleteMany": "Delete {count} items? This can't be undone."
+  },
+  "transfer": {
+    "failed": "Transfer failed",
+    "resumed": "Resumed",
+    "queued": "Waiting",
+    "cancelled": "Cancelled",
+    "files": "{done}/{count} files",
+    "cancel": "Cancel",
+    "retry": "Retry (resumes)",
+    "clear": "Clear finished"
+  },
+  "edit": {
+    "folderName": "Folder name",
+    "mkdirFailed": "Couldn't create the folder",
+    "renameFailed": "Couldn't rename",
+    "failed": "Couldn't open {name}",
+    "watching": "Editing locally · saves upload",
+    "uploaded": "Uploaded {count}×",
+    "overwrite": "Overwrite",
+    "stop": "Stop syncing"
+  }
+}

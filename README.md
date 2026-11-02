@@ -126,7 +126,7 @@ Not started.
 <!-- yuzora:lane:L4:start -->
 ### L4 · SSH / SFTP
 
-Not started.
+The SSH / SFTP sidebar mode lists hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines, with connection state and latency. A host's quick actions open SFTP (a side-by-side local ↔ host pane with a transfer queue that resumes and keeps permissions and times), a terminal there, a HERDR session (`hc machine add`) and known hosts. New host keys are confirmed by fingerprint and changed keys are flagged. Other lanes reach databases behind a host through `yuzora_ssh::tunnel`. Details: [docs/beta2/ssh.md](docs/beta2/ssh.md).
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->

@@ -2,7 +2,7 @@ Herdr third-party notices
 =========================
 Regenerate with just notices. See licenses/README.md.
 
-Input-SHA256: 6bc4db268e41446461590de7c3d773d8a39880f55ca2ed187ec3e6491f16613d Cargo.lock
+Input-SHA256: 0b80fe309a07879bb7491232327d3db42026bdae5ebb26ece5a6f37d363a4cdb Cargo.lock
 Input-SHA256: edbce966a117b82eda4fbab791f4848c9d640149f5dbff6116aafe0a4e3ec1f8 Cargo.toml
 Input-SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 LICENSE
 Input-SHA256: e58cb0de2dde300bcda769ca993fde2737f42c0274082f038621ab22975a49e2 about.toml
@@ -703,10 +703,11 @@ Apache License 2.0 (Apache-2.0)
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
   herdr-app 0.1.0-beta.2
+  russh 0.62.7 — https://github.com/warp-tech/russh
   as-raw-xcb-connection 1.0.1 — https://github.com/psychon/as-raw-xcb-connection
   clang-sys 1.9.1 — https://github.com/KyleMayes/clang-sys
   cmov 0.5.4 — https://github.com/RustCrypto/utils
-  ctutils 0.4.2 — https://github.com/RustCrypto/utils
+  ctutils 0.4.7 — https://github.com/RustCrypto/utils
   encoding_rs 0.8.35 — https://github.com/hsivonen/encoding_rs
   halfbrown 0.4.0 — https://github.com/Licenser/halfbrown
   kurbo 0.13.1 — https://github.com/linebender/kurbo
@@ -2961,6 +2962,7 @@ Apache License 2.0 (Apache-2.0)
 Apache License 2.0 (Apache-2.0)
   herdr-app 0.1.0-beta.2
   herdr-app 0.1.0-beta.2
+  russh-sftp 3.0.0 — https://github.com/AspectUnk/russh-sftp
   codespan-reporting 0.13.1 — https://github.com/brendanzab/codespan
   crypto-primes 0.7.2 — https://github.com/entropyxyz/crypto-primes
   self_cell 1.3.0 — https://github.com/Voultapher/self_cell
@@ -7852,6 +7854,7 @@ Apache License 2.0 (Apache-2.0)
   idna 1.1.0 — https://github.com/servo/rust-url/
   idna_adapter 1.2.2 — https://github.com/hsivonen/idna_adapter
   indexmap 2.14.1 — https://github.com/indexmap-rs/indexmap
+  internal-russh-num-bigint 0.5.0 — https://github.com/rust-num/num-bigint
   io-extras 0.19.0 — https://github.com/sunfishcode/io-extras
   io-lifetimes 2.0.4 — https://github.com/sunfishcode/io-lifetimes
   io-lifetimes 3.0.1 — https://github.com/sunfishcode/io-lifetimes
@@ -7859,7 +7862,7 @@ Apache License 2.0 (Apache-2.0)
   itertools 0.13.0 — https://github.com/rust-itertools/itertools
   itertools 0.14.0 — https://github.com/rust-itertools/itertools
   jobserver 0.1.35 — https://github.com/rust-lang/jobserver-rs
-  js-sys 0.3.98 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
+  js-sys 0.3.107 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
   khronos-egl 6.0.0 — https://github.com/timothee-haudebourg/khronos-egl
   lazy_static 1.5.0 — https://github.com/rust-lang-nursery/lazy-static.rs
   linux-raw-sys 0.12.1 — https://github.com/sunfishcode/linux-raw-sys
@@ -7959,13 +7962,13 @@ Apache License 2.0 (Apache-2.0)
   waker-fn 1.2.0 — https://github.com/smol-rs/waker-fn
   wasi 0.11.1+wasi-snapshot-preview1 — https://github.com/bytecodealliance/wasi
   wasip2 1.0.4+wasi-0.2.12 — https://github.com/bytecodealliance/wasi-rs
-  wasm-bindgen-futures 0.4.71 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures
-  wasm-bindgen-macro-support 0.2.121 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro-support
-  wasm-bindgen-macro 0.2.121 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
-  wasm-bindgen-shared 0.2.121 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
-  wasm-bindgen 0.2.121 — https://github.com/wasm-bindgen/wasm-bindgen
+  wasm-bindgen-futures 0.4.80 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures
+  wasm-bindgen-macro-support 0.2.130 — https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support
+  wasm-bindgen-macro 0.2.130 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
+  wasm-bindgen-shared 0.2.130 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
+  wasm-bindgen 0.2.130 — https://github.com/wasm-bindgen/wasm-bindgen
   wasm_thread 0.3.3 — https://github.com/chemicstry/wasm_thread
-  web-sys 0.3.98 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
+  web-sys 0.3.107 — https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
   wit-bindgen 0.57.1 — https://github.com/bytecodealliance/wit-bindgen
   xml5ever 0.18.1 — https://github.com/servo/html5ever
   zed-font-kit 0.14.1-zed — https://github.com/servo/font-kit
@@ -8175,6 +8178,7 @@ limitations under the License.
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
+  bcrypt-pbkdf 0.11.0 — https://github.com/RustCrypto/password-hashes
   ff 0.14.0 — https://github.com/zkcrypto/ff
 
                               Apache License
@@ -8810,12 +8814,15 @@ Apache License 2.0 (Apache-2.0)
   aes-gcm 0.11.1 — https://github.com/RustCrypto/AEADs
   aes 0.8.4 — https://github.com/RustCrypto/block-ciphers
   aes 0.9.3 — https://github.com/RustCrypto/block-ciphers
+  argon2 0.6.0 — https://github.com/RustCrypto/password-hashes
   base16ct 1.0.0 — https://github.com/RustCrypto/formats
   base64ct 1.8.3 — https://github.com/RustCrypto/formats
+  blake2 0.11.0 — https://github.com/RustCrypto/hashes
   block-buffer 0.10.4 — https://github.com/RustCrypto/utils
   block-buffer 0.12.1 — https://github.com/RustCrypto/utils
   block-padding 0.3.3 — https://github.com/RustCrypto/utils
   block-padding 0.4.2 — https://github.com/RustCrypto/utils
+  blowfish 0.10.0 — https://github.com/RustCrypto/block-ciphers
   cbc 0.1.2 — https://github.com/RustCrypto/block-modes
   cbc 0.2.1 — https://github.com/RustCrypto/block-modes
   chacha20 0.10.2 — https://github.com/RustCrypto/stream-ciphers
@@ -8835,13 +8842,17 @@ Apache License 2.0 (Apache-2.0)
   digest 0.11.3 — https://github.com/RustCrypto/traits
   elliptic-curve 0.14.1 — https://github.com/RustCrypto/traits
   ghash 0.6.0 — https://github.com/RustCrypto/universal-hashes
+  hex-literal 1.1.0 — https://github.com/RustCrypto/utils
   hmac 0.12.1 — https://github.com/RustCrypto/MACs
   hmac 0.13.0 — https://github.com/RustCrypto/MACs
   hybrid-array 0.4.14 — https://github.com/RustCrypto/hybrid-array
   inout 0.1.4 — https://github.com/RustCrypto/utils
   inout 0.2.2 — https://github.com/RustCrypto/utils
+  keccak 0.2.2 — https://github.com/RustCrypto/sponges
   md-5 0.10.6 — https://github.com/RustCrypto/hashes
   md-5 0.11.0 — https://github.com/RustCrypto/hashes
+  ml-kem 0.3.4 — https://github.com/RustCrypto/KEMs
+  module-lattice 0.2.4 — https://github.com/RustCrypto/KEMs
   p256 0.14.0 — https://github.com/RustCrypto/elliptic-curves
   p384 0.14.0 — https://github.com/RustCrypto/elliptic-curves
   p521 0.14.0 — https://github.com/RustCrypto/elliptic-curves
@@ -8849,17 +8860,27 @@ Apache License 2.0 (Apache-2.0)
   pbkdf2 0.13.0 — https://github.com/RustCrypto/password-hashes
   pem-rfc7468 1.0.0 — https://github.com/RustCrypto/formats
   pkcs1 0.8.0-rc.4 — https://github.com/RustCrypto/formats
+  pkcs5 0.8.1 — https://github.com/RustCrypto/formats
   pkcs8 0.11.0 — https://github.com/RustCrypto/formats
+  poly1305 0.9.1 — https://github.com/RustCrypto/universal-hashes
   polyval 0.7.3 — https://github.com/RustCrypto/universal-hashes
   primefield 0.14.0 — https://github.com/RustCrypto/elliptic-curves
   primeorder 0.14.0 — https://github.com/RustCrypto/elliptic-curves
+  salsa20 0.11.0 — https://github.com/RustCrypto/stream-ciphers
+  scrypt 0.12.0 — https://github.com/RustCrypto/password-hashes
   sec1 0.8.1 — https://github.com/RustCrypto/formats
   sha1 0.10.7 — https://github.com/RustCrypto/hashes
   sha1 0.11.0 — https://github.com/RustCrypto/hashes
   sha2 0.10.9 — https://github.com/RustCrypto/hashes
   sha2 0.11.0 — https://github.com/RustCrypto/hashes
+  sha3 0.12.0 — https://github.com/RustCrypto/hashes
+  shake 0.1.0 — https://github.com/RustCrypto/XOFs
   signature 3.0.0 — https://github.com/RustCrypto/traits
   spki 0.8.0 — https://github.com/RustCrypto/formats
+  sponge-cursor 0.1.0 — https://github.com/RustCrypto/utils
+  ssh-cipher 0.3.0 — https://github.com/RustCrypto/SSH
+  ssh-encoding 0.3.0 — https://github.com/RustCrypto/SSH
+  ssh-key 0.7.0-rc.11 — https://github.com/RustCrypto/SSH
   universal-hash 0.6.1 — https://github.com/RustCrypto/traits
   wnaf 0.14.0 — https://github.com/RustCrypto/elliptic-curves
 
@@ -12442,18 +12463,21 @@ Apache License 2.0 (Apache-2.0)
   cranelift-bitset 0.116.1 — https://github.com/bytecodealliance/wasmtime
   cranelift-isle 0.116.1 — https://github.com/bytecodealliance/wasmtime/tree/main/cranelift/isle
   crc32c 0.6.8 — https://github.com/zowens/crc32c
+  delegate 0.13.5 — https://github.com/kobzol/rust-delegate
   dirs-sys 0.4.1 — https://github.com/dirs-dev/dirs-sys-rs
   dirs 5.0.1 — https://github.com/soc/dirs-rs
   dispatch2 0.3.1 — https://github.com/madsmtm/objc2
   document-features 0.2.12 — https://github.com/slint-ui/document-features
   dunce 1.0.5 — https://gitlab.com/kornelski/dunce
   dyn-clone 1.0.20 — https://github.com/dtolnay/dyn-clone
+  enum_dispatch 0.3.13 — https://gitlab.com/antonok/enum_dispatch
   enumn 0.1.14 — https://github.com/dtolnay/enumn
   erased-serde 0.4.10 — https://github.com/dtolnay/erased-serde
   etagere 0.2.15 — https://github.com/nical/etagere
   fdeflate 0.3.7 — https://github.com/image-rs/fdeflate
   fiat-crypto 0.3.0 — https://github.com/mit-plv/fiat-crypto
   gl_generator 0.14.0 — https://github.com/brendanzab/gl-rs/
+  gloo-timers 0.4.0 — https://github.com/rustwasm/gloo/tree/master/crates/timers
   gpu-descriptor-types 0.2.0 — https://github.com/zakarumych/gpu-descriptor
   gpu-descriptor 0.3.2 — https://github.com/zakarumych/gpu-descriptor
   half 2.7.1 — https://github.com/VoidStarKat/half-rs
@@ -12463,6 +12487,7 @@ Apache License 2.0 (Apache-2.0)
   inventory 0.3.24 — https://github.com/dtolnay/inventory
   itoa 1.0.18 — https://github.com/dtolnay/itoa
   jni-sys-macros 0.4.1 — https://github.com/jni-rs/jni-sys
+  kem 0.3.0 — https://github.com/RustCrypto/traits
   khronos_api 3.1.0 — https://github.com/brendanzab/gl-rs/
   leak 0.1.2 — https://github.com/jmesmon/leak.git
   leaky-cow 0.1.1 — https://github.com/notriddle/rust-leaky-cow
@@ -12477,6 +12502,7 @@ Apache License 2.0 (Apache-2.0)
   mac-notification-sys 0.6.15 — https://github.com/h4llow3En/mac-notification-sys
   mac 0.1.1 — https://github.com/reem/rust-mac.git
   mach2 0.5.0 — https://github.com/JohnTitor/mach2
+  md5 0.8.1 — https://github.com/stainless-steel/md5
   miniz_oxide 0.8.9 — https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
   miniz_oxide 0.9.1 — https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
   naga 29.0.4 — https://github.com/gfx-rs/wgpu
@@ -12497,6 +12523,7 @@ Apache License 2.0 (Apache-2.0)
   objc2-quartz-core 0.3.2 — https://github.com/madsmtm/objc2
   objc2-screen-capture-kit 0.3.2 — https://github.com/madsmtm/objc2
   objc2-user-notifications 0.3.2 — https://github.com/madsmtm/objc2
+  pageant 0.2.5 — https://github.com/warp-tech/russh
   paste 1.0.15 — https://github.com/dtolnay/paste
   pathfinder_geometry 0.5.1 — https://github.com/servo/pathfinder
   pathfinder_simd 0.5.6 — https://github.com/servo/pathfinder
@@ -12522,6 +12549,8 @@ Apache License 2.0 (Apache-2.0)
   ref-cast-impl 1.0.27 — https://github.com/dtolnay/ref-cast
   ref-cast 1.0.27 — https://github.com/dtolnay/ref-cast
   resvg 0.46.0 — https://github.com/linebender/resvg
+  russh-cryptovec 0.62.0 — https://github.com/warp-tech/russh
+  russh-util 0.52.0 — https://github.com/warp-tech/russh
   rustc-hash 2.1.3 — https://github.com/rust-lang/rustc-hash
   rustversion 1.0.23 — https://github.com/dtolnay/rustversion
   ryu 1.0.23 — https://github.com/dtolnay/ryu
@@ -16545,6 +16574,33 @@ SOFTWARE.
 
 ----------------------------------------------------------------------
 MIT License (MIT)
+  dashmap 6.2.1 — https://github.com/xacrimon/dashmap
+
+MIT License
+
+Copyright (c) 2019 Acrimon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+----------------------------------------------------------------------
+MIT License (MIT)
   schemars 1.2.2 — https://github.com/GREsau/schemars
   schemars_derive 1.2.2 — https://github.com/GREsau/schemars
 
@@ -17550,6 +17606,33 @@ THE SOFTWARE.
 
 ----------------------------------------------------------------------
 MIT License (MIT)
+  nix 0.31.3 — https://github.com/nix-rust/nix
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Carl Lerche + nix-rust Authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+----------------------------------------------------------------------
+MIT License (MIT)
   raw-cpuid 11.6.0 — https://github.com/gz/rust-cpuid
 
 The MIT License (MIT)
@@ -18155,6 +18238,7 @@ SOFTWARE.
 ----------------------------------------------------------------------
 MIT License (MIT)
   generic-array 0.14.7 — https://github.com/fizyk20/generic-array.git
+  generic-array 1.4.5 — https://github.com/fizyk20/generic-array.git
 
 The MIT License (MIT)
 

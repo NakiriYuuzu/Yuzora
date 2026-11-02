@@ -1,0 +1,43 @@
+{
+  "status": {
+    "verified": "{host} · {kind} 已驗證",
+    "connecting": "正在連線 {host}…",
+    "transfers": "{arrow} {count} 進行中 · {pct}%"
+  },
+  "errors": {
+    "unknown-host": "找不到主機 {host}（不在 ~/.ssh/config、Yuzora 主機或 herdr machines 中）。",
+    "closed": "SSH 連線已關閉。",
+    "profile-host": "主機需要位址，且不能有空白。",
+    "port": "連接埠必須介於 1 到 65535。",
+    "auth-transport": "登入時連線中斷：{why}",
+    "needs-input": "{host} 需要密碼或確認。請先從 SSH 側欄連線一次。",
+    "auth-failed": "{user}@{host} 拒絕了所有嘗試的登入方式。",
+    "cancelled": "已取消。",
+    "prompt-timeout": "等待回覆逾時。",
+    "timeout": "主機沒有及時回應。",
+    "known-hosts-write": "無法把主機金鑰寫入 Yuzora 的 known_hosts：{why}",
+    "host-key-revoked": "{host} 的主機金鑰（{fingerprint}）已被標記撤銷，不會連線。",
+    "host-key-changed": "{host} 的主機金鑰變了（現在是 {fingerprint}）。可能有人攔截連線，未接受。",
+    "host-key-rejected": "未信任 {host} 的主機金鑰。",
+    "host-key-strict": "{host} 不在 known_hosts 中，且 StrictHostKeyChecking 為 yes（{fingerprint}）。",
+    "host-key-unknown": "尚未信任 {host}（{fingerprint}）。請先從 SSH 側欄連線一次確認金鑰。",
+    "forward-refused": "主機無法連到 {target}：{why}",
+    "sftp-unavailable": "主機沒有提供 SFTP：{why}",
+    "too-many-hops": "連到 {host} 的 ProxyJump 跳板太多。",
+    "proxy-command": "ProxyCommand 無法啟動：{why}",
+    "connect-timeout": "{target} 在連線逾時內沒有回應。",
+    "connect-failed": "無法連到 {target}：{why}",
+    "handshake-timeout": "{target} 啟動 SSH 太久。",
+    "handshake-failed": "與 {target} 的 SSH 失敗：{why}",
+    "bad-name": "「{name}」不是有效的名稱。",
+    "refuse-root": "不會更動 {path}。",
+    "exists": "{name} 已存在。",
+    "bad-path": "傳輸需要來源與目的資料夾。",
+    "no-transfer": "沒有可重試的傳輸。",
+    "edit-folder": "資料夾無法開啟編輯。",
+    "edit-too-big": "超過 {mb} MB 的檔案請用傳輸，不開啟編輯。",
+    "edit-conflict": "開啟後主機上的檔案已被改動，暫停上傳。",
+    "bind": "無法在本機連接埠 {port} 監聽：{why}",
+    "known-hosts-readonly": "這裡只能編輯 Yuzora 自己的 known_hosts；~/.ssh 由你管理（ssh-keygen -R）。"
+  }
+}

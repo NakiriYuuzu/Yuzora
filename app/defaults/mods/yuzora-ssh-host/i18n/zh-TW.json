@@ -1,0 +1,23 @@
+{
+  "add": "新增主機",
+  "edit": "編輯 {name}",
+  "remove": "要刪除 {name} 嗎？",
+  "removeBody": "Yuzora 會忘記這台主機與它儲存的密碼，主機本身不受影響。",
+  "hint": "~/.ssh/config 裡的主機會自動列出；要修改請直接編輯該檔。",
+  "name": "名稱",
+  "namePlaceholder": "lab-01",
+  "host": "主機",
+  "hostPlaceholder": "lab-01.example.com 或 10.0.0.5",
+  "port": "連接埠",
+  "user": "使用者",
+  "identity": "私鑰（選填）",
+  "identityPlaceholder": "~/.ssh/id_ed25519",
+  "jump": "ProxyJump（選填）",
+  "jumpPlaceholder": "user@bastion:22",
+  "password": "密碼（選填，存在系統鑰匙圈）",
+  "passwordKept": "已儲存密碼。輸入新密碼即可取代。",
+  "save": "儲存",
+  "delete": "刪除",
+  "cancel": "取消",
+  "failed": "無法儲存：{why}"
+}

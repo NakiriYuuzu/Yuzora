@@ -97,6 +97,8 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
+- L4 SSH 的 russh 走 crate 自己的 tokio runtime（`yuzora_ssh::runtime`）；HostModule 的 async 函式用 `runtime::bridge` 交回 GPUI executor，不要在 mod 的 host 函式裡直接 `tokio::spawn`。
+- 改 `yuzora:ssh` 函式時同步改 `js.rs` 的 `DECLARATIONS`；錯誤以 `"[code] message"` 拋給 JS。
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->

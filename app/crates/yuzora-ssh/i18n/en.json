@@ -1,0 +1,43 @@
+{
+  "status": {
+    "verified": "{host} · {kind} verified",
+    "connecting": "Connecting to {host}…",
+    "transfers": "{arrow} {count} running · {pct}%"
+  },
+  "errors": {
+    "unknown-host": "No host called {host} (not in ~/.ssh/config, Yuzora's hosts or herdr machines).",
+    "closed": "The SSH connection is closed.",
+    "profile-host": "A host needs an address, without spaces.",
+    "port": "The port must be between 1 and 65535.",
+    "auth-transport": "The connection broke while logging in: {why}",
+    "needs-input": "{host} needs a password or a decision. Connect from the SSH sidebar once first.",
+    "auth-failed": "{user}@{host} refused every login method that was tried.",
+    "cancelled": "Cancelled.",
+    "prompt-timeout": "Nobody answered in time.",
+    "timeout": "The host didn't answer in time.",
+    "known-hosts-write": "Couldn't save the host key to Yuzora's known_hosts: {why}",
+    "host-key-revoked": "The host key of {host} ({fingerprint}) is marked as revoked. Not connecting.",
+    "host-key-changed": "The host key of {host} changed (now {fingerprint}). Someone may be intercepting the connection; it wasn't accepted.",
+    "host-key-rejected": "The host key of {host} wasn't trusted.",
+    "host-key-strict": "{host} isn't in known_hosts and StrictHostKeyChecking is yes ({fingerprint}).",
+    "host-key-unknown": "{host} isn't trusted yet ({fingerprint}). Connect from the SSH sidebar once to check its key.",
+    "forward-refused": "The host couldn't open a connection to {target}: {why}",
+    "sftp-unavailable": "The host has no SFTP: {why}",
+    "too-many-hops": "Too many ProxyJump hops to reach {host}.",
+    "proxy-command": "The ProxyCommand didn't start: {why}",
+    "connect-timeout": "{target} didn't answer within the connect timeout.",
+    "connect-failed": "Couldn't reach {target}: {why}",
+    "handshake-timeout": "{target} took too long to start SSH.",
+    "handshake-failed": "SSH with {target} failed: {why}",
+    "bad-name": "\"{name}\" isn't a valid name.",
+    "refuse-root": "Won't change {path}.",
+    "exists": "{name} already exists.",
+    "bad-path": "A transfer needs a source and a destination folder.",
+    "no-transfer": "No such transfer to retry.",
+    "edit-folder": "A folder can't be opened for editing.",
+    "edit-too-big": "Files over {mb} MB are transferred, not edited.",
+    "edit-conflict": "The file changed on the host since it was opened; saves are on hold.",
+    "bind": "Couldn't listen on local port {port}: {why}",
+    "known-hosts-readonly": "Only Yuzora's own known_hosts can be edited here; ~/.ssh stays yours (ssh-keygen -R)."
+  }
+}

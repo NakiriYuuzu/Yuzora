@@ -6,6 +6,9 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- SSH / SFTP 模式：列出 ~/.ssh/config、Yuzora 自建主機與 herdr machines，顯示連線狀態與延遲；首次連線確認主機金鑰指紋，金鑰變更時警告。
+- SFTP 雙欄傳輸：本機 ↔ 主機各自瀏覽，→／← 或拖放傳輸，佇列顯示進度與速度，可取消、重試並從中斷處續傳，可保留權限與時間；遠端檔案可用本機程式編輯並在存檔時自動上傳。
+- 主機快速動作：開啟 SFTP、新終端機、HERDR Session、已知主機管理；資料庫可透過 SSH tunnel 連到主機後方。
 
 ## [0.1.12] - 2026-11-02
 <!-- spotlight macos -->

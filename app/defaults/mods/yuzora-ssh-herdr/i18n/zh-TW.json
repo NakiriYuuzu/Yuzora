@@ -1,0 +1,10 @@
+{
+  "title": "{host} 的 HERDR Session",
+  "body": "成為 herdr machine 後，{host} 會透過 herdr-core 執行 Yuzora 的終端機與 agent：本機休眠時仍持續運作，它的 Space 也會和本機的並列。",
+  "already": "{host} 已是 herdr machine {machine}（{state}）。",
+  "newSpace": "在 {machine} 開新 Space",
+  "command": "用 herdr-core 加入。請在終端機執行，以便回答 ssh 的詢問（密碼、新的主機金鑰）：",
+  "run": "在終端機執行",
+  "dialog": "使用 Herdr 的新增機器",
+  "close": "關閉"
+}
