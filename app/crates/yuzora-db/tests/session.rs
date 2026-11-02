@@ -184,6 +184,20 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
     assert_eq!(runtime::block_on(session::write_back(summary.id)).unwrap(), 1);
     assert_eq!(rows(id, "select a, twice from sums"), [["5", "10"]]);
 
+    // Write back pressed twice before the pane repaints: one write, the
+    // second refused (a trigger counts the updates).
+    run(id, "setup", "create table hits(n integer);\ncreate trigger counted after update on sums begin insert into hits values (1); end;");
+    let state = wait(session::open_table(id, None, "pane", &table("sums"), None));
+    let twice_pressed = state.results[0].id;
+    results::lock(&results::get(twice_pressed).unwrap()).set_edit(0, a, Cell::Int(6));
+    let (first, second) = runtime::block_on(futures_util::future::join(
+        session::write_back(twice_pressed),
+        session::write_back(twice_pressed),
+    ));
+    assert_eq!(first, Ok(1));
+    assert!(second.is_err(), "{second:?}");
+    assert_eq!(rows(id, "select count(*) from hits"), [["1"]]);
+
     sql_server_tables_stay_in_the_panes_database();
 
     let _ = std::fs::remove_dir_all(&home);

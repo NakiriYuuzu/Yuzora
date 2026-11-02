@@ -48,11 +48,18 @@ fn store_at(file: &Path, all: &HashMap<String, Vec<Entry>>) -> std::io::Result<(
 
 /// SQL that may hold a password or secret in clear: `CREATE ROLE … PASSWORD`,
 /// `CREATE LOGIN … WITH PASSWORD`, `… SECRET =`, a connection string's `PWD=`,
-/// user mapping options. Such a script is not kept at all (too broad on
+/// user mapping options, a URL with userinfo (`postgresql://user:pass@host`,
+/// a token as the user). Such a script is not kept at all (too broad on
 /// purpose: a query about a `password_hash` column is left out too).
 pub fn carries_credentials(sql: &str) -> bool {
-    let sql = sql.to_ascii_lowercase();
-    ["password", "passwd", "pwd=", "pwd =", "secret", "identified by"].iter().any(|w| sql.contains(w))
+    let lower = sql.to_ascii_lowercase();
+    ["password", "passwd", "pwd=", "pwd =", "secret", "identified by"].iter().any(|w| lower.contains(w))
+        || sql.match_indices("://").any(|(i, _)| {
+            sql[i + 3..]
+                .chars()
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '/' | '?' | '#' | '\'' | '"' | ')' | ','))
+                .any(|c| c == '@')
+        })
 }
 
 pub fn record_at(file: &Path, connection: &str, sql: &str, elapsed_ms: u64, ok: bool) {
@@ -134,11 +141,15 @@ mod tests {
             "CREATE USER MAPPING FOR app SERVER s OPTIONS (user 'u', Password 'hunter2')",
             "SELECT * FROM OPENROWSET('MSOLEDBSQL', 'Server=lab;UID=sa;PWD=hunter2;', 'SELECT 1')",
             "select 2;\nalter user app with password 'hunter2';",
+            "SELECT dblink_connect('postgresql://alice:hunter2@db.example/app')",
+            "COPY t FROM PROGRAM 'curl -s https://ghp_hunter2@git.example/raw/t.csv'",
         ] {
             record_at(&file, "a", sql, 1, true);
         }
+        // A URL without userinfo is kept, an `@` past its host too.
+        record_at(&file, "a", "select 'https://yuzora.example/docs?by=a@b'", 1, true);
         let kept: Vec<_> = list_at(&file, "a").into_iter().map(|e| e.sql).collect();
-        assert_eq!(kept, ["select 1"]);
+        assert_eq!(kept, ["select 'https://yuzora.example/docs?by=a@b'", "select 1"]);
         assert!(!std::fs::read_to_string(&file).unwrap().contains("hunter2"));
         #[cfg(unix)]
         {

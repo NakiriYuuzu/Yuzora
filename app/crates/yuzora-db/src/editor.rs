@@ -30,7 +30,9 @@ use crate::config::Engine;
 pub struct Text {
     pub text: String,
     pub selection: String,
-    pub statement: String,
+    /// `None`: where the statement under the cursor ends depends on the
+    /// session ([`crate::sql::runnable_statement_at`]); it is not run alone.
+    pub statement: Option<String>,
 }
 
 struct Registered {
@@ -149,7 +151,7 @@ pub fn text(id: &str) -> Option<Text> {
         let s = state.read(cx);
         let text = s.value().to_string();
         let cursor = s.cursor();
-        let statement = crate::sql::statement_at(&text, cursor, engine).map(|st| st.text).unwrap_or_default();
+        let statement = crate::sql::runnable_statement_at(&text, cursor, engine);
         Text { selection: s.selected_value().to_string(), statement, text }
     })
 }

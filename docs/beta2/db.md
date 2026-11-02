@@ -33,9 +33,9 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 目錄：`databases(id)`、`objects(id, db)`、`describe(id, db, {schema, name})`。
 - 查詢：`query(id, db, owner, sql) → jobId`、`openTable(id, db, owner, table, order?) → jobId`、`job(jobId, seen?)`（長輪詢：版本超過 `seen` 或 250 ms 後回傳）、`cancel(jobId)`、`result(resultId)`。
 - 生命週期：`release(owner)` 關掉 owner（pane key）的連線、工作、結果集、grid 與 editor。pane 的 `close()` 必須呼叫。
-- 歷史：`history(id)`、`clearHistory(id)`；存在 app home 的 `db-history.json`，每個連線最多 200 筆、每筆最多 20,000 字，只存 SQL 不存結果。檔案權限是 0600（只有擁有者能讀）。含 `password`、`passwd`、`pwd=`、`secret`、`identified by` 的 SQL 整段都不記錄（`history::carries_credentials`）。這個範圍刻意放寬，所以查 `password_hash` 欄位的查詢也不會進歷史。
+- 歷史：`history(id)`、`clearHistory(id)`；存在 app home 的 `db-history.json`，每個連線最多 200 筆、每筆最多 20,000 字，只存 SQL 不存結果。檔案權限是 0600（只有擁有者能讀）。含 `password`、`passwd`、`pwd=`、`secret`、`identified by`，或含帶 userinfo 的 URL（`postgresql://user:pass@host`，也包括只放 token 的 `https://token@host`）的 SQL，整段都不記錄（`history::carries_credentials`）。這個範圍刻意放寬，所以查 `password_hash` 欄位的查詢也不會進歷史。
 - 元件：`DataGrid.new(id, {result, colors})`、`SqlEditor.new(id, {engine, value, readonly})`。注意是 `X.new(...)`，不是 `new X(...)`。
-- 編輯器：`editorText(id)`（全文、選取、游標所在的句子）、`setEditorText(id, text)`、`editorAction(id)`（等 ⌘↵，回傳 `"run"`）。
+- 編輯器：`editorText(id)`（全文、選取、游標所在的句子；句子在哪裡結束要看 session 時是 `null`，見 PostgreSQL 一節）、`setEditorText(id, text)`、`editorAction(id)`（等 ⌘↵，回傳 `"run"`）。
 
 ### 共用狀態
 
@@ -65,7 +65,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 雙擊或 Enter 編輯，⌘⌫ 設 NULL，Esc 取消。打開編輯框卻沒改內容就離開，不算修改；改回原值也等於沒改。NULL 儲存格的編輯框是空的：在裡面打過字或按了 Enter，留空就寫成空字串；只打開就離開，仍然是 NULL。
 - 編輯框只有一行：含換行的文字和二進位值不能在表格內編輯（底部會說明），請在 SQL 分頁用 `UPDATE`。
 - 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「捨棄並繼續」或「繼續編輯」。
-- 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。
+- 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。寫回還沒結束時再按一次寫回會被拒絕（`edit.writing`），所以同一批修改不會寫兩次。
 - SQL 分頁在同一條連線上留著尚未結束的交易時，不會寫回（`edit.open_transaction`），修改仍保留為待寫回。原因是 PostgreSQL 會忽略寫回的 BEGIN，寫回的 COMMIT 會連分頁自己的修改一起提交；SQL Server 的巢狀 COMMIT 只會把計數減一，之後分頁一 ROLLBACK，寫回就跟著消失。判斷方式：PostgreSQL 看 `now() = statement_timestamp()`，SQL Server 看 `@@TRANCOUNT`，SQLite 看 autocommit。
 - 底部顯示「N 個儲存格已修改 · 捨棄 · 寫回」。寫回在一個交易內，每列用 primary key 定位，每列影響的列數必須剛好是 1，否則整筆 rollback 並顯示錯誤。key 是 NULL 的列拒絕寫回。
 - PostgreSQL 用文字格式參數寫回（server 依欄位型別解析），所以 numeric、interval、enum、array 等都能原文 round-trip。
@@ -81,7 +81,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 沒指定資料庫時依序試 `postgres`、與使用者同名的資料庫，只有遇到 SQLSTATE `3D000`、`42501`、`55000` 才換下一個。
 - 欄位型別用 `prepare` 取得；值用 `simple_query_raw` 讀文字格式，所以 numeric、interval、inet、enum、array、JSON 大整數都照伺服器的原文顯示。
 - 取消用 cancel token，連線用的 TLS connector 也用在 cancel 上。連線在取消後可以繼續使用。
-- 切句會照 session 的 `standard_conforming_strings`。設定為 off 時，一般字串裡的 `\'` 也是跳脫，所以字串裡的 `;` 不會被當成分隔，不會把字串的一部分當成另一句執行。腳本含 `\` 時才用 `SHOW` 查詢這個設定；執行到提到這個設定的語句，或 `RESET`、`DISCARD`、結束交易的語句（`COMMIT`、`ROLLBACK`…）之後會再查一次，模式變了就重新切剩下的腳本。交易已失敗時查不到，就沿用上次的結果。編輯器的「游標所在的句子」查不到 session，一律照 on 切。
+- 切句會照 session 的 `standard_conforming_strings`。設定為 off 時，一般字串裡的 `\'` 也是跳脫，所以字串裡的 `;` 不會被當成分隔，不會把字串的一部分當成另一句執行。腳本含 `\` 時才用 `SHOW` 查詢這個設定；執行到提到這個設定的語句，或 `RESET`、`DISCARD`、結束交易的語句（`COMMIT`、`ROLLBACK`…）之後會再查一次，模式變了就重新切剩下的腳本。交易已失敗時查不到，就沿用上次的結果。編輯器的「游標所在的句子」查不到 session，所以腳本含 `\` 時兩種模式都切一次：切出的句子不同，就不從游標執行，查詢 pane 會提示先選取要執行的句子（`sql::runnable_statement_at`）。
 - schema 樹會列出 trigger（`pg_trigger`，不含外鍵等約束內部用的 trigger），說明欄是所屬的表。
 - TLS 照 libpq 的語意：
 

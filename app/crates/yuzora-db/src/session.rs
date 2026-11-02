@@ -650,6 +650,11 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
     let set = results::get(result).ok_or_else(|| DbError::NotFound(String::new()))?;
     let prepared = {
         let mut r = results::lock(&set);
+        // Pressed again before the pane shows the first one: the same edits
+        // would be written twice.
+        if r.writing {
+            return Err(DbError::NotEditable(crate::i18n::t("edit.writing", &[])));
+        }
         let out = row_edits(&r).map(|(target, edits)| (target, edits, r.edits.clone()));
         match &out {
             Ok(_) => {

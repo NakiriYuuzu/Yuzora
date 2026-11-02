@@ -12,6 +12,7 @@
   "stop": "停止",
   "run_tip": "⌘↵ 執行選取範圍，沒有選取時執行游標所在的語句；⇧⌘↵ 全部執行",
   "hint": "在上方輸入 SQL。⌘↵ 執行選取範圍或游標所在的語句；⇧⌘↵ 全部執行。",
+  "select_statement": "這句在哪裡結束取決於伺服器的 standard_conforming_strings，請先選取再執行",
   "running": "執行中… {s} 秒",
   "cancelled": "已取消",
   "failed": "失敗",

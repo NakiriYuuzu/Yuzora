@@ -12,6 +12,7 @@
   "stop": "Stop",
   "run_tip": "⌘↵ runs the selection, else the statement at the cursor; ⇧⌘↵ runs everything",
   "hint": "Write SQL above. ⌘↵ runs the selection or the statement at the cursor; ⇧⌘↵ runs everything.",
+  "select_statement": "Where this statement ends depends on the server's standard_conforming_strings: select it to run it",
   "running": "Running… {s} s",
   "cancelled": "Cancelled",
   "failed": "Failed",

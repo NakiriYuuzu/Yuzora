@@ -119,8 +119,9 @@ export function result(id: number): ResultSummary | null;
 export function release(owner: string): null;
 export function history(id: string): HistoryEntry[];
 export function clearHistory(id: string): null;
-/** The SQL editor `id`: its whole text, the selection, and the statement under the cursor. */
-export function editorText(id: string): { text: string; selection: string; statement: string } | null;
+/** The SQL editor `id`: its whole text, the selection, and the statement under the cursor
+ * (`null` when where it ends depends on the session: PostgreSQL's standard_conforming_strings). */
+export function editorText(id: string): { text: string; selection: string; statement: string | null } | null;
 export function setEditorText(id: string, text: string): null;
 /** Waits for the editor's next action: `"run"` (⌘↵ / Ctrl+Enter). */
 export function editorAction(id: string): Promise<string>;

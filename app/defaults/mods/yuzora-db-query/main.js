@@ -21,6 +21,7 @@ export default class DbQuery extends View {
     this.jobId = null;
     this.shown = 0;
     this.menu = null; // "conn" | "db" | "history"
+    this.notice = null; // why ⌘↵ ran nothing
     this.dbs = [];
     this.split = 0.45;
     this.initial = typeof p?.sql === "string" ? p.sql : "";
@@ -73,7 +74,11 @@ export default class DbQuery extends View {
     if (!this.connection || this.state?.running) return;
     const text = editorText(`${this.key}:sql`);
     if (!text) return;
-    const sql = (all ? text.text : text.selection.trim() ? text.selection : text.statement || text.text).trim();
+    const picked = all ? text.text : text.selection.trim() ? text.selection : text.statement;
+    // The server's string mode decides where the cursor's statement ends: run it selected.
+    this.notice = picked === null ? t("select_statement") : null;
+    if (picked === null) return cx.notify();
+    const sql = (picked || text.text).trim();
     if (!sql) return;
     this.shown = 0;
     this.menu = null;
@@ -128,14 +133,14 @@ export default class DbQuery extends View {
     const chip = (id, text, menu) => h_flex().id(id).h(20).px(8).gap(5).items_center().rounded(4).border_1().border_color(th.input)
       .text_size(11.5).cursor_pointer().hover((s) => s.bg(th.hover)).on_click((_e, cx) => this.pick(menu, cx))
       .child(div().max_w(160).truncate().child(text)).child(div().text_color(th.dim).child("▾"));
-    const status = running
+    const status = this.notice ?? (running
       ? t("running", { s: (st.elapsedMs / 1000).toFixed(1) })
-      : st?.cancelled ? t("cancelled") : st?.error ? t("failed") : st ? t("finished", { ms: st.elapsedMs }) : "";
+      : st?.cancelled ? t("cancelled") : st?.error ? t("failed") : st ? t("finished", { ms: st.elapsedMs }) : "");
     return h_flex().h(28).flex_none().gap(6).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
       .child(chip("conn", conn?.name ?? t("pick_connection"), "conn"))
       .when(Boolean(conn), (el) => el.child(chip("db", this.database || conn.database || t("default_db"), "db")))
       .child(chip("history", t("history"), "history"))
-      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(st?.error ? th.blocked : th.dim).child(status))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(st?.error || this.notice ? th.blocked : th.dim).child(status))
       .child(running
         ? div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
           .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => cancel(this.jobId)).child(t("stop"))

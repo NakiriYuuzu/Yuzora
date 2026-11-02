@@ -112,7 +112,23 @@ pub fn split_with(sql: &str, engine: Engine, backslash: bool) -> Vec<Statement> 
 /// The statement under `offset` (between two, the one before; ahead of the
 /// first, the first).
 pub fn statement_at(sql: &str, offset: usize, engine: Engine) -> Option<Statement> {
-    let all = split(sql, engine);
+    statement_at_with(sql, offset, engine, false)
+}
+
+/// [`statement_at`], to run on its own from the editor's cursor: its text
+/// (empty when there is none). `None` when PostgreSQL could end it in two
+/// places, by the session's `standard_conforming_strings` the editor does
+/// not know.
+pub fn runnable_statement_at(sql: &str, offset: usize, engine: Engine) -> Option<String> {
+    let statement = statement_at(sql, offset, engine);
+    if engine == Engine::Postgres && sql.contains('\\') && statement_at_with(sql, offset, engine, true) != statement {
+        return None;
+    }
+    Some(statement.map(|s| s.text).unwrap_or_default())
+}
+
+fn statement_at_with(sql: &str, offset: usize, engine: Engine, backslash: bool) -> Option<Statement> {
+    let all = split_with(sql, engine, backslash);
     all.iter()
         .find(|s| s.range.contains(&offset))
         .or_else(|| all.iter().rev().find(|s| s.range.end <= offset))
@@ -590,6 +606,22 @@ mod tests {
         let go = "SELECT 1\nGO\nSELECT 2";
         assert_eq!(statement_at(go, 10, Engine::Mssql).map(|s| s.text).as_deref(), Some("SELECT 1"));
         assert_eq!(statement_at(go, 14, Engine::Mssql).map(|s| s.text).as_deref(), Some("SELECT 2"));
+    }
+
+    #[test]
+    fn the_cursor_runs_nothing_whose_end_the_string_mode_decides() {
+        let sql = "SELECT 'it\\'; DELETE FROM important; SELECT 2'; SELECT 3";
+        let delete = sql.find("DELETE").unwrap();
+        assert_eq!(runnable_statement_at(sql, delete, Engine::Postgres), None);
+        assert_eq!(runnable_statement_at(sql, sql.len(), Engine::Postgres), None);
+        // Both readings agree: it runs.
+        let sql = "SELECT 'a\\b'; SELECT 2";
+        assert_eq!(runnable_statement_at(sql, 0, Engine::Postgres).as_deref(), Some("SELECT 'a\\b'"));
+        assert_eq!(runnable_statement_at(sql, sql.len(), Engine::Postgres).as_deref(), Some("SELECT 2"));
+        assert_eq!(runnable_statement_at("-- only", 3, Engine::Postgres).as_deref(), Some(""));
+        // Other engines have one reading.
+        let sql = "SELECT 'it\\'; SELECT 2";
+        assert_eq!(runnable_statement_at(sql, 0, Engine::Sqlite).as_deref(), Some("SELECT 'it\\'"));
     }
 
     #[test]
