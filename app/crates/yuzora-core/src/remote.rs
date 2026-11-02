@@ -193,6 +193,9 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     let mut cmd = Command::new(&req.program);
     cmd.args(&req.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
+    // Its own process group, so a timeout can end everything it started.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
@@ -201,7 +204,7 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) if start.elapsed() > req.timeout => {
-                let _ = child.kill();
+                kill_tree(&mut child);
                 let _ = child.wait();
                 return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: None });
             }
@@ -213,6 +216,29 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     // in the background may hold them open, so don't wait for that.
     let until = Instant::now() + PIPE_GRACE;
     Ok(ExecOutput { code: status.code().unwrap_or(-1), stdout: out.finish(until), stderr: err.finish(until) })
+}
+
+/// Ends the program and everything it started: its process group on Unix
+/// (`process_group(0)` above), its process tree on Windows.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: a plain syscall on the group this call created for the child.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    let _ = child.kill();
 }
 
 /// One output stream read on its own thread, up to a limit (the rest is
@@ -298,6 +324,27 @@ mod tests {
         assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(matches!(run(&ExecRequest::new("yuzora-no-such-program", Vec::<String>::new())), Err(ExecError::Spawn(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_ends_what_the_program_started() {
+        let pid_file = std::env::temp_dir().join(format!("yuzora-exec-tree-{}", std::process::id()));
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let slow = run(&ExecRequest::new("sh", ["-c", script.as_str()]).timeout(Duration::from_millis(300)));
+        assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        // Killed with its shell, then reparented and reaped: gone in a moment.
+        let gone = (0..100).any(|_| {
+            // SAFETY: signal 0 only asks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            !alive
+        });
+        assert!(gone, "sleep {pid} outlived the timeout");
     }
 
     #[cfg(unix)]
