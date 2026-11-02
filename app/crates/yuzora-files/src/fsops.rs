@@ -603,8 +603,7 @@ pub fn write_text(
         if now != Some(want) {
             return Err(WriteError::Conflict(now));
         }
-        // The same length as read: reading it again is bounded.
-        if content_hash(&std::fs::read(&target).map_err(io_err)?) != hash {
+        if !holds(&target, want.len, hash).map_err(io_err)? {
             return Err(WriteError::Conflict(now));
         }
     }
@@ -623,6 +622,16 @@ pub fn write_text(
             "cannot write {path}: the file vanished"
         ))),
     }
+}
+
+/// Whether the file still holds the `len` bytes hashed as `hash`. Reads at
+/// most one byte more, however much it grew since it was looked at.
+fn holds(path: &Path, len: u64, hash: u64) -> io::Result<bool> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(len.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes.len() as u64 == len && content_hash(&bytes) == hash)
 }
 
 fn resolve_link(path: &Path) -> io::Result<PathBuf> {
@@ -1191,6 +1200,19 @@ mod tests {
             })
         );
         assert_eq!(parse_stamp("nonsense"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_check_before_a_save_reads_no_more_than_was_read() {
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "f.txt", b"mine\n");
+        let hash = content_hash(b"mine\n");
+        assert!(holds(Path::new(&f), 5, hash).unwrap());
+        std::fs::write(&f, b"mine\nand more\n").unwrap();
+        assert!(!holds(Path::new(&f), 5, hash).unwrap());
+        // A file that never ends (one that kept growing) is not read whole.
+        assert!(!holds(Path::new("/dev/zero"), 5, hash).unwrap());
     }
 
     #[test]
