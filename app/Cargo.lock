@@ -3744,6 +3744,7 @@ dependencies = [
  "yuzora-db",
  "yuzora-files",
  "yuzora-git",
+ "yuzora-perf",
  "yuzora-settings",
  "yuzora-shell",
  "yuzora-ssh",
@@ -10219,6 +10220,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
+ "yuzora-core",
+]
+
+[[package]]
+name = "yuzora-perf"
+version = "0.1.0-beta.2"
+dependencies = [
+ "async-channel",
+ "libc",
+ "serde",
+ "serde_json",
+ "sysinfo 0.37.2",
  "yuzora-core",
 ]
 

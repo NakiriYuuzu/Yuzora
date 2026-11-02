@@ -1,0 +1,45 @@
+{
+  "chip": "{cpu}% · {memory}MB",
+  "chip_waiting": "取樣中…",
+  "chip_unavailable": "效能無資料",
+  "tip": {
+    "total": "這台電腦的 Yuzora：CPU {cpu}% · {memory} MB",
+    "app": "App 本體：{cpu}% · {memory} MB",
+    "core": "herdr-core：{processes} · {cpu}% · {memory} MB",
+    "core_missing": "herdr-core：未計入（{error}）",
+    "tools": "Yuzora 工具：{processes} · {cpu}% · {memory} MB",
+    "sampling": "最近 {attempts} 次取樣中有 {failures} 次失敗、{empty} 次沒有資料（另有 {skipped} 次因視窗不在前景略過）。最後錯誤：{error}",
+    "open": "點擊查看明細"
+  },
+  "title": "資源用量",
+  "close": "關閉資源用量",
+  "scope": "只量這台電腦：Yuzora App、它啟動的工具，以及這個 app 的 herdr-core（含裡面的終端機與 agents）。SSH 遠端 Space 不計入。",
+  "memory": "記憶體",
+  "cpu": "CPU",
+  "category": {
+    "app": "App 本體",
+    "core": "herdr-core",
+    "tools": "Yuzora 工具"
+  },
+  "detail": {
+    "app": "視窗與 mods",
+    "core": "終端機與 agents",
+    "tools": "git、ssh、資料庫輔助程式、hc connect"
+  },
+  "summary_label": "各類記憶體用量",
+  "largest_first": "用量由高至低",
+  "sort_label": "用量排序",
+  "list_label": "資源分類",
+  "process_one": "1 個行程",
+  "process_other": "{count} 個行程",
+  "share": "總量的 {value}%",
+  "no_share": "占比不適用",
+  "no_sample": "目前沒有可用樣本，未知用量不代表零。",
+  "core_pid": "herdr-core 是 pid {pid} 的 server，以及它和 holders 底下的所有行程。",
+  "core_missing": "herdr-core 沒有計入，以 0 計：{error}",
+  "measurement": "記憶體為 RSS（十進位 MB）；CPU 以單核心為 100%，可超過 100%；總量為各行程加總。",
+  "cadence": "視窗在前景時每 2 秒取樣一次。",
+  "sampling": "近期 {attempts} 次：{failures} 次失敗 · {empty} 次空樣本 · {skipped} 次因無焦點略過。",
+  "last_error": "最後錯誤：{error}",
+  "cost": "單次取樣耗時：中位數 {median} ms · p95 {p95} ms（近 {samples} 次）。"
+}
