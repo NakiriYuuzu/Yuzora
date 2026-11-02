@@ -6,6 +6,7 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- Git（以 IntelliJ IDEA 為基準）：側欄 Git 模式可暫存、提交（amend、sign-off、略過 hooks、訊息歷史與範本）、推送；diff pane 可暫存或捨棄單一 hunk 或選取的行；提交紀錄與分支圖、篩選與右鍵操作；分支 popup（smart checkout、merge、rebase、比較）；三方合併解衝突；互動式 rebase；Annotate；stash、tag、remote、worktree、patch 管理；Git 設定頁。
 
 ## [0.1.12] - 2026-11-02
 <!-- spotlight macos -->

@@ -49,6 +49,12 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
+### L2 · Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
+
+- 設計、A1–A12 完成度與效能數據：`docs/beta2/git.md`。git 只走 CLI（不用 libgit2），一律經 `crates/yuzora-git/src/exec.rs` 的執行器（讀取不拿鎖、寫入拿 repo 鎖、可取消、逾時、遠端走 `hc exec --on`）；不要在 mod 裡用 herdr 的 `exec("git", …)`。
+- 測試：`cargo test --locked -p yuzora-git`（每個測試在暫存 repo 上跑真的 git）。大型 repo 效能：`YUZORA_GIT_PERF_REPO=<repo> cargo test -p yuzora-git --lib --config 'profile.dev.package.yuzora-git.opt-level=2' -- --ignored --nocapture perf`，只對 clone 出來的複本量。
+- mods 的 `v_virtual_list` item renderer 裡不能註冊事件（gpui-shell 會丟例外、清單整個不畫，`check-mods` 抓不到）：用清單的 `on_item_click`／`on_item_secondary_click`。
+- 實機時 mods 可以熱更新：把 `app/defaults/mods/<mod>` 複製到隔離 app home 的 `mods/<mod>`；`herdr-app do tab.new` 要用旗標形式（`--mod … --props '{…}'`），單一 JSON 物件會掉 `mod`。
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->

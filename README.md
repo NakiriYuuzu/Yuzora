@@ -114,7 +114,14 @@ Not started.
 <!-- yuzora:lane:L2:start -->
 ### L2 · Git
 
-Not started.
+Git modelled on JetBrains IntelliJ IDEA Community, with the staging area:
+the sidebar's Git mode (changes, staging, commit, push), a diff pane with
+hunk and line staging, the commit log with its branch graph, the branches
+popup, push dialog, three-way merge, interactive rebase, annotate, and a
+repository pane (stashes, tags, remotes, worktrees, submodules, patches).
+All git work runs in Rust (`app/crates/yuzora-git`, the `yuzora:git`
+module), never on the UI thread. Design and the IntelliJ checklist:
+[docs/beta2/git.md](docs/beta2/git.md).
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->

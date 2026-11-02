@@ -1,0 +1,21 @@
+{
+  "pane.title": "Annotate",
+  "title": "Annotate",
+  "empty": "Nothing to annotate. Open a file's Annotate from the diff pane or from the log.",
+  "loading": "Reading the file's history…",
+  "emptyFile": "The file is empty.",
+  "uncommitted": "Not committed yet",
+  "ignoreSpaces": "Ignore whitespace",
+  "moves": "Moved lines",
+  "moves.none": "Off",
+  "moves.inner": "Within a file",
+  "moves.outer": "Across files",
+  "history": "File history",
+  "refresh": "Refresh",
+  "back": "← Back",
+  "close": "Close",
+  "log.tab": "Git log",
+  "commit.log": "Show in log",
+  "commit.previous": "Annotate previous revision",
+  "commit.diff": "Compare with previous"
+}
