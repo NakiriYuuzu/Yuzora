@@ -49,25 +49,121 @@ impl Cell {
     }
 
     /// Sort order: NULL first, numbers by value (also numeric text), then text.
+    /// Integers and decimal text compare exactly, never through `f64`.
     pub fn compare(&self, other: &Cell, numeric: bool) -> Ordering {
-        fn number(c: &Cell, numeric: bool) -> Option<f64> {
-            match c {
-                Cell::Int(i) => Some(*i as f64),
-                Cell::Float(f) => Some(*f),
-                Cell::Bool(b) => Some(*b as i64 as f64),
-                Cell::Text(s) if numeric => s.trim().parse().ok(),
-                _ => None,
-            }
-        }
         match (self, other) {
             (Cell::Null, Cell::Null) => Ordering::Equal,
             (Cell::Null, _) => Ordering::Less,
             (_, Cell::Null) => Ordering::Greater,
-            _ => match (number(self, numeric), number(other, numeric)) {
-                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+            _ => match (Number::of(self, numeric), Number::of(other, numeric)) {
+                (Some(a), Some(b)) => a.cmp(&b),
                 _ => self.display().cmp(&other.display()),
             },
         }
+    }
+}
+
+/// A cell's numeric value for sorting.
+enum Number<'a> {
+    Int(i64),
+    /// Decimal text, compared digit by digit.
+    Decimal(Decimal<'a>),
+    /// A float, or text only a float reads (`1e20`, `Infinity`, `NaN`).
+    Float(f64),
+}
+
+impl<'a> Number<'a> {
+    fn of(cell: &'a Cell, numeric: bool) -> Option<Self> {
+        match cell {
+            Cell::Int(i) => Some(Number::Int(*i)),
+            Cell::Bool(b) => Some(Number::Int(*b as i64)),
+            Cell::Float(f) => Some(Number::Float(*f)),
+            Cell::Text(s) if numeric => {
+                Decimal::parse(s).map(Number::Decimal).or_else(|| s.trim().parse().ok().map(Number::Float))
+            }
+            _ => None,
+        }
+    }
+
+    fn cmp(&self, other: &Number<'_>) -> Ordering {
+        match (self, other) {
+            (Number::Int(a), Number::Int(b)) => a.cmp(b),
+            (Number::Decimal(a), Number::Decimal(b)) => a.cmp(b),
+            (Number::Int(i), Number::Decimal(d)) => Decimal::parse(&i.to_string()).map_or(Ordering::Equal, |i| i.cmp(d)),
+            (Number::Decimal(_), Number::Int(_)) => other.cmp(self).reverse(),
+            (Number::Float(a), Number::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Number::Float(f), exact) => float_cmp(*f, exact),
+            (exact, Number::Float(f)) => float_cmp(*f, exact).reverse(),
+        }
+    }
+}
+
+/// A float against an exact number: by the nearest float first, which can
+/// only tie when the two are close; a tie is settled on the float's exact value.
+fn float_cmp(f: f64, exact: &Number<'_>) -> Ordering {
+    let text = match exact {
+        Number::Int(i) => i.to_string(),
+        Number::Decimal(d) => d.to_string(),
+        Number::Float(g) => return f.partial_cmp(g).unwrap_or(Ordering::Equal),
+    };
+    let near: f64 = text.parse().unwrap_or(f64::NAN);
+    match f.partial_cmp(&near) {
+        Some(Ordering::Equal) if f.is_finite() => {
+            // Every finite f64 is exact in 1074 decimal places.
+            let f = format!("{f:.1074}");
+            match (Decimal::parse(&f), Decimal::parse(&text)) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                _ => Ordering::Equal,
+            }
+        }
+        order => order.unwrap_or(Ordering::Equal),
+    }
+}
+
+/// `-12.340` as sign, integer digits without leading zeros (`12`) and
+/// fraction digits without trailing zeros (`34`).
+#[derive(Clone, Copy)]
+struct Decimal<'a> {
+    negative: bool,
+    int: &'a str,
+    frac: &'a str,
+}
+
+impl<'a> Decimal<'a> {
+    fn parse(s: &'a str) -> Option<Self> {
+        let s = s.trim();
+        let (negative, digits) = match s.as_bytes().first()? {
+            b'-' => (true, &s[1..]),
+            b'+' => (false, &s[1..]),
+            _ => (false, s),
+        };
+        let (int, frac) = digits.split_once('.').unwrap_or((digits, ""));
+        if (int.is_empty() && frac.is_empty()) || !int.bytes().chain(frac.bytes()).all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (int, frac) = (int.trim_start_matches('0'), frac.trim_end_matches('0'));
+        // -0 is 0.
+        Some(Self { negative: negative && !(int.is_empty() && frac.is_empty()), int, frac })
+    }
+
+    fn cmp(&self, other: &Decimal<'_>) -> Ordering {
+        let magnitude = || {
+            self.int.len().cmp(&other.int.len()).then_with(|| self.int.cmp(other.int)).then_with(|| self.frac.cmp(other.frac))
+        };
+        match (self.negative, other.negative) {
+            (false, true) => Ordering::Greater,
+            (true, false) => Ordering::Less,
+            (false, false) => magnitude(),
+            (true, true) => magnitude().reverse(),
+        }
+    }
+}
+
+impl std::fmt::Display for Decimal<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sign = if self.negative { "-" } else { "" };
+        let int = if self.int.is_empty() { "0" } else { self.int };
+        if self.frac.is_empty() { write!(f, "{sign}{int}") } else { write!(f, "{sign}{int}.{}", self.frac) }
     }
 }
 
@@ -234,6 +330,35 @@ mod tests {
         assert_eq!(v, vec![Cell::Null, Cell::text("9"), Cell::text("10")]);
         v.sort_by(|a, b| a.compare(b, false));
         assert_eq!(v, vec![Cell::Null, Cell::text("10"), Cell::text("9")]);
+    }
+
+    #[test]
+    fn numbers_sort_exactly_past_what_a_float_holds() {
+        use Ordering::*;
+        let n = |s: &str| Cell::text(s);
+        let cases = [
+            // Integers past 2^53, as a bigint and as PostgreSQL's text.
+            (Cell::Int(i64::MAX), Cell::Int(i64::MAX - 1), Greater),
+            (n("9007199254740993"), n("9007199254740992"), Greater),
+            (Cell::Int(9_007_199_254_740_993), n("9007199254740992"), Greater),
+            // numeric(38, 23): equal as floats, not as decimals.
+            (n("0.12345678901234567890123"), n("0.12345678901234567890122"), Greater),
+            (n("-10.5"), n("-2"), Less),
+            (n("-0.000"), n("0"), Equal),
+            (n("1.50"), n("+1.5"), Equal),
+            (n("007.25"), n("7.250"), Equal),
+            (n("0.05"), n("0.5"), Less),
+            // Against a float: its exact value decides a tie.
+            (Cell::Int(9_007_199_254_740_993), Cell::Float(9_007_199_254_740_992.0), Greater),
+            (n("0.1"), Cell::Float(0.1), Less),
+            (Cell::Float(1.5), n("1.5"), Equal),
+            (n("1e3"), n("999.9"), Greater),
+            (n("-Infinity"), n("-99999999999999999999999"), Less),
+        ];
+        for (a, b, order) in cases {
+            assert_eq!(a.compare(&b, true), order, "{a:?} vs {b:?}");
+            assert_eq!(b.compare(&a, true), order.reverse(), "{b:?} vs {a:?}");
+        }
     }
 
     #[test]
