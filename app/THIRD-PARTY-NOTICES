@@ -2,8 +2,8 @@ Herdr third-party notices
 =========================
 Regenerate with just notices. See licenses/README.md.
 
-Input-SHA256: e8652bf53a20bf680723f754b43cdefffc2d13a3ccb37aa11b3ce56631de85da Cargo.lock
-Input-SHA256: f8a7dfe625bbd109b376722442c0653d14de3da5731ed98152d1465080d4c1b6 Cargo.toml
+Input-SHA256: 8fd7da10e19e26df94e8214c70660e71dad758606ff5d84b38255cf28f6eb6e7 Cargo.lock
+Input-SHA256: 93493752440b4ef65853264964b87369e65af2676dc70a9f7185a67885935f71 Cargo.toml
 Input-SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 LICENSE
 Input-SHA256: e58cb0de2dde300bcda769ca993fde2737f42c0274082f038621ab22975a49e2 about.toml
 Input-SHA256: 84a7a98c82140fb12c37fe42b93805baa16024cb3e5acc599b7ffe612c55d847 assets/fonts/LICENSE-SymbolsNerdFont.txt
@@ -17636,6 +17636,7 @@ MIT License (MIT)
   hex-simd 0.8.0 — https://github.com/Nugine/simd
   libm 0.2.16 — https://github.com/rust-lang/compiler-builtins
   malloc_buf 0.0.6 — https://github.com/SSheldon/malloc_buf
+  minisign-verify 0.3.0 — https://github.com/jedisct1/rust-minisign-verify
   objc-sys 0.3.5 — https://github.com/madsmtm/objc2
   objc2-app-kit 0.2.2 — https://github.com/madsmtm/objc2
   objc2-encode 4.1.0 — https://github.com/madsmtm/objc2

@@ -140,6 +140,8 @@ fn main() {
     };
     #[cfg(target_os = "macos")]
     core_bin::install_cli_link();
+    #[cfg(target_os = "macos")]
+    yuzora::release::install_cli_link(); // yuzora(L7): ~/.local/bin/yuzora for Yuzora.app
     if core.is_ok() {
         update::after_update();
     }
