@@ -22,10 +22,10 @@ function pane(chunks: object[]) {
 const chunk = (index: number, ours: string[], theirs: string[], eol = { base: true, ours: true, theirs: true }) =>
   ({ index, kind: "conflict", base: ["mid"], ours, theirs, eol });
 
-test("the box shows lines; Use sends them back ending as the source did", () => {
+test("the box shows each line with its end; Use sends them back ending as the source did", () => {
   const { view, cx, box, type } = pane([chunk(0, ["OURS"], ["THEIRS"])]);
   view.startEdit(0, cx);
-  expect(box()).toBe("OURS");
+  expect(box()).toBe("OURS\n");
   type("MINE");
   view.useEdit(cx);
   expect(view.choices[0]).toEqual({ text: "MINE\n" });
@@ -60,6 +60,19 @@ test("a side that deleted the chunk opens an empty box that stays empty", () => 
   expect(box()).toBe("");
   view.useEdit(cx);
   expect(view.choices[0]).toEqual({ text: "" });
+});
+
+test("opening the editor and pressing Use without a change keeps the result", () => {
+  const ends = { base: true, ours: true, theirs: true }, open = { base: false, ours: false, theirs: false };
+  for (const [ours, eol] of [[[], ends], [[""], ends], [["a"], ends], [["a", ""], ends], [["a", "b"], open]] as const) {
+    const c = chunk(0, [...ours], ["X"], eol);
+    const { view, cx } = pane([c]);
+    view.choices = { 0: "ours" };
+    view.startEdit(0, cx);
+    view.useEdit(cx);
+    // An empty chunk has no last line to end.
+    expect([ours, view.resultOf(c), ours.length ? view.endsLine(c) : "-"]).toEqual([ours, [...ours], ours.length ? eol.ours : "-"]);
+  }
 });
 
 test("whether a choice ends its last line follows the side it takes", () => {

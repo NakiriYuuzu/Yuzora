@@ -267,13 +267,16 @@ export default class GitMerge extends View {
     const c = this.session.chunks[i];
     this.editing = i;
     this.editEnds = this.endsLine(c);
-    this.edit.set_value((this.resultOf(c) ?? c.ours).join("\n"));
+    // Each line with its end, as written: no lines is "", one blank line "\n",
+    // so the box reads back the lines it showed (a file's last line may have no end).
+    const lines = this.resultOf(c) ?? c.ours;
+    this.edit.set_value(lines.map((l, k) => (k < lines.length - 1 || this.editEnds ? `${l}\n` : l)).join(""));
     cx.spawn(async (cx) => { await cx.sleep(30); this.edit.focus(); });
     cx.notify();
   }
 
-  // The box shows lines; the text sent ends its last line as the source did.
-  // An emptied box drops the chunk ("" is no line; one blank line is "\n").
+  // The text sent ends its last line as the source did, even if the box lost
+  // its final end. An emptied box drops the chunk ("" is no line; one blank line is "\n").
   useEdit(cx) {
     const value = this.edit.value();
     this.choose(this.editing, { text: value !== "" && this.editEnds && !value.endsWith("\n") ? `${value}\n` : value }, cx);
