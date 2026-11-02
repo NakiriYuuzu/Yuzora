@@ -9,7 +9,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -21,6 +21,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_OUTPUT: u64 = 8 << 20;
 /// How long past the remote timeout the local `hc` may take to answer.
 const REMOTE_GRACE: Duration = Duration::from_secs(5);
+/// After the program exits, how long its output may take to arrive. Anything
+/// it started in the background can keep the pipes open for good.
+const PIPE_GRACE: Duration = Duration::from_millis(500);
 
 static HC: OnceLock<PathBuf> = OnceLock::new();
 
@@ -146,9 +149,15 @@ pub fn parse_hc_exec(stdout: &str, stderr: &str, req: &ExecRequest) -> Result<Ex
     if v.get("timed_out").and_then(Value::as_bool) == Some(true) {
         return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: req.on.clone() });
     }
+    // hc has no output limit: the request's cap applies here, as it does locally.
+    let limit = usize::try_from(req.max_output).unwrap_or(usize::MAX);
     let bytes = |k: &str| {
         base64::engine::general_purpose::STANDARD
             .decode(v.get(k).and_then(Value::as_str).unwrap_or_default())
+            .map(|mut b| {
+                b.truncate(limit);
+                b
+            })
             .map_err(|e| ExecError::Protocol(format!("hc exec {k}: {e}")))
     };
     let code = v.get("code").and_then(Value::as_i64).map_or(-1, |c| c as i32);
@@ -159,15 +168,21 @@ pub fn parse_hc_exec(stdout: &str, stderr: &str, req: &ExecRequest) -> Result<Ex
 pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     match hc_exec_args(req) {
         Some(args) => {
+            // hc's JSON carries both streams in base64 (4/3 the size), whole:
+            // room for the default 8 MiB of each, or the request's cap if larger.
+            let answer = req.max_output.max(DEFAULT_MAX_OUTPUT).saturating_mul(3).saturating_add(64 << 10);
             let local = ExecRequest {
                 program: hc_program().to_string_lossy().into_owned(),
                 args,
                 cwd: None,
                 on: None,
                 timeout: req.timeout + REMOTE_GRACE,
-                max_output: req.max_output.saturating_mul(2).saturating_add(4096),
+                max_output: answer,
             };
             let out = run_local(&local)?;
+            if out.stdout.len() as u64 >= answer {
+                return Err(ExecError::Protocol(format!("hc exec: the answer from {} was larger than {answer} bytes", req.on.as_deref().unwrap_or("the machine"))));
+            }
             parse_hc_exec(&out.stdout_text(), &out.stderr_text(), req)
         }
         None => run_local(req),
@@ -179,18 +194,8 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     cmd.args(&req.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
-    let limit = req.max_output;
-    let drain = |r: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut r = r;
-            let mut buf = Vec::new();
-            let _ = (&mut r).take(limit).read_to_end(&mut buf);
-            let _ = std::io::copy(&mut r, &mut std::io::sink());
-            buf
-        })
-    };
-    let out = drain(Box::new(child.stdout.take().expect("piped stdout")));
-    let err = drain(Box::new(child.stderr.take().expect("piped stderr")));
+    let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
+    let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
     let start = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -204,7 +209,49 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
             Err(e) => return Err(ExecError::Spawn(e.to_string())),
         }
     };
-    Ok(ExecOutput { code: status.code().unwrap_or(-1), stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
+    // What the program wrote is already in the pipes; whatever it left running
+    // in the background may hold them open, so don't wait for that.
+    let until = Instant::now() + PIPE_GRACE;
+    Ok(ExecOutput { code: status.code().unwrap_or(-1), stdout: out.finish(until), stderr: err.finish(until) })
+}
+
+/// One output stream read on its own thread, up to a limit (the rest is
+/// drained and dropped), into a buffer that can be taken before it ends.
+struct Drain {
+    buf: Arc<Mutex<Vec<u8>>>,
+    ended: mpsc::Receiver<()>,
+}
+
+impl Drain {
+    fn start(mut r: impl Read + Send + 'static, limit: u64) -> Self {
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let (tx, ended) = mpsc::channel();
+        let into = buf.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 16 << 10];
+            loop {
+                match r.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut b = into.lock().unwrap_or_else(|e| e.into_inner());
+                        let room = limit.saturating_sub(b.len());
+                        b.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(());
+        });
+        Drain { buf, ended }
+    }
+
+    /// Everything read once the stream ends, or what was read by `until`.
+    fn finish(self, until: Instant) -> Vec<u8> {
+        let _ = self.ended.recv_timeout(until.saturating_duration_since(Instant::now()));
+        std::mem::take(&mut *self.buf.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +281,9 @@ mod tests {
         let slow = parse_hc_exec(r#"{"timed_out":true,"code":null}"#, "", &req).unwrap_err();
         assert!(slow.to_string().contains("on vps"));
         assert!(matches!(parse_hc_exec("nonsense", "boom", &req), Err(ExecError::Protocol(_))));
+        // The request's cap holds for remote output too ("aGkK" is "hi\n").
+        let capped = parse_hc_exec(r#"{"code":0,"stdout":"aGkK","stderr":"aGkK"}"#, "", &req.clone().max_output(1)).unwrap();
+        assert_eq!((capped.stdout_text().as_str(), capped.stderr_text().as_str()), ("h", "h"));
     }
 
     #[cfg(unix)]
@@ -248,5 +298,15 @@ mod tests {
         assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(matches!(run(&ExecRequest::new("yuzora-no-such-program", Vec::<String>::new())), Err(ExecError::Spawn(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_child_holding_the_pipes_does_not_hold_the_answer() {
+        // `sleep` inherits stdout and stderr and outlives the shell by seconds.
+        let started = Instant::now();
+        let out = run(&ExecRequest::new("sh", ["-c", "printf done; printf warn >&2; sleep 4 & exit 0"]).timeout(Duration::from_secs(30))).unwrap();
+        assert_eq!((out.code, out.stdout_text().as_str(), out.stderr_text().as_str()), (0, "done", "warn"));
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
     }
 }

@@ -58,19 +58,35 @@ pub fn request_refresh() {
     }
 }
 
-/// Scans are cheap but renders are many: one scan serves them for a moment.
-fn discovered() -> (Value, Value) {
-    static LAST: Mutex<Option<(Instant, Value, Value)>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, panes, settings)) = last.as_ref()
-        && at.elapsed() < Duration::from_secs(2)
+/// One scan of the installed mods, and the language its labels are in.
+struct Scan {
+    at: Instant,
+    locale: &'static str,
+    panes: Value,
+    settings: Value,
+}
+
+/// Scans are cheap but renders are many: one scan serves them for a moment,
+/// unless the language changed since (the labels are translated).
+fn reuse_or_scan(last: &mut Option<Scan>, locale: &'static str, scan: impl FnOnce() -> (Value, Value)) -> (Value, Value) {
+    if let Some(s) = last.as_ref()
+        && s.locale == locale
+        && s.at.elapsed() < Duration::from_secs(2)
     {
-        return (panes.clone(), settings.clone());
+        return (s.panes.clone(), s.settings.clone());
     }
-    let found = crate::discovery::scan_installed();
-    let (panes, settings) = (Value::Array(found.panes), Value::Array(found.settings));
-    *last = Some((Instant::now(), panes.clone(), settings.clone()));
+    let (panes, settings) = scan();
+    *last = Some(Scan { at: Instant::now(), locale, panes: panes.clone(), settings: settings.clone() });
     (panes, settings)
+}
+
+fn discovered() -> (Value, Value) {
+    static LAST: Mutex<Option<Scan>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    reuse_or_scan(&mut last, crate::i18n::current(), || {
+        let found = crate::discovery::scan_installed();
+        (Value::Array(found.panes), Value::Array(found.settings))
+    })
 }
 
 fn pairs(v: &[(String, String)]) -> Vec<(&str, String)> {
@@ -108,7 +124,12 @@ pub fn module(mod_name: &str) -> HostModule {
         .function("settingsPages", |_| Ok(to_host(&discovered().1)))
         .function("getSetting", |a| Ok(to_host(&crate::settings::section(a.string(0)?))))
         .function("setSetting", |a| {
-            crate::settings::set_section(a.string(0)?, arg(a, 1)).map_err(error)?;
+            let section = a.string(0)?;
+            crate::settings::set_section(section, arg(a, 1)).map_err(error)?;
+            // general.locale may have changed, as with setLocale.
+            if section == crate::settings::GENERAL {
+                crate::i18n::refresh();
+            }
             request_refresh();
             Ok(HostValue::Null)
         })
@@ -158,5 +179,21 @@ mod tests {
         assert!(m.is_async("exec"));
         let tokens = from_host(&m.call("tokens", &HostArguments::new([])).unwrap());
         assert_eq!(tokens["agents"]["claude"], "#c96a4b");
+    }
+
+    #[test]
+    fn discovered_labels_are_scanned_again_in_a_new_language() {
+        let mut last = None;
+        let mut scans = 0;
+        let mut scan = |locale: &'static str| {
+            reuse_or_scan(&mut last, locale, || {
+                scans += 1;
+                (json!([locale]), json!([]))
+            })
+        };
+        assert_eq!(scan("en").0, json!(["en"]));
+        assert_eq!(scan("en").0, json!(["en"]));
+        assert_eq!(scan("zh-TW").0, json!(["zh-TW"]));
+        assert_eq!(scans, 2);
     }
 }
