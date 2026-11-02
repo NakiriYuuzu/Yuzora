@@ -1,0 +1,19 @@
+{
+  "status": {
+    "position": "Ln {line}, Col {column}",
+    "plain": "Plain Text",
+    "large": "Plain Text (large file)",
+    "readonly": "Read-only"
+  },
+  "elsewhere": {
+    "title": "This file is open for editing in another pane.",
+    "claim": "Edit here"
+  },
+  "image": {
+    "none": "No image",
+    "loading": "Loading image…",
+    "too_large": "This image is too large to show (over 32 MB).",
+    "unsupported": "This kind of image can't be shown.",
+    "failed": "Can't show this image. {error}"
+  }
+}

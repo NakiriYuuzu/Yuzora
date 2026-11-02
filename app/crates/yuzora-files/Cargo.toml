@@ -8,3 +8,34 @@ publish.workspace = true
 
 [dependencies]
 yuzora-core = { path = "../yuzora-core" }
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-base = { path = "../../vendor/gpui-kit/crates/base" }
+gpui-shell = { path = "../../vendor/gpui-kit/crates/shell" }
+async-channel = "2"
+futures = "0.3"
+ignore = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trash = "5"
+# Syntax highlighting: the runtime and one grammar per language (each only
+# depends on tree-sitter-language, so they share this runtime).
+streaming-iterator = "0.1"
+tree-sitter = "0.27"
+tree-sitter-bash = "0.25"
+tree-sitter-css = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-sequel = "0.3"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-typescript = "0.23"
+tree-sitter-yaml = "0.7"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+tempfile = "3"

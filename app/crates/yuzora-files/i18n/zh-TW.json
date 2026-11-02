@@ -1,0 +1,19 @@
+{
+  "status": {
+    "position": "Ln {line}, Col {column}",
+    "plain": "純文字",
+    "large": "純文字（大型檔案）",
+    "readonly": "唯讀"
+  },
+  "elsewhere": {
+    "title": "這個檔案正在另一個 pane 中編輯。",
+    "claim": "在這裡編輯"
+  },
+  "image": {
+    "none": "沒有圖片",
+    "loading": "正在載入圖片…",
+    "too_large": "圖片太大（超過 32 MB），無法顯示。",
+    "unsupported": "無法顯示這種圖片格式。",
+    "failed": "無法顯示這張圖片。{error}"
+  }
+}

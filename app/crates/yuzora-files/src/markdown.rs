@@ -1,0 +1,330 @@
+//! The Markdown preview: a document's text rendered as GFM by gpui-base's
+//! `TextView`, code blocks highlighted by [`crate::highlight`]. It watches
+//! the document, so it follows every keystroke in whichever editor has it.
+//!
+//! Images: relative paths load from the file's folder (local files only),
+//! and only regular files up to the image pane's size limit. Network, UNC
+//! (`//host/share`), inline (`data:`) images and those of a file on another
+//! machine are not fetched. Links: only http,
+//! https and mailto open, in the system's browser or mail app.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use gpui::{
+    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageSource, IntoElement,
+    ParentElement as _, Render, SharedString, SharedUri, StyleRefinement, Styled as _,
+    Subscription, Window, div, px,
+};
+use gpui_base::text::{TextView, TextViewStyle};
+use yuzora_core::HostValue;
+
+use crate::docs::{self, DocView};
+use crate::highlight::{self, SyntaxPalette};
+
+/// Where a document image comes from, or `None` when it is not loaded.
+pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    if url.is_empty()
+        || lower.starts_with("data:")
+        || lower.contains("://") && !lower.starts_with("file://")
+    {
+        return None;
+    }
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let path = percent_decode(path);
+    // `//host/share/x.png` is a network path on Windows.
+    if path.starts_with("//") || path.starts_with("\\\\") {
+        return None;
+    }
+    let path = Path::new(&path);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    Some(base?.join(path))
+}
+
+/// Whether a clicked link may open outside the app.
+pub fn opens_outside(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+}
+
+#[derive(Clone, PartialEq)]
+struct Colors {
+    foreground: Option<Hsla>,
+    body: Option<Hsla>,
+    muted: Option<Hsla>,
+    link: Option<Hsla>,
+    code: Option<Hsla>,
+    border: Option<Hsla>,
+}
+
+impl Colors {
+    fn from_props(props: &HostValue) -> Self {
+        let c = |k: &str| {
+            props
+                .get("colors")
+                .and_then(|c| c.get(k))
+                .and_then(HostValue::as_str)
+                .and_then(highlight::parse_hex)
+        };
+        Self {
+            foreground: c("foreground"),
+            body: c("body"),
+            muted: c("muted"),
+            link: c("link"),
+            code: c("code"),
+            border: c("border"),
+        }
+    }
+}
+
+fn missing_image() -> ImageSource {
+    ImageSource::from(PathBuf::new())
+}
+
+/// A regular file small enough to show: not a device, FIFO or folder.
+fn loadable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= crate::image::MAX_IMAGE_BYTES)
+}
+
+/// One preview pane's view.
+pub struct MarkdownView {
+    doc: Entity<DocView>,
+    id: SharedString,
+    base: Option<PathBuf>,
+    /// The file is on another machine: no image is read from this one.
+    remote: bool,
+    colors: Colors,
+    highlighter: highlight::CodeBlockHighlighter,
+    /// The text shown and the document revision it is from.
+    text: SharedString,
+    rev: u64,
+    _watch: Subscription,
+}
+
+impl MarkdownView {
+    fn new(doc: Entity<DocView>, id: SharedString, colors: Colors, cx: &mut Context<Self>) -> Self {
+        let watch = Self::watch(&doc, cx);
+        let base = Self::base_of(&doc, cx);
+        let remote = doc.read(cx).key.on.is_some();
+        Self {
+            doc,
+            id,
+            base,
+            remote,
+            colors,
+            highlighter: highlight::code_block_highlighter(Arc::new(SyntaxPalette::one_dark())),
+            text: SharedString::default(),
+            rev: u64::MAX,
+            _watch: watch,
+        }
+    }
+
+    /// Redraws when the text changed, not on every cursor blink of the editor.
+    fn watch(doc: &Entity<DocView>, cx: &mut Context<Self>) -> Subscription {
+        cx.observe(doc, |this: &mut Self, doc, cx| {
+            if doc.read(cx).rev() != this.rev {
+                cx.notify();
+            }
+        })
+    }
+
+    fn base_of(doc: &Entity<DocView>, cx: &App) -> Option<PathBuf> {
+        let key = &doc.read(cx).key;
+        if key.on.is_some() {
+            return None;
+        }
+        Path::new(&key.path).parent().map(Path::to_path_buf)
+    }
+
+    fn style(&self, cx: &App) -> TextViewStyle {
+        let mut style = TextViewStyle::from_theme(&gpui_base::Theme::global(cx));
+        if let Some(c) = self.colors.body.or(self.colors.foreground) {
+            style = style.with_foreground(c);
+        }
+        if let Some(c) = self.colors.muted {
+            style = style.with_muted_foreground(c);
+        }
+        if let Some(c) = self.colors.link {
+            style = style.with_link(c);
+        }
+        if let Some(c) = self.colors.code {
+            style = style
+                .with_code_background(c)
+                .with_inline_code(gpui::HighlightStyle {
+                    background_color: Some(c),
+                    ..Default::default()
+                });
+        }
+        if let Some(c) = self.colors.border {
+            style = style.with_border(c);
+        }
+        let heading_color = self.colors.foreground;
+        style
+            .with_heading(move |level| {
+                let (size, weight) = match level {
+                    1 => (22., FontWeight::BOLD),
+                    2 => (17., FontWeight::BOLD),
+                    3 => (14., FontWeight::SEMIBOLD),
+                    _ => (13., FontWeight::SEMIBOLD),
+                };
+                let mut s = StyleRefinement::default()
+                    .text_size(px(size))
+                    .font_weight(weight);
+                if let Some(c) = heading_color {
+                    s = s.text_color(c);
+                }
+                s
+            })
+            .with_code_block(StyleRefinement::default().rounded(px(6.)).p(px(10.)))
+    }
+}
+
+impl Render for MarkdownView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rev = self.doc.read(cx).rev();
+        if rev != self.rev {
+            self.text = self.doc.read(cx).text(cx);
+            self.rev = rev;
+        }
+        let text = self.text.clone();
+        let base = self.base.clone();
+        let remote = self.remote;
+        div().size_full().min_h_0().px(px(18.)).py(px(14.)).child(
+            TextView::markdown(ElementId::Name(self.id.clone()), text)
+                .style(self.style(cx))
+                .shared_code_block_highlighter(self.highlighter.clone())
+                .image_source(move |uri: &SharedUri| {
+                    match image_path(uri.as_ref(), base.as_deref()) {
+                        Some(path) if !remote && loadable(&path) => ImageSource::from(path),
+                        _ => missing_image(),
+                    }
+                })
+                .on_link_click(|url, _, _, cx| {
+                    if opens_outside(url) {
+                        cx.open_url(url);
+                    }
+                })
+                .selectable(true)
+                .scrollable(true),
+        )
+    }
+}
+
+/// The `Markdown` component: `Markdown.new(id, {doc, colors?})`.
+pub fn markdown_component(
+    args: gpui_shell::ComponentArgs<'_>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let props = args.props();
+    let Some(doc) = props
+        .get("doc")
+        .and_then(HostValue::as_number)
+        .and_then(|id| docs::get(id as u64, cx))
+    else {
+        return div().size_full().into_any_element();
+    };
+    let id = SharedString::from(format!("yuzora-md-{}", args.id()));
+    let colors = Colors::from_props(props);
+    let key = ElementId::Name(id.clone());
+    let init_doc = doc.clone();
+    let init_colors = colors.clone();
+    let init_id = id.clone();
+    let view = window.use_keyed_state(key, cx, move |_, cx| {
+        MarkdownView::new(init_doc, init_id, init_colors, cx)
+    });
+    view.update(cx, |v, cx| {
+        if v.doc != doc {
+            v._watch = MarkdownView::watch(&doc, cx);
+            v.base = MarkdownView::base_of(&doc, cx);
+            v.remote = doc.read(cx).key.on.is_some();
+            v.doc = doc;
+            v.rev = u64::MAX;
+            cx.notify();
+        }
+        if v.colors != colors {
+            v.colors = colors;
+            cx.notify();
+        }
+    });
+    view.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn images_load_from_the_file_folder_and_never_from_the_network() {
+        let base = Path::new("/repo/docs");
+        assert_eq!(
+            image_path("img/a.png", Some(base)),
+            Some(PathBuf::from("/repo/docs/img/a.png"))
+        );
+        assert_eq!(
+            image_path("/abs/b.svg", Some(base)),
+            Some(PathBuf::from("/abs/b.svg"))
+        );
+        assert_eq!(
+            image_path("a%20b.png?raw=1", Some(base)),
+            Some(PathBuf::from("/repo/docs/a b.png"))
+        );
+        assert_eq!(image_path("https://example.com/x.png", Some(base)), None);
+        assert_eq!(image_path("data:image/png;base64,AAAA", Some(base)), None);
+        assert_eq!(image_path("rel.png", None), None);
+        // Network paths on Windows.
+        assert_eq!(image_path("//host/share/a.png", Some(base)), None);
+        assert_eq!(image_path("file:////host/share/a.png", Some(base)), None);
+        assert_eq!(image_path("\\\\host\\share\\a.png", Some(base)), None);
+    }
+
+    #[test]
+    fn only_regular_files_within_the_limit_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("a.png");
+        std::fs::write(&png, b"not really a png").unwrap();
+        assert!(loadable(&png));
+        assert!(!loadable(dir.path()));
+        assert!(!loadable(&dir.path().join("missing.png")));
+        #[cfg(unix)]
+        {
+            assert!(!loadable(Path::new("/dev/zero")));
+            let link = dir.path().join("zero.png");
+            std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
+            assert!(!loadable(&link));
+        }
+    }
+
+    #[test]
+    fn only_web_and_mail_links_leave_the_app() {
+        assert!(opens_outside("https://github.com"));
+        assert!(opens_outside("mailto:a@b.c"));
+        assert!(!opens_outside("file:///Applications/Calculator.app"));
+        assert!(!opens_outside("./other.md"));
+        assert!(!opens_outside("javascript:alert(1)"));
+    }
+}
