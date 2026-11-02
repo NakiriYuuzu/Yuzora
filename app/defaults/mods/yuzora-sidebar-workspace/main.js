@@ -34,6 +34,8 @@ export default class SidebarWorkspace extends View {
     this.folded = new Set(load("folded", []));
     this.hosts = [];
     this.host = null;
+    this.pressed = null; // the Space being dragged: { space, machine, index }
+    this.over = null;
     cx.spawn(async (cx) => {
       try {
         const r = await exec("hostname", []);
@@ -210,10 +212,25 @@ export default class SidebarWorkspace extends View {
       t(r.branches === 1 ? "space.branch" : "space.branches", { count: r.branches }),
       t(r.agents === 1 ? "space.agent" : "space.agents", { count: r.agents }),
     ].join(" · ");
-    return h_flex().id(`row-${r.id}`).min_h(36).flex_none().mt(2).py(3).px(6).gap(8).items_center().rounded(6)
+    // Drag a Space onto another of its machine's to move it there (Herdr keeps each machine's together).
+    const dragging = this.pressed && this.pressed.space !== r.space;
+    const target = dragging && this.pressed.machine === r.machine && this.over === r.space;
+    return h_flex().id(`row-${r.id}`).relative().min_h(36).flex_none().mt(2).py(3).px(6).gap(8).items_center().rounded(6)
       .when(r.active, (el) => el.bg(th.hover)).when(!r.active, (el) => el.hover((s) => s.bg(th.hover)))
+      .when(this.pressed?.space === r.space && Boolean(this.over) && this.over !== r.space, (el) => el.opacity(0.5))
+      .when(target, (el) => el.child(div().absolute().left(0).right(0).h(2).bg(th.accent)
+        .when(this.pressed.index < r.index, (line) => line.bottom(0)).when(this.pressed.index > r.index, (line) => line.top(0))))
       .cursor_pointer()
-      .on_click(() => run("space.select", { id: r.space }))
+      .on_mouse_down("left", () => { this.pressed = { space: r.space, machine: r.machine, index: r.index }; this.over = r.space; })
+      .on_mouse_move((_e, cx) => { if (this.pressed && this.over !== r.space) { this.over = r.space; cx.notify(); } })
+      .on_mouse_up("left", (_e, cx) => {
+        const from = this.pressed;
+        this.pressed = null;
+        this.over = null;
+        if (from && from.space !== r.space && from.machine === r.machine) run("space.move", { id: from.space, index: r.index });
+        else if (from?.space === r.space) run("space.select", { id: r.space });
+        cx.notify();
+      })
       .on_mouse_down("right", () => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: r.space } } }))
       .child(div().size(22).flex_none().rounded(6).bg(r.color).flex().items_center().justify_center()
         .text_size(11.5).font_bold().text_color(tk.text.on_badge).child(r.initial))
@@ -252,8 +269,11 @@ export default class SidebarWorkspace extends View {
             .on_click(() => run("space.new"))
             .child(svg(`${CHROME}/plus.svg`).size(12)).child(t("menu.new_space"))));
     }
+    const index = new Map(spaces().map((s, i) => [s.id, i + 1])); // space.move takes a place in spaces()
     return v_flex().id("tree").flex_1().min_h(0).px(6).pt(4).pb(10).overflow_y_scrollbar()
+      .on_mouse_up("left", (_e, cx) => { if (this.pressed) { this.pressed = null; this.over = null; cx.notify(); } })
       .children(tree.rows.map((r) => {
+        if (r.kind === "space") r.index = index.get(r.space) ?? 0;
         if (r.kind === "machine") return this.machineRow(th, tk, r);
         if (r.kind === "space") return this.spaceRow(th, tk, r);
         if (r.kind === "worktree") return this.worktreeRow(th, tk, r);
