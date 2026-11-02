@@ -93,6 +93,16 @@ pub struct DbProfile {
     pub credential: Option<String>,
 }
 
+/// beta.1's DB connections, with what it was still saving when it closed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DbProfiles {
+    pub profiles: Vec<DbProfile>,
+    /// A new connection, or new settings for one in `profiles`, that beta.1
+    /// hadn't finished saving (it would have offered to finish or drop it).
+    /// An importer brings or skips each one and says so ([`Imported::left`]).
+    pub unfinished: Vec<DbProfile>,
+}
+
 /// What the Tauri app left on this machine.
 pub struct Beta1 {
     /// Its data folder (`<data dir>/dev.yuuzu.yuzora`).
@@ -146,27 +156,37 @@ impl Beta1 {
         serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// beta.1's DB connections (`database-profiles-v1.json`, version 1).
-    pub fn db_profiles(&self) -> Result<Vec<DbProfile>, String> {
+    /// beta.1's DB connections (`database-profiles-v1.json`, version 1), as
+    /// they end up once its journal (`pendingOperations`) is done: a delete
+    /// or a password removal it hadn't finished is applied here, as beta.1
+    /// would have on its next start; a save it hadn't finished is
+    /// [`DbProfiles::unfinished`].
+    pub fn db_profiles(&self) -> Result<DbProfiles, String> {
         let path = self.data.join("database-profiles-v1.json");
-        let Some(doc) = self.json(&path)? else { return Ok(Vec::new()) };
+        let Some(doc) = self.json(&path)? else { return Ok(DbProfiles::default()) };
         if doc["version"].as_u64() != Some(1) {
             return Err(format!("{}: version {} (expected 1)", path.display(), doc["version"]));
         }
-        let profiles = doc["profiles"].as_array().ok_or_else(|| format!("{}: no profiles", path.display()))?;
-        profiles
-            .iter()
-            .map(|p| {
-                let text = |k: &str| p[k].as_str().map(str::to_owned).ok_or_else(|| format!("{}: a profile without {k}", path.display()));
-                let stored = p["credentialState"].as_str() == Some("stored");
-                Ok(DbProfile {
-                    id: text("descriptorId")?,
-                    name: text("name")?,
-                    target: p["target"].clone(),
-                    credential: p["activeCredentialGeneration"].as_str().filter(|_| stored).map(str::to_owned),
-                })
-            })
-            .collect()
+        let profile = |p: &Value, generation: &Value| {
+            let text = |k: &str| p[k].as_str().map(str::to_owned).ok_or_else(|| format!("{}: a profile without {k}", path.display()));
+            let stored = p["credentialState"].as_str() == Some("stored");
+            Ok::<_, String>(DbProfile { id: text("descriptorId")?, name: text("name")?, target: p["target"].clone(), credential: generation.as_str().filter(|_| stored).map(str::to_owned) })
+        };
+        let list = doc["profiles"].as_array().ok_or_else(|| format!("{}: no profiles", path.display()))?;
+        let mut found = DbProfiles { profiles: list.iter().map(|p| profile(p, &p["activeCredentialGeneration"])).collect::<Result<_, _>>()?, unfinished: Vec::new() };
+        for operation in doc["pendingOperations"].as_array().into_iter().flatten() {
+            let of = |p: &DbProfile| operation["descriptorId"].as_str() == Some(p.id.as_str());
+            match operation["kind"].as_str() {
+                Some("pendingCreate") => found.unfinished.push(profile(&operation["profile"], &operation["credentialGeneration"])?),
+                Some("pendingReplace") => found.unfinished.push(profile(&operation["replacement"], &operation["newGeneration"])?),
+                Some("pendingForget") => found.profiles.retain(|p| !of(p)),
+                Some("pendingRemoveCredential") => found.profiles.iter_mut().filter(|p| of(p)).for_each(|p| p.credential = None),
+                // cleanupOld: an old password is going; the profile already has its new one.
+                Some("cleanupOld") => {}
+                other => return Err(format!("{}: a pending operation beta.1 doesn't write ({other:?})", path.display())),
+            }
+        }
+        Ok(found)
     }
 
     /// The password beta.1 stored for `profile`, if any.
@@ -428,8 +448,9 @@ mod tests {
         let account = db_account("dbc-2", "credential-9");
         assert_eq!(account, "v1:18:io.yuzora.database:5:dbc-2:12:credential-9");
         let old = beta1(&root, MemoryLegacy::with(&[(DB_SERVICE, &account, "s3cret")]));
-        let profiles = old.db_profiles().unwrap();
+        let DbProfiles { profiles, unfinished } = old.db_profiles().unwrap();
         assert_eq!(profiles.len(), 2);
+        assert!(unfinished.is_empty());
         assert_eq!((profiles[1].name.as_str(), profiles[1].target["kind"].as_str()), ("prod", Some("postgres")));
         assert_eq!(old.db_password(&profiles[0]), Ok(None));
         assert_eq!(old.db_password(&profiles[1]), Ok(Some("s3cret".into())));
@@ -443,6 +464,37 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn db_profiles_end_as_beta1_would_have_finished_them() {
+        let root = temp("journal");
+        let old = beta1(&root, MemoryLegacy::default());
+        let stored = |id: &str, name: &str, generation: Option<&str>| json!({"descriptorId": id, "configGeneration": 1, "name": name, "target": {"kind": "postgres", "host": "db"}, "credentialState": if generation.is_some() { "stored" } else { "required" }, "activeCredentialGeneration": generation});
+        let doc = json!({
+            "version": 1,
+            "profiles": [stored("dbc-1", "kept", Some("credential-1")), stored("dbc-2", "password going", Some("credential-2")), stored("dbc-3", "being deleted", Some("credential-3"))],
+            "pendingOperations": [
+                // Written before the password is stored: no active generation yet.
+                {"kind": "pendingCreate", "operationId": "profile-op-1", "profile": {"descriptorId": "dbc-4", "configGeneration": 1, "name": "new", "target": {"kind": "postgres", "host": "db"}, "credentialState": "stored", "activeCredentialGeneration": null}, "credentialGeneration": "credential-4"},
+                {"kind": "pendingReplace", "operationId": "profile-op-2", "descriptorId": "dbc-1", "replacement": stored("dbc-1", "kept, renamed", Some("credential-5")), "oldGeneration": "credential-1", "newGeneration": "credential-5"},
+                {"kind": "pendingRemoveCredential", "operationId": "profile-op-3", "descriptorId": "dbc-2", "generations": ["credential-2"]},
+                {"kind": "pendingForget", "operationId": "profile-op-4", "descriptorId": "dbc-3", "generations": ["credential-3"]},
+                {"kind": "cleanupOld", "operationId": "profile-op-5", "descriptorId": "dbc-1", "oldGeneration": "credential-0", "activeGeneration": "credential-1"},
+            ],
+        });
+        let file = old.data.join("database-profiles-v1.json");
+        std::fs::write(&file, doc.to_string()).unwrap();
+        let found = old.db_profiles().unwrap();
+        let summary = |list: &[DbProfile]| list.iter().map(|p| (p.id.clone(), p.name.clone(), p.credential.clone())).collect::<Vec<_>>();
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(summary(&found.profiles), vec![("dbc-1".into(), "kept".into(), some("credential-1")), ("dbc-2".into(), "password going".into(), None)]);
+        assert_eq!(summary(&found.unfinished), vec![("dbc-4".into(), "new".into(), some("credential-4")), ("dbc-1".into(), "kept, renamed".into(), some("credential-5"))]);
+        let mut odd = doc.clone();
+        odd["pendingOperations"] = json!([{"kind": "pendingSomethingElse"}]);
+        std::fs::write(&file, odd.to_string()).unwrap();
+        assert!(old.db_profiles().unwrap_err().contains("pendingSomethingElse"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     struct Db;
     impl Importer for Db {
         fn section(&self) -> &str {
@@ -451,7 +503,7 @@ mod tests {
         fn import(&self, from: &Beta1, into: &mut Section<'_>) -> Result<Imported, String> {
             let mut connections = into.value().get("connections").and_then(Value::as_array).cloned().unwrap_or_default();
             let mut imported = Imported::default();
-            for p in from.db_profiles()? {
+            for p in from.db_profiles()?.profiles {
                 if connections.iter().any(|c| c["from"] == p.id.as_str()) {
                     continue;
                 }

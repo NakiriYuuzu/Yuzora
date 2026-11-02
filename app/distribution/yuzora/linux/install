@@ -43,7 +43,7 @@ cat > "$data/applications/$id.desktop" <<EOF
 Type=Application
 Name=Yuzora
 Comment=AI coding agent workspace
-Exec=$bin/yuzora
+Exec="$home/yuzora"
 Icon=$id
 Terminal=false
 Categories=Development;

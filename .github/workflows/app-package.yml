@@ -172,6 +172,8 @@ jobs:
           HOME="$work/other" XDG_DATA_HOME= "$work/yuzora/install"
           [ "$(cat "$work/other/.local/bin/yuzora")" = "$(printf '#!/bin/sh\necho mine')" ]
           [ -x "$work/other/.local/share/yuzora/yuzora" ]
+          # ...and the launcher opens Yuzora, not that one.
+          grep -qx "Exec=\"$work/other/.local/share/yuzora/yuzora\"" "$work/other/.local/share/applications/dev.yuuzu.yuzora.desktop"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: yuzora-${{ matrix.target }}

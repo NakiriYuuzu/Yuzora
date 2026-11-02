@@ -34,6 +34,8 @@ SetCompressor /SOLID lzma
 Name "${APP}"
 OutFile "${OUT}"
 InstallDir "$LOCALAPPDATA\Programs\${APP}"
+; Running it again replaces the install where it is, wherever /D= put it.
+InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation"
 BrandingText "${APP} ${VERSION}"
 VIProductVersion "${VIVERSION}"
 

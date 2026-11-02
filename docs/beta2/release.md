@@ -54,7 +54,7 @@
 
 - beta.1（Tauri）以 MSI 安裝，per-machine（`C:\Program Files\Yuzora`），UpgradeCode `{A5829978-F7B9-5882-B5BB-B8521FCEBF5F}`（`src-tauri/src/nsis_migration.rs`）。
 - beta.2 不能升級那個 MSI（per-user 與 per-machine 是兩套安裝）。NSIS 安裝完會用 `MsiEnumRelatedProductsW` 找舊 MSI，**詢問**是否移除（`msiexec /x … /passive`，由 msiexec 自己要求系統管理員權限）。靜默安裝（`/S`）時不移除。使用者資料不受影響。
-- 旗標：`/S` 靜默、`/D=<資料夾>` 改位置（只收空資料夾，或解除安裝項目 `InstallLocation` 記錄的那個資料夾；其他非空資料夾一律拒絕，exit 2，因為更新與解除安裝都會處理整個資料夾）；`/P`（只顯示進度）、`/R`（裝完開啟 Yuzora）、`/UPDATE`、`/ARGS` 是 Tauri updater 呼叫 NSIS 的方式（§5）。
+- 旗標：`/S` 靜默、`/D=<資料夾>` 改位置（只收空資料夾，或解除安裝項目 `InstallLocation` 記錄的那個資料夾；其他非空資料夾一律拒絕，exit 2，因為更新與解除安裝都會處理整個資料夾；不帶 `/D=` 重跑會裝回 `InstallLocation`）；`/P`（只顯示進度）、`/R`（裝完開啟 Yuzora）、`/UPDATE`、`/ARGS` 是 Tauri updater 呼叫 NSIS 的方式（§5）。
 - 已知限制：app 自我更新後，「設定 › 應用程式」顯示的版本仍是安裝時的版本；開始功能表捷徑沒有設定 AppUserModelID（工作列分組依 exe）。列入待辦。
 - Windows 沒有 Authenticode 簽章，SmartScreen 會警告（與 beta.1 相同）。
 
@@ -213,7 +213,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 | section | lane | 來源 | 待決定 |
 | --- | --- | --- | --- |
-| `db` | L3 | `db_profiles()`＋`db_password()` | `target`（sqlite／postgres／mssql 欄位、`viaHost` 對到 L4 的主機 id、`transportMode`／`trustCert`）對到 L3 的連線格式 |
+| `db` | L3 | `db_profiles()`＋`db_password()`（profiles 已依 beta.1 的 journal 收尾：沒做完的刪除與移除密碼直接套用；沒存完的新增或修改放在 `unfinished`，importer 要匯入或在 `left` 說明，不可默默略過） | `target`（sqlite／postgres／mssql 欄位、`viaHost` 對到 L4 的主機 id、`transportMode`／`trustCert`）對到 L3 的連線格式 |
 | `ssh` | L4 | `local_storage("yuzora.hosts.ssh.v2")`、`known_hosts()` | 主機欄位（`id`、`name`、`host`、`port`、`user`、`authKind`、`keyPath`）；known_hosts 格式 |
 | `general` | L6 | `local_storage("yuzora:language")`（`system`／`en`／`zh-TW`） | 外觀、終端機、編輯器設定要不要帶 |
 
