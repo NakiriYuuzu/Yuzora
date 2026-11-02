@@ -942,7 +942,8 @@ pub fn blame(repo: &Repo, path: &str, rev: Option<&str>, o: &Value) -> GitResult
     {
         return Ok(v);
     }
-    let mut cmd = Git::read(["blame", "--porcelain", "-l", "-t", "--encoding=UTF-8"]);
+    // The file's own lines: no textconv program from the repo's config.
+    let mut cmd = Git::read(["blame", "--porcelain", "-l", "-t", "--encoding=UTF-8", "--no-textconv"]);
     if ignore_ws {
         cmd = cmd.arg("-w");
     }

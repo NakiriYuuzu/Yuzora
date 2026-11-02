@@ -824,6 +824,34 @@ pub fn close(id: u64) {
     }
 }
 
+/// `-c` overrides for the signature programs the repo's own config names.
+/// Checking a signature (`%G?`) runs one, and a folder's `.git/config` must
+/// not choose it (there is no trusted-folder check yet); the person's own
+/// (global or system) choice, else git's default, is used instead.
+pub fn signature_programs(repo: &Repo) -> Vec<String> {
+    const DEFAULTS: [(&str, &str); 4] = [("gpg.program", "gpg"), ("gpg.openpgp.program", "gpg"), ("gpg.ssh.program", "ssh-keygen"), ("gpg.x509.program", "gpgsm")];
+    let out = repo.run(Git::read(["config", "--show-scope", "--get-regexp", r"^gpg\.(openpgp\.|ssh\.|x509\.)?program$"])).ok().filter(|o| o.ok()).map(|o| o.stdout_text()).unwrap_or_default();
+    // `<scope>\t<key> <value>`, lowest scope first: the last line of a key wins.
+    let mut last: HashMap<String, (bool, String)> = HashMap::new();
+    let mut outside: HashMap<String, String> = HashMap::new();
+    for line in out.lines() {
+        let Some((scope, rest)) = line.split_once('\t') else { continue };
+        let (key, value) = rest.split_once(' ').unwrap_or((rest, ""));
+        let repo_own = matches!(scope, "local" | "worktree");
+        if !repo_own {
+            outside.insert(key.to_owned(), value.to_owned());
+        }
+        last.insert(key.to_owned(), (repo_own, value.to_owned()));
+    }
+    let mut args = Vec::new();
+    for (key, default) in DEFAULTS {
+        if last.get(key).is_some_and(|(repo_own, _)| *repo_own) {
+            args.extend(["-c".to_owned(), format!("{key}={}", outside.get(key).map_or(default, String::as_str))]);
+        }
+    }
+    args
+}
+
 /// One commit's details: message, people, signature and changed files.
 pub fn details(repo: &Repo, hash: &str) -> GitResult<Value> {
     static CACHE: OnceLock<Mutex<Lru<String, Value>>> = OnceLock::new();
@@ -834,7 +862,7 @@ pub fn details(repo: &Repo, hash: &str) -> GitResult<Value> {
     }
     let fmt = "--format=%x01%x01%H%x02%x02%P%x02%x02%an%x02%x02%ae%x02%x02%at%x02%x02%cn%x02%x02%ce%x02%x02%ct%x02%x02%G?%x02%x02%GS%x02%x02%B%x03%x03";
     let out = repo
-        .run(Git::read(["log", "--no-walk=unsorted", "--stdin", "--encoding=UTF-8", "--name-status", "-M", "-z", "--diff-merges=first-parent", fmt]).stdin(format!("{hash}\n").into_bytes()))?
+        .run(Git::read(signature_programs(repo)).args(["log", "--no-walk=unsorted", "--stdin", "--encoding=UTF-8", "--name-status", "-M", "-z", "--diff-merges=first-parent", fmt]).stdin(format!("{hash}\n").into_bytes()))?
         .into_result()?;
     let text = String::from_utf8_lossy(&out).into_owned();
     let start = text.find(RECORD_START).ok_or_else(|| GitError::Other(format!("no commit {hash}")))?;
@@ -979,6 +1007,36 @@ mod tests {
         assert_eq!(d["subject"], "third");
         assert_eq!(d["files"][0]["path"], "a.txt");
         close(log.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn details_never_run_the_repos_own_signature_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let marker = format!("{}/ran", s.dir.path().display());
+        let program = format!("{}/fake-gpg.sh", s.dir.path().display());
+        std::fs::write(&program, format!("#!/bin/sh\ntouch '{marker}'\nexit 1\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A commit that carries a signature, so `%G?` has something to check.
+        let tree = s.git(&["rev-parse", "HEAD^{tree}"]);
+        let parent = s.git(&["rev-parse", "HEAD"]);
+        let object = format!(
+            "tree {}\nparent {}\nauthor A <a@b> 1700000000 +0000\ncommitter A <a@b> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----\n\nsigned\n",
+            tree.trim(),
+            parent.trim()
+        );
+        let out = s.repo.run(Git::write(["hash-object", "-t", "commit", "-w", "--stdin"]).stdin(object.into_bytes())).unwrap();
+        let hash = out.stdout_text().trim().to_owned();
+        s.git(&["config", "gpg.program", &program]);
+        assert_eq!(signature_programs(&s.repo)[1], "gpg.program=gpg");
+        let d = details(&s.repo, &hash).unwrap();
+        assert_eq!(d["subject"], "signed");
+        assert!(!std::path::Path::new(&marker).exists(), "details ran the repo's gpg.program");
+        // Without the override git would have run it.
+        s.git(&["log", "-1", "--format=%G?", &hash]);
+        assert!(std::path::Path::new(&marker).exists());
     }
 
     #[test]

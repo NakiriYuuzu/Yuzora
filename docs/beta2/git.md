@@ -52,6 +52,8 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 
 - 只用 git CLI。每個指令都帶 `-c core.quotepath=false -c log.showSignature=false -c color.ui=false`；讀取另外帶 `GIT_OPTIONAL_LOCKS=0` 與 `-c diff.autoRefreshIndex=false`，不碰 `.git/index`，watcher 才不會被自己的讀取喚醒。
 - 環境：`LANGUAGE=` 清空、`LC_ALL=en_US.UTF-8`（macOS 本機）或 `C.UTF-8`，`GIT_TERMINAL_PROMPT=0`、`GIT_EDITOR=:`、`GIT_MERGE_AUTOEDIT=no`，輸出才能穩定解析，也不會卡在互動輸入。
+- 讀取一律帶 `-c core.fsmonitor=false`：側欄一聚焦資料夾就自動跑 status，repo 自己的 `.git/config` 不能藉 fsmonitor hook 在使用者沒有任何動作時執行程式（`status_never_runs_the_repos_fsmonitor_program` 守住）。代價是設定了 fsmonitor 的大 repo，背景 status 會慢一些。
+- 其他由 repo 設定指定程式的讀取：commit 詳情的簽章檢查（`%G?`）把 repo 本地設定的 `gpg.program`／`gpg.{openpgp,ssh,x509}.program` 換回使用者全域／系統的值或 git 預設（`signature_programs`）；blame 帶 `--no-textconv`；status 的 numstat 帶 `--no-ext-diff --no-textconv`，建立 patch 的 diff 帶 `--no-ext-diff`。diff 讀 blob 用 `cat-file --filters`，會照 repo 設定跑 smudge filter（例如 git-lfs），只在使用者打開 diff 時發生，與 checkout 相同。
 - 寫入指令先拿 repo 層級的寫入鎖（等待中可取消）；讀取不拿。
 - 取消與逾時：本機行程開在自己的 process group，取消或逾時就 `kill(-pid, SIGKILL)` 整棵樹。讀取預設 60 秒，fetch／pull／push 等網路操作 600 秒；輸出上限 64 MiB。
 - pathspec 超過 7600 bytes 改用 `--pathspec-from-file=- --pathspec-file-nul`（指令不支援時退回不帶路徑、讀全部）。
@@ -121,7 +123,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - ✅ Repo 偵測：側欄依焦點 pane 的資料夾（否則 space 的資料夾）找所在的 repo，跟著焦點切換；本機與遠端 space（`hc exec --on`）都可以。
 - ⛔ Multi-root 同步分支操作：一次看一個 repo。
 - 🟡 Submodules：列出狀態、`submodule update`；子模組本身當成另一個 repo 開啟。
-- ⛔ Safe mode（未受信任專案）：herdr 沒有信任模型。
+- ⛔ Safe mode（未受信任專案）：herdr 沒有信任模型。自動執行的讀取已關掉 `core.fsmonitor`，簽章檢查不用 repo 本地指定的程式，blame 不跑 textconv；其他由 repo 設定觸發程式的途徑（clean／smudge filter、fetch 時的 `core.sshCommand`、credential helper）要等殼層提供信任資料夾（見〈已知限制與後續〉）。
 
 ### A2. Status、Changes view、Partial commit
 
@@ -216,6 +218,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 ## 已知限制與後續
 
 - **側欄沒開過時沒有徽章**：herdr 只在 stack 子節點第一次顯示時建立 mod，`yuzora.badge.git`／`yuzora.status.git` 要等 Git 模式開過一次才開始更新（之後切到別的模式仍會持續）。需要 L1／殼層在啟動時建立側欄各模式，或由狀態列自己訂閱。
+- **沒有信任資料夾**：打開資料夾就會自動跑 git 讀取，就像 shell 提示字元的 git 狀態一樣。讀取已關掉 fsmonitor，但 repo 設定的 filter 仍可能在 status 時執行。自動 fetch 預設關閉，開啟後會套用 repo 的 `core.sshCommand`／credential helper。IntelliJ 的 Safe mode、VS Code 的 Restricted Mode 都會在未信任時停用 Git，Yuzora 需要殼層（L1）提供同類的信任判斷，Git 側欄再依它決定要不要自動讀取。
 - **遠端 repo 沒有 watcher**：靠 `changed()` 約 25 秒逾時輪詢一次 status。
 - **持久化 log index**：未做；圖只依賴 `RawCommit`，第二階段來源可以換成 index（見〈Log〉）。
 - **記憶體內編輯**只有 reword。
