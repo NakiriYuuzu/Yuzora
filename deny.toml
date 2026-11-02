@@ -49,6 +49,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
     { id = "RUSTSEC-2026-0368", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
     { id = "RUSTSEC-2026-0369", reason = "app zip 8.6.0 write-only, updater zip 4.6.1 extracts signed Windows updates only; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
+    { id = "RUSTSEC-2026-0429", reason = "ZipArchive::extract symlink abort; app zip 8.6.0 write-only (no extract), updater zip 4.6.1 extracts signed Windows updates only; same scope as RUSTSEC-2026-0367; owner: yuuzu; review-by: 2027-03-31; fix with zip >=9" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 unmaintained, Linux GTK build-time macro, no safe upgrade; owner: yuuzu; review-by: 2027-03-31; leaves with Tauri (P11)" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant 5 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names 4 unmaintained as a standalone crate, Linux D-Bus via zbus 5, no safe upgrade; owner: yuuzu; review-by: 2027-03-31" },
