@@ -22,7 +22,7 @@ pub const NAME: &str = "yuzora:shell";
 pub const DECLARATIONS: &str = r#"
 export type AgentState = "working" | "blocked" | "done" | "idle" | "unknown";
 export interface SpaceBadge { initial: string; color: string }
-export interface GitSummary { branch: string | null; upstream: string | null; ahead: number; behind: number; changed: number; conflicted: number }
+export interface GitSummary { branch: string | null; upstream: string | null; ahead: number; behind: number; changed: number | null; conflicted: number | null }
 export interface WorkspaceAgent {
   kind: "agent"; id: string; address: string; pane: string; space: string; space_name: string; tab: string;
   worktree: string; branch: string | null; name: string; brand: "claude" | "codex" | "pi" | "gemini" | null;
@@ -60,7 +60,9 @@ export function spaceBadges(spaces: { id: string; name: string }[], kept?: unkno
 export function workspace(input: { spaces: unknown[]; panes: unknown[]; agents: unknown[]; machines?: unknown[]; hosts?: unknown[]; scope?: string | null; folded?: string[]; colors?: unknown }): WorkspaceTree;
 /** An agent's brand from what it reported (app) or its program key: "claude", "codex", "pi", "gemini", or null. */
 export function agentBrand(app: string | null, key: string | null): string | null;
-/** A folder's branch, ahead/behind and changed files, here or on a machine (10 s); null outside a repo. */
+/** A folder's branch and ahead/behind, here or on a machine (10 s a step); null outside a repo. Reads refs, config and
+ *  commits only, so nothing the repo's own config names (filters, hooks, ssh) runs. changed and conflicted need
+ *  git status: null until the folder is trusted. */
 export function gitStatus(cwd: string, options?: { on?: string | null }): Promise<GitSummary | null>;
 "#;
 

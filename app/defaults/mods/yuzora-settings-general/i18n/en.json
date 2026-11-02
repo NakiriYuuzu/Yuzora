@@ -1,0 +1,52 @@
+{
+  "page": {
+    "title": "General",
+    "about": "Language, the look, and what Yuzora does when it opens."
+  },
+  "language": {
+    "heading": "Language",
+    "title": "Language",
+    "about": "Shown now: {current}. System follows your computer's language; any Chinese shows Traditional Chinese.",
+    "system": "System",
+    "names": { "en": "English", "zh-TW": "Traditional Chinese" }
+  },
+  "look": {
+    "heading": "Look",
+    "about": "For the layout you're in: each layout keeps its own light and dark theme.",
+    "appearance": "Appearance",
+    "appearance_about": "Light or dark, or as your system is now.",
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark",
+    "theme_dark": "Dark theme",
+    "theme_light": "Light theme",
+    "ui_font": "Interface font",
+    "font": "Terminal font",
+    "font_size": "Terminal font size",
+    "layout_font": "This layout sets its own; yours shows in the others.",
+    "default_font": "Default ({font})",
+    "zoom": "Zoom",
+    "zoom_about": "Everything: terminals, panels, text.",
+    "reset": "Reset",
+    "search": "Type to search",
+    "none": "Nothing matches."
+  },
+  "startup": {
+    "heading": "When Yuzora opens",
+    "sidebar": "Sidebar",
+    "sidebar_about": "The sidebar mode to show first.",
+    "modes": {
+      "last": "The last one",
+      "workspace": "Workspace",
+      "files": "Files",
+      "git": "Git",
+      "database": "Database",
+      "ssh": "SSH"
+    }
+  },
+  "security": {
+    "heading": "Terminal clipboard",
+    "clipboard": "Programs may write the clipboard",
+    "clipboard_about": "Programs in your terminals (remote ones too) can put text on the clipboard with OSC 52. Off: only what you copy yourself gets there. Reading the clipboard is never allowed."
+  }
+}
