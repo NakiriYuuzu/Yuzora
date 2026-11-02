@@ -236,29 +236,31 @@ export default class DbTable extends View {
     if (this.infoError) return div().p(12).text_size(12).text_color(th.blocked).child(this.infoError);
     const info = this.info;
     if (!info) return div().p(12).text_size(12).text_color(th.dim).child(t("loading"));
+    // A width w > 0 is fixed; w < 0 shares what's left, at least -w.
+    const box = (w) => (w > 0 ? div().w(w).flex_none() : div().flex_1().min_w(-w));
     const head = (cols) => h_flex().h(26).px(12).bg(th.raised).text_size(11.5).font_semibold().text_color(th.muted)
-      .children(cols.map(([text, w]) => div().w(w).flex_none().truncate().child(text)));
+      .children(cols.map(([text, w]) => box(w).pr(8).truncate().child(text)));
     const line = (cells, i) => h_flex().id(`l-${i}`).h(26).px(12).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .children(cells.map(([text, w, color]) => div().w(w).flex_none().pr(8).truncate().text_color(color ?? th.foreground).child(text)));
+      .children(cells.map(([text, w, color]) => box(w).pr(8).truncate().text_color(color ?? th.foreground).child(text)));
     const section = (title) => div().pt(14).pb(6).px(12).text_size(11.5).font_semibold().text_color(th.dim).child(title);
-    const colW = [["name", 180], ["type", 170], ["nullable", 80], ["default", 220], ["key", 60]];
+    const colW = [["name", -110], ["type", 140], ["nullable", 76], ["default", -90], ["key", 52]];
     return v_flex().id("structure").flex_1().min_h(0).overflow_y_scrollbar().pb(12)
       .child(section(t("structure.columns", { count: info.columns.length })))
       .child(head(colW.map(([k, w]) => [t(`structure.${k}`), w])))
       .children(info.columns.map((c, i) => line([
-        [c.name, 180], [c.typeName, 170, th.muted], [c.nullable ? "NULL" : "NOT NULL", 80, th.dim],
-        [c.default ?? "", 220, th.dim], [c.primaryKey ? `PK ${c.primaryKey}` : "", 60, th.blocked],
+        [c.name, -110], [c.typeName, 140, th.muted], [c.nullable ? "NULL" : "NOT NULL", 76, th.dim],
+        [c.default ?? "", -90, th.dim], [c.primaryKey ? `PK ${c.primaryKey}` : "", 52, th.blocked],
       ], i)))
       .when(info.indexes.length > 0, (el) => el
         .child(section(t("structure.indexes", { count: info.indexes.length })))
         .children(info.indexes.map((x, i) => line([
-          [x.name, 240], [x.columns.join(", "), 260, th.muted], [x.primary ? "PRIMARY" : x.unique ? "UNIQUE" : "", 90, th.dim],
+          [x.name, -140], [x.columns.join(", "), -120, th.muted], [x.primary ? "PRIMARY" : x.unique ? "UNIQUE" : "", 80, th.dim],
         ], `i${i}`))))
       .when(info.foreignKeys.length > 0, (el) => el
         .child(section(t("structure.foreign_keys", { count: info.foreignKeys.length })))
         .children(info.foreignKeys.map((f, i) => line([
-          [f.name, 220], [f.columns.join(", "), 160, th.muted],
-          [`→ ${f.referenced.schema ? `${f.referenced.schema}.` : ""}${f.referenced.name} (${f.referencedColumns.join(", ")})`, 320, th.dim],
+          [f.name, -120], [f.columns.join(", "), -90, th.muted],
+          [`→ ${f.referenced.schema ? `${f.referenced.schema}.` : ""}${f.referenced.name} (${f.referencedColumns.join(", ")})`, -160, th.dim],
         ], `f${i}`))))
       .when(Boolean(info.ddl), (el) => el
         .child(section("DDL"))

@@ -24,6 +24,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
+    ScrollWheelEvent,
     ScrollHandle, ScrollStrategy, StatefulInteractiveElement, Styled, Subscription, Task,
     UniformListScrollHandle, Window, div, px, uniform_list,
 };
@@ -125,6 +126,8 @@ pub struct Grid {
     colors: Colors,
     /// Why the last cell asked for couldn't be edited here.
     notice: Option<String>,
+    /// Frames drawn before the list had a size (the footer's range waits for one).
+    unsized_frames: u8,
     _watch: Option<Task<()>>,
 }
 
@@ -180,6 +183,7 @@ impl Grid {
             focus: cx.focus_handle(),
             colors: Colors::from_props(None),
             notice: None,
+            unsized_frames: 0,
             _watch: None,
         }
     }
@@ -197,6 +201,7 @@ impl Grid {
         self.head = None;
         self.editing = None;
         self.notice = None;
+        self.unsized_frames = 0;
         self.resizing = None;
         self.list = UniformListScrollHandle::new();
         self.hscroll = ScrollHandle::new();
@@ -439,6 +444,8 @@ impl Grid {
         };
         if let Some(pos) = moved {
             self.select(pos, m.shift, cx);
+            // The list scrolls at the next layout: the footer's range follows then.
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
             cx.stop_propagation();
             return;
         }
@@ -676,13 +683,14 @@ impl Grid {
         let offset = -f32::from(state.base_handle.offset().y);
         let height = f32::from(state.base_handle.bounds().size.height);
         let first = (offset / ROW_H).floor().max(0.0) as usize;
-        let count = if height > 0.0 { (height / ROW_H).ceil() as usize } else { rows };
+        // Before the list is laid out its height is 0: one row, until render asks again.
+        let count = ((height / ROW_H).ceil() as usize).max(1);
         ((first + 1).min(rows), (first + count).min(rows))
     }
 }
 
 impl Render for Grid {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = self.colors.clone();
         let root = div()
             .id("yuzora-db-grid")
@@ -737,12 +745,20 @@ impl Render for Grid {
                         .child(
                             uniform_list("rows", count, cx.processor(|this, range, _, cx| this.rows(range, cx)))
                                 .track_scroll(&self.list)
+                                .on_scroll_wheel(cx.listener(|_, _: &ScrollWheelEvent, window, cx| {
+                                    cx.on_next_frame(window, |_, _, cx| cx.notify());
+                                }))
                                 .flex_1()
                                 .min_h_0(),
                         ),
                 )
                 .into_any_element()
         };
+        let laid_out = f32::from(self.list.0.borrow().base_handle.bounds().size.height) > 0.0;
+        if count > 0 && !laid_out && self.unsized_frames < 3 {
+            self.unsized_frames += 1;
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        }
         root.child(body).child(footer)
     }
 }
