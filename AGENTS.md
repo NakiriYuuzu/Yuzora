@@ -58,6 +58,13 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
+### L5 檔案＋編輯器（`yuzora-files`）
+
+- 設計、API 與待辦：`docs/beta2/files.md`。
+- 測試：`cargo test --locked -p yuzora-files`；mods：`scripts/yuzora/check-mods yuzora-sidebar-files yuzora-editor yuzora-markdown yuzora-files-image`。
+- `yuzora-editor/doc-pane.js` 與 `yuzora-markdown/doc-pane.js` 必須完全相同（測試守著）：改一份就複製到另一份。
+- 上色在 `src/highlight/`：新增語言＝加語法 crate、`Lang` 加一項、補測試樣本。其他 crate 要編輯器時用 `yuzora_files::editor::new_code_editor` 與 `code_editor`。
+- 磁碟 I/O 一律在 worker thread。需要 `Window` 的操作（`set_value`、focus、取代）延後到 foreground task 執行，不要在 host function 裡同步做：host function 執行時 window 正在更新。
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

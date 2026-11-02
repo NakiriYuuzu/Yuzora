@@ -6,6 +6,9 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- 檔案側欄：跟隨目前 pane 的 repo，顯示 git 標記；新增、重新命名、刪除到垃圾桶、複製路徑、在 Finder 中顯示；檔名模糊搜尋與內容搜尋（有 ripgrep 就用，否則用內建搜尋）。
+- 程式碼編輯器：14 種語言的 tree-sitter 上色、存檔衝突檢查、搜尋與取代；檔案在磁碟上被修改時自動重新載入，有 Agent 在改同一個檔案時會提示。
+- Markdown 預覽（與編輯器即時同步，可切換原始碼）與圖片／SVG 檢視。遠端 Space 的檔案可以瀏覽與唯讀開啟。
 
 ## [0.1.12] - 2026-11-02
 <!-- spotlight macos -->

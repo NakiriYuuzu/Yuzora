@@ -1040,6 +1040,21 @@ with these differences.
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
+### Files and the editor
+
+- The sidebar's Files mode shows the focused pane's repo. Files open beside the
+  focused pane: `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or
+  source), `yuzora-files-image` (images and SVG). Open one yourself with
+  `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
+  (`on`: a machine for a remote space's file).
+- The editor follows the disk: a file with no unsaved changes reloads when it
+  changes; with unsaved changes the person is asked. While you (an agent) are
+  working in a folder that holds an open file you just changed, its pane shows
+  "<agent> is editing too".
+- `yuzora:files` (types in `yuzora.d.ts`): `listDir`, `gitStatus`, `findFiles`,
+  `grep`, `openDocument` / `documentState` / `saveDocument`, the native
+  components `Editor`, `Markdown`, `ImageView`, and more.
+- Files on another machine can be browsed and opened, read-only in this version.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

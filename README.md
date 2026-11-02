@@ -132,7 +132,12 @@ Not started.
 <!-- yuzora:lane:L5:start -->
 ### L5 · Files and editor
 
-Not started.
+- **Files** mode in the sidebar: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
+- **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
+- **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
+- Files on another machine (remote spaces) can be browsed and opened read-only in beta.2.
+
+Details: [docs/beta2/files.md](docs/beta2/files.md).
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
