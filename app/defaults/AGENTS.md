@@ -1043,6 +1043,27 @@ with these differences.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
+- Settings (`app.settings`, ⌘,) open on Yuzora's General page;
+  `{"section": "templates"}` opens another (a Yuzora page's section or mod
+  name, or one of Herdr's sections). A mod becomes a page with
+  `"yuzora": {"settings": {"title": "settings.title", "icon": "icon.svg", "order": 500, "section": "git"}}`
+  and is shown beside the settings nav with `props.section`. General is order
+  0, Templates 800, Mods 900.
+- `general.startup.sidebar` in `yuzora/settings.json`: `"last"` or the mode
+  (`"git"`, `"files"`…) the sidebar opens on.
+- Agent templates are herdr-core's (`~/.config/herdr-core/templates/<name>.md`,
+  `hc templates`). The Templates settings page edits them on any machine.
+  `yuzora-settings-launch` starts one:
+  `openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {template, machine, space, tab, task}})`,
+  every prop optional. Without the dialog, `yuzora:settings`
+  `runTemplate({template, task, machine, space, tab, cwd, name})` runs
+  `hc run` with `herdr.space`/`herdr.tab` labels, so the terminal lands in
+  that space and tab (a tab id the app doesn't know opens a new tab).
+- `yuzora:settings` also lists mods and layouts with where they came from
+  (`listMods()`), checks one (`checkMod(name)`) and installs a folder
+  (`planInstall(path)` shows what it would install, `installFolder(path)`
+  installs it). Mods are trusted code: show the person the plan and ask
+  before installing.
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
