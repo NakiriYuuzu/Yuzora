@@ -19,7 +19,7 @@ use crate::exec::{Git, GitError, GitResult};
 use crate::repo::Repo;
 
 /// Config keys (lowercased by git) that name a program run without asking.
-const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(sshcommand|gitproxy|askpass)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow)$";
+const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow)$";
 
 /// Stands for the keys when the config couldn't be read: the gate stays shut.
 const UNREADABLE: &str = "(unreadable config)";
@@ -92,6 +92,24 @@ pub fn pending(repo: &Repo) -> GitResult<Vec<String>> {
     if trusted().contains(&repo.id) { Ok(Vec::new()) } else { repo_programs(repo) }
 }
 
+/// Every other call on the repo goes through here first: while the folder
+/// waits for trust, the panes (log, diff, merge...) stay off as the sidebar
+/// does, so no filter or other program of the repo's runs through them.
+pub fn check(repo: &Repo) -> GitResult<()> {
+    let pending = pending(repo)?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let keys = pending.join(", ");
+    // In the shown language (the sidebar's strings); tests keep to English
+    // and away from the app home.
+    let text = if cfg!(test) { String::new() } else { yuzora_core::i18n::translate("yuzora-sidebar-git", "trust.refused", &[("keys", keys.clone())]) };
+    Err(GitError::Other(if text.is_empty() || text == "trust.refused" { format!("{UNTRUSTED} ({keys})") } else { text }))
+}
+
+/// The start of [`check`]'s error, for the panes to recognise.
+pub const UNTRUSTED: &str = "untrusted folder: trust it in the Git sidebar first";
+
 /// Trusts the repo's folder (here or on its machine) from now on.
 pub fn trust(repo: &Repo) -> GitResult<Value> {
     let mut all = trusted();
@@ -117,6 +135,10 @@ mod tests {
         let s = scratch();
         s.commit("a.txt", "1\n", "first");
         assert!(pending(&s.repo).unwrap().is_empty(), "a plain repo needs no trust");
+        assert!(check(&s.repo).is_ok());
+        s.git(&["config", "core.alternateRefsCommand", "true"]);
+        assert_eq!(pending(&s.repo).unwrap(), vec!["core.alternaterefscommand".to_string()]);
+        s.git(&["config", "--unset", "core.alternateRefsCommand"]);
         // A clean filter in the repo's own config, used by its attributes.
         let marker = format!("{}/ran", s.dir.path().display());
         let program = format!("{}/clean.sh", s.dir.path().display());
@@ -126,6 +148,8 @@ mod tests {
         std::fs::write(s.repo.git_path("info/attributes"), "*.txt filter=evil\n").unwrap();
         s.write("a.txt", "2\n");
         assert_eq!(pending(&s.repo).unwrap(), vec!["filter.evil.clean".to_string()]);
+        // Every other call refuses until then, not just status.
+        assert!(check(&s.repo).unwrap_err().to_string().contains(UNTRUSTED));
         assert!(crate::ops::fetch(&s.repo, &serde_json::json!({ "auto": true }), None).is_err(), "auto fetch waits for trust");
         let v = crate::status::read(&s.repo, false).unwrap();
         assert_eq!(v["trust"], serde_json::json!(["filter.evil.clean"]));

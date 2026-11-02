@@ -66,5 +66,6 @@
   "trust.title": "Trust this folder?",
   "trust.body": "This repository's own Git config names programs Git would run on its own: {keys}. Yuzora reads its Git status only once you trust the folder.",
   "trust.button": "Trust and read",
-  "trust.status": "untrusted folder"
+  "trust.status": "untrusted folder",
+  "trust.refused": "This folder isn't trusted yet: trust it in the Git sidebar first ({keys})."
 }

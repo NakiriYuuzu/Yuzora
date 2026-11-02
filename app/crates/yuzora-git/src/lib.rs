@@ -241,7 +241,13 @@ fn repo_fn(m: HostModule, name: &'static str, job: impl Fn(Arc<Repo>, Vec<Value>
         let repo = repo::get(a.string(0)?).map_err(err)?;
         let rest = args_json(a, 1);
         let job = job.clone();
-        Ok(finish(name, move || job(repo, rest)))
+        Ok(finish(name, move || {
+            // `status` shows the trust prompt itself; `trust` answers it.
+            if !matches!(name, "status" | "trust") {
+                trust::check(&repo)?;
+            }
+            job(repo, rest)
+        }))
     })
 }
 
@@ -255,7 +261,7 @@ fn repo_fn_cancellable(m: HostModule, name: &'static str, opt: usize, job: impl 
         let (cancel, token) = cancel_for(&if o.is_string() { json!({ "token": o }) } else { o });
         let job = job.clone();
         Ok(finish(name, move || {
-            let r = job(repo, rest, cancel);
+            let r = trust::check(&repo).and_then(|_| job(repo, rest, cancel));
             forget_cancel(token);
             r
         }))
