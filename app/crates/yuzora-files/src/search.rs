@@ -683,7 +683,8 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
             break;
         }
         let text = text.trim_end_matches(['\n', '\r']);
-        // rg counts submatch offsets in bytes of the line.
+        // rg counts submatch offsets in bytes of the line. The first one,
+        // even empty (`$`), is where the hit goes; empty ones mark nothing.
         let mut ranges: Vec<(usize, usize)> = data["submatches"]
             .as_array()
             .map(|subs| {
@@ -692,11 +693,11 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
                         Some((s["start"].as_u64()? as usize, s["end"].as_u64()? as usize))
                     })
                     .map(|(start, end)| (char_offset(text, start), char_offset(text, end)))
-                    .filter(|(start, end)| end > start)
                     .collect()
             })
             .unwrap_or_default();
         let column = ranges.first().map_or(1, |r| r.0 as u64 + 1);
+        ranges.retain(|(start, end)| end > start);
         ranges.retain(|r| r.0 < TEXT_CHARS);
         for r in &mut ranges {
             r.1 = r.1.min(TEXT_CHARS);
@@ -1284,6 +1285,14 @@ mod tests {
             ),
             ("b.txt", 1, 0)
         );
+    }
+
+    #[test]
+    fn an_empty_rg_match_still_places_the_hit() {
+        // `$` on "abc": a match at the end, nothing to mark.
+        let out = r#"{"type":"match","data":{"path":{"text":"./a.txt"},"lines":{"text":"abc\n"},"line_number":2,"absolute_offset":0,"submatches":[{"match":{"text":""},"start":3,"end":3}]}}"#;
+        let r = parse_rg_json("/r", out, 10);
+        assert_eq!((r.hits[0].column, r.hits[0].ranges.len()), (4, 0));
     }
 
     #[test]

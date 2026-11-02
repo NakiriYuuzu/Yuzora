@@ -3,6 +3,7 @@
 //! file that changed on disk shows its new content when `rev` changes.
 
 use std::io::Read as _;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +20,113 @@ use crate::highlight;
 
 /// Images above this are not shown.
 pub const MAX_IMAGE_BYTES: u64 = 32 << 20;
+
+/// Nor images that take more than this once decoded: GPUI keeps every frame
+/// of a GIF or animated WebP, 4 bytes a pixel of the whole canvas.
+pub const MAX_DECODED_BYTES: u64 = 512 << 20;
+
+/// Whether an image (all its bytes) decodes within [`MAX_DECODED_BYTES`],
+/// by its header and, for GIF and WebP, its frames counted without
+/// decoding. Not a raster (SVG) or a header that doesn't parse: left to the
+/// decoder.
+pub fn fits_in_memory(bytes: &[u8]) -> bool {
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
+    let Ok(reader) = reader else { return true };
+    let frames = match reader.format() {
+        Some(image::ImageFormat::Gif) => gif_frames(bytes),
+        Some(image::ImageFormat::WebP) => webp_frames(bytes),
+        _ => 1,
+    };
+    reader
+        .into_dimensions()
+        .map_or(true, |(w, h)| within_budget(w, h, frames))
+}
+
+/// [`fits_in_memory`] for a file on this machine: only a GIF or WebP is read
+/// whole (at most [`MAX_IMAGE_BYTES`]) to count its frames; others, as far
+/// as their size.
+pub fn file_fits_in_memory(path: &Path) -> bool {
+    let reader = image::ImageReader::open(path).and_then(|r| r.with_guessed_format());
+    let Ok(reader) = reader else { return false };
+    match reader.format() {
+        Some(image::ImageFormat::Gif | image::ImageFormat::WebP) => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)
+                .and_then(|f| f.take(MAX_IMAGE_BYTES).read_to_end(&mut bytes))
+                .is_ok()
+                && fits_in_memory(&bytes)
+        }
+        _ => reader
+            .into_dimensions()
+            .map_or(true, |(w, h)| within_budget(w, h, 1)),
+    }
+}
+
+/// Whether `frames` of a `width`×`height` canvas, 4 bytes a pixel, fit.
+fn within_budget(width: u32, height: u32, frames: u64) -> bool {
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(4)
+        .saturating_mul(frames.max(1))
+        <= MAX_DECODED_BYTES
+}
+
+/// The images (frames) a GIF holds, from its blocks; as many as are there
+/// when it is cut short.
+fn gif_frames(b: &[u8]) -> u64 {
+    // A color table of 2^(n+1) entries, 3 bytes each.
+    let table = |flags: u8| {
+        if flags & 0x80 != 0 {
+            3usize << ((flags & 7) + 1)
+        } else {
+            0
+        }
+    };
+    // Data sub-blocks: a length byte and that many bytes, until a 0.
+    let blocks = |mut at: usize| -> Option<usize> {
+        loop {
+            let n = usize::from(*b.get(at)?);
+            at += 1 + n;
+            if n == 0 {
+                return Some(at);
+            }
+        }
+    };
+    let Some(&flags) = b.get(10) else { return 0 };
+    let mut at = 13 + table(flags);
+    let mut frames = 0;
+    loop {
+        let next = match b.get(at) {
+            // An extension: its label, then its sub-blocks.
+            Some(0x21) => blocks(at + 2),
+            // An image: its descriptor, color table, code size and data.
+            Some(0x2C) => {
+                frames += 1;
+                b.get(at + 9).and_then(|&f| blocks(at + 10 + table(f) + 1))
+            }
+            _ => None,
+        };
+        match next {
+            Some(n) => at = n,
+            None => return frames,
+        }
+    }
+}
+
+/// The frames of a WebP: its `ANMF` chunks (1 when still).
+fn webp_frames(b: &[u8]) -> u64 {
+    let mut at = 12;
+    let mut frames = 0;
+    while let Some(head) = b.get(at..at + 8) {
+        let size = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        frames += u64::from(&head[..4] == b"ANMF");
+        at = at
+            .saturating_add(8)
+            .saturating_add(size)
+            .saturating_add(size & 1);
+    }
+    frames.max(1)
+}
 
 /// Reads `$1` on another machine, up to `$2` bytes: a regular file only, as
 /// here (a FIFO would wait, a device never ends).
@@ -110,9 +218,17 @@ impl ImageView {
                 });
                 return;
             };
-            let bytes = blocking(move || read(&path, on.as_deref()))
-                .await
-                .unwrap_or_else(|| Err("worker".into()));
+            let bytes = blocking(move || {
+                read(&path, on.as_deref()).and_then(|bytes| {
+                    if fits_in_memory(&bytes) {
+                        Ok(bytes)
+                    } else {
+                        Err("too_large_decoded".into())
+                    }
+                })
+            })
+            .await
+            .unwrap_or_else(|| Err("worker".into()));
             let _ = this.update(cx, |v, cx| {
                 if v.key != key {
                     return;
@@ -218,6 +334,9 @@ pub fn image_component(
     match &v.loaded {
         Loaded::Loading => status(s.t("image.loading", &[]), look.muted),
         Loaded::Failed(e) if e == "too_large" => status(s.t("image.too_large", &[]), look.muted),
+        Loaded::Failed(e) if e == "too_large_decoded" => {
+            status(s.t("image.too_large_decoded", &[]), look.muted)
+        }
         Loaded::Failed(e) if e == "unsupported" => {
             status(s.t("image.unsupported", &[]), look.muted)
         }
@@ -327,5 +446,70 @@ mod tests {
                 .unwrap_err()
                 .starts_with("no such file")
         );
+    }
+
+    /// A GIF of a `size`² canvas holding `frames` 1×1 images.
+    fn gif(size: u16, frames: usize) -> Vec<u8> {
+        let mut b = b"GIF89a".to_vec();
+        b.extend(size.to_le_bytes());
+        b.extend(size.to_le_bytes());
+        // A global color table of 2 entries.
+        b.extend([0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff]);
+        // Loop forever (an extension), so animated.
+        b.extend([0x21, 0xff, 0x0b]);
+        b.extend(b"NETSCAPE2.0");
+        b.extend([0x03, 0x01, 0, 0, 0]);
+        for _ in 0..frames {
+            b.extend([0x21, 0xf9, 0x04, 0, 0x0a, 0, 0, 0]);
+            b.extend([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0x02, 0x02, 0x44, 0x01, 0]);
+        }
+        b.push(0x3b);
+        b
+    }
+
+    #[test]
+    fn a_gif_is_shown_only_when_all_its_frames_fit_in_memory() {
+        assert_eq!(gif_frames(&gif(8, 3)), 3);
+        // Cut short: the frames up to there.
+        let cut = gif(8, 3);
+        assert_eq!(gif_frames(&cut[..cut.len() - 20]), 2);
+        assert!(fits_in_memory(&gif(8, 3)));
+        // 8192² is 256 MB a frame: two fill the budget, three are over it.
+        assert!(fits_in_memory(&gif(8192, 2)));
+        assert!(!fits_in_memory(&gif(8192, 3)));
+        // A file is checked the same way.
+        let dir = tempfile::tempdir().unwrap();
+        let (small, big) = (dir.path().join("s.gif"), dir.path().join("b.gif"));
+        std::fs::write(&small, gif(8, 3)).unwrap();
+        std::fs::write(&big, gif(8192, 3)).unwrap();
+        assert!(file_fits_in_memory(&small));
+        assert!(!file_fits_in_memory(&big));
+        assert!(!file_fits_in_memory(&dir.path().join("missing.gif")));
+    }
+
+    #[test]
+    fn webp_frames_are_its_anmf_chunks() {
+        let chunk = |name: &[u8; 4], body: &[u8]| {
+            let mut c = name.to_vec();
+            c.extend((body.len() as u32).to_le_bytes());
+            c.extend(body);
+            if body.len() % 2 == 1 {
+                c.push(0);
+            }
+            c
+        };
+        let mut b = b"RIFF\0\0\0\0WEBP".to_vec();
+        b.extend(chunk(b"VP8X", &[0x02; 10]));
+        b.extend(chunk(b"ANIM", &[0; 6]));
+        b.extend(chunk(b"ANMF", &[0; 17]));
+        b.extend(chunk(b"ANMF", &[0; 16]));
+        assert_eq!(webp_frames(&b), 2);
+        assert_eq!(webp_frames(b"RIFF\0\0\0\0WEBP"), 1);
+    }
+
+    #[test]
+    fn what_has_no_raster_header_is_left_to_the_decoder() {
+        assert!(fits_in_memory(b"<svg xmlns='http://www.w3.org/2000/svg'/>"));
+        assert!(fits_in_memory(b""));
     }
 }

@@ -32,7 +32,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 - 一個檔案（機器＋路徑）在整個 app 只有一份 `DocView`（GPUI global 的 registry），所有 pane 共用。`openDocument` 每呼叫一次加一個參考，`releaseDocument` 減一。
 - **只有一個 pane 畫編輯器**（owner）。同一個檔案在另一個 pane 開啟時顯示「在這裡編輯」，按下才接手；避免同一個 GPUI entity 在同一個 frame 被畫兩次。
 - 載入：`fsops::read_text`，換行正規化為 LF，記住原本是 LF／CRLF 與 BOM，存檔時還原。
-- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去，保留權限與 owner；資料夾不能建暫存檔、或 owner 保不住時退回就地寫入：先把舊內容備份（同資料夾，資料夾不可寫時放 app home 的 `backups/files`（0700）；一律新建檔案（O_EXCL，不寫進既有路徑或 symlink），只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容，連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案；指向的檔案已刪除時（還原），沿著連結寫回原本的位置。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。
+- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去，保留權限與 owner；資料夾不能建暫存檔、或 owner 保不住時退回就地寫入：先把舊內容備份（同資料夾，資料夾不可寫時放 app home 的 `backups/files`（0700）；一律新建檔案（O_EXCL，不寫進既有路徑或 symlink），只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容，連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案；指向的檔案已刪除時（還原），沿著連結寫回原本的位置。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。暫存檔寫完、rename（或就地寫入）之前再比對一次，寫入期間別人改了檔案也會回報衝突並保留對方的內容；rename 沒有「比對後才替換」的原子操作，只有最後一次比對到 rename 之間的改動仍會被蓋掉。
 - **外部變更**：本機用 herdr 的 `watchFolder`（檔案所在資料夾）＋15 秒輪詢，遠端 5 秒輪詢，呼叫 `checkDisk`。stamp 變了才讀內容並比對 hash：
   - 內容相同（touch）：只更新 stamp。
   - 沒有未儲存變更：自動重新載入，保留游標與捲動位置。
@@ -57,9 +57,9 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 ### Markdown 與圖片
 
 - `Markdown` 元件跟著文件的文字版本（每次編輯或重新載入加一）重畫，游標閃爍不會讓它重抓全文；同一份文件在原始碼與預覽間切換時即時同步。
-- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做（畫面只讀快取，10 秒後重新檢查），所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。連結只開 http、https、mailto。
+- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB，解碼後也不超過 512 MiB（見下方圖片 pane）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做（畫面只讀快取，10 秒後重新檢查），所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。連結只開 http、https、mailto。
 - 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色仍是 One Dark。
-- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG，「符合」與「100%」（原尺寸，比 pane 大時可捲動）、淺色背景；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
+- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；SVG 與檔頭解析不了的交給解碼器。檢視有「符合」與「100%」（原尺寸，比 pane 大時可捲動）、淺色背景；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
 
 ### 側欄（`yuzora-sidebar-files`）
 
@@ -112,7 +112,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（114 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
+- `cargo test --locked -p yuzora-files`（119 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析（含空字串比對的欄位）與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：

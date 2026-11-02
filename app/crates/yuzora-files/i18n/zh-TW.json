@@ -13,6 +13,7 @@
     "none": "沒有圖片",
     "loading": "正在載入圖片…",
     "too_large": "圖片太大（超過 32 MB），無法顯示。",
+    "too_large_decoded": "圖片解碼後太大（超過 512 MB），無法顯示。",
     "unsupported": "無法顯示這種圖片格式。",
     "failed": "無法顯示這張圖片。{error}"
   }

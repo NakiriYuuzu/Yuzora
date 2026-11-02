@@ -595,7 +595,10 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
 /// `bom`. With `expected` (the stamp and [`content_hash`] last read), a file
 /// whose stamp differs, that is gone, or whose bytes changed under the same
 /// stamp (a coarse clock) is not touched: `Conflict` carries its current
-/// stamp. The write goes to a scratch file in the same directory that is
+/// stamp. That is checked again right before the swap, so a change made
+/// while the new content was written is kept too (a rename has no compare
+/// and swap: only what lands between that check and the rename is lost).
+/// The write goes to a scratch file in the same directory that is
 /// fsynced and renamed over the target, so a failed save leaves the old
 /// content; mode (and owner) are kept. When it cannot be swapped (see
 /// [`write_in_place`]) the old content is kept in a backup until the new one
@@ -610,14 +613,13 @@ pub fn write_text(
 ) -> Result<Stamp, WriteError> {
     let io_err = |e: io::Error| WriteError::Io(format!("cannot write {path}: {e}"));
     let target = resolve_link(Path::new(path)).map_err(io_err)?;
-    if let Some((want, hash)) = expected {
-        let now = stat_local(&target).map_err(WriteError::Io)?;
-        if now != Some(want) {
-            return Err(WriteError::Conflict(now));
-        }
-        if !holds(&target, want.len, hash).map_err(io_err)? {
-            return Err(WriteError::Conflict(now));
-        }
+    let still = || unchanged(&target, expected);
+    let conflict = || match stat_local(&target) {
+        Ok(now) => WriteError::Conflict(now),
+        Err(e) => WriteError::Io(e),
+    };
+    if !still().map_err(io_err)? {
+        return Err(conflict());
     }
     let mut bytes = Vec::with_capacity(text.len() + BOM.len());
     if bom {
@@ -627,13 +629,25 @@ pub fn write_text(
         Eol::Lf => bytes.extend_from_slice(text.as_bytes()),
         Eol::Crlf => bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
     }
-    replace_atomically(&target, &bytes).map_err(io_err)?;
+    if !replace_atomically(&target, &bytes, &still).map_err(io_err)? {
+        return Err(conflict());
+    }
     match stat_local(&target).map_err(WriteError::Io)? {
         Some(stamp) => Ok(stamp),
         None => Err(WriteError::Io(format!(
             "cannot write {path}: the file vanished"
         ))),
     }
+}
+
+/// Whether the file is as `expected` (its stamp and [`content_hash`]) has it;
+/// always, without one.
+fn unchanged(target: &Path, expected: Option<(Stamp, u64)>) -> io::Result<bool> {
+    let Some((want, hash)) = expected else {
+        return Ok(true);
+    };
+    let now = stat_local(target).map_err(io::Error::other)?;
+    Ok(now == Some(want) && holds(target, want.len, hash)?)
 }
 
 /// Whether the file still holds the `len` bytes hashed as `hash`. Reads at
@@ -695,7 +709,20 @@ fn scratch_path(dir: &Path) -> PathBuf {
     dir.join(format!("{SCRATCH_PREFIX}{id:016x}{nanos:016x}"))
 }
 
-fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Puts `bytes` in `target` when `unchanged` still says so right before the
+/// swap: `false` when it did not (nothing written, no scratch file left).
+fn replace_atomically(
+    target: &Path,
+    bytes: &[u8],
+    unchanged: &dyn Fn() -> io::Result<bool>,
+) -> io::Result<bool> {
+    // Written in place: the check goes right before the write.
+    let in_place = |backups: &Path| {
+        if !unchanged()? {
+            return Ok(false);
+        }
+        write_in_place(target, bytes, backups).map(|()| true)
+    };
     let original = std::fs::metadata(target).ok().filter(|m| m.is_file());
     if original.is_some() {
         // The file's own write bit decides, as it would for an in-place write.
@@ -721,7 +748,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
                     io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
                 ) =>
         {
-            return write_in_place(target, bytes, &private_backups()?);
+            return in_place(&private_backups()?);
         }
         Err(e) => return Err(e),
     };
@@ -732,7 +759,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
         // The swap would change the owner: write in place instead.
         drop(file);
         let _ = std::fs::remove_file(&scratch);
-        return write_in_place(target, bytes, dir);
+        return in_place(dir);
     }
     let staged = (|| {
         file.write_all(bytes)?;
@@ -740,18 +767,21 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
         if let Some(m) = &original {
             file.set_permissions(m.permissions())?;
         }
-        file.sync_all()
-    })()
-    .and_then(|()| std::fs::rename(&scratch, target));
+        file.sync_all()?;
+        if !unchanged()? {
+            return Ok(false);
+        }
+        std::fs::rename(&scratch, target).map(|()| true)
+    })();
     drop(file);
-    if let Err(e) = staged {
+    if !matches!(staged, Ok(true)) {
         let _ = std::fs::remove_file(&scratch);
-        return Err(e);
+        return staged;
     }
     // The content is in place already; this only hardens the rename.
     #[cfg(unix)]
     let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
-    Ok(())
+    Ok(true)
 }
 
 /// Writes `bytes` over `target` in place (its inode, owner and links stay),
@@ -1531,6 +1561,31 @@ mod tests {
         let err = write_text(&p(&d, "missing-dir/f.txt"), "x", Eol::Lf, false, None).unwrap_err();
         assert!(matches!(err, WriteError::Io(_)), "{err:?}");
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_change_made_while_saving_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "f.txt", b"mine\n");
+        let target = PathBuf::from(&f);
+        let read = Some((stat(&f, None).unwrap().unwrap(), content_hash(b"mine\n")));
+        // Somebody writes while the new content is being staged: the check
+        // right before the swap sees it.
+        let raced = || {
+            std::fs::write(&target, b"theirs, longer\n")?;
+            unchanged(&target, read)
+        };
+        assert!(!replace_atomically(&target, b"x\n", &raced).unwrap());
+        assert_eq!(std::fs::read(&f).unwrap(), b"theirs, longer\n");
+        let left: Vec<_> = std::fs::read_dir(d.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        // Unchanged: swapped in.
+        let read = Some((
+            stat(&f, None).unwrap().unwrap(),
+            content_hash(b"theirs, longer\n"),
+        ));
+        assert!(replace_atomically(&target, b"x\n", &|| unchanged(&target, read)).unwrap());
+        assert_eq!(std::fs::read(&f).unwrap(), b"x\n");
     }
 
     #[cfg(unix)]

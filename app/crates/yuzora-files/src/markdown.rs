@@ -116,9 +116,11 @@ fn missing_image() -> ImageSource {
     ImageSource::from(PathBuf::new())
 }
 
-/// A regular file small enough to show: not a device, FIFO or folder.
+/// A regular file small enough to show: not a device, FIFO or folder, and
+/// not too big once decoded.
 fn loadable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= crate::image::MAX_IMAGE_BYTES)
+        && crate::image::file_fits_in_memory(path)
 }
 
 /// A path's answer is looked at again after this long.

@@ -13,6 +13,7 @@
     "none": "No image",
     "loading": "Loading image…",
     "too_large": "This image is too large to show (over 32 MB).",
+    "too_large_decoded": "This image is too large to show (over 512 MB once decoded).",
     "unsupported": "This kind of image can't be shown.",
     "failed": "Can't show this image. {error}"
   }
