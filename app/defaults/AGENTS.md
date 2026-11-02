@@ -1079,6 +1079,15 @@ with these differences.
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
+- In Yuzora the command line program is `yuzora`: the same program as
+  `herdr-app` in this guide, so run `yuzora status`, `yuzora ls`,
+  `yuzora do …`, `yuzora shot …` and `yuzora check …`. A `herdr-app` on
+  PATH, if there is one, is the official Herdr app: it drives another window
+  with another home, never this one.
+- Yuzora updates itself from the GitHub releases of NakiriYuuzu/Yuzora, and
+  only from a manifest signed with the release key. `"update": {"channel":
+  "stable"}` (or `"beta"`) in `yuzora/settings.json` picks the channel; an
+  update waiting shows in Settings and goes in when Yuzora restarts.
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->

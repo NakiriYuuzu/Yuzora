@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "name": "yuzora",
+  "version": "0.1.0-beta.3",
+  "channel": "beta",
+  "pub_date": "2026-11-03T00:00:00Z",
+  "notes": { "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/changelog.md", "sha256": "0000000000000000000000000000000000000000000000000000000000000001" },
+  "targets": {
+    "linux-x86_64": { "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/yuzora-0.1.0-beta.3-linux-x86_64.tar.gz", "sha256": "0000000000000000000000000000000000000000000000000000000000000002", "size": 2 },
+    "macos-aarch64": { "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/yuzora-0.1.0-beta.3-macos-aarch64.tar.gz", "sha256": "0000000000000000000000000000000000000000000000000000000000000003", "size": 3 },
+    "windows-x86_64": { "url": "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/yuzora-0.1.0-beta.3-windows-x86_64.tar.gz", "sha256": "0000000000000000000000000000000000000000000000000000000000000004", "size": 4 }
+  }
+}

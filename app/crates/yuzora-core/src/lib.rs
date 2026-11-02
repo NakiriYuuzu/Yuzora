@@ -9,12 +9,14 @@
 //! - [`tokens`]: design tokens a theme has no name for.
 //! - [`host`]: helpers for a lane's `host_module()`.
 //! - [`js`]: the `yuzora:core` module itself.
+//! - [`migrate`]: bringing data over from the Tauri app (0.1.0-beta.1 and older; L7).
 
 pub mod discovery;
 pub mod git_trust;
 pub mod host;
 pub mod i18n;
 pub mod js;
+pub mod migrate;
 pub mod paths;
 pub mod remote;
 pub mod secrets;

@@ -1,7 +1,7 @@
 #!/bin/bash
 # yuzora: wraps a built herdr-app binary as Yuzora.app (bundle id
 # dev.yuuzu.yuzora, Yuzora's icon) for local runs and checks. Not a release
-# package: L7 owns packaging, signing and the update channel.
+# package: scripts/yuzora/package makes those (docs/beta2/release.md).
 #
 #   scripts/yuzora/bundle-macos <out-dir> [path/to/herdr-app]
 #
@@ -20,24 +20,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/Yuzora"
 cp "$here/assets/icons/Yuzora.icns" "$app/Contents/Resources/Yuzora.icns"
-cat > "$app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-    <key>CFBundleExecutable</key><string>Yuzora</string>
-    <key>CFBundleIdentifier</key><string>dev.yuuzu.yuzora</string>
-    <key>CFBundleName</key><string>Yuzora</string>
-    <key>CFBundleDisplayName</key><string>Yuzora</string>
-    <key>CFBundleIconFile</key><string>Yuzora</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$version</string>
-    <key>CFBundleVersion</key><string>$version</string>
-    <key>NSMicrophoneUsageDescription</key><string>Terminal programs running in Yuzora can use the microphone, for example for voice input.</string>
-    <key>NSCameraUsageDescription</key><string>Terminal programs running in Yuzora can use the camera.</string>
-    <key>NSAppleEventsUsageDescription</key><string>Terminal programs running in Yuzora can use AppleScript to control other apps.</string>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSHighResolutionCapable</key><true/>
-</dict></plist>
-PLIST
+# yuzora(L7): the same Info.plist as the release package.
+sed "s/@VERSION@/$version/g" "$here/distribution/yuzora/macos/Info.plist" > "$app/Contents/Info.plist"
 codesign --force --sign - "$app" >/dev/null 2>&1 || true
 echo "$app"

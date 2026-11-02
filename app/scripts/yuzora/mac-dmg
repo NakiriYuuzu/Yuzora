@@ -1,0 +1,46 @@
+#!/bin/bash
+# yuzora(L7): the macOS download, a disk image holding Yuzora.app and a link
+# to /Applications to drag it onto:
+#
+#   scripts/yuzora/mac-dmg <Yuzora.app> <out.dmg>
+#
+# Unlike upstream's scripts/mac-dmg there is no Developer ID, no notarization
+# and no stapling (AGENTS.md, "Release platform support"): the app inside is
+# ad-hoc signed and Gatekeeper asks on first open (README). Only hdiutil, no
+# Finder scripting, so it builds the same on a headless runner.
+set -euo pipefail
+
+app=${1:?usage: mac-dmg <Yuzora.app> <out.dmg>}
+out=${2:?usage: mac-dmg <Yuzora.app> <out.dmg>}
+[[ $(uname -s) == Darwin ]] || { echo 'mac-dmg needs macOS' >&2; exit 1; }
+[[ $(basename "$app") == Yuzora.app && -d $app ]] || { echo "mac-dmg: expected a Yuzora.app, got $app" >&2; exit 1; }
+[[ $out == *.dmg ]] || { echo 'mac-dmg: the output must end in .dmg' >&2; exit 1; }
+codesign --verify --deep --strict "$app"
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/yuzora-dmg.XXXXXX")
+mounted=
+cleanup() {
+  [[ -n $mounted ]] && hdiutil detach "$mounted" -quiet >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+mkdir "$work/source"
+ditto "$app" "$work/source/Yuzora.app"
+ln -s /Applications "$work/source/Applications"
+mkdir -p "$(dirname "$out")"
+rm -f "$out"
+hdiutil create -quiet -volname Yuzora -srcfolder "$work/source" -fs HFS+ \
+  -format UDZO -imagekey zlib-level=9 -o "$out"
+hdiutil verify -quiet "$out"
+
+# What people get: the image mounts, holds the same signed app, and the link.
+mounted="$work/mnt"
+mkdir "$mounted"
+hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mounted" "$out"
+[[ -L $mounted/Applications && $(readlink "$mounted/Applications") == /Applications ]] || { echo 'mac-dmg: no Applications link in the image' >&2; exit 1; }
+codesign --verify --deep --strict "$mounted/Yuzora.app"
+cmp "$app/Contents/MacOS/Yuzora" "$mounted/Yuzora.app/Contents/MacOS/Yuzora"
+hdiutil detach "$mounted" -quiet
+mounted=
+echo "mac-dmg: $out"
