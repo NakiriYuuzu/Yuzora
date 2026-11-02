@@ -154,6 +154,6 @@ grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果�
 
 ## 後續整合
 
-- L4：`yuzora_ssh::tunnel(host) -> (local_host, local_port)` 一類的 API；L3 在 `session::spec_for` 把 `ConnectSpec::endpoint` 換成 tunnel 的本機端點，`refuse_tunnel` 拿掉即可。
+- L4：#190 提供 `yuzora_ssh::tunnel::open(TunnelSpec::new(ssh_host, host, port))`，回傳的 `Tunnel` 在 drop 時關閉。合併後，L3 在 `session::spec_for` 開 tunnel、把 `ConnectSpec::endpoint` 設成 `127.0.0.1:local_port`，並讓 `Tunnel` 跟連線池的那條連線同生命週期，然後拿掉 `refuse_tunnel`。兩個引擎驗證憑證時都已經用設定的 host，不用 endpoint，所以經過 tunnel 時 verify-full 不受影響。
 - L6：`db.maxRows` 的設定頁（目前只能手改 `settings.json`）。
 - L1：狀態列讀 `yuzora.status.db`，模式列讀 `yuzora.badge.database`。pane 標題目前顯示 mod 名稱（`yuzora-db-table`），應改成資料表或查詢名稱。
