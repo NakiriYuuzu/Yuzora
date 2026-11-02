@@ -583,7 +583,10 @@ pub(crate) mod tests {
         let r = open(s.root(), None).unwrap();
         release_now(&r);
         // Only the log pane looks at the repo: logWait in a loop, never repo::get.
+        // A pane goes idle after its first load; during the load a wait can
+        // wake before anything is new.
         let log = crate::log::open(r.clone(), crate::log::Filter::default());
+        assert!(wait_until(|| log.info()["loading"] == false));
         let wait = |log: &Arc<crate::log::LogSession>| {
             let (tx, rx) = std::sync::mpsc::channel();
             let (l, g) = (log.clone(), log.generation());

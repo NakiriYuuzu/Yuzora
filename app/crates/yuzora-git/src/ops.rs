@@ -1354,7 +1354,10 @@ mod tests {
         s.git(&["init", "-q", "--bare", &ap]);
         s.git(&["init", "-q", "--bare", &abp]);
         s.git(&["remote", "add", "a", &ap]);
-        s.git(&["remote", "add", "a/b", &abp]);
+        // git 2.5x's `remote add` refuses nested names; older gits made them
+        // and a hand-edited config still has them, so write it directly.
+        s.git(&["config", "remote.a/b.url", &abp]);
+        s.git(&["config", "remote.a/b.fetch", "+refs/heads/*:refs/remotes/a/b/*"]);
         // main tracks b/main on remote a: `@{push}` is a/b/main.
         s.git(&["push", "-q", "a", "main:b/main"]);
         s.git(&["fetch", "-q", "a"]);
