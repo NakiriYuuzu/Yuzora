@@ -60,6 +60,7 @@ pub fn host_modules(mod_name: &str) -> Vec<gpui_shell::HostModule> {
         yuzora_ssh::host_module(),
         yuzora_files::host_module(),
         yuzora_settings::host_module(),
+        yuzora_perf::host_module(),
     ]
 }
 
@@ -130,7 +131,7 @@ mod tests {
         }
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         let d = declarations();
         assert!(d.contains("declare module \"yuzora:core\"") && d.contains("declare module \"yuzora:git\""));
     }
