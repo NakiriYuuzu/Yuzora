@@ -111,6 +111,62 @@ fn forget(id: u64, cx: &mut App) {
     }
 }
 
+/// Renames a file or folder (this machine only), then points the documents
+/// open at it, or under it, at the new path: their panes keep showing them,
+/// and the next look at the disk finds the file where it now is.
+pub fn rename(
+    from: String,
+    to: String,
+    on: Option<String>,
+    cx: &mut App,
+) -> oneshot::Receiver<Result<(), String>> {
+    let (tx, rx) = oneshot::channel();
+    cx.spawn(async move |cx| {
+        let (f, t, o) = (from.clone(), to.clone(), on);
+        let result = blocking(move || fsops::rename(&f, &t, o.as_deref()))
+            .await
+            .unwrap_or_else(|| Err("could not start a worker".into()));
+        if result.is_ok() {
+            cx.update(|cx| moved(&from, &to, cx));
+        }
+        let _ = tx.send(result);
+    })
+    .detach();
+    rx
+}
+
+/// Re-keys the documents on this machine at `from`, or under it, to `to`.
+fn moved(from: &str, to: &str, cx: &mut App) {
+    for view in all(cx) {
+        let (id, key) = {
+            let doc = view.read(cx);
+            (doc.id, doc.key.clone())
+        };
+        let Some(path) = renamed(&key.path, from, to).filter(|_| key.on.is_none()) else {
+            continue;
+        };
+        let new_key = DocKey { on: None, path };
+        let docs = cx.default_global::<Docs>();
+        if docs.by_key.get(&key) == Some(&id) {
+            docs.by_key.remove(&key);
+        }
+        docs.by_key.insert(new_key.clone(), id);
+        view.update(cx, |doc, cx| {
+            doc.key = new_key;
+            doc.bump(cx);
+        });
+    }
+}
+
+/// `path` after `from` moved to `to`, if it is `from` or inside it.
+fn renamed(path: &str, from: &str, to: &str) -> Option<String> {
+    if path == from {
+        return Some(to.to_owned());
+    }
+    let rest = path.strip_prefix(from)?;
+    rest.starts_with(['/', '\\']).then(|| format!("{to}{rest}"))
+}
+
 /// The document already open for a file, if any.
 pub fn find(key: &DocKey, cx: &App) -> Option<u64> {
     cx.try_global::<Docs>()?.by_key.get(key).copied()
@@ -1250,6 +1306,58 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
+    }
+
+    #[test]
+    fn renames_reach_the_paths_inside() {
+        assert_eq!(
+            renamed("/r/a.txt", "/r/a.txt", "/r/b.txt").as_deref(),
+            Some("/r/b.txt")
+        );
+        assert_eq!(
+            renamed("/r/d/a.txt", "/r/d", "/r/e").as_deref(),
+            Some("/r/e/a.txt")
+        );
+        assert_eq!(renamed("/r/dd/a.txt", "/r/d", "/r/e"), None);
+        assert_eq!(renamed("/r/a.txt", "/r/b.txt", "/r/c.txt"), None);
+    }
+
+    #[gpui::test]
+    fn an_open_document_follows_its_file_when_renamed(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.txt"), "one\n").unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let old = DocKey {
+            on: None,
+            path: path(&sub.join("a.txt")),
+        };
+        let id = cx.update(|cx| open(old.clone(), cx));
+        cx.run_until_parked();
+        // The file, then its folder.
+        let renamed_to =
+            |from: &std::path::Path, to: &std::path::Path, cx: &mut gpui::TestAppContext| {
+                let rx = cx.update(|cx| rename(path(from), path(to), None, cx));
+                cx.run_until_parked();
+                assert_eq!(futures::executor::block_on(rx).unwrap(), Ok(()));
+            };
+        renamed_to(&sub.join("a.txt"), &sub.join("b.txt"), cx);
+        let moved = DocKey {
+            on: None,
+            path: path(&dir.path().join("sub2/b.txt")),
+        };
+        renamed_to(&sub, &dir.path().join("sub2"), cx);
+        cx.update(|cx| {
+            assert_eq!(find(&old, cx), None);
+            assert_eq!(find(&moved, cx), Some(id));
+            assert_eq!(get(id, cx).unwrap().read(cx).key, moved);
+        });
+        // Where it is now, it is not deleted.
+        let view = cx.update(|cx| get(id, cx).unwrap());
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!view.read(cx).deleted));
     }
 
     #[cfg(unix)]

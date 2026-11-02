@@ -79,6 +79,7 @@ export function stat(path: string, options?: On): Promise<{ len: number; mtime_m
 /** New file, new folder, rename: this machine only for now (a machine in `on` is refused). */
 export function createFile(path: string, options?: On): Promise<null>;
 export function createFolder(path: string, options?: On): Promise<null>;
+/** Renaming also moves the documents open at that path (or under that folder) to the new one. */
 export function rename(from: string, to: string, options?: On): Promise<null>;
 /** Moves a file or folder to the system's trash (this machine only). */
 export function trash(path: string): Promise<null>;
@@ -347,7 +348,14 @@ pub fn host_module() -> HostModule {
         })
         .async_function("rename", |a| {
             let (from, to, on) = (a.string(0)?.to_owned(), a.string(1)?.to_owned(), on(a, 2));
-            Ok(job(move || fsops::rename(&from, &to, on.as_deref()), null))
+            let rx = app(|cx| docs::rename(from, to, on, cx))?;
+            Ok(async move {
+                match rx.await {
+                    Ok(Ok(())) => Ok(HostValue::Null),
+                    Ok(Err(e)) => Err(HostError::new(e)),
+                    Err(_) => Err(HostError::new("closed")),
+                }
+            })
         })
         .async_function("trash", |a| {
             let path = a.string(0)?.to_owned();

@@ -118,7 +118,9 @@ export class DocPane extends View {
       try {
         for (;;) {
           const changed = await watchFolder(dir);
-          if (changed.some(p => p === this.path || p === dir)) await checkDisk(this.doc).catch(() => {});
+          // The document's path, which follows a rename made in the sidebar.
+          const path = this.state?.path ?? this.path;
+          if (changed.some(p => p === path || p === dir)) await checkDisk(this.doc).catch(() => {});
         }
       } catch {}
     });

@@ -561,11 +561,13 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
 /// Saves `text` (LF) to a file on this machine, in `eol` and with a BOM when
 /// `bom`. With `expected` (the stamp and [`content_hash`] last read), a file
 /// whose stamp differs, that is gone, or whose bytes changed under the same
-/// stamp (a coarse clock) is not touched: `Conflict` carries its current stamp. The write goes to a scratch
-/// file in the same directory that is fsynced and renamed over the target, so
-/// a failed save leaves the old content; mode (and owner) are kept. A symlink
-/// is written through. Another machine is the caller's to refuse
-/// ([`WriteError::Remote`]). Returns the new stamp.
+/// stamp (a coarse clock) is not touched: `Conflict` carries its current
+/// stamp. The write goes to a scratch file in the same directory that is
+/// fsynced and renamed over the target, so a failed save leaves the old
+/// content; mode (and owner) are kept. When it cannot be swapped (see
+/// [`write_in_place`]) the old content is kept in a backup until the new one
+/// is complete. A symlink is written through. Another machine is the
+/// caller's to refuse ([`WriteError::Remote`]). Returns the new stamp.
 pub fn write_text(
     path: &str,
     text: &str,
@@ -642,7 +644,8 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
         .open(&scratch)
     {
         Ok(f) => f,
-        // A directory that cannot hold a scratch file around a writable file.
+        // A directory that cannot hold a scratch file around a writable file:
+        // the backup goes to the temporary folder.
         Err(e)
             if original.is_some()
                 && matches!(
@@ -650,7 +653,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
                     io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
                 ) =>
         {
-            return std::fs::write(target, bytes);
+            return write_in_place(target, bytes, &scratch_path(&std::env::temp_dir()));
         }
         Err(e) => return Err(e),
     };
@@ -661,7 +664,7 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
         // The swap would change the owner: write in place instead.
         drop(file);
         let _ = std::fs::remove_file(&scratch);
-        return std::fs::write(target, bytes);
+        return write_in_place(target, bytes, &scratch);
     }
     let staged = (|| {
         file.write_all(bytes)?;
@@ -681,6 +684,48 @@ fn replace_atomically(target: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
     Ok(())
+}
+
+/// Writes `bytes` over `target` in place (its inode, owner and links stay),
+/// for a file that cannot be swapped. Its old content is first copied to
+/// `backup`, readable by its owner only, and kept there until the new content
+/// is complete: a failed write puts the old content back, and when even that
+/// fails the error names the backup.
+fn write_in_place(target: &Path, bytes: &[u8], backup: &Path) -> io::Result<()> {
+    write_in_place_with(target, bytes, backup, write_synced)
+}
+
+fn write_in_place_with(
+    target: &Path,
+    bytes: &[u8],
+    backup: &Path,
+    write: impl Fn(&Path, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    let old = std::fs::read(target)?;
+    write(backup, &old)?;
+    let Err(e) = write(target, bytes) else {
+        let _ = std::fs::remove_file(backup);
+        return Ok(());
+    };
+    if write(target, &old).is_ok() {
+        let _ = std::fs::remove_file(backup);
+        return Err(e);
+    }
+    Err(io::Error::new(
+        e.kind(),
+        format!("{e}; its old content is in {}", backup.display()),
+    ))
+}
+
+/// Writes and fsyncs a whole file; one it creates is its owner's only.
+fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Gives the scratch file the original's owner and group; false when it cannot.
@@ -1236,6 +1281,48 @@ mod tests {
         assert_eq!(std::fs::read(&f).unwrap(), b"new\n");
         write_text(&f, "newer\n", Eol::Lf, true, None).unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"\xef\xbb\xbfnewer\n");
+    }
+
+    #[test]
+    fn writes_in_place_keep_the_old_content_until_the_new_is_complete() {
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "f.txt", b"old content\n");
+        let target = Path::new(&f);
+        let backup = Path::new(&p(&d, "backup")).to_owned();
+        // Done: the new content, and no backup left.
+        write_in_place(target, b"new\n", &backup).unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), b"new\n");
+        assert!(!backup.exists());
+        // The write fails halfway (say the disk filled up): the old content is put back.
+        let failing = std::cell::Cell::new(true);
+        let flaky = |path: &Path, bytes: &[u8]| {
+            if path == target && bytes == b"newer\n" && failing.replace(false) {
+                std::fs::write(path, b"ne")?;
+                return Err(io::Error::other("no space left"));
+            }
+            write_synced(path, bytes)
+        };
+        let err = write_in_place_with(target, b"newer\n", &backup, flaky).unwrap_err();
+        assert_eq!(err.to_string(), "no space left");
+        assert_eq!(std::fs::read(target).unwrap(), b"new\n");
+        assert!(!backup.exists());
+        // Putting it back fails too: the backup stays, and the error says where.
+        let broken = |path: &Path, bytes: &[u8]| {
+            if path == target {
+                std::fs::write(path, b"")?;
+                return Err(io::Error::other("no space left"));
+            }
+            write_synced(path, bytes)
+        };
+        let err = write_in_place_with(target, b"newer\n", &backup, broken).unwrap_err();
+        assert!(err.to_string().contains(&backup.display().to_string()));
+        assert_eq!(std::fs::read(&backup).unwrap(), b"new\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 
     #[test]

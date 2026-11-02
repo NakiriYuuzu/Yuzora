@@ -586,21 +586,23 @@ pub fn grep_local(
         let mut found = false;
         for (number, line) in text.lines().enumerate() {
             let line = line.trim_end_matches('\r');
-            let mut ranges: Vec<(usize, usize)> = matcher
-                .find_iter(line)
+            // A pattern that matches only an empty spot (`^`, `\b`) still
+            // makes a hit, as with ripgrep; there is just nothing to mark.
+            let mut matches = matcher.find_iter(line).peekable();
+            let Some(first) = matches.peek().map(|m| char_offset(line, m.start())) else {
+                continue;
+            };
+            let mut ranges: Vec<(usize, usize)> = matches
                 .filter(|m| m.end() > m.start())
                 .map(|m| (char_offset(line, m.start()), char_offset(line, m.end())))
                 .collect();
-            if ranges.is_empty() {
-                continue;
-            }
             if result.hits.len() >= limit {
                 result.truncated = true;
                 result.files += usize::from(found);
                 return Ok(result);
             }
             found = true;
-            let column = ranges[0].0 as u64 + 1;
+            let column = first as u64 + 1;
             ranges.retain(|r| r.0 < TEXT_CHARS);
             for r in &mut ranges {
                 r.1 = r.1.min(TEXT_CHARS);
@@ -1424,5 +1426,23 @@ mod tests {
         );
         let cut = grep_local(&root, "main", false, false, false, 1).unwrap();
         assert_eq!((cut.hits.len(), cut.truncated, cut.files), (1, true, 1));
+        // A pattern that only matches an empty spot finds lines, with nothing to mark.
+        let starts = grep_local(&root, "^", true, false, false, 100).unwrap();
+        let main: Vec<_> = starts
+            .hits
+            .iter()
+            .filter(|h| h.path == "src/main.rs")
+            .collect();
+        assert_eq!(main.len(), 3);
+        assert!(main.iter().all(|h| h.column == 1 && h.ranges.is_empty()));
+        let words = grep_local(&root, r"\blast", true, false, false, 100).unwrap();
+        assert_eq!(
+            words
+                .hits
+                .iter()
+                .map(|h| (h.line, h.column))
+                .collect::<Vec<_>>(),
+            [(3, 1)]
+        );
     }
 }
