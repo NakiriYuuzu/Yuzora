@@ -9,6 +9,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
@@ -24,16 +25,21 @@ const REMOTE_GRACE: Duration = Duration::from_secs(5);
 /// After the program exits, how long its output may take to arrive. Anything
 /// it started in the background can keep the pipes open for good.
 const PIPE_GRACE: Duration = Duration::from_millis(500);
+/// How often an idle reader looks whether it should let go of its pipe.
+const READ_CHECK: Duration = Duration::from_millis(50);
 
-static HC: OnceLock<PathBuf> = OnceLock::new();
+type FindHc = Box<dyn Fn() -> PathBuf + Send + Sync>;
 
-/// The herdr-core the app found (`hc` on PATH until then).
-pub fn set_hc_program(path: PathBuf) {
-    let _ = HC.set(path);
+static HC: OnceLock<FindHc> = OnceLock::new();
+
+/// How to find the herdr-core the app uses, asked on every call: the setup
+/// screen can install or pick one after start. `hc` on PATH until set.
+pub fn set_hc_program(find: impl Fn() -> PathBuf + Send + Sync + 'static) {
+    let _ = HC.set(Box::new(find));
 }
 
 pub fn hc_program() -> PathBuf {
-    HC.get().cloned().unwrap_or_else(|| PathBuf::from("hc"))
+    HC.get().map(|find| find()).unwrap_or_else(|| PathBuf::from("hc"))
 }
 
 /// One program to run.
@@ -213,7 +219,8 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
         }
     };
     // What the program wrote is already in the pipes; whatever it left running
-    // in the background may hold them open, so don't wait for that.
+    // in the background may hold them open, so don't wait for that (the
+    // readers let go of the pipes as the Drains drop).
     let until = Instant::now() + PIPE_GRACE;
     Ok(ExecOutput { code: status.code().unwrap_or(-1), stdout: out.finish(until), stderr: err.finish(until) })
 }
@@ -241,22 +248,76 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
+/// A pipe its reader can wait on without blocking on it for good.
+#[cfg(unix)]
+trait Pipe: Read + Send + std::os::fd::AsRawFd + 'static {}
+#[cfg(unix)]
+impl<T: Read + Send + std::os::fd::AsRawFd + 'static> Pipe for T {}
+#[cfg(windows)]
+trait Pipe: Read + Send + std::os::windows::io::AsRawHandle + 'static {}
+#[cfg(windows)]
+impl<T: Read + Send + std::os::windows::io::AsRawHandle + 'static> Pipe for T {}
+
+/// Whether `r` has something to read, or has ended, within `wait`.
+#[cfg(unix)]
+fn readable(r: &impl Pipe, wait: Duration) -> std::io::Result<bool> {
+    let mut fd = libc::pollfd { fd: r.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let ms = libc::c_int::try_from(wait.as_millis()).unwrap_or(libc::c_int::MAX);
+    // SAFETY: one pollfd, alive for the whole call.
+    match unsafe { libc::poll(&mut fd, 1, ms) } {
+        0 => Ok(false),
+        n if n > 0 => Ok(true),
+        _ => {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted { Ok(false) } else { Err(e) }
+        }
+    }
+}
+
+/// Whether `r` has something to read, or has ended, within `wait`.
+#[cfg(windows)]
+fn readable(r: &impl Pipe, wait: Duration) -> std::io::Result<bool> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn PeekNamedPipe(pipe: *mut std::ffi::c_void, buf: *mut std::ffi::c_void, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+    }
+    let mut available = 0u32;
+    // SAFETY: the pipe `r` owns and one out-parameter, alive for the whole call.
+    let ok = unsafe { PeekNamedPipe(r.as_raw_handle(), std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) };
+    // Failing means the pipe ended (the read then says so).
+    if ok == 0 || available > 0 {
+        return Ok(true);
+    }
+    std::thread::sleep(wait);
+    Ok(false)
+}
+
 /// One output stream read on its own thread, up to a limit (the rest is
 /// drained and dropped), into a buffer that can be taken before it ends.
+/// Dropped, it lets go of the pipe even while something still holds the
+/// other end (a program's background child).
 struct Drain {
     buf: Arc<Mutex<Vec<u8>>>,
     ended: mpsc::Receiver<()>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Drain {
-    fn start(mut r: impl Read + Send + 'static, limit: u64) -> Self {
+    fn start(mut r: impl Pipe, limit: u64) -> Self {
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let buf = Arc::new(Mutex::new(Vec::new()));
         let (tx, ended) = mpsc::channel();
-        let into = buf.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (into, stopped) = (buf.clone(), stop.clone());
         std::thread::spawn(move || {
             let mut chunk = [0u8; 16 << 10];
-            loop {
+            // Until the stream ends or the Drain is dropped; the pipe closes with `r`.
+            while !stopped.load(Ordering::Relaxed) {
+                match readable(&r, READ_CHECK) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
                 match r.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -270,13 +331,19 @@ impl Drain {
             }
             let _ = tx.send(());
         });
-        Drain { buf, ended }
+        Drain { buf, ended, stop }
     }
 
     /// Everything read once the stream ends, or what was read by `until`.
     fn finish(self, until: Instant) -> Vec<u8> {
         let _ = self.ended.recv_timeout(until.saturating_duration_since(Instant::now()));
         std::mem::take(&mut *self.buf.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+impl Drop for Drain {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -355,5 +422,33 @@ mod tests {
         let out = run(&ExecRequest::new("sh", ["-c", "printf done; printf warn >&2; sleep 4 & exit 0"]).timeout(Duration::from_secs(30))).unwrap();
         assert_eq!((out.code, out.stdout_text().as_str(), out.stderr_text().as_str()), (0, "done", "warn"));
         assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn a_reader_lets_go_of_a_pipe_still_held_open() {
+        use std::io::Write as _;
+        let (r, mut w) = std::io::pipe().unwrap();
+        w.write_all(b"early").unwrap();
+        assert_eq!(Drain::start(r, 64).finish(Instant::now() + Duration::from_millis(200)), b"early");
+        // The writer (a background child, in an exec) is still open; the reader
+        // closes its end anyway, so writing fails instead of feeding a stuck thread.
+        let closed = (0..100).any(|_| {
+            let refused = w.write_all(b"late").is_err();
+            if !refused {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            refused
+        });
+        assert!(closed, "the reader still holds the pipe");
+    }
+
+    #[test]
+    fn the_core_is_asked_for_on_every_call() {
+        static CORE: Mutex<Option<PathBuf>> = Mutex::new(None);
+        set_hc_program(|| CORE.lock().unwrap().clone().unwrap_or_else(|| PathBuf::from("hc")));
+        assert_eq!(hc_program(), PathBuf::from("hc"));
+        // The setup screen installs or picks one after start.
+        *CORE.lock().unwrap() = Some(PathBuf::from("/opt/herdr/herdr-core"));
+        assert_eq!(hc_program(), PathBuf::from("/opt/herdr/herdr-core"));
     }
 }
