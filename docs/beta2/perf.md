@@ -112,7 +112,7 @@ cargo run --release -p yuzora-perf --example cost -- <app pid> 30   # 在 app �
 
 | 檔案 | 內容 |
 | --- | --- |
-| `l8-chip.png` | 右下角的 chip（24 個終端機） |
+| `l8-chip.png` | 右下角的 chip，在指令快捷鍵右邊，與狀態列無縫（merge `beta2/integration` 87249406 後用新安裝的 home 重拍；5 個終端機） |
 | `l8-popover.png` | 展開的資源用量 popover（記憶體排序；herdr-core 26 個行程、工具 1 個） |
 | `l8-popover-cpu.png` | CPU 排序（8 個終端機；只在隔離 home 的 mod 複本把預設排序改成 CPU 截圖，之後還原） |
 
