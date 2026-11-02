@@ -68,6 +68,9 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
+- L3 資料庫：`app/crates/yuzora-db`（`yuzora:db`）＋ mods `yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query`。設計、API、共用狀態 key 與限制見 `docs/beta2/db.md`。
+- 引擎 integration tests 在 `app/crates/yuzora-db/tests/engines.rs`：SQLite 一律跑；PG／MSSQL 需要 `tests/database/docker-compose.yml` 的容器，並設 `YUZORA_DATABASE_TEST_ENGINES=postgres,mssql`（沒設就印 skip 後通過）。效能量測是 `#[ignore]`，用 `--ignored --nocapture` 跑。
+- 隔離實機執行加 `YUZORA_DB_SECRETS=memory`，密碼只留在該 process，不碰系統 keychain。
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->

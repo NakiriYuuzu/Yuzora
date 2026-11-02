@@ -130,7 +130,7 @@ module), never on the UI thread. Design and the IntelliJ checklist:
 <!-- yuzora:lane:L3:start -->
 ### L3 · Databases
 
-Not started.
+PostgreSQL, SQL Server and SQLite in the sidebar's Database mode: saved connections (passwords in the system keychain), a database picker and the schema tree; a table pane with Data (virtual grid, sorting, copying, editing cells and writing them back in one transaction), Structure (columns, indexes, foreign keys, DDL) and SQL; and a SQL pane with several result sets, cancel and history. Native layer `app/crates/yuzora-db` (`yuzora:db`); design and limits in [docs/beta2/db.md](docs/beta2/db.md).
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
