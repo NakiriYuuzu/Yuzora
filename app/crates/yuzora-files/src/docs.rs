@@ -407,23 +407,28 @@ impl DocView {
         self.phase = Phase::Loading;
         let key = self.key.clone();
         cx.spawn(async move |this, cx| {
-            let read =
-                blocking(move || fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES))
-                    .await
-                    .unwrap_or_else(|| Err("could not start a worker".into()));
-            let _ = this.update(cx, |doc, cx| doc.loaded(read, cx));
+            let (read, gone) = blocking(move || {
+                let read = fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES);
+                // Gone only when a stat says so, not when it is unreadable or out of reach.
+                let gone =
+                    read.is_err() && matches!(fsops::stat(&key.path, key.on.as_deref()), Ok(None));
+                (read, gone)
+            })
+            .await
+            .unwrap_or_else(|| (Err("could not start a worker".into()), false));
+            let _ = this.update(cx, |doc, cx| doc.loaded(read, gone, cx));
         })
         .detach();
     }
 
-    fn loaded(&mut self, read: Result<TextFile, String>, cx: &mut Context<Self>) {
+    /// `gone`: a failed read found no file there.
+    fn loaded(&mut self, read: Result<TextFile, String>, gone: bool, cx: &mut Context<Self>) {
         match read {
             // A re-read that failed keeps the text there is: it may be all
             // that is left of a file removed from disk.
             Err(e) if self.state.is_some() => {
                 self.phase = Phase::Ready;
-                self.deleted =
-                    self.key.on.is_none() && !std::path::Path::new(&self.key.path).exists();
+                self.deleted = gone;
                 self.conflict = false;
                 self.error = Some(e);
             }
@@ -1245,6 +1250,39 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn an_unreadable_file_is_not_taken_for_a_deleted_one(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let path = sub.join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, _window) = editing(&path, cx);
+        // Its folder shut: there, but neither readable nor stat-able.
+        let mode = |m: u32| std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(m));
+        mode(0o000).unwrap();
+        if std::fs::metadata(&path).is_ok() {
+            // Root sees it anyway.
+            mode(0o755).unwrap();
+            return;
+        }
+        view.update(cx, |doc, cx| doc.reload(cx));
+        cx.run_until_parked();
+        mode(0o755).unwrap();
+        cx.update(|cx| {
+            let doc = view.read(cx);
+            assert!(!doc.deleted && doc.error.is_some());
+            assert_eq!(doc.text(cx).as_ref(), "one\n");
+        });
+        // Removed: that is deleted.
+        std::fs::remove_file(&path).unwrap();
+        view.update(cx, |doc, cx| doc.reload(cx));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(view.read(cx).deleted));
     }
 
     #[gpui::test]

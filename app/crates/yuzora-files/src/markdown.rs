@@ -61,15 +61,18 @@ pub fn opens_outside(url: &str) -> bool {
 }
 
 fn percent_decode(s: &str) -> String {
+    // Bytes, not string slices: a `%` before a multibyte character is not an
+    // escape, and slicing into that character would panic.
+    let hex = |b: u8| char::from(b).to_digit(16);
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
             && i + 2 < bytes.len()
-            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+            && let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
         {
-            out.push(b);
+            out.push((hi * 16 + lo) as u8);
             i += 3;
             continue;
         }
@@ -415,6 +418,15 @@ mod tests {
         assert_eq!(image_path("/\\host/share/a.png", Some(base)), None);
         assert_eq!(image_path("\\/host/share/a.png", Some(base)), None);
         assert_eq!(image_path("%5C%5Chost%5Cshare%5Ca.png", Some(base)), None);
+        // A stray `%` before a multibyte character is kept as it is.
+        assert_eq!(
+            image_path("%\u{1f9e9}.png", Some(base)),
+            Some(PathBuf::from("/repo/docs/%\u{1f9e9}.png"))
+        );
+        assert_eq!(
+            image_path("a%\u{00e9}%41.png", Some(base)),
+            Some(PathBuf::from("/repo/docs/a%\u{00e9}A.png"))
+        );
     }
 
     #[test]
