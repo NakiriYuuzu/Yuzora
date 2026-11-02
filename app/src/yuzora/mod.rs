@@ -12,6 +12,8 @@
 use gpui_shell::policy::Policy;
 use std::path::{Path, PathBuf};
 
+pub mod shell;
+
 /// The name people see (window title, setup screen).
 pub const APP_NAME: &str = "Yuzora";
 /// macOS bundle id, also the Linux/Wayland app id and Windows AppUserModelID.

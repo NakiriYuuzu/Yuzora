@@ -267,6 +267,9 @@ pub struct PaneFrame {
     /// Frame a tab's only pane too (default: only when it's split).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lone: bool,
+    // yuzora(L1): the border while the pane's agent needs a reply (over `focus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<Line>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

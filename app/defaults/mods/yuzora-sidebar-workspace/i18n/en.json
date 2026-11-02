@@ -1,5 +1,46 @@
 {
   "title": "Workspace",
-  "description": "Spaces, sessions and agents",
-  "placeholder": "Coming in lane {lane}."
+  "description": "Spaces, machines and agents",
+  "tab": { "spaces": "Spaces", "agents": "Agents" },
+  "add": "New Space or machine",
+  "tools": {
+    "title": "Herdr tools",
+    "palette": "Command palette",
+    "layout": "Next layout",
+    "help": "Herdr manual"
+  },
+  "menu": {
+    "new_space": "New Space",
+    "new_space_on": "New Space on {machine}",
+    "worktree": "New worktree…",
+    "machine": "Connect a machine…"
+  },
+  "scope": { "all": "All" },
+  "attention": "Needs attention · {count}",
+  "status": {
+    "working": "Working",
+    "blocked": "Needs reply",
+    "done": "Done · unseen",
+    "idle": "Idle",
+    "unknown": "Unknown"
+  },
+  "machine": {
+    "local": "This computer · {host}",
+    "local_bare": "This computer",
+    "add_space": "New Space on this machine",
+    "fold": "Fold {name}",
+    "unfold": "Unfold {name}"
+  },
+  "space": {
+    "branch": "1 branch",
+    "branches": "{count} branches",
+    "agent": "1 agent",
+    "agents": "{count} agents"
+  },
+  "pending": "{count} to reply",
+  "worktree": { "new": "New terminal here" },
+  "empty": {
+    "spaces": "No Spaces yet.",
+    "agents": "No agents yet. Agents show up here once they report their status."
+  }
 }
