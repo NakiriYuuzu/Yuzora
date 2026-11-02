@@ -63,6 +63,7 @@ export function placeIn(f, space, dir) {
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
+    this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); // space id -> "files" | "changes" | null
     if (props()?.menu !== "pane") {
       // "yuzora-shell-tabs.new-pane" (a key in keys.json, or herdr-app do) opens the new-pane menu.
       cx.spawn(async () => {
@@ -141,6 +142,35 @@ export default class Tabs extends View {
 
   // ---- the bar --------------------------------------------------------------------
 
+  // The side panel (Files / Changes) is remembered per Space, as Herdr's tab bar does:
+  // switching shows that Space's choice (closed if it never had one), opening or closing records it.
+  syncPanel(space, panel, body, enabled) {
+    if (!space || !panel) return;
+    const now = panel.hidden ? null : body?.active ?? null;
+    if (space.id !== this.space) {
+      const first = this.space === undefined;
+      this.space = space.id;
+      this.pending = null;
+      if (!(first && !(space.id in this.panels))) {
+        const stored = this.panels[space.id] ?? null, want = enabled.includes(stored) ? stored : null;
+        if (want !== now) {
+          this.pending = { want, until: Date.now() + 1000 };
+          if (want) { run("layout.select", { stack: "panel-body", child: want }); run("layout.show", { id: "panel" }); }
+          else run("layout.hide", { id: "panel" });
+          return;
+        }
+      }
+    }
+    // Until the restore lands (or something else won), the old state isn't a choice.
+    if (this.pending) {
+      if (this.pending.want !== now && Date.now() < this.pending.until) return;
+      this.pending = null;
+    }
+    if (this.panels[space.id] === now) return;
+    this.panels[space.id] = now;
+    localStorage.setItem("panels", JSON.stringify(this.panels));
+  }
+
   render() {
     const th = theme(), tk = tokens();
     if (props()?.menu === "pane") return this.menu(th, tk);
@@ -185,6 +215,26 @@ export default class Tabs extends View {
       ? Math.max(6, (root.traffic_lights[0] + 64) / (settings().zoom || 1) - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 6;
     const winIcon = (name, glyph) => (w.platform === "windows" ? svg(`mods/tabs/win-${name}.svg`).size(16) : glyph);
+    const panel = find(root, "panel"), body = find(root, "panel-body");
+    const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    this.syncPanel(sp.find((s) => s.active), panel, body, enabled);
+    const panelButton = (id, icon) => {
+      const open = panel && !panel.hidden && body?.active === id;
+      return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12.5)
+        .bg(open ? th.selected : th.chrome).text_color(open ? th.foreground : th.muted).hover((s) => s.bg(th.hover))
+        .on_mouse_down("left", stop)
+        .on_click(() => {
+          if (open) run("layout.hide", { id: "panel" });
+          else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
+        })
+        .child(svg(icon).size(14)).child(t(`panel.${id}`));
+    };
+    // Split the focused pane; a layout terminal block (or nothing) has the keyboard: nothing to split.
+    const target = focused()?.pane;
+    const split = (id, direction) => target
+      ? button(id, svg(`mods/pane/${id}.svg`).size(14), t(`pane.${id.replace("-", "_")}`), () => run("pane.split", { direction, pane: target }))
+      : div().id(id).w(28).h(26).flex_none().flex().items_center().justify_center().text_color(th.dim).opacity(0.45)
+        .tooltip(t("pane.no_pane")).child(svg(`mods/pane/${id}.svg`).size(14));
     return h_flex().id("root").size_full().min_w(0).pl(lights).pr(6).gap(6).items_center().bg(th.chrome).border_b(1).border_color(th.divider ?? th.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
@@ -199,8 +249,10 @@ export default class Tabs extends View {
         .child(svg(`mods/${SELF}/pane-add.svg`).size(14).text_color(th.muted))
         .child(t("pane.add"))
         .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).text_color(th.dim)))
-      .child(button("split-right", svg("mods/pane/split-right.svg").size(14), t("pane.split_right"), () => run("pane.split", { direction: "right" })))
-      .child(button("split-down", svg("mods/pane/split-down.svg").size(14), t("pane.split_down"), () => run("pane.split", { direction: "down" })))
+      .when(enabled.includes("files") && Boolean(panel), (el) => el.child(panelButton("files", "mods/files/file.svg")))
+      .when(enabled.includes("changes") && Boolean(panel), (el) => el.child(panelButton("changes", "mods/changes/changes.svg")))
+      .child(split("split-right", "right"))
+      .child(split("split-down", "down"))
       .when(Boolean(w?.buttons), (el) => el.child(div().w(1).h(16).flex_none().bg(th.border))
         .child(button("minimize", winIcon("min", "—"), t("window.minimize"), () => run("window.minimize"), 30))
         .child(button("maximize", winIcon(w.maximized ? "restore" : "max", "□"), t("window.maximize"), () => run("window.maximize"), 30))
