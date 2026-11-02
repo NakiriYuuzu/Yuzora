@@ -491,8 +491,15 @@ pub fn fetch(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value>
             return Err(GitError::Other(format!("the folder isn't trusted ({})", pending.join(", "))));
         }
     }
-    let args: &[&str] = if auto { &["-c", "core.hooksPath=/dev/null", "fetch"] } else { &["fetch"] };
-    let mut cmd = Git::read(args.iter().copied()).timeout(LONG_TIMEOUT).cancel(cancel);
+    let mut cmd = if auto {
+        // Hooks from an empty folder of ours (it doesn't exist on another
+        // machine either), and submodules (their own configs) left alone.
+        Git::read(["-c".to_owned(), format!("core.hooksPath={}", crate::trust::no_hooks_dir()), "fetch".to_owned(), "--no-recurse-submodules".to_owned()])
+    } else {
+        Git::read(["fetch"])
+    }
+    .timeout(LONG_TIMEOUT)
+    .cancel(cancel);
     match o.get("remote").and_then(Value::as_str).filter(|r| !r.is_empty()) {
         Some(r) => cmd = cmd.arg(r),
         None => cmd = cmd.arg("--all"),

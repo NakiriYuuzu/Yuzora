@@ -24,19 +24,54 @@ const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(sshcommand|
 /// Stands for the keys when the config couldn't be read: the gate stays shut.
 const UNREADABLE: &str = "(unreadable config)";
 
-/// The program keys the repository's own config sets.
+/// An empty folder of ours for `core.hooksPath` when hooks must not run.
+pub fn no_hooks_dir() -> String {
+    let dir = crate::settings::own_dir().join("git").join("no-hooks");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().into_owned()
+}
+
+/// The program keys the repository's own config sets, and its submodules'
+/// (status looks inside them, with their configs), as `path: key`.
 pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
     let out = repo.run(Git::read(["config", "--show-scope", "-z", "--name-only", "--get-regexp", PROGRAMS]))?;
     if !out.ok() {
         // 1 with nothing printed: no key matched. Anything else: unknown.
         return Ok(if out.code == 1 && out.stdout.is_empty() { Vec::new() } else { vec![UNREADABLE.into()] });
     }
-    let out = out.stdout;
-    // `scope\0key\0` per entry; an include counts as the file that includes it.
-    let text = String::from_utf8_lossy(&out);
-    let parts: Vec<&str> = text.split('\0').collect();
-    let keys: BTreeSet<String> = parts.chunks(2).filter(|c| c.len() == 2 && matches!(c[0], "local" | "worktree")).map(|c| c[1].to_owned()).collect();
+    let mut keys = repo_keys(&out.stdout, "");
+    if repo.exists(&repo.abs(".gitmodules")) {
+        // Each checked-out submodule, nested ones too: a `sub` record names it.
+        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --name-only --get-regexp '{PROGRAMS}' || true");
+        let out = repo.run(Git::read(["submodule", "foreach", "--recursive", "--quiet", &script]))?;
+        if !out.ok() {
+            keys.insert(UNREADABLE.into());
+        }
+        keys.extend(repo_keys(&out.stdout, "?"));
+    }
     Ok(keys.into_iter().collect())
+}
+
+/// `scope\0key\0` records (an include counts as the file that includes it):
+/// the repo-level keys, as `path: key` once a `sub` record named a submodule.
+fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
+    let text = String::from_utf8_lossy(out);
+    let parts: Vec<&str> = text.split('\0').collect();
+    let mut place = first.to_owned();
+    let mut keys = BTreeSet::new();
+    for c in parts.chunks(2).filter(|c| c.len() == 2) {
+        match c[0] {
+            "sub" => place = c[1].to_owned(),
+            "local" | "worktree" if place.is_empty() => {
+                keys.insert(c[1].to_owned());
+            }
+            "local" | "worktree" => {
+                keys.insert(format!("{place}: {}", c[1]));
+            }
+            _ => {}
+        }
+    }
+    keys
 }
 
 fn file() -> PathBuf {
@@ -128,5 +163,19 @@ mod tests {
         std::fs::write(&config, text).unwrap();
         let keys = pending(&s.repo).unwrap_or_else(|_| vec![UNREADABLE.into()]);
         assert_eq!(keys, vec![UNREADABLE.to_string()]);
+    }
+
+    #[test]
+    fn a_submodules_own_config_counts_too() {
+        let lib = scratch();
+        lib.commit("f.txt", "1\n", "lib");
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "vendor/lib"]);
+        s.git(&["commit", "-qm", "sub"]);
+        assert!(pending(&s.repo).unwrap().is_empty());
+        let sub = crate::repo::open(&format!("{}/vendor/lib", s.root()), None).unwrap();
+        sub.run(Git::write(["config", "filter.evil.clean", "cat"])).unwrap();
+        assert_eq!(pending(&s.repo).unwrap(), vec!["vendor/lib: filter.evil.clean".to_string()]);
     }
 }
