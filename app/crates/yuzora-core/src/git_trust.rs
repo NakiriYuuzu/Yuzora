@@ -9,11 +9,15 @@
 //! them. The person's own (global, system) config is theirs and needs no
 //! trust.
 //!
-//! - Any time, with [`READ_FLAGS`] first: commands that read refs and
-//!   commits only, never the index or the work tree — `rev-parse`,
-//!   `symbolic-ref`, `for-each-ref`, `rev-list --left-right --count`,
-//!   `config --get`. (In a partial clone a missing object is fetched when
-//!   read; these read refs and commits, which a partial clone has.)
+//! - Any time, with [`READ_FLAGS`] first: commands that read refs only,
+//!   never the index or the work tree — `rev-parse --show-toplevel`,
+//!   `symbolic-ref`, `for-each-ref` (no `:track`), `config --get`.
+//! - Walking commits (`rev-list --left-right --count`, `for-each-ref`'s
+//!   `%(upstream:track)`, `log`, `merge-base`) only with `--no-lazy-fetch`
+//!   (git 2.44 and later) when the repo has a promisor remote: a ref may
+//!   name a commit the clone lacks, and git fetches it with the repo's own
+//!   ssh command. With an older git, don't walk (`yuzora-shell`'s
+//!   `gitStatus` is an example).
 //! - Only once [`pending`] is empty: `status`, `diff` and its kin
 //!   (`diff-files`, `diff-index`, `ls-files -m`), anything that compares or
 //!   writes the work tree or the index, and `fetch`, `pull`, `push`.
