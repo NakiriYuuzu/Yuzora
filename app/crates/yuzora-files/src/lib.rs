@@ -216,7 +216,7 @@ fn with_doc<R>(
     app(|cx| docs::get(id, cx).map(|view| view.update(cx, f)))
 }
 
-/// (root, machine, hidden) → when it was listed, and the files.
+/// (root, machine, hidden) → when its listing began, and the files.
 type Listings = HashMap<(String, Option<String>, bool), (Instant, Arc<search::FileList>)>;
 static LISTINGS: LazyLock<Mutex<Listings>> = LazyLock::new(Default::default);
 const LISTING_TTL: Duration = Duration::from_secs(15);
@@ -235,11 +235,28 @@ fn listing(
     {
         return Ok(files.clone());
     }
+    let began = Instant::now();
     let files = Arc::new(search::list_files(root, on, hidden, LISTING_LIMIT)?);
     let mut cache = LISTINGS.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(keep_newest(&mut cache, key, began, files))
+}
+
+/// Caches `files`, listed from `began`, unless a listing that began later is
+/// there already (an older walk that finished last): that one is returned.
+fn keep_newest(
+    cache: &mut Listings,
+    key: (String, Option<String>, bool),
+    began: Instant,
+    files: Arc<search::FileList>,
+) -> Arc<search::FileList> {
     cache.retain(|_, (at, _)| at.elapsed() < LISTING_TTL);
-    cache.insert(key, (Instant::now(), files.clone()));
-    Ok(files)
+    match cache.get(&key) {
+        Some((at, newer)) if *at > began => newer.clone(),
+        _ => {
+            cache.insert(key, (began, files.clone()));
+            files
+        }
+    }
 }
 
 /// A blocking job as a script promise.
@@ -592,6 +609,35 @@ mod tests {
         assert_eq!(
             m.call("version", &HostArguments::new([])).unwrap(),
             HostValue::Str(yuzora_core::VERSION.into())
+        );
+    }
+
+    #[test]
+    fn an_older_listing_never_replaces_a_newer_one() {
+        let mut cache = Listings::default();
+        let key = || ("/r".to_owned(), None, false);
+        let list = |name: &str| {
+            Arc::new(search::FileList {
+                files: vec![name.to_owned()],
+                ..Default::default()
+            })
+        };
+        let (old, new) = (Instant::now(), Instant::now() + Duration::from_millis(5));
+        // The fresh walk finishes first, the older one after it.
+        assert_eq!(
+            keep_newest(&mut cache, key(), new, list("fresh")).files,
+            ["fresh"]
+        );
+        assert_eq!(
+            keep_newest(&mut cache, key(), old, list("stale")).files,
+            ["fresh"]
+        );
+        assert_eq!(cache[&key()].1.files, ["fresh"]);
+        // A later one replaces it.
+        let later = new + Duration::from_millis(5);
+        assert_eq!(
+            keep_newest(&mut cache, key(), later, list("later")).files,
+            ["later"]
         );
     }
 

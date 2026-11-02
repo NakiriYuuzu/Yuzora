@@ -35,9 +35,13 @@ pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
     {
         return None;
     }
-    let path = url.strip_prefix("file://").unwrap_or(url);
+    let uri = url.strip_prefix("file://");
+    let path = uri.unwrap_or(url);
     let path = path.split(['?', '#']).next().unwrap_or(path);
-    let path = percent_decode(path);
+    let mut path = percent_decode(path);
+    if uri.is_some() {
+        path = drive_of_uri(&path, cfg!(windows)).to_owned();
+    }
     // `//host/share/x.png` is a network path on Windows, whichever slashes.
     let slashed = path.replace('\\', "/");
     if slashed.starts_with("//") {
@@ -52,6 +56,18 @@ pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
         return Some(path.to_path_buf());
     }
     Some(base?.join(path))
+}
+
+/// A `file:` URI's path names a drive as `/C:/…`; on Windows that is `C:/…`
+/// (with the slash, it would be a folder under the document's).
+fn drive_of_uri(path: &str, windows: bool) -> &str {
+    let b = path.as_bytes();
+    let drive = b.len() >= 3
+        && b[0] == b'/'
+        && b[1].is_ascii_alphabetic()
+        && b[2] == b':'
+        && b.get(3).is_none_or(|&c| c == b'/' || c == b'\\');
+    if windows && drive { &path[1..] } else { path }
 }
 
 /// Whether a clicked link may open outside the app.
@@ -476,6 +492,24 @@ mod tests {
         assert_eq!(image_path("/\\host/share/a.png", Some(base)), None);
         assert_eq!(image_path("\\/host/share/a.png", Some(base)), None);
         assert_eq!(image_path("%5C%5Chost%5Cshare%5Ca.png", Some(base)), None);
+        // A drive in a file URI, on Windows.
+        assert_eq!(drive_of_uri("/C:/repo/a.png", true), "C:/repo/a.png");
+        assert_eq!(drive_of_uri("/c:\\repo\\a.png", true), "c:\\repo\\a.png");
+        assert_eq!(drive_of_uri("/C:", true), "C:");
+        assert_eq!(drive_of_uri("/C:/repo/a.png", false), "/C:/repo/a.png");
+        assert_eq!(drive_of_uri("/repo/a.png", true), "/repo/a.png");
+        assert_eq!(drive_of_uri("/CD:/a.png", true), "/CD:/a.png");
+        assert_eq!(drive_of_uri("/C:a.png", true), "/C:a.png");
+        #[cfg(windows)]
+        assert_eq!(
+            image_path("file:///C:/repo/a.png", Some(base)),
+            Some(PathBuf::from("C:/repo/a.png"))
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            image_path("file:///C:/repo/a.png", Some(base)),
+            Some(PathBuf::from("/C:/repo/a.png"))
+        );
         // A stray `%` before a multibyte character is kept as it is.
         assert_eq!(
             image_path("%\u{1f9e9}.png", Some(base)),
