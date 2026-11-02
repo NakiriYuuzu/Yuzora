@@ -114,3 +114,10 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 
 <!-- yuzora:lane:L7:start -->
 <!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+### L8 實機驗證
+
+- popover 截圖：用同一組隔離環境變數執行 `herdr-app do yuzora-perf.toggle` 打開（再執行一次關閉），等下一次重畫後 `shot`。
+- 取樣只在視窗位於前景時進行；`shot` 前先把視窗帶到前面（再執行一次 app），否則 chip 會停在上一個樣本，並記為 `skipped_no_focus`。
+<!-- yuzora:lane:L8:end -->
