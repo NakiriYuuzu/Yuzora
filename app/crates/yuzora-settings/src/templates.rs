@@ -178,12 +178,13 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 /// A name Windows can give a file: none of `< > : " | ? *`, no trailing
-/// space or dot, not a device name (`CON`, `NUL`, `COM1`… with any extension).
+/// space or dot, not a device name (`CON`, `NUL`, `COM1`, `COM¹`… with any
+/// extension; Microsoft's "Naming files" list).
 /// Only this computer's saves on Windows need it: elsewhere hc runs these names.
 pub fn windows_name(name: &str) -> bool {
     const DEVICES: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-        "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM¹", "COM²", "COM³", "LPT0",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
     ];
     let device = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
     !name.contains(['<', '>', ':', '"', '|', '?', '*']) && !name.ends_with([' ', '.']) && !DEVICES.contains(&device.as_str())
@@ -492,7 +493,13 @@ const REMOTE_TRASH_FN: &str = r#"trash_file() {
   mkdir -p "$t/files" "$t/info" || return 1
   b=${1##*/}; n=$b; i=1
   while [ -e "$t/files/$n" ] || [ -e "$t/info/$n.trashinfo" ]; do i=$((i+1)); n="${b%.md}.$i.md"; done
-  printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$1" "$(date +%Y-%m-%dT%H:%M:%S)" > "$t/info/$n.trashinfo" && mv "$1" "$t/files/$n"
+  printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$(url_path "$1")" "$(date +%Y-%m-%dT%H:%M:%S)" > "$t/info/$n.trashinfo" && mv "$1" "$t/files/$n"
+}
+# The spec's Path is URL-escaped: every byte but / as %xx (a % in a name stays a %).
+url_path() {
+  for h in $(printf '%s' "$1" | od -An -v -tx1); do
+    if [ "$h" = 2f ]; then printf /; else printf '%%%s' "$h"; fi
+  done
 }
 "#;
 
@@ -632,7 +639,7 @@ mod tests {
         }
         // Saved on a Windows computer, the name must be a Windows file name too.
         let here = |name: &str| check_for(name, &json!({ "command": "pi" }), "b", true).into_iter().map(|i| i.code).collect::<Vec<_>>();
-        for name in ["review:fast", "a?b", "trailing.", "trailing ", "CON", "nul.backup", "com1"] {
+        for name in ["review:fast", "a?b", "trailing.", "trailing ", "CON", "nul.backup", "com1", "COM0", "com¹", "LPT³.old"] {
             assert_eq!(here(name), ["name_windows"], "{name}");
         }
         for name in ["review", "審查", "my review", "console", "com10"] {
@@ -740,7 +747,7 @@ mod tests {
         let d = tmp("sh");
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln"] {
+        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od"] {
             let found = ["/bin", "/usr/bin"].iter().map(|p| Path::new(p).join(tool)).find(|p| p.exists()).unwrap();
             std::os::unix::fs::symlink(found, bin.join(tool)).unwrap();
         }
@@ -776,6 +783,26 @@ mod tests {
         assert!(names(sh(REMOTE_LIST, &[])).is_empty());
         let trashed = d.join("data/Trash");
         assert!(trashed.join("files/rev.md").exists() && trashed.join("info/rev.md.trashinfo").exists());
+        // The trash record's Path is URL-escaped: a % or space in the name comes back as itself.
+        assert_eq!(sh(&save, &["50% off", text, "new", "", ""]).status.code(), Some(0));
+        assert_eq!(sh(&remote_trash_script(), &["50% off"]).status.code(), Some(0));
+        let info = std::fs::read_to_string(trashed.join("info/50% off.md.trashinfo")).unwrap();
+        let path = info.lines().find_map(|l| l.strip_prefix("Path=")).unwrap();
+        let decoded = {
+            let (b, mut out, mut i) = (path.as_bytes(), Vec::new(), 0);
+            while i < b.len() {
+                if b[i] == b'%' {
+                    out.push(u8::from_str_radix(&path[i + 1..i + 3], 16).unwrap());
+                    i += 3;
+                } else {
+                    out.push(b[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8(out).unwrap()
+        };
+        assert!(!path.contains(' '), "{path}");
+        assert_eq!(decoded, d.join("config/herdr-core/templates/50% off.md").to_string_lossy());
         assert_eq!(std::fs::read_to_string(trashed.join("files/review.md")).unwrap(), text);
         // A linked template: the edit reaches the file, the link stays; the
         // trash takes the link, never the file.

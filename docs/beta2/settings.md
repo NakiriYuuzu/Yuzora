@@ -92,7 +92,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 ### 存檔前的檢查（`checkTemplate`）
 
-錯誤（擋住儲存）：名稱空白或不是資料夾裡的一個檔案（含 `/`、`\` 或控制字元、以 `.` 開頭、超過 200 位元組；其餘與 hc 一樣不限）、沒有 command、值含換行、`paste_gap_ms` 不是整數。同一套名稱規則也用在移到垃圾桶、改名與啟動，本機與遠端都先在 Rust 檢查。本機是 Windows 時另外擋下 Windows 不能當檔名的名稱（`< > : " | ? *`、結尾空白或句點、`CON`／`NUL`／`COM1` 等裝置名稱），其他機器上 hc 能用的名稱照樣可用。
+錯誤（擋住儲存）：名稱空白或不是資料夾裡的一個檔案（含 `/`、`\` 或控制字元、以 `.` 開頭、超過 200 位元組；其餘與 hc 一樣不限）、沒有 command、值含換行、`paste_gap_ms` 不是整數。同一套名稱規則也用在移到垃圾桶、改名與啟動，本機與遠端都先在 Rust 檢查。本機是 Windows 時另外擋下 Windows 不能當檔名的名稱（`< > : " | ? *`、結尾空白或句點、`CON`／`NUL`／`COM0`–`COM9`／`COM¹` 等裝置名稱），其他機器上 hc 能用的名稱照樣可用。
 警告：值被引號包住（hc 會照字面吃進去）、`ready` 不是 `quiet`、`submit`／`stop` 有 hc 可能不認得的按鍵、body 空白、`codex` 沒加 `--no-daemon`（`hc --skill` 的要求）。
 
 頁面 props：`{machine?, edit?}`。`edit` 為模板名稱時，清單讀完直接開該模板的表單；`""` 開新增表單（給其他 lane 的「新增模板」入口用）。
@@ -103,7 +103,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 ### 其他 machine
 
-透過 `hc exec --on <machine> -- sh -c <script> sh <args…>`（`yuzora_core::remote`，20 秒）：列表、寫入、移到垃圾桶都是固定的 sh 腳本，資料只當 positional 參數傳入，不拼進腳本。遠端的垃圾桶依序用 `gio trash`、`trash` 指令，否則手動寫 freedesktop Trash（`files/`＋`info/*.trashinfo`）。Windows 遠端（沒有 sh、模板在 `%APPDATA%`）不支援。
+透過 `hc exec --on <machine> -- sh -c <script> sh <args…>`（`yuzora_core::remote`，20 秒）：列表、寫入、移到垃圾桶都是固定的 sh 腳本，資料只當 positional 參數傳入，不拼進腳本。遠端的垃圾桶依序用 `gio trash`、`trash` 指令，否則手動寫 freedesktop Trash（`files/`＋`info/*.trashinfo`，`Path=` 依規格做 URL 編碼，用 `od`）。Windows 遠端（沒有 sh、模板在 `%APPDATA%`）不支援。
 
 ### 垃圾桶（本機）
 
@@ -140,7 +140,7 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder(plan.token)`。
   - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。
   - 一個 mod 資料夾（有 `main.js`），或 shared layout 的資料夾（`layouts/*.json`＋`mods/*/`）。
-  - 不覆寫：名稱被占用就用 `-2`、`-3`…（連結、壞掉的連結也算占用），並把 `mods/<資料夾原名>/` 路徑與 `mod: "<資料夾原名>"` 改寫成安裝的名稱（`my mod` 裝成 `my-mod` 時也改；冒號前後可有任意空白），layout 內引用也一起改。寫入時 mod 資料夾用 `create_dir`、每個檔案用 `create_new`，名稱在這之間被占用就失敗，不會跟著連結寫到 home 外。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
+  - 不覆寫：名稱被占用就用 `-2`、`-3`…（連結、壞掉的連結也算占用；同一包裡的名稱不分大小寫比對，`Foo` 與 `foo` 在 Windows／macOS 是同一個資料夾），並把 `mods/<資料夾原名>/` 路徑與 `mod: "<資料夾原名>"` 改寫成安裝的名稱（`my mod` 裝成 `my-mod` 時也改；冒號前後可有任意空白），layout 內引用也一起改。寫入時 mod 資料夾用 `create_dir`、每個檔案用 `create_new`，名稱在這之間被占用就失敗，不會跟著連結寫到 home 外。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
   - 不複製 `.git`、`node_modules`、隱藏檔、根目錄的 `RECIPE.md`／`preview.png`；超過 2000 個檔案或 64 MB 拒絕；來源在 app home 內拒絕；失敗時刪掉這次寫入的東西。
   - `keys.json` 不自動合併（AGENTS.md 要求替換既有按鍵前先問人），提示使用者自行處理。
 

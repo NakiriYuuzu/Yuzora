@@ -371,6 +371,20 @@ fn mod_name(dir: &Path) -> String {
     if name.trim_matches('-').is_empty() { "mod".to_owned() } else { name }
 }
 
+/// Names for `bases`, in order: each free of `taken` (what's in the home), of
+/// the names chosen before it and, but for its own, of the other bases, so
+/// renaming one can't turn its references into another's (x → x-3 beside a
+/// bundled x-2). Compared without case, as Windows and macOS homes do.
+fn choose(bases: &[String], taken: impl Fn(&str) -> bool) -> Vec<String> {
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    let mut chosen: Vec<String> = Vec::new();
+    for base in bases {
+        let name = free_name(|n| taken(n) || chosen.iter().any(|c| same(c, n)) || (!same(n, base) && bases.iter().any(|b| same(b, n))), base);
+        chosen.push(name);
+    }
+    chosen
+}
+
 /// Reads a folder and decides where each piece goes, without writing anything.
 pub fn plan(source: &Path, home: &Path) -> Result<Plan, InstallError> {
     let source = std::fs::canonicalize(source)?;
@@ -404,26 +418,14 @@ pub fn plan(source: &Path, home: &Path) -> Result<Plan, InstallError> {
         }
         plan.kind = "bundle";
         plan.keys = source.join("keys.json").is_file();
-        let taken = |n: &str| occupied(&home.join("layouts").join(format!("{n}.json")));
-        let mut chosen: Vec<String> = Vec::new();
-        for l in layouts {
-            let base = l.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let name = free_name(|n| taken(n) || chosen.iter().any(|c| c == n), &base);
-            chosen.push(name.clone());
-            plan.layouts.push((l, name));
-        }
+        let bases: Vec<String> = layouts.iter().map(|l| l.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let names = choose(&bases, |n| occupied(&home.join("layouts").join(format!("{n}.json"))));
+        plan.layouts = layouts.into_iter().zip(names).collect();
         dirs
     };
-    // A new name is never another mod's name in the bundle, so renaming one
-    // can't turn its references into another's (x → x-2 beside a bundled x-2).
-    let bundled: Vec<String> = mod_dirs.iter().map(|d| mod_name(d)).collect();
-    let mut chosen: Vec<String> = Vec::new();
-    for dir in mod_dirs {
-        let base = mod_name(&dir);
-        let name = free_name(|n| occupied(&home.join("mods").join(n)) || chosen.iter().any(|c| c == n) || (n != base && bundled.iter().any(|b| b == n)), &base);
-        chosen.push(name.clone());
-        plan.mods.push((dir, name));
-    }
+    let bases: Vec<String> = mod_dirs.iter().map(|d| mod_name(d)).collect();
+    let names = choose(&bases, |n| occupied(&home.join("mods").join(n)));
+    plan.mods = mod_dirs.into_iter().zip(names).collect();
     // References name the folder as it is (`mods/my mod/`), installed as `my-mod`.
     let renames: Vec<(String, String)> = plan.mods.iter().map(|(d, to)| (folder_name(d), to.clone())).filter(|(a, b)| a != b).collect();
     // (read from, written to under the home, the renames its text gets): a
@@ -734,6 +736,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("mods/side-2/main.js")).unwrap(), r#"image("mods/side-2/a.png")"#);
         assert_eq!(std::fs::read_to_string(home.join("layouts/deck.json")).unwrap(), "{}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn names_differ_in_more_than_case() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(choose(&s(&["Foo", "foo"]), |_| false), s(&["Foo", "foo-2"]), "one folder on Windows and macOS");
+        assert_eq!(choose(&s(&["x", "x-2"]), |n| n == "x"), s(&["x-3", "x-2"]));
+        assert_eq!(choose(&s(&["deck"]), |n| n.eq_ignore_ascii_case("DECK")), s(&["deck-2"]));
     }
 
     #[test]
