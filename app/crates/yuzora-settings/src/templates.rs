@@ -373,6 +373,8 @@ pub enum SaveError {
     Exists,
     /// The file changed (or went) since it was read.
     Changed,
+    /// Past MAX_FILE: the listing wouldn't read it back.
+    TooLarge,
     Io(std::io::Error),
     /// Renamed: the new file is written, the old one couldn't go to the trash
     /// (both are there now).
@@ -385,6 +387,7 @@ impl SaveError {
             SaveError::Name => "name_invalid",
             SaveError::Exists => "exists",
             SaveError::Changed => "changed",
+            SaveError::TooLarge => "too_large",
             SaveError::Io(_) => "io",
             SaveError::OldKept(_) => "old_kept",
         }
@@ -418,6 +421,9 @@ pub fn save(dir: &Path, name: &str, text: &str, expected: Option<&str>, previous
     if !valid_name(name) || previous.is_some_and(|p| !valid_name(p)) || (cfg!(windows) && !windows_name(name)) {
         return Err(SaveError::Name);
     }
+    if text.len() as u64 > MAX_FILE {
+        return Err(SaveError::TooLarge);
+    }
     // Yuzora's saves one at a time; another program's edit is caught by
     // comparing again right before the file is replaced.
     static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -440,7 +446,16 @@ pub fn save(dir: &Path, name: &str, text: &str, expected: Option<&str>, previous
     let linked = !fresh && std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
     let target = if linked { std::fs::canonicalize(&target)? } else { target };
     let tmp = target.with_file_name(format!(".{name}.md.tmp-{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
+    // An edit or a rename keeps the file's mode: a 0600 template stays private.
+    let was = source.clone().or_else(|| (!fresh).then(|| target.clone()));
+    let written = std::fs::write(&tmp, text).and_then(|()| match &was {
+        Some(was) => std::fs::set_permissions(&tmp, std::fs::metadata(was)?.permissions()),
+        None => Ok(()),
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     let placed = if fresh {
         // A hard link fails when the name was taken meanwhile, where a rename
         // would replace it; a rename only where links aren't possible.
@@ -552,7 +567,15 @@ if [ "$src" = "$f" ] && [ -L "$f" ]; then
   printf '%s' "$text" > "$f" || exit 6
 else
   tmp="$d/.$name.md.tmp.$$"
+  # An edit or a rename keeps the file's mode (a 0600 template stays
+  # private): the text goes into a copy of the file, made writable meanwhile.
+  ro=
+  if [ "$mode" != new ]; then
+    cp -p "$src" "$tmp" || {{ rm -f "$tmp"; exit 6; }}
+    [ -w "$tmp" ] || {{ ro=1; chmod u+w "$tmp"; }}
+  fi
   printf '%s' "$text" > "$tmp" || {{ rm -f "$tmp"; exit 6; }}
+  [ -z "$ro" ] || chmod u-w "$tmp"
   if [ "$mode" = new ] || [ "$src" != "$f" ]; then
     # A new name: ln fails when it was taken meanwhile, where mv would replace it.
     if ! ln "$tmp" "$f" 2>/dev/null; then
@@ -755,6 +778,38 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("mode");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let one = "---\ncommand: pi\n---\none\n";
+        std::fs::write(d.join("rev.md"), one).unwrap();
+        std::fs::set_permissions(d.join("rev.md"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        save(&d, "rev", "two", Some(one), None).unwrap();
+        assert_eq!(mode(&d.join("rev.md")), 0o600, "a private template stays private");
+        // Read-only too: the edit is asked for, the mode stays.
+        std::fs::set_permissions(d.join("rev.md"), std::fs::Permissions::from_mode(0o400)).unwrap();
+        save(&d, "rev", "three", Some("two"), None).unwrap();
+        assert_eq!((mode(&d.join("rev.md")), std::fs::read_to_string(d.join("rev.md")).unwrap().as_str()), (0o400, "three"));
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "no temporary file left beside it");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_template_past_max_file_is_not_saved() {
+        // The listing reads no file past MAX_FILE: one saved would come back broken.
+        let d = tmp("big");
+        let big = "x".repeat(MAX_FILE as usize + 1);
+        assert_eq!(save(&d, "big", &big, None, None).unwrap_err().code(), "too_large");
+        assert!(!d.join("big.md").exists());
+        save(&d, "edge", &big[1..], None, None).unwrap();
+        assert_eq!(save(&d, "edge", &big, Some(&big[1..]), None).unwrap_err().code(), "too_large");
+        assert_eq!(std::fs::metadata(d.join("edge.md")).unwrap().len(), MAX_FILE);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn cksum_is_posix_cksum() {
         // `printf … | cksum` on macOS and GNU coreutils.
@@ -784,7 +839,7 @@ mod tests {
         let d = tmp("sh");
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od", "cksum", "wc"] {
+        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od", "cksum", "wc", "cp", "chmod"] {
             let found = ["/bin", "/usr/bin"].iter().map(|p| Path::new(p).join(tool)).find(|p| p.exists()).unwrap();
             std::os::unix::fs::symlink(found, bin.join(tool)).unwrap();
         }
@@ -807,7 +862,16 @@ mod tests {
         let sum = cksum(text.as_bytes());
         assert_eq!(sh(&save, &["rev", "x", "old", "stale", ""]).status.code(), Some(5), "changed");
         assert_eq!(sh(&save, &["rev", "x", "old", &cksum(text.trim_end().as_bytes()), ""]).status.code(), Some(5), "trailing newlines count");
-        assert_eq!(sh(&save, &["rev", text, "old", &sum, ""]).status.code(), Some(0));
+        // An edit keeps the file's mode, a read-only one too.
+        use std::os::unix::fs::PermissionsExt;
+        let rev = d.join("config/herdr-core/templates/rev.md");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        std::fs::set_permissions(&rev, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(sh(&save, &["rev", "edited", "old", &sum, ""]).status.code(), Some(0));
+        assert_eq!(mode(&rev), 0o600, "a private template stays private");
+        std::fs::set_permissions(&rev, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(sh(&save, &["rev", text, "old", &cksum(b"edited"), ""]).status.code(), Some(0));
+        assert_eq!(mode(&rev), 0o400);
         let out = sh(REMOTE_LIST, &[]);
         let (dir, l) = parse_remote_list(&String::from_utf8_lossy(&out.stdout)).unwrap();
         assert!(dir.ends_with("config/herdr-core/templates"));
@@ -817,6 +881,7 @@ mod tests {
         assert_eq!(sh(&save, &["review", text, "old", &sum, "rev"]).status.code(), Some(0));
         let names = |out: std::process::Output| parse_remote_list(&String::from_utf8_lossy(&out.stdout)).unwrap().1.into_iter().map(|e| e.name).collect::<Vec<_>>();
         assert_eq!(names(sh(REMOTE_LIST, &[])), ["review"]);
+        assert_eq!(mode(&d.join("config/herdr-core/templates/review.md")), 0o400, "a rename keeps the mode too");
         assert_eq!(sh(&remote_trash_script(), &["review"]).status.code(), Some(0));
         assert_eq!(sh(&remote_trash_script(), &["review"]).status.code(), Some(3));
         assert!(names(sh(REMOTE_LIST, &[])).is_empty());

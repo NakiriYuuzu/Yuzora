@@ -55,7 +55,7 @@ export function listTemplates(machine?: string | null): Promise<TemplateList>;
 export function checkTemplate(name: string, fields: TemplateFields, body: string, machine?: string | null): TemplateIssue[];
 /** The file a template saves as: the fields, the header lines kept from the file (others), the body. */
 export function templateText(fields: TemplateFields, others: [string, string][], body: string): string;
-/** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | old_kept (renamed; the old file is still there) | too_big (over 12 KiB, on another machine) | io | remote, message}. */
+/** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | old_kept (renamed; the old file is still there; with text) | too_big (over 12 KiB, on another machine) | too_large (over 1 MiB) | io | remote, message}. */
 export function saveTemplate(machine: string | null, name: string, fields: TemplateFields, others: [string, string][], body: string, expected: string | null, previous?: string | null): Promise<Outcome>;
 /** Moves a template to the trash. */
 export function trashTemplate(machine: string | null, name: string): Promise<Outcome>;
@@ -119,6 +119,14 @@ fn failed(code: &str, message: impl std::fmt::Display) -> Value {
     json!({ "ok": false, "code": code, "message": message.to_string() })
 }
 
+/// Renamed, but the old file is still there: the new one is written all the
+/// same, so its text comes back as for ok.
+fn old_kept(text: &str, message: impl std::fmt::Display) -> Value {
+    let mut r = failed("old_kept", message);
+    r["text"] = json!(text);
+    r
+}
+
 fn sh(machine: &str, script: &str, args: &[&str]) -> Result<yuzora_core::remote::ExecOutput, Value> {
     let mut all = vec!["-c", script, "sh"];
     all.extend_from_slice(args);
@@ -173,6 +181,7 @@ fn save_template(s: Save) -> Value {
     match &s.machine {
         None => match templates::save(&templates::dir(), &s.name, &s.text, s.expected.as_deref(), s.previous.as_deref()) {
             Ok(()) => json!({ "ok": true, "text": s.text }),
+            Err(e @ templates::SaveError::OldKept(_)) => old_kept(&s.text, e),
             Err(e) => failed(e.code(), e),
         },
         Some(m) => {
@@ -189,7 +198,7 @@ fn save_template(s: Save) -> Value {
                     0 => json!({ "ok": true, "text": s.text }),
                     4 => failed("exists", "exists"),
                     5 => failed("changed", "changed"),
-                    7 => failed("old_kept", out.stderr_text().trim()),
+                    7 => old_kept(&s.text, out.stderr_text().trim()),
                     _ => failed("io", out.stderr_text().trim()),
                 },
                 Err(e) => e,

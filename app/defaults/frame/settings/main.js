@@ -724,7 +724,7 @@ export default class Settings extends View {
     const primary = (id, label, f) =>
       div().id(id).px(12).py(5).rounded(7).cursor_pointer().bg(t.accent).text_color(t.accent_foreground).text_size(13).font_semibold().hover((s) => s.opacity(0.9)).on_click(f).child(label);
     const app = !u.app.updates
-      ? [yz.appUpdates(u.app.version).about, null] // yuzora(L6): no self-update yet
+      ? [yz.appUpdates(u.app.version).about, null] // yuzora(L6): this build doesn't update itself
       : u.app.ready
         ? [`${u.app.ready} is ready. Restart to switch now; it also switches when you quit.`, primary("st-app-update", "Restart to update", () => run("app.update"))]
         : [result, check("st-check-app")];

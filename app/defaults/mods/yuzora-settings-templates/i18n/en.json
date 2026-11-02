@@ -24,6 +24,7 @@
   "reread": "Read it again",
   "trash_ask": "Move {name} to the Trash? You can put it back from there.",
   "saved": "Saved {name}.",
+  "saved_more": "Saved {name}; what you changed while it saved isn't saved yet.",
   "trashed": "Moved {name} to the Trash.",
   "editing": "Editing {name}",
   "adding": "A new template",
@@ -46,6 +47,7 @@
     "invalid": "Fix what's marked first.",
     "name_invalid": "{name} isn't a name hc can run.",
     "too_big": "This template is over 12 KB, too big to save on another machine (it travels on a command line). Shorten it, or edit it on that machine.",
+    "too_large": "This template is over 1 MB, more than Yuzora reads as a template. Shorten it.",
     "missing": "{name} isn't there any more.",
     "old_kept": "Saved {name}, but the old {old} couldn't go to the Trash: both files are there.",
     "other": "It didn't work: {message}"

@@ -133,7 +133,7 @@ export default class Mods extends View {
   // An editor pane (L5) opens a mod's main.js, when one is installed.
   editor() {
     try {
-      return panes().find((p) => p.mod === "yuzora-editor" || p.mod.startsWith("yuzora-editor-")) ?? null;
+      return panes().find((p) => typeof p.mod === "string" && (p.mod === "yuzora-editor" || p.mod.startsWith("yuzora-editor-"))) ?? null;
     } catch {
       return null;
     }

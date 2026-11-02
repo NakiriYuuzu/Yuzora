@@ -128,7 +128,7 @@ export function privacy(th, heading, row) {
     .child(div().pt(12).text_size(12.5).line_height("18px").text_color(th.dim).child(t("privacy.network")));
 }
 
-/** Updates: Yuzora's line in place of Herdr's (the app doesn't update itself yet). */
+/** Updates: Yuzora's line in place of Herdr's (for a build that doesn't update itself). */
 export function appUpdates(version) {
   return { title: `${APP} ${version}`, about: t("updates.app_off") };
 }

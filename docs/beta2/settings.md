@@ -42,7 +42,7 @@
 | `LOOKS` | 加 `yuzora: "Yuzora"`，排第一 |
 | `init` | 判斷 nav-only 模式（`props().yuzora`）；要求的是 Yuzora 頁（或沒指定）時改開 layout overlay；關掉其他 Yuzora 設定 overlay（`yz.closeOthers`） |
 | `alerts` | 預設音效名稱「Herdr's sound」→ i18n「內建音效」 |
-| `updates` | 標題與版本列改 Yuzora；「build from source」說明改為「Yuzora 目前不會自我更新」；頁尾改寫 |
+| `updates` | 標題與版本列改 Yuzora；不會自我更新的版本（例如從原始碼建置）說明改為到 GitHub Releases 下載；頁尾改寫（Yuzora 與 herdr-core 每小時檢查，L7 的 GitHub Releases 更新）。更新通道 UI 是 L7 列給 L6 的後續整合 |
 | `privacy` | 整頁改為 `yz.privacy`：Yuzora 不收集任何資料（Herdr 的遙測已在 L0 關閉，toggle 與「What we send」都沒有意義） |
 | `render` | 換頁中先畫空白並量高度；nav 插入 Yuzora 分組；nav-only 模式下 Herdr 分頁不標示選取、點了回原 frame；nav-only 模式只回傳 nav（含 Esc 與 Send feedback，與原 frame 相同）；記下對話框高度（`this.measured`） |
 
@@ -97,7 +97,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 頁面 props：`{machine?, edit?}`。`edit` 為模板名稱時，清單讀完直接開該模板的表單；`""` 開新增表單（給其他 lane 的「新增模板」入口用）。
 
-寫檔時已知欄位依固定順序輸出，編輯器沒有的欄位原樣保留在後面；寫入走暫存檔，並比對開啟時讀到的內容（被別處改過就拒絕，`changed`）。同一個 app 的存檔一次一個；編輯在 rename 前一刻再比對一次；新名稱（新增或改名）用 hard link 放上去，名稱在這之間被佔用就回 `exists`，不會蓋掉（不支援 hard link 的檔案系統才退回 rename）。遠端腳本同樣處理（`ln`、`mv` 前再比對）。改名時先寫新檔，再把舊檔移到垃圾桶；舊檔移不走時回 `old_kept`（新檔已存好，兩個檔案都在），頁面當作已儲存並提示。
+寫檔時已知欄位依固定順序輸出，編輯器沒有的欄位原樣保留在後面；寫入走暫存檔，並比對開啟時讀到的內容（被別處改過就拒絕，`changed`）。同一個 app 的存檔一次一個；編輯在 rename 前一刻再比對一次；新名稱（新增或改名）用 hard link 放上去，名稱在這之間被佔用就回 `exists`，不會蓋掉（不支援 hard link 的檔案系統才退回 rename）。編輯與改名保留原檔的權限（0600 的模板不會變成 0644；唯讀檔照樣可以存）。超過 1 MiB 的內容不存（`too_large`：列表不讀這麼大的檔案，存了會變成壞掉的模板）。遠端腳本同樣處理（`ln`、`mv` 前再比對，權限用 `cp -p` 帶過去）。存檔期間表單又被改過時，存檔完成後表單保持開啟，從剛寫好的檔案繼續（提示「儲存期間的修改還沒存」）。改名時先寫新檔，再把舊檔移到垃圾桶；舊檔移不走時回 `old_kept`（新檔已存好，兩個檔案都在），頁面當作已儲存並提示。
 
 模板是 symlink（例如用 stow 管理的 dotfiles）時：編輯寫進它指向的檔案，連結保留；移到垃圾桶移走的是連結本身，不動原檔。本機與遠端一致。
 

@@ -24,6 +24,7 @@
   "reread": "重新讀取",
   "trash_ask": "要把 {name} 移到垃圾桶嗎？之後可以從垃圾桶放回。",
   "saved": "已儲存 {name}。",
+  "saved_more": "已儲存 {name}；儲存期間的修改還沒存。",
   "trashed": "已把 {name} 移到垃圾桶。",
   "editing": "編輯 {name}",
   "adding": "新的模板",
@@ -46,6 +47,7 @@
     "invalid": "請先修正標示的地方。",
     "name_invalid": "{name} 不是 hc 能執行的名稱。",
     "too_big": "這個模板超過 12 KB，無法存到其他機器（內容要經過命令列傳送）。請縮短，或直接在那台機器上編輯。",
+    "too_large": "這個模板超過 1 MB，Yuzora 不會讀這麼大的模板。請縮短。",
     "missing": "{name} 已經不在了。",
     "old_kept": "已儲存 {name}，但舊的 {old} 沒能移到垃圾桶，兩個檔案都還在。",
     "other": "沒有成功：{message}"

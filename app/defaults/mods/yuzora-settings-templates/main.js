@@ -84,6 +84,11 @@ export default class Templates extends View {
     return f;
   }
 
+  /** What the form holds, to tell whether it changed. */
+  draft() {
+    return JSON.stringify([this.inputs.name.value().trim(), this.fields(), this.body.value()]);
+  }
+
   recheck(cx) {
     if (!this.editing) return;
     this.issues = checkTemplate(this.inputs.name.value().trim(), this.fields(), this.body.value(), this.machine);
@@ -118,15 +123,25 @@ export default class Templates extends View {
     this.saving = true;
     const name = this.inputs.name.value().trim();
     const machine = this.machine;
+    const fields = this.fields();
+    const body = this.body.value();
+    const sent = this.draft();
+    const old = e.original;
     cx.spawn(async (cx) => {
-      const r = await saveTemplate(machine, name, this.fields(), e.others, this.body.value(), e.expected, e.original);
+      const r = await saveTemplate(machine, name, fields, e.others, body, e.expected, old);
       this.saving = false;
-      // Another machine or template may be open by now: close only this form.
+      // Another machine or template may be open by now: close only this form,
+      // and keep it open if it was edited while saving.
       const same = this.editing === e;
+      const later = same && this.draft() !== sent;
       if (r.ok || r.code === "old_kept") {
         // old_kept: renamed, but the old file is still there beside the new one.
-        if (same) this.editing = null;
-        this.message = r.ok ? { text: t("saved", { name }), tone: "ok" } : { text: t("errors.old_kept", { name, old: e.original }), tone: "warning" };
+        if (later) {
+          // The form goes on from the file just written.
+          e.expected = r.text;
+          e.original = name;
+        } else if (same) this.editing = null;
+        this.message = r.ok ? { text: t(later ? "saved_more" : "saved", { name }), tone: "ok" } : { text: t("errors.old_kept", { name, old }), tone: "warning" };
         this.reload(cx);
       } else {
         this.message = { text: this.why(r, name), tone: "error", changed: same && r.code === "changed" };
@@ -137,7 +152,7 @@ export default class Templates extends View {
   }
 
   why(r, name) {
-    const known = ["exists", "changed", "invalid", "name_invalid", "missing", "too_big"];
+    const known = ["exists", "changed", "invalid", "name_invalid", "missing", "too_big", "too_large"];
     if (known.includes(r.code)) return t(`errors.${r.code}`, { name });
     return t("errors.other", { message: r.message ?? r.code ?? "" });
   }
