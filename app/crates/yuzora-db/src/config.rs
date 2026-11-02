@@ -6,6 +6,7 @@
 //! { "db": { "connections": [ { "id": "c1", "name": "local-pg", "engine": "postgres", … } ] } }
 //! ```
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -123,6 +124,17 @@ impl ConnectionConfig {
         self.port.or(self.engine.default_port()).unwrap_or(0)
     }
 
+    /// Whether a password saved for `self` may be sent to `other`: the same
+    /// engine, server, login and tunnel. Anything else needs it typed again.
+    pub fn same_server(&self, other: &ConnectionConfig) -> bool {
+        self.engine == other.engine
+            && self.host.trim().eq_ignore_ascii_case(other.host.trim())
+            && self.port() == other.port()
+            && self.user == other.user
+            && self.instance.trim().eq_ignore_ascii_case(other.instance.trim())
+            && self.ssh == other.ssh
+    }
+
     /// `~` in a SQLite path is the home folder.
     pub fn sqlite_path(&self) -> PathBuf {
         let p = self.path.trim();
@@ -187,36 +199,95 @@ pub fn get(id: &str) -> DbResult<ConnectionConfig> {
 }
 
 /// Adds or replaces (by id; a new one gets an id). `password`: `Some` sets
-/// it (or forgets it when `save_password` is off), `None` leaves it alone.
+/// it, `None` keeps the one there is unless the connection now points at
+/// another server or login (see [`keep_password`]).
 pub fn save(mut config: ConnectionConfig, password: Option<&str>) -> DbResult<ConnectionConfig> {
     config.validate()?;
     let mut list = load();
     if config.id.is_empty() {
         config.id = new_id(&list);
     }
+    let mut moved = false;
     match list.iter_mut().find(|c| c.id == config.id) {
-        Some(existing) => *existing = config.clone(),
+        Some(existing) => {
+            moved = !existing.same_server(&config);
+            *existing = config.clone();
+        }
         None => list.push(config.clone()),
     }
-    if !config.save_password {
-        secrets().delete(&secret_key(&config.id))?;
-    } else if let Some(p) = password {
-        secrets().set(&secret_key(&config.id), p)?;
-    }
+    keep_password(&*secrets(), &mut unsaved(), &config, password, moved)?;
     store_list(&list)?;
     Ok(config)
+}
+
+/// Where the password goes when `config` is saved: the credential store when
+/// it saves passwords, this process only when it doesn't, and nowhere when
+/// the connection `moved` to another server or login without a new one.
+fn keep_password(
+    store: &dyn SecretStore,
+    unsaved: &mut HashMap<String, String>,
+    config: &ConnectionConfig,
+    password: Option<&str>,
+    moved: bool,
+) -> DbResult<()> {
+    let key = secret_key(&config.id);
+    match (config.save_password, password) {
+        (true, Some(p)) => {
+            store.set(&key, p)?;
+            unsaved.remove(&config.id);
+        }
+        (false, Some(p)) => {
+            store.delete(&key)?;
+            unsaved.insert(config.id.clone(), p.to_owned());
+        }
+        (_, None) if moved => {
+            store.delete(&key)?;
+            unsaved.remove(&config.id);
+        }
+        (false, None) => store.delete(&key)?,
+        (true, None) => {
+            if let Some(p) = unsaved.remove(&config.id) {
+                store.set(&key, &p)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn delete(id: &str) -> DbResult<()> {
     let mut list = load();
     list.retain(|c| c.id != id);
     store_list(&list)?;
+    unsaved().remove(id);
     secrets().delete(&secret_key(id))?;
     Ok(())
 }
 
+/// The connection's password: typed this session for a connection that
+/// doesn't save it, else the credential store's.
 pub fn password(id: &str) -> DbResult<Option<String>> {
+    if let Some(p) = unsaved().get(id) {
+        return Ok(Some(p.clone()));
+    }
     Ok(secrets().get(&secret_key(id))?)
+}
+
+/// Passwords of connections with `savePassword` off: this process only.
+fn unsaved() -> std::sync::MutexGuard<'static, HashMap<String, String>> {
+    static UNSAVED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    UNSAVED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The password saved under `config.id`, only while `config` still points at
+/// the server and login it was saved for (see [`ConnectionConfig::same_server`]).
+pub fn saved_password_for(config: &ConnectionConfig) -> DbResult<Option<String>> {
+    if config.id.is_empty() || config.engine == Engine::Sqlite {
+        return Ok(None);
+    }
+    match get(&config.id) {
+        Ok(saved) if saved.same_server(config) => password(&config.id),
+        _ => Ok(None),
+    }
 }
 
 fn secret_key(id: &str) -> SecretKey {
@@ -271,6 +342,56 @@ mod tests {
         assert_eq!(v["caFile"], "/x.pem");
         assert_eq!(v["ssl"], "verify-full");
         assert_eq!(parse(&json!({ "connections": [v, {"engine": "nope"}] })), vec![c]);
+    }
+
+    #[test]
+    fn a_saved_password_only_follows_the_same_server_and_login() {
+        let saved: ConnectionConfig = serde_json::from_value(json!({
+            "id": "c1", "name": "pg", "engine": "postgres", "host": "DB.local", "user": "app"
+        }))
+        .unwrap();
+        let mut edit = saved.clone();
+        edit.name = "renamed".into();
+        edit.host = " db.local ".into();
+        edit.port = Some(5432);
+        assert!(saved.same_server(&edit), "name, case and the default port spelled out are the same server");
+        for change in [
+            |c: &mut ConnectionConfig| c.host = "evil.example".into(),
+            |c: &mut ConnectionConfig| c.port = Some(6432),
+            |c: &mut ConnectionConfig| c.user = "postgres".into(),
+            |c: &mut ConnectionConfig| c.engine = Engine::Mssql,
+            |c: &mut ConnectionConfig| c.ssh = Some(SshTunnel { host: "jump".into() }),
+        ] {
+            let mut other = saved.clone();
+            change(&mut other);
+            assert!(!saved.same_server(&other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn passwords_follow_save_password_and_never_a_moved_connection() {
+        let store = MemoryStore::default();
+        let mut unsaved = HashMap::new();
+        let mut c: ConnectionConfig = serde_json::from_value(json!({"id": "c1", "engine": "postgres", "host": "h"})).unwrap();
+        let key = secret_key("c1");
+
+        keep_password(&store, &mut unsaved, &c, Some("pw"), false).unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some("pw"));
+        keep_password(&store, &mut unsaved, &c, None, false).unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some("pw"), "an edit without a password keeps it");
+
+        keep_password(&store, &mut unsaved, &c, None, true).unwrap();
+        assert_eq!(store.get(&key).unwrap(), None, "pointed elsewhere, the saved password is dropped");
+
+        c.save_password = false;
+        keep_password(&store, &mut unsaved, &c, Some("typed"), false).unwrap();
+        assert_eq!(store.get(&key).unwrap(), None, "not saving keeps it out of the store");
+        assert_eq!(unsaved.get("c1").map(String::as_str), Some("typed"), "but this session can connect");
+
+        c.save_password = true;
+        keep_password(&store, &mut unsaved, &c, None, false).unwrap();
+        assert_eq!(store.get(&key).unwrap().as_deref(), Some("typed"), "turning saving on keeps the typed one");
+        assert!(unsaved.is_empty());
     }
 
     #[test]

@@ -11,6 +11,7 @@ const ACTIVE = "yuzora.db.active"; // {connection, database}: what the sidebar s
 const OPEN = "yuzora.db.open"; // {key, target, seq}: retarget a table pane
 const TAB_PANES = "yuzora.db.tabPanes"; // {tab: key}: each tab's table pane
 const STATUS = "yuzora.status.db";
+const BADGE = "yuzora.badge.database"; // live connections, null for none
 const ROW = 25;
 const OTHER_KINDS = ["function", "procedure", "sequence", "trigger", "index", "type", "other"];
 
@@ -196,6 +197,8 @@ export default class SidebarDatabase extends View {
     else if (conn?.status?.state === "error") next = { text: t("status.failed", { name: conn.name }), tone: "blocked" };
     const now = shared(STATUS) ?? null;
     if (JSON.stringify(now) !== JSON.stringify(next)) setShared(STATUS, next);
+    const live = this.conns().filter((c) => c.status?.state === "connected").length || null;
+    if ((shared(BADGE) ?? null) !== live) setShared(BADGE, live);
   }
 
   connRow(c, selected, th) {

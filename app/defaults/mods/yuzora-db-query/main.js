@@ -176,7 +176,7 @@ export default class DbQuery extends View {
         .when(Boolean(current.error), (el) => el.child(div().text_color(th.blocked).child(current.error)))
         .child(div().text_color(th.dim).child(`${current.elapsedMs} ms`));
     } else {
-      body = new DataGrid(`${this.key}:grid`, { result: current.id, colors: gridColors(th) });
+      body = DataGrid.new(`${this.key}:grid`, { result: current.id, colors: gridColors(th) });
     }
     return v_flex().flex_1().min_h(0)
       .when(results.length > 0, (el) => el.child(tabs))
@@ -197,7 +197,7 @@ export default class DbQuery extends View {
       .child(this.toolbar(th, conn))
       .child(v_flex().flex_1().min_h(0)
         .child(div().flex_none().h(Math.max(80, Math.round((this.height ?? 480) * this.split))).border_b(1).border_color(th.divider ?? th.border)
-          .child(new SqlEditor(`${this.key}:sql`, { engine: conn?.engine, value: "" })))
+          .child(SqlEditor.new(`${this.key}:sql`, { engine: conn?.engine, value: "" })))
         .child(this.results(th)))
       .when(Boolean(menu), (el) => el.child(menu));
   }

@@ -168,7 +168,7 @@ export default class DbTable extends View {
         .when(Boolean(current.error), (el) => el.child(div().text_color(th.blocked).child(current.error)))
         .child(div().text_color(th.dim).child(`${current.elapsedMs} ms`));
     } else {
-      body = new DataGrid(`${this.key}:grid`, { result: current?.id ?? null, colors: gridColors(th) });
+      body = DataGrid.new(`${this.key}:grid`, { result: current?.id ?? null, colors: gridColors(th) });
     }
     const chips = results.length > 1
       ? h_flex().h(26).flex_none().px(8).gap(4).items_center().border_b(1).border_color(th.divider ?? th.border)
@@ -213,12 +213,12 @@ export default class DbTable extends View {
       .when(Boolean(info.ddl), (el) => el
         .child(section("DDL"))
         .child(div().mx(12).h(Math.min(420, 22 + 18 * (info.ddl.split("\n").length + 1))).rounded(6).border_1().border_color(th.border).overflow_hidden()
-          .child(new SqlEditor(`${this.key}:ddl`, { engine: this.conn()?.engine, value: info.ddl, readonly: true }))));
+          .child(SqlEditor.new(`${this.key}:ddl`, { engine: this.conn()?.engine, value: info.ddl, readonly: true }))));
   }
 
   sqlTab(th) {
     return v_flex().flex_1().min_h(0)
-      .child(div().flex_1().min_h(0).child(new SqlEditor(`${this.key}:sql`, { engine: this.conn()?.engine, value: this.sql })))
+      .child(div().flex_1().min_h(0).child(SqlEditor.new(`${this.key}:sql`, { engine: this.conn()?.engine, value: this.sql })))
       .child(div().h(24).flex_none().px(12).flex().items_center().text_size(11).text_color(th.dim).border_t(1).border_color(th.divider ?? th.border)
         .child(t("sql_hint")));
   }

@@ -12,6 +12,7 @@
     "user": "User",
     "password": "Password",
     "password_keep": "Leave empty to keep the saved password",
+    "password_retype": "The server or login changed, so the saved password won't be sent there. Type it again.",
     "save_password": "Save the password in the system keychain",
     "database": "Database (empty: the server's default)",
     "ssl": "TLS",

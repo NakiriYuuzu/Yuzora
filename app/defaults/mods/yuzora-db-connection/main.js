@@ -19,6 +19,7 @@ export default class ConnectionDialog extends View {
       ? { ...existing }
       : { id: "", name: "", engine: "postgres", host: "127.0.0.1", port: null, user: "", database: "", ssl: "prefer", caFile: "", instance: "", path: "", readOnly: false, savePassword: true, ssh: null };
     this.editing = Boolean(existing);
+    this.original = existing;
     this.inputs = {};
     for (const key of TEXT_FIELDS) {
       const value = this.form[key] === null || this.form[key] === undefined ? "" : String(this.form[key]);
@@ -55,6 +56,16 @@ export default class ConnectionDialog extends View {
   pwd() {
     const value = this.password.value();
     return this.passwordTouched || !this.editing ? value : null;
+  }
+
+  /** Editing pointed the connection at another server or login: the saved password stays behind. */
+  moved() {
+    const a = this.original;
+    if (!a) return false;
+    const b = this.config();
+    const port = (c) => c.port ?? this.engines.find((e) => e.id === c.engine)?.defaultPort ?? null;
+    const same = (x, y) => String(x ?? "").trim().toLowerCase() === String(y ?? "").trim().toLowerCase();
+    return a.engine !== b.engine || !same(a.host, b.host) || port(a) !== port(b) || (a.user ?? "") !== (b.user ?? "") || !same(a.instance, b.instance);
   }
 
   close() {
@@ -162,6 +173,7 @@ export default class ConnectionDialog extends View {
         .child(label(t("field.user"))).child(field("user"))
         .child(label(t("field.password")))
         .child(Input.new(this.password).h(32).px(10).rounded(7).border_1().border_color(th.input).bg(th.background).text_size(12.5).text_color(th.foreground))
+        .when(this.editing && !this.passwordTouched && this.moved(), (el) => el.child(div().pt(6).text_size(11).text_color(th.blocked).child(t("field.password_retype"))))
         .child(toggle("save-password", f.savePassword, t("field.save_password"), () => { f.savePassword = !f.savePassword; }))
         .child(label(t("field.database"))).child(field("database"))
         .child(label(t("field.ssl")))

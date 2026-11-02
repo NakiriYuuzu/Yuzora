@@ -199,8 +199,7 @@ pub fn disconnect(connection: &str) {
 pub async fn test(config: ConnectionConfig, password: Option<String>) -> DbResult<(String, u64)> {
     let password = match password {
         Some(p) => Some(p),
-        None if !config.id.is_empty() && config.engine != config::Engine::Sqlite => config::password(&config.id)?,
-        None => None,
+        None => config::saved_password_for(&config)?,
     };
     refuse_tunnel(&config)?;
     let mut spec = ConnectSpec::new(config, password);
