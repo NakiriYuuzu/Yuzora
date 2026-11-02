@@ -94,6 +94,8 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
+- L3（資料庫）：已存的密碼只送給存它時的伺服器（`ConnectionConfig::password_may_follow`：engine、host、port、user、instance、tunnel 相同，TLS 不變弱、verify 模式不換 CA）。改連線相關程式時不要放寬這條規則。
+- 原生元件在 JS 用 `DataGrid.new(id, props)`、`SqlEditor.new(id, props)`，不是 `new X(...)`（`herdr-app check` 會報 not a constructor）。
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
