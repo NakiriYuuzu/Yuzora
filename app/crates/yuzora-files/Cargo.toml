@@ -12,6 +12,8 @@ gpui = { package = "gpui-pre", version = "=0.3.8" }
 gpui-base = { path = "../../vendor/gpui-kit/crates/base" }
 gpui-shell = { path = "../../vendor/gpui-kit/crates/shell" }
 async-channel = "2"
+# ripgrep's JSON gives a line that isn't UTF-8 as base64.
+base64 = "0.22"
 futures = "0.3"
 ignore = "0.4"
 # Only to read an image's size and frames before GPUI decodes it (its formats).

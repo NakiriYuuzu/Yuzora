@@ -2,12 +2,14 @@
 //! paths, and content search through ripgrep. Blocking. Here or on a
 //! herdr-core machine (`on: Some(machine)`, POSIX paths).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+use base64::Engine as _;
 use serde_json::Value;
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
@@ -537,7 +539,7 @@ fn grep_with(
     if !matches!(out.code, 0 | 1) && result.hits.is_empty() {
         return Err(failure(&out, "ripgrep"));
     }
-    result.skipped = !matches!(out.code, 0 | 1);
+    result.skipped |= !matches!(out.code, 0 | 1);
     Ok(result)
 }
 
@@ -658,10 +660,14 @@ pub fn grep_local(
     Ok(result)
 }
 
-/// Reads `rg --json` output: one hit per matching line, at most `limit`.
+/// Reads `rg --json` output: one hit per matching line, at most `limit`. A
+/// line that isn't UTF-8 (base64 `bytes`) is shown with replacement
+/// characters; a path that isn't can't be opened by name: left out, and the
+/// result said to be [`GrepResult::skipped`].
 pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
     let mut hits = Vec::new();
     let mut truncated = false;
+    let mut skipped = false;
     let mut files = HashSet::new();
     for line in out.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
@@ -671,18 +677,33 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
             continue;
         }
         let data = &event["data"];
-        let (Some(path), Some(text), Some(number)) = (
-            data["path"]["text"].as_str(),
-            data["lines"]["text"].as_str(),
-            data["line_number"].as_u64(),
-        ) else {
+        let Some(number) = data["line_number"].as_u64() else {
+            continue;
+        };
+        let lines = &data["lines"];
+        let raw: Option<Cow<[u8]>> = match lines["text"].as_str() {
+            Some(text) => Some(Cow::Borrowed(text.as_bytes())),
+            None => lines["bytes"]
+                .as_str()
+                .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+                .map(Cow::Owned),
+        };
+        let (Some(path), Some(raw)) = (data["path"]["text"].as_str(), raw) else {
+            skipped = true;
             continue;
         };
         if hits.len() >= limit {
             truncated = true;
             break;
         }
-        let text = text.trim_end_matches(['\n', '\r']);
+        let end = raw.len()
+            - raw
+                .iter()
+                .rev()
+                .take_while(|b| matches!(b, b'\n' | b'\r'))
+                .count();
+        let raw = &raw[..end];
+        let text = String::from_utf8_lossy(raw);
         // rg counts submatch offsets in bytes of the line. The first one,
         // even empty (`$`), is where the hit goes; empty ones mark nothing.
         let mut ranges: Vec<(usize, usize)> = data["submatches"]
@@ -692,7 +713,7 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
                     .filter_map(|s| {
                         Some((s["start"].as_u64()? as usize, s["end"].as_u64()? as usize))
                     })
-                    .map(|(start, end)| (char_offset(text, start), char_offset(text, end)))
+                    .map(|(start, end)| (chars_before(raw, start), chars_before(raw, end)))
                     .collect()
             })
             .unwrap_or_default();
@@ -716,8 +737,16 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
         hits,
         truncated,
         files: files.len(),
-        skipped: false,
+        skipped,
     }
+}
+
+/// [`char_offset`] in a line's bytes, counted as [`String::from_utf8_lossy`]
+/// shows them.
+fn chars_before(raw: &[u8], byte: usize) -> usize {
+    String::from_utf8_lossy(&raw[..byte.min(raw.len())])
+        .chars()
+        .count()
 }
 
 /// A file's bytes if it holds at most `cap`; reads one byte past it at most.
@@ -1252,7 +1281,11 @@ mod tests {
     #[test]
     fn rg_json_hits_use_character_offsets() {
         let r = parse_rg_json("/work/repo", RG_FIXTURE, 100);
-        assert_eq!((r.hits.len(), r.truncated, r.files), (3, false, 2));
+        // The match whose path is bytes is left out (and said to be).
+        assert_eq!(
+            (r.hits.len(), r.truncated, r.files, r.skipped),
+            (4, false, 3, true)
+        );
         assert_eq!(
             r.hits[0],
             GrepHit {
@@ -1285,6 +1318,11 @@ mod tests {
             ),
             ("b.txt", 1, 0)
         );
+        // A line given as bytes is decoded.
+        assert_eq!(
+            (r.hits[3].path.as_str(), r.hits[3].text.as_str()),
+            ("c.txt", "foo")
+        );
     }
 
     #[test]
@@ -1299,8 +1337,8 @@ mod tests {
     fn rg_json_stops_at_the_limit_and_cuts_long_lines() {
         let r = parse_rg_json("/r", RG_FIXTURE, 2);
         assert_eq!((r.hits.len(), r.truncated, r.files), (2, true, 1));
-        let r = parse_rg_json("/r", RG_FIXTURE, 3);
-        assert_eq!((r.hits.len(), r.truncated), (3, false));
+        let r = parse_rg_json("/r", RG_FIXTURE, 4);
+        assert_eq!((r.hits.len(), r.truncated), (4, false));
         let r = parse_rg_json("/r", RG_FIXTURE, 0);
         assert_eq!((r.hits.len(), r.truncated, r.files), (0, true, 0));
 
@@ -1318,6 +1356,24 @@ mod tests {
         let line = line.replace("\"start\":894,\"end\":900", "\"start\":900,\"end\":903");
         let hit = &parse_rg_json("/r", &line, 5).hits[0];
         assert_eq!((hit.column, hit.ranges.len()), (305, 0));
+    }
+
+    #[test]
+    fn rg_lines_and_paths_that_are_not_utf8() {
+        let line = r#"{"type":"match","data":{"path":{"text":"/r/a.txt"},"lines":{"bytes":"LINE"},"line_number":3,"submatches":[{"match":{"text":"needle"},"start":5,"end":11}]}}"#
+            .replace("LINE", "Y2Fm6SBuZWVkbGUK");
+        let r = parse_rg_json("/r", &line, 5);
+        assert!(!r.skipped);
+        let hit = &r.hits[0];
+        assert_eq!(hit.text, "caf\u{fffd} needle");
+        assert_eq!(
+            (hit.line, hit.column, hit.ranges.clone()),
+            (3, 6, vec![(5, 11)])
+        );
+        // A path rg can only give as bytes: not opened, said to be missing.
+        let path = line.replace(r#"{"text":"/r/a.txt"}"#, r#"{"bytes":"L3IvYmFk/y50eHQ="}"#);
+        let r = parse_rg_json("/r", &path, 5);
+        assert_eq!((r.hits.len(), r.files, r.skipped), (0, 0, true));
     }
 
     #[test]
@@ -1379,7 +1435,7 @@ mod tests {
     #[test]
     fn grep_reads_rg_exit_codes() {
         let (hits, seen) = with_fake_rg(RG_FIXTURE, "", 0, 100);
-        assert_eq!(hits.unwrap().hits.len(), 3);
+        assert_eq!(hits.unwrap().hits.len(), 4);
         assert_eq!(seen, grep_args("main", false, false, false));
         // 1 is "no matches".
         let (none, _) = with_fake_rg("", "", 1, 100);
@@ -1400,7 +1456,7 @@ mod tests {
         // ...but with hits (an unreadable file elsewhere) the hits stand.
         let (partial, _) = with_fake_rg(RG_FIXTURE, "rg: ./secret: Permission denied\n", 2, 100);
         let partial = partial.unwrap();
-        assert_eq!((partial.hits.len(), partial.skipped), (3, true));
+        assert_eq!((partial.hits.len(), partial.skipped), (4, true));
         let (cut, _) = with_fake_rg(RG_FIXTURE, "", 0, 1);
         let cut = cut.unwrap();
         assert_eq!((cut.hits.len(), cut.truncated), (1, true));

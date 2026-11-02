@@ -220,6 +220,9 @@ fn skipped(name: &str) -> bool {
 
 fn list_local(path: &str, limit: usize) -> Result<(Vec<Entry>, bool), String> {
     let read = std::fs::read_dir(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    // However big the folder, only the first `limit + 1` (sorted) are kept:
+    // past twice that, the rest are dropped as it goes.
+    let keep = limit.saturating_add(1);
     let mut entries = Vec::new();
     for ent in read.flatten() {
         let name = ent.file_name().to_string_lossy().into_owned();
@@ -240,6 +243,10 @@ fn list_local(path: &str, limit: usize) -> Result<(Vec<Entry>, bool), String> {
             link,
             size: 0,
         });
+        if entries.len() >= keep.saturating_mul(2) {
+            sort_entries(&mut entries);
+            entries.truncate(keep);
+        }
     }
     sort_entries(&mut entries);
     let truncated = entries.len() > limit;
@@ -1158,6 +1165,19 @@ mod tests {
             (10, 2, 0)
         );
         assert!(!get("file2.txt").dir && !get("file2.txt").link);
+    }
+
+    #[test]
+    fn a_big_folder_is_cut_as_it_is_read() {
+        let d = tempfile::tempdir().unwrap();
+        // Names that don't come in sorted order, more than twice the limit.
+        for i in (0..60).rev() {
+            put(&d, &format!("f{}.txt", (i * 37) % 60), b"");
+        }
+        std::fs::create_dir(d.path().join("zdir")).unwrap();
+        let (entries, truncated) = list_dir(&p(&d, ""), None, 4).unwrap();
+        assert!(truncated);
+        assert_eq!(names(&entries), ["zdir", "f0.txt", "f1.txt", "f2.txt"]);
     }
 
     #[test]

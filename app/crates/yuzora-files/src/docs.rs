@@ -31,6 +31,12 @@ use crate::highlight::{self, Lang};
 /// Files above this are not opened at all.
 pub const MAX_OPEN_BYTES: u64 = 16 << 20;
 
+/// A stamp in whole seconds (another machine's, a coarse file system) can
+/// hide a rewrite of the same length within its second. Read this long
+/// after the stamp was first seen, the content under it can't change again
+/// unseen.
+const SETTLE_MS: u64 = 2_000;
+
 /// Which file a document holds. `on`: a machine from `hc machine ls`, `None` here.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DocKey {
@@ -320,6 +326,10 @@ pub struct DocView {
     disk_mode: Option<u32>,
     /// What a check found on disk while there were unsaved changes.
     incoming: Option<TextFile>,
+    /// Since when (ms) the stamp checks compare against has been seen, while
+    /// it is in whole seconds and no read after [`SETTLE_MS`] confirmed it:
+    /// until then a check reads the content even under the same stamp.
+    unconfirmed: Option<u64>,
     dirty: bool,
     conflict: bool,
     deleted: bool,
@@ -404,6 +414,7 @@ impl DocView {
             disk_hash: 0,
             disk_mode: None,
             incoming: None,
+            unconfirmed: None,
             dirty: false,
             conflict: false,
             deleted: false,
@@ -486,6 +497,7 @@ impl DocView {
     fn load(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Loading;
         let key = self.key.clone();
+        let asked = key.clone();
         cx.spawn(async move |this, cx| {
             let (read, gone) = blocking(move || {
                 let read = fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES);
@@ -496,7 +508,14 @@ impl DocView {
             })
             .await
             .unwrap_or_else(|| (Err("could not start a worker".into()), false));
-            let _ = this.update(cx, |doc, cx| doc.loaded(read, gone, cx));
+            let _ = this.update(cx, |doc, cx| {
+                // Renamed meanwhile: what was read (or not found) is the old path's.
+                if doc.key == asked {
+                    doc.loaded(read, gone, cx);
+                } else {
+                    doc.load(cx);
+                }
+            });
         })
         .detach();
     }
@@ -535,6 +554,7 @@ impl DocView {
         self.facts = Facts::from_file(&self.key, &file);
         self.disk = Some(file.stamp);
         self.disk_hash = file.hash;
+        self.saw(file.stamp);
         if !self.facts.editable_text() || self.facts.large != large {
             self.state = None;
             self._subscriptions.clear();
@@ -726,6 +746,7 @@ impl DocView {
                     Ok(stamp) => {
                         doc.disk = Some(stamp);
                         doc.disk_hash = hash;
+                        doc.saw(stamp);
                         doc.facts.size = stamp.len;
                         doc.baseline = rope;
                         doc.conflict = false;
@@ -811,8 +832,11 @@ impl DocView {
             None => (self.disk, self.disk_hash),
         };
         let key = self.key.clone();
+        let asked = key.clone();
         let base = self.disk;
         let mode = self.disk_mode;
+        let read = read || self.unconfirmed.is_some();
+        let started = now_ms();
         cx.spawn(async move |this, cx| {
             let probe = blocking(move || match fsops::stat(&key.path, key.on.as_deref()) {
                 Ok(None) => Probe::Missing,
@@ -839,9 +863,10 @@ impl DocView {
             .unwrap_or(Probe::Same);
             let _ = this.update(cx, |doc, cx| {
                 doc.checking = false;
-                // A save landed meanwhile: what was read is older than that.
-                if doc.disk == base {
-                    doc.probed(probe, cx);
+                // A save landed meanwhile, or it was renamed: what was read
+                // is older than that, or another path's.
+                if doc.disk == base && doc.key == asked {
+                    doc.probed(probe, started, cx);
                 }
             });
             let _ = tx.send(());
@@ -850,7 +875,14 @@ impl DocView {
         rx
     }
 
-    fn probed(&mut self, probe: Probe, cx: &mut Context<Self>) {
+    /// A stamp taken in: one in whole seconds stays [`Self::unconfirmed`]
+    /// until a read [`SETTLE_MS`] later finds the same content.
+    fn saw(&mut self, stamp: Stamp) {
+        self.unconfirmed = (stamp.mtime_ms % 1000 == 0).then(now_ms);
+    }
+
+    /// `started`: when the check began (ms).
+    fn probed(&mut self, probe: Probe, started: u64, cx: &mut Context<Self>) {
         match probe {
             Probe::Same => {}
             Probe::Failed(e) => {
@@ -876,6 +908,15 @@ impl DocView {
                 }
             }
             Probe::Touched(stamp) => {
+                let was = self.incoming.as_ref().map_or(self.disk, |f| Some(f.stamp));
+                if was != Some(stamp) {
+                    self.saw(stamp);
+                } else if self
+                    .unconfirmed
+                    .is_some_and(|since| started >= since + SETTLE_MS)
+                {
+                    self.unconfirmed = None;
+                }
                 match &mut self.incoming {
                     Some(file) => file.stamp = stamp,
                     None => self.disk = Some(stamp),
@@ -891,6 +932,7 @@ impl DocView {
                 self.error = None;
                 if self.dirty {
                     self.conflict = true;
+                    self.saw(file.stamp);
                     self.incoming = Some(file);
                 } else if !file.binary && !file.too_large && !self.facts.editable_text() {
                     // It became text: start over.
@@ -1314,6 +1356,63 @@ mod tests {
         })
         .unwrap();
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn a_rewrite_within_the_stamps_second_is_seen(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        let put = |text: &str, at: std::time::Duration| {
+            std::fs::write(&path, text).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + at)
+                .unwrap();
+        };
+        let second = std::time::Duration::from_secs(1_700_000_000);
+        put("one\n", second);
+        let (view, _window) = editing(&path, cx);
+        cx.update(|cx| assert!(view.read(cx).unconfirmed.is_some()));
+        // Other bytes of the same length in the same second: the same stamp.
+        put("two\n", second);
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(view.read(cx).text(cx).as_ref(), "two\n"));
+        // Read long after it was first seen, the stamp is confirmed.
+        view.update(cx, |doc, _| doc.unconfirmed = Some(0));
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(view.read(cx).unconfirmed, None));
+        // A finer stamp never waits.
+        put("two\n", second + std::time::Duration::from_millis(250));
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(view.read(cx).unconfirmed, None));
+    }
+
+    #[gpui::test]
+    fn a_check_begun_before_a_rename_is_dropped(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        let (view, _window) = editing(&a, cx);
+        let (from, to) = (a.to_string_lossy(), b.to_string_lossy());
+        std::fs::rename(&a, &b).unwrap();
+        // The check looks at the old path; the rename re-keys the document
+        // before its answer lands.
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.update(|cx| moved(&from, &to, cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let doc = view.read(cx);
+            assert_eq!(doc.key.path, to);
+            assert!(!doc.deleted);
+        });
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!view.read(cx).deleted));
     }
 
     #[gpui::test]

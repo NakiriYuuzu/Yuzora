@@ -10790,6 +10790,7 @@ name = "yuzora-files"
 version = "0.1.0-beta.2"
 dependencies = [
  "async-channel",
+ "base64",
  "futures",
  "gpui-base",
  "gpui-pre",
