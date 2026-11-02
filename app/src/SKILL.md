@@ -82,12 +82,13 @@ the screen.
 
 ## Customize layouts, keys, or mods
 
-First read `~/.config/herdr-app/AGENTS.md` (or `$HERDR_APP_HOME/AGENTS.md` if
+<!-- yuzora: Yuzora's home and YUZORA_APP_HOME here and under `shot`. -->
+First read `~/.config/yuzora/AGENTS.md` (or `$YUZORA_APP_HOME/AGENTS.md` if
 set). It is the installed guide to settings, layouts, commands and mods.
 Read the generated `.d.ts` files beside it for full API details; do not edit
 those files or the generated guide. The app rewrites them on start.
 
-- Home defaults to `~/.config/herdr-app`; `HERDR_APP_HOME` selects another.
+- Home defaults to `~/.config/yuzora`; `YUZORA_APP_HOME` selects another.
 - Mods live in `mods/<name>/` with `main.js` and optional `mod.json`.
   They are trusted JavaScript with command and network access.
   `"focusable": true` in `mod.json` lets `pane.go` move onto a copy; it receives
@@ -109,7 +110,7 @@ those files or the generated guide. The app rewrites them on start.
 After every mod change:
 
 ```sh
-herdr-app check ~/.config/herdr-app/mods/<name>
+herdr-app check ~/.config/yuzora/mods/<name>
 herdr-app status
 herdr-app shot /tmp/mod.png   # then look at the picture
 ```
@@ -124,7 +125,7 @@ absolute path (default: `herdr-shot.png` in your current folder). It is the
 app's own rendering at full pixel size: terminals, images, overlays and
 floats included, even when the window is covered or minimized. No screen
 capture or permissions. It needs a running window that has drawn a frame;
-`HERDR_APP_HOME` selects the window, as for `status`.
+`YUZORA_APP_HOME` selects the window, as for `status`.
 
 ## Problems and safety
 
