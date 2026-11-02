@@ -103,7 +103,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 ### 其他 machine
 
-透過 `hc exec --on <machine> -- sh -c <script> sh <args…>`（`yuzora_core::remote`，20 秒）：列表、寫入、移到垃圾桶都是固定的 sh 腳本，資料只當 positional 參數傳入，不拼進腳本。遠端的垃圾桶依序用 `gio trash`、`trash` 指令，否則手動寫 freedesktop Trash（`files/`＋`info/*.trashinfo`，`Path=` 依規格做 URL 編碼，用 `od`）。Windows 遠端（沒有 sh、模板在 `%APPDATA%`）不支援。
+透過 `hc exec --on <machine> -- sh -c <script> sh <args…>`（`yuzora_core::remote`，20 秒）：列表、寫入、移到垃圾桶都是固定的 sh 腳本，資料只當 positional 參數傳入，不拼進腳本。`hc exec` 沒有 stdin，內容只能走參數：存檔時開啟時讀到的內容改傳 POSIX `cksum`（遠端用 `cksum` 比對），新內容上限 12 KiB（Windows 命令列 32,767 字元、Linux 單一參數 128 KiB，含引號跳脫），超過回 `too_big`。遠端的垃圾桶依序用 `gio trash`、`trash` 指令，否則手動寫 freedesktop Trash（`files/`＋`info/*.trashinfo`，`Path=` 依規格做 URL 編碼，用 `od`）。Windows 遠端（沒有 sh、模板在 `%APPDATA%`）不支援。
 
 ### 垃圾桶（本機）
 

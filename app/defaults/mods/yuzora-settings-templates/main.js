@@ -137,7 +137,7 @@ export default class Templates extends View {
   }
 
   why(r, name) {
-    const known = ["exists", "changed", "invalid", "name_invalid", "missing"];
+    const known = ["exists", "changed", "invalid", "name_invalid", "missing", "too_big"];
     if (known.includes(r.code)) return t(`errors.${r.code}`, { name });
     return t("errors.other", { message: r.message ?? r.code ?? "" });
   }

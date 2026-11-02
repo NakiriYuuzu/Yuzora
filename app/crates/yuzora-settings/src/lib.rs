@@ -55,7 +55,7 @@ export function listTemplates(machine?: string | null): Promise<TemplateList>;
 export function checkTemplate(name: string, fields: TemplateFields, body: string, machine?: string | null): TemplateIssue[];
 /** The file a template saves as: the fields, the header lines kept from the file (others), the body. */
 export function templateText(fields: TemplateFields, others: [string, string][], body: string): string;
-/** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | old_kept (renamed; the old file is still there) | io | remote, message}. */
+/** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | old_kept (renamed; the old file is still there) | too_big (over 12 KiB, on another machine) | io | remote, message}. */
 export function saveTemplate(machine: string | null, name: string, fields: TemplateFields, others: [string, string][], body: string, expected: string | null, previous?: string | null): Promise<Outcome>;
 /** Moves a template to the trash. */
 export function trashTemplate(machine: string | null, name: string): Promise<Outcome>;
@@ -176,8 +176,14 @@ fn save_template(s: Save) -> Value {
             Err(e) => failed(e.code(), e),
         },
         Some(m) => {
+            // The text goes as an argument: past REMOTE_MAX the command line
+            // wouldn't start. The text it was read as goes as its cksum.
+            if s.text.len() > templates::REMOTE_MAX {
+                return failed("too_big", templates::REMOTE_MAX);
+            }
             let mode = if s.expected.is_some() { "old" } else { "new" };
-            let args = [s.name.as_str(), s.text.as_str(), mode, s.expected.as_deref().unwrap_or(""), s.previous.as_deref().unwrap_or("")];
+            let sum = s.expected.as_deref().map(|e| templates::cksum(e.as_bytes())).unwrap_or_default();
+            let args = [s.name.as_str(), s.text.as_str(), mode, sum.as_str(), s.previous.as_deref().unwrap_or("")];
             match sh(m, &templates::remote_save_script(), &args) {
                 Ok(out) => match out.code {
                     0 => json!({ "ok": true, "text": s.text }),

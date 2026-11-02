@@ -45,6 +45,7 @@
     "changed": "This template changed somewhere else since you opened it. Read it again, then edit.",
     "invalid": "Fix what's marked first.",
     "name_invalid": "{name} isn't a name hc can run.",
+    "too_big": "This template is over 12 KB, too big to save on another machine (it travels on a command line). Shorten it, or edit it on that machine.",
     "missing": "{name} isn't there any more.",
     "old_kept": "Saved {name}, but the old {old} couldn't go to the Trash: both files are there.",
     "other": "It didn't work: {message}"

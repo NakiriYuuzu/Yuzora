@@ -503,7 +503,28 @@ url_path() {
 }
 "#;
 
-/// `sh -c REMOTE_SAVE sh <name> <text> <new|old> <expected> <previous>`.
+/// The most a template saved on another machine may hold: its text travels
+/// as an argument (`hc exec` has no stdin), and command lines are short
+/// (Windows: 32,767 characters, quoting included; Linux: 128 KiB per argument).
+pub const REMOTE_MAX: usize = 12 * 1024;
+
+/// POSIX `cksum` of `bytes` as the other machine's `cksum` prints it
+/// (`<crc> <length>`): a remote save compares the file it would replace by
+/// this, rather than sending the text it was read as again.
+pub fn cksum(bytes: &[u8]) -> String {
+    fn feed(crc: u32, b: u8) -> u32 {
+        (0..8).fold(crc ^ (u32::from(b) << 24), |c, _| if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 })
+    }
+    let mut crc = bytes.iter().fold(0, |c, &b| feed(c, b));
+    let mut n = bytes.len() as u64;
+    while n != 0 {
+        crc = feed(crc, (n & 0xff) as u8);
+        n >>= 8;
+    }
+    format!("{} {}", !crc, bytes.len())
+}
+
+/// `sh -c REMOTE_SAVE sh <name> <text> <new|old> <cksum of expected> <previous>`.
 /// Exits 4 when the name is taken, 5 when the file changed, 6 on a write error,
 /// 7 when renamed but the old file couldn't go to the trash.
 pub fn remote_save_script() -> String {
@@ -513,7 +534,7 @@ name=$1; text=$2; mode=$3; expected=$4; previous=$5
 mkdir -p "$d" || exit 6
 f="$d/$name.md"; src=$f
 if [ -n "$previous" ] && [ "$previous" != "$name" ]; then src="$d/$previous.md"; fi
-same() {{ cur=$(cat "$1" 2>/dev/null; printf x); cur=${{cur%x}}; [ -f "$1" ] && [ "$cur" = "$expected" ]; }}
+same() {{ [ -f "$1" ] || return 1; set -- $(cksum < "$1"); [ "$1 $2" = "$expected" ]; }}
 taken() {{ [ -e "$f" ] || [ -L "$f" ]; }}
 if [ "$mode" = new ]; then
   taken && exit 4
@@ -729,6 +750,14 @@ mod tests {
     }
 
     #[test]
+    fn cksum_is_posix_cksum() {
+        // `printf … | cksum` on macOS and GNU coreutils.
+        assert_eq!(cksum(b"123456789"), "930766865 9");
+        assert_eq!(cksum(b""), "4294967295 0");
+        assert_eq!(cksum(b"abc"), "1219131554 3");
+    }
+
+    #[test]
     fn reads_another_machines_listing() {
         let out = "/home/p/.config/herdr-core/templates\n\u{1e}rev.md\u{1f}---\ncommand: pi\n---\nhi\n\u{1e}bad.md\u{1f}oops";
         let (dir, l) = parse_remote_list(out);
@@ -747,7 +776,7 @@ mod tests {
         let d = tmp("sh");
         let bin = d.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od"] {
+        for tool in ["cat", "mkdir", "mv", "rm", "date", "ln", "od", "cksum"] {
             let found = ["/bin", "/usr/bin"].iter().map(|p| Path::new(p).join(tool)).find(|p| p.exists()).unwrap();
             std::os::unix::fs::symlink(found, bin.join(tool)).unwrap();
         }
@@ -767,15 +796,17 @@ mod tests {
         let text = "---\ncommand: pi\n---\nends with blank lines\n\n";
         assert_eq!(sh(&save, &["rev", text, "new", "", ""]).status.code(), Some(0));
         assert_eq!(sh(&save, &["rev", text, "new", "", ""]).status.code(), Some(4), "taken");
+        let sum = cksum(text.as_bytes());
         assert_eq!(sh(&save, &["rev", "x", "old", "stale", ""]).status.code(), Some(5), "changed");
-        assert_eq!(sh(&save, &["rev", text, "old", text, ""]).status.code(), Some(0), "trailing newlines compare exactly");
+        assert_eq!(sh(&save, &["rev", "x", "old", &cksum(text.trim_end().as_bytes()), ""]).status.code(), Some(5), "trailing newlines count");
+        assert_eq!(sh(&save, &["rev", text, "old", &sum, ""]).status.code(), Some(0));
         let out = sh(REMOTE_LIST, &[]);
         let (dir, l) = parse_remote_list(&String::from_utf8_lossy(&out.stdout));
         assert!(dir.ends_with("config/herdr-core/templates"));
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].text, text);
         // Rename: the new file is written, the old one leaves the folder.
-        assert_eq!(sh(&save, &["review", text, "old", text, "rev"]).status.code(), Some(0));
+        assert_eq!(sh(&save, &["review", text, "old", &sum, "rev"]).status.code(), Some(0));
         let names = |out: std::process::Output| parse_remote_list(&String::from_utf8_lossy(&out.stdout)).1.into_iter().map(|e| e.name).collect::<Vec<_>>();
         assert_eq!(names(sh(REMOTE_LIST, &[])), ["review"]);
         assert_eq!(sh(&remote_trash_script(), &["review"]).status.code(), Some(0));
@@ -811,7 +842,7 @@ mod tests {
         std::fs::write(&dots, text).unwrap();
         let link = d.join("config/herdr-core/templates/lab.md");
         std::os::unix::fs::symlink(&dots, &link).unwrap();
-        assert_eq!(sh(&save, &["lab", "edited", "old", text, ""]).status.code(), Some(0));
+        assert_eq!(sh(&save, &["lab", "edited", "old", &sum, ""]).status.code(), Some(0));
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&dots).unwrap(), "edited");
         assert_eq!(sh(&remote_trash_script(), &["lab"]).status.code(), Some(0));
