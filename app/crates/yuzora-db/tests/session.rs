@@ -198,6 +198,28 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
     assert!(second.is_err(), "{second:?}");
     assert_eq!(rows(id, "select count(*) from hits"), [["1"]]);
 
+    // The saved connection now points at another file with a table of the
+    // same name: edits read from the first are never written to the second.
+    let other = home.join("other.sqlite");
+    std::fs::File::create(&other).unwrap();
+    let state = wait(session::open_table(id, None, "pane", &table("sums"), None));
+    let stale = state.results[0].id;
+    results::lock(&results::get(stale).unwrap()).set_edit(0, a, Cell::Int(7));
+    let point_at = |path: &PathBuf| {
+        let mut c = config::get(id).unwrap();
+        c.path = path.to_string_lossy().into_owned();
+        config::save(c, None).unwrap();
+        // What saveConnection does when a connection connects differently.
+        session::disconnect(id);
+    };
+    point_at(&other);
+    run(id, "setup", "create table sums(id integer primary key, a integer, twice integer as (a * 2));\ninsert into sums(a) values (4);");
+    assert!(runtime::block_on(session::write_back(stale)).is_err());
+    assert_eq!(rows(id, "select a from sums"), [["4"]]);
+    assert_eq!(results::lock(&results::get(stale).unwrap()).edits.len(), 1, "the edit stays pending");
+    point_at(&file);
+    assert_eq!(rows(id, "select a from sums"), [["6"]]);
+
     sql_server_tables_stay_in_the_panes_database();
 
     let _ = std::fs::remove_dir_all(&home);

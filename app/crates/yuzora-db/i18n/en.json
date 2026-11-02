@@ -10,6 +10,7 @@
     "no_key": "Read-only: the table has no primary key",
     "read_only": "Read-only: the connection is set to read-only",
     "writing": "A write-back is already running",
+    "connection_changed": "The connection's settings changed after this table was read: refresh the table, then edit again",
     "open_transaction": "The SQL tab left a transaction open on this connection: COMMIT or ROLLBACK it there, then write back",
     "no_info": "Read-only: could not read the table's key ({error})",
     "null_key": "A row's primary key is NULL; it can't be found to update"

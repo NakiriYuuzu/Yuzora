@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::config::ConnectionConfig;
 use crate::model::{Cell, Column, ObjectRef};
 
 pub type ResultId = u64;
@@ -21,6 +22,9 @@ pub type ResultId = u64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditTarget {
     pub connection: String,
+    /// The connection's settings when the rows were read: saved since to
+    /// connect elsewhere, the edits are not written there.
+    pub config: ConnectionConfig,
     pub database: Option<String>,
     pub owner: String,
     pub table: ObjectRef,
@@ -371,6 +375,7 @@ mod tests {
         let mut r = lock(&set);
         r.edit = Some(EditTarget {
             connection: "c".into(),
+            config: serde_json::from_value(serde_json::json!({"name": "c", "engine": "sqlite", "path": "t.sqlite"})).unwrap(),
             database: None,
             owner: "t-read-only".into(),
             table: ObjectRef { schema: String::new(), name: "t".into() },

@@ -10,6 +10,7 @@
     "no_key": "唯讀：這個資料表沒有主鍵",
     "read_only": "唯讀：這個連線設定為唯讀",
     "writing": "已經在寫回中",
+    "connection_changed": "讀取這個資料表之後，連線設定已經變更：請重新整理資料表後再編輯",
     "open_transaction": "SQL 分頁在這條連線上留著尚未結束的交易：請先在那裡 COMMIT 或 ROLLBACK，再寫回",
     "no_info": "唯讀：無法讀取資料表的主鍵（{error}）",
     "null_key": "有一列的主鍵是 NULL，無法找到該列來更新"

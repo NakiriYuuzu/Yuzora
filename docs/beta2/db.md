@@ -66,6 +66,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 編輯框只有一行：含換行的文字和二進位值不能在表格內編輯（底部會說明），請在 SQL 分頁用 `UPDATE`。
 - 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「捨棄並繼續」或「繼續編輯」。
 - 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。寫回還沒結束時再按一次寫回會被拒絕（`edit.writing`），所以同一批修改不會寫兩次。
+- 寫回只送到讀取這些列時的連線設定。表打開之後，如果已存的連線改成連到別處（另一台伺服器、另一個資料庫或另一個檔案），寫回會被拒絕（`edit.connection_changed`），修改仍保留為待寫回；重新整理資料表後再編輯。判斷方式和存檔時是否重連相同（`ConnectionConfig::connects_like`），在連線前後各檢查一次。
 - SQL 分頁在同一條連線上留著尚未結束的交易時，不會寫回（`edit.open_transaction`），修改仍保留為待寫回。原因是 PostgreSQL 會忽略寫回的 BEGIN，寫回的 COMMIT 會連分頁自己的修改一起提交；SQL Server 的巢狀 COMMIT 只會把計數減一，之後分頁一 ROLLBACK，寫回就跟著消失。判斷方式：PostgreSQL 看 `now() = statement_timestamp()`，SQL Server 看 `@@TRANCOUNT`，SQLite 看 autocommit。
 - 底部顯示「N 個儲存格已修改 · 捨棄 · 寫回」。寫回在一個交易內，每列用 primary key 定位，每列影響的列數必須剛好是 1，否則整筆 rollback 並顯示錯誤。key 是 NULL 的列拒絕寫回。
 - PostgreSQL 用文字格式參數寫回（server 依欄位型別解析），所以 numeric、interval、enum、array 等都能原文 round-trip。

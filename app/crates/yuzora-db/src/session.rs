@@ -527,14 +527,15 @@ pub fn open_table(
     let (connection, database, owner, table) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), table.clone());
     runtime::spawn(async move {
-        let (engine, read_only) = match config::get(&connection) {
-            Ok(c) => (c.engine, c.read_only),
+        let opened_with = match config::get(&connection) {
+            Ok(c) => c,
             Err(e) => {
                 let mut sink = JobSink::new(id, &owner, "");
                 finish_job(id, Err(e), &mut sink);
                 return;
             }
         };
+        let (engine, read_only) = (opened_with.engine, opened_with.read_only);
         let info = describe(&connection, database.as_deref(), &table).await;
         let mut l = match lease(&connection, database.as_deref(), &owner).await {
             Ok(l) => l,
@@ -562,6 +563,7 @@ pub fn open_table(
                 (Ok(_), Some(key)) if !key.is_empty() => {
                     r.edit = Some(EditTarget {
                         connection: connection.clone(),
+                        config: opened_with.clone(),
                         database: database.clone(),
                         owner: owner.clone(),
                         table: table.clone(),
@@ -668,10 +670,22 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
     };
     results::changed(result);
     let (target, edits, written) = prepared?;
-    let outcome = match lease(&target.connection, target.database.as_deref(), &target.owner).await {
-        Ok(mut l) => l.conn().apply_edits(&target.table, &edits).await,
-        Err(e) => Err(e),
-    };
+    // Saved since to connect elsewhere (another server, database or file):
+    // these keys and values are not for it. Asked again once connected, in
+    // case it was saved meanwhile.
+    let unchanged = || config::get(&target.connection).is_ok_and(|c| c.connects_like(&target.config));
+    let changed = || DbError::NotEditable(crate::i18n::t("edit.connection_changed", &[]));
+    let outcome = async {
+        if !unchanged() {
+            return Err(changed());
+        }
+        let mut l = lease(&target.connection, target.database.as_deref(), &target.owner).await?;
+        if !unchanged() {
+            return Err(changed());
+        }
+        l.conn().apply_edits(&target.table, &edits).await
+    }
+    .await;
     {
         let mut r = results::lock(&set);
         r.writing = false;
