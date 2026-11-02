@@ -162,6 +162,28 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
     assert!(!state.results[0].editable, "{:?}", state.results[0]);
     assert_eq!(state.results[0].not_editable, Some(yuzora_db::i18n::t("edit.read_only", &[])));
 
+    // A generated column is shown but never edited: an edit there would make
+    // the whole write-back fail, the other cells with it.
+    run(id, "setup", "create table sums(id integer primary key, a integer, twice integer as (a * 2));\ninsert into sums(a) values (4);");
+    let state = wait(session::open_table(id, None, "pane", &table("sums"), None));
+    let summary = &state.results[0];
+    assert!(summary.editable, "{summary:?}");
+    let set = results::get(summary.id).unwrap();
+    let (a, twice) = {
+        let r = results::lock(&set);
+        let at = |n: &str| r.columns.iter().position(|c| c.name == n).unwrap();
+        (at("a"), at("twice"))
+    };
+    {
+        let mut r = results::lock(&set);
+        assert!(!r.column_editable(twice) && r.column_editable(a));
+        r.set_edit(0, twice, Cell::Int(99));
+        r.set_edit(0, a, Cell::Int(5));
+        assert_eq!(r.edits.len(), 1, "{:?}", r.edits);
+    }
+    assert_eq!(runtime::block_on(session::write_back(summary.id)).unwrap(), 1);
+    assert_eq!(rows(id, "select a, twice from sums"), [["5", "10"]]);
+
     sql_server_tables_stay_in_the_panes_database();
 
     let _ = std::fs::remove_dir_all(&home);

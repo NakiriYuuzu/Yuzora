@@ -55,16 +55,18 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 連線還在建立時按「停止」也有效：引擎先把自己的取消機制準備好，然後在每個 statement 執行前檢查工作是否已經停止（`RowSink::cancelled`）。所以 UPDATE、DELETE 這類不回傳列的語句，不會在回報取消之後才執行。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
 - 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
-- 排序在用戶端，只排已讀進來的列（排的是檢視的索引，不搬資料）。整數與數字文字逐位精確比較，不經過 f64，所以超過 2^53 的 bigint 和高精度 numeric 也排得對。被截斷的結果要完整排序，請在 SQL 加 `ORDER BY`。
+- 排序在用戶端，只排已讀進來的列（排的是檢視的索引，不搬資料）。整數與數字文字逐位精確比較，不經過 f64，所以超過 2^53 的 bigint 和高精度 numeric 也排得對。NaN 排在所有數字之後（和 PostgreSQL 一樣）。PostgreSQL 的 money 依數值排序：只把數字之間的 `.`、`,` 當分隔，所以 `$1,234.56`、`1.234,56 €`、`￥1,234` 都會正確排序。查詢還在串流時就排序，之後到的列也會依排序併入。被截斷的結果要完整排序，請在 SQL 加 `ORDER BY`。
 - 開表時另外跑一次 `COUNT(*)`（MSSQL 是 `COUNT_BIG`），狀態列顯示「X 列 · 顯示 a–b · N ms」。
 
 ## 編輯與寫回
 
 - 只有「開表」產生的結果集可以編輯，而且資料表必須有 primary key；沒有就停用並顯示原因（`edit.no_key`）。連線設成唯讀（SQLite 的 `readOnly`）時也會停用（`edit.read_only`）。
-- 雙擊或 Enter 編輯，⌘⌫ 設 NULL，Esc 取消。打開編輯框卻沒改內容就離開，不算修改；改回原值也等於沒改。
+- 由資料庫計算的欄位不能編輯（`grid.generated`），包括產生欄、計算欄，以及 PostgreSQL 的 `GENERATED ALWAYS` identity 和 SQL Server 的 identity。否則寫回時整筆交易都會被伺服器拒絕。`describe` 的 `ColumnInfo.generated` 標示這類欄位。
+- 雙擊或 Enter 編輯，⌘⌫ 設 NULL，Esc 取消。打開編輯框卻沒改內容就離開，不算修改；改回原值也等於沒改。NULL 儲存格的編輯框是空的：在裡面打過字或按了 Enter，留空就寫成空字串；只打開就離開，仍然是 NULL。
 - 編輯框只有一行：含換行的文字和二進位值不能在表格內編輯（底部會說明），請在 SQL 分頁用 `UPDATE`。
 - 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「捨棄並繼續」或「繼續編輯」。
 - 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。
+- SQL 分頁在同一條連線上留著尚未結束的交易時，不會寫回（`edit.open_transaction`），修改仍保留為待寫回。原因是 PostgreSQL 會忽略寫回的 BEGIN，寫回的 COMMIT 會連分頁自己的修改一起提交；SQL Server 的巢狀 COMMIT 只會把計數減一，之後分頁一 ROLLBACK，寫回就跟著消失。判斷方式：PostgreSQL 看 `now() = statement_timestamp()`，SQL Server 看 `@@TRANCOUNT`，SQLite 看 autocommit。
 - 底部顯示「N 個儲存格已修改 · 捨棄 · 寫回」。寫回在一個交易內，每列用 primary key 定位，每列影響的列數必須剛好是 1，否則整筆 rollback 並顯示錯誤。key 是 NULL 的列拒絕寫回。
 - PostgreSQL 用文字格式參數寫回（server 依欄位型別解析），所以 numeric、interval、enum、array 等都能原文 round-trip。
 

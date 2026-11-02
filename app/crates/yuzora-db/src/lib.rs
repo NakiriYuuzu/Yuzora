@@ -63,7 +63,7 @@ export interface ConnectionStatus {
 export type ObjectKind = "table" | "view" | "materialized_view" | "function" | "procedure" | "sequence" | "trigger" | "index" | "type" | "other";
 export interface DbObject { schema: string; name: string; kind: ObjectKind; rows: number | null; detail: string }
 export interface ObjectRef { schema: string; name: string }
-export interface ColumnInfo { name: string; typeName: string; nullable: boolean; default: string | null; primaryKey: number | null }
+export interface ColumnInfo { name: string; typeName: string; nullable: boolean; default: string | null; primaryKey: number | null; generated: boolean }
 export interface TableInfo {
   columns: ColumnInfo[];
   indexes: { name: string; columns: string[]; unique: boolean; primary: boolean }[];

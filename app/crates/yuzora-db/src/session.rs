@@ -448,7 +448,7 @@ impl RowSink for JobSink {
             let room = self.max_rows.saturating_sub(r.rows.len());
             let offered = rows.len();
             let take = offered.min(room);
-            r.rows.extend(rows.into_iter().take(take));
+            r.push_rows(rows.into_iter().take(take));
             // Truncated only once a row doesn't fit: at exactly the cap it
             // keeps reading to find out whether there is one.
             let more = take == offered;
@@ -566,6 +566,12 @@ pub fn open_table(
                         owner: owner.clone(),
                         table: table.clone(),
                         key,
+                        read_only: info
+                            .iter()
+                            .flat_map(|i| &i.columns)
+                            .filter(|c| c.generated)
+                            .filter_map(|c| r.columns.iter().position(|rc| rc.name == c.name))
+                            .collect(),
                     })
                 }
                 _ => r.not_editable = Some(crate::i18n::t("edit.no_key", &[])),

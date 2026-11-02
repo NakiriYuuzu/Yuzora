@@ -169,6 +169,12 @@ pub fn key_mismatch(key: &[(String, Cell)], matched: u64) -> String {
     crate::i18n::t("engine.key_mismatch", &[("key", key.join(", ")), ("count", matched.to_string())])
 }
 
+/// Write-back refused: the connection is inside a transaction the SQL tab
+/// left open, which the write-back's own commit would get tangled in.
+pub fn open_transaction() -> crate::error::DbError {
+    crate::error::DbError::NotEditable(crate::i18n::t("edit.open_transaction", &[]))
+}
+
 // ---------------------------------------------------------------- scanning
 
 /// What the statement being read so far is about: whether anything but

@@ -105,6 +105,10 @@ struct Editing {
     column: usize,
     /// What the editor opened with: left as it was, nothing is edited.
     initial: String,
+    /// The cell was NULL (the editor opens empty).
+    was_null: bool,
+    /// Typed into: a NULL cell left blank then means an empty string.
+    typed: bool,
     input: Entity<InputState>,
     _events: Subscription,
 }
@@ -311,16 +315,22 @@ impl Grid {
                 return;
             }
             let row = r.row_index(pos.0);
+            if !r.column_editable(pos.1) {
+                self.notice = Some(t("grid.generated", &[]));
+                cx.notify();
+                return;
+            }
             // The editor is one line of text: a value it can't hold whole
             // (line breaks, bytes) would come back changed.
             let cell = r.cell(row, pos.1);
             if cell.is_some_and(|c| matches!(c, Cell::Bytes(_)) || matches!(c, Cell::Text(s) if s.contains(['\n', '\r']))) {
                 Err(t("grid.not_inline", &[]))
             } else {
-                Ok((row, cell.filter(|c| !c.is_null()).map(|c| c.display().into_owned()).unwrap_or_default()))
+                let was_null = cell.is_none_or(Cell::is_null);
+                Ok((row, cell.filter(|c| !c.is_null()).map(|c| c.display().into_owned()).unwrap_or_default(), was_null))
             }
         };
-        let (row, value) = match outcome {
+        let (row, value, was_null) = match outcome {
             Ok(found) => found,
             Err(why) => {
                 self.notice = Some(why);
@@ -336,13 +346,22 @@ impl Grid {
         });
         let events = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => {
+                if let Some(e) = this.editing.as_mut() {
+                    // Enter on a blank NULL cell asks for an empty string.
+                    e.typed = true;
+                }
                 this.commit_editing(cx);
                 this.focus.focus(window, cx);
+            }
+            InputEvent::Change => {
+                if let Some(e) = this.editing.as_mut() {
+                    e.typed = true;
+                }
             }
             InputEvent::Blur => this.commit_editing(cx),
             _ => {}
         });
-        self.editing = Some(Editing { row, column: pos.1, initial: value, input, _events: events });
+        self.editing = Some(Editing { row, column: pos.1, initial: value, was_null, typed: false, input, _events: events });
         cx.notify();
     }
 
@@ -350,13 +369,13 @@ impl Grid {
     fn commit_editing(&mut self, cx: &mut Context<Self>) {
         let (Some(editing), Some(set)) = (self.editing.take(), self.set.clone()) else { return };
         let value = editing.input.read(cx).value().to_string();
-        if value == editing.initial {
+        let Some(value) = typed_value(&editing.initial, value, editing.was_null, editing.typed) else {
             // Opened and left: a NULL stays NULL, 5 stays the number 5.
             return cx.notify();
-        }
+        };
         let id = {
             let mut r = results::lock(&set);
-            r.set_edit(editing.row, editing.column, Cell::text(value));
+            r.set_edit(editing.row, editing.column, value);
             r.id
         };
         results::changed(id);
@@ -794,9 +813,29 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
+/// What the inline editor's text makes of a cell, if anything: opened and
+/// left as it was, nothing. A NULL cell opens blank, so blank there means an
+/// empty string only once it was typed into or Enter was pressed (`meant`).
+fn typed_value(initial: &str, value: String, was_null: bool, meant: bool) -> Option<Cell> {
+    (value != initial || (was_null && meant)).then(|| Cell::text(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_null_cell_can_become_an_empty_string() {
+        // Typed into (or Enter pressed on) a NULL cell left blank: an empty string.
+        assert_eq!(typed_value("", String::new(), true, true), Some(Cell::text("")));
+        // Opened and left without a key: still NULL.
+        assert_eq!(typed_value("", String::new(), true, false), None);
+        // A value left as it was is no edit, however it was left.
+        assert_eq!(typed_value("5", "5".into(), false, true), None);
+        assert_eq!(typed_value("", String::new(), false, true), None, "an empty string stays one");
+        assert_eq!(typed_value("a", "b".into(), false, false), Some(Cell::text("b")));
+        assert_eq!(typed_value("", "x".into(), true, false), Some(Cell::text("x")));
+    }
 
     #[test]
     fn numbers_get_separators() {

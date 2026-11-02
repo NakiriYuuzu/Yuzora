@@ -288,7 +288,7 @@ fn describe(conn: &Connection, name: &str) -> DbResult<TableInfo> {
     let mut stmt = conn
         .prepare(
             // hidden: 0 plain, 1 a virtual table's own, 2 and 3 generated.
-            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_xinfo(?1) \
+            "SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo(?1) \
              WHERE hidden IN (0, 2, 3) ORDER BY cid",
         )
         .map_err(lite_err)?;
@@ -301,6 +301,7 @@ fn describe(conn: &Connection, name: &str) -> DbResult<TableInfo> {
                 nullable: r.get::<_, i64>(2)? == 0,
                 default: r.get(3)?,
                 primary_key: u32::try_from(pk).ok().filter(|p| *p > 0),
+                generated: r.get::<_, i64>(5)? >= 2,
             })
         })
         .map_err(lite_err)?
@@ -387,6 +388,9 @@ fn primary_key_of(conn: &Connection, table: &str) -> DbResult<Vec<String>> {
 // ---------------------------------------------------------------- edits
 
 fn apply_edits(conn: &mut Connection, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {
+    if !conn.is_autocommit() {
+        return Err(sql::open_transaction());
+    }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(lite_err)?;
     let mut written = 0;
     for edit in edits.iter().filter(|e| !e.changes.is_empty()) {

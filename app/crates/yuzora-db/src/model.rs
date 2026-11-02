@@ -68,6 +68,8 @@ enum Number<'a> {
     Int(i64),
     /// Decimal text, compared digit by digit.
     Decimal(Decimal<'a>),
+    /// Money as the server's locale prints it, made plain decimal text.
+    Money(String),
     /// A float, or text only a float reads (`1e20`, `Infinity`, `NaN`).
     Float(f64),
 }
@@ -78,20 +80,23 @@ impl<'a> Number<'a> {
             Cell::Int(i) => Some(Number::Int(*i)),
             Cell::Bool(b) => Some(Number::Int(*b as i64)),
             Cell::Float(f) => Some(Number::Float(*f)),
-            Cell::Text(s) if numeric => {
-                Decimal::parse(s).map(Number::Decimal).or_else(|| s.trim().parse().ok().map(Number::Float))
-            }
+            Cell::Text(s) if numeric => Decimal::parse(s)
+                .map(Number::Decimal)
+                .or_else(|| s.trim().parse().ok().map(Number::Float))
+                .or_else(|| plain_money(s).map(Number::Money)),
             _ => None,
         }
     }
 
     fn cmp(&self, other: &Number<'_>) -> Ordering {
         match (self, other) {
+            (Number::Money(m), _) => Decimal::parse(m).map_or(Ordering::Equal, |d| Number::Decimal(d).cmp(other)),
+            (_, Number::Money(m)) => Decimal::parse(m).map_or(Ordering::Equal, |d| self.cmp(&Number::Decimal(d))),
             (Number::Int(a), Number::Int(b)) => a.cmp(b),
             (Number::Decimal(a), Number::Decimal(b)) => a.cmp(b),
             (Number::Int(i), Number::Decimal(d)) => Decimal::parse(&i.to_string()).map_or(Ordering::Equal, |i| i.cmp(d)),
             (Number::Decimal(_), Number::Int(_)) => other.cmp(self).reverse(),
-            (Number::Float(a), Number::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (Number::Float(a), Number::Float(b)) => nan_last(*a, *b),
             (Number::Float(f), exact) => float_cmp(*f, exact),
             (exact, Number::Float(f)) => float_cmp(*f, exact).reverse(),
         }
@@ -101,10 +106,14 @@ impl<'a> Number<'a> {
 /// A float against an exact number: by the nearest float first, which can
 /// only tie when the two are close; a tie is settled on the float's exact value.
 fn float_cmp(f: f64, exact: &Number<'_>) -> Ordering {
+    if f.is_nan() {
+        return Ordering::Greater;
+    }
     let text = match exact {
         Number::Int(i) => i.to_string(),
         Number::Decimal(d) => d.to_string(),
-        Number::Float(g) => return f.partial_cmp(g).unwrap_or(Ordering::Equal),
+        Number::Money(m) => m.clone(),
+        Number::Float(g) => return nan_last(f, *g),
     };
     let near: f64 = text.parse().unwrap_or(f64::NAN);
     match f.partial_cmp(&near) {
@@ -118,6 +127,45 @@ fn float_cmp(f: f64, exact: &Number<'_>) -> Ordering {
         }
         order => order.unwrap_or(Ordering::Equal),
     }
+}
+
+/// NaN after every number, as PostgreSQL sorts it; NaNs are equal.
+fn nan_last(a: f64, b: f64) -> Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+    }
+}
+
+/// Money as PostgreSQL prints it in the server's locale (`$1,234.56`,
+/// `-1.234,56 €`, `Fr. 1'234.50`, `￥1,234`) as plain decimal text. Only `.`
+/// and `,` between two digits count; the decimal point is the last of them,
+/// unless that is a lone one before exactly three digits (grouping, `￥1,234`).
+fn plain_money(s: &str) -> Option<String> {
+    let s = s.trim();
+    let chars: Vec<char> = s.chars().collect();
+    let digit = |i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
+    let kept: String = (0..chars.len())
+        .filter(|&i| digit(i) || (matches!(chars[i], '.' | ',') && i > 0 && digit(i - 1) && digit(i + 1)))
+        .map(|i| chars[i])
+        .collect();
+    if !kept.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let point = kept.rfind(['.', ',']).filter(|&i| {
+        let separator = kept.as_bytes()[i];
+        let both = kept.contains('.') && kept.contains(',');
+        let lone = kept.bytes().filter(|b| *b == separator).count() == 1;
+        both || (lone && kept.len() - i - 1 != 3)
+    });
+    let digits = |part: &str| part.chars().filter(char::is_ascii_digit).collect::<String>();
+    let sign = if s.contains('-') || (s.starts_with('(') && s.ends_with(')')) { "-" } else { "" };
+    Some(match point {
+        Some(i) => format!("{sign}{}.{}", digits(&kept[..i]), digits(&kept[i + 1..])),
+        None => format!("{sign}{}", digits(&kept)),
+    })
 }
 
 /// `-12.340` as sign, integer digits without leading zeros (`12`) and
@@ -263,6 +311,9 @@ pub struct ColumnInfo {
     pub default: Option<String>,
     /// 1-based position in the primary key.
     pub primary_key: Option<u32>,
+    /// The database computes it (a generated or computed column, an identity
+    /// it always numbers itself): it can't be written.
+    pub generated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -359,6 +410,45 @@ mod tests {
             assert_eq!(a.compare(&b, true), order, "{a:?} vs {b:?}");
             assert_eq!(b.compare(&a, true), order.reverse(), "{b:?} vs {a:?}");
         }
+    }
+
+    #[test]
+    fn money_sorts_by_value_whatever_the_locale_prints() {
+        use Ordering::*;
+        let n = |s: &str| Cell::text(s);
+        let cases = [
+            (n("$1,234.56"), n("$999.99"), Greater),
+            (n("-$5.00"), n("$1.00"), Less),
+            (n("-$1,000.00"), n("-$5.00"), Less),
+            (n("1.234,56 €"), n("999,99 €"), Greater),
+            (n("￥1,234"), n("￥999"), Greater),
+            (n("Fr. 1'234.50"), n("Fr. 999.00"), Greater),
+            (n("$1,234.50"), n("$1,234.5"), Equal),
+            (n("$12.00"), Cell::Int(12), Equal),
+        ];
+        for (a, b, order) in cases {
+            assert_eq!(a.compare(&b, true), order, "{a:?} vs {b:?}");
+            assert_eq!(b.compare(&a, true), order.reverse(), "{b:?} vs {a:?}");
+        }
+        assert_eq!(n("$5.00").compare(&n("$40.00"), false), Greater, "text columns stay text");
+    }
+
+    #[test]
+    fn nan_sorts_after_every_number() {
+        use Ordering::*;
+        let nan = [Cell::text("NaN"), Cell::Float(f64::NAN)];
+        for a in &nan {
+            for b in [Cell::text("1e308"), Cell::text("Infinity"), Cell::Int(i64::MAX), Cell::Float(-1.0), Cell::text("12.5")] {
+                assert_eq!(a.compare(&b, true), Greater, "{a:?} vs {b:?}");
+                assert_eq!(b.compare(a, true), Less, "{b:?} vs {a:?}");
+            }
+            for b in &nan {
+                assert_eq!(a.compare(b, true), Equal);
+            }
+        }
+        let mut v = vec![Cell::text("3"), Cell::text("NaN"), Cell::text("1"), Cell::Null, Cell::text("2")];
+        v.sort_by(|a, b| a.compare(b, true));
+        assert_eq!(v, vec![Cell::Null, Cell::text("1"), Cell::text("2"), Cell::text("3"), Cell::text("NaN")]);
     }
 
     #[test]

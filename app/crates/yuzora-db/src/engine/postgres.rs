@@ -266,6 +266,8 @@ impl PgConn {
                     nullable: !c.not_null,
                     default: c.default.clone().filter(|_| c.generated.is_empty()),
                     primary_key: key.get(&c.name).and_then(|p| u32::try_from(*p).ok()),
+                    // An identity BY DEFAULT may be written; ALWAYS only to DEFAULT.
+                    generated: !c.generated.is_empty() || c.identity == "a",
                 })
                 .collect(),
             ..TableInfo::default()
@@ -408,6 +410,19 @@ impl PgConn {
 
     pub async fn apply_edits(&mut self, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
+        // Inside a transaction the SQL tab left open, BEGIN is ignored and
+        // COMMIT would commit the tab's own work too. Outside one, a simple
+        // query is its own transaction: it started with the statement.
+        match self.client.simple_query("SELECT now() = statement_timestamp()").await {
+            Ok(messages) => {
+                let alone = messages.iter().any(|m| matches!(m, SimpleQueryMessage::Row(r) if r.get(0) == Some("t")));
+                if !alone {
+                    return Err(sql::open_transaction());
+                }
+            }
+            Err(e) if e.code() == Some(&SqlState::IN_FAILED_SQL_TRANSACTION) => return Err(sql::open_transaction()),
+            Err(e) => return Err(query_error(e)),
+        }
         let tx = self.client.transaction().await.map_err(query_error)?;
         let mut statements: HashMap<String, Statement> = HashMap::new();
         let mut written = 0;

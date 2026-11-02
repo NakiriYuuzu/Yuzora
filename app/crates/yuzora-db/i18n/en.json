@@ -9,6 +9,7 @@
   "edit": {
     "no_key": "Read-only: the table has no primary key",
     "read_only": "Read-only: the connection is set to read-only",
+    "open_transaction": "The SQL tab left a transaction open on this connection: COMMIT or ROLLBACK it there, then write back",
     "no_info": "Read-only: could not read the table's key ({error})",
     "null_key": "A row's primary key is NULL; it can't be found to update"
   },
@@ -22,7 +23,8 @@
     "writing": "Writing…",
     "discard": "Discard",
     "write": "Write back",
-    "not_inline": "Line breaks and binary values can't be edited in the grid; use an UPDATE in the SQL tab"
+    "not_inline": "Line breaks and binary values can't be edited in the grid; use an UPDATE in the SQL tab",
+    "generated": "The database computes this column (generated, computed or identity); it can't be edited"
   },
   "field": {
     "name": "name",

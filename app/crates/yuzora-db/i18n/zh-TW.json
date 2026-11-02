@@ -9,6 +9,7 @@
   "edit": {
     "no_key": "唯讀：這個資料表沒有主鍵",
     "read_only": "唯讀：這個連線設定為唯讀",
+    "open_transaction": "SQL 分頁在這條連線上留著尚未結束的交易：請先在那裡 COMMIT 或 ROLLBACK，再寫回",
     "no_info": "唯讀：無法讀取資料表的主鍵（{error}）",
     "null_key": "有一列的主鍵是 NULL，無法找到該列來更新"
   },
@@ -22,7 +23,8 @@
     "writing": "寫回中…",
     "discard": "捨棄",
     "write": "寫回",
-    "not_inline": "含換行或二進位的值無法在表格內編輯，請在 SQL 分頁用 UPDATE"
+    "not_inline": "含換行或二進位的值無法在表格內編輯，請在 SQL 分頁用 UPDATE",
+    "generated": "這個欄位由資料庫計算（產生欄、計算欄或 identity），無法編輯"
   },
   "field": {
     "name": "名稱",

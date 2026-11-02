@@ -511,6 +511,43 @@ fn sqlite_a_stop_pressed_before_the_statement_keeps_it_from_running() {
     });
 }
 
+/// The refusal to write back inside a transaction the SQL tab left open.
+fn open_transaction() -> DbError {
+    DbError::NotEditable(yuzora_db::i18n::t("edit.open_transaction", &[]))
+}
+
+fn one_edit(value: &str) -> RowEdit {
+    RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("v".into(), text(value))] }
+}
+
+#[test]
+fn sqlite_write_back_waits_for_a_transaction_left_open() {
+    let db = TempDb::new("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'a');");
+    run(async {
+        let mut conn = db.open().await;
+        let t = ObjectRef { schema: String::new(), name: "t".into() };
+        query(&mut conn, "BEGIN; INSERT INTO t VALUES (2, 'theirs')").await.unwrap();
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Err(open_transaction()));
+        query(&mut conn, "ROLLBACK").await.unwrap();
+        assert_eq!(db.peek("SELECT id, v FROM t"), [["Integer(1)", "Text(\"a\")"]]);
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Ok(1), "once it is closed, it writes");
+    });
+}
+
+#[test]
+fn sqlite_describes_generated_columns_as_not_writable() {
+    let db = TempDb::new(
+        "CREATE TABLE g (id INTEGER PRIMARY KEY, a INTEGER, twice INTEGER GENERATED ALWAYS AS (a * 2) VIRTUAL, \
+                         next INTEGER AS (a + 1) STORED);",
+    );
+    run(async {
+        let mut conn = db.open().await;
+        let info = conn.describe(&ObjectRef { schema: String::new(), name: "g".into() }).await.unwrap();
+        let generated: Vec<_> = info.columns.iter().map(|c| (c.name.as_str(), c.generated)).collect();
+        assert_eq!(generated, [("id", false), ("a", false), ("twice", true), ("next", true)]);
+    });
+}
+
 #[test]
 fn sqlite_read_only_refuses_writes() {
     let db = TempDb::new("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'a');");
@@ -836,6 +873,17 @@ fn postgres_describes_foreign_keys_defaults_and_generated_columns() {
             None,
             "a generated column's expression is not a default"
         );
+        let generated: Vec<_> = info.columns.iter().map(|c| (c.name.as_str(), c.generated)).collect();
+        assert_eq!(
+            generated,
+            [("id", false), ("pa", false), ("pb", false), ("label", false), ("doubled", true)],
+            "an identity BY DEFAULT may be written"
+        );
+        query(&mut conn, "CREATE TEMP TABLE yz_always (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text)")
+            .await
+            .unwrap();
+        let always = conn.describe(&pg_object(&schema, "yz_always")).await.unwrap();
+        assert_eq!(always.columns.iter().map(|c| c.generated).collect::<Vec<_>>(), [true, false]);
         let index = info.indexes.iter().find(|i| i.name == "yz_child_label").unwrap();
         assert_eq!(index.columns, ["lower(label)", "pa"]);
         for part in [
@@ -967,6 +1015,29 @@ fn postgres_a_stop_pressed_before_the_statement_keeps_it_from_running() {
         conn.canceller().cancel().await;
         assert_eq!(conn.execute("UPDATE yz_stop SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
         assert_eq!(scalar(&mut conn, "SELECT v FROM yz_stop").await, "1");
+    });
+}
+
+#[test]
+fn postgres_write_back_waits_for_a_transaction_left_open() {
+    only_with!("postgres");
+    run(async {
+        let mut conn = pg().await;
+        query(&mut conn, "CREATE TEMP TABLE yz_tx (id int PRIMARY KEY, v text); INSERT INTO yz_tx VALUES (1, 'a')")
+            .await
+            .unwrap();
+        let t = pg_object(&pg_temp_schema(&mut conn).await, "yz_tx");
+        // Write-back would have committed the SQL tab's own work with it.
+        query(&mut conn, "BEGIN; INSERT INTO yz_tx VALUES (2, 'theirs')").await.unwrap();
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Err(open_transaction()));
+        query(&mut conn, "ROLLBACK").await.unwrap();
+        assert_eq!(grid(&mut conn, "SELECT id, v FROM yz_tx").await, [["1", "a"]]);
+        // A transaction already failed is still open.
+        let _ = query(&mut conn, "BEGIN; SELECT 1 / 0").await;
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Err(open_transaction()));
+        query(&mut conn, "ROLLBACK").await.unwrap();
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Ok(1));
+        assert_eq!(scalar(&mut conn, "SELECT v FROM yz_tx").await, "z");
     });
 }
 
@@ -1458,6 +1529,25 @@ fn mssql_a_stop_pressed_before_the_statement_keeps_it_from_running() {
 }
 
 #[test]
+fn mssql_write_back_waits_for_a_transaction_left_open() {
+    only_with!("mssql");
+    run(async {
+        let mut conn = ms().await;
+        query(&mut conn, "CREATE TABLE #tx (id int PRIMARY KEY, v nvarchar(10)); INSERT INTO #tx VALUES (1, N'a')")
+            .await
+            .unwrap();
+        let t = ms_object("", "#tx");
+        // Nested, the write-back's COMMIT would only count down: the SQL tab's ROLLBACK would undo it.
+        query(&mut conn, "BEGIN TRANSACTION; INSERT INTO #tx VALUES (2, N'theirs')").await.unwrap();
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Err(open_transaction()));
+        query(&mut conn, "ROLLBACK").await.unwrap();
+        assert_eq!(grid(&mut conn, "SELECT id, v FROM #tx").await, [["1", "a"]]);
+        assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Ok(1));
+        assert_eq!(scalar(&mut conn, "SELECT v FROM #tx").await, "z");
+    });
+}
+
+#[test]
 fn mssql_table_sql_stays_in_the_connections_database_after_a_use() {
     only_with!("mssql");
     run(async {
@@ -1619,6 +1709,8 @@ fn mssql_describes_keys_identities_computed_columns_and_foreign_keys() {
 
         let by_name = |n: &str| info.columns.iter().find(|c| c.name == n).unwrap();
         assert_eq!((by_name("id").primary_key, by_name("id").nullable), (Some(1), false));
+        let generated: Vec<_> = info.columns.iter().filter(|c| c.generated).map(|c| c.name.as_str()).collect();
+        assert_eq!(generated, ["id", "doubled"], "an identity and a computed column are the server's to fill");
         assert_eq!(by_name("label").default.as_deref(), Some("(N'none')"));
         assert_eq!((by_name("code").type_name.as_str(), by_name("code").nullable), ("varchar(8)", true));
         assert_eq!(by_name("amount").type_name, "decimal(9,3)");

@@ -26,6 +26,9 @@ pub struct EditTarget {
     pub table: ObjectRef,
     /// The primary key's columns, as indexes into the result's columns.
     pub key: Vec<usize>,
+    /// Columns the database computes (generated, computed, an identity it
+    /// numbers itself): shown, never edited.
+    pub read_only: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -112,29 +115,69 @@ impl ResultSet {
         self.edit.is_some() && self.complete && self.error.is_none()
     }
 
+    /// Whether a cell of `column` may be edited (not one the database computes).
+    pub fn column_editable(&self, column: usize) -> bool {
+        self.edit.as_ref().is_none_or(|e| !e.read_only.contains(&column))
+    }
+
+    /// More rows from the server. A sorted view takes them in where they
+    /// sort, after the rows already there that tie with them.
+    pub fn push_rows(&mut self, rows: impl IntoIterator<Item = Vec<Cell>>) {
+        let from = self.rows.len() as u32;
+        self.rows.extend(rows);
+        let Some(sort) = self.sort else { return };
+        let merged = {
+            let order = self.row_order(sort);
+            let mut added: Vec<u32> = (from..self.rows.len() as u32).collect();
+            added.sort_by(&order);
+            let mut merged = Vec::with_capacity(self.order.len() + added.len());
+            let (mut old, mut new) = (self.order.iter().peekable(), added.iter().peekable());
+            while let (Some(&&a), Some(&&b)) = (old.peek(), new.peek()) {
+                if order(&b, &a).is_lt() {
+                    merged.push(b);
+                    new.next();
+                } else {
+                    merged.push(a);
+                    old.next();
+                }
+            }
+            merged.extend(old.chain(new));
+            merged
+        };
+        self.order = merged;
+    }
+
+    /// How two rows (indexes into `rows`) compare under `sort`.
+    fn row_order(&self, (column, descending): (usize, bool)) -> impl Fn(&u32, &u32) -> std::cmp::Ordering + '_ {
+        let numeric = self.columns.get(column).is_some_and(|c| c.numeric);
+        move |a, b| {
+            let (x, y) = (self.rows[*a as usize].get(column), self.rows[*b as usize].get(column));
+            let o = match (x, y) {
+                (Some(x), Some(y)) => x.compare(y, numeric),
+                _ => std::cmp::Ordering::Equal,
+            };
+            if descending { o.reverse() } else { o }
+        }
+    }
+
     /// Sorts the view by `column` (`None` restores the server's order).
     pub fn sort_by(&mut self, sort: Option<(usize, bool)>) {
         self.sort = sort;
         self.order.clear();
-        if let Some((column, descending)) = sort {
-            let numeric = self.columns.get(column).is_some_and(|c| c.numeric);
+        if let Some(sort) = sort {
             let mut order: Vec<u32> = (0..self.rows.len() as u32).collect();
-            let rows = &self.rows;
-            order.sort_by(|a, b| {
-                let (x, y) = (&rows[*a as usize].get(column), &rows[*b as usize].get(column));
-                let o = match (x, y) {
-                    (Some(x), Some(y)) => x.compare(y, numeric),
-                    _ => std::cmp::Ordering::Equal,
-                };
-                if descending { o.reverse() } else { o }
-            });
+            order.sort_by(self.row_order(sort));
             self.order = order;
         }
         self.version += 1;
     }
 
-    /// Sets (or, back to the original value, clears) one pending edit.
+    /// Sets (or, back to the original value, clears) one pending edit. A
+    /// column the database computes takes none.
     pub fn set_edit(&mut self, row: usize, column: usize, value: Cell) {
+        if !self.column_editable(column) {
+            return;
+        }
         let original = self.rows.get(row).and_then(|r| r.get(column));
         if original == Some(&value) {
             self.edits.remove(&(row as u32, column as u32));
@@ -304,6 +347,41 @@ mod tests {
         assert_eq!(r.row_index(2), 1, "NULL sorts first, so last when descending");
         r.sort_by(None);
         assert_eq!(r.row_index(0), 0);
+    }
+
+    #[test]
+    fn a_sort_takes_in_the_rows_that_arrive_after_it() {
+        let set = filled("t-sort-stream");
+        let mut r = lock(&set);
+        r.complete = false;
+        r.sort_by(Some((0, false)));
+        r.push_rows(vec![vec![Cell::text("50"), Cell::Null], vec![Cell::text("1"), Cell::Null]]);
+        r.push_rows(vec![vec![Cell::text("10"), Cell::text("tie")]]);
+        let shown = |r: &ResultSet| (0..r.len()).map(|i| r.rows[r.row_index(i)][0].display().into_owned()).collect::<Vec<_>>();
+        assert_eq!(shown(&r), ["1", "9", "10", "10", "50", "100"]);
+        assert_eq!(r.row_index(3), 5, "ties keep the server's order");
+        r.sort_by(Some((0, true)));
+        r.push_rows(vec![vec![Cell::text("75"), Cell::Null]]);
+        assert_eq!(shown(&r), ["100", "75", "50", "10", "10", "9", "1"]);
+    }
+
+    #[test]
+    fn computed_columns_take_no_edits() {
+        let set = filled("t-read-only");
+        let mut r = lock(&set);
+        r.edit = Some(EditTarget {
+            connection: "c".into(),
+            database: None,
+            owner: "t-read-only".into(),
+            table: ObjectRef { schema: String::new(), name: "t".into() },
+            key: vec![0],
+            read_only: vec![1],
+        });
+        r.set_edit(0, 1, Cell::text("z"));
+        assert!(r.edits.is_empty(), "{:?}", r.edits);
+        assert!(!r.column_editable(1) && r.column_editable(0));
+        r.set_edit(0, 0, Cell::text("11"));
+        assert!(r.is_edited(0, 0));
     }
 
     #[test]

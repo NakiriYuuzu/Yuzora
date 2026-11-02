@@ -256,6 +256,7 @@ impl MsConn {
                     nullable: c.nullable,
                     default: c.default.clone(),
                     primary_key: c.key,
+                    generated: c.computed.is_some() || c.identity.is_some(),
                 })
                 .collect(),
             indexes: indexes
@@ -312,6 +313,21 @@ impl MsConn {
             }
         }
         let mut client = self.take_client().await?;
+        // Nested in a transaction the SQL tab left open, COMMIT only counts
+        // down: the tab's ROLLBACK would undo the write-back after it read as done.
+        match scalar(&mut client, "SELECT CAST(@@TRANCOUNT AS nvarchar(11))").await {
+            Ok(n) if n == "0" => {}
+            Ok(_) => {
+                self.client = Some(client);
+                return Err(sql::open_transaction());
+            }
+            Err(e) => {
+                if !fatal(&e) {
+                    self.client = Some(client);
+                }
+                return Err(query_error(e));
+            }
+        }
         match write_rows(&mut client, &self.database, table, &edits).await {
             Ok(written) => {
                 self.client = Some(client);
