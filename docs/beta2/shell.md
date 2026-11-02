@@ -94,7 +94,7 @@ L1 讀的 key：
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
 | `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora |
-| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 路徑改為 `~/.config/yuzora` |
+| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確） |
 | `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
 | `app/defaults/frame/feedback/main.js` | 送出後的感謝文字 |
 | `app/defaults/frame/welcome/yuzora.png` | 新檔：Yuzora 圖示（160px，由 `assets/icons/yuzora.png` 縮圖） |
