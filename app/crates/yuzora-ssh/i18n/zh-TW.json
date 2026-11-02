@@ -30,6 +30,7 @@
     "handshake-timeout": "{target} 啟動 SSH 太久。",
     "handshake-failed": "與 {target} 的 SSH 失敗：{why}",
     "bad-name": "「{name}」不是有效的名稱。",
+    "unsafe-name": "「{name}」含有主機或使用者名稱不能用的字元。",
     "refuse-root": "不會更動 {path}。",
     "exists": "{name} 已存在。",
     "bad-path": "傳輸需要來源與目的資料夾。",

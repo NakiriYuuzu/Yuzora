@@ -47,7 +47,8 @@ impl Context {
             secrets: Arc::new(KeyringStore),
             agent: true,
             default_identities: true,
-            temp: std::env::temp_dir().join("yuzora-ssh"),
+            // In the app home, not a shared /tmp another account could plant links in.
+            temp: yuzora_core::paths::yuzora_dir().join("tmp").join("ssh"),
         }
     }
 }

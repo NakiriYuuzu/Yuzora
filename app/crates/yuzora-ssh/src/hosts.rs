@@ -6,7 +6,7 @@
 //! a bare alias, profile name, machine name or `user@host:port`, so another
 //! lane can pass whatever it stored.
 
-use crate::config::{JumpHost, ResolvedHost, SshConfig, parse_destination};
+use crate::config::{JumpHost, ResolvedHost, SshConfig, parse_destination, safe_name};
 use crate::context::{Context, SECTION};
 use crate::error::{ErrorKind, Result, SshError};
 use serde::{Deserialize, Serialize};
@@ -69,7 +69,7 @@ impl HostDef {
     pub fn ssh_argv(&self) -> Vec<String> {
         match self.source {
             // ssh reads the same config, so the alias says everything.
-            Source::Config => vec!["ssh".into(), self.name.clone()],
+            Source::Config => vec!["ssh".into(), "--".into(), self.name.clone()],
             _ => {
                 let r = &self.resolved;
                 let mut argv = vec!["ssh".to_owned()];
@@ -84,6 +84,7 @@ impl HostDef {
                 if !r.proxy_jump.is_empty() {
                     argv.extend(["-J".into(), r.proxy_jump.iter().map(jump_text).collect::<Vec<_>>().join(",")]);
                 }
+                argv.push("--".into());
                 argv.push(if r.user.is_empty() { r.hostname.clone() } else { format!("{}@{}", r.user, r.hostname) });
                 argv
             }
@@ -153,6 +154,9 @@ pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
     if p.host.is_empty() || p.host.contains(char::is_whitespace) {
         return Err(SshError::text(ErrorKind::Invalid, "profile-host", &[]));
     }
+    if !safe_name(&p.host) {
+        return Err(SshError::text(ErrorKind::Invalid, "unsafe-name", &[("name", p.host.clone())]));
+    }
     if p.name.is_empty() {
         p.name = p.host.clone();
     }
@@ -163,6 +167,9 @@ pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
         if field.as_deref().is_some_and(|s| s.trim().is_empty()) {
             *field = None;
         }
+    }
+    if let Some(user) = p.user.as_deref().filter(|u| !safe_name(u)) {
+        return Err(SshError::text(ErrorKind::Invalid, "unsafe-name", &[("name", user.to_owned())]));
     }
     let mut list = profiles(ctx);
     if p.id.is_empty() {
@@ -282,6 +289,9 @@ pub fn lookup(ctx: &Context, machines: &[Machine], key: &str) -> Result<HostDef>
     }
     let raw = key.strip_prefix("dest:").unwrap_or(key);
     let dest = parse_destination(raw).ok_or_else(|| SshError::text(ErrorKind::UnknownHost, "unknown-host", &[("host", key.into())]))?;
+    if let Some(bad) = std::iter::once(&dest.host).chain(dest.user.as_ref()).find(|s| !safe_name(s)) {
+        return Err(SshError::text(ErrorKind::Invalid, "unsafe-name", &[("name", bad.clone())]));
+    }
     let cfg = SshConfig::load(&ctx.ssh_config, &ctx.config);
     Ok(HostDef { id: format!("dest:{raw}"), name: raw.to_owned(), source: Source::Direct, resolved: from_destination(ctx, &cfg, &dest), machine: None, profile: None })
 }
@@ -310,8 +320,8 @@ mod tests {
         assert_eq!(all[1].target(), format!("{}@nas.local:2222", ctx.config.local_user));
         assert_eq!(all[2].target(), "root@box.example");
         assert_eq!(all[3].target(), "me@vps.example:2200");
-        assert_eq!(all[0].ssh_argv(), ["ssh", "lab-01"]);
-        assert_eq!(all[3].ssh_argv(), ["ssh", "-p", "2200", "me@vps.example"]);
+        assert_eq!(all[0].ssh_argv(), ["ssh", "--", "lab-01"]);
+        assert_eq!(all[3].ssh_argv(), ["ssh", "-p", "2200", "--", "me@vps.example"]);
     }
 
     #[test]
@@ -333,12 +343,18 @@ mod tests {
         let ctx = w.context();
         yuzora_core::settings::set_section_at(&ctx.settings, SECTION, json!({ "preserve": false })).unwrap();
         assert!(save_profile(&ctx, Profile { host: "  ".into(), ..Default::default() }).is_err());
+        // Names that would reach a shell (%h in a ProxyCommand) or ssh's options.
+        for (host, user) in [("h;touch x", None), ("-oProxyCommand=sh", None), ("h.example", Some("$(id)")), ("h.example", Some("-l"))] {
+            let p = Profile { host: host.into(), user: user.map(Into::into), ..Default::default() };
+            assert_eq!(save_profile(&ctx, p).unwrap_err().kind, ErrorKind::Invalid, "{host} {user:?}");
+        }
+        assert!(lookup(&ctx, &[], "dest:me@h`id`.example").is_err());
         let id = save_profile(&ctx, Profile { host: "h.example".into(), user: Some(" ".into()), proxy_jump: Some("jump@bastion:2200".into()), ..Default::default() }).unwrap();
         let p = &profiles(&ctx)[0];
         assert_eq!((p.name.as_str(), p.user.as_deref()), ("h.example", None));
         let h = lookup(&ctx, &[], &format!("profile:{id}")).unwrap();
         assert_eq!(h.resolved.proxy_jump, vec![JumpHost { user: Some("jump".into()), host: "bastion".into(), port: Some(2200) }]);
-        assert_eq!(h.ssh_argv(), ["ssh", "-J", "jump@bastion:2200", &format!("{}@h.example", ctx.config.local_user)]);
+        assert_eq!(h.ssh_argv(), ["ssh", "-J", "jump@bastion:2200", "--", &format!("{}@h.example", ctx.config.local_user)]);
         assert!(remove_profile(&ctx, &id).unwrap());
         assert!(!remove_profile(&ctx, &id).unwrap());
         assert_eq!(yuzora_core::settings::section_from(&ctx.settings, SECTION)["preserve"], false);

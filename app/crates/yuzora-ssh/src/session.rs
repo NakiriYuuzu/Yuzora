@@ -4,7 +4,7 @@
 //! the host key against known_hosts (asking the person about a new or changed
 //! key), and logs in ([`crate::auth`]).
 
-use crate::config::StrictHostKeyChecking;
+use crate::config::{StrictHostKeyChecking, safe_name};
 use crate::context::Context;
 use crate::error::{ErrorKind, Result, SshError};
 use crate::hosts::{self, HostDef, Machine};
@@ -430,6 +430,10 @@ impl Manager {
             return self.handshake(def, Box::new(channel.into_stream()), interaction, hops, None).await;
         }
         if let Some(command) = r.proxy_command.as_deref() {
+            // %h and %r went into the shell line (OpenSSH refuses these too).
+            if let Some(bad) = [&r.hostname, &r.user].into_iter().find(|s| !s.is_empty() && !safe_name(s)) {
+                return Err(SshError::text(ErrorKind::Invalid, "unsafe-name", &[("name", bad.clone())]));
+            }
             let (stream, child) = spawn_proxy(command).map_err(|e| SshError::text(ErrorKind::Connect, "proxy-command", &[("why", e.to_string())]))?;
             return self.handshake(def, Box::new(stream), interaction, Vec::new(), Some(child)).await;
         }

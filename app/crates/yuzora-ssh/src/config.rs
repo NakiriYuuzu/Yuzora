@@ -183,6 +183,14 @@ impl SshConfig {
 }
 
 /// "[user@]host[:port]", "user@[v6]:port", "ssh://[user@]host[:port]". None for empty/invalid.
+/// A host or user name OpenSSH would take from outside its config: no shell
+/// metacharacters, whitespace or control characters, and no leading `-`.
+/// `%h`/`%r` go into a ProxyCommand's shell line and the destination into an
+/// `ssh` argv, so anything else is refused.
+pub fn safe_name(s: &str) -> bool {
+    !s.is_empty() && !s.starts_with('-') && !s.chars().any(|c| c.is_whitespace() || c.is_control() || "'`\"$\\;&<>|(){}".contains(c))
+}
+
 pub fn parse_destination(s: &str) -> Option<JumpHost> {
     let s = s.trim();
     let s = s.strip_prefix("ssh://").map(|r| r.trim_end_matches('/')).unwrap_or(s);
@@ -1215,6 +1223,16 @@ mod tests {
         assert_eq!(parse_destination("  spaced  "), Some(dest(None, "spaced", None)));
         for bad in ["", "   ", "@host", "user@", "host:", "host:0", "host:70000", "host:abc", "[::1", "[::1]x", "[]", "ssh://", "ssh://host/path", "a b"] {
             assert_eq!(parse_destination(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn safe_names_keep_shell_and_option_characters_out() {
+        for good in ["lab-01", "10.0.0.5", "::1", "fe80::1%en0", "db.example.com", "deploy", "a_b"] {
+            assert!(safe_name(good), "{good}");
+        }
+        for bad in ["", "-oProxyCommand=x", "a b", "a;b", "a&b", "a|b", "$(id)", "`id`", "a'b", "a\"b", "a\\b", "a<b", "a>b", "a(b", "a{b", "a\nb"] {
+            assert!(!safe_name(bad), "{bad:?}");
         }
     }
 

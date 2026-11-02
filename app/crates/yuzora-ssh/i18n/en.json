@@ -30,6 +30,7 @@
     "handshake-timeout": "{target} took too long to start SSH.",
     "handshake-failed": "SSH with {target} failed: {why}",
     "bad-name": "\"{name}\" isn't a valid name.",
+    "unsafe-name": "\"{name}\" has characters a host or user name can't have.",
     "refuse-root": "Won't change {path}.",
     "exists": "{name} already exists.",
     "bad-path": "A transfer needs a source and a destination folder.",
