@@ -414,9 +414,12 @@ impl RowSink for JobSink {
         let (id, more) = {
             let mut r = results::lock(&set);
             let room = self.max_rows.saturating_sub(r.rows.len());
-            let take = rows.len().min(room);
+            let offered = rows.len();
+            let take = offered.min(room);
             r.rows.extend(rows.into_iter().take(take));
-            let more = r.rows.len() < self.max_rows;
+            // Truncated only once a row doesn't fit: at exactly the cap it
+            // keeps reading to find out whether there is one.
+            let more = take == offered;
             if !more {
                 r.truncated = true;
             }

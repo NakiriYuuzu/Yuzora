@@ -1,0 +1,142 @@
+//! The session layer end to end on SQLite, the way the panes drive it: a saved
+//! connection, a script, a table read with its count and key, cells edited and
+//! written back in one transaction (and rolled back when a row is gone), the
+//! row cap, a cancelled query, and releasing a pane.
+//!
+//! One test: the app home is process-wide (`YUZORA_APP_HOME`).
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use serde_json::json;
+use yuzora_db::config::{self, ConnectionConfig};
+use yuzora_db::model::{Cell, ObjectRef};
+use yuzora_db::session::{self, JobId, JobState};
+use yuzora_db::{results, runtime};
+
+fn wait(job: JobId) -> JobState {
+    let mut seen = 0;
+    for _ in 0..400 {
+        let state = runtime::block_on(session::job_after(job, seen)).expect("job");
+        if !state.running {
+            return state;
+        }
+        seen = state.version;
+    }
+    panic!("job {job} still running");
+}
+
+fn run(connection: &str, owner: &str, sql: &str) -> JobState {
+    let state = wait(session::start_query(connection, None, owner, sql));
+    assert_eq!(state.error, None, "{sql}");
+    state
+}
+
+/// The rows of a query's last result, as text.
+fn rows(connection: &str, sql: &str) -> Vec<Vec<String>> {
+    let state = run(connection, "check", sql);
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.iter().map(|row| row.iter().map(Cell::display).map(|s| s.to_string()).collect()).collect()
+}
+
+fn table(name: &str) -> ObjectRef {
+    serde_json::from_value(json!({"schema": "", "name": name})).unwrap()
+}
+
+#[test]
+fn a_pane_reads_edits_writes_back_caps_and_cancels() {
+    let home = std::env::temp_dir().join(format!("yuzora-db-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    // SAFETY: the only test in this binary, before any thread reads them.
+    unsafe {
+        std::env::set_var("YUZORA_APP_HOME", &home);
+        std::env::set_var("YUZORA_DB_SECRETS", "memory");
+    }
+    let file: PathBuf = home.join("app.sqlite");
+    std::fs::File::create(&file).unwrap();
+    let saved = config::save(
+        serde_json::from_value::<ConnectionConfig>(json!({"name": "lite", "engine": "sqlite", "path": file})).unwrap(),
+        None,
+    )
+    .unwrap();
+    let id = saved.id.as_str();
+
+    run(
+        id,
+        "setup",
+        "create table people(id integer primary key, name text not null, note text);\n\
+         insert into people(name, note) values ('ada', null), ('linus', 'x');\n\
+         create table log(line text);",
+    );
+
+    // A table: its rows, its count, and editable because it has a key.
+    let state = wait(session::open_table(id, None, "pane", &table("people"), None));
+    assert_eq!(state.error, None);
+    let summary = &state.results[0];
+    assert_eq!((summary.rows, summary.total, summary.editable), (2, Some(2), true), "{summary:?}");
+    let set = results::get(summary.id).unwrap();
+    let name = results::lock(&set).columns.iter().position(|c| c.name == "name").unwrap();
+    let note = results::lock(&set).columns.iter().position(|c| c.name == "note").unwrap();
+    {
+        let mut r = results::lock(&set);
+        r.set_edit(0, name, Cell::Text("grace".into()));
+        r.set_edit(1, note, Cell::Null);
+    }
+    assert_eq!(runtime::block_on(session::write_back(summary.id)).unwrap(), 2);
+    {
+        let r = results::lock(&set);
+        assert!(r.edits.is_empty() && r.write_error.is_none());
+        assert_eq!(r.cell(0, name), Some(&Cell::Text("grace".into())), "written values become the result's");
+    }
+    assert_eq!(rows(id, "select name, note from people order by id"), [["grace", "NULL"], ["linus", "NULL"]]);
+
+    // A row gone under the edit: nothing of the transaction stays.
+    let state = wait(session::open_table(id, None, "pane", &table("people"), None));
+    let set = results::get(state.results[0].id).unwrap();
+    {
+        let mut r = results::lock(&set);
+        r.set_edit(0, name, Cell::Text("first".into()));
+        r.set_edit(1, name, Cell::Text("second".into()));
+    }
+    run(id, "elsewhere", "delete from people where id = 2");
+    assert!(runtime::block_on(session::write_back(state.results[0].id)).is_err());
+    assert!(results::lock(&set).write_error.is_some());
+    assert_eq!(rows(id, "select name from people"), [["grace"]], "rolled back");
+
+    // No key, no editing, and the reason is given.
+    let state = wait(session::open_table(id, None, "pane", &table("log"), None));
+    assert!(!state.results[0].editable && state.results[0].not_editable.is_some(), "{:?}", state.results[0]);
+
+    // The row cap: exactly the cap is complete, one more is truncated.
+    let mut section = yuzora_core::settings::section(config::SECTION);
+    section["maxRows"] = json!(1000);
+    yuzora_core::settings::set_section(config::SECTION, section).unwrap();
+    let count = |n: u32| format!("with recursive c(x) as (select 1 union all select x + 1 from c where x < {n}) select x from c");
+    let exact = run(id, "pane", &count(1000));
+    assert_eq!((exact.results[0].rows, exact.results[0].truncated), (1000, false));
+    let over = run(id, "pane", &count(5000));
+    assert_eq!((over.results[0].rows, over.results[0].truncated), (1000, true));
+
+    // A query that never ends is cancelled, and the pane's connection still works.
+    let job = session::start_query(id, None, "pane", "with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c");
+    std::thread::sleep(Duration::from_millis(300));
+    session::cancel(job);
+    let state = wait(job);
+    assert!(state.cancelled && state.error.is_none(), "{state:?}");
+    assert_eq!(rows(id, "select 1 + 1"), [["2"]]);
+
+    // Releasing the pane drops its results.
+    let kept = state.results.first().map(|r| r.id);
+    session::release_owner("pane");
+    if let Some(r) = kept {
+        assert!(results::get(r).is_none());
+    }
+
+    // History keeps the statements, newest first.
+    let history = yuzora_db::history::list(id);
+    assert_eq!(history.first().map(|h| h.sql.as_str()), Some("select 1 + 1"));
+
+    let _ = std::fs::remove_dir_all(&home);
+}
