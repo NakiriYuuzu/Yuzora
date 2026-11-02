@@ -63,18 +63,40 @@ pub struct Candidate {
     pub signature_url: String,
 }
 
-/// The newest release in `releases` (GitHub's JSON list) on `channel` that is
-/// newer than `running` and has both the manifest and its signature. None:
-/// nothing newer. Drafts and tags that aren't `v<version>` never count.
+/// One page of GitHub's release list (JSON), or why it isn't one.
+pub fn releases(page: &[u8]) -> Result<Vec<Value>, String> {
+    match serde_json::from_slice(page).map_err(|e| format!("release list: {e}"))? {
+        Value::Array(list) => Ok(list),
+        _ => Err("release list: not a list".into()),
+    }
+}
+
+/// Whether the next (older) page could still hold something newer than
+/// `running`: this page is full and every release on it is newer. On
+/// stable, a run of betas can fill a page before the stable release.
+pub fn reaches_older(page: &[Value], per_page: usize, running: &str) -> bool {
+    page.len() >= per_page && !page.iter().any(|release| version_of(release).is_some_and(|v| !crate::update::newer(v, running)))
+}
+
+fn version_of(release: &Value) -> Option<&str> {
+    release["tag_name"].as_str().and_then(|t| t.strip_prefix('v')).filter(|v| plausible(v))
+}
+
+/// [`pick_in`] for one page of GitHub's JSON list.
 pub fn pick(releases: &[u8], channel: Channel, running: &str) -> Result<Option<Candidate>, String> {
-    let list: Value = serde_json::from_slice(releases).map_err(|e| format!("release list: {e}"))?;
-    let list = list.as_array().ok_or("release list: not a list")?;
+    Ok(pick_in(&self::releases(releases)?, channel, running))
+}
+
+/// The newest release in `list` on `channel` that is newer than `running`
+/// and has both the manifest and its signature. None: nothing newer. Drafts
+/// and tags that aren't `v<version>` never count.
+pub fn pick_in(list: &[Value], channel: Channel, running: &str) -> Option<Candidate> {
     let mut best: Option<Candidate> = None;
     for release in list {
         if release["draft"].as_bool() != Some(false) {
             continue;
         }
-        let Some(version) = release["tag_name"].as_str().and_then(|t| t.strip_prefix('v')).filter(|v| plausible(v)) else {
+        let Some(version) = version_of(release) else {
             continue;
         };
         let prerelease = release["prerelease"].as_bool().unwrap_or(true);
@@ -92,7 +114,7 @@ pub fn pick(releases: &[u8], channel: Channel, running: &str) -> Result<Option<C
         };
         best = Some(Candidate { version: version.to_owned(), manifest_url, signature_url });
     }
-    Ok(best)
+    best
 }
 
 /// `0.1.0` or `0.1.0-beta.2`: three numbers, an optional pre-release of
@@ -166,6 +188,15 @@ mod tests {
         let found = pick(serde_json::to_vec(&vec![release("v0.1.0-beta.3", true, false, true)]).unwrap().as_slice(), Channel::Beta, "0.1.0-beta.2").unwrap().unwrap();
         assert_eq!(found.manifest_url, format!("https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/{MANIFEST}"));
         assert_eq!(found.signature_url, format!("https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/{SIGNATURE}"));
+    }
+
+    #[test]
+    fn only_a_full_page_of_newer_releases_reads_on() {
+        let page = |tags: &[&str]| tags.iter().map(|t| release(t, true, false, false)).collect::<Vec<_>>();
+        assert!(reaches_older(&page(&["v0.2.0-beta.3", "v0.2.0-beta.2"]), 2, "0.1.0"));
+        assert!(!reaches_older(&page(&["v0.2.0-beta.3", "v0.2.0-beta.2"]), 3, "0.1.0"), "the last page");
+        assert!(!reaches_older(&page(&["v0.2.0-beta.3", "v0.1.0"]), 2, "0.1.0"), "reached this version");
+        assert!(reaches_older(&page(&["v0.2.0-beta.3", "odd"]), 2, "0.1.0"), "odd tags don't stop it");
     }
 
     #[test]

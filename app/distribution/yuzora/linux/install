@@ -20,13 +20,23 @@ id=dev.yuuzu.yuzora
 [ "$(uname -s)" = Linux ] || { echo "yuzora: this installer is for Linux" >&2; exit 1; }
 [ -x "$here/yuzora" ] || { echo "yuzora: no yuzora program next to this script" >&2; exit 1; }
 
+entry="$data/applications/$id.desktop"
+
 mkdir -p "$data" "$bin" "$data/applications" "$data/icons/hicolor/512x512/apps"
 if [ "$here" != "$home" ]; then
-  # Not $home.new: that's where the app stages its own updates.
-  rm -rf "$home.install"
-  cp -R "$here" "$home.install"
+  # The whole folder is replaced, so only a new (or empty) one, or the one
+  # this script installed into, as its launcher entry says.
+  if [ -n "$(ls -A "$home" 2>/dev/null)" ] && ! grep -qxF "Exec=\"$home/yuzora\"" "$entry" 2>/dev/null; then
+    echo "yuzora: $home is there and isn't a Yuzora install, so nothing was changed" >&2
+    exit 1
+  fi
+  # A fresh folder to copy into (not $home.new: the app stages its updates there).
+  stage=$(mktemp -d "$data/.yuzora-install.XXXXXX")
+  chmod 755 "$stage"
+  trap 'rm -rf "$stage"' EXIT
+  cp -R "$here/." "$stage"
   rm -rf "$home"
-  mv "$home.install" "$home"
+  mv "$stage" "$home"
 fi
 # Only a link to a Yuzora folder (or nothing) is replaced, never your own `yuzora`.
 link="$bin/yuzora"
@@ -38,7 +48,7 @@ else
   echo "yuzora: $link isn't Yuzora's link, so it was left as it is; the app is $home/yuzora" >&2
 fi
 cp "$home/yuzora.png" "$data/icons/hicolor/512x512/apps/$id.png"
-cat > "$data/applications/$id.desktop" <<EOF
+cat > "$entry" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Yuzora

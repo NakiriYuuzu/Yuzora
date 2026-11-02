@@ -166,6 +166,15 @@ jobs:
           [ "$("$work/home/.local/bin/yuzora" --version)" = "herdr-app $version" ]
           grep -qx 'StartupWMClass=dev.yuuzu.yuzora' "$work/home/.local/share/applications/dev.yuuzu.yuzora.desktop"
           [ -f "$work/home/.local/share/yuzora/yuzora.png" ]
+          # Again over itself (an update by hand).
+          HOME="$work/home" XDG_DATA_HOME= "$work/yuzora/install"
+          [ "$("$work/home/.local/bin/yuzora" --version)" = "herdr-app $version" ]
+          # A ~/.local/share/yuzora that isn't Yuzora's install: refused, as it was.
+          mkdir -p "$work/third/.local/share/yuzora"
+          echo theirs > "$work/third/.local/share/yuzora/theirs.txt"
+          if HOME="$work/third" XDG_DATA_HOME= "$work/yuzora/install"; then exit 1; fi
+          [ "$(cat "$work/third/.local/share/yuzora/theirs.txt")" = theirs ]
+          [ ! -e "$work/third/.local/share/yuzora/yuzora" ]
           # Someone's own `yuzora` on PATH stays.
           mkdir -p "$work/other/.local/bin"
           printf '#!/bin/sh\necho mine\n' > "$work/other/.local/bin/yuzora"

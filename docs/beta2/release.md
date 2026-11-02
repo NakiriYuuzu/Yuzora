@@ -63,6 +63,8 @@
 上游只有 tar.gz 加安裝腳本，Yuzora 照做，不做 AppImage／deb／rpm：
 
 - `yuzora/install` 把資料夾複製到 `~/.local/share/yuzora`，建立 `~/.local/bin/yuzora`、圖示與桌面檔。再次執行（從較新的資料夾）就是手動更新。
+  - 會整個替換的 `~/.local/share/yuzora` 只接受不存在、空的，或桌面檔 `Exec` 指向的那個（它裝的）；其他一律拒絕、不動。複製先進 `mktemp -d` 的新資料夾再搬過去。
+  - `~/.local/bin/yuzora` 只取代指向 Yuzora 資料夾的連結；桌面檔直接執行安裝好的程式。
 - 不從 `curl | sh` 下載，也不在安裝時裝 herdr-core（Yuzora 開啟時的設定畫面會提供）。
 - 以 ubuntu-22.04 建置，glibc 下限跟上游一致。
 
@@ -71,8 +73,9 @@
 ```
 啟動 10 秒後，之後每小時（上游時鐘）
   └─ release::update::check(root)
-       1. GET api.github.com/repos/NakiriYuuzu/Yuzora/releases?per_page=30
-       2. channel::pick：非 draft、tag 是 v<semver>、屬於本通道、比目前新、
+       1. GET api.github.com/repos/NakiriYuuzu/Yuzora/releases?per_page=100
+          （整頁都比目前新時再讀下一頁，最多 5 頁：stable 通道前面可能堆了一整頁 beta）
+       2. channel::pick_in：非 draft、tag 是 v<semver>、屬於本通道、比目前新、
           帶 yuzora-update.json 與 .sig 的 release 中，版本最大的一個
        3. 下載 manifest 與簽章 → manifest::read：先驗簽章，再驗內容
        4. 有 changelog 就下載（驗 sha256）給「新功能」說明

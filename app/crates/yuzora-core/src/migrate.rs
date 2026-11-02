@@ -223,18 +223,43 @@ pub fn db_account(descriptor: &str, generation: &str) -> String {
 /// counts: beta.1's preview pane opened web pages in the same data store, so
 /// any site could have left a `yuzora.hosts.ssh.v2` of its own.
 fn webkit_local_storage(webkit: &Path, key: &str) -> Result<Option<String>, String> {
+    // Only "not there" reads as nothing; anything else (a permission, say)
+    // is an error, so the import runs again rather than counting as done.
+    let missing = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+    let fail = |path: &Path, e: std::io::Error| format!("{}: {e}", path.display());
+    let dirs = |dir: &Path| -> Result<Vec<PathBuf>, String> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).map_err(|e| fail(dir, e))? {
+            let entry = entry.map_err(|e| fail(dir, e))?;
+            // Files beside the origin folders (WebKit's salt) aren't stores.
+            if entry.file_type().map_err(|e| fail(&entry.path(), e))?.is_dir() {
+                found.push(entry.path());
+            }
+        }
+        Ok(found)
+    };
     let mut stores: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     let default = webkit.join("WebsiteData/Default");
-    let Ok(tops) = std::fs::read_dir(&default) else { return Ok(None) };
-    for top in tops.flatten() {
-        let Ok(frames) = std::fs::read_dir(top.path()) else { continue };
-        for frame in frames.flatten() {
-            if !std::fs::read(frame.path().join("origin")).is_ok_and(|o| is_app_origin(&o)) {
-                continue;
+    match std::fs::metadata(&default) {
+        Err(e) if missing(&e) => return Ok(None),
+        Err(e) => return Err(fail(&default, e)),
+        Ok(_) => {}
+    }
+    for top in dirs(&default)? {
+        for frame in dirs(&top)? {
+            let origin = frame.join("origin");
+            match std::fs::read(&origin) {
+                Ok(o) if is_app_origin(&o) => {}
+                Ok(_) => continue,
+                Err(e) if missing(&e) => continue,
+                Err(e) => return Err(fail(&origin, e)),
             }
-            let db = frame.path().join("LocalStorage/localstorage.sqlite3");
-            let Ok(meta) = std::fs::metadata(&db) else { continue };
-            stores.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), db));
+            let db = frame.join("LocalStorage/localstorage.sqlite3");
+            match std::fs::metadata(&db) {
+                Ok(meta) => stores.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), db)),
+                Err(e) if missing(&e) => {}
+                Err(e) => return Err(fail(&db, e)),
+            }
         }
     }
     stores.sort_by(|a, b| b.0.cmp(&a.0));
@@ -590,6 +615,25 @@ mod tests {
         assert!(at(Some(root.join("WebKit"))).left_anything());
         std::fs::create_dir_all(root.join("dot")).unwrap();
         assert!(at(None).left_anything());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_webkit_store_is_an_error_not_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp("unreadable");
+        let webkit = root.join("WebKit");
+        let old = Beta1::at(root.join("data"), root.join("dot"), Some(webkit.clone()), Box::new(MemoryLegacy::default()));
+        assert_eq!(old.local_storage("yuzora:language"), Ok(None), "no WebKit data at all");
+        let default = webkit.join("WebsiteData/Default");
+        std::fs::create_dir_all(default.join("a/a")).unwrap();
+        std::fs::write(default.join("salt"), "x").unwrap();
+        assert_eq!(old.local_storage("yuzora:language"), Ok(None), "a frame without an origin, and a file");
+        std::fs::set_permissions(&default, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let read = old.local_storage("yuzora:language");
+        std::fs::set_permissions(&default, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(read.is_err(), "{read:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 

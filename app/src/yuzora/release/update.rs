@@ -22,6 +22,9 @@ pub const TEST_KEY_ENV: &str = "YUZORA_UPDATE_TEST_KEY";
 const REPO: &str = "NakiriYuuzu/Yuzora";
 /// Downloads the app reads into memory (the release list, a manifest, notes).
 const MAX_FETCH: &str = "8388608";
+/// Releases per page of the list (GitHub's most), and the most pages read.
+const PER_PAGE: usize = 100;
+const MAX_PAGES: usize = 5;
 
 /// Where releases are listed and downloaded from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,13 +37,13 @@ pub struct Source {
 
 impl Source {
     pub fn github() -> Source {
-        Source { list: format!("https://api.github.com/repos/{REPO}/releases?per_page=30"), downloads: format!("https://github.com/{REPO}/releases/download") }
+        Source { list: format!("https://api.github.com/repos/{REPO}/releases?per_page={PER_PAGE}"), downloads: format!("https://github.com/{REPO}/releases/download") }
     }
 
     /// A server laid out like GitHub at `base` (tests).
     pub fn at(base: &str) -> Source {
         let base = base.trim_end_matches('/');
-        Source { list: format!("{base}/repos/{REPO}/releases?per_page=30"), downloads: format!("{base}/{REPO}/releases/download") }
+        Source { list: format!("{base}/repos/{REPO}/releases?per_page={PER_PAGE}"), downloads: format!("{base}/{REPO}/releases/download") }
     }
 
     fn from_env() -> Source {
@@ -90,8 +93,17 @@ pub fn check(root: &Path) -> Result<Option<String>, String> {
 /// The newest release on `channel` newer than `running`, with its manifest
 /// checked against `keys`. None: nothing newer (or nothing signed).
 pub fn find(source: &Source, channel: Channel, running: &str, keys: &[String]) -> Result<Option<Manifest>, String> {
-    let list = fetch(&source.list, true)?.ok_or_else(|| format!("{}: not found", source.list))?;
-    let Some(candidate) = channel::pick(&list, channel, running)? else {
+    let mut list = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let url = if page == 1 { source.list.clone() } else { format!("{}&page={page}", source.list) };
+        let releases = channel::releases(&fetch(&url, true)?.ok_or_else(|| format!("{url}: not found"))?)?;
+        let more = channel::reaches_older(&releases, PER_PAGE, running);
+        list.extend(releases);
+        if !more {
+            break;
+        }
+    }
+    let Some(candidate) = channel::pick_in(&list, channel, running) else {
         return Ok(None);
     };
     let bytes = fetch(&candidate.manifest_url, false)?.ok_or_else(|| format!("{}: not found", candidate.manifest_url))?;
@@ -196,7 +208,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let mut routes = vec![
-            (format!("/repos/{REPO}/releases?per_page=30"), 200, list(&base, tag)),
+            (format!("/repos/{REPO}/releases?per_page={PER_PAGE}"), 200, list(&base, tag)),
             (format!("/dl/{tag}/{}", manifest::MANIFEST), 200, manifest.to_vec()),
         ];
         if let Some(signature) = signature {
@@ -204,7 +216,7 @@ mod tests {
         }
         // The list and files come from here; the fixture was signed with
         // GitHub's download URLs inside, so those stay GitHub's.
-        let source = Source { list: format!("{base}/repos/{REPO}/releases?per_page=30"), downloads: Source::github().downloads };
+        let source = Source { list: format!("{base}/repos/{REPO}/releases?per_page={PER_PAGE}"), downloads: Source::github().downloads };
         (source, serve_on(listener, routes, requests))
     }
 
@@ -215,10 +227,30 @@ mod tests {
         assert_eq!(found.version, "0.1.0-beta.3");
         assert!(found.targets.contains_key("macos-aarch64"));
         let requests = server.join().unwrap();
-        assert!(requests[0].starts_with("GET /repos/NakiriYuuzu/Yuzora/releases?per_page=30 HTTP/1.1\r\n"));
+        assert!(requests[0].starts_with("GET /repos/NakiriYuuzu/Yuzora/releases?per_page=100 HTTP/1.1\r\n"));
         assert!(requests[0].contains("Accept: application/vnd.github+json"));
         assert!(requests[0].contains(concat!("User-Agent: Yuzora/", env!("CARGO_PKG_VERSION"))));
         assert!(requests[2].starts_with("GET /dl/v0.1.0-beta.3/yuzora-update.json.sig "));
+    }
+
+    #[test]
+    fn a_page_full_of_newer_releases_reads_the_next() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        // 100 newer releases without a manifest fill the first page.
+        let full: Vec<serde_json::Value> = (0..PER_PAGE).map(|n| serde_json::json!({"tag_name": format!("v0.1.0-rc.{n}"), "draft": false, "prerelease": true, "assets": []})).collect();
+        let tag = "v0.1.0-beta.3";
+        let routes = vec![
+            (format!("/repos/{REPO}/releases?per_page={PER_PAGE}"), 200, serde_json::to_vec(&full).unwrap()),
+            (format!("/repos/{REPO}/releases?per_page={PER_PAGE}&page=2"), 200, list(&base, tag)),
+            (format!("/dl/{tag}/{}", manifest::MANIFEST), 200, MANIFEST_FIXTURE.to_vec()),
+            (format!("/dl/{tag}/{}", manifest::SIGNATURE), 200, SIGNATURE_FIXTURE.to_vec()),
+        ];
+        let server = serve_on(listener, routes, 4);
+        let source = Source { list: format!("{base}/repos/{REPO}/releases?per_page={PER_PAGE}"), downloads: Source::github().downloads };
+        assert_eq!(find(&source, Channel::Beta, "0.1.0-beta.2", &test_keys()).unwrap().unwrap().version, "0.1.0-beta.3");
+        let requests = server.join().unwrap();
+        assert!(requests[1].starts_with("GET /repos/NakiriYuuzu/Yuzora/releases?per_page=100&page=2 "), "{}", requests[1]);
     }
 
     #[test]
@@ -256,7 +288,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let limited = br#"{"message":"API rate limit exceeded for 192.0.2.1."}"#.to_vec();
-        let server = serve_on(listener, vec![(format!("/repos/{REPO}/releases?per_page=30"), 403, limited)], 2);
+        let server = serve_on(listener, vec![(format!("/repos/{REPO}/releases?per_page={PER_PAGE}"), 403, limited)], 2);
         let err = find(&Source::at(&base), Channel::Beta, "0.1.0-beta.2", &test_keys()).unwrap_err();
         assert!(err.contains("HTTP 403") && err.contains("rate limit"), "{err}");
         assert!(find(&Source::at(&format!("{base}/elsewhere")), Channel::Beta, "0.1.0-beta.2", &test_keys()).unwrap_err().contains("not found"));

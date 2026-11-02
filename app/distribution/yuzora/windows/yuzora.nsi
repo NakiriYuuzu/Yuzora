@@ -41,6 +41,8 @@ VIProductVersion "${VIVERSION}"
 
 Var Passive
 Var Relaunch
+; 1 when the folder is the one Yuzora's uninstall entry names (InstallLocation).
+Var Ours
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -67,10 +69,12 @@ LangString NotOurs ${LANG_TRADCHINESE} "這看起來不是 Yuzora 的資料夾�
 LangString NotEmpty ${LANG_ENGLISH} "Yuzora needs a folder of its own: updates replace the whole folder, and uninstalling removes it. This folder already has other files in it:"
 LangString NotEmpty ${LANG_TRADCHINESE} "Yuzora 需要自己專用的資料夾：更新會替換整個資料夾，解除安裝也會把它刪掉。這個資料夾裡已經有其他檔案："
 
-; Removes what the app made beside its folder (src/update.rs) only when it's
-; Yuzora's: MARK is a file only Yuzora puts there.
+; Removes what the app made beside its folder (src/update.rs): only beside
+; the folder its uninstall entry names (nothing of Yuzora's ran beside any
+; other), and only with MARK in it.
 !macro RemoveIfOurs DIR MARK
-  ${If} ${FileExists} "${DIR}\${MARK}"
+  ${If} $Ours == 1
+  ${AndIf} ${FileExists} "${DIR}\${MARK}"
     RMDir /r "${DIR}"
   ${EndIf}
 !macroend
@@ -123,8 +127,12 @@ Section "Yuzora"
   ; be named yuzora.png proves nothing.
   ${DirState} "$INSTDIR" $R0
   ReadRegStr $R1 HKCU "${UNINST_KEY}" "InstallLocation"
+  StrCpy $Ours 0
+  ${If} $R1 == $INSTDIR
+    StrCpy $Ours 1
+  ${EndIf}
   ${If} $R0 == 1
-  ${AndIf} $R1 != $INSTDIR
+  ${AndIf} $Ours != 1
     MessageBox MB_ICONSTOP "$(NotEmpty) $INSTDIR" /SD IDOK
     SetErrorLevel 2
     Quit
@@ -144,7 +152,9 @@ Section "Yuzora"
   File /r "${SRC}\*.*"
   ; What the app staged for the version this replaces (src/update.rs).
   !insertmacro RemoveIfOurs "$INSTDIR.new" "yuzora.png"
-  Delete "$INSTDIR.new.json"
+  ${If} $Ours == 1
+    Delete "$INSTDIR.new.json"
+  ${EndIf}
   !insertmacro RemoveIfOurs "$INSTDIR.download" "app.tar.gz"
   !insertmacro RemoveIfOurs "$INSTDIR.old" "yuzora.exe"
 
@@ -174,14 +184,18 @@ Section "Yuzora"
 SectionEnd
 
 Section "Uninstall"
-  ; $INSTDIR is the uninstaller's own folder, <app folder>-uninstall.
+  ; $INSTDIR is the uninstaller's own folder, <app folder>-uninstall, and
+  ; the app folder must be the one Yuzora's uninstall entry names.
   StrCpy $0 $INSTDIR "" -10
   StrCpy $1 $INSTDIR -10
+  ReadRegStr $2 HKCU "${UNINST_KEY}" "InstallLocation"
   ${If} $0 != "-uninstall"
+  ${OrIf} $2 != $1
   ${OrIfNot} ${FileExists} "$1\yuzora.png"
     MessageBox MB_ICONEXCLAMATION "$(NotOurs) $1" /SD IDOK
     Abort
   ${EndIf}
+  StrCpy $Ours 1
   nsExec::Exec '"${POWERSHELL}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\path.ps1" -Remove "$1"'
   Pop $2
   Delete "$SMPROGRAMS\${APP}.lnk"
