@@ -150,6 +150,8 @@ fn rank(status: &str) -> u8 {
 }
 
 /// A machine's LED: `on` (connected), `busy` (reading its layout, connecting) or `off`.
+/// hc's states as Herdr's settings read them: `online` is connected too (older cores),
+/// `reconnecting` is still connecting.
 fn led(local: bool, host: Option<&Host>, layout: Option<&str>) -> &'static str {
     if layout == Some("loading") {
         return "busy";
@@ -158,12 +160,12 @@ fn led(local: bool, host: Option<&Host>, layout: Option<&str>) -> &'static str {
         return "on";
     }
     match host.and_then(|h| h.state.as_deref()) {
-        Some("connecting" | "starting") => "busy",
-        Some(state) if state != "connected" => "off",
+        Some("connecting" | "reconnecting" | "starting") => "busy",
+        Some(state) if !matches!(state, "connected" | "online") => "off",
         state => match layout {
             Some("ready") => "on",
             Some("unavailable") => "off",
-            _ if state == Some("connected") => "on",
+            _ if state.is_some() => "on",
             _ => "off",
         },
     }
@@ -491,6 +493,10 @@ mod tests {
         assert_eq!(led(false, None, Some("loading")), "busy");
         assert_eq!(led(false, None, None), "off");
         assert_eq!(led(true, None, None), "on");
+        let online = Host { name: "old".into(), state: Some("online".into()), ..Host::default() };
+        assert_eq!(led(false, Some(&online), None), "on");
+        let back = Host { state: Some("reconnecting".into()), ..online };
+        assert_eq!(led(false, Some(&back), Some("ready")), "busy");
         assert_eq!(tree["scopes"][0]["spaces"], 2);
         assert_eq!(tree["scopes"][0]["blocked"], 2);
         assert!(tree["scope"].is_null());
@@ -542,8 +548,14 @@ mod tests {
         w["machines"][1]["layout"] = json!("unavailable");
         w["hosts"][0]["state"] = json!("disconnected");
         assert!(build(&input(w.clone()), &palette())["scope"].is_null());
-        // Still connecting: the scope holds.
-        w["hosts"][0]["state"] = json!("connecting");
+        // Still connecting (or reconnecting): the scope holds.
+        for state in ["connecting", "reconnecting"] {
+            w["hosts"][0]["state"] = json!(state);
+            assert_eq!(build(&input(w.clone()), &palette())["scope"], "lab", "{state}");
+        }
+        // Online, as older cores say connected, with its layout read: the scope holds.
+        w["hosts"][0]["state"] = json!("online");
+        w["machines"][1]["layout"] = json!("ready");
         assert_eq!(build(&input(w), &palette())["scope"], "lab");
     }
 

@@ -112,7 +112,8 @@ export default class SidebarWorkspace extends View {
       const remote = remoteMachines();
       rows = [
         this.menuRow(th, "m-space", `${CHROME}/plus.svg`, t("menu.new_space"), () => run("space.new")),
-        ...remote.map((m) => this.menuRow(th, `m-space-${m}`, `${CHROME}/server.svg`, t("menu.new_space_on", { machine: m }), () => run("space.new", { machine: m }))),
+        ...remote.map((m) => this.menuRow(th, `m-space-${m}`, `${CHROME}/server.svg`, t("menu.new_space_on", { machine: m }), () => run("space.new", { machine: m }),
+          (machines().find((x) => x.name === m)?.layout ?? "ready") === "ready")), // not while its layout loads
         this.menuRow(th, "m-worktree", `${CHROME}/branch.svg`, t("menu.worktree"),
           () => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find((p) => p.focused)?.cwd, action: "new" } }), Boolean(space)),
         rule(),
@@ -216,7 +217,8 @@ export default class SidebarWorkspace extends View {
       .child(this.led(th, tk, r.led))
       .child(div().flex_1().min_w(0).truncate().child(label))
       .when(Boolean(tail), (el) => el.child(div().flex_none().font_normal().text_size(11).child(tail)))
-      .when(r.led !== "off", (el) => el.child(div().id(`new-${r.id}`).size(20).flex_none().flex().items_center().justify_center().rounded(4)
+      // Herdr takes structural commands for a machine once its layout is read (LED on).
+      .when(r.led === "on", (el) => el.child(div().id(`new-${r.id}`).size(20).flex_none().flex().items_center().justify_center().rounded(4)
         .hover((s) => s.bg(th.hover).text_color(th.foreground)).tooltip(t("machine.add_space"))
         .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: r.machine ?? "" }); })
         .child(svg(`${CHROME}/plus.svg`).size(12))))

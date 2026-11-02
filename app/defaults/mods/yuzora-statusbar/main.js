@@ -59,10 +59,14 @@ export default class Statusbar extends View {
     });
   }
 
+  // The focused terminal's machine: its address is "<machine>/<id>" off this computer. A layout
+  // terminal block can show another machine's terminal than the Space's; a mod pane has none.
   key() {
     const f = focused();
     if (!f?.cwd) return null;
-    const machine = spaces().find((s) => s.id === f.space)?.machine ?? null;
+    const machine = f.terminal
+      ? (f.terminal.includes("/") ? f.terminal.slice(0, f.terminal.indexOf("/")) : null)
+      : spaces().find((s) => s.id === f.space)?.machine ?? null;
     return JSON.stringify([machine, f.cwd]);
   }
 
@@ -75,7 +79,8 @@ export default class Statusbar extends View {
     const space = sp.find((s) => s.id === f?.space);
     const key = this.key();
     const git = key ? this.git[key] : null;
-    const branch = git?.branch ?? ps.find((p) => p.pane === f?.pane)?.branch ?? null;
+    const shown = f?.pane ? ps.find((p) => p.pane === f.pane) : ps.find((p) => f?.terminal && p.terminal === f.terminal);
+    const branch = git?.branch ?? shown?.branch ?? null;
     const badge = space ? badges[space.id] : null;
     const core = updates()?.core?.version;
     const where = machines().map((m) => m.name ?? t("local")).join(" / ");

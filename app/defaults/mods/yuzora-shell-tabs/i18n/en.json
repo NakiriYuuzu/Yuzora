@@ -7,7 +7,8 @@
   "pane": {
     "add": "New pane",
     "split_right": "Split right with a terminal",
-    "split_down": "Split down with a terminal"
+    "split_down": "Split down with a terminal",
+    "no_pane": "Focus a pane to split it"
   },
   "menu": {
     "where": "Place it",
@@ -26,5 +27,9 @@
     "minimize": "Minimize",
     "maximize": "Maximize",
     "close": "Close window"
+  },
+  "panel": {
+    "files": "Files",
+    "changes": "Changes"
   }
 }
