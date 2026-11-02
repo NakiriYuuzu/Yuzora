@@ -132,6 +132,17 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果大小無關。預設上限是 100,000 列。PostgreSQL 一列約 161 B，所以一個裝滿的結果集大約 16 MB。
 
+## 實機畫面
+
+隔離的 app home 與 `HC_SESSION`，`herdr-app shot` 截圖。資料是一個 SQLite 檔：customers 120,000 列、orders 30,000 列（含 FK 與兩個索引）、沒有 PK 的 audit_log、一個 view、一個 trigger。
+
+- [l3-db-data.png](evidence/l3-db-data.png)：側欄的連線與 schema 樹，orders 的資料分頁。
+- [l3-db-structure.png](evidence/l3-db-structure.png)：結構分頁，含欄位、PK、索引、FK 與 DDL。
+- [l3-db-query.png](evidence/l3-db-query.png)：SQL pane 一次執行四句，每個結果集一個分頁。
+- [l3-db-connection.png](evidence/l3-db-connection.png)：新增連線對話框。
+
+儲存格編輯與寫回沒辦法用 `herdr-app do` 操作，所以沒有截圖。這部分由 `tests/session.rs` 與 `tests/engines.rs` 對真實資料庫驗證。
+
 ## 已知限制
 
 - SSH tunnel：等 L4。
@@ -145,3 +156,4 @@ grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果�
 
 - L4：`yuzora_ssh::tunnel(host) -> (local_host, local_port)` 一類的 API；L3 在 `session::spec_for` 把 `ConnectSpec::endpoint` 換成 tunnel 的本機端點，`refuse_tunnel` 拿掉即可。
 - L6：`db.maxRows` 的設定頁（目前只能手改 `settings.json`）。
+- L1：狀態列讀 `yuzora.status.db`，模式列讀 `yuzora.badge.database`。pane 標題目前顯示 mod 名稱（`yuzora-db-table`），應改成資料表或查詢名稱。
