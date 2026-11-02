@@ -298,7 +298,7 @@ pub fn host_module() -> HostModule {
         .function("setSettings", |a| {
             let values = arg(a, 0);
             let known = settings::defaults();
-            let mut current = match yuzora_core::settings::section(settings::SECTION) {
+            let mut current = match yuzora_core::settings::section_from(&settings::file(), settings::SECTION) {
                 Value::Object(o) => o,
                 _ => serde_json::Map::new(),
             };
@@ -309,7 +309,7 @@ pub fn host_module() -> HostModule {
                     }
                 }
             }
-            yuzora_core::settings::set_section(settings::SECTION, Value::Object(current)).map_err(err)?;
+            yuzora_core::settings::set_section_at(&settings::file(), settings::SECTION, Value::Object(current)).map_err(err)?;
             Ok(HostValue::Null)
         });
 

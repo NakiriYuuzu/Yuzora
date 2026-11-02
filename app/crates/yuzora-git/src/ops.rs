@@ -187,7 +187,7 @@ pub fn commit(repo: &Repo, o: &CommitOptions) -> GitResult<Value> {
 }
 
 fn messages_file() -> std::path::PathBuf {
-    yuzora_core::paths::yuzora_dir().join("git").join("messages.json")
+    crate::settings::own_dir().join("git").join("messages.json")
 }
 
 fn remember_message(repo: &Repo, message: &str) {

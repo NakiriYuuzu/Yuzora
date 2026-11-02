@@ -3,8 +3,20 @@
 //! the settings page applies to the next command.
 
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 pub const SECTION: &str = "git";
+
+/// Yuzora's own files (settings, commit message history). Tests use a scratch
+/// folder so they never read or write the person's app home.
+pub fn own_dir() -> PathBuf {
+    if cfg!(test) { std::env::temp_dir().join(format!("yuzora-git-tests-{}", std::process::id())) } else { yuzora_core::paths::yuzora_dir() }
+}
+
+/// Yuzora's settings.json (see [`own_dir`]).
+pub fn file() -> PathBuf {
+    own_dir().join("settings.json")
+}
 
 /// Every setting and its default.
 pub fn defaults() -> Value {
@@ -54,7 +66,7 @@ pub fn defaults() -> Value {
 /// The stored section over the defaults.
 pub fn all() -> Value {
     let mut v = defaults();
-    if let Value::Object(stored) = yuzora_core::settings::section(SECTION)
+    if let Value::Object(stored) = yuzora_core::settings::section_from(&file(), SECTION)
         && let Value::Object(m) = &mut v
     {
         for (k, x) in stored {
@@ -103,5 +115,11 @@ mod tests {
         assert_eq!(d["updateMethod"], "merge");
         assert_eq!(d["largeFileMb"], 50);
         assert!(regex::Regex::new(d["protectedBranches"].as_str().unwrap()).unwrap().is_match("main"));
+    }
+
+    #[test]
+    fn tests_stay_out_of_the_app_home() {
+        assert!(own_dir().starts_with(std::env::temp_dir()));
+        assert_ne!(own_dir(), yuzora_core::paths::yuzora_dir());
     }
 }
