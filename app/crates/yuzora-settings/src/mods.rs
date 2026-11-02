@@ -205,20 +205,50 @@ fn put_back(home: &Path, name: &str, files: &[(&str, &[u8])]) -> std::io::Result
 }
 
 /// Text that named mod `from` now names `to`: asset paths and `mod:` keys,
-/// the same rewrites `mod.clone` makes.
+/// the rewrites `mod.clone` makes, with any whitespace around the colon (a
+/// layout is JSON, which allows any).
 pub fn rewrite(text: &str, from: &str, to: &str) -> String {
-    let mut text = text
+    let text = text
         .replace(&format!("mods/{from}/"), &format!("mods/{to}/"))
         .replace(&format!("\"mods/{from}\""), &format!("\"mods/{to}\""))
         .replace(&format!("'mods/{from}'"), &format!("'mods/{to}'"));
-    for key in ["mod", "\"mod\"", "'mod'"] {
-        for space in ["", " "] {
-            for quote in ["\"", "'"] {
-                text = text.replace(&format!("{key}:{space}{quote}{from}{quote}"), &format!("{key}:{space}{quote}{to}{quote}"));
+    let skip = |at: usize| at + text[at..].len() - text[at..].trim_start().len();
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    let mut from_here = 0;
+    'keys: while let Some(found) = text[from_here..].find("mod") {
+        let start = from_here + found;
+        from_here = start + 3;
+        // The key: `mod`, `"mod"` or `'mod'`, not the end of a longer name.
+        let mut end = start + 3;
+        match text[..start].chars().next_back() {
+            Some(q @ ('"' | '\'')) => {
+                if !text[end..].starts_with(q) {
+                    continue;
+                }
+                end += 1;
+            }
+            Some(c) if c.is_alphanumeric() || matches!(c, '_' | '$') => continue,
+            _ => {}
+        }
+        let colon = skip(end);
+        if !text[colon..].starts_with(':') {
+            continue;
+        }
+        let value = skip(colon + 1);
+        for q in ['"', '\''] {
+            let old = format!("{q}{from}{q}");
+            if text[value..].starts_with(&old) {
+                out.push_str(&text[done..value]);
+                out.push_str(&format!("{q}{to}{q}"));
+                done = value + old.len();
+                from_here = done;
+                continue 'keys;
             }
         }
     }
-    text
+    out.push_str(&text[done..]);
+    out
 }
 
 /// What installing a folder would do.
@@ -553,6 +583,12 @@ mod tests {
             rewrite(text, "old", "new"),
             r#"svg("mods/new/icon.svg"); run("mod.open", {name: "old"}); const x = { mod: 'new' }; {"mod": "new", "icon": "mods/new"} oldish"#
         );
+        // JSON allows any whitespace around the colon.
+        assert_eq!(rewrite("{\"mod\"   :\n\t \"old\"}", "old", "new"), "{\"mod\"   :\n\t \"new\"}");
+        assert_eq!(rewrite("{ mod:\t'old', \"mod\":\"old\" }", "old", "new"), "{ mod:\t'new', \"mod\":\"new\" }");
+        // Not a key named mod, or not this mod.
+        let other = r#"{"model": "old", xmod: "old", "mod": "older", "mod": "old-2", 'mod": "old"}"#;
+        assert_eq!(rewrite(other, "old", "new"), other);
     }
 
     #[test]

@@ -91,8 +91,36 @@ pub fn freedesktop(path: &Path, trash: &Path) -> std::io::Result<()> {
         i += 1;
         name = format!("{stem}.{i}{ext}");
     };
-    if let Err(e) = std::fs::rename(path, files.join(&name)) {
+    if let Err(e) = move_file(path, &files.join(&name)) {
         let _ = std::fs::remove_file(record);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// A rename, or across filesystems (the config and data homes on different
+/// mounts: EXDEV) a copy of the file or link, then removing the original.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => copy_then_remove(from, to),
+        done => done,
+    }
+}
+
+fn copy_then_remove(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)?;
+        #[cfg(not(unix))]
+        return Err(std::io::Error::other("a link on another filesystem"));
+    } else if meta.is_file() {
+        std::fs::copy(from, to)?;
+    } else {
+        return Err(std::io::Error::other("not a file"));
+    }
+    if let Err(e) = std::fs::remove_file(from) {
+        let _ = std::fs::remove_file(to);
         return Err(e);
     }
     Ok(())
@@ -155,6 +183,24 @@ mod tests {
         std::fs::remove_file(d.join("real.md")).unwrap();
         assert!(absolute(&d.join("Trash/files/rev.md")).is_ok(), "a broken link is still there to trash");
         assert_eq!(absolute(&d.join("none.md")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// What a move across filesystems does in place of the rename.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_then_remove_moves_files_and_links() {
+        let d = std::env::temp_dir().join(format!("yuzora-trash-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("to")).unwrap();
+        std::fs::write(d.join("a.md"), "x").unwrap();
+        copy_then_remove(&d.join("a.md"), &d.join("to/a.md")).unwrap();
+        assert!(!d.join("a.md").exists());
+        assert_eq!(std::fs::read_to_string(d.join("to/a.md")).unwrap(), "x");
+        std::os::unix::fs::symlink(d.join("to/a.md"), d.join("l.md")).unwrap();
+        copy_then_remove(&d.join("l.md"), &d.join("to/l.md")).unwrap();
+        assert!(std::fs::symlink_metadata(d.join("l.md")).is_err());
+        assert_eq!(std::fs::read_link(d.join("to/l.md")).unwrap(), d.join("to/a.md"));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
