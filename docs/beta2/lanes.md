@@ -13,6 +13,7 @@ L0 建好基底後，L1–L7 從 `beta2/integration` 各開一條分支並行開
 | L5 檔案＋編輯器 | 檔案樹（git 標記）、程式碼編輯器、Markdown 預覽 | `yuzora-files`（`yuzora:files`） | `yuzora-sidebar-files`、`yuzora-files-*`、`yuzora-editor-*`、`yuzora-markdown-*` | | `docs/beta2/files.md` | slot-1 |
 | L6 設定＋MOD／Template | 設定框架（`settingsPages()`）、`general` 設定（含語系）、mods 管理、herdr-core templates 管理 | `yuzora-settings`（`yuzora:settings`） | `yuzora-settings-*` | Yuzora `settings.json` 的 `general` section | `docs/beta2/settings.md` | slot-3 |
 | L7 發布更新 | 打包、簽章、更新通道（GitHub Releases）、binary 最終名稱 | 不另設 crate；app 端 glue 放 `app/src/yuzora/update.rs` 等新檔 | | `app/scripts/yuzora/bundle-*`、`app/assets/icons/yuzora*`、新的 app 發布 workflow | `docs/beta2/release.md` | slot-4 |
+| L8 效能監控 | 右下角的資源用量 chip 與 popover：App 本體、herdr-core（終端機與 agents）、Yuzora 工具 | `yuzora-perf`（`yuzora:perf`） | `yuzora-perf` | 總指揮特准：`app/Cargo.toml` 與 `app/src/yuzora/mod.rs` 掛上 crate、`app/defaults/layouts/yuzora.json` 的 `status` 節點 | `docs/beta2/perf.md` | 無固定（slot-1～4 擇未上鎖者） |
 
 - 「`yuzora-<x>-*`」是 mod 名稱前綴，例如 L2 的 tool pane 叫 `yuzora-git-log`、`yuzora-git-diff`。
 - 每個 crate 的 `Cargo.toml`、原始碼與測試都歸該 lane。lane 的 Rust 字串目錄放在 crate 內（例如 `app/crates/yuzora-git/i18n/`），mod 的字串放在 mod 內的 `i18n/`。

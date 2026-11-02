@@ -73,6 +73,15 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L7:start -->
 <!-- yuzora:lane:L7:end -->
 
+<!-- yuzora:lane:L8:start -->
+#### L8 效能監控
+
+- 文件：`docs/beta2/perf.md`。mod：`yuzora-perf`（右下角 chip＋popover，指令 `yuzora-perf.toggle`）；crate `yuzora-perf`（`tick()`、`state()`）。
+- 聚合與分類在 `app/crates/yuzora-perf/src/tree.rs`（純函式＋單元測試）。三類加總＝總量是不變式，改分類先改測試。
+- herdr-core 的 server 在行程樹裡的位置不固定（由 app 的 `hc connect` 啟動時是 app 的孫行程，否則在 launchd 底下），也可能同時有好幾個。一律用 app 的 `hc server status --json` 取 `pid` 與 `holders` 辨識；只在 app 底下有 `hc` 子行程時才問，因為沒有 core 時 `hc server status` 會自己啟動一個。
+- 取樣只在 worker thread。量單次取樣成本：用 app 的隔離環境變數執行 `cargo run --release -p yuzora-perf --example cost -- <app pid>`。
+<!-- yuzora:lane:L8:end -->
+
 ## Release platform support
 
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon（M 系列）。候選版與正式版使用 `aarch64-apple-darwin`，不得重新加入 Intel／universal App 安裝包或 `darwin-x86_64` updater entry。
