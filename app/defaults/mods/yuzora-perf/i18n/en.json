@@ -1,0 +1,45 @@
+{
+  "chip": "{cpu}% · {memory}MB",
+  "chip_waiting": "Sampling…",
+  "chip_unavailable": "perf n/a",
+  "tip": {
+    "total": "This computer's Yuzora: {cpu}% CPU · {memory} MB",
+    "app": "App: {cpu}% · {memory} MB",
+    "core": "herdr-core: {processes} · {cpu}% · {memory} MB",
+    "core_missing": "herdr-core: not measured ({error})",
+    "tools": "Yuzora tools: {processes} · {cpu}% · {memory} MB",
+    "sampling": "Sampling: {failures} failed and {empty} returned no data of the last {attempts} polls ({skipped} skipped while unfocused). Last error: {error}",
+    "open": "Click for details"
+  },
+  "title": "Resource usage",
+  "close": "Close resource usage",
+  "scope": "This computer only: the Yuzora app, the tools it starts, and its herdr-core with the terminals and agents in it. Remote (SSH) Spaces are not measured.",
+  "memory": "Memory",
+  "cpu": "CPU",
+  "category": {
+    "app": "App",
+    "core": "herdr-core",
+    "tools": "Yuzora tools"
+  },
+  "detail": {
+    "app": "The window and its mods",
+    "core": "Terminals and agents",
+    "tools": "git, ssh, database helpers, hc connect"
+  },
+  "summary_label": "Memory by category",
+  "largest_first": "Largest first",
+  "sort_label": "Sort usage",
+  "list_label": "Resource categories",
+  "process_one": "1 process",
+  "process_other": "{count} processes",
+  "share": "{value}% of total",
+  "no_share": "Share unavailable",
+  "no_sample": "No sample yet. Unknown usage is not zero.",
+  "core_pid": "herdr-core is the server with pid {pid} and everything under it and its holders.",
+  "core_missing": "herdr-core was not measured and counts 0: {error}",
+  "measurement": "Memory is RSS in decimal MB. CPU is relative to one core and can exceed 100%; totals are sums.",
+  "cadence": "Sampled every 2 s while the window is in front.",
+  "sampling": "Last {attempts} polls: {failures} failed · {empty} empty · {skipped} skipped without focus.",
+  "last_error": "Last error: {error}",
+  "cost": "One sample takes {median} ms (median) · {p95} ms (p95) over the last {samples}."
+}

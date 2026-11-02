@@ -1077,3 +1077,15 @@ with these differences.
 
 <!-- yuzora:lane:L7:start -->
 <!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+### Resource usage
+
+- The chip in the bottom-right corner is `yuzora-perf`: what this computer's Yuzora uses (the app, its herdr-core
+  with the terminals and agents in it, and the tools the app starts). `yuzora-perf.toggle` (a key in keys.json, or
+  `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
+- `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
+  callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
+  core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
+  `{cpu, memory, count}`: cpu is one core = 100, summed; memory is RSS in bytes. The categories add up to total.
+<!-- yuzora:lane:L8:end -->

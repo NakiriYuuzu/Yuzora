@@ -1,0 +1,19 @@
+[package]
+name = "yuzora-perf"
+description = "Yuzora L8: resource usage of this computer's Yuzora (the app, its herdr-core and the tools it starts) for the status bar's corner."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The sysinfo gpui-fps already brings in: no new package in Cargo.lock.
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# proc_listallpids / proc_listchildpids: refresh only the trees measured.
+libc = "0.2"

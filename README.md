@@ -155,6 +155,15 @@ Not started.
 Not started.
 <!-- yuzora:lane:L7:end -->
 
+<!-- yuzora:lane:L8:start -->
+### L8 · Resource usage
+
+The chip in the window's bottom-right corner shows what this computer's Yuzora uses (the app, its herdr-core with
+the terminals and agents in it, and the tools the app starts) as `{cpu}% · {memory}MB`, and opens the details above
+it. `yuzora:perf` (`app/crates/yuzora-perf`) samples on a worker thread every 2 s while the window is in front.
+Details: [docs/beta2/perf.md](docs/beta2/perf.md).
+<!-- yuzora:lane:L8:end -->
+
 ## License
 
 The beta.2 app builds on [herdr-app](https://github.com/herdrdev/herdr-app) (Apache-2.0); its license and

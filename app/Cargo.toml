@@ -49,6 +49,7 @@ yuzora-db = { path = "crates/yuzora-db" }
 yuzora-ssh = { path = "crates/yuzora-ssh" }
 yuzora-files = { path = "crates/yuzora-files" }
 yuzora-settings = { path = "crates/yuzora-settings" }
+yuzora-perf = { path = "crates/yuzora-perf" }
 
 [[test]]
 name = "shot_pixels"
