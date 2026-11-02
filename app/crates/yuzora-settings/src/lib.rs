@@ -55,14 +55,14 @@ export function listTemplates(machine?: string | null): Promise<TemplateList>;
 export function checkTemplate(name: string, fields: TemplateFields, body: string): TemplateIssue[];
 /** The file a template saves as: the fields, the header lines kept from the file (others), the body. */
 export function templateText(fields: TemplateFields, others: [string, string][], body: string): string;
-/** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | io | remote, message}. */
+/** Saves a template (expected null: a new one; else the text it was read as). previous: its old name, when renamed (that file goes to the trash). Resolves {ok, text} or {ok: false, code: exists | changed | invalid | name_invalid | old_kept (renamed; the old file is still there) | io | remote, message}. */
 export function saveTemplate(machine: string | null, name: string, fields: TemplateFields, others: [string, string][], body: string, expected: string | null, previous?: string | null): Promise<Outcome>;
 /** Moves a template to the trash. */
 export function trashTemplate(machine: string | null, name: string): Promise<Outcome>;
 /** Starts an agent from a template into a space and tab (tab null: a new tab). Resolves {ok, address, sent, reason} or {ok: false, kind, message}. */
 export function runTemplate(launch: Launch): Promise<Outcome>;
 /** The home's mods and layouts. */
-export function listMods(): { mods: ModEntry[]; layouts: LayoutEntry[] };
+export function listMods(): Promise<{ mods: ModEntry[]; layouts: LayoutEntry[] }>;
 /** Puts a shipped mod back as shipped; an edited one first moves to <name>-edited (returned). */
 export function resetMod(name: string): string | null;
 /** The window's `status` (layout, overlays, errors), as `herdr-app status` prints it. */
@@ -77,12 +77,24 @@ export function installFolder(path: string): Promise<Outcome & { plan?: InstallP
 export function reveal(path: string): null;
 /** general.startup: the sidebar mode to show when the window opens (a yuzora-sidebar child), or null for the last one. */
 export function startup(): { sidebar: string | null };
+/** This run of the app: a different value after every start (for shared values that mean nothing after a restart, like an overlay id). */
+export function session(): string;
 "#;
 
 /// Remote template work is a few small files: a short wait is plenty.
 const REMOTE_TIMEOUT: Duration = Duration::from_secs(20);
 /// A template run waits for the agent's first status report (hc: 30 s by default).
 const RUN_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// This process and when it started: overlay ids restart at o1 with the app,
+/// so one kept in `shared` across a restart may name someone else's overlay.
+fn session() -> &'static str {
+    static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SESSION.get_or_init(|| {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        format!("{}-{nanos}", std::process::id())
+    })
+}
 
 /// Runs blocking work on its own thread; the script gets a promise.
 fn background<F>(work: F) -> Result<impl std::future::Future<Output = Result<HostValue, HostError>> + Send + 'static, HostError>
@@ -154,6 +166,10 @@ struct Save {
 }
 
 fn save_template(s: Save) -> Value {
+    // Names go into paths on the other machine too: checked here for both.
+    if !templates::valid_name(&s.name) || s.previous.as_deref().is_some_and(|p| !templates::valid_name(p)) {
+        return failed("name_invalid", &s.name);
+    }
     match &s.machine {
         None => match templates::save(&templates::dir(), &s.name, &s.text, s.expected.as_deref(), s.previous.as_deref()) {
             Ok(()) => json!({ "ok": true, "text": s.text }),
@@ -167,7 +183,7 @@ fn save_template(s: Save) -> Value {
                     0 => json!({ "ok": true, "text": s.text }),
                     4 => failed("exists", "exists"),
                     5 => failed("changed", "changed"),
-                    7 => failed("io", "saved, but the old file couldn't go to the trash"),
+                    7 => failed("old_kept", out.stderr_text().trim()),
                     _ => failed("io", out.stderr_text().trim()),
                 },
                 Err(e) => e,
@@ -177,6 +193,9 @@ fn save_template(s: Save) -> Value {
 }
 
 fn trash_template(machine: Option<String>, name: String) -> Value {
+    if !templates::valid_name(&name) {
+        return failed("name_invalid", &name);
+    }
     match &machine {
         None => match templates::trash(&templates::dir(), &name) {
             Ok(()) => json!({ "ok": true }),
@@ -364,9 +383,11 @@ pub fn host_module() -> HostModule {
             let l = launch_from(&arg(a, 0));
             background(move || run_template(l))
         })
-        .function("listMods", |_| {
-            let home = yuzora_core::paths::app_home();
-            Ok(to_host(&json!({ "mods": mods::list_mods(&home), "layouts": mods::list_layouts(&home) })))
+        .async_function("listMods", |_| {
+            background(|| {
+                let home = yuzora_core::paths::app_home();
+                json!({ "mods": mods::list_mods(&home), "layouts": mods::list_layouts(&home) })
+            })
         })
         .function("resetMod", |a| {
             let name = a.string(0)?;
@@ -397,6 +418,7 @@ pub fn host_module() -> HostModule {
             let general = yuzora_core::settings::section(yuzora_core::settings::GENERAL);
             Ok(to_host(&json!({ "sidebar": startup::sidebar(&general) })))
         })
+        .function("session", |_| Ok(HostValue::Str(session().to_owned())))
 }
 
 /// Arguments as JSON, for tests and callers outside a script.
@@ -414,18 +436,25 @@ mod tests {
         m.validate().unwrap();
         assert_eq!(m.name(), "yuzora:settings");
         assert_eq!(m.call("version", &HostArguments::new([])).unwrap(), HostValue::Str(yuzora_core::VERSION.into()));
-        for f in ["listTemplates", "saveTemplate", "trashTemplate", "runTemplate", "appStatus", "checkMod", "planInstall", "installFolder"] {
+        for f in ["listTemplates", "saveTemplate", "trashTemplate", "runTemplate", "listMods", "appStatus", "checkMod", "planInstall", "installFolder"] {
             assert!(m.is_async(f), "{f} must not block the UI thread");
         }
     }
 
     #[test]
     fn check_and_text_reach_the_script() {
-        let issues = call("checkTemplate", vec![json!("a b"), json!({ "command": "" }), json!("")]).unwrap();
+        let issues = call("checkTemplate", vec![json!("a/b"), json!({ "command": "" }), json!("")]).unwrap();
         let codes: Vec<_> = issues.as_array().unwrap().iter().map(|i| i["code"].as_str().unwrap().to_owned()).collect();
         assert_eq!(codes, ["name_invalid", "command_empty", "body_empty"]);
         let text = call("templateText", vec![json!({ "command": "pi" }), json!([["model", "x"], ["bad:key", "y"], ["k", "two\nlines"]]), json!("Hi")]).unwrap();
         assert_eq!(text, "---\ncommand: pi\nmodel: x\n---\nHi\n", "header lines that would break the file are dropped");
+    }
+
+    #[test]
+    fn a_session_is_one_value_for_this_run() {
+        let s = call("session", vec![]).unwrap();
+        assert!(s.as_str().is_some_and(|s| s.starts_with(&format!("{}-", std::process::id()))));
+        assert_eq!(call("session", vec![]).unwrap(), s);
     }
 
     #[test]

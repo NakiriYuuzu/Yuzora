@@ -46,12 +46,13 @@
     "invalid": "請先修正標示的地方。",
     "name_invalid": "{name} 不是 hc 能執行的名稱。",
     "missing": "{name} 已經不在了。",
+    "old_kept": "已儲存 {name}，但舊的 {old} 沒能移到垃圾桶，兩個檔案都還在。",
     "other": "沒有成功：{message}"
   },
   "field": {
     "name": "名稱",
     "name_placeholder": "reviewer",
-    "name_hint": "用 hc run <名稱> 啟動。可用英文字母、數字、. _ -",
+    "name_hint": "用 hc run <名稱> 啟動，也就是檔名（不含 .md）。",
     "description": "說明",
     "description_placeholder": "唯讀的程式碼審查，給它檔案路徑。",
     "description_hint": "顯示在模板清單。",
@@ -79,7 +80,7 @@
   },
   "issues": {
     "name_empty": "請取個名稱。",
-    "name_invalid": "只能用英文字母、數字、. _ -（開頭不能是 . 或 -），最多 64 字。",
+    "name_invalid": "不能含 / 或 \\ 與控制字元，不能以 . 開頭，最多 200 位元組。",
     "command_empty": "模板必須有指令。",
     "multiline": "只能一行：標頭是逐行讀取的。",
     "quoted": "值會照字面使用：引號也會變成內容的一部分。",

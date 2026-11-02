@@ -15,6 +15,7 @@
   "clone": "複製",
   "clone_as": "複製為",
   "clone_name": "只能用英文字母、數字、- 或 _。",
+  "clone_taken": "已經有名為 {name} 的項目。",
   "cloned": "已複製為 {name}。",
   "cloned_layout": "已複製為 {name}，並切換過去。",
   "open_folder": "在資料夾中顯示",

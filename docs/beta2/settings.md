@@ -31,7 +31,7 @@
 - `app.settings` 不帶 section：開 Yuzora「一般」頁（`yz.DEFAULT_PAGE`）。frame 先畫一個空白底，量到對話框實際高度（620，視窗太矮時是視窗的 85%）後換成同寬同高的 layout overlay，換頁不會跳動；量不到時 500 ms 後以 620 開。
 - `app.settings {section}`：Herdr 的分頁（look、keyboard、machines、alerts、updates、privacy）照舊；也可以是 Yuzora 頁的 mod 名稱或 section key（`{section: "templates"}`），直接開該頁。Herdr 的分頁名稱優先。
 - 分組來源是 `settingsPages()`（各 mod 的 `mod.json` `yuzora.settings`），依 `order` 排序。L6 自己的頁：`general` 0、`templates` 800、`mods` 900；其他 lane 的頁放在 1–799 之間就會排在中間。
-- 同時只有一個設定對話框：`app.settings` 只認得 id 為 `settings` 的 overlay，所以 Yuzora 頁的 overlay id 記在 `shared("yuzora.settings.overlay")`；frame 每次開啟（⌘,、選單、齒輪）都先關掉它。不必改 `window.rs`。
+- 同時只有一個設定對話框：`app.settings` 只認得 id 為 `settings` 的 overlay，所以 Yuzora 頁的 overlay 記在 `shared("yuzora.settings.overlay")`（`{id, run}`）；frame 每次開啟（⌘,、選單、齒輪）都先關掉它。不必改 `window.rs`。overlay id 每次啟動都從 `o1` 重新編號，而 `shared` 會存檔，所以只有 `run` 等於本次啟動的 `session()` 時才關，否則只清掉這個值（避免關到重啟後拿到同一個 id 的別的 overlay）。
 - 從 nav 點回 Herdr 分頁、從 Herdr 分頁點 Yuzora 頁，都以目前對話框的高度開新的那一個。
 
 ### 上游 `main.js` 的改動（全部帶 `// yuzora(L6):`）
@@ -83,20 +83,23 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 | 標頭行 | `key: value`，第一個冒號切開、兩邊 trim；空行略過；註解行（`# …`）會錯；key 分大小寫；重複 key 取最後一個 |
 | `command` | 必填；`Command:` 不算 |
 | `paste_gap_ms` | 非負整數（`-5`、`1.5`、超過 u64 都錯） |
+| 結束行與錯誤順序 | 先找結束行：沒有結束行就是 `never_closes`，即使中間有不是 `key: value` 的行（例如縮排的 `  ---`） |
 | `ready` | `quiet` 以外的值不報錯，等同預設 |
 | `submit`／`stop` | 列表時不檢查；`hc run` 時才回報「unknown key」並讓第一則訊息不送出 |
-| 檔案 | 只認小寫 `.md`、不進子資料夾；檔名去掉 `.md` 就是名稱，`name:` 欄位被忽略 |
+| 檔案 | 只認小寫 `.md`、不進子資料夾；檔名去掉 `.md` 就是名稱，`name:` 欄位被忽略；名稱不限字元（`my review`、`審查`、`-x` 都能 `hc run`） |
 
 `yuzora-settings::templates::parse` 照這些規則實作，`Entry::error` 給出與 `hc templates --json` 相同的判定（`no_frontmatter`、`never_closes`、`not_key_value`、`no_command`、`paste_gap_number`）。
 
 ### 存檔前的檢查（`checkTemplate`）
 
-錯誤（擋住儲存）：名稱空白或不合法（`[A-Za-z0-9._-]`、不以 `.`／`-` 開頭、最多 64）、沒有 command、值含換行、`paste_gap_ms` 不是整數。
+錯誤（擋住儲存）：名稱空白或不是資料夾裡的一個檔案（含 `/`、`\` 或控制字元、以 `.` 開頭、超過 200 位元組；其餘與 hc 一樣不限）、沒有 command、值含換行、`paste_gap_ms` 不是整數。同一套名稱規則也用在移到垃圾桶、改名與啟動，本機與遠端都先在 Rust 檢查。
 警告：值被引號包住（hc 會照字面吃進去）、`ready` 不是 `quiet`、`submit`／`stop` 有 hc 可能不認得的按鍵、body 空白、`codex` 沒加 `--no-daemon`（`hc --skill` 的要求）。
 
 頁面 props：`{machine?, edit?}`。`edit` 為模板名稱時，清單讀完直接開該模板的表單；`""` 開新增表單（給其他 lane 的「新增模板」入口用）。
 
-寫檔時已知欄位依固定順序輸出，編輯器沒有的欄位原樣保留在後面；寫入走暫存檔＋rename，並比對開啟時讀到的內容（被別處改過就拒絕，`changed`）。改名時先寫新檔，再把舊檔移到垃圾桶。
+寫檔時已知欄位依固定順序輸出，編輯器沒有的欄位原樣保留在後面；寫入走暫存檔＋rename，並比對開啟時讀到的內容（被別處改過就拒絕，`changed`）。改名時先寫新檔，再把舊檔移到垃圾桶；舊檔移不走時回 `old_kept`（新檔已存好，兩個檔案都在），頁面當作已儲存並提示。
+
+模板是 symlink（例如用 stow 管理的 dotfiles）時：編輯寫進它指向的檔案，連結保留；移到垃圾桶移走的是連結本身，不動原檔。本機與遠端一致。
 
 ### 其他 machine
 
@@ -136,7 +139,7 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 還原內建：layout 用 `layout.reset {name}`。mod 沒有對應指令：`yuzora_settings::mods::reset_mod` 先把 edited 的資料夾移到 `<name>-edited`（與啟動時相同），再寫回 shipped 檔案。它需要 app 交出內嵌的 shipped 檔案（`set_shipped_mods(crate::mods::DEFAULT_MODS)`），目前尚未串接（見後續整合），所以 UI 只說明「下次啟動會還原」，不顯示按鈕。
 - 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder`。
   - 一個 mod 資料夾（有 `main.js`），或 shared layout 的資料夾（`layouts/*.json`＋`mods/*/`）。
-  - 不覆寫：名稱被占用就用 `-2`、`-3`…，並把 `mods/<舊名>/` 路徑與 `mod: "<舊名>"` 改寫成新名稱（與 `mod.clone` 相同規則），layout 內引用也一起改。
+  - 不覆寫：名稱被占用就用 `-2`、`-3`…，並把 `mods/<舊名>/` 路徑與 `mod: "<舊名>"` 改寫成新名稱（與 `mod.clone` 相同規則），layout 內引用也一起改。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
   - 不複製 `.git`、`node_modules`、隱藏檔、根目錄的 `RECIPE.md`／`preview.png`；超過 2000 個檔案或 64 MB 拒絕；來源在 app home 內拒絕；失敗時刪掉這次寫入的東西。
   - `keys.json` 不自動合併（AGENTS.md 要求替換既有按鍵前先問人），提示使用者自行處理。
 
@@ -151,11 +154,12 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 | `checkTemplate(name, fields, body)`、`templateText(fields, others, body)` | 存前檢查、檔案內容預覽 |
 | `saveTemplate(machine, name, fields, others, body, expected, previous?)`、`trashTemplate(machine, name)` | 寫入、移到垃圾桶（async，回傳 `{ok, code?}`） |
 | `runTemplate(launch)` | 以模板啟動（async） |
-| `listMods()`、`resetMod(name)` | mods／layouts 清單、還原內建 mod |
+| `listMods()`、`resetMod(name)` | mods／layouts 清單（async：每次都讀過 shipped mod 的檔案並算指紋）、還原內建 mod |
 | `appStatus()`、`checkMod(name)` | 視窗 status、`check`（async） |
 | `planInstall(path)`、`installFolder(path)` | 安裝計畫、安裝（async） |
 | `reveal(path)` | 在檔案管理員顯示 |
 | `startup()` | `general.startup` 要求的側欄模式 |
+| `session()` | 本次啟動的識別值（給存在 `shared` 但重啟後就沒意義的值用，例如 overlay id） |
 
 ## 後續整合（需要其他 lane 或總指揮）
 
@@ -176,3 +180,4 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - Windows 遠端模板、Windows 本機垃圾桶未實機驗證（只有 CI 編譯）。
 - 外觀頁與上游 Look 頁功能重疊；L1 確定 Yuzora 的主題／字型方案後，可考慮在 `LOOKS` 之外收斂。
 - 模板 body 編輯器沒有 frontmatter 語法提示；hc 的按鍵名稱清單是近似值（只會警告）。
+- macOS 沒有 `/usr/bin/trash`（macOS 15 以前）時改用 Finder；Finder 對 symlink 是否只移走連結未實測。

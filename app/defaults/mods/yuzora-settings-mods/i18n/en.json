@@ -15,6 +15,7 @@
   "clone": "Clone",
   "clone_as": "Clone as",
   "clone_name": "Use letters, digits, - or _.",
+  "clone_taken": "There's already one called {name}.",
   "cloned": "Cloned as {name}.",
   "cloned_layout": "Cloned as {name}, now shown.",
   "open_folder": "Show in folder",

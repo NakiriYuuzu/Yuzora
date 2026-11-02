@@ -19,7 +19,8 @@ const MONO = "JetBrains Mono";
 export default class Mods extends View {
   init(_props, cx) {
     this.tab = props()?.tab === "layouts" ? "layouts" : "mods";
-    this.data = listMods();
+    this.data = { mods: [], layouts: [] };
+    this.loaded = false;
     this.errors = [];
     this.statusError = null;
     this.busy = {}; // name -> what's running
@@ -32,14 +33,27 @@ export default class Mods extends View {
     this.cloneInput.on("submit", (_e, cx) => this.clone(cx));
     this.refresh(cx);
     // New folders (a clone, an agent's mod) show up on their own.
-    cx.timer.every(5000, (cx) => {
-      this.data = listMods();
+    cx.timer.every(5000, (cx) => this.list(cx));
+  }
+
+  // listMods reads (and fingerprints) every mod's files: off the UI thread,
+  // one listing at a time.
+  list(cx) {
+    if (this.listing) return;
+    this.listing = true;
+    cx.spawn(async (cx) => {
+      try {
+        this.data = await listMods();
+        this.loaded = true;
+      } finally {
+        this.listing = false;
+      }
       cx.notify();
     });
   }
 
   refresh(cx) {
-    this.data = listMods();
+    this.list(cx);
     cx.spawn(async (cx) => {
       const s = await appStatus();
       this.errors = s.ok ? s.errors ?? [] : [];
@@ -72,6 +86,11 @@ export default class Mods extends View {
     const as = this.cloneInput.value().trim();
     if (!/^[A-Za-z0-9_-]+$/.test(as)) {
       this.results[c.name] = { text: t("clone_name"), tone: "error" };
+      return cx.notify();
+    }
+    // run() doesn't say whether it worked: a taken name is the one failure to catch here.
+    if ((c.kind === "mod" ? this.data.mods : this.data.layouts).some((m) => m.name === as)) {
+      this.results[c.name] = { text: t("clone_taken", { name: as }), tone: "error" };
       return cx.notify();
     }
     run(c.kind === "mod" ? "mod.clone" : "layout.clone", { name: c.name, as });
@@ -339,6 +358,7 @@ export default class Mods extends View {
             .items_center()
             .child(segmented(th, "md-tab", [["mods", t("tab_mods", { n: this.data.mods.length })], ["layouts", t("tab_layouts", { n: this.data.layouts.length })]], this.tab, (v, cx) => { this.tab = v; this.cloning = null; cx.notify(); }))
             .child(div().flex_1())
+            .when(!this.loaded, (el) => el.child(spinner(th)))
             .child(button(th, "md-refresh", t("refresh"), (_e, cx) => this.refresh(cx)))
             .child(button(th, "md-install", t("install"), (_e, cx) => this.pickInstall(cx), "primary")),
         )

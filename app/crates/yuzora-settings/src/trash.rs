@@ -9,11 +9,18 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn trash(path: &Path) -> std::io::Result<()> {
-    if !path.exists() {
+    platform(&absolute(path)?)
+}
+
+/// `path` with its folder resolved but not the file itself: a link goes to the
+/// trash as the link (as `mv` would), never the file it points at.
+fn absolute(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    if std::fs::symlink_metadata(path).is_err() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} is gone", path.display())));
     }
-    let path = std::fs::canonicalize(path)?;
-    platform(&path)
+    let name = path.file_name().ok_or_else(|| std::io::Error::other("no file name"))?;
+    let folder = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    Ok(std::fs::canonicalize(folder)?.join(name))
 }
 
 fn ran(cmd: &mut Command) -> std::io::Result<()> {
@@ -70,7 +77,7 @@ pub fn freedesktop(path: &Path, trash: &Path) -> std::io::Result<()> {
     let mut i = 1;
     let record = loop {
         let record = info.join(format!("{name}.trashinfo"));
-        if !files.join(&name).exists() {
+        if std::fs::symlink_metadata(files.join(&name)).is_err() {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&record) {
                 Ok(mut f) => {
                     use std::io::Write;
@@ -130,6 +137,25 @@ mod tests {
         assert_eq!(deletion_date(UNIX_EPOCH + Duration::from_secs(1_793_719_425)), "2026-11-03T15:23:45");
         assert_eq!(deletion_date(UNIX_EPOCH + Duration::from_secs(951_782_400)), "2000-02-29T00:00:00");
         assert_eq!(encode_path(Path::new("/home/p/a b/字.md")), "/home/p/a%20b/%E5%AD%97.md");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_goes_to_the_trash_as_the_link() {
+        let d = std::env::temp_dir().join(format!("yuzora-trash-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("t")).unwrap();
+        std::fs::write(d.join("real.md"), "x").unwrap();
+        std::os::unix::fs::symlink(d.join("real.md"), d.join("t/rev.md")).unwrap();
+        let at = absolute(&d.join("t/rev.md")).unwrap();
+        assert_eq!(at, std::fs::canonicalize(d.join("t")).unwrap().join("rev.md"), "the link's own path");
+        freedesktop(&at, &d.join("Trash")).unwrap();
+        assert!(std::fs::symlink_metadata(d.join("Trash/files/rev.md")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(d.join("real.md")).unwrap(), "x", "the file it pointed at stays");
+        std::fs::remove_file(d.join("real.md")).unwrap();
+        assert!(absolute(&d.join("Trash/files/rev.md")).is_ok(), "a broken link is still there to trash");
+        assert_eq!(absolute(&d.join("none.md")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

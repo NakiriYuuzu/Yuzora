@@ -100,8 +100,10 @@ pub fn parse(text: &str) -> Result<Template, ParseError> {
     if first.strip_suffix('\n').unwrap_or(first) != "---" {
         return Err(ParseError::NoFrontmatter);
     }
-    let mut header = Vec::new();
+    // The closing line first, then the lines before it (hc reports a file
+    // that never closes before a bad line in it).
     let mut consumed = first.len();
+    let mut inside = Vec::new();
     let mut closed = false;
     for line in lines {
         consumed += line.len();
@@ -110,16 +112,17 @@ pub fn parse(text: &str) -> Result<Template, ParseError> {
             closed = true;
             break;
         }
-        if bare.trim().is_empty() {
-            continue;
-        }
+        inside.push(bare);
+    }
+    if !closed {
+        return Err(ParseError::NeverCloses);
+    }
+    let mut header = Vec::new();
+    for bare in inside.into_iter().filter(|l| !l.trim().is_empty()) {
         let Some((k, v)) = bare.split_once(':') else {
             return Err(ParseError::NotKeyValue(bare.trim().to_owned()));
         };
         header.push((k.trim().to_owned(), v.trim().to_owned()));
-    }
-    if !closed {
-        return Err(ParseError::NeverCloses);
     }
     Ok(Template { header, body: text[consumed..].to_owned() })
 }
@@ -166,13 +169,12 @@ impl Issue {
     }
 }
 
-/// A name `hc run <name>` finds as one file: letters, digits, `.`, `_`, `-`,
-/// not starting with `.` or `-`, at most 64 characters.
+/// A name `hc run <name>` finds as one file in the folder. hc takes any file
+/// name (`my review`, `審查`, `-x`); this refuses only what isn't one plain
+/// file there: a path separator, a control character, a leading `.` (hidden,
+/// like the temporary files a save writes), more than 200 bytes.
 pub fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && !name.starts_with(['.', '-'])
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && !name.chars().any(|c| matches!(c, '/' | '\\') || c.is_control())
 }
 
 /// Key names `hc keys` takes (`enter`, `esc`, `ctrl+c`, `alt+x`, `f5`, `a`…),
@@ -346,6 +348,9 @@ pub enum SaveError {
     /// The file changed (or went) since it was read.
     Changed,
     Io(std::io::Error),
+    /// Renamed: the new file is written, the old one couldn't go to the trash
+    /// (both are there now).
+    OldKept(std::io::Error),
 }
 
 impl SaveError {
@@ -355,6 +360,7 @@ impl SaveError {
             SaveError::Exists => "exists",
             SaveError::Changed => "changed",
             SaveError::Io(_) => "io",
+            SaveError::OldKept(_) => "old_kept",
         }
     }
 }
@@ -363,6 +369,7 @@ impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SaveError::Io(e) => write!(f, "io: {e}"),
+            SaveError::OldKept(e) => write!(f, "old_kept: {e}"),
             other => f.write_str(other.code()),
         }
     }
@@ -405,14 +412,18 @@ pub fn save(dir: &Path, name: &str, text: &str, expected: Option<&str>, previous
         }
     }
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{name}.md.tmp-{}", std::process::id()));
+    // An edit of a linked template (dotfiles) writes the file it points at,
+    // keeping the link.
+    let linked = source.is_none() && std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    let target = if linked { std::fs::canonicalize(&target)? } else { target };
+    let tmp = target.with_file_name(format!(".{name}.md.tmp-{}", std::process::id()));
     std::fs::write(&tmp, text)?;
     if let Err(e) = std::fs::rename(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
     if let Some(old) = source {
-        crate::trash::trash(&old)?;
+        crate::trash::trash(&old).map_err(SaveError::OldKept)?;
     }
     Ok(())
 }
@@ -452,7 +463,8 @@ const REMOTE_TRASH_FN: &str = r#"trash_file() {
 "#;
 
 /// `sh -c REMOTE_SAVE sh <name> <text> <new|old> <expected> <previous>`.
-/// Exits 4 when the name is taken, 5 when the file changed, 6 on a write error.
+/// Exits 4 when the name is taken, 5 when the file changed, 6 on a write error,
+/// 7 when renamed but the old file couldn't go to the trash.
 pub fn remote_save_script() -> String {
     format!(
         r#"{REMOTE_TRASH_FN}d="${{XDG_CONFIG_HOME:-$HOME/.config}}/herdr-core/templates"
@@ -468,8 +480,12 @@ else
   [ "$cur" = "$expected" ] || exit 5
   if [ "$src" != "$f" ] && [ -e "$f" ]; then exit 4; fi
 fi
-tmp="$d/.$name.md.tmp.$$"
-printf '%s' "$text" > "$tmp" && mv -f "$tmp" "$f" || {{ rm -f "$tmp"; exit 6; }}
+if [ "$src" = "$f" ] && [ -L "$f" ]; then
+  printf '%s' "$text" > "$f" || exit 6
+else
+  tmp="$d/.$name.md.tmp.$$"
+  printf '%s' "$text" > "$tmp" && mv -f "$tmp" "$f" || {{ rm -f "$tmp"; exit 6; }}
+fi
 if [ "$src" != "$f" ]; then trash_file "$src" || exit 7; fi
 "#
     )
@@ -528,6 +544,7 @@ mod tests {
         assert_eq!(parse("---\r\ncommand: x\r\n---\r\n"), Err(ParseError::NoFrontmatter), "CRLF is not ---");
         assert_eq!(parse("---\ncommand: x\n"), Err(ParseError::NeverCloses));
         assert_eq!(parse("---\n# a comment\n---\n"), Err(ParseError::NotKeyValue("# a comment".into())));
+        assert_eq!(parse("---\ncommand: x\n  ---\n"), Err(ParseError::NeverCloses), "an indented --- doesn't close, and hc says so first");
         assert_eq!(parse(""), Err(ParseError::NoFrontmatter));
     }
 
@@ -560,8 +577,11 @@ mod tests {
         let codes = |name: &str, fields: Value, body: &str| check(name, &fields, body).into_iter().map(|i| (i.field, i.code, i.error)).collect::<Vec<_>>();
         assert_eq!(codes("rev", json!({ "command": "pi" }), "b"), []);
         assert_eq!(codes("", json!({ "command": "pi" }), "b"), [("name".into(), "name_empty", true)]);
-        assert_eq!(codes("a b", json!({ "command": "pi" }), "b"), [("name".into(), "name_invalid", true)]);
-        assert_eq!(codes("-x", json!({ "command": "pi" }), "b")[0].1, "name_invalid");
+        assert_eq!(codes("a/b", json!({ "command": "pi" }), "b"), [("name".into(), "name_invalid", true)]);
+        assert_eq!(codes(".x", json!({ "command": "pi" }), "b")[0].1, "name_invalid");
+        for name in ["my review", "審查", "-x"] {
+            assert!(codes(name, json!({ "command": "pi" }), "b").is_empty(), "hc runs {name}");
+        }
         assert_eq!(codes("ok", json!({}), "b"), [("command".into(), "command_empty", true)]);
         assert_eq!(codes("ok", json!({ "command": "pi\nrm" }), "b"), [("command".into(), "multiline", true)]);
         assert_eq!(codes("ok", json!({ "command": "\"pi\"" }), "b"), [("command".into(), "quoted", false)]);
@@ -621,6 +641,25 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    /// A template linked from dotfiles stays a link; its file gets the edit.
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_writes_through_a_link() {
+        let d = tmp("link");
+        let dots = d.join("dotfiles");
+        let dir = d.join("templates");
+        std::fs::create_dir_all(&dots).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let one = "---\ncommand: pi\n---\none\n";
+        std::fs::write(dots.join("rev.md"), one).unwrap();
+        std::os::unix::fs::symlink(dots.join("rev.md"), dir.join("rev.md")).unwrap();
+        save(&dir, "rev", "two", Some(one), None).unwrap();
+        assert!(std::fs::symlink_metadata(dir.join("rev.md")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(dots.join("rev.md")).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(&dots).unwrap().count(), 1, "no temporary file left beside it");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn reads_another_machines_listing() {
         let out = "/home/p/.config/herdr-core/templates\n\u{1e}rev.md\u{1f}---\ncommand: pi\n---\nhi\n\u{1e}bad.md\u{1f}oops";
@@ -677,6 +716,19 @@ mod tests {
         let trashed = d.join("data/Trash");
         assert!(trashed.join("files/rev.md").exists() && trashed.join("info/rev.md.trashinfo").exists());
         assert_eq!(std::fs::read_to_string(trashed.join("files/review.md")).unwrap(), text);
+        // A linked template: the edit reaches the file, the link stays; the
+        // trash takes the link, never the file.
+        let dots = d.join("dotfiles/lab.md");
+        std::fs::create_dir_all(dots.parent().unwrap()).unwrap();
+        std::fs::write(&dots, text).unwrap();
+        let link = d.join("config/herdr-core/templates/lab.md");
+        std::os::unix::fs::symlink(&dots, &link).unwrap();
+        assert_eq!(sh(&save, &["lab", "edited", "old", text, ""]).status.code(), Some(0));
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&dots).unwrap(), "edited");
+        assert_eq!(sh(&remote_trash_script(), &["lab"]).status.code(), Some(0));
+        assert!(std::fs::symlink_metadata(trashed.join("files/lab.md")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&dots).unwrap(), "edited");
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

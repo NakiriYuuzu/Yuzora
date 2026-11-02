@@ -14,6 +14,7 @@ import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { openOverlay, closeOverlay, run, settings, props, shared, setShared } from "herdr";
 import { settingsPages, t } from "yuzora:core";
+import { session } from "yuzora:settings";
 
 export const APP = "Yuzora";
 /** The page settings open on when nobody asked for one. */
@@ -22,7 +23,9 @@ export const DEFAULT_PAGE = "yuzora-settings-general";
 const WIDTH = 880;
 const HEIGHT = 620;
 const NAV = 190;
-// The Yuzora dialog open now: app.settings only knows its own ("settings").
+// The Yuzora dialog open now, {id, run}: app.settings only knows its own
+// ("settings"). Overlay ids restart with the app, so a kept one counts only
+// in the run (session()) that opened it.
 const OPEN = "yuzora.settings.overlay";
 
 export function pages() {
@@ -57,17 +60,18 @@ export function open(page, overlay, height) {
       ],
     },
   });
-  setShared(OPEN, id);
+  setShared(OPEN, { id, run: session() });
 }
 
 /** One settings dialog at a time: app.settings (⌘, the menu) while a Yuzora
  *  page is open closes that page's dialog instead of stacking on it. */
 export function closeOthers(own) {
   const open = shared(OPEN);
-  if (open && open !== own) {
-    closeOverlay(open);
-    setShared(OPEN, null);
-  }
+  if (!open) return;
+  const now = open.run === session();
+  if (now && open.id === own) return;
+  if (now) closeOverlay(open.id);
+  setShared(OPEN, null);
 }
 
 /** The frame asked for a Yuzora page (`view.leaving`): opens it once, at the

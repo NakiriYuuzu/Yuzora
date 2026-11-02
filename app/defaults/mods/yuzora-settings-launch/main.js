@@ -22,10 +22,14 @@ export default class Launch extends View {
   init(_props, cx) {
     const p = props() ?? {};
     const all = spaces();
-    const space = all.find((s) => s.id === p.space) ?? all.find((s) => s.active) ?? all[0] ?? null;
+    // A template is one machine's (props.machine, null: this one): a space on
+    // that machine, the active one first; none there, no template picked.
+    const asked = "machine" in p;
+    const on = (s) => !asked || (s.machine ?? null) === (p.machine ?? null);
+    const space = all.find((s) => s.id === p.space) ?? all.find((s) => s.active && on(s)) ?? all.find(on) ?? all.find((s) => s.active) ?? all[0] ?? null;
     this.space = space?.id ?? null;
     this.tab = p.tab ?? space?.tabs.find((tb) => tb.active)?.id ?? NEW_TAB;
-    this.template = p.template ?? null;
+    this.template = space && on(space) ? (p.template ?? null) : null;
     this.lists = {}; // machine ("" here) -> TemplateList
     this.state = null; // null | "starting" | "placing"
     this.error = null;

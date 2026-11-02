@@ -369,10 +369,13 @@ pub fn plan(source: &Path, home: &Path) -> Result<Plan, InstallError> {
         }
         dirs
     };
+    // A new name is never another mod's name in the bundle, so renaming one
+    // can't turn its references into another's (x → x-2 beside a bundled x-2).
+    let bundled: Vec<String> = mod_dirs.iter().map(|d| mod_name(d)).collect();
     let mut chosen: Vec<String> = Vec::new();
     for dir in mod_dirs {
         let base = mod_name(&dir);
-        let name = free_name(|n| home.join("mods").join(n).exists() || chosen.iter().any(|c| c == n), &base);
+        let name = free_name(|n| home.join("mods").join(n).exists() || chosen.iter().any(|c| c == n) || (n != base && bundled.iter().any(|b| b == n)), &base);
         chosen.push(name.clone());
         plan.mods.push((dir, name));
     }
@@ -610,6 +613,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("layouts/deck-2.json")).unwrap(), r#"{"type":"block","content":{"mod":"side-2"},"preview":"x"}"#);
         assert_eq!(std::fs::read_to_string(home.join("mods/side-2/main.js")).unwrap(), r#"image("mods/side-2/a.png")"#);
         assert_eq!(std::fs::read_to_string(home.join("layouts/deck.json")).unwrap(), "{}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_renamed_mod_never_takes_another_bundled_mods_name() {
+        let root = tmp("install-chain");
+        let home = root.join("home");
+        write(&home.join("mods/x/main.js"), "mine");
+        let src = root.join("share");
+        write(&src.join("layouts/deck.json"), r#"[{"mod":"x"},{"mod":"x-2"}]"#);
+        write(&src.join("mods/x/main.js"), r#"image("mods/x/a.png")"#);
+        write(&src.join("mods/x-2/main.js"), r#"image("mods/x-2/a.png")"#);
+
+        let p = install(&src, &home).unwrap();
+        assert_eq!(p.to_json()["mods"], json!([{ "from": "x", "as": "x-3" }, { "from": "x-2", "as": "x-2" }]));
+        assert_eq!(std::fs::read_to_string(home.join("layouts/deck.json")).unwrap(), r#"[{"mod":"x-3"},{"mod":"x-2"}]"#);
+        assert_eq!(std::fs::read_to_string(home.join("mods/x-3/main.js")).unwrap(), r#"image("mods/x-3/a.png")"#);
+        assert_eq!(std::fs::read_to_string(home.join("mods/x-2/main.js")).unwrap(), r#"image("mods/x-2/a.png")"#);
+        assert_eq!(std::fs::read_to_string(home.join("mods/x/main.js")).unwrap(), "mine");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

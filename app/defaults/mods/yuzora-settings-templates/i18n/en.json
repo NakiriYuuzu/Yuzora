@@ -46,12 +46,13 @@
     "invalid": "Fix what's marked first.",
     "name_invalid": "{name} isn't a name hc can run.",
     "missing": "{name} isn't there any more.",
+    "old_kept": "Saved {name}, but the old {old} couldn't go to the Trash: both files are there.",
     "other": "It didn't work: {message}"
   },
   "field": {
     "name": "Name",
     "name_placeholder": "reviewer",
-    "name_hint": "You start it with hc run <name>. Letters, digits, . _ -",
+    "name_hint": "You start it with hc run <name>: the file name without .md.",
     "description": "Description",
     "description_placeholder": "Read-only code review. Give it file paths.",
     "description_hint": "Shown in the template list.",
@@ -79,7 +80,7 @@
   },
   "issues": {
     "name_empty": "Give it a name.",
-    "name_invalid": "Use letters, digits, . _ - (not first: . or -), up to 64.",
+    "name_invalid": "No / or \\ or control characters, not starting with a dot, up to 200 bytes.",
     "command_empty": "A template needs a command.",
     "multiline": "One line only: the header is line by line.",
     "quoted": "Values are taken literally: the quotes become part of it.",
