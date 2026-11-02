@@ -12,6 +12,7 @@
 use gpui_shell::policy::Policy;
 use std::path::{Path, PathBuf};
 
+pub mod release;
 pub mod shell;
 
 /// The name people see (window title, setup screen).

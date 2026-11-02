@@ -11,6 +11,8 @@
 - pane 標頭與外框：focus 時邊框變亮，Agent 需要回覆時邊框與標頭轉為琥珀色；狀態列顯示 pane／Space／Agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本。
 - 歡迎、新功能、意見回饋畫面改為 Yuzora 品牌；介面字型改用系統字型。
 - 視窗右下角顯示這台電腦上 Yuzora 的 CPU 與記憶體用量（App 本體、herdr-core 的終端機與 Agent、Yuzora 啟動的工具），點擊展開各類明細；取樣出問題時顯示 ⚠。
+- App 改由 Yuzora 的 GitHub Releases 自我更新：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，下次重新啟動時套用。beta 版預設走 beta 通道，可在 `yuzora/settings.json` 的 `update.channel` 改成 `stable`。
+- 安裝檔：macOS 是 `Yuzora-macos-aarch64.dmg`（僅 Apple Silicon，ad-hoc 簽章，第一次開啟要在「隱私權與安全性」按「仍要打開」）、Windows 是免系統管理員權限的 `Yuzora-windows-x64-setup.exe`、Linux 是 tar.gz 加 `install`。命令列程式叫 `yuzora`。
 - 設定改從 Yuzora 的「一般」頁開啟，並新增「Yuzora」分組列出各功能的設定頁；隱私頁說明 Yuzora 不收集也不傳送任何資料。
 - 一般設定：語系（跟隨系統、English、繁體中文）、主題、字型與大小、縮放、終端機剪貼簿寫入。
 - Agent 模板：在設定裡管理各台機器的 herdr-core 模板（表單編輯、存檔前檢查、移到垃圾桶），並能「從模板啟動」到指定的 Space 與 tab。

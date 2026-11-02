@@ -113,6 +113,18 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
+L7（發布與更新，`docs/beta2/release.md`）：
+
+```bash
+cd app
+YUZORA_PACKAGE_BIN=$CARGO_TARGET_DIR/debug/herdr-app scripts/yuzora/package   # 只檢查打包，不做 release build
+scripts/yuzora/package                                                       # release build 並打包到 dist/
+bun test scripts/yuzora/ && bun scripts/yuzora/manifest.ts yuzora dist
+cargo test --locked -p herdr-app yuzora::release
+cargo test --locked -p yuzora-core migrate
+```
+
+本機的 `makensis`（`brew install makensis`）沒設 `LC_ALL=en_US.UTF-8` 會以 `std::bad_alloc` 結束。
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->
