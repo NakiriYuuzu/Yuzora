@@ -3,6 +3,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, window } from "herdr";
+import * as yz from "./yuzora.js"; // yuzora(L6): the Yuzora group, brand and privacy
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -15,7 +16,7 @@ const SECTIONS = [
   { id: "privacy", title: "Privacy", icon: "shield" },
 ];
 
-const LOOKS = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" };
+const LOOKS = { yuzora: "Yuzora", main: "Herdr", terminals: "Terminals", win98: "Herdr 98" }; // yuzora(L6): Yuzora's layout first
 const APPEARANCES = [
   [null, "System"],
   ["light", "Light"],
@@ -30,6 +31,12 @@ export default class Settings extends View {
   init(_props, cx) {
     const asked = props()?.section;
     this.section = SECTIONS.some((s) => s.id === asked) ? asked : "look";
+    // yuzora(L6): beside a Yuzora page this copy is only the nav; a Yuzora
+    // page asked for (or none asked: General) opens as that row instead.
+    this.yuzora = props()?.yuzora ?? null;
+    this.leaving = this.yuzora || this.section === asked ? null : yz.find(asked ?? yz.DEFAULT_PAGE);
+    if (this.leaving) cx.spawn(async (cx) => { await cx.sleep(500); yz.leave(this); });
+    yz.closeOthers(props()?.overlay);
     this.picking = null; // "font" | "ui_font" while its list is open
     this.filter = "";
     this.fontInput = InputState.new({ placeholder: "Type to search fonts" });
@@ -670,7 +677,7 @@ export default class Settings extends View {
   alerts(t) {
     const sounds = this.person.sounds ?? {};
     const on = sounds.enabled !== false;
-    const file = (f) => (f ? f.split(/[\\/]/).pop() : "Herdr's sound");
+    const file = (f) => (f ? f.split(/[\\/]/).pop() : yz.defaultSound()); // yuzora(L6)
     return v_flex()
       .w_full()
       .child(this.heading(t, "Sounds"))
@@ -717,7 +724,7 @@ export default class Settings extends View {
     const primary = (id, label, f) =>
       div().id(id).px(12).py(5).rounded(7).cursor_pointer().bg(t.accent).text_color(t.accent_foreground).text_size(13).font_semibold().hover((s) => s.opacity(0.9)).on_click(f).child(label);
     const app = !u.app.updates
-      ? ["A build from source: it updates with git, not here.", null]
+      ? [yz.appUpdates(u.app.version).about, null] // yuzora(L6): no self-update yet
       : u.app.ready
         ? [`${u.app.ready} is ready. Restart to switch now; it also switches when you quit.`, primary("st-app-update", "Restart to update", () => run("app.update"))]
         : [result, check("st-check-app")];
@@ -735,14 +742,14 @@ export default class Settings extends View {
               : ["Not checked: a build from source looks for no updates.", null];
     return v_flex()
       .w_full()
-      .child(this.heading(t, "Herdr"))
-      .child(this.row(t, `Herdr ${u.app.version}`, app[0], h_flex().gap(8).flex_none()
+      .child(this.heading(t, yz.APP)) // yuzora(L6)
+      .child(this.row(t, yz.appUpdates(u.app.version).title, app[0], h_flex().gap(8).flex_none() // yuzora(L6)
         .child(this.button(t, "st-whats-new", "What's new", () => { closeOverlay(props()?.overlay); run("app.whats_new"); }))
         .when(Boolean(app[1]), (el) => el.child(app[1]))))
       .child(div().h(18))
       .child(this.heading(t, "herdr-core"))
       .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div()))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates."));
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child(yz.updatesFooter())); // yuzora(L6)
   }
 
 
@@ -772,6 +779,7 @@ export default class Settings extends View {
   }
 
   privacy(t) {
+    return yz.privacy(t, (...a) => this.heading(...a), (...a) => this.row(...a)); // yuzora(L6): Yuzora collects nothing
     const s = telemetry();
     const on = s ? s.setting : this.person.telemetry !== false;
     const at = (secs) => new Date(secs * 1000).toLocaleString();
@@ -817,6 +825,7 @@ export default class Settings extends View {
     const t = theme();
     const u = updates();
     const waiting = Boolean(u.app.ready || (u.core.ready && !u.core.managed));
+    if (this.leaving) return div().id("settings").w_full().h(620).min_h(0).bg(t.popover).on_size_change((size) => yz.leave(this, size.height)); // yuzora(L6): becoming a Yuzora page, at this size
     const nav = v_flex()
       .flex_none()
       .w(190)
@@ -825,9 +834,10 @@ export default class Settings extends View {
       .border_r(1)
       .border_color(t.border)
       .child(div().px(10).pt(6).pb(12).text_size(16).font_semibold().text_color(t.foreground).child("Settings"))
+      .child(yz.group(t, this.yuzora, (p) => yz.open(p, props().overlay, this.measured))) // yuzora(L6)
       .children(
         SECTIONS.map((s) => {
-          const on = s.id === this.section;
+          const on = !this.yuzora && s.id === this.section; // yuzora(L6)
           return h_flex()
             .id(`st-s-${s.id}`)
             .gap(10)
@@ -839,6 +849,7 @@ export default class Settings extends View {
             .bg(on ? t.raised : "#00000000")
             .hover((st) => st.bg(t.raised))
             .on_click((_e, cx) => {
+              if (this.yuzora) return yz.herdr(s.id, props().overlay); // yuzora(L6)
               this.section = s.id;
               this.picking = null;
               this.machineEdit = null;
@@ -851,8 +862,13 @@ export default class Settings extends View {
             .when(s.id === "updates" && waiting, (el) => el.child(div().w(7).h(7).rounded(4).bg(t.accent)));
         }),
       );
+    // yuzora(L6): the nav alone, beside a Yuzora page.
+    if (this.yuzora) return nav.id("settings").track_focus(this.handle).w_full().h_full().bg(t.popover).border_r(0).on_size_change((size) => (this.measured = size.height))
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.close(); } })
+      .child(div().flex_1()).child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); }));
     return h_flex()
       .id("settings")
+      .on_size_change((size) => (this.measured = size.height)) // yuzora(L6): Yuzora pages open at this height
       .track_focus(this.handle)
       .w_full()
       .h(620)

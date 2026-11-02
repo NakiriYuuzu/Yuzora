@@ -1,0 +1,22 @@
+{
+  "group": "Yuzora",
+  "app": "App",
+  "privacy": {
+    "heading": "Your data",
+    "title": "Yuzora collects no data",
+    "about": "Nothing about you, your terminals, files or projects leaves this computer for Yuzora or for Herdr.",
+    "usage": "Usage data",
+    "usage_about": "Herdr's daily usage report is switched off in Yuzora, whatever settings.json or the environment say.",
+    "off": "Off",
+    "feedback": "Feedback",
+    "feedback_about": "Send feedback opens a GitHub issue in your browser; you read it and send it yourself.",
+    "network": "Yuzora goes online only when you ask it to (a remote machine, a database, git) and to look for herdr-core updates."
+  },
+  "updates": {
+    "app_off": "Yuzora doesn't update itself yet: new versions come from GitHub Releases.",
+    "footer": "herdr-core is checked every hour; a newer one shows in the corner. It runs your terminals, so they keep running through its updates."
+  },
+  "alerts": {
+    "default_sound": "Built-in sound"
+  }
+}
