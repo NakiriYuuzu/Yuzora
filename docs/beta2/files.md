@@ -32,7 +32,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 - 一個檔案（機器＋路徑）在整個 app 只有一份 `DocView`（GPUI global 的 registry），所有 pane 共用。`openDocument` 每呼叫一次加一個參考，`releaseDocument` 減一。
 - **只有一個 pane 畫編輯器**（owner）。同一個檔案在另一個 pane 開啟時顯示「在這裡編輯」，按下才接手；避免同一個 GPUI entity 在同一個 frame 被畫兩次。
 - 載入：`fsops::read_text`，換行正規化為 LF，記住原本是 LF／CRLF 與 BOM，存檔時還原。
-- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去，保留權限與 owner；資料夾不能建暫存檔、或 owner 保不住時退回就地寫入：先把舊內容備份（同資料夾，資料夾不可寫時放 app home 的 `backups/files`（0700）；一律新建檔案（O_EXCL，不寫進既有路徑或 symlink），只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容，連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。
+- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去，保留權限與 owner；資料夾不能建暫存檔、或 owner 保不住時退回就地寫入：先把舊內容備份（同資料夾，資料夾不可寫時放 app home 的 `backups/files`（0700）；一律新建檔案（O_EXCL，不寫進既有路徑或 symlink），只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容，連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案；指向的檔案已刪除時（還原），沿著連結寫回原本的位置。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。
 - **外部變更**：本機用 herdr 的 `watchFolder`（檔案所在資料夾）＋15 秒輪詢，遠端 5 秒輪詢，呼叫 `checkDisk`。stamp 變了才讀內容並比對 hash：
   - 內容相同（touch）：只更新 stamp。
   - 沒有未儲存變更：自動重新載入，保留游標與捲動位置。
@@ -63,12 +63,12 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 
 ### 側欄（`yuzora-sidebar-files`）
 
-- 跟隨目前 focused pane 的 Space 與 cwd（沿用上游 `files` mod 的定位方式）；focused 的是工具 pane（沒有 cwd）時保留原本的資料夾。在 repo 裡時以 `git rev-parse --show-toplevel` 為根。換到別的資料夾時，取消正在輸入的新增或重新命名（它屬於原本的資料夾）；搜尋開著時，在新的根目錄重跑。
+- 跟隨目前 focused pane 的 Space 與 cwd（沿用上游 `files` mod 的定位方式）；focused 的是工具 pane（沒有 cwd）時保留原本的資料夾。在 repo 裡時以 `git rev-parse --show-toplevel` 為根。換到別的資料夾時，取消正在輸入的新增或重新命名（它屬於原本的資料夾）；搜尋開著時，在新的根目錄重跑；樹重新整理時（watch 事件、手動、遠端的 10 秒輪詢）也重跑，檔名清單重新列出。本機有 watch 時，10 秒計時不重跑搜尋。
 - 頂部：Space 徽章（`tokens().space_badges` 依 Space 順序取色、名稱首字）、「本機」或機器名、`路徑 · 分支`。
 - 動作列：新增檔案、新增資料夾、重新整理、全部收合、搜尋、顯示隱藏檔（記在 localStorage；切換時重跑搜尋）。
 - 樹：`uniform_list` 虛擬捲動，每個資料夾最多 2000 項、總共 20000 列；git 標記 M／A／D／U／?，收合的資料夾若含變更顯示 `•`。`watchFolder` 監看根目錄＋10 秒重新整理；收合過的資料夾再展開時，先顯示上次的內容並重新列出。根目錄重新列出失敗時（被刪除或沒有權限），樹上方顯示錯誤，下面是上次列出的內容。
 - 搜尋：檔名（模糊比對，`.gitignore` 生效，清單快取 15 秒，最多列 200,000 個檔案，超過時提示「只搜尋了前 200,000 個檔案」）與內容（有 `rg` 就用 ripgrep；本機沒有時改用內建搜尋：`ignore`＋`regex`、同樣的規則；遠端沒有 `rg` 時顯示提示）。有檔案或資料夾讀不到時（ripgrep exit 2、`find` 或 git 失敗、本機走訪錯誤），保留找到的結果並提示「有些檔案或資料夾無法讀取，結果可能不完整」。點內容結果會開檔並跳到該行。
-- 右鍵：同一個 mod 以 popup 開啟自己（`props().menu`）。開啟、在終端機開啟、新增檔案／資料夾、重新命名、刪除到垃圾桶、複製路徑／相對路徑、在 Finder（檔案總管／檔案管理員）中顯示。新增與重新命名透過 `shared("yuzora.files.request")` 交回主側欄，在樹上方顯示輸入列。重新命名不會覆蓋已存在的檔案或資料夾：macOS 與 Linux 用一次系統呼叫完成（`renamex_np(RENAME_EXCL)`／`renameat2(RENAME_NOREPLACE)`），檢查與搬移之間不會被別的程式搶先建立同名檔案；其他平台與不支援的檔案系統則先檢查目標。重新命名後，開著的文件（該檔案或資料夾底下的）會換到新路徑，pane 繼續顯示，不會被當成已刪除；語言（上色）沿用開檔時的判斷。
+- 右鍵：同一個 mod 以 popup 開啟自己（`props().menu`）。開啟、在終端機開啟、新增檔案／資料夾、重新命名、刪除到垃圾桶、複製路徑／相對路徑、在 Finder（檔案總管／檔案管理員）中顯示。新增與重新命名透過 `shared("yuzora.files.request")` 交回主側欄，在樹上方顯示輸入列。重新命名不會覆蓋已存在的檔案或資料夾：macOS 與 Linux 用一次系統呼叫完成（`renamex_np(RENAME_EXCL)`／`renameat2(RENAME_NOREPLACE)`），檢查與搬移之間不會被別的程式搶先建立同名檔案；其他平台與不支援的檔案系統則先檢查目標。新路徑上還開著文件時（檔案已刪除、pane 還在），拒絕重新命名並請先關掉它，避免同一個檔案出現兩份緩衝。重新命名後，開著的文件（該檔案或資料夾底下的）會換到新路徑，pane 繼續顯示，不會被當成已刪除；語言（上色）沿用開檔時的判斷。
 
 ### 開檔
 
@@ -112,7 +112,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（110 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
+- `cargo test --locked -p yuzora-files`（112 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（原子存檔、衝突（含 stamp 相同但內容不同）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序、rg JSON 解析與內建搜尋、文件載入／外部變更自動重載／刪除／共享／釋放、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：

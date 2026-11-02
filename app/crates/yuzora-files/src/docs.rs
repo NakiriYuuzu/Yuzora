@@ -113,7 +113,9 @@ fn forget(id: u64, cx: &mut App) {
 
 /// Renames a file or folder (this machine only), then points the documents
 /// open at it, or under it, at the new path: their panes keep showing them,
-/// and the next look at the disk finds the file where it now is.
+/// and the next look at the disk finds the file where it now is. Refused
+/// while a document is open at the new path (its file deleted): the two
+/// would edit one file.
 pub fn rename(
     from: String,
     to: String,
@@ -121,6 +123,16 @@ pub fn rename(
     cx: &mut App,
 ) -> oneshot::Receiver<Result<(), String>> {
     let (tx, rx) = oneshot::channel();
+    let open_there = all(cx).into_iter().find_map(|d| {
+        let key = &d.read(cx).key;
+        (key.on.is_none() && renamed(&key.path, &to, &to).is_some()).then(|| key.path.clone())
+    });
+    if let Some(path) = open_there.filter(|_| fsops::machine(on.as_deref()).is_none()) {
+        let _ = tx.send(Err(format!(
+            "{path} is still open (its file was deleted): close it first"
+        )));
+        return rx;
+    }
     cx.spawn(async move |cx| {
         let (f, t, o) = (from.clone(), to.clone(), on);
         let result = blocking(move || fsops::rename(&f, &t, o.as_deref()))
@@ -588,13 +600,11 @@ impl DocView {
 
     fn on_input(&mut self, _: Entity<EditorState>, event: &InputEvent, cx: &mut Context<Self>) {
         match event {
+            // Every change: scripts follow the text (find counts, dirty).
             InputEvent::Change => {
                 self.rev += 1;
-                let dirty = self.compute_dirty(cx);
-                if dirty != self.dirty {
-                    self.dirty = dirty;
-                    self.bump(cx);
-                }
+                self.dirty = self.compute_dirty(cx);
+                self.bump(cx);
             }
             InputEvent::Focus => {
                 self.focused = true;
@@ -1414,6 +1424,21 @@ mod tests {
     }
 
     #[gpui::test]
+    fn every_edit_wakes_the_scripts_waiting_on_the_document(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "a", cx);
+        let seq = cx.update(|cx| view.read(cx).seq);
+        let mut changed = cx.update(|cx| view.update(cx, |doc, _| doc.wait(seq)));
+        // Still dirty after the second edit: woken all the same.
+        type_text(&view, window, "b", cx);
+        assert!(matches!(changed.try_recv(), Ok(Some(n)) if n > seq));
+        cx.update(|cx| assert!(view.read(cx).dirty));
+    }
+
+    #[gpui::test]
     fn a_save_that_meets_a_change_shows_what_is_there(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.txt");
@@ -1497,6 +1522,57 @@ mod tests {
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
         cx.run_until_parked();
         cx.update(|cx| assert!(!view.read(cx).deleted));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_rename_onto_an_open_deleted_file_is_refused(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "moved\n").unwrap();
+        std::fs::write(&b, "kept in its pane\n").unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let key = DocKey {
+            on: None,
+            path: path(&b),
+        };
+        let id = cx.update(|cx| open(key.clone(), cx));
+        cx.run_until_parked();
+        std::fs::remove_file(&b).unwrap();
+        let rename_to = |to: &std::path::Path, cx: &mut gpui::TestAppContext| {
+            let rx = cx.update(|cx| rename(path(&a), path(to), None, cx));
+            cx.run_until_parked();
+            futures::executor::block_on(rx).unwrap()
+        };
+        assert!(rename_to(&b, cx).unwrap_err().contains("close it first"));
+        assert!(a.exists() && !b.exists());
+        // Its folder too.
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let moved = DocKey {
+            on: None,
+            path: path(&sub.join("x.txt")),
+        };
+        let other = cx.update(|cx| open(moved, cx));
+        cx.run_until_parked();
+        std::fs::remove_dir(&sub).unwrap();
+        let rx = cx.update(|cx| rename(path(&b.with_file_name("none")), path(&sub), None, cx));
+        cx.run_until_parked();
+        assert!(
+            futures::executor::block_on(rx)
+                .unwrap()
+                .unwrap_err()
+                .contains("close it first")
+        );
+        cx.update(|cx| {
+            assert_eq!(find(&key, cx), Some(id));
+            assert!(get(other, cx).is_some());
+        });
+        // Closed, the name is free.
+        cx.update(|cx| release(id, None, cx));
+        cx.run_until_parked();
+        assert_eq!(rename_to(&b, cx), Ok(()));
+        assert!(b.exists());
     }
 
     #[cfg(unix)]

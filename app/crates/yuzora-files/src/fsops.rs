@@ -646,11 +646,37 @@ fn holds(path: &Path, len: u64, hash: u64) -> io::Result<bool> {
     Ok(bytes.len() as u64 == len && content_hash(&bytes) == hash)
 }
 
+/// Where a write to `path` lands: through a symlink, the file it names. A
+/// link whose file is gone names where it was (a restore puts it back).
 fn resolve_link(path: &Path) -> io::Result<PathBuf> {
     match std::fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path),
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path).or_else(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                dangling_target(path)
+            } else {
+                Err(e)
+            }
+        }),
         _ => Ok(path.to_owned()),
     }
+}
+
+/// The path at the end of a chain of links, followed one link at a time.
+fn dangling_target(path: &Path) -> io::Result<PathBuf> {
+    let mut at = path.to_owned();
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let next = std::fs::read_link(&at)?;
+                at = match at.parent() {
+                    Some(dir) => dir.join(next),
+                    None => next,
+                };
+            }
+            _ => return Ok(at),
+        }
+    }
+    Err(io::Error::other("too many levels of symbolic links"))
 }
 
 /// Whether `name` is a save's scratch file: the prefix and 32 lowercase hex digits.
@@ -1540,6 +1566,22 @@ mod tests {
                 .is_symlink()
         );
         assert_eq!(std::fs::read(&f).unwrap(), b"via link\n");
+        // Its file gone (a restore): put back where the links say, links kept.
+        let chain = p(&d, "chain");
+        std::os::unix::fs::symlink("link", &chain).unwrap();
+        std::fs::remove_file(&f).unwrap();
+        write_text(&chain, "back\n", Eol::Lf, false, None).unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"back\n");
+        assert!(
+            std::fs::symlink_metadata(&chain)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        // A loop of links is an error, not a hang.
+        std::os::unix::fs::symlink("loop-b", p(&d, "loop-a")).unwrap();
+        std::os::unix::fs::symlink("loop-a", p(&d, "loop-b")).unwrap();
+        assert!(write_text(&p(&d, "loop-a"), "x", Eol::Lf, false, None).is_err());
     }
 
     #[cfg(unix)]

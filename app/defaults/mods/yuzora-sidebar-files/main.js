@@ -55,7 +55,7 @@ export default class FilesSidebar extends View {
     this.here = null;
     this.relocate(cx);
     this.countUnsaved();
-    cx.timer.every(10000, cx => { this.reload(cx); this.countUnsaved(); });
+    cx.timer.every(10000, cx => { this.reload(cx, true); this.countUnsaved(); });
   }
 
   // The mode bar's badge: unsaved documents. The editor panes keep it current;
@@ -89,7 +89,8 @@ export default class FilesSidebar extends View {
     return this.here === here;
   }
 
-  reload(cx) {
+  // `timed`: the 10 s timer's, which a watched folder doesn't need for search.
+  reload(cx, timed = false) {
     const here = this.here;
     if (!here?.cwd || here.reloading) return;
     here.reloading = true;
@@ -99,10 +100,7 @@ export default class FilesSidebar extends View {
         if (!this.current(here)) return;
         here.top = git?.top ?? null; here.branch = git?.branch ?? null;
         here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0;
-        if (!here.root) {
-          here.root = here.top ?? here.cwd;
-          if (this.searching) this.search(cx);
-        }
+        if (!here.root) here.root = here.top ?? here.cwd;
         this.setMarks(git?.marks ?? {}, here);
         for (const folder of ["", ...[...this.open].sort()]) {
           if (!this.current(here)) return;
@@ -110,6 +108,8 @@ export default class FilesSidebar extends View {
           await this.loadFolder(folder, here).catch(e => { if (!folder) throw e; this.open.delete(folder); });
         }
         here.error = null;
+        // An open search follows the files too (the new root's, after a move).
+        if (this.searching && !(timed && this.watching === here.root)) this.search(cx, !timed);
         this.watch(here, cx);
       } catch (e) {
         if (this.current(here)) here.error = String(e?.message ?? e);
@@ -265,7 +265,8 @@ export default class FilesSidebar extends View {
 
   // Search: file names (fuzzy) or contents (ripgrep).
 
-  search(cx) {
+  // `fresh`: list the files again rather than use the last 15 s listing.
+  search(cx, fresh = false) {
     const query = this.searchInput.value(), here = this.here, seq = ++this.searchSeq;
     if (!query.trim() || !here?.root) { this.results = []; this.searchNote = null; cx.notify(); return; }
     cx.timer.after(this.searchMode === "name" ? 60 : 250, cx => {
@@ -273,7 +274,7 @@ export default class FilesSidebar extends View {
       cx.spawn(async cx => {
         try {
           if (this.searchMode === "name") {
-            const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200 });
+            const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
             if (seq !== this.searchSeq) return;
             this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
             const notes = [
