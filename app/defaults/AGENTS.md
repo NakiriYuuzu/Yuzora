@@ -1049,6 +1049,23 @@ with these differences.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
+- Databases (PostgreSQL, SQL Server, SQLite) live in the sidebar's
+  `yuzora-sidebar-database` mode. Saved connections are the `db` section of
+  `yuzora/settings.json` (`connections`, and `maxRows`, the most rows a result
+  keeps: 100000 by default). Passwords are in the system's credential store,
+  never in that file; don't write one there. Query history is
+  `yuzora/db-history.json` (statements only).
+- Open a table or a query for the person with `pane.split` or `tab.new`:
+  `{"mod": "yuzora-db-table", "props": {"connection": "<id>", "database": null,
+  "schema": "public", "name": "orders", "tab": "data"}}` (`tab`: `data`,
+  `structure` or `sql`), or `{"mod": "yuzora-db-query", "props":
+  {"connection": "<id>", "database": null, "sql": "select …"}}`. Connection
+  ids are in the settings file.
+- Commands go to the shown pane: `yuzora-db-query.run` (the statement under
+  the cursor), `.run_all`, `.stop`; `yuzora-db-table.data`, `.structure`,
+  `.sql`, `.run`, `.stop`; `yuzora-sidebar-database.next`, `.prev`,
+  `.refresh`, `.add`, `.query`. Edited cells are written back only when the
+  person presses Write back.
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->

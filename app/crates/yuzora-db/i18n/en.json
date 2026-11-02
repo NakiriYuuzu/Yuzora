@@ -1,0 +1,53 @@
+{
+  "error": {
+    "cancelled": "Cancelled",
+    "missing": "Missing {field}",
+    "no_connection": "No connection {id}",
+    "no_job": "That query is gone",
+    "ssh_pending": "Connecting through the SSH host {host} comes with the SSH lane; clear the tunnel to connect directly"
+  },
+  "edit": {
+    "no_key": "Read-only: the table has no primary key",
+    "read_only": "Read-only: the connection is set to read-only",
+    "writing": "A write-back is already running",
+    "connection_changed": "The connection's settings changed after this table was read: refresh the table, then edit again",
+    "open_transaction": "The SQL tab left a transaction open on this connection: COMMIT or ROLLBACK it there, then write back",
+    "no_info": "Read-only: could not read the table's key ({error})",
+    "null_key": "A row's primary key is NULL; it can't be found to update"
+  },
+  "grid": {
+    "modified": "{count} cells modified",
+    "rows": "{count} rows",
+    "rows_loading": "{count} rows…",
+    "rows_capped": "first {count} rows",
+    "showing": "showing {first}–{last}",
+    "loaded": "{count} loaded",
+    "writing": "Writing…",
+    "discard": "Discard",
+    "write": "Write back",
+    "not_inline": "Line breaks and binary values can't be edited in the grid; use an UPDATE in the SQL tab",
+    "generated": "The database computes this column (generated, computed or identity); it can't be edited"
+  },
+  "field": {
+    "name": "name",
+    "path": "SQLite file",
+    "host": "host",
+    "user": "user"
+  },
+  "engine": {
+    "timeout": "Timed out after {s}s connecting to {target}",
+    "tls_failed": "TLS ({mode}) with {target} failed: {error}",
+    "ca_as_server": "The server's certificate is marked as a CA, which rustls does not accept as a server certificate. Give the server a certificate that is not a CA (signed by your CA), or use the require mode.",
+    "lost": "The connection to the server was lost: {error}",
+    "sqlite_missing": "The SQLite file {path} does not exist",
+    "worker_stopped": "The SQLite worker stopped: {error}",
+    "no_object": "There is no table or view named {name}",
+    "ca_unreadable": "Can't read the CA file {path}: {error}",
+    "ca_not_pem": "{path} is not a PEM certificate file: {error}",
+    "ca_unusable": "{path} holds an unusable certificate: {error}",
+    "ca_empty": "{path} holds no PEM certificate",
+    "key_mismatch": "The row with {key} matched {count} rows instead of exactly one; nothing was written",
+    "instance_port": "The instance {instance} needs its port: looking it up through SQL Browser isn't supported. Enter the instance's TCP port.",
+    "ca_required": "verify-ca checks the certificate against your CA only: choose its CA file, or use verify-full"
+  }
+}
