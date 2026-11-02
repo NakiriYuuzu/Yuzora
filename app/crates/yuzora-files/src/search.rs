@@ -161,7 +161,8 @@ fn read_listing(out: &ExecOutput, hidden: bool, limit: usize) -> Result<FileList
     }
     let mut list = parse_file_list(bytes, hidden, limit);
     list.truncated |= capped;
-    list.skipped = listed && failed;
+    // Even with nothing listed: find's 1 may be an unreadable folder first.
+    list.skipped = failed;
     Ok(list)
 }
 
@@ -1082,6 +1083,12 @@ mod tests {
         // rg's 1 with nothing listed is an empty tree; other failures with nothing are errors.
         assert_eq!(ended(b"rg\0", 1).unwrap(), FileList::default());
         assert_eq!(ended(b"rg\0", 2), Err("Permission denied".to_owned()));
+        // find's 1 before it found anything: no files, but not all of them.
+        let shut = ended(b"find\0", 1).unwrap();
+        assert_eq!(
+            (shut.files.len(), shut.unfiltered, shut.skipped),
+            (0, true, true)
+        );
     }
 
     #[test]

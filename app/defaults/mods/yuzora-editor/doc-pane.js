@@ -158,7 +158,8 @@ export class DocPane extends View {
   }
 
   save(force, cx) {
-    const s = this.state;
+    // Read now: this.state follows documentChanged, a step behind a key typed just before.
+    const s = (this.doc && documentState(this.doc)) ?? this.state;
     if (!s || s.phase !== "ready" || s.readonly) return;
     // Nothing to write: a clean save would only rewrite line endings.
     if (!force && !s.dirty && !s.deleted) return;
