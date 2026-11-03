@@ -127,7 +127,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release，不改 `release.yml`。
 - 本機測完整更新流程：debug build 加 `YUZORA_UPDATE_URL=<仿 GitHub 路徑的測試伺服器>` 與 `YUZORA_UPDATE_TEST_KEY=<一次性公鑰>`（測試金鑰只有 debug build 會讀；`YUZORA_UPDATE_URL` 任何 build 都會讀，但簽章一樣只認信任的金鑰），一律在 lanes.md 的隔離環境下跑。
 - beta.1 資料遷移：`yuzora_core::migrate`。beta.1 的資料只讀不寫；各 lane 實作自己的 `Importer`。
-- App 內的更新說明有兩份：`app/CHANGELOG.md`（英文）與 `app/CHANGELOG.zh-TW.md`（繁中，只放 Yuzora 的段落）。每筆條目兩份都要加，版本、標題與項目數要一致，測試會檢查。
+- App 內的更新說明有兩份：`app/CHANGELOG.md`（英文）與 `app/CHANGELOG.zh-TW.md`（繁中，只放 Yuzora 的段落）。每筆條目兩份都要加。測試只檢查三項：第一段是目前版本（兩份都是）、中文有的版本英文也要有、同一版本兩份的日期與 spotlight 一致且各標題下的項目數相同；條目文字是否對應要自己核對（`docs/beta2/release.md` §3）。
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->
