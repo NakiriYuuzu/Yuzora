@@ -17,9 +17,11 @@
     "unsupported": "This kind of image can't be shown.",
     "failed": "Can't show this image. {error}",
     "svgz": "Compressed SVGs (SVGZ) aren't shown.",
-    "svg_too_deep": "This SVG nests its elements too deeply, or refers back to itself, to show.",
-    "svg_entities": "This SVG declares entities that expand into markup or other entities, so it isn't shown.",
-    "svg_too_complex": "This SVG is too complex to show.",
-    "svg_too_many_layers": "This SVG has too many layers inside one another to show."
+    "svg_invalid": "This SVG can't be read.",
+    "svg_timeout": "This SVG took too long to draw (over 5 seconds), so it isn't shown.",
+    "svg_memory": "This SVG needs too much memory to draw (over 512 MB), so it isn't shown.",
+    "svg_crashed": "Drawing this SVG stopped with an error, so it isn't shown.",
+    "svg_output": "Drawing this SVG gave a result that can't be shown.",
+    "svg_spawn": "SVGs can't be drawn: the process that draws them didn't start."
   }
 }

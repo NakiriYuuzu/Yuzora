@@ -12,13 +12,14 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 | `src/docs.rs` | 開啟中的文件（每個檔案一份 buffer）、存檔衝突檢查、外部變更、搜尋取代、`Editor` 元件 |
 | `src/markdown.rs` | `Markdown` 元件（gpui-base `TextView`，GFM） |
 | `src/image.rs` | `ImageView` 元件（PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG） |
+| `src/svg.rs`、`src/svg/` | repo 的 SVG 交給子行程點陣化：父行程的請求、快取與並行上限（`svg.rs`）、子行程的監管與資源上限（`process.rs`）、協定（`wire.rs`）、子行程本身（`child.rs`） |
 | `src/fsops.rs`、`src/git.rs`、`src/search.rs` | 檔案操作、輕量 `git status`、模糊檔名搜尋與內容搜尋（ripgrep，本機沒有 rg 時用內建搜尋）；本機或 `hc exec --on` |
 | `app/defaults/mods/yuzora-sidebar-files` | 側欄「檔案」模式（含自己開的右鍵 popup） |
 | `app/defaults/mods/yuzora-editor` | 編輯器 pane |
 | `app/defaults/mods/yuzora-markdown` | Markdown pane（預覽／原始碼切換） |
 | `app/defaults/mods/yuzora-files-image` | 圖片與 SVG 檢視 pane |
 
-上游程式碼：無改動（沒有 `// yuzora(L5):` 註記）。共用檔只改了各自的 L5 標記區：`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md`，以及 `app/CHANGELOG.md` 的 0.1.0-beta.2 條目。
+上游程式碼的改動都有 `// yuzora(L5):` 註記：`app/src/main.rs`（SVG 子行程的入口，在 `main()` 的開頭）、vendored gpui-pre 的 `svg_renderer.rs`（`<image>` 一律不載入、`ParsedSvg::tree()`）與 `assets.rs`（`RenderImage::with_scale_factor`）。共用檔只改了各自的 L5 標記區：`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md`，以及 `app/CHANGELOG.md` 的 0.1.0-beta.2 條目。
 
 ## 設計
 
@@ -57,19 +58,59 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 ### Markdown 與圖片
 
 - `Markdown` 元件跟著文件的文字版本（每次編輯或重新載入加一）重畫，游標閃爍不會讓它重抓全文；同一份文件在原始碼與預覽間切換時即時同步。
-- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB；點陣圖解碼後不超過 512 MiB，SVG 由 `src/svg.rs` 檢查並畫好（見下方圖片 pane）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做：讀出 bytes（最多 32 MiB，不多讀）、檢查解碼大小，交給 GPUI 的就是這份 bytes（SVG 是用它畫好的圖）而不是路徑，所以讀完之後檔案變大或被換掉也繞不過限制。畫面只讀快取，10 秒後重新 `stat`，stamp 變了才重讀，同一路徑換了圖也會更新；最後一個 frame 沒畫到、而且 1 分鐘沒畫到的圖片連同 bytes 放掉（SVG 連同它的 texture）（之後沒有新的 frame 也會在 1 分鐘後放掉；捲出畫面的圖片捲回來時重讀）。所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。Windows 上 `file:///C:/…` 指的是 `C:/…`。連結只開 http、https、mailto。
+- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB；點陣圖解碼後不超過 512 MiB，SVG 交給子行程畫（見下方「repo 的 SVG」）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做：讀出 bytes（最多 32 MiB，不多讀）、檢查解碼大小，交給 GPUI 的就是這份 bytes（SVG 是子行程用它畫好的圖）而不是路徑，所以讀完之後檔案變大或被換掉也繞不過限制。畫面只讀快取，10 秒後重新 `stat`，stamp 變了才重讀，同一路徑換了圖也會更新；最後一個 frame 沒畫到、而且 1 分鐘沒畫到的圖片連同 bytes 放掉（SVG 連同它的 texture）（之後沒有新的 frame 也會在 1 分鐘後放掉；捲出畫面的圖片捲回來時重讀）。所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。Windows 上 `file:///C:/…` 指的是 `C:/…`。連結只開 http、https、mailto。
 - 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色和編輯器相同（`syntax`），換主題時 code block 重新上色（文字的上色快取以 highlighter 為 key，只有語法色變了才換一個）。
-- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；檔頭解析不了的交給解碼器。SVG 不交給 GPUI 的解碼器（它在 GCD 佇列的 thread 上解碼，stack 只有 512 KiB，也沒有任何資源上限），圖片 pane 與 Markdown 預覽都由 `src/svg.rs` 在自己的 thread（64 MiB stack）上檢查後畫成點陣圖：
-  - 拒絕 gzip（SVGZ，`1f 8b` 開頭，也包括 Markdown 裡沒有副檔名的圖片）：usvg 會整份解壓，沒有上限（實測約 1064 倍）。`.svgz` 副檔名不當圖片開。
-  - 標記巢狀不超過 128 層；entity 的內容含 `<`、`&`、`%`，或是 parameter entity，就不顯示（展開後會巢狀或倍增，掃描看不到）。
-  - 在 usvg 之前，用 roxmltree 與 simplecss（usvg 用的同一版）照 usvg 的規則找出每個元素的參照（屬性、`style`、比對到的 style sheet 規則；fill、stroke、marker 會繼承，`<use>` 的複本繼承 `<use>` 的）。參照繞回自己就不顯示：usvg 只擋長度 1、2 的循環，更長的會一路遞迴到 stack 用完。轉換深度（巢狀加上沿途每個參照）超過 512 不顯示：clipPath、mask、pattern、marker、feImage 串成 10 萬層，在 64 MiB 的 stack 上也會爆。估計 usvg 會建立的節點超過 100,000 也不顯示：`<use>` 展開、marker 在每個頂點各一份（1 萬層的 marker 鏈實測 1.3 GB）、文字每個字元一個、clip／mask／pattern 每次參照各算一次。style sheet 超過 1 MiB、或比對 selector 超過 2^24 步（descendant selector 會回溯，usvg 對每個元素比對每條規則）也不顯示。
-  - parse 之後依 resvg 實際的配置估計再畫：每個 layer（有 opacity、filter、clip、mask、blend 的 group）是它的 bbox，最大 5×5 個畫布；clip、mask 各多一份，串起來的每層各一份；filter 每個 primitive 的結果都留到最後，而且 filter 的 region 不受畫布限制（實測 4 萬單位的 `feFlood` 吃 2.1 GB、40 萬單位直接 crash）；pattern 的 tile 也是它自己的大小。同時留著的像素（含畫布）超過 256 MiB、或繪製量（每個 path 的 bbox、每個 layer 清除與合成、filter 的每一輪；morphology 依半徑、convolve 依 kernel、turbulence 依 octave 加倍；虛線依段數，tiny-skia 每個 path 最多切 100 萬段）超過 2^30 像素時，把畫布縮小到放得下；長邊最多 4096 px，要縮到 16 px 以下就不顯示。互相包住的 layer 超過 16 層不顯示。
-  - 實測（debug build，watchdog 量 RSS）：8 層 opacity group 的 4096² 檔案原本 1.88 GB，現在畫成 2591² 峰值 245 MiB；160 GB 的 pattern tile、百萬 octave 的 turbulence、半徑 1000 的 morphology 不顯示；1000 個 primitive 的 filter、13 層 mask、9 萬個全畫布矩形都縮小後畫出，峰值 245 MiB 以下；repo 裡 517 個 SVG 都照常顯示。
-  - 繪製量是估計值，usvg 對每份 `<use>` 複本還會再比對一次 selector，這部分沒有另外計步（複本數受節點上限約束）。
-
-  SVG 裡的 `<image>` 一律不跟：usvg 預設會把它指的任何本機路徑整個讀進來（不管大小，`/dev/zero`、FIFO、UNC 分享都會照讀）；data URI 也一律不解：點陣圖會被 resvg 依檔頭宣稱的尺寸解碼（60000² 的 PNG 只要幾十 bytes），SVG 會用同一個 resolver 一層層 parse（75 層就讓 GPUI 的解碼 thread 爆 stack、整個 app 結束；50 次 `<use>` 同一個內嵌 SVG 要 25 秒 CPU），gzip 的也照樣整份解壓。所以 vendored gpui-pre 的 `SvgRenderer`（`svg_renderer.rs`，`// yuzora(L5):`）改用自己的 `image_href_resolver`，什麼都不載入；同一處另加 `ParsedSvg::tree()`，讓 `src/svg.rs` 在畫之前估計成本，畫的時候仍用 GPUI 自己的 parse 與字型。這是全域設定，所有 mod 的 `svg()`／`img()` 也一樣；內建的 SVG 都沒有用到 `<image>`。mod 自己的 SVG 仍由 GPUI 解碼（它們是 app 或 mod 的資產，不是 repo 的檔案），上面的深度與預算檢查不套用。畫好的 SVG 是一張 texture：換圖、圖片不再顯示、pane 或預覽關掉時用 `drop_image` 放掉。
+- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；檔頭解析不了的交給解碼器。SVG 見下一節。
 
   檢視有「符合」與「100%」（原尺寸，比 pane 大時可捲動）、對比底色（`th.solid`：淺色主題是深底、深色主題是淺底，上面的提示文字用 `solid_foreground`）；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
+
+### repo 的 SVG（子行程點陣化）
+
+在 App 行程裡解析 repo 的 SVG，前三輪審查每補一種上限（巢狀深度、參照循環、節點數、layer 與 filter 的像素預算），下一輪就找到新的放大方式，用特製的小檔案耗盡記憶體、CPU 或 stack，讓整個 App 中止。所以圖片 pane 與 Markdown 預覽的 SVG 一律交給子行程點陣化，App 本體不解析，原本的檢查與預算都已刪除。
+
+- **子行程**：同一支執行檔（`std::env::current_exe()`）加隱藏參數 `--yuzora-rasterize-svg`。`app/src/main.rs` 的 `main()` 一開頭看到這個參數就交給 `yuzora_files::svg::child_main()`，不做其他初始化。沒有新增 binary，打包不變。
+  - 子行程（`src/svg/child.rs`）從 stdin 讀一份 SVG，用 GPUI 自己的 `SvgRenderer` 在 16 MiB stack 的 thread 上畫（usvg＋resvg、相同的字型；`<image>` 一律不載入，見下方），長邊不超過 4096 px（GPUI 畫 SVG 用兩倍尺寸），寫到 stdout 後結束。
+  - env 清空，只留找系統字型需要的變數：macOS 留 `HOME`；Linux 留 `HOME`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_DATA_DIRS`、`FONTCONFIG_FILE`、`FONTCONFIG_PATH`；Windows 留 `SystemRoot`、`USERPROFILE`。
+  - Unix 上子行程先設 `alarm(10)`：父行程不在了（例如 App crash），它也不會一直跑下去。
+- **父行程**（`src/svg.rs`、`src/svg/process.rs`）只做不需要解析的檢查：大小不超過 32 MiB；開頭是 gzip magic（`1f 8b`）或副檔名是 `.svgz` 就拒絕（usvg 會整份解壓，沒有上限）。usvg、resvg、roxmltree、simplecss 都不是 `yuzora-files` 的依賴，父行程的程式碼也不呼叫 `SvgRenderer`；測試會檢查這兩點。
+  - 收到的 RGBA 換成 GPUI 用的 BGRA，scale 和 GPUI 畫的 SVG 一樣是 2（vendored gpui-pre 的 `RenderImage::with_scale_factor`）。一般 SVG 的結果和改版前在 App 裡畫的逐 byte 相同（整合測試比對）。
+- **協定**（`src/svg/wire.rs`，數字都是 little-endian u32）：
+  - stdin：`YZSVGIN1`、長邊上限、SVG 的長度，接著是 SVG。
+  - stdout：`YZSVGPX1`、狀態（0 畫好、1 usvg 讀不了或畫不出來）、寬、高；畫好時接著是寬×高×4 bytes 的 RGBA（straight alpha）。
+  - 兩邊都只讀 header 指定的長度，不等 EOF：pipe 的一端被別的子行程意外繼承時，也不會卡住。
+
+#### 上限（`src/svg.rs` 的常數）
+
+| 常數 | 值 | 做法 |
+| --- | --- | --- |
+| `TIMEOUT` | 5 秒 | 牆鐘時間，從子行程啟動起算（排隊的時間不算），超過就殺。 |
+| `MEMORY_LIMIT` | 512 MiB | macOS：每 10 ms 用 `proc_pid_rusage` 讀 `phys_footprint`，超過就殺。Linux：`pre_exec` 裡 `setrlimit(RLIMIT_AS)`。Windows：Job Object 設 `JOB_OBJECT_LIMIT_PROCESS_MEMORY` 與 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，送出任何資料前就把子行程放進 job。 |
+| `MAX_EDGE` | 4096 px | stdout 最多讀 header 加上寬×高×4。header 的寬或高超過上限（或是 0），或在那之後多送任何一個 byte，都算輸出格式錯誤。 |
+| `CONCURRENT` | 2 | 同時最多 2 個子行程，其餘排隊。 |
+| `MAX_SVG_BYTES` | 32 MiB | 和圖片的大小上限相同。 |
+
+- 每個子行程在父行程佔用的記憶體：像素最多 64 MiB，加上 64 KiB 的讀取緩衝與 4 KiB 的 stderr。
+- spawn 時持有行程內的一把鎖：macOS 的 std 先建 pipe，再設 close-on-exec，平行 spawn 時，另一個子行程可能繼承到這個 pipe 的一端。std 在 `spawn` 裡就關掉父行程中屬於子行程的那一端，所以這一步在鎖內完成。
+- 子行程樹：Unix 上子行程是自己 process group 的 leader，Windows 上它在自己的 Job Object 裡。殺子行程時連同它啟動的行程一起殺；子行程自己結束時，剩下的行程也一併清掉。
+
+#### 失敗時
+
+- 逾時、超過記憶體、crash（非 0 結束或被 signal 終止）、輸出格式錯誤：殺掉子行程樹，回傳原因。Linux 與 Windows 上，超過記憶體上限時配置會失敗，Rust 會在 stderr 寫 `memory allocation of …` 後 abort，父行程據此判為記憶體不足（stderr 只留前 4 KiB）。
+- 圖片 pane 顯示佔位圖（灰框打叉，由父行程直接產生，不是 SVG）和原因：`image.svg_timeout`、`svg_memory`、`svg_crashed`、`svg_output`、`svg_invalid`、`svg_spawn`、`svgz`，en 與 zh-TW 都有。
+- Markdown 預覽顯示同一張佔位圖。`TextView` 的圖片欄位只接受圖片，原因的文字無法放進預覽。
+- 不自動重試。結果依內容的 hash 快取（行程內隨機金鑰，無法造出相撞的檔案），同一份 SVG 只 spawn 一次，失敗的結果也記著；檔案內容改了才重畫。多個請求同時要同一份 SVG 時，等第一個的結果。快取最多 128 MiB 的像素、512 筆，先進先出。取消與子行程無法啟動的結果不快取。
+- 取消：圖片 pane 換檔或關閉、Markdown 預覽關閉或換文件時，排隊中的請求直接放棄，畫到一半的子行程被殺。
+
+#### `<image>` 與 mod 的 SVG
+
+SVG 裡的 `<image>` 一律不跟：usvg 預設會把它指的任何本機路徑整個讀進來（不管大小，`/dev/zero`、FIFO、UNC 分享都會照讀）；data URI 也一律不解：點陣圖會被 resvg 依檔頭宣稱的尺寸解碼（60000² 的 PNG 只要幾十 bytes），SVG 會用同一個 resolver 一層層 parse（75 層就讓 GPUI 的解碼 thread 爆 stack、整個 app 結束；50 次 `<use>` 同一個內嵌 SVG 要 25 秒 CPU），gzip 的也照樣整份解壓。所以 vendored gpui-pre 的 `SvgRenderer`（`svg_renderer.rs`，`// yuzora(L5):`）改用自己的 `image_href_resolver`，什麼都不載入；同一處的 `ParsedSvg::tree()` 讓子行程讀出尺寸，決定縮放。這是全域設定，所有 mod 的 `svg()`／`img()` 也一樣；內建的 SVG 都沒有用到 `<image>`。mod 自己的 SVG 仍由 GPUI 在 App 裡解碼（它們是 app 或 mod 的資產，不是 repo 的檔案），不經子行程。畫好的 SVG 是一張 texture：換圖、圖片不再顯示、pane 或預覽關掉時用 `drop_image` 放掉。
+
+#### 已知限制
+
+- Linux 的 `RLIMIT_AS` 限制的是位址空間：執行檔、shared library、thread stack 的 mapping 都算在 512 MiB 裡，實際能用的 heap 比 macOS、Windows 少。App 本體在 Linux 上的基本用量尚未量測。
+- macOS 的記憶體上限靠輪詢：兩次輪詢之間（10 ms）子行程可能多配置一些才被殺。
+- 每個子行程第一次畫文字時都要載入系統字型。
+- Windows 的 Job Object 實作只做過交叉編譯檢查，沒有實際執行（`app-ci.yml` 沒有 Windows job）。
 
 ### 側欄（`yuzora-sidebar-files`）
 
@@ -127,7 +168,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（178 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、讀不到類型或讀到一半失敗的項目（假的資料夾項目）、原子存檔保留延伸屬性與 ACL（確認換了 inode；ACL 只在 macOS 驗）、就地寫入在備份複製完才比對（複製期間的外部修改不被覆寫、備份刪掉）、存檔的暫存檔在換上去之前只有擁有者能開、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、SVG 的 `<image>`（用 GPUI 自己的 `SvgRenderer`、在 536,576 bytes 的 stack 上畫：真實紅色 PNG 的絕對路徑、開頭是紅色 PNG 的 64 MiB 檔案、Windows 的 `\\?\` 長路徑都不讀；FIFO 不會卡住、`/dev/zero` 不會讀；data URI 的點陣圖、60000² 檔頭的 PNG、內嵌的 SVG（base64 與百分比編碼）、gzip 都不解，75 層內嵌不會爆 stack）、repo 的 SVG（gzip、巢狀 1000 層與 129 層、entity、`<use>` 鏈、參照循環（3 層 clip、繼承的 pattern／marker、style sheet、只靠 `!important` 串成的）、512 層的 clip／mask／pattern／marker 鏈、marker 逐頂點與文字的節點數、會回溯的 selector、Illustrator 風格的 style sheet 照畫、layer／pattern tile／filter region／primitive／mask 鏈的像素預算、morphology／turbulence／虛線／全畫布 fan-out 的繪製量；每個都在 mutation 下會失敗）、Markdown 的 SVG 在 worker 畫好，換掉、放掉與預覽關掉時釋放 texture、遠端變更一律拒絕）、git porcelain 解析（不是 UTF-8 的路徑不標記）與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔；未信任的資料夾不跑 repo 的 clean filter、只讀 refs 時不 lazy fetch、遠端檔名清單不用 git，信任後 git 照常執行；promisor 的 URL 指到 PATH 上的 remote helper、又缺物件時，`git status` 與 sparse index 的 `ls-files` 都不叫起它，原本的請求會叫起（oracle）；每個請求都帶 `OFFLINE`，而且只有 `fsops::run` 對外執行程式；`core.worktree` 指到另一個 repo 時，信任 top level 也不會跑那個資料夾的 filter）、模糊搜尋排序（超過上限時回報還有更多）與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不全是 UTF-8 的檔案照樣找得到；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫、剛修改的 stamp 在毫秒內被改寫、確認期間的 chmod）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、程式碼顏色在兩個 Yuzora 主題都讀得清楚（在 QuickJS 跑 `doc-pane.js` 的 `SYNTAX`／`syntax`／`mix`：One Dark 有上色的名稱都有主題色；淺色主題在背景、code block、目前行上都 ≥ 4.5，語言徽章也是；深色主題不低於 One Dark 與原本的徽章色）、`mix` 混色、Markdown code block 用傳入的語法色且只在語法色變了才換 highlighter、「<Agent> 也在改」的資料夾比對（在 QuickJS 跑 `doc-pane.js` 的 `within`／`editingAgent`：Windows 兩種斜線、大小寫、UNC，其他平台反斜線是檔名的一部分）、側欄路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑；路徑卡的資料夾名稱與上層路徑：家目錄、根目錄、根目錄下的資料夾、遠端路徑、沒有分支、上層路徑結尾的分隔符、Windows 兩種斜線）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、改名後圖片 pane 換成新路徑（在 QuickJS 跑 `open.js`，假的 Herdr：位置、焦點、資料夾改名、已關掉的 pane 不重開）。
+- `cargo test --locked -p yuzora-files`（單元測試 176 個，另有 `tests/svg_child.rs` 的 13 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、讀不到類型或讀到一半失敗的項目（假的資料夾項目）、原子存檔保留延伸屬性與 ACL（確認換了 inode；ACL 只在 macOS 驗）、就地寫入在備份複製完才比對（複製期間的外部修改不被覆寫、備份刪掉）、存檔的暫存檔在換上去之前只有擁有者能開、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、SVG 的 `<image>`（用 GPUI 自己的 `SvgRenderer`、在 536,576 bytes 的 stack 上畫：真實紅色 PNG 的絕對路徑、開頭是紅色 PNG 的 64 MiB 檔案、Windows 的 `\\?\` 長路徑都不讀；FIFO 不會卡住、`/dev/zero` 不會讀；data URI 的點陣圖、60000² 檔頭的 PNG、內嵌的 SVG（base64 與百分比編碼）、gzip 都不解，75 層內嵌不會爆 stack）、repo 的 SVG 由子行程畫（單元測試的子行程是一律回一個綠色像素的 `sh`：圖片 pane 與 Markdown 預覽畫紅色的 SVG 得到綠色，本行程畫 SVG 的次數為 0；父行程的程式碼不出現 usvg、resvg、roxmltree、simplecss、`SvgRenderer`，這些也不是 crate 的依賴；gzip 與 `.svgz` 不啟動子行程；畫不出來的 SVG 在 Markdown 顯示佔位圖、檔案沒變不重試；預覽關閉時取消；圖片 pane 換檔或關閉時取消；協定的 header 與長度檢查；快取的位元組與筆數上限）、Markdown 的 SVG 換掉、放掉與預覽關掉時釋放 texture、遠端變更一律拒絕）、git porcelain 解析（不是 UTF-8 的路徑不標記）與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔；未信任的資料夾不跑 repo 的 clean filter、只讀 refs 時不 lazy fetch、遠端檔名清單不用 git，信任後 git 照常執行；promisor 的 URL 指到 PATH 上的 remote helper、又缺物件時，`git status` 與 sparse index 的 `ls-files` 都不叫起它，原本的請求會叫起（oracle）；每個請求都帶 `OFFLINE`，而且只有 `fsops::run` 對外執行程式；`core.worktree` 指到另一個 repo 時，信任 top level 也不會跑那個資料夾的 filter）、模糊搜尋排序（超過上限時回報還有更多）與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不全是 UTF-8 的檔案照樣找得到；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫、剛修改的 stamp 在毫秒內被改寫、確認期間的 chmod）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、程式碼顏色在兩個 Yuzora 主題都讀得清楚（在 QuickJS 跑 `doc-pane.js` 的 `SYNTAX`／`syntax`／`mix`：One Dark 有上色的名稱都有主題色；淺色主題在背景、code block、目前行上都 ≥ 4.5，語言徽章也是；深色主題不低於 One Dark 與原本的徽章色）、`mix` 混色、Markdown code block 用傳入的語法色且只在語法色變了才換 highlighter、「<Agent> 也在改」的資料夾比對（在 QuickJS 跑 `doc-pane.js` 的 `within`／`editingAgent`：Windows 兩種斜線、大小寫、UNC，其他平台反斜線是檔名的一部分）、側欄路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑；路徑卡的資料夾名稱與上層路徑：家目錄、根目錄、根目錄下的資料夾、遠端路徑、沒有分支、上層路徑結尾的分隔符、Windows 兩種斜線）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、改名後圖片 pane 換成新路徑（在 QuickJS 跑 `open.js`，假的 Herdr：位置、焦點、資料夾改名、已關掉的 pane 不重開）。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：
@@ -155,6 +196,17 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
   - 檔案側欄標題改版（B1）：
     - `l5-20-sidebar-header-dark.png`（yuzora-dark）、`l5-21-sidebar-header-light.png`（yuzora-light）：標題列的「檔案」與 6 顆圖示鈕（「顯示隱藏檔」開著，`selected` 底；樹裡多了 `.yuuzu`）、路徑卡（上層路徑 `/private/tmp/yz-l5-run/` 放不下時先截斷、資料夾名稱 `demo` 完整、「本機」chip、分支 `feat/gpui-dock`）。
     - 沒有截圖的：hover、遠端時停用的新增鈕、沒有分支時第二行消失、側欄再變窄時截斷「檔案」（要點擊或拖動）。遠端與沒有分支的資料由 `heading()` 的單元測試涵蓋（遠端路徑不用 `~`、沒有分支、上層路徑與名稱的拆法），排版靠 `flex_none`／`min_w(0)`／`truncate`。
+- `tests/svg_child.rs`（`harness = false`：測試執行檔自己就是子行程，另外扮演各種出錯的子行程）：
+  - 一般 SVG（矩形、漸層加虛線、中英文字、opacity group）由子行程畫出的結果，和在本行程用 GPUI 的 `SvgRenderer` 畫的逐 byte 相同；超過長邊上限的縮小方式也相同。usvg 讀不了的回 `svg_invalid`。
+  - 只睡覺的子行程 2 秒逾時並被殺；一直配置記憶體的子行程在記憶體上限被殺，不是等到逾時；crash 回 `svg_crashed`；亂寫與只送一半的回 `svg_output`。
+  - 子行程啟動的行程（逾時與 crash 兩種結束）都一起被殺。6 個請求同時進來，最多 2 個子行程在跑。取消時，排隊中的請求不啟動子行程，畫到一半的被殺。
+  - 同一份 SVG 只 spawn 一次（兩個請求同時要也一樣），失敗的不重試。在 header 之後一直送資料（最多 256 MiB）的子行程，在第一個多餘的 byte 就被拒，本行程的峰值記憶體增加不到 32 MiB；header 宣稱 100000² 的，不配置記憶體就拒絕。
+  - 常數就是文件寫的值；整個測試過程中，本行程沒有畫過任何 SVG。
+- SVG 子行程的 mutation 抽查（每次只改一處，跑對應的測試）：拿掉逾時、拿掉 macOS 的記憶體 watchdog、拿掉並行上限、讓圖片 pane 或 Markdown 預覽在本行程畫、讓父行程直接呼叫子行程的繪製函式、拿掉 stdout 的讀取上限、拿掉 process group 的 kill，對應的測試都會失敗。
+- SVG 子行程的跨平台檢查：
+  - macOS：上面的測試全部實際執行；也用實際建置的 App 執行檔當子行程（`env -i`）畫出一般 SVG，usvg 讀不了的回狀態 1，不是請求的輸入以 2 結束。
+  - Linux：`src/svg/process.rs` 與 `wire.rs` 原封不動，放進一個小的 runner，交叉編譯成 aarch64 Linux 執行檔，在 Ubuntu 24.04 container 裡跑：子行程的 `RLIMIT_AS` 是 512 MiB、env 已清空；一直配置記憶體的子行程回 `svg_memory`；逾時、crash、輸出過多、子行程樹（兩種結束）、取消都和 macOS 相同。這個 runner 不含 GPUI，所以 GPUI 執行檔在 512 MiB 位址空間下的實際表現，要等 `app-ci.yml` 的 Linux job 跑 `tests/svg_child.rs` 才知道。
+  - Windows：`process.rs`（Job Object、thread 讀寫）只做 `x86_64-pc-windows-msvc` 的型別與 clippy 檢查，沒有實際執行。
 - 沒有在實機驗的（需要鍵盤或滑鼠；未取得 computer-use 授權）：輸入後的未儲存標記與存檔、衝突橫幅、⌘F 搜尋取代、右鍵選單、樹的展開、側欄搜尋、Markdown 原始碼切換、「<Agent> 也在改」。其中存檔與衝突判斷有 `fsops` 單元測試，互動本身都沒有在實機驗過。
 
 ## 已知限制

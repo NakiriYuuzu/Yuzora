@@ -21,10 +21,6 @@ image = { version = "0.25", default-features = false }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# GPUI's own SVG parser (gpui-pre depends on it), to weigh a tree before
-# drawing it, and the CSS parser it matches style sheets with.
-simplecss = "0.2"
-usvg = { version = "0.46", default-features = false }
 trash = "5"
 # Syntax highlighting: the runtime and one grammar per language (each only
 # depends on tree-sitter-language, so they share this runtime).
@@ -47,10 +43,20 @@ tree-sitter-yaml = "0.7"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# A repo's SVG is drawn in a child held in a Job Object (src/svg/process.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [dev-dependencies]
-# To gzip an SVG (usvg's own, already in the tree).
+# To gzip an SVG (usvg's, already in the tree).
 flate2 = "1"
 gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
 # The app's JS engine (gpui-shell's), to run the mods' plain helpers in tests.
 quickjs = { package = "quickjs-jit", version = "0.12.11", git = "https://github.com/longbridge/quickjs-jit", rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393" }
 tempfile = "3"
+
+# The SVG child's tests: the binary is its own child, so no libtest harness
+# writing to its stdout.
+[[test]]
+name = "svg_child"
+harness = false
