@@ -44,12 +44,12 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
 | 寫入 | Yuzora | Herdr.app | 會互相覆寫嗎 |
 | --- | --- | --- | --- |
 | `doc.set`／`doc.get` | 名稱 `yuzora`，本機和每台 machine 都是（`app/src/mirror_sync.rs:77`、`:96`；`CORE_DOCUMENT`，`app/src/yuzora/mod.rs`） | `herdr-app` | 不會。實測 `docs.json` 有兩個 key，各自從 version 3 起算 |
-| `terminal.run` 的 label | `herdr.space`、`herdr.tab`、`herdr.seen=0`；env 帶 `TERM_PROGRAM=herdr`（`app/src/window.rs:2322`、`app/src/hc.rs`） | 同 | 不會：每個終端機只由建立它的 app 寫一次 |
-| `herdr.seen` | 看過的 turn，只增不減（`window.rs:1507` `share_seen`） | 同 | 設計上共用：在一邊看過，另一邊也算已讀（`docs/labels.md`） |
-| `where` | `<space> / <tab>`，給 `hc ls` 和 picker 顯示（`window.rs:1726` `write_where`） | 同 | **最後寫入者勝**。實測 `t1` 是 Yuzora 的 `yz-space`，`where` 卻是 Herdr 寫的 `tmp / 1`。兩邊都只快取自己上次寫的值，所以不會來回改 |
+| `terminal.run` 的 label | `herdr.space`、`herdr.tab`、`herdr.seen=0`；env 帶 `TERM_PROGRAM=herdr`（`app/src/window.rs:2326`、`app/src/hc.rs`） | 同 | 不會：每個終端機只由建立它的 app 寫一次 |
+| `herdr.seen` | 看過的 turn，只增不減（`window.rs:1511` `share_seen`） | 同 | 設計上共用：在一邊看過，另一邊也算已讀（`docs/labels.md`） |
+| `where` | `<space> / <tab>`，給 `hc ls` 和 picker 顯示（`window.rs:1730` `write_where`） | 同 | **最後寫入者勝**。實測 `t1` 是 Yuzora 的 `yz-space`，`where` 卻是 Herdr 寫的 `tmp / 1`。兩邊都只快取自己上次寫的值，所以不會來回改 |
 | `herdr.pinned`、`herdr.right-click` | `terminal.pin`、`terminal.right_click` | 同 | 設計上共用（pin 會在所有 client 顯示） |
-| `herdr.space`／`herdr.tab` 改寫 | `terminal.keep` 改成 Yuzora 的 id；`terminal.park` 清空（`window.rs:2973`、`:2977`） | 同 | 只影響「沒有 pane 的終端機」之後由誰收養 |
-| `terminal.kill` | 關閉 pane／tab／Space、`terminal.kill` 指令（`window.rs:2587` `kill`） | 同 | **會**：見 A5 |
+| `herdr.space`／`herdr.tab` 改寫 | `terminal.keep` 改成 Yuzora 的 id；`terminal.park` 清空（`window.rs:2977`、`:2981`） | 同 | 只影響「沒有 pane 的終端機」之後由誰收養 |
+| `terminal.kill` | 關閉 pane／tab／Space、`terminal.kill` 指令（`window.rs:2591` `kill`） | 同 | **會**：見 A5 |
 | machines | `hc machine add／rm／rename／update`，只在 UI 按鈕觸發（`defaults/mods/machine-add`、`defaults/frame/settings`、`yuzora-sidebar-ssh` 只讀） | 同（同一份上游程式） | 共用 `machines.json`：一邊移除，另一邊也不見 |
 | 模板 | `crates/yuzora-settings/src/templates.rs:271-280`、`:420` 直接寫 `<config>/herdr-core/templates/<name>.md`；遠端透過 `hc exec` | 只讀（上游沒有模板編輯器） | 沒有 key 衝突；內容兩邊共用 |
 | `config.toml` | 不寫 | 不寫 | — |
@@ -109,13 +109,13 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
 
 - Space 與 tab 存在各自的 layout 文件，所以不共用。終端機在 core 裡，兩邊都看得到。
 - **收養**：
-  - 每次列出終端機時，`reconcile`（`window.rs:2072`、`adopt` `:2132`、`adoptable` `:4631`）會把「有 `herdr.space` label、但自己的文件裡沒有 pane」的終端機收進一個 Space。這個 Space 用 label 的 id，沒有名稱，所以會以第一個終端機的資料夾命名。收養時也會設 `keep: true`。
+  - 每次列出終端機時，`reconcile`（`window.rs:2076`、`adopt` `:2136`、`adoptable` `:4635`）會把「有 `herdr.space` label、但自己的文件裡沒有 pane」的終端機收進一個 Space。這個 Space 用 label 的 id，沒有名稱，所以會以第一個終端機的資料夾命名。收養時也會設 `keep: true`。
   - 實測：
     - Yuzora 建的 `yz-space` 在 Herdr 顯示成 `tmp`。
     - Herdr 建的 `hd-space` 在 Yuzora 也顯示成 `tmp`。
     - 兩邊的 Space id 相同（`sp4aaae9…`、`sp09c5ad…`），名稱各自存在自己的文件裡。
 - **關閉會結束終端機**：
-  - `space.close`、`tab.close`、`pane.close` 和 `terminal.kill` 都會對該 pane 的終端機呼叫 `terminal.kill`（`window.rs:2587`、`:2609`）。
+  - `space.close`、`tab.close`、`pane.close` 和 `terminal.kill` 都會對該 pane 的終端機呼叫 `terminal.kill`（`window.rs:2591`、`:2613`）。
   - 實測：在 Yuzora 關閉收養來的 `hd-space`（`space.close --confirmed true`）後，core 裡的 `t2` 變成 `finished／killed`，Herdr.app 的 `hd-space` 也整個消失。
   - 收養來的 tab 或 pane，在 Yuzora 關掉同樣會在 Herdr 消失，反過來也一樣。
 - **D4 的描述需要更正**。architecture.md D4「代價」寫「這不會關閉或刪除終端機」，只對 label 改動成立。被收養的終端機，在任一個 app 關閉時都會結束。請總指揮更正（`docs/beta2/` 不屬於 L9）。
