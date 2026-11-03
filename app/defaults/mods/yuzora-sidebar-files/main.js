@@ -1,14 +1,504 @@
-// The sidebar's Files mode (placeholder). Owned by lane L5.
-import { View, div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { theme } from "herdr";
-import { t } from "yuzora:core";
+// The sidebar's Files mode: the focused pane's repo (or folder) as a tree with
+// git marks, file and content search, and a right-click menu. Owned by lane L5.
+// The same mod opens itself as the right-click popup (props().menu).
+import { View, div, svg, uniform_list } from "gpui-kit";
+import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
+import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
+import { t, tokens } from "yuzora:core";
+import { listDir, gitStatus, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
+import { openFile, moved, join, parent, base, rel } from "./open.js";
+import { fileIcon } from "./icons.js";
+import { heading } from "./paths.js";
 
-export default class SidebarFiles extends View {
-  render() {
-    const th = theme();
-    return v_flex().id("root").size_full().bg(th.chrome).text_color(th.foreground).text_size(12.5)
-      .child(h_flex().h(32).px(12).flex_none().items_center().child(div().font_semibold().child(t("title"))))
-      .child(div().px(12).pt(4).text_size(11.5).text_color(th.dim).child(t("placeholder", { lane: "L5" })));
+const ME = "yuzora-sidebar-files";
+const PER_FOLDER = 2000, ROWS = 20000;
+const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
+
+// Where the tree is: the focused pane's folder, on its space's machine. A tool
+// pane (no folder of its own) keeps the folder already shown in that space.
+function where(prev) {
+  const space = spaces().find(s => s.active);
+  if (!space) return null;
+  const f = focused();
+  const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
+  const on = f && f.pane === null && f.terminal?.includes("/") ? f.terminal.split("/")[0] : space.machine ?? null;
+  let cwd = pane?.cwd || (f && f.pane === null ? f.cwd : null);
+  if (!cwd && prev && prev.space === space.id && prev.on === on) return prev;
+  cwd ||= space.folder || (on ? null : home());
+  return cwd ? { space: space.id, cwd, on, key: `${on ?? ""}|${cwd}` } : { space: space.id, cwd: null, on, key: `${on ?? ""}|` };
+}
+
+export default class FilesSidebar extends View {
+  init(_p, cx) {
+    this.menu = props()?.menu ?? null;
+    if (this.menu) return;
+    this.saved = new Map();
+    this.entries = new Map();
+    this.open = new Set();
+    this.pending = new Set();
+    this.marks = {};
+    this.dirMarks = new Map();
+    this.hidden = localStorage.getItem("hidden") === "1";
+    this.rows = []; this.rowsVersion = -1; this.version = 0;
+    this.selected = null;
+    this.searching = false; this.searchMode = "name"; this.results = []; this.searchSeq = 0;
+    this.searchInput = InputState.new({ placeholder: t("search.placeholder") });
+    this.searchInput.on("change", (_e, cx) => this.search(cx));
+    this.editInput = InputState.new({});
+    this.editInput.on("submit", (_e, cx) => this.submitEdit(cx));
+    this.edit = null;
+    this.lastRequest = shared(REQUEST)?.seq ?? 0;
+    this.lastRefresh = shared(REFRESH) ?? 0;
+    this.here = null;
+    this.relocate(cx);
+    this.countUnsaved();
+    cx.timer.every(10000, cx => { this.reload(cx, true); this.countUnsaved(); });
   }
+
+  // The mode bar's badge: unsaved documents. The editor panes keep it current;
+  // this catches what they cannot (a restart, a save that ends after its pane closed).
+  countUnsaved() {
+    const n = unsavedCount();
+    if ((shared("yuzora.badge.files") ?? null) === (n || null)) return;
+    setShared("yuzora.badge.files", n || null);
+    setShared("yuzora.status.files", n ? { text: t("status.unsaved", { count: n }), tone: "blocked" } : null);
+  }
+
+  // Context.
+
+  relocate(cx) {
+    const next = where(this.here);
+    if (next?.key === this.here?.key && next?.space === this.here?.space) return;
+    if (this.here?.root) this.saved.set(this.here.key, { open: this.open, selected: this.selected });
+    const saved = next ? this.saved.get(next.key) : null;
+    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false, skipped: false, marksCut: false } : null;
+    this.entries = new Map(); this.open = new Set(saved?.open); this.pending = new Set();
+    this.marks = {}; this.dirMarks = new Map(); this.selected = saved?.selected ?? null; this.version++;
+    this.watching = null;
+    // A name being typed is for the folder it was started in.
+    this.edit = null;
+    // Results belong to the folder they were found in: the search runs again there.
+    this.searchSeq++; this.results = []; this.searchNote = null;
+    if (this.here?.cwd) this.reload(cx);
+  }
+
+  current(here) {
+    return this.here === here;
+  }
+
+  // `timed`: the 10 s timer's, which a watched folder doesn't need for search.
+  reload(cx, timed = false) {
+    const here = this.here;
+    if (!here?.cwd || here.reloading) return;
+    here.reloading = true;
+    cx.spawn(async cx => {
+      try {
+        const git = await gitStatus(here.cwd, { on: here.on }).catch(() => null);
+        if (!this.current(here)) return;
+        here.top = git?.top ?? null; here.branch = git?.branch ?? null;
+        here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0; here.untrusted = Boolean(git?.untrusted);
+        here.marksCut = Boolean(git?.truncated);
+        if (!here.root) here.root = here.top ?? here.cwd;
+        this.setMarks(git?.marks ?? {}, here);
+        for (const folder of ["", ...[...this.open].sort()]) {
+          if (!this.current(here)) return;
+          if (folder && !this.open.has(folder)) continue;
+          await this.loadFolder(folder, here).catch(e => { if (!folder) throw e; this.open.delete(folder); });
+        }
+        here.error = null;
+        // An open search follows the files too (the new root's, after a move).
+        if (this.searching && !(timed && this.watching === here.root)) this.search(cx, !timed);
+        this.watch(here, cx);
+      } catch (e) {
+        if (this.current(here)) here.error = String(e?.message ?? e);
+      } finally {
+        here.loading = false; here.reloading = false;
+        if (this.current(here)) { this.version++; cx.notify(); }
+      }
+    });
+  }
+
+  // Watches are recursive on macOS: the home folder (or /) itself is left to the timer.
+  watch(here, cx) {
+    if (here.on || this.watching === here.root || here.root === "/" || here.root === home()) return;
+    this.watching = here.root;
+    cx.spawn(async cx => {
+      try {
+        while (this.current(here) && this.watching === here.root) {
+          await watchFolder(here.root);
+          if (this.current(here)) this.reload(cx);
+        }
+      } catch { if (this.current(here)) this.watching = null; }
+    });
+  }
+
+  setMarks(marks, here) {
+    this.marks = marks;
+    const dirs = new Map();
+    for (const [path, mark] of Object.entries(marks)) {
+      let r = rel(here.root, path);
+      if (r === null) continue;
+      while (r.includes("/")) {
+        r = r.slice(0, r.lastIndexOf("/"));
+        if (!dirs.has(r)) dirs.set(r, mark);
+      }
+    }
+    this.dirMarks = dirs;
+  }
+
+  async loadFolder(folder, here) {
+    const path = folder ? join(here.root, folder) : here.root;
+    const { entries, truncated, skipped } = await listDir(path, { on: here.on, limit: PER_FOLDER });
+    if (!this.current(here)) return;
+    this.entries.set(folder, entries);
+    if (truncated) here.limited = true;
+    if (skipped) here.skipped = true;
+    if (!folder) here.rootCut = truncated;
+    this.version++;
+  }
+
+  toggle(folder, cx) {
+    if (this.open.has(folder)) {
+      for (const f of [...this.open]) if (f === folder || f.startsWith(folder + "/")) this.open.delete(f);
+      this.version++; cx.notify();
+      return;
+    }
+    this.open.add(folder); this.version++;
+    // Listed again on every open: what is kept from before shows meanwhile.
+    if (this.pending.has(folder)) { cx.notify(); return; }
+    const here = this.here;
+    this.pending.add(folder);
+    cx.spawn(async cx => {
+      try { await this.loadFolder(folder, here); }
+      catch (e) { if (this.current(here)) { this.open.delete(folder); notify({ title: t("error.list"), body: String(e?.message ?? e), level: "error" }); } }
+      finally { this.pending.delete(folder); this.version++; cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  collapse(cx) {
+    this.open.clear(); this.version++; cx.notify();
+  }
+
+  // The visible rows, rebuilt only when something they show changed.
+  visible() {
+    if (this.rowsVersion === this.version) return this.rows;
+    const out = [];
+    let capped = false;
+    const walk = (folder, depth) => {
+      for (const e of this.entries.get(folder) ?? []) {
+        if (e.hidden && !this.hidden) continue;
+        // One more row than fits: the tree is cut, and says so.
+        if (out.length >= ROWS) { capped = true; return; }
+        const r = folder ? `${folder}/${e.name}` : e.name;
+        const open = e.dir && this.open.has(r);
+        out.push({ rel: r, name: e.name, dir: e.dir, link: e.link, depth, open });
+        if (open) walk(r, depth + 1);
+      }
+    };
+    walk("", 0);
+    this.rows = out; this.rowsCapped = capped; this.rowsVersion = this.version;
+    return out;
+  }
+
+  abs(r) {
+    return r ? join(this.here.root, r) : this.here.root;
+  }
+
+  mark(row) {
+    const m = this.marks[this.abs(row.rel)];
+    if (m) return m;
+    return row.dir && !row.open && this.dirMarks.has(row.rel) ? "•" : null;
+  }
+
+  click(r, cx) {
+    const row = this.visible().find(x => x.rel === r);
+    if (!row) return;
+    this.selected = r; this.version++;
+    if (row.dir) this.toggle(r, cx);
+    else { openFile(this.abs(r), this.here.on); cx.notify(); }
+  }
+
+  // Requests from the popup copy (rename, new file …) and refreshes after its actions.
+  requests(cx) {
+    const req = shared(REQUEST);
+    if (req?.seq && req.seq > this.lastRequest) {
+      this.lastRequest = req.seq;
+      if (this.here?.root && req.root === this.here.root) this.startEdit(req.action, req.path, req.dir, cx);
+    }
+    const refresh = shared(REFRESH) ?? 0;
+    if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
+  }
+
+  // New file / folder / rename: one bar above the tree.
+
+  startEdit(kind, path, dir, cx) {
+    if (this.here?.on) { notify({ title: t("remote.readonly"), level: "info" }); return; }
+    const value = kind === "rename" ? base(path) : "";
+    this.edit = { kind, path, dir: dir ?? (path ? parent(path) : this.here.root) };
+    this.editInput.set_value(value);
+    if (value) {
+      const dot = value.lastIndexOf(".");
+      this.editInput.set_selected_range({ start: 0, end: dot > 0 ? dot : value.length });
+    }
+    this.editInput.focus();
+    cx?.notify();
+  }
+
+  submitEdit(cx) {
+    const edit = this.edit, name = this.editInput.value().trim();
+    if (!edit) return;
+    if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) { notify({ title: t("error.name"), level: "warning" }); return; }
+    this.edit = null;
+    const here = this.here, target = join(edit.dir, name);
+    cx.spawn(async cx => {
+      try {
+        if (edit.kind === "new-file") { await createFile(target); openFile(target, null); }
+        else if (edit.kind === "new-folder") await createFolder(target);
+        else if (target !== edit.path) { await rename(edit.path, target); moved(edit.path, target); }
+        const r = rel(here.root, edit.dir);
+        if (r) this.open.add(r);
+        this.selected = rel(here.root, target);
+      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: String(e?.message ?? e), level: "error" }); }
+      finally { this.reload(cx); cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  // Search: file names (fuzzy) or contents (ripgrep).
+
+  // `fresh`: list the files again rather than use the last 15 s listing.
+  search(cx, fresh = false) {
+    const query = this.searchInput.value(), here = this.here, seq = ++this.searchSeq;
+    if (!query.trim() || !here?.root) { this.results = []; this.searchNote = null; cx.notify(); return; }
+    cx.timer.after(this.searchMode === "name" ? 60 : 250, cx => {
+      if (seq !== this.searchSeq) return;
+      cx.spawn(async cx => {
+        try {
+          if (this.searchMode === "name") {
+            const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
+            if (seq !== this.searchSeq) return;
+            this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
+            const notes = [
+              found.matches.length ? null : t("search.none"),
+              found.more ? t("search.truncated", { count: found.matches.length }) : null,
+              found.truncated ? t("search.partial", { count: "200,000" }) : null,
+              found.unfiltered ? t("search.unfiltered", { machine: here.on }) : null,
+              found.skipped ? t("search.skipped") : null,
+            ].filter(Boolean);
+            this.searchNote = notes.length ? notes.join(" ") : null;
+          } else {
+            const found = await grep(here.root, query, { on: here.on, hidden: this.hidden, limit: 500 });
+            if (seq !== this.searchSeq) return;
+            this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root: here.root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
+            const notes = !found.available ? [t("search.no_rg")] : [
+              found.hits.length ? null : t("search.none"),
+              found.truncated ? t("search.truncated", { count: found.hits.length }) : null,
+              found.skipped ? t("search.skipped") : null,
+            ].filter(Boolean);
+            this.searchNote = notes.length ? notes.join(" ") : null;
+          }
+        } catch (e) { if (seq === this.searchSeq) { this.results = []; this.searchNote = String(e?.message ?? e); } }
+        cx.notify();
+      });
+    });
+  }
+
+  openResult(key) {
+    const r = this.results.find(x => x.key === key);
+    if (!r) return;
+    openFile(join(r.root, r.path), r.on, r.line ? { line: r.line, column: r.column } : {});
+  }
+
+  toggleSearch(cx) {
+    this.searching = !this.searching;
+    // Results kept while closed may be from other settings or files: look again.
+    if (this.searching) { this.searchInput.focus(); this.search(cx); }
+    cx.notify();
+  }
+
+  // Badge and status: unsaved documents are counted by the editor mods.
+
+  render(cx) {
+    if (this.menu) return this.renderMenu(cx);
+    this.requests(cx);
+    if (where(this.here)?.key !== this.here?.key) this.relocate(cx);
+    const th = theme(), tk = tokens(), here = this.here;
+    const local = !here?.on;
+    // Ghost icon buttons, as on the other sidebars' title rows; a toggle that's on is selected.
+    const action = (id, icon, label, onClick, on = false, enabled = true) =>
+      div().id(id).size(22).flex().flex_none().items_center().justify_center().rounded(5)
+        .bg(on ? th.selected : "#00000000").text_color(enabled ? (on ? th.foreground : th.muted) : th.dim)
+        .when(enabled, el => el.cursor_pointer().hover(s => s.bg(on ? th.selected : th.hover).text_color(th.foreground)).on_click(onClick))
+        .tooltip(label)
+        .child(svg(`mods/${ME}/icons/${icon}.svg`).size(14));
+    // New files and folders: off on another machine (read-only there), which the tooltip says.
+    const canAdd = local && Boolean(here?.root);
+    const addTip = label => (local ? label : t("remote.readonly"));
+    // The folder above (shrinks first) and the folder's own name; "~" only on this machine.
+    const head = here?.root ? heading(here.root, local ? home() : null, here.branch) : null;
+    return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
+      .child(h_flex().h(32).px(12).flex_none().items_center()
+        .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
+        .child(h_flex().flex_none().gap(2)
+          .child(action("new-file", "new-file", addTip(t("action.new_file")), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("new-folder", "new-folder", addTip(t("action.new_folder")), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }))
+          .child(action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx)))
+          .child(action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching))
+          .child(action("hidden", "eye", t("action.hidden"), (_e, cx) => {
+            this.hidden = !this.hidden; localStorage.setItem("hidden", this.hidden ? "1" : "0"); this.version++;
+            if (this.searching) this.search(cx);
+            cx.notify();
+          }, this.hidden))))
+      .when(Boolean(head), el => el.child(v_flex().flex_none().mt(4).mx(10).mb(6).py(6).px(8).gap(4).rounded(7)
+        .bg(th.raised).border_1().border_color(th.border)
+        .child(h_flex().gap(6).items_center().min_w(0)
+          .child(svg(`mods/${ME}/icons/files/folder.svg`).size(14).flex_none().text_color(th.muted))
+          .child(h_flex().flex_1().min_w(0).items_center()
+            .when(Boolean(head.dir), row => row.child(div().min_w(0).flex_shrink(100).truncate().text_color(th.dim).child(head.dir)))
+            .child(div().min_w(0).truncate().font_semibold().child(head.name)))
+          .child(div().flex_none().px(6).py(1).rounded(4).bg(th.hover).text_size(11).text_color(th.muted)
+            .child(local ? t("local") : here.on)))
+        .when(Boolean(head.branch), card => card.child(h_flex().gap(6).items_center().min_w(0).text_size(11.5).text_color(th.accent)
+          .child(svg("mods/workspace-chrome/git-branch.svg").size(13).flex_none())
+          .child(div().min_w(0).truncate().child(head.branch))))))
+      .when(!head, el => el.child(div().h(6).flex_none()))
+      .when(Boolean(here?.untrusted), el => el.child(div().flex_none().px(12).pb(6).text_size(11).text_color(th.dim).child(t("git.untrusted"))))
+      .when(Boolean(this.edit), el => el.child(this.renderEdit(th)))
+      .child(this.searching ? this.renderSearch(th) : this.renderTree(th, tk));
+  }
+
+  selectedDir() {
+    const row = this.selected ? this.visible().find(r => r.rel === this.selected) : null;
+    if (!row) return this.here.root;
+    return row.dir ? this.abs(row.rel) : parent(this.abs(row.rel));
+  }
+
+  renderEdit(th) {
+    const label = t(`edit.${this.edit.kind}`);
+    return v_flex().flex_none().mx(8).mb(6).p(6).gap(4).rounded(6).bg(th.popover).border_1().border_color(th.input)
+      .on_key_down((e, cx) => { if (e.key === "escape") { this.edit = null; cx.notify(); cx.stop_propagation(); } })
+      .child(div().text_size(11).text_color(th.dim).child(label))
+      .child(Input.new(this.editInput).h(24).px(6).rounded(4).bg(th.canvas).border_1().border_color(th.border).text_size(12))
+      .child(div().text_size(10.5).text_color(th.dim).child(t("edit.hint")));
+  }
+
+  renderTree(th, tk) {
+    const here = this.here;
+    if (!here?.cwd) return div().p(12).text_size(12).text_color(th.dim).child(t("empty.no_folder"));
+    if (here.error && !this.entries.get("")) return div().p(12).text_size(12).text_color(th.blocked).child(here.error);
+    const rows = this.visible();
+    // The folder was cut, and every entry that made the cut is hidden: there may be more.
+    const empty = here.loading ? t("empty.loading") : here.rootCut ? t("empty.hidden_only", { count: PER_FOLDER })
+      : here.skipped ? t("empty.skipped") : t("empty.no_files");
+    if (!rows.length) return div().p(12).text_size(12).text_color(th.dim).child(empty);
+    const fs = tk.file_status ?? {};
+    const markColor = m => m === "A" ? fs.added : m === "D" || m === "U" ? fs.deleted : m === "?" ? fs.untracked : fs.modified;
+    const tree = v_flex().flex_1().min_h(0).relative()
+      .child(uniform_list("tree", rows.length, i => rows[i].rel, range => rows.slice(range.start, range.end).map(row => {
+        const m = this.mark(row), sel = row.rel === this.selected;
+        return h_flex().h(25).pl(6 + row.depth * 13 + 6).pr(12).mx(6).gap(6).items_center().rounded(5)
+          .bg(sel ? th.selected : "#00000000").hover(s => s.bg(sel ? th.selected : th.hover))
+          .child(row.dir ? svg(`mods/${ME}/icons/chevron-${row.open ? "down" : "right"}.svg`).size(10).flex_none().text_color(th.dim) : div().w(10).flex_none())
+          .child(this.icon(th, row.name, row.dir, row.open))
+          .child(div().flex_1().min_w(0).truncate().text_color(row.link ? th.muted : th.foreground).child(row.name))
+          .when(Boolean(m), el => el.child(div().flex_none().text_size(11).font_semibold().text_color(markColor(m) ?? th.blocked).child(m)));
+      }))
+        .flex_1().min_h(0)
+        .on_item_click((key, cx) => this.click(key, cx))
+        .on_item_secondary_click((key, e, cx) => this.openMenu(key, e, cx)))
+      .child(Scrollbar.vertical("tree").absolute().inset_0())
+      .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))))
+      .when(here.skipped, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.skipped"))))
+      .when(Boolean(here.marksCut), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.truncated"))))
+      .when(Boolean(this.rowsCapped), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.rows", { count: ROWS }))));
+    // The folder could not be listed again: the rows are from before.
+    if (!here.error) return tree;
+    return v_flex().flex_1().min_h(0)
+      .child(div().flex_none().px(12).pb(6).text_size(11.5).text_color(th.blocked).child(here.error))
+      .child(tree);
+  }
+
+  icon(th, name, dir = false, open = false) {
+    const { icon, color } = fileIcon(name, dir, open);
+    return svg(`mods/${ME}/icons/files/${icon}.svg`).size(16).flex_none().text_color(th[color] ?? th.dim);
+  }
+
+  renderSearch(th) {
+    const tab = (id, label) => div().id(`mode-${id}`).px(8).h(22).flex().items_center().rounded(4).cursor_pointer()
+      .bg(this.searchMode === id ? th.selected : "#00000000").text_color(this.searchMode === id ? th.foreground : th.muted)
+      .on_click((_e, cx) => { this.searchMode = id; this.search(cx); cx.notify(); }).child(label);
+    const results = this.results;
+    return v_flex().flex_1().min_h(0)
+      .child(v_flex().flex_none().px(8).pb(6).gap(6)
+        .child(Input.new(this.searchInput).h(26).px(8).rounded(6).bg(th.canvas).border_1().border_color(th.input).text_size(12))
+        .child(h_flex().gap(4).text_size(11.5).child(tab("name", t("search.names"))).child(tab("content", t("search.content")))))
+      .when(Boolean(this.searchNote), el => el.child(div().px(12).py(4).text_size(11.5).text_color(th.dim).child(this.searchNote)))
+      .child(v_flex().flex_1().min_h(0).relative()
+        .child(uniform_list("results", results.length, i => results[i].key, range => results.slice(range.start, range.end).map(r =>
+          h_flex().h(r.line ? 38 : 25).mx(6).px(8).gap(6).items_center().rounded(5).hover(s => s.bg(th.hover))
+            .child(this.icon(th, base(r.path)))
+            .child(v_flex().flex_1().min_w(0)
+              .child(h_flex().gap(6).min_w(0)
+                .child(div().flex_none().max_w(150).truncate().child(base(r.path)))
+                .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(th.dim).child(r.line ? `${parent(r.path) || "."}:${r.line}` : parent(r.path))))
+              .when(Boolean(r.line), el => el.child(div().truncate().text_size(11).text_color(th.muted).child(r.text.trim()))))))
+          .flex_1().min_h(0)
+          .on_item_click((key, cx) => this.openResult(key)))
+        .child(Scrollbar.vertical("results").absolute().inset_0()));
+  }
+
+  // The right-click popup.
+
+  openMenu(r, e, cx) {
+    const row = this.visible().find(x => x.rel === r);
+    if (!row) return;
+    this.selected = r; this.version++; cx.notify();
+    const items = menuItems({ abs: this.abs(r), dir: row.dir, root: this.here.root, on: this.here.on });
+    openOverlay({ mod: ME, kind: "popup", width: 236, height: 12 + items.filter(i => i).length * 28 + items.filter(i => !i).length * 9,
+      props: { menu: { abs: this.abs(r), rel: r, dir: row.dir, root: this.here.root, on: this.here.on } } });
+  }
+
+  renderMenu(cx) {
+    const th = theme(), m = this.menu, items = menuItems(m);
+    return v_flex().id("menu").size_full().p(6).gap(0).bg(th.popover).text_color(th.foreground).text_size(12.5)
+      .children(items.map((it, i) => it
+        ? h_flex().id(`item-${i}`).h(28).px(8).rounded(5).items_center().gap(8)
+          .text_color(it.enabled === false ? th.dim : it.danger ? th.ansi1 : th.foreground)
+          .when(it.enabled !== false, el => el.cursor_pointer().hover(s => s.bg(th.hover)).on_click((_e, cx) => { closeOverlay(props().overlay); it.run(); }))
+          .child(div().flex_1().child(it.label))
+        : div().h(1).my(4).mx(4).bg(th.border)));
+  }
+}
+
+function request(action, m, extra) {
+  setShared(REQUEST, { action, root: m.root, seq: Date.now(), ...extra });
+}
+
+function revealLabel() {
+  const p = window()?.platform;
+  return t(p === "macos" ? "menu.reveal_mac" : p === "windows" ? "menu.reveal_windows" : "menu.reveal");
+}
+
+// The popup's items for a row: { label, run, enabled?, danger? }, null a divider.
+function menuItems(m) {
+  const local = !m.on, folder = m.dir ? m.abs : parent(m.abs);
+  const relPath = rel(m.root, m.abs) ?? m.abs;
+  return [
+    m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
+    { label: t("menu.terminal"), run: () => run("terminal.open", { folder, place: "right" }) },
+    null,
+    { label: t("menu.new_file"), enabled: local, run: () => request("new-file", m, { dir: folder }) },
+    { label: t("menu.new_folder"), enabled: local, run: () => request("new-folder", m, { dir: folder }) },
+    { label: t("menu.rename"), enabled: local, run: () => request("rename", m, { path: m.abs }) },
+    { label: t("menu.trash"), enabled: local, danger: true, run: () => {
+      trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
+        .catch(e => notify({ title: t("error.trash"), body: String(e?.message ?? e), level: "error" }));
+    } },
+    null,
+    { label: t("menu.copy_path"), run: () => copyText(m.abs) },
+    { label: t("menu.copy_relative"), run: () => copyText(relPath) },
+    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: String(e?.message ?? e), level: "error" }); } } },
+  ].filter((it, i, all) => it || (i > 0 && all[i - 1]));
 }

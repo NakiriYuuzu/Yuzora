@@ -1,5 +1,74 @@
 {
   "title": "Files",
   "description": "File tree",
-  "placeholder": "Coming in lane {lane}."
+  "local": "Local",
+  "remote": {
+    "readonly": "Remote files are read-only in this version"
+  },
+  "action": {
+    "new_file": "New file",
+    "new_folder": "New folder",
+    "refresh": "Refresh",
+    "collapse": "Collapse all",
+    "search": "Search files",
+    "hidden": "Show hidden files"
+  },
+  "edit": {
+    "new-file": "New file name",
+    "new-folder": "New folder name",
+    "rename": "Rename to",
+    "hint": "Enter to confirm · Esc to cancel"
+  },
+  "empty": {
+    "no_folder": "No folder for this space.",
+    "loading": "Loading files…",
+    "no_files": "No files here.",
+    "limited": "Folders show at most {count} entries.",
+    "hidden_only": "The first {count} entries here are all hidden: show hidden files to see them.",
+    "skipped": "Some entries here couldn't be read or shown: they are left out.",
+    "rows": "The tree shows at most {count} rows: collapse some folders to see the rest."
+  },
+  "search": {
+    "placeholder": "Search…",
+    "names": "File names",
+    "content": "Contents",
+    "none": "No matches.",
+    "no_rg": "Searching contents on another machine needs ripgrep (rg) there.",
+    "truncated": "Showing the first {count} matches.",
+    "partial": "Searched the first {count} files only.",
+    "unfiltered": "No git or ripgrep on {machine}: ignored files are included.",
+    "skipped": "Some files or folders couldn't be read: results may be incomplete."
+  },
+  "git": {
+    "untrusted": "Untrusted folder: trust it in the Git sidebar to show Git marks.",
+    "truncated": "Too many changes: not every changed file has a Git mark."
+  },
+  "menu": {
+    "open": "Open",
+    "terminal": "Open in terminal",
+    "new_file": "New file…",
+    "new_folder": "New folder…",
+    "rename": "Rename…",
+    "trash": "Move to Trash",
+    "copy_path": "Copy path",
+    "copy_relative": "Copy relative path",
+    "reveal_mac": "Reveal in Finder",
+    "reveal_windows": "Show in File Explorer",
+    "reveal": "Show in file manager"
+  },
+  "toast": {
+    "trashed": "Moved {name} to the trash"
+  },
+  "error": {
+    "list": "Can't open this folder",
+    "name": "That name can't be used",
+    "new-file": "Can't create the file",
+    "new-folder": "Can't create the folder",
+    "rename": "Can't rename",
+    "trash": "Can't move to the trash",
+    "reveal": "Can't show it in the file manager"
+  },
+  "status": {
+    "unsaved": "{count} unsaved"
+  }
 }
