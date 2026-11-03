@@ -29,7 +29,7 @@ pub fn assign(kept: &mut Map<String, Value>, id: &str, palette: &[String]) -> (S
         return (c.to_owned(), false);
     }
     let Some(first) = palette.first() else {
-        return ("#4f6bed".to_owned(), false);
+        return ("#2563eb".to_owned(), false);
     };
     let uses = |c: &String| kept.values().filter(|v| v.as_str() == Some(c)).count();
     let color = palette.iter().min_by_key(|c| uses(c)).unwrap_or(first).clone();
@@ -70,7 +70,7 @@ mod tests {
         assert_eq!(assign(&mut kept, "s4", &p).0, "#a");
         kept.remove("s2");
         assert_eq!(assign(&mut kept, "s5", &p).0, "#b");
-        assert_eq!(assign(&mut Map::new(), "s1", &[]), ("#4f6bed".into(), false));
+        assert_eq!(assign(&mut Map::new(), "s1", &[]), ("#2563eb".into(), false));
     }
 
     #[test]
@@ -108,6 +108,6 @@ mod tests {
     fn the_palette_is_the_tokens() {
         let p = palette();
         assert!(p.len() >= 4);
-        assert_eq!(p[0], "#4f6bed");
+        assert_eq!(p[0], "#2563eb");
     }
 }

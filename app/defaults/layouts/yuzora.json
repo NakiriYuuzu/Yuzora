@@ -6,7 +6,10 @@
     14,
     13
   ],
-  "theme": "yuzora-dark",
+  "theme": {
+    "light": "yuzora-light",
+    "dark": "yuzora-dark"
+  },
   "ui_font": ".SystemUIFont",
   "background": "canvas",
   "terminal_padding": [

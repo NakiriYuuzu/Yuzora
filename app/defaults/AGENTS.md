@@ -1009,9 +1009,11 @@ with these differences.
   with `layout.select {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}`,
   and the tab bar, the active tab and `yuzora-statusbar` on the right. It is
   shipped: clone it before changing its structure, as with Herdr's layouts.
-- Theme `yuzora-dark`. Design values a theme has no name for (diff colors,
-  agent brand colors, Space badge colors, the agent states' shapes, sizes)
-  come from `tokens()`.
+- Themes `yuzora-dark` and `yuzora-light`: the layout shows the one for the
+  system's appearance (or settings.json's `appearance`). Design values a theme
+  has no name for (diff colors, agent brand colors, Space badge colors, the
+  agent states' shapes, sizes) come from `tokens()`, which gives a light theme
+  its own text, diff and status colors.
 - Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
