@@ -285,7 +285,7 @@ Merge 後刪除已完成的短期 branch；release tag 與長期維護 branch �
 Release PR 除了一般 PR gate，還必須符合 [`docs/operations.md`](../operations.md)：
 
 - 三份 version 與根目錄 `Cargo.lock` 一致。
-- `CHANGELOG.md` 有對應版本使用者說明。
+- `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）都有對應版本的使用者說明，兩份的版本、段落與項目一一對應（`scripts/release-notes.test.ts` 會比對）。
 - Release／updater contract checks 通過。
 - Tag 尚未存在。
 - Merge 後 exact `main` commit 的完整 CI 通過，才可建立 tag。

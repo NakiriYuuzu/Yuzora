@@ -15,7 +15,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 | L7 發布更新 | 打包、簽章、更新通道（GitHub Releases）、binary 最終名稱 | 不另設 crate；app 端 glue 放 `app/src/yuzora/update.rs` 等新檔 | | `app/scripts/yuzora/bundle-*`、`app/assets/icons/yuzora*`、新的 app 發布 workflow | `docs/beta2/release.md` | slot-4 |
 | L8 效能監控 | 右下角的資源用量 chip 與 popover：App 本體、herdr-core（終端機與 agents）、Yuzora 工具 | `yuzora-perf`（`yuzora:perf`） | `yuzora-perf` | 總指揮特准：`app/Cargo.toml` 與 `app/src/yuzora/mod.rs` 掛上 crate、`app/defaults/layouts/yuzora.json` 的 `status` 節點 | `docs/beta2/perf.md` | 無固定（slot-1～4 擇未上鎖者） |
 | L9 Herdr 相容與上游更新 | 與官方 Herdr.app 共用 herdr-core 的盤點與修正、herdr-app 上游同步、herdr-core 版本把關 | 不另設 crate；app 端 glue 放 `app/src/yuzora/herdr_compat.rs` | | `app/scripts/yuzora/sync-check`、上游同步 PR（`git subtree pull`，merge commit 合併） | `docs/beta2/herdr-compat.md` | 依總指揮指派 |
-| L10 文件與官網收斂 | 對外文件與官網反映 integration 上實際做出來的東西 | | | `README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 標記區塊外的內容；`README.zh-TW.md`（沒有標記區塊，跟著英文版同步）；根目錄 `CHANGELOG.md`、`CHANGELOG.zh-TW.md`；`docs/operations.md`；`site/` | 本檔與 PR 描述 | slot-3（只在需要自己截圖時建置） |
+| L10 文件與官網收斂 | 對外文件與官網反映 integration 上實際做出來的東西 | | | `README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 標記區塊外的內容，以及已合併 lane 標記區塊的措辭；`README.zh-TW.md`（沒有標記區塊，跟著英文版同步）；根目錄 `CHANGELOG.md`、`CHANGELOG.zh-TW.md`；`docs/operations.md`；`site/` | 本檔與 PR 描述 | slot-3（只在需要自己截圖時建置） |
 
 - 「`yuzora-<x>-*`」是 mod 名稱前綴，例如 L2 的 tool pane 叫 `yuzora-git-log`、`yuzora-git-diff`。
 - 每個 crate 的 `Cargo.toml`、原始碼與測試都歸該 lane。lane 的 Rust 字串目錄放在 crate 內（例如 `app/crates/yuzora-git/i18n/`），mod 的字串放在 mod 內的 `i18n/`。
@@ -44,6 +44,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 ```
 
 - 只改自己的區塊內容，保留兩行標記本身，不要移動區塊。
+- 例外：L10（收斂 lane）可以整理**已合併** lane 的區塊措辭、對齊兩語系，也可以把和區塊外重複的內容併到區塊外的對應段落（PR 描述要列出搬了什麼）；不改事實，標記本身不動。還開著的 lane 的區塊不動，由該 lane 自己改。
 - 區塊外的內容由 L10 收斂。需要改區塊外的內容時，寫進 PR 描述請總指揮轉交。`README.zh-TW.md` 沒有標記區塊，由 L10 依英文版同步。
 - 根目錄三份是給開發者與開發用 agent 讀的（建置、測試、目錄）；`app/defaults/AGENTS.md` 每次啟動都會寫進使用者的 app home，給**使用者的 agent** 讀（怎麼操作、怎麼改 Yuzora 的 mods），兩者寫的對象不同。
 - 較長的設計與決策寫在 `docs/beta2/<lane>.md`。

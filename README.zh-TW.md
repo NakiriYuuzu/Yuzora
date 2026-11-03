@@ -13,7 +13,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
 [![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=beta2/integration&style=flat-square&label=beta.2%20app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
 ![Version](https://img.shields.io/badge/version-0.1.0--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
-![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-57534b?style=flat-square&labelColor=1b1a17)
+![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux%20%28experimental%29-57534b?style=flat-square&labelColor=1b1a17)
 
 <samp><a href="README.md">English</a> · 繁體中文 · <a href="https://github.yuuzu.net/Yuzora/">官方網站</a></samp>
 
@@ -73,9 +73,10 @@ beta.2 是 Pre-release，目前請從 [GitHub Releases](https://github.com/Nakir
 | **Windows** x64 | `Yuzora_<version>_x64-setup.exe`，不需要系統管理員權限 | `%LOCALAPPDATA%\Programs\Yuzora`，並把 `yuzora` 加進 PATH |
 | **Linux** x86_64／aarch64，實驗性 | `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install` | `~/.local/share/yuzora` 與 `~/.local/bin/yuzora` |
 
-正式版另外提供固定檔名，永遠指向最新的正式版：`releases/latest/download/Yuzora-macos-aarch64.dmg` 與
-`releases/latest/download/Yuzora-windows-x64-setup.exe`。在 0.1.0 正式版發布前，`releases/latest` 仍是 Tauri 版最後
-一個正式版 v0.0.19。
+從 0.1.0 正式版起，正式版另外提供固定檔名，永遠指向最新的正式版：`releases/latest/download/Yuzora-macos-aarch64.dmg`
+與 `releases/latest/download/Yuzora-windows-x64-setup.exe`。在那之前 `releases/latest` 仍是 Tauri 版最後一個正式版
+v0.0.19：DMG 是 Tauri 版，Windows 的連結會 404（v0.0.19 的檔名是 `Yuzora-windows-x64.msi`）。beta.2 請從它的
+pre-release 頁面下載。
 
 - **macOS 沒有 Apple Developer ID 簽章，也沒有公證**（只有 ad-hoc 簽章）。第一次開啟會被 Gatekeeper 擋下：到
   「系統設定 › 隱私權與安全性」按「仍要打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
