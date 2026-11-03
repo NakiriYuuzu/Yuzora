@@ -233,6 +233,18 @@ const BONUS_PREFIX: i64 = 6;
 const NONE: i64 = i64::MIN / 4;
 /// Most cells (query chars x path chars) [`fuzzy_match`] scores properly.
 const MAX_MATCH_CELLS: usize = 1 << 20;
+/// Longest query (not counting whitespace) that is matched at all: each path
+/// costs the length of the query, so a pasted paragraph would cost seconds.
+pub const MAX_QUERY_CHARS: usize = 256;
+
+/// Whether `query` is too long to match (see [`MAX_QUERY_CHARS`]).
+pub fn query_too_long(query: &str) -> bool {
+    query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .nth(MAX_QUERY_CHARS)
+        .is_some()
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct FuzzyMatch {
@@ -283,7 +295,7 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i64, Vec<usize>)> {
     let n = c.len();
     // The tables below take `m * n` cells each: past the cap (a pasted
     // paragraph against a long path) settle for the leftmost subsequence,
-    // scored below any real match, rather than allocate hundreds of MB.
+    // scored -n (usually below a real match), rather than allocate hundreds of MB.
     if m.saturating_mul(n) > MAX_MATCH_CELLS {
         let mut indices = Vec::with_capacity(m);
         for (j, &ch) in c.iter().enumerate() {
@@ -386,7 +398,7 @@ pub fn fuzzy_top(query: &str, paths: &[String], limit: usize) -> (Vec<FuzzyMatch
 /// the shorter path, then the lexicographically smaller. An empty query keeps
 /// the first `limit` paths with score 0.
 pub fn fuzzy_filter(query: &str, paths: &[String], limit: usize) -> Vec<FuzzyMatch> {
-    if limit == 0 {
+    if limit == 0 || query_too_long(query) {
         return Vec::new();
     }
     if query.chars().all(char::is_whitespace) {
@@ -911,6 +923,18 @@ mod tests {
         let tied = ranked("a", &["b/a", "a/a/a", "c/a"]);
         assert_eq!(tied[0], "b/a");
         assert_eq!(ranked("a", &["c/a", "b/a"]), ["b/a", "c/a"]);
+    }
+
+    #[test]
+    fn a_query_past_the_length_limit_matches_nothing() {
+        let long = "a".repeat(MAX_QUERY_CHARS + 1);
+        let paths = vec!["a".repeat(MAX_QUERY_CHARS + 10)];
+        assert!(query_too_long(&long));
+        assert!(fuzzy_filter(&long, &paths, 10).is_empty());
+        // Whitespace is not counted, as in the match.
+        let spaced = format!("{} ", "a".repeat(MAX_QUERY_CHARS));
+        assert!(!query_too_long(&spaced));
+        assert_eq!(fuzzy_filter(&spaced, &paths, 10).len(), 1);
     }
 
     #[test]

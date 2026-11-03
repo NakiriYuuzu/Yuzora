@@ -282,7 +282,7 @@ export default class FilesSidebar extends View {
             if (seq !== this.searchSeq) return;
             this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
             const notes = [
-              found.matches.length ? null : t("search.none"),
+              found.tooLong ? t("search.too_long") : found.matches.length ? null : t("search.none"),
               found.more ? t("search.truncated", { count: found.matches.length }) : null,
               found.truncated ? t("search.partial", { count: "200,000" }) : null,
               found.unfiltered ? t("search.unfiltered", { machine: here.on }) : null,

@@ -1,4 +1,4 @@
-// No imports (a test runs this as it is).
+// No imports (a test runs this as it is; `export` is dropped).
 // `gitStatus` answers null for a folder that is not in a repo and rejects when
 // it could not tell (git failed or timed out): the tree says so for the second.
 export async function readGit(gitStatus, cwd, options) {
