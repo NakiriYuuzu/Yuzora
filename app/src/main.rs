@@ -77,6 +77,10 @@ fn attach_console() {
 }
 
 fn main() {
+    // yuzora(L5): a repo's SVG is drawn in a child of this executable, held to the parent's limits.
+    if std::env::args_os().nth(1).is_some_and(|a| a == yuzora_files::svg::CHILD_ARG) {
+        std::process::exit(yuzora_files::svg::child_main());
+    }
     let args: Vec<String> = std::env::args().collect();
     #[cfg(windows)]
     if args.len() > 1 {

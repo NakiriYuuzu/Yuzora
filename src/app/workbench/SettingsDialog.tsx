@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { getVersion } from "@tauri-apps/api/app"
-import changelogMarkdown from "../../../CHANGELOG.md?raw"
+import changelogMarkdown from "../../../CHANGELOG.zh-TW.md?raw"
 import {
   Check,
   Search,

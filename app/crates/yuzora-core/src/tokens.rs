@@ -193,6 +193,11 @@ mod tests {
                     assert!(contrast(&s("database", k), &c(bg)) >= 3.0, "light={light}: database.{k} on {bg}");
                 }
             }
+            // The Files sidebar's path card: the folder's place, name and branch on raised, the machine chip on hover.
+            for (fg, bg) in [("dim", "raised"), ("foreground", "raised"), ("accent", "raised"), ("muted", "hover")] {
+                let r = contrast(&c(fg), &c(bg));
+                assert!(r >= 4.5, "light={light}: path card {fg} on {bg} is {r:.2}");
+            }
             for b in t["space_badges"].as_array().unwrap() {
                 assert!(contrast(t["text"]["on_badge"].as_str().unwrap(), b.as_str().unwrap()) >= 4.5, "badge {b}");
             }

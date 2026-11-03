@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Yuzora：AI coding agent 工作區。**v0.1.0-beta.2 開發中**：以 herdr-app（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，放在 `app/`，把 SQL、SSH／SFTP、Git、Files、設定內建進去。`src-tauri/`＋`src/`（Tauri 2＋React 19）是 v0.1.0-beta.1 以前的 app，beta.2 期間只當移植來源。GitHub：`NakiriYuuzu/Yuzora`。
+Yuzora：給 CLI coding agents 的原生工作區（ADE）。**v0.1.0-beta.2 開發中**：以 herdr-app（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，放在 `app/`，把 Git、資料庫、SSH／SFTP、Files 與編輯器、設定、mods／templates 內建進去。`src-tauri/`＋`src/`（Tauri 2＋React 19）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布。GitHub：`NakiriYuuzu/Yuzora`。
 
 各 agent 共用的規則（beta.2 架構與目錄地圖、Release 平台支援、shadcn first、Rust 建置目錄重用、Agent skills）只寫在 AGENTS.md，這裡直接匯入；本檔只放 Claude 補充內容。
 
@@ -22,11 +22,13 @@ cargo build                          # target/debug/herdr-app（package／binary
 cargo test --locked                  # 全 workspace；單一 crate：cargo test --locked -p yuzora-core
 scripts/yuzora/check-mods            # 在複本上對每個 yuzora-* mod 跑 herdr-app check
 scripts/yuzora/bundle-macos /tmp/yz  # 包成 /tmp/yz/Yuzora.app（本機用，非正式打包）
+scripts/yuzora/package               # 發布用安裝檔到 dist/（細節見 L7 補充）
+scripts/yuzora/sync-check            # subtree pull 之後的上游同步檢查（--quick 不跑 cargo test）
 ```
 
 上游 herdr-app 的其他工具（`scripts/sandbox`、`bun scripts/docs.ts check`、`justfile`）見 `app/AGENTS.md`。
 
-Tauri app（根目錄，bun）：
+Tauri app（根目錄，bun；beta.1 以前的版本，也負責官網 `site/` 的測試與 Pages 建置）：
 
 ```bash
 bun run tauri:dev        # 桌面 app（Vite dev server 固定 port 1420）
@@ -52,14 +54,15 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 先讀 `docs/beta2/architecture.md`（ADR）與 `docs/beta2/lanes.md`。重點：
 
 - **三層**：herdr 殼（上游 `app/src`、上游 mods）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane）。
-- **整合點**：`app/src/yuzora/mod.rs` 掛上 `yuzora:core` 與 6 個 lane 模組；`app/Cargo.toml` 已依賴全部 crate。lane 只在自己 crate 的 `host_module()` 加函式，`DECLARATIONS` 要同步加 `export function …`（不一致會在 `validate` 失敗）。
+- **整合點**：`app/src/yuzora/mod.rs` 掛上 `yuzora:core` 與 7 個 lane 模組（shell、git、db、ssh、files、settings、perf）；`app/Cargo.toml` 已依賴全部 crate。lane 只在自己 crate 的 `host_module()` 加函式，`DECLARATIONS` 要同步加 `export function …`（不一致會在 `validate` 失敗）。
 - **herdr 模型**：herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；space 屬於一台機器，tab 屬於一個 space，pane 可以是終端機或 mod pane（`pane.split {mod, props}`）。layout 節點 `row`／`column`／`stack`／`block`，`layout.select {stack, child}` 切換。mod API 在 `app/defaults/herdr.d.ts`，Yuzora 的在 app home 的 `yuzora.d.ts`。
-- **外連**：遙測、feedback 送 herdr.dev、app 自我更新、update notes 媒體都關閉（`app/src/yuzora/mod.rs` 的常數與 `nothing_goes_to_herdr_dev` 測試）。app home `~/.config/yuzora`（`YUZORA_APP_HOME`），core layout 文件名 `yuzora`。
+- **外連**：遙測、feedback 送 herdr.dev、update notes 媒體都關閉（`app/src/yuzora/mod.rs` 的常數與 `nothing_goes_to_herdr_dev` 測試）；app 自我更新改走本 repo 的 GitHub Releases（`app/src/yuzora/release/`，manifest 必須以 release 金鑰簽章，只有安裝好的 release build 會檢查）；herdr-core 的安裝與更新保留上游官方通道。app home `~/.config/yuzora`（`YUZORA_APP_HOME`；不讀 `HERDR_APP_HOME`），core layout 文件名 `yuzora`。
 - **探索**：mod 在 `mod.json` 宣告 `"yuzora": {"pane": …}`／`{"settings": …}`，由 `yuzora:core` 的 `panes()`／`settingsPages()` 列出。
 - **i18n**：`app/defaults/mods/<mod>/i18n/{en,zh-TW}.json`，JS `t(key, vars)`，Rust `yuzora_core::i18n`；語系預設跟系統。UI 文字兩語系都要填。
+- **與官方 Herdr 共用 core**：終端機、machines、templates 共用；收養來的終端機在任一邊關閉都會在 core 結束。細節與已決定的取捨見 `docs/beta2/herdr-compat.md`。
 - **mod 限制**：mod 的 `exec` 上限 30 秒／8 MiB、`readTextFile` 1 MiB、`writeTextFile` 只能寫 app home。DB 連線、SSH session、大量資料都要在 Rust 層做；遠端用 `yuzora_core::remote`（`hc exec --on`，可自訂 timeout）。
 
-## Tauri app 架構（移植來源）
+## Tauri app 架構（beta.1 以前，移植來源）
 
 - IPC：React ←→ `src/lib/ipc.ts`／`herdrIpc.ts` ←→ `src-tauri/src/lib.rs` 註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`db_*`、`ssh_service`、`sftp_*`、`git_*`、`fs_service`⋯），是 beta.2 L2–L5 的移植來源。
 - vendored patches：`src-tauri/vendor/{russh,russh-sftp,tiberius}-*-yuzora`（beta.2 已複製到 `app/vendor/`）。
@@ -74,8 +77,9 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 
 ## CI 守門
 
+- `app-package.yml`：改到打包相關路徑的 PR／push 與手動觸發；macOS、Windows、Linux x64／arm64 四平台打包並以使用者的方式安裝檢查，固定狀態名稱 `App (package)`。不建 tag、不發布、不讀 secret。
 - `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置與 `cargo test --locked`；macOS 另跑 yuzora crates、`check-mods`（check 需要視窗伺服器）與 shot_pixels，Linux 另跑 packaging 與文件檢查。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
-- `ci.yml`（Tauri）：只改 `app/**`、`docs/beta2/**` 的 PR 不觸發。frontend checks 與 test shards 平行，`Frontend (lint · typecheck · test · build)` aggregator；三平台 `cargo check`＋macOS fmt／clippy／`cargo test`＋Linux 資料庫 integration。**Clippy 是 exact baseline**（`.github/clippy-baseline.json`），warning 新增、消失、搬移都會 fail。
+- `ci.yml`（Tauri）：只改 `app/**`、`docs/beta2/**` 的 PR 不觸發；改到 `site/`、`tests/site-*.js`、README 等的 PR 會跑（官網測試在 vitest 裡）。frontend checks 與 test shards 平行，`Frontend (lint · typecheck · test · build)` aggregator；三平台 `cargo check`＋macOS fmt／clippy／`cargo test`＋Linux 資料庫 integration。**Clippy 是 exact baseline**（`.github/clippy-baseline.json`），warning 新增、消失、搬移都會 fail。
 
 ## 慣例與路徑
 
@@ -110,6 +114,10 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
+### L5 檔案與編輯器
+
+- 一個檔案只有一個 `DocView`，同一時間只有一個 pane 畫它的編輯器（owner）；不要讓同一個 `EditorState` entity 在同一個 frame 被畫兩次。
+- mod pane 不知道自己的 pane id：編輯器取得焦點時用 `focused().pane` 記到文件（`notePane`），開檔時靠它 `pane.focus` 回去。
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

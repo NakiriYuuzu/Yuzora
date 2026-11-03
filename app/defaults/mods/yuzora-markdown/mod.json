@@ -1,0 +1,7 @@
+{
+  "place": "none",
+  "focusable": true,
+  "yuzora": {
+    "pane": { "title": "pane.title", "icon": "mods/yuzora-markdown/icon.svg", "order": 51, "header": "own" }
+  }
+}

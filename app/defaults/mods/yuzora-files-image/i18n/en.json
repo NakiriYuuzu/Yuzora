@@ -1,0 +1,8 @@
+{
+  "pane": { "title": "Image viewer" },
+  "fit": "Fit",
+  "actual": "100%",
+  "checker": "Contrast background",
+  "missing": "File not found",
+  "none": "No image."
+}
