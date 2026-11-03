@@ -43,7 +43,9 @@ export interface FileEntry { name: string; dir: boolean; link: boolean; hidden: 
 export interface Language { id: string; name: string; badge: string; color: string }
 export interface GitMarks { top: string; branch: string | null; detached: boolean; ahead: number; behind: number;
   /** Absolute path → "M" | "A" | "D" | "U" | "?". */
-  marks: Record<string, string>; truncated: boolean }
+  marks: Record<string, string>; truncated: boolean;
+  /** The folder waits for trust (its own config names programs git would run): only the branch, no marks. */
+  untrusted: boolean }
 export interface GrepHit { path: string; line: number; column: number; text: string; ranges: [number, number][] }
 export interface DocumentState {
   doc: number; seq: number; path: string; on: string | null; name: string; dir: string;
@@ -347,6 +349,7 @@ pub fn host_module() -> HostModule {
                             ),
                         )
                         .field("truncated", s.truncated)
+                        .field("untrusted", s.untrusted)
                         .into(),
                 },
             ))

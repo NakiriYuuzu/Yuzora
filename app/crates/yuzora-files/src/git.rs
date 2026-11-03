@@ -1,14 +1,20 @@
 //! Git status for the Files lane: the branch and a mark per changed path, read
 //! with `git status --porcelain` here or on a herdr-core machine. Blocking.
 //! Writes nothing under `.git` (no optional locks, so no index refresh).
+//! In a folder not trusted yet whose own config names programs (a clean
+//! filter runs during status), only the refs are read: no marks.
 
+use std::path::Path;
 use std::time::Duration;
 
-use yuzora_core::remote::{self, ExecError, ExecRequest};
+use yuzora_core::git_trust;
+use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 use crate::fsops::join;
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+/// Config keys that make a remote a promisor one: git fetches what's missing from it.
+const PROMISOR: &str = r"^(extensions\.partialclone|remote\..+\.(promisor|partialclonefilter))$";
 const MAX_OUTPUT: u64 = 16 << 20;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -23,28 +29,60 @@ pub struct GitStatus {
     pub marks: Vec<(String, char)>,
     /// More changed paths than `limit` (or than the output could hold).
     pub truncated: bool,
+    /// The folder waits for trust: no `git status` ran, so no marks.
+    pub untrusted: bool,
 }
 
-/// The status of the work tree around `cwd`; `None` when `cwd` is not inside
-/// one (or git is not there).
-pub fn status(cwd: &str, on: Option<&str>, limit: usize) -> Result<Option<GitStatus>, String> {
-    // Never an fsmonitor command (it would run per call) nor an index lock.
-    let git = |args: &[&str]| {
-        let hardened = ["--no-optional-locks", "-c", "core.fsmonitor=false"];
-        let req = ExecRequest::new("git", hardened.iter().chain(args).copied())
+impl GitStatus {
+    fn new(top: &str) -> Self {
+        GitStatus {
+            top: top.to_owned(),
+            branch: None,
+            detached: false,
+            ahead: 0,
+            behind: 0,
+            marks: Vec::new(),
+            truncated: false,
+            untrusted: false,
+        }
+    }
+}
+
+/// git in `cwd` (on `on`): never an fsmonitor command (it would run per
+/// call) nor an index lock.
+fn runner<'a>(
+    cwd: &'a str,
+    on: Option<&'a str>,
+) -> impl Fn(&[&str]) -> Result<ExecOutput, ExecError> + 'a {
+    move |args| {
+        let req = ExecRequest::new("git", git_trust::READ_FLAGS.iter().chain(args).copied())
             .on(on)
             .cwd(Some(cwd))
             .timeout(TIMEOUT)
             .max_output(MAX_OUTPUT);
         remote::run(&req)
-    };
-    let top = match git(&["rev-parse", "--show-toplevel"]) {
-        Ok(out) if out.code == 0 => out.stdout_text().trim_end_matches(['\n', '\r']).to_owned(),
-        Ok(_) | Err(ExecError::Spawn(_)) => return Ok(None),
-        Err(e) => return Err(e.to_string()),
-    };
-    if top.is_empty() {
+    }
+}
+
+/// The status of the work tree around `cwd`; `None` when `cwd` is not inside
+/// one (or git is not there).
+pub fn status(cwd: &str, on: Option<&str>, limit: usize) -> Result<Option<GitStatus>, String> {
+    status_with(&git_trust::trusted_file(), cwd, on, limit)
+}
+
+/// [`status`] with the trusted folders listed in `trusted`.
+fn status_with(
+    trusted: &Path,
+    cwd: &str,
+    on: Option<&str>,
+    limit: usize,
+) -> Result<Option<GitStatus>, String> {
+    let git = runner(cwd, on);
+    let Some(top) = toplevel(&git)? else {
         return Ok(None);
+    };
+    if waits(trusted, on, &top) {
+        return refs_only(&git, &top).map(Some);
     }
     let out = match git(&[
         "status",
@@ -75,18 +113,82 @@ pub fn status(cwd: &str, on: Option<&str>, limit: usize) -> Result<Option<GitSta
     Ok(Some(status))
 }
 
+/// The top level of the work tree `git` runs in; `None` outside one (or
+/// without git).
+fn toplevel(
+    git: impl Fn(&[&str]) -> Result<ExecOutput, ExecError>,
+) -> Result<Option<String>, String> {
+    let top = match git(&["rev-parse", "--show-toplevel"]) {
+        Ok(out) if out.code == 0 => out.stdout_text().trim_end_matches(['\n', '\r']).to_owned(),
+        Ok(_) | Err(ExecError::Spawn(_)) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok(Some(top).filter(|top| !top.is_empty()))
+}
+
+/// The repo's own config at `top` names programs git would run on the work
+/// tree (a clean filter during `status`), or that can't be told, and the
+/// person hasn't trusted the folder: only its refs may be read.
+fn waits(trusted: &Path, on: Option<&str>, top: &str) -> bool {
+    git_trust::pending_from(trusted, on, top).map_or(true, |keys| !keys.is_empty())
+}
+
+/// Whether git may read the work tree around `cwd` (list or compare it):
+/// it is one, and it doesn't wait for trust.
+pub(crate) fn work_tree_open(trusted: &Path, cwd: &str, on: Option<&str>) -> bool {
+    matches!(toplevel(runner(cwd, on)), Ok(Some(top)) if !waits(trusted, on, &top))
+}
+
+/// The branch and how far it is from its upstream, from the refs alone: no
+/// `git status`, so nothing of the work tree is read and no filter or other
+/// program of the repo's runs. For a folder that waits for trust.
+fn refs_only(
+    git: impl Fn(&[&str]) -> Result<ExecOutput, ExecError>,
+    top: &str,
+) -> Result<GitStatus, String> {
+    let mut status = GitStatus::new(top);
+    status.untrusted = true;
+    match git(&["symbolic-ref", "-q", "--short", "HEAD"]) {
+        Ok(out) if out.code == 0 => {
+            status.branch = Some(out.stdout_text().trim_end_matches(['\n', '\r']).to_owned());
+        }
+        // 1: HEAD is not a branch.
+        Ok(out) if out.code == 1 => status.detached = true,
+        Ok(out) => {
+            return Err(match out.stderr_text().trim() {
+                "" => format!("git symbolic-ref failed (exit {})", out.code),
+                e => e.to_owned(),
+            });
+        }
+        Err(e) => return Err(e.to_string()),
+    }
+    // A partial clone would fetch a commit it lacks with the repo's own ssh
+    // command: there the walk never fetches (git 2.44 and later; older git
+    // shows no counts). 1 is "no such key"; anything else might be one.
+    let promisor = git(&["config", "--get-regexp", PROMISOR]).map_or(true, |out| out.code != 1);
+    let walk = ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"];
+    let no_fetch = ["--no-lazy-fetch"]
+        .iter()
+        .chain(&walk)
+        .copied()
+        .collect::<Vec<_>>();
+    // Fails without an upstream (or a commit): 0 and 0, as status shows it.
+    if !status.detached
+        && let Ok(out) = git(if promisor { &no_fetch } else { &walk })
+        && out.code == 0
+    {
+        let text = out.stdout_text();
+        let mut counts = text.split_whitespace().map(|n| n.parse().unwrap_or(0));
+        status.ahead = counts.next().unwrap_or(0);
+        status.behind = counts.next().unwrap_or(0);
+    }
+    Ok(status)
+}
+
 /// Reads `git status --porcelain=v1 -z --branch` output. A path that is not
 /// UTF-8 gets no mark: a stand-in for it (with U+FFFD) could name another file.
 pub fn parse_porcelain(top: &str, out: impl AsRef<[u8]>, limit: usize) -> GitStatus {
-    let mut status = GitStatus {
-        top: top.to_owned(),
-        branch: None,
-        detached: false,
-        ahead: 0,
-        behind: 0,
-        marks: Vec::new(),
-        truncated: false,
-    };
+    let mut status = GitStatus::new(top);
     let mut records = out.as_ref().split(|b| *b == 0).filter(|r| !r.is_empty());
     while let Some(record) = records.next() {
         if let Some(header) = record.strip_prefix(b"## ") {
@@ -215,7 +317,8 @@ mod tests {
                 ahead: 0,
                 behind: 0,
                 marks: vec![],
-                truncated: false
+                truncated: false,
+                untrusted: false
             }
         );
     }
@@ -324,6 +427,11 @@ mod tests {
         assert_eq!((s.marks.len(), s.truncated), (0, true));
     }
 
+    /// [`status`] here with no folder trusted (a plain repo needs none).
+    fn local(cwd: &str, limit: usize) -> Result<Option<GitStatus>, String> {
+        status_with(Path::new("/nonexistent/trusted.json"), cwd, None, limit)
+    }
+
     fn git_present() -> bool {
         Command::new("git")
             .arg("--version")
@@ -387,13 +495,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         assert_eq!(
-            status(&root.to_string_lossy(), None, 100),
+            local(&root.to_string_lossy(), 100),
             Ok(None),
             "not a repo yet"
         );
         git_in(root, &["init", "-q"]);
         // Before the first commit.
-        let fresh = status(&root.to_string_lossy(), None, 100).unwrap().unwrap();
+        let fresh = local(&root.to_string_lossy(), 100).unwrap().unwrap();
         assert_eq!(fresh.branch.as_deref(), Some("main"));
         for (f, body) in [
             ("keep.txt", "keep\n"),
@@ -414,10 +522,10 @@ mod tests {
         std::fs::write(root.join("keep.txt"), "keep\n").unwrap();
 
         let before = snapshot(&root.join(".git"));
-        let from_sub = status(&root.join("sub").to_string_lossy(), None, 100)
+        let from_sub = local(&root.join("sub").to_string_lossy(), 100)
             .unwrap()
             .unwrap();
-        let s = status(&root.to_string_lossy(), None, 100).unwrap().unwrap();
+        let s = local(&root.to_string_lossy(), 100).unwrap().unwrap();
         assert_eq!(
             snapshot(&root.join(".git")),
             before,
@@ -446,12 +554,166 @@ mod tests {
             ]
         );
 
-        let cut = status(&root.to_string_lossy(), None, 2).unwrap().unwrap();
+        let cut = local(&root.to_string_lossy(), 2).unwrap().unwrap();
         assert_eq!((cut.marks.len(), cut.truncated), (2, true));
 
         git_in(root, &["checkout", "-q", "--detach"]);
-        let detached = status(&root.to_string_lossy(), None, 100).unwrap().unwrap();
+        let detached = local(&root.to_string_lossy(), 100).unwrap().unwrap();
         assert_eq!((detached.branch, detached.detached), (None, true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_untrusted_folder_runs_no_filter_of_the_repo() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_present() {
+            eprintln!("git not found: skipping");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let fresh = |cwd: &str| refs_only(runner(cwd, None), "/r").unwrap();
+        git_in(&root, &["init", "-q"]);
+        assert_eq!(
+            (fresh(&cwd).branch.as_deref(), fresh(&cwd).detached),
+            (Some("main"), false),
+            "before the first commit"
+        );
+        // A branch one commit ahead of its upstream and one behind it.
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=probe\n").unwrap();
+        std::fs::write(root.join("a.txt"), "1\n").unwrap();
+        git_in(&root, &["add", "-A"]);
+        git_in(&root, &["commit", "-q", "-m", "first"]);
+        git_in(&root, &["branch", "up"]);
+        git_in(&root, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+        git_in(&root, &["checkout", "-q", "up"]);
+        git_in(&root, &["commit", "-q", "--allow-empty", "-m", "theirs"]);
+        git_in(&root, &["checkout", "-q", "main"]);
+        git_in(&root, &["branch", "-q", "--set-upstream-to=up"]);
+        // The repo's own clean filter leaves a mark whenever it runs, and a
+        // changed file is one status runs it on.
+        let marker = tmp.path().join("ran");
+        let program = tmp.path().join("clean.sh");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_in(
+            &root,
+            &["config", "filter.probe.clean", &program.to_string_lossy()],
+        );
+        std::fs::write(root.join("a.txt"), "2\n").unwrap();
+
+        let trusted = tmp.path().join("trusted.json");
+        let s = status_with(&trusted, &cwd, None, 100).unwrap().unwrap();
+        assert!(
+            !marker.exists(),
+            "an untrusted folder's status ran the repo's filter"
+        );
+        assert_eq!(
+            (s.branch.as_deref(), s.detached, s.ahead, s.behind),
+            (Some("main"), false, 1, 1)
+        );
+        assert!(s.untrusted && s.marks.is_empty() && !s.truncated);
+
+        // Trusted, git status runs as in a terminal: the oracle is live.
+        git_trust::trust_at(&trusted, &git_trust::folder_id(None, &s.top)).unwrap();
+        let full = status_with(&trusted, &cwd, None, 100).unwrap().unwrap();
+        assert!(marker.exists(), "git status did not run the filter");
+        assert!(!full.untrusted);
+        assert_eq!(full.marks, [(join(&s.top, "a.txt"), 'M')]);
+        assert_eq!(
+            (full.branch, full.detached, full.ahead, full.behind),
+            (s.branch, s.detached, s.ahead, s.behind),
+            "the refs say what status says"
+        );
+
+        git_in(&root, &["checkout", "-q", "--detach"]);
+        let s = fresh(&cwd);
+        assert_eq!(
+            (s.branch, s.detached, s.ahead, s.behind),
+            (None, true, 0, 0)
+        );
+        // Outside a repo it fails (status() never gets that far).
+        let elsewhere = tmp.path().join("plain");
+        std::fs::create_dir(&elsewhere).unwrap();
+        assert!(refs_only(runner(&elsewhere.to_string_lossy(), None), "/r").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reading_the_refs_alone_fetches_no_missing_commit() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_present() {
+            eprintln!("git not found: skipping");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git_in(&root, &["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "1\n").unwrap();
+        git_in(&root, &["add", "-A"]);
+        git_in(&root, &["commit", "-q", "-m", "one"]);
+        // The upstream is a commit the clone doesn't have, from a promisor
+        // remote reached with the repo's own ssh command.
+        let marker = tmp.path().join("ran");
+        let ssh = tmp.path().join("ssh.sh");
+        std::fs::write(
+            &ssh,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (key, value) in [
+            ("remote.origin.url", "ssh://example.invalid/x"),
+            ("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"),
+            ("remote.origin.promisor", "true"),
+            ("core.sshCommand", &*ssh.to_string_lossy()),
+            ("branch.main.remote", "origin"),
+            ("branch.main.merge", "refs/heads/main"),
+        ] {
+            git_in(&root, &["config", key, value]);
+        }
+        let gone = Command::new("git")
+            .args(["commit-tree", "-p", "HEAD", "-m", "gone", "HEAD^{tree}"])
+            .current_dir(&root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .unwrap();
+        let gone = String::from_utf8_lossy(&gone.stdout).trim().to_owned();
+        git_in(&root, &["update-ref", "refs/remotes/origin/main", &gone]);
+        std::fs::remove_file(root.join(format!(".git/objects/{}/{}", &gone[..2], &gone[2..])))
+            .unwrap();
+
+        let s = refs_only(runner(&root.to_string_lossy(), None), "/r").unwrap();
+        assert_eq!(
+            (s.branch.as_deref(), s.ahead, s.behind),
+            (Some("main"), 0, 0)
+        );
+        assert!(
+            !marker.exists(),
+            "reading the refs fetched with the repo's ssh command"
+        );
+        // The plain walk does fetch: the marker is a live oracle.
+        let _ = Command::new("git")
+            .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            marker.exists(),
+            "rev-list did not fetch, so this proves nothing"
+        );
     }
 
     #[test]

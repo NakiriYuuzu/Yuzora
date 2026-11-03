@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::Value;
+use yuzora_core::git_trust;
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 use crate::fsops::{failure, machine, run_sh};
@@ -25,14 +26,14 @@ const TEXT_CHARS: usize = 300;
 /// The built-in search skips files larger than this.
 const GREP_FILE_MAX: u64 = 2 << 20;
 
-/// The files under `$1` (relative): git's list in a work tree, else
-/// ripgrep's, else find's. `$2` is 1 to include hidden files. Prints the
-/// tool's name, then NUL-terminated paths; git's are followed by an empty
-/// entry and the tracked files deleted from the work tree. find knows no
-/// ignore files.
+/// The files under `$1` (relative): git's list in a work tree git may read
+/// (`$3` is 1, see [`crate::git::work_tree_open`]), else ripgrep's, else
+/// find's. `$2` is 1 to include hidden files. Prints the tool's name, then
+/// NUL-terminated paths; git's are followed by an empty entry and the
+/// tracked files deleted from the work tree. find knows no ignore files.
 const LIST_SCRIPT: &str = r#"cd -- "$1" 2>/dev/null || { echo "cannot open $1" >&2; exit 3; }
 g() { git --no-optional-locks -c core.fsmonitor=false "$@"; }
-if command -v git >/dev/null 2>&1 && [ "$(g rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+if [ "$3" = 1 ] && command -v git >/dev/null 2>&1 && [ "$(g rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
   printf 'git\0'
   g ls-files -co --exclude-standard -z || exit $?
   printf '\0'
@@ -127,10 +128,28 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<FileList, String
 }
 
 fn list_sh(root: &str, on: Option<&str>, hidden: bool, limit: usize) -> Result<FileList, String> {
+    list_sh_with(&git_trust::trusted_file(), root, on, hidden, limit)
+}
+
+/// [`list_sh`] with the trusted folders listed in `trusted`. A work tree
+/// that waits for trust is listed by ripgrep or find: git's listing reads
+/// the work tree and the index (a partial clone's sparse index may fetch).
+fn list_sh_with(
+    trusted: &Path,
+    root: &str,
+    on: Option<&str>,
+    hidden: bool,
+    limit: usize,
+) -> Result<FileList, String> {
+    let git = crate::git::work_tree_open(trusted, root, on);
     let out = run_sh(
         on,
         LIST_SCRIPT,
-        &[root, if hidden { "1" } else { "0" }],
+        &[
+            root,
+            if hidden { "1" } else { "0" },
+            if git { "1" } else { "0" },
+        ],
         LIST_TIMEOUT,
         LIST_MAX_OUTPUT,
     )?;
@@ -1155,9 +1174,26 @@ mod tests {
         assert!(read_listing(&out, false, 10).unwrap().skipped);
     }
 
-    /// Runs the remote list script with a PATH of the named tools only.
+    /// [`list_sh`] here with no folder trusted (a plain repo needs none).
+    fn listed(root: &str, hidden: bool, limit: usize) -> Result<FileList, String> {
+        list_sh_with(
+            Path::new("/nonexistent/trusted.json"),
+            root,
+            None,
+            hidden,
+            limit,
+        )
+    }
+
+    /// Runs the remote list script with a PATH of the named tools only;
+    /// `git` says git may read the work tree.
     #[cfg(unix)]
-    fn run_list_script(tools: &[(&str, &Path)], root: &Path, hidden: bool) -> (Vec<u8>, i32) {
+    fn run_list_script(
+        tools: &[(&str, &Path)],
+        root: &Path,
+        hidden: bool,
+        git: bool,
+    ) -> (Vec<u8>, i32) {
         let bin = tempfile::tempdir().unwrap();
         for (name, target) in tools {
             std::os::unix::fs::symlink(target, bin.path().join(name)).unwrap();
@@ -1166,6 +1202,7 @@ mod tests {
             .args(["-c", LIST_SCRIPT, "sh"])
             .arg(root)
             .arg(if hidden { "1" } else { "0" })
+            .arg(if git { "1" } else { "0" })
             .env("PATH", bin.path())
             .output()
             .unwrap();
@@ -1186,7 +1223,7 @@ mod tests {
         let d = tree();
         // Neither git nor rg: find, with .git left out.
         if let Some(find) = tool("find") {
-            let (out, code) = run_list_script(&[("find", &find)], d.path(), true);
+            let (out, code) = run_list_script(&[("find", &find)], d.path(), true, true);
             assert_eq!(code, 0);
             let list = parse_file_list(&out, true, 100);
             assert!(list.unfiltered);
@@ -1208,18 +1245,18 @@ mod tests {
         }
         // `echo` standing in for rg shows how it is called.
         if let Some(echo) = tool("echo") {
-            let (out, code) = run_list_script(&[("rg", &echo)], d.path(), false);
+            let (out, code) = run_list_script(&[("rg", &echo)], d.path(), false, true);
             assert_eq!(
                 (String::from_utf8_lossy(&out).trim_end(), code),
                 ("rg\0--files --null -g !.git", 0)
             );
-            let (out, _) = run_list_script(&[("rg", &echo)], d.path(), true);
+            let (out, _) = run_list_script(&[("rg", &echo)], d.path(), true, true);
             assert_eq!(
                 String::from_utf8_lossy(&out).trim_end(),
                 "rg\0--files --null --hidden -g !.git"
             );
         }
-        let (out, code) = run_list_script(&[], &d.path().join("nope"), false);
+        let (out, code) = run_list_script(&[], &d.path().join("nope"), false, true);
         assert_eq!((out.is_empty(), code), (true, 3));
     }
 
@@ -1253,7 +1290,7 @@ mod tests {
         std::fs::remove_file(d.path().join("gone.rs")).unwrap();
         let root = d.path().to_string_lossy().into_owned();
         // Untracked but not ignored files are listed; ignored ones are not.
-        let list = list_sh(&root, None, true, 100).unwrap();
+        let list = listed(&root, true, 100).unwrap();
         assert_eq!(
             list.files,
             [
@@ -1266,9 +1303,9 @@ mod tests {
             ]
         );
         assert!(!list.truncated && !list.unfiltered);
-        let files = list_sh(&root, None, false, 100).unwrap().files;
+        let files = listed(&root, false, 100).unwrap().files;
         assert_eq!(files, ["README.md", "src/a b.rs", "src/main.rs"]);
-        let cut = list_sh(&root, None, false, 1).unwrap();
+        let cut = listed(&root, false, 1).unwrap();
         assert_eq!(
             (cut.files, cut.truncated),
             (vec!["README.md".to_owned()], true)
@@ -1276,13 +1313,84 @@ mod tests {
         // Same answer as the local walk.
         assert_eq!(
             list_local(&root, false, 100).unwrap(),
-            list_sh(&root, None, false, 100).unwrap()
+            listed(&root, false, 100).unwrap()
         );
         assert!(
-            list_sh(&format!("{root}/nope"), None, false, 10)
+            listed(&format!("{root}/nope"), false, 10)
                 .unwrap_err()
                 .contains("cannot open")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_untrusted_work_tree_is_listed_without_git() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(git) = tool("git") else {
+            eprintln!("git not found: skipping");
+            return;
+        };
+        let run = |args: &[&str], dir: &Path| {
+            let out = Command::new(&git)
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim_end().to_owned()
+        };
+        let d = tree();
+        std::fs::remove_dir_all(d.path().join(".git")).unwrap();
+        let root = d.path().to_string_lossy().into_owned();
+        let state = tempfile::tempdir().unwrap();
+        let trusted = state.path().join("trusted.json");
+        let open = |cwd: &str| crate::git::work_tree_open(&trusted, cwd, None);
+        assert!(!open(&root), "not a work tree");
+        run(&["init", "-q"], d.path());
+        assert!(open(&root), "a plain repo needs no trust");
+        // An ignored file that is tracked: only git's list has it.
+        run(&["add", "-f", "--", "debug.log"], d.path());
+        let by_git =
+            |list: &FileList| list.files.iter().any(|f| f == "debug.log") && !list.unfiltered;
+        assert!(by_git(
+            &list_sh_with(&trusted, &root, None, false, 100).unwrap()
+        ));
+
+        // The repo's own config names a program git runs on the work tree.
+        run(&["config", "filter.probe.clean", "cat"], d.path());
+        assert!(!open(&root) && !open(&format!("{root}/src")));
+        let list = list_sh_with(&trusted, &root, None, false, 100).unwrap();
+        assert!(!by_git(&list), "git listed an untrusted work tree");
+        assert!(list.files.iter().any(|f| f == "src/main.rs"));
+        // Trusted: git lists it again.
+        let top = run(&["rev-parse", "--show-toplevel"], d.path());
+        git_trust::trust_at(&trusted, &git_trust::folder_id(None, &top)).unwrap();
+        assert!(open(&root));
+        assert!(by_git(
+            &list_sh_with(&trusted, &root, None, false, 100).unwrap()
+        ));
+
+        // Told no, the script never calls git: one that leaves a mark.
+        let bin = tempfile::tempdir().unwrap();
+        let marker = bin.path().join("ran");
+        let fake = bin.path().join("fake-git");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\n: > '{}'\necho true\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (out, _) = run_list_script(&[("git", &fake)], d.path(), false, false);
+        assert!(!marker.exists(), "the list script ran git");
+        assert!(out.starts_with(b"find\0"));
+        let (out, _) = run_list_script(&[("git", &fake)], d.path(), false, true);
+        assert!(
+            marker.exists(),
+            "the fake git never ran, so this proves nothing"
+        );
+        assert!(out.starts_with(b"git\0"));
     }
 
     const RG_FIXTURE: &str = concat!(

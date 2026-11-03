@@ -96,7 +96,7 @@ export default class FilesSidebar extends View {
         const git = await gitStatus(here.cwd, { on: here.on }).catch(() => null);
         if (!this.current(here)) return;
         here.top = git?.top ?? null; here.branch = git?.branch ?? null;
-        here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0;
+        here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0; here.untrusted = Boolean(git?.untrusted);
         if (!here.root) here.root = here.top ?? here.cwd;
         this.setMarks(git?.marks ?? {}, here);
         for (const folder of ["", ...[...this.open].sort()]) {
@@ -362,6 +362,7 @@ export default class FilesSidebar extends View {
           .child(svg("mods/workspace-chrome/git-branch.svg").size(13).flex_none())
           .child(div().min_w(0).truncate().child(head.branch))))))
       .when(!head, el => el.child(div().h(6).flex_none()))
+      .when(Boolean(here?.untrusted), el => el.child(div().flex_none().px(12).pb(6).text_size(11).text_color(th.dim).child(t("git.untrusted"))))
       .when(Boolean(this.edit), el => el.child(this.renderEdit(th)))
       .child(this.searching ? this.renderSearch(th) : this.renderTree(th, tk));
   }
