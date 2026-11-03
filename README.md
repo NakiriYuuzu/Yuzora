@@ -192,8 +192,8 @@ own Spaces, tabs and layout. The terminals belong to herdr-core, so both apps se
   within about a second, and every program in its terminals ends (kept terminals come back with a fresh shell). To
   stop the core for good, quit both apps first.
 - **Herdr's settings and mods aren't imported.** To bring a mod over, copy its folder from `~/.config/herdr-app/mods/`
-  into `~/.config/yuzora/mods/`, or pick that folder in Settings › Mods › Install from folder… (which never overwrites
-  a mod you have). `keys.json` and themes can be copied the same way; don't copy `installed.json`. Yuzora's own
+  into `~/.config/yuzora/mods/` (with `XDG_CONFIG_HOME` set, both homes are under it instead), or pick that folder in
+  Settings › Mods › Install from folder… (which never overwrites a mod you have). `keys.json` and themes can be copied the same way; don't copy `installed.json`. Yuzora's own
   `yuzora-*` mods don't load in Herdr.
 - **Machines and agent templates are shared.** Both apps use herdr-core's machine list and its templates folder
   (`~/.config/herdr-core/templates/`; on Windows `%APPDATA%\herdr-core\templates`; `$XDG_CONFIG_HOME/herdr-core/templates/`
