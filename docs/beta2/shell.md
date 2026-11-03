@@ -1,6 +1,6 @@
 # L1 外殼＋工作區
 
-lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列、pane 標頭與外框、狀態列、「＋ 新增 pane」選單（混合分割），以及 `yuzora-dark` theme、tokens 與上游畫面的品牌字樣。設計依據是設計稿 p1–p6，特別是 p6 的工作區模式。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
+lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列、pane 標頭與外框、狀態列、「＋ 新增 pane」選單（混合分割），以及 `yuzora-dark`／`yuzora-light` theme、tokens 與上游畫面的品牌字樣。設計依據是設計稿 p1–p6，特別是 p6 的工作區模式。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
 
 ## 範圍與檔案
 
@@ -15,7 +15,7 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
 | `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列：標誌與搜尋（開指令面板） |
 | `app/defaults/layouts/yuzora.json` | 預設 layout：改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型 |
-| `app/defaults/themes/yuzora-dark.json`、`app/defaults/yuzora/tokens.json` | theme 與 tokens |
+| `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深色／淺色 theme 與 tokens（`light` 區塊是淺色主題的覆寫值） |
 | `app/defaults/frame/{welcome,whatsnew,feedback}/` | 上游畫面，只改品牌字樣（見「上游改動」） |
 
 ## `yuzora:shell`
@@ -75,6 +75,7 @@ L1 讀的 key：
 - **側欄的＋選單**依列數決定高度（最高 360px，超過時捲動）；「需要注意」最多 5 列高，更多時在框內捲動，下方的樹不會被擠出畫面。
 - **狀態列**：各 lane 的狀態文字共用中間剩下的寬度，太長就截短（再不夠就裁掉），右側的 HERDR 版本與指令面板快捷鍵一定看得到。
 - **Space 徽章色放 shared state**：不寫 Yuzora `settings.json`，所以測試與 render 不會碰 app home 以外的檔案，也不會蓋掉別的設定；L6 若要在外觀頁讓使用者改色，改寫 `yuzora.space.colors` 即可。
+- **Yuzora 主題色調**：`yuzora-dark` 保留設計稿的中性底色層次（canvas、chrome、surface、popover、raised、border、divider），互動色改用品牌色（logo 的藍 `#3b82f6`、青 `#14b8a6`）：accent `#60a5fa`（品牌藍淺一階，在深色底上當文字也達 AA）配品牌墨色 `#0e1026` 當 accent_foreground；ring 用品牌藍；hover／selected 照 beta.1 的推導方式，把品牌藍以 9%／15% 混入中性底色；done `#89b4fa`（品牌藍 60% 混白）；Space 徽章第一、二色是品牌藍與青（都改成白字達 AA 的深一階）；終端的 blue／cyan 換成品牌藍與青。`yuzora-light` 是對應的淺色版（accent `#1d55d4` 配白字）。layout 的 theme 是 `{light: yuzora-light, dark: yuzora-dark}`，跟隨系統或 settings.json 的 `appearance`。`tokens.json` 的值給深色用，`light` 區塊是淺色主題的覆寫值；`tokens()` 依目前主題背景的亮度選用（app 在 `yuzora/mod.rs` 以 `tokens::set_light` 告訴 yuzora-core），所以其他 mod 不必改。對比由 yuzora-core 的 `both_yuzora_themes_read_at_wcag_aa` 測試把關：文字 4.5，狀態標記與 ring 3，終端除了黑色以外的 ansi 4.5。layout 的 theme 欄位一改，upstream 會丟掉使用者在這個 layout 上點選的主題（`layout_sync::forget_edited`）。這次是 beta.2 發布前唯一一次改這個欄位，之後調色只改 theme 檔；舊版 `yuzora-dark` 列在 `settings.rs` 的 `PREVIOUS_THEMES`，沒改過的會自動更新，改過的保留。
 - **字型**：見下節。
 
 ## 字型
@@ -133,6 +134,7 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 | `l1-scope-after-restart.png` | 選 lab-01 後重啟，scope 仍在 |
 | `l1-blocked-and-badge.png` | 側欄在 Git 模式時新增 blocked agent：工作區徽章變 3、pane 琥珀外框與標頭 |
 | `l1-agents-tab.png` | Agents 分頁（最急的在前） |
+| `l1-theme-dark.png`、`l1-theme-light.png` | Yuzora 主題的全畫面：深色（yuzora-dark）與淺色（yuzora-light，`appearance: light`） |
 | `l1-new-pane-menu.png` | 「新增 pane」選單（由 `yuzora-shell-tabs.new-pane` 開啟） |
 | `l1-mixed-split-after-restart.png` | 終端機與工具 pane 混合分割，重啟後保留 |
 | `l1-welcome.png` | welcome 的 Yuzora 品牌字樣 |
@@ -140,7 +142,6 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 ## 待辦
 
 - 隨 app 打包 Inter（與 Noto Sans TC 的取捨），見「字型」。
-- light theme（`yuzora-light`）。
 - 設計稿品牌列的第二顆按鈕用途未定（搜尋已加入，開指令面板）。
 - pane 標頭的 `repo` 目前是 pane 目前資料夾的名稱；在 repo 子資料夾時不是 repo 名稱。
 - 設計稿 tab 列右側兩顆圖示按鈕的用途未定，暫時做成「在右側／下方開終端機」。

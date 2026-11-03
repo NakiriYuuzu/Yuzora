@@ -47,6 +47,8 @@ fn init_once() {
         // Asked on every call: this runs before the setup screen installs or picks a core.
         yuzora_core::remote::set_hc_program(crate::core_bin::path);
         yuzora_core::js::set_refresh_hook(|| crate::mods::request(crate::mods::Request::Refresh));
+        // tokens() follows the theme showing (yuzora-light's darker text and status colors).
+        yuzora_core::tokens::set_light(|| crate::settings::theme().get("background").is_some_and(|c| yuzora_core::tokens::is_light(c)));
     });
 }
 
@@ -152,5 +154,9 @@ mod tests {
     fn the_yuzora_layout_and_theme_ship() {
         assert!(crate::window::shipped_layouts().contains(&DEFAULT_LAYOUT));
         assert!(crate::settings::SHIPPED_THEMES.contains(&"yuzora-dark"));
+        assert!(crate::settings::SHIPPED_THEMES.contains(&"yuzora-light"));
+        // A fresh install follows the system: Yuzora's own theme for each appearance.
+        let layout: serde_json::Value = serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap();
+        assert_eq!(layout["theme"], serde_json::json!({ "light": "yuzora-light", "dark": "yuzora-dark" }));
     }
 }
