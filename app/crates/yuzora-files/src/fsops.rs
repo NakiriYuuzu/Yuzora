@@ -824,12 +824,7 @@ fn replace_atomically(
     unchanged: &dyn Fn() -> io::Result<bool>,
 ) -> io::Result<bool> {
     // Written in place: the check goes right before the write.
-    let in_place = |backups: &Path| {
-        if !unchanged()? {
-            return Ok(false);
-        }
-        write_in_place(target, bytes, backups).map(|()| true)
-    };
+    let in_place = |backups: &Path| write_in_place(target, bytes, backups, unchanged);
     let original = std::fs::metadata(target).ok().filter(|m| m.is_file());
     if original.is_some() {
         // The file's own write bit decides, as it would for an in-place write.
@@ -896,9 +891,16 @@ fn replace_atomically(
 /// for a file that cannot be swapped. Its old content is first copied to a
 /// new backup in `backups` and kept there until the new content is complete:
 /// a failed write puts the old content back, and when even that fails the
-/// error names the backup.
-fn write_in_place(target: &Path, bytes: &[u8], backups: &Path) -> io::Result<()> {
-    write_in_place_with(target, bytes, backups, overwrite)
+/// error names the backup. `unchanged` is asked once the backup is complete,
+/// right before the write, so a change made while it was copied is kept:
+/// `false` when it says no (nothing written, no backup left).
+fn write_in_place(
+    target: &Path,
+    bytes: &[u8],
+    backups: &Path,
+    unchanged: &dyn Fn() -> io::Result<bool>,
+) -> io::Result<bool> {
+    write_in_place_with(target, bytes, backups, unchanged, overwrite)
 }
 
 /// `write` puts what it reads into a file; the old content goes to the
@@ -909,8 +911,9 @@ fn write_in_place_with(
     target: &Path,
     bytes: &[u8],
     backups: &Path,
+    unchanged: &dyn Fn() -> io::Result<bool>,
     write: impl Fn(&Path, &mut dyn Read) -> io::Result<()>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let mut old = open_regular(target)?;
     let (backup, mut file) = new_backup(backups)?;
     if let Err(e) = io::copy(&mut old, &mut file).and_then(|_| file.sync_all()) {
@@ -919,10 +922,16 @@ fn write_in_place_with(
         return Err(e);
     }
     drop(old);
+    let still = unchanged();
+    if !matches!(still, Ok(true)) {
+        drop(file);
+        let _ = std::fs::remove_file(&backup);
+        return still;
+    }
     let Err(e) = write(target, &mut &bytes[..]) else {
         drop(file);
         let _ = std::fs::remove_file(&backup);
-        return Ok(());
+        return Ok(true);
     };
     if file
         .rewind()
@@ -1881,6 +1890,37 @@ mod tests {
     }
 
     #[test]
+    fn a_change_made_while_the_backup_is_copied_is_not_written_over() {
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "f.txt", b"old content\n");
+        let target = Path::new(&f);
+        let backups = d.path().join("backups");
+        std::fs::create_dir(&backups).unwrap();
+        let backup = || {
+            std::fs::read_dir(&backups)
+                .unwrap()
+                .next()
+                .map(|e| std::fs::read(e.unwrap().path()).unwrap())
+        };
+        // Someone saves over the file while its old content is copied; the
+        // check comes once the backup holds all of it, and sees that.
+        let theirs = || {
+            assert_eq!(backup().as_deref(), Some(&b"old content\n"[..]));
+            std::fs::write(target, b"theirs\n")?;
+            Ok(std::fs::read(target)? == b"old content\n")
+        };
+        assert!(!write_in_place(target, b"mine\n", &backups, &theirs).unwrap());
+        assert_eq!(std::fs::read(target).unwrap(), b"theirs\n");
+        assert_eq!(backup(), None);
+        // A check that fails leaves the file and no backup either.
+        let broken = || Err(io::Error::other("cannot stat"));
+        let err = write_in_place(target, b"mine\n", &backups, &broken).unwrap_err();
+        assert_eq!(err.to_string(), "cannot stat");
+        assert_eq!(std::fs::read(target).unwrap(), b"theirs\n");
+        assert_eq!(backup(), None);
+    }
+
+    #[test]
     fn writes_in_place_keep_the_old_content_until_the_new_is_complete() {
         let d = tempfile::tempdir().unwrap();
         let f = put(&d, "f.txt", b"old content\n");
@@ -1889,7 +1929,8 @@ mod tests {
         std::fs::create_dir(&backups).unwrap();
         let left = || std::fs::read_dir(&backups).unwrap().count();
         // Done: the new content, and no backup left.
-        write_in_place(target, b"new\n", &backups).unwrap();
+        let same = || Ok(true);
+        assert!(write_in_place(target, b"new\n", &backups, &same).unwrap());
         assert_eq!(std::fs::read(target).unwrap(), b"new\n");
         assert_eq!(left(), 0);
         // The write fails halfway (say the disk filled up): the old content is put back.
@@ -1903,7 +1944,7 @@ mod tests {
             }
             overwrite(path, &mut &bytes[..])
         };
-        let err = write_in_place_with(target, b"newer\n", &backups, flaky).unwrap_err();
+        let err = write_in_place_with(target, b"newer\n", &backups, &same, flaky).unwrap_err();
         assert_eq!(err.to_string(), "no space left");
         assert_eq!(std::fs::read(target).unwrap(), b"new\n");
         assert_eq!(left(), 0);
@@ -1912,7 +1953,7 @@ mod tests {
             std::fs::write(path, b"")?;
             Err(io::Error::other("no space left"))
         };
-        let err = write_in_place_with(target, b"newer\n", &backups, broken).unwrap_err();
+        let err = write_in_place_with(target, b"newer\n", &backups, &same, broken).unwrap_err();
         let backup = std::fs::read_dir(&backups)
             .unwrap()
             .next()
@@ -1951,7 +1992,7 @@ mod tests {
             }
             overwrite(path, &mut &bytes[..])
         };
-        write_in_place_with(target, b"newer\n", &backups, swap).unwrap_err();
+        write_in_place_with(target, b"newer\n", &backups, &same, swap).unwrap_err();
         assert_eq!(std::fs::read(target).unwrap(), b"mine\n");
         // A backup is always a new file, never one already there.
         let (path, _) = new_backup(&backups).unwrap();
