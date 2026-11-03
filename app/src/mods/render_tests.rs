@@ -865,3 +865,81 @@ fn yuzora_new_pane_menu_puts_a_pick_where_the_pills_say(cx: &mut TestAppContext)
     let (runs, _) = picks(false, "this.choose({kind: 'terminal'});");
     assert_eq!(runs, [json!(["tab.new", {}])], "nothing focused: a new tab");
 }
+
+// yuzora(L1): Herdr's own Files and Changes panels start off in Yuzora (its sidebar has Files and
+// Git): no saved choice means none, a saved one stays, and Settings > General turns them on and off.
+#[gpui::test]
+fn yuzora_herdr_panels_start_off(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let shown: Value = serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap();
+    let mut session = |entry: &str, layout: &Value, saved: Option<Value>, setup: Option<&str>| {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        if let Some(saved) = saved {
+            calls.borrow_mut().shared.insert("workspace.panels".into(), saved);
+        }
+        let mut values = fixture(true, json!({}), updates("current", "current"));
+        values.insert("layout".into(), layout.clone());
+        let policy = Policy::new()
+            .with_storage_path(staged.0.join("store-panels.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(values, calls.clone()))
+            .unwrap();
+        let policy = crate::yuzora::with_modules(policy, "");
+        let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
+        let window = cx.add_window(|_, _| Empty);
+        let tree = window.update(cx, |_, window, cx| {
+            let mut session = DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap();
+            session.describe(window, cx).unwrap();
+            let tree = session.describe(window, cx).unwrap();
+            window.remove_window();
+            tree
+        }).unwrap();
+        let calls = calls.borrow();
+        assert!(calls.unexpected.is_empty(), "{entry}: {:?}", calls.unexpected);
+        let runs: Vec<Value> = calls.effects.iter().filter(|(n, _)| n == "run").map(|(_, a)| json!(a)).collect();
+        (tree, calls.shared.get("workspace.panels").cloned(), runs)
+    };
+
+    // The default itself.
+    std::fs::write(staged.0.join("main.js"), "import { View, div } from 'gpui-kit'; import { panelsOn } from './mods/yuzora-shell-tabs/main.js'; \
+        export default class Check extends View { render() { return div().child(JSON.stringify([undefined, null, [], ['files'], 'files'].map((v) => panelsOn(v)))); } }").unwrap();
+    let (tree, ..) = session("", &shown, None, None);
+    assert!(tree.contains(r#"[[],[],[],[\"files\"],[]]"#), "{tree}");
+
+    // The tab bar shows a button only for a panel that's on, and never writes the choice.
+    let button = |tree: &str, id: &str| tree.contains(&format!("\"panel-{id}\""));
+    for (saved, files, changes) in [
+        (None, false, false),
+        (Some(Value::Null), false, false),
+        (Some(json!([])), false, false),
+        (Some(json!(["files"])), true, false),
+        (Some(json!(["files", "changes"])), true, true),
+    ] {
+        let (tree, kept, _) = session("mods/yuzora-shell-tabs", &shown, saved.clone(), None);
+        assert_eq!((button(&tree, "files"), button(&tree, "changes")), (files, changes), "{saved:?}: {tree}");
+        assert_eq!(kept, saved, "the tab bar keeps the saved choice");
+    }
+
+    // Settings > General shows a switch for each and turns them on and off.
+    let accent = crate::settings::theme()["accent"].clone();
+    let switch = |tree: &str, id: &str| tree.lines().find(|l| l.contains(&format!("\"gn-panel-{id}\""))).unwrap_or_else(|| panic!("{id}: {tree}")).contains(&format!(".bg[Str({accent:?})]"));
+    let (tree, kept, _) = session("mods/yuzora-settings-general", &shown, Some(json!(["changes"])), None);
+    assert_eq!((switch(&tree, "files"), switch(&tree, "changes")), (false, true), "{tree}");
+    assert_eq!(kept, Some(json!(["changes"])), "showing the page changes nothing");
+    let (_, kept, runs) = session("mods/yuzora-settings-general", &shown, None, Some("this.setPanel('files', true);"));
+    assert_eq!((kept, runs), (Some(json!(["files"])), vec![]));
+    // Turning off the panel that's showing closes it.
+    let mut open = shown.clone();
+    fn show(node: &mut Value) {
+        if node["id"] == "panel" {
+            node["hidden"] = json!(false);
+        }
+        for child in node.get_mut("children").and_then(Value::as_array_mut).into_iter().flatten() {
+            show(child);
+        }
+    }
+    show(&mut open);
+    let (_, kept, runs) = session("mods/yuzora-settings-general", &open, Some(json!(["files", "changes"])), Some("this.setPanel('files', false);"));
+    assert_eq!((kept, runs), (Some(json!(["changes"])), vec![json!(["layout.hide", {"id": "panel"}])]));
+}

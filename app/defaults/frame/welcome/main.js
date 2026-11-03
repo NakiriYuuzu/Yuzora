@@ -110,7 +110,8 @@ export default class Welcome extends View {
 
   // The panels picked: the tab bar shows a button for each.
   panels() {
-    return shared("workspace.panels") ?? PANELS.map((p) => p.id);
+    // yuzora(L1): none until picked; Yuzora's sidebar has its own Files and Git.
+    return shared("workspace.panels") ?? [];
   }
 
   togglePanel(id) {
@@ -395,6 +396,7 @@ export default class Welcome extends View {
   pageThree(t) {
     // The first look at this page asks: nothing is picked yet (skipping the
     // welcome leaves both on).
+    // yuzora(L1): in Yuzora skipping it leaves both off too (panels()).
     if (shared("workspace.panels") === undefined || shared("workspace.panels") === null) setShared("workspace.panels", []);
     return v_flex()
       .gap(14)

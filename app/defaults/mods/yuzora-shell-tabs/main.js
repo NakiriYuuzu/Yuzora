@@ -35,6 +35,13 @@ export function choicesOf(agents) {
 // pills scrolls. (A popup sizes to its content, so nothing in it may wait for a height to fill.)
 export const MENU_MAX = 520;
 
+// Herdr's own Files and Changes panels that are on (shared "workspace.panels"): none until
+// someone turns one on (the welcome's third page, Settings > General), since Yuzora's
+// sidebar has Files and Git. A list someone saved stays as it is.
+export function panelsOn(saved) {
+  return Array.isArray(saved) ? saved : [];
+}
+
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -246,7 +253,7 @@ export default class Tabs extends View {
       : 6;
     const winIcon = (name, glyph) => (w.platform === "windows" ? svg(`mods/tabs/win-${name}.svg`).size(16) : glyph);
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    const enabled = panelsOn(shared("workspace.panels"));
     this.syncPanel(sp.find((s) => s.active), panel, body, enabled);
     const panelButton = (id, icon) => {
       const open = panel && !panel.hidden && body?.active === id;

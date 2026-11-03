@@ -44,6 +44,12 @@
       "ssh": "SSH"
     }
   },
+  "panels": {
+    "heading": "Panels",
+    "about": "Herdr's Files and Changes panels open beside your terminals from buttons in the tab bar. Yuzora's sidebar has its own Files and Git modes, so both start off.",
+    "files": "Files panel",
+    "changes": "Changes panel"
+  },
   "security": {
     "heading": "Terminal clipboard",
     "clipboard": "Programs may write the clipboard",
