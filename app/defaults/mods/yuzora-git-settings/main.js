@@ -118,7 +118,7 @@ export default class GitSettings extends View {
 
   row(it, th) {
     const off = it.needs && !this.s[it.needs];
-    return h_flex().id(`row-${it.key}`).py(9).gap(16).items_center().border_b(1).border_color(th.divider ?? th.border).when(off, (el) => el.opacity(0.5))
+    return h_flex().id(`row-${it.key}`).py(9).gap(16).items_center().border_b(1).border_color(th.divider ?? th.border).when(off, (el) => el.opacity(0.75))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().text_size(12.5).child(t(`s.${it.key}`)))
         .child(div().text_size(11).text_color(th.dim).child(t(`s.${it.key}.desc`)))

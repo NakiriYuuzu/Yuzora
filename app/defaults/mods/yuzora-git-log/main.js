@@ -320,7 +320,7 @@ export default class GitLog extends View {
     const c = x.kind === "head" ? th.accent : x.kind === "remote" ? th.ansi4 : x.kind === "tag" ? th.blocked : th.ansi2;
     return div().flex_none().max_w(150).min_w(0).h(18).px(6).flex().items_center().rounded(4).text_size(10.5)
       .when(x.kind === "head", (el) => el.bg(th.accent).text_color(th.accent_foreground ?? "#ffffff"))
-      .when(x.kind !== "head", (el) => el.bg(tint(c, "26")).text_color(c).border_1().border_color(tint(c, "55")))
+      .when(x.kind !== "head", (el) => el.bg(tint(c, "26")).text_color(th.foreground).border_1().border_color(tint(c, "55")))
       .child(div().min_w(0).truncate().child(x.name));
   }
 
@@ -330,12 +330,12 @@ export default class GitLog extends View {
     return r.head && !refs.some((x) => x.kind === "head") ? [{ name: "HEAD", kind: "head" }, ...refs] : refs;
   }
 
-  logRow(r, info, th, mono) {
+  logRow(r, info, th, mono, gg) {
     const on = this.sel?.row === r.row, bg = on ? th.selected : th.background;
     const refs = this.refsOf(r), narrow = this.w < 520 ? 8 : 20;
     return h_flex().w_full().h(ROW).px(6).gap(6).items_center().bg(bg).text_size(12)
       .when(info.graph, (el) => el.child(div().flex_none().w(Math.min(info.width, narrow) * LANE).h(ROW).overflow_hidden()
-        .child(GraphCell.new(`g-${r.row}`, { log: info.id, row: r.row, height: ROW, width: info.width * LANE, head: r.head, ...(hex(bg) ? { background: hex(bg) } : {}) }))))
+        .child(GraphCell.new(`g-${r.row}`, { log: info.id, row: r.row, height: ROW, width: info.width * LANE, head: r.head, colors: gg.lanes, headColor: gg.head, ...(hex(bg) ? { background: hex(bg) } : {}) }))))
       .child(h_flex().flex_1().min_w(0).gap(5).items_center()
         .children(refs.slice(0, 3).map((x) => this.tag(x, th)))
         .when(refs.length > 3, (el) => el.child(div().flex_none().text_size(10.5).text_color(th.dim).child(`+${refs.length - 3}`)))
@@ -382,7 +382,8 @@ export default class GitLog extends View {
 
   dropdown(th) {
     const items = this.ddItems();
-    const color = (k) => (k === "head" ? th.accent : k === "remote" ? th.ansi4 : k === "tag" ? th.blocked : th.ansi2);
+    const added = tokens().diff?.added ?? th.ansi2;
+    const color = (k) => (k === "head" ? th.accent : k === "remote" ? th.ansi4 : k === "tag" ? th.blocked : added);
     const key = (x) => `${x.kind}:${x.name}`;
     return div().flex_none().h(Math.min(220, items.length * FILE + 8)).mx(8).mb(6).relative().rounded(6).border_1().border_color(th.border).bg(th.popover ?? th.raised)
       .child(v_virtual_list("branch-dd", items.length, FILE, (i) => key(items[i]), (range) => items.slice(range.start, range.end).map((x) =>
@@ -459,7 +460,7 @@ export default class GitLog extends View {
         .child(div().text_color(this.error ? th.ansi1 : th.dim).child(this.error ?? (this.p.cwd || spaces().some((s) => s.active && s.folder) ? t("loading") : t("hint"))));
     }
     if (this.p.compare) return this.renderCompare(th);
-    const info = this.id == null ? null : logInfo(this.id), mono = settings().font_family ?? "JetBrains Mono", fs = tokens().file_status ?? {};
+    const info = this.id == null ? null : logInfo(this.id), mono = settings().font_family ?? "JetBrains Mono", fs = tokens().file_status ?? {}, gg = tokens().git_graph ?? {};
     const side = this.w >= 760, detail = this.showDetail && this.sel;
     const parts = info ? [t("footer.commits", { count: info.rows })] : [];
     if (info?.firstMs != null) parts.push(t("footer.first", { ms: info.firstMs }));
@@ -467,7 +468,7 @@ export default class GitLog extends View {
     const rows = !info ? div().flex_1().p(12).text_color(this.error ? th.ansi1 : th.dim).child(this.error ?? t("loading")) : div().flex_1().min_w(0).min_h(0).relative()
       .child(v_virtual_list("log-rows", info.rows, ROW, (i) => String(i), (range) => {
         this.vis = range;
-        return logRows(info.id, range.start, range.end).map((r) => this.logRow(r, info, th, mono));
+        return logRows(info.id, range.start, range.end).map((r) => this.logRow(r, info, th, mono, gg));
       }).size_full().track_scroll(this.scroll)
         .on_item_click((key, cx) => { this.handle.focus(); this.showDetail = true; this.select(Number(key), cx, false); })
         .on_item_secondary_click((key, _e, cx) => this.contextMenu(Number(key), cx)))
@@ -658,7 +659,7 @@ export default class GitLog extends View {
     const tall = this.screen === "reset";
     return v_flex().when(it.sep, (el) => el.child(div().mx(7).my(4).h(1).bg(th.border)))
       .child(h_flex().id(`mi-${i}`).h(tall ? 40 : MENU).px(8).gap(9).rounded(7).items_center().justify_between().cursor_pointer()
-        .text_color(it.danger ? th.ansi1 : th.foreground).when(i === this.at, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
+        .text_color(it.danger ? tokens().file_status?.deleted ?? th.ansi1 : th.foreground).when(i === this.at, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
         .on_click((_e, cx) => this.choose(it, cx))
         .child(tall
           ? v_flex().child(div().child(t(`reset.${it.id}`))).child(div().text_size(10.5).text_color(th.dim).child(t(`reset.${it.id}.tip`)))

@@ -421,7 +421,7 @@ export default class GitRebase extends View {
     // Shown always, so you see which branches the option would move; dim while it is off.
     for (const x of this.refsAt(r.hash)) {
       out.push(div().id(`u-${r.hash}-${x.ref}`).ml(30).h(20).flex_none().flex().items_center().text_size(10.5)
-        .text_color(this.updateRefs ? th.muted : th.dim).when(!this.updateRefs, (el) => el.opacity(0.6))
+        .text_color(this.updateRefs ? th.muted : th.dim)
         .child(`⤷ ${t("updateRef")} ${x.ref.replace(/^refs\/heads\//, "")}`));
     }
     return out;
