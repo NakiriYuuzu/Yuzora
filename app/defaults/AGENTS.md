@@ -1049,6 +1049,23 @@ with these differences.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
+- Databases (PostgreSQL, SQL Server, SQLite) live in the sidebar's
+  `yuzora-sidebar-database` mode. Saved connections are the `db` section of
+  `yuzora/settings.json` (`connections`, and `maxRows`, the most rows a result
+  keeps: 100000 by default). Passwords are in the system's credential store,
+  never in that file; don't write one there. Query history is
+  `yuzora/db-history.json` (statements only).
+- Open a table or a query for the person with `pane.split` or `tab.new`:
+  `{"mod": "yuzora-db-table", "props": {"connection": "<id>", "database": null,
+  "schema": "public", "name": "orders", "tab": "data"}}` (`tab`: `data`,
+  `structure` or `sql`), or `{"mod": "yuzora-db-query", "props":
+  {"connection": "<id>", "database": null, "sql": "select …"}}`. Connection
+  ids are in the settings file.
+- Commands go to the shown pane: `yuzora-db-query.run` (the statement under
+  the cursor), `.run_all`, `.stop`; `yuzora-db-table.data`, `.structure`,
+  `.sql`, `.run`, `.stop`; `yuzora-sidebar-database.next`, `.prev`,
+  `.refresh`, `.add`, `.query`. Edited cells are written back only when the
+  person presses Write back.
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
@@ -1066,6 +1083,25 @@ with these differences.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
+- Settings (`app.settings`, ⌘,) open on Yuzora's General page;
+  `{"section": "templates"}` opens another (a Yuzora page's section or mod
+  name, or one of Herdr's sections). A mod becomes a page with
+  `"yuzora": {"settings": {"title": "settings.title", "icon": "icon.svg", "order": 500, "section": "git"}}`
+  and is shown beside the settings nav with `props.section`. General is order
+  0, Templates 800, Mods 900.
+- Agent templates are herdr-core's (`~/.config/herdr-core/templates/<name>.md`,
+  `hc templates`). The Templates settings page edits them on any machine.
+  `yuzora-settings-launch` starts one:
+  `openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {template, machine, space, tab, task}})`,
+  every prop optional. Without the dialog, `yuzora:settings`
+  `runTemplate({template, task, machine, space, tab, cwd, name})` runs
+  `hc run` with `herdr.space`/`herdr.tab` labels, so the terminal lands in
+  that space and tab (a tab id the app doesn't know opens a new tab).
+- `yuzora:settings` also lists mods and layouts with where they came from
+  (`listMods()`), checks one (`checkMod(name)`) and installs a folder
+  (`planInstall(path)` reads it and shows what it would install;
+  `installFolder(plan.token)` installs exactly what that plan read). Mods
+  are trusted code: show the person the plan and ask before installing.
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->

@@ -1,5 +1,39 @@
 {
   "title": "Database",
   "description": "Connections, tables and views",
-  "placeholder": "Coming in lane {lane}."
+  "connections": "Database connections",
+  "empty": "No connections yet.",
+  "loading": "Loading…",
+  "refresh": "Refresh",
+  "conn": {
+    "add": "Add connection",
+    "edit": "Edit connection",
+    "query": "New SQL query",
+    "connected": "connected",
+    "connecting": "connecting…",
+    "failed": "failed"
+  },
+  "db": {
+    "default": "Default database",
+    "none": "No databases"
+  },
+  "tree": {
+    "empty": "No tables or views"
+  },
+  "kind": {
+    "table": "table",
+    "view": "view",
+    "materialized_view": "mat. view",
+    "function": "Functions",
+    "procedure": "Procedures",
+    "sequence": "Sequences",
+    "trigger": "Triggers",
+    "index": "Indexes",
+    "type": "Types",
+    "other": "Other"
+  },
+  "status": {
+    "connecting": "Connecting to {name}…",
+    "failed": "{name} · connection failed"
+  }
 }

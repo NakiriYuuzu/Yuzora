@@ -59,6 +59,9 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
+- L3 資料庫：`app/crates/yuzora-db`（`yuzora:db`）＋ mods `yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query`。設計、API、共用狀態 key 與限制見 `docs/beta2/db.md`。
+- 引擎 integration tests 在 `app/crates/yuzora-db/tests/engines.rs`：SQLite 一律跑；PG／MSSQL 需要 `tests/database/docker-compose.yml` 的容器，並設 `YUZORA_DATABASE_TEST_ENGINES=postgres,mssql`（沒設就印 skip 後通過）。效能量測是 `#[ignore]`，用 `--ignored --nocapture` 跑。
+- 隔離實機執行加 `YUZORA_DB_SECRETS=memory`，密碼只留在該 process，不碰系統 keychain。
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
@@ -71,6 +74,14 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
+#### L6 設定＋MOD／Template
+
+- crate `app/crates/yuzora-settings`（`yuzora:settings`）：`templates`（與 hc 0.1.13 對齊的模板解析、檢查、寫入、遠端 sh 腳本）、`launch`（`hc run` 參數與 label）、`mods`（mods／layouts 分類、還原、從資料夾安裝）、`trash`（各平台垃圾桶）。
+- mods：`yuzora-settings-general`、`-templates`、`-mods`（設定頁）與 `-launch`（「從模板啟動」對話框，`place: none`）。
+- 上游改動只有 `app/defaults/frame/settings/main.js` 帶 `// yuzora(L6):` 的行；邏輯在新檔 `frame/settings/yuzora.js`，字串在 `frame/settings/i18n/`。
+- 測試：`cargo test --locked -p yuzora-settings`；mods 用 `scripts/yuzora/check-mods yuzora-settings-general yuzora-settings-templates yuzora-settings-launch yuzora-settings-mods`；frame 由 `app/src/mods/render_tests.rs` 守，測試環境沒有任何 Yuzora 設定頁，frame 在 `settingsPages()` 為空時也要照常畫出。
+- 測遠端模板腳本時不得碰到真正的垃圾桶：測試的 PATH 只放 cat／mkdir／mv／rm／date／ln。
+- 設計與決策：`docs/beta2/settings.md`。
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
