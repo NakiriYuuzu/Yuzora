@@ -124,14 +124,20 @@ const SCAN: &str = "yuzora-trust-scan";
 /// would read as no gitlinks. Each repo (git dir and work tree) is read once,
 /// in one shell that remembers them: met again below itself, it is a way
 /// back up that git would follow without end, and counts as unreadable; met
-/// again elsewhere, its keys are in already. A quoted path (a `"`, `\` or
-/// control character), an absolute one (git goes there; the scan would look
-/// under the top), a work tree whose name has a line feed (`$(…)` drops one
-/// at the end, so the scan would read another folder: `rev-parse`'s answer
-/// is taken with a `.` after it, and must be two lines then), and more than
-/// 16 levels can't be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a sparse index in a
-/// partial clone never fetches with the repo's ssh.
-const SCAN_SCRIPT: &str = r#"unset GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
+/// again elsewhere, its keys are in already. Like git, it looks from inside
+/// each work tree, by the gitlink's name as it is (one path from the root
+/// could pass PATH_MAX where git's doesn't), and a `.git` it can't see is
+/// passed over only when the gitlink is surely not there: a folder on its way
+/// can be entered and lacks the next part, or is a file. A quoted path (a
+/// `"`, `\` or control character), an absolute one (git goes there; the scan
+/// would look under the top), one git never writes (a `.`, `..` or empty
+/// part, or a drive letter), a gitlink that may be there but can't be looked
+/// at, a work tree whose name has a line feed (`$(…)` drops one at the end,
+/// so the scan would read another folder: `rev-parse`'s answer is taken with
+/// a `.` after it, and must be two lines then), and more than 16 levels can't
+/// be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a
+/// sparse index in a partial clone never fetches with the repo's ssh.
+const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
 GIT_NO_LAZY_FETCH=1
 export GIT_NO_LAZY_FETCH
 tab=$(printf '\t') nl='
@@ -159,14 +165,28 @@ scan() {
     [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
   done
 }
+gone() {
+  case "$1" in */*) up=${1%/*} ;; *) up=. ;; esac
+  if [ -d "$up" ]; then
+    (cd "./$up" && [ ! -e "./${1##*/}" ] && [ ! -L "./${1##*/}" ]) 2>/dev/null
+  elif [ -e "$up" ]; then
+    :
+  else
+    [ ! -L "$up" ] && gone "$up"
+  fi
+}
 enter() {
-  case "$4" in \"*|/*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
-  [ -e "$3/$4/.git" ] || return 0
+  case "/$4/" in /\"*|/?:*|*/./*|*/../*|*//*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
+  cd "$3/" || { printf 'sub\0%s%s\0err\0path\0' "$1" "$4"; return; }
+  if [ ! -e "$4/.git" ]; then
+    gone "$4/.git" || printf 'sub\0%s%s\0err\0path\0' "$1" "$4"
+    return
+  fi
   printf 'sub\0%s%s\0' "$1" "$4"
-  GIT_DIR=.git git -C "$3/$4" config --show-scope -z --get-regexp '@PROGRAMS@'
+  GIT_DIR=.git git -C "$4" config --show-scope -z --get-regexp '@PROGRAMS@'
   c=$?
   if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; return; fi
-  w=$(GIT_DIR=.git git -C "$3/$4" rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w" || { printf 'err\0worktree\0'; return; }
+  w=$(GIT_DIR=.git git -C "$4" rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w" || { printf 'err\0worktree\0'; return; }
   case "$5" in *"$node"*) printf 'err\0cycle\0'; return ;; esac
   case "$seen" in *"$node"*) return ;; esac
   seen=$seen$node
@@ -383,6 +403,11 @@ mod tests {
         // Not checked out: git doesn't look inside, nor does the check.
         std::fs::create_dir_all(Path::new(&top).join("empty")).unwrap();
         link("", "empty", "sub");
+        // Nor are these: no folder, no folder above it, a file in its place.
+        link("", "missing", "sub");
+        link("", "no/where", "sub");
+        std::fs::write(Path::new(&top).join("plain"), "x\n").unwrap();
+        link("", "plain", "sub");
         let marker = Path::new(&top).join("ran");
         git("sub", &["config", "filter.evil.clean", &format!("touch '{}'; cat", marker.display())]);
         std::fs::write(Path::new(&top).join("sub/.gitattributes"), "* filter=evil\n").unwrap();
@@ -426,6 +451,27 @@ mod tests {
         git(at, &["commit", "-qm", "s"]);
         git(at, &["config", "filter.evil.clean", &format!("touch '{}'; cat", mark.display())]);
         git(at, &["rev-parse", "HEAD"])
+    }
+
+    /// The longest path the system takes, its NUL included.
+    const PATH_MAX: usize = if cfg!(target_os = "linux") { 4096 } else { 1024 };
+
+    /// A gitlink to `commit` in `top`'s index named `name`, which git takes
+    /// from no command: a stand-in of the same length, renamed in the index
+    /// file (and its checksum written again).
+    fn link_by_a_name_git_never_writes(git: &impl Fn(&str, &[&str]) -> String, top: &str, commit: &str, name: &str) {
+        let stand_in = "Q".repeat(name.len());
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{commit},{stand_in}")]);
+        let index = Path::new(top).join(".git/index");
+        let bytes = std::fs::read(&index).unwrap();
+        let mut body = bytes[..bytes.len() - 20].to_vec();
+        let at = body.windows(name.len()).position(|w| w == stand_in.as_bytes()).unwrap();
+        body[at..at + name.len()].copy_from_slice(name.as_bytes());
+        let mut sha = std::process::Command::new("shasum").args(["-a", "1"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        std::io::Write::write_all(&mut sha.stdin.take().unwrap(), &body).unwrap();
+        let hex = String::from_utf8(sha.wait_with_output().unwrap().stdout).unwrap();
+        let sum: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        std::fs::write(&index, [body, sum].concat()).unwrap();
     }
 
     /// Whether `git status` at `cwd` runs the clean filter of the repo at
@@ -498,20 +544,7 @@ mod tests {
         let mark = other.join("ran");
         let evil = evil_repo(&git_there, &elsewhere, "ev", &mark);
         let abs = format!("{elsewhere}/ev");
-        // git takes no such name: a stand-in of the same length, renamed in
-        // the index file (and its checksum written again).
-        let stand_in = "Q".repeat(abs.len());
-        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},{stand_in}")]);
-        let index = Path::new(&top).join(".git/index");
-        let bytes = std::fs::read(&index).unwrap();
-        let mut body = bytes[..bytes.len() - 20].to_vec();
-        let at = body.windows(abs.len()).position(|w| w == stand_in.as_bytes()).unwrap();
-        body[at..at + abs.len()].copy_from_slice(abs.as_bytes());
-        let mut sha = std::process::Command::new("sha1sum").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
-        std::io::Write::write_all(&mut sha.stdin.take().unwrap(), &body).unwrap();
-        let hex = String::from_utf8(sha.wait_with_output().unwrap().stdout).unwrap();
-        let sum: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
-        std::fs::write(&index, [body, sum].concat()).unwrap();
+        link_by_a_name_git_never_writes(&git, &top, &evil, &abs);
         assert!(git("", &["ls-files", "-s"]).contains(&format!("\t{abs}")));
         let got = programs_within(None, &top, Duration::from_secs(30));
         let ran = status_runs_the_filter(&top, Path::new(&abs), &mark);
@@ -519,6 +552,79 @@ mod tests {
         std::fs::remove_dir_all(&other).unwrap();
         assert!(ran, "status didn't run the filter, so this proves nothing");
         assert_eq!(got, Ok(vec![format!("{abs}: {UNREADABLE}")]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gitlink_name_with_a_dot_or_empty_part_shuts_the_gate() {
+        // git goes in by the name as it is (`name/.git/commondir` the longest
+        // path it reads first), and these make `top/name/.git` too long.
+        let long = PATH_MAX - 1 - "/.git/commondir".len();
+        for (tag, name) in [
+            ("dots-pad", format!("{}ev", "./".repeat((long - 2) / 2))),
+            ("dots-slash", format!("ev{}", "/".repeat(long - 2))),
+            ("dots-up", format!("{}ev", "x/../".repeat((long - 2) / 5))),
+        ] {
+            let (dir, top, git) = scratch_dir(tag);
+            git("", &["init", "-q"]);
+            std::fs::create_dir_all(Path::new(&top).join("x")).unwrap();
+            let mark = dir.join("ran");
+            let evil = evil_repo(&git, &top, "ev", &mark);
+            link_by_a_name_git_never_writes(&git, &top, &evil, &name);
+            let got = programs_within(None, &top, Duration::from_secs(30));
+            let ran = status_runs_the_filter(&top, &Path::new(&top).join("ev"), &mark);
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(ran, "{tag}: status didn't run the filter, so this proves nothing");
+            assert_eq!(got, Ok(vec![format!("{name}: {UNREADABLE}")]), "{tag}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gitlink_the_scan_cant_look_into_shuts_the_gate() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, top, git) = scratch_dir("locked");
+        git("", &["init", "-q"]);
+        let evil = evil_repo(&git, &top, "ev", &dir.join("ran"));
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},ev")]);
+        // A folder that lists but can't be gone into: `ev/.git` may be there.
+        let ev = Path::new(&top).join("ev");
+        std::fs::set_permissions(&ev, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let hidden = std::fs::metadata(ev.join(".git")).is_err(); // not for root
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        std::fs::set_permissions(&ev, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        if hidden {
+            assert_eq!(got, Ok(vec![format!("ev: {UNREADABLE}")]));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gitlink_past_the_longest_path_from_the_root_is_read_by_its_name() {
+        // `top/name/.git` is past PATH_MAX; git's `name/.git` isn't. Its
+        // config is read by that name; past it the scan goes by paths from
+        // the root (its git dir's is too long), so it's unreadable too.
+        let (dir, top, git) = scratch_dir("deep");
+        git("", &["init", "-q"]);
+        let mark = dir.join("ran");
+        let evil = evil_repo(&git, &top, "ev", &mark);
+        let want = PATH_MAX - 3 - top.len() - 1;
+        let mut name = String::new();
+        while want - name.len() > 201 {
+            name.push_str(&"d".repeat(200));
+            name.push('/');
+        }
+        name.push_str(&"e".repeat(want - name.len()));
+        let at = Path::new(&top).join(&name);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::rename(Path::new(&top).join("ev"), &at).unwrap();
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},{name}")]);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        let ran = status_runs_the_filter(&top, &at, &mark);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(ran, "status didn't run the filter, so this proves nothing");
+        assert_eq!(got, Ok(vec![format!("{name}: {UNREADABLE}"), format!("{name}: filter.evil.clean")]));
     }
 
     #[cfg(unix)]

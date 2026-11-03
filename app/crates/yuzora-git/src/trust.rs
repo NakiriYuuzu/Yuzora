@@ -259,5 +259,8 @@ mod tests {
         let v = crate::status::read(&s.repo, false).unwrap();
         assert!(!std::path::Path::new(&mark).exists(), "status ran the nested repo's clean filter before the folder was trusted");
         assert_eq!(v["trust"], serde_json::json!(["s: (unreadable config)"]));
+        // git status itself goes there and runs it: otherwise this proves nothing.
+        std::process::Command::new("git").args(["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--untracked-files=no"]).current_dir(s.root()).output().unwrap();
+        assert!(std::path::Path::new(&mark).exists(), "git status didn't run the filter, so this proves nothing");
     }
 }
