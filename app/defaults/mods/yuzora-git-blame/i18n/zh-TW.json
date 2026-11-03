@@ -17,5 +17,6 @@
   "log.tab": "Git 紀錄",
   "commit.log": "在紀錄中顯示",
   "commit.previous": "Annotate 上一版",
-  "commit.diff": "與上一版比較"
+  "commit.diff": "與上一版比較",
+  "tab.diff": "差異"
 }

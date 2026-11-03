@@ -151,10 +151,7 @@ export default class SidebarGit extends View {
     const mode = section === "staged" ? "staged" : "unstaged";
     if (section === "conflicts") return this.openMerge(f.path);
     const spec = { cwd: repo.root, on: repo.machine, path: f.path, orig: f.orig ?? null, mode, at: Date.now() };
-    setShared("yuzora.git.diff", spec);
-    const pane = panes().find((p) => p.mod === "yuzora-git-diff");
-    if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: "Diff", mod: "yuzora-git-diff", props: spec });
+    showDiff(spec);
   }
 
   openMerge(path) {
@@ -487,4 +484,24 @@ export default class SidebarGit extends View {
       .child(list)
       .child(commitBox);
   }
+}
+
+// A diff pane beside the focused pane, or in a tab of its own (Git settings).
+function placeDiff(spec, where) {
+  const pane = where !== "tab" && focused()?.pane;
+  if (pane) run("pane.split", { direction: "right", pane, mod: "yuzora-git-diff", props: spec });
+  else run("tab.new", { name: t("tab.diff"), mod: "yuzora-git-diff", props: spec });
+}
+
+// Where a diff opens (Git settings): into the open diff pane, which follows
+// the shared request; else a modal, or straight into a pane as Keep would.
+function showDiff(spec) {
+  const s = gitSettings();
+  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  if (pane) {
+    setShared("yuzora.git.diff", spec);
+    return run("pane.focus", { pane: pane.pane });
+  }
+  if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);
+  openOverlay({ mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props: spec });
 }

@@ -117,5 +117,6 @@
   "identity.unchanged": "Nothing changed.",
   "identity.saved": "Saved {count} settings.",
   "identity.version": "Git version",
-  "identity.executable": "Executable"
+  "identity.executable": "Executable",
+  "tab.diff": "Diff"
 }

@@ -3,7 +3,7 @@
 // Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { theme, props, shared, settings, run, panes } from "herdr";
+import { theme, props, shared, settings, run, panes, focused, closeOverlay } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { open, changed, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
 
@@ -11,10 +11,11 @@ const ROW = 20, CHAR = 7, GUTTER = 44;
 
 export default class GitDiff extends View {
   init(_props, cx) {
-    const s = gitSettings();
-    this.layout = s.diffMode === "unified" ? "unified" : "side";
-    this.whitespace = s.diffIgnoreWhitespace ?? "none";
-    this.context = Number(s.diffContext ?? 3);
+    const s = gitSettings(), p = props() ?? {};
+    // Kept from a modal: the view it had there.
+    this.layout = (p.layout ?? s.diffMode) === "unified" ? "unified" : "side";
+    this.whitespace = p.whitespace ?? s.diffIgnoreWhitespace ?? "none";
+    this.context = Number(p.context ?? s.diffContext ?? 3);
     this.view = null; this.error = null; this.busy = false; this.note = null;
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
     this.scroll = VirtualListScrollHandle.new();
@@ -27,6 +28,8 @@ export default class GitDiff extends View {
   // The newest of the props and the shared request.
   wanted() {
     const p = props() ?? {}, s = shared("yuzora.git.diff");
+    // In a modal, only what it was opened with.
+    if (p.overlay) return p.path ? p : null;
     return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) ? s : p.path ? p : null;
   }
 
@@ -71,6 +74,14 @@ export default class GitDiff extends View {
       this.hunk = Math.min(this.hunk, Math.max(0, view.hunks.length - 1));
     } catch (e) { if (this.loop === loop) this.error = String(e); }
     cx.notify();
+  }
+
+  // Out of the modal into a pane (Git settings: beside the focused pane, or
+  // a tab), shown as it is here.
+  keep() {
+    const { overlay, ...spec } = props() ?? {};
+    placeDiff({ ...spec, at: Date.now(), layout: this.layout, whitespace: this.whitespace, context: this.context }, gitSettings().diffKeepIn);
+    closeOverlay(overlay);
   }
 
   relayout(cx) {
@@ -223,7 +234,7 @@ export default class GitDiff extends View {
     const want = this.wanted();
     if (JSON.stringify(want ?? null) !== JSON.stringify(this.spec ?? null)) this.follow(cx);
     const spec = this.spec, v = this.view;
-    const mono = settings().font_family ?? "JetBrains Mono";
+    const mono = settings().font_family ?? "JetBrains Mono", overlay = props()?.overlay;
     const root = v_flex().id("git-diff").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12)
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx)).on_mouse_down("left", () => this.handle.focus());
     if (!spec) return root.child(div().p(16).text_color(th.dim).child(t("empty")));
@@ -259,8 +270,10 @@ export default class GitDiff extends View {
         .child(this.button("discard", label("discard"), th, stageable && (hunks > 0 || modeOnly), (cx) => { this.askDiscard = { hunks: npicked ? [] : [this.hunk], lines: picked }; cx.notify(); })))
       .when(spec.mode === "staged", (el) => el
         .child(this.button("unstage", label("unstage"), th, stageable && (hunks > 0 || modeOnly), (cx) => this.apply(cx, "unstage", npicked ? [] : [this.hunk], picked))))
-      .child(this.button("blame", t("annotate"), th, Boolean(this.repo), () => run("tab.new", { name: `${t("annotate")} · ${spec.path.split("/").pop()}`, mod: "yuzora-git-blame", props: { cwd: spec.cwd, on: spec.on ?? null, path: spec.path, rev: spec.mode === "commit" ? spec.rev : null } })))
-      .child(this.button("history", t("history"), th, Boolean(this.repo), () => run("tab.new", { name: `${t("history")} · ${spec.path.split("/").pop()}`, mod: "yuzora-git-log", props: { cwd: spec.cwd, on: spec.on ?? null, filter: { paths: [spec.path], follow: true } } })));
+      .child(this.button("blame", t("annotate"), th, Boolean(this.repo), () => { run("tab.new", { name: `${t("annotate")} · ${spec.path.split("/").pop()}`, mod: "yuzora-git-blame", props: { cwd: spec.cwd, on: spec.on ?? null, path: spec.path, rev: spec.mode === "commit" ? spec.rev : null } }); if (overlay) closeOverlay(overlay); }))
+      .child(this.button("history", t("history"), th, Boolean(this.repo), () => { run("tab.new", { name: `${t("history")} · ${spec.path.split("/").pop()}`, mod: "yuzora-git-log", props: { cwd: spec.cwd, on: spec.on ?? null, filter: { paths: [spec.path], follow: true } } }); if (overlay) closeOverlay(overlay); }))
+      // In a modal: Keep moves it into a pane; ✕ (or Esc, or a click beside it) closes it.
+      .when(Boolean(overlay), (el) => el.child(this.button("keep", t("keep"), th, true, () => this.keep())).child(this.button("close", "✕", th, true, () => closeOverlay(overlay))));
 
     let body;
     if (this.error) body = div().p(16).text_color(th.ansi1).child(this.error);
@@ -296,4 +309,11 @@ export default class GitDiff extends View {
       .when(Boolean(v) && !v.stageable && (spec.mode === "unstaged" || spec.mode === "staged") && this.whitespace !== "none", (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.dim).child(t("wsNoStage"))))
       .child(body);
   }
+}
+
+// A diff pane beside the focused pane, or in a tab of its own (Git settings).
+function placeDiff(spec, where) {
+  const pane = where !== "tab" && focused()?.pane;
+  if (pane) run("pane.split", { direction: "right", pane, mod: "yuzora-git-diff", props: spec });
+  else run("tab.new", { name: t("tab.diff"), mod: "yuzora-git-diff", props: spec });
 }

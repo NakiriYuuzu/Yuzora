@@ -6,9 +6,9 @@
 // the graph is a native cell per visible row, so render touches visible rows only.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
-import { spaces, panes, theme, settings, run, props, openOverlay, closeOverlay, notify, setShared } from "herdr";
+import { spaces, panes, focused, theme, settings, run, props, openOverlay, closeOverlay, notify, setShared } from "herdr";
 import { t, tokens, getSetting } from "yuzora:core";
-import { open, trust, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate } from "yuzora:git";
+import { open, trust, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate, settings as gitSettings } from "yuzora:git";
 
 const ROW = 26, LANE = 16, FILE = 24, MENU = 28, MENU_HEAD = 34;
 // Filter boxes after the branch one: [field, width, applied while typing].
@@ -56,7 +56,7 @@ function dropLog(id) {
 }
 
 function openDiff(repo, file, how) {
-  openPane("yuzora.git.diff", "yuzora-git-diff", t("tab.diff"), { cwd: repo.root, on: repo.machine, path: file.path, orig: file.orig ?? null, ...how });
+  showDiff({ cwd: repo.root, on: repo.machine, path: file.path, orig: file.orig ?? null, ...how, at: Date.now() });
 }
 
 function openMerge(repo) {
@@ -719,4 +719,24 @@ export default class GitLog extends View {
       .when(Boolean(this.err), (el) => el.child(div().id("m-err").max_h(90).overflow_y_scrollbar().mx(12).mt(8).text_size(11).text_color(th.ansi1).child(this.err)))
       .when(this.busy, (el) => el.child(div().px(12).pt(6).text_size(11).text_color(th.dim).child(t("working"))));
   }
+}
+
+// A diff pane beside the focused pane, or in a tab of its own (Git settings).
+function placeDiff(spec, where) {
+  const pane = where !== "tab" && focused()?.pane;
+  if (pane) run("pane.split", { direction: "right", pane, mod: "yuzora-git-diff", props: spec });
+  else run("tab.new", { name: t("tab.diff"), mod: "yuzora-git-diff", props: spec });
+}
+
+// Where a diff opens (Git settings): into the open diff pane, which follows
+// the shared request; else a modal, or straight into a pane as Keep would.
+function showDiff(spec) {
+  const s = gitSettings();
+  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  if (pane) {
+    setShared("yuzora.git.diff", spec);
+    return run("pane.focus", { pane: pane.pane });
+  }
+  if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);
+  openOverlay({ mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props: spec });
 }

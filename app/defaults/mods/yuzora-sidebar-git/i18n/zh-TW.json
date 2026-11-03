@@ -68,5 +68,6 @@
   "trust.button": "信任並讀取",
   "trust.status": "未信任的資料夾",
   "trust.refused": "這個資料夾還沒有信任：請先在 Git 側欄信任它（{keys}）。",
-  "path.lossy": "{path}：這個名稱不是 UTF-8，Yuzora 無法把它原樣交給 git，請改用終端機處理。"
+  "path.lossy": "{path}：這個名稱不是 UTF-8，Yuzora 無法把它原樣交給 git，請改用終端機處理。",
+  "tab.diff": "差異"
 }
