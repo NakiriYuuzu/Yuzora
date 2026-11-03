@@ -61,7 +61,7 @@ export default class ImagePane extends View {
     const size = this.size == null ? "" : this.size < 1024 ? `${this.size} B` : this.size < 1048576 ? `${(this.size / 1024).toFixed(1)} KB` : `${(this.size / 1048576).toFixed(1)} MB`;
     return v_flex().id("root").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12.5)
       .child(h_flex().h(28).flex_none().gap(7).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.border)
-        .child(div().flex_none().text_size(10).font_bold().text_color("#c678dd").child(name.toLowerCase().endsWith(".svg") ? "SVG" : "IMG"))
+        .child(div().flex_none().text_size(10).font_bold().text_color(th.ansi5).child(name.toLowerCase().endsWith(".svg") ? "SVG" : "IMG"))
         .child(div().flex_none().max_w(260).truncate().font_semibold().child(name))
         .child(div().flex_1().min_w(0).truncate().text_color(th.dim).child(this.stamp === "missing" ? t("missing") : size))
         .child(h_flex().flex_none().p(2).rounded(5).bg(th.raised)
@@ -69,7 +69,7 @@ export default class ImagePane extends View {
           .child(toggle("actual", t("actual"), this.fit === "actual", (_e, cx) => { this.fit = "actual"; localStorage.setItem("fit", "actual"); cx.notify(); })))
         .child(toggle("checker", t("checker"), this.checker, (_e, cx) => { this.checker = !this.checker; localStorage.setItem("checker", this.checker ? "1" : "0"); cx.notify(); })))
       .child(div().flex_1().min_h(0).child(this.path
-        ? ImageView.new("image", { path: this.path, on: this.on, rev: this.rev, fit: this.fit, colors: { muted: th.dim, ...(this.checker ? { checker: "#f4f4f5" } : {}) } })
+        ? ImageView.new("image", { path: this.path, on: this.on, rev: this.rev, fit: this.fit, colors: this.checker ? { muted: th.solid_foreground, checker: th.solid } : { muted: th.dim } })
         : div().p(24).text_color(th.dim).child(t("none"))));
   }
 }

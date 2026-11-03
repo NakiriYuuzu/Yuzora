@@ -7,7 +7,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 | 路徑 | 內容 |
 | --- | --- |
 | `app/crates/yuzora-files/src/lib.rs` | `yuzora:files` HostModule：函式、3 個原生元件、TypeScript 宣告 |
-| `src/highlight/` | tree-sitter 上色：14 種語言、`InputHighlighter` 實作、One Dark 色盤、無狀態 `highlight()` API |
+| `src/highlight/` | tree-sitter 上色：14 種語言、`InputHighlighter` 實作、One Dark 色盤（mod 以主題色覆寫）、無狀態 `highlight()` API |
 | `src/editor.rs` | 可重用的程式碼編輯器：`new_code_editor()`、`code_editor()`、`Look` |
 | `src/docs.rs` | 開啟中的文件（每個檔案一份 buffer）、存檔衝突檢查、外部變更、搜尋取代、`Editor` 元件 |
 | `src/markdown.rs` | `Markdown` 元件（gpui-base `TextView`，GFM） |
@@ -36,10 +36,10 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 - **外部變更**：本機用 herdr 的 `watchFolder`（檔案所在資料夾）＋15 秒輪詢，遠端 5 秒輪詢，呼叫 `checkDisk`。stamp 變了才讀內容並比對 hash。只到秒的 stamp（遠端的 `stat`、時間精度粗的檔案系統）在同一秒內被改寫成同樣長度時不會變，所以這種 stamp 在第一次看到 2 秒後的讀取確認內容相同之前，每次檢查都讀內容。檢查開始後文件被重新命名的，結果不套用（載入也一樣，改用新路徑重讀）：
   - 內容相同（touch）：只更新 stamp。
   - 沒有未儲存變更：自動重新載入，保留游標與捲動位置。
-  - 有未儲存變更：標成衝突，橫幅提供「重新載入（捨棄我的）／保留我的／覆寫」。
+  - 有未儲存變更：標成衝突，橫幅提供「重新載入（捨棄我的）／保留我的／覆寫」。衝突橫幅的底色與邊框取 `tokens().status.blocked` 的 `header_bg`／`pane_border`（與 L1 等待中 pane 的標頭相同，淺色主題自動換成淺色版本），文字是 `th.blocked`。
   - 檔案消失：橫幅提供「重新儲存」。
   - 只改權限（chmod 不動大小與時間）：本機檢查也比對權限位元，變了才重新判斷能不能寫，編輯器跟著切換唯讀。
-- **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案（Windows 路徑兩種斜線都認、不分大小寫），標頭顯示該 agent 的名稱（Claude Code 用設計稿的 `#2a201c`／`#e8a27f`）。
+- **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案（Windows 路徑兩種斜線都認、不分大小寫），標頭顯示該 agent 的名稱：`raised` 底、`muted` 字，前面一個品牌色圓點（`tokens()` 的 agent 品牌色，沒有時用 `th.blocked`）。品牌色直接當文字在淺色底上不到 4.5:1，所以只用在圓點。
 - 關閉有未儲存變更的 pane：buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回；Yuzora 結束才會遺失。
 - 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。重新讀取時（外部變更、Reload），檔案變成二進位或超過上限就不再顯示編輯器，未存的修改一併丟掉，不會再被存回去；大小跨過 2 MiB 時重建編輯器，上色與摺疊跟著開或關。
 - 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。文件還在載入時輸入的查詢會記住，編輯器建立後再套用。
@@ -48,7 +48,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 
 - tree-sitter 0.27 與 13 個語法 crate：rust、typescript／tsx、javascript（含 JSX）、json、toml、yaml、markdown（block 語法）、python、go、sql（tree-sitter-sequel）、bash、css、html。
 - 增量解析：`InputEdit` 轉成 `tree_sitter::InputEdit`，用舊 tree 重新解析（一批 edit 只重解析一次）；`styles(range)` 只對可見範圍跑 `QueryCursor`。debug 建置下 2 MiB 的 Rust 全文解析約 0.9 秒、增量約 80 ms、一屏約 1–2 ms。
-- capture 名稱對應到固定的語意名稱（keyword、function、type、string…），由 `SyntaxPalette`（`HighlightStyleResolver`）決定顏色；預設 One Dark（設計稿的配色）。
+- capture 名稱對應到固定的語意名稱（keyword、function、type、string…），由 `SyntaxPalette`（`HighlightStyleResolver`）決定顏色；預設 One Dark（設計稿的配色）。編輯器與 Markdown 由 `doc-pane.js` 的 `SYNTAX` 傳入主題色（`syntax: {名稱: 色碼}`，對應到 `ansi1`–`ansi14` 與 `dim`），淺色主題也看得清楚：One Dark 有上色的每個名稱都列出來（覆寫依前綴比對，只列 `function` 的話 `function.builtin` 也會變成 function 的色）。淺色主題的目前行用 hover 與背景各半，程式碼在上面仍有 4.5:1；深色主題維持 hover。語言徽章同樣是主題色的名稱（`languages()` 的 `color`、文件的 `badgeColor`）。
 - 同一段文字有多個 capture 時：範圍最小的優先，一樣大時比 pattern 的限定程度（節點數＋predicate），再相同才取後面的。上游各語言的查詢對先後順序的假設互相矛盾（JS 要後面的贏、JSON 與 Go 要前面的贏），單一規則無法全對。
 - 上游查詢的兩處執行期修補（各有測試）：tree-sitter-sequel 把數字寫成 Lua 的 `%d`，換成 `[0-9]`；tree-sitter-toml-ng 的 `(pair (bare_key)) @property` 會把整個 pair 上色，改成 `(pair (bare_key) @property)`。
 - 摺疊範圍來自語法樹（成對括號跨行的節點、python `block`、markdown `section`…）。
@@ -58,8 +58,8 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 
 - `Markdown` 元件跟著文件的文字版本（每次編輯或重新載入加一）重畫，游標閃爍不會讓它重抓全文；同一份文件在原始碼與預覽間切換時即時同步。
 - 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB，解碼後也不超過 512 MiB（見下方圖片 pane）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做：讀出 bytes（最多 32 MiB，不多讀）、檢查解碼大小，交給 GPUI 的就是這份 bytes 而不是路徑，所以讀完之後檔案變大或被換掉也繞不過限制。畫面只讀快取，10 秒後重新 `stat`，stamp 變了才重讀，同一路徑換了圖也會更新；最後一個 frame 沒畫到、而且 1 分鐘沒畫到的圖片連同 bytes 放掉（之後沒有新的 frame 也會在 1 分鐘後放掉；捲出畫面的圖片捲回來時重讀）。所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。Windows 上 `file:///C:/…` 指的是 `C:/…`。連結只開 http、https、mailto。
-- 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色仍是 One Dark。
-- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；SVG 與檔頭解析不了的交給解碼器。檢視有「符合」與「100%」（原尺寸，比 pane 大時可捲動）、淺色背景；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
+- 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色和編輯器相同（`syntax`），換主題時 code block 重新上色（文字的上色快取以 highlighter 為 key，只有語法色變了才換一個）。
+- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；SVG 與檔頭解析不了的交給解碼器。檢視有「符合」與「100%」（原尺寸，比 pane 大時可捲動）、對比底色（`th.solid`：淺色主題是深底、深色主題是淺底，上面的提示文字用 `solid_foreground`）；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
 
 ### 側欄（`yuzora-sidebar-files`）
 
@@ -113,7 +113,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（141 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、讀不到類型或讀到一半失敗的項目（假的資料夾項目）、原子存檔保留延伸屬性與 ACL（確認換了 inode；ACL 只在 macOS 驗）、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析（不是 UTF-8 的路徑不標記）與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、「<Agent> 也在改」的資料夾比對（在 QuickJS 跑 `doc-pane.js` 的 `within`／`editingAgent`：Windows 兩種斜線、大小寫、UNC，其他平台反斜線是檔名的一部分）、側欄路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、改名後圖片 pane 換成新路徑（在 QuickJS 跑 `open.js`，假的 Herdr：位置、焦點、資料夾改名、已關掉的 pane 不重開）。
+- `cargo test --locked -p yuzora-files`（144 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、讀不到類型或讀到一半失敗的項目（假的資料夾項目）、原子存檔保留延伸屬性與 ACL（確認換了 inode；ACL 只在 macOS 驗）、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析（不是 UTF-8 的路徑不標記）與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、程式碼顏色在兩個 Yuzora 主題都讀得清楚（在 QuickJS 跑 `doc-pane.js` 的 `SYNTAX`／`syntax`／`mix`：One Dark 有上色的名稱都有主題色；淺色主題在背景、code block、目前行上都 ≥ 4.5，語言徽章也是；深色主題不低於 One Dark 與原本的徽章色）、`mix` 混色、Markdown code block 用傳入的語法色且只在語法色變了才換 highlighter、「<Agent> 也在改」的資料夾比對（在 QuickJS 跑 `doc-pane.js` 的 `within`／`editingAgent`：Windows 兩種斜線、大小寫、UNC，其他平台反斜線是檔名的一部分）、側欄路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、改名後圖片 pane 換成新路徑（在 QuickJS 跑 `open.js`，假的 Herdr：位置、焦點、資料夾改名、已關掉的 pane 不重開）。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：
@@ -129,6 +129,13 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
   - `l5-09-image-actual-size.png`：2400×1600 的圖以 100% 顯示（下方 pane，暫時的 probe mod），從左上角原尺寸排版、可捲動，不再置中裁切。
   - `l5-13-file-icons.png`：檔案樹的類型 icon（深色主題 yuzora-dark）：收合的資料夾、程式碼（Rust 琥珀、TS 藍、JS 黃、Go／Python）、圖片、shell、lock、`Cargo.toml`／`package.json`、設定檔、`Dockerfile`、Markdown 與純文字、沒有對照的 `LICENSE`。
   - `l5-14-file-icons-light.png`：同一個資料夾在淺色主題 paper：顏色換成主題的深色 ANSI，在白底上同樣清楚。
+  - 淺色主題 yuzora-light（Yuzora 的 UI 文字在淺色主題都要清楚）：
+    - `l5-15-light-editor.png`：TSX 的語法色、語言徽章、目前行、狀態列（右下顯示目前的主題名稱）；側欄的樹與 git 標記。
+    - `l5-16-light-markdown.png`：Markdown 預覽中 Rust 與 TS 的 code block，各種 token 在 code block 底色上都清楚。
+    - `l5-17-light-banner.png`：在 app 外刪掉開著的檔案，警告橫幅是淺琥珀底、深琥珀字（`tokens().status.blocked`）。
+    - `l5-18-light-image.png`：圖片 pane 的 `IMG` 徽章與切換鈕。「對比背景」開啟時的畫面要點擊才能切換，沒有截圖（`solid_foreground` 在 `solid` 上是 17.7:1）。
+    - `l5-19-dark-editor.png`：同一個檔案在 yuzora-dark，作為對照。
+    - 側欄右鍵選單的刪除項目（`ansi1`）要右鍵才會出現，沒有截圖；用色碼計算是 popover 上 5.69、hover 上 4.60。
 - 沒有在實機驗的（需要鍵盤或滑鼠；未取得 computer-use 授權）：輸入後的未儲存標記與存檔、衝突橫幅、⌘F 搜尋取代、右鍵選單、樹的展開、側欄搜尋、Markdown 原始碼切換、「<Agent> 也在改」。其中存檔與衝突判斷有 `fsops` 單元測試，互動本身都沒有在實機驗過。
 
 ## 已知限制

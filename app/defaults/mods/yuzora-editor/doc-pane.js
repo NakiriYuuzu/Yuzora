@@ -22,6 +22,34 @@ const WENT_KEEP = 7 * 24 * 60 * 60 * 1000;
 
 const parent = path => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
+// Code colors by theme color name, so code reads on light and dark themes
+// alike. A name not listed takes its prefix's (`keyword.control` is a keyword).
+const SYNTAX = {
+  keyword: "ansi5",
+  function: "ansi12", "function.method": "ansi12", link: "ansi12",
+  "function.builtin": "ansi6", operator: "ansi6", "string.escape": "ansi6", "string.special": "ansi6",
+  type: "ansi11", "type.builtin": "ansi11", constructor: "ansi11", namespace: "ansi11", module: "ansi11",
+  string: "ansi2", literal: "ansi2",
+  number: "ansi3", boolean: "ansi3", constant: "ansi3", "constant.builtin": "ansi3", attribute: "ansi3",
+  comment: "dim",
+  property: "ansi1", tag: "ansi1", label: "ansi1", heading: "ansi1", "variable.builtin": "ansi1", "variable.parameter": "ansi1",
+};
+
+// The theme's colors for code (`syntax` of Editor and Markdown). Built with
+// `fromEntries`: mods run with frozen built-in prototypes, where
+// `out.constructor = …` throws.
+function syntax(th) {
+  return Object.fromEntries(Object.entries(SYNTAX).filter(([, color]) => th[color]).map(([name, color]) => [name, th[color]]));
+}
+
+// `a` and `b` (#rrggbb) mixed, `share` of `a`; `a` itself when either isn't #rrggbb.
+function mix(a, b, share) {
+  const rgb = c => /^#[0-9a-f]{6}$/i.test(c ?? "") ? [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)) : null;
+  const [x, y] = [rgb(a), rgb(b)];
+  if (!x || !y) return a;
+  return "#" + x.map((v, i) => Math.round(v * share + y[i] * (1 - share)).toString(16).padStart(2, "0")).join("");
+}
+
 // `path` is `dir` or a file under it. A Windows path (`C:\…`, `\\server\…`)
 // may use either slash, and case doesn't matter there. (A test runs this
 // function on its own: it uses nothing else from this file.)
@@ -221,10 +249,12 @@ export class DocPane extends View {
     else if (e.key === "escape" && this.finding) { this.closeFind(cx); cx.stop_propagation(); }
   }
 
+  // The current line: the hover color, half of it on a light theme so code on it still reads.
   look(th) {
+    const s = settings();
     return {
-      font_family: String(settings().font_family ?? ""), font_size: 12.5, theme: "One Dark",
-      colors: { foreground: th.foreground, muted: th.ansi8, status: th.muted, background: th.background, active_line: th.hover, selection: th.selection, caret: th.foreground, border: th.border },
+      font_family: String(s.font_family ?? ""), font_size: 12.5, theme: String(s.theme ?? ""), syntax: syntax(th),
+      colors: { foreground: th.foreground, muted: th.ansi8, status: th.muted, background: th.background, active_line: s.dark ? th.hover : mix(th.hover, th.background, 0.5), selection: th.selection, caret: th.foreground, border: th.border },
     };
   }
 
@@ -251,14 +281,15 @@ export class DocPane extends View {
     const icon = (id, glyph, label, onClick) => div().id(id).w(20).h(20).flex().items_center().justify_center().rounded(4).cursor_pointer()
       .text_color(th.dim).hover(st => st.bg(th.hover).text_color(th.foreground)).tooltip(label).on_click(onClick).child(glyph);
     return h_flex().h(28).flex_none().gap(7).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.border)
-      .when(Boolean(s?.badge), el => el.child(div().flex_none().text_size(10).font_bold().text_color(s.badgeColor ?? th.muted).child(s.badge)))
+      .when(Boolean(s?.badge), el => el.child(div().flex_none().text_size(10).font_bold().text_color(th[s.badgeColor] ?? th.muted).child(s.badge)))
       .child(div().flex_none().max_w(260).truncate().font_semibold().child(s?.name ?? this.path.split("/").pop()))
       .when(Boolean(s?.dirty), el => el.child(div().w(6).h(6).flex_none().rounded_full().bg(th.foreground).tooltip(t("header.unsaved"))))
       .when(this.kind() === "markdown", el => el.child(div().flex_none().text_color(th.dim).child(this.view === "preview" ? t("header.preview") : t("header.source"))))
       .when(this.kind() !== "markdown", el => el.child(div().flex_1().min_w(0).truncate().text_color(th.dim).child(s?.dir ?? "")))
       .when(this.kind() === "markdown", el => el.child(div().flex_1()))
-      .when(Boolean(agent), el => el.child(div().flex_none().px(6).py(1).rounded(8).text_size(11)
-        .bg(agent.program?.key === "claude" ? "#2a201c" : th.raised).text_color(agent.program?.key === "claude" ? "#e8a27f" : brand ?? th.blocked)
+      .when(Boolean(agent), el => el.child(h_flex().flex_none().gap(5).items_center().px(6).py(1).rounded(8).text_size(11)
+        .bg(th.raised).text_color(th.muted)
+        .child(div().w(6).h(6).flex_none().rounded_full().bg(brand ?? th.blocked))
         .child(t("header.agent", { agent: agent.program?.name ?? agent.app ?? "Agent" }))))
       .when(Boolean(s?.readonly) && s?.phase === "ready", el => el.child(div().flex_none().text_size(11).text_color(th.dim).child(t("header.readonly"))))
       .when(this.kind() === "markdown", el => el.child(h_flex().flex_none().p(2).rounded(5).bg(th.raised).child(toggle("source", t("header.source"))).child(toggle("preview", t("header.preview")))))
@@ -267,11 +298,12 @@ export class DocPane extends View {
 
   banners(th, s) {
     if (!s || s.phase !== "ready") return [];
+    const warn = tokens().status?.blocked ?? {};
     const button = (id, label, onClick, primary) => div().id(id).h(22).px(8).rounded(5).flex().items_center().cursor_pointer().text_size(11.5)
       .bg(primary ? th.solid : "#00000000").text_color(primary ? th.solid_foreground : th.foreground).border_1().border_color(primary ? th.solid : th.input)
       .on_click(onClick).child(label);
     const banner = (text, tone, buttons = []) => h_flex().flex_none().gap(8).px(10).py(6).items_center().text_size(12)
-      .bg(tone === "warn" ? "#1d1a14" : th.raised).border_b(1).border_color(tone === "warn" ? "#8a6420" : th.border)
+      .bg(tone === "warn" ? warn.header_bg ?? th.raised : th.raised).border_b(1).border_color(tone === "warn" ? warn.pane_border ?? th.border : th.border)
       .child(div().flex_1().min_w(0).text_color(tone === "warn" ? th.blocked : th.muted).child(text)).children(buttons);
     const out = [];
     if (s.conflict) out.push(banner(t("banner.conflict"), "warn", [
@@ -317,7 +349,7 @@ export class DocPane extends View {
     if (s.tooLarge) return this.message(th, t("message.too_large"));
     if (this.view === "preview") {
       return div().flex_1().min_h(0).child(Markdown.new(`md-${this.owner}`, { doc: this.doc,
-        colors: { foreground: th.foreground, body: th.foreground, muted: th.muted, link: th.ansi4, code: th.raised, border: th.border } }));
+        colors: { foreground: th.foreground, body: th.foreground, muted: th.muted, link: th.ansi4, code: th.raised, border: th.border }, syntax: syntax(th) }));
     }
     return div().flex_1().min_h(0).child(Editor.new(`ed-${this.owner}`, { doc: this.doc, owner: this.owner, status: true, ...this.look(th) }));
   }

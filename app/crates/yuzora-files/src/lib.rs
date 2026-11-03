@@ -39,6 +39,7 @@ pub const NAME: &str = "yuzora:files";
 pub const DECLARATIONS: &str = r##"
 type On = { on?: string | null };
 export interface FileEntry { name: string; dir: boolean; link: boolean; hidden: boolean; size: number }
+/** `color`: a theme color's name (`theme()[color]`). */
 export interface Language { id: string; name: string; badge: string; color: string }
 export interface GitMarks { top: string; branch: string | null; detached: boolean; ahead: number; behind: number;
   /** Absolute path → "M" | "A" | "D" | "U" | "?". */
@@ -47,6 +48,7 @@ export interface GrepHit { path: string; line: number; column: number; text: str
 export interface DocumentState {
   doc: number; seq: number; path: string; on: string | null; name: string; dir: string;
   phase: "loading" | "ready" | "failed"; error: string | null;
+  /** `badgeColor`: a theme color's name (`theme()[badgeColor]`). */
   language: string | null; languageName: string | null; badge: string | null; badgeColor: string | null;
   eol: "LF" | "CRLF"; bom: boolean; size: number;
   binary: boolean; tooLarge: boolean; large: boolean; notUtf8: boolean; readonly: boolean; remote: boolean;
@@ -189,7 +191,7 @@ fn language(l: Lang) -> HostValue {
         .field("id", l.id())
         .field("name", l.name())
         .field("badge", l.badge())
-        .field("color", format!("#{:06x}", l.badge_color()))
+        .field("color", l.badge_color())
         .into()
 }
 
@@ -909,6 +911,147 @@ mod tests {
         let want: Vec<bool> = cases.iter().map(|(.., want)| *want).collect();
         assert_eq!(got, want);
         assert_eq!((agent.as_deref(), none), (Some("codex"), None));
+    }
+
+    // Code and its language's badge read on both Yuzora themes: AA on the light
+    // one; on the dark one, no less than One Dark and the old badge colors did.
+    #[test]
+    fn code_reads_on_both_yuzora_themes() {
+        use gpui::Hsla;
+        use gpui_base::input::HighlightStyleResolver as _;
+
+        use crate::highlight::{SyntaxPalette, parse_hex};
+        let src = include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js");
+        let part = |start: &str, end: &str| {
+            let at = src.find(start).unwrap();
+            &src[at..at + src[at..].find(end).unwrap() + end.len()]
+        };
+        let script = |th: &str| {
+            format!(
+                // As mods run: strict, with the built-in prototypes frozen.
+                "(() => {{ 'use strict'; Object.freeze(Object.prototype); {}{}{} const th = {th}; return JSON.stringify([syntax(th), mix(th.hover, th.background, 0.5)]); }})()",
+                part("\nconst SYNTAX = {", "\n};\n"),
+                part("\nfunction syntax(", "\n}\n"),
+                part("\nfunction mix(", "\n}\n"),
+            )
+        };
+        let lum = |c: Hsla| {
+            let c = c.to_rgb();
+            let ch = |v: f32| {
+                let v = v as f64;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
+        };
+        let contrast = |a: Hsla, b: Hsla| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let hex = |s: &str| parse_hex(s).unwrap();
+        let one_dark = SyntaxPalette::one_dark();
+        // Before the badges took theme colors.
+        let old_badge = |lang: Lang| match lang {
+            Lang::Rust | Lang::Html => "#f08a5d",
+            Lang::TypeScript | Lang::Tsx | Lang::Python => "#60a5fa",
+            Lang::JavaScript | Lang::Json => "#e5c07b",
+            Lang::Toml => "#9ca3af",
+            Lang::Yaml => "#f87171",
+            Lang::Markdown => "#93c5fd",
+            Lang::Go => "#7dd3fc",
+            Lang::Sql => "#a78bfa",
+            Lang::Bash => "#86d17a",
+            Lang::Css => "#f472b6",
+        };
+        for (file, light) in [
+            (
+                include_str!("../../../defaults/themes/yuzora-dark.json"),
+                false,
+            ),
+            (
+                include_str!("../../../defaults/themes/yuzora-light.json"),
+                true,
+            ),
+        ] {
+            // As `theme()` gives it: the colors and ansi0–ansi15.
+            let theme: serde_json::Value = serde_json::from_str(file).unwrap();
+            let mut th = theme["colors"].as_object().unwrap().clone();
+            for (i, a) in theme["ansi"].as_array().unwrap().iter().enumerate() {
+                th.insert(format!("ansi{i}"), a.clone());
+            }
+            let c = |k: &str| hex(th[k].as_str().unwrap());
+            let runtime = quickjs::Runtime::new().unwrap();
+            let context = quickjs::Context::full(&runtime).unwrap();
+            let out: String = context.with(|ctx| {
+                ctx.eval(script(&serde_json::Value::from(th.clone()).to_string()))
+                    .unwrap()
+            });
+            let (code, mixed): (HashMap<String, String>, String) =
+                serde_json::from_str(&out).unwrap();
+            let mut names: Vec<&str> = code.keys().map(String::as_str).collect();
+            let mut colored = one_dark.colored();
+            names.sort_unstable();
+            colored.sort_unstable();
+            assert_eq!(
+                names, colored,
+                "every name One Dark colors takes a theme color"
+            );
+            // Code on the editor, a Markdown code block and the current line.
+            let active = if light { hex(&mixed) } else { c("hover") };
+            for (name, color) in &code {
+                for (bg, on) in [
+                    ("background", c("background")),
+                    ("raised", c("raised")),
+                    ("current line", active),
+                ] {
+                    let r = contrast(hex(color), on);
+                    if light {
+                        assert!(r >= 4.5, "light: {name} on {bg} is {r:.2}");
+                    } else {
+                        let was = contrast(one_dark.style(name).unwrap().color.unwrap(), on);
+                        assert!(
+                            r + 0.01 >= was,
+                            "dark: {name} on {bg} is {r:.2}, One Dark's {was:.2}"
+                        );
+                    }
+                }
+            }
+            for lang in Lang::all() {
+                let r = contrast(c(lang.badge_color()), c("background"));
+                if light {
+                    assert!(r >= 4.5, "light: {} badge is {r:.2}", lang.id());
+                } else {
+                    let was = contrast(hex(old_badge(*lang)), c("background"));
+                    assert!(
+                        r + 0.01 >= was,
+                        "dark: {} badge is {r:.2}, was {was:.2}",
+                        lang.id()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn doc_pane_mixes_two_colors() {
+        let src = include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js");
+        let at = src.find("\nfunction mix(").unwrap();
+        let mix = &src[at..at + src[at..].find("\n}\n").unwrap() + 3];
+        let script = format!(
+            "(() => {{ {mix} return JSON.stringify([mix('#000000', '#ffffff', 0.5), mix('#e3e7f2', '#FFFFFF', 0.5), mix('#102030', '#000000', 1), mix('#00000000', '#ffffff', 0.5), mix('#ffffff', undefined, 0.5)]); }})()"
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let got: Vec<String> = serde_json::from_str(&out).unwrap();
+        // Not two #rrggbb: the first as it is.
+        assert_eq!(
+            got,
+            ["#808080", "#f1f3f9", "#102030", "#00000000", "#ffffff"]
+        );
     }
 
     #[test]

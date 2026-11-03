@@ -258,7 +258,7 @@ fn from_id_accepts_ids_aliases_and_extensions() {
     for lang in Lang::all() {
         assert_eq!(Lang::from_id(lang.id()), Some(*lang));
         assert!(!lang.name().is_empty() && !lang.badge().is_empty());
-        assert!(lang.badge_color() <= 0xffffff);
+        assert!(lang.badge_color().starts_with("ansi"));
     }
     for (alias, lang) in [
         ("RS", Lang::Rust),

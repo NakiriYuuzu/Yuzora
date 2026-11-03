@@ -107,6 +107,8 @@ struct Colors {
     link: Option<Hsla>,
     code: Option<Hsla>,
     border: Option<Hsla>,
+    /// Code blocks' colors by semantic name, as the editor's (`syntax`).
+    syntax: Vec<(String, Hsla)>,
 }
 
 impl Colors {
@@ -125,7 +127,14 @@ impl Colors {
             link: c("link"),
             code: c("code"),
             border: c("border"),
+            syntax: crate::editor::syntax_overrides(props),
         }
+    }
+
+    /// Highlights code blocks in these colors.
+    fn highlighter(&self) -> highlight::CodeBlockHighlighter {
+        let palette = SyntaxPalette::one_dark().with_overrides(self.syntax.clone());
+        highlight::code_block_highlighter(Arc::new(palette))
     }
 }
 
@@ -312,8 +321,8 @@ impl MarkdownView {
             id,
             base,
             remote,
+            highlighter: colors.highlighter(),
             colors,
-            highlighter: highlight::code_block_highlighter(Arc::new(SyntaxPalette::one_dark())),
             text: SharedString::default(),
             rev: u64::MAX,
             images: Arc::default(),
@@ -423,6 +432,19 @@ impl MarkdownView {
                 cx.notify();
             }
         })
+    }
+
+    /// The script's colors. Code blocks are colored again only when their
+    /// colors change: they cache their highlighting by the highlighter.
+    fn set_colors(&mut self, colors: Colors, cx: &mut Context<Self>) {
+        if self.colors == colors {
+            return;
+        }
+        if self.colors.syntax != colors.syntax {
+            self.highlighter = colors.highlighter();
+        }
+        self.colors = colors;
+        cx.notify();
     }
 
     fn base_of(doc: &Entity<DocView>, cx: &App) -> Option<PathBuf> {
@@ -549,10 +571,7 @@ pub fn markdown_component(
             v.images = Arc::default();
             cx.notify();
         }
-        if v.colors != colors {
-            v.colors = colors;
-            cx.notify();
-        }
+        v.set_colors(colors, cx);
     });
     view.into_any_element()
 }
@@ -560,6 +579,53 @@ pub fn markdown_component(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn code_blocks_take_the_script_colors(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let key = docs::DocKey {
+            on: None,
+            path: dir.path().join("a.md").to_string_lossy().into_owned(),
+        };
+        let id = cx.update(|cx| docs::open(key, cx));
+        cx.run_until_parked();
+        let doc = cx.update(|cx| docs::get(id, cx).unwrap());
+        let obj = |kv: Vec<(&str, HostValue)>| {
+            HostValue::Object(kv.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+        };
+        let colors = |keyword: &str, link: &str| {
+            Colors::from_props(&obj(vec![
+                ("colors", obj(vec![("link", HostValue::Str(link.into()))])),
+                (
+                    "syntax",
+                    obj(vec![("keyword", HostValue::Str(keyword.into()))]),
+                ),
+            ]))
+        };
+        let block = gpui_base::text::CodeBlock::from_code("fn main() {}", Some("rust"));
+        // `fn`, a keyword.
+        let keyword = |v: &MarkdownView| {
+            (v.highlighter)(&block)
+                .into_iter()
+                .find(|(range, _)| *range == (0..2))
+                .and_then(|(_, style)| style.color)
+        };
+        let (red, blue) = ("#ff0000", "#0000ff");
+        let view = cx.new(|cx| MarkdownView::new(doc, "md".into(), colors(red, red), cx));
+        view.update(cx, |v, cx| {
+            assert_eq!(keyword(v), highlight::parse_hex(red));
+            let first = v.highlighter.clone();
+            v.set_colors(colors(red, blue), cx);
+            assert!(
+                Arc::ptr_eq(&first, &v.highlighter),
+                "same code colors, same highlighting"
+            );
+            v.set_colors(colors(blue, blue), cx);
+            assert_eq!(keyword(v), highlight::parse_hex(blue));
+        });
+    }
 
     #[gpui::test]
     fn images_follow_a_rename_of_the_folder(cx: &mut gpui::TestAppContext) {

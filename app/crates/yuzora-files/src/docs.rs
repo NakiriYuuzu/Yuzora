@@ -1046,10 +1046,7 @@ impl DocView {
             .field("language", lang.map(Lang::id))
             .field("languageName", lang.map(Lang::name))
             .field("badge", self.facts.lang.map(Lang::badge))
-            .field(
-                "badgeColor",
-                self.facts.lang.map(|l| format!("#{:06x}", l.badge_color())),
-            )
+            .field("badgeColor", self.facts.lang.map(Lang::badge_color))
             .field(
                 "eol",
                 match self.facts.eol {
@@ -1230,7 +1227,7 @@ impl DocView {
             .look
             .status
             .or(self.look.muted)
-            .unwrap_or_else(|| gpui::rgb(0xa1a1aa).into());
+            .unwrap_or_else(crate::editor::fallback_muted);
         div()
             .flex()
             .flex_none()
@@ -1332,8 +1329,8 @@ fn elsewhere(view: Entity<DocView>, owner: String, look: &Look) -> AnyElement {
     let muted = look
         .status
         .or(look.muted)
-        .unwrap_or_else(|| gpui::rgb(0xa1a1aa).into());
-    let border = look.border.unwrap_or_else(|| gpui::rgb(0x34353a).into());
+        .unwrap_or_else(crate::editor::fallback_muted);
+    let border = look.border.unwrap_or_else(crate::editor::fallback_border);
     div()
         .flex()
         .flex_col()

@@ -296,7 +296,7 @@ pub fn image_component(
             Some("actual") => Fit::Actual,
             _ => Fit::Contain,
         },
-        muted: color("muted").unwrap_or_else(|| gpui::rgb(0xa1a1aa).into()),
+        muted: color("muted").unwrap_or_else(crate::editor::fallback_muted),
         checker: color("checker"),
     };
     let s = crate::strings();

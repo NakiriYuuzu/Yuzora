@@ -339,7 +339,7 @@ export default class FilesSidebar extends View {
     const pathLine = here?.root ? tilde(here.root) + (here.branch ? ` · ${here.branch}` : "") : "";
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
       .child(h_flex().flex_none().pt(2).px(12).pb(6).gap(6).items_center()
-        .child(div().w(16).h(16).flex_none().rounded(4).bg(badgeBg).text_color("#ffffff").text_size(10).font_bold().flex().items_center().justify_center()
+        .child(div().w(16).h(16).flex_none().rounded(4).bg(badgeBg).text_color(tk.text.on_badge).text_size(10).font_bold().flex().items_center().justify_center()
           .child((space?.name ?? "?").slice(0, 1).toUpperCase()))
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
         .child(div().flex_none().px(6).py(1).rounded(4).bg(th.raised).text_size(11).text_color(th.muted)
@@ -455,7 +455,7 @@ export default class FilesSidebar extends View {
     return v_flex().id("menu").size_full().p(6).gap(0).bg(th.popover).text_color(th.foreground).text_size(12.5)
       .children(items.map((it, i) => it
         ? h_flex().id(`item-${i}`).h(28).px(8).rounded(5).items_center().gap(8)
-          .text_color(it.enabled === false ? th.dim : it.danger ? "#f08a8a" : th.foreground)
+          .text_color(it.enabled === false ? th.dim : it.danger ? th.ansi1 : th.foreground)
           .when(it.enabled !== false, el => el.cursor_pointer().hover(s => s.bg(th.hover)).on_click((_e, cx) => { closeOverlay(props().overlay); it.run(); }))
           .child(div().flex_1().child(it.label))
         : div().h(1).my(4).mx(4).bg(th.border)));

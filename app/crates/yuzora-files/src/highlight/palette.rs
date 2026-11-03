@@ -186,6 +186,16 @@ impl SyntaxPalette {
         &self.name
     }
 
+    /// The names it gives a color of its own.
+    #[cfg(test)]
+    pub(crate) fn colored(&self) -> Vec<&'static str> {
+        self.styles
+            .iter()
+            .filter(|(_, s)| s.color.is_some())
+            .map(|(k, _)| *k)
+            .collect()
+    }
+
     /// Replaces colours by semantic name. An override keeps the palette's
     /// weight, slant and underline for that name.
     pub fn with_overrides(mut self, overrides: impl IntoIterator<Item = (String, Hsla)>) -> Self {

@@ -104,19 +104,19 @@ impl Lang {
         }
     }
 
-    /// Badge colour as `0xRRGGBB`.
-    pub fn badge_color(self) -> u32 {
+    /// The badge's colour: a theme colour's name (`theme()[name]`), so it
+    /// reads on light and dark themes alike. As the files tree's icons.
+    pub fn badge_color(self) -> &'static str {
         match self {
-            Lang::Rust | Lang::Html => 0xf08a5d,
-            Lang::TypeScript | Lang::Tsx | Lang::Python => 0x60a5fa,
-            Lang::JavaScript | Lang::Json => 0xe5c07b,
-            Lang::Toml => 0x9ca3af,
-            Lang::Yaml => 0xf87171,
-            Lang::Markdown => 0x93c5fd,
-            Lang::Go => 0x7dd3fc,
-            Lang::Sql => 0xa78bfa,
-            Lang::Bash => 0x86d17a,
-            Lang::Css => 0xf472b6,
+            Lang::Rust => "ansi3",
+            Lang::TypeScript | Lang::Tsx | Lang::Python => "ansi4",
+            Lang::JavaScript | Lang::Json => "ansi11",
+            Lang::Toml | Lang::Yaml => "ansi6",
+            Lang::Go => "ansi14",
+            Lang::Markdown => "ansi12",
+            Lang::Sql | Lang::Css => "ansi13",
+            Lang::Bash => "ansi2",
+            Lang::Html => "ansi1",
         }
     }
 

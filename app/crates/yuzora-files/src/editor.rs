@@ -75,6 +75,41 @@ fn color(v: Option<&HostValue>) -> Option<Hsla> {
     v.and_then(HostValue::as_str).and_then(highlight::parse_hex)
 }
 
+/// Muted text where a script gave no color (`muted`, `status`): the dim of
+/// the theme's kind, so it reads on a light background too.
+pub(crate) fn fallback_muted() -> Hsla {
+    gpui::rgb(if yuzora_core::tokens::light() {
+        0x5b5b64
+    } else {
+        0xa1a1aa
+    })
+    .into()
+}
+
+/// A border where a script gave none, for the theme's kind.
+pub(crate) fn fallback_border() -> Hsla {
+    gpui::rgb(if yuzora_core::tokens::light() {
+        0xe2e2e6
+    } else {
+        0x34353a
+    })
+    .into()
+}
+
+/// A script's syntax colors, `syntax: {name: "#hex"}`, by semantic name
+/// (what [`SyntaxPalette::with_overrides`] takes).
+pub(crate) fn syntax_overrides(props: &HostValue) -> Vec<(String, Hsla)> {
+    props
+        .get("syntax")
+        .and_then(HostValue::as_object)
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| Some((k.clone(), color(Some(v))?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 impl Look {
     /// From a script's props: `{font_family, font_size, colors: {foreground, muted,
     /// background, active_line, selection, caret, border, status}, syntax: {name: "#hex"}}`.
@@ -83,15 +118,7 @@ impl Look {
     pub fn from_props(props: &HostValue, previous: Option<&Look>) -> Self {
         let colors = props.get("colors");
         let get = |k: &str| color(colors.and_then(|c| c.get(k)));
-        let overrides: Vec<(String, Hsla)> = props
-            .get("syntax")
-            .and_then(HostValue::as_object)
-            .map(|o| {
-                o.iter()
-                    .filter_map(|(k, v)| Some((k.clone(), color(Some(v))?)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let overrides = syntax_overrides(props);
         let syntax = match previous {
             Some(p) if p.overrides == overrides => p.syntax.clone(),
             _ => Arc::new(SyntaxPalette::one_dark().with_overrides(overrides.clone())),
