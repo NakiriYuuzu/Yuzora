@@ -24,6 +24,13 @@ use crate::status::Scope;
 
 /// Bigger sides aren't diffed (shown as "too large").
 pub const MAX_SIDE: usize = 16 << 20;
+/// Nor sides of more lines: each costs the diff far more than its bytes.
+pub const MAX_LINES: usize = 1_000_000;
+
+/// Whether a side is past what is diffed here ([`MAX_SIDE`], [`MAX_LINES`]).
+pub fn is_too_large(side: &[u8]) -> bool {
+    side.len() > MAX_SIDE || side.iter().filter(|b| **b == b'\n').count() > MAX_LINES
+}
 /// Word diff inside blocks up to this size.
 const WORD_DIFF_LINES: usize = 300;
 const WORD_DIFF_CHARS: usize = 40_000;
@@ -148,7 +155,7 @@ impl DiffSession {
                 None => worktree(&repo, &path),
             }),
         };
-        let too_large = left.as_ref().is_some_and(|l| l.len() > MAX_SIDE) || right.as_ref().is_some_and(|r| r.len() > MAX_SIDE);
+        let too_large = [&left, &right].iter().any(|s| s.as_deref().is_some_and(is_too_large));
         let binary = !too_large && [&left, &right].iter().any(|s| s.as_ref().is_some_and(|b| b[..b.len().min(8000)].contains(&0)));
         let changes = if too_large || binary {
             Vec::new()
@@ -172,13 +179,14 @@ impl DiffSession {
     pub fn view(&self, layout: &str, context: i64, ws: Whitespace) -> Value {
         let l = self.left.as_deref().unwrap_or_default();
         let r = self.right.as_deref().unwrap_or_default();
-        let ll = diff::lines(l);
-        let rl = diff::lines(r);
-        let changes = if ws == Whitespace::Exact { self.changes.clone() } else if self.binary || self.too_large { Vec::new() } else { diff::diff_lines(&ll, &rl, ws) };
+        // Not shown: no lines either (a large side would split into many).
+        let shown = !(self.binary || self.too_large);
+        let (ll, rl) = if shown { (diff::lines(l), diff::lines(r)) } else { (Vec::new(), Vec::new()) };
+        let changes = if ws == Whitespace::Exact { self.changes.clone() } else if shown { diff::diff_lines(&ll, &rl, ws) } else { Vec::new() };
         let add: usize = changes.iter().map(|c| c.b.len()).sum();
         let del: usize = changes.iter().map(|c| c.a.len()).sum();
         let hunks: Vec<Value> = changes.iter().enumerate().map(|(i, c)| json!({ "index": i, "a": [c.a.start, c.a.end], "b": [c.b.start, c.b.end] })).collect();
-        let rows = if self.binary || self.too_large { Vec::new() } else { rows(&ll, &rl, &changes, layout == "unified", context, ws) };
+        let rows = if shown { rows(&ll, &rl, &changes, layout == "unified", context, ws) } else { Vec::new() };
         json!({
             "id": self.id,
             "path": self.path,
@@ -511,7 +519,6 @@ impl DiffSession {
         if worktree(&self.repo, &self.path) != self.right {
             return Err(GitError::other("the file changed since this diff was read; reload it"));
         }
-        let (l, r) = self.sides();
         let abs = self.repo.abs(&self.path);
         // A change of mode alone goes back whole (git restores the mode).
         let all = sel.covers_all(&self.changes) || (self.changes.is_empty() && self.modes.is_some());
@@ -524,6 +531,7 @@ impl DiffSession {
         } else if is_link(&self.repo, &self.path, self.index_entry.as_ref().map(|e| e.0.as_str())) {
             return Err(GitError::other("a symbolic link changes as a whole: discard all of it"));
         } else {
+            let (l, r) = self.sides();
             let content = combine(&l, &r, &self.changes, sel, Pick::Revert);
             if self.right.is_none() && self.left.is_some() {
                 // A deleted file comes back as git had it (mode, type) first.
@@ -676,6 +684,21 @@ mod tests {
         }
         assert_eq!(s.read("f.txt"), "a\nB\n");
         assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "g.txt\n");
+    }
+
+    #[test]
+    fn a_side_of_too_many_lines_is_too_large_to_compare() {
+        let s = scratch();
+        s.commit("big.txt", "a\n", "small");
+        // Far under 16 MiB, but each line costs the diff more than its byte.
+        s.write("big.txt", &"\n".repeat(MAX_LINES + 1));
+        let d = DiffSession::load(s.repo.clone(), "big.txt".into(), None, Mode::Unstaged).unwrap();
+        assert!(d.too_large && d.changes.is_empty(), "too large: {}", d.too_large);
+        let v = d.view("side", 3, Whitespace::Exact);
+        assert_eq!((v["tooLarge"].clone(), v["rows"].as_array().map(Vec::len)), (json!(true), Some(0)));
+        // Whole, it still stages.
+        d.stage(&sel_all(&[])).unwrap();
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]).trim(), "big.txt");
     }
 
     #[test]

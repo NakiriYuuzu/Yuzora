@@ -42,7 +42,7 @@
   "kind.deleted.yours": "Yours 刪除",
   "kind.deleted.theirs": "Theirs 刪除",
   "file.binary": "二進位檔案：沒有文字可以合併，請整個接受其中一邊。",
-  "file.tooLarge": "檔案太大（超過 16 MiB），無法在這裡合併，請整個接受其中一邊。",
+  "file.tooLarge": "檔案太大（超過 16 MiB 或 100 萬行），無法在這裡合併，請整個接受其中一邊。",
   "file.notConflicted": "{path} 已經沒有衝突。",
   "file.oneSide": "只有一邊新增或刪除：請整個接受其中一邊。",
   "apply": "套用",

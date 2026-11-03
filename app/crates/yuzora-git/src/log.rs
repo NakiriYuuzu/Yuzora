@@ -449,7 +449,7 @@ impl LogSession {
                 let input: String = batch.iter().map(|h| to_hex(h) + "\n").collect();
                 let mut got = Vec::new();
                 let mut p = MetaParser::default();
-                let r = crate::trust::check(&me.repo).and_then(|()| me.repo.run(Git::read(["log", "--no-walk=unsorted", "--stdin", "--encoding=UTF-8", META_FORMAT]).stdin(input.into_bytes())));
+                let r = crate::trust::check(&me.repo).and_then(|()| me.repo.run(log_read(&me.repo, ["--no-walk=unsorted", "--stdin", "--encoding=UTF-8", META_FORMAT]).stdin(input.into_bytes())));
                 if let Ok(out) = r {
                     p.feed(&out.stdout, |c, m| got.push((c.hash, Arc::new(m))));
                 }
@@ -579,7 +579,7 @@ impl LogSession {
             });
             !cancel.is_cancelled()
         };
-        let cmd = Git::read(["log", "--encoding=UTF-8", META_FORMAT, &format!("--max-count={n}")]).args(revs.clone()).arg("--").cancel(Some(cancel.clone()));
+        let cmd = log_read(&self.repo, ["--encoding=UTF-8", META_FORMAT, &format!("--max-count={n}")]).args(revs.clone()).arg("--").cancel(Some(cancel.clone()));
         crate::exec::run_streaming(&self.repo.place, cmd, Some(&mut sink))?.into_result()?;
         let first_complete = commits.len() < n;
         let sorted = topo_sort(commits);
@@ -608,7 +608,7 @@ impl LogSession {
             hp.feed(b, |c| all.push(c));
             !cancel.is_cancelled()
         };
-        let cmd = Git::read(["log", "--date-order", "--format=%H%x00%P%x00%ct"]).args(start_revs(&refs, true)).arg("--").cancel(Some(cancel.clone())).timeout(crate::exec::LONG_TIMEOUT);
+        let cmd = log_read(&self.repo, ["--date-order", "--format=%H%x00%P%x00%ct"]).args(start_revs(&refs, true)).arg("--").cancel(Some(cancel.clone())).timeout(crate::exec::LONG_TIMEOUT);
         crate::exec::run_streaming(&self.repo.place, cmd, Some(&mut sink))?.into_result()?;
         if cancel.is_cancelled() {
             return Err(GitError::Cancelled);
@@ -639,7 +639,7 @@ impl LogSession {
         let mut recent = Vec::new();
         let mut meta = HashMap::new();
         let mut p = MetaParser::default();
-        let out = self.repo.run(Git::read(["log", "--encoding=UTF-8", META_FORMAT, &format!("--max-count={RECENT}")]).args(start_revs(&refs, true)).arg("--").cancel(Some(cancel.clone())))?.into_result()?;
+        let out = self.repo.run(log_read(&self.repo, ["--encoding=UTF-8", META_FORMAT, &format!("--max-count={RECENT}")]).args(start_revs(&refs, true)).arg("--").cancel(Some(cancel.clone())))?.into_result()?;
         p.feed(&out, |c, m| {
             meta.insert(c.hash.clone(), Arc::new(m));
             recent.push(c);
@@ -697,7 +697,7 @@ impl LogSession {
                 });
                 !cancel.is_cancelled()
             };
-            let mut cmd = Git::read(["log", "--encoding=UTF-8", META_FORMAT]).cancel(Some(cancel.clone())).timeout(crate::exec::LONG_TIMEOUT);
+            let mut cmd = log_read(&self.repo, ["--encoding=UTF-8", META_FORMAT]).cancel(Some(cancel.clone())).timeout(crate::exec::LONG_TIMEOUT);
             if stage != usize::MAX {
                 cmd = cmd.arg(format!("--max-count={stage}"));
             }
@@ -740,6 +740,15 @@ impl LogSession {
         }
         Ok(())
     }
+}
+
+/// `git log` as the log pane reads it. It loads and refreshes on its own
+/// (opening, refs moving), so until the person trusts the folder a partial
+/// clone never fetches what it lacks: that contacts the remote the repo's
+/// own config names, plain URL or not. A trusted folder fetches as git does.
+fn log_read<'a>(repo: &Repo, args: impl IntoIterator<Item = &'a str>) -> Git {
+    let cmd = Git::read(["log"]).args(args);
+    if crate::trust::trusted_folder(repo) { cmd } else { cmd.env("GIT_NO_LAZY_FETCH", "1") }
 }
 
 /// HEAD (when there is one), branches, remotes, and on the full read, tags.
@@ -1206,6 +1215,40 @@ mod tests {
         let log = open(s.repo.clone(), filter);
         wait_loaded(&log);
         assert!(marker.exists(), "the log didn't fetch, so this test proves nothing");
+        close(log.id);
+    }
+
+    #[test]
+    fn an_untrusted_partial_clone_never_fetches_what_its_log_lacks() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.commit("a.txt", "2\n", "second");
+        // The promisor remote is a plain URL, so nothing waits for trust;
+        // a path-filtered log still reads a tree the clone lacks.
+        let src = s.dir.path().join("src.git");
+        let out = std::process::Command::new("git").args(["clone", "-q", "--bare", "--no-local", s.root()]).arg(&src).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        for (key, value) in [("remote.origin.url", format!("file://{}", src.display())), ("remote.origin.promisor", "true".into())] {
+            s.git(&["config", key, &value]);
+        }
+        assert_eq!(crate::trust::pending(&s.repo).unwrap(), Vec::<String>::new());
+        let tree = s.git(&["rev-parse", "HEAD~1^{tree}"]).trim().to_owned();
+        std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &tree[..2], &tree[2..]))).unwrap();
+        let present = || s.repo.run(Git::read(["cat-file", "-e", &tree]).env("GIT_NO_LAZY_FETCH", "1")).unwrap().ok();
+        let filter = Filter { paths: vec!["a.txt".into()], ..Filter::default() };
+        let log = open(s.repo.clone(), filter.clone());
+        wait_loaded(&log);
+        assert!(!present(), "the log fetched from the promisor remote before the folder was trusted");
+        log.start(true);
+        wait_loaded(&log);
+        assert!(!present(), "a refresh fetched before the folder was trusted");
+        close(log.id);
+        // Trusted, the same log fetches what it lacks and reads it all.
+        crate::trust::trust(&s.repo).unwrap();
+        let log = open(s.repo.clone(), filter);
+        wait_loaded(&log);
+        assert!(present(), "the log didn't fetch, so this test proves nothing: {}", log.info());
+        assert_eq!(log.info()["rows"], 2, "{}", log.info());
         close(log.id);
     }
 }
