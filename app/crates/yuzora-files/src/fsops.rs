@@ -827,19 +827,27 @@ fn replace_atomically(
     let in_place = |backups: &Path| write_in_place(target, bytes, backups, unchanged);
     let original = std::fs::metadata(target).ok().filter(|m| m.is_file());
     if original.is_some() {
-        // The file's own write bit decides, as it would for an in-place write.
-        std::fs::OpenOptions::new().write(true).open(target)?;
+        // The file's own write bit decides, as it would for an in-place write
+        // (opened as a regular file: a FIFO swapped in meanwhile isn't waited on).
+        let mut write = std::fs::OpenOptions::new();
+        write.write(true);
+        open_checked(write, target)?;
     }
     let dir = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let scratch = scratch_path(dir);
-    let mut file = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&scratch)
-    {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Owner-only until it holds the content and is about to replace the
+    // file: only then does it take the file's mode, so nobody the file
+    // keeps out can open it meanwhile.
+    #[cfg(unix)]
+    if original.is_some() {
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    }
+    let mut file = match options.open(&scratch) {
         Ok(f) => f,
         // A directory that cannot hold a scratch file around a writable file:
         // the backup goes to a folder of the app's own.
@@ -867,12 +875,12 @@ fn replace_atomically(
     let staged = (|| {
         file.write_all(bytes)?;
         file.flush()?;
-        if let Some(m) = &original {
-            file.set_permissions(m.permissions())?;
-        }
         file.sync_all()?;
         if !unchanged()? {
             return Ok(false);
+        }
+        if let Some(m) = &original {
+            file.set_permissions(m.permissions())?;
         }
         std::fs::rename(&scratch, target).map(|()| true)
     })();
@@ -2101,6 +2109,32 @@ mod tests {
         );
         #[cfg(target_os = "macos")]
         assert!(acl(&f), "the ACL entry is gone");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_is_owner_only_until_it_replaces_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "notes.txt", b"old\n");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let target = Path::new(&f);
+        // Right before the swap the new content is all in the scratch file:
+        // nobody else may open it, whatever the file's own mode.
+        let private = || {
+            let modes: Vec<u32> = std::fs::read_dir(d.path())
+                .unwrap()
+                .map(|e| e.unwrap())
+                .filter(|e| is_scratch_name(&e.file_name().to_string_lossy()))
+                .map(|e| e.metadata().unwrap().permissions().mode() & 0o777)
+                .collect();
+            assert_eq!(modes, [0o600]);
+            Ok(true)
+        };
+        assert!(replace_atomically(target, b"new\n", &private).unwrap());
+        assert_eq!(std::fs::read(target).unwrap(), b"new\n");
+        let mode = std::fs::metadata(target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 
     #[cfg(unix)]

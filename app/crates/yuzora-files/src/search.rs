@@ -615,9 +615,9 @@ pub fn grep_local(
         if bytes[..bytes.len().min(8 << 10)].contains(&0) {
             continue;
         }
-        let Ok(text) = std::str::from_utf8(&bytes) else {
-            continue;
-        };
+        // Not UTF-8 throughout: searched as shown, each bad byte a U+FFFD
+        // (as rg's lines are).
+        let text = String::from_utf8_lossy(&bytes);
         let Ok(rel) = entry.path().strip_prefix(base) else {
             continue;
         };
@@ -1428,6 +1428,27 @@ mod tests {
             r.map(|r| (r.hits.len(), r.hits[0].ranges.len())),
             Ok((1, TEXT_CHARS))
         );
+    }
+
+    #[test]
+    fn the_builtin_search_reads_a_file_that_is_not_all_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"caf\xe9 needle\nneedle two\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+        let r = grep_local(root, "needle", false, false, false, 10).unwrap();
+        let hits: Vec<_> = r
+            .hits
+            .iter()
+            .map(|h| (h.line, h.column, h.text.as_str(), h.ranges.clone()))
+            .collect();
+        assert_eq!(
+            hits,
+            [
+                (1, 6, "caf\u{fffd} needle", vec![(5, 11)]),
+                (2, 1, "needle two", vec![(0, 6)])
+            ]
+        );
+        assert_eq!((r.files, r.skipped), (1, false));
     }
 
     #[cfg(unix)]
