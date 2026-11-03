@@ -31,7 +31,7 @@ export function setLocale(choice: "system" | "en" | "zh-TW"): void;
 export function t(key: string, vars?: Record<string, string | number>): string;
 /** Another mod's text for key. */
 export function translate(mod: string, key: string, vars?: Record<string, string | number>): string;
-/** Design tokens a theme has no name for: diff, agents, space_badges, status shapes, metrics. */
+/** Design tokens a theme has no name for: diff, agents, space_badges, status shapes, metrics. For the theme showing: a light one gets its own text, diff and status colors. */
 export function tokens(): Record<string, any>;
 /** Mods whose mod.json declares "yuzora": { "pane": {...} } (the + new pane menu). */
 export function panes(): PaneEntry[];

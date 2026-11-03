@@ -115,6 +115,19 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 - 取樣只在 worker thread。量單次取樣成本：用 app 的隔離環境變數執行 `cargo run --release -p yuzora-perf --example cost -- <app pid>`。
 <!-- yuzora:lane:L8:end -->
 
+<!-- yuzora:lane:L9:start -->
+#### L9 Herdr 相容與上游同步
+
+- 文件：`docs/beta2/herdr-compat.md`（Yuzora 與官方 Herdr.app 共用 herdr-core 時的盤點、待決策項）。
+- 上游同步：照 `docs/beta2/architecture.md`「上游同步流程」做 `git subtree pull`，commit 後跑 `app/scripts/yuzora/sync-check`（`--quick` 不跑 cargo test）。同步 PR 一律 merge commit。
+- Yuzora 只讀 `YUZORA_APP_HOME`，不讀 `HERDR_APP_HOME`。上游測試若只設 `HERDR_APP_HOME`，會在真實的 `~/.config/yuzora` 開 app home，要補上 `YUZORA_APP_HOME`（sync-check 會擋）。
+- 和 Herdr.app 一起實測：
+  - 兩邊用同一組 `env -i`、`HC_SESSION`、XDG 目錄；Herdr.app 另外設 `HERDR_APP_HOME`、`HERDR_TELEMETRY=0`、`HERDR_RELEASES_URL=http://127.0.0.1:9`（擋掉自我更新）。
+  - 直接執行 `/Applications/Herdr.app/Contents/MacOS/Herdr`，不要用 `open`（會帶進 `HERDR_*`）。
+  - 兩個 app 都會收養對方的終端機；在任一邊關閉收養來的 Space／tab／pane，會在 core 裡結束那個終端機。
+- `hc server stop` 在任何 app 開著時，1 秒內就會被它的 `hc connect` 重新啟動（程式全部結束）。只對隔離 session 做。
+<!-- yuzora:lane:L9:end -->
+
 ## Release platform support
 
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon（M 系列）。候選版與正式版使用 `aarch64-apple-darwin`，不得重新加入 Intel／universal App 安裝包或 `darwin-x86_64` updater entry。

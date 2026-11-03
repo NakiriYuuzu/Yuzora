@@ -133,28 +133,8 @@ impl Setup {
 
     /// Title, what's going on, and the line under the buttons.
     fn words(&self) -> (String, String, String) {
-        match &self.need {
-            Need::Install => (
-                "Herdr needs herdr-core".into(),
-                "herdr-core runs your terminals and agents, and keeps them alive when this window closes. Herdr couldn't find it on this computer.".into(),
-                format!("Install it for me puts it in {CORE_PLACE} (with hc), like its own installer: {CORE_INSTALL}"),
-            ),
-            Need::Fix(Mismatch::TooOld { have, need }) => (
-                "Herdr needs a newer herdr-core".into(),
-                format!("Yours is {have}; this Herdr needs {need} or newer. Updating keeps your terminals running."),
-                "Or update it yourself: hc update".into(),
-            ),
-            Need::Fix(Mismatch::Missing(methods)) => (
-                "Herdr needs a newer herdr-core".into(),
-                format!("Your herdr-core can't do everything this Herdr needs ({}). Updating keeps your terminals running.", methods.join(", ")),
-                "Or update it yourself: hc update".into(),
-            ),
-            Need::Fix(Mismatch::Newer { generation }) => (
-                "This Herdr is older than your herdr-core".into(),
-                format!("Your herdr-core speaks a newer protocol (generation {generation}) than this Herdr understands. Update Herdr; your terminals keep running."),
-                format!("Update Herdr: {APP_INSTALL}"),
-            ),
-        }
+        // yuzora(L9): Yuzora's name, and that Herdr may share the core (src/yuzora/herdr_compat.rs).
+        crate::yuzora::herdr_compat::setup_words(&self.need, CORE_PLACE, CORE_INSTALL, APP_INSTALL)
     }
 }
 
