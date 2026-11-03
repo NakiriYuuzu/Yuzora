@@ -10,6 +10,13 @@
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
 
+> **beta.2（`app/`，herdr-app 基底）**：打包、更新 manifest、金鑰用途、beta.1 升級與建議的發布步驟見 [`docs/beta2/release.md`](beta2/release.md)。beta.2 的發布 workflow 尚未實作（release.md §6，需使用者授權發布方式與 secrets 的 environment）；在它取代現行流程之前，本手冊 §4–§10 描述的是 v0.1.0-beta.1 以前的 Tauri App 發布。與 Tauri 版的差異：
+>
+> - Windows 改用 per-user NSIS 安裝程式，固定檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI，MSI `ProductVersion` 編碼也不適用；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`。macOS 仍只有 Apple Silicon（`Yuzora-macos-aarch64.dmg`）。
+> - App 自己的更新改讀 `yuzora-update.json`，以 Tauri updater 同一把 minisign 金鑰簽章（`.sig`），App 驗不過就不更新。要讓 beta.1 的預覽通道升級到 beta.2 時，另附 Tauri 格式的 `latest.json`（Stable 不附，以免 0.0.19 的 stable 通道讀到）。
+> - 固定下載別名仍只上傳到 Stable；Beta 只有版本化檔名。
+> - `.github/workflows/app-package.yml` 只產出四平台 artifacts 與未簽章的 manifest，不建 tag、不發布、不讀 secret。
+
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
 
 ## 1. Source of truth
@@ -125,6 +132,13 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 - `scripts/finalize-updater-metadata.ts`
 - `scripts/prepare-updater-metadata.ts`
 - `src-tauri/tauri.conf.json` 的 updater public key／endpoint
+
+beta.2 起同一把金鑰也簽 `yuzora-update.json`，下列檔案同屬供應鏈安全敏感變更（`docs/beta2/release.md` §4）：
+
+- `app/src/yuzora/release/manifest.rs` 的 `TRUSTED_KEYS` 與驗證規則
+- `app/scripts/yuzora/manifest.ts`
+- `.github/workflows/app-package.yml`
+- beta.2 的發布 workflow（實作後）
 
 這些變更應由指定 maintainer review。建議後續將 signing secrets 放入具 required reviewer 的 protected GitHub Environment；在完成前不得宣稱此 gate 已啟用。
 
@@ -428,7 +442,9 @@ Windows 只發行 MSI；`Yuzora-windows-x64-setup.exe` 固定連結已停止更�
 - 產品頁直接使用的 macOS DMG 與 Windows MSI，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
 - MSI alias 若新增其他頁面或 script consumer，也要一併更新並補測試。
 
-固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
+固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。
+
+beta.2 的 Windows 固定檔名改為 `Yuzora-windows-x64-setup.exe`（per-user NSIS），macOS 不變。產品頁（`site/index.html`、`site/downloads.js`、`tests/site-downloads.test.js`）已先改成 beta.2 的檔名；beta.2 的發布 workflow 必須在 Stable release 上傳這兩個別名。在第一個帶這兩個別名的 Stable release 發布前，`releases/latest/download/Yuzora-windows-x64-setup.exe` 找不到檔案（v0.0.19 只有 `.msi`），macOS 的固定連結則仍下載 v0.0.19 的 Tauri App；Pages 部署 beta.2 產品頁之前必須先決定如何處理（見 §11）。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
 
 ### 7.4 Finalize updater metadata
 
@@ -621,6 +637,10 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
+- 產品頁內容已改為介紹 beta.2（herdr-app 基底的原生 App）。尚待決定：
+  - Pages 在 beta.2（Pre-release）合併進 `main` 時就會部署，但產品頁的固定下載連結要等 Stable 0.1.0 才有 beta.2 的檔案（見 §7.3）。
+  - 是否在產品頁提供 Linux 下載（目前只有 macOS 與 Windows；`tests/site-page.test.js` 守著沒有 Linux 列）。
+  - 三段功能影片與它們的 poster、互動 Demo（`src/demo/`）仍是 Tauri 版介面；hero 與社群預覽圖暫用 `docs/beta2/evidence/` 的截圖，檔案（L5）與 Git（L2）合併後再換最終截圖。
 
 ### 產品頁 smoke test
 

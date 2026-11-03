@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.1.0-beta.2] - 未發布
+
+Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI、libghostty、QuickJS mods）為基底重寫成原生 App。終端機與 agent 改由 herdr-core（`hc`）執行，關掉視窗也會繼續；介面依新設計重做。
+
+### 新增與改善
+
+- 工作區側欄：Spaces／Agents 分頁、每台機器的 scope chip（LED 顯示連線狀態）、「需要注意」區，以及機器 → Space → worktree → agent 的樹；agent 狀態同時以顏色與形狀表示（工作中、需要回覆、完成、閒置）。
+- 新增 Space 時先選資料夾（遠端機器輸入路徑並在那台機器上確認），Space 以資料夾命名；同一個資料夾已有 Space 時直接切換過去。
+- 混合分割：「＋ 新增 pane」把工具 pane、終端機或 agent 放在目前 pane 的右側或下方，同一個 tab 裡可以混排；tab 列每個 tab 帶 Space 徽章與狀態，agent 需要回覆時 pane 邊框與標頭轉為琥珀色。
+- 狀態列顯示 pane／Space／agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本；右下角顯示這台電腦上 Yuzora 的 CPU 與記憶體用量（App、herdr-core 的終端機與 agent、Yuzora 啟動的工具），點擊展開明細。
+- Git 以 IntelliJ IDEA Community 為基準、採 staging area 模式：側欄的變更、暫存與 commit，可逐塊與逐行暫存的 diff pane，提交紀錄與分支圖、分支、push、三方合併、互動式 rebase、annotate，以及 stash、tag、remote、worktree、submodule、patch。repo 自己的 Git 設定會執行程式的資料夾要先信任才會動作。
+- 檔案與編輯器：帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器（存檔前檢查衝突、尋找與取代、磁碟上的變更即時跟上）、Markdown 預覽與圖片檢視。
+- 資料庫：PostgreSQL、SQL Server、SQLite 連線（密碼存在系統鑰匙圈）、資料庫切換與 schema 樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）與 SQL 分頁；SQL pane 可執行多個結果集、取消與查看歷史紀錄。
+- SSH／SFTP：列出 `~/.ssh/config`、Yuzora 自建主機與 herdr machines，顯示連線狀態與延遲；首次連線以指紋確認主機金鑰，金鑰變更時警告；SFTP 雙欄傳輸可以拖放、取消、重試、續傳，並保留權限與時間；遠端檔案可用本機文字編輯器開啟，存檔時自動上傳。
+- 設定：「一般」頁（語系、主題、字型與大小、縮放、終端機剪貼簿寫入），以及列出各功能設定頁的「Yuzora」分組；隱私頁說明 Yuzora 不收集也不傳送任何資料。
+- Agent 模板：在設定裡管理各台機器的 herdr-core 模板（表單編輯、存檔前檢查、移到垃圾桶），並能啟動到指定的 Space 與 tab。
+- MOD 管理：列出內建、已修改、複製與個人的 mods 與 layouts 及其錯誤；可複製、檢查、切換或還原 layout，並在顯示信任警告後從資料夾安裝。Yuzora 自己的介面就是 mods，可以複製後修改。
+- 深色與淺色主題（yuzora-dark、yuzora-light），預設跟隨系統；介面支援英文與繁體中文。
+- 與官方 Herdr 共用 herdr-core：版本不符的畫面改用 Yuzora 的名稱並說明 core 是共用的；core 重新啟動後若變成 Yuzora 不能用的版本，Yuzora 不會接上，並一直顯示原因，恢復後自動重新連線。
+- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，重新啟動時套用。beta 版預設走 beta 通道。
+- 不再傳送任何使用資料；意見回饋改開 GitHub Issue。
+- 命令列程式叫 `yuzora`，不會蓋掉官方 Herdr 的 `herdr-app`。
+
+### 已移除
+
+- Browser、Companion（手機遠端控制）與 AgentZone 不在 beta.2；編輯器不提供 LSP。
+
+### 已知限制
+
+- beta.1 的資料不會自動搬過來：資料庫連線、SSH 主機與設定需要重新設定；beta.1 的檔案原封不動，回到 beta.1 仍可使用。
+- 資料庫還不能經由 SSH tunnel 連線；遠端機器上的檔案在這一版只能瀏覽與唯讀開啟。
+- 更新通道目前只能在 `~/.config/yuzora/yuzora/settings.json` 的 `update.channel` 修改，設定頁還沒有選項。
+- app home 已經有 layout 時（例如用過開發版），不會自動加入新的介面元件（例如右下角的資源用量），要重設 layout 才會出現。
+- 和 Herdr 同時使用時，在任一邊關閉收養來的 Space、tab 或 pane，會結束那邊的終端機；只要任一個 App 開著，`hc server stop` 後 core 會在一秒內重新啟動。
+- Windows 的遠端模板、垃圾桶與 SSH agent，以及 Windows、Linux 上與 Herdr 共用 core 的行為，只通過 CI 編譯與測試，尚未實機驗證。
+
+### 安裝說明
+
+- macOS App 僅支援 Apple Silicon，只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證；第一次開啟要到「系統設定 › 隱私權與安全性」按「仍要打開」。每次更新後 macOS 可能會再詢問一次麥克風、相機或資料夾權限。
+- Windows 改用免系統管理員權限的 NSIS 安裝程式 `Yuzora_<version>_x64-setup.exe`（安裝到 `%LOCALAPPDATA%\Programs\Yuzora`），不再出 MSI；安裝完會詢問是否移除 beta.1 的全機安裝。Authenticode 尚未啟用，可能出現 SmartScreen 提示。
+- Linux 提供 x86_64 與 aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install`。
+- 需要 herdr-core 0.1.11 以上；沒有安裝時，第一次開啟的畫面會提供安裝。
+- beta.1 的預覽通道會在 beta.2 的 release 提供升級檔時帶你升級；否則請手動下載。
+
 ## [0.1.0-beta.1] - 2026-10-26
 
 ### 新增與改善
