@@ -390,8 +390,15 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 第六輪（reviewer 複審 `4ee825ea`）：
 
 - blocker：`.git/modules/<name>` 本身是 gitfile（`gitdir: ../evil.git`）時，掃描只列資料夾，看不到它指向的 git dir。git 在自己的 process 裡打開 submodule 時（`repo_submodule_init` → `resolve_gitdir_gently`）會跟著 gitfile 走：repo 設了 `push.recurseSubmodules=check`／`on-demand` 或 `submodule.recurse` 時，push 檢查 submodule 的 commit（`find_unpushed_submodules`）就會打開它。若它是缺那個 commit 的 partial clone，git 2.44 以前（不認得 `GIT_NO_LAZY_FETCH`）會 lazy fetch，執行它的 `remote.origin.uploadpack`；`reach` 放行 file 傳輸。第五輪「push 不會進入未 checkout 的 git dir」的說法因此是錯的。兩個修正都做：
-  - (a) 掃描：`modules/` 底下開頭是 `gitdir: ` 的一般檔案（`find -L -type f`，指向檔案的 symlink 也算）也交給 git（`GIT_DIR=<檔案>`，git 會跟著 gitfile 走），讀它指向的 git dir 與那個 git dir 自己的 `modules/`；git 不接受的當成讀不到。git 只看檔案開頭、不讀超過 1 MiB 的 gitfile（實測 512 KiB 接受、1.5 MiB 拒絕），掃描先用 grep 篩 2 MiB 以下的檔案，再比對第一行。
+  - (a) 掃描：`modules/` 底下開頭是 `gitdir: ` 的一般檔案（`find -L -type f`，指向檔案的 symlink 也算）也交給 git（`GIT_DIR=<檔案>`，git 會跟著 gitfile 走），讀它指向的 git dir 與那個 git dir 自己的 `modules/`；git 不接受的當成讀不到。git 只看檔案開頭、不讀超過 1 MiB 的 gitfile（實測 512 KiB 接受、1.5 MiB 拒絕），掃描先用 grep 篩 2 MiB 以下的檔案，再比對第一行。（第七輪更正：指向 gitfile 的 symlink 有兩種基準，`GIT_DIR=<link>` 和 git 自己打開 submodule 時讀到的不一定是同一個 git dir，見第七輪。）
   - 其他讓 git 從 submodule 名稱解析出 git dir 的方式：`modules/<name>` 是資料夾（第五輪）、gitfile 或指向兩者的 symlink（這一輪）、git 2.54 起 `extensions.submodulePathConfig` 的 `submodule.<name>.gitdir` 可以指到任何地方。最後一種不另外解析路徑，這個 key 本身就要等信任（在 repo 自己的設定與每個 submodule git dir 的設定裡都算）。push 的檢查、`diff.submodule=log` 這類在同一個 process 裡打開 submodule 的讀取都經過這三種，所以掃描涵蓋它們，不必逐一處理。
-  - (b) 未信任時 push 加 `--recurse-submodules=no`，和 fetch、pull 一致。
+  - (b) 未信任時 push 加 `--recurse-submodules=no`，和 fetch、pull 一致。（第七輪更正：這一輪只改了 branch push，tag push 沒改，見第七輪。）
 - 測試：core 測 gitfile、指向 gitfile 的 symlink、gitfile 指向的 git dir 自己的 `modules/`、git 不接受的 gitfile（讀不到）、第一行不是 `gitdir: ` 的檔案（不算）與 `submodule.x.gitdir`；yuzora-git 端到端照 reviewer 的重現：gitfile 指向缺 commit 的 partial clone，用一個拿掉 `GIT_NO_LAZY_FETCH` 的 git（`GIT_EXEC_PATH` 換成包裝過的 git）模擬 2.44 以前，未信任時 push 不會執行 `uploadpack`；把 remote 退回後信任再 push，確實會執行，證明測試有效。
 - 30 個 submodule git dir、8 千多個資料夾的合成例子，掃描約 1 秒；這個 repo（ghostty 的 git dir）約 0.12 秒。
+
+第七輪（reviewer 複審 `d4486750`）：
+
+- blocker：`.git/modules/<name>` 是指向 gitfile 的 symlink、gitfile 裡寫的是相對路徑時，掃描用 `GIT_DIR=<link>`，git 以 link 所在的資料夾為基準解讀這個路徑；git 在自己的 process 裡打開 submodule 時（`repo_init` 先 `real_pathdup`，再 `resolve_gitdir_gently`），以 gitfile 本身所在的資料夾為基準。兩邊得到不同的 git dir：掃描讀到乾淨的那個，push 打開的卻是缺 commit 的 partial clone。另外第六輪的 (b) 只改了 branch push，`tag_push`（單一 tag，以及 pushAll 的 `push --tags`）未信任時仍會檢查 submodule。git 2.44 以前，這兩種 push 都會執行 `uploadpack`。兩個修正都做：
+  - (a) 掃描先取實際路徑（`real`：逐層 `readlink` 解開最後一段的 symlink，最多 40 層，再以 `cd -P`／`pwd -P` 取所在資料夾），用實際路徑交給 git，基準和 `repo_init` 一致。路徑經過 symlink 時，link 基準也照舊讀一次，兩個 git dir 都算（以 git 回報的實際 git dir 去重）。取不到實際路徑（沒有 `readlink`、超過 40 層）當成讀不到。資料夾候選不必取：資料夾裡沒有相對路徑要解讀（`commondir` 也照實際路徑解析），兩種基準是同一個資料夾。
+  - (b) `ops.rs` 每個 push 都改用 `push_args`，未信任時加 `--recurse-submodules=no`。共 5 處：`push`、`tag_push`（單一 tag 與 `--tags`）、刪除遠端 branch（`branchDelete`）、刪除遠端 tag（`tagDelete`）。只刪除的 push 沒有要推的 commit，git 不檢查 submodule（實測 `push.recurseSubmodules=check` 擋下 branch push，刪除照常成功），所以後兩處沒有行為差別，只是寫法一致。
+- 測試：core 新增「symlink 指向更深一層的 gitfile」，兩種基準各放一個 key，兩個都要列出，link 基準那個 git dir 自己的 `modules/` 也要列出。yuzora-git 端到端照 reviewer 的重現：`.git/modules/s` 是 symlink，link 基準是乾淨的 bare repo，實際基準是缺 commit 的 partial clone；用舊版 git 模擬，未信任時 branch push、單一 tag push、push 全部 tag 都不執行 `uploadpack`，信任後三種都會執行，證明測試有效。每次 push 前把 remote 退回，並刪掉 partial clone 抓進來的 pack，否則只有第一次會 lazy fetch，信任後的對照組會失效。
