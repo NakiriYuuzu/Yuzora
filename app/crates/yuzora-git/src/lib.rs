@@ -466,17 +466,24 @@ pub fn host_module() -> HostModule {
 }
 
 /// Writes a saved file, never through a symlink in its place (a repo can
-/// put one where the patch goes, pointing at a file of the person's).
+/// put one where the patch goes, pointing at a file of the person's), and
+/// only to a regular file: opening a FIFO to write waits for a reader.
 fn write_not_through_a_link(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(std::io::Error::other("a symbolic link: not followed"));
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => return Err(std::io::Error::other("a symbolic link: not followed")),
+        Ok(m) if !m.is_file() => return Err(std::io::Error::other("not a regular file")),
+        _ => {}
     }
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
     // Also when one appears between the look and the open.
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NOFOLLOW);
-    std::io::Write::write_all(&mut o.open(path)?, bytes)
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let mut file = o.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    std::io::Write::write_all(&mut file, bytes)
 }
 
 /// `from_host` re-exported for tests.
@@ -533,6 +540,21 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("the log never loaded");
+    }
+
+    // A FIFO where the patch goes: opening it to write waits for a reader
+    // that never comes, and Save Patch hung for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_patch_never_waits_on_a_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("changes.patch");
+        let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(write_not_through_a_link(&fifo, b"x\n")));
+        let r = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("Save Patch waited on the FIFO");
+        assert!(r.is_err_and(|e| e.to_string().contains("not a regular file")));
     }
 
     #[cfg(unix)]
