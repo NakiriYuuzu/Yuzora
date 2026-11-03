@@ -23,8 +23,10 @@
 //!   writes the work tree or the index, and `fetch`, `pull`, `push`.
 //!
 //! Submodules count with their own config: every checked-out gitlink in
-//! the index, nested ones too. `status` and `diff` look into those whether
-//! or not a `.gitmodules` names them.
+//! the index, nested ones too, found where git looks for them (a
+//! submodule's own `core.worktree` may put its work tree elsewhere).
+//! `status` and `diff` look into those whether or not a `.gitmodules`
+//! names them.
 //!
 //! A folder's id is `<machine>:<top>` (machine empty here), `top` as
 //! `git rev-parse --show-toplevel` prints it there. The trusted ids live in
@@ -89,13 +91,20 @@ pub fn repo_programs<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E
         _ => return Ok(vec![UNREADABLE.into()]),
     };
     // The submodules, whatever the repository's own config said.
-    let alias = format!("alias.{SCAN}=!{}", SCAN_SCRIPT.replace("@PROGRAMS@", PROGRAMS));
+    let alias = format!("alias.{SCAN}=!{}", SCAN_SCRIPT.replace("@PROGRAMS@", PROGRAMS).replace("@SCAN@", SCAN));
     let (code, out) = run(&["-c", &alias, SCAN])?;
-    if code != 0 {
+    if code != 0 || !scanned_to_the_end(&out) {
         keys.insert(UNREADABLE.into());
     }
     keys.extend(repo_keys(&out, "?"));
     Ok(keys.into_iter().collect())
+}
+
+/// Whether the scan's answer ends with its last record (`end\0<SCAN>\0`,
+/// records in pairs): one that stopped part way may lack a submodule.
+fn scanned_to_the_end(out: &[u8]) -> bool {
+    let parts: Vec<&[u8]> = out.split(|b| *b == 0).collect();
+    parts.len() >= 3 && parts.len() % 2 == 1 && parts[parts.len() - 3] == b"end" && parts[parts.len() - 2] == SCAN.as_bytes() && parts[parts.len() - 1].is_empty()
 }
 
 /// The command line's own alias for [`SCAN_SCRIPT`]: git runs it in the top
@@ -104,29 +113,52 @@ const SCAN: &str = "yuzora-trust-scan";
 
 /// Each checked-out gitlink in the index, nested ones too, and its config's
 /// program keys: `sub\0path\0` then the records, `err\0what\0` when it can't
-/// be read. Checked out is what git looks for (a `.git` in the folder), and
-/// inside one only it counts (`GIT_DIR=.git`, never a repo further up). A
-/// quoted path (a `"`, `\` or control character) can't be followed: it counts
-/// as unreadable.
-const SCAN_SCRIPT: &str = r#"unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
+/// be read, and `end\0<SCAN>\0` last. It follows git: a gitlink is checked
+/// out when its folder has a `.git`, and git works in it with `GIT_DIR=.git`
+/// (never a repo further up), so its config is read that way, and its own
+/// gitlinks are where its work tree is (its `core.worktree`, from its config
+/// or its gitdir's). grep picks the gitlinks out of git's list, and must pass
+/// on a last line added to it: a grep that failed would print nothing, which
+/// would read as no gitlinks. A quoted path (a `"`, `\` or control
+/// character) can't be followed, nor more than 16 levels (a work tree
+/// pointing back up): both count as unreadable. `GIT_NO_LAZY_FETCH`: listing
+/// a sparse index in a partial clone never fetches with the repo's ssh.
+const SCAN_SCRIPT: &str = r#"unset GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
+GIT_NO_LAZY_FETCH=1
+export GIT_NO_LAZY_FETCH
+tab=$(printf '\t') nl='
+'
 scan() {
-  list=$(git -c core.quotepath=false ls-files -s) || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
-  printf '%s\n' "$list" | grep '^160000 ' | cut -f2- | sort -u | while IFS= read -r p; do
+  [ "$2" -lt 16 ] || { printf 'sub\0%s\0err\0depth\0' "$1"; return; }
+  links=$( { git -c core.quotepath=false ls-files -s || echo '#failed'; echo '160000 #end'; } | LC_ALL=C grep -e '^160000 ' -e '^#failed$') || links=
+  case "$nl$links" in
+    *"$nl#failed$nl"*) links= ;;
+    *"${nl}160000 #end") ;;
+    *) links= ;;
+  esac
+  [ -n "$links" ] || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
+  printf '%s\n' "$links" | while IFS= read -r line; do
+    [ "$line" = '160000 #end' ] && continue
+    p=${line#*"$tab"}
     case "$p" in \"*) printf 'sub\0%s%s\0err\0name\0' "$1" "$p"; continue ;; esac
     (
       cd "./$p" 2>/dev/null && [ -e .git ] || exit 0
-      GIT_DIR=.git GIT_WORK_TREE=.
-      export GIT_DIR GIT_WORK_TREE
+      GIT_DIR=.git
+      export GIT_DIR
+      unset GIT_WORK_TREE
       printf 'sub\0%s%s\0' "$1" "$p"
       git config --show-scope -z --get-regexp '@PROGRAMS@'
       c=$?
       if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; exit 0; fi
-      scan "$1$p/"
+      w=$(git rev-parse --absolute-git-dir --show-toplevel) && gd=${w%%"$nl"*} && top=${w#*"$nl"} && cd "$top" || { printf 'err\0worktree\0'; exit 0; }
+      GIT_DIR=$gd GIT_WORK_TREE=$top
+      export GIT_DIR GIT_WORK_TREE
+      scan "$1$p/" $(($2 + 1))
     )
   done
 }
-scan ""
-exit 0
+scan "" 0
+printf 'end\0@SCAN@\0'
 "#;
 
 /// `scope\0key\nvalue\0` records (an include counts as the file that
@@ -234,18 +266,23 @@ mod tests {
             .unwrap();
             (keys, calls)
         };
+        // The scan's last record: an answer without it was cut short.
+        const END: &str = "end\0yuzora-trust-scan\0";
         // No key: nothing pending.
-        assert_eq!(answer((1, ""), (0, "")).0, Vec::<String>::new());
+        assert_eq!(answer((1, ""), (0, END)).0, Vec::<String>::new());
         // An unreadable config shuts the gate and stops there.
         assert_eq!(answer((128, ""), (0, "")), (vec![UNREADABLE.to_string()], vec!["config".to_string()]));
         // Only the repository's own scopes count, and only values that run something.
         let own = "local\0filter.x.clean\nprog\0global\0core.sshcommand\nssh\0worktree\0core.fsmonitor\ntrue\0local\0diff.x.textconv\0";
-        assert_eq!(answer((0, own), (0, "")).0, ["diff.x.textconv", "filter.x.clean"]);
+        assert_eq!(answer((0, own), (0, END)).0, ["diff.x.textconv", "filter.x.clean"]);
         // Submodules name themselves; one git can't read keeps the gate shut.
-        let subs = "sub\0vendor/a\0local\0filter.y.clean\ncat\0sub\0vendor/b\0err\0128\0";
+        let subs = &format!("sub\0vendor/a\0local\0filter.y.clean\ncat\0sub\0vendor/b\0err\0128\0{END}");
         assert_eq!(answer((1, ""), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"], "no key above: the submodules still count");
         assert_eq!(answer((0, "global\0core.askpass\nx\0"), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"]);
         assert!(answer((0, ""), (2, "")).0.contains(&UNREADABLE.to_string()));
+        // A scan that stopped part way (exit 0, records missing) keeps it shut.
+        assert_eq!(answer((1, ""), (0, "")).0, [UNREADABLE]);
+        assert_eq!(answer((1, ""), (0, "sub\0vendor/a\0local\0filter.y.clean\ncat\0")).0, [UNREADABLE, "vendor/a: filter.y.clean"]);
     }
 
     #[test]
@@ -327,6 +364,92 @@ mod tests {
         std::fs::File::options().write(true).open(Path::new(&top).join("sub/f")).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)).unwrap();
         git("", &["--no-optional-locks", "status", "--porcelain=v2", "--untracked-files=no"]);
         assert!(marker.exists(), "status didn't run the submodule's filter, so this test proves nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A scratch folder for a test, with `git` run in a folder inside it.
+    #[cfg(unix)]
+    fn scratch_dir(name: &str) -> (PathBuf, String, impl Fn(&str, &[&str]) -> String) {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let top = std::fs::canonicalize(&dir).unwrap().to_string_lossy().into_owned();
+        let at = top.clone();
+        let git = move |path: &str, args: &[&str]| {
+            let here = Path::new(&at).join(path);
+            std::fs::create_dir_all(&here).unwrap();
+            let out = std::process::Command::new("git").args(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false"]).args(args).current_dir(here).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        (dir, top, git)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_submodule_that_works_elsewhere_is_followed_there() {
+        let (dir, top, git) = scratch_dir("worktree");
+        let repo = |at: &str| {
+            git(at, &["init", "-q"]);
+            std::fs::write(Path::new(&top).join(at).join("f"), "x\n").unwrap();
+            git(at, &["add", "f"]);
+            git(at, &["commit", "-qm", "s"]);
+        };
+        let link = |at: &str, path: &str, to: &str| git(at, &["update-index", "--add", "--cacheinfo", &format!("160000,{},{path}", git(to, &["rev-parse", "HEAD"]))]);
+        repo("");
+        repo("other/deep");
+        repo("sub");
+        // `sub` links `deep`, and works in `other` (its core.worktree): git
+        // looks for `deep` there, not in `sub`.
+        link("sub", "deep", "other/deep");
+        git("sub", &["config", "core.worktree", "../../other"]);
+        link("", "sub", "sub");
+        let marker = Path::new(&top).join("ran");
+        git("other/deep", &["config", "filter.evil.clean", &format!("touch '{}'; cat", marker.display())]);
+        std::fs::write(Path::new(&top).join("other/deep/.gitattributes"), "* filter=evil\n").unwrap();
+        let file = dir.join("trusted.json");
+        assert_eq!(pending_from(&file, None, &top), Ok(vec!["sub/deep: filter.evil.clean".to_string()]));
+        assert!(!marker.exists());
+        // What it guards: status above goes through `sub` into `other/deep`
+        // and, with the file's time changed, runs its clean filter.
+        std::fs::File::options().write(true).open(Path::new(&top).join("other/deep/f")).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)).unwrap();
+        git("", &["--no-optional-locks", "status", "--porcelain=v2", "--untracked-files=no"]);
+        assert!(marker.exists(), "status didn't run the filter there, so this test proves nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_failing_part_way_keeps_the_gate_shut() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, top, git) = scratch_dir("tools");
+        git("", &["init", "-q"]);
+        git("sub", &["init", "-q"]);
+        std::fs::write(Path::new(&top).join("sub/f"), "x\n").unwrap();
+        git("sub", &["add", "f"]);
+        git("sub", &["commit", "-qm", "s"]);
+        git("sub", &["config", "core.sshCommand", "true"]);
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", git("sub", &["rev-parse", "HEAD"]))]);
+        let scan = |path: &str| {
+            repo_programs(|args| {
+                let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).env("PATH", path).output()?;
+                Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+            })
+            .unwrap()
+        };
+        assert_eq!(scan(&std::env::var("PATH").unwrap_or_default()), ["sub: core.sshcommand"]);
+        // Tools a shell script might pipe through, broken: failing, or
+        // printing nothing as if all went well. Never "no key".
+        for (i, body) in ["exit 1", "exit 0"].iter().enumerate() {
+            let stub = dir.join(format!("stub-{i}"));
+            std::fs::create_dir_all(&stub).unwrap();
+            for tool in ["sort", "grep", "cut", "sed", "awk", "tr", "uniq", "head"] {
+                std::fs::write(stub.join(tool), format!("#!/bin/sh\ncat >/dev/null\n{body}\n")).unwrap();
+                std::fs::set_permissions(stub.join(tool), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let path = format!("{}:{}", stub.display(), std::env::var("PATH").unwrap_or_default());
+            assert_eq!(scan(&path), [format!(".: {UNREADABLE}")], "tools that {body}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
