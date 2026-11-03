@@ -73,7 +73,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
   ```
 
 - `app/CHANGELOG.md` 第一筆必須是 `0.1.0-beta.2`（`update_notes` 測試）。各 lane 在該筆底下加自己的條目即可，不要新增版本標題。
-- App 內的更新說明分成兩份：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本）。這條在 #206（L7：App 讀取兩份、發布檔名）合併進 `beta2/integration` 後才適用，合併前照上一條只寫 `app/CHANGELOG.md`。之後 lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
+- App 內的更新說明分成兩份：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本，#206 起）。lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
 - 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁中）是 GitHub Release 的內文，由 L10 維護，兩份的版本、段落與項目要一一對應（`scripts/release-notes.test.ts` 會比對）。
 
 ## 分支與 PR 流程

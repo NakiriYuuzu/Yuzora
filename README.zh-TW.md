@@ -30,8 +30,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 關掉視窗也會繼續執行；Git、檔案、資料庫與 SSH／SFTP 就在旁邊，同一個視窗裡。
 
 <p align="center">
-  <!-- TODO(L10): #192（檔案）合併後補檔案側欄的截圖，並換成最終截圖。 -->
-  <img src="docs/beta2/evidence/l1-workspace.png" width="880" alt="Yuzora beta.2：工作區側欄列出本機與 lab-01 的 Spaces、需要回覆的 agent、tab 列與狀態列" />
+  <img src="docs/readme/workspace-zh.png" width="880" alt="Yuzora beta.2：側欄列出三個 Space 與各自的 agent，同一個 tab 裡分割出 agent 終端機、Git diff 與資料表" />
 </p>
 
 ## 功能
@@ -44,8 +43,9 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 - **Git** 以 IntelliJ IDEA Community 為基準，採 staging area 模式：側欄處理變更與 commit，diff pane 可以逐塊、逐行
   暫存，另有提交紀錄與分支圖、分支、push、三方合併、互動式 rebase 與 annotate。repo 自己的 Git 設定會執行程式的
   資料夾，要先信任才會動作。
-- **檔案與編輯器。** 帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器、Markdown 預覽與圖片檢視。
-  beta.2 的遠端機器檔案以唯讀開啟。不提供 language server（LSP）。
+- **檔案與編輯器。** 帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器、Markdown 預覽，以及圖片
+  與 SVG 檢視（repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限）。beta.2 的遠端機器檔案以唯讀開啟。不提供 language
+  server（LSP）。
 - **資料庫**：PostgreSQL、SQL Server、SQLite。schema 樹、可在單一交易內寫回修改的資料表格、資料表結構與 SQL pane。
 - **SSH／SFTP**：主機來自 `~/.ssh/config`、Yuzora 自建主機與 herdr machines；以指紋確認主機金鑰；SFTP 雙欄傳輸可以
   續傳。
@@ -58,6 +58,10 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 <p align="center">
   <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora 的 Git 模式：側欄列出已暫存與未暫存的變更和 commit 區，右側是並排 diff pane，可以暫存或捨棄單一 hunk" />
   <img src="docs/beta2/evidence/l2-log.png" width="436" alt="Yuzora 的 Git 提交紀錄 pane：依分支、作者、日期、路徑與訊息篩選，commit 旁有分支圖與分支、tag 標籤" />
+</p>
+
+<p align="center">
+  <img src="docs/readme/files-zh.png" width="880" alt="Yuzora 的檔案模式：側欄是帶 Git 標記的 repo 檔案樹，agent 終端機旁分割出程式碼編輯器與 Markdown 預覽" />
 </p>
 
 beta.2 不包含：Browser、Companion 與 AgentZone。
@@ -171,8 +175,14 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 
 ### L5 · 檔案與編輯器
 
-<!-- TODO(L10): #192 合併後依英文版的 L5 區塊同步。 -->
-尚未開始。
+- 側欄**檔案**模式：以樹狀顯示目前 pane 所在的 repo，帶 Git 標記（M／A／D／U／?）；新增檔案與資料夾、重新命名、刪除到
+  垃圾桶、複製路徑、在 Finder 中顯示；檔名模糊搜尋與內容搜尋（有安裝 ripgrep 就用它，否則用內建搜尋）。
+- **編輯器** pane：14 種語言的 tree-sitter 上色，存檔時檢查衝突（⌘S），尋找與取代（⌘F／⌘H）。磁碟上的變更會即時跟上，
+  有 agent 在改同一個檔案時會顯示。
+- **Markdown** pane：GFM 預覽，跟著編輯器即時更新，可以切換原始碼與預覽。另有圖片與 SVG 檢視。
+- beta.2 可以瀏覽並以唯讀開啟其他機器（遠端 Space）上的檔案。
+
+細節見 [docs/beta2/files.md](docs/beta2/files.md)。
 
 ### L6 · 設定、mods 與模板
 

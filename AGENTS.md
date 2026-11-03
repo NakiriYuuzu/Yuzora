@@ -4,7 +4,7 @@
 
 v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，用 `git subtree` 放在 `app/`。`src-tauri/` 與 `src/`（Tauri 2＋React）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布：不刪，也不當設計依據。
 
-- 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。各功能的設計與限制：`docs/beta2/<lane>.md`（shell、git、db、ssh、settings、release、perf、herdr-compat；files 隨 #192 合併）。研究資料：`docs/beta2/research/`。
+- 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。各功能的設計與限制：`docs/beta2/<lane>.md`（shell、git、db、ssh、files、settings、release、perf、herdr-compat）。研究資料：`docs/beta2/research/`。
 - `app/` 是獨立的 Cargo workspace（root `Cargo.toml` 將它 exclude），有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。Cargo package 與執行檔維持上游名稱 `herdr-app`，打包後才叫 `Yuzora.app`／`yuzora`。
 - **三層**：herdr 殼（上游 `app/src`、上游 mods 與 frame）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件，JS 以 `import … from "yuzora:<name>"` 使用）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane，使用者可 `mod.clone` 後修改）。
 - herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；遠端 Space 的 Git、Files 等走 `hc exec --on <machine>`（`yuzora_core::remote`）。
@@ -63,7 +63,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
-### L2 · Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
+#### L2 Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
 
 - 設計、A1–A12 完成度與效能數據：`docs/beta2/git.md`。git 只走 CLI（不用 libgit2），一律經 `crates/yuzora-git/src/exec.rs` 的執行器（讀取不拿鎖、寫入拿 repo 鎖、可取消、逾時、遠端走 `hc exec --on`）；不要在 mod 裡用 herdr 的 `exec("git", …)`。
 - 路徑一律是字面路徑（`GIT_LITERAL_PATHSPECS=1`）。自動執行的讀取不能讓 repo 自己的設定挑程式來跑：讀取關掉 fsmonitor、簽章檢查用使用者自己的 gpg、blame 不跑 textconv；repo 本地設定若有 filter／ssh／credential 等程式，所有 `yuzora:git` 呼叫（`status` 只回傳提示）都要等使用者信任資料夾（`trust.rs`，在 `repo_fn` 統一檢查，log 的載入與 diff／merge session 的寫入不經過 `repo_fn`，各自檢查；偵測與信任清單在 `yuzora_core::git_trust`，其他 lane 自己跑 git 時也用它）。新增函式一律走 `repo_fn`，新增讀取照這個原則。
@@ -91,7 +91,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
-### L5 檔案＋編輯器（`yuzora-files`）
+#### L5 檔案＋編輯器（`yuzora-files`）
 
 - 設計、API 與待辦：`docs/beta2/files.md`。
 - 測試：`cargo test --locked -p yuzora-files`；mods：`scripts/yuzora/check-mods yuzora-sidebar-files yuzora-editor yuzora-markdown yuzora-files-image`。

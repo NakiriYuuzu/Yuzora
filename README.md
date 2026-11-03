@@ -31,8 +31,7 @@ terminals that keep running when the window closes, and puts Git, files, databas
 the same window.
 
 <p align="center">
-  <!-- TODO(L10): English-UI screenshots and the files sidebar once #192 (files) is merged. -->
-  <img src="docs/beta2/evidence/l1-workspace.png" width="880" alt="Yuzora beta.2: the workspace sidebar with Spaces on this computer and on lab-01, the agents that need a reply, the tab bar and the status bar" />
+  <img src="docs/readme/workspace-en.png" width="880" alt="Yuzora beta.2: the workspace sidebar lists three Spaces and their agents, and one tab is split into an agent's terminal, a Git diff and a table" />
 </p>
 
 ## Features
@@ -46,8 +45,8 @@ the same window.
   that stages hunks and lines, the log with its branch graph, branches, push, three-way merge, interactive rebase
   and annotate. Folders whose own Git config runs programs ask for your trust first.
 - **Files and editor.** A file tree with Git marks and file-name and content search, a code editor with tree-sitter
-  highlighting, a Markdown preview and an image viewer. Files on a remote machine open read-only in beta.2. There is
-  no language server (LSP).
+  highlighting, a Markdown preview, and an image and SVG viewer (a repo's SVG is drawn in a separate process, with
+  time and memory limits). Files on a remote machine open read-only in beta.2. There is no language server (LSP).
 - **Databases**: PostgreSQL, SQL Server and SQLite, with a schema tree, a data grid that writes edited cells back in
   one transaction, the table structure and a SQL pane.
 - **SSH / SFTP**: hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines; host keys checked by
@@ -61,6 +60,10 @@ the same window.
 <p align="center">
   <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora's Git mode: staged and unstaged changes and the commit box in the sidebar, and a side-by-side diff pane with buttons to stage or discard a hunk" />
   <img src="docs/beta2/evidence/l2-log.png" width="436" alt="Yuzora's Git log pane: filters for branch, author, date, path and message, and commits with branch and tag labels beside the branch graph" />
+</p>
+
+<p align="center">
+  <img src="docs/readme/files-en.png" width="880" alt="Yuzora's Files mode: the repo's tree with Git marks in the sidebar, and the agent's terminal split with the code editor and a Markdown preview" />
 </p>
 
 Not in beta.2: the Browser, Companion and AgentZone.
