@@ -223,9 +223,13 @@ const SCAN: &str = "yuzora-trust-scan";
 /// that starts `gitdir: ` (a gitfile, or a link to one, up to 2 MiB: git
 /// reads none past 1 MiB), which git follows when it opens a submodule in
 /// its own process (a push that checks them does); the git dir it names
-/// counts, and that git dir's own `modules/` in turn. One git won't take
-/// counts as unreadable. They're read last, and one the
-/// scan already read as a checked-out submodule keeps that name. A path
+/// counts, and that git dir's own `modules/` in turn. A link to a gitfile
+/// names two: `GIT_DIR` reads the path in it from the link's folder, and git
+/// opening a submodule in its own process takes the real path first, so from
+/// the file's own folder; both count. One git won't take, and a path whose
+/// real one can't be had (no `readlink`, links 40 deep), count as
+/// unreadable. They're read last, and one the scan already read as a
+/// checked-out submodule keeps that name. A path
 /// there `find` gives that can't be read back (a line feed in it) and a
 /// `find` that fails count as unreadable.
 const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
@@ -269,6 +273,18 @@ files() {
   done
 }
 has() { [ -e "$1" ] || [ -L "$1" ]; }
+real() {
+  rp=$1 rk=0
+  while [ -L "$rp" ]; do
+    [ $rk -lt 40 ] || return 1
+    rl=$(readlink "$rp" && echo .) || return 1
+    rl=${rl%"$nl."} rk=$((rk+1))
+    case "$rl" in /*) rp=$rl ;; *) rp=${rp%/*}/$rl ;; esac
+  done
+  rd=$(cd -P "${rp%/*}/" && pwd -P && echo .) || return 1
+  rd=${rd%"$nl."}
+  rp=${rd%/}/${rp##*/}
+}
 queue() {
   mods=$mods+$1$nl$2$nl$2$nl
   [ "$3" = "$2" ] || mods=$mods+$1$nl$2$nl$3$nl
@@ -307,7 +323,9 @@ modules() {
     IFS= read -r first < "$m"
     case "$first" in "gitdir: "*) ;; *) continue ;; esac
     ml=$n/${m#"$3/"}
-    gitdir "$1" "$ml" "$m" "${m%/*}" && queue "$1$ml/" "$w" "$mg"
+    real "$m" || { printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$ml"; continue; }
+    gitdir "$1" "$ml" "$rp" "${rp%/*}" && queue "$1$ml/" "$w" "$mg"
+    [ "$rp" = "$m" ] || { gitdir "$1" "$ml" "$m" "${m%/*}" && queue "$1$ml/" "$w" "$mg"; }
   done
 }
 legacy() {
@@ -1114,12 +1132,21 @@ mod tests {
         // git reads a link's target, relative to where the link is.
         std::fs::write(at(".git/elsewhere/f"), "gitdir: ../other.git\n").unwrap();
         std::os::unix::fs::symlink("../elsewhere/f", at(".git/modules/l")).unwrap();
+        // A link to a gitfile a level deeper: `GIT_DIR` reads `../d.git`
+        // from the link's folder, git opening a submodule itself (its real
+        // path first) from the file's. Each git dir's own `modules/` counts.
+        bare(".git/d.git", "core.gitProxy");
+        bare(".git/d.git/modules/n", "filter.link.clean");
+        bare(".git/deep/d.git", "remote.origin.receivePack");
+        std::fs::create_dir_all(at(".git/deep/a")).unwrap();
+        std::fs::write(at(".git/deep/a/f"), "gitdir: ../d.git\n").unwrap();
+        std::os::unix::fs::symlink("../deep/a/f", at(".git/modules/d")).unwrap();
         // git takes a gitfile by how it starts.
         std::fs::write(at(".git/modules/note"), "a note\ngitdir: ../evil.git\n").unwrap();
         let git_dir = |gd: &str| std::process::Command::new("git").args(["rev-parse", "--git-dir"]).env("GIT_DIR", at(gd)).output().unwrap().status.success();
         assert!(git_dir(".git/modules/s") && git_dir(".git/modules/l") && !git_dir(".git/modules/note"), "git doesn't take them as it should, so this proves nothing");
         let got = programs_within(None, &top, Duration::from_secs(30));
-        let want = [".git/modules/l: core.sshcommand", ".git/modules/s/.git/modules/n: filter.evil.smudge", ".git/modules/s: remote.origin.uploadpack"];
+        let want = [".git/modules/d/.git/modules/n: filter.link.clean", ".git/modules/d: core.gitproxy", ".git/modules/d: remote.origin.receivepack", ".git/modules/l: core.sshcommand", ".git/modules/s/.git/modules/n: filter.evil.smudge", ".git/modules/s: remote.origin.uploadpack"];
         assert_eq!(got, Ok(want.map(String::from).to_vec()));
         std::fs::write(at(".git/modules/bad"), "gitdir: ../nowhere\n").unwrap();
         git("", &["config", "submodule.x.gitdir", "../anywhere"]);
