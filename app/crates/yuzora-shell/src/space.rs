@@ -14,12 +14,14 @@ use yuzora_core::remote::{ExecError, ExecRequest, run};
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run on a machine with the folders as `$1…`: each one's real path, or an
-/// empty line when it isn't a folder there. `~` is the machine's home, and so
-/// is where relative paths start. The paths are arguments, never code.
+/// empty record when it isn't a folder there, each ended by a NUL (a name may
+/// hold a line feed, never a NUL). `~` is the machine's home, and so is where
+/// relative paths start. The paths are arguments, never code.
 pub const RESOLVE: &str = r#"cd -- "$HOME" 2>/dev/null
 for p do
   case $p in "" | "~") p=$HOME ;; "~/"*) p=$HOME/${p#"~/"} ;; esac
-  (CDPATH= cd -- "$p" 2>/dev/null && pwd -P) || echo
+  r=$(CDPATH= cd -- "$p" 2>/dev/null && pwd -P && echo .) && r=${r%??} || r=
+  printf '%s\0' "$r"
 done"#;
 
 /// RESOLVE for a machine without `sh` (Windows), run by its PowerShell as one
@@ -34,7 +36,7 @@ foreach ($p in @(FOLDERS)) {
   $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue;
   $f = if ($i -and $i.PSIsContainer) { $i.FullName } else { '' };
   if ($f.Length -gt 3) { $f = $f.TrimEnd('\', '/') };
-  [Console]::Out.Write($f + [char]10)
+  [Console]::Out.Write($f + [char]0)
 }"#;
 
 /// PowerShell's single quotes, the curly ones too (as `programs::powershell_line`).
@@ -150,14 +152,14 @@ pub fn resolve(folders: &[String], on: Option<&str>) -> Result<Vec<Option<String
         return Err(Problem::Unreachable(out.stderr_text().trim().to_owned()));
     }
     let text = out.stdout_text();
-    lines(text.strip_prefix('\u{feff}').unwrap_or(&text), folders.len())
+    records(text.strip_prefix('\u{feff}').unwrap_or(&text), folders.len())
 }
 
-/// The script's answer: one line per folder.
-fn lines(stdout: &str, count: usize) -> Result<Vec<Option<String>>, Problem> {
-    let list: Vec<Option<String>> = stdout.strip_suffix('\n').unwrap_or(stdout).split('\n').map(|l| Some(l.to_owned()).filter(|l| !l.is_empty())).collect();
+/// The script's answer: one NUL-ended record per folder.
+fn records(stdout: &str, count: usize) -> Result<Vec<Option<String>>, Problem> {
+    let list: Vec<Option<String>> = stdout.strip_suffix('\0').unwrap_or(stdout).split('\0').map(|l| Some(l.to_owned()).filter(|l| !l.is_empty())).collect();
     if list.len() != count && !(count == 0 && stdout.is_empty()) {
-        return Err(Problem::Unreachable(format!("expected {count} lines, got {}", list.len())));
+        return Err(Problem::Unreachable(format!("expected {count} folders, got {}", list.len())));
     }
     Ok(if count == 0 { Vec::new() } else { list })
 }
@@ -342,7 +344,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(out.status.success());
-        lines(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap()
+        records(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap()
     }
 
     #[cfg(unix)]
@@ -351,9 +353,10 @@ mod tests {
         let s = Scratch::new("remote");
         std::fs::create_dir_all(s.0.join("src/my app")).unwrap();
         std::fs::create_dir_all(s.0.join("$(touch pwned)")).unwrap();
+        std::fs::create_dir_all(s.0.join("two\nlines\n")).unwrap();
         std::os::unix::fs::symlink(s.0.join("src"), s.0.join("link")).unwrap();
         let home = s.0.to_string_lossy().into_owned();
-        let got = resolve_in_sh(&s.0, &["~", "", "~/src/my app/", "src", "link/my app", "/nonexistent-yuzora", "$(touch pwned)", "`touch pwned2`"]);
+        let got = resolve_in_sh(&s.0, &["~", "", "~/src/my app/", "src", "link/my app", "/nonexistent-yuzora", "$(touch pwned)", "`touch pwned2`", "two\nlines\n"]);
         assert_eq!(
             got,
             vec![
@@ -365,6 +368,7 @@ mod tests {
                 None,
                 Some(format!("{home}/$(touch pwned)")),
                 None,
+                Some(format!("{home}/two\nlines\n")),
             ]
         );
         assert!(!s.0.join("pwned").exists() && !s.0.join("pwned2").exists(), "a path ran as code");
@@ -392,7 +396,7 @@ mod tests {
         }
         let out = run.output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        lines(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap()
+        records(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap()
     }
 
     #[cfg(windows)]
@@ -458,10 +462,11 @@ mod tests {
     }
 
     #[test]
-    fn reads_one_line_per_folder() {
-        assert_eq!(lines("/a\n\n/b\n", 3).unwrap(), vec![Some("/a".into()), None, Some("/b".into())]);
-        assert_eq!(lines("", 0).unwrap(), Vec::<Option<String>>::new());
-        assert!(matches!(lines("/a\n", 2), Err(Problem::Unreachable(_))));
+    fn reads_one_record_per_folder() {
+        assert_eq!(records("/a\0\0/b\0", 3).unwrap(), vec![Some("/a".into()), None, Some("/b".into())]);
+        assert_eq!(records("/two\nlines\0", 1).unwrap(), vec![Some("/two\nlines".into())], "a line feed is part of a name");
+        assert_eq!(records("", 0).unwrap(), Vec::<Option<String>>::new());
+        assert!(matches!(records("/a\0", 2), Err(Problem::Unreachable(_))));
     }
 
     #[test]
