@@ -61,33 +61,16 @@ fn trusted() -> BTreeSet<String> {
 }
 
 /// What keeps git from running on its own in this repo, unless the folder
-/// is trusted (empty: nothing does): its program keys, what makes it a
-/// partial clone ([`partial_clone_keys`]), and the remote helpers git kept
-/// out of a command there ([`heard`]).
+/// is trusted (empty: nothing does): its program keys (a partial clone's
+/// too: [`git_trust::names_program`]), and the remote helpers git kept out
+/// of a command there ([`heard`]).
 pub fn pending(repo: &Repo) -> GitResult<Vec<String>> {
     if trusted_folder(repo) {
         return Ok(Vec::new());
     }
     let mut keys: BTreeSet<String> = repo_programs(repo)?.into_iter().collect();
-    keys.extend(partial_clone_keys(repo));
     keys.extend(kept_out().lock().unwrap_or_else(|e| e.into_inner()).get(&repo.id).into_iter().flatten().cloned());
     Ok(keys.into_iter().collect())
-}
-
-/// The keys that make the repo a partial clone, as git's own
-/// `repo_has_promisor_remote` reads them: `extensions.partialClone`, a remote
-/// marked `promisor` or given a `partialCloneFilter` (any value). Such a clone fetches what it lacks from that remote as
-/// it reads: every command there would fail or come back short until the
-/// folder is trusted ([`guard`]), so it waits from the start.
-pub fn partial_clone_keys(repo: &Repo) -> Vec<String> {
-    let read = |args: &[&str]| repo.run(offline(Git::read(["config"]).args(args.iter().copied()))).ok().filter(|o| o.ok()).map(|o| o.stdout_text()).unwrap_or_default();
-    let mut keys = Vec::new();
-    if !read(&["--get", "extensions.partialClone"]).trim().is_empty() {
-        keys.push("extensions.partialclone".to_owned());
-    }
-    keys.extend(read(&["--type=bool", "--get-regexp", r"^remote\..*\.promisor$"]).lines().filter_map(|l| l.strip_suffix(" true")).map(str::to_owned));
-    keys.extend(read(&["--name-only", "--get-regexp", r"^remote\..*\.partialclonefilter$"]).lines().map(str::to_owned));
-    keys
 }
 
 /// What git kept out this session in a folder not trusted yet ([`heard`]), by repo.
@@ -427,6 +410,62 @@ mod tests {
         }
     }
 
+    // `submodule update` reuses whatever is at `.git/modules/<name>`, and git
+    // takes it for a git dir as it opens it: `HEAD` spelled `head` (where
+    // case doesn't count), only `HEAD` and a `commondir` naming where the
+    // rest is, `HEAD` a link to a ref that's only packed. Each waits for
+    // trust like a plain one; where git can't open it, nothing runs either.
+    #[test]
+    fn a_submodule_git_dir_hidden_from_a_listing_waits_for_trust() {
+        for variant in ["lowerhead", "commondir", "symhead"] {
+            let (s, lib) = (scratch(), scratch());
+            lib.write(".gitattributes", "*.txt filter=evil\n");
+            lib.git(&["add", ".gitattributes"]);
+            lib.commit("f.txt", "x\n", "l");
+            s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+            s.git(&["commit", "-q", "-m", "sub"]);
+            s.git(&["submodule", "deinit", "-q", "-f", "s"]);
+            s.git(&["config", "-f", ".gitmodules", "submodule.s.url", "ssh://example.invalid/s"]);
+            s.git(&["commit", "-q", "-am", "url"]);
+            let gd = std::path::PathBuf::from(s.repo.git_path("modules/s"));
+            let mut config = gd.join("config");
+            match variant {
+                "lowerhead" => std::fs::rename(gd.join("HEAD"), gd.join("head")).unwrap(),
+                "commondir" => {
+                    let common = std::path::PathBuf::from(s.repo.git_path("evil-common"));
+                    std::fs::rename(&gd, &common).unwrap();
+                    std::fs::create_dir(&gd).unwrap();
+                    std::fs::copy(common.join("HEAD"), gd.join("HEAD")).unwrap();
+                    std::fs::write(gd.join("commondir"), "../../evil-common\n").unwrap();
+                    config = common.join("config");
+                }
+                _ => {
+                    let at = gd.display().to_string();
+                    let head = s.git(&["--git-dir", &at, "rev-parse", "HEAD"]);
+                    s.git(&["--git-dir", &at, "update-ref", "refs/heads/keep", head.trim()]);
+                    s.git(&["--git-dir", &at, "pack-refs", "--all"]);
+                    std::fs::remove_file(gd.join("HEAD")).unwrap();
+                    std::os::unix::fs::symlink("refs/heads/keep", gd.join("HEAD")).unwrap();
+                }
+            }
+            let (mark, prog) = hit(&s, "cat");
+            s.git(&["config", "--file", &config.display().to_string(), "filter.evil.smudge", &prog]);
+            // Where case counts, git can't open `head` as `HEAD`.
+            let opens = gd.join("HEAD").exists() || gd.join("HEAD").is_symlink();
+            let pending = pending(&s.repo).unwrap();
+            if opens {
+                assert_eq!(pending, [".git/modules/s: filter.evil.smudge"], "{variant}");
+                assert!(check(&s.repo).is_err(), "{variant}");
+            } else {
+                assert_eq!(pending, Vec::<String>::new(), "{variant}");
+            }
+            assert!(!mark.exists(), "{variant}");
+            trust(&s.repo).unwrap();
+            let _ = crate::ops::submodule_update(&s.repo, None);
+            assert_eq!(mark.exists(), opens, "{variant}: trusted, submodule update ran it as git opens it: this proves the scan reads what git does");
+        }
+    }
+
     // A linked worktree keeps its submodules' git dirs in its own git dir
     // (`.git/worktrees/<id>/modules`), and its `submodule update` reuses them.
     #[test]
@@ -504,9 +543,9 @@ mod tests {
     fn a_partial_clone_waits_for_trust_by_the_keys_git_reads() {
         let s = scratch();
         s.commit("a.txt", "1\n", "first");
-        assert_eq!(partial_clone_keys(&s.repo), Vec::<String>::new());
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new());
         s.git(&["config", "remote.origin.promisor", "false"]);
-        assert_eq!(partial_clone_keys(&s.repo), Vec::<String>::new());
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new());
         s.git(&["config", "remote.origin.promisor", "yes"]);
         assert_eq!(pending(&s.repo).unwrap(), ["remote.origin.promisor"]);
         s.git(&["config", "--unset", "remote.origin.promisor"]);

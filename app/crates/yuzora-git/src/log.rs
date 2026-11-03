@@ -746,8 +746,8 @@ impl LogSession {
 /// (opening, refs moving), so until the person trusts the folder a partial
 /// clone never fetches what it lacks: that contacts the remote the repo's
 /// own config names, plain URL or not. A trusted folder fetches as git does.
-/// A partial clone waits for trust from the start
-/// ([`crate::trust::partial_clone_keys`]): the log refuses with
+/// A partial clone waits for trust from the start (its keys count in
+/// [`yuzora_core::git_trust::names_program`]): the log refuses with
 /// [`crate::trust::UNTRUSTED`], which sends the person to the Git sidebar's
 /// trust card. Any failure past that (a bad range, a bad regex) stays git's
 /// own.
