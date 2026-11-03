@@ -25,4 +25,5 @@
 - MOD 管理：列出內建、已修改、複製與個人的 mods 與 layouts 及其錯誤；可複製、在資料夾中顯示、檢查、還原、切換 layout，並在顯示信任警告後從資料夾安裝。
 - 資料庫：側欄「資料庫」模式支援 PostgreSQL、SQL Server、SQLite 連線（密碼存在系統鑰匙圈）、資料庫切換與 schema 樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）與 SQL 分頁；SQL pane 可執行選取或整段、多個結果集、取消與歷史紀錄。
 - Git（以 IntelliJ IDEA 為基準）：側欄 Git 模式可暫存、提交（amend、sign-off、略過 hooks、訊息歷史與範本）、推送；diff pane 可暫存或捨棄單一 hunk 或選取的行；提交紀錄與分支圖、篩選與右鍵操作；分支 popup（smart checkout、merge、rebase、比較）；三方合併解衝突；互動式 rebase；Annotate；stash、tag、remote、worktree、patch 管理；Git 設定頁。
+- Git 會先問是否信任資料夾：信任前，Git 在那裡離線執行，不啟動 repo 自己的設定指定的程式（filter、SSH 指令、remote helper），包括還沒 checkout 的 submodule 的設定；partial clone 也會先問，因為它讀取時會向 remote 抓缺少的物件。
 - 同步 herdr-app 上游到 f6fe216（v0.1.12 之後）：可選用終端機字型連字（`settings.json` 的 `font_ligatures`，預設關閉）、快捷鍵說明再按一次就關閉，並修正 pane 程式的啟動尺寸、焦點框與控制鍵別名等問題。
