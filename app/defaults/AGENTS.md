@@ -1077,6 +1077,15 @@ with these differences.
   `setSettings({...})` in `yuzora:git`): e.g. `logRecentCount`,
   `forceWithLease`, `protectedBranches` (a regex), `updateMethod`,
   `swapSidesInRebase`.
+- A file clicked in the sidebar, a commit's files, Annotate or the repository
+  pane shows its diff as the `git` settings say: `diffOpenIn` is `"modal"`
+  (the default: a dialog over the window, whose Keep button moves the diff into
+  a pane) or `"pane"`; `diffKeepIn` is where Keep and `"pane"` put it,
+  `"split"` (the default: beside the focused pane) or `"tab"`; with
+  `diffFollowPane` (default `true`) a diff pane already open shows the next
+  file instead. A diff pane's props can also set its view: `layout: "side" |
+  "unified"`, `whitespace: "none" | "trim" | "all"`, `context` (lines; `-1` is
+  the whole file).
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
