@@ -527,8 +527,12 @@ pub fn fetch(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value>
         // Hooks from an empty folder of ours (it doesn't exist on another
         // machine either), and submodules (their own configs) left alone.
         Git::read(["-c".to_owned(), format!("core.hooksPath={}", crate::trust::no_hooks_dir()), "fetch".to_owned(), "--no-recurse-submodules".to_owned()])
-    } else {
+    } else if crate::trust::trusted_folder(repo) {
         Git::read(["fetch"])
+    } else {
+        // Before trust the folder's own repo only, as auto fetch: no
+        // submodule's settings run, even any the scan didn't see.
+        Git::read(["fetch", "--no-recurse-submodules"])
     }
     .timeout(LONG_TIMEOUT)
     .cancel(cancel);
@@ -554,6 +558,10 @@ pub fn fetch(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value>
 pub fn pull(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> {
     let b = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
     let mut cmd = Git::write(["pull"]).timeout(LONG_TIMEOUT).cancel(cancel);
+    if !crate::trust::trusted_folder(repo) {
+        // As fetch: no submodule's settings before trust.
+        cmd = cmd.arg("--no-recurse-submodules");
+    }
     let method = o.get("method").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| crate::settings::text("updateMethod"));
     match method.as_str() {
         "rebase" => cmd = cmd.arg("--rebase"),

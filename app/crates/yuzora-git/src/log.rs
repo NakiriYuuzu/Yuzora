@@ -746,11 +746,11 @@ impl LogSession {
 /// (opening, refs moving), so until the person trusts the folder a partial
 /// clone never fetches what it lacks: that contacts the remote the repo's
 /// own config names, plain URL or not. A trusted folder fetches as git does.
-/// A log that git failed to read in an untrusted partial clone because it
-/// needed an object it may not fetch yet ([`log_read`]): says so, so the
-/// pane can offer to trust the folder (the sidebar offers it only when the
-/// repo's settings name programs). Any other failure (a bad range, a bad
-/// regex) stays git's own.
+/// A partial clone waits for trust from the start
+/// ([`crate::trust::partial_clone_keys`]): the log refuses with
+/// [`crate::trust::UNTRUSTED`], which sends the person to the Git sidebar's
+/// trust card. Any failure past that (a bad range, a bad regex) stays git's
+/// own.
 fn log_read<'a>(repo: &Repo, args: impl IntoIterator<Item = &'a str>) -> Git {
     crate::trust::own_read(repo, Git::read(["log"]).args(args))
 }
