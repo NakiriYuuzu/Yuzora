@@ -191,13 +191,23 @@ const SCAN: &str = "yuzora-trust-scan";
 /// empty `GIT_ALLOW_PROTOCOL` for a git before 2.44, which ignores it):
 /// listing a sparse index in a partial clone never fetches with the repo's
 /// ssh. Each repo's remote files (`remotes/`, `branches/` in its common
-/// dir) count too: git reads remotes from them besides the config.
+/// dir) count too: git reads remotes from them besides the config. So does
+/// each git dir under `modules/` (a `HEAD`, `objects/` and `refs/`, nested
+/// ones too) in its git dir and its common dir, as `.git/modules/<name>`
+/// (a linked worktree keeps its own, `.git/worktrees/<id>/modules/<name>`),
+/// with its own remote files: a submodule not checked out keeps one there,
+/// which `submodule update` reuses and a fetch recurses into. They're read
+/// last, and one the
+/// scan already read as a checked-out submodule keeps that name. A path
+/// there `find` gives that can't be read back (a line feed in it) and a
+/// `find` that fails count as unreadable.
 const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=
 export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL
 tab=$(printf '\t') nl='
 '
 IFS=$nl
+mseen=$nl mods=
 set -f
 case ${OS-}:$(uname -s 2>/dev/null) in Windows_NT:*|*:CYGWIN*|*:MINGW*|*:MSYS*) win=1 ;; *) win= ;; esac
 where() {
@@ -221,17 +231,44 @@ scan() {
     [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
   done
 }
-legacy() {
-  c=$("$@" rev-parse --path-format=absolute --git-common-dir && echo .) || c=
-  case "$c" in *"$nl"*"$nl"*) printf 'err\0commondir\0'; return ;; ?*"$nl.") c=${c%"$nl."} ;; *) printf 'err\0commondir\0'; return ;; esac
+files() {
   for d in remotes branches; do
-    if [ -d "$c/$d" ] && [ ! -L "$c/$d" ]; then
-      l=$(ls -A "$c/$d" && echo .) || l=x
+    if [ -d "$1/$d" ] && [ ! -L "$1/$d" ]; then
+      l=$(ls -A "$1/$d" && echo .) || l=x
       [ "$l" = . ] || printf 'legacy\0.git/%s\0' "$d"
-    elif [ -e "$c/$d" ] || [ -L "$c/$d" ]; then
+    elif [ -e "$1/$d" ] || [ -L "$1/$d" ]; then
       printf 'legacy\0.git/%s\0' "$d"
     fi
   done
+}
+modules() {
+  case "$3" in "$2") n=.git ;; "$2"/*) n=.git/${3#"$2/"} ;; *) n=$3 ;; esac
+  [ -d "$3/modules" ] || return
+  heads=$(find -L "$3/modules" -name HEAD -type f && echo .) || heads=
+  case "$heads" in .|*"$nl.") ;; *) printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return ;; esac
+  for h in $heads; do
+    [ "$h" != . ] || continue
+    [ -f "$h" ] || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
+    m=${h%/HEAD}
+    [ -d "$m/objects" ] && [ -d "$m/refs" ] || continue
+    case "$mseen" in *"$nl$m$nl"*) continue ;; esac
+    mseen=$mseen$m$nl
+    printf 'sub\0%s%s/%s\0' "$1" "$n" "${m#"$3/"}"
+    GIT_DIR=$m git config --show-scope -z --get-regexp '@PROGRAMS@'
+    r=$?
+    if [ $r -gt 1 ]; then printf 'err\0%s\0' $r; fi
+    files "$m"
+  done
+}
+legacy() {
+  p=$1
+  shift
+  c=$("$@" rev-parse --path-format=absolute --git-common-dir --absolute-git-dir && echo .) || c=
+  case "$c" in *"$nl"*"$nl"*"$nl"*) printf 'err\0commondir\0'; return ;; ?*"$nl"?*"$nl.") c=${c%"$nl."} ;; *) printf 'err\0commondir\0'; return ;; esac
+  g=${c#*"$nl"} c=${c%%"$nl"*}
+  files "$c"
+  mods=$mods+$p$nl$c$nl$c$nl
+  [ "$g" = "$c" ] || mods=$mods+$p$nl$c$nl$g$nl
 }
 gone() {
   case "$1" in */*) up=${1%/*} ;; *) up=. ;; esac
@@ -258,18 +295,23 @@ enter() {
   c=$?
   if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; return; fi
   w=$(GIT_DIR=.git git -C "$4" rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w" || { printf 'err\0worktree\0'; return; }
+  mseen=$mseen$gd$nl
   case "$5" in *"$node"*) printf 'err\0cycle\0'; return ;; esac
   case "$seen" in *"$node"*) return ;; esac
   seen=$seen$node
-  legacy env GIT_DIR=.git git -C "$4"
+  legacy "$1$4/" env GIT_DIR=.git git -C "$4"
   scan "$1$4/" $(($2 + 1)) "$gd" "$top" "$5$node"
 }
 if w=$(git rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w"; then
   unset GIT_DIR GIT_WORK_TREE
   seen=$node
   printf 'sub\0\0'
-  legacy git
+  legacy "" git
   scan "" 0 "$gd" "$top" "$node"
+  i=0
+  for ml in $mods; do
+    case $i in 0) mp=${ml#+} i=1 ;; 1) mc=$ml i=2 ;; *) modules "$mp" "$mc" "$ml"; i=0 ;; esac
+  done
 else
   printf 'sub\0.\0err\0worktree\0'
 fi
@@ -932,6 +974,45 @@ mod tests {
             "remote.origin.url",
         ];
         assert_eq!(got.to_vec(), want.map(|k| Ok(vec![k.to_string()])));
+    }
+
+    // A submodule not checked out keeps its git dir (`.git/modules/<name>`,
+    // its own nested ones inside it), and `submodule update` reuses it, a
+    // fetch recurses into it: its config's programs count, though no
+    // gitlink's folder holds a `.git`.
+    #[cfg(unix)]
+    #[test]
+    fn a_submodule_git_dir_nothing_checks_out_counts_too() {
+        let (dir, top, git) = scratch_dir("modules");
+        git("", &["init", "-q", "-b", "main"]);
+        git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+        assert_eq!(programs_within(None, &top, Duration::from_secs(30)), Ok(vec![]));
+        // As `submodule deinit` leaves them: a name with a slash, one nested in another.
+        for (gd, key) in [(".git/modules/s", "filter.evil.smudge"), (".git/modules/vendor/lib", "core.sshCommand"), (".git/modules/s/modules/n", "core.gitProxy"), (".git/modules/plain", "")] {
+            git("", &["init", "-q", "--bare", gd]);
+            if !key.is_empty() {
+                git("", &["config", "--file", &format!("{gd}/config"), key, "hit"]);
+            }
+        }
+        // A remote's HEAD and a reflog's are files named HEAD too, not git dirs.
+        git("", &["update-ref", "refs/remotes/origin/HEAD", "HEAD"]);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        assert_eq!(got, Ok(vec![".git/modules/s/modules/n: core.gitproxy".to_string(), ".git/modules/s: filter.evil.smudge".into(), ".git/modules/vendor/lib: core.sshcommand".into()]));
+        // A linked worktree keeps its own (`.git/worktrees/<id>/modules`); the
+        // common dir's count there too. The main worktree never uses a linked one's.
+        git("", &["worktree", "add", "-q", "wt"]);
+        git("", &["init", "-q", "--bare", ".git/worktrees/wt/modules/x"]);
+        git("", &["config", "--file", ".git/worktrees/wt/modules/x/config", "core.sshCommand", "hit"]);
+        let at_wt = programs_within(None, &format!("{top}/wt"), Duration::from_secs(30));
+        assert_eq!(programs_within(None, &top, Duration::from_secs(30)), got, "the main worktree");
+        let mut want = got.clone().unwrap();
+        want.push(".git/worktrees/wt/modules/x: core.sshcommand".into());
+        assert_eq!(at_wt, Ok(want));
+        // One whose name the scan can't read back whole shuts the gate.
+        git("", &["init", "-q", "--bare", ".git/modules/a\nb"]);
+        let got = programs_within(None, &top, Duration::from_secs(30)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(got.iter().any(|k| k.ends_with(UNREADABLE)), "{got:?}");
     }
 
     #[cfg(unix)]
