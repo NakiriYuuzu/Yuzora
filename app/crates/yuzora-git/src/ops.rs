@@ -206,15 +206,27 @@ fn remember_message(repo: &Repo, message: &str) {
     let _ = std::fs::write(&file, serde_json::to_string_pretty(&all).unwrap_or_default());
 }
 
+/// Where `commit.template` (as `config --path` gives it) is. Absolute as
+/// git reads it on either kind of machine: `/…`, or on Windows `C:/…`,
+/// `C:\…` and `\\server\…` (the repo may be on another machine).
+fn template_file(repo: &Repo, p: &str) -> String {
+    let b = p.as_bytes();
+    let drive = b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\');
+    if let Some(rest) = p.strip_prefix('~') {
+        format!("{}{rest}", yuzora_core::paths::home_dir().to_string_lossy())
+    } else if p.starts_with('/') || p.starts_with('\\') || drive {
+        p.to_owned()
+    } else {
+        repo.abs(p)
+    }
+}
+
 /// Earlier messages for this repo, newest first; the template; the last commit's message.
 pub fn messages(repo: &Repo) -> GitResult<Value> {
     let all: BTreeMap<String, Vec<String>> = std::fs::read_to_string(messages_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let history = all.get(&repo.id).cloned().unwrap_or_default();
     let template = repo.run(Git::read(["config", "--path", "commit.template"]))?;
-    let template = template.ok().then(|| template.stdout_text().trim().to_owned()).filter(|p| !p.is_empty()).and_then(|p| {
-        let abs = if p.starts_with('/') || p.starts_with('~') { p.replacen('~', &yuzora_core::paths::home_dir().to_string_lossy(), 1) } else { repo.abs(&p) };
-        repo.read_file(&abs).map(|b| String::from_utf8_lossy(&b).into_owned())
-    });
+    let template = template.ok().then(|| template.stdout_text().trim().to_owned()).filter(|p| !p.is_empty()).and_then(|p| repo.read_file(&template_file(repo, &p)).map(|b| String::from_utf8_lossy(&b).into_owned()));
     let last = repo.run(Git::read(["log", "-1", "--format=%B"]))?;
     let authors = repo.run(Git::read(["log", "-n", "300", "--format=%an <%ae>"]))?;
     let mut seen = HashSet::new();
@@ -984,10 +996,16 @@ pub fn submodules(repo: &Repo) -> GitResult<Value> {
                     'U' => "conflict",
                     _ => "ok",
                 };
-                let mut f = l[1..].split_whitespace();
-                let hash = f.next()?;
-                let path = f.next()?;
-                Some(json!({ "path": path, "hash": hash, "state": state, "describe": f.next().map(|d| d.trim_matches(|c| c == '(' || c == ')')) }))
+                // `<state><hash> <path>`, then ` (<describe>)` for a checked
+                // out one: the path as it is, spaces and all; a describe (a
+                // ref name) has none.
+                let (hash, rest) = l[1..].split_once(' ')?;
+                let described = matches!(state, "ok" | "modified").then(|| rest.rsplit_once(" (")).flatten().filter(|(_, d)| d.ends_with(')') && !d.contains(' '));
+                let (path, describe) = match described {
+                    Some((path, d)) => (path, Some(&d[..d.len() - 1])),
+                    None => (rest, None),
+                };
+                Some(json!({ "path": path, "hash": hash, "state": state, "describe": describe }))
             })
             .collect(),
     ))
@@ -1157,6 +1175,37 @@ mod tests {
         s.git(&["remote", "add", "origin", "/srv/some dir/repo.git"]);
         s.git(&["remote", "set-url", "--push", "origin", "/srv/push dir/a (push).git"]);
         assert_eq!(remotes(&s.repo).unwrap(), json!([{ "name": "origin", "url": "/srv/some dir/repo.git", "pushUrl": "/srv/push dir/a (push).git" }]));
+    }
+
+    #[test]
+    fn a_submodule_path_with_spaces_is_read_whole() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let lib = scratch();
+        lib.commit("l.txt", "1\n", "lib");
+        lib.git(&["tag", "v1"]);
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "a module (x)"]);
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "b c"]);
+        s.git(&["commit", "-q", "-m", "subs"]);
+        // Not checked out: git prints no description after the path.
+        s.git(&["submodule", "deinit", "-q", "--", "b c"]);
+        let subs = submodules(&s.repo).unwrap();
+        assert_eq!(subs[0]["path"], "a module (x)", "{subs}");
+        assert_eq!(subs[0]["describe"], "v1", "{subs}");
+        assert_eq!(subs[1]["path"], "b c", "{subs}");
+        assert_eq!(subs[1]["state"], "uninitialized", "{subs}");
+        assert_eq!(subs[1]["describe"], Value::Null, "{subs}");
+    }
+
+    #[test]
+    fn a_commit_template_at_an_absolute_path_is_read_there() {
+        let s = scratch();
+        for p in ["/home/me/.gitmessage", "C:/Users/me/.gitmessage", "C:\\Users\\me\\.gitmessage", "\\\\server\\share\\msg"] {
+            assert_eq!(template_file(&s.repo, p), p);
+        }
+        // `/` paths with a `~` in them are as they are.
+        assert_eq!(template_file(&s.repo, "/srv/a~b/msg"), "/srv/a~b/msg");
+        assert_eq!(template_file(&s.repo, "msg/t.txt"), s.repo.abs("msg/t.txt"));
     }
 
     #[test]

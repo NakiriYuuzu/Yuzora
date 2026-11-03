@@ -413,7 +413,7 @@ export default class SidebarGit extends View {
           .child(div().font_semibold().child(t("trust.title")))
           .child(div().text_size(11.5).text_color(th.muted).child(t("trust.body", { keys: st.trust.join(", ") })))
           .child(div().id("trust").h(24).px(10).flex().items_center().justify_center().rounded(4).cursor_pointer()
-            .bg(th.accent).text_color(th.background).hover((s) => s.text_color(th.foreground))
+            .bg(th.accent).text_color(th.accent_foreground).hover((s) => s.opacity(0.88))
             .on_click((_e, cx) => cx.spawn(async (cx) => {
               try { await trust(repo.id); } catch (e) { this.error = String(e); }
               await this.reload(cx, true);

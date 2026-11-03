@@ -6,6 +6,8 @@
   "empty": "沒有符合篩選條件的 commits。",
   "failed": "Git 執行失敗。",
   "cancel": "取消",
+  "lazy.body": "這個 partial clone 缺少 log 需要的物件。信任這個資料夾之後，Yuzora 才會從 remote 抓取。",
+  "lazy.button": "信任並抓取",
   "refresh": "重新讀取紀錄",
   "conflicts": "{count} 個檔案有衝突。",
   "working": "處理中…",

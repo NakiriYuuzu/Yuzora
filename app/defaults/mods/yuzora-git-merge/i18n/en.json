@@ -42,7 +42,7 @@
   "kind.deleted.yours": "Deleted in yours",
   "kind.deleted.theirs": "Deleted in theirs",
   "file.binary": "Binary file: there is no text to merge. Take one side whole.",
-  "file.tooLarge": "This file is too large to merge here (over 16 MiB). Take one side whole.",
+  "file.tooLarge": "This file is too large to merge here (over 16 MiB or 1,000,000 lines). Take one side whole.",
   "file.notConflicted": "{path} has no conflict any more.",
   "file.oneSide": "Added or deleted on one side only: take one side whole.",
   "apply": "Apply",

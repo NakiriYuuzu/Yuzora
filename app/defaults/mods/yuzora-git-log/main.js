@@ -8,7 +8,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
 import { spaces, panes, theme, settings, run, props, openOverlay, closeOverlay, notify, setShared } from "herdr";
 import { t, tokens, getSetting } from "yuzora:core";
-import { open, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate } from "yuzora:git";
+import { open, trust, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate } from "yuzora:git";
 
 const ROW = 26, LANE = 16, FILE = 24, MENU = 28, MENU_HEAD = 34;
 // Filter boxes after the branch one: [field, width, applied while typing].
@@ -320,7 +320,7 @@ export default class GitLog extends View {
     const c = x.kind === "head" ? th.accent : x.kind === "remote" ? th.ansi4 : x.kind === "tag" ? th.blocked : th.ansi2;
     return div().flex_none().max_w(150).min_w(0).h(18).px(6).flex().items_center().rounded(4).text_size(10.5)
       .when(x.kind === "head", (el) => el.bg(th.accent).text_color(th.accent_foreground ?? "#ffffff"))
-      .when(x.kind !== "head", (el) => el.bg(tint(c, "26")).text_color(c).border_1().border_color(tint(c, "55")))
+      .when(x.kind !== "head", (el) => el.bg(tint(c, "26")).text_color(th.foreground).border_1().border_color(tint(c, "55")))
       .child(div().min_w(0).truncate().child(x.name));
   }
 
@@ -330,12 +330,12 @@ export default class GitLog extends View {
     return r.head && !refs.some((x) => x.kind === "head") ? [{ name: "HEAD", kind: "head" }, ...refs] : refs;
   }
 
-  logRow(r, info, th, mono) {
+  logRow(r, info, th, mono, gg) {
     const on = this.sel?.row === r.row, bg = on ? th.selected : th.background;
     const refs = this.refsOf(r), narrow = this.w < 520 ? 8 : 20;
     return h_flex().w_full().h(ROW).px(6).gap(6).items_center().bg(bg).text_size(12)
       .when(info.graph, (el) => el.child(div().flex_none().w(Math.min(info.width, narrow) * LANE).h(ROW).overflow_hidden()
-        .child(GraphCell.new(`g-${r.row}`, { log: info.id, row: r.row, height: ROW, width: info.width * LANE, head: r.head, ...(hex(bg) ? { background: hex(bg) } : {}) }))))
+        .child(GraphCell.new(`g-${r.row}`, { log: info.id, row: r.row, height: ROW, width: info.width * LANE, head: r.head, colors: gg.lanes, headColor: gg.head, ...(hex(bg) ? { background: hex(bg) } : {}) }))))
       .child(h_flex().flex_1().min_w(0).gap(5).items_center()
         .children(refs.slice(0, 3).map((x) => this.tag(x, th)))
         .when(refs.length > 3, (el) => el.child(div().flex_none().text_size(10.5).text_color(th.dim).child(`+${refs.length - 3}`)))
@@ -382,7 +382,8 @@ export default class GitLog extends View {
 
   dropdown(th) {
     const items = this.ddItems();
-    const color = (k) => (k === "head" ? th.accent : k === "remote" ? th.ansi4 : k === "tag" ? th.blocked : th.ansi2);
+    const added = tokens().diff?.added ?? th.ansi2;
+    const color = (k) => (k === "head" ? th.accent : k === "remote" ? th.ansi4 : k === "tag" ? th.blocked : added);
     const key = (x) => `${x.kind}:${x.name}`;
     return div().flex_none().h(Math.min(220, items.length * FILE + 8)).mx(8).mb(6).relative().rounded(6).border_1().border_color(th.border).bg(th.popover ?? th.raised)
       .child(v_virtual_list("branch-dd", items.length, FILE, (i) => key(items[i]), (range) => items.slice(range.start, range.end).map((x) =>
@@ -459,7 +460,7 @@ export default class GitLog extends View {
         .child(div().text_color(this.error ? th.ansi1 : th.dim).child(this.error ?? (this.p.cwd || spaces().some((s) => s.active && s.folder) ? t("loading") : t("hint"))));
     }
     if (this.p.compare) return this.renderCompare(th);
-    const info = this.id == null ? null : logInfo(this.id), mono = settings().font_family ?? "JetBrains Mono", fs = tokens().file_status ?? {};
+    const info = this.id == null ? null : logInfo(this.id), mono = settings().font_family ?? "JetBrains Mono", fs = tokens().file_status ?? {}, gg = tokens().git_graph ?? {};
     const side = this.w >= 760, detail = this.showDetail && this.sel;
     const parts = info ? [t("footer.commits", { count: info.rows })] : [];
     if (info?.firstMs != null) parts.push(t("footer.first", { ms: info.firstMs }));
@@ -467,18 +468,19 @@ export default class GitLog extends View {
     const rows = !info ? div().flex_1().p(12).text_color(this.error ? th.ansi1 : th.dim).child(this.error ?? t("loading")) : div().flex_1().min_w(0).min_h(0).relative()
       .child(v_virtual_list("log-rows", info.rows, ROW, (i) => String(i), (range) => {
         this.vis = range;
-        return logRows(info.id, range.start, range.end).map((r) => this.logRow(r, info, th, mono));
+        return logRows(info.id, range.start, range.end).map((r) => this.logRow(r, info, th, mono, gg));
       }).size_full().track_scroll(this.scroll)
         .on_item_click((key, cx) => { this.handle.focus(); this.showDetail = true; this.select(Number(key), cx, false); })
         .on_item_secondary_click((key, _e, cx) => this.contextMenu(Number(key), cx)))
       .child(Scrollbar.vertical("log-rows").viewport_from_layout().absolute().inset_0())
-      .when(info.rows === 0, (el) => el.child(div().absolute().top(16).left(0).right(0).px(12).text_center().text_size(11.5).text_color(info.error ? th.ansi1 : th.dim)
+      .when(info.rows === 0 && !info.lazyFetch, (el) => el.child(div().absolute().top(16).left(0).right(0).px(12).text_center().text_size(11.5).text_color(info.error ? th.ansi1 : th.dim)
         .child(info.error ?? (info.loading ? t("loading") : t("empty")))));
     return v_flex().id("git-log").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12).track_focus(this.handle)
       .on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { const cls = (w) => (w < 480) + (w < 640) + (w < 760); if (cls(size.width) !== cls(this.w)) { this.w = size.width; cx.notify(); } })
       .when(Boolean(this.p.title), (el) => el.child(div().h(28).flex_none().px(10).flex().items_center().font_semibold().truncate().child(this.p.title)))
       .child(this.toolbar(th))
+      .when(Boolean(info?.lazyFetch), (el) => el.child(this.lazyFetch(info, th)))
       .when(this.dd, (el) => el.child(this.dropdown(th)))
       .child((side ? h_flex().items_stretch() : v_flex()).flex_1().min_h(0)
         .child(rows)
@@ -641,6 +643,22 @@ export default class GitLog extends View {
     cx.notify();
   }
 
+  // The log needs objects this partial clone lacks, and git fetches none
+  // until the folder is trusted (the sidebar asks only when the repo's
+  // settings name programs): ask here.
+  lazyFetch(info, th) {
+    const repo = this.repo;
+    return h_flex().id("lazy-fetch").mx(8).my(6).p(8).gap(8).flex_none().items_center().rounded(6).border_1().border_color(th.blocked).bg(th.raised).text_size(11.5)
+      .child(div().flex_1().min_w(0).text_color(this.lazyErr ? th.ansi1 : th.muted).child(this.lazyErr ?? t("lazy.body")))
+      .child(div().id("lazy-trust").h(24).px(10).flex().flex_none().items_center().rounded(4).cursor_pointer()
+        .bg(th.accent).text_color(th.accent_foreground).hover((s) => s.opacity(0.88))
+        .on_click((_e, cx) => cx.spawn(async (cx) => {
+          try { await trust(repo.id); this.lazyErr = null; logRefresh(info.id); } catch (e) { this.lazyErr = msg(e); }
+          cx.notify();
+        }))
+        .child(t("lazy.button")));
+  }
+
   button(id, label, th, kind, action) {
     return h_flex().id(id).h(28).px(12).items_center().rounded(6).text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click((_e, cx) => action(cx))
       .when(kind === "primary", (el) => el.bg(th.solid).text_color(th.solid_foreground).font_semibold())
@@ -658,7 +676,7 @@ export default class GitLog extends View {
     const tall = this.screen === "reset";
     return v_flex().when(it.sep, (el) => el.child(div().mx(7).my(4).h(1).bg(th.border)))
       .child(h_flex().id(`mi-${i}`).h(tall ? 40 : MENU).px(8).gap(9).rounded(7).items_center().justify_between().cursor_pointer()
-        .text_color(it.danger ? th.ansi1 : th.foreground).when(i === this.at, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
+        .text_color(it.danger ? tokens().file_status?.deleted ?? th.ansi1 : th.foreground).when(i === this.at, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
         .on_click((_e, cx) => this.choose(it, cx))
         .child(tall
           ? v_flex().child(div().child(t(`reset.${it.id}`))).child(div().text_size(10.5).text_color(th.dim).child(t(`reset.${it.id}.tip`)))
