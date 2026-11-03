@@ -78,10 +78,10 @@ fn status_with(
     limit: usize,
 ) -> Result<Option<GitStatus>, String> {
     let git = runner(cwd, on);
-    let Some(top) = toplevel(&git)? else {
+    let Some((dir, top)) = toplevel(&git)? else {
         return Ok(None);
     };
-    if waits(trusted, on, &top) {
+    if waits(trusted, on, &dir, &top) {
         return refs_only(&git, &top).map(Some);
     }
     let out = match git(&[
@@ -113,30 +113,39 @@ fn status_with(
     Ok(Some(status))
 }
 
-/// The top level of the work tree `git` runs in; `None` outside one (or
-/// without git).
+/// The repository git finds where `git` runs: its git dir and the top level
+/// of its work tree; `None` outside one (or without git).
 fn toplevel(
     git: impl Fn(&[&str]) -> Result<ExecOutput, ExecError>,
-) -> Result<Option<String>, String> {
-    let top = match git(&["rev-parse", "--show-toplevel"]) {
-        Ok(out) if out.code == 0 => out.stdout_text().trim_end_matches(['\n', '\r']).to_owned(),
+) -> Result<Option<(String, String)>, String> {
+    let out = match git(&["rev-parse", "--absolute-git-dir", "--show-toplevel"]) {
+        Ok(out) if out.code == 0 => out.stdout_text(),
         Ok(_) | Err(ExecError::Spawn(_)) => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
-    Ok(Some(top).filter(|top| !top.is_empty()))
+    Ok(out
+        .trim_end_matches(['\n', '\r'])
+        .split_once('\n')
+        .map(|(dir, top)| (dir.trim_end_matches('\r').to_owned(), top.to_owned()))
+        .filter(|(dir, top)| !dir.is_empty() && !top.is_empty()))
 }
 
-/// The repo's own config at `top` names programs git would run on the work
+/// Only the refs may be read in the repository at `dir`, work tree `top`.
+/// The trust check reads the repository git finds from `top`, which a
+/// `core.worktree` can make another one: then it speaks for nothing here.
+/// Otherwise, while its config names programs git would run on the work
 /// tree (a clean filter during `status`), or that can't be told, and the
-/// person hasn't trusted the folder: only its refs may be read.
-fn waits(trusted: &Path, on: Option<&str>, top: &str) -> bool {
-    git_trust::pending_from(trusted, on, top).map_or(true, |keys| !keys.is_empty())
+/// person hasn't trusted the folder.
+fn waits(trusted: &Path, on: Option<&str>, dir: &str, top: &str) -> bool {
+    let there = runner(top, on)(&["rev-parse", "--absolute-git-dir"]);
+    let same = matches!(&there, Ok(out) if out.code == 0 && out.stdout_text().trim_end_matches(['\n', '\r']) == dir);
+    !same || git_trust::pending_from(trusted, on, top).map_or(true, |keys| !keys.is_empty())
 }
 
 /// Whether git may read the work tree around `cwd` (list or compare it):
 /// it is one, and it doesn't wait for trust.
 pub(crate) fn work_tree_open(trusted: &Path, cwd: &str, on: Option<&str>) -> bool {
-    matches!(toplevel(runner(cwd, on)), Ok(Some(top)) if !waits(trusted, on, &top))
+    matches!(toplevel(runner(cwd, on)), Ok(Some((dir, top))) if !waits(trusted, on, &dir, &top))
 }
 
 /// The branch and how far it is from its upstream, from the refs alone: no
@@ -642,6 +651,75 @@ mod tests {
         let elsewhere = tmp.path().join("plain");
         std::fs::create_dir(&elsewhere).unwrap();
         assert!(refs_only(runner(&elsewhere.to_string_lossy(), None), "/r").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_work_tree_set_elsewhere_is_checked_where_git_reads_it() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_present() {
+            eprintln!("git not found: skipping");
+            return;
+        }
+        // `evil`'s config names a clean filter and puts its work tree in
+        // `clean`, a repository of its own with nothing to trust: the trust
+        // check at the top level would read `clean`, git status from `evil`
+        // runs `evil`'s filter.
+        let tmp = tempfile::tempdir().unwrap();
+        let (evil, clean) = (tmp.path().join("evil"), tmp.path().join("clean"));
+        for dir in [&evil, &clean] {
+            std::fs::create_dir(dir).unwrap();
+            git_in(dir, &["init", "-q"]);
+        }
+        std::fs::write(clean.join("a.txt"), "1\n").unwrap();
+        let marker = tmp.path().join("ran");
+        let program = tmp.path().join("clean.sh");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git_in(
+            &evil,
+            &["config", "filter.probe.clean", &program.to_string_lossy()],
+        );
+        git_in(
+            &evil,
+            &["config", "core.worktree", &clean.to_string_lossy()],
+        );
+        std::fs::write(evil.join(".git/info/attributes"), "* filter=probe\n").unwrap();
+        git_in(&evil, &["add", "a.txt"]);
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::write(clean.join("a.txt"), "2\n").unwrap();
+
+        let trusted = tmp.path().join("trusted.json");
+        let cwd = evil.to_string_lossy().into_owned();
+        let s = status_with(&trusted, &cwd, None, 100).unwrap().unwrap();
+        assert!(
+            !marker.exists(),
+            "git status ran the filter of a repo the check never read"
+        );
+        assert!(s.untrusted && s.marks.is_empty());
+        assert!(!work_tree_open(&trusted, &cwd, None));
+        // Trusting the top level speaks for `clean`, not for `evil`.
+        git_trust::trust_at(&trusted, &git_trust::folder_id(None, &s.top)).unwrap();
+        assert!(
+            status_with(&trusted, &cwd, None, 100)
+                .unwrap()
+                .unwrap()
+                .untrusted
+        );
+        assert!(!work_tree_open(&trusted, &cwd, None));
+        assert!(!marker.exists());
+        // `clean` itself is what was trusted, and opens.
+        assert!(work_tree_open(&trusted, &clean.to_string_lossy(), None));
+        // The oracle is live: git status from `evil` does run the filter.
+        git_in(&evil, &["status", "--porcelain"]);
+        assert!(
+            marker.exists(),
+            "git status never ran the filter, so this proves nothing"
+        );
     }
 
     #[cfg(unix)]
