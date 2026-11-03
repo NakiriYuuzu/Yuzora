@@ -176,7 +176,8 @@ fn read_image(path: &Path, shown: Option<Stamp>) -> Found {
 
 /// A path's answer is looked at again after this long.
 const RECHECK: Duration = Duration::from_secs(10);
-/// An image no frame drew for this long is let go (with its bytes).
+/// An image the last frame didn't draw, and none has for this long, is let
+/// go (with its bytes). Off screen it is read again when drawn.
 const FORGET: Duration = Duration::from_secs(60);
 
 /// What a preview shows for one image path.
@@ -185,8 +186,9 @@ struct Known {
     shown: Option<(Stamp, Arc<Image>)>,
     /// When it was looked at.
     at: Instant,
-    /// When a frame last drew it.
+    /// When a frame last drew it, and which.
     asked: Instant,
+    frame: u64,
 }
 
 /// Which of a preview's images may be shown. Drawing only reads it; the
@@ -203,6 +205,10 @@ struct ImageChecks {
     missing: bool,
     /// A redraw to look at missing images again is waiting.
     timer: bool,
+    /// The frame drawn last (counted as the preview renders).
+    frame: u64,
+    /// A pass to let go of images no longer drawn is waiting.
+    forgetting: bool,
 }
 
 impl ImageChecks {
@@ -212,6 +218,7 @@ impl ImageChecks {
         match self.known.get_mut(path) {
             Some(known) => {
                 known.asked = Instant::now();
+                known.frame = self.frame;
                 if known.at.elapsed() > RECHECK {
                     self.wanted.insert(path.to_owned());
                 }
@@ -243,14 +250,14 @@ impl ImageChecks {
     /// replaced at the same path too). Lets go of images not drawn lately.
     fn record(&mut self, answers: Vec<(PathBuf, Found)>) -> bool {
         let now = Instant::now();
-        self.known
-            .retain(|_, k| now.duration_since(k.asked) < FORGET);
+        self.forget();
         let mut changed = false;
         for (path, found) in answers {
             let known = self.known.entry(path).or_insert(Known {
                 shown: None,
                 at: now,
                 asked: now,
+                frame: self.frame,
             });
             known.at = now;
             match found {
@@ -267,6 +274,15 @@ impl ImageChecks {
             }
         }
         changed
+    }
+
+    /// Lets go of the images the last frame didn't draw and none has for
+    /// [`FORGET`]. True when some it didn't draw are left, for later.
+    fn forget(&mut self) -> bool {
+        let (now, frame) = (Instant::now(), self.frame);
+        self.known
+            .retain(|_, k| k.frame == frame || now.duration_since(k.asked) < FORGET);
+        self.known.values().any(|k| k.frame != frame)
     }
 }
 
@@ -346,6 +362,30 @@ impl MarkdownView {
             }
             if changed {
                 let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+    }
+
+    /// Lets go later of images the frames stopped drawing (an edit took them
+    /// out, or they are off screen): no frame may come to do it.
+    fn forget_later(&self, cx: &mut Context<Self>) {
+        let images = self.images.clone();
+        {
+            let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
+            if checks.forgetting || checks.known.is_empty() {
+                return;
+            }
+            checks.forgetting = true;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(FORGET).await;
+                let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
+                if this.upgrade().is_none() || !checks.forget() {
+                    checks.forgetting = false;
+                    break;
+                }
             }
         })
         .detach();
@@ -447,8 +487,10 @@ impl Render for MarkdownView {
         let base = self.base.clone();
         let remote = self.remote;
         let images = self.images.clone();
+        images.lock().unwrap_or_else(|e| e.into_inner()).frame += 1;
         self.check_images(cx);
         self.recheck_later(cx);
+        self.forget_later(cx);
         div().size_full().min_h_0().px(px(18.)).py(px(14.)).child(
             TextView::markdown(ElementId::Name(self.id.clone()), text)
                 .style(self.style(cx))
@@ -687,10 +729,82 @@ mod tests {
         checks.known.get_mut(a).unwrap().at = Instant::now() - RECHECK * 2;
         assert!(checks.answer(a).is_some());
         assert!(checks.wanted.contains(a));
-        // One no frame drew for a while is let go.
-        checks.known.get_mut(b).unwrap().asked = Instant::now() - FORGET * 2;
-        checks.record(vec![]);
-        assert!(!checks.known.contains_key(b) && checks.known.contains_key(a));
+    }
+
+    #[test]
+    fn images_no_longer_drawn_are_let_go() {
+        let read = || Found::Read {
+            stamp: Stamp {
+                len: 1,
+                mtime_ms: 1,
+            },
+            format: ImageFormat::Png,
+            bytes: vec![0],
+        };
+        let (a, b) = (Path::new("/r/a.png"), Path::new("/r/b.png"));
+        let mut checks = ImageChecks {
+            frame: 1,
+            ..Default::default()
+        };
+        checks.answer(a);
+        checks.answer(b);
+        checks.record(vec![(a.to_owned(), read()), (b.to_owned(), read())]);
+        // The next frame draws only `a` (an edit took `b` out): `b` is kept
+        // for now, to be looked at later.
+        checks.frame = 2;
+        checks.answer(a);
+        assert!(checks.forget());
+        assert!(checks.known.contains_key(b));
+        // A while later, with no frame since: `b` goes; `a`, still on screen, stays.
+        for k in checks.known.values_mut() {
+            k.asked = Instant::now() - FORGET * 2;
+        }
+        assert!(!checks.forget());
+        assert!(checks.known.contains_key(a) && !checks.known.contains_key(b));
+    }
+
+    #[gpui::test]
+    fn images_taken_out_are_let_go_without_a_frame(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let key = docs::DocKey {
+            on: None,
+            path: dir.path().join("a.md").to_string_lossy().into_owned(),
+        };
+        let id = cx.update(|cx| docs::open(key, cx));
+        cx.run_until_parked();
+        let doc = cx.update(|cx| docs::get(id, cx).unwrap());
+        let colors = Colors::from_props(&HostValue::Null);
+        let view = cx.new(|cx| MarkdownView::new(doc, "md".into(), colors, cx));
+        let image = dir.path().join("x.png");
+        view.update(cx, |v, cx| {
+            let mut checks = v.images.lock().unwrap();
+            checks.frame = 1;
+            checks.answer(&image);
+            checks.record(vec![(
+                image.clone(),
+                Found::Read {
+                    stamp: Stamp {
+                        len: 1,
+                        mtime_ms: 1,
+                    },
+                    format: ImageFormat::Png,
+                    bytes: vec![0],
+                },
+            )]);
+            // The last frame no longer drew it, a while ago.
+            checks.frame = 2;
+            checks.known.get_mut(&image).unwrap().asked = Instant::now() - FORGET * 2;
+            drop(checks);
+            v.forget_later(cx);
+        });
+        cx.executor().advance_clock(FORGET);
+        cx.run_until_parked();
+        view.update(cx, |v, _| {
+            let checks = v.images.lock().unwrap();
+            assert!(checks.known.is_empty() && !checks.forgetting);
+        });
     }
 
     #[gpui::test]

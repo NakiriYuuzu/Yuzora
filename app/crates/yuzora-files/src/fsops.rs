@@ -800,25 +800,30 @@ fn write_in_place(target: &Path, bytes: &[u8], backups: &Path) -> io::Result<()>
     write_in_place_with(target, bytes, backups, overwrite)
 }
 
+/// `write` puts what it reads into a file; the old content goes to the
+/// backup and back from it a chunk at a time, however big the file is.
 fn write_in_place_with(
     target: &Path,
     bytes: &[u8],
     backups: &Path,
-    write: impl Fn(&Path, &[u8]) -> io::Result<()>,
+    write: impl Fn(&Path, &mut dyn Read) -> io::Result<()>,
 ) -> io::Result<()> {
-    let old = std::fs::read(target)?;
+    let mut old = std::fs::File::open(target)?;
     let (backup, mut file) = new_backup(backups)?;
-    if let Err(e) = file.write_all(&old).and_then(|()| file.sync_all()) {
+    if let Err(e) = io::copy(&mut old, &mut file).and_then(|_| file.sync_all()) {
         drop(file);
         let _ = std::fs::remove_file(&backup);
         return Err(e);
     }
-    drop(file);
-    let Err(e) = write(target, bytes) else {
+    drop((old, file));
+    let Err(e) = write(target, &mut &bytes[..]) else {
         let _ = std::fs::remove_file(&backup);
         return Ok(());
     };
-    if write(target, &old).is_ok() {
+    if std::fs::File::open(&backup)
+        .and_then(|mut b| write(target, &mut b))
+        .is_ok()
+    {
         let _ = std::fs::remove_file(&backup);
         return Err(e);
     }
@@ -860,13 +865,14 @@ fn private_backups() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Writes over a file that is there (never creates one) and fsyncs it.
-fn overwrite(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Writes what `from` holds over a file that is there (never creates one)
+/// and fsyncs it.
+fn overwrite(path: &Path, from: &mut dyn Read) -> io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
         .open(path)?;
-    file.write_all(bytes)?;
+    io::copy(from, &mut file)?;
     file.sync_all()
 }
 
@@ -1536,19 +1542,21 @@ mod tests {
         assert_eq!(left(), 0);
         // The write fails halfway (say the disk filled up): the old content is put back.
         let failing = std::cell::Cell::new(true);
-        let flaky = |path: &Path, bytes: &[u8]| {
+        let flaky = |path: &Path, from: &mut dyn Read| {
+            let mut bytes = Vec::new();
+            from.read_to_end(&mut bytes)?;
             if bytes == b"newer\n" && failing.replace(false) {
                 std::fs::write(path, b"ne")?;
                 return Err(io::Error::other("no space left"));
             }
-            overwrite(path, bytes)
+            overwrite(path, &mut &bytes[..])
         };
         let err = write_in_place_with(target, b"newer\n", &backups, flaky).unwrap_err();
         assert_eq!(err.to_string(), "no space left");
         assert_eq!(std::fs::read(target).unwrap(), b"new\n");
         assert_eq!(left(), 0);
         // Putting it back fails too: the backup stays, and the error says where.
-        let broken = |path: &Path, _: &[u8]| {
+        let broken = |path: &Path, _: &mut dyn Read| {
             std::fs::write(path, b"")?;
             Err(io::Error::other("no space left"))
         };

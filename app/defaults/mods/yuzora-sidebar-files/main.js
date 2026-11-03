@@ -184,10 +184,12 @@ export default class FilesSidebar extends View {
   visible() {
     if (this.rowsVersion === this.version) return this.rows;
     const out = [];
+    let capped = false;
     const walk = (folder, depth) => {
       for (const e of this.entries.get(folder) ?? []) {
-        if (out.length >= ROWS) return;
         if (e.hidden && !this.hidden) continue;
+        // One more row than fits: the tree is cut, and says so.
+        if (out.length >= ROWS) { capped = true; return; }
         const r = folder ? `${folder}/${e.name}` : e.name;
         const open = e.dir && this.open.has(r);
         out.push({ rel: r, name: e.name, dir: e.dir, link: e.link, depth, open });
@@ -195,7 +197,7 @@ export default class FilesSidebar extends View {
       }
     };
     walk("", 0);
-    this.rows = out; this.rowsVersion = this.version;
+    this.rows = out; this.rowsCapped = capped; this.rowsVersion = this.version;
     return out;
   }
 
@@ -392,7 +394,8 @@ export default class FilesSidebar extends View {
         .on_item_click((key, cx) => this.click(key, cx))
         .on_item_secondary_click((key, e, cx) => this.openMenu(key, e, cx)))
       .child(Scrollbar.vertical("tree").absolute().inset_0())
-      .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))));
+      .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))))
+      .when(Boolean(this.rowsCapped), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.rows", { count: ROWS }))));
     // The folder could not be listed again: the rows are from before.
     if (!here.error) return tree;
     return v_flex().flex_1().min_h(0)

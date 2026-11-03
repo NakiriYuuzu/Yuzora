@@ -23,7 +23,8 @@
     "no_folder": "這個 Space 沒有資料夾。",
     "loading": "正在載入檔案…",
     "no_files": "這裡沒有檔案。",
-    "limited": "每個資料夾最多顯示 {count} 個項目。"
+    "limited": "每個資料夾最多顯示 {count} 個項目。",
+    "rows": "樹最多顯示 {count} 列，收合一些資料夾才看得到其餘的項目。"
   },
   "search": {
     "placeholder": "搜尋…",

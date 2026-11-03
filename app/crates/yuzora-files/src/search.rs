@@ -629,25 +629,16 @@ pub fn grep_local(
             let line = line.trim_end_matches('\r');
             // A pattern that matches only an empty spot (`^`, `\b`) still
             // makes a hit, as with ripgrep; there is just nothing to mark.
-            let mut matches = matcher.find_iter(line).peekable();
-            let Some(first) = matches.peek().map(|m| char_offset(line, m.start())) else {
+            let matches = matcher.find_iter(line).map(|m| (m.start(), m.end()));
+            let Some((column, ranges)) = marks(|b| char_offset(line, b), matches) else {
                 continue;
             };
-            let mut ranges: Vec<(usize, usize)> = matches
-                .filter(|m| m.end() > m.start())
-                .map(|m| (char_offset(line, m.start()), char_offset(line, m.end())))
-                .collect();
             if result.hits.len() >= limit {
                 result.truncated = true;
                 result.files += usize::from(found);
                 return Ok(result);
             }
             found = true;
-            let column = first as u64 + 1;
-            ranges.retain(|r| r.0 < TEXT_CHARS);
-            for r in &mut ranges {
-                r.1 = r.1.min(TEXT_CHARS);
-            }
             result.hits.push(GrepHit {
                 path: path.clone(),
                 line: number as u64 + 1,
@@ -705,25 +696,11 @@ pub fn parse_rg_json(root: &str, out: &str, limit: usize) -> GrepResult {
                 .count();
         let raw = &raw[..end];
         let text = String::from_utf8_lossy(raw);
-        // rg counts submatch offsets in bytes of the line. The first one,
-        // even empty (`$`), is where the hit goes; empty ones mark nothing.
-        let mut ranges: Vec<(usize, usize)> = data["submatches"]
-            .as_array()
-            .map(|subs| {
-                subs.iter()
-                    .filter_map(|s| {
-                        Some((s["start"].as_u64()? as usize, s["end"].as_u64()? as usize))
-                    })
-                    .map(|(start, end)| (chars_before(raw, start), chars_before(raw, end)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let column = ranges.first().map_or(1, |r| r.0 as u64 + 1);
-        ranges.retain(|(start, end)| end > start);
-        ranges.retain(|r| r.0 < TEXT_CHARS);
-        for r in &mut ranges {
-            r.1 = r.1.min(TEXT_CHARS);
-        }
+        // rg counts submatch offsets in bytes of the line.
+        let subs = data["submatches"].as_array().into_iter().flatten();
+        let subs =
+            subs.filter_map(|s| Some((s["start"].as_u64()? as usize, s["end"].as_u64()? as usize)));
+        let (column, ranges) = marks(|b| chars_before(raw, b), subs).unwrap_or((1, Vec::new()));
         let path = relative(root, path);
         files.insert(path.clone());
         hits.push(GrepHit {
@@ -762,6 +739,32 @@ fn read_at_most(path: &Path, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
 /// Characters of `text` that start before byte `byte`.
 fn char_offset(text: &str, byte: usize) -> usize {
     text.char_indices().take_while(|(at, _)| *at < byte).count()
+}
+
+/// A hit's column (1-based) and the character ranges to mark, from its
+/// matches in order (byte offsets; `chars_at` turns one into characters).
+/// The first, even empty (`$`), is where the hit goes; empty ones mark
+/// nothing. Only matches that start in the [`TEXT_CHARS`] shown are looked
+/// at, so a line with millions of them costs no more than a short one.
+/// `None` without any match.
+fn marks(
+    chars_at: impl Fn(usize) -> usize,
+    mut matches: impl Iterator<Item = (usize, usize)>,
+) -> Option<(u64, Vec<(usize, usize)>)> {
+    let first = matches.next()?;
+    let column = chars_at(first.0) as u64 + 1;
+    let mut ranges = Vec::new();
+    for (start, end) in std::iter::once(first).chain(matches) {
+        let from = chars_at(start);
+        if from >= TEXT_CHARS {
+            break;
+        }
+        let to = chars_at(end).min(TEXT_CHARS);
+        if to > from {
+            ranges.push((from, to));
+        }
+    }
+    Some((column, ranges))
 }
 
 /// rg run in `root` names files `./x/y` (or with `root` in front).
@@ -1381,6 +1384,29 @@ mod tests {
         let path = line.replace(r#"{"text":"/r/a.txt"}"#, r#"{"bytes":"L3IvYmFk/y50eHQ="}"#);
         let r = parse_rg_json("/r", &path, 5);
         assert_eq!((r.hits.len(), r.files, r.skipped), (0, 0, true));
+    }
+
+    #[test]
+    fn only_matches_in_the_shown_text_are_looked_at() {
+        let pulled = std::cell::Cell::new(0);
+        let matches = (0..1_000_000).map(|i| {
+            pulled.set(pulled.get() + 1);
+            (i, i + 1)
+        });
+        let (column, ranges) = marks(|b| b, matches).unwrap();
+        assert_eq!((column, ranges.len()), (1, TEXT_CHARS));
+        assert_eq!(pulled.get(), TEXT_CHARS + 1);
+        // A first match past the shown text: its column, nothing marked.
+        assert_eq!(marks(|b| b, [(400, 403)].into_iter()), Some((401, vec![])));
+        assert_eq!(marks(|b| b, std::iter::empty()), None);
+        // A long line of matches, searched without rg: one hit, quickly.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a".repeat(1 << 20)).unwrap();
+        let r = grep_local(dir.path().to_str().unwrap(), "a", false, false, false, 10);
+        assert_eq!(
+            r.map(|r| (r.hits.len(), r.hits[0].ranges.len())),
+            Ok((1, TEXT_CHARS))
+        );
     }
 
     #[test]

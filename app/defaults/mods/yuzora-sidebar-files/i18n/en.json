@@ -23,7 +23,8 @@
     "no_folder": "No folder for this space.",
     "loading": "Loading files…",
     "no_files": "No files here.",
-    "limited": "Folders show at most {count} entries."
+    "limited": "Folders show at most {count} entries.",
+    "rows": "The tree shows at most {count} rows: collapse some folders to see the rest."
   },
   "search": {
     "placeholder": "Search…",
