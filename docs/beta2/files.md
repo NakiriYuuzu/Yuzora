@@ -160,6 +160,10 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 - Windows 存檔保留 ACL 與其他屬性：目前 rename 換檔後只保留唯讀屬性，ACL 變成資料夾繼承的。改用 `ReplaceFileW`（保留 DACL、屬性、建立時間），失敗時（`ERROR_UNABLE_TO_MOVE_REPLACEMENT`）要把暫存檔放回原位，不能刪；需要 CI 在 Windows 編譯並測試 app（第 24 輪）。
 - Windows 上 `doc-pane.js` 的 `parent` 只認 `/`：原生路徑（`C:\…`）的檔案不會即時 watch，只靠 15 秒一次的檢查重新載入；watch 回報的路徑也要用和 `within()` 相同的方式比對（第 23 輪修 agent 判斷時發現）。
+- `gitStatus` 失敗時的提示：在 work tree 裡但 `gitStatus` 失敗（讀不到、逾時）時，現在和「不是 repo」一樣清掉分支與標記。要分開記下錯誤，並在樹下方提示 Git 標記無法取得。
+- 遠端檔名清單加 `rg --no-config`：清單腳本的兩個 `rg --files` 會讀 `RIPGREP_CONFIG_PATH`，裡面的 glob 可能讓檔案默默少掉（內容搜尋已經加了）。
+- 遠端列資料夾不展開整個 glob：列目錄腳本的 `for f in ./.[!.]* ./..?* ./*` 會先展開所有名稱，`max` 只限制輸出；超大的遠端資料夾可能逾時。改用逐筆讀取、到 `max + 1` 就停。
+- 模糊比對的配置上限：`fuzzy_match` 的兩個 `m × n` 矩陣在查詢與路徑都長達數千字元時可達數百 MB。限制查詢長度與配置量。
 
 ## 待辦
 
