@@ -1146,8 +1146,10 @@ with these differences.
   "stable"}` (or `"beta"`) in `yuzora/settings.json` picks the channel; an
   update waiting shows in Settings and goes in when Yuzora restarts.
 - What's new follows the language shown (`general.locale`): Chinese
-  (zh-TW) or English. A newer release's notes are kept per language,
-  `update-notes-cache.md` (English) and `update-notes-cache.zh-TW.md`.
+  (zh-TW) from the bundled `CHANGELOG.zh-TW.md`, English from
+  `CHANGELOG.md`; a version without Chinese notes shows in English. A newer
+  release's notes are kept per language, `update-notes-cache.md` (English)
+  and `update-notes-cache.zh-TW.md`.
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->

@@ -149,7 +149,7 @@ fn all() -> Vec<Note> {
 }
 
 fn all_in(locale: &'static str) -> Vec<Note> {
-    let mut notes = parse(crate::yuzora::release::notes::bundled(locale)); // yuzora(L7)
+    let mut notes = crate::yuzora::release::notes::bundled(locale); // yuzora(L7): in `locale`
     let fetched = FETCHED.lock().unwrap().entry(locale).or_insert_with(|| {
         std::fs::read_to_string(path(crate::yuzora::release::notes::cache_file(locale))).map(|s| parse(&s)).unwrap_or_default()
     }).clone();

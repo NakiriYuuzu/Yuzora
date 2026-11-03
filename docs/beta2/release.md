@@ -127,7 +127,16 @@
 - **manifest**：英文是 `notes`（`changelog.md`），繁中是 `localized_notes["zh-TW"]`（`changelog.zh-TW.md`）；`manifest.ts` 看到 dist 裡有哪份就寫哪份。`localized_notes` 是新增欄位，`schema` 維持 1：沒有這個欄位的舊 manifest 照樣能讀，繁中退回英文；舊版 app 讀到新 manifest 會略過這個欄位，只用 `notes`。
 - **下載**：找到新版時，每個語系各下載一份：繁中用 `localized_notes["zh-TW"]`，沒有就用英文 `notes`。每份都比對 manifest 裡的 sha256，不符就丟掉並記 log，**不會改用另一份**；更新說明是選用的，失敗不影響更新本身。
 - **快取**：app home 裡一個語系一份，`update-notes-cache.md`（英文，上游原本的檔名）與 `update-notes-cache.zh-TW.md`，所以切換語系後馬上顯示另一份，不必重新下載。
-- **內建的說明**：目前這版自己的說明來自 build 內建的 `app/CHANGELOG.md`（`release::notes::bundled`）。上游 `update_notes.rs` 只改了標 `yuzora(L7)` 的幾行：快取與內建說明改成依語系取得。
+- **兩份 changelog**：
+  - `app/CHANGELOG.md`（上游檔）是英文，Yuzora 的段落在 Herdr 的上面。上游的解析器、`scripts/yuzora/sync-check` 與 justfile 都照舊可用。
+  - `app/CHANGELOG.zh-TW.md`（Yuzora 自有）只放 Yuzora 的段落，是同一批版本的繁中版。標題仍用英文的 `### New`／`### Fixed`，因為 App 靠這個標題判斷 Fixed。
+  - 兩份都內嵌進 build（`release::notes::bundled`）。zh-TW 先取中文，中文檔沒有的版本（例如 Herdr 的版本）逐版改用英文；其他語系一律英文。
+  - 發布時 `app-package.yml` 把兩份複製成 `dist/changelog.md`、`dist/changelog.zh-TW.md`，manifest 帶兩份的 sha256。
+- **新增條目**：每筆都要兩份各加一行，英文進 `app/CHANGELOG.md`，繁中進 `app/CHANGELOG.zh-TW.md`。測試會擋下這些情況：
+  - 任一份的第一段不是 `CARGO_PKG_VERSION`；
+  - 中文有、英文沒有的版本；
+  - 同一版本兩份的日期、spotlight，或各標題下的項目數不同。
+- **上游的接點**：`update_notes.rs` 只改了標 `yuzora(L7)` 的幾行，把快取與內建說明改成依語系取得。
 
 ## 4. 金鑰管理
 
@@ -186,7 +195,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 現行 `release.yml` 是 Tauri app 的發布：main 一 push 就自動 tag 與發布。beta.2 **不改它的觸發行為**。建議另開一個 beta.2 發布 workflow（或在 release PR 中改寫 `release.yml`，由使用者決定），步驟：
 
 1. 觸發 `app-package.yml`（workflow_dispatch）取得四個平台的 artifacts 與未簽章 manifest。
-2. 在 protected environment（required reviewer）下載 artifacts，加入 `changelog.md`（`app/CHANGELOG.md`）與 `changelog.zh-TW.md`，重產並簽 `yuzora-update.json` → `.sig`。
+2. 在 protected environment（required reviewer）下載 artifacts，加入 `changelog.md`（`app/CHANGELOG.md`）與 `changelog.zh-TW.md`（`app/CHANGELOG.zh-TW.md`；`app-package.yml` 的 artifact 已帶兩份），重產並簽 `yuzora-update.json` → `.sig`。
 3. 若要帶 beta.1：簽 macOS archive 與 NSIS 安裝程式，產生 `latest.json`（§5）。
 4. 建 draft release `v<version>`（beta：`prerelease=true`、不設 Latest），上傳：
 
