@@ -40,7 +40,8 @@
     "skipped": "Some files or folders couldn't be read: results may be incomplete."
   },
   "git": {
-    "untrusted": "Untrusted folder: trust it in the Git sidebar to show Git marks."
+    "untrusted": "Untrusted folder: trust it in the Git sidebar to show Git marks.",
+    "truncated": "Too many changes: not every changed file has a Git mark."
   },
   "menu": {
     "open": "Open",

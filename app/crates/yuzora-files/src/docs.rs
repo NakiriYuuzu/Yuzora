@@ -303,8 +303,10 @@ impl Facts {
 enum Probe {
     Same,
     Missing,
-    /// Same content, new timestamp (a touch, or our own write seen late).
-    Touched(Stamp),
+    /// Same content, new timestamp (a touch, or our own write seen late),
+    /// or a stamp read through to confirm it; with other permission bits
+    /// (mode, readonly) when they changed.
+    Touched(Stamp, Option<(u32, bool)>),
     /// Same stamp, other permission bits: whether it can be written now.
     Access {
         mode: u32,
@@ -359,7 +361,8 @@ pub struct DocView {
     /// What a check found on disk while there were unsaved changes.
     incoming: Option<TextFile>,
     /// Since when (ms) the stamp checks compare against has been seen, while
-    /// it is in whole seconds and no read after [`SETTLE_MS`] confirmed it:
+    /// it is in whole seconds or was fresh then ([`Self::saw`]) and no read
+    /// after [`SETTLE_MS`] confirmed it:
     /// until then a check reads the content even under the same stamp.
     unconfirmed: Option<u64>,
     dirty: bool,
@@ -888,26 +891,32 @@ impl DocView {
         let read = read || self.unconfirmed.is_some();
         let started = now_ms();
         cx.spawn(async move |this, cx| {
-            let probe = blocking(move || match fsops::stat(&key.path, key.on.as_deref()) {
-                Ok(None) => Probe::Missing,
-                // Unchanged, unless only its permissions were (a chmod moves
-                // neither size nor time).
-                Ok(Some(stamp)) if Some(stamp) == disk && !read => {
-                    match key.on.is_none().then(|| fsops::mode(&key.path)).flatten() {
-                        Some(now) if Some(now) != mode => Probe::Access {
-                            mode: now,
-                            readonly: fsops::readonly(&key.path),
-                        },
-                        _ => Probe::Same,
+            let probe = blocking(move || {
+                // A chmod moves neither size nor time: the same bytes may
+                // still have other permissions (here only).
+                let access = || match key.on.is_none().then(|| fsops::mode(&key.path)).flatten() {
+                    Some(now) if Some(now) != mode => Some((now, fsops::readonly(&key.path))),
+                    _ => None,
+                };
+                match fsops::stat(&key.path, key.on.as_deref()) {
+                    Ok(None) => Probe::Missing,
+                    Ok(Some(stamp)) if Some(stamp) == disk && !read => {
+                        access().map_or(Probe::Same, |(mode, readonly)| Probe::Access {
+                            mode,
+                            readonly,
+                        })
                     }
-                }
-                Ok(Some(_)) => match fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES)
-                {
-                    Ok(file) if file.hash == disk_hash => Probe::Touched(file.stamp),
-                    Ok(file) => Probe::Changed(file),
+                    Ok(Some(_)) => {
+                        match fsops::read_text(&key.path, key.on.as_deref(), MAX_OPEN_BYTES) {
+                            Ok(file) if file.hash == disk_hash => {
+                                Probe::Touched(file.stamp, access())
+                            }
+                            Ok(file) => Probe::Changed(file),
+                            Err(e) => Probe::Failed(e),
+                        }
+                    }
                     Err(e) => Probe::Failed(e),
-                },
-                Err(e) => Probe::Failed(e),
+                }
             })
             .await
             .unwrap_or(Probe::Same);
@@ -925,10 +934,25 @@ impl DocView {
         rx
     }
 
-    /// A stamp taken in: one in whole seconds stays [`Self::unconfirmed`]
-    /// until a read [`SETTLE_MS`] later finds the same content.
+    /// A stamp taken in: one in whole seconds, or modified less than
+    /// [`SETTLE_MS`] ago (a rewrite within the clock's tick, however fine the
+    /// stamp, would share it), stays [`Self::unconfirmed`] until a read
+    /// [`SETTLE_MS`] later finds the same content.
     fn saw(&mut self, stamp: Stamp) {
-        self.unconfirmed = (stamp.mtime_ms % 1000 == 0).then(now_ms);
+        let now = now_ms();
+        let fresh = (now as i64).saturating_sub(stamp.mtime_ms) < SETTLE_MS as i64;
+        self.unconfirmed = (stamp.mtime_ms % 1000 == 0 || fresh).then_some(now);
+    }
+
+    /// The permission bits on disk: whether the file can be written now.
+    fn access_seen(&mut self, mode: u32, readonly: bool, cx: &mut Context<Self>) {
+        self.disk_mode = Some(mode);
+        let readonly = readonly || self.facts.not_utf8 || self.key.on.is_some();
+        if readonly != self.facts.readonly {
+            self.facts.readonly = readonly;
+            self.sync_readonly(cx);
+            self.bump(cx);
+        }
     }
 
     /// `started`: when the check began (ms).
@@ -948,16 +972,11 @@ impl DocView {
                     self.bump(cx);
                 }
             }
-            Probe::Access { mode, readonly } => {
-                self.disk_mode = Some(mode);
-                let readonly = readonly || self.facts.not_utf8 || self.key.on.is_some();
-                if readonly != self.facts.readonly {
-                    self.facts.readonly = readonly;
-                    self.sync_readonly(cx);
-                    self.bump(cx);
+            Probe::Access { mode, readonly } => self.access_seen(mode, readonly, cx),
+            Probe::Touched(stamp, access) => {
+                if let Some((mode, readonly)) = access {
+                    self.access_seen(mode, readonly, cx);
                 }
-            }
-            Probe::Touched(stamp) => {
                 let was = self.incoming.as_ref().map_or(self.disk, |f| Some(f.stamp));
                 if was != Some(stamp) {
                     self.saw(stamp);
@@ -1456,11 +1475,25 @@ mod tests {
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(view.read(cx).unconfirmed, None));
-        // A finer stamp never waits.
+        // A finer stamp from long ago never waits.
         put("two\n", second + std::time::Duration::from_millis(250));
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(view.read(cx).unconfirmed, None));
+        // A fresh one waits, whatever its precision: a rewrite within the
+        // clock's tick (a millisecond, or a coarse kernel tick) shares it.
+        let mut fresh = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        if fresh.as_millis().is_multiple_of(1000) {
+            fresh += std::time::Duration::from_millis(1);
+        }
+        put("tres\n", fresh);
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(view.read(cx).unconfirmed.is_some()));
+        put("tr3s\n", fresh);
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(view.read(cx).text(cx).as_ref(), "tr3s\n"));
     }
 
     #[gpui::test]

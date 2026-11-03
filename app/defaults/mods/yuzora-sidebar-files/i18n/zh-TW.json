@@ -40,7 +40,8 @@
     "skipped": "有些檔案或資料夾無法讀取，結果可能不完整。"
   },
   "git": {
-    "untrusted": "未信任的資料夾，在 Git 側欄信任後才會顯示 Git 標記。"
+    "untrusted": "未信任的資料夾，在 Git 側欄信任後才會顯示 Git 標記。",
+    "truncated": "變更太多，有些變更的檔案沒有 Git 標記。"
   },
   "menu": {
     "open": "開啟",

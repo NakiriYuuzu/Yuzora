@@ -360,6 +360,14 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i64, Vec<usize>)> {
     Some((top - n as i64 / 8, indices))
 }
 
+/// [`fuzzy_filter`], and whether more paths matched than the `limit` shown.
+pub fn fuzzy_top(query: &str, paths: &[String], limit: usize) -> (Vec<FuzzyMatch>, bool) {
+    let mut hits = fuzzy_filter(query, paths, limit.saturating_add(1));
+    let more = hits.len() > limit;
+    hits.truncate(limit);
+    (hits, more)
+}
+
 /// The best `limit` of `paths` for `query`, highest score first; ties go to
 /// the shorter path, then the lexicographically smaller. An empty query keeps
 /// the first `limit` paths with score 0.
@@ -976,6 +984,13 @@ mod tests {
             ]
         );
         assert!(fuzzy_filter("zzz", &paths, 10).is_empty());
+        // More matches than shown is said, and only then.
+        let (shown, more) = fuzzy_top("lib", &paths, 2);
+        assert_eq!((shown, more), (top, true));
+        assert!(!fuzzy_top("lib", &paths, hits.len()).1);
+        assert_eq!(fuzzy_top("lib", &paths, hits.len()).0, hits);
+        assert!(fuzzy_top("", &paths, paths.len() - 1).1);
+        assert!(!fuzzy_top("", &paths, paths.len()).1);
     }
 
     fn tree() -> tempfile::TempDir {

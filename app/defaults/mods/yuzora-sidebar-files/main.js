@@ -71,7 +71,7 @@ export default class FilesSidebar extends View {
     if (next?.key === this.here?.key && next?.space === this.here?.space) return;
     if (this.here?.root) this.saved.set(this.here.key, { open: this.open, selected: this.selected });
     const saved = next ? this.saved.get(next.key) : null;
-    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false, skipped: false } : null;
+    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false, skipped: false, marksCut: false } : null;
     this.entries = new Map(); this.open = new Set(saved?.open); this.pending = new Set();
     this.marks = {}; this.dirMarks = new Map(); this.selected = saved?.selected ?? null; this.version++;
     this.watching = null;
@@ -97,6 +97,7 @@ export default class FilesSidebar extends View {
         if (!this.current(here)) return;
         here.top = git?.top ?? null; here.branch = git?.branch ?? null;
         here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0; here.untrusted = Boolean(git?.untrusted);
+        here.marksCut = Boolean(git?.truncated);
         if (!here.root) here.root = here.top ?? here.cwd;
         this.setMarks(git?.marks ?? {}, here);
         for (const folder of ["", ...[...this.open].sort()]) {
@@ -280,6 +281,7 @@ export default class FilesSidebar extends View {
             this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
             const notes = [
               found.matches.length ? null : t("search.none"),
+              found.more ? t("search.truncated", { count: found.matches.length }) : null,
               found.truncated ? t("search.partial", { count: "200,000" }) : null,
               found.unfiltered ? t("search.unfiltered", { machine: here.on }) : null,
               found.skipped ? t("search.skipped") : null,
@@ -409,6 +411,7 @@ export default class FilesSidebar extends View {
       .child(Scrollbar.vertical("tree").absolute().inset_0())
       .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))))
       .when(here.skipped, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.skipped"))))
+      .when(Boolean(here.marksCut), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.truncated"))))
       .when(Boolean(this.rowsCapped), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.rows", { count: ROWS }))));
     // The folder could not be listed again: the rows are from before.
     if (!here.error) return tree;
