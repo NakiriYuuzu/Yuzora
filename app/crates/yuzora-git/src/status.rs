@@ -353,12 +353,20 @@ fn full(repo: &Repo) -> GitResult<()> {
     Ok(())
 }
 
-/// The gitlinks in the index, whether or not `.gitmodules` names them:
-/// status reports what changed inside one as the gitlink.
+/// The gitlinks in the index, whether or not `.gitmodules` names them, and
+/// the paths it names: status reports what changed inside one as the gitlink.
 fn gitlinks(repo: &Repo) -> Vec<String> {
-    let out = repo.run(Git::read(["ls-files", "-s", "-z"])).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
-    // `<mode> <oid> <stage>\t<path>\0`; a conflict lists a path once per stage.
-    let mut links: Vec<String> = split_z(&out).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
+    let read = |cmd: Git| repo.run(cmd).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
+    // `<mode> <oid> <stage>\t<path>\0`, whole records only: an index past
+    // the output cap is cut short.
+    let index = read(Git::read(["ls-files", "-s", "-z"]));
+    let whole = &index[..index.iter().rposition(|b| *b == 0).map_or(0, |i| i + 1)];
+    let mut links: Vec<String> = split_z(whole).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
+    // `-z`: `key\nvalue\0` per entry.
+    let modules = read(Git::read(["config", "--file", ".gitmodules", "-z", "--get-regexp", r"^submodule\..*\.path$"]));
+    links.extend(String::from_utf8_lossy(&modules).split('\0').filter_map(|e| e.split_once('\n')).map(|(_, v)| v.trim_end_matches('/').to_owned()).filter(|v| !v.is_empty()));
+    // A conflict lists a path once per stage.
+    links.sort();
     links.dedup();
     links
 }
