@@ -239,42 +239,50 @@ fn merge(mut cs: Vec<Change>) -> Vec<Change> {
 
 /// Patience diff: anchors on lines unique to both sides (in order), Myers in
 /// between; a gap with no anchors that Myers can't afford is one change.
+///
+/// A work list, not recursion: an anchor can leave the next one in the gap
+/// before it, line after line, and a call per level overflowed a worker
+/// thread's stack. Finding anchors one gap at a time like that is quadratic,
+/// so once the gaps scanned add up to 32 times both sides, each gap left is
+/// one change.
 pub fn patience(a: &[u32], b: &[u32]) -> Vec<Change> {
     let mut out = Vec::new();
-    patience_into(a, 0..a.len(), b, 0..b.len(), &mut out);
-    merge(out)
-}
-
-fn patience_into(a: &[u32], mut ar: Range<usize>, b: &[u32], mut br: Range<usize>, out: &mut Vec<Change>) {
-    let p = prefix(&a[ar.clone()], &b[br.clone()]);
-    ar.start += p;
-    br.start += p;
-    let s = suffix(&a[ar.clone()], &b[br.clone()]);
-    ar.end -= s;
-    br.end -= s;
-    if ar.is_empty() && br.is_empty() {
-        return;
-    }
-    if ar.is_empty() || br.is_empty() {
-        out.push(Change { a: ar, b: br });
-        return;
-    }
-    let anchors = unique_lcs(&a[ar.clone()], &b[br.clone()]);
-    if anchors.is_empty() {
-        let (sa, sb) = (&a[ar.clone()], &b[br.clone()]);
-        match myers(sa, sb, budget(sa.len(), sb.len()) / 4) {
-            Some(cs) => out.extend(cs.into_iter().map(|c| Change { a: c.a.start + ar.start..c.a.end + ar.start, b: c.b.start + br.start..c.b.end + br.start })),
-            None => out.push(Change { a: ar, b: br }),
+    let mut todo = vec![(0..a.len(), 0..b.len())];
+    let mut left = 32 * (a.len() + b.len());
+    while let Some((mut ar, mut br)) = todo.pop() {
+        let p = prefix(&a[ar.clone()], &b[br.clone()]);
+        ar.start += p;
+        br.start += p;
+        let s = suffix(&a[ar.clone()], &b[br.clone()]);
+        ar.end -= s;
+        br.end -= s;
+        if ar.is_empty() && br.is_empty() {
+            continue;
         }
-        return;
+        let scan = ar.len() + br.len();
+        if ar.is_empty() || br.is_empty() || scan > left {
+            out.push(Change { a: ar, b: br });
+            continue;
+        }
+        left -= scan;
+        let anchors = unique_lcs(&a[ar.clone()], &b[br.clone()]);
+        if anchors.is_empty() {
+            let (sa, sb) = (&a[ar.clone()], &b[br.clone()]);
+            match myers(sa, sb, budget(sa.len(), sb.len()) / 4) {
+                Some(cs) => out.extend(cs.into_iter().map(|c| Change { a: c.a.start + ar.start..c.a.end + ar.start, b: c.b.start + br.start..c.b.end + br.start })),
+                None => out.push(Change { a: ar, b: br }),
+            }
+            continue;
+        }
+        let (mut pa, mut pb) = (ar.start, br.start);
+        for (ia, ib) in anchors {
+            todo.push((pa..ar.start + ia, pb..br.start + ib));
+            pa = ar.start + ia + 1;
+            pb = br.start + ib + 1;
+        }
+        todo.push((pa..ar.end, pb..br.end));
     }
-    let (mut pa, mut pb) = (ar.start, br.start);
-    for (ia, ib) in anchors {
-        patience_into(a, pa..ar.start + ia, b, pb..br.start + ib, out);
-        pa = ar.start + ia + 1;
-        pb = br.start + ib + 1;
-    }
-    patience_into(a, pa..ar.end, b, pb..br.end, out);
+    merge(out)
 }
 
 /// Lines appearing exactly once on each side, longest increasing run.
@@ -457,6 +465,25 @@ mod tests {
                 assert_eq!(check(&a, &b, &cs), a.len() + b.len() - 2 * lcs(&a, &b), "budget {budget}");
             }
         }
+    }
+
+    // Each anchor here leaves the next one in the gap before it, so Patience
+    // went one call deeper per line: 24 000 lines (146 KB) overflowed a
+    // worker thread's 2 MiB stack and aborted the app.
+    #[test]
+    fn a_chain_of_anchors_runs_on_a_worker_threads_stack() {
+        let n = 12_000u32;
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for i in (1..=n).rev() {
+            a.extend([i, i + 1]);
+            b.extend([i, 1_000_000 + i]);
+        }
+        let t = std::time::Instant::now();
+        let (a2, b2) = (a.clone(), b.clone());
+        let cs = std::thread::Builder::new().stack_size(2 << 20).spawn(move || patience(&a2, &b2)).unwrap().join().unwrap();
+        check(&a, &b, &cs);
+        // One anchor at a time is quadratic: past its share of work the rest is one change.
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "{:?}", t.elapsed());
     }
 
     #[test]
