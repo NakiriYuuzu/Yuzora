@@ -7,8 +7,9 @@
 //! Git the same way), and every other call on the repo is refused. The
 //! person's own (global, system) config is theirs and needs no trust.
 //! Reads override some of these anyway (fsmonitor, signature programs,
-//! textconv), but writes would run them, so they count. Editors don't (the
-//! engine always sets GIT_EDITOR and GIT_SEQUENCE_EDITOR), nor does a pager
+//! textconv), but writes would run them, so they count. Editors don't (every
+//! call sets GIT_EDITOR; the interactive rebase, the one command that opens
+//! the sequence editor, sets GIT_SEQUENCE_EDITOR), nor does a pager
 //! (output never goes to a terminal), nor hooks: status runs none, auto
 //! fetch runs with them off, and husky and the like set `core.hooksPath` in
 //! many repos for the commits the person makes.
@@ -36,7 +37,7 @@ pub fn no_hooks_dir() -> String {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`.
 pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
-    git_trust::repo_programs(repo.exists(&repo.abs(".gitmodules")), |args| {
+    git_trust::repo_programs(|args| {
         repo.run(Git::read(args.iter().copied()).max_output(git_trust::ANSWER_CAP + 1)).map(|out| git_trust::whole(out.code, out.stdout))
     })
 }
@@ -184,5 +185,24 @@ mod tests {
         std::fs::write(&config, text).unwrap();
         let keys = pending(&s.repo).unwrap_or_else(|_| vec![UNREADABLE.into()]);
         assert!(keys.iter().any(|k| k.contains(UNREADABLE)), "{keys:?}");
+    }
+
+    #[test]
+    fn a_checked_out_gitlink_counts_without_gitmodules() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        // A repo inside, linked in the index only: no `submodule add`, no .gitmodules.
+        s.git(&["init", "-q", "sub"]);
+        s.write("sub/f", "x\n");
+        s.git(&["-C", "sub", "add", "f"]);
+        s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "s"]);
+        let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]).trim().to_owned();
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{head},sub")]);
+        assert!(pending(&s.repo).unwrap().is_empty());
+        // Status above looks into it, with its config: its filter counts.
+        s.git(&["-C", "sub", "config", "filter.evil.clean", "cat"]);
+        assert_eq!(pending(&s.repo).unwrap(), vec!["sub: filter.evil.clean".to_string()]);
+        // The same on a machine (through `hc exec`).
+        assert_eq!(pending(&crate::repo::testing::on_machine(&s)).unwrap(), vec!["sub: filter.evil.clean".to_string()]);
     }
 }

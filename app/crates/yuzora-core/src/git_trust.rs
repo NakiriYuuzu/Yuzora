@@ -22,6 +22,10 @@
 //!   (`diff-files`, `diff-index`, `ls-files -m`), anything that compares or
 //!   writes the work tree or the index, and `fetch`, `pull`, `push`.
 //!
+//! Submodules count with their own config: every checked-out gitlink in
+//! the index, nested ones too. `status` and `diff` look into those whether
+//! or not a `.gitmodules` names them.
+//!
 //! A folder's id is `<machine>:<top>` (machine empty here), `top` as
 //! `git rev-parse --show-toplevel` prints it there. The trusted ids live in
 //! `<app home>/yuzora/git/trusted.json`.
@@ -33,7 +37,7 @@ use std::time::Duration;
 use crate::remote::{self, ExecRequest};
 
 /// Config keys (lowercased by git) that name a program run without asking.
-pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow|merge\..+\.driver|diff\..+\.(command|textconv)|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
+pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
 
 /// Whether a matched key's value runs something: fsmonitor as a boolean is
 /// git's own daemon, and a submodule's update mode is a command only after
@@ -74,27 +78,56 @@ pub fn whole(code: i32, stdout: Vec<u8>) -> (i32, Vec<u8>) {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`. `run`
 /// runs git with these arguments in the repository's top level and answers
-/// its exit code and stdout, through [`whole`]; `gitmodules`: the top level has a
-/// `.gitmodules`. A config git can't read counts as [`UNREADABLE`].
-pub fn repo_programs<E>(gitmodules: bool, mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
+/// its exit code and stdout, through [`whole`]. A config git can't read
+/// counts as [`UNREADABLE`].
+pub fn repo_programs<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
     let (code, out) = run(&["config", "--show-scope", "-z", "--get-regexp", PROGRAMS])?;
+    // 1 with nothing printed: no key matched. Anything else: unknown.
+    let mut keys = match code {
+        0 => repo_keys(&out, ""),
+        1 if out.is_empty() => BTreeSet::new(),
+        _ => return Ok(vec![UNREADABLE.into()]),
+    };
+    // The submodules, whatever the repository's own config said.
+    let alias = format!("alias.{SCAN}=!{}", SCAN_SCRIPT.replace("@PROGRAMS@", PROGRAMS));
+    let (code, out) = run(&["-c", &alias, SCAN])?;
     if code != 0 {
-        // 1 with nothing printed: no key matched. Anything else: unknown.
-        return Ok(if code == 1 && out.is_empty() { Vec::new() } else { vec![UNREADABLE.into()] });
+        keys.insert(UNREADABLE.into());
     }
-    let mut keys = repo_keys(&out, "");
-    if gitmodules {
-        // Each checked-out submodule, nested ones too: a `sub` record names it.
-        // 1 is "no key"; any other failure is an `err` record (gate shut).
-        let script = format!("printf 'sub\\0%s\\0' \"$displaypath\"; git config --show-scope -z --get-regexp '{PROGRAMS}'; c=$?; if [ $c -gt 1 ]; then printf 'err\\0%s\\0' $c; fi");
-        let (code, out) = run(&["submodule", "foreach", "--recursive", "--quiet", &script])?;
-        if code != 0 {
-            keys.insert(UNREADABLE.into());
-        }
-        keys.extend(repo_keys(&out, "?"));
-    }
+    keys.extend(repo_keys(&out, "?"));
     Ok(keys.into_iter().collect())
 }
+
+/// The command line's own alias for [`SCAN_SCRIPT`]: git runs it in the top
+/// level, so any runner of git (here, `hc exec --on`) does in one call.
+const SCAN: &str = "yuzora-trust-scan";
+
+/// Each checked-out gitlink in the index, nested ones too, and its config's
+/// program keys: `sub\0path\0` then the records, `err\0what\0` when it can't
+/// be read. Checked out is what git looks for (a `.git` in the folder), and
+/// inside one only it counts (`GIT_DIR=.git`, never a repo further up). A
+/// quoted path (a `"`, `\` or control character) can't be followed: it counts
+/// as unreadable.
+const SCAN_SCRIPT: &str = r#"unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
+scan() {
+  list=$(git -c core.quotepath=false ls-files -s) || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
+  printf '%s\n' "$list" | grep '^160000 ' | cut -f2- | sort -u | while IFS= read -r p; do
+    case "$p" in \"*) printf 'sub\0%s%s\0err\0name\0' "$1" "$p"; continue ;; esac
+    (
+      cd "./$p" 2>/dev/null && [ -e .git ] || exit 0
+      GIT_DIR=.git GIT_WORK_TREE=.
+      export GIT_DIR GIT_WORK_TREE
+      printf 'sub\0%s%s\0' "$1" "$p"
+      git config --show-scope -z --get-regexp '@PROGRAMS@'
+      c=$?
+      if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; exit 0; fi
+      scan "$1$p/"
+    )
+  done
+}
+scan ""
+exit 0
+"#;
 
 /// `scope\0key\nvalue\0` records (an include counts as the file that
 /// includes it; a key alone is a boolean): the repo-level keys whose values
@@ -127,9 +160,7 @@ fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
 /// run or answer; count the folder as not safe.
 pub fn programs_in(machine: Option<&str>, top: &str) -> Result<Vec<String>, String> {
     let machine = machine.filter(|m| !m.is_empty());
-    // Over there, `submodule foreach` costs one call and prints nothing without submodules.
-    let gitmodules = machine.is_some() || Path::new(top).join(".gitmodules").exists();
-    repo_programs(gitmodules, |args| {
+    repo_programs(|args| {
         let req = ExecRequest::new("git", READ_FLAGS.iter().copied().chain(args.iter().copied())).on(machine).cwd(Some(top)).timeout(TIMEOUT).max_output(ANSWER_CAP as u64 + 1);
         remote::run(&req).map(|o| whole(o.code, o.stdout)).map_err(|e| e.to_string())
     })
@@ -196,7 +227,7 @@ mod tests {
     fn records_and_exit_codes_read_as_the_gate_needs() {
         let answer = |config: (i32, &str), subs: (i32, &str)| {
             let mut calls = Vec::new();
-            let keys = repo_programs(true, |args| {
+            let keys = repo_programs(|args| {
                 calls.push(args[0].to_owned());
                 Ok::<_, ()>(if args[0] == "config" { (config.0, config.1.as_bytes().to_vec()) } else { (subs.0, subs.1.as_bytes().to_vec()) })
             })
@@ -212,7 +243,7 @@ mod tests {
         assert_eq!(answer((0, own), (0, "")).0, ["diff.x.textconv", "filter.x.clean"]);
         // Submodules name themselves; one git can't read keeps the gate shut.
         let subs = "sub\0vendor/a\0local\0filter.y.clean\ncat\0sub\0vendor/b\0err\0128\0";
-        assert_eq!(answer((1, ""), (0, subs)).0, Vec::<String>::new(), "the config said no key: no submodule call");
+        assert_eq!(answer((1, ""), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"], "no key above: the submodules still count");
         assert_eq!(answer((0, "global\0core.askpass\nx\0"), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"]);
         assert!(answer((0, ""), (2, "")).0.contains(&UNREADABLE.to_string()));
     }
@@ -247,8 +278,55 @@ mod tests {
         git(&["config", "filter.evil.clean", "touch ran"]);
         assert_eq!(pending_from(&file, None, &top), Ok(vec!["filter.evil.clean".to_string()]));
         assert!(!dir.join("ran").exists());
+        // `git diff` without `--no-ext-diff` runs it.
+        git(&["config", "diff.external", "touch ran"]);
+        assert_eq!(pending_from(&file, None, &top), Ok(vec!["diff.external".to_string(), "filter.evil.clean".into()]));
         trust_at(&file, &folder_id(None, &top)).unwrap();
         assert_eq!(pending_from(&file, Some(""), &top), Ok(Vec::new()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_checked_out_gitlink_counts_whether_or_not_gitmodules_names_it() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let top = std::fs::canonicalize(&dir).unwrap().to_string_lossy().into_owned();
+        let git = |at: &str, args: &[&str]| {
+            let out = std::process::Command::new("git").args(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false"]).args(args).current_dir(Path::new(&top).join(at)).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let repo = |at: &str| {
+            std::fs::create_dir_all(Path::new(&top).join(at)).unwrap();
+            git(at, &["init", "-q"]);
+            std::fs::write(Path::new(&top).join(at).join("f"), "x\n").unwrap();
+            git(at, &["add", "f"]);
+            git(at, &["commit", "-qm", "s"]);
+        };
+        // Gitlinks in the index, none in a .gitmodules: `sub`, and `deep` inside it.
+        repo("");
+        repo("sub");
+        repo("sub/deep");
+        let link = |at: &str, path: &str, to: &str| git(at, &["update-index", "--add", "--cacheinfo", &format!("160000,{},{path}", git(to, &["rev-parse", "HEAD"]))]);
+        link("sub", "deep", "sub/deep");
+        link("", "sub", "sub");
+        // Not checked out: git doesn't look inside, nor does the check.
+        std::fs::create_dir_all(Path::new(&top).join("empty")).unwrap();
+        link("", "empty", "sub");
+        let marker = Path::new(&top).join("ran");
+        git("sub", &["config", "filter.evil.clean", &format!("touch '{}'; cat", marker.display())]);
+        std::fs::write(Path::new(&top).join("sub/.gitattributes"), "* filter=evil\n").unwrap();
+        git("sub/deep", &["config", "core.sshCommand", "true"]);
+        let file = dir.join("trusted.json");
+        assert_eq!(pending_from(&file, None, &top), Ok(vec!["sub/deep: core.sshcommand".to_string(), "sub: filter.evil.clean".into()]));
+        assert!(!marker.exists());
+        // What it guards: status above looks into `sub` and, with the file's
+        // time changed, runs its clean filter.
+        std::fs::File::options().write(true).open(Path::new(&top).join("sub/f")).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)).unwrap();
+        git("", &["--no-optional-locks", "status", "--porcelain=v2", "--untracked-files=no"]);
+        assert!(marker.exists(), "status didn't run the submodule's filter, so this test proves nothing");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
