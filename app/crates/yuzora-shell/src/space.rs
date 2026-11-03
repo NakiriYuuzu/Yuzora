@@ -57,19 +57,23 @@ pub fn folder_name(path: &str) -> String {
     }
 }
 
-/// A path as two that name the same folder compare: no `\\?\`, no repeated
-/// or trailing separators (a root keeps its own).
+/// A path as two that name the same folder compare: no `\\?\` (`\\?\UNC\host\share`
+/// is `\\host\share`), no repeated or trailing separators (a root keeps its own, a
+/// share its leading `\\`).
 pub fn normalize(path: &str) -> String {
     let p = path.trim();
-    let p = p.strip_prefix(r"\\?\").unwrap_or(p);
-    let mut out = String::with_capacity(p.len());
+    let (share, p) = match p.strip_prefix(r"\\?\") {
+        Some(rest) => rest.strip_prefix(r"UNC\").map_or((false, rest), |s| (true, s)),
+        None => p.strip_prefix(r"\\").map_or((false, p), |s| (true, s)),
+    };
+    let mut out = String::from(if share { r"\\" } else { "" });
     for c in p.chars() {
         let sep = c == '/' || c == '\\';
         if !(sep && out.ends_with(['/', '\\'])) {
             out.push(c);
         }
     }
-    let root = |s: &str| s.len() == 1 || (s.len() == 3 && s.as_bytes()[1] == b':');
+    let root = |s: &str| s.len() == 1 || (s.len() == 3 && s.as_bytes()[1] == b':') || (share && s.len() == 2);
     while out.ends_with(['/', '\\']) && !root(&out) {
         out.pop();
     }
@@ -195,6 +199,12 @@ mod tests {
         assert_eq!(normalize("//"), "/");
         assert_eq!(normalize(r"\\?\C:\a\b\"), r"C:\a\b");
         assert_eq!(normalize(r"C:\"), r"C:\");
+        // A network share keeps its leading \\ (canonicalize gives \\?\UNC\host\share).
+        assert_eq!(normalize(r"\\?\UNC\nas\share\proj\"), r"\\nas\share\proj");
+        assert_eq!(normalize(r"\\nas\share\\proj"), r"\\nas\share\proj");
+        assert_eq!(folder_name(r"\\?\UNC\nas\share"), "share");
+        let spaces = vec![("sp1".to_owned(), r"\\nas\share\proj".to_owned(), None)];
+        assert_eq!(existing(r"\\?\UNC\nas\share\proj", &spaces), Some("sp1".into()));
     }
 
     #[test]
