@@ -6,7 +6,7 @@
 ### New
 - Yuzora 改以 herdr-app 為基底：預設 Yuzora 版面（左側 5 個模式的側欄、模式列、狀態列）與 yuzora-dark 主題。
 - Yuzora 主題改用品牌的藍與青，並新增淺色版 yuzora-light；預設跟隨系統的淺色／深色模式。
-- 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
+- 不再傳送任何使用資料；意見回饋改開 GitHub Issues。
 - 工作區側欄：Spaces／Agents 分頁、每台機器的 scope chip（LED 顯示連線狀態）、「需要注意」區，以及機器 → Space → worktree → Agent 的樹；Agent 狀態同時以顏色與形狀表示。
 - 新增 Space 會先選資料夾（遠端機器輸入路徑並在那台機器上確認），Space 以資料夾命名、終端機從那裡開始；同一個資料夾已有 Space 時直接切換過去。
 - 模式列顯示各模式的徽章數；tab 列每個 tab 帶 Space 徽章與狀態，「＋ 新增 pane」可把工具 pane、終端機、Agent 混合分割進同一個 tab。
@@ -15,7 +15,7 @@
 - 與官方 Herdr 共用 herdr-core 時：版本不符的畫面改用 Yuzora 的名稱並說明 core 是共用的；core 重新啟動後若變成 Yuzora 不能用的版本（例如 Herdr 換成新一代），Yuzora 不會接上，並一直顯示原因（點一下開啟更新頁），恢復後自動重連。
 - SSH / SFTP 模式：列出 ~/.ssh/config、Yuzora 自建主機與 herdr machines，顯示連線狀態與延遲；首次連線確認主機金鑰指紋，金鑰變更時警告。
 - SFTP 雙欄傳輸：本機 ↔ 主機各自瀏覽，→／← 或拖放傳輸，佇列顯示進度與速度，可取消、重試並從中斷處續傳，可保留權限與時間；遠端檔案可在本機文字編輯器開啟，存檔時自動上傳。
-- 主機快速動作：開啟 SFTP、新終端機、HERDR Session、已知主機管理；資料庫可透過 SSH tunnel 連到主機後方。
+- 主機快速動作：開啟 SFTP、新終端機、HERDR Session、已知主機管理。資料庫還不能經由 SSH tunnel 連線。
 - 視窗右下角顯示這台電腦上 Yuzora 的 CPU 與記憶體用量（App 本體、herdr-core 的終端機與 Agent、Yuzora 啟動的工具），點擊展開各類明細；取樣出問題時顯示 ⚠。
 - App 改由 Yuzora 的 GitHub Releases 自我更新：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，下次重新啟動時套用。beta 版預設走 beta 通道，可在 `yuzora/settings.json` 的 `update.channel` 改成 `stable`。
 - 安裝檔：macOS 是 `Yuzora-macos-aarch64.dmg`（僅 Apple Silicon，ad-hoc 簽章，第一次開啟要在「隱私權與安全性」按「仍要打開」）、Windows 是免系統管理員權限的 `Yuzora-windows-x64-setup.exe`、Linux 是 tar.gz 加 `install`。命令列程式叫 `yuzora`。

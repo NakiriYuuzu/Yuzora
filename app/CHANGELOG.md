@@ -7,7 +7,7 @@
 ### New
 - Yuzora is now built on herdr-app: the default Yuzora layout (a sidebar with 5 modes on the left, a mode bar and a status bar) and the yuzora-dark theme.
 - The Yuzora theme now uses the brand's blue and cyan, with a new light version, yuzora-light; by default it follows the system's light or dark mode.
-- No usage data is sent anymore; feedback opens a GitHub issue; the app's self-update is paused and will come from GitHub Releases later.
+- No usage data is sent anymore; feedback opens a GitHub issue.
 - Workspace sidebar: Spaces / Agents tabs, a scope chip for each machine (an LED shows the connection state), a "Needs attention" section, and a tree of machine → Space → worktree → agent; an agent's state is shown by both color and shape.
 - A new Space starts by picking a folder (on a remote machine, you type the path and it is checked on that machine). The Space is named after the folder and its terminals start there; if a Space already exists for that folder, Yuzora switches to it.
 - The mode bar shows a badge count for each mode; each tab in the tab bar carries a Space badge and a state, and "+ New pane" mixes tool panes, terminals and agents as splits in one tab.
@@ -16,7 +16,7 @@
 - When sharing herdr-core with the official Herdr: the version-mismatch screen uses Yuzora's name and explains that the core is shared; if the core restarts as a version Yuzora can't use (for example, Herdr moved to a new generation), Yuzora doesn't connect and keeps the reason on screen (click it to open the update page), and reconnects automatically once that's fixed.
 - SSH / SFTP mode: lists ~/.ssh/config, Yuzora's own hosts and herdr machines, with connection state and latency; on first connection the host key's fingerprint is confirmed, and a changed key triggers a warning.
 - Side-by-side SFTP transfers: browse this computer and the host side by side and transfer with → / ← or drag and drop; the queue shows progress and speed, and a transfer can be cancelled, retried and resumed where it stopped, keeping permissions and times; a remote file can be opened in a local text editor and is uploaded each time it's saved.
-- Host quick actions: open SFTP, a new terminal, a HERDR session, and known-hosts management; databases can reach behind a host through an SSH tunnel.
+- Host quick actions: open SFTP, a new terminal, a HERDR session, and known-hosts management. Databases can't connect through an SSH tunnel yet.
 - The bottom-right corner of the window shows the CPU and memory Yuzora uses on this computer (the app itself, the terminals and agents in herdr-core, and the tools Yuzora starts); click it to expand each category; ⚠ shows when sampling runs into a problem.
 - The app now updates itself from Yuzora's GitHub Releases: it checks every hour, downloads only after the update manifest's signature and each file's SHA-256 check out, and applies the update on the next restart. Beta builds use the beta channel by default; set `update.channel` in `yuzora/settings.json` to `stable` to change it.
 - Installers: `Yuzora-macos-aarch64.dmg` on macOS (Apple Silicon only, ad-hoc signed; the first time you open it, click "Open Anyway" in Privacy & Security), `Yuzora-windows-x64-setup.exe` on Windows, which needs no admin rights, and a tar.gz with `install` on Linux. The command-line program is called `yuzora`.
