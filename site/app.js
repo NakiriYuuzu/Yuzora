@@ -7,12 +7,12 @@ import { I18N } from "./i18n.js";
 
 /* Mini palette 指令（真實功能，示意互動） */
 const MP_COMMANDS = [
-  { zh: "新增 HERDR terminal", en: "New HERDR terminal", cat: "Herdr" },
+  { zh: "新增 pane", en: "New pane", cat: "Shell" },
   { zh: "切換 Space", en: "Switch Space", cat: "Spaces" },
   { zh: "Git：暫存變更", en: "Git: stage changes", cat: "Git" },
-  { zh: "SSH：連線主機", en: "SSH: connect host", cat: "SSH" },
+  { zh: "SSH：開啟 SFTP", en: "SSH: open SFTP", cat: "SSH" },
   { zh: "資料庫：新增連線", en: "Database: new connection", cat: "Database" },
-  { zh: "瀏覽器：開啟網址", en: "Browser: open URL", cat: "Browser" },
+  { zh: "設定：Agent 模板", en: "Settings: agent templates", cat: "Settings" },
   { zh: "切換語言", en: "Toggle language", cat: "UI", action: "lang" },
 ];
 
@@ -94,8 +94,8 @@ document.getElementById("mp-input").addEventListener("input", (e) => {
 
 /* ============ 技術 marquee（真實 stack logos） ============ */
 const STACK = [
-  ["tauri", "Tauri"], ["react", "React"], ["rust", "Rust"], ["typescript", "TypeScript"],
-  ["bun", "Bun"], ["postgresql", "PostgreSQL"], ["sqlite", "SQLite"], ["git", "Git"],
+  ["rust", "Rust"], ["ghostty", "Ghostty"], ["zig", "Zig"], ["javascript", "JavaScript"],
+  ["postgresql", "PostgreSQL"], ["sqlite", "SQLite"], ["git", "Git"], ["markdown", "Markdown"],
 ];
 const track = document.getElementById("marquee-track");
 [0, 1].forEach((dup) => {

@@ -45,7 +45,7 @@ describe("crawlable bilingual product pages", () => {
       expect(page.querySelector('meta[name="description"]').content).toBe(I18N[lang]["meta.description"]);
       for (const selector of ['meta[property="og:image"]', 'meta[name="twitter:image"]']) {
         const url = page.querySelector(selector).content;
-        expect(url).toBe(`${base}assets/ade-herdr-runtime-${lang === "en" ? "en" : "zh"}.png`);
+        expect(url).toBe(`${base}assets/yuzora-workspace-${lang === "en" ? "en" : "zh"}.png`);
         expect(existsSync(resolve(site, url.slice(base.length)))).toBe(true);
       }
       expect(page.querySelector('meta[name="twitter:card"]').content).toBe("summary_large_image");
