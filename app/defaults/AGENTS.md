@@ -1144,9 +1144,10 @@ and machines are shared; templates are shared whatever the session.
 - Don't use `hc server stop` to stop the core: while either app is open it starts again within a second, and every
   program in its terminals ends. To stop it for good, the person quits both apps first.
 - Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from `mods/<name>` in
-  Herdr's home to `mods/<name>` in this folder (never `installed.json`). Herdr's home is `$XDG_CONFIG_HOME/herdr-app`
-  when that is set, else `~/.config/herdr-app`, unless the person moved it with `HERDR_APP_HOME` (ask if it isn't
-  there). A copied mod's `fs` writes under Herdr's home are refused here, but the commands it runs aren't limited.
+  Herdr's home to `mods/<name>` in this folder (never `installed.json`). If `mods/<name>` is already here, don't copy
+  over it: ask the person, or point them to Settings › Mods › Install from folder…, which picks a free name. Herdr's
+  home is `$XDG_CONFIG_HOME/herdr-app` when that is set, else `~/.config/herdr-app`, unless the person moved it with
+  `HERDR_APP_HOME` (ask if it isn't there). A copied mod's `fs` writes under Herdr's home are refused here, but the commands it runs aren't limited.
   `yuzora-*` mods don't load in Herdr.
 - `hc machine add`, `rm` and `rename`, and edits in herdr-core's templates folder, change them for Herdr too. The
   folder is `$XDG_CONFIG_HOME/herdr-core/templates/` when that is set, else `%APPDATA%\herdr-core\templates` on
