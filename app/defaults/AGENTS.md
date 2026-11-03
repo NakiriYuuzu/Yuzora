@@ -996,9 +996,10 @@ This window is **Yuzora**, built on the Herdr app: everything above holds,
 with these differences.
 
 - This folder is Yuzora's home, `~/.config/yuzora` (`YUZORA_APP_HOME` picks
-  another), never Herdr's `~/.config/herdr-app`. The command line is the app
-  itself (`Yuzora.app/Contents/MacOS/Yuzora status`, `... do <command>`). A
-  `herdr-app` on PATH may be the official Herdr app, which answers for its
+  another), never Herdr's `~/.config/herdr-app`. The command line is
+  `yuzora` (see "The `yuzora` command and updates" below), or the app's own
+  program (`Yuzora.app/Contents/MacOS/Yuzora status`, `... do <command>`).
+  A `herdr-app` on PATH may be the official Herdr app, which answers for its
   own window, not this one.
 - Yuzora keeps its spaces and tabs in herdr-core's `yuzora` layout document,
   so Herdr and Yuzora on one core don't overwrite each other's arrangement.
@@ -1017,12 +1018,12 @@ with these differences.
 - Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
-  `yuzora:ssh`, `yuzora:files`, `yuzora:settings`. Their types are in
-  `yuzora.d.ts` beside `herdr.d.ts` (rewritten on every start).
+  `yuzora:ssh`, `yuzora:files`, `yuzora:settings`, `yuzora:perf`. Their
+  types are in `yuzora.d.ts` beside `herdr.d.ts` (rewritten on every start).
 - Text: a Yuzora mod keeps its strings in `mods/<mod>/i18n/en.json` and
   `zh-TW.json` and shows them with `t("key", {name: value})`. The language is
   `general.locale` in `yuzora/settings.json`: `"system"` (the default), `"en"`
-  or `"zh-TW"`.
+  or `"zh-TW"`. A mod you write for Yuzora fills both files.
 - A mod offers itself as a tool pane (the new-pane menu) or a settings page
   in its own `mod.json`: `"yuzora": {"pane": {"title": "pane.title"}}`,
   `"yuzora": {"settings": {"title": "settings.title", "section": "git"}}`.
@@ -1030,7 +1031,9 @@ with these differences.
   `settings.json` above stays the person's look, sounds and fonts. Passwords
   and keys live in the system's credential store, never in these files.
 - Nothing goes to herdr.dev: telemetry is off, feedback opens a GitHub issue
-  on NakiriYuuzu/Yuzora, and the app doesn't update itself from Herdr.
+  on NakiriYuuzu/Yuzora, and the app doesn't update itself from Herdr. Only
+  herdr-core's own install and update still come from `releases.herdr.dev`.
+- Yuzora has no Browser and no language server (LSP).
 
 <!-- yuzora:lane:L1:start -->
 ### The workspace shell
@@ -1089,6 +1092,8 @@ with these differences.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
+### Databases (`yuzora:db`)
+
 - Databases (PostgreSQL, SQL Server, SQLite) live in the sidebar's
   `yuzora-sidebar-database` mode. Saved connections are the `db` section of
   `yuzora/settings.json` (`connections`, and `maxRows`, the most rows a result
@@ -1138,6 +1143,8 @@ with these differences.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
+### Settings, mods and templates (`yuzora:settings`)
+
 - Settings (`app.settings`, ⌘,) open on Yuzora's General page;
   `{"section": "templates"}` opens another (a Yuzora page's section or mod
   name, or one of Herdr's sections). A mod becomes a page with
@@ -1160,6 +1167,8 @@ with these differences.
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
+### The `yuzora` command and updates
+
 - In Yuzora the command line program is `yuzora`: the same program as
   `herdr-app` in this guide, so run `yuzora status`, `yuzora ls`,
   `yuzora do …`, `yuzora shot …` and `yuzora check …`. A `herdr-app` on

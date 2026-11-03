@@ -2,27 +2,30 @@
 
 ## beta.2 架構（`app/`）
 
-v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，用 `git subtree` 放在 `app/`。`src-tauri/` 與 `src/`（React）是 v0.1.0-beta.1 以前的 Tauri app，beta.2 期間只當移植來源，不刪也不當設計依據。
+v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，用 `git subtree` 放在 `app/`。`src-tauri/` 與 `src/`（Tauri 2＋React）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布：不刪，也不當設計依據。
 
-- 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。研究資料：`docs/beta2/research/`。
-- `app/` 是獨立的 Cargo workspace（root `Cargo.toml` 將它 exclude），有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。
+- 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。各功能的設計與限制：`docs/beta2/<lane>.md`（shell、git、db、ssh、files、settings、release、perf、herdr-compat）。研究資料：`docs/beta2/research/`。
+- `app/` 是獨立的 Cargo workspace（root `Cargo.toml` 將它 exclude），有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。Cargo package 與執行檔維持上游名稱 `herdr-app`，打包後才叫 `Yuzora.app`／`yuzora`。
+- **三層**：herdr 殼（上游 `app/src`、上游 mods 與 frame）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件，JS 以 `import … from "yuzora:<name>"` 使用）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane，使用者可 `mod.clone` 後修改）。
+- herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；遠端 Space 的 Git、Files 等走 `hc exec --on <machine>`（`yuzora_core::remote`）。
 - 對上游檔只做最少改動，並以 `// yuzora:`（lane 用 `// yuzora(L<n>):`）註記。能新增檔案就不改上游檔。
-- 上游同步：`git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`。L0 PR 與上游同步 PR 必須用 merge commit 合併，否則會弄丟 subtree metadata。
+- 上游同步：`git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`，commit 後跑 `app/scripts/yuzora/sync-check`。L0 PR 與上游同步 PR 必須用 merge commit 合併，否則會弄丟 subtree metadata。
 - `app/AGENTS.md` 是上游給 herdr-app 開發者的指南（建置、測試、隔離執行），在 `app/` 內工作時一併遵守；它的 commit 規則（例如不加 AI co-author）只適用於向上游貢獻。`app/defaults/AGENTS.md` 是寫進使用者 app home、給使用者 agent 讀的操作指南。
 
 ### 目錄地圖
 
 | 路徑 | 內容 |
 | --- | --- |
-| `app/src/` | herdr-app 殼（上游）。`app/src/yuzora/mod.rs` 是 Yuzora 唯一整合點：品牌常數、外連開關、掛上所有 `yuzora:*` HostModule |
-| `app/crates/yuzora-core/` | 共用層：app home、`hc exec --on` 遠端執行、keyring、i18n、Yuzora 設定、mod 探索、design tokens |
-| `app/crates/yuzora-{shell,git,db,ssh,files,settings}/` | L1–L6 的原生層；各自提供 `host_module()`（JS `import … from "yuzora:<name>"`） |
-| `app/defaults/mods/yuzora-*` | Yuzora 的 JS mods（側欄模式、模式列、狀態列、tool panes）；i18n 在各 mod 的 `i18n/{en,zh-TW}.json` |
+| `app/src/` | herdr-app 殼（上游）。`app/src/yuzora/mod.rs` 是 Yuzora 唯一整合點：品牌常數、外連開關、掛上所有 `yuzora:*` HostModule；同目錄另有 lane glue（`shell.rs`、`herdr_compat.rs`、`release/` 更新通道與 manifest 驗證） |
+| `app/crates/yuzora-core/` | 共用層：app home、`hc exec --on` 遠端執行、keyring、i18n、Yuzora 設定、mod 探索、design tokens、beta.1 資料遷移框架（`migrate`） |
+| `app/crates/yuzora-{shell,git,db,ssh,files,settings,perf}/` | 各 lane 的原生層；各自提供 `host_module()`（JS `import … from "yuzora:<name>"`） |
+| `app/defaults/mods/yuzora-*` | Yuzora 的 JS mods（側欄模式、模式列、狀態列、tool panes、設定頁）；i18n 在各 mod 的 `i18n/{en,zh-TW}.json` |
 | `app/defaults/layouts/yuzora.json` | 新安裝的預設 layout（248px 側欄＋5 模式 stack＋右側 tab 區與狀態列） |
-| `app/defaults/themes/yuzora-dark.json`、`app/defaults/yuzora/tokens.json` | theme 色名與 theme 沒有的設計 tokens |
+| `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深淺兩套 theme 色名與 theme 沒有的設計 tokens（`light` 區塊是淺色覆寫值） |
 | `app/vendor/` | 上游 vendored crates、ghostty submodule、Yuzora 的 russh／russh-sftp／tiberius patches |
-| `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（包成 `Yuzora.app`） |
-| `.github/workflows/app-ci.yml` | app 的 CI（base 為 `beta2/integration` 的 PR，Linux＋macOS） |
+| `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（本機包成 `Yuzora.app`）、`package`／`mac-dmg`（發布用安裝檔）、`manifest.ts`（更新 manifest）、`sync-check`（上游同步檢查） |
+| `app/distribution/yuzora/` | 各平台打包範本：macOS `Info.plist`、Windows NSIS（`yuzora.nsi`）、Linux `install` 與桌面檔 |
+| `.github/workflows/app-ci.yml`、`app-package.yml` | app 的 CI（base 為 `beta2/integration` 的 PR，Linux＋macOS）與四平台打包檢查（不建 tag、不發布） |
 
 ### 建置與測試
 
@@ -33,12 +36,16 @@ cd app
 cargo test --locked                # app、ghostty-sys 與全部 yuzora-* crate
 cargo test --locked -p yuzora-git  # 單一 crate
 scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
+bun test scripts/yuzora/           # 打包與 manifest 腳本
+scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_PACKAGE_BIN=<binary> 只檢查打包）
 ```
 
-- Rust 1.95 以上（上游 CI 用 1.95.0）。
+- Rust 1.95 以上（上游 CI 用 1.95.0）。在 worktree／lane 建置前，先依下方「Rust 建置目錄重用」設定 `CARGO_TARGET_DIR`。
 - 不要直接對 `app/defaults/mods/` 執行 `herdr-app check`：它會寫入 `gpui-kit.d.ts`、`jsconfig.json`，`build.rs` 會把它們打包進 app。
 - `app/Cargo.lock` 有變動就要重產 `app/THIRD-PARTY-NOTICES`（cargo-about 0.9.3，`bun scripts/notices.ts`），否則 `tests/notices.rs` 失敗。
-- 實機執行一律用暫存 `YUZORA_APP_HOME` 與隔離的 `HC_SESSION`／`XDG_STATE_HOME`，並先清掉所有 `HERDR_*` 環境變數，不得碰使用者真實的 Herdr、herdr-core 或 Yuzora 資料。完整指令見 `docs/beta2/lanes.md`。
+- `app/CHANGELOG.md` 第一筆必須是目前版本（`update_notes` 測試），App 會把它當成這一版的「新功能」說明。
+- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）一起改：版本標題、段落與項目要一一對應，未發布的版本英文寫 `Unreleased`、中文寫 `未發布`（`scripts/release-notes.test.ts` 會比對）。GitHub Release 內文由兩份的同版本段落組成，英文在前。
+- 實機執行一律用暫存 `YUZORA_APP_HOME` 與隔離的 `HC_SESSION`／`XDG_STATE_HOME`，並先清掉所有 `HERDR_*`、`HC_*` 環境變數，不得碰使用者真實的 Herdr、herdr-core 或 Yuzora 資料。Yuzora 不讀 `HERDR_APP_HOME`。完整指令見 `docs/beta2/lanes.md`。
 - 要用 computer-use 或瀏覽器自動化做 GUI 驗收前，先取得使用者明確同意；優先用 `herdr-app status`／`shot`／`check` 留證。
 
 ### Lane 段落
@@ -56,7 +63,7 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
-### L2 · Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
+#### L2 Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
 
 - 設計、A1–A12 完成度與效能數據：`docs/beta2/git.md`。git 只走 CLI（不用 libgit2），一律經 `crates/yuzora-git/src/exec.rs` 的執行器（讀取不拿鎖、寫入拿 repo 鎖、可取消、逾時、遠端走 `hc exec --on`）；不要在 mod 裡用 herdr 的 `exec("git", …)`。
 - 路徑一律是字面路徑（`GIT_LITERAL_PATHSPECS=1`）。自動執行的讀取不能讓 repo 自己的設定挑程式來跑：讀取關掉 fsmonitor、簽章檢查用使用者自己的 gpg、blame 不跑 textconv；repo 本地設定若有 filter／ssh／credential 等程式，所有 `yuzora:git` 呼叫（`status` 只回傳提示）都要等使用者信任資料夾（`trust.rs`，在 `repo_fn` 統一檢查，log 的載入與 diff／merge session 的寫入不經過 `repo_fn`，各自檢查；偵測與信任清單在 `yuzora_core::git_trust`，其他 lane 自己跑 git 時也用它）。新增函式一律走 `repo_fn`，新增讀取照這個原則。
@@ -68,19 +75,23 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
-- L3 資料庫：`app/crates/yuzora-db`（`yuzora:db`）＋ mods `yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query`。設計、API、共用狀態 key 與限制見 `docs/beta2/db.md`。
+#### L3 資料庫
+
+- `app/crates/yuzora-db`（`yuzora:db`）＋ mods `yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query`。設計、API、共用狀態 key 與限制見 `docs/beta2/db.md`。
 - 引擎 integration tests 在 `app/crates/yuzora-db/tests/engines.rs`：SQLite 一律跑；PG／MSSQL 需要 `tests/database/docker-compose.yml` 的容器，並設 `YUZORA_DATABASE_TEST_ENGINES=postgres,mssql`（沒設就印 skip 後通過）。效能量測是 `#[ignore]`，用 `--ignored --nocapture` 跑。
 - 隔離實機執行加 `YUZORA_DB_SECRETS=memory`，密碼只留在該 process，不碰系統 keychain。
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
-- L4（SSH／SFTP）：crate `app/crates/yuzora-ssh`（`yuzora:ssh`），mods `yuzora-sidebar-ssh`、`yuzora-sftp`、`yuzora-ssh-{prompt,host,known-hosts,herdr}`。設計與 tunnel API：`docs/beta2/ssh.md`。
+#### L4 SSH／SFTP
+
+- crate `app/crates/yuzora-ssh`（`yuzora:ssh`），mods `yuzora-sidebar-ssh`、`yuzora-sftp`、`yuzora-ssh-{prompt,host,known-hosts,herdr}`。設計與 tunnel API：`docs/beta2/ssh.md`。
 - 測試：`cargo test --locked -p yuzora-ssh`。整合測試在測試行程內起 russh SSH 伺服器，SFTP 用系統的 OpenSSH `sftp-server`（沒有時 skip），一律用暫存目錄與記憶體憑證庫。
 - 絕不寫入使用者的 `~/.ssh`：known_hosts 只寫 `<app home>/yuzora/known_hosts`，`~/.ssh` 唯讀；密碼與密語只在使用者勾選時存進系統鑰匙圈（namespace `ssh`）。
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
-### L5 檔案＋編輯器（`yuzora-files`）
+#### L5 檔案＋編輯器（`yuzora-files`）
 
 - 設計、API 與待辦：`docs/beta2/files.md`。
 - 測試：`cargo test --locked -p yuzora-files`；mods：`scripts/yuzora/check-mods yuzora-sidebar-files yuzora-editor yuzora-markdown yuzora-files-image`。
@@ -104,7 +115,7 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
-### L7 發布與更新
+#### L7 發布與更新
 
 設計、金鑰與發布步驟：`docs/beta2/release.md`。
 
@@ -131,7 +142,7 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L9:start -->
 #### L9 Herdr 相容與上游同步
 
-- 文件：`docs/beta2/herdr-compat.md`（Yuzora 與官方 Herdr.app 共用 herdr-core 時的盤點、待決策項）。
+- 文件：`docs/beta2/herdr-compat.md`（Yuzora 與官方 Herdr.app 共用 herdr-core 時的盤點、已修項目與 2026-11-03 使用者決定的取捨）。
 - 上游同步：照 `docs/beta2/architecture.md`「上游同步流程」做 `git subtree pull`，commit 後跑 `app/scripts/yuzora/sync-check`（`--quick` 不跑 cargo test）。同步 PR 一律 merge commit。
 - Yuzora 只讀 `YUZORA_APP_HOME`，不讀 `HERDR_APP_HOME`。上游測試若只設 `HERDR_APP_HOME`，會在真實的 `~/.config/yuzora` 開 app home，要補上 `YUZORA_APP_HOME`（sync-check 會擋）。
 - 和 Herdr.app 一起實測：
@@ -143,11 +154,16 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 
 ## Release platform support
 
-- 從 v0.0.9 起，macOS App 僅支援 Apple Silicon（M 系列）。候選版與正式版使用 `aarch64-apple-darwin`，不得重新加入 Intel／universal App 安裝包或 `darwin-x86_64` updater entry。
+- 從 v0.0.9 起，macOS App 僅支援 Apple Silicon（M 系列）。候選版與正式版使用 `aarch64-apple-darwin`，不得重新加入 Intel／universal App 安裝包或 `darwin-x86_64` updater entry。beta.2 的更新 archive（`yuzora-<version>-macos-aarch64.tar.gz`）與 `yuzora-update.json` 也只有 `macos-aarch64`，不得加入 `macos-x86_64` 或 universal target。
 - macOS 固定下載檔名為 `Yuzora-macos-aarch64.dmg`；更新發布流程時須同步核對官網、README、`docs/operations.md` 與 updater metadata。
 - 遠端 Host 保留 `macos-x86_64` 與 `macos-aarch64`；App 停止 Intel 支援不代表移除既有 Intel macOS 遠端工作區。
 - 已發布的舊版 Intel／universal artifacts 保持不可變，不重寫舊版 release 或 tag。
 - macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須 Tauri updater 簽章。正式 build 不可使用會一併停用 updater 簽章的 `--no-sign`；README 與 release notes 須說明 Gatekeeper 提示。
+- beta.2（`app/`）起：
+  - Windows 改用 per-user NSIS 安裝程式，固定下載檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`（沒有固定別名）。固定下載別名只上傳到 Stable release，Beta 只有版本化檔名（`docs/beta2/release.md` §6）。
+  - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章（beta.2 依使用者 2026-11-03 的決定不附 `latest.json`，舊版 App 內更新要等 0.1.0 Stable）。
+  - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在發布步驟；私鑰永遠不進 repo。
+  - macOS 只做 ad-hoc 簽章（`codesign --sign -`），Windows 沒有 Authenticode；README 與 release notes 須說明 Gatekeeper 與 SmartScreen 提示。
 
 ## UI components — shadcn first（Tauri／React app）
 
@@ -173,7 +189,7 @@ repo 有兩個 Cargo workspace，各自一份 `Cargo.lock` 與 target：
 一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
 
 - 主 checkout（`yuzora/`）使用上述預設 target，不另外設定 `CARGO_TARGET_DIR`。
-- 不在主 checkout 的建置，包括 `../.yuzora-lanes/<lane>` worktree、`output/` 底下的原始碼快照，一律重用固定的 slot。不得以 lane 或 experiment 名稱建立新的 target：
+- 不在主 checkout 的建置，包括 `../.yuzora-lanes/<lane>` worktree、`.claude/worktrees/` 底下的 session worktree、`output/` 底下的原始碼快照，一律重用固定的 slot。不得以 lane 或 experiment 名稱建立新的 target：
 
   ```bash
   LANES="$(dirname "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")/.yuzora-lanes"
@@ -181,7 +197,7 @@ repo 有兩個 Cargo workspace，各自一份 `Cargo.lock` 與 target：
   ```
 
 - slot 平時只有 `slot-1`、`slot-2` 兩組。cargo 會對 target 目錄上鎖，出現 `Blocking waiting for file lock on build directory` 代表這個 slot 正在使用中，請改用 `slot-2`。兩組都在使用中就等待，不要建立 `slot-3` 或 lane 專屬的 target。
-- **beta.2 並行期間暫准 `slot-1`～`slot-4`**，依 lane 固定分配：L1＋L5 → `slot-1`、L2＋L3 → `slot-2`、L4＋L6 → `slot-3`、L7 → `slot-4`。遇到鎖就等待，不要再建新的 slot。beta.2 結束後回到兩組。
+- **beta.2 並行期間暫准 `slot-1`～`slot-4`**，分配見 `docs/beta2/lanes.md` 總覽表（L1＋L5 → `slot-1`、L2＋L3 → `slot-2`、L4＋L6＋L10 → `slot-3`、L7 → `slot-4`，L8 擇未上鎖者）。遇到鎖就等待，不要再建新的 slot。beta.2 結束後回到兩組。
 - 不同 worktree 共用同一個 slot 時，第三方依賴可以直接重用，只有 yuzora 自己的 crate 會重新編譯。slot 裡的執行檔會被下一個使用者覆寫，量測或交付需要的 binary 請先複製出去。
 - 效能或評估迴圈不要每一輪都把整份 repo 複製到 `output/`，請改用 lane worktree 或 patch。必要的快照在量測完成後刪除，只保留報告與數據。
 - 開始 Rust build 前，如果 `df -h` 顯示可用空間低於 50 GB，先停下來向使用者回報，不要自行刪除其他 lane 或實驗的資料。

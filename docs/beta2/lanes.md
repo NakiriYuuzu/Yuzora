@@ -1,6 +1,6 @@
 # beta.2 lanes
 
-L0 建好基底後，L1–L7 從 `beta2/integration` 各開一條分支並行開發。原則是**每條 lane 只改自己擁有的目錄**；共用檔只改自己的標記區塊。架構決策見 [architecture.md](architecture.md)。
+L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行開發（L8–L10 是後來加開的）。原則是**每條 lane 只改自己擁有的目錄**；共用檔只改自己的標記區塊。架構決策見 [architecture.md](architecture.md)。
 
 ## 總覽
 
@@ -14,6 +14,8 @@ L0 建好基底後，L1–L7 從 `beta2/integration` 各開一條分支並行開
 | L6 設定＋MOD／Template | 設定框架（`settingsPages()`）、`general` 設定（含語系）、mods 管理、herdr-core templates 管理 | `yuzora-settings`（`yuzora:settings`） | `yuzora-settings-*` | Yuzora `settings.json` 的 `general` section | `docs/beta2/settings.md` | slot-3 |
 | L7 發布更新 | 打包、簽章、更新通道（GitHub Releases）、binary 最終名稱 | 不另設 crate；app 端 glue 放 `app/src/yuzora/update.rs` 等新檔 | | `app/scripts/yuzora/bundle-*`、`app/assets/icons/yuzora*`、新的 app 發布 workflow | `docs/beta2/release.md` | slot-4 |
 | L8 效能監控 | 右下角的資源用量 chip 與 popover：App 本體、herdr-core（終端機與 agents）、Yuzora 工具 | `yuzora-perf`（`yuzora:perf`） | `yuzora-perf` | 總指揮特准：`app/Cargo.toml` 與 `app/src/yuzora/mod.rs` 掛上 crate、`app/defaults/layouts/yuzora.json` 的 `status` 節點 | `docs/beta2/perf.md` | 無固定（slot-1～4 擇未上鎖者） |
+| L9 Herdr 相容與上游更新 | 與官方 Herdr.app 共用 herdr-core 的盤點與修正、herdr-app 上游同步、herdr-core 版本把關 | 不另設 crate；app 端 glue 放 `app/src/yuzora/herdr_compat.rs` | | `app/scripts/yuzora/sync-check`、上游同步 PR（`git subtree pull`，merge commit 合併） | `docs/beta2/herdr-compat.md` | 依總指揮指派 |
+| L10 文件與官網收斂 | 對外文件與官網反映 integration 上實際做出來的東西 | | | `README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 標記區塊外的內容，以及已合併 lane 標記區塊的措辭；`README.zh-TW.md`（沒有標記區塊，跟著英文版同步）；根目錄 `CHANGELOG.md`、`CHANGELOG.zh-TW.md`；`docs/operations.md`；`site/` | 本檔與 PR 描述 | slot-3（只在需要自己截圖時建置） |
 
 - 「`yuzora-<x>-*`」是 mod 名稱前綴，例如 L2 的 tool pane 叫 `yuzora-git-log`、`yuzora-git-diff`。
 - 每個 crate 的 `Cargo.toml`、原始碼與測試都歸該 lane。lane 的 Rust 字串目錄放在 crate 內（例如 `app/crates/yuzora-git/i18n/`），mod 的字串放在 mod 內的 `i18n/`。
@@ -33,7 +35,7 @@ L0 建好基底後，L1–L7 從 `beta2/integration` 各開一條分支並行開
 
 ### 文件標記區塊
 
-`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 都有 L1–L7 的標記區塊：
+`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 都有各 lane 的標記區塊（L1–L9；`CLAUDE.md` 只到 L8）：
 
 ```markdown
 <!-- yuzora:lane:L2:start -->
@@ -42,7 +44,8 @@ L0 建好基底後，L1–L7 從 `beta2/integration` 各開一條分支並行開
 ```
 
 - 只改自己的區塊內容，保留兩行標記本身，不要移動區塊。
-- 區塊外的內容由總指揮收斂。需要改區塊外的內容時，寫進 PR 描述請總指揮處理。
+- 例外：L10（收斂 lane）可以整理**已合併** lane 的區塊措辭、對齊兩語系，也可以把和區塊外重複的內容併到區塊外的對應段落（PR 描述要列出搬了什麼）；不改事實，標記本身不動。還開著的 lane 的區塊不動，由該 lane 自己改。
+- 區塊外的內容由 L10 收斂。需要改區塊外的內容時，寫進 PR 描述請總指揮轉交。`README.zh-TW.md` 沒有標記區塊，由 L10 依英文版同步。
 - 根目錄三份是給開發者與開發用 agent 讀的（建置、測試、目錄）；`app/defaults/AGENTS.md` 每次啟動都會寫進使用者的 app home，給**使用者的 agent** 讀（怎麼操作、怎麼改 Yuzora 的 mods），兩者寫的對象不同。
 - 較長的設計與決策寫在 `docs/beta2/<lane>.md`。
 
@@ -70,6 +73,8 @@ L0 建好基底後，L1–L7 從 `beta2/integration` 各開一條分支並行開
   ```
 
 - `app/CHANGELOG.md` 第一筆必須是 `0.1.0-beta.2`（`update_notes` 測試）。各 lane 在該筆底下加自己的條目即可，不要新增版本標題。
+- App 內的更新說明分成兩份：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本，#206 起）。lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
+- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁中）是 GitHub Release 的內文，由 L10 維護，兩份的版本、段落與項目要一一對應（`scripts/release-notes.test.ts` 會比對）。
 
 ## 分支與 PR 流程
 
@@ -96,7 +101,7 @@ scripts/yuzora/check-mods                 # 每個 yuzora-* mod 的 herdr-app ch
 scripts/yuzora/check-mods yuzora-git-log  # 指定 mod
 ```
 
-- slot 分配：L1＋L5 → `slot-1`、L2＋L3 → `slot-2`、L4＋L6 → `slot-3`、L7 → `slot-4`。cargo 會對 target 上鎖，出現 `Blocking waiting for file lock` 就等，不要建新的 slot。
+- slot 分配：L1＋L5 → `slot-1`、L2＋L3 → `slot-2`、L4＋L6＋L10 → `slot-3`、L7 → `slot-4`，L8 擇未上鎖者。cargo 會對 target 上鎖，出現 `Blocking waiting for file lock` 就等，不要建新的 slot。
 - 同一個 slot 的執行檔會被另一條 lane 覆寫；要量測或保留的 binary 先複製出去。
 - 開建前先看 `df -h`，可用空間低於 50 GB 就停下回報總指揮。不要刪除其他 lane 或實驗的資料。
 - **不要直接對 `defaults/mods/` 執行 `herdr-app check`**：它會在被檢查的資料夾寫入 `gpui-kit.d.ts`、`jsconfig.json`，而 `build.rs` 會把它們打包進 app。一律用 `scripts/yuzora/check-mods`（在複本上檢查）。
