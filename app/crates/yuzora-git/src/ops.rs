@@ -392,11 +392,19 @@ pub fn branch_rename(repo: &Repo, old: &str, new: &str) -> GitResult<Value> {
     Ok(json!({ "ok": true }))
 }
 
+/// `git push`, which before trust checks and pushes no submodule: either
+/// opens each submodule's git dir, its settings and all, in this process or
+/// its own (`push.recurseSubmodules`, `submodule.recurse`), as fetch and
+/// pull would.
+fn push_args(repo: &Repo) -> Vec<&'static str> {
+    if crate::trust::trusted_folder(repo) { vec!["push"] } else { vec!["push", "--recurse-submodules=no"] }
+}
+
 /// Deletes a local branch (`notMerged` when it needs `force`), or a remote one.
 pub fn branch_delete(repo: &Repo, name: &str, force: bool, remote: bool, cancel: Option<Cancel>) -> GitResult<Value> {
     if remote {
         let (r, b) = remote_and_branch(&remote_names(repo)?, name).ok_or_else(|| GitError::other("a remote branch is <remote>/<branch>"))?;
-        let out = crate::trust::reach(repo, Git::write(["push", r, "--delete", b]).cancel(cancel).timeout(LONG_TIMEOUT), true)?;
+        let out = crate::trust::reach(repo, Git::write(push_args(repo)).args([r, "--delete", b]).cancel(cancel).timeout(LONG_TIMEOUT), true)?;
         done(repo, true);
         return Ok(outcome(&out));
     }
@@ -648,7 +656,7 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
         return Err(GitError::Other(format!("{target} is protected: force push is not allowed (Settings → Git)")));
     }
     let build = || {
-        let mut cmd = Git::read(["push", "--porcelain"]).timeout(LONG_TIMEOUT).cancel(cancel.clone());
+        let mut cmd = Git::read(push_args(repo)).arg("--porcelain").timeout(LONG_TIMEOUT).cancel(cancel.clone());
         match force.as_str() {
             "lease" => cmd = cmd.arg("--force-with-lease"),
             "force" => cmd = cmd.arg(if crate::settings::flag("forceWithLease") { "--force-with-lease" } else { "--force" }),
@@ -664,11 +672,6 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
         }
         if o.get("setUpstream").and_then(Value::as_bool).unwrap_or(preview["newBranch"].as_bool().unwrap_or(false)) {
             cmd = cmd.arg("--set-upstream");
-        }
-        if !crate::trust::trusted_folder(repo) {
-            // As fetch and pull: a push that checks or pushes submodules
-            // opens each in its own process, its settings and all.
-            cmd = cmd.arg("--recurse-submodules=no");
         }
         cmd.args([remote.clone(), format!("refs/heads/{branch}:refs/heads/{target}")])
     };
@@ -864,7 +867,7 @@ pub fn tag_create(repo: &Repo, name: &str, rev: Option<&str>, message: Option<&s
 
 pub fn tag_delete(repo: &Repo, name: &str, remote: Option<&str>, cancel: Option<Cancel>) -> GitResult<Value> {
     let out = match remote.filter(|r| !r.is_empty()) {
-        Some(r) => crate::trust::reach(repo, Git::read(["push", r, &format!(":refs/tags/{name}")]).timeout(LONG_TIMEOUT).cancel(cancel), true)?,
+        Some(r) => crate::trust::reach(repo, Git::read(push_args(repo)).args([r.to_owned(), format!(":refs/tags/{name}")]).timeout(LONG_TIMEOUT).cancel(cancel), true)?,
         None => repo.run(Git::write(["tag", "-d", name]))?,
     };
     done(repo, true);
@@ -873,8 +876,8 @@ pub fn tag_delete(repo: &Repo, name: &str, remote: Option<&str>, cancel: Option<
 
 pub fn tag_push(repo: &Repo, remote: &str, name: Option<&str>, cancel: Option<Cancel>) -> GitResult<Value> {
     let cmd = match name {
-        Some(n) => Git::read(["push", remote, &format!("refs/tags/{n}")]),
-        None => Git::read(["push", remote, "--tags"]),
+        Some(n) => Git::read(push_args(repo)).args([remote.to_owned(), format!("refs/tags/{n}")]),
+        None => Git::read(push_args(repo)).args([remote, "--tags"]),
     };
     let out = crate::trust::reach(repo, cmd.timeout(LONG_TIMEOUT).cancel(cancel), true)?;
     done(repo, true);

@@ -553,12 +553,12 @@ mod tests {
         vec![("PATH".into(), format!("{}:{}", at.display(), std::env::var("PATH").unwrap_or_default())), ("GIT_EXEC_PATH".into(), at.display().to_string())]
     }
 
-    // `.git/modules/<name>` may be a gitfile, here naming a partial clone
-    // that lacks the commit a push carries: a push that checks submodules
-    // (`push.recurseSubmodules`) opens it in its own process, and a git
-    // before 2.44 fetches the commit there with that repo's `uploadpack`.
-    // The scan reads the git dir the gitfile names; before trust a push
-    // checks no submodule either.
+    // `.git/modules/<name>` may be a gitfile, here a link to one naming a
+    // partial clone that lacks the commit a push carries: a push that checks
+    // submodules (`push.recurseSubmodules`) opens it in its own process, from
+    // the link's real path, and a git before 2.44 fetches the commit there
+    // with that repo's `uploadpack`. The scan reads the git dir git opens;
+    // before trust no push, of a branch or of tags, checks a submodule either.
     #[test]
     fn a_push_before_trust_opens_no_submodule_git_dir() {
         let (s, lib) = (scratch(), scratch());
@@ -579,12 +579,18 @@ mod tests {
         s.git(&["push", "-q", "origin", "main"]);
         let sub = s.git(&["rev-parse", "HEAD"]);
         s.git(&["submodule", "deinit", "-q", "-f", "s"]);
-        let (gd, evil) = (s.repo.git_path("modules/s"), s.repo.git_path("evil.git"));
+        // `.git/modules/s` a link to a gitfile a level deeper, `../evil.git`
+        // in it: from the link's folder that is `.git/evil.git` (clean
+        // here), from the file's own `.git/deep/evil.git`, which git opens.
+        let (gd, evil) = (s.repo.git_path("modules/s"), s.repo.git_path("deep/evil.git"));
+        std::fs::create_dir_all(s.repo.git_path("deep/a")).unwrap();
         std::fs::rename(&gd, &evil).unwrap();
-        std::fs::write(&gd, "gitdir: ../evil.git\n").unwrap();
+        std::fs::write(s.repo.git_path("deep/a/f"), "gitdir: ../evil.git\n").unwrap();
+        std::os::unix::fs::symlink("../deep/a/f", &gd).unwrap();
+        git(&["init", "-q", "--bare", &s.repo.git_path("evil.git")]);
         let (mark, prog) = hit(&s, "exec git-upload-pack \"$@\"");
-        for (k, v) in [("core.worktree", "../../s"), ("remote.origin.url", &src), ("remote.origin.promisor", "true"), ("extensions.partialClone", "origin"), ("remote.origin.uploadpack", &prog)] {
-            s.git(&["--git-dir", &evil, "config", k, v]);
+        for (k, v) in [("remote.origin.url", src.as_str()), ("remote.origin.promisor", "true"), ("extensions.partialClone", "origin"), ("remote.origin.uploadpack", prog.as_str())] {
+            git(&["--git-dir", &evil, "config", k, v]);
         }
         // A commit the partial clone lacks; the push carries the gitlink moved to it.
         lib.commit("f.txt", "2\n", "two");
@@ -592,22 +598,46 @@ mod tests {
         let two = lib.git(&["rev-parse", "HEAD"]);
         s.git(&["update-index", "--cacheinfo", &format!("160000,{},s", two.trim())]);
         s.git(&["commit", "-q", "-m", "bump"]);
+        s.git(&["tag", "v1"]);
         s.git(&["config", "push.recurseSubmodules", "check"]);
         assert_eq!(pending(&s.repo).unwrap(), [".git/modules/s: extensions.partialclone", ".git/modules/s: remote.origin.promisor", ".git/modules/s: remote.origin.uploadpack"]);
         assert!(check(&s.repo).is_err());
+        // Each push the remote lacks, as if nothing had been pushed since
+        // `sub`, and the partial clone without what a push fetched into it.
+        let packs = || std::fs::read_dir(format!("{evil}/objects/pack")).unwrap().map(|e| e.unwrap().path()).collect::<std::collections::BTreeSet<_>>();
+        let kept = packs();
+        let unpushed = || {
+            git(&["--git-dir", &up, "update-ref", "refs/heads/main", sub.trim()]);
+            let _ = std::process::Command::new("git").args(["--git-dir", &up, "update-ref", "-d", "refs/tags/v1"]).output();
+            s.git(&["update-ref", "refs/remotes/origin/main", sub.trim()]);
+            packs().difference(&kept).for_each(|p| std::fs::remove_file(p).unwrap());
+            let _ = std::fs::remove_file(&mark);
+        };
+        let pushes: [(&str, &dyn Fn()); 3] = [
+            ("a branch push", &|| { let _ = crate::ops::push(&s.repo, &serde_json::json!({}), None); }),
+            ("a tag's push", &|| { let _ = crate::ops::tag_push(&s.repo, "origin", Some("v1"), None); }),
+            ("a push of all tags", &|| { let _ = crate::ops::tag_push(&s.repo, "origin", None, None); }),
+        ];
         // Past the gate (which shuts here), with a git that fetches lazily anyway.
         let env = old_git(&away.join("old-git"));
         crate::exec::TEST_ENV.with(|t| *t.borrow_mut() = env);
-        let _ = crate::ops::push(&s.repo, &serde_json::json!({}), None);
-        let before = mark.exists();
-        // The same push again, trusted: it opens s and fetches there.
-        git(&["--git-dir", &up, "update-ref", "refs/heads/main", sub.trim()]);
-        s.git(&["update-ref", "refs/remotes/origin/main", sub.trim()]);
+        let mut ran = vec![];
+        for (what, push) in &pushes {
+            unpushed();
+            push();
+            ran.push((*what, mark.exists()));
+        }
+        // The same pushes again, trusted: each opens s and fetches there.
         trust(&s.repo).unwrap();
-        let _ = crate::ops::push(&s.repo, &serde_json::json!({}), None);
+        let mut trusted = vec![];
+        for (what, push) in &pushes {
+            unpushed();
+            push();
+            trusted.push((*what, mark.exists()));
+        }
         crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
-        assert!(!before, "a push before trust ran the uploadpack of a submodule's git dir");
-        assert!(mark.exists(), "trusted, the push didn't run it either: this proves nothing");
+        assert_eq!(ran, pushes.map(|(w, _)| (w, false)), "a push before trust ran the uploadpack of a submodule's git dir");
+        assert_eq!(trusted, pushes.map(|(w, _)| (w, true)), "trusted, a push didn't run it either: this proves nothing");
     }
 
     #[test]
