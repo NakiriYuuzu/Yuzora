@@ -32,6 +32,20 @@ describe("yuzora-update.json", () => {
       size: 3,
     });
     expect(doc.notes.url).toEndWith("/v0.1.0-beta.3/changelog.md");
+    expect(doc.localized_notes).toBeUndefined();
+  });
+
+  test("the Chinese changelog goes under localized_notes, by the app's locale", () => {
+    const dir = dist({ [archiveName("0.1.0-beta.3", "linux-x86_64")]: "x", "changelog.md": "en", "changelog.zh-TW.md": "zh" });
+    const doc = yuzoraManifest(dir, "0.1.0-beta.3") as any;
+    expect(Object.keys(doc.localized_notes)).toEqual(["zh-TW"]);
+    expect(doc.localized_notes["zh-TW"]).toEqual({
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/changelog.zh-TW.md",
+      // sha256("zh")
+      sha256: "60cae1d01739facc4543771db2e8fbc4d1ebe5fc66284a5b8b4bd1ed585f452e",
+      size: 2,
+    });
+    expect(doc.notes.url).toEndWith("/v0.1.0-beta.3/changelog.md");
   });
 
   test("stable versions are on stable; odd versions, targets and empty folders fail", () => {

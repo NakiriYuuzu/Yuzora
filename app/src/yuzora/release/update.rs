@@ -74,13 +74,16 @@ pub fn check(root: &Path) -> Result<Option<String>, String> {
     let Some(found) = find(&Source::from_env(), Channel::chosen(), env!("CARGO_PKG_VERSION"), &keys())? else {
         return Ok(None);
     };
-    // Notes are optional: a missing or damaged changelog never holds up the update.
-    if let Some(notes) = &found.notes
-        && !crate::update_notes::has(&found.version)
-    {
-        match fetch_asset(notes) {
-            Ok(text) => crate::update_notes::cache(&String::from_utf8_lossy(&text)),
-            Err(e) => tracing::warn!("update notes for {}: {e}", found.version),
+    // Notes are optional: a missing or damaged changelog never holds up the
+    // update. Each language is kept, so switching shows the other at once.
+    for &locale in yuzora_core::i18n::LOCALES {
+        if let Some(notes) = found.notes_in(locale)
+            && !crate::update_notes::has(locale, &found.version)
+        {
+            match fetch_asset(notes) {
+                Ok(text) => crate::update_notes::cache(locale, &String::from_utf8_lossy(&text)),
+                Err(e) => tracing::warn!("update notes ({locale}) for {}: {e}", found.version),
+            }
         }
     }
     let Some(entry) = found.targets.get(&super::target()) else {
@@ -303,6 +306,27 @@ mod tests {
             assert_eq!(checks_app(Some(PathBuf::from("/Applications/Yuzora.app"))), None);
         }
         assert_eq!(checks_app(None), None);
+    }
+
+    #[test]
+    fn notes_in_each_language_must_match_their_sha256() {
+        use yuzora_core::i18n::{EN, ZH_TW};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (en, zh) = (b"## [0.1.0-beta.3] - 2026-11-03\n- English\n".to_vec(), "## [0.1.0-beta.3] - 2026-11-03\n- 中文\n".as_bytes().to_vec());
+        let routes = vec![("/changelog.md".to_owned(), 200, en.clone()), ("/changelog.zh-TW.md".to_owned(), 200, zh.clone())];
+        let server = serve_on(listener, routes, 3);
+        let mut found: Manifest = serde_json::from_slice(MANIFEST_FIXTURE).unwrap();
+        found.notes = Some(manifest::Asset { url: format!("{base}/changelog.md"), sha256: crate::update::sha256(&en), size: None });
+        let zh_tw = |sha256: String| [(ZH_TW.to_owned(), manifest::Asset { url: format!("{base}/changelog.zh-TW.md"), sha256, size: None })].into();
+        found.localized_notes = zh_tw(crate::update::sha256(&zh));
+        assert_eq!(fetch_asset(found.notes_in(EN).unwrap()).unwrap(), en);
+        assert_eq!(fetch_asset(found.notes_in(ZH_TW).unwrap()).unwrap(), zh);
+        // Served bytes that aren't what the signed manifest says are refused, not shown.
+        found.localized_notes = zh_tw(crate::update::sha256(&en));
+        let err = fetch_asset(found.notes_in(ZH_TW).unwrap()).unwrap_err();
+        assert!(err.contains("changelog.zh-TW.md: checksum mismatch"), "{err}");
+        server.join().unwrap();
     }
 
     #[test]
