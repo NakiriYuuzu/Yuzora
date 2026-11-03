@@ -227,8 +227,9 @@ pub fn messages(repo: &Repo) -> GitResult<Value> {
     let history = all.get(&repo.id).cloned().unwrap_or_default();
     let template = repo.run(Git::read(["config", "--path", "commit.template"]))?;
     let template = template.ok().then(|| template.stdout_text().trim().to_owned()).filter(|p| !p.is_empty()).and_then(|p| repo.read_file(&template_file(repo, &p)).map(|b| String::from_utf8_lossy(&b).into_owned()));
-    let last = repo.run(Git::read(["log", "-1", "--format=%B"]))?;
-    let authors = repo.run(Git::read(["log", "-n", "300", "--format=%an <%ae>"]))?;
+    // The sidebar reads these on its own: no lazy fetch before trust.
+    let last = repo.run(crate::trust::own_read(repo, Git::read(["log", "-1", "--format=%B"])))?;
+    let authors = repo.run(crate::trust::own_read(repo, Git::read(["log", "-n", "300", "--format=%an <%ae>"])))?;
     let mut seen = HashSet::new();
     let authors: Vec<String> = authors.stdout_text().lines().filter(|a| seen.insert(a.to_string())).take(16).map(str::to_owned).collect();
     Ok(json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()), "authors": authors }))
@@ -395,7 +396,7 @@ pub fn branch_rename(repo: &Repo, old: &str, new: &str) -> GitResult<Value> {
 pub fn branch_delete(repo: &Repo, name: &str, force: bool, remote: bool, cancel: Option<Cancel>) -> GitResult<Value> {
     if remote {
         let (r, b) = remote_and_branch(&remote_names(repo)?, name).ok_or_else(|| GitError::other("a remote branch is <remote>/<branch>"))?;
-        let out = repo.run(Git::write(["push", r, "--delete", b]).cancel(cancel).timeout(LONG_TIMEOUT))?;
+        let out = crate::trust::reach(repo, Git::write(["push", r, "--delete", b]).cancel(cancel).timeout(LONG_TIMEOUT), true)?;
         done(repo, true);
         return Ok(outcome(&out));
     }
@@ -545,7 +546,7 @@ pub fn fetch(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value>
     }
     // fetch writes refs, but must not wait behind our own writes: it is a READ
     // in IntelliJ too (its lock is git's own).
-    let out = repo.run(cmd)?;
+    let out = crate::trust::reach(repo, cmd, true)?;
     done(repo, true);
     Ok(outcome(&out))
 }
@@ -574,7 +575,7 @@ pub fn pull(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
             cmd = cmd.arg(br);
         }
     }
-    let out = repo.run(cmd)?;
+    let out = crate::trust::reach(repo, cmd, true)?;
     Ok(with_conflicts(repo, out))
 }
 
@@ -658,7 +659,7 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
         }
         cmd.args([remote.clone(), format!("refs/heads/{branch}:refs/heads/{target}")])
     };
-    let out = repo.run(build())?;
+    let out = crate::trust::reach(repo, build(), true)?;
     let text = [out.stdout_text(), out.stderr_text()].join("\n");
     let rejected = !out.ok() && (text.contains("[rejected]") || text.contains("non-fast-forward") || text.contains("fetch first"));
     let auto = o.get("autoUpdate").and_then(Value::as_bool).unwrap_or_else(|| crate::settings::flag("autoUpdateOnReject"));
@@ -670,7 +671,7 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
             v["updated"] = json!(false);
             return Ok(v);
         }
-        let again = repo.run(build())?;
+        let again = crate::trust::reach(repo, build(), true)?;
         done(repo, true);
         let mut v = outcome(&again);
         v["updated"] = json!(true);
@@ -850,7 +851,7 @@ pub fn tag_create(repo: &Repo, name: &str, rev: Option<&str>, message: Option<&s
 
 pub fn tag_delete(repo: &Repo, name: &str, remote: Option<&str>, cancel: Option<Cancel>) -> GitResult<Value> {
     let out = match remote.filter(|r| !r.is_empty()) {
-        Some(r) => repo.run(Git::read(["push", r, &format!(":refs/tags/{name}")]).timeout(LONG_TIMEOUT).cancel(cancel))?,
+        Some(r) => crate::trust::reach(repo, Git::read(["push", r, &format!(":refs/tags/{name}")]).timeout(LONG_TIMEOUT).cancel(cancel), true)?,
         None => repo.run(Git::write(["tag", "-d", name]))?,
     };
     done(repo, true);
@@ -862,7 +863,7 @@ pub fn tag_push(repo: &Repo, remote: &str, name: Option<&str>, cancel: Option<Ca
         Some(n) => Git::read(["push", remote, &format!("refs/tags/{n}")]),
         None => Git::read(["push", remote, "--tags"]),
     };
-    let out = repo.run(cmd.timeout(LONG_TIMEOUT).cancel(cancel))?;
+    let out = crate::trust::reach(repo, cmd.timeout(LONG_TIMEOUT).cancel(cancel), true)?;
     done(repo, true);
     Ok(outcome(&out))
 }
@@ -1012,7 +1013,8 @@ pub fn submodules(repo: &Repo) -> GitResult<Value> {
 }
 
 pub fn submodule_update(repo: &Repo, cancel: Option<Cancel>) -> GitResult<Value> {
-    let out = repo.run(Git::write(["submodule", "update", "--init", "--recursive"]).timeout(LONG_TIMEOUT).cancel(cancel))?;
+    // A submodule's URL is the repo's, not the person's (git's own `file` rule).
+    let out = crate::trust::reach(repo, Git::write(["submodule", "update", "--init", "--recursive"]).timeout(LONG_TIMEOUT).cancel(cancel), false)?;
     done(repo, true);
     Ok(outcome(&out))
 }
@@ -1206,6 +1208,32 @@ mod tests {
         // `/` paths with a `~` in them are as they are.
         assert_eq!(template_file(&s.repo, "/srv/a~b/msg"), "/srv/a~b/msg");
         assert_eq!(template_file(&s.repo, "msg/t.txt"), s.repo.abs("msg/t.txt"));
+    }
+
+    // The sidebar reads the messages on its own as it opens: in an untrusted
+    // partial clone, a commit it lacks stays unfetched, as for status.
+    #[test]
+    fn an_untrusted_partial_clone_fetches_nothing_for_its_messages() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        let two = s.commit("a.txt", "2\n", "two");
+        let src = s.dir.path().join("src.git");
+        let out = std::process::Command::new("git").args(["clone", "-q", "--bare", "--no-local", s.root()]).arg(&src).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        for (key, value) in [("remote.origin.url", format!("file://{}", src.display())), ("remote.origin.promisor", "true".into()), ("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*".into())] {
+            s.git(&["config", key, &value]);
+        }
+        std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &two[..2], &two[2..]))).unwrap();
+        let present = || s.repo.run(Git::read(["cat-file", "-e", &two]).env("GIT_NO_LAZY_FETCH", "1")).unwrap().ok();
+        assert!(!present());
+        assert_eq!(crate::trust::pending(&s.repo).unwrap(), Vec::<String>::new());
+        let m = messages(&s.repo).unwrap();
+        assert!(!present(), "messages fetched from the promisor remote before the folder was trusted");
+        assert_eq!(m["last"], Value::Null, "{m}");
+        crate::trust::trust(&s.repo).unwrap();
+        let m = messages(&s.repo).unwrap();
+        assert!(present(), "messages didn't fetch once trusted, so this test proves nothing");
+        assert_eq!(m["last"], "two", "{m}");
     }
 
     #[test]

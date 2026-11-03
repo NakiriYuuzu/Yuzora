@@ -18,13 +18,14 @@
 //! the status bar and the file tree; this keeps the list under
 //! [`crate::settings::own_dir`] and runs git through the engine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
 use yuzora_core::git_trust;
 
-use crate::exec::{Git, GitError, GitResult};
+use crate::exec::{Git, GitError, GitResult, Output};
 use crate::repo::Repo;
 
 /// An empty folder of ours for `core.hooksPath` when hooks must not run.
@@ -60,9 +61,63 @@ fn trusted() -> BTreeSet<String> {
 }
 
 /// What keeps git from running on its own in this repo: its program keys,
-/// unless the folder is trusted (empty: nothing does).
+/// and the remote helpers [`reach`] kept out, unless the folder is trusted
+/// (empty: nothing does).
 pub fn pending(repo: &Repo) -> GitResult<Vec<String>> {
-    if trusted_folder(repo) { Ok(Vec::new()) } else { repo_programs(repo) }
+    if trusted_folder(repo) {
+        return Ok(Vec::new());
+    }
+    let mut keys = repo_programs(repo)?;
+    keys.extend(kept_out().lock().unwrap_or_else(|e| e.into_inner()).get(&repo.id).into_iter().flatten().cloned());
+    Ok(keys)
+}
+
+/// The remote helpers [`reach`] kept out this session, by repo.
+fn kept_out() -> &'static Mutex<BTreeMap<String, BTreeSet<String>>> {
+    static KEPT: OnceLock<Mutex<BTreeMap<String, BTreeSet<String>>>> = OnceLock::new();
+    KEPT.get_or_init(Mutex::default)
+}
+
+/// git's own transports: anything else is a remote helper.
+const OWN_TRANSPORTS: [&str; 5] = ["file", "git", "http", "https", "ssh"];
+
+/// Runs a command that reaches a remote (fetch, pull, push, submodule
+/// update). Until the folder is trusted it uses no remote helper (`ext::`
+/// runs its command), whatever names one: the scan can't see them all (a
+/// tracked `.gitmodules`, a nested one `--recursive` meets on the way, an
+/// unpopulated submodule's git dir, the person's own `insteadOf`).
+/// `GIT_ALLOW_PROTOCOL` lists git's own transports the person's config
+/// allows ([`transports`]). A helper git kept out waits for trust from then
+/// on, so the sidebar asks.
+pub fn reach(repo: &Repo, cmd: Git, from_user: bool) -> GitResult<Output> {
+    if trusted_folder(repo) {
+        return repo.run(cmd);
+    }
+    let config = repo.run(Git::read(["config", "--get-regexp", r"^protocol\."]))?.stdout_text();
+    let out = repo.run(cmd.env("GIT_ALLOW_PROTOCOL", transports(&config, from_user)))?;
+    // git's words (its messages are in English here): `transport '<name>' not allowed`.
+    let stderr = out.stderr_text();
+    let kept = stderr.lines().filter_map(|l| l.split_once("transport '")?.1.strip_suffix("' not allowed")).filter(|t| !OWN_TRANSPORTS.contains(t));
+    let kept: BTreeSet<String> = kept.map(|t| format!("transport '{t}'")).collect();
+    if !kept.is_empty() {
+        kept_out().lock().unwrap_or_else(|e| e.into_inner()).entry(repo.id.clone()).or_default().extend(kept);
+    }
+    Ok(out)
+}
+
+/// Which of git's own transports the person's config allows, as git decides
+/// (`protocol.<name>.allow`, else `protocol.allow`, else its defaults:
+/// `file` only for a URL from the person, which a submodule's isn't), from
+/// `git config --get-regexp '^protocol\.'`; `:`-separated.
+fn transports(config: &str, from_user: bool) -> String {
+    let get = |key: &str| config.lines().rev().filter_map(|l| l.split_once(' ')).find(|(k, _)| *k == key).map(|(_, v)| v.to_ascii_lowercase());
+    let allowed = |t: &str| match get(&format!("protocol.{t}.allow")).or_else(|| get("protocol.allow")).as_deref() {
+        Some("always") => true,
+        Some("user") => from_user,
+        Some(_) => false,
+        None => t != "file" || from_user,
+    };
+    OWN_TRANSPORTS.into_iter().filter(|t| allowed(t)).collect::<Vec<_>>().join(":")
 }
 
 /// Whether the person trusted the folder (not only that nothing waits).
@@ -165,6 +220,57 @@ mod tests {
         assert!(v.get("trust").is_none());
         assert_eq!(v["counts"]["unstaged"], 1);
         assert!(std::path::Path::new(&marker).exists(), "trusted: git runs the filter as it would in a terminal");
+    }
+
+    // An unpopulated submodule's git dir (`.git/modules/<name>`) is beyond
+    // the scan, yet `fetch` (on demand) and `submodule update` use its
+    // remote; a tracked `.gitmodules`, a nested one met on the way, likewise.
+    #[test]
+    fn an_untrusted_folder_reaches_no_remote_helper() {
+        let s = scratch();
+        let mark = s.dir.path().join("ran");
+        let hit = s.dir.path().join("hit");
+        std::fs::write(&hit, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", mark.display())).unwrap();
+        std::fs::set_permissions(&hit, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (lib, up) = (scratch(), scratch());
+        lib.commit("l.txt", "1\n", "l1");
+        up.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "m"]);
+        up.git(&["commit", "-q", "-m", "s1"]);
+        s.git(&["remote", "add", "origin", up.root()]);
+        s.git(&["fetch", "-q", "origin"]);
+        s.git(&["reset", "-q", "--hard", "origin/main"]);
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init"]);
+        s.git(&["submodule", "deinit", "-q", "-f", "m"]);
+        // Upstream moves the submodule on; its git dir here names a helper, and allows it.
+        lib.commit("l.txt", "2\n", "l2");
+        up.git(&["-C", "m", "pull", "-q"]);
+        up.git(&["commit", "-q", "-am", "s2"]);
+        let config = s.repo.git_path("modules/m/config");
+        s.git(&["config", "--file", &config, "remote.origin.url", &format!("ext::{}", hit.display())]);
+        s.git(&["config", "--file", &config, "protocol.ext.allow", "always"]);
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new(), "the scan reads no unpopulated submodule");
+        crate::ops::fetch(&s.repo, &serde_json::json!({}), None).unwrap();
+        assert!(!mark.exists(), "fetch ran the helper an unpopulated submodule names before the folder was trusted");
+        assert_eq!(pending(&s.repo).unwrap(), ["transport 'ext'"], "what git kept out waits for trust");
+        s.git(&["reset", "-q", "--hard", "origin/main"]);
+        crate::ops::submodule_update(&s.repo, None).unwrap();
+        assert!(!mark.exists(), "submodule update ran it before the folder was trusted");
+        trust(&s.repo).unwrap();
+        crate::ops::submodule_update(&s.repo, None).unwrap();
+        assert!(mark.exists(), "trusted, git didn't run it either: this proves nothing");
+    }
+
+    #[test]
+    fn git_s_own_transports_follow_the_person_s_policy() {
+        assert_eq!(transports("", true), "file:git:http:https:ssh");
+        assert_eq!(transports("", false), "git:http:https:ssh");
+        // Per transport first, then `protocol.allow`; the last value wins; values in any case.
+        assert_eq!(transports("protocol.allow never\nprotocol.https.allow always", true), "https");
+        assert_eq!(transports("protocol.git.allow NEVER\nprotocol.file.allow always", false), "file:http:https:ssh");
+        assert_eq!(transports("protocol.ssh.allow always\nprotocol.ssh.allow user", false), "git:http:https");
+        assert_eq!(transports("protocol.allow user", false), "");
+        // The transport's name is a subsection: its case counts, as in git.
+        assert_eq!(transports("protocol.HTTPS.allow never", true), "file:git:http:https:ssh");
     }
 
     #[test]
