@@ -2,7 +2,7 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
-## [0.1.0-beta.2] - Unreleased
+## [0.1.0-beta.2] - 2026-11-04
 
 Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herdrdev/herdr-app) (Rust, GPUI, libghostty, QuickJS mods). Terminals and agents now run in herdr-core (`hc`) and keep running when you close the window. The interface is redesigned.
 
@@ -41,7 +41,7 @@ Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herd
 
 ### Installation notes
 
-- The macOS app supports only Apple Silicon and has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway". After each update, macOS may ask again for microphone, camera or folder access.
+- The macOS app supports only Apple Silicon and has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`). After each update, macOS may ask again for microphone, camera or folder access.
 - Windows uses a per-user NSIS installer that needs no admin rights, `Yuzora_<version>_x64-setup.exe` (installs to `%LOCALAPPDATA%\Programs\Yuzora`), and no longer ships an MSI. After installing, it asks whether to remove the beta.1 all-users install. Authenticode isn't enabled yet, so SmartScreen may show a warning.
 - Linux (experimental) provides `yuzora-<version>-linux-<arch>.tar.gz` for x86_64 and aarch64. Unpack it and run `yuzora/install`. It has only passed CI and hasn't been tried on a real machine.
 - Requires herdr-core 0.1.11 or newer. If it isn't installed, the first screen offers to install it.

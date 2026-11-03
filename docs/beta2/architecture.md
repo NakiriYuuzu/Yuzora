@@ -176,7 +176,7 @@ git submodule update --init app/vendor/ghostty
 
 同步後檢查：
 
-1. `git grep -n 'yuzora:' -- app/src app/build.rs app/tests app/scripts`：逐一確認 Yuzora 的改動仍在，沒有被上游改寫蓋掉。
+1. `git grep -n 'yuzora[:(]' -- app/src app/build.rs app/tests app/scripts`：逐一確認 Yuzora 的改動仍在，沒有被上游改寫蓋掉。
 2. `app/CHANGELOG.md`：上游新版本會加在最上面，但 `update_notes` 測試要求第一筆版本等於 `CARGO_PKG_VERSION`。保持 Yuzora 的 `0.1.0-beta.2` 那筆在最上面。
 3. `app/.gitmodules` 與 root `.gitmodules` 的 ghostty URL 一致。
 4. `app/Cargo.lock` 有變動時，重產 `app/THIRD-PARTY-NOTICES`（見 lanes.md）。

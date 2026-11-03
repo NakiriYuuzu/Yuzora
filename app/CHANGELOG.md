@@ -2,7 +2,7 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
-## [0.1.0-beta.2] - 2026-11-02
+## [0.1.0-beta.2] - 2026-11-04
 
 ### New
 - Yuzora is now built on herdr-app: the default Yuzora layout (a sidebar with 5 modes on the left, a mode bar and a status bar) and the yuzora-dark theme.

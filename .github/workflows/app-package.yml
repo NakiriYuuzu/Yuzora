@@ -18,6 +18,10 @@ on:
   push:
     branches: [beta2/integration]
     paths: &package-paths
+      # The update notes are embedded at compile time (include_str! in app/src/yuzora/release/notes.rs),
+      # so a CHANGELOG edit changes what gets packaged.
+      - 'app/CHANGELOG.md'
+      - 'app/CHANGELOG.zh-TW.md'
       - 'app/assets/icons/**'
       - 'app/distribution/yuzora/**'
       - 'app/scripts/yuzora/**'

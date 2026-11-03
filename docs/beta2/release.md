@@ -159,6 +159,8 @@
 
 ## 5. beta.1 → beta.2 升級
 
+> 2026-11-03 已決定改採退路：beta.2 不附 `latest.json`，舊版 App 要手動下載（見本節末段與 decisions §10）。以下的分析保留作為日後帶 beta.1 升級時的依據。
+
 ### 結論：技術上可以用 Tauri updater 直接帶過來（macOS 與 Windows）；但 beta.2 不附 `latest.json`（見本節末）
 
 依 beta.1 的程式（`src-tauri/src/update_channel.rs`）與 tauri-plugin-updater 2.14.1 原始碼：
