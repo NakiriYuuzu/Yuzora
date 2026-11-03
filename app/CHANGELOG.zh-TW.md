@@ -26,7 +26,7 @@
 - 資料庫：側欄「資料庫」模式支援 PostgreSQL、SQL Server、SQLite 連線（密碼存在系統鑰匙圈）、資料庫切換與 schema 樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）與 SQL 分頁；SQL pane 可執行選取或整段、多個結果集、取消與歷史紀錄。
 - 檔案側欄：跟隨目前 pane 的 repo，顯示 git 標記與依類型上色的檔案 icon；新增、重新命名、刪除到垃圾桶、複製路徑、在 Finder 中顯示；檔名模糊搜尋與內容搜尋（有 ripgrep 就用，否則用內建搜尋）。
 - 程式碼編輯器：14 種語言的 tree-sitter 上色、存檔衝突檢查、搜尋與取代；檔案在磁碟上被修改時自動重新載入，有 Agent 在改同一個檔案時會提示。
-- Markdown 預覽（與編輯器即時同步，可切換原始碼）與圖片／SVG 檢視。repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限，超過時顯示佔位圖和原因。遠端 Space 的檔案可以瀏覽與唯讀開啟。
+- Markdown 預覽（與編輯器即時同步，可切換原始碼）與圖片／SVG 檢視。repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限，超過時顯示佔位圖，圖片檢視會說明原因（Markdown 預覽只有佔位圖）。遠端 Space 的檔案可以瀏覽與唯讀開啟。
 - Git（以 IntelliJ IDEA 為基準）：側欄 Git 模式可暫存、提交（amend、sign-off、略過 hooks、訊息歷史與範本）、推送；diff pane 可暫存或捨棄單一 hunk 或選取的行；提交紀錄與分支圖、篩選與右鍵操作；分支 popup（smart checkout、merge、rebase、比較）；三方合併解衝突；互動式 rebase；Annotate；stash、tag、remote、worktree、patch 管理；Git 設定頁。
 - 未信任的資料夾：在 Git 模式信任資料夾之前，Yuzora 不會在那裡執行任何可能啟動 repo 自己設定的程式（filter、fsmonitor hook）的 Git 指令。Changes 與 Files 面板、worktree 對話框會顯示資料夾還沒有信任，Spaces 清單只從 refs 讀取分支與 ↑↓；Linux 上監看這類資料夾時，也不再向 Git 查詢被忽略的資料夾。
 - 同步 herdr-app 上游到 f6fe216（v0.1.12 之後）：可選用終端機字型連字（`settings.json` 的 `font_ligatures`，預設關閉）、快捷鍵說明再按一次就關閉，並修正 pane 程式的啟動尺寸、焦點框與控制鍵別名等問題。

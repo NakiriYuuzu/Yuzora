@@ -41,8 +41,8 @@ if [ "$3" = 1 ] && command -v git >/dev/null 2>&1 && [ "$(g rev-parse --is-insid
 fi
 if command -v rg >/dev/null 2>&1; then
   printf 'rg\0'
-  if [ "$2" = 1 ]; then exec rg --files --null --hidden -g '!.git'; fi
-  exec rg --files --null -g '!.git'
+  if [ "$2" = 1 ]; then exec rg --files --no-config --null --hidden -g '!.git'; fi
+  exec rg --files --no-config --null -g '!.git'
 fi
 printf 'find\0'
 exec find . -type f -not -path '*/.git/*' -print0"#;
@@ -231,6 +231,8 @@ const BONUS_CONSECUTIVE: i64 = 6;
 const BONUS_BASENAME: i64 = 5;
 const BONUS_PREFIX: i64 = 6;
 const NONE: i64 = i64::MIN / 4;
+/// Most cells (query chars x path chars) [`fuzzy_match`] scores properly.
+const MAX_MATCH_CELLS: usize = 1 << 20;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct FuzzyMatch {
@@ -279,6 +281,18 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i64, Vec<usize>)> {
 
     let c: Vec<char> = candidate.chars().collect();
     let n = c.len();
+    // The tables below take `m * n` cells each: past the cap (a pasted
+    // paragraph against a long path) settle for the leftmost subsequence,
+    // scored below any real match, rather than allocate hundreds of MB.
+    if m.saturating_mul(n) > MAX_MATCH_CELLS {
+        let mut indices = Vec::with_capacity(m);
+        for (j, &ch) in c.iter().enumerate() {
+            if indices.len() < m && same(indices.len(), ch) {
+                indices.push(j);
+            }
+        }
+        return Some((-(n as i64), indices));
+    }
     let basename = c
         .iter()
         .rposition(|&ch| ch == '/' || ch == '\\')
@@ -900,6 +914,17 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_match_falls_back_to_a_cheap_one() {
+        let path = "a".repeat(3000);
+        let (score, at) = fuzzy_match(&"a".repeat(2000), &path).unwrap();
+        assert!(score <= 0, "scored by the table: {score}");
+        assert_eq!(at, (0..2000).collect::<Vec<_>>());
+        // Not a subsequence stays a miss, and a normal query is still scored.
+        assert!(fuzzy_match(&"b".repeat(2000), &path).is_none());
+        assert!(fuzzy_match("aa", "aab").unwrap().0 > 0);
+    }
+
+    #[test]
     fn smart_case_makes_uppercase_exact() {
         assert!(fuzzy_match("foo", "Foo.rs").is_some());
         assert!(fuzzy_match("foo", "FOO.rs").is_some());
@@ -1263,12 +1288,12 @@ mod tests {
             let (out, code) = run_list_script(&[("rg", &echo)], d.path(), false, true);
             assert_eq!(
                 (String::from_utf8_lossy(&out).trim_end(), code),
-                ("rg\0--files --null -g !.git", 0)
+                ("rg\0--files --no-config --null -g !.git", 0)
             );
             let (out, _) = run_list_script(&[("rg", &echo)], d.path(), true, true);
             assert_eq!(
                 String::from_utf8_lossy(&out).trim_end(),
-                "rg\0--files --null --hidden -g !.git"
+                "rg\0--files --no-config --null --hidden -g !.git"
             );
         }
         let (out, code) = run_list_script(&[], &d.path().join("nope"), false, true);

@@ -52,9 +52,15 @@ const MAGIC: &[&[u8]] = &[
 /// the same order. Stops after `$2` entries. `$1` is the directory.
 const LIST_SCRIPT: &str = r#"d=$1; max=$2
 cd -- "$d" 2>/dev/null || { echo "cannot open $d" >&2; exit 3; }
+# Entries are read one by one from find, never expanded as a glob, so a
+# folder of millions of names costs `max` of them and not all of them. find
+# stops by itself (SIGPIPE) when the loop does. A name with a newline in it
+# cannot be told apart in this stream: find leaves it out.
+find . ! -name . -prune ! -name '*
+*' 2>/dev/null | {
 n=0
 set --
-for f in ./.[!.]* ./..?* ./*; do
+while IFS= read -r f; do
   case $f in
     ./.git|./.DS_Store) continue;;
     ./.yuzora-save-*) r=${f#./.yuzora-save-}; case $r in *[!0-9a-f]*) ;; *) [ "${#r}" -eq 32 ] && continue;; esac;;
@@ -74,6 +80,7 @@ printf -- '-\0'
 if [ "$#" -gt 0 ]; then
   stat -c %s -- "$@" 2>/dev/null || stat -f %z -- "$@" 2>/dev/null
 fi
+}
 exit 0"#;
 
 /// Exit 4 when `$1` does not exist; else prints `size mtime-seconds`. Not
@@ -1429,6 +1436,42 @@ mod tests {
             put(&d, f, body.as_bytes());
         }
         d
+    }
+
+    /// The listing script reads names one by one and stops at `max + 1`: with
+    /// a `find` that never ends it still finishes (a glob would have to
+    /// expand every name first).
+    #[cfg(unix)]
+    #[test]
+    fn list_script_stops_reading_at_the_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        put(&dir, "a", b"x");
+        let bin = tempfile::tempdir().unwrap();
+        let fake = bin.path().join("find");
+        std::fs::write(&fake, "#!/bin/sh\nexec yes ./a\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", LIST_SCRIPT, "sh"])
+            .arg(dir.path())
+            .arg("3")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let t = std::time::Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if t.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                panic!("never stopped reading");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(child.stdout.as_mut().unwrap(), &mut out).unwrap();
+        let listing = parse_listing(&out, 2);
+        assert!(listing.truncated);
+        assert_eq!(listing.entries.len(), 2);
     }
 
     #[test]

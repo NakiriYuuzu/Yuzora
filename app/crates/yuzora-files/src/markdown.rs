@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt as _;
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageFormat, ImageSource,
     IntoElement, ParentElement as _, Render, RenderImage, SharedString, SharedUri, StyleRefinement,
@@ -144,6 +145,24 @@ fn missing_image() -> ImageSource {
     ImageSource::from(PathBuf::new())
 }
 
+/// What the preview draws for `url`: the checked image, never the path (GPUI
+/// would read an SVG itself), and nothing while there is no answer.
+fn source_of(
+    images: &Mutex<ImageChecks>,
+    url: &str,
+    base: Option<&Path>,
+    remote: bool,
+) -> ImageSource {
+    let path = image_path(url, base).filter(|_| !remote);
+    let image = path.and_then(|path| {
+        images
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .answer(&path)
+    });
+    image.map_or_else(missing_image, |image| image.source())
+}
+
 /// What a look at an image file found.
 enum Found {
     /// The stamp of what is shown: not read again.
@@ -190,6 +209,39 @@ fn read_image(path: &Path, shown: Option<Stamp>, cancel: &Cancel) -> Found {
         Some(picture) => Found::Read { stamp, picture },
         None => Found::Nothing,
     }
+}
+
+/// Images read at once: as many as the SVG children that may run at once.
+const IMAGE_WORKERS: usize = crate::svg::CONCURRENT;
+
+/// Reads each of `wanted` with `read` on up to `workers` threads, handing
+/// every answer to `done` as it is ready. Returns when all are.
+fn read_images<R, D>(
+    wanted: Vec<(PathBuf, Option<Stamp>)>,
+    cancel: &Cancel,
+    workers: usize,
+    read: R,
+    done: D,
+) where
+    R: Fn(&Path, Option<Stamp>, &Cancel) -> Found + Sync,
+    D: Fn(PathBuf, Found) + Sync,
+{
+    let queue = Mutex::new(std::collections::VecDeque::from(wanted));
+    let next = || queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+    std::thread::scope(|scope| {
+        for _ in 0..workers.max(1).min(queue_len(&queue)) {
+            scope.spawn(|| {
+                while let Some((path, shown)) = next() {
+                    let found = read(&path, shown, cancel);
+                    done(path, found);
+                }
+            });
+        }
+    });
+}
+
+fn queue_len<T>(queue: &Mutex<std::collections::VecDeque<T>>) -> usize {
+    queue.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 /// A path's answer is looked at again after this long.
@@ -395,21 +447,28 @@ impl MarkdownView {
                     }
                     (checks.take_wanted(), checks.cancel.clone())
                 };
-                let answers = docs::blocking(move || {
-                    wanted
-                        .into_iter()
-                        .map(|(path, shown)| {
-                            let found = read_image(&path, shown, &cancel);
-                            (path, found)
-                        })
-                        .collect()
-                })
-                .await
-                .unwrap_or_default();
-                changed |= images
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .record(answers);
+                // Answers come as each image is done, and a few are read at
+                // once (an SVG a child draws is held to its own limits), so
+                // one that times out does not hold the others back.
+                let (tx, mut rx) = futures::channel::mpsc::unbounded();
+                let work = docs::blocking(move || {
+                    read_images(wanted, &cancel, IMAGE_WORKERS, read_image, |path, found| {
+                        let _ = tx.unbounded_send((path, found));
+                    });
+                });
+                let record = async {
+                    while let Some(answer) = rx.next().await {
+                        let now = images
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .record(vec![answer]);
+                        changed |= now;
+                        if now {
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                        }
+                    }
+                };
+                futures::future::join(work, record).await;
             }
             let _ = this.update(cx, |_, cx| {
                 drop_released(&images, cx);
@@ -568,14 +627,7 @@ impl Render for MarkdownView {
                 .style(self.style(cx))
                 .shared_code_block_highlighter(self.highlighter.clone())
                 .image_source(move |uri: &SharedUri| {
-                    let path = image_path(uri.as_ref(), base.as_deref()).filter(|_| !remote);
-                    let image = path.and_then(|path| {
-                        images
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .answer(&path)
-                    });
-                    image.map_or_else(missing_image, |image| image.source())
+                    source_of(&images, uri.as_ref(), base.as_deref(), remote)
                 })
                 .on_link_click(|url, _, _, cx| {
                     if opens_outside(url) {
@@ -656,6 +708,66 @@ mod tests {
             Some(Picture::Bytes(image)) => image,
             _ => panic!("no bytes shown"),
         }
+    }
+
+    #[test]
+    fn images_are_read_a_few_at_once_and_answered_as_each_is_done() {
+        let wanted: Vec<_> = (0..4)
+            .map(|i| (PathBuf::from(format!("/x/{i}.svg")), None))
+            .collect();
+        let answers = Mutex::new(Vec::new());
+        let started = Instant::now();
+        read_images(
+            wanted,
+            &Cancel::default(),
+            2,
+            |path, _, _| {
+                // The first one is the slow one.
+                if path.ends_with("0.svg") {
+                    std::thread::sleep(Duration::from_millis(500));
+                } else {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Found::Nothing
+            },
+            |path, _| answers.lock().unwrap().push((path, started.elapsed())),
+        );
+        let answers = answers.into_inner().unwrap();
+        assert_eq!(answers.len(), 4);
+        // One after another it would be 800 ms; two at a time, the three
+        // quick ones are all in by the time the slow one is.
+        assert!(
+            started.elapsed() < Duration::from_millis(700),
+            "{answers:?}"
+        );
+        let slow = answers.iter().position(|(p, _)| p.ends_with("0.svg"));
+        assert_eq!(slow, Some(3), "the slow one answered last: {answers:?}");
+    }
+
+    #[test]
+    fn the_preview_never_hands_a_path_to_gpui() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("a.svg");
+        std::fs::write(&svg, svg_with(RED_RECT)).unwrap();
+        let images = Mutex::new(ImageChecks::default());
+        let is_blank_path = |s: ImageSource| matches!(&s, ImageSource::Resource(gpui::Resource::Path(p)) if p.as_os_str().is_empty());
+        // No answer yet: nothing, not the .svg path.
+        let at = |images: &Mutex<ImageChecks>, remote| {
+            source_of(images, "a.svg", Some(dir.path()), remote)
+        };
+        assert!(is_blank_path(at(&images, false)));
+        // Answered: the drawn pixels.
+        let stamp = fsops::stamp_of(&std::fs::metadata(&svg).unwrap());
+        images.lock().unwrap().record(vec![(
+            svg.clone(),
+            Found::Read {
+                stamp,
+                picture: Picture::Drawn(drawn()),
+            },
+        )]);
+        assert!(matches!(at(&images, false), ImageSource::Render(_)));
+        // A remote document draws nothing from this machine's disk.
+        assert!(is_blank_path(at(&images, true)));
     }
 
     #[gpui::test]
