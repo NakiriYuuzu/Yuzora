@@ -5,8 +5,10 @@
 //!   pre-release part (`0.1.0`).
 //! - **beta**: those and pre-releases (`0.1.0-beta.3`).
 //!
-//! A beta build starts on beta, a stable build on stable; the `update`
-//! section of Yuzora's settings.json (`{"channel": "stable"}`) picks.
+//! A stable build starts on stable; the `update` section of Yuzora's
+//! settings.json (`{"channel": "beta"}`) can pick beta. A beta build always
+//! follows stable: betas are downloaded by hand, and `0.1.0` stable is
+//! what takes a beta install over.
 //! Only releases carrying a signed Yuzora manifest count: the Tauri app's
 //! releases (0.1.0-beta.1 and older) have none.
 
@@ -31,14 +33,15 @@ impl Channel {
         }
     }
 
-    /// Where a build of `version` starts: a pre-release on beta.
-    pub fn of_build(version: &str) -> Channel {
-        if version.contains('-') { Channel::Beta } else { Channel::Stable }
-    }
-
-    /// The channel `settings` (the `update` section) picks, else the build's.
+    /// The channel a build of `version` follows. A beta build (a version with
+    /// a pre-release part) only updates to stable releases, whatever the
+    /// `update` section of the settings says; a stable build follows the
+    /// section's `channel`, stable by default.
     pub fn chosen_from(settings: &Value, version: &str) -> Channel {
-        settings.get("channel").and_then(Value::as_str).and_then(Channel::parse).unwrap_or_else(|| Channel::of_build(version))
+        if version.contains('-') {
+            return Channel::Stable;
+        }
+        settings.get("channel").and_then(Value::as_str).and_then(Channel::parse).unwrap_or(Channel::Stable)
     }
 
     /// The channel this install follows now.
@@ -147,12 +150,13 @@ mod tests {
     }
 
     #[test]
-    fn builds_start_on_their_own_channel_and_settings_pick() {
-        assert_eq!(Channel::of_build("0.1.0-beta.2"), Channel::Beta);
-        assert_eq!(Channel::of_build("0.1.0"), Channel::Stable);
-        assert_eq!(Channel::chosen_from(&Value::Null, "0.1.0-beta.2"), Channel::Beta);
-        assert_eq!(Channel::chosen_from(&json!({"channel": "stable"}), "0.1.0-beta.2"), Channel::Stable);
+    fn stable_builds_follow_settings_and_beta_builds_only_stable() {
+        assert_eq!(Channel::chosen_from(&Value::Null, "0.1.0"), Channel::Stable);
         assert_eq!(Channel::chosen_from(&json!({"channel": "beta"}), "0.1.0"), Channel::Beta);
+        // A beta build takes nothing but stable releases, whatever settings say.
+        assert_eq!(Channel::chosen_from(&Value::Null, "0.1.0-beta.2"), Channel::Stable);
+        assert_eq!(Channel::chosen_from(&json!({"channel": "stable"}), "0.1.0-beta.2"), Channel::Stable);
+        assert_eq!(Channel::chosen_from(&json!({"channel": "beta"}), "0.1.0-beta.2"), Channel::Stable);
         assert_eq!(Channel::chosen_from(&json!({"channel": "nightly"}), "0.1.0"), Channel::Stable);
     }
 
@@ -171,6 +175,17 @@ mod tests {
         let with_stable = vec![release("v0.1.0-beta.3", true, false, true), release("v0.1.0", false, false, true)];
         assert_eq!(pick_from(with_stable.clone(), Channel::Beta, "0.1.0-beta.2").as_deref(), Some("0.1.0"));
         assert_eq!(pick_from(with_stable, Channel::Stable, "0.1.0-beta.2").as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn a_beta_build_set_to_beta_sees_0_1_0_but_no_newer_beta() {
+        let settings = json!({"channel": "beta"});
+        let channel = Channel::chosen_from(&settings, "0.1.0-beta.2");
+        let betas = vec![release("v0.1.0-beta.3", true, false, true), release("v0.1.0-beta.4", true, false, true)];
+        assert_eq!(pick_from(betas.clone(), channel, "0.1.0-beta.2"), None);
+        let mut with_stable = betas;
+        with_stable.push(release("v0.1.0", false, false, true));
+        assert_eq!(pick_from(with_stable, channel, "0.1.0-beta.2").as_deref(), Some("0.1.0"));
     }
 
     #[test]

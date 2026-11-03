@@ -62,6 +62,12 @@ pub fn keeps(version: &str) -> bool {
     keeps_on(Channel::chosen(), version)
 }
 
+/// [`keeps`] for the channel a build of `running` follows given `settings`.
+#[cfg(test)]
+fn keeps_for(settings: &serde_json::Value, running: &str, version: &str) -> bool {
+    keeps_on(Channel::chosen_from(settings, running), version)
+}
+
 fn keeps_on(channel: Channel, version: &str) -> bool {
     channel.takes(version, false)
 }
@@ -335,5 +341,16 @@ mod tests {
         assert!(keeps_on(Channel::Beta, "0.2.0"));
         assert!(keeps_on(Channel::Stable, "0.2.0"));
         assert!(!keeps_on(Channel::Stable, "0.2.0-beta.1"));
+    }
+
+    #[test]
+    fn a_beta_build_drops_a_staged_beta_but_keeps_stable() {
+        let beta = serde_json::json!({"channel": "beta"});
+        for settings in [serde_json::Value::Null, beta.clone()] {
+            assert!(!keeps_for(&settings, "0.1.0-beta.2", "0.1.0-beta.3"), "{settings}");
+            assert!(keeps_for(&settings, "0.1.0-beta.2", "0.1.0"), "{settings}");
+        }
+        // A stable build set to beta keeps a staged beta, as before.
+        assert!(keeps_for(&beta, "0.1.0", "0.2.0-beta.1"));
     }
 }

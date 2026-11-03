@@ -206,9 +206,9 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 四個平台上檢查。
 
 - **更新。** 安裝好的 Yuzora 每小時檢查一次本 repo 的 GitHub Releases，把新版下載到自己旁邊，重新啟動時換上。更新
-  清單必須以 release 金鑰簽章，每個檔案也必須符合它的 SHA-256，否則什麼都不會安裝。beta build 走 beta 通道
-  （Pre-release 與正式版都收），正式 build 走 stable 通道；要改通道，在 `~/.config/yuzora/yuzora/settings.json` 寫
-  `"update": {"channel": "stable"}`。
+  清單必須以 release 金鑰簽章，每個檔案也必須符合它的 SHA-256，否則什麼都不會安裝。beta build 只會更新到正式版
+  （0.1.0 以後），不會更新到其他 beta，beta 請手動下載；正式 build 走 stable 通道，要連 Pre-release 一起收，在
+  `~/.config/yuzora/yuzora/settings.json` 寫 `"update": {"channel": "beta"}`。
 - **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 beta.2（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供
   beta.2，要等 0.1.0 Stable 才能在舊版 App 裡更新到新版。beta.1 的資料留在原處；連線與設定的搬移還沒接上，目前要重新設定。Windows 的安裝程式
   會詢問是否移除舊的全機安裝。

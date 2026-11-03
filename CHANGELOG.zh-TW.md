@@ -21,7 +21,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 - MOD 管理：列出內建、已修改、複製與個人的 mods 與 layouts 及其錯誤；可複製、檢查、切換或還原 layout，並在顯示信任警告後從資料夾安裝。Yuzora 自己的介面就是 mods，可以複製後修改。
 - 深色與淺色主題（yuzora-dark、yuzora-light），預設跟隨系統；介面支援英文與繁體中文。
 - 與官方 Herdr 共用 herdr-core：版本不符的畫面改用 Yuzora 的名稱並說明 core 是共用的；core 重新啟動後若變成 Yuzora 不能用的版本，Yuzora 不會接上，並一直顯示原因，恢復後自動重新連線。
-- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，重新啟動時套用。beta 版預設走 beta 通道。
+- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，重新啟動時套用。beta 版只會更新到正式版（0.1.0 以後），不會更新到其他 beta。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issue。
 - 命令列程式叫 `yuzora`，不會蓋掉官方 Herdr 的 `herdr-app`。
 

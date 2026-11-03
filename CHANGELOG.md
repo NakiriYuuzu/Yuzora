@@ -21,7 +21,7 @@ Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herd
 - Mods management: lists shipped, edited, cloned and personal mods and layouts with their errors. You can clone, check, switch or reset a layout, and install from a folder after a trust warning is shown. Yuzora's own interface is made of mods, so you can clone and change it.
 - Dark and light themes (yuzora-dark, yuzora-light), following the system by default. The interface is available in English and Traditional Chinese.
 - Sharing herdr-core with the official Herdr: the version-mismatch screen uses Yuzora's name and explains that the core is shared. If herdr-core restarts as a version Yuzora can't use, Yuzora does not connect to it and keeps the reason on screen. It reconnects automatically once the core is fixed.
-- Updates now come from this repo's GitHub Releases: Yuzora checks every hour, downloads only after verifying the update manifest's signature and each file's SHA-256, and applies the update on restart. Beta builds use the beta channel by default.
+- Updates now come from this repo's GitHub Releases: Yuzora checks every hour, downloads only after verifying the update manifest's signature and each file's SHA-256, and applies the update on restart. A beta build only updates to a stable release (0.1.0 and later), never to another beta.
 - No usage data is sent anymore. Feedback opens a GitHub issue.
 - The command-line program is called `yuzora` and doesn't overwrite the official Herdr's `herdr-app`.
 

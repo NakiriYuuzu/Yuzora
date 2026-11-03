@@ -121,7 +121,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 
 - 打包：`app/scripts/yuzora/package [<triple>]` 輸出到 `app/dist/`；`YUZORA_PACKAGE_BIN=<binary>` 可跳過 release build，只檢查打包。macOS 只做 aarch64、ad-hoc 簽章、`Yuzora-macos-aarch64.dmg`（`scripts/yuzora/mac-dmg`）；Windows 是 per-user NSIS（`app/distribution/yuzora/windows/yuzora.nsi`）；Linux 是 tar.gz 加 `install`。
 - 名稱：Cargo 的 binary 維持 `herdr-app`，打包後叫 `Yuzora`／`yuzora`，CLI 是 `yuzora`。不要在任何地方安裝名為 `herdr-app` 的東西。
-- 更新：`app/src/yuzora/release/`（通道、manifest 簽章驗證、CLI 連結）。上游 `app/src/update.rs`、`app/src/main.rs` 只有標了 `// yuzora(L7):` 的接點，其餘照上游。
+- 更新：`app/src/yuzora/release/`（通道、manifest 簽章驗證、CLI 連結）。beta build（版本帶 `-`）只自動更新到 Stable，不管 `update.channel`（`docs/beta2/release.md` §3）。上游 `app/src/update.rs`、`app/src/main.rs` 只有標了 `// yuzora(L7):` 的接點，其餘照上游。
 - manifest：`bun app/scripts/yuzora/manifest.ts yuzora|tauri <dist>`；測試在 `app/` 下 `bun test scripts/yuzora/`。
 - **私鑰永遠不進 repo；PR 與打包 workflow 不讀任何 signing secret**。簽章只在發布步驟。不新增、不放寬任何安全例外。
 - `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release，不改 `release.yml`。

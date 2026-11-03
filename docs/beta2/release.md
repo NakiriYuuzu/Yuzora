@@ -84,7 +84,7 @@
   └─ 設定畫面顯示「重新啟動」；重啟或下次結束時交換（上游 swap/apply）
 ```
 
-- **通道**：`stable` 只收非 pre-release、版本不帶 `-` 的 release；`beta` 兩者都收。beta build 預設 beta、stable build 預設 stable；Yuzora `settings.json` 的 `update` section（`{"channel": "stable" | "beta"}`）可以改。這個 section 屬 L7；設定 UI 由 L6 接（見 §10）。改成 stable 時，已經下載好、等著重啟套用的 beta 會在下一次檢查、結束或啟動時丟掉，不會套用（`staged_version` 的 L7 接點）。
+- **通道**：`stable` 只收非 pre-release、版本不帶 `-` 的 release；`beta` 兩者都收。**beta build（版本帶 `-`）一律走 stable，不管設定寫什麼**：beta 之間不自動更新（2026-11-04 使用者決定，一律手動下載），0.1.0 Stable 發布後，裝著 beta 的人會自動升上去。stable build 預設 stable，Yuzora `settings.json` 的 `update` section（`{"channel": "stable" | "beta"}`）可以改成 beta。這個 section 屬 L7；設定 UI 由 L6 接（見 §10）。已經下載好、等著重啟套用的版本若不在目前通道內（beta build 上的 beta、或 stable build 改成 stable 後的 beta），會在下一次檢查、結束或啟動時丟掉，不會套用（`staged_version` 的 L7 接點，`update::keeps`）。
 - **只有安裝好的 release build 會檢查**（`HERDR_APP_RELEASE`＋安裝形狀：macOS 是 `.app`；其他平台是有 `yuzora.package` 的資料夾，而且資料夾裡只有這份清單列出的東西，避免把解壓到使用者資料夾上的封包當成安裝、更新時整個資料夾被換掉）。從原始碼建置的不會連網。
 - **版本比較**：上游 `newer()` 把 pre-release 當字串比，`beta.10` 會排在 `beta.9` 前面。已修正為 semver 規則（`release::prerelease_cmp`，`update.rs` 一行改動）。
 - **錯誤處理**：任何一步失敗都只記 log、30 分鐘後重試（上游 RETRY）；GitHub API 403（每小時 60 次的未驗證上限）也是。一個 IP 後面很多台 app 時可能偶爾撞到上限，之後再評估改走 `releases/latest/download`。
@@ -159,7 +159,7 @@
 
 ## 5. beta.1 → beta.2 升級
 
-### 結論：可以用 Tauri updater 直接帶過來（macOS 與 Windows）
+### 結論：技術上可以用 Tauri updater 直接帶過來（macOS 與 Windows）；但 beta.2 不附 `latest.json`（見本節末與 §3）
 
 依 beta.1 的程式（`src-tauri/src/update_channel.rs`）與 tauri-plugin-updater 2.14.1 原始碼：
 
@@ -188,7 +188,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 ### 不可行時的退路
 
-若決定不讓 Tauri updater 帶過來：beta.2 release **不要附 `latest.json`**，beta.1 就不會看到它（也不會報錯）；release notes 與 README 提示手動下載 DMG／NSIS 安裝程式。
+**既定決定（2026-11-03，使用者）**：beta.2 release **不附 `latest.json`**，beta.1 就不會看到它（也不會報錯）；release notes 與 README 提示手動下載 DMG／NSIS 安裝程式。新 App 自己的更新也一樣只收 Stable（§3，2026-11-04）。
 
 ## 6. 發布流程（未實作，需使用者授權）
 
@@ -206,7 +206,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
    | `changelog.md`、`changelog.zh-TW.md` | ✓ | ✓ |
    | `Yuzora_<version>_aarch64.dmg`、`Yuzora_<version>_x64-setup.exe`（版本化） | ✓ | ✓ |
    | `Yuzora-macos-aarch64.dmg`、`Yuzora-windows-x64-setup.exe`（固定別名） | ✗ | ✓ |
-   | `latest.json`＋兩個 `.sig`（帶 beta.1） | 選擇性 | 不要（stable 的 `latest.json` 會被 0.0.19 的 stable 通道讀到） |
+   | `latest.json`＋兩個 `.sig`（帶 beta.1） | ✗（不附，既定決定） | 不要（stable 的 `latest.json` 會被 0.0.19 的 stable 通道讀到） |
 
 5. 驗證 asset 清單完整（缺任一平台或簽章就不發布）、`yuzora-update.json.sig` 能用 `TRUSTED_KEYS` 驗過，再 publish。
 
