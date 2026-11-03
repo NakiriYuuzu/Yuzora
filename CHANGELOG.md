@@ -21,7 +21,7 @@ Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herd
 - Mods management: lists shipped, edited, cloned and personal mods and layouts with their errors. You can clone, check, switch or reset a layout, and install from a folder after a trust warning is shown. Yuzora's own interface is made of mods, so you can clone and change it.
 - Dark and light themes (yuzora-dark, yuzora-light), following the system by default. The interface is available in English and Traditional Chinese.
 - Sharing herdr-core with the official Herdr: the version-mismatch screen uses Yuzora's name and explains that the core is shared. If herdr-core restarts as a version Yuzora can't use, Yuzora does not connect to it and keeps the reason on screen. It reconnects automatically once the core is fixed.
-- Updates now come from this repo's GitHub Releases: Yuzora checks every hour, downloads only after verifying the update manifest's signature and each file's SHA-256, and applies the update on restart. Beta builds use the beta channel by default.
+- Updates now come from this repo's GitHub Releases: Yuzora checks every hour, downloads only after verifying the update manifest's signature and each file's SHA-256, and applies the update on restart. A beta build only updates to a stable release (0.1.0 and later), never to another beta.
 - No usage data is sent anymore. Feedback opens a GitHub issue.
 - The command-line program is called `yuzora` and doesn't overwrite the official Herdr's `herdr-app`.
 
@@ -34,7 +34,7 @@ Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herd
 - beta.1 data isn't moved over automatically: database connections, SSH hosts and settings need to be set up again. beta.1's files are left untouched, so you can still go back to beta.1.
 - Git: the mode bar's Git change count and the status bar's Git summary start updating only after you open Git mode once. Repos on remote machines have no file watching, so changes made outside Yuzora show up after about 25 seconds. Trusting a folder only covers the Git that Yuzora runs itself; what runs in a terminal, agents included, isn't affected.
 - Databases can't connect through an SSH tunnel yet. Files on remote machines can only be browsed and opened read-only in this version.
-- The update channel can currently only be changed through `update.channel` in `~/.config/yuzora/yuzora/settings.json`. The Settings page has no option for it yet.
+- A beta version has no update channel setting: it only updates to a stable release. (A stable version can take pre-releases too through `update.channel` in `~/.config/yuzora/yuzora/settings.json`; the Settings page has no option for it yet.)
 - When the app home already has a layout (for example, if you used a development build), new interface elements (such as the resource usage in the bottom-right corner) aren't added automatically. Reset the layout for them to appear.
 - When used together with Herdr, closing an adopted Space, tab or pane in either app ends its terminal in herdr-core, so it closes in the other app too. While either app is open, the core restarts within one second after `hc server stop`.
 - Windows remote templates, trash and SSH agent, and the behavior of sharing the core with Herdr on Windows and Linux, have only passed CI builds and tests. They haven't been verified on real machines.

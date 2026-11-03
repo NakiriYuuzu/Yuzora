@@ -121,13 +121,13 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 
 - 打包：`app/scripts/yuzora/package [<triple>]` 輸出到 `app/dist/`；`YUZORA_PACKAGE_BIN=<binary>` 可跳過 release build，只檢查打包。macOS 只做 aarch64、ad-hoc 簽章、`Yuzora-macos-aarch64.dmg`（`scripts/yuzora/mac-dmg`）；Windows 是 per-user NSIS（`app/distribution/yuzora/windows/yuzora.nsi`）；Linux 是 tar.gz 加 `install`。
 - 名稱：Cargo 的 binary 維持 `herdr-app`，打包後叫 `Yuzora`／`yuzora`，CLI 是 `yuzora`。不要在任何地方安裝名為 `herdr-app` 的東西。
-- 更新：`app/src/yuzora/release/`（通道、manifest 簽章驗證、CLI 連結）。上游 `app/src/update.rs`、`app/src/main.rs` 只有標了 `// yuzora(L7):` 的接點，其餘照上游。
+- 更新：`app/src/yuzora/release/`（通道、manifest 簽章驗證、CLI 連結）。beta build（版本帶 `-`）只自動更新到 Stable，不管 `update.channel`（`docs/beta2/release.md` §3）。上游 `app/src/update.rs`、`app/src/main.rs` 只有標了 `// yuzora(L7):` 的接點，其餘照上游。
 - manifest：`bun app/scripts/yuzora/manifest.ts yuzora|tauri <dist>`；測試在 `app/` 下 `bun test scripts/yuzora/`。
 - **私鑰永遠不進 repo；PR 與打包 workflow 不讀任何 signing secret**。簽章只在發布步驟。不新增、不放寬任何安全例外。
 - `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release，不改 `release.yml`。
 - 本機測完整更新流程：debug build 加 `YUZORA_UPDATE_URL=<仿 GitHub 路徑的測試伺服器>` 與 `YUZORA_UPDATE_TEST_KEY=<一次性公鑰>`（測試金鑰只有 debug build 會讀；`YUZORA_UPDATE_URL` 任何 build 都會讀，但簽章一樣只認信任的金鑰），一律在 lanes.md 的隔離環境下跑。
 - beta.1 資料遷移：`yuzora_core::migrate`。beta.1 的資料只讀不寫；各 lane 實作自己的 `Importer`。
-- App 內的更新說明有兩份：`app/CHANGELOG.md`（英文）與 `app/CHANGELOG.zh-TW.md`（繁中，只放 Yuzora 的段落）。每筆條目兩份都要加，版本、標題與項目數要一致，測試會檢查。
+- App 內的更新說明有兩份：`app/CHANGELOG.md`（英文）與 `app/CHANGELOG.zh-TW.md`（繁中，只放 Yuzora 的段落）。每筆條目兩份都要加。測試只檢查三項：第一段是目前版本（兩份都是）、中文有的版本英文也要有、同一版本兩份的日期與 spotlight 一致且各標題下的項目數相同；條目文字是否對應要自己核對（`docs/beta2/release.md` §3）。
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->
