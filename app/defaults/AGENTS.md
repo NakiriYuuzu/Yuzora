@@ -1059,6 +1059,24 @@ with these differences.
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
+### Git (`yuzora:git`)
+
+- The sidebar's Git mode is `yuzora-sidebar-git`. Tool panes: `yuzora-git-log`
+  (props `{cwd, on, filter?, compare?}`; `filter: {paths: [p], follow: true}`
+  is a file's history), `yuzora-git-diff` (`{cwd, on, path, mode: "unstaged" |
+  "staged" | "commit" | "compare", rev?, to?}`), `yuzora-git-merge`,
+  `yuzora-git-rebase` (`{cwd, on, base}`), `yuzora-git-blame` (`{cwd, on,
+  path, rev?}`), `yuzora-git-repo` (`{cwd, on}`). Open one with
+  `herdr-app do tab.new --name Log --mod yuzora-git-log --props '{"cwd": "/path/to/repo"}'`.
+- In a mod, `open(cwd, on)` from `yuzora:git` gives the repository (`id`,
+  `root`, `machine`); every other function takes that `id`. `changed(id, since)`
+  resolves when the repository changed. Git runs in the app (never on the UI
+  thread), with locks for writes and a timeout; don't run `git` with `exec`
+  for things `yuzora:git` does.
+- Git settings are the `git` section of `yuzora/settings.json` (`settings()` /
+  `setSettings({...})` in `yuzora:git`): e.g. `logRecentCount`,
+  `forceWithLease`, `protectedBranches` (a regex), `updateMethod`,
+  `swapSidesInRebase`.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
