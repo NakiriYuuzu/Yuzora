@@ -6,7 +6,7 @@
 //! and passes it back; the Rust side keeps the rest.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -377,12 +377,34 @@ pub fn exists(place: &Place, path: &str) -> bool {
     }
 }
 
-/// Writes a file; a symlink in the way is replaced, never written through.
+/// The shell check of [`no_link_above`]: `$1` the path, `$2` the root.
+const NO_LINK_ABOVE: &str = r#"case $1 in "$2"/*) p=$(dirname -- "$1"); while [ "$p" != "$2" ]; do if [ -L "$p" ]; then echo "$p is a symbolic link: not followed" >&2; exit 3; fi; p=$(dirname -- "$p"); done;; esac; "#;
+
+/// Refuses a path in the work tree below a symlinked folder: git doesn't
+/// go through those (`beyond a symbolic link`), and a write or a removal
+/// there would land outside the repo.
+fn no_link_above(place: &Place, path: &str) -> GitResult<()> {
+    let Ok(rel) = Path::new(path).strip_prefix(&place.root) else { return Ok(()) };
+    let mut at = PathBuf::from(&place.root);
+    let parts: Vec<_> = rel.components().collect();
+    for part in parts.iter().take(parts.len().saturating_sub(1)) {
+        at.push(part);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(GitError::Other(format!("{} is a symbolic link: not followed", at.display())));
+        }
+    }
+    Ok(())
+}
+
+/// Writes a file; a symlink in the way is replaced, never written through,
+/// and one above it in the work tree refuses the write.
 pub fn write_file(place: &Place, path: &str, bytes: &[u8]) -> GitResult<()> {
     if place.is_remote() {
-        let out = remote_sh(place, r#"if [ -L "$1" ]; then rm -f -- "$1"; fi; mkdir -p "$(dirname -- "$1")" && cat > "$1""#, &[path], Some(bytes.to_vec()))?;
+        let script = format!(r#"{NO_LINK_ABOVE}if [ -L "$1" ]; then rm -f -- "$1"; fi; mkdir -p "$(dirname -- "$1")" && cat > "$1""#);
+        let out = remote_sh(place, &script, &[path, &place.root], Some(bytes.to_vec()))?;
         out.into_result().map(|_| ())
     } else {
+        no_link_above(place, path)?;
         if let Some(dir) = Path::new(path).parent() {
             std::fs::create_dir_all(dir).map_err(GitError::other)?;
         }
@@ -395,8 +417,9 @@ pub fn write_file(place: &Place, path: &str, bytes: &[u8]) -> GitResult<()> {
 
 pub fn remove_path(place: &Place, path: &str) -> GitResult<()> {
     if place.is_remote() {
-        remote_sh(place, r#"rm -rf -- "$1""#, &[path], None)?.into_result().map(|_| ())
+        remote_sh(place, &format!(r#"{NO_LINK_ABOVE}rm -rf -- "$1""#), &[path, &place.root], None)?.into_result().map(|_| ())
     } else {
+        no_link_above(place, path)?;
         let p = Path::new(path);
         let r = if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
         match r {
@@ -629,6 +652,30 @@ pub(crate) mod tests {
         let not = tempfile::tempdir().unwrap();
         let Err(err) = open(&not.path().to_string_lossy(), None) else { panic!("opened a folder outside git") };
         assert!(err.to_string().contains("not a git repository"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_never_go_through_a_linked_folder() {
+        let s = testing::scratch();
+        s.commit("dir/f.txt", "1\n", "first");
+        // `dir` swapped for a link to a folder outside the repo.
+        let out = tempfile::tempdir().unwrap();
+        std::fs::create_dir(out.path().join("sub")).unwrap();
+        std::fs::write(out.path().join("f.txt"), "outside\n").unwrap();
+        std::fs::write(out.path().join("sub/g.txt"), "outside\n").unwrap();
+        std::fs::remove_dir_all(format!("{}/dir", s.root())).unwrap();
+        std::os::unix::fs::symlink(out.path(), format!("{}/dir", s.root())).unwrap();
+        let remote = testing::on_machine(&s);
+        for r in [&s.repo, &remote] {
+            assert!(r.write_file(&r.abs("dir/f.txt"), b"x\n").is_err(), "wrote through the link");
+            assert!(r.write_file(&r.abs("dir/sub/g.txt"), b"x\n").is_err(), "wrote through the link above");
+            assert!(remove_path(&r.place, &r.abs("dir/sub/g.txt")).is_err(), "removed through the link");
+            // Elsewhere writes go on as before.
+            r.write_file(&r.abs("new/h.txt"), b"h\n").unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(out.path().join("f.txt")).unwrap(), "outside\n");
+        assert_eq!(std::fs::read_to_string(out.path().join("sub/g.txt")).unwrap(), "outside\n");
     }
 
     #[test]

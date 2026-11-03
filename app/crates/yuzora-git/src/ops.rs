@@ -826,7 +826,8 @@ pub fn tag_create(repo: &Repo, name: &str, rev: Option<&str>, message: Option<&s
     if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
         cmd = cmd.args(["-a", "-m", m]);
     }
-    cmd = cmd.arg(name);
+    // After `--`, a name like `-d` is a name (git refuses it), never an option.
+    cmd = cmd.args(["--", name]);
     if let Some(r) = rev.filter(|r| !r.is_empty()) {
         cmd = cmd.arg(r);
     }
@@ -858,11 +859,25 @@ pub fn tag_push(repo: &Repo, remote: &str, name: Option<&str>, cancel: Option<Ca
 
 /// A patch: commits (`format-patch`), or the staged / unstaged changes of some paths.
 pub fn patch_create(repo: &Repo, o: &Value) -> GitResult<String> {
+    patch_within(repo, o, crate::exec::DEFAULT_MAX_OUTPUT)
+}
+
+fn patch_within(repo: &Repo, o: &Value, cap: usize) -> GitResult<String> {
+    // Past `cap` git's output is cut short: refuse rather than hand back part
+    // of a patch as if it were all of it.
+    let mut text = String::new();
+    let mut add = |cmd: Git| -> GitResult<()> {
+        let out = repo.run(cmd.max_output(cap + 1))?.into_result()?;
+        if text.len() + out.len() > cap {
+            return Err(GitError::Other(format!("the patch is larger than {} MiB", cap >> 20)));
+        }
+        text.push_str(&String::from_utf8_lossy(&out));
+        Ok(())
+    };
     if let Some(hashes) = o.get("hashes").and_then(Value::as_array).filter(|a| !a.is_empty()) {
         let hs: Vec<String> = hashes.iter().filter_map(Value::as_str).map(str::to_owned).collect();
-        let mut text = String::new();
         for h in oldest_first(repo, &hs)? {
-            text.push_str(&repo.text(Git::read(["format-patch", "--stdout", "--binary", "-1", &h]))?);
+            add(Git::read(["format-patch", "--stdout", "--binary", "-1", &h]))?;
         }
         return Ok(text);
     }
@@ -872,15 +887,15 @@ pub fn patch_create(repo: &Repo, o: &Value) -> GitResult<String> {
         cmd = cmd.arg("--cached");
     }
     if paths.is_empty() {
-        return repo.text(cmd);
+        add(cmd)?;
+        return Ok(text);
     }
     // diff takes no --pathspec-from-file: a long selection goes in runs
     // (in git's order), never as the whole repo.
     paths.sort();
     paths.dedup();
-    let mut text = String::new();
     for run in crate::exec::pathspec_runs(&paths) {
-        text.push_str(&repo.text(cmd.clone().arg("--").args(run.iter().cloned()))?);
+        add(cmd.clone().arg("--").args(run.iter().cloned()))?;
     }
     Ok(text)
 }
@@ -1230,6 +1245,32 @@ mod tests {
         let h = b["lines"][0]["hash"].as_str().unwrap();
         assert_eq!(b["commits"][h]["summary"], "ours");
         assert_eq!(b["commits"][h]["author"], "Yuzora Test");
+    }
+
+    #[test]
+    fn a_tag_name_like_an_option_is_never_one() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        s.git(&["tag", "release"]);
+        // `git tag -d release` would delete it.
+        assert!(tag_create(&s.repo, "-d", Some("release"), None).is_err());
+        assert!(tag_create(&s.repo, "--delete", Some("release"), Some("note")).is_err());
+        assert_eq!(s.git(&["tag", "-l"]), "release\n");
+        tag_create(&s.repo, "v1", Some("release"), Some("note")).unwrap();
+        assert_eq!(s.git(&["tag", "-l"]), "release\nv1\n");
+    }
+
+    #[test]
+    fn a_patch_past_the_cap_is_refused_not_cut() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        let h = s.commit("a.txt", &"x\n".repeat(200), "two");
+        s.write("a.txt", &"y\n".repeat(200));
+        for o in [json!({ "paths": ["a.txt"] }), json!({}), json!({ "hashes": [h.trim()] })] {
+            let e = patch_within(&s.repo, &o, 300).unwrap_err();
+            assert!(e.to_string().contains("larger than"), "{o}: {e}");
+        }
+        assert!(patch_within(&s.repo, &json!({ "paths": ["a.txt"] }), 1 << 20).is_ok());
     }
 
     #[test]
