@@ -20,15 +20,19 @@ export const rel = (root, path) => {
   return path.startsWith(prefix) ? path.slice(prefix.length) : null;
 };
 /**
- * The sidebar's heading for `root`: `name` (the folder's own name) over `dir`
- * (the folder it is in, "~" for the home folder), and `branch` (null for
- * none). `home` is this machine's home: give null for another machine's path.
- * The home folder itself is "~"; a root ("/", "C:\") is its own name.
+ * The sidebar's heading for `root`: `dir`, the folder it is in ending in its
+ * separator ("~/" and so on for the home folder), then `name`, the folder's
+ * own; `branch` is null for none. `home` is this machine's home: give null
+ * for another machine's path. The home folder itself is "~" and a root ("/",
+ * "C:\") its own name, with no `dir`.
  */
 export const heading = (root, home, branch) => {
   const under = p => home && (p === home || p.startsWith(home + "/") || (windows(home) && p.startsWith(home + "\\")));
   const tilde = p => (under(p) ? "~" + p.slice(home.length) : p);
   const dir = parent(root);
   const name = home && root === home ? "~" : !dir || dir === root ? root : base(root);
-  return { name, dir: name === root || name === "~" ? "" : tilde(dir), branch: branch || null };
+  if (name === root || name === "~") return { name, dir: "", branch: branch || null };
+  const above = tilde(dir);
+  const sep = /[\\/]$/.test(above) ? "" : windows(root) && !root.includes("/") ? "\\" : "/";
+  return { name, dir: above + sep, branch: branch || null };
 };

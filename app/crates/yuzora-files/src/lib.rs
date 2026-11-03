@@ -690,43 +690,49 @@ mod tests {
     fn sidebar_heading_splits_the_folder_name_from_where_it_is() {
         let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/paths.js")
             .replace("export const", "const");
-        // (root, this machine's home, branch) → (name, dir, branch).
+        // (root, this machine's home, branch) → (name, dir ending in its separator, branch).
         let cases = [
             (
                 ("/Users/me/App/yuzora", Some("/Users/me"), Some("main")),
-                ("yuzora", "~/App", Some("main")),
+                ("yuzora", "~/App/", Some("main")),
             ),
             (
                 ("/Users/me/proj", Some("/Users/me"), Some("feat/x")),
-                ("proj", "~", Some("feat/x")),
+                ("proj", "~/", Some("feat/x")),
             ),
             (
                 ("/opt/src/tool", Some("/Users/me"), None),
-                ("tool", "/opt/src", None),
+                ("tool", "/opt/src/", None),
             ),
+            (("/srv", Some("/Users/me"), None), ("srv", "/", None)),
             // Not in a repo, or no branch name: no branch.
             (
                 ("/Users/me/notes", Some("/Users/me"), Some("")),
-                ("notes", "~", None),
+                ("notes", "~/", None),
             ),
             // The home folder itself, and a root, have nothing above them shown.
             (("/Users/me", Some("/Users/me"), None), ("~", "", None)),
             (("/", Some("/Users/me"), None), ("/", "", None)),
             (
                 ("/Users/meow/x", Some("/Users/me"), None),
-                ("x", "/Users/meow", None),
+                ("x", "/Users/meow/", None),
             ),
             // Another machine's path: never "~", whatever this machine's home is.
             (
                 ("/home/me/repo", None, Some("dev")),
-                ("repo", "/home/me", Some("dev")),
+                ("repo", "/home/me/", Some("dev")),
             ),
-            (("/home/me", None, None), ("me", "/home", None)),
+            (("/home/me", None, None), ("me", "/home/", None)),
             // Windows, with either slash.
             (
                 (r"C:\Users\me\src\app", Some(r"C:\Users\me"), None),
-                ("app", r"~\src", None),
+                ("app", r"~\src\", None),
             ),
+            (
+                (r"C:\app", Some(r"C:\Users\me"), None),
+                ("app", r"C:\", None),
+            ),
+            (("C:/work/app", None, None), ("app", "C:/work/", None)),
             (
                 (r"C:\Users\me", Some(r"C:\Users\me"), None),
                 ("~", "", None),
