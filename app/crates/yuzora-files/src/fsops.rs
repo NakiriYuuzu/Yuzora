@@ -435,9 +435,12 @@ pub fn read_text(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFil
 }
 
 /// A file here this process cannot write: no write bit, or opening it to
-/// write is refused (owner, ACL, a read-only mount).
+/// write is refused (owner, ACL, a read-only mount), or it is no longer a
+/// regular file.
 fn readonly_of(path: &Path, meta: &std::fs::Metadata) -> bool {
-    meta.permissions().readonly() || std::fs::OpenOptions::new().write(true).open(path).is_err()
+    let mut write = std::fs::OpenOptions::new();
+    write.write(true);
+    meta.permissions().readonly() || open_checked(write, path).is_err()
 }
 
 /// A file's permission bits here (on Windows, its read-only flag): cheap to
@@ -523,12 +526,18 @@ fn decode(bytes: Vec<u8>, stamp: Stamp, readonly: bool, max_bytes: u64) -> TextF
 /// and checked through the handle: a FIFO put in its place after a look at
 /// it would otherwise wait for a writer, and a device never end.
 pub(crate) fn open_regular(path: &Path) -> io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
+    let mut read = std::fs::OpenOptions::new();
+    read.read(true);
+    open_checked(read, path)
+}
+
+/// [`open_regular`] with any `options` (to write: a FIFO would wait for a
+/// reader).
+fn open_checked(mut options: std::fs::OpenOptions, path: &Path) -> io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        // A regular file reads the same either way.
+        // A regular file reads and writes the same either way.
         options.custom_flags(libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
@@ -1502,6 +1511,17 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("waited for a writer");
         assert_eq!(opened, Err("not a regular file".to_owned()));
+        // Nor to see whether it can be written (no reader waits on it).
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let meta = std::fs::metadata(&path).unwrap();
+            let _ = tx.send(readonly_of(&path, &meta));
+        });
+        let readonly = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waited for a reader");
+        assert!(readonly);
         let file = d.path().join("a.txt");
         std::fs::write(&file, "a\n").unwrap();
         let mut text = String::new();

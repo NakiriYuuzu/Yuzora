@@ -161,29 +161,32 @@ fn read_listing(out: &ExecOutput, hidden: bool, limit: usize) -> Result<FileList
     let mut list = parse_file_list(bytes, hidden, limit);
     list.truncated |= capped;
     // Even with nothing listed: find's 1 may be an unreadable folder first.
-    list.skipped = failed;
+    list.skipped |= failed;
     Ok(list)
 }
 
 /// What [`LIST_SCRIPT`] prints: the tool, then paths with `./` dropped,
 /// git's deleted files, `.git` and (unless `hidden`) dot-files left out;
-/// sorted, cut to `limit`.
+/// sorted, cut to `limit`. A path that isn't UTF-8 can't be opened by name:
+/// left out, and the list said to be [`FileList::skipped`].
 fn parse_file_list(out: &[u8], hidden: bool, limit: usize) -> FileList {
     let mut entries = out.split(|b| *b == 0);
     let tool = entries.next().unwrap_or_default();
     let listed: Vec<&[u8]> = entries.by_ref().take_while(|p| !p.is_empty()).collect();
     let gone: HashSet<&[u8]> = entries.filter(|p| !p.is_empty()).collect();
+    let mut skipped = false;
     let mut files: Vec<String> = listed
         .into_iter()
         .filter(|p| !gone.contains(p))
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .map(|p| {
-            p.strip_prefix("./")
-                .map_or_else(|| p.clone(), str::to_owned)
-        })
-        .filter(|p| {
+        .map(|p| (String::from_utf8_lossy(p), std::str::from_utf8(p).is_ok()))
+        .map(|(p, utf8)| (p.strip_prefix("./").unwrap_or(&p).to_owned(), utf8))
+        .filter(|(p, _)| {
             p.split('/')
                 .all(|part| part != ".git" && (hidden || !part.starts_with('.')))
+        })
+        .filter_map(|(p, utf8)| {
+            skipped |= !utf8;
+            utf8.then_some(p)
         })
         .collect();
     files.sort();
@@ -193,7 +196,7 @@ fn parse_file_list(out: &[u8], hidden: bool, limit: usize) -> FileList {
         files,
         truncated,
         unfiltered: tool == b"find",
-        skipped: false,
+        skipped,
     }
 }
 
@@ -1138,6 +1141,18 @@ mod tests {
         // find applies no ignore file.
         assert!(parse_file_list(b"find\0./a\0", false, 10).unfiltered);
         assert!(!parse_file_list(b"git\0a\0\0", false, 10).unfiltered);
+        // A name that isn't UTF-8 (another machine's): left out, and said so,
+        // through a run that otherwise went well.
+        let odd = parse_file_list(b"find\0./a.rs\0./b\xff.rs\0", false, 10);
+        assert_eq!((odd.files, odd.skipped), (vec!["a.rs".to_owned()], true));
+        let hidden = parse_file_list(b"find\0./.b\xff\0", false, 10);
+        assert_eq!((hidden.files.len(), hidden.skipped), (0, false));
+        let out = ExecOutput {
+            code: 0,
+            stdout: b"find\0./a.rs\0./b\xff.rs\0".to_vec(),
+            stderr: Vec::new(),
+        };
+        assert!(read_listing(&out, false, 10).unwrap().skipped);
     }
 
     /// Runs the remote list script with a PATH of the named tools only.
