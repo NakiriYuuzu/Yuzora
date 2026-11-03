@@ -1,4 +1,4 @@
-/* global getComputedStyle, URLSearchParams, document, window, localStorage, matchMedia, IntersectionObserver, requestAnimationFrame, performance, fetch, setInterval, navigator */
+/* global getComputedStyle, document, window, localStorage, matchMedia, IntersectionObserver, requestAnimationFrame, performance, fetch, setInterval, navigator */
 
 import { initDownloadExperience } from "./downloads.js";
 
@@ -271,30 +271,6 @@ if (finePointer && !reduceMotion) {
   });
 }
 
-/* ============ Video autoplay in view ============ */
-const videos = document.querySelectorAll("video[data-vstem]");
-function syncVideoPlayback() {
-  videos.forEach((video) => {
-    if (!reduceMotion && !document.hidden && video.dataset.inView === "true") {
-      video.play().catch(() => {});
-    } else {
-      video.pause();
-    }
-  });
-}
-if (reduceMotion) {
-  videos.forEach((video) => { video.controls = true; });
-} else {
-  const videoIO = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      entry.target.dataset.inView = String(entry.isIntersecting);
-    });
-    syncVideoPlayback();
-  }, { threshold: 0.35 });
-  videos.forEach((video) => videoIO.observe(video));
-}
-document.addEventListener("visibilitychange", syncVideoPlayback);
-
 /* ============ 平台偵測下載（downloads.js 契約） ============ */
 document.documentElement.classList.remove("no-js");
 void initDownloadExperience(navigator, document);
@@ -307,10 +283,6 @@ function updateBrandFavicon() {
   const paths = source.innerHTML.replace(/var\((--[\w-]+),\s*[^)]+\)/g, (_, token) => style.getPropertyValue(token).trim());
   document.querySelector('link[rel="icon"]').href = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">${paths}</svg>`)}`;
 }
-function updateDemoLinks() {
-  const params = new URLSearchParams({ lang: document.documentElement.lang === "en" ? "en" : "zh-TW", accent: document.documentElement.dataset.accent || "blue", theme: document.documentElement.dataset.theme || "light" });
-  document.querySelectorAll("[data-demo-link]").forEach(link => { link.href = `${currentLang === "en" ? "../" : ""}demo/?${params}`; });
-}
 function applyBrandAccent(name) {
   const colors = {lime:["#86b81f","134,184,31","#5f8c1e"],blue:["#2f6bff","47,107,255","#2456cc"],violet:["#7b5bff","123,91,255","#5d3fd3"],coral:["#ff6b54","255,107,84","#c0562f"],amber:["#e0a11f","224,161,31","#a8690f"]};
   const color = colors[name] || colors.blue;
@@ -321,7 +293,6 @@ function applyBrandAccent(name) {
   root.style.setProperty("--accent-ink",color[2]);
   document.querySelectorAll("[data-brand-accent]").forEach(button => button.setAttribute("aria-pressed",String(button.dataset.brandAccent === root.dataset.accent)));
   updateBrandFavicon();
-  updateDemoLinks();
 }
 let savedAccent = "blue";
 try { savedAccent = localStorage.getItem("yuzora-accent") || "blue"; } catch { /* private browsing */ }
@@ -330,12 +301,3 @@ document.querySelectorAll("[data-brand-accent]").forEach(button => button.addEve
   applyBrandAccent(button.dataset.brandAccent);
   try { localStorage.setItem("yuzora-accent", button.dataset.brandAccent); } catch { /* private browsing */ }
 }));
-document.getElementById("theme-toggle").addEventListener("click", updateDemoLinks);
-document.getElementById("demo-launch").addEventListener("click", () => {
-  const frame = document.createElement("iframe");
-  frame.src = document.querySelector("[data-demo-link]").href;
-  frame.title = "Yuzora interactive demo";
-  frame.className = "demo-frame";
-  document.getElementById("demo-frame-host").appendChild(frame);
-  document.getElementById("demo-launch").hidden = true;
-});

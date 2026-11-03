@@ -48,7 +48,7 @@ describe("frontend CI", () => {
     expect(fixtures).toBeGreaterThan(-1);
     expect(fixtures).toBeLessThan(tests.steps.length - 1);
     expect(tests.steps[fixtures].run?.trim().split("\n")).toEqual([
-      "bun run site:companions", "bun run site:seo", "bun run demo:build",
+      "bun run site:seo", "bun run demo:build",
     ]);
     const checks = jobs["frontend-checks"].steps.map((step) => step.run);
     expect(checks).toContain("bun run lint");
