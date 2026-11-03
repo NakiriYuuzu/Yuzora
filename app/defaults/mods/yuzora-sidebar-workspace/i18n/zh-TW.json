@@ -10,8 +10,8 @@
     "help": "HERDR 說明"
   },
   "menu": {
-    "new_space": "新增 Space",
-    "new_space_on": "在 {machine} 新增 Space",
+    "new_space": "新增 Space…",
+    "new_space_on": "在 {machine} 新增 Space…",
     "worktree": "新增 worktree…",
     "machine": "連線機器…"
   },
@@ -27,7 +27,7 @@
   "machine": {
     "local": "本機 · {host}",
     "local_bare": "本機",
-    "add_space": "在這台機器新增 Space",
+    "add_space": "在這台機器新增 Space…",
     "fold": "收合 {name}",
     "unfold": "展開 {name}"
   },

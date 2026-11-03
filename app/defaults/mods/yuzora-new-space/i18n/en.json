@@ -1,0 +1,28 @@
+{
+  "title": "Open a Folder as a Space",
+  "title_on": "New Space on {machine}",
+  "pick": {
+    "prompt": "Open as Space",
+    "waiting": "Choose a folder in the window that opened.",
+    "again": "Choose another folder, or cancel.",
+    "choose_again": "Choose Again"
+  },
+  "path": {
+    "label": "A folder on {machine}",
+    "placeholder": "~/projects/app",
+    "hint": "~ is {machine}'s home folder. The folder is checked there."
+  },
+  "checking": "Checking the folder…",
+  "cancel": "Cancel",
+  "create": "Create",
+  "busy": "A Space is already being made on {machine}.",
+  "busy_here": "A Space is already being made on this computer.",
+  "existing": "{name} is already a Space: switched to it.",
+  "error": {
+    "not_a_folder": "There's no such folder on {machine}.",
+    "not_a_folder_here": "There's no such folder on this computer.",
+    "unreachable": "{machine} didn't answer: {detail}",
+    "machine_gone": "{machine} went offline before the Space was made.",
+    "pick_failed": "The folder picker didn't open: {detail}"
+  }
+}

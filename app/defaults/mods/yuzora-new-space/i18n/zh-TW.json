@@ -1,0 +1,28 @@
+{
+  "title": "開啟資料夾並建立 Space",
+  "title_on": "在 {machine} 建立 Space",
+  "pick": {
+    "prompt": "建立 Space",
+    "waiting": "請在開啟的視窗中選擇資料夾。",
+    "again": "可以重新選擇資料夾，或取消。",
+    "choose_again": "重新選擇"
+  },
+  "path": {
+    "label": "{machine} 上的資料夾",
+    "placeholder": "~/projects/app",
+    "hint": "~ 代表 {machine} 的家目錄，會在那台機器上確認資料夾是否存在。"
+  },
+  "checking": "正在檢查資料夾…",
+  "cancel": "取消",
+  "create": "建立",
+  "busy": "{machine} 已經有一個 Space 正在建立。",
+  "busy_here": "這台電腦已經有一個 Space 正在建立。",
+  "existing": "「{name}」已經是一個 Space，已切換過去。",
+  "error": {
+    "not_a_folder": "{machine} 上找不到這個資料夾。",
+    "not_a_folder_here": "這台電腦上找不到這個資料夾。",
+    "unreachable": "{machine} 沒有回應：{detail}",
+    "machine_gone": "Space 建立前，{machine} 已離線。",
+    "pick_failed": "無法開啟資料夾選擇視窗：{detail}"
+  }
+}
