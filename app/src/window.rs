@@ -700,10 +700,22 @@ impl AppWindow {
                 core.closed().await;
                 tracing::warn!("lost the core; reconnecting");
                 crate::telemetry::count("core_lost");
+                let mut told = None; // yuzora(L9): the mismatch of a refused core, its toast up until one serves
                 let fresh = loop {
                     cx.background_executor().timer(Duration::from_millis(1000)).await;
                     if let Ok(core) = cx.background_executor().spawn(async { Core::connect() }).await {
-                        break core;
+                        // yuzora(L9): another app (Herdr) may have changed the shared core: check it like at start (src/yuzora/herdr_compat.rs).
+                        let id = crate::yuzora::herdr_compat::REFUSED_TOAST;
+                        match crate::yuzora::herdr_compat::serves(&core.hello, &mut told) {
+                            Ok(refused) => {
+                                if refused { let _ = this.update_in(cx, |this, window, cx| this.remove_overlay(id, window, cx)); }
+                                break core;
+                            }
+                            Err(toast) => {
+                                if let Some(toast) = toast { let _ = this.update_in(cx, |this, window, cx| { this.remove_overlay(id, window, cx); this.open_overlay(id.into(), toast, window, cx) }); }
+                                cx.background_executor().timer(Duration::from_millis(4000)).await;
+                            }
+                        }
                     }
                 };
                 if this.update(cx, |this, cx| this.reconnected(fresh, cx)).is_err() {

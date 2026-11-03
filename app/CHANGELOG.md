@@ -10,6 +10,7 @@
 - 模式列顯示各模式的徽章數；tab 列每個 tab 帶 Space 徽章與狀態，「＋ 新增 pane」可把工具 pane、終端機、Agent 混合分割進同一個 tab。
 - pane 標頭與外框：focus 時邊框變亮，Agent 需要回覆時邊框與標頭轉為琥珀色；狀態列顯示 pane／Space／Agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本。
 - 歡迎、新功能、意見回饋畫面改為 Yuzora 品牌；介面字型改用系統字型。
+- 與官方 Herdr 共用 herdr-core 時：版本不符的畫面改用 Yuzora 的名稱並說明 core 是共用的；core 重新啟動後若變成 Yuzora 不能用的版本（例如 Herdr 換成新一代），Yuzora 不會接上，並一直顯示原因與解法，恢復後自動重連。
 - SSH / SFTP 模式：列出 ~/.ssh/config、Yuzora 自建主機與 herdr machines，顯示連線狀態與延遲；首次連線確認主機金鑰指紋，金鑰變更時警告。
 - SFTP 雙欄傳輸：本機 ↔ 主機各自瀏覽，→／← 或拖放傳輸，佇列顯示進度與速度，可取消、重試並從中斷處續傳，可保留權限與時間；遠端檔案可在本機文字編輯器開啟，存檔時自動上傳。
 - 主機快速動作：開啟 SFTP、新終端機、HERDR Session、已知主機管理；資料庫可透過 SSH tunnel 連到主機後方。
