@@ -1,0 +1,10 @@
+{
+  "title": "HERDR session on {host}",
+  "body": "As a herdr machine, {host} runs Yuzora's terminals and agents through herdr-core: they keep running there when this computer sleeps, and its Spaces sit beside your local ones.",
+  "already": "{host} is the herdr machine {machine} ({state}).",
+  "newSpace": "New Space on {machine}",
+  "command": "Add it with herdr-core, in a terminal where you can answer what ssh asks (a password, a new host key):",
+  "run": "Run in a terminal",
+  "dialog": "Use Herdr's Add a machine",
+  "close": "Close"
+}

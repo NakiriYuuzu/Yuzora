@@ -1087,6 +1087,14 @@ with these differences.
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
+### SSH / SFTP (`yuzora:ssh`)
+
+- Hosts come from `~/.ssh/config` (read only), Yuzora's own hosts (`yuzora/settings.json` → `ssh.profiles`; passwords in the system keychain) and herdr machines. `hosts(machines)` lists them with `state`, `latencyMs` and the verified host key; pass `hc machine ls --json`'s `machines`.
+- `connect(host)` may need the person: a new or changed host key, a password, a passphrase, keyboard-interactive answers. Those wait in `prompts()`; a mod that shows them calls `claimPrompt(id)` and opens `yuzora-ssh-prompt` with `props: { id }` (the SSH sidebar and the SFTP pane already do).
+- Yuzora writes host keys only to `yuzora/known_hosts` here; `~/.ssh/known_hosts` is read, never written.
+- `list(side, path)` (`side` null: this computer), `transfer({host, direction, from, toDir, preserve})` and `transfers()`, `openRemote(host, path)` (a local copy whose saves upload), `openTunnel(host, remoteHost, remotePort)`.
+- Open SFTP for a host beside the focused pane: `run("pane.split", { direction: "right", mod: "yuzora-sftp", props: { host: "ssh:lab-01" } })`.
+- The status bar line is `shared("yuzora.status.ssh")`; the mode badge `shared("yuzora.badge.ssh")` counts transfers in progress.
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
