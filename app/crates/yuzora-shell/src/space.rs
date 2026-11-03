@@ -300,9 +300,10 @@ mod tests {
         std::fs::write(s.0.join("note.txt"), "x").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(s.0.join("my app"), s.0.join("link")).unwrap();
-        let real = s.path("my app");
+        // As a picker gives it: no \\?\ on Windows (a verbatim path takes no `/`).
+        let real = normalize(&s.path("my app"));
 
-        let fresh = plan(&format!("{real}/"), &[], None).unwrap();
+        let fresh = plan(&format!("{real}{}", std::path::MAIN_SEPARATOR), &[], None).unwrap();
         assert_eq!(fresh, Plan { folder: real.clone(), name: "my app".into(), existing: None });
 
         let spaces = vec![("sp9".to_owned(), real.clone())];
