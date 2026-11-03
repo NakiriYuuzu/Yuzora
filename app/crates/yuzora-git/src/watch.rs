@@ -8,9 +8,10 @@
 //!   directory (a build writing into `target/` refreshes nothing);
 //! - objects, logs, locks and the fsmonitor daemon's files: nothing.
 //!
-//! A machine's repo isn't watched; its views refresh on a timer. A repo no
-//! view has called or waited on for [`crate::repo::IDLE`] stops being
-//! watched until the next call.
+//! A machine's repo isn't watched; its views refresh on a timer. Nor is a
+//! local one whose watch couldn't start: a wait on it that runs out reads
+//! everything again. A repo no view has called or waited on for
+//! [`crate::repo::IDLE`] stops being watched until the next call.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,15 +90,20 @@ fn git_noise(rel: &str) -> bool {
         || rel.is_empty()
 }
 
-/// Starts watching a local repo; the watch lives in `repo.watch`.
-pub fn start(repo: &Arc<Repo>) {
+/// Starts watching a local repo; the watch lives in `repo.watch`. False:
+/// it couldn't start (the system's watches used up, say).
+pub fn start(repo: &Arc<Repo>) -> bool {
     #[cfg(test)]
     starts().lock().unwrap().push((repo.id.clone(), std::thread::current().id()));
+    #[cfg(test)]
+    if NO_WATCH.with(|n| n.get()) {
+        return false;
+    }
     let (tx, rx) = mpsc::channel();
-    let Ok(mut watcher) = notify::recommended_watcher(tx) else { return };
+    let Ok(mut watcher) = notify::recommended_watcher(tx) else { return false };
     let root = PathBuf::from(&repo.place.root);
     if watcher.watch(&root, RecursiveMode::Recursive).is_err() {
-        return;
+        return false;
     }
     let mut git_dirs = vec![PathBuf::from(&repo.git_dir)];
     if repo.common_dir != repo.git_dir {
@@ -112,9 +118,18 @@ pub fn start(repo: &Arc<Repo>) {
     let weak = Arc::downgrade(repo);
     let stopped = stop.clone();
     let spawned = std::thread::Builder::new().name("yuzora-git-watch".into()).spawn(move || run(weak, rx, root, git_dirs, stopped));
-    if spawned.is_ok() {
-        *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch { _watcher: watcher, stop });
+    if spawned.is_err() {
+        return false;
     }
+    *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch { _watcher: watcher, stop });
+    true
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Watches started on this thread fail, as when the system has no
+    /// watches left (tests).
+    pub static NO_WATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Which thread started each watch (tests).

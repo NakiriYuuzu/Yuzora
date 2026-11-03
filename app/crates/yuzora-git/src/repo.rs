@@ -45,6 +45,9 @@ pub struct Repo {
     used: Mutex<Instant>,
     /// The watcher let go for that: the next call starts it again.
     unwatched: AtomicBool,
+    /// Here, but its watcher couldn't start: a wait that runs out counts as
+    /// a change, as a machine's does for the sidebar.
+    polled: AtomicBool,
     pub blame: Mutex<crate::lru::Lru<String, Arc<serde_json::Value>>>,
 }
 
@@ -65,6 +68,7 @@ impl Repo {
             idle_after: AtomicU64::new(IDLE.as_millis() as u64),
             used: Mutex::new(Instant::now()),
             unwatched: AtomicBool::new(false),
+            polled: AtomicBool::new(false),
             blame: Mutex::new(crate::lru::Lru::new(10)),
         }
     }
@@ -124,7 +128,16 @@ impl Repo {
             w.push((by, tx.clone()));
             answer_by(by, tx);
         }
-        async move { rx.recv().await.unwrap_or(now) }
+        let repo = self.clone();
+        async move {
+            let g = rx.recv().await.unwrap_or(now);
+            // Ran out (0) with nothing watching: whatever changed went unseen.
+            if g == 0 && repo.polled.load(Ordering::SeqCst) {
+                repo.invalidate_refs();
+                return repo.generation();
+            }
+            g
+        }
     }
 
     /// Answers waiters past their time (called on a timer).
@@ -142,7 +155,7 @@ impl Repo {
         if restart {
             let repo = self.clone();
             let spawned = std::thread::Builder::new().name("yuzora-git-watch-start".into()).spawn(move || {
-                crate::watch::start(&repo);
+                repo.polled.store(!crate::watch::start(&repo), Ordering::SeqCst);
                 repo.invalidate_refs();
             });
             if spawned.is_err() {
@@ -427,7 +440,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     all.insert(id, repo.clone());
     drop(all);
     if !repo.place.is_remote() {
-        crate::watch::start(&repo);
+        repo.polled.store(!crate::watch::start(&repo), Ordering::SeqCst);
     }
     Ok(repo)
 }
@@ -636,6 +649,33 @@ pub(crate) mod tests {
         });
         // The sidebar refreshes a machine's repo when its wait ends.
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(0), "a wait on a machine never ended");
+    }
+
+    #[test]
+    fn a_repo_whose_watcher_cant_start_reads_again_when_a_wait_runs_out() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        crate::watch::NO_WATCH.with(|n| n.set(true));
+        let r = open(s.root(), None);
+        crate::watch::NO_WATCH.with(|n| n.set(false));
+        let r = r.unwrap();
+        assert!(r.watch.lock().unwrap().is_none());
+        r.wait_limit.store(200, Ordering::SeqCst);
+        assert_eq!(crate::status::read(&r, false).unwrap()["counts"]["unstaged"], 0);
+        // Changed with no watcher to see it.
+        s.write("a.txt", "2\n");
+        let g = r.generation();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wait = r.wait(g);
+        std::thread::spawn(move || {
+            let _ = tx.send(futures_lite_block(wait));
+        });
+        let next = rx.recv_timeout(Duration::from_secs(5));
+        let counts = crate::status::read(&r, false).map(|v| v["counts"]["unstaged"].clone());
+        close(&r.id);
+        // The sidebar reads a local repo again only when the generation moves.
+        assert!(next.is_ok_and(|n| n > g), "the wait ran out as if nothing could change: {next:?}");
+        assert_eq!(counts.unwrap(), 1);
     }
 
     #[test]

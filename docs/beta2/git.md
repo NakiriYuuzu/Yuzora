@@ -39,7 +39,7 @@ yuzora-git-settings ┘
 
 - 每個 mod 用 `open(cwd, on)` 取得 repo（同一個 `<machine>:<root>` 只開一次，watcher 也只有一個），之後的函式都帶 `repo.id`。
 - 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求。log、blame、repo pane 用 props，可以同時開多個。
-- 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
+- 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。本機 repo 的 watcher 啟動失敗時（例如系統的監看數用完），等待逾時就把整個 repo 與 refs 視為已變更，generation 前進，各 pane 照常重讀。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
 - 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
 
 ### virtual list 的限制
@@ -54,11 +54,16 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - 環境：`LANGUAGE=` 清空、`LC_ALL=en_US.UTF-8`（macOS 本機）或 `C.UTF-8`，`GIT_TERMINAL_PROMPT=0`、`GIT_EDITOR=:`、`GIT_MERGE_AUTOEDIT=no`，輸出才能穩定解析，也不會卡在互動輸入。
 - 讀取一律帶 `-c core.fsmonitor=false`：側欄一聚焦資料夾就自動跑 status，repo 自己的 `.git/config` 不能藉 fsmonitor hook 在使用者沒有任何動作時執行程式（`status_never_runs_the_repos_fsmonitor_program` 守住）。代價是設定了 fsmonitor 的大 repo，背景 status 會慢一些。
 - 其他由 repo 設定指定程式的讀取：commit 詳情的簽章檢查（`%G?`）把 repo 本地設定的 `gpg.program`／`gpg.{openpgp,ssh,x509}.program` 換回使用者全域／系統的值或 git 預設（`signature_programs`）；blame 帶 `--no-textconv`；status 的 numstat 帶 `--no-ext-diff --no-textconv`，建立 patch 的 diff 帶 `--no-ext-diff`。diff 讀 blob 用 `cat-file --filters`，會照 repo 設定跑 smudge filter（例如 git-lfs），只在使用者打開 diff 時發生，與 checkout 相同。
-- 信任資料夾（`trust.rs`）：repo 自己的設定（`.git/config`、它 include 的檔案、worktree 設定）若指定了 git 會執行的程式（`filter.*.clean/smudge/process`、`core.sshCommand`／`gitProxy`／`askPass`／`alternateRefsCommand`、指向程式的 `core.fsmonitor`（`true` 是 git 自己的 daemon，不算）、credential helper、`remote.*.uploadpack/receivepack/vcs`、`protocol.*.allow`、`merge.*.driver`、`diff.external`、`diff.*.command/textconv`、`gpg.*program`、`gpg.ssh.defaultKeyCommand`、`!` 開頭的 `submodule.*.update`），`status` 不跑 git，只回傳已知內容和 `trust`（那些 key）；側欄顯示「要信任這個資料夾嗎？」，按下後記在 `<app home>/yuzora/git/trusted.json`。自動 fetch 由引擎擋（`fetch {auto: true}` 在未信任時直接拒絕），而且一律不跑 hook（`core.hooksPath` 指向 app 自己的空目錄；fetch 會觸發 reference-transaction）、不遞迴 submodule（`--no-recurse-submodules`）。信任檢查也看 index 裡每個已 checkout 的 gitlink（巢狀的也算）自己的設定，不管 `.gitmodules` 有沒有列出它，也不管上層設定有沒有程式：git 的 status、diff 會遞迴進這些 submodule，用它們的設定跑 filter。判斷「已 checkout」照 git 自己的條件（資料夾裡有 `.git`），進去後只讀它自己（`GIT_DIR=.git`）；它的巢狀 gitlink 到它實際的工作樹去找：submodule 自己的 `core.worktree`（寫在它的 config、gitdir 的 config 或 `config.worktree`）可以把工作樹指到別處，git 的 status 會跟過去，掃描也用 `rev-parse --show-toplevel` 跟過去。路徑被 git 加了引號（含 `"`、`\`、控制字元）、超過 16 層（工作樹指回上層形成循環）時無法追蹤，當成讀不到。掃描以命令列 alias 讓 git 在頂層執行，本機與遠端都只多一次呼叫；腳本 export `GIT_NO_LAZY_FETCH=1`。只要有一段沒跑完，關卡就維持關閉：gitlink 用 grep 從 `ls-files -s` 挑出，輸入最後補一行固定的記錄，grep 的輸出沒有它就當成讀不到（壞掉的 grep 不輸出也會 exit 0，看起來就像沒有 gitlink）；整個掃描以 `end` 記錄結尾，回答沒有它也當成讀不到。20 萬筆 entry 的 index 約 100 ms。橫幅以 `路徑: key` 列出。設定讀不到、或回答超過 8 MiB（`git_trust::ANSWER_CAP`，截斷的回答可能剛好少了某個程式 key）時，當成未信任。hook 本身不列入信任條件：status 不跑 hook，而 husky 等工具會在許多 repo 設定 `core.hooksPath`。使用者全域／系統設定的程式（例如全域安裝的 git-lfs）不需要信任。未信任時 `yuzora:git` 對這個 repo 的其他呼叫（log、diff、merge、stage、commit、fetch…）一律在引擎拒絕（`trust::check`，錯誤以 `untrusted folder` 開頭），各 pane 顯示這個錯誤，等同 IntelliJ 的 Safe mode；只有 `status`（顯示提示）與 `trust`（回答）例外。不經過 `repo_fn` 的路徑各自在跑 git 之前檢查：log 的載入（開啟、`logRefresh`、跟著 refs 更新）與補抓 metadata，以及 diff／merge session 的寫入（`diffStage`／`diffUnstage`／`diffDiscard`、`conflictResolve`；session 開啟後 repo 設定可能多了程式，例如 `git lfs install --local`）。partial clone 讀到缺少的物件時，會用 repo 的 ssh 指令去抓，所以 log 也不能在信任前讀。
+- 信任資料夾（`trust.rs`）：repo 自己的設定（`.git/config`、它 include 的檔案、worktree 設定）若指定了 git 會執行的程式（`filter.*.clean/smudge/process`、`core.sshCommand`／`gitProxy`／`askPass`／`alternateRefsCommand`、指向程式的 `core.fsmonitor`（`true` 是 git 自己的 daemon，不算）、credential helper、`remote.*.uploadpack/receivepack/vcs`、`protocol.*.allow`、`merge.*.driver`、`diff.external`、`diff.*.command/textconv`、`gpg.*program`、`gpg.ssh.defaultKeyCommand`、`!` 開頭的 `submodule.*.update`），`status` 不跑 git，只回傳已知內容和 `trust`（那些 key）；側欄顯示「要信任這個資料夾嗎？」，按下後記在 `<app home>/yuzora/git/trusted.json`。自動 fetch 由引擎擋（`fetch {auto: true}` 在未信任時直接拒絕），而且一律不跑 hook（`core.hooksPath` 指向 app 自己的空目錄；fetch 會觸發 reference-transaction）、不遞迴 submodule（`--no-recurse-submodules`）。信任檢查也看 index 裡每個已 checkout 的 gitlink（巢狀的也算）自己的設定，不管 `.gitmodules` 有沒有列出它，也不管上層設定有沒有程式：git 的 status、diff 會遞迴進這些 submodule，用它們的設定跑 filter。判斷「已 checkout」照 git 自己的條件（資料夾裡有 `.git`），進去後只讀它自己（`GIT_DIR=.git`）；它的巢狀 gitlink 到它實際的工作樹去找：submodule 自己的 `core.worktree`（寫在它的 config、gitdir 的 config 或 `config.worktree`）可以把工作樹指到別處，git 的 status 會跟過去，掃描也用 `rev-parse --show-toplevel` 跟過去。每個 repo（gitdir 加工作樹，取 `rev-parse` 的絕對路徑）只讀一次，整個掃描在同一個 shell 裡記住讀過哪些：在自己底下又遇到（工作樹指回上層，git 的 status 會無限遞迴）當成讀不到；在別處又遇到（兩個 gitfile 指向同一個 gitdir、衝突的 gitlink 在 index 出現好幾次）就略過，它的 key 已經列過。所以掃描量受實際 repo 數限制，不會像只限層數那樣在兩個指回頂層的 gitlink 上展開成 2^16 個。路徑被 git 加了引號（含 `"`、`\`、控制字元）或超過 16 層時無法追蹤，也當成讀不到。掃描以命令列 alias 讓 git 在頂層執行，本機與遠端都只多一次呼叫；腳本 export `GIT_NO_LAZY_FETCH=1`。只要有一段沒跑完，關卡就維持關閉：gitlink 用 grep 從 `ls-files -s` 挑出，輸入最後補一行固定的記錄，grep 的輸出沒有它就當成讀不到（壞掉的 grep 不輸出也會 exit 0，看起來就像沒有 gitlink）；整個掃描以 `end` 記錄結尾，回答沒有它也當成讀不到。20 萬筆 entry 的 index 約 115 ms。掃描逾時（yuzora-git 60 秒、`programs_in` 30 秒）也當成讀不到，而不是錯誤：錯誤會讓 status 沒有 `trust` 欄位，側欄就無法提供信任。橫幅以 `路徑: key` 列出。設定讀不到、或回答超過 8 MiB（`git_trust::ANSWER_CAP`，截斷的回答可能剛好少了某個程式 key）時，當成未信任。hook 本身不列入信任條件：status 不跑 hook，而 husky 等工具會在許多 repo 設定 `core.hooksPath`。使用者全域／系統設定的程式（例如全域安裝的 git-lfs）不需要信任。未信任時 `yuzora:git` 對這個 repo 的其他呼叫（log、diff、merge、stage、commit、fetch…）一律在引擎拒絕（`trust::check`，錯誤以 `untrusted folder` 開頭），各 pane 顯示這個錯誤，等同 IntelliJ 的 Safe mode；只有 `status`（顯示提示）與 `trust`（回答）例外。不經過 `repo_fn` 的路徑各自在跑 git 之前檢查：log 的載入（開啟、`logRefresh`、跟著 refs 更新）與補抓 metadata，以及 diff／merge session 的寫入（`diffStage`／`diffUnstage`／`diffDiscard`、`conflictResolve`；session 開啟後 repo 設定可能多了程式，例如 `git lfs install --local`）。partial clone 讀到缺少的物件時，會用 repo 的 ssh 指令去抓，所以 log 也不能在信任前讀。
 - 共用的信任 API（`yuzora_core::git_trust`）：上面的偵測（`PROGRAMS`、`names_program`、submodule 掃描）與信任清單放在 yuzora-core，給狀態列（L1）、檔案樹（L5）等也會自己跑 git 的地方共用；yuzora-git 用自己的執行器呼叫它，行為不變。
   - `pending(machine, top)`：回傳空清單才可以跑 `status`、`diff` 這類會比對工作樹或 index 的指令；`Err`（git 跑不起來）也當成不安全。`top` 是那台機器上 `git rev-parse --show-toplevel` 的輸出，遠端走 `hc exec --on`。
+  - 清單裡的項目是 `key`（repo 自己的設定）或 `路徑: key`（submodule 的設定）。設定讀不到時，項目是 `UNREADABLE`（`(unreadable config)`）或 `路徑: (unreadable config)`：git 讀設定失敗、回答超過 `ANSWER_CAP`、掃描沒跑完或逾時、submodule 的工作樹指回上層、路徑被加了引號、超過 16 層。這些都維持關閉，但使用者仍可以信任這個資料夾。
+  - `pending_from(file, machine, top)`：同 `pending`，信任清單從 `file` 讀（測試用暫存檔，不碰真實的 app home）。
   - `is_trusted(machine, top)`：只讀信任清單，不跑 git。
-  - API 變動（#194 審查期間）：`repo_programs(run)` 拿掉了第一個參數 `gitmodules: bool`，submodule 一律從 index 掃，不再看 `.gitmodules`。`pending`、`programs_in`、`is_trusted` 的呼叫方式不變。自己傳 `run` 的呼叫端，要讓它能執行 `-c alias.…=!<script> yuzora-trust-scan`（本機與 `hc exec --on` 都可以），並照原樣回傳 exit code 與 stdout（經 `whole`）。
+  - `folder_id(machine, top)`：信任清單裡的 id，`<machine>:<top>`，本機的 machine 是空字串。
+  - `trust_at(file, id)`：把 id 加進 `file`。信任只能由 Git 側欄按下（yuzora-git 的 `trust`），其他 lane 只讀，不要呼叫它。
+  - `programs_in(machine, top)`：不看信任清單，只列出 key（`pending` 在未信任時就是它）。
+  - API 變動（#194 審查期間）：`repo_programs(run)` 拿掉了第一個參數 `gitmodules: bool`，submodule 一律從 index 掃，不再看 `.gitmodules`。`pending`、`programs_in`、`is_trusted` 的呼叫方式不變。自己傳 `run` 的呼叫端，要讓它能執行 `-c alias.…=!<script> yuzora-trust-scan`（本機與 `hc exec --on` 都可以），並照原樣回傳 exit code 與 stdout（經 `whole`）；逾時要回傳 `Ok((-1, vec![]))`（當成讀不到），只有 git 根本跑不起來才回 `Err`。
   - 未信任時仍可以執行的指令（前面加 `READ_FLAGS`，也就是 `--no-optional-locks -c core.fsmonitor=false`）：只讀 refs、不碰 index 與工作樹的指令，例如 `rev-parse --show-toplevel`、`symbolic-ref`、`for-each-ref`（不帶 `:track`）、`config --get`。
   - 走訪 commit 的指令（`rev-list --left-right --count`、`for-each-ref` 的 `%(upstream:track)`、`log`、`merge-base`）：repo 有 promisor remote（partial clone）時，ref 可能指向 clone 裡沒有的 commit，git 會用 repo 自己的 ssh 指令去抓。這種 repo 要加 `--no-lazy-fetch`（git 2.44 起），更舊的 git 就不要走訪。範例是 L1 的 `yuzora-shell` `gitStatus`（`a_partial_clones_missing_commit_is_not_fetched`）。
   - 必須先信任的指令：`status`、`diff`、`diff-files`、`diff-index`、`ls-files -m`，任何寫入工作樹或 index 的指令，以及 `fetch`、`pull`、`push`。
@@ -71,7 +76,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 ### Status（`status.rs`、`watch.rs`）
 
 - `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）。全量刷新時這幾個讀取並行執行。
-- watcher（notify，300 ms debounce）只在有 view 使用 repo 時運作。呼叫和等待（`changed()`、log 的 `logWait`）都算使用；超過 2 分鐘兩者都沒有，就停掉 watcher。下一次呼叫或等待會在背景執行緒重新啟動 watcher（遞迴監看可能要走過整個工作樹，不能放在 UI 執行緒），並把整個 repo 視為已變更。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
+- watcher（notify，300 ms debounce）只在有 view 使用 repo 時運作。呼叫和等待（`changed()`、log 的 `logWait`）都算使用；超過 2 分鐘兩者都沒有，就停掉 watcher。下一次呼叫或等待會在背景執行緒重新啟動 watcher（遞迴監看可能要走過整個工作樹，不能放在 UI 執行緒），並把整個 repo 視為已變更。watcher 啟動失敗時改成輪詢（見〈pane 之間的約定〉的 `changed()`）。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
 - 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。
 - `.git` 的操作狀態（rebase-merge／rebase-apply、MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、BISECT_LOG）直接讀檔，對應 IntelliJ 的 `GitRepositoryReader`。
 
@@ -92,14 +97,14 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - 行 diff 在 Rust 計算：線性空間 Myers（middle snake），編輯數超過 `max(20000 + 10·√(n+m), 20000)`（IntelliJ `MyersLCS` 的門檻）就退回 Patience（唯一行錨點＋區段內有限 Myers）。單側超過 16 MiB 不比較並告知。
 - 內容：`git cat-file --filters <rev>:<path>`（套用 textconv 以外的 filter，與 IntelliJ 的 `git.read.content.with=FILTERS` 相同）、index 用 `:<path>`、工作目錄直接讀檔（symlink 讀目標字串）。遠端也一樣：`cat` 會讀穿 symlink，所以先在那台機器上用 `test -L`／`readlink`／`test -x` 判斷（`Repo::kind`），新檔部分暫存時的 mode（`120000`、`100755`）也照它。
 - 檢視：並排或合併、字詞層級高亮（tokens：單字、空白段、單一符號）、空白策略 Exact／Trim／Ignore（對應 IntelliJ `ComparisonPolicy`）、context 摺疊。
-- **部分暫存不動工作目錄**：把「index 版本＋選中的 hunk 或行」組成新內容，`git hash-object -w --stdin --path` 寫 blob，再 `update-index --add --cacheinfo <mode>,<oid>,<path>`。取消暫存同理（HEAD 版本＋反向選取）；捨棄 hunk 則改寫工作目錄檔案。整檔情況（新檔、刪除、全選）直接走 `add`／`reset`／`rm --cached`。只有 mode 改變（例如 `chmod +x`）時，以 `git diff --raw` 讀兩邊的 mode（照 git 的判斷，含 `core.fileMode`），pane 顯示 mode 變更，暫存、取消暫存、捨棄都整檔處理，mode 一起帶上。CRLF 與無結尾換行會保留。
+- **部分暫存不動工作目錄**：把「index 版本＋選中的 hunk 或行」組成新內容，`git hash-object -w --stdin --path` 寫 blob，再 `update-index --add --cacheinfo <mode>,<oid>,<path>`。取消暫存同理（HEAD 版本＋反向選取）；捨棄 hunk 則改寫工作目錄檔案。整檔情況（新檔、刪除、全選）直接走 `add`／`reset`／`rm --cached`。只有 mode 改變（例如 `chmod +x`）時，以 `git diff --raw` 讀兩邊的 mode（照 git 的判斷，含 `core.fileMode`），pane 顯示 mode 變更，暫存、取消暫存、捨棄都整檔處理，mode 一起帶上。已暫存的 rename 比較 HEAD 裡舊路徑的 mode 與 index 裡新路徑的 mode（`--no-renames` 會把它看成新增）。部分暫存是用開啟時讀到的內容組出來的，所以先確認工作目錄的檔案沒有被其他編輯器改過（捨棄也是），改過就要求重新載入，免得暫存檔案裡已經不存在的行。CRLF 與無結尾換行會保留。
 - 空白不是 Exact 時不允許暫存（畫面上的 hunk 與實際內容不一致）。
 
 ### Merge 與衝突（`merge.rs`）
 
 - 讀 index 的 stage 1／2／3（base／ours／theirs）做 diff3 分塊：equal、ours、theirs、same、conflict。
 - 「自動解決簡單衝突」：對 conflict 塊再做 token 層級三方合併，兩側改到不重疊的地方時給出 auto 解答（對應 IntelliJ 的 magic resolve）。
-- 結果寫回檔案後 `git add`；整檔 accept yours／theirs 用 `checkout --ours/--theirs`（刪除衝突用 `git rm`）。
+- 結果寫回檔案後 `git add`；整檔 accept yours／theirs 用 `checkout --ours/--theirs`（刪除衝突用 `git rm`）。symlink 的衝突以 `120000` 寫回 index，結果的每個位元組都是目標路徑（結尾的換行也是），不另外去掉。
 - 手動編輯一塊（`{text}`）：
   - 文字以 `\n` 分行，結尾的 `\n` 表示最後一行有行尾，不會多出一行。
   - `""` 代表這塊沒有任何行（刪掉整塊）；`"\n"` 代表一行空白。
@@ -114,7 +119,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 
 - `GIT_SEQUENCE_EDITOR` 指向一段 shell，把我們寫好的 todo（`.git/yuzora-rebase/todo`）複製過去；`GIT_EDITOR` 指向另一段 shell，依 `rebase-merge/done` 的最後一行找出要 reword／squash 的 commit，換上我們事先寫好的訊息。不需要外部 helper 程式，本機與遠端都能用。base 放在 `rebase -i` 的選項後面（列出 commit 的 `log` 也是），開頭是 `-` 的一律拒絕，否則 `--exec=<cmd>` 會執行指令、`--output=<file>` 會寫檔。
 - todo 驗證（第一行不能是 squash／fixup、action 必須合法）；支援 `--update-refs`；edit 或衝突停下後由 `sequencer(continue|abort|skip)` 接手，continue 也用同一組 editor。
-- **記憶體內歷史編輯（評估）**：IntelliJ 的 in-memory 操作（git-revise 啟發）不動工作目錄與 index。beta.2 先做 **reword**：沿線性歷史用 `commit-tree` 重建該 commit 之後的鏈（保留作者與時間），最後 `update-ref`；遇到 merge 就拒絕並改走一般互動式 rebase。drop／fixup／reorder 需要 tree 層級的三方合併（`merge-tree --write-tree`，git ≥ 2.38），留待後續。
+- **記憶體內歷史編輯（評估）**：IntelliJ 的 in-memory 操作（git-revise 啟發）不動工作目錄與 index。beta.2 先做 **reword**：沿線性歷史重建該 commit 之後的鏈，最後 `update-ref`。每個 commit 照原本的位元組重放（`hash-object -t commit`），只換 parent 與 committer（`git var GIT_COMMITTER_IDENT`）、拿掉已失效的簽章；作者、`encoding` header 與之後的訊息都不經過文字轉換，非 UTF-8 的訊息也不會變。被改寫的那個 commit 換上新訊息（UTF-8，拿掉 `encoding`）。遇到 merge 就拒絕並改走一般互動式 rebase。drop／fixup／reorder 需要 tree 層級的三方合併（`merge-tree --write-tree`，git ≥ 2.38），留待後續。
 
 ## 效能量測
 
@@ -206,7 +211,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - ✅ 檔案歷史：log 加路徑篩選＋`--follow`。⏳ 選取範圍的歷史。
 - ✅ Annotate：`git blame --porcelain -l -t`，忽略空白、偵測移動（none／inner `-M`／outer `-C`）、上一版 annotate（跟著改名）、與上一版比較、在 log 中顯示。
 - ✅ Diff viewer：並排、合併、字詞高亮、三種空白策略、context 摺疊；二進位與過大檔案明示。⏳ 外部 diff 工具。
-- ✅ Patches：建立（commits、已暫存、未暫存；複製或存檔）、套用（`git apply`：check、3way、只進 index、reverse）。
+- ✅ Patches：建立（commits、已暫存、未暫存；複製或存檔）、套用（`git apply`：check、3way、只進 index、reverse）。`git diff` 不支援 `--pathspec-from-file`，選取的路徑太長時分批產生再串起來（依路徑排序），不會退回整個 repo。
 
 ### A10. Worktrees 與其他
 

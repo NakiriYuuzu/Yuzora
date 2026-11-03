@@ -865,13 +865,23 @@ pub fn patch_create(repo: &Repo, o: &Value) -> GitResult<String> {
         }
         return Ok(text);
     }
-    let paths: Vec<String> = o.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+    let mut paths: Vec<String> = o.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
     let mut cmd = Git::read(["diff", "--binary", "--no-ext-diff"]);
     if o.get("staged").and_then(Value::as_bool).unwrap_or(false) {
         cmd = cmd.arg("--cached");
     }
-    let (cmd, _) = cmd.paths_or_all(&paths);
-    repo.text(cmd)
+    if paths.is_empty() {
+        return repo.text(cmd);
+    }
+    // diff takes no --pathspec-from-file: a long selection goes in runs
+    // (in git's order), never as the whole repo.
+    paths.sort();
+    paths.dedup();
+    let mut text = String::new();
+    for run in crate::exec::pathspec_runs(&paths) {
+        text.push_str(&repo.text(cmd.clone().arg("--").args(run.iter().cloned()))?);
+    }
+    Ok(text)
 }
 
 /// `git apply` (checked first): to the work tree, the index (`cached`), both
@@ -1211,6 +1221,26 @@ mod tests {
         let h = b["lines"][0]["hash"].as_str().unwrap();
         assert_eq!(b["commits"][h]["summary"], "ours");
         assert_eq!(b["commits"][h]["author"], "Yuzora Test");
+    }
+
+    #[test]
+    fn a_patch_of_many_paths_holds_those_paths_only() {
+        let s = scratch();
+        let many: Vec<String> = (0..200).map(|i| format!("dir/a-rather-long-tracked-file-name-number-{i:04}.txt")).collect();
+        for p in &many {
+            s.write(p, "1\n");
+        }
+        s.write("other.txt", "1\n");
+        s.git(&["add", "-A"]);
+        s.git(&["commit", "-qm", "first"]);
+        for p in &many {
+            s.write(p, "2\n");
+        }
+        s.write("other.txt", "not picked\n");
+        assert!(crate::exec::pathspec_len(&many) > crate::exec::PATHSPEC_LIMIT);
+        let p = patch_create(&s.repo, &json!({ "paths": many })).unwrap();
+        assert!(!p.contains("other.txt"), "a selection too long for one command line exported the whole repo");
+        assert_eq!(p.matches("diff --git ").count(), many.len());
     }
 
     #[test]

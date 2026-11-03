@@ -140,9 +140,9 @@ pub fn forget(repo: &Repo) {
 }
 
 /// Rewrites one commit's message without touching the work tree or index:
-/// the commit and everything after it are recreated with `commit-tree`
-/// (same trees, same authors), then the branch moves. Only on a linear
-/// history up to HEAD, on a branch.
+/// the commit and everything after it are recreated (same trees, same
+/// authors, the later messages byte for byte), then the branch moves. Only
+/// on a linear history up to HEAD, on a branch.
 pub fn reword_in_memory(repo: &Repo, hash: &str, message: &str) -> GitResult<Value> {
     if message.trim().is_empty() {
         return Err(GitError::other("the message is empty"));
@@ -175,21 +175,15 @@ pub fn reword_in_memory(repo: &Repo, hash: &str, message: &str) -> GitResult<Val
         return Err(GitError::other("only a linear history (no merges) can be reworded in place"));
     }
     let mut new_parent = parent_of_target;
+    // Who commits them now, as `git commit-tree` would say.
+    let committer = repo.text(Git::read(["var", "GIT_COMMITTER_IDENT"]))?.trim().to_owned();
     for (i, r) in rows.iter().enumerate() {
-        let raw = repo.text(Git::read(["cat-file", "commit", &r[0]]))?;
-        let (headers, body) = raw.split_once("\n\n").unwrap_or((&raw, ""));
-        let header = |k: &str| headers.lines().find_map(|l| l.strip_prefix(&format!("{k} "))).map(str::to_owned);
-        let tree = header("tree").ok_or_else(|| GitError::other("unreadable commit"))?;
-        let mut cmd = Git::write(["commit-tree", &tree]);
-        if let Some(p) = &new_parent {
-            cmd = cmd.args(["-p", p]);
-        }
-        if let Some((name, email, date)) = header("author").as_deref().and_then(person) {
-            cmd = cmd.env("GIT_AUTHOR_NAME", name).env("GIT_AUTHOR_EMAIL", email).env("GIT_AUTHOR_DATE", date);
-        }
-        let msg = if i == 0 { message.trim_end().to_owned() + "\n" } else { body.to_owned() };
+        // Bytes: a message or a name in another encoding stays as it is.
+        let raw = repo.run(Git::read(["cat-file", "commit", &r[0]]))?.into_result()?;
+        let msg = (i == 0).then(|| message.trim_end().to_owned() + "\n");
+        let object = replay(&raw, new_parent.as_deref(), &committer, msg.as_deref());
         // The write lock is taken per command; the branch only moves at the end.
-        let new = repo.text(cmd.arg("-F").arg("-").stdin(msg.into_bytes()))?.trim().to_owned();
+        let new = repo.text(Git::write(["hash-object", "-t", "commit", "-w", "--stdin"]).stdin(object))?.trim().to_owned();
         new_parent = Some(new);
     }
     let new_head = new_parent.ok_or_else(|| GitError::other("nothing was rewritten"))?;
@@ -198,11 +192,46 @@ pub fn reword_in_memory(repo: &Repo, hash: &str, message: &str) -> GitResult<Val
     Ok(json!({ "ok": true, "head": new_head }))
 }
 
-/// `Name <email> 1700000000 +0900` → (name, email, "1700000000 +0900").
-fn person(s: &str) -> Option<(String, String, String)> {
-    let lt = s.find('<')?;
-    let gt = s.find('>')?;
-    Some((s[..lt].trim().to_owned(), s[lt + 1..gt].to_owned(), s[gt + 1..].trim().to_owned()))
+/// The commit `raw` again on `parent`, committed by `committer`: its other
+/// headers (author, encoding...) and message byte for byte, or `message`
+/// in its place (UTF-8, so no `encoding`). A signature no longer holds.
+fn replay(raw: &[u8], parent: Option<&str>, committer: &str, message: Option<&str>) -> Vec<u8> {
+    let (headers, body) = match raw.windows(2).position(|w| w == b"\n\n") {
+        Some(i) => (&raw[..i], &raw[i + 2..]),
+        None => (raw, &b""[..]),
+    };
+    let mut out = Vec::with_capacity(raw.len() + 100);
+    let mut line = |l: &[u8]| {
+        out.extend_from_slice(l);
+        out.push(b'\n');
+    };
+    let mut dropped = false;
+    for l in headers.split(|b| *b == b'\n') {
+        // A header's further lines start with a space.
+        if l.starts_with(b" ") {
+            if !dropped {
+                line(l);
+            }
+            continue;
+        }
+        dropped = false;
+        match l.split(|b| *b == b' ').next().unwrap_or_default() {
+            b"tree" => {
+                line(l);
+                if let Some(p) = parent {
+                    line(format!("parent {p}").as_bytes());
+                }
+            }
+            b"committer" => line(format!("committer {committer}").as_bytes()),
+            b"parent" => {}
+            b"encoding" if message.is_some() => {}
+            b"gpgsig" | b"gpgsig-sha256" => dropped = true,
+            _ => line(l),
+        }
+    }
+    out.push(b'\n');
+    out.extend_from_slice(message.map_or(body, str::as_bytes));
+    out
 }
 
 #[cfg(test)]
@@ -286,6 +315,30 @@ mod tests {
         assert_eq!(s.git(&["log", "--format=%s"]), "last\nmiddle, better\nfirst\n");
         assert_eq!(s.read("a.txt"), "edited\n");
         assert_eq!(s.git(&["status", "--porcelain"]), " M a.txt\n?? dirty.txt\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewording_keeps_later_commits_byte_for_byte() {
+        use std::os::unix::ffi::OsStrExt;
+        let s = scratch();
+        s.commit("base.txt", "0\n", "base");
+        let a = s.commit("a.txt", "a\n", "add a");
+        s.write("b.txt", "b\n");
+        s.git(&["add", "b.txt"]);
+        // A later commit in Latin-1, as its encoding header says, by an
+        // author whose name is Latin-1 too.
+        let msg = format!("{}/.git/yz-msg", s.root());
+        std::fs::write(&msg, b"caf\xe9\n").unwrap();
+        let out = std::process::Command::new("git").args(["-c", "i18n.commitEncoding=ISO-8859-1", "commit", "-q", "-F", &msg]).env("GIT_AUTHOR_NAME", std::ffi::OsStr::from_bytes(b"Jos\xe9")).current_dir(s.root()).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let raw = |rev: &str| s.repo.run(Git::read(["cat-file", "commit", rev])).unwrap().into_result().unwrap();
+        // All of a commit but what rewording must change.
+        let kept = |c: Vec<u8>| c.split(|b| *b == b'\n').filter(|l| !l.starts_with(b"parent ") && !l.starts_with(b"committer ")).map(<[u8]>::to_vec).collect::<Vec<_>>();
+        let before = kept(raw("HEAD"));
+        reword_in_memory(&s.repo, &a, "A, reworded").unwrap();
+        assert_eq!(s.git(&["log", "-1", "--format=%s", "HEAD~1"]), "A, reworded\n");
+        assert_eq!(kept(raw("HEAD")), before, "the later commit's message, encoding or author changed");
     }
 
     #[test]

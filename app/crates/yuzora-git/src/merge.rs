@@ -333,9 +333,9 @@ impl ConflictSession {
                 self.repo.run(Git::write(["add", "--", &self.path]))?.into_result()?;
             }
             Some(true) => {
-                // The content is the link's target: record a link and let git
-                // write it to the work tree.
-                write_index(&self.repo, &self.path, content.strip_suffix(b"\n").unwrap_or(&content), "120000")?;
+                // The content is the link's target, every byte of it: record
+                // a link and let git write it to the work tree.
+                write_index(&self.repo, &self.path, &content, "120000")?;
                 self.repo.run(Git::write(["checkout", "--", &self.path]))?.into_result()?;
             }
             None => return Err(GitError::other("a file and a symbolic link conflict here: take one side as a whole")),
@@ -532,6 +532,30 @@ mod tests {
             let entry = s.git(&["ls-files", "-s", "link"]);
             assert!(entry.starts_with("120000 ") && entry.contains(" 0\t"), "{entry}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_target_keeps_its_last_byte() {
+        use std::os::unix::fs::symlink;
+        let s = scratch();
+        let link = |to: &str| {
+            let p = format!("{}/link", s.root());
+            let _ = std::fs::remove_file(&p);
+            symlink(to, &p).unwrap();
+            s.git(&["add", "--", "link"]);
+            s.git(&["commit", "-qm", "link"]);
+        };
+        link("base");
+        s.git(&["switch", "-q", "-c", "other"]);
+        link("THEIRS");
+        s.git(&["switch", "-q", "main"]);
+        // A newline is a byte of the target like any other (valid on Unix).
+        link("OURS\n");
+        assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+        let c = ConflictSession::load(s.repo.clone(), "link").unwrap();
+        c.resolve(&json!({ "0": "ours" })).unwrap();
+        assert_eq!(std::fs::read_link(format!("{}/link", s.root())).unwrap().to_string_lossy(), "OURS\n");
     }
 
     #[test]

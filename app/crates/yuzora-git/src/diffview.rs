@@ -156,9 +156,11 @@ impl DiffSession {
             let (l, r) = (left.as_deref().unwrap_or_default(), right.as_deref().unwrap_or_default());
             diff::diff_lines(&diff::lines(l), &diff::lines(r), Whitespace::Exact)
         };
-        let modes = match &mode {
-            Mode::Unstaged => changed_modes(&repo, &path, false)?,
-            Mode::Staged => changed_modes(&repo, &path, true)?,
+        let modes = match (&mode, &orig) {
+            (Mode::Unstaged, _) => changed_modes(&repo, &path, false)?,
+            // A rename: HEAD's mode of the old path against the index's of the new.
+            (Mode::Staged, Some(o)) => head_mode(&repo, o)?.zip(index_entry.as_ref().map(|e| e.0.clone())).filter(|(a, b)| a != b),
+            (Mode::Staged, None) => changed_modes(&repo, &path, true)?,
             _ => None,
         };
         static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -446,6 +448,11 @@ impl DiffSession {
             // Whole file: let git record deletions, modes and new files itself.
             self.repo.run(Git::write(["add", "-A"]).pathspec(&p))?.into_result()?;
         } else {
+            // Built from the file as read: once edited elsewhere, it would
+            // stage lines the file no longer has.
+            if worktree(&self.repo, &self.path) != self.right {
+                return Err(GitError::other("the file changed since this diff was read; reload it"));
+            }
             let (l, r) = self.sides();
             let content = combine(&l, &r, &self.changes, sel, Pick::Apply);
             let mode = match &self.index_entry {
@@ -741,6 +748,34 @@ mod tests {
         d.stage(&lines(&[], &[0])).unwrap();
         let entry = s.git(&["ls-files", "-s", "link"]);
         assert!(entry.starts_with("120000 "), "{entry}");
+    }
+
+    #[test]
+    fn a_partial_stage_refuses_once_the_file_changed_under_it() {
+        let s = scratch();
+        s.commit("f.txt", "a\nb\nc\nd\ne\nf\ng\nh\n", "base");
+        s.write("f.txt", "a\nB\nc\nd\ne\nf\ng\nH\n");
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
+        // Edited in another editor after the diff was read: its `B` is gone.
+        s.write("f.txt", "a\nBee\nc\nd\ne\nf\ng\nH\n");
+        assert!(d.stage(&sel_all(&[0])).is_err());
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "", "a stale stage wrote a line the file no longer has");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_rename_that_changed_mode_shows_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("old.sh", "echo\n", "first");
+        s.git(&["mv", "old.sh", "new.sh"]);
+        std::fs::set_permissions(s.repo.abs("new.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        s.git(&["add", "new.sh"]);
+        let d = DiffSession::load(s.repo.clone(), "new.sh".into(), Some("old.sh".into()), Mode::Staged).unwrap();
+        let v = d.view("side", 3, Whitespace::Exact);
+        assert_eq!((v["identical"].clone(), v["modes"].clone()), (json!(false), json!(["100644", "100755"])), "{v}");
+        d.unstage(&sel_all(&[])).unwrap();
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "");
     }
 
     #[test]
