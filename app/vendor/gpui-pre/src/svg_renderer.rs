@@ -178,6 +178,20 @@ impl SvgRenderer {
                 select_font: font_resolver,
                 select_fallback: fallback_selection,
             },
+            // yuzora(L5): usvg's default reads whatever local path an <image> names
+            // (whole, any size, devices and FIFOs, a UNC share) and keeps any raster
+            // a data URI carries for resvg to decode at the size its header claims.
+            // SVGs come from repos and agents here: neither is followed. An SVG in a
+            // data URI still draws (usvg gives it no external images either).
+            image_href_resolver: usvg::ImageHrefResolver {
+                resolve_data: Box::new(|mime: &str, data, options: &usvg::Options| match mime {
+                    "image/svg+xml" => {
+                        (usvg::ImageHrefResolver::default_data_resolver())(mime, data, options)
+                    }
+                    _ => None,
+                }),
+                resolve_string: Box::new(|_: &str, _: &usvg::Options| None),
+            },
             ..Default::default()
         };
         Self {

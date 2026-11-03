@@ -87,6 +87,7 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 - `yuzora-editor/doc-pane.js` 與 `yuzora-markdown/doc-pane.js` 必須完全相同（測試守著）：改一份就複製到另一份。
 - 上色在 `src/highlight/`：新增語言＝加語法 crate、`Lang` 加一項、補測試樣本。其他 crate 要編輯器時用 `yuzora_files::editor::new_code_editor` 與 `code_editor`。
 - 磁碟 I/O 一律在 worker thread。需要 `Window` 的操作（`set_value`、focus、取代）延後到 foreground task 執行，不要在 host function 裡同步做：host function 執行時 window 正在更新。
+- 上游改動只有 `app/vendor/gpui-pre/src/svg_renderer.rs` 的 `image_href_resolver`（`// yuzora(L5):`）：SVG 的 `<image>` 不讀任何路徑、不解碼 data URI 裡的點陣圖，只畫內嵌的 SVG。上游同步時保留它；回歸測試在 `yuzora-files` 的 `image::tests::an_svg_*`。
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

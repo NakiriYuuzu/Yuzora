@@ -416,6 +416,7 @@ pub(crate) fn test_gif(size: u16, frames: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn formats_follow_the_extension() {
@@ -508,5 +509,130 @@ mod tests {
     fn what_has_no_raster_header_is_left_to_the_decoder() {
         assert!(fits_in_memory(b"<svg xmlns='http://www.w3.org/2000/svg'/>"));
         assert!(fits_in_memory(b""));
+    }
+
+    // GPUI's SVG renderer, the one the image pane, Markdown and every mod's
+    // `svg()`/`img()` use: an SVG's `<image>` reads no file and decodes no
+    // raster it carries.
+
+    /// A 4×4 red PNG.
+    const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGP4z8DwHxkzkC4AADxAH+HggXe0AAAAAElFTkSuQmCC";
+    /// A PNG whose header says 60000×60000 (14 GB decoded), 74 bytes long.
+    const HUGE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAA6mAAAOpgCAYAAACA0nVCAAAAEUlEQVR4nGNgGAWjYBQMdwAAA+gAAbOm00YAAAAASUVORK5CYII=";
+
+    fn svg_with(inner: &str) -> String {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">{inner}</svg>"#)
+    }
+
+    fn image_at(href: &str) -> String {
+        svg_with(&format!(r#"<image href="{href}" width="4" height="4"/>"#))
+    }
+
+    /// The top-left pixel (BGRA) of `svg` rendered, within ten seconds.
+    fn first_pixel(svg: String) -> [u8; 4] {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let image = gpui::SvgRenderer::new(std::sync::Arc::new(()))
+                .render_single_frame(svg.as_bytes(), 1.0)
+                .unwrap();
+            let _ = tx.send(<[u8; 4]>::try_from(&image.as_bytes(0).unwrap()[..4]).unwrap());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the SVG didn't render within ten seconds")
+    }
+
+    const RED: [u8; 4] = [0, 0, 255, 255];
+    const NOTHING: [u8; 4] = [0, 0, 0, 0];
+
+    #[test]
+    fn an_svg_image_reads_no_file() {
+        assert_eq!(
+            first_pixel(svg_with(r#"<rect width="4" height="4" fill="red"/>"#)),
+            RED
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let red = dir.path().join("red.png");
+        std::fs::write(
+            &red,
+            base64::engine::general_purpose::STANDARD
+                .decode(RED_PNG)
+                .unwrap(),
+        )
+        .unwrap();
+        // A big file is not read whole either.
+        let big = dir.path().join("big.png");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(64 << 20)
+            .unwrap();
+        let red = red.to_string_lossy().into_owned();
+        for href in [
+            red.clone(),
+            format!("file://{red}"),
+            big.to_string_lossy().into_owned(),
+            r"\\host\share\x.png".to_owned(),
+        ] {
+            assert_eq!(first_pixel(image_at(&href)), NOTHING, "{href}");
+        }
+        // Nor through an SVG inside it.
+        let nested = base64::engine::general_purpose::STANDARD.encode(image_at(&red));
+        assert_eq!(
+            first_pixel(image_at(&format!("data:image/svg+xml;base64,{nested}"))),
+            NOTHING
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_svg_image_never_waits_on_a_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe.png");
+        let name = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let svg = image_at(&fifo.to_string_lossy());
+        std::thread::spawn(move || {
+            let _ = gpui::SvgRenderer::new(std::sync::Arc::new(()))
+                .render_single_frame(svg.as_bytes(), 1.0);
+            let _ = tx.send(());
+        });
+        if rx.recv_timeout(std::time::Duration::from_secs(10)).is_err() {
+            // Let the stuck reader go before failing.
+            let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
+            panic!("the SVG waited on a FIFO");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_svg_image_never_reads_a_device() {
+        // Read, /dev/zero never ends: the app would grow until it aborts.
+        assert_eq!(first_pixel(image_at("/dev/zero")), NOTHING);
+    }
+
+    #[test]
+    fn an_svg_decodes_no_raster_it_carries() {
+        for mime in ["image/png", "text/plain", ""] {
+            let svg = image_at(&format!("data:{mime};base64,{RED_PNG}"));
+            assert_eq!(first_pixel(svg), NOTHING, "{mime}");
+        }
+        // Whatever size its header claims.
+        assert_eq!(
+            first_pixel(image_at(&format!("data:image/png;base64,{HUGE_PNG}"))),
+            NOTHING
+        );
+        // An SVG in it still draws, its own rasters left out the same way.
+        let rect = base64::engine::general_purpose::STANDARD
+            .encode(svg_with(r#"<rect width="4" height="4" fill="red"/>"#));
+        assert_eq!(
+            first_pixel(image_at(&format!("data:image/svg+xml;base64,{rect}"))),
+            RED
+        );
+        let inner = base64::engine::general_purpose::STANDARD
+            .encode(image_at(&format!("data:image/png;base64,{RED_PNG}")));
+        assert_eq!(
+            first_pixel(image_at(&format!("data:image/svg+xml;base64,{inner}"))),
+            NOTHING
+        );
     }
 }
