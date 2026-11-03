@@ -1,19 +1,9 @@
-// Opening a file in the right pane, and small path helpers.
+// Opening a file in the right pane, and small path helpers (paths.js).
 import { panes, focused, run } from "herdr";
-import { kindOf, documentFor, focusDocument, gotoLine } from "yuzora:files";
+import { kindOf, documentFor, focusDocument, revealLine } from "yuzora:files";
+import { base } from "./paths.js";
 
-export const join = (dir, name) => (dir.endsWith("/") ? dir + name : `${dir}/${name}`);
-export const parent = path => {
-  const i = path.lastIndexOf("/");
-  return i > 0 ? path.slice(0, i) : i === 0 ? "/" : "";
-};
-export const base = path => path.slice(path.lastIndexOf("/") + 1);
-/** `path` relative to `root` ("" for root itself), or null outside it. */
-export const rel = (root, path) => {
-  if (path === root) return "";
-  const prefix = root.endsWith("/") ? root : root + "/";
-  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
-};
+export { join, parent, base, rel } from "./paths.js";
 
 const COLORS = {
   tsx: "#60a5fa", jsx: "#60a5fa", ts: "#e5c07b", mts: "#e5c07b", cts: "#e5c07b", js: "#e5c07b", mjs: "#e5c07b", cjs: "#e5c07b",
@@ -48,7 +38,8 @@ export function openFile(path, on, at = {}) {
   const open = kind === "image" ? null : documentFor(path, { on });
   if (open?.pane && panes().some(p => p.pane === open.pane)) {
     run("pane.focus", { pane: open.pane });
-    if (at.line) gotoLine(open.doc, at.line, at.column ?? 1);
+    // A preview there switches to the source for the line.
+    if (at.line) revealLine(open.doc, at.line, at.column ?? 1);
     else focusDocument(open.doc);
     return;
   }

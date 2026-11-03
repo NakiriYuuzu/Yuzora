@@ -348,6 +348,9 @@ pub struct DocView {
     focused: bool,
     /// The herdr pane a script last saw showing it.
     pane: Option<String>,
+    /// The last line asked to be shown from outside its panes (id, line,
+    /// column): a pane showing the preview switches to the source for it.
+    reveal: Option<(u64, u32, u32)>,
     seq: u64,
     waiters: Vec<oneshot::Sender<u64>>,
     look: Look,
@@ -428,6 +431,7 @@ impl DocView {
             refs: 1,
             focused: false,
             pane: None,
+            reveal: None,
             seq: 1,
             waiters: Vec::new(),
             look: Look::default(),
@@ -1027,6 +1031,16 @@ impl DocView {
             .field("column", column)
             .field("matches", matches)
             .field("match", current.map(|c| c + 1))
+            .field(
+                "reveal",
+                self.reveal.map(|(id, line, column)| -> HostValue {
+                    HostObject::new()
+                        .field("id", id)
+                        .field("line", line)
+                        .field("column", column)
+                        .into()
+                }),
+            )
             .into()
     }
 
@@ -1127,6 +1141,16 @@ impl DocView {
             );
             s.focus(window, cx);
         }));
+    }
+
+    /// [`Self::goto`], asked from outside the panes (a search hit): a pane
+    /// showing the preview has no editor yet, so it switches to the source
+    /// and goes there itself.
+    pub fn reveal(&mut self, line: u32, column: u32, cx: &mut Context<Self>) {
+        let id = self.reveal.map_or(1, |(id, ..)| id + 1);
+        self.reveal = Some((id, line, column));
+        self.goto(line, column, cx);
+        self.bump(cx);
     }
 
     fn status_bar(&self, cx: &App) -> impl IntoElement {
@@ -1390,6 +1414,38 @@ mod tests {
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(view.read(cx).unconfirmed, None));
+    }
+
+    #[gpui::test]
+    fn a_line_asked_from_outside_is_told_to_the_panes(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "# a\n\nb\n").unwrap();
+        let key = DocKey {
+            on: None,
+            path: path.to_string_lossy().into_owned(),
+        };
+        // A preview only: no editor to put the cursor in.
+        let id = cx.update(|cx| open(key, cx));
+        cx.run_until_parked();
+        let view = cx.update(|cx| get(id, cx).unwrap());
+        let reveal = |cx: &mut gpui::TestAppContext| {
+            cx.update(|cx| {
+                let r = view.read(cx).snapshot(cx).get("reveal").cloned().unwrap();
+                ["id", "line", "column"].map(|k| r.get(k).and_then(HostValue::as_number))
+            })
+        };
+        cx.update(|cx| {
+            assert_eq!(
+                view.read(cx).snapshot(cx).get("reveal"),
+                Some(&HostValue::Null)
+            )
+        });
+        view.update(cx, |doc, cx| doc.reveal(3, 2, cx));
+        assert_eq!(reveal(cx), [Some(1.0), Some(3.0), Some(2.0)]);
+        // Each ask is a new one, even for the same line.
+        view.update(cx, |doc, cx| doc.reveal(3, 2, cx));
+        assert_eq!(reveal(cx)[0], Some(2.0));
     }
 
     #[gpui::test]

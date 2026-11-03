@@ -63,6 +63,8 @@ export class DocPane extends View {
     this.goto = p.line && this.fresh ? { line: p.line, column: p.column ?? 1 } : null;
     // A line to go to is in the source (this pane only; the saved choice stays).
     this.view = this.kind() === "markdown" && !this.goto ? (localStorage.getItem("view") ?? "preview") : "source";
+    // A line asked before this pane opened is not for it.
+    this.revealed = this.state?.reveal?.id ?? 0;
     this.handle = cx.focus_handle();
     this.finding = false; this.replacing = false; this.caseSensitive = false;
     this.findInput = InputState.new({ placeholder: t("find.placeholder") });
@@ -138,6 +140,17 @@ export class DocPane extends View {
   settle() {
     const s = this.state;
     if (!s) return;
+    // A line asked from outside (a search hit): the preview has no lines to
+    // go to, so this pane shows the source and goes there once it owns it.
+    if (s.reveal && s.reveal.id !== this.revealed) {
+      this.revealed = s.reveal.id;
+      if (this.view === "preview") {
+        this.view = "source";
+        this.goto = { line: s.reveal.line, column: s.reveal.column };
+        this.until = Date.now() + OPEN_WINDOW;
+        this.went = null;
+      }
+    }
     if (s.focused || this.fresh) this.notePane();
     if (Date.now() > this.until) { this.goto = null; this.fresh = false; }
     // The editor exists once this pane owns it (Rust bumps when it is made).

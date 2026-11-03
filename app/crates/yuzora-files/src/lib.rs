@@ -55,6 +55,8 @@ export interface DocumentState {
   externalAt: number | null;
   focused: boolean; owner: string | null; pane: string | null;
   line: number; column: number; matches: number; match: number | null;
+  /** The last line asked to be shown from outside its panes (revealLine): a preview switches to the source for it. */
+  reveal: { id: number; line: number; column: number } | null;
 }
 export interface EditorLook { font_family?: string; font_size?: number;
   colors?: { foreground?: string; muted?: string; background?: string; active_line?: string; selection?: string; caret?: string; border?: string; status?: string };
@@ -120,6 +122,8 @@ export function checkDisk(doc: number): Promise<null>;
 export function focusDocument(doc: number): null;
 /** Puts the cursor on a 1-based line (and column) and focuses the editor. */
 export function gotoLine(doc: number, line: number, column?: number): null;
+/** gotoLine asked from outside the document's panes (a search hit): a pane showing the Markdown preview switches to the source and goes there. */
+export function revealLine(doc: number, line: number, column?: number): null;
 /** Highlights matches and moves to the next one; empty query ends the search. Counts are in documentState. */
 export function find(doc: number, query: string, options?: { caseSensitive?: boolean }): null;
 export function findStep(doc: number, backwards?: boolean): null;
@@ -556,6 +560,16 @@ pub fn host_module() -> HostModule {
             with_doc(a, |d, cx| d.goto(line, column, cx))?;
             Ok(HostValue::Null)
         })
+        .function("revealLine", |a| {
+            let line = a.number(1)?.max(1.0) as u32;
+            let column = a
+                .get(2)
+                .and_then(HostValue::as_number)
+                .unwrap_or(1.0)
+                .max(1.0) as u32;
+            with_doc(a, |d, cx| d.reveal(line, column, cx))?;
+            Ok(HostValue::Null)
+        })
         .function("find", |a| {
             let query = a.string(1)?.to_owned();
             let case = opt_bool(a, 2, "caseSensitive");
@@ -639,6 +653,33 @@ mod tests {
             keep_newest(&mut cache, key(), later, list("later")).files,
             ["later"]
         );
+    }
+
+    #[test]
+    fn sidebar_paths_take_either_slash_in_windows_paths_only() {
+        let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/paths.js")
+            .replace("export const", "const");
+        let cases = [
+            (r#"parent("C:\\a\\b.txt")"#, r"C:\a"),
+            (r#"base("C:\\a\\b.txt")"#, "b.txt"),
+            (r#"parent("C:\\a.txt")"#, r"C:\"),
+            (r#"parent("C:/a/b\\c.txt")"#, "C:/a/b"),
+            (r#"base("\\\\srv\\share\\x.md")"#, "x.md"),
+            (r#"parent("/a/b")"#, "/a"),
+            (r#"parent("/a")"#, "/"),
+            (r#"parent("a")"#, ""),
+            (r#"base("/a/b")"#, "b"),
+            // Elsewhere a backslash is part of a name.
+            (r#"base("/a/b\\c")"#, r"b\c"),
+            (r#"parent("/a/b\\c")"#, "/a"),
+        ];
+        let calls: Vec<&str> = cases.iter().map(|(call, _)| *call).collect();
+        let script = format!("(() => {{ {src}\nreturn [{}]; }})()", calls.join(", "));
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let got: Vec<String> = context.with(|ctx| ctx.eval(script).unwrap());
+        let want: Vec<&str> = cases.iter().map(|(_, want)| *want).collect();
+        assert_eq!(got, want);
     }
 
     #[test]

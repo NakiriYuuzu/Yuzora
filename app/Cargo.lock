@@ -10798,6 +10798,7 @@ dependencies = [
  "ignore",
  "image",
  "libc",
+ "quickjs-jit",
  "regex",
  "serde",
  "serde_json",

@@ -45,4 +45,6 @@ libc = "0.2"
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+# The app's JS engine (gpui-shell's), to run the mods' plain helpers in tests.
+quickjs = { package = "quickjs-jit", version = "0.12.11", git = "https://github.com/longbridge/quickjs-jit", rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393" }
 tempfile = "3"
