@@ -1,5 +1,5 @@
 // Settings > Yuzora > General: language, look, what happens when Yuzora
-// opens, the terminal clipboard. Owned by lane L6.
+// opens, Herdr's panels (L1's), the terminal clipboard. Owned by lane L6.
 //
 // Language and startup live in Yuzora's settings (yuzora/settings.json,
 // section "general"); look and clipboard are Herdr's settings.json, written
@@ -8,7 +8,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, theme, themes, fonts, settings, layouts, shared, appHome, readTextFile, writeTextFile } from "herdr";
+import { run, theme, themes, fonts, settings, layouts, layout, shared, setShared, appHome, readTextFile, writeTextFile } from "herdr";
 import { t, locale, setLocale, getSetting, setSetting } from "yuzora:core";
 import { page, title, heading, row, button, toggle, segmented, note, item } from "./ui.js";
 
@@ -16,6 +16,15 @@ import { page, title, heading, row, button, toggle, segmented, note, item } from
 const DEFAULT_FONT = "JetBrains Mono";
 const DEFAULT_UI_FONT = "Geist";
 const MODES = ["last", "workspace", "files", "git", "database", "ssh"];
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
 
 export default class General extends View {
   init(_props, cx) {
@@ -238,6 +247,32 @@ export default class General extends View {
       );
   }
 
+  // Panels (lane L1) -----------------------------------------------------
+
+  // Herdr's Files and Changes panels, as the welcome's third page turns them on and off
+  // (shared "workspace.panels"; unset: none, see yuzora-shell-tabs). The tab bar shows a
+  // button for each one on; turning off the one showing closes it too.
+  setPanel(id, on) {
+    const was = shared("workspace.panels");
+    const now = (Array.isArray(was) ? was : []).filter((x) => x !== id);
+    setShared("workspace.panels", on ? [...now, id] : now);
+    const L = layout(), panel = find(L, "panel");
+    if (!on && panel && !panel.hidden && find(L, "panel-body")?.active === id) run("layout.hide", { id: "panel" });
+  }
+
+  panels(th) {
+    const saved = shared("workspace.panels"), on = Array.isArray(saved) ? saved : [];
+    const line = (id) => row(th, t(`panels.${id}`), null, toggle(th, `gn-panel-${id}`, on.includes(id), (_e, cx) => {
+      this.setPanel(id, !on.includes(id));
+      cx.notify();
+    }));
+    return v_flex()
+      .child(heading(th, t("panels.heading")))
+      .child(note(th, t("panels.about")))
+      .child(line("files"))
+      .child(line("changes"));
+  }
+
   // Terminal clipboard ---------------------------------------------------
 
   security(th, cx) {
@@ -266,6 +301,7 @@ export default class General extends View {
         .child(this.look(th))
         // Only once something opens the window on it (the mode bar sets this flag).
         .when(Boolean(shared("yuzora.startup.honored")), (el) => el.child(this.startup(th)))
+        .child(this.panels(th))
         .child(this.security(th, cx)),
     );
   }

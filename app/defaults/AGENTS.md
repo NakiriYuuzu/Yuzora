@@ -1009,9 +1009,11 @@ with these differences.
   with `layout.select {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}`,
   and the tab bar, the active tab and `yuzora-statusbar` on the right. It is
   shipped: clone it before changing its structure, as with Herdr's layouts.
-- Theme `yuzora-dark`. Design values a theme has no name for (diff colors,
-  agent brand colors, Space badge colors, the agent states' shapes, sizes)
-  come from `tokens()`.
+- Themes `yuzora-dark` and `yuzora-light`: the layout shows the one for the
+  system's appearance (or settings.json's `appearance`). Design values a theme
+  has no name for (diff colors, agent brand colors, Space badge colors, the
+  agent states' shapes, sizes) come from `tokens()`, which gives a light theme
+  its own text, diff and status colors.
 - Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
@@ -1036,6 +1038,9 @@ with these differences.
 - The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+- Herdr's Files and Changes panels are off in Yuzora until turned on (the welcome's third page, or Settings >
+  Yuzora > General > Panels): shared `"workspace.panels"` lists the ones on, and unset means none. The tab bar
+  shows a button only for those; Yuzora's sidebar has its own Files and Git modes.
 - Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
   `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
 - `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`

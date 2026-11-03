@@ -321,21 +321,23 @@ impl InputHighlighter for SqlHighlighter {
     }
 }
 
-/// The design's SQL colors (p4).
+/// The design's SQL colors (p4): tokens.json `sql`, its light part while a light theme shows.
 struct SqlColors;
+
+/// A highlight's color for a dark (`false`) or light (`true`) theme.
+fn sql_color(light: bool, name: &str) -> Option<gpui::Hsla> {
+    static SQL: LazyLock<[Value; 2]> = LazyLock::new(|| [false, true].map(|l| yuzora_core::tokens::for_theme(l)["sql"].clone()));
+    let key = match name {
+        "type" | "boolean" => "type",
+        "keyword" | "string" | "number" | "comment" | "function" => name,
+        _ => return None,
+    };
+    crate::grid::hex(SQL[usize::from(light)][key].as_str()?)
+}
 
 impl HighlightStyleResolver for SqlColors {
     fn style(&self, name: &str) -> Option<HighlightStyle> {
-        let rgb = match name {
-            "keyword" => 0xc678dd,
-            "type" | "boolean" => 0xe5c07b,
-            "string" => 0x98c379,
-            "number" => 0xd19a66,
-            "comment" => 0x8b8f98,
-            "function" => 0x61afef,
-            _ => return None,
-        };
-        Some(HighlightStyle { color: Some(gpui::rgb(rgb).into()), ..Default::default() })
+        Some(HighlightStyle { color: Some(sql_color(yuzora_core::tokens::light(), name)?), ..Default::default() })
     }
 }
 
@@ -375,5 +377,20 @@ mod tests {
             ]
         );
         assert_eq!(named("$$ select 1 $$ N'中文'"), [("$$ select 1 $$", "string"), ("N'中文'", "string")]);
+    }
+
+    #[test]
+    fn sql_colors_follow_the_theme() {
+        let hex = |s| crate::grid::hex(s);
+        // Dark keeps the design's colors; light takes tokens.json's light part.
+        assert_eq!(sql_color(false, "keyword"), hex("#c678dd"));
+        assert_eq!(sql_color(true, "keyword"), hex("#9333c4"));
+        assert_eq!(sql_color(true, "boolean"), sql_color(true, "type"));
+        for light in [false, true] {
+            for name in ["keyword", "type", "boolean", "string", "number", "comment", "function"] {
+                assert!(sql_color(light, name).is_some(), "light={light}: {name}");
+            }
+            assert_eq!(sql_color(light, "punctuation"), None);
+        }
     }
 }

@@ -1,6 +1,6 @@
 # L1 外殼＋工作區
 
-lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列、pane 標頭與外框、狀態列、「＋ 新增 pane」選單（混合分割），以及 `yuzora-dark` theme、tokens 與上游畫面的品牌字樣。設計依據是設計稿 p1–p6，特別是 p6 的工作區模式。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
+lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列、pane 標頭與外框、狀態列、「＋ 新增 pane」選單（混合分割），以及 `yuzora-dark`／`yuzora-light` theme、tokens 與上游畫面的品牌字樣。設計依據是設計稿 p1–p6，特別是 p6 的工作區模式。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
 
 ## 範圍與檔案
 
@@ -15,7 +15,7 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
 | `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列：標誌與搜尋（開指令面板） |
 | `app/defaults/layouts/yuzora.json` | 預設 layout：改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型 |
-| `app/defaults/themes/yuzora-dark.json`、`app/defaults/yuzora/tokens.json` | theme 與 tokens |
+| `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深色／淺色 theme 與 tokens（`light` 區塊是淺色主題的覆寫值） |
 | `app/defaults/frame/{welcome,whatsnew,feedback}/` | 上游畫面，只改品牌字樣（見「上游改動」） |
 
 ## `yuzora:shell`
@@ -72,10 +72,13 @@ L1 讀的 key：
 - **機器的「新增 Space」**：只在該機器的 layout 已讀到（LED 綠燈）時提供；讀取中 Herdr 會拒絕結構性指令。狀態列的 git 摘要在 focus 的終端機所屬機器上執行（終端機位址 `<machine>/<id>`），不是目前 Space 的機器。
 - **狀態列的 git 不跑 `git status`**：終端機一 `cd` 進資料夾，狀態列就會自動查詢，那個 repo 可能是剛下載、不可信的。`git status` 會看工作樹，並執行 repo 自己 config 指定的程式（`filter.<x>.clean`／`process`、`core.fsmonitor` 等），所以只讀 ref 與 commit：`symbolic-ref` 取 branch，`for-each-ref` 的 `%(upstream:short)`、`%(upstream:track)` 取 upstream 與 ↑↓。partial clone（promisor remote）缺 commit 時，走訪 commit 會用 repo 的 ssh 指令 lazy fetch，所以這種 repo 加 `--no-lazy-fetch`（git 2.44 起）；更舊的 git 不顯示 ↑↓。變更數與衝突數要等 L2 的 trust 判斷搬進 `yuzora-core`（#194）後，只在 folder 已信任時才用 `git status` 查；在那之前回傳 null，狀態列本來就只畫 branch 與 ↑↓。測試用會留下標記檔的 clean filter 與 ssh 指令當 oracle，並確認舊指令確實會觸發它們。
 - **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動還沒列出）或離線（LED 熄滅）時先顯示全部，機器回來後自動回到該機器；連線中（LED 琥珀）時維持原 scope。
-- **新增 pane 選單的高度**：依工具 pane 與 agent 數量（上次 `knownAgents()` 的快取）決定，最高 520px；超過時位置切換列固定、下方清單捲動。還沒有 Space 時工具 pane 停用並註明「需要先有 Space」（`tab.new` 可以替終端機或 agent 順便建立 Space，mod 不行）。
+- **新增 pane 選單的高度**：跟著列數長高，最高 520px（`MENU_MAX`）；超過時位置切換列固定、下方清單捲動。popup 會依內容決定高度（`set_fit_content`，`height` 只是上限），所以選單裡不能有等待「填滿高度」的元素：根元素不用 `size_full`，清單不用 `flex_1`，也不用 `overflow_y_scrollbar`（它的捲動區會填滿父層，改用 `overflow_y_scroll`，和上游的 machine-add、picker 一樣），否則清單高度會塌成 0，只剩位置切換列（曾經發生過，`render_tests.rs` 的 `yuzora_new_pane_menu_*` 鎖住）。選中的位置用 accent 底色，點了立即更新，也記在 `yuzora.shell.split` 給下一次用（截圖：`evidence/l1-pane-menu-before.png` 修正前、`l1-pane-menu-popup.png` 修正後、`l1-pane-menu-below.png` 選「下方」）。沒有工具 pane 或 agent 時顯示說明。還沒有 Space 時工具 pane 停用並註明「需要先有 Space」（`tab.new` 可以替終端機或 agent 順便建立 Space，mod 不行）。
+- **Herdr 的「檔案」「變更」panel 預設關閉**：Yuzora 的側欄已有檔案（L5）與 Git（L2）模式，兩個原生 panel 重複。shared `workspace.panels` 沒有值（undefined／null）時視為 `[]`（`yuzora-shell-tabs` 的 `panelsOn`、welcome frame 的 `panels()`，後者標 `// yuzora(L1):`），tab 列就不顯示這兩顆按鈕；使用者存過的值照舊。layout 的 `panel` 節點維持 `hidden: true`。重新開啟的入口：welcome 第三頁的開關，以及 L6 一般設定頁新增的「Panel」區塊（兩個開關，關掉正在顯示的那個會一併收起）。不放指令面板：它的指令名稱是上游寫死的英文清單，沒有 i18n，也看不出目前是開是關（截圖：`evidence/l1-panels-off.png` 預設的 tab 列、`l1-panels-settings.png` 設定頁）。上游的 `tabs` mod 不在 Yuzora layout 裡，不動。
 - **側欄的＋選單**依列數決定高度（最高 360px，超過時捲動）；「需要注意」最多 5 列高，更多時在框內捲動，下方的樹不會被擠出畫面。
 - **狀態列**：各 lane 的狀態文字共用中間剩下的寬度，太長就截短（再不夠就裁掉），右側的 HERDR 版本與指令面板快捷鍵一定看得到。
 - **Space 徽章色放 shared state**：不寫 Yuzora `settings.json`，所以測試與 render 不會碰 app home 以外的檔案，也不會蓋掉別的設定；L6 若要在外觀頁讓使用者改色，改寫 `yuzora.space.colors` 即可。
+- **Yuzora 主題色調**：`yuzora-dark` 保留設計稿的中性底色層次（canvas、chrome、surface、popover、raised、border、divider），互動色改用品牌色（logo 的藍 `#3b82f6`、青 `#14b8a6`）：accent `#60a5fa`（品牌藍淺一階，在深色底上當文字也達 AA）配品牌墨色 `#0e1026` 當 accent_foreground；ring 用品牌藍；hover／selected 照 beta.1 的推導方式，把品牌藍以 9%／15% 混入中性底色；done `#89b4fa`（品牌藍 60% 混白）；Space 徽章第一、二色是品牌藍與青（都改成白字達 AA 的深一階）；終端的 blue／cyan 換成品牌藍與青。`yuzora-light` 是對應的淺色版（accent `#1d55d4` 配白字）。layout 的 theme 是 `{light: yuzora-light, dark: yuzora-dark}`，跟隨系統或 settings.json 的 `appearance`。`tokens.json` 的值給深色用，`light` 區塊是淺色主題的覆寫值；`tokens()` 依目前主題背景的亮度選用（app 在 `yuzora/mod.rs` 以 `tokens::set_light` 告訴 yuzora-core），所以其他 mod 不必改。對比由 yuzora-core 的 `both_yuzora_themes_read_at_wcag_aa` 測試把關：文字 4.5，狀態標記與 ring 3，終端除了黑色以外的 ansi 4.5。layout 的 theme 欄位一改，upstream 會丟掉使用者在這個 layout 上點選的主題（`layout_sync::forget_edited`）。這次是 beta.2 發布前唯一一次改這個欄位，之後調色只改 theme 檔；舊版 `yuzora-dark` 列在 `settings.rs` 的 `PREVIOUS_THEMES`，沒改過的會自動更新，改過的保留。
+- **淺色主題的對比**：Yuzora mods 與 layout 裡的上游 mods 不寫死顏色（只剩全透明的 `#00000000`）。L3 資料庫畫面原本的深色專用色碼（SQL 高亮、DataGrid 的錯誤字、編輯中的列、主按鈕字色）在白底只有 1.1–3.2:1，現在改從 tokens 取：`tokens().sql`（keyword、type、string、number、comment、function，mod 的 `highlight` 與原生 `SqlEditor` 共用）、`database.edited_row`、`database.error`，主按鈕字色是 DataGrid 新增的 `buttonText`（傳 `accent_foreground`）。`both_yuzora_themes_read_at_wcag_aa` 一併檢查這些色在兩個主題各底色上的對比（文字 4.5，圖示 3）。不隨主題變的：上游 picker／spaces 的徽章（固定色配白字）、agent 品牌色徽章、settings 的主題預覽卡。
 - **字型**：見下節。
 
 ## 字型
@@ -97,8 +100,8 @@ L1 讀的 key：
 | `app/src/layout.rs` | `PaneFrame` 新增 `blocked: Option<Line>` 欄位 |
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
-| `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora |
-| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確） |
+| `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora；新增 `yuzora_new_pane_menu_*` 兩個測試（新增 pane 選單在 popup 裡的版面、點選後的指令）與 `yuzora_herdr_panels_start_off`（Herdr panel 預設關閉、設定頁開關） |
+| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確）；`panels()` 沒有設定時視為沒有 panel |
 | `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
 | `app/defaults/frame/feedback/main.js` | 送出後的感謝文字 |
 | `app/defaults/frame/welcome/yuzora.png` | 新檔：Yuzora 圖示（160px，由 `assets/icons/yuzora.png` 縮圖） |
@@ -134,16 +137,17 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 | `l1-scope-after-restart.png` | 選 lab-01 後重啟，scope 仍在 |
 | `l1-blocked-and-badge.png` | 側欄在 Git 模式時新增 blocked agent：工作區徽章變 3、pane 琥珀外框與標頭 |
 | `l1-agents-tab.png` | Agents 分頁（最急的在前） |
+| `l1-theme-dark.png`、`l1-theme-light.png` | Yuzora 主題的全畫面：深色（yuzora-dark）與淺色（yuzora-light，`appearance: light`） |
 | `l1-new-pane-menu.png` | 「新增 pane」選單（由 `yuzora-shell-tabs.new-pane` 開啟） |
 | `l1-mixed-split-after-restart.png` | 終端機與工具 pane 混合分割，重啟後保留 |
 | `l1-welcome.png` | welcome 的 Yuzora 品牌字樣 |
 | `l1-modebar-gear.png` | 模式列（2x 裁切）：最右的設定按鈕是齒輪 |
 | `l1-brand-dark.png`、`l1-brand-light.png` | 側欄頂端（2x 裁切）的 Yuzora 標誌，深色（yuzora-dark）與淺色（paper，`appearance: light`）主題 |
+| `l1-light-*.png` | 淺色主題（`appearance: light`）的各畫面：`workspace`、`sidebar-files`、`sidebar-git`（L2、L5 尚未合併，仍是 L0 的佔位）、`sidebar-database`、`sidebar-ssh`、`database`（資料表與 SQL 查詢）、`sftp`、`settings`、`settings-mods`、`new-pane`、`palette`。SSH 主機來自假的 HOME（`build-server`、`staging-db`） |
 
 ## 待辦
 
 - 隨 app 打包 Inter（與 Noto Sans TC 的取捨），見「字型」。
-- light theme（`yuzora-light`）。
 - 設計稿品牌列的第二顆按鈕用途未定（搜尋已加入，開指令面板）。
 - pane 標頭的 `repo` 目前是 pane 目前資料夾的名稱；在 repo 子資料夾時不是 repo 名稱。
 - 設計稿 tab 列右側兩顆圖示按鈕的用途未定，暫時做成「在右側／下方開終端機」。
@@ -153,5 +157,6 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 - **L6**：設定框架合併後，模式列齒輪改開 Yuzora 的設定（`yuzora-modebar/main.js` 的 `app.settings`）。外觀設定頁可編輯 `yuzora.space.colors`（Space 徽章色）。
 - **L2**：#194 把 trust 判斷搬進 `yuzora-core` 後，`gitStatus` 改接那個 API：folder 已信任時再跑一次 `git status` 補上 `changed`、`conflicted`，未信任時維持現在的行為（只有 branch 與 ↑↓，不報錯）。
 - **L2–L5**：側欄模式的標頭可用 `spaceBadges()` 畫 Space 徽章（用法見上）；徽章數與狀態列文字照「共享狀態」的 key 寫入。工具 pane 在 `mod.json` 宣告 `"yuzora": {"pane": …}` 就會出現在「＋ 新增 pane」選單。
+- **L2、L5**：#194、#192 在淺色主題下的對比問題（git graph 色盤、ref chip、編輯器與 Markdown 的 One Dark 語法色、警告橫幅等）已列給總指揮轉交。原則同上：顏色從 theme 名稱或 `tokens()` 取，不寫死。
 - **L8**：狀態列最右端（指令面板快捷鍵右邊）保留給 L8 的 `yuzora-perf`，由 L8 把 layout 的 `status` 節點改成 row。L1 維持 `status` 的 id 與 26px 高度，不在快捷鍵右邊加東西；`yuzora-statusbar` 根元素的背景（`theme().chrome`）或上緣分隔線（1px，`theme().divider ?? theme().border`）若要改，要在 PR 註明讓 L8 對齊。
 - **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。
