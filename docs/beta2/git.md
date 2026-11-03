@@ -39,7 +39,7 @@ yuzora-git-settings ┘
 
 - 每個 mod 用 `open(cwd, on)` 取得 repo（同一個 `<machine>:<root>` 只開一次，watcher 也只有一個），之後的函式都帶 `repo.id`。
 - 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求。log、blame、repo pane 用 props，可以同時開多個。
-- 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。
+- 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
 - 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
 
 ### virtual list 的限制
@@ -62,7 +62,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
   - 走訪 commit 的指令（`rev-list --left-right --count`、`for-each-ref` 的 `%(upstream:track)`、`log`、`merge-base`）：repo 有 promisor remote（partial clone）時，ref 可能指向 clone 裡沒有的 commit，git 會用 repo 自己的 ssh 指令去抓。這種 repo 要加 `--no-lazy-fetch`（git 2.44 起），更舊的 git 就不要走訪。範例是 L1 的 `yuzora-shell` `gitStatus`（`a_partial_clones_missing_commit_is_not_fetched`）。
   - 必須先信任的指令：`status`、`diff`、`diff-files`、`diff-index`、`ls-files -m`，任何寫入工作樹或 index 的指令，以及 `fetch`、`pull`、`push`。
 - 寫入指令先拿 repo 層級的寫入鎖（等待中可取消）；讀取不拿。
-- 取消與逾時：本機行程開在自己的 process group，取消或逾時就 `kill(-pid, SIGKILL)` 整棵樹。Windows 沒有 process group：git 先以暫停狀態啟動，放進自己的 job object 後才恢復執行，取消或逾時用 `TerminateJobObject` 結束 hook、ssh、credential helper 等所有子孫行程。job 允許明確要求脫離的程式（`CREATE_BREAKAWAY_FROM_JOB`）離開，否則那些程式會無法啟動；這和 unix 上行程可以離開 process group 對等。credential helper 為登入而開的瀏覽器在 job 裡，取消那次 fetch 時會一起被關掉。讀取預設 60 秒，fetch／pull／push 等網路操作 600 秒；輸出上限 64 MiB。
+- 取消與逾時：本機行程開在自己的 process group，取消或逾時就 `kill(-pid, SIGKILL)` 整棵樹。Windows 沒有 process group：git 先以暫停狀態啟動，放進自己的 job object 後才恢復執行，取消或逾時用 `TerminateJobObject` 結束 hook、ssh、credential helper 等所有子孫行程。job 允許明確要求脫離的程式（`CREATE_BREAKAWAY_FROM_JOB`）離開，否則那些程式會無法啟動；這和 unix 上行程可以離開 process group 對等。credential helper 為登入而開的瀏覽器在 job 裡，取消那次 fetch 時會一起被關掉。job 建不起來或放不進去時不執行 git（回傳錯誤），不會在取消只能結束 git 本身的情況下執行。讀取預設 60 秒，fetch／pull／push 等網路操作 600 秒；輸出上限 64 MiB。
 - pathspec 超過 7600 bytes 改用 `--pathspec-from-file=- --pathspec-file-nul`（指令不支援時退回不帶路徑、讀全部）。
 - 遠端 space：同一個執行器改走 `hc exec --json --on <machine> --cwd --timeout --env … [--stdin] -- git …`（`yuzora_core::remote`）。
 - 輸出可以邊讀邊解析（`run_streaming`），log 用這條路。
@@ -83,7 +83,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - **layout index**：依 IntelliJ `GraphLayoutBuilder` 的 DFS，目前分支、main／master、其他本地、遠端、tag 依序先排，重要分支固定在左側；顏色由 layout index 決定，同一條分支的顏色穩定。
 - **可見圖與列印元素**：依篩選得到可見列；每列的列印元素（節點欄、經過的邊、長邊箭頭，LONG_EDGE 30 列）在需要時才算，放 LRU（400）。元素排序移植 IntelliJ 的 `GraphElementComparatorByLayoutIndex`。
 - **繪製**：`GraphCell` 是 HostModule 元件（GPUI `canvas`），直接讀 Rust 端的列印元素畫線段、箭頭與節點（HEAD 實心＋外框、merge 實心、一般空心）。
-- **篩選**：branch、user、date、path、text（regex、區分大小寫）、hash、range、不含 merge。branch／path／range 篩選保留分支圖（`--parents` 改寫後的 parents）；user／text／date／hash／no-merges 顯示平面清單。篩選的 `--max-count` 分段 5 → 100 → 2000 → 全部（與 IntelliJ 一樣先給一屏）。
+- **篩選**：branch、user、date、path、text（regex、區分大小寫）、hash、range、不含 merge。branch／path／range 篩選保留分支圖（`--parents` 改寫後的 parents）；user／text／date／hash／no-merges 顯示平面清單。篩選的 `--max-count` 分段 5 → 100 → 2000 → 全部（與 IntelliJ 一樣先給一屏）。branch／hash／range 是放在選項前面的 revision，開頭是 `-` 的一律拒絕，否則 git 會把它當成選項（例如 `--output=<file>` 會把 log 寫進那個檔案）；compare 的兩端也一樣。
 - **持久化 index 的接縫**：圖只依賴 `RawCommit {hash, parents, time}`，`LogSession` 的第二階段來源可以換成讀 index；篩選目前全交給 git。
 
 ### Diff 與部分暫存（`diff.rs`、`diffview.rs`）
@@ -166,7 +166,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 
 ### A5. Branches、Tags、Remotes
 
-- ✅ 分支 popup：搜尋、最近、本地（↑↓、upstream 消失、在其他 worktree）、遠端、tags；新增、checkout（本地、遠端建追蹤分支、tag／revision 分離）、從此建分支、改名、刪除（未合併再確認）、刪遠端分支、設定／取消 upstream、tag push／刪除。⏳ favorites、依目錄分組、checkout and rebase onto current。
+- ✅ 分支 popup：搜尋、最近、本地（↑↓、upstream 消失、在其他 worktree）、遠端、tags；新增、checkout（本地、遠端建追蹤分支、tag／revision 分離）、從此建分支、改名、刪除（未合併再確認）、刪遠端分支（遠端分支的 remote 以設定的 remote 名稱最長相符來判斷，`team/origin` 這種含斜線的名稱也對）、設定／取消 upstream、tag push／刪除。⏳ favorites、依目錄分組、checkout and rebase onto current。
 - ✅ Smart checkout 與強制 checkout（本地變更擋住時詢問）。
 - ✅ 比較：兩分支（只在一邊的 commits 與差異檔案）、與工作目錄比較的 diff 模式（`compare`）。
 - ⏳ Branch cleanup（刪除已合併分支）。

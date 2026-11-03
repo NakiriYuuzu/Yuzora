@@ -110,6 +110,12 @@ impl Filter {
         self.users.is_empty() && self.text.is_none() && self.since.is_none() && self.until.is_none() && self.hashes.is_empty() && !self.no_merges
     }
 
+    /// The revisions go before the options, where git would take one that
+    /// starts with `-` for an option (`--output=<file>` writes the log there).
+    pub fn check(&self) -> GitResult<()> {
+        self.hashes.iter().chain(&self.range).chain(&self.branches).try_for_each(|r| not_an_option(r))
+    }
+
     /// The revisions and options for `git log`.
     pub fn args(&self) -> Vec<String> {
         let mut a = Vec::new();
@@ -677,6 +683,7 @@ impl LogSession {
 
     fn load_filtered(self: &Arc<Self>, cancel: &Cancel) -> GitResult<()> {
         let started = Instant::now();
+        self.filter.check()?;
         let refs = read_refs(&self.repo)?;
         let keeps = self.filter.keeps_graph();
         for (i, &stage) in STAGES.iter().enumerate() {
@@ -888,6 +895,12 @@ pub fn details(repo: &Repo, hash: &str) -> GitResult<Value> {
     Ok(v)
 }
 
+/// A revision that would go before a command's options (log, compare):
+/// git would take one starting with `-` for an option.
+pub fn not_an_option(rev: &str) -> GitResult<()> {
+    if rev.starts_with('-') { Err(GitError::Other(format!("not a revision: {rev}"))) } else { Ok(()) }
+}
+
 /// `--name-status -z` entries: `M\0path\0`, `R100\0old\0new\0`.
 pub fn parse_name_status(text: &str) -> Vec<Value> {
     let mut out = Vec::new();
@@ -1078,6 +1091,29 @@ mod tests {
         assert_eq!(path.data.read().unwrap().graph.parents_of(0).collect::<Vec<_>>(), [1]);
         close(log.id);
         close(path.id);
+    }
+
+    #[test]
+    fn a_revision_in_a_filter_is_never_read_as_an_option() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let file = s.dir.path().join("written");
+        let output = format!("--output={}", file.display());
+        // What git writes is named after the whole argument (`written...main`).
+        let written = || std::fs::read_dir(s.dir.path()).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("written")).map(|e| e.path());
+        for f in [json!({ "range": output }), json!({ "branches": [output] }), json!({ "hashes": [output] })] {
+            let log = open(s.repo.clone(), Filter::from_json(&f));
+            wait_loaded(&log);
+            assert_eq!(written(), None, "git log took {f} for an option");
+            assert!(log.info()["error"].as_str().is_some_and(|e| e.contains("--output")), "{f}: {}", log.info());
+            close(log.id);
+        }
+        // The log pane's compare takes two revisions the same way.
+        for (a, b) in [(output.as_str(), "main"), ("main", output.as_str())] {
+            let r = crate::ops::compare(&s.repo, a, b);
+            assert_eq!(written(), None, "compare took {a}...{b} for an option");
+            assert!(r.is_err_and(|e| e.to_string().starts_with("not a revision")));
+        }
     }
 
     /// Timings on a real repository (YUZORA_GIT_PERF_REPO, read only):

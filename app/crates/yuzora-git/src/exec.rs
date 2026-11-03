@@ -461,7 +461,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 /// What a kill reaches besides git: on Windows the job it runs in (the
 /// process group does it elsewhere).
 #[cfg(windows)]
-type Tree = Option<job::Job>;
+type Tree = job::Job;
 #[cfg(not(windows))]
 type Tree = ();
 
@@ -476,9 +476,7 @@ fn kill(child: &mut std::process::Child, tree: &Tree) {
         }
     }
     #[cfg(windows)]
-    if let Some(job) = tree {
-        job.terminate();
-    }
+    tree.terminate();
     let _ = tree;
     let _ = child.kill();
     let _ = child.wait();
@@ -532,30 +530,42 @@ mod job {
         }
     }
 
-    /// Puts a child started suspended into a new job, then lets it run. No
-    /// job (it couldn't be made): it runs, and a kill ends git alone. Err:
-    /// it couldn't be resumed.
-    pub fn adopt(child: &std::process::Child) -> std::io::Result<Option<Job>> {
+    /// Puts a child started suspended into a new job, then lets it run. Err:
+    /// no job (it couldn't be made or joined), or it couldn't be resumed. The
+    /// caller kills it then: git never runs where a cancel ends git alone.
+    pub fn adopt(child: &std::process::Child) -> std::io::Result<Job> {
         // SAFETY: plain calls on handles we own or that the child owns.
         let job = unsafe {
-            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if !h.is_null() {
-                // A program that asks to leave (CREATE_BREAKAWAY_FROM_JOB)
-                // may: it would fail to start otherwise.
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-                SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32);
-            }
+            let h = if no_job() { std::ptr::null_mut() } else { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if h.is_null() {
-                None
-            } else if AssignProcessToJobObject(h, child.as_raw_handle() as HANDLE) == 0 {
-                CloseHandle(h);
-                None
-            } else {
-                Some(Job(h))
+                return Err(std::io::Error::last_os_error());
             }
+            // A program that asks to leave (CREATE_BREAKAWAY_FROM_JOB)
+            // may: it would fail to start otherwise.
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of_val(&info) as u32);
+            if AssignProcessToJobObject(h, child.as_raw_handle() as HANDLE) == 0 {
+                let e = std::io::Error::last_os_error();
+                CloseHandle(h);
+                return Err(e);
+            }
+            Job(h)
         };
         if resume(child.id()) { Ok(job) } else { Err(std::io::Error::last_os_error()) }
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// Tests: this thread's calls get no job, as if Windows refused one.
+        pub static NO_JOB: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn no_job() -> bool {
+        #[cfg(test)]
+        return NO_JOB.with(std::cell::Cell::get);
+        #[cfg(not(test))]
+        false
     }
 
     /// Resumes the threads of a process started suspended (std doesn't hand
@@ -855,11 +865,26 @@ mod tests {
         use std::os::windows::process::CommandExt as _;
         // Suspended, as run_local starts git.
         let mut child = Command::new("cmd").args(["/c", "exit"]).creation_flags(0x0800_0000 | 0x0000_0004).spawn().unwrap();
-        let job = job::adopt(&child).unwrap().expect("a job");
+        let job = job::adopt(&child).unwrap();
         let _ = child.wait();
         // CREATE_BREAKAWAY_FROM_JOB would fail inside it otherwise; on unix a
         // process can leave its group as well.
         assert!(job.lets_breakaway());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_never_runs_where_a_cancel_cant_reach_what_it_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::local(dir.path().to_string_lossy());
+        // No job for this thread's calls: a kill would end git alone, not
+        // the shell (a hook, ssh, a credential helper) it starts.
+        job::NO_JOB.with(|n| n.set(true));
+        let r = run(&place, Git::read(["-c", "alias.w=!echo ran > ran.txt", "w"]));
+        job::NO_JOB.with(|n| n.set(false));
+        assert!(matches!(r, Err(GitError::Spawn(_))), "{r:?}");
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(!dir.path().join("ran.txt").exists(), "git ran outside a job");
     }
 
     /// What the job costs per call on Windows (a thread snapshot to resume

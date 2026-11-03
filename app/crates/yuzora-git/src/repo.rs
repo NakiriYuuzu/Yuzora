@@ -31,7 +31,10 @@ pub struct Repo {
     generation: AtomicU64,
     /// Moves when refs, HEAD or the operation in progress changed (the log reloads).
     refs_generation: AtomicU64,
+    /// Each with the time it is answered by.
     waiters: Mutex<Vec<(Instant, async_channel::Sender<u64>)>>,
+    /// How long a wait lasts at most (ms, [`WAIT_LIMIT`]).
+    pub wait_limit: AtomicU64,
     pub status: Mutex<crate::status::StatusCache>,
     /// One status refresh at a time.
     pub refreshing: Mutex<()>,
@@ -55,6 +58,7 @@ impl Repo {
             generation: AtomicU64::new(1),
             refs_generation: AtomicU64::new(1),
             waiters: Mutex::default(),
+            wait_limit: AtomicU64::new(WAIT_LIMIT.as_millis() as u64),
             status: Mutex::default(),
             refreshing: Mutex::default(),
             watch: Mutex::default(),
@@ -104,7 +108,7 @@ impl Repo {
         self.bump();
     }
 
-    /// Resolves once the generation is past `since`, or after [`WAIT_LIMIT`].
+    /// Resolves once the generation is past `since`, or after `wait_limit`.
     /// Waiting counts as using the repo (a log pane only ever waits).
     pub fn wait(self: &Arc<Self>, since: u64) -> impl std::future::Future<Output = u64> + Send + use<> {
         self.used();
@@ -114,14 +118,16 @@ impl Repo {
             let _ = tx.try_send(now);
         } else {
             let mut w = self.waiters.lock().unwrap_or_else(|e| e.into_inner());
-            // Old waiters are answered here and by the watcher's tick.
+            // Old waiters leave the list here and on the watcher's tick.
             expire(&mut w);
-            w.push((Instant::now(), tx));
+            let by = Instant::now() + Duration::from_millis(self.wait_limit.load(Ordering::SeqCst));
+            w.push((by, tx.clone()));
+            answer_by(by, tx);
         }
         async move { rx.recv().await.unwrap_or(now) }
     }
 
-    /// Answers waiters older than [`WAIT_LIMIT`] (called on a timer).
+    /// Answers waiters past their time (called on a timer).
     pub fn expire_waiters(&self) {
         expire(&mut self.waiters.lock().unwrap_or_else(|e| e.into_inner()));
     }
@@ -196,9 +202,38 @@ impl Repo {
     }
 }
 
+/// Answers a wait at its time whether or not a watcher ticks: a repo on a
+/// machine has none, nor one whose watcher couldn't start. One thread for
+/// all of them, there while any wait is.
+fn answer_by(by: Instant, tx: async_channel::Sender<u64>) {
+    type Waits = (bool, Vec<(Instant, async_channel::Sender<u64>)>);
+    static WAITS: Mutex<Waits> = Mutex::new((false, Vec::new()));
+    let mut w = WAITS.lock().unwrap_or_else(|e| e.into_inner());
+    w.1.push((by, tx));
+    if w.0 {
+        return;
+    }
+    let started = std::thread::Builder::new().name("yuzora-git-waits".into()).spawn(|| {
+        loop {
+            std::thread::sleep(WAIT_TICK);
+            let mut w = WAITS.lock().unwrap_or_else(|e| e.into_inner());
+            expire(&mut w.1);
+            if w.1.is_empty() {
+                w.0 = false;
+                return;
+            }
+        }
+    });
+    w.0 = started.is_ok();
+}
+
+/// How late past its time a wait may be answered.
+const WAIT_TICK: Duration = Duration::from_secs(1);
+
 fn expire(w: &mut Vec<(Instant, async_channel::Sender<u64>)>) {
-    w.retain(|(at, tx)| {
-        if at.elapsed() >= WAIT_LIMIT {
+    let now = Instant::now();
+    w.retain(|(by, tx)| {
+        if now >= *by {
             let _ = tx.try_send(0);
             false
         } else {
@@ -584,6 +619,23 @@ pub(crate) mod tests {
         let later = s.repo.wait(g);
         let bumped = s.repo.bump();
         assert_eq!(futures_lite_block(later), bumped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wait_on_a_machine_ends_on_time_without_a_watcher() {
+        let s = scratch();
+        // Over `hc exec`: no watcher, so nothing of the watcher's answers it.
+        let r = super::testing::on_machine(&s);
+        assert!(r.watch.lock().unwrap().is_none());
+        r.wait_limit.store(200, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wait = r.wait(r.generation());
+        std::thread::spawn(move || {
+            let _ = tx.send(futures_lite_block(wait));
+        });
+        // The sidebar refreshes a machine's repo when its wait ends.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(0), "a wait on a machine never ended");
     }
 
     #[test]

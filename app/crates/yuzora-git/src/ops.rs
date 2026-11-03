@@ -227,6 +227,7 @@ pub fn messages(repo: &Repo) -> GitResult<Value> {
 pub fn branches(repo: &Repo) -> GitResult<Value> {
     let fmt = "--format=%(refname)%00%(objectname)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(HEAD)%00%(committerdate:unix)%00%(subject)%00%(worktreepath)";
     let out = repo.text(Git::read(["for-each-ref", fmt, "refs/heads", "refs/remotes", "refs/tags"]))?;
+    let remotes = remote_names(repo)?;
     let (mut local, mut remote, mut tags) = (Vec::new(), Vec::new(), Vec::new());
     let mut current = None;
     for line in out.lines() {
@@ -251,7 +252,7 @@ pub fn branches(repo: &Repo) -> GitResult<Value> {
             if name.ends_with("/HEAD") {
                 continue;
             }
-            let (r, b) = name.split_once('/').unwrap_or((name, ""));
+            let (r, b) = remote_and_branch(&remotes, name).unwrap_or((name, ""));
             remote.push(json!({ "name": name, "remote": r, "branch": b, "hash": f[1], "time": time, "subject": f[6] }));
         } else if let Some(name) = f[0].strip_prefix("refs/tags/") {
             tags.push(json!({ "name": name, "hash": f[1], "time": time, "subject": f[6] }));
@@ -279,6 +280,21 @@ pub fn branches(repo: &Repo) -> GitResult<Value> {
     Ok(json!({ "current": current, "head": head.ok().then(|| head.stdout_text().trim().to_owned()), "local": local, "remote": remote, "tags": tags, "recent": recent }))
 }
 
+fn remote_names(repo: &Repo) -> GitResult<Vec<String>> {
+    Ok(repo.text(Git::read(["remote"]))?.lines().map(str::to_owned).collect())
+}
+
+/// A remote branch's remote and branch (`team/origin/main`): the longest
+/// configured remote it starts with, as a remote's name may have slashes
+/// or be another's prefix (`a`, `a/b`), else up to the first slash.
+fn remote_and_branch<'a>(remotes: &[String], name: &'a str) -> Option<(&'a str, &'a str)> {
+    let named = remotes.iter().filter(|r| name.len() > r.len() && name.starts_with(r.as_str()) && name.as_bytes()[r.len()] == b'/').max_by_key(|r| r.len());
+    match named {
+        Some(r) => Some((&name[..r.len()], &name[r.len() + 1..])),
+        None => name.split_once('/'),
+    }
+}
+
 /// Whether git refused because local changes would be overwritten.
 fn blocked_by_changes(stderr: &str) -> bool {
     stderr.contains("would be overwritten") || stderr.contains("Please commit your changes or stash them")
@@ -294,7 +310,7 @@ pub fn checkout(repo: &Repo, target: &str, smart: bool, force: bool) -> GitResul
     let mut cmd = if is_local {
         Git::write(["switch", target])
     } else if is_remote {
-        let local = target.split_once('/').map_or(target, |(_, b)| b);
+        let local = remote_and_branch(&remote_names(repo)?, target).map_or(target, |(_, b)| b);
         if locals.lines().any(|l| l == local) { Git::write(["switch", local]) } else { Git::write(["switch", "-c", local, "--track", target]) }
     } else {
         Git::write(["switch", "--detach", target])
@@ -366,7 +382,7 @@ pub fn branch_rename(repo: &Repo, old: &str, new: &str) -> GitResult<Value> {
 /// Deletes a local branch (`notMerged` when it needs `force`), or a remote one.
 pub fn branch_delete(repo: &Repo, name: &str, force: bool, remote: bool, cancel: Option<Cancel>) -> GitResult<Value> {
     if remote {
-        let (r, b) = name.split_once('/').ok_or_else(|| GitError::other("a remote branch is <remote>/<branch>"))?;
+        let (r, b) = remote_and_branch(&remote_names(repo)?, name).ok_or_else(|| GitError::other("a remote branch is <remote>/<branch>"))?;
         let out = repo.run(Git::write(["push", r, "--delete", b]).cancel(cancel).timeout(LONG_TIMEOUT))?;
         done(repo, true);
         return Ok(outcome(&out));
@@ -390,6 +406,8 @@ pub fn branch_track(repo: &Repo, branch: &str, upstream: Option<&str>) -> GitRes
 
 /// Commits on each side and the files that differ (`a...b`).
 pub fn compare(repo: &Repo, a: &str, b: &str) -> GitResult<Value> {
+    crate::log::not_an_option(a)?;
+    crate::log::not_an_option(b)?;
     let list = |range: &str| -> GitResult<Vec<Value>> {
         let out = repo.text(Git::read(["log", "-n", "500", "--encoding=UTF-8", META_FORMAT_LIST, range, "--"]))?;
         Ok(parse_list(&out))
@@ -557,7 +575,7 @@ pub fn push_preview(repo: &Repo) -> GitResult<Value> {
     let branch = branch.stdout_text().trim().to_owned();
     let upstream = repo.run(Git::read(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]))?;
     let upstream = upstream.ok().then(|| upstream.stdout_text().trim().to_owned()).filter(|u| !u.is_empty());
-    let remotes: Vec<String> = repo.text(Git::read(["remote"]))?.lines().map(str::to_owned).collect();
+    let remotes = remote_names(repo)?;
     let (remote, target) = match &upstream {
         Some(u) => match push_dest(repo, &branch)? {
             // As git names them: a remote's name may have slashes or be
@@ -567,12 +585,7 @@ pub fn push_preview(repo: &Repo) -> GitResult<Value> {
                 (r, t)
             }
             None => {
-                // The longest configured remote the ref starts with, then the branch.
-                let named = remotes.iter().filter(|r| u.len() > r.len() && u.starts_with(r.as_str()) && u.as_bytes()[r.len()] == b'/').max_by_key(|r| r.len());
-                let (r, t) = match named {
-                    Some(r) => (r.as_str(), &u[r.len() + 1..]),
-                    None => u.split_once('/').unwrap_or((u, &branch)),
-                };
+                let (r, t) = remote_and_branch(&remotes, u).unwrap_or((u, &branch));
                 (r.to_owned(), t.to_owned())
             }
         },
@@ -1343,6 +1356,30 @@ mod tests {
         let p = push_preview(&s.repo).unwrap();
         assert_eq!((p["remote"].as_str(), p["target"].as_str()), (Some("team/origin"), Some("main")), "{p}");
         assert_eq!(p["commits"].as_array().unwrap().len(), 1, "{p}");
+    }
+
+    #[test]
+    fn a_remote_with_a_slash_in_its_name_is_one_remote_for_its_branches() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let bare = tempfile::tempdir().unwrap();
+        let bare = bare.path().to_string_lossy().into_owned();
+        s.git(&["init", "-q", "--bare", &bare]);
+        s.git(&["remote", "add", "team/origin", &bare]);
+        s.git(&["push", "-q", "team/origin", "main", "main:feature"]);
+        s.git(&["fetch", "-q", "team/origin"]);
+        let b = branches(&s.repo).unwrap();
+        let feature = b["remote"].as_array().unwrap().iter().find(|r| r["name"] == "team/origin/feature").cloned().unwrap_or_default();
+        // Pull Into takes these two.
+        assert_eq!((feature["remote"].as_str(), feature["branch"].as_str()), (Some("team/origin"), Some("feature")), "{b}");
+        // Checking it out makes the branch it names, tracking it.
+        checkout(&s.repo, "team/origin/feature", false, false).unwrap();
+        assert_eq!(s.git(&["symbolic-ref", "--short", "HEAD"]).trim(), "feature");
+        assert_eq!(s.git(&["rev-parse", "--abbrev-ref", "@{upstream}"]).trim(), "team/origin/feature");
+        // Deleting it deletes it there.
+        let v = branch_delete(&s.repo, "team/origin/feature", false, true, None).unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        assert!(!s.git(&["ls-remote", "--heads", &bare]).contains("refs/heads/feature"));
     }
 
     #[test]
