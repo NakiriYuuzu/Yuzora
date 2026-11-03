@@ -68,6 +68,14 @@ impl RenderImage {
         }
     }
 
+    // yuzora(L5): a repo's SVG is rasterized in a child process; the pixels it
+    // sends back show at the size `SvgRenderer::render_parsed` gives them.
+    /// Sets how many of its pixels make one logical pixel on screen.
+    pub fn with_scale_factor(mut self, scale_factor: f32) -> Self {
+        self.scale_factor = scale_factor;
+        self
+    }
+
     /// Convert this image into a byte slice.
     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
         self.data

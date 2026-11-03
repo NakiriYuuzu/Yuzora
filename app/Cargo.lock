@@ -11295,7 +11295,6 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "simplecss",
  "streaming-iterator",
  "tempfile",
  "trash",
@@ -11313,7 +11312,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
- "usvg",
+ "windows-sys 0.61.2",
  "yuzora-core",
 ]
 

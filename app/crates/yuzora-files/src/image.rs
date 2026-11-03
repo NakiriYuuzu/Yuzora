@@ -9,14 +9,14 @@ use std::time::Duration;
 use gpui::{
     AnyElement, App, Context, ElementId, Hsla, Image, ImageFormat, ImageSource,
     InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, RenderImage, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, SvgRenderer, Window, div, img,
-    px,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
 };
 use yuzora_core::HostValue;
 
 use crate::docs::blocking;
 use crate::fsops::{failure, machine, run_sh};
 use crate::highlight;
+use crate::svg::Cancel;
 
 /// Images above this are not shown.
 pub const MAX_IMAGE_BYTES: u64 = 32 << 20;
@@ -191,7 +191,7 @@ fn read_sh(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
 }
 
 /// An image ready for GPUI: a raster's bytes for it to decode (checked by
-/// [`fits_in_memory`]), or an SVG already rasterized ([`crate::svg`]).
+/// [`fits_in_memory`]), or an SVG a child rasterized ([`crate::svg`]).
 #[derive(Clone)]
 pub(crate) enum Picture {
     Bytes(Arc<Image>),
@@ -199,15 +199,17 @@ pub(crate) enum Picture {
 }
 
 impl Picture {
-    /// What a repo's image bytes show as: an SVG is rasterized now, so this
-    /// blocks (a worker's call).
+    /// What a repo's image bytes (of the file at `path`) show as: an SVG is
+    /// rasterized now, in a child, so this blocks (a worker's call) until it
+    /// is drawn, fails or `cancel` stops it.
     pub(crate) fn of(
         format: ImageFormat,
+        path: &str,
         bytes: Vec<u8>,
-        svg: &SvgRenderer,
+        cancel: &Cancel,
     ) -> Result<Self, String> {
         match format {
-            ImageFormat::Svg => crate::svg::rasterize(svg, bytes).map(Picture::Drawn),
+            ImageFormat::Svg => crate::svg::rasterize(path, &bytes, cancel).map(Picture::Drawn),
             _ => Ok(Picture::Bytes(Arc::new(Image::from_bytes(format, bytes)))),
         }
     }
@@ -229,17 +231,9 @@ impl Picture {
     }
 }
 
-/// Why an image isn't shown, each with its own `image.*` text.
-const REFUSALS: [&str; 8] = [
-    "too_large",
-    "too_large_decoded",
-    "unsupported",
-    "svgz",
-    "svg_too_deep",
-    "svg_entities",
-    "svg_too_complex",
-    "svg_too_many_layers",
-];
+/// Why an image isn't shown, each with its own `image.*` text (an SVG's are
+/// [`crate::svg::REFUSALS`]).
+const REFUSALS: [&str; 3] = ["too_large", "too_large_decoded", "unsupported"];
 
 enum Loaded {
     Loading,
@@ -259,14 +253,37 @@ impl Loaded {
 struct ImageView {
     key: (String, Option<String>, u64),
     loaded: Loaded,
+    /// The load under way: cancelled by the next one, or when the pane closes
+    /// (an SVG's child is killed).
+    cancel: Cancel,
 }
 
 impl ImageView {
+    fn new(key: (String, Option<String>, u64), cx: &mut Context<Self>) -> Self {
+        cx.on_release(|v: &mut ImageView, cx| {
+            v.cancel.cancel();
+            let loaded = std::mem::replace(&mut v.loaded, Loaded::Loading);
+            if let Some(image) = loaded.drawn() {
+                cx.drop_image(image, None);
+            }
+        })
+        .detach();
+        let mut v = ImageView {
+            key,
+            loaded: Loaded::Loading,
+            cancel: Cancel::default(),
+        };
+        v.load(cx);
+        v
+    }
+
     fn load(&mut self, cx: &mut Context<Self>) {
         self.loaded = Loaded::Loading;
+        self.cancel.cancel();
+        self.cancel = Cancel::default();
+        let cancel = self.cancel.clone();
         let (path, on, _) = self.key.clone();
         let key = self.key.clone();
-        let svg = cx.svg_renderer();
         cx.spawn(async move |this, cx| {
             let Some(format) = format_of(&path) else {
                 let _ = this.update(cx, |v, cx| {
@@ -278,7 +295,7 @@ impl ImageView {
             let picture = blocking(move || {
                 read(&path, on.as_deref()).and_then(|bytes| {
                     if fits_in_memory(&bytes) {
-                        Picture::of(format, bytes, &svg)
+                        Picture::of(format, &path, bytes, &cancel)
                     } else {
                         Err("too_large_decoded".into())
                     }
@@ -287,7 +304,7 @@ impl ImageView {
             .await
             .unwrap_or_else(|| Err("worker".into()));
             let _ = this.update(cx, |v, cx| {
-                if v.key != key {
+                if v.key != key || picture.as_ref().is_err_and(|e| e == crate::svg::CANCELLED) {
                     return;
                 }
                 let was = std::mem::replace(
@@ -318,6 +335,27 @@ struct Look {
     fit: Fit,
     muted: Hsla,
     checker: Option<Hsla>,
+}
+
+/// An SVG that isn't drawn: a placeholder, and why.
+fn not_drawn(text: String, muted: Hsla) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .size_full()
+        .items_center()
+        .justify_center()
+        .px(px(16.))
+        .text_size(px(12.))
+        .text_color(muted)
+        .child(
+            img(ImageSource::Render(crate::svg::placeholder()))
+                .w(px(48.))
+                .h(px(36.)),
+        )
+        .child(text)
+        .into_any_element()
 }
 
 fn status(text: String, muted: Hsla) -> AnyElement {
@@ -378,21 +416,7 @@ pub fn image_component(
         cx,
         {
             let key = key.clone();
-            move |_, cx| {
-                cx.on_release(|v: &mut ImageView, cx| {
-                    let loaded = std::mem::replace(&mut v.loaded, Loaded::Loading);
-                    if let Some(image) = loaded.drawn() {
-                        cx.drop_image(image, None);
-                    }
-                })
-                .detach();
-                let mut v = ImageView {
-                    key,
-                    loaded: Loaded::Loading,
-                };
-                v.load(cx);
-                v
-            }
+            move |_, cx| ImageView::new(key, cx)
         },
     );
     view.update(cx, |v, cx| {
@@ -404,6 +428,9 @@ pub fn image_component(
     let v = view.read(cx);
     match &v.loaded {
         Loaded::Loading => status(s.t("image.loading", &[]), look.muted),
+        Loaded::Failed(e) if crate::svg::REFUSALS.contains(&e.as_str()) => {
+            not_drawn(s.t(&format!("image.{e}"), &[]), look.muted)
+        }
         Loaded::Failed(e) if REFUSALS.contains(&e.as_str()) => {
             status(s.t(&format!("image.{e}"), &[]), look.muted)
         }
@@ -575,6 +602,51 @@ mod tests {
         b.extend(chunk(b"ANMF", &[0; 16]));
         assert_eq!(webp_frames(&b), 2);
         assert_eq!(webp_frames(b"RIFF\0\0\0\0WEBP"), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_pane_draws_a_repo_svg_in_a_child() {
+        // Red here; the test child answers green.
+        let svg = svg_with(r#"<rect width="4" height="4" fill="red"/><!-- pane -->"#);
+        let cancel = Cancel::default();
+        let Ok(Picture::Drawn(image)) =
+            Picture::of(ImageFormat::Svg, "a.svg", svg.into_bytes(), &cancel)
+        else {
+            panic!("not drawn");
+        };
+        assert_eq!(image.as_bytes(0).unwrap(), crate::svg::TEST_CHILD_PIXEL);
+        assert_eq!(crate::svg::drawn_here(), 0);
+    }
+
+    #[gpui::test]
+    fn a_pane_closed_or_moved_on_cancels_its_load(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let view = cx.new(|cx| ImageView::new(("/none/a.svg".into(), None, 0), cx));
+        let first = view.update(cx, |v, _| v.cancel.clone());
+        assert!(!first.is_cancelled());
+        // Another file: the first load stops.
+        let second = view.update(cx, |v, cx| {
+            v.key = ("/none/b.svg".into(), None, 0);
+            v.load(cx);
+            v.cancel.clone()
+        });
+        assert!(first.is_cancelled() && !second.is_cancelled());
+        drop(view);
+        cx.update(|_| {});
+        assert!(second.is_cancelled());
+    }
+
+    #[test]
+    fn every_refusal_has_its_text() {
+        let en: serde_json::Value = serde_json::from_str(include_str!("../i18n/en.json")).unwrap();
+        let zh: serde_json::Value =
+            serde_json::from_str(include_str!("../i18n/zh-TW.json")).unwrap();
+        for key in REFUSALS.iter().chain(&crate::svg::REFUSALS) {
+            for catalog in [&en, &zh] {
+                assert!(catalog["image"][key].is_string(), "image.{key}");
+            }
+        }
     }
 
     #[test]

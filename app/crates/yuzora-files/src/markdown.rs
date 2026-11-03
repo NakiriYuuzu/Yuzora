@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageSource, IntoElement,
-    ParentElement as _, Render, RenderImage, SharedString, SharedUri, StyleRefinement, Styled as _,
-    Subscription, SvgRenderer, Window, div, px,
+    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageFormat, ImageSource,
+    IntoElement, ParentElement as _, Render, RenderImage, SharedString, SharedUri, StyleRefinement,
+    Styled as _, Subscription, Window, div, px,
 };
 use gpui_base::text::{TextView, TextViewStyle};
 use yuzora_core::HostValue;
@@ -26,6 +26,7 @@ use crate::docs::{self, DocView};
 use crate::fsops::{self, Stamp};
 use crate::highlight::{self, SyntaxPalette};
 use crate::image::Picture;
+use crate::svg::Cancel;
 
 /// Where a document image comes from, or `None` when it is not loaded.
 pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
@@ -147,19 +148,20 @@ fn missing_image() -> ImageSource {
 enum Found {
     /// The stamp of what is shown: not read again.
     Same,
-    /// What to show, checked (an SVG drawn), and the stamp from before it
-    /// was read (a change after that is seen the next time).
+    /// What to show, checked (an SVG drawn by a child, or a placeholder when
+    /// it isn't), and the stamp from before it was read (a change after that
+    /// is seen the next time, and only then is an SVG drawn again).
     Read { stamp: Stamp, picture: Picture },
     /// Not a regular file (a device, FIFO or folder), too big, too big once
-    /// decoded, or an SVG [`crate::svg`] doesn't draw.
+    /// decoded, or the preview closed while its SVG was drawn.
     Nothing,
 }
 
 /// Reads an image for the preview, unless its stamp is still `shown`. GPUI
 /// gets these bytes, not the path: what it decodes is what was checked
 /// ([`crate::image::read`] reads no more than the limit). Blocks: an SVG is
-/// drawn here.
-fn read_image(path: &Path, shown: Option<Stamp>, svg: &SvgRenderer) -> Found {
+/// drawn by a child, until `cancel`.
+fn read_image(path: &Path, shown: Option<Stamp>, cancel: &Cancel) -> Found {
     let stamp = std::fs::metadata(path)
         .ok()
         .filter(|m| m.is_file())
@@ -176,7 +178,13 @@ fn read_image(path: &Path, shown: Option<Stamp>, svg: &SvgRenderer) -> Found {
         .and_then(|bytes| {
             let format =
                 crate::image::format_of(name).unwrap_or_else(|| crate::image::format_in(&bytes));
-            Picture::of(format, bytes, svg).ok()
+            match Picture::of(format, name, bytes, cancel) {
+                Ok(picture) => Some(picture),
+                Err(e) if format == ImageFormat::Svg && e != crate::svg::CANCELLED => {
+                    Some(Picture::Drawn(crate::svg::placeholder()))
+                }
+                Err(_) => None,
+            }
         });
     match picture {
         Some(picture) => Found::Read { stamp, picture },
@@ -222,6 +230,8 @@ struct ImageChecks {
     /// SVGs let go of whose textures are still to be dropped (that takes the
     /// app, which drawing and the checks don't have).
     released: Vec<Arc<RenderImage>>,
+    /// The checks' SVG children: killed when the preview closes.
+    cancel: Cancel,
 }
 
 impl ImageChecks {
@@ -302,8 +312,10 @@ impl ImageChecks {
         self.known.values().any(|k| k.frame != frame)
     }
 
-    /// Everything shown, let go of (the preview is closed).
+    /// Everything shown, let go of, and the checks under way stopped (the
+    /// preview is closed).
     fn clear(&mut self) {
+        self.cancel.cancel();
         let shown = self.known.drain().filter_map(|(_, k)| k.shown);
         self.released.extend(shown.filter_map(|(_, p)| p.drawn()));
     }
@@ -371,25 +383,23 @@ impl MarkdownView {
             }
             checks.busy = true;
         }
-        let svg = cx.svg_renderer();
         cx.spawn(async move |this, cx| {
             let mut changed = false;
             // Frames drawn meanwhile may ask for more.
             loop {
-                let wanted = {
+                let (wanted, cancel) = {
                     let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
                     if checks.wanted.is_empty() {
                         checks.busy = false;
                         break;
                     }
-                    checks.take_wanted()
+                    (checks.take_wanted(), checks.cancel.clone())
                 };
-                let svg = svg.clone();
                 let answers = docs::blocking(move || {
                     wanted
                         .into_iter()
                         .map(|(path, shown)| {
-                            let found = read_image(&path, shown, &svg);
+                            let found = read_image(&path, shown, &cancel);
                             (path, found)
                         })
                         .collect()
@@ -608,6 +618,11 @@ pub fn markdown_component(
             v.remote = doc.read(cx).key.on.is_some();
             v.doc = doc;
             v.rev = u64::MAX;
+            v.images
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancel
+                .cancel();
             v.images = Arc::default();
             cx.notify();
         }
@@ -620,22 +635,20 @@ pub fn markdown_component(
 mod tests {
     use super::*;
     use crate::svg::samples::{gzip, svg_with};
-    use gpui::{Image, ImageFormat};
+    use gpui::Image;
 
     const RED_RECT: &str = r#"<rect width="4" height="4" fill="red"/>"#;
-
-    fn renderer() -> SvgRenderer {
-        SvgRenderer::new(Arc::new(()))
-    }
 
     /// A PNG's bytes to show, `len` long.
     fn png(len: usize) -> Picture {
         Picture::Bytes(Arc::new(Image::from_bytes(ImageFormat::Png, vec![0; len])))
     }
 
-    /// An SVG drawn.
+    /// An SVG drawn (pixels as a child sends them).
     fn drawn() -> Arc<RenderImage> {
-        crate::svg::rasterize(&renderer(), svg_with(RED_RECT).into_bytes()).unwrap()
+        Arc::new(RenderImage::new(vec![::image::Frame::new(
+            ::image::RgbaImage::new(1, 1),
+        )]))
     }
 
     fn bytes_of(picture: Option<Picture>) -> Arc<Image> {
@@ -775,11 +788,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("a.png");
         std::fs::write(&png, b"not really a png").unwrap();
-        let svg = renderer();
+        let cancel = Cancel::default();
         let Found::Read {
             stamp,
             picture: Picture::Bytes(image),
-        } = read_image(&png, None, &svg)
+        } = read_image(&png, None, &cancel)
         else {
             panic!("not read");
         };
@@ -788,12 +801,15 @@ mod tests {
             (ImageFormat::Png, &b"not really a png"[..])
         );
         // Unchanged since it was read: not read again.
-        assert!(matches!(read_image(&png, Some(stamp), &svg), Found::Same));
+        assert!(matches!(
+            read_image(&png, Some(stamp), &cancel),
+            Found::Same
+        ));
         // No extension: the format from its bytes.
         let bare = dir.path().join("picture");
         std::fs::write(&bare, crate::image::test_gif(1, 1)).unwrap();
         assert!(matches!(
-            read_image(&bare, None, &svg),
+            read_image(&bare, None, &cancel),
             Found::Read {
                 picture: Picture::Bytes(image),
                 ..
@@ -802,34 +818,66 @@ mod tests {
         // Too big once decoded.
         let big = dir.path().join("big.gif");
         std::fs::write(&big, crate::image::test_gif(8192, 3)).unwrap();
-        assert!(matches!(read_image(&big, None, &svg), Found::Nothing));
-        assert!(matches!(read_image(dir.path(), None, &svg), Found::Nothing));
+        assert!(matches!(read_image(&big, None, &cancel), Found::Nothing));
         assert!(matches!(
-            read_image(&dir.path().join("missing.png"), None, &svg),
+            read_image(dir.path(), None, &cancel),
             Found::Nothing
         ));
-        // An SVG is drawn here, by `crate::svg`; one it refuses shows nothing.
-        let drawn = dir.path().join("a.svg");
-        std::fs::write(&drawn, svg_with(RED_RECT)).unwrap();
         assert!(matches!(
-            read_image(&drawn, None, &svg),
-            Found::Read {
-                picture: Picture::Drawn(_),
-                ..
-            }
+            read_image(&dir.path().join("missing.png"), None, &cancel),
+            Found::Nothing
         ));
+        // An SVG is drawn by a child (the test one answers green, whatever the
+        // SVG), never here.
+        #[cfg(unix)]
+        {
+            let drawn = dir.path().join("a.svg");
+            std::fs::write(
+                &drawn,
+                svg_with(r#"<rect width="4" height="4" fill="red"/><!-- md -->"#),
+            )
+            .unwrap();
+            let Found::Read {
+                picture: Picture::Drawn(image),
+                ..
+            } = read_image(&drawn, None, &cancel)
+            else {
+                panic!("not drawn");
+            };
+            assert_eq!(image.as_bytes(0).unwrap(), crate::svg::TEST_CHILD_PIXEL);
+            assert_eq!(crate::svg::drawn_here(), 0);
+        }
+        // One that isn't drawn shows the placeholder (and isn't read again
+        // while unchanged).
         let svgz = dir.path().join("b.svg");
         std::fs::write(&svgz, gzip(svg_with(RED_RECT).as_bytes())).unwrap();
-        assert!(matches!(read_image(&svgz, None, &svg), Found::Nothing));
+        let Found::Read {
+            stamp,
+            picture: Picture::Drawn(image),
+        } = read_image(&svgz, None, &cancel)
+        else {
+            panic!("no placeholder");
+        };
+        assert!(Arc::ptr_eq(&image, &crate::svg::placeholder()));
+        assert!(matches!(
+            read_image(&svgz, Some(stamp), &cancel),
+            Found::Same
+        ));
+        // The preview closed meanwhile: nothing.
+        let closed = Cancel::default();
+        closed.cancel();
+        let other = dir.path().join("c.svg");
+        std::fs::write(&other, svg_with("<!-- closed -->")).unwrap();
+        assert!(matches!(read_image(&other, None, &closed), Found::Nothing));
         #[cfg(unix)]
         {
             assert!(matches!(
-                read_image(Path::new("/dev/zero"), None, &svg),
+                read_image(Path::new("/dev/zero"), None, &cancel),
                 Found::Nothing
             ));
             let link = dir.path().join("zero.png");
             std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
-            assert!(matches!(read_image(&link, None, &svg), Found::Nothing));
+            assert!(matches!(read_image(&link, None, &cancel), Found::Nothing));
         }
     }
 
@@ -1024,6 +1072,8 @@ mod tests {
         let checks = images.lock().unwrap();
         assert!(checks.known.is_empty() && checks.released.is_empty());
         assert_eq!(Arc::strong_count(&image), 1);
+        // Its SVG children killed.
+        assert!(checks.cancel.is_cancelled());
     }
 
     #[gpui::test]
