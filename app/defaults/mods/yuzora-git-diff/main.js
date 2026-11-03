@@ -19,13 +19,15 @@ export default class GitDiff extends View {
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
+    // Props without `at` (an agent's tab.new) date from now, not from 1970.
+    this.born = Date.now();
     this.follow(cx);
   }
 
   // The newest of the props and the shared request.
   wanted() {
     const p = props() ?? {}, s = shared("yuzora.git.diff");
-    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? 0)) ? s : p.path ? p : null;
+    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) ? s : p.path ? p : null;
   }
 
   follow(cx) {
