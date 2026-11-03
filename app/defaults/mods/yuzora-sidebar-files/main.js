@@ -3,11 +3,12 @@
 // The same mod opens itself as the right-click popup (props().menu).
 import { View, div, svg, uniform_list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
+import { spaces, panes, focused, theme, settings, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { listDir, gitStatus, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
 import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
+import { heading } from "./paths.js";
 
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
@@ -25,11 +26,6 @@ function where(prev) {
   if (!cwd && prev && prev.space === space.id && prev.on === on) return prev;
   cwd ||= space.folder || (on ? null : home());
   return cwd ? { space: space.id, cwd, on, key: `${on ?? ""}|${cwd}` } : { space: space.id, cwd: null, on, key: `${on ?? ""}|` };
-}
-
-function tilde(path) {
-  const h = home();
-  return h && (path === h || path.startsWith(h + "/")) ? "~" + path.slice(h.length) : path;
 }
 
 export default class FilesSidebar extends View {
@@ -330,24 +326,42 @@ export default class FilesSidebar extends View {
     const badges = tk.space_badges ?? ["#4f6bed"];
     const badgeBg = space ? badges[(space.index - 1) % badges.length] : badges[0];
     const local = !here?.on;
-    const action = (id, icon, label, onClick, on = false, enabled = true) =>
-      div().id(id).w(30).h(26).flex().items_center().justify_center().rounded(5).flex_none()
-        .bg(on ? th.selected : th.popover).text_color(enabled ? (on ? th.foreground : th.muted) : th.dim)
-        .when(enabled, el => el.cursor_pointer().hover(s => s.bg(th.hover).text_color(th.foreground)).on_click(onClick))
+    // The folder's name over the folder it's in; "~" only on this machine.
+    const head = here?.root ? heading(here.root, local ? home() : null, here.branch) : null;
+    const mono = String(settings().font_family ?? "");
+    // Icon buttons: no background until hovered; a toggle that's on is selected.
+    const action = (id, icon, label, onClick, on = false) =>
+      div().id(id).w(24).h(24).flex().items_center().justify_center().rounded(5).flex_none().cursor_pointer()
+        .bg(on ? th.selected : "#00000000").text_color(on ? th.foreground : th.muted)
+        .hover(s => s.bg(on ? th.selected : th.hover).text_color(th.foreground)).on_click(onClick)
         .tooltip(label)
         .child(svg(`mods/${ME}/icons/${icon}.svg`).size(14));
-    const pathLine = here?.root ? tilde(here.root) + (here.branch ? ` · ${here.branch}` : "") : "";
+    // New file or folder, in the accent; off on another machine (read-only there).
+    const canAdd = local && Boolean(here?.root);
+    const add = h_flex().id("new").h(24).px(8).gap(5).flex_none().items_center().rounded(5).text_size(12)
+      .when(canAdd, el => el.bg(tk.accent_soft).text_color(th.accent).cursor_pointer().hover(s => s.bg(th.selected))
+        .on_click(() => this.openNewMenu()))
+      .when(!canAdd, el => el.text_color(th.dim))
+      .when(!local, el => el.tooltip(t("remote.readonly")))
+      .child(svg("mods/workspace-chrome/plus.svg").size(12).flex_none())
+      .child(t("action.new"))
+      .child(svg("mods/workspace-chrome/chevron-down.svg").size(10).flex_none());
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
-      .child(h_flex().flex_none().pt(2).px(12).pb(6).gap(6).items_center()
-        .child(div().w(16).h(16).flex_none().rounded(4).bg(badgeBg).text_color(tk.text.on_badge).text_size(10).font_bold().flex().items_center().justify_center()
+      .child(h_flex().flex_none().pt(2).px(12).gap(9).items_center()
+        .child(div().w(28).h(28).flex_none().rounded(7).bg(badgeBg).text_color(tk.text.on_badge).text_size(13).font_bold().flex().items_center().justify_center()
           .child((space?.name ?? "?").slice(0, 1).toUpperCase()))
-        .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
+        .child(v_flex().flex_1().min_w(0).gap(1)
+          .child(div().text_size(14).font_semibold().truncate().child(head?.name ?? ""))
+          .when(Boolean(head?.dir), el => el.child(div().text_size(11.5).when(Boolean(mono), d => d.font_family(mono)).text_color(th.dim).truncate().child(head.dir))))
         .child(div().flex_none().px(6).py(1).rounded(4).bg(th.raised).text_size(11).text_color(th.muted)
           .child(local ? t("local") : here.on)))
-      .child(div().flex_none().px(12).pb(6).text_size(11.5).text_color(th.muted).truncate().child(pathLine || " "))
-      .child(h_flex().flex_none().gap(2).px(8).pb(6)
-        .child(action("new-file", "new-file", t("action.new_file"), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, local && Boolean(here?.root)))
-        .child(action("new-folder", "new-folder", t("action.new_folder"), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, local && Boolean(here?.root)))
+      .when(Boolean(head?.branch), el => el.child(h_flex().flex_none().pt(8).px(12)
+        .child(h_flex().h(20).min_w(0).px(8).gap(5).items_center().rounded_full().bg(tk.accent_soft).text_color(th.accent).text_size(11.5)
+          .child(svg("mods/workspace-chrome/git-branch.svg").size(13).flex_none())
+          .child(div().min_w(0).truncate().child(head.branch)))))
+      .child(h_flex().flex_none().gap(2).px(8).pt(8).pb(6).items_center()
+        .child(add)
+        .child(div().flex_1())
         .child(action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }))
         .child(action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx)))
         .child(action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching))
@@ -439,6 +453,12 @@ export default class FilesSidebar extends View {
         .child(Scrollbar.vertical("results").absolute().inset_0()));
   }
 
+  // The New button's popup: a file or a folder, where a right-click's New would put it.
+  openNewMenu() {
+    const here = this.here;
+    openOverlay({ mod: ME, kind: "popup", width: 200, props: { menu: { kind: "new", root: here.root, on: here.on, dir: this.selectedDir() } } });
+  }
+
   // The right-click popup.
 
   openMenu(r, e, cx) {
@@ -450,13 +470,16 @@ export default class FilesSidebar extends View {
       props: { menu: { abs: this.abs(r), rel: r, dir: row.dir, root: this.here.root, on: this.here.on } } });
   }
 
+  // As tall as its rows: nothing in it waits for a height to fill (the New
+  // menu opens with none).
   renderMenu(cx) {
-    const th = theme(), m = this.menu, items = menuItems(m);
-    return v_flex().id("menu").size_full().p(6).gap(0).bg(th.popover).text_color(th.foreground).text_size(12.5)
+    const th = theme(), m = this.menu, items = m.kind === "new" ? newItems(m) : menuItems(m);
+    return v_flex().id("menu").w_full().p(6).gap(0).bg(th.popover).text_color(th.foreground).text_size(12.5)
       .children(items.map((it, i) => it
         ? h_flex().id(`item-${i}`).h(28).px(8).rounded(5).items_center().gap(8)
           .text_color(it.enabled === false ? th.dim : it.danger ? th.ansi1 : th.foreground)
           .when(it.enabled !== false, el => el.cursor_pointer().hover(s => s.bg(th.hover)).on_click((_e, cx) => { closeOverlay(props().overlay); it.run(); }))
+          .when(Boolean(it.icon), el => el.child(svg(`mods/${ME}/icons/${it.icon}.svg`).size(14).flex_none().text_color(th.muted)))
           .child(div().flex_1().child(it.label))
         : div().h(1).my(4).mx(4).bg(th.border)));
   }
@@ -471,7 +494,15 @@ function revealLabel() {
   return t(p === "macos" ? "menu.reveal_mac" : p === "windows" ? "menu.reveal_windows" : "menu.reveal");
 }
 
-// The popup's items for a row: { label, run, enabled?, danger? }, null a divider.
+// The New menu's items: in the folder it was opened for.
+function newItems(m) {
+  return [
+    { label: t("menu.new_file"), icon: "new-file", run: () => request("new-file", m, { dir: m.dir }) },
+    { label: t("menu.new_folder"), icon: "new-folder", run: () => request("new-folder", m, { dir: m.dir }) },
+  ];
+}
+
+// The popup's items for a row: { label, run, enabled?, danger?, icon? }, null a divider.
 function menuItems(m) {
   const local = !m.on, folder = m.dir ? m.abs : parent(m.abs);
   const relPath = rel(m.root, m.abs) ?? m.abs;

@@ -687,6 +687,80 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_heading_splits_the_folder_name_from_where_it_is() {
+        let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/paths.js")
+            .replace("export const", "const");
+        // (root, this machine's home, branch) → (name, dir, branch).
+        let cases = [
+            (
+                ("/Users/me/App/yuzora", Some("/Users/me"), Some("main")),
+                ("yuzora", "~/App", Some("main")),
+            ),
+            (
+                ("/Users/me/proj", Some("/Users/me"), Some("feat/x")),
+                ("proj", "~", Some("feat/x")),
+            ),
+            (
+                ("/opt/src/tool", Some("/Users/me"), None),
+                ("tool", "/opt/src", None),
+            ),
+            // Not in a repo, or no branch name: no branch.
+            (
+                ("/Users/me/notes", Some("/Users/me"), Some("")),
+                ("notes", "~", None),
+            ),
+            // The home folder itself, and a root, have nothing above them shown.
+            (("/Users/me", Some("/Users/me"), None), ("~", "", None)),
+            (("/", Some("/Users/me"), None), ("/", "", None)),
+            (
+                ("/Users/meow/x", Some("/Users/me"), None),
+                ("x", "/Users/meow", None),
+            ),
+            // Another machine's path: never "~", whatever this machine's home is.
+            (
+                ("/home/me/repo", None, Some("dev")),
+                ("repo", "/home/me", Some("dev")),
+            ),
+            (("/home/me", None, None), ("me", "/home", None)),
+            // Windows, with either slash.
+            (
+                (r"C:\Users\me\src\app", Some(r"C:\Users\me"), None),
+                ("app", r"~\src", None),
+            ),
+            (
+                (r"C:\Users\me", Some(r"C:\Users\me"), None),
+                ("~", "", None),
+            ),
+            ((r"C:\", Some(r"C:\Users\me"), None), (r"C:\", "", None)),
+        ];
+        let calls: Vec<String> = cases
+            .iter()
+            .map(|((root, home, branch), _)| {
+                format!(
+                    "heading({root:?}, {}, {})",
+                    home.map_or("null".into(), |h| format!("{h:?}")),
+                    branch.map_or("null".into(), |b| format!("{b:?}"))
+                )
+            })
+            .collect();
+        let script = format!(
+            "(() => {{ {src}\nreturn JSON.stringify([{}].map(h => [h.name, h.dir, h.branch])); }})()",
+            calls.join(", ")
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let got: Vec<(String, String, Option<String>)> = serde_json::from_str(&out).unwrap();
+        let want: Vec<(String, String, Option<String>)> = cases
+            .iter()
+            .map(|(_, (name, dir, branch))| {
+                (name.to_string(), dir.to_string(), branch.map(str::to_owned))
+            })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
     fn file_icons_follow_the_type_and_the_theme() {
         let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/icons.js")
             .replace("export function", "function");

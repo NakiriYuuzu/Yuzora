@@ -19,3 +19,16 @@ export const rel = (root, path) => {
   const prefix = root.endsWith("/") ? root : root + "/";
   return path.startsWith(prefix) ? path.slice(prefix.length) : null;
 };
+/**
+ * The sidebar's heading for `root`: `name` (the folder's own name) over `dir`
+ * (the folder it is in, "~" for the home folder), and `branch` (null for
+ * none). `home` is this machine's home: give null for another machine's path.
+ * The home folder itself is "~"; a root ("/", "C:\") is its own name.
+ */
+export const heading = (root, home, branch) => {
+  const under = p => home && (p === home || p.startsWith(home + "/") || (windows(home) && p.startsWith(home + "\\")));
+  const tilde = p => (under(p) ? "~" + p.slice(home.length) : p);
+  const dir = parent(root);
+  const name = home && root === home ? "~" : !dir || dir === root ? root : base(root);
+  return { name, dir: name === root || name === "~" ? "" : tilde(dir), branch: branch || null };
+};

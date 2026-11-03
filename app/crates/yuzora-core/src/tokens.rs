@@ -86,6 +86,7 @@ mod tests {
                 assert!(is_hex(&t["sql"][k]), "sql.{k}");
             }
             assert!(t["space_badges"].as_array().is_some_and(|l| !l.is_empty() && l.iter().all(is_hex)));
+            assert!(is_hex(&t["accent_soft"]), "accent_soft");
             for k in ["working", "blocked", "done", "idle", "unknown"] {
                 assert!(is_hex(&t["status"][k]["color"]), "status.{k}");
                 assert!(t["status"][k]["shape"].is_string(), "status.{k}.shape");
@@ -186,6 +187,9 @@ mod tests {
                     assert!(contrast(&s("database", k), &c(bg)) >= 3.0, "light={light}: database.{k} on {bg}");
                 }
             }
+            // Accent text on its soft background: the Files sidebar's branch and New button.
+            let r = contrast(&c("accent"), t["accent_soft"].as_str().unwrap());
+            assert!(r >= 4.5, "light={light}: accent on accent_soft is {r:.2}");
             for b in t["space_badges"].as_array().unwrap() {
                 assert!(contrast(t["text"]["on_badge"].as_str().unwrap(), b.as_str().unwrap()) >= 4.5, "badge {b}");
             }
