@@ -139,6 +139,13 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 - 側欄的檔名與內容搜尋只丟掉過期結果，背景工作不會取消；大 repo 剛輸入時可能同時跑多個完整列舉。
 - 有未儲存變更且檔案已從磁碟刪除時，只能「重新儲存」，沒有「捨棄」。
 
+## 延後到合併後的 follow-up PR
+
+#192 的 Codex P2 可以延後（P0／P1 一律在合併前修好）；延後的項目列在這裡，合併後由 L5 另開 PR 處理。
+
+- Windows 存檔保留 ACL 與其他屬性：目前 rename 換檔後只保留唯讀屬性，ACL 變成資料夾繼承的。改用 `ReplaceFileW`（保留 DACL、屬性、建立時間），失敗時（`ERROR_UNABLE_TO_MOVE_REPLACEMENT`）要把暫存檔放回原位，不能刪；需要 CI 在 Windows 編譯並測試 app（第 24 輪）。
+- Windows 上 `doc-pane.js` 的 `parent` 只認 `/`：原生路徑（`C:\…`）的檔案不會即時 watch，只靠 15 秒一次的檢查重新載入；watch 回報的路徑也要用和 `within()` 相同的方式比對（第 23 輪修 agent 判斷時發現）。
+
 ## 待辦
 
 - 遠端寫入（見上）。
