@@ -37,8 +37,16 @@ pub fn no_hooks_dir() -> String {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`.
 pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
-    git_trust::repo_programs(|args| {
-        repo.run(Git::read(args.iter().copied()).max_output(git_trust::ANSWER_CAP + 1)).map(|out| git_trust::whole(out.code, out.stdout))
+    within(repo, crate::exec::READ_TIMEOUT)
+}
+
+/// [`repo_programs`] within `timeout`.
+fn within(repo: &Repo, timeout: std::time::Duration) -> GitResult<Vec<String>> {
+    git_trust::repo_programs(|args| match repo.run(Git::read(args.iter().copied()).max_output(git_trust::ANSWER_CAP + 1).timeout(timeout)) {
+        Ok(out) => Ok(git_trust::whole(out.code, out.stdout)),
+        // Out of time: unreadable, which the person may still trust.
+        Err(GitError::TimedOut { .. }) => Ok((-1, Vec::new())),
+        Err(e) => Err(e),
     })
 }
 
@@ -133,6 +141,24 @@ mod tests {
         assert!(v.get("trust").is_none());
         assert_eq!(v["counts"]["unstaged"], 1);
         assert!(std::path::Path::new(&marker).exists(), "trusted: git runs the filter as it would in a terminal");
+    }
+
+    #[test]
+    fn a_check_out_of_time_still_lets_the_folder_be_trusted() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.write("sub/f", "x\n");
+        s.git(&["-C", "sub", "init", "-q"]);
+        s.git(&["-C", "sub", "add", "f"]);
+        s.git(&["-C", "sub", "commit", "-qm", "s"]);
+        let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]);
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", head.trim())]);
+        // A submodule config git waits on forever.
+        let config = format!("{}/sub/.git/config", s.root());
+        std::fs::remove_file(&config).unwrap();
+        assert!(std::process::Command::new("mkfifo").arg(&config).status().unwrap().success());
+        // Pending, not an error: the sidebar shows what waits for trust only then.
+        assert_eq!(within(&s.repo, std::time::Duration::from_secs(2)).map_err(|e| e.to_string()), Ok(vec![UNREADABLE.to_string()]));
     }
 
     #[test]

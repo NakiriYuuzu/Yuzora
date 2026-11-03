@@ -81,7 +81,9 @@ pub fn whole(code: i32, stdout: Vec<u8>) -> (i32, Vec<u8>) {
 /// (status looks inside them, with their configs), as `path: key`. `run`
 /// runs git with these arguments in the repository's top level and answers
 /// its exit code and stdout, through [`whole`]. A config git can't read
-/// counts as [`UNREADABLE`].
+/// counts as [`UNREADABLE`]. A runner that ran out of time answers
+/// `(-1, [])`, as git failing: the gate stays shut and the person can still
+/// trust the folder. Err only when git couldn't run at all.
 pub fn repo_programs<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
     let (code, out) = run(&["config", "--show-scope", "-z", "--get-regexp", PROGRAMS])?;
     // 1 with nothing printed: no key matched. Anything else: unknown.
@@ -119,45 +121,60 @@ const SCAN: &str = "yuzora-trust-scan";
 /// gitlinks are where its work tree is (its `core.worktree`, from its config
 /// or its gitdir's). grep picks the gitlinks out of git's list, and must pass
 /// on a last line added to it: a grep that failed would print nothing, which
-/// would read as no gitlinks. A quoted path (a `"`, `\` or control
-/// character) can't be followed, nor more than 16 levels (a work tree
-/// pointing back up): both count as unreadable. `GIT_NO_LAZY_FETCH`: listing
-/// a sparse index in a partial clone never fetches with the repo's ssh.
+/// would read as no gitlinks. Each repo (git dir and work tree) is read once,
+/// in one shell that remembers them: met again below itself, it is a way
+/// back up that git would follow without end, and counts as unreadable; met
+/// again elsewhere, its keys are in already. A quoted path (a `"`, `\` or
+/// control character) can't be followed, nor more than 16 levels: both
+/// count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a sparse index in a
+/// partial clone never fetches with the repo's ssh.
 const SCAN_SCRIPT: &str = r#"unset GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
 GIT_NO_LAZY_FETCH=1
 export GIT_NO_LAZY_FETCH
 tab=$(printf '\t') nl='
 '
+IFS=$nl
+set -f
+where() {
+  case "$1" in *"$nl"*"$nl"*) return 1 ;; ?*"$nl"?*) ;; *) return 1 ;; esac
+  gd=${1%%"$nl"*}
+  top=${1#*"$nl"}
+  node="${nl}g:$gd${nl}t:$top$nl"
+  [ -d "$top" ]
+}
 scan() {
   [ "$2" -lt 16 ] || { printf 'sub\0%s\0err\0depth\0' "$1"; return; }
-  links=$( { git -c core.quotepath=false ls-files -s || echo '#failed'; echo '160000 #end'; } | LC_ALL=C grep -e '^160000 ' -e '^#failed$') || links=
+  links=$( { GIT_DIR=$3 GIT_WORK_TREE=$4 git -C "$4" -c core.quotepath=false ls-files -s || echo '#failed'; echo '160000 #end'; } | LC_ALL=C grep -e '^160000 ' -e '^#failed$') || links=
   case "$nl$links" in
     *"$nl#failed$nl"*) links= ;;
     *"${nl}160000 #end") ;;
     *) links= ;;
   esac
   [ -n "$links" ] || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
-  printf '%s\n' "$links" | while IFS= read -r line; do
-    [ "$line" = '160000 #end' ] && continue
-    p=${line#*"$tab"}
-    case "$p" in \"*) printf 'sub\0%s%s\0err\0name\0' "$1" "$p"; continue ;; esac
-    (
-      cd "./$p" 2>/dev/null && [ -e .git ] || exit 0
-      GIT_DIR=.git
-      export GIT_DIR
-      unset GIT_WORK_TREE
-      printf 'sub\0%s%s\0' "$1" "$p"
-      git config --show-scope -z --get-regexp '@PROGRAMS@'
-      c=$?
-      if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; exit 0; fi
-      w=$(git rev-parse --absolute-git-dir --show-toplevel) && gd=${w%%"$nl"*} && top=${w#*"$nl"} && cd "$top" || { printf 'err\0worktree\0'; exit 0; }
-      GIT_DIR=$gd GIT_WORK_TREE=$top
-      export GIT_DIR GIT_WORK_TREE
-      scan "$1$p/" $(($2 + 1))
-    )
+  for line in $links; do
+    [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
   done
 }
-scan "" 0
+enter() {
+  case "$4" in \"*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
+  [ -e "$3/$4/.git" ] || return 0
+  printf 'sub\0%s%s\0' "$1" "$4"
+  GIT_DIR=.git git -C "$3/$4" config --show-scope -z --get-regexp '@PROGRAMS@'
+  c=$?
+  if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; return; fi
+  w=$(GIT_DIR=.git git -C "$3/$4" rev-parse --absolute-git-dir --show-toplevel) && where "$w" || { printf 'err\0worktree\0'; return; }
+  case "$5" in *"$node"*) printf 'err\0cycle\0'; return ;; esac
+  case "$seen" in *"$node"*) return ;; esac
+  seen=$seen$node
+  scan "$1$4/" $(($2 + 1)) "$gd" "$top" "$5$node"
+}
+if w=$(git rev-parse --absolute-git-dir --show-toplevel) && where "$w"; then
+  unset GIT_DIR GIT_WORK_TREE
+  seen=$node
+  scan "" 0 "$gd" "$top" "$node"
+else
+  printf 'sub\0.\0err\0worktree\0'
+fi
 printf 'end\0@SCAN@\0'
 "#;
 
@@ -189,12 +206,22 @@ fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
 
 /// [`repo_programs`] for the repository at `top`, here or on `machine`
 /// (through `hc exec --on`), with `git` from PATH there. Err: git couldn't
-/// run or answer; count the folder as not safe.
+/// run or answer (out of time is [`UNREADABLE`]); count the folder as not safe.
 pub fn programs_in(machine: Option<&str>, top: &str) -> Result<Vec<String>, String> {
+    programs_within(machine, top, TIMEOUT)
+}
+
+/// [`programs_in`] within `timeout`.
+fn programs_within(machine: Option<&str>, top: &str, timeout: Duration) -> Result<Vec<String>, String> {
     let machine = machine.filter(|m| !m.is_empty());
     repo_programs(|args| {
-        let req = ExecRequest::new("git", READ_FLAGS.iter().copied().chain(args.iter().copied())).on(machine).cwd(Some(top)).timeout(TIMEOUT).max_output(ANSWER_CAP as u64 + 1);
-        remote::run(&req).map(|o| whole(o.code, o.stdout)).map_err(|e| e.to_string())
+        let req = ExecRequest::new("git", READ_FLAGS.iter().copied().chain(args.iter().copied())).on(machine).cwd(Some(top)).timeout(timeout).max_output(ANSWER_CAP as u64 + 1);
+        match remote::run(&req) {
+            Ok(o) => Ok(whole(o.code, o.stdout)),
+            // Out of time: unreadable, which the person may still trust.
+            Err(remote::ExecError::TimedOut { .. }) => Ok((-1, Vec::new())),
+            Err(e) => Err(e.to_string()),
+        }
     })
 }
 
@@ -416,6 +443,56 @@ mod tests {
         git("", &["--no-optional-locks", "status", "--porcelain=v2", "--untracked-files=no"]);
         assert!(marker.exists(), "status didn't run the filter there, so this test proves nothing");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn work_trees_pointing_back_up_end_the_scan_soon() {
+        let (dir, top, git) = scratch_dir("cycle");
+        let repo = |at: &str| {
+            git(at, &["init", "-q"]);
+            std::fs::write(Path::new(&top).join(at).join("f"), "x\n").unwrap();
+            git(at, &["add", "f"]);
+            git(at, &["commit", "-qm", "s"]);
+        };
+        repo("");
+        for s in ["s1", "s2"] {
+            repo(s);
+            git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{},{s}", git(s, &["rev-parse", "HEAD"]))]);
+        }
+        // Both work in the top (their core.worktree) with its index: the
+        // same two gitlinks again at every level, 2^16 folders to 16 levels.
+        for s in ["s1", "s2"] {
+            git(s, &["config", "core.worktree", "../.."]);
+            std::fs::copy(Path::new(&top).join(".git/index"), Path::new(&top).join(s).join(".git/index")).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let got = programs_within(None, &top, Duration::from_secs(10));
+        let took = started.elapsed();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let back = |p: &str| format!("{p}: {UNREADABLE}");
+        assert_eq!(got, Ok(vec![back("s1/s1"), back("s1/s2/s1"), back("s1/s2/s2")]), "each repo once, and a way back up counts as unreadable");
+        assert!(took < Duration::from_secs(5), "took {took:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_out_of_time_keeps_the_gate_shut_and_can_be_trusted() {
+        let (dir, top, git) = scratch_dir("slow");
+        git("", &["init", "-q"]);
+        git("sub", &["init", "-q"]);
+        std::fs::write(Path::new(&top).join("sub/f"), "x\n").unwrap();
+        git("sub", &["add", "f"]);
+        git("sub", &["commit", "-qm", "s"]);
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", git("sub", &["rev-parse", "HEAD"]))]);
+        // A config git waits on forever (status would too).
+        let config = Path::new(&top).join("sub/.git/config");
+        std::fs::remove_file(&config).unwrap();
+        assert!(std::process::Command::new("mkfifo").arg(&config).status().unwrap().success());
+        let got = programs_within(None, &top, Duration::from_secs(2));
+        std::fs::remove_dir_all(&dir).unwrap();
+        // Not an error: one would leave no way to trust the folder.
+        assert_eq!(got, Ok(vec![UNREADABLE.to_string()]));
     }
 
     #[cfg(unix)]
