@@ -73,8 +73,8 @@ export function languages(): Language[];
 /** Which pane opens a file: the image viewer, the Markdown preview, or the editor. */
 export function kindOf(path: string): "image" | "markdown" | "text";
 
-/** A folder's entries, folders first. Skips .git and .DS_Store. `skipped`: some names are
- *  not UTF-8 and are left out (a stand-in name could open another entry). */
+/** A folder's entries, folders first. Skips .git and .DS_Store. `skipped`: some entries are
+ *  left out unread (a name that is not UTF-8, a kind that can't be read, a read that failed). */
 export function listDir(path: string, options?: On & { limit?: number }): Promise<{ entries: FileEntry[]; truncated: boolean; skipped: boolean }>;
 /** git status for the repo `cwd` is in; null outside a repo. Writes nothing under .git. */
 export function gitStatus(cwd: string, options?: On): Promise<GitMarks | null>;

@@ -70,13 +70,14 @@ pub fn status(cwd: &str, on: Option<&str>, limit: usize) -> Result<Option<GitSta
     if capped && let Some(nul) = bytes.iter().rposition(|b| *b == 0) {
         bytes = &bytes[..=nul];
     }
-    let mut status = parse_porcelain(&top, &String::from_utf8_lossy(bytes), limit);
+    let mut status = parse_porcelain(&top, bytes, limit);
     status.truncated |= capped;
     Ok(Some(status))
 }
 
-/// Reads `git status --porcelain=v1 -z --branch` output.
-pub fn parse_porcelain(top: &str, out: &str, limit: usize) -> GitStatus {
+/// Reads `git status --porcelain=v1 -z --branch` output. A path that is not
+/// UTF-8 gets no mark: a stand-in for it (with U+FFFD) could name another file.
+pub fn parse_porcelain(top: &str, out: impl AsRef<[u8]>, limit: usize) -> GitStatus {
     let mut status = GitStatus {
         top: top.to_owned(),
         branch: None,
@@ -86,22 +87,24 @@ pub fn parse_porcelain(top: &str, out: &str, limit: usize) -> GitStatus {
         marks: Vec::new(),
         truncated: false,
     };
-    let mut records = out.split('\0').filter(|r| !r.is_empty());
+    let mut records = out.as_ref().split(|b| *b == 0).filter(|r| !r.is_empty());
     while let Some(record) = records.next() {
-        if let Some(header) = record.strip_prefix("## ") {
-            parse_branch(header, &mut status);
+        if let Some(header) = record.strip_prefix(b"## ") {
+            parse_branch(&String::from_utf8_lossy(header), &mut status);
             continue;
         }
-        let mut chars = record.chars();
-        let (Some(x), Some(y), Some(' ')) = (chars.next(), chars.next(), chars.next()) else {
+        let [x, y, b' ', path @ ..] = record else {
             continue;
         };
-        let path = chars.as_str();
+        let (x, y) = (char::from(*x), char::from(*y));
         // A rename or copy is followed by its source path.
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             records.next();
         }
         let Some(mark) = mark_of(x, y) else { continue };
+        let Ok(path) = std::str::from_utf8(path) else {
+            continue;
+        };
         if status.marks.len() >= limit {
             status.truncated = true;
             break;
@@ -172,7 +175,7 @@ mod tests {
 
     #[test]
     fn branch_headers() {
-        let head = |h: &str| parse_porcelain("/r", &nul(&[h]), 10);
+        let head = |h: &str| parse_porcelain("/r", nul(&[h]), 10);
         let s = head("## main...origin/main [ahead 3, behind 2]");
         assert_eq!(
             (s.branch.as_deref(), s.detached, s.ahead, s.behind),
@@ -282,16 +285,31 @@ mod tests {
             ["/dir/with space/ünï.txt", "/a\nb.txt", "/\"quoted\".txt"]
         );
         // A rename's source is a record of its own and is not a change.
-        let s = parse_porcelain("/r", &nul(&["R  new.rs", "old.rs", " M x.rs"]), 10);
+        let s = parse_porcelain("/r", nul(&["R  new.rs", "old.rs", " M x.rs"]), 10);
         assert_eq!(
             s.marks,
             [("/r/new.rs".to_owned(), 'M'), ("/r/x.rs".to_owned(), 'M')]
         );
         // Junk is ignored.
         assert!(
-            parse_porcelain("/r", &nul(&["x", "", "?"]), 10)
+            parse_porcelain("/r", nul(&["x", "", "?"]), 10)
                 .marks
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_not_utf8_gets_no_mark() {
+        // `b\xff.rs` read lossily is `b\u{FFFD}.rs`: the name of the file next to it.
+        let out = b"## main\0 M b\xff.rs\0?? b\xef\xbf\xbd.rs\0R  c\xff.rs\0old.rs\0 M x.rs\0";
+        let s = parse_porcelain("/r", out, 10);
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(
+            s.marks,
+            [
+                ("/r/b\u{FFFD}.rs".to_owned(), '?'),
+                ("/r/x.rs".to_owned(), 'M')
+            ]
         );
     }
 

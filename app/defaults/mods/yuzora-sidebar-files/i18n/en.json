@@ -25,7 +25,7 @@
     "no_files": "No files here.",
     "limited": "Folders show at most {count} entries.",
     "hidden_only": "The first {count} entries here are all hidden: show hidden files to see them.",
-    "skipped": "Some names here aren't UTF-8 and can't be shown: they are left out.",
+    "skipped": "Some entries here couldn't be read or shown: they are left out.",
     "rows": "The tree shows at most {count} rows: collapse some folders to see the rest."
   },
   "search": {

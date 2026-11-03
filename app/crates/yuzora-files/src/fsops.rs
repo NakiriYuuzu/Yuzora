@@ -6,6 +6,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::ffi::OsString;
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -121,8 +122,9 @@ pub struct Listing {
     pub entries: Vec<Entry>,
     /// There were more than the limit.
     pub truncated: bool,
-    /// Some names are not UTF-8 and are left out: a stand-in for one (with
-    /// U+FFFD) could open or rename another entry.
+    /// Some entries are left out unread: a name that is not UTF-8 (a stand-in
+    /// for one, with U+FFFD, could open or rename another entry), an entry
+    /// whose kind could not be read, or a read that failed partway.
     pub skipped: bool,
 }
 
@@ -231,25 +233,75 @@ fn skipped(name: &str) -> bool {
 
 fn list_local(path: &str, limit: usize) -> Result<Listing, String> {
     let read = std::fs::read_dir(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    // However big the folder, only the first `limit + 1` (sorted) are kept:
-    // past twice that, the rest are dropped as it goes.
+    let (mut entries, skipped) = read_entries(read, limit);
+    sort_entries(&mut entries);
+    let truncated = entries.len() > limit;
+    entries.truncate(limit);
+    for e in entries.iter_mut().filter(|e| !e.dir && !e.link) {
+        e.size = std::fs::metadata(Path::new(path).join(&e.name)).map_or(0, |m| m.len());
+    }
+    Ok(Listing {
+        entries,
+        truncated,
+        skipped,
+    })
+}
+
+/// A folder entry as it is read: [`std::fs::DirEntry`], or a test's own.
+trait Listed {
+    fn name(&self) -> OsString;
+    /// (a directory, a symlink); a link to a directory counts as one.
+    fn kind(&self) -> io::Result<(bool, bool)>;
+}
+
+impl Listed for std::fs::DirEntry {
+    fn name(&self) -> OsString {
+        self.file_name()
+    }
+
+    fn kind(&self) -> io::Result<(bool, bool)> {
+        let kind = self.file_type()?;
+        let link = kind.is_symlink();
+        let dir = if link {
+            std::fs::metadata(self.path()).is_ok_and(|m| m.is_dir())
+        } else {
+            kind.is_dir()
+        };
+        Ok((dir, link))
+    }
+}
+
+/// The entries of a folder as it is read, of which only the first
+/// `limit + 1` (sorted) are kept: past twice that, the rest are dropped as it
+/// goes, however big the folder. The flag says some were left out unread
+/// ([`Listing::skipped`]); one gone meanwhile is just not there.
+fn read_entries<E: Listed>(
+    read: impl Iterator<Item = io::Result<E>>,
+    limit: usize,
+) -> (Vec<Entry>, bool) {
     let keep = limit.saturating_add(1);
     let mut entries = Vec::new();
     let mut unreadable = false;
-    for ent in read.flatten() {
-        let Ok(name) = ent.file_name().into_string() else {
+    for ent in read {
+        // Nothing after a failed read is read.
+        let Ok(ent) = ent else {
+            unreadable = true;
+            break;
+        };
+        let Ok(name) = ent.name().into_string() else {
             unreadable = true;
             continue;
         };
-        let Ok(kind) = ent.file_type() else { continue };
         if skipped(&name) {
             continue;
         }
-        let link = kind.is_symlink();
-        let dir = if link {
-            std::fs::metadata(ent.path()).is_ok_and(|m| m.is_dir())
-        } else {
-            kind.is_dir()
+        let (dir, link) = match ent.kind() {
+            Ok(kind) => kind,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unreadable = true;
+                continue;
+            }
         };
         entries.push(Entry {
             hidden: name.starts_with('.'),
@@ -263,17 +315,7 @@ fn list_local(path: &str, limit: usize) -> Result<Listing, String> {
             entries.truncate(keep);
         }
     }
-    sort_entries(&mut entries);
-    let truncated = entries.len() > limit;
-    entries.truncate(limit);
-    for e in entries.iter_mut().filter(|e| !e.dir && !e.link) {
-        e.size = std::fs::metadata(Path::new(path).join(&e.name)).map_or(0, |m| m.len());
-    }
-    Ok(Listing {
-        entries,
-        truncated,
-        skipped: unreadable,
-    })
+    (entries, unreadable)
 }
 
 fn list_sh(path: &str, on: Option<&str>, limit: usize) -> Result<Listing, String> {
@@ -819,9 +861,10 @@ fn replace_atomically(
     };
     #[cfg(unix)]
     if let Some(m) = &original
-        && !keep_owner(&file, m)
+        && !(keep_owner(&file, m) && keep_extended(&file, target))
     {
-        // The swap would change the owner: write in place instead.
+        // The swap would change the owner, or drop an ACL or extended
+        // attributes: write in place instead.
         drop(file);
         let _ = std::fs::remove_file(&scratch);
         return in_place(dir);
@@ -949,6 +992,92 @@ fn keep_owner(file: &std::fs::File, original: &std::fs::Metadata) -> bool {
     };
     (staged.uid(), staged.gid()) == (original.uid(), original.gid())
         || fchown(file, Some(original.uid()), Some(original.gid())).is_ok()
+}
+
+/// Gives the scratch file the ACL and extended attributes of `original`
+/// (Finder tags, a resource fork, a POSIX ACL): a new inode has none of its
+/// own. False when it cannot.
+#[cfg(target_os = "macos")]
+fn keep_extended(file: &std::fs::File, original: &Path) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let Ok(from) = open_regular(original) else {
+        return false;
+    };
+    let flags = libc::COPYFILE_ACL | libc::COPYFILE_XATTR;
+    // SAFETY: both descriptors are open for the call; no state is passed.
+    unsafe {
+        libc::fcopyfile(
+            from.as_raw_fd(),
+            file.as_raw_fd(),
+            std::ptr::null_mut(),
+            flags,
+        ) == 0
+    }
+}
+
+/// [`keep_extended`] on Linux, where a POSIX ACL is an extended attribute
+/// too: the scratch file gets each of `original`'s, and loses any it got on
+/// its own (a folder's default ACL).
+#[cfg(target_os = "linux")]
+fn keep_extended(file: &std::fs::File, original: &Path) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let Ok(from) = open_regular(original) else {
+        return false;
+    };
+    let (Some(want), Some(have)) = (xattrs(from.as_raw_fd()), xattrs(file.as_raw_fd())) else {
+        return false;
+    };
+    let fd = file.as_raw_fd();
+    // SAFETY (both): `fd` is open; names end in NUL, values are as long as said.
+    let remove = |name: &std::ffi::CString| unsafe { libc::fremovexattr(fd, name.as_ptr()) } == 0;
+    let set = |name: &std::ffi::CString, value: &[u8]| {
+        let at = value.as_ptr().cast();
+        unsafe { libc::fsetxattr(fd, name.as_ptr(), at, value.len(), 0) == 0 }
+    };
+    have.iter()
+        .filter(|(name, _)| !want.iter().any(|(w, _)| w == name))
+        .all(|(name, _)| remove(name))
+        && want
+            .iter()
+            .filter(|a| !have.contains(*a))
+            .all(|(name, value)| set(name, value.as_slice()))
+}
+
+/// A file's extended attributes, by name; none on a file system without
+/// them. `None` when they could not be read.
+#[cfg(target_os = "linux")]
+fn xattrs(fd: std::os::fd::RawFd) -> Option<Vec<(std::ffi::CString, Vec<u8>)>> {
+    use std::ptr::null_mut;
+    // SAFETY (each call): `fd` is open, buffers are as long as said.
+    let len = unsafe { libc::flistxattr(fd, null_mut(), 0) };
+    if len < 0 {
+        let unsupported = io::Error::last_os_error().raw_os_error() == Some(libc::EOPNOTSUPP);
+        return unsupported.then(Vec::new);
+    }
+    let mut names = vec![0u8; usize::try_from(len).ok()?];
+    let len = unsafe { libc::flistxattr(fd, names.as_mut_ptr().cast(), names.len()) };
+    // A change meanwhile (ERANGE) is a failure too.
+    names.truncate(usize::try_from(len).ok()?);
+    names
+        .split(|b| *b == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            let name = std::ffi::CString::new(name).ok()?;
+            let len = unsafe { libc::fgetxattr(fd, name.as_ptr(), null_mut(), 0) };
+            let mut value = vec![0u8; usize::try_from(len).ok()?];
+            let len = unsafe {
+                libc::fgetxattr(fd, name.as_ptr(), value.as_mut_ptr().cast(), value.len())
+            };
+            value.truncate(usize::try_from(len).ok()?);
+            Some((name, value))
+        })
+        .collect()
+}
+
+/// Elsewhere only the owner and mode are kept.
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn keep_extended(_file: &std::fs::File, _original: &Path) -> bool {
+    true
 }
 
 // ---- create, rename, remove ----
@@ -1367,6 +1496,63 @@ mod tests {
                 (vec!["a.txt"], true)
             );
             assert_eq!(list_sh(&p(&d, ""), None, 10).unwrap(), local);
+        }
+    }
+
+    /// A folder entry as a test makes it: a name, and its kind or why that
+    /// can't be read.
+    struct Fake(OsString, Result<(bool, bool), io::ErrorKind>);
+
+    impl Listed for Fake {
+        fn name(&self) -> OsString {
+            self.0.clone()
+        }
+
+        fn kind(&self) -> io::Result<(bool, bool)> {
+            self.1.map_err(io::Error::from)
+        }
+    }
+
+    #[test]
+    fn entries_that_cannot_be_read_are_left_out_and_said_to_be() {
+        let file = |n: &str| -> io::Result<Fake> { Ok(Fake(n.into(), Ok((false, false)))) };
+        let failing = |n: &str, e| -> io::Result<Fake> { Ok(Fake(n.into(), Err(e))) };
+        let read = |all: Vec<io::Result<Fake>>| {
+            let (entries, unreadable) = read_entries(all.into_iter(), 10);
+            let names: Vec<String> = entries.into_iter().map(|e| e.name).collect();
+            (names, unreadable)
+        };
+        // One gone meanwhile is just not there.
+        assert_eq!(
+            read(vec![
+                file("a"),
+                failing("gone", io::ErrorKind::NotFound),
+                Ok(Fake("d".into(), Ok((true, false)))),
+            ]),
+            (vec!["a".to_owned(), "d".to_owned()], false)
+        );
+        // Its kind can't be read.
+        assert_eq!(
+            read(vec![
+                file("a"),
+                failing("b", io::ErrorKind::PermissionDenied)
+            ]),
+            (vec!["a".to_owned()], true)
+        );
+        // The read fails partway: nothing after it.
+        assert_eq!(
+            read(vec![file("a"), Err(io::Error::other("EIO")), file("c")]),
+            (vec!["a".to_owned()], true)
+        );
+        // A name that is not UTF-8.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt as _;
+            let odd = Ok(Fake(
+                OsString::from_vec(b"b\xff".to_vec()),
+                Ok((false, false)),
+            ));
+            assert_eq!(read(vec![file("a"), odd]), (vec!["a".to_owned()], true));
         }
     }
 
@@ -1803,6 +1989,77 @@ mod tests {
         ));
         assert!(replace_atomically(&target, b"x\n", &|| unchanged(&target, read)).unwrap());
         assert_eq!(std::fs::read(&f).unwrap(), b"x\n");
+    }
+
+    /// Sets an extended attribute; false where the file system takes none.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn set_xattr(path: &str, name: &str, value: &[u8]) -> bool {
+        use std::os::fd::AsRawFd as _;
+        let file = std::fs::File::open(path).unwrap();
+        let (fd, name) = (file.as_raw_fd(), std::ffi::CString::new(name).unwrap());
+        let (at, len) = (value.as_ptr().cast(), value.len());
+        #[cfg(target_os = "macos")]
+        let done = unsafe { libc::fsetxattr(fd, name.as_ptr(), at, len, 0, 0) };
+        #[cfg(target_os = "linux")]
+        let done = unsafe { libc::fsetxattr(fd, name.as_ptr(), at, len, 0) };
+        done == 0
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn get_xattr(path: &str, name: &str) -> Option<Vec<u8>> {
+        use std::os::fd::AsRawFd as _;
+        let file = std::fs::File::open(path).unwrap();
+        let (fd, name) = (file.as_raw_fd(), std::ffi::CString::new(name).unwrap());
+        let mut value = vec![0u8; 256];
+        let (at, len) = (value.as_mut_ptr().cast(), value.len());
+        #[cfg(target_os = "macos")]
+        let got = unsafe { libc::fgetxattr(fd, name.as_ptr(), at, len, 0, 0) };
+        #[cfg(target_os = "linux")]
+        let got = unsafe { libc::fgetxattr(fd, name.as_ptr(), at, len) };
+        value.truncate(usize::try_from(got).ok()?);
+        Some(value)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_swapped_save_keeps_the_extended_attributes_and_acl() {
+        use std::os::unix::fs::MetadataExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "notes.txt", b"old\n");
+        if !set_xattr(&f, "user.yuzora.tag", b"red") {
+            eprintln!("skipped: this file system takes no extended attributes");
+            return;
+        }
+        // An ACL entry of its own.
+        #[cfg(target_os = "macos")]
+        let acl = |path: &str| {
+            let out = Command::new("/bin/ls")
+                .args(["-le", path])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).contains("allow read")
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let user = std::env::var("USER").unwrap();
+            let entry = format!("user:{user} allow read");
+            let added = Command::new("/bin/chmod").args(["+a", &entry, &f]).status();
+            assert!(added.unwrap().success() && acl(&f));
+        }
+        let before = std::fs::metadata(&f).unwrap().ino();
+        write_text(&f, "new\n", Eol::Lf, false, None).unwrap();
+        assert_ne!(
+            std::fs::metadata(&f).unwrap().ino(),
+            before,
+            "written in place, not swapped"
+        );
+        assert_eq!(std::fs::read(&f).unwrap(), b"new\n");
+        assert_eq!(
+            get_xattr(&f, "user.yuzora.tag").as_deref(),
+            Some(&b"red"[..])
+        );
+        #[cfg(target_os = "macos")]
+        assert!(acl(&f), "the ACL entry is gone");
     }
 
     #[cfg(unix)]
