@@ -82,14 +82,10 @@ pub fn check(root: &Path) -> Result<Option<String>, String> {
     };
     // Notes are optional: a missing or damaged changelog never holds up the
     // update. Each language is kept, so switching shows the other at once.
-    for &locale in yuzora_core::i18n::LOCALES {
-        if let Some(notes) = found.notes_in(locale)
-            && !crate::update_notes::has(locale, &found.version)
-        {
-            match fetch_asset(notes) {
-                Ok(text) => crate::update_notes::cache(locale, &String::from_utf8_lossy(&text)),
-                Err(e) => tracing::warn!("update notes ({locale}) for {}: {e}", found.version),
-            }
+    for (locale, notes) in notes_to_fetch(&found, crate::update_notes::has) {
+        match fetch_asset(notes) {
+            Ok(text) => crate::update_notes::cache(locale, &String::from_utf8_lossy(&text)),
+            Err(e) => tracing::warn!("update notes ({locale}) for {}: {e}", found.version),
         }
     }
     let Some(entry) = found.targets.get(&super::target()) else {
@@ -97,6 +93,13 @@ pub fn check(root: &Path) -> Result<Option<String>, String> {
         return Ok(None);
     };
     crate::update::stage(root, &found.version, &entry.url, &entry.sha256)
+}
+
+/// The notes to download for `found`: per language, the asset that language
+/// shows (its own, else the English one), unless `has(locale, version)` says
+/// that language's notes are already kept.
+fn notes_to_fetch<'a>(found: &'a Manifest, has: impl Fn(&'static str, &str) -> bool) -> Vec<(&'static str, &'a manifest::Asset)> {
+    yuzora_core::i18n::LOCALES.iter().filter_map(|&locale| Some((locale, found.notes_in(locale)?))).filter(|(locale, _)| !has(locale, &found.version)).collect()
 }
 
 /// The newest release on `channel` newer than `running`, with its manifest
@@ -333,6 +336,20 @@ mod tests {
         let err = fetch_asset(found.notes_in(ZH_TW).unwrap()).unwrap_err();
         assert!(err.contains("changelog.zh-TW.md: checksum mismatch"), "{err}");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn each_language_fetches_its_own_notes_unless_kept() {
+        use yuzora_core::i18n::{EN, ZH_TW};
+        let asset = |name: &str| manifest::Asset { url: format!("https://example.test/{name}"), sha256: "0".repeat(64), size: None };
+        let mut found: Manifest = serde_json::from_slice(MANIFEST_FIXTURE).unwrap();
+        found.notes = Some(asset("changelog.md"));
+        found.localized_notes = [(ZH_TW.to_owned(), asset("changelog.zh-TW.md"))].into();
+        let urls = |has: &dyn Fn(&str, &str) -> bool| notes_to_fetch(&found, has).into_iter().map(|(l, a)| (l, a.url.rsplit('/').next().unwrap().to_owned())).collect::<Vec<_>>();
+        assert_eq!(urls(&|_, _| false), [(EN, "changelog.md".to_owned()), (ZH_TW, "changelog.zh-TW.md".to_owned())]);
+        let version = found.version.clone();
+        assert_eq!(urls(&|l, v| l == EN && v == version), [(ZH_TW, "changelog.zh-TW.md".to_owned())]);
+        assert!(urls(&|_, _| true).is_empty());
     }
 
     #[test]
