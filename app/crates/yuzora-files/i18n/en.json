@@ -15,6 +15,11 @@
     "too_large": "This image is too large to show (over 32 MB).",
     "too_large_decoded": "This image is too large to show (over 512 MB once decoded).",
     "unsupported": "This kind of image can't be shown.",
-    "failed": "Can't show this image. {error}"
+    "failed": "Can't show this image. {error}",
+    "svgz": "Compressed SVGs (SVGZ) aren't shown.",
+    "svg_too_deep": "This SVG nests its elements too deeply, or refers back to itself, to show.",
+    "svg_entities": "This SVG declares entities that expand into markup or other entities, so it isn't shown.",
+    "svg_too_complex": "This SVG is too complex to show.",
+    "svg_too_many_layers": "This SVG has too many layers inside one another to show."
   }
 }

@@ -15,6 +15,11 @@
     "too_large": "圖片太大（超過 32 MB），無法顯示。",
     "too_large_decoded": "圖片解碼後太大（超過 512 MB），無法顯示。",
     "unsupported": "無法顯示這種圖片格式。",
-    "failed": "無法顯示這張圖片。{error}"
+    "failed": "無法顯示這張圖片。{error}",
+    "svgz": "不顯示壓縮的 SVG（SVGZ）。",
+    "svg_too_deep": "這個 SVG 的元素巢狀太深，或參照繞回自己，無法顯示。",
+    "svg_entities": "這個 SVG 宣告的 entity 會展開成標記或其他 entity，所以不顯示。",
+    "svg_too_complex": "這個 SVG 太複雜，無法顯示。",
+    "svg_too_many_layers": "這個 SVG 互相包住的圖層太多，無法顯示。"
   }
 }

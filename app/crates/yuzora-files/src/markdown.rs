@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, Image, ImageFormat, ImageSource,
-    IntoElement, ParentElement as _, Render, SharedString, SharedUri, StyleRefinement, Styled as _,
-    Subscription, Window, div, px,
+    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageSource, IntoElement,
+    ParentElement as _, Render, RenderImage, SharedString, SharedUri, StyleRefinement, Styled as _,
+    Subscription, SvgRenderer, Window, div, px,
 };
 use gpui_base::text::{TextView, TextViewStyle};
 use yuzora_core::HostValue;
@@ -25,6 +25,7 @@ use yuzora_core::HostValue;
 use crate::docs::{self, DocView};
 use crate::fsops::{self, Stamp};
 use crate::highlight::{self, SyntaxPalette};
+use crate::image::Picture;
 
 /// Where a document image comes from, or `None` when it is not loaded.
 pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
@@ -146,22 +147,19 @@ fn missing_image() -> ImageSource {
 enum Found {
     /// The stamp of what is shown: not read again.
     Same,
-    /// Bytes to show, checked, and the stamp from before they were read (a
-    /// change after that is seen the next time).
-    Read {
-        stamp: Stamp,
-        format: ImageFormat,
-        bytes: Vec<u8>,
-    },
-    /// Not a regular file (a device, FIFO or folder), too big, or too big
-    /// once decoded.
+    /// What to show, checked (an SVG drawn), and the stamp from before it
+    /// was read (a change after that is seen the next time).
+    Read { stamp: Stamp, picture: Picture },
+    /// Not a regular file (a device, FIFO or folder), too big, too big once
+    /// decoded, or an SVG [`crate::svg`] doesn't draw.
     Nothing,
 }
 
 /// Reads an image for the preview, unless its stamp is still `shown`. GPUI
 /// gets these bytes, not the path: what it decodes is what was checked
-/// ([`crate::image::read`] reads no more than the limit).
-fn read_image(path: &Path, shown: Option<Stamp>) -> Found {
+/// ([`crate::image::read`] reads no more than the limit). Blocks: an SVG is
+/// drawn here.
+fn read_image(path: &Path, shown: Option<Stamp>, svg: &SvgRenderer) -> Found {
     let stamp = std::fs::metadata(path)
         .ok()
         .filter(|m| m.is_file())
@@ -172,14 +170,17 @@ fn read_image(path: &Path, shown: Option<Stamp>) -> Found {
     if shown == Some(stamp) {
         return Found::Same;
     }
-    match crate::image::read(name, None) {
-        Ok(bytes) if crate::image::fits_in_memory(&bytes) => Found::Read {
-            stamp,
-            format: crate::image::format_of(name)
-                .unwrap_or_else(|| crate::image::format_in(&bytes)),
-            bytes,
-        },
-        _ => Found::Nothing,
+    let picture = crate::image::read(name, None)
+        .ok()
+        .filter(|bytes| crate::image::fits_in_memory(bytes))
+        .and_then(|bytes| {
+            let format =
+                crate::image::format_of(name).unwrap_or_else(|| crate::image::format_in(&bytes));
+            Picture::of(format, bytes, svg).ok()
+        });
+    match picture {
+        Some(picture) => Found::Read { stamp, picture },
+        None => Found::Nothing,
     }
 }
 
@@ -192,7 +193,7 @@ const FORGET: Duration = Duration::from_secs(60);
 /// What a preview shows for one image path.
 struct Known {
     /// The image and the stamp it was read at; `None`: nothing to show.
-    shown: Option<(Stamp, Arc<Image>)>,
+    shown: Option<(Stamp, Picture)>,
     /// When it was looked at.
     at: Instant,
     /// When a frame last drew it, and which.
@@ -218,12 +219,15 @@ struct ImageChecks {
     frame: u64,
     /// A pass to let go of images no longer drawn is waiting.
     forgetting: bool,
+    /// SVGs let go of whose textures are still to be dropped (that takes the
+    /// app, which drawing and the checks don't have).
+    released: Vec<Arc<RenderImage>>,
 }
 
 impl ImageChecks {
     /// The image for `path` so far (none while unknown); asks for a check
     /// when there is no answer or it is old.
-    fn answer(&mut self, path: &Path) -> Option<Arc<Image>> {
+    fn answer(&mut self, path: &Path) -> Option<Picture> {
         match self.known.get_mut(path) {
             Some(known) => {
                 known.asked = Instant::now();
@@ -269,18 +273,16 @@ impl ImageChecks {
                 frame: self.frame,
             });
             known.at = now;
-            match found {
-                Found::Same => {}
-                Found::Read {
-                    stamp,
-                    format,
-                    bytes,
-                } => {
-                    known.shown = Some((stamp, Arc::new(Image::from_bytes(format, bytes))));
+            let was = match found {
+                Found::Same => None,
+                Found::Read { stamp, picture } => {
                     changed = true;
+                    known.shown.replace((stamp, picture))
                 }
-                Found::Nothing => changed |= known.shown.take().is_some(),
-            }
+                Found::Nothing => known.shown.take(),
+            };
+            changed |= was.is_some();
+            self.released.extend(was.and_then(|(_, p)| p.drawn()));
         }
         changed
     }
@@ -289,9 +291,29 @@ impl ImageChecks {
     /// [`FORGET`]. True when some it didn't draw are left, for later.
     fn forget(&mut self) -> bool {
         let (now, frame) = (Instant::now(), self.frame);
-        self.known
-            .retain(|_, k| k.frame == frame || now.duration_since(k.asked) < FORGET);
+        let released = &mut self.released;
+        self.known.retain(|_, k| {
+            let keep = k.frame == frame || now.duration_since(k.asked) < FORGET;
+            if !keep {
+                released.extend(k.shown.take().and_then(|(_, p)| p.drawn()));
+            }
+            keep
+        });
         self.known.values().any(|k| k.frame != frame)
+    }
+
+    /// Everything shown, let go of (the preview is closed).
+    fn clear(&mut self) {
+        let shown = self.known.drain().filter_map(|(_, k)| k.shown);
+        self.released.extend(shown.filter_map(|(_, p)| p.drawn()));
+    }
+}
+
+/// Drops the textures of the SVGs `images` let go of.
+fn drop_released(images: &Mutex<ImageChecks>, cx: &mut App) {
+    let released = std::mem::take(&mut images.lock().unwrap_or_else(|e| e.into_inner()).released);
+    for image in released {
+        cx.drop_image(image, None);
     }
 }
 
@@ -314,6 +336,14 @@ pub struct MarkdownView {
 impl MarkdownView {
     fn new(doc: Entity<DocView>, id: SharedString, colors: Colors, cx: &mut Context<Self>) -> Self {
         let watch = Self::watch(&doc, cx);
+        cx.on_release(|this: &mut Self, cx| {
+            this.images
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            drop_released(&this.images, cx);
+        })
+        .detach();
         let base = Self::base_of(&doc, cx);
         let remote = doc.read(cx).key.on.is_some();
         Self {
@@ -341,6 +371,7 @@ impl MarkdownView {
             }
             checks.busy = true;
         }
+        let svg = cx.svg_renderer();
         cx.spawn(async move |this, cx| {
             let mut changed = false;
             // Frames drawn meanwhile may ask for more.
@@ -353,11 +384,12 @@ impl MarkdownView {
                     }
                     checks.take_wanted()
                 };
+                let svg = svg.clone();
                 let answers = docs::blocking(move || {
                     wanted
                         .into_iter()
                         .map(|(path, shown)| {
-                            let found = read_image(&path, shown);
+                            let found = read_image(&path, shown, &svg);
                             (path, found)
                         })
                         .collect()
@@ -369,9 +401,12 @@ impl MarkdownView {
                     .unwrap_or_else(|e| e.into_inner())
                     .record(answers);
             }
-            if changed {
-                let _ = this.update(cx, |_, cx| cx.notify());
-            }
+            let _ = this.update(cx, |_, cx| {
+                drop_released(&images, cx);
+                if changed {
+                    cx.notify();
+                }
+            });
         })
         .detach();
     }
@@ -390,9 +425,14 @@ impl MarkdownView {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(FORGET).await;
-                let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
-                if this.upgrade().is_none() || !checks.forget() {
-                    checks.forgetting = false;
+                let more = {
+                    let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
+                    let more = this.upgrade().is_some() && checks.forget();
+                    checks.forgetting = more;
+                    more
+                };
+                let _ = this.update(cx, |_, cx| drop_released(&images, cx));
+                if !more {
                     break;
                 }
             }
@@ -525,7 +565,7 @@ impl Render for MarkdownView {
                             .unwrap_or_else(|e| e.into_inner())
                             .answer(&path)
                     });
-                    image.map_or_else(missing_image, ImageSource::Image)
+                    image.map_or_else(missing_image, |image| image.source())
                 })
                 .on_link_click(|url, _, _, cx| {
                     if opens_outside(url) {
@@ -579,6 +619,31 @@ pub fn markdown_component(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::svg::samples::{gzip, svg_with};
+    use gpui::{Image, ImageFormat};
+
+    const RED_RECT: &str = r#"<rect width="4" height="4" fill="red"/>"#;
+
+    fn renderer() -> SvgRenderer {
+        SvgRenderer::new(Arc::new(()))
+    }
+
+    /// A PNG's bytes to show, `len` long.
+    fn png(len: usize) -> Picture {
+        Picture::Bytes(Arc::new(Image::from_bytes(ImageFormat::Png, vec![0; len])))
+    }
+
+    /// An SVG drawn.
+    fn drawn() -> Arc<RenderImage> {
+        crate::svg::rasterize(&renderer(), svg_with(RED_RECT).into_bytes()).unwrap()
+    }
+
+    fn bytes_of(picture: Option<Picture>) -> Arc<Image> {
+        match picture {
+            Some(Picture::Bytes(image)) => image,
+            _ => panic!("no bytes shown"),
+        }
+    }
 
     #[gpui::test]
     fn code_blocks_take_the_script_colors(cx: &mut gpui::TestAppContext) {
@@ -710,48 +775,61 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("a.png");
         std::fs::write(&png, b"not really a png").unwrap();
+        let svg = renderer();
         let Found::Read {
             stamp,
-            format,
-            bytes,
-        } = read_image(&png, None)
+            picture: Picture::Bytes(image),
+        } = read_image(&png, None, &svg)
         else {
             panic!("not read");
         };
         assert_eq!(
-            (format, bytes.as_slice()),
+            (image.format(), image.bytes()),
             (ImageFormat::Png, &b"not really a png"[..])
         );
         // Unchanged since it was read: not read again.
-        assert!(matches!(read_image(&png, Some(stamp)), Found::Same));
+        assert!(matches!(read_image(&png, Some(stamp), &svg), Found::Same));
         // No extension: the format from its bytes.
         let bare = dir.path().join("picture");
         std::fs::write(&bare, crate::image::test_gif(1, 1)).unwrap();
         assert!(matches!(
-            read_image(&bare, None),
+            read_image(&bare, None, &svg),
             Found::Read {
-                format: ImageFormat::Gif,
+                picture: Picture::Bytes(image),
                 ..
-            }
+            } if image.format() == ImageFormat::Gif
         ));
         // Too big once decoded.
         let big = dir.path().join("big.gif");
         std::fs::write(&big, crate::image::test_gif(8192, 3)).unwrap();
-        assert!(matches!(read_image(&big, None), Found::Nothing));
-        assert!(matches!(read_image(dir.path(), None), Found::Nothing));
+        assert!(matches!(read_image(&big, None, &svg), Found::Nothing));
+        assert!(matches!(read_image(dir.path(), None, &svg), Found::Nothing));
         assert!(matches!(
-            read_image(&dir.path().join("missing.png"), None),
+            read_image(&dir.path().join("missing.png"), None, &svg),
             Found::Nothing
         ));
+        // An SVG is drawn here, by `crate::svg`; one it refuses shows nothing.
+        let drawn = dir.path().join("a.svg");
+        std::fs::write(&drawn, svg_with(RED_RECT)).unwrap();
+        assert!(matches!(
+            read_image(&drawn, None, &svg),
+            Found::Read {
+                picture: Picture::Drawn(_),
+                ..
+            }
+        ));
+        let svgz = dir.path().join("b.svg");
+        std::fs::write(&svgz, gzip(svg_with(RED_RECT).as_bytes())).unwrap();
+        assert!(matches!(read_image(&svgz, None, &svg), Found::Nothing));
         #[cfg(unix)]
         {
             assert!(matches!(
-                read_image(Path::new("/dev/zero"), None),
+                read_image(Path::new("/dev/zero"), None, &svg),
                 Found::Nothing
             ));
             let link = dir.path().join("zero.png");
             std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
-            assert!(matches!(read_image(&link, None), Found::Nothing));
+            assert!(matches!(read_image(&link, None, &svg), Found::Nothing));
         }
     }
 
@@ -760,8 +838,7 @@ mod tests {
         let stamp = |len| Stamp { len, mtime_ms: 1 };
         let read = |len| Found::Read {
             stamp: stamp(len),
-            format: ImageFormat::Png,
-            bytes: vec![0; len as usize],
+            picture: png(len as usize),
         };
         let mut checks = ImageChecks::default();
         let (a, b) = (Path::new("/r/a.png"), Path::new("/r/b.png"));
@@ -773,7 +850,7 @@ mod tests {
             (a.to_owned(), read(1)),
             (b.to_owned(), Found::Nothing)
         ]));
-        let shown = checks.answer(a).unwrap();
+        let shown = bytes_of(checks.answer(a));
         assert!(checks.answer(b).is_none());
         assert!(checks.wanted.is_empty());
         // Looked at again with the stamp it shows; unchanged, nothing changes.
@@ -783,10 +860,10 @@ mod tests {
             (a.to_owned(), Found::Same),
             (b.to_owned(), Found::Nothing)
         ]));
-        assert!(Arc::ptr_eq(&checks.answer(a).unwrap(), &shown));
+        assert!(Arc::ptr_eq(&bytes_of(checks.answer(a)), &shown));
         // Replaced at the same path: the new image is shown.
         assert!(checks.record(vec![(a.to_owned(), read(2))]));
-        assert!(!Arc::ptr_eq(&checks.answer(a).unwrap(), &shown));
+        assert!(!Arc::ptr_eq(&bytes_of(checks.answer(a)), &shown));
         // Gone: nothing shown.
         assert!(checks.record(vec![(a.to_owned(), Found::Nothing)]));
         assert!(checks.answer(a).is_none());
@@ -804,8 +881,7 @@ mod tests {
                 len: 1,
                 mtime_ms: 1,
             },
-            format: ImageFormat::Png,
-            bytes: vec![0],
+            picture: png(1),
         };
         let (a, b) = (Path::new("/r/a.png"), Path::new("/r/b.png"));
         let mut checks = ImageChecks {
@@ -827,6 +903,46 @@ mod tests {
         }
         assert!(!checks.forget());
         assert!(checks.known.contains_key(a) && !checks.known.contains_key(b));
+        // Bytes: GPUI's to let go of.
+        assert!(checks.released.is_empty());
+    }
+
+    #[test]
+    fn svgs_let_go_of_have_their_textures_released() {
+        let stamp = |len| Stamp { len, mtime_ms: 1 };
+        let svg = |len, image: &Arc<RenderImage>| Found::Read {
+            stamp: stamp(len),
+            picture: Picture::Drawn(image.clone()),
+        };
+        let (one, two, three) = (drawn(), drawn(), drawn());
+        let (a, b) = (Path::new("/r/a.svg"), Path::new("/r/b.svg"));
+        let mut checks = ImageChecks {
+            frame: 1,
+            ..Default::default()
+        };
+        checks.record(vec![
+            (a.to_owned(), svg(1, &one)),
+            (b.to_owned(), svg(1, &two)),
+        ]);
+        assert!(checks.released.is_empty());
+        // Replaced, and gone.
+        checks.record(vec![
+            (a.to_owned(), svg(2, &three)),
+            (b.to_owned(), Found::Nothing),
+        ]);
+        let released = |checks: &mut ImageChecks| -> Vec<_> {
+            checks.released.drain(..).map(|i| i.id).collect()
+        };
+        assert_eq!(released(&mut checks), [one.id, two.id]);
+        // No longer drawn, a while ago.
+        checks.frame = 2;
+        checks.known.get_mut(a).unwrap().asked = Instant::now() - FORGET * 2;
+        checks.forget();
+        assert_eq!(released(&mut checks), [three.id]);
+        // Closed: whatever is shown.
+        checks.record(vec![(a.to_owned(), svg(3, &one))]);
+        checks.clear();
+        assert_eq!(released(&mut checks), [one.id]);
     }
 
     #[gpui::test]
@@ -855,8 +971,7 @@ mod tests {
                         len: 1,
                         mtime_ms: 1,
                     },
-                    format: ImageFormat::Png,
-                    bytes: vec![0],
+                    picture: Picture::Drawn(drawn()),
                 },
             )]);
             // The last frame no longer drew it, a while ago.
@@ -870,7 +985,45 @@ mod tests {
         view.update(cx, |v, _| {
             let checks = v.images.lock().unwrap();
             assert!(checks.known.is_empty() && !checks.forgetting);
+            // Its texture dropped.
+            assert!(checks.released.is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn a_closed_preview_releases_its_svgs(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let key = docs::DocKey {
+            on: None,
+            path: dir.path().join("a.md").to_string_lossy().into_owned(),
+        };
+        let id = cx.update(|cx| docs::open(key, cx));
+        cx.run_until_parked();
+        let doc = cx.update(|cx| docs::get(id, cx).unwrap());
+        let colors = Colors::from_props(&HostValue::Null);
+        let view = cx.new(|cx| MarkdownView::new(doc, "md".into(), colors, cx));
+        let image = drawn();
+        let images = view.update(cx, |v, _| {
+            v.images.lock().unwrap().record(vec![(
+                dir.path().join("x.svg"),
+                Found::Read {
+                    stamp: Stamp {
+                        len: 1,
+                        mtime_ms: 1,
+                    },
+                    picture: Picture::Drawn(image.clone()),
+                },
+            )]);
+            v.images.clone()
+        });
+        drop(view);
+        // Released once effects are flushed.
+        cx.update(|_| {});
+        let checks = images.lock().unwrap();
+        assert!(checks.known.is_empty() && checks.released.is_empty());
+        assert_eq!(Arc::strong_count(&image), 1);
     }
 
     #[gpui::test]

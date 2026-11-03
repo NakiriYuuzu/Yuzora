@@ -18,6 +18,7 @@ pub mod highlight;
 pub mod image;
 pub mod markdown;
 pub mod search;
+pub mod svg;
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};

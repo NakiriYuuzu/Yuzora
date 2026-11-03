@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, ElementId, Hsla, Image, ImageFormat, ImageSource,
-    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, RenderImage, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, SvgRenderer, Window, div, img,
+    px,
 };
 use yuzora_core::HostValue;
 
@@ -189,10 +190,70 @@ fn read_sh(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// An image ready for GPUI: a raster's bytes for it to decode (checked by
+/// [`fits_in_memory`]), or an SVG already rasterized ([`crate::svg`]).
+#[derive(Clone)]
+pub(crate) enum Picture {
+    Bytes(Arc<Image>),
+    Drawn(Arc<RenderImage>),
+}
+
+impl Picture {
+    /// What a repo's image bytes show as: an SVG is rasterized now, so this
+    /// blocks (a worker's call).
+    pub(crate) fn of(
+        format: ImageFormat,
+        bytes: Vec<u8>,
+        svg: &SvgRenderer,
+    ) -> Result<Self, String> {
+        match format {
+            ImageFormat::Svg => crate::svg::rasterize(svg, bytes).map(Picture::Drawn),
+            _ => Ok(Picture::Bytes(Arc::new(Image::from_bytes(format, bytes)))),
+        }
+    }
+
+    /// The texture GPUI keeps for it once drawn, which only
+    /// [`App::drop_image`] lets go of: an SVG's.
+    pub(crate) fn drawn(self) -> Option<Arc<RenderImage>> {
+        match self {
+            Picture::Bytes(_) => None,
+            Picture::Drawn(image) => Some(image),
+        }
+    }
+
+    pub(crate) fn source(&self) -> ImageSource {
+        match self {
+            Picture::Bytes(image) => ImageSource::Image(image.clone()),
+            Picture::Drawn(image) => ImageSource::Render(image.clone()),
+        }
+    }
+}
+
+/// Why an image isn't shown, each with its own `image.*` text.
+const REFUSALS: [&str; 8] = [
+    "too_large",
+    "too_large_decoded",
+    "unsupported",
+    "svgz",
+    "svg_too_deep",
+    "svg_entities",
+    "svg_too_complex",
+    "svg_too_many_layers",
+];
+
 enum Loaded {
     Loading,
-    Ready(Arc<Image>),
+    Ready(Picture),
     Failed(String),
+}
+
+impl Loaded {
+    fn drawn(self) -> Option<Arc<RenderImage>> {
+        match self {
+            Loaded::Ready(picture) => picture.drawn(),
+            _ => None,
+        }
+    }
 }
 
 struct ImageView {
@@ -205,6 +266,7 @@ impl ImageView {
         self.loaded = Loaded::Loading;
         let (path, on, _) = self.key.clone();
         let key = self.key.clone();
+        let svg = cx.svg_renderer();
         cx.spawn(async move |this, cx| {
             let Some(format) = format_of(&path) else {
                 let _ = this.update(cx, |v, cx| {
@@ -213,10 +275,10 @@ impl ImageView {
                 });
                 return;
             };
-            let bytes = blocking(move || {
+            let picture = blocking(move || {
                 read(&path, on.as_deref()).and_then(|bytes| {
                     if fits_in_memory(&bytes) {
-                        Ok(bytes)
+                        Picture::of(format, bytes, &svg)
                     } else {
                         Err("too_large_decoded".into())
                     }
@@ -228,10 +290,17 @@ impl ImageView {
                 if v.key != key {
                     return;
                 }
-                v.loaded = match bytes {
-                    Ok(bytes) => Loaded::Ready(Arc::new(Image::from_bytes(format, bytes))),
-                    Err(e) => Loaded::Failed(e),
-                };
+                let was = std::mem::replace(
+                    &mut v.loaded,
+                    match picture {
+                        Ok(picture) => Loaded::Ready(picture),
+                        Err(e) => Loaded::Failed(e),
+                    },
+                );
+                // An SVG drawn before: its texture goes with it.
+                if let Some(image) = was.drawn() {
+                    cx.drop_image(image, None);
+                }
                 cx.notify();
             });
         })
@@ -310,6 +379,13 @@ pub fn image_component(
         {
             let key = key.clone();
             move |_, cx| {
+                cx.on_release(|v: &mut ImageView, cx| {
+                    let loaded = std::mem::replace(&mut v.loaded, Loaded::Loading);
+                    if let Some(image) = loaded.drawn() {
+                        cx.drop_image(image, None);
+                    }
+                })
+                .detach();
                 let mut v = ImageView {
                     key,
                     loaded: Loaded::Loading,
@@ -328,16 +404,12 @@ pub fn image_component(
     let v = view.read(cx);
     match &v.loaded {
         Loaded::Loading => status(s.t("image.loading", &[]), look.muted),
-        Loaded::Failed(e) if e == "too_large" => status(s.t("image.too_large", &[]), look.muted),
-        Loaded::Failed(e) if e == "too_large_decoded" => {
-            status(s.t("image.too_large_decoded", &[]), look.muted)
-        }
-        Loaded::Failed(e) if e == "unsupported" => {
-            status(s.t("image.unsupported", &[]), look.muted)
+        Loaded::Failed(e) if REFUSALS.contains(&e.as_str()) => {
+            status(s.t(&format!("image.{e}"), &[]), look.muted)
         }
         Loaded::Failed(e) => status(s.t("image.failed", &[("error", e.clone())]), look.muted),
         Loaded::Ready(image) => {
-            let source = ImageSource::Image(image.clone());
+            let source = image.source();
             let muted = look.muted;
             let picture = img(source).with_fallback(move || {
                 status(
@@ -520,23 +592,25 @@ mod tests {
     /// A PNG whose header says 60000×60000 (14 GB decoded), 74 bytes long.
     const HUGE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAA6mAAAOpgCAYAAACA0nVCAAAAEUlEQVR4nGNgGAWjYBQMdwAAA+gAAbOm00YAAAAASUVORK5CYII=";
 
-    fn svg_with(inner: &str) -> String {
-        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">{inner}</svg>"#)
-    }
+    use crate::svg::samples::{gzip, image_at, nested_in_images, svg_data, svg_with};
 
-    fn image_at(href: &str) -> String {
-        svg_with(&format!(r#"<image href="{href}" width="4" height="4"/>"#))
-    }
+    /// The stack of the dispatch queue threads GPUI decodes images on
+    /// (macOS), where a mod's SVG is drawn.
+    const DECODER_STACK: usize = 536_576;
 
-    /// The top-left pixel (BGRA) of `svg` rendered, within ten seconds.
+    /// The top-left pixel (BGRA) of `svg` as GPUI's own decoder renders it, on
+    /// a stack that size, within ten seconds.
     fn first_pixel(svg: String) -> [u8; 4] {
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let image = gpui::SvgRenderer::new(std::sync::Arc::new(()))
-                .render_single_frame(svg.as_bytes(), 1.0)
-                .unwrap();
-            let _ = tx.send(<[u8; 4]>::try_from(&image.as_bytes(0).unwrap()[..4]).unwrap());
-        });
+        std::thread::Builder::new()
+            .stack_size(DECODER_STACK)
+            .spawn(move || {
+                let image = gpui::SvgRenderer::new(std::sync::Arc::new(()))
+                    .render_single_frame(svg.as_bytes(), 1.0)
+                    .unwrap();
+                let _ = tx.send(<[u8; 4]>::try_from(&image.as_bytes(0).unwrap()[..4]).unwrap());
+            })
+            .unwrap();
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("the SVG didn't render within ten seconds")
     }
@@ -551,35 +625,30 @@ mod tests {
             RED
         );
         let dir = tempfile::tempdir().unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(RED_PNG)
+            .unwrap();
         let red = dir.path().join("red.png");
-        std::fs::write(
-            &red,
-            base64::engine::general_purpose::STANDARD
-                .decode(RED_PNG)
-                .unwrap(),
-        )
-        .unwrap();
-        // A big file is not read whole either.
+        std::fs::write(&red, &png).unwrap();
+        // A big file is not read whole either: 64 MiB, red to a PNG decoder
+        // (it stops at the image's end).
         let big = dir.path().join("big.png");
-        std::fs::File::create(&big)
+        std::fs::write(&big, &png).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&big)
             .unwrap()
             .set_len(64 << 20)
             .unwrap();
         let red = red.to_string_lossy().into_owned();
-        for href in [
-            red.clone(),
-            format!("file://{red}"),
-            big.to_string_lossy().into_owned(),
-            r"\\host\share\x.png".to_owned(),
-        ] {
+        #[allow(unused_mut)]
+        let mut hrefs = vec![red.clone(), big.to_string_lossy().into_owned()];
+        // The same file by its long name.
+        #[cfg(windows)]
+        hrefs.push(format!(r"\\?\{red}"));
+        for href in hrefs {
             assert_eq!(first_pixel(image_at(&href)), NOTHING, "{href}");
         }
-        // Nor through an SVG inside it.
-        let nested = base64::engine::general_purpose::STANDARD.encode(image_at(&red));
-        assert_eq!(
-            first_pixel(image_at(&format!("data:image/svg+xml;base64,{nested}"))),
-            NOTHING
-        );
     }
 
     #[cfg(unix)]
@@ -621,18 +690,30 @@ mod tests {
             first_pixel(image_at(&format!("data:image/png;base64,{HUGE_PNG}"))),
             NOTHING
         );
-        // An SVG in it still draws, its own rasters left out the same way.
-        let rect = base64::engine::general_purpose::STANDARD
-            .encode(svg_with(r#"<rect width="4" height="4" fill="red"/>"#));
-        assert_eq!(
-            first_pixel(image_at(&format!("data:image/svg+xml;base64,{rect}"))),
-            RED
-        );
-        let inner = base64::engine::general_purpose::STANDARD
-            .encode(image_at(&format!("data:image/png;base64,{RED_PNG}")));
-        assert_eq!(
-            first_pixel(image_at(&format!("data:image/svg+xml;base64,{inner}"))),
-            NOTHING
-        );
+        // Nor an SVG: each would be parsed inside the last.
+        let rect = svg_with(r#"<rect width="4" height="4" fill="red"/>"#);
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&rect);
+        for href in [
+            format!("data:image/svg+xml;base64,{base64}"),
+            svg_data(&rect),
+        ] {
+            assert_eq!(first_pixel(image_at(&href)), NOTHING, "{href}");
+        }
+    }
+
+    #[test]
+    fn svgs_nested_in_data_never_run_the_stack_out() {
+        // 75 deep, drawn on a decoder thread: the process used to abort.
+        let rect = svg_with(r#"<rect width="4" height="4" fill="red"/>"#);
+        assert_eq!(first_pixel(nested_in_images(rect, 75)), NOTHING);
+    }
+
+    #[test]
+    fn an_svg_inflates_no_gzip_it_carries() {
+        // usvg inflates an SVGZ whole, however far it expands.
+        let rect = svg_with(r#"<rect width="4" height="4" fill="red"/>"#);
+        let base64 = base64::engine::general_purpose::STANDARD.encode(gzip(rect.as_bytes()));
+        let svg = image_at(&format!("data:image/svg+xml;base64,{base64}"));
+        assert_eq!(first_pixel(svg), NOTHING);
     }
 }
