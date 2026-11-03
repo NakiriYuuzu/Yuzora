@@ -2,36 +2,42 @@
 //!
 //! Owned by lane L4. Scripts reach it as `import { … } from "yuzora:ssh"`;
 //! the app registers [`host_module`] for every mod (app/src/yuzora/mod.rs), so
-//! a new function only needs adding here, with its line in [`DECLARATIONS`].
+//! a new function only needs adding in [`js`], with its line in [`DECLARATIONS`].
+//!
+//! - [`config`]: `~/.ssh/config` (Include, Host/Match, ProxyJump…), read only.
+//! - [`hosts`]: config hosts, Yuzora profiles (settings `ssh`) and herdr machines, merged.
+//! - [`known_hosts`]: OpenSSH known_hosts; Yuzora writes only its own file
+//!   (`<app home>/yuzora/known_hosts`) and reads `~/.ssh`'s.
+//! - [`session`]: one shared SSH session per host ([`Manager::session`]), host key
+//!   checks, ProxyJump / ProxyCommand; [`auth`] logs in (agent, keys, password,
+//!   keyboard-interactive) with questions through [`prompt`].
+//! - [`sftp`], [`transfer`], [`edit`]: the SFTP pane's browsing, transfer queue
+//!   (resume, preserve) and editing a host's file locally.
+//! - [`tunnel`]: local port forwards for other lanes (L3's remote databases).
+//! - [`runtime`]: the crate's tokio runtime; its futures can be awaited anywhere.
 
-use yuzora_core::{HostModule, HostValue};
-
-/// The import specifier: `yuzora:ssh`.
-pub const NAME: &str = "yuzora:ssh";
-
-/// The TypeScript face of [`host_module`]: one `export function` per function.
-pub const DECLARATIONS: &str = r#"
-/** The yuzora-ssh crate's version (Yuzora's). */
-export function version(): string;
-"#;
-
-/// The `yuzora:ssh` module.
-pub fn host_module() -> HostModule {
-    HostModule::new(NAME)
-        .declarations(DECLARATIONS)
-        .function("version", |_| Ok(HostValue::Str(yuzora_core::VERSION.into())))
-}
+pub mod auth;
+pub mod config;
+pub mod context;
+pub mod edit;
+pub mod error;
+pub mod hosts;
+pub mod js;
+pub mod known_hosts;
+pub mod prompt;
+pub mod runtime;
+pub mod session;
+pub mod sftp;
+mod strings;
+pub mod transfer;
+pub mod tunnel;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use yuzora_core::HostArguments;
+mod testing;
+#[cfg(test)]
+mod tests;
 
-    #[test]
-    fn module_validates_and_reports_its_version() {
-        let m = host_module();
-        m.validate().unwrap();
-        assert_eq!(m.name(), "yuzora:ssh");
-        assert_eq!(m.call("version", &HostArguments::new([])).unwrap(), HostValue::Str(yuzora_core::VERSION.into()));
-    }
-}
+pub use context::Context;
+pub use error::{ErrorKind, SshError};
+pub use js::{DECLARATIONS, NAME, host_module};
+pub use session::{HostSession, Interaction, Manager, manager};

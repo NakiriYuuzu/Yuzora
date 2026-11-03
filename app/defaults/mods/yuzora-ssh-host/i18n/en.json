@@ -1,0 +1,22 @@
+{
+  "add": "Add a host",
+  "edit": "Edit {name}",
+  "remove": "Delete {name}?",
+  "removeBody": "Yuzora forgets this host and its stored password. Nothing on the host changes.",
+  "hint": "Hosts in ~/.ssh/config show up on their own; edit that file to change them.",
+  "name": "Name",
+  "namePlaceholder": "lab-01",
+  "host": "Host",
+  "hostPlaceholder": "lab-01.example.com or 10.0.0.5",
+  "port": "Port",
+  "user": "User",
+  "identity": "Private key (optional)",
+  "identityPlaceholder": "~/.ssh/id_ed25519",
+  "jump": "ProxyJump (optional)",
+  "jumpPlaceholder": "user@bastion:22",
+  "password": "Password (optional, kept in the system keychain)",
+  "save": "Save",
+  "delete": "Delete",
+  "cancel": "Cancel",
+  "failed": "Couldn't save: {why}"
+}
