@@ -39,7 +39,7 @@ use std::time::Duration;
 use crate::remote::{self, ExecRequest};
 
 /// Config keys (lowercased by git) that name a program run without asking.
-pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remotes?\..+|branch\..+\.(remote|pushremote)|url\..+\.(insteadof|pushinsteadof)|extensions\.partialclone|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.(update|url))$";
+pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remotes?\..+|branch\..+\.(remote|pushremote)|url\..+\.(insteadof|pushinsteadof)|extensions\.partialclone|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.(update|url|gitdir))$";
 
 /// Whether a matched key's value runs something: fsmonitor as a boolean is
 /// git's own daemon, and a submodule's update mode is a command only after
@@ -63,6 +63,10 @@ pub fn names_program(key: &str, value: &str) -> bool {
     }
     if key.starts_with("submodule.") && key.ends_with(".url") {
         return names_helper(value);
+    }
+    // Since git 2.54 (`extensions.submodulePathConfig`) a submodule's git dir is where this says.
+    if key.starts_with("submodule.") && key.ends_with(".gitdir") {
+        return true;
     }
     let branch_remote = key.starts_with("branch.") && (key.ends_with(".remote") || key.ends_with(".pushremote"));
     if branch_remote || key == "remote.pushdefault" {
@@ -215,7 +219,11 @@ const SCAN: &str = "yuzora-trust-scan";
 /// missing one doesn't stop it): any folder there with a `HEAD` (as the file
 /// system opens it: `head` where case doesn't count, a link that leads
 /// nowhere) and a `commondir` or `objects/` and `refs/` is asked, which is
-/// all git's own test (`is_git_directory`) can take. One git won't take
+/// all git's own test (`is_git_directory`) can take. So does any file there
+/// that starts `gitdir: ` (a gitfile, or a link to one, up to 2 MiB: git
+/// reads none past 1 MiB), which git follows when it opens a submodule in
+/// its own process (a push that checks them does); the git dir it names
+/// counts, and that git dir's own `modules/` in turn. One git won't take
 /// counts as unreadable. They're read last, and one the
 /// scan already read as a checked-out submodule keeps that name. A path
 /// there `find` gives that can't be read back (a line feed in it) and a
@@ -261,27 +269,45 @@ files() {
   done
 }
 has() { [ -e "$1" ] || [ -L "$1" ]; }
+queue() {
+  mods=$mods+$1$nl$2$nl$2$nl
+  [ "$3" = "$2" ] || mods=$mods+$1$nl$2$nl$3$nl
+}
+gitdir() {
+  w=$(GIT_DIR=$3 GIT_WORK_TREE=$4 git rev-parse --path-format=absolute --git-common-dir --absolute-git-dir && echo .) || w=
+  case "$w" in *"$nl"*"$nl"*"$nl"*) w= ;; ?*"$nl"?*"$nl.") w=${w%"$nl."} ;; *) w= ;; esac
+  [ -n "$w" ] || { printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$2"; return 1; }
+  mg=${w#*"$nl"} w=${w%%"$nl"*}
+  case "$mseen" in *"$nl$mg$nl"*) return 1 ;; esac
+  mseen=$mseen$mg$nl
+  printf 'sub\0%s%s\0' "$1" "$2"
+  GIT_DIR=$3 GIT_WORK_TREE=$4 git config --show-scope -z --get-regexp '@PROGRAMS@'
+  r=$?
+  if [ $r -gt 1 ]; then printf 'err\0%s\0' $r; fi
+  files "$w"
+}
 modules() {
   case "$3" in "$2") n=.git ;; "$2"/*) n=.git/${3#"$2/"} ;; *) n=$3 ;; esac
   [ -d "$3/modules" ] || return
   dirs=$(find -L "$3/modules" -type d && echo .) || dirs=
-  case "$dirs" in .|*"$nl.") ;; *) printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return ;; esac
+  gfs=$(find -L "$3/modules" -type f -size -4097 -exec sh -c 'grep -l "^gitdir: " "$@"; [ $? -le 1 ]' sh {} + && echo .) || gfs=
+  case "$dirs" in .|*"$nl.") ;; *) dirs= ;; esac
+  case "$gfs" in .|*"$nl.") ;; *) gfs= ;; esac
+  [ -n "$dirs" ] && [ -n "$gfs" ] || { printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return; }
   for m in $dirs; do
     [ "$m" != . ] || continue
     case "$m" in "$3/modules"|"$3/modules/"*) [ -d "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
     has "$m/HEAD" && { has "$m/commondir" || { has "$m/objects" && has "$m/refs"; }; } || continue
+    gitdir "$1" "$n/${m#"$3/"}" "$m" "$m"
+  done
+  for m in $gfs; do
+    [ "$m" != . ] || continue
+    case "$m" in "$3/modules/"*) [ -f "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
+    first=
+    IFS= read -r first < "$m"
+    case "$first" in "gitdir: "*) ;; *) continue ;; esac
     ml=$n/${m#"$3/"}
-    w=$(GIT_DIR=$m GIT_WORK_TREE=$m git rev-parse --path-format=absolute --git-common-dir --absolute-git-dir && echo .) || w=
-    case "$w" in *"$nl"*"$nl"*"$nl"*) w= ;; ?*"$nl"?*"$nl.") w=${w%"$nl."} ;; *) w= ;; esac
-    [ -n "$w" ] || { printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$ml"; continue; }
-    mg=${w#*"$nl"} w=${w%%"$nl"*}
-    case "$mseen" in *"$nl$mg$nl"*) continue ;; esac
-    mseen=$mseen$mg$nl
-    printf 'sub\0%s%s\0' "$1" "$ml"
-    GIT_DIR=$m GIT_WORK_TREE=$m git config --show-scope -z --get-regexp '@PROGRAMS@'
-    r=$?
-    if [ $r -gt 1 ]; then printf 'err\0%s\0' $r; fi
-    files "$w"
+    gitdir "$1" "$ml" "$m" "${m%/*}" && queue "$1$ml/" "$w" "$mg"
   done
 }
 legacy() {
@@ -291,8 +317,7 @@ legacy() {
   case "$c" in *"$nl"*"$nl"*"$nl"*) printf 'err\0commondir\0'; return ;; ?*"$nl"?*"$nl.") c=${c%"$nl."} ;; *) printf 'err\0commondir\0'; return ;; esac
   g=${c#*"$nl"} c=${c%%"$nl"*}
   files "$c"
-  mods=$mods+$p$nl$c$nl$c$nl
-  [ "$g" = "$c" ] || mods=$mods+$p$nl$c$nl$g$nl
+  queue "$p" "$c" "$g"
 }
 gone() {
   case "$1" in */*) up=${1%/*} ;; *) up=. ;; esac
@@ -332,9 +357,14 @@ if w=$(git rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w"
   printf 'sub\0\0'
   legacy "" git
   scan "" 0 "$gd" "$top" "$node"
-  i=0
-  for ml in $mods; do
-    case $i in 0) mp=${ml#+} i=1 ;; 1) mc=$ml i=2 ;; *) modules "$mp" "$mc" "$ml"; i=0 ;; esac
+  while [ -n "$mods" ]; do
+    mp=${mods%%"$nl"*}
+    mods=${mods#*"$nl"}
+    mc=${mods%%"$nl"*}
+    mods=${mods#*"$nl"}
+    mm=${mods%%"$nl"*}
+    mods=${mods#*"$nl"}
+    modules "${mp#+}" "$mc" "$mm"
   done
 else
   printf 'sub\0.\0err\0worktree\0'
@@ -461,6 +491,8 @@ mod tests {
         assert!(names_program("remote.origin.promisor", "true") && names_program("remote.origin.promisor", "Yes") && names_program("remote.origin.promisor", "1"));
         assert!(!names_program("remote.origin.promisor", "false") && !names_program("remote.origin.promisor", "off") && !names_program("remote.origin.promisor", "") && !names_program("remote.origin.promisor", "0"));
         assert!(names_program("remote.origin.partialclonefilter", "blob:none") && !names_program("remote.origin.fetch", "+refs/*:refs/*"));
+        // Since git 2.54 a submodule's git dir may be anywhere config says.
+        assert!(names_program("submodule.x.gitdir", ".git/modules/x"));
         // A remote's name, which stands for its URL when it has none, whatever the key.
         assert!(names_program("remote.ext::sh -c x.fetch", "+refs/heads/*:refs/remotes/x/*") && names_program("remote.zz::p.promisor", "true") && names_program("remote.a.b.vcs", "hg"));
         assert!(!names_program("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*") && !names_program("remote.team/a.b.prune", "true") && !names_program("remote.origin.tagopt", "--no-tags"));
@@ -1054,6 +1086,48 @@ mod tests {
         let got = programs_within(None, &top, Duration::from_secs(30));
         std::fs::remove_dir_all(&dir).unwrap();
         want.insert(0, format!(".git/modules/broken: {UNREADABLE}"));
+        assert_eq!(got, Ok(want));
+    }
+
+    // `.git/modules/<name>` may be a gitfile (`gitdir: …`, or a link to one):
+    // git follows it when it opens the submodule, as a push that checks the
+    // submodule's commits does in its own process. The git dir it names
+    // counts, and that git dir's own `modules/`; one git won't take shuts the
+    // gate. Since git 2.54 `submodule.<name>.gitdir` may put one anywhere.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitfile_in_modules_counts_as_the_git_dir_it_names() {
+        let (dir, top, git) = scratch_dir("gitfile");
+        git("", &["init", "-q", "-b", "main"]);
+        git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let at = |p: &str| Path::new(&top).join(p);
+        let bare = |gd: &str, key: &str| {
+            git("", &["init", "-q", "--bare", gd]);
+            git("", &["config", "--file", &format!("{gd}/config"), key, "hit"]);
+        };
+        bare(".git/evil.git", "remote.origin.uploadPack");
+        bare(".git/evil.git/modules/n", "filter.evil.smudge");
+        bare(".git/other.git", "core.sshCommand");
+        std::fs::create_dir_all(at(".git/modules")).unwrap();
+        std::fs::create_dir_all(at(".git/elsewhere")).unwrap();
+        std::fs::write(at(".git/modules/s"), "gitdir: ../evil.git\n").unwrap();
+        // git reads a link's target, relative to where the link is.
+        std::fs::write(at(".git/elsewhere/f"), "gitdir: ../other.git\n").unwrap();
+        std::os::unix::fs::symlink("../elsewhere/f", at(".git/modules/l")).unwrap();
+        // git takes a gitfile by how it starts.
+        std::fs::write(at(".git/modules/note"), "a note\ngitdir: ../evil.git\n").unwrap();
+        let git_dir = |gd: &str| std::process::Command::new("git").args(["rev-parse", "--git-dir"]).env("GIT_DIR", at(gd)).output().unwrap().status.success();
+        assert!(git_dir(".git/modules/s") && git_dir(".git/modules/l") && !git_dir(".git/modules/note"), "git doesn't take them as it should, so this proves nothing");
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        let want = [".git/modules/l: core.sshcommand", ".git/modules/s/.git/modules/n: filter.evil.smudge", ".git/modules/s: remote.origin.uploadpack"];
+        assert_eq!(got, Ok(want.map(String::from).to_vec()));
+        std::fs::write(at(".git/modules/bad"), "gitdir: ../nowhere\n").unwrap();
+        git("", &["config", "submodule.x.gitdir", "../anywhere"]);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let mut want = want.map(String::from).to_vec();
+        want.insert(0, format!(".git/modules/bad: {UNREADABLE}"));
+        want.push("submodule.x.gitdir".into());
         assert_eq!(got, Ok(want));
     }
 
