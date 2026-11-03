@@ -1,9 +1,15 @@
 // The sidebar's top row: Yuzora's mark, clear of the macOS window buttons, and search
 // (the command palette). Owned by lane L1.
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { theme, layout, window, settings, keys, run } from "herdr";
 import { t } from "yuzora:core";
+
+// A light color, the way the app tells light themes (settings.rs is_light).
+function light(hex) {
+  const n = parseInt(String(hex).slice(1, 7), 16);
+  return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255 > 0.5;
+}
 
 // The palette's key as people read it: "⌘K", "Ctrl+Shift+P".
 function shortcut(action) {
@@ -28,8 +34,8 @@ export default class Brand extends View {
     const left = lights ? Math.max(12, (root.traffic_lights[0] + 64) / (settings().zoom || 1)) : 12;
     const key = shortcut("app.palette");
     return h_flex().id("root").size_full().pl(left).pr(8).gap(8).items_center().bg(th.chrome)
-      .child(div().w(18).h(18).flex_none().rounded(5).bg(th.foreground).text_color(th.chrome)
-        .text_size(11).font_bold().flex().items_center().justify_center().child("Y"))
+      // In full color (image, not svg: svg tints a one-color mask).
+      .child(image(`mods/yuzora-brand/${light(th.chrome) ? "mark-light" : "mark"}.svg`).w(18).h(18).flex_none())
       .child(div().flex_1().text_size(13.5).font_bold().text_color(th.foreground).child(t("name")))
       .child(div().id("search").size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(th.muted)
         .hover((s) => s.bg(th.hover).text_color(th.foreground))
