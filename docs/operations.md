@@ -640,7 +640,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - 產品頁內容已改為介紹 beta.2（herdr-app 基底的原生 App）。尚待決定：
   - Pages 在 beta.2（Pre-release）合併進 `main` 時就會部署，但產品頁的固定下載連結要等 Stable 0.1.0 才有 beta.2 的檔案（見 §7.3）。
   - 是否在產品頁提供 Linux 下載（目前只有 macOS 與 Windows；`tests/site-page.test.js` 守著沒有 Linux 列）。
-  - 三段功能影片與它們的 poster、互動 Demo（`src/demo/`）仍是 Tauri 版介面；hero 與社群預覽圖暫用 `docs/beta2/evidence/` 的截圖，檔案（L5）與 Git（L2）合併後再換最終截圖。
+  - 三段功能影片與它們的 poster、互動 Demo（`src/demo/`）仍是 Tauri 版介面；hero 與社群預覽圖暫用 `docs/beta2/evidence/` 的截圖，檔案（L5）合併後再換最終截圖。
 
 ### 產品頁 smoke test
 

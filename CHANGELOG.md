@@ -30,6 +30,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 ### 已知限制
 
 - beta.1 的資料不會自動搬過來：資料庫連線、SSH 主機與設定需要重新設定；beta.1 的檔案原封不動，回到 beta.1 仍可使用。
+- Git：模式列的 Git 變更數與狀態列的 Git 摘要，要先打開過一次 Git 模式才會開始更新；遠端機器上的 repo 沒有檔案監看，Yuzora 以外的變更約 25 秒內才會反映；信任資料夾只管 Git，終端機與其他模式不受影響。
 - 資料庫還不能經由 SSH tunnel 連線；遠端機器上的檔案在這一版只能瀏覽與唯讀開啟。
 - 更新通道目前只能在 `~/.config/yuzora/yuzora/settings.json` 的 `update.channel` 修改，設定頁還沒有選項。
 - app home 已經有 layout 時（例如用過開發版），不會自動加入新的介面元件（例如右下角的資源用量），要重設 layout 才會出現。

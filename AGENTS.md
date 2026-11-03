@@ -4,7 +4,7 @@
 
 v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，用 `git subtree` 放在 `app/`。`src-tauri/` 與 `src/`（Tauri 2＋React）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布：不刪，也不當設計依據。
 
-- 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。各功能的設計與限制：`docs/beta2/<lane>.md`（shell、db、ssh、settings、release、perf、herdr-compat；git、files 隨 #194、#192 合併）。研究資料：`docs/beta2/research/`。
+- 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。各功能的設計與限制：`docs/beta2/<lane>.md`（shell、git、db、ssh、settings、release、perf、herdr-compat；files 隨 #192 合併）。研究資料：`docs/beta2/research/`。
 - `app/` 是獨立的 Cargo workspace（root `Cargo.toml` 將它 exclude），有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。Cargo package 與執行檔維持上游名稱 `herdr-app`，打包後才叫 `Yuzora.app`／`yuzora`。
 - **三層**：herdr 殼（上游 `app/src`、上游 mods 與 frame）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件，JS 以 `import … from "yuzora:<name>"` 使用）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane，使用者可 `mod.clone` 後修改）。
 - herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；遠端 Space 的 Git、Files 等走 `hc exec --on <machine>`（`yuzora_core::remote`）。

@@ -30,7 +30,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 關掉視窗也會繼續執行；Git、檔案、資料庫與 SSH／SFTP 就在旁邊，同一個視窗裡。
 
 <p align="center">
-  <!-- TODO(L10): #192（檔案）與 #194（Git）合併後換成最終截圖。 -->
+  <!-- TODO(L10): #192（檔案）合併後補檔案側欄的截圖，並換成最終截圖。 -->
   <img src="docs/beta2/evidence/l1-workspace.png" width="880" alt="Yuzora beta.2：工作區側欄列出本機與 lab-01 的 Spaces、需要回覆的 agent、tab 列與狀態列" />
 </p>
 
@@ -54,6 +54,11 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 - 介面支援英文與繁體中文，深色與淺色主題，預設都跟隨系統。
 - **不收集任何資料。** 遙測已關閉，意見回饋改開 GitHub Issue。安裝好的正式版會向本 repo 的 GitHub Releases 檢查
   Yuzora 更新，並向 `releases.herdr.dev` 檢查 herdr-core 的版本。
+
+<p align="center">
+  <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora 的 Git 模式：側欄列出已暫存與未暫存的變更和 commit 區，右側是並排 diff pane，可以暫存或捨棄單一 hunk" />
+  <img src="docs/beta2/evidence/l2-log.png" width="436" alt="Yuzora 的 Git 提交紀錄 pane：依分支、作者、日期、路徑與訊息篩選，commit 旁有分支圖與分支、tag 標籤" />
+</p>
 
 beta.2 不包含：Browser、Companion 與 AgentZone。
 
@@ -142,11 +147,10 @@ beta.2 分成多條 lane 並行開發，每條 lane 擁有自己的目錄與下�
 
 ### L2 · Git
 
-<!-- TODO(L10): #194 合併後依英文版的 L2 區塊同步。 -->
 以 JetBrains IntelliJ IDEA Community 為基準、採 staging area 模式的 Git：側欄 Git 模式（變更、暫存、commit、push）、
 可逐塊與逐行暫存的 diff pane、提交紀錄與分支圖、分支 popup、push 對話框、三方合併、互動式 rebase、annotate，以及
 repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 工作都在 Rust（`app/crates/yuzora-git`，
-`yuzora:git` 模組）執行，不在 UI 執行緒。設計與 IntelliJ 對照清單見 `docs/beta2/git.md`（#194）。
+`yuzora:git` 模組）執行，不在 UI 執行緒。設計與 IntelliJ 對照清單見 [docs/beta2/git.md](docs/beta2/git.md)。
 
 ### L3 · 資料庫
 

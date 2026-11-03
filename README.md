@@ -31,7 +31,7 @@ terminals that keep running when the window closes, and puts Git, files, databas
 the same window.
 
 <p align="center">
-  <!-- TODO(L10): final English screenshots once #192 (files) and #194 (Git) are merged. -->
+  <!-- TODO(L10): English-UI screenshots and the files sidebar once #192 (files) is merged. -->
   <img src="docs/beta2/evidence/l1-workspace.png" width="880" alt="Yuzora beta.2: the workspace sidebar with Spaces on this computer and on lab-01, the agents that need a reply, the tab bar and the status bar" />
 </p>
 
@@ -57,6 +57,11 @@ the same window.
 - English and Traditional Chinese (Taiwan), light and dark themes, both following the system by default.
 - **Nothing is collected.** Telemetry is off and feedback opens a GitHub issue. An installed release checks this
   repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's.
+
+<p align="center">
+  <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora's Git mode: staged and unstaged changes and the commit box in the sidebar, and a side-by-side diff pane with buttons to stage or discard a hunk" />
+  <img src="docs/beta2/evidence/l2-log.png" width="436" alt="Yuzora's Git log pane: filters for branch, author, date, path and message, and commits with branch and tag labels beside the branch graph" />
+</p>
 
 Not in beta.2: the Browser, Companion and AgentZone.
 
