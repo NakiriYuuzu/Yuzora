@@ -683,6 +683,84 @@ mod tests {
     }
 
     #[test]
+    fn file_icons_follow_the_type_and_the_theme() {
+        let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/icons.js")
+            .replace("export function", "function");
+        let cases = [
+            (("main.rs", false, false), ("code", "ansi3")),
+            (("App.TSX", false, false), ("code", "ansi4")),
+            (("index.mjs", false, false), ("code", "ansi11")),
+            (("tsconfig.json", false, false), ("json", "ansi11")),
+            (("README.md", false, false), ("markdown", "muted")),
+            (("Cargo.toml", false, false), ("package", "ansi3")),
+            (("rustfmt.toml", false, false), ("config", "ansi6")),
+            (("package.json", false, false), ("package", "ansi2")),
+            (("Cargo.lock", false, false), ("lock", "dim")),
+            (("package-lock.json", false, false), ("lock", "dim")),
+            (("Dockerfile", false, false), ("container", "ansi4")),
+            (("Dockerfile.dev", false, false), ("container", "ansi4")),
+            ((".gitignore", false, false), ("git", "ansi1")),
+            ((".env.local", false, false), ("config", "ansi6")),
+            (("logo.svg", false, false), ("image", "ansi13")),
+            (("build.sh", false, false), ("terminal", "ansi2")),
+            (("styles.css", false, false), ("code", "ansi5")),
+            (("index.html", false, false), ("code", "ansi1")),
+            (("LICENSE", false, false), ("file", "dim")),
+            ((".hidden", false, false), ("file", "dim")),
+            (("a.unknown", false, false), ("file", "dim")),
+            // A folder is a folder, whatever its name.
+            (("src.rs", true, false), ("folder", "dim")),
+            (("src", true, true), ("folder-open", "dim")),
+        ];
+        let calls: Vec<String> = cases
+            .iter()
+            .map(|((name, dir, open), _)| {
+                format!("(i => i.icon + ' ' + i.color)(fileIcon({name:?}, {dir}, {open}))")
+            })
+            .collect();
+        // Every icon and color it can give, and how long a big folder's
+        // worth of rows takes to look up.
+        let script = format!(
+            "(() => {{ {src}
+            const all = [...BY_NAME.values(), ...BY_EXT.values(), FOLDER, FOLDER_OPEN, FILE];
+            const started = Date.now();
+            for (let i = 0; i < 20000; i++) fileIcon(`file${{i}}.tsx`);
+            return JSON.stringify([[{}], all.map(i => i.icon), all.map(i => i.color), Date.now() - started]);
+            }})()",
+            calls.join(", ")
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let (got, icons, colors, ms): (Vec<String>, Vec<String>, Vec<String>, f64) =
+            serde_json::from_str(&out).unwrap();
+        let want: Vec<String> = cases.iter().map(|(_, (i, c))| format!("{i} {c}")).collect();
+        assert_eq!(got, want);
+        // Only colors every theme names.
+        let names = ["foreground", "muted", "dim", "accent"];
+        for color in &colors {
+            let ansi = color
+                .strip_prefix("ansi")
+                .and_then(|n| n.parse::<u8>().ok())
+                .is_some_and(|n| n < 16);
+            assert!(ansi || names.contains(&color.as_str()), "{color}");
+        }
+        // Each one drawn, in the mode bar's style: a 16x16 mask with 1.4 strokes.
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../defaults/mods/yuzora-sidebar-files/icons/files"
+        );
+        for icon in &icons {
+            let svg = std::fs::read_to_string(format!("{dir}/{icon}.svg")).unwrap();
+            assert!(
+                svg.contains(r#"viewBox="0 0 16 16""#) && svg.contains(r#"stroke-width="1.4""#),
+                "{icon}"
+            );
+        }
+        assert!(ms < 1000.0, "20000 lookups took {ms} ms");
+    }
+
+    #[test]
     fn files_open_in_the_pane_for_their_kind() {
         assert_eq!(kind_of("a/b.png"), "image");
         assert_eq!(kind_of("logo.SVG"), "image");

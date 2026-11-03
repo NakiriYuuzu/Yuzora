@@ -6,7 +6,8 @@ import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { listDir, gitStatus, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
-import { openFile, join, parent, base, rel, fileColor } from "./open.js";
+import { openFile, join, parent, base, rel } from "./open.js";
+import { fileIcon } from "./icons.js";
 
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
@@ -389,7 +390,7 @@ export default class FilesSidebar extends View {
         return h_flex().h(25).pl(6 + row.depth * 13 + 6).pr(12).mx(6).gap(6).items_center().rounded(5)
           .bg(sel ? th.selected : "#00000000").hover(s => s.bg(sel ? th.selected : th.hover))
           .child(row.dir ? svg(`mods/${ME}/icons/chevron-${row.open ? "down" : "right"}.svg`).size(10).flex_none().text_color(th.dim) : div().w(10).flex_none())
-          .child(row.dir ? div().w(13).h(10).flex_none().rounded(2).bg("#6f7078") : div().w(10).h(12).flex_none().rounded(2).bg(fileColor(row.name)))
+          .child(this.icon(th, row.name, row.dir, row.open))
           .child(div().flex_1().min_w(0).truncate().text_color(row.link ? th.muted : th.foreground).child(row.name))
           .when(Boolean(m), el => el.child(div().flex_none().text_size(11).font_semibold().text_color(markColor(m) ?? th.blocked).child(m)));
       }))
@@ -406,6 +407,11 @@ export default class FilesSidebar extends View {
       .child(tree);
   }
 
+  icon(th, name, dir = false, open = false) {
+    const { icon, color } = fileIcon(name, dir, open);
+    return svg(`mods/${ME}/icons/files/${icon}.svg`).size(16).flex_none().text_color(th[color] ?? th.dim);
+  }
+
   renderSearch(th) {
     const tab = (id, label) => div().id(`mode-${id}`).px(8).h(22).flex().items_center().rounded(4).cursor_pointer()
       .bg(this.searchMode === id ? th.selected : "#00000000").text_color(this.searchMode === id ? th.foreground : th.muted)
@@ -419,7 +425,7 @@ export default class FilesSidebar extends View {
       .child(v_flex().flex_1().min_h(0).relative()
         .child(uniform_list("results", results.length, i => results[i].key, range => results.slice(range.start, range.end).map(r =>
           h_flex().h(r.line ? 38 : 25).mx(6).px(8).gap(6).items_center().rounded(5).hover(s => s.bg(th.hover))
-            .child(div().w(10).h(12).flex_none().rounded(2).bg(fileColor(r.path)))
+            .child(this.icon(th, base(r.path)))
             .child(v_flex().flex_1().min_w(0)
               .child(h_flex().gap(6).min_w(0)
                 .child(div().flex_none().max_w(150).truncate().child(base(r.path)))
