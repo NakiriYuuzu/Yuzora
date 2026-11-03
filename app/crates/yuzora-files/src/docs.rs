@@ -121,7 +121,9 @@ fn forget(id: u64, cx: &mut App) {
 /// open at it, or under it, at the new path: their panes keep showing them,
 /// and the next look at the disk finds the file where it now is. Refused
 /// while a document is open at the new path (its file deleted): the two
-/// would edit one file.
+/// would edit one file. A save and a rename of its file never overlap: the
+/// rename is refused while one of its documents is saving, and they refuse
+/// to save until it is done.
 pub fn rename(
     from: String,
     to: String,
@@ -133,20 +135,44 @@ pub fn rename(
         let key = &d.read(cx).key;
         (key.on.is_none() && renamed(&key.path, &to, &to).is_some()).then(|| key.path.clone())
     });
-    if let Some(path) = open_there.filter(|_| fsops::machine(on.as_deref()).is_none()) {
+    let local = fsops::machine(on.as_deref()).is_none();
+    if let Some(path) = open_there.filter(|_| local) {
         let _ = tx.send(Err(format!(
             "{path} is still open (its file was deleted): close it first"
         )));
         return rx;
     }
+    let moving: Vec<_> = all(cx)
+        .into_iter()
+        .filter(|d| {
+            let key = &d.read(cx).key;
+            local && key.on.is_none() && renamed(&key.path, &from, &to).is_some()
+        })
+        .collect();
+    if let Some(doc) = moving.iter().map(|d| d.read(cx)).find(|d| d.saving) {
+        let _ = tx.send(Err(format!(
+            "{} is being saved: try again when it is done",
+            doc.key.path
+        )));
+        return rx;
+    }
+    for doc in &moving {
+        doc.update(cx, |doc, _| doc.moving = true);
+    }
+    let moving: Vec<_> = moving.iter().map(Entity::downgrade).collect();
     cx.spawn(async move |cx| {
         let (f, t, o) = (from.clone(), to.clone(), on);
         let result = blocking(move || fsops::rename(&f, &t, o.as_deref()))
             .await
             .unwrap_or_else(|| Err("could not start a worker".into()));
-        if result.is_ok() {
-            cx.update(|cx| moved(&from, &to, cx));
-        }
+        cx.update(|cx| {
+            for doc in &moving {
+                let _ = doc.update(cx, |doc, _| doc.moving = false);
+            }
+            if result.is_ok() {
+                moved(&from, &to, cx);
+            }
+        });
         let _ = tx.send(result);
     })
     .detach();
@@ -334,6 +360,9 @@ pub struct DocView {
     conflict: bool,
     deleted: bool,
     saving: bool,
+    /// Its file (or a folder above it) is being renamed: a save now would
+    /// write the old path.
+    moving: bool,
     checking: bool,
     /// Text from disk is on its way into the editor: a save now would pair
     /// the old text with the new stamp.
@@ -422,6 +451,7 @@ impl DocView {
             conflict: false,
             deleted: false,
             saving: false,
+            moving: false,
             checking: false,
             applying: false,
             rev: 0,
@@ -725,7 +755,7 @@ impl DocView {
             let _ = tx.send(Saved::error("readonly"));
             return rx;
         }
-        if self.saving || self.applying {
+        if self.saving || self.applying || self.moving {
             let _ = tx.send(Saved::error("busy"));
             return rx;
         }
@@ -1692,6 +1722,49 @@ mod tests {
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
         cx.run_until_parked();
         cx.update(|cx| assert!(!view.read(cx).deleted));
+    }
+
+    #[gpui::test]
+    fn a_save_and_a_rename_of_its_file_never_overlap(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let (view, window) = editing(&a, cx);
+        let text = |cx: &mut gpui::TestAppContext| {
+            cx.update(|cx| {
+                view.read(cx)
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .text()
+                    .to_string()
+            })
+        };
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+        // A save in flight: the rename is refused.
+        type_text(&view, window, "two ", cx);
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        let rx = cx.update(|cx| rename(path(&a), path(&b), None, cx));
+        cx.run_until_parked();
+        let refused = futures::executor::block_on(rx).unwrap().unwrap_err();
+        assert!(refused.contains("being saved"), "{refused}");
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!((read(&a), b.exists()), (text(cx), false));
+        // A rename in flight: the save is refused, then saves where the file is.
+        type_text(&view, window, "three ", cx);
+        let rx = cx.update(|cx| rename(path(&a), path(&b), None, cx));
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert_eq!(futures::executor::block_on(rx).unwrap(), Ok(()));
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!((saved.ok, saved.error.as_deref()), (false, Some("busy")));
+        assert!(!a.exists());
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!((read(&b), a.exists()), (text(cx), false));
     }
 
     #[cfg(unix)]

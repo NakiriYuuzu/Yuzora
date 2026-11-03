@@ -74,7 +74,7 @@ export default class FilesSidebar extends View {
     if (next?.key === this.here?.key && next?.space === this.here?.space) return;
     if (this.here?.root) this.saved.set(this.here.key, { open: this.open, selected: this.selected });
     const saved = next ? this.saved.get(next.key) : null;
-    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false } : null;
+    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false } : null;
     this.entries = new Map(); this.open = new Set(saved?.open); this.pending = new Set();
     this.marks = {}; this.dirMarks = new Map(); this.selected = saved?.selected ?? null; this.version++;
     this.watching = null;
@@ -154,6 +154,7 @@ export default class FilesSidebar extends View {
     if (!this.current(here)) return;
     this.entries.set(folder, entries);
     if (truncated) here.limited = true;
+    if (!folder) here.rootCut = truncated;
     this.version++;
   }
 
@@ -377,7 +378,9 @@ export default class FilesSidebar extends View {
     if (!here?.cwd) return div().p(12).text_size(12).text_color(th.dim).child(t("empty.no_folder"));
     if (here.error && !this.entries.get("")) return div().p(12).text_size(12).text_color(th.blocked).child(here.error);
     const rows = this.visible();
-    if (!rows.length) return div().p(12).text_size(12).text_color(th.dim).child(here.loading ? t("empty.loading") : t("empty.no_files"));
+    // The folder was cut, and every entry that made the cut is hidden: there may be more.
+    const empty = here.loading ? t("empty.loading") : here.rootCut ? t("empty.hidden_only", { count: PER_FOLDER }) : t("empty.no_files");
+    if (!rows.length) return div().p(12).text_size(12).text_color(th.dim).child(empty);
     const fs = tk.file_status ?? {};
     const markColor = m => m === "A" ? fs.added : m === "D" || m === "U" ? fs.deleted : m === "?" ? fs.untracked : fs.modified;
     const tree = v_flex().flex_1().min_h(0).relative()

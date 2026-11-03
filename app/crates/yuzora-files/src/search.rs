@@ -113,12 +113,11 @@ fn list_local(root: &str, hidden: bool, limit: usize) -> Result<FileList, String
                 unfiltered: false,
             });
         }
-        files.push(
-            rel.components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
-        );
+        let Some(name) = utf8_path(rel) else {
+            skipped = true;
+            continue;
+        };
+        files.push(name);
     }
     Ok(FileList {
         files,
@@ -619,11 +618,7 @@ pub fn grep_local(
         let Ok(rel) = entry.path().strip_prefix(base) else {
             continue;
         };
-        let path = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
+        let path = utf8_path(rel);
         let mut found = false;
         for (number, line) in text.lines().enumerate() {
             let line = line.trim_end_matches('\r');
@@ -632,6 +627,10 @@ pub fn grep_local(
             let matches = matcher.find_iter(line).map(|m| (m.start(), m.end()));
             let Some((column, ranges)) = marks(|b| char_offset(line, b), matches) else {
                 continue;
+            };
+            let Some(path) = &path else {
+                result.skipped = true;
+                break;
             };
             if result.hits.len() >= limit {
                 result.truncated = true;
@@ -765,6 +764,13 @@ fn marks(
         }
     }
     Some((column, ranges))
+}
+
+/// `rel` with `/` between its parts; None when one isn't UTF-8: such a path
+/// can't be opened by name (a lossy one could name another file).
+fn utf8_path(rel: &Path) -> Option<String> {
+    let parts: Option<Vec<&str>> = rel.components().map(|c| c.as_os_str().to_str()).collect();
+    parts.map(|parts| parts.join("/"))
 }
 
 /// rg run in `root` names files `./x/y` (or with `root` in front).
@@ -1407,6 +1413,29 @@ mod tests {
             r.map(|r| (r.hits.len(), r.hits[0].ranges.len())),
             Ok((1, TEXT_CHARS))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_utf8_is_left_out_and_said_to_be() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+        let odd = OsStr::from_bytes(b"b\xff.txt");
+        assert_eq!(utf8_path(Path::new("a/b.txt")), Some("a/b.txt".into()));
+        assert_eq!(utf8_path(&Path::new("a").join(odd)), None);
+        // Searched without rg, on a file system that takes such a name (not APFS).
+        let dir = tempfile::tempdir().unwrap();
+        if std::fs::write(dir.path().join(odd), "needle\n").is_err() {
+            eprintln!("skipped: this file system takes only UTF-8 names");
+            return;
+        }
+        std::fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+        let r = grep_local(root, "needle", false, false, false, 10).unwrap();
+        let hits: Vec<&str> = r.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!((hits, r.files, r.skipped), (vec!["a.txt"], 1, true));
+        let l = list_files(root, None, false, 10).unwrap();
+        assert_eq!((l.files, l.skipped), (vec!["a.txt".to_owned()], true));
     }
 
     #[test]

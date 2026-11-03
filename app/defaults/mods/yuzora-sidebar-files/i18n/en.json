@@ -24,6 +24,7 @@
     "loading": "Loading files…",
     "no_files": "No files here.",
     "limited": "Folders show at most {count} entries.",
+    "hidden_only": "The first {count} entries here are all hidden: show hidden files to see them.",
     "rows": "The tree shows at most {count} rows: collapse some folders to see the rest."
   },
   "search": {
