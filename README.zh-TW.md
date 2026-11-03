@@ -85,7 +85,7 @@ beta.2 是 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 上
   「幫我安裝」，使用 herdr-core 官方的安裝程式。
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel Mac 仍可當遠端主機。
 
-更新、從 beta.1 升級與 `yuzora` 指令：見 [L7 · 發布與更新](#l7--發布與更新)。版本紀錄：[CHANGELOG.md](CHANGELOG.md)。
+更新、從 beta.1 升級與 `yuzora` 指令：見 [L7 · 發布與更新](#l7--發布與更新)。版本紀錄：[CHANGELOG.zh-TW.md](CHANGELOG.zh-TW.md)。
 
 ## 從原始碼建置
 

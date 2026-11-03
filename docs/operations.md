@@ -189,10 +189,10 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - 更新後的根目錄 `Cargo.lock`（workspace 唯一的 lockfile，含 `yuzora`、`yuzora-host`、`yuzora-companion` 的 entry）。
 - `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新根 `Cargo.lock` 的 `yuzora-host` entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
 - `src-tauri/companion/Cargo.toml` 版本與桌面一致，並更新根 `Cargo.lock` 的 `yuzora-companion` entry；`verify-version-consistency.ts` 會拒絕不一致。
-- `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
+- `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）中對應完整 version 的使用者可讀章節，兩份的版本、段落與項目一一對應（`scripts/release-notes.test.ts` 會比對），例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
 - 必要的 release／updater contract 修改與測試。
 
-`CHANGELOG.md` 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由該版本章節自動產生，因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
+兩份 CHANGELOG 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由兩份的該版本章節自動產生（英文在前，各自放在 `## English`、`## 繁體中文` 標題下），因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
 
 修改上述 `Cargo.toml` version 後，先讓 Cargo 更新根 `Cargo.lock` 中這些 workspace member 的 entry（在 workspace 內執行任一 cargo 指令都會更新整份 lock），再確認根 `Cargo.lock` 沒有意外的 dependency 變動：
 
@@ -241,7 +241,7 @@ Remove-Item Env:GITHUB_REF_NAME
 三項都必須成功：
 
 - 三份 product version 與 tag contract 一致。
-- `CHANGELOG.md` 存在對應版本且內容非空。
+- `CHANGELOG.md` 與 `CHANGELOG.zh-TW.md` 都存在對應版本且內容非空。
 - Stable：Updater signing、macOS 無 Apple 簽章／公證、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
 - Beta：`prerelease=true`，有 Tauri updater 簽章與每版 `latest.json`、沒有 Apple signing secrets／Stable aliases，release notes 揭露 Gatekeeper 風險，且 publish command 不含 `--latest`。
 
@@ -407,7 +407,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 2. Checkout SHA 與成功 CI 的 `workflow_run.head_sha` 完全一致。
 3. Stable 才驗證 `TAURI_SIGNING_PRIVATE_KEY` 與 password secret；Beta build step 不接收這些 secrets。
 4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致，且版本只可為 Stable 或 `-beta.N`。
-5. `CHANGELOG.md` 有該版本 release notes。
+5. `CHANGELOG.md` 與 `CHANGELOG.zh-TW.md` 都有該版本 release notes。
 6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。新 Beta build 另要求 `YUZORA_BETA_ACCEPTED_TREE_SHA` 精確等於 successful-main tree，且 `YUZORA_BETA_ACCEPTANCE_URL` 指向本 repository 的 PR／Issue evidence。
 7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致並觸發雙平台重建；已發布版本安全略過。
 8. Release state 的 `shouldBuild` 與 `shouldPublishExisting` 先驗證為 boolean 再交給 shell；`false` 是合法決策值，不得被 `jq` truthiness 誤判為 guard failure。

@@ -4,18 +4,58 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 import { describe, expect, it } from "vitest"
-import { releaseNotesForTag } from "./release-notes"
+import { CHANGELOGS, releaseNotesForTag, type Changelogs } from "./release-notes"
+
+function repositoryChangelogs(): Changelogs {
+  return {
+    "CHANGELOG.md": readFileSync("CHANGELOG.md", "utf8"),
+    "CHANGELOG.zh-TW.md": readFileSync("CHANGELOG.zh-TW.md", "utf8"),
+  }
+}
+
+// Each version's heading (未發布 and Unreleased are the same), with its section and item counts.
+function outline(changelog: string) {
+  const versions: { heading: string; sections: number; items: number; nested: number }[] = []
+  for (const line of changelog.split(/\r?\n/)) {
+    if (line.startsWith("## [")) {
+      versions.push({ heading: line.replace(/ - 未發布$/, " - Unreleased"), sections: 0, items: 0, nested: 0 })
+    } else if (versions.length > 0) {
+      const current = versions[versions.length - 1]
+      if (line.startsWith("### ")) current.sections += 1
+      else if (line.startsWith("- ")) current.items += 1
+      else if (/^\s+- /.test(line)) current.nested += 1
+    }
+  }
+  return versions
+}
 
 describe("releaseNotesForTag", () => {
   it("discloses the v0.0.9 Apple signing limitation and retained updater verification", () => {
-    const notes = releaseNotesForTag(readFileSync("CHANGELOG.md", "utf8"), "v0.0.9")
+    const notes = releaseNotesForTag(repositoryChangelogs(), "v0.0.9")
     expect(notes).toContain("未經 Apple Developer ID 簽章或公證")
-    expect(notes).toContain("Gatekeeper")
     expect(notes).toContain("Tauri updater 簽章")
+    const english = notes.slice(0, notes.indexOf("## 繁體中文"))
+    expect(english).toContain("Apple Developer ID")
+    expect(english).toContain("Gatekeeper")
   })
 
-  it("returns only the user-facing changelog section for the release tag", () => {
-    const changelog = `# Changelog
+  it("returns the release tag's section from both changelogs, English first", () => {
+    const changelogs = {
+      "CHANGELOG.md": `# Changelog
+
+## [0.0.3] - 2026-07-17
+
+### Improved
+
+- After an update, the app shows what this version changed.
+
+## [0.0.2] - 2026-07-16
+
+### Added
+
+- Check for updates from Settings.
+`,
+      "CHANGELOG.zh-TW.md": `# Changelog
 
 ## [0.0.3] - 2026-07-17
 
@@ -28,15 +68,28 @@ describe("releaseNotesForTag", () => {
 ### 新增
 
 - 可在設定中檢查更新。
-`
+`,
+    }
 
-    expect(releaseNotesForTag(changelog, "v0.0.3")).toBe(
-      "### 改善\n\n- 更新後會清楚顯示這個版本帶來的改變。"
+    expect(releaseNotesForTag(changelogs, "v0.0.3")).toBe(
+      "## English\n\n### Improved\n\n- After an update, the app shows what this version changed.\n\n" +
+        "## 繁體中文\n\n### 改善\n\n- 更新後會清楚顯示這個版本帶來的改變。"
     )
   })
 
   it("extracts a beta changelog section", () => {
-    const changelog = `# Changelog
+    const changelogs = {
+      "CHANGELOG.md": `# Changelog
+
+## [0.0.9-beta.1] - 2026-08-17
+
+### Known limitations
+
+- Manual download only.
+
+## [0.0.8] - 2026-08-15
+`,
+      "CHANGELOG.zh-TW.md": `# Changelog
 
 ## [0.0.9-beta.1] - 2026-08-17
 
@@ -45,10 +98,11 @@ describe("releaseNotesForTag", () => {
 - 僅供手動下載。
 
 ## [0.0.8] - 2026-08-15
-`
+`,
+    }
 
-    expect(releaseNotesForTag(changelog, "v0.0.9-beta.1")).toBe(
-      "### 已知限制\n\n- 僅供手動下載。"
+    expect(releaseNotesForTag(changelogs, "v0.0.9-beta.1")).toBe(
+      "## English\n\n### Known limitations\n\n- Manual download only.\n\n## 繁體中文\n\n### 已知限制\n\n- 僅供手動下載。"
     )
   })
 
@@ -61,7 +115,7 @@ describe("releaseNotesForTag", () => {
         encoding: "utf8"
       })
       const handoff = readFileSync(outputPath, "utf8")
-      const expected = `${releaseNotesForTag(readFileSync("CHANGELOG.md", "utf8"), tag)}\n`
+      const expected = `${releaseNotesForTag(repositoryChangelogs(), tag)}\n`
       const payload = Buffer.from(handoff, "utf8").toString("base64")
 
       expect(stdout).toBe(`User-facing release notes verified for ${tag}\n`)
@@ -73,9 +127,34 @@ describe("releaseNotesForTag", () => {
     }
   })
 
-  it("blocks a release when its changelog section is missing", () => {
-    expect(() => releaseNotesForTag("# Changelog\n", "v0.0.3")).toThrow(
-      "CHANGELOG.md must include version 0.0.3"
-    )
+  it("blocks a release when either changelog is missing its section", () => {
+    const section = "## [0.0.3] - 2026-07-17\n\n### Fixed\n\n- A fix.\n"
+    expect(() =>
+      releaseNotesForTag({ "CHANGELOG.md": "# Changelog\n", "CHANGELOG.zh-TW.md": section }, "v0.0.3")
+    ).toThrow("CHANGELOG.md must include version 0.0.3")
+    expect(() =>
+      releaseNotesForTag({ "CHANGELOG.md": section, "CHANGELOG.zh-TW.md": "# Changelog\n" }, "v0.0.3")
+    ).toThrow("CHANGELOG.zh-TW.md must include version 0.0.3")
+  })
+})
+
+describe("the English and Traditional Chinese changelogs", () => {
+  it("list the same versions with the same sections and items", () => {
+    const changelogs = repositoryChangelogs()
+    const english = outline(changelogs["CHANGELOG.md"])
+    const chinese = outline(changelogs["CHANGELOG.zh-TW.md"])
+    expect(english.map((v) => v.heading)).toEqual(chinese.map((v) => v.heading))
+    expect(english).toEqual(chinese)
+    expect(english.length).toBeGreaterThan(0)
+  })
+
+  it("link to each other at the top", () => {
+    const changelogs = repositoryChangelogs()
+    for (const { path } of CHANGELOGS) {
+      const top = changelogs[path].slice(0, changelogs[path].indexOf("## ["))
+      for (const other of CHANGELOGS.filter((c) => c.path !== path)) {
+        expect(top).toContain(`href="${other.path}"`)
+      }
+    }
   })
 })
