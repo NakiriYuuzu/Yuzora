@@ -22,6 +22,17 @@ const WENT_KEEP = 7 * 24 * 60 * 60 * 1000;
 
 const parent = path => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
+// `path` is `dir` or a file under it. A Windows path (`C:\…`, `\\server\…`)
+// may use either slash, and case doesn't matter there. (A test runs this
+// function on its own: it uses nothing else from this file.)
+function within(path, dir) {
+  if (/^([A-Za-z]:[\\/]|\\\\)/.test(dir)) {
+    path = path.replace(/\\/g, "/").toLowerCase();
+    dir = dir.replace(/\\/g, "/").toLowerCase();
+  }
+  return path === dir || path.startsWith(dir.endsWith("/") ? dir : dir + "/");
+}
+
 // The agent most likely writing this file: one working in a folder that holds it.
 function editingAgent(state) {
   if (!state?.externalAt || Date.now() - state.externalAt > AGENT_WINDOW) return null;
@@ -29,7 +40,7 @@ function editingAgent(state) {
   for (const a of agents()) {
     if (a.status !== "working") continue;
     const cwd = all.find(p => p.pane === a.pane)?.cwd;
-    if (cwd && (state.path === cwd || state.path.startsWith(cwd.endsWith("/") ? cwd : cwd + "/"))) return a;
+    if (cwd && within(state.path, cwd)) return a;
   }
   return null;
 }

@@ -861,6 +861,57 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_folder_holds_its_files_with_either_slash_on_windows() {
+        let src = include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js");
+        // A top-level function of doc-pane.js, as written there.
+        let function = |name: &str| {
+            let start = src.find(&format!("\nfunction {name}(")).unwrap();
+            let end = start + src[start..].find("\n}\n").unwrap();
+            &src[start..end + 2]
+        };
+        let cases = [
+            (r"C:\repo\src\a.rs", r"C:\repo", true),
+            // The sidebar joins with `/` under a native root.
+            (r"C:\repo/src/a.rs", r"C:\repo", true),
+            (r"C:/repo/src/a.rs", r"C:\Repo\", true),
+            (r"c:\repo", r"C:\repo", true),
+            (r"\\srv\share\x\a.md", r"\\srv\share", true),
+            (r"C:\repository\a.rs", r"C:\repo", false),
+            (r"D:\repo\a.rs", r"C:\repo", false),
+            ("/home/a/b.rs", "/home/a", true),
+            ("/home/a/b.rs", "/home/a/", true),
+            ("/home/ab.rs", "/home/a", false),
+            // Elsewhere a backslash is part of a name, and case counts.
+            (r"/home/a\b.rs", "/home/a", false),
+            ("/Home/a/b.rs", "/home/a", false),
+        ];
+        let calls: Vec<String> = cases
+            .iter()
+            .map(|(path, dir, _)| format!("within({path:?}, {dir:?})"))
+            .collect();
+        let script = format!(
+            "(() => {{ {}{}
+            const AGENT_WINDOW = 60000;
+            const panes = () => [{{ pane: 'p1', cwd: 'C:\\\\Users\\\\me\\\\repo' }}];
+            const agents = () => [{{ pane: 'p1', status: 'working', name: 'codex' }}];
+            const editing = path => editingAgent({{ externalAt: Date.now(), path }})?.name ?? null;
+            return JSON.stringify([[{}], editing('C:\\\\Users\\\\me\\\\repo\\\\src\\\\a.rs'), editing('C:\\\\Users\\\\me\\\\other\\\\a.rs')]);
+            }})()",
+            function("within"),
+            function("editingAgent"),
+            calls.join(", ")
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let (got, agent, none): (Vec<bool>, Option<String>, Option<String>) =
+            serde_json::from_str(&out).unwrap();
+        let want: Vec<bool> = cases.iter().map(|(.., want)| *want).collect();
+        assert_eq!(got, want);
+        assert_eq!((agent.as_deref(), none), (Some("codex"), None));
+    }
+
+    #[test]
     fn the_editor_and_markdown_panes_share_one_implementation() {
         assert_eq!(
             include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js"),

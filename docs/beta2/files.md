@@ -39,7 +39,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
   - 有未儲存變更：標成衝突，橫幅提供「重新載入（捨棄我的）／保留我的／覆寫」。
   - 檔案消失：橫幅提供「重新儲存」。
   - 只改權限（chmod 不動大小與時間）：本機檢查也比對權限位元，變了才重新判斷能不能寫，編輯器跟著切換唯讀。
-- **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案，標頭顯示該 agent 的名稱（Claude Code 用設計稿的 `#2a201c`／`#e8a27f`）。
+- **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案（Windows 路徑兩種斜線都認、不分大小寫），標頭顯示該 agent 的名稱（Claude Code 用設計稿的 `#2a201c`／`#e8a27f`）。
 - 關閉有未儲存變更的 pane：buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回；Yuzora 結束才會遺失。
 - 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。重新讀取時（外部變更、Reload），檔案變成二進位或超過上限就不再顯示編輯器，未存的修改一併丟掉，不會再被存回去；大小跨過 2 MiB 時重建編輯器，上色與摺疊跟著開或關。
 - 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。文件還在載入時輸入的查詢會記住，編輯器建立後再套用。
@@ -113,7 +113,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（137 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、側欄路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、改名後圖片 pane 換成新路徑（在 QuickJS 跑 `open.js`，假的 Herdr：位置、焦點、資料夾改名、已關掉的 pane 不重開）。
+- `cargo test --locked -p yuzora-files`（138 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、「<Agent> 也在改」的資料夾比對（在 QuickJS 跑 `doc-pane.js` 的 `within`／`editingAgent`：Windows 兩種斜線、大小寫、UNC，其他平台反斜線是檔名的一部分）、側欄路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、改名後圖片 pane 換成新路徑（在 QuickJS 跑 `open.js`，假的 Herdr：位置、焦點、資料夾改名、已關掉的 pane 不重開）。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：
