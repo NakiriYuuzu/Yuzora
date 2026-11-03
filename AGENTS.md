@@ -62,6 +62,15 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
+### L2 · Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
+
+- 設計、A1–A12 完成度與效能數據：`docs/beta2/git.md`。git 只走 CLI（不用 libgit2），一律經 `crates/yuzora-git/src/exec.rs` 的執行器（讀取不拿鎖、寫入拿 repo 鎖、可取消、逾時、遠端走 `hc exec --on`）；不要在 mod 裡用 herdr 的 `exec("git", …)`。
+- 路徑一律是字面路徑（`GIT_LITERAL_PATHSPECS=1`）。自動執行的讀取不能讓 repo 自己的設定挑程式來跑：讀取關掉 fsmonitor、簽章檢查用使用者自己的 gpg、blame 不跑 textconv；repo 本地設定若有 filter／ssh／credential 等程式，所有 `yuzora:git` 呼叫（`status` 只回傳提示）都要等使用者信任資料夾（`trust.rs`，在 `repo_fn` 統一檢查，log 的載入與 diff／merge session 的寫入不經過 `repo_fn`，各自檢查；偵測與信任清單在 `yuzora_core::git_trust`，其他 lane 自己跑 git 時也用它）。新增函式一律走 `repo_fn`，新增讀取照這個原則。
+- merge pane 的編輯與結果邏輯有 bun 測試：`bun test scripts/yuzora-git-merge.test.ts`（在 `app/` 下執行）。
+- 測試不得讀寫真實的 app home：Yuzora 自己的檔案一律經 `settings::own_dir()`（測試時指向暫存目錄）。
+- 測試：`cargo test --locked -p yuzora-git`（每個測試在暫存 repo 上跑真的 git）。大型 repo 效能：`YUZORA_GIT_PERF_REPO=<repo> cargo test -p yuzora-git --lib --config 'profile.dev.package.yuzora-git.opt-level=2' -- --ignored --nocapture perf`，只對 clone 出來的複本量。
+- mods 的 `v_virtual_list` item renderer 裡不能註冊事件（gpui-shell 會丟例外、清單整個不畫，`check-mods` 抓不到）：用清單的 `on_item_click`／`on_item_secondary_click`。
+- 實機時 mods 可以熱更新：app 執行中把 `app/defaults/mods/<mod>` 複製到隔離 app home 的 `mods/<mod>`（換新 binary 重啟時，與內建版本不同的副本會被搬到 `<mod>-edited`，改裝內建版本）；`herdr-app do tab.new` 要用旗標形式（`--mod … --props '{…}'`），單一 JSON 物件會掉 `mod`。
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
