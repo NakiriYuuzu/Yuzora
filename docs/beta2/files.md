@@ -57,7 +57,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 ### Markdown 與圖片
 
 - `Markdown` 元件跟著文件的文字版本（每次編輯或重新載入加一）重畫，游標閃爍不會讓它重抓全文；同一份文件在原始碼與預覽間切換時即時同步。
-- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB，解碼後也不超過 512 MiB（見下方圖片 pane）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做（畫面只讀快取，10 秒後重新檢查），所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。Windows 上 `file:///C:/…` 指的是 `C:/…`。連結只開 http、https、mailto。
+- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB，解碼後也不超過 512 MiB（見下方圖片 pane）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做：讀出 bytes（最多 32 MiB，不多讀）、檢查解碼大小，交給 GPUI 的就是這份 bytes 而不是路徑，所以讀完之後檔案變大或被換掉也繞不過限制。畫面只讀快取，10 秒後重新 `stat`，stamp 變了才重讀，同一路徑換了圖也會更新；1 分鐘沒畫到的圖片連同 bytes 放掉。所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。Windows 上 `file:///C:/…` 指的是 `C:/…`。連結只開 http、https、mailto。
 - 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色仍是 One Dark。
 - 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；SVG 與檔頭解析不了的交給解碼器。檢視有「符合」與「100%」（原尺寸，比 pane 大時可捲動）、淺色背景；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
 
@@ -112,7 +112,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 ## 驗證
 
-- `cargo test --locked -p yuzora-files`（124 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫）／刪除／共享／釋放、改名前開始的檢查不套用、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
+- `cargo test --locked -p yuzora-files`（125 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、遠端變更一律拒絕）、git porcelain 解析與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔）、模糊搜尋排序與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫）／刪除／共享／釋放、改名前開始的檢查不套用、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同。
 - `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
 - `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
 - 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：

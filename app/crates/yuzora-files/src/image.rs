@@ -3,7 +3,6 @@
 //! file that changed on disk shows its new content when `rev` changes.
 
 use std::io::Read as _;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,26 +39,6 @@ pub fn fits_in_memory(bytes: &[u8]) -> bool {
     reader
         .into_dimensions()
         .map_or(true, |(w, h)| within_budget(w, h, frames))
-}
-
-/// [`fits_in_memory`] for a file on this machine: only a GIF or WebP is read
-/// whole (at most [`MAX_IMAGE_BYTES`]) to count its frames; others, as far
-/// as their size.
-pub fn file_fits_in_memory(path: &Path) -> bool {
-    let reader = image::ImageReader::open(path).and_then(|r| r.with_guessed_format());
-    let Ok(reader) = reader else { return false };
-    match reader.format() {
-        Some(image::ImageFormat::Gif | image::ImageFormat::WebP) => {
-            let mut bytes = Vec::new();
-            std::fs::File::open(path)
-                .and_then(|f| f.take(MAX_IMAGE_BYTES).read_to_end(&mut bytes))
-                .is_ok()
-                && fits_in_memory(&bytes)
-        }
-        _ => reader
-            .into_dimensions()
-            .map_or(true, |(w, h)| within_budget(w, h, 1)),
-    }
 }
 
 /// Whether `frames` of a `width`×`height` canvas, 4 bytes a pixel, fit.
@@ -135,6 +114,22 @@ const READ_SCRIPT: &str = r#"[ -e "$1" ] || { echo "no such file: $1" >&2; exit 
 exec head -c "$2" -- "$1""#;
 
 /// The format a file's extension names, if it is an image the viewer shows.
+/// The format of an image by its bytes, for a name without a known
+/// extension: a raster format the header names, else SVG (as GPUI guesses).
+pub(crate) fn format_in(bytes: &[u8]) -> ImageFormat {
+    use image::ImageFormat as F;
+    match image::guess_format(bytes) {
+        Ok(F::Png) => ImageFormat::Png,
+        Ok(F::Jpeg) => ImageFormat::Jpeg,
+        Ok(F::Gif) => ImageFormat::Gif,
+        Ok(F::WebP) => ImageFormat::Webp,
+        Ok(F::Bmp) => ImageFormat::Bmp,
+        Ok(F::Tiff) => ImageFormat::Tiff,
+        Ok(F::Ico) => ImageFormat::Ico,
+        _ => ImageFormat::Svg,
+    }
+}
+
 pub fn format_of(path: &str) -> Option<ImageFormat> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
     Some(match ext.as_str() {
@@ -150,7 +145,7 @@ pub fn format_of(path: &str) -> Option<ImageFormat> {
     })
 }
 
-fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
+pub(crate) fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
     match machine(on) {
         None => {
             // Looked at before opening: a FIFO would wait, a device never ends.
@@ -398,6 +393,26 @@ pub fn image_component(
 
 use gpui::prelude::FluentBuilder as _;
 
+/// A GIF of a `size`² canvas holding `frames` 1×1 images.
+#[cfg(test)]
+pub(crate) fn test_gif(size: u16, frames: usize) -> Vec<u8> {
+    let mut b = b"GIF89a".to_vec();
+    b.extend(size.to_le_bytes());
+    b.extend(size.to_le_bytes());
+    // A global color table of 2 entries.
+    b.extend([0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff]);
+    // Loop forever (an extension), so animated.
+    b.extend([0x21, 0xff, 0x0b]);
+    b.extend(b"NETSCAPE2.0");
+    b.extend([0x03, 0x01, 0, 0, 0]);
+    for _ in 0..frames {
+        b.extend([0x21, 0xf9, 0x04, 0, 0x0a, 0, 0, 0]);
+        b.extend([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0x02, 0x02, 0x44, 0x01, 0]);
+    }
+    b.push(0x3b);
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,23 +463,13 @@ mod tests {
         );
     }
 
-    /// A GIF of a `size`² canvas holding `frames` 1×1 images.
-    fn gif(size: u16, frames: usize) -> Vec<u8> {
-        let mut b = b"GIF89a".to_vec();
-        b.extend(size.to_le_bytes());
-        b.extend(size.to_le_bytes());
-        // A global color table of 2 entries.
-        b.extend([0x80, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff]);
-        // Loop forever (an extension), so animated.
-        b.extend([0x21, 0xff, 0x0b]);
-        b.extend(b"NETSCAPE2.0");
-        b.extend([0x03, 0x01, 0, 0, 0]);
-        for _ in 0..frames {
-            b.extend([0x21, 0xf9, 0x04, 0, 0x0a, 0, 0, 0]);
-            b.extend([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0x02, 0x02, 0x44, 0x01, 0]);
-        }
-        b.push(0x3b);
-        b
+    use super::test_gif as gif;
+
+    #[test]
+    fn formats_are_guessed_from_bytes_without_an_extension() {
+        assert_eq!(format_in(&gif(1, 1)), ImageFormat::Gif);
+        assert_eq!(format_in(b"\x89PNG\r\n\x1a\n"), ImageFormat::Png);
+        assert_eq!(format_in(b"<svg/>"), ImageFormat::Svg);
     }
 
     #[test]
@@ -477,14 +482,6 @@ mod tests {
         // 8192² is 256 MB a frame: two fill the budget, three are over it.
         assert!(fits_in_memory(&gif(8192, 2)));
         assert!(!fits_in_memory(&gif(8192, 3)));
-        // A file is checked the same way.
-        let dir = tempfile::tempdir().unwrap();
-        let (small, big) = (dir.path().join("s.gif"), dir.path().join("b.gif"));
-        std::fs::write(&small, gif(8, 3)).unwrap();
-        std::fs::write(&big, gif(8192, 3)).unwrap();
-        assert!(file_fits_in_memory(&small));
-        assert!(!file_fits_in_memory(&big));
-        assert!(!file_fits_in_memory(&dir.path().join("missing.gif")));
     }
 
     #[test]

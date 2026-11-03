@@ -15,14 +15,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageSource, IntoElement,
-    ParentElement as _, Render, SharedString, SharedUri, StyleRefinement, Styled as _,
+    AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, Image, ImageFormat, ImageSource,
+    IntoElement, ParentElement as _, Render, SharedString, SharedUri, StyleRefinement, Styled as _,
     Subscription, Window, div, px,
 };
 use gpui_base::text::{TextView, TextViewStyle};
 use yuzora_core::HostValue;
 
 use crate::docs::{self, DocView};
+use crate::fsops::{self, Stamp};
 use crate::highlight::{self, SyntaxPalette};
 
 /// Where a document image comes from, or `None` when it is not loaded.
@@ -132,22 +133,68 @@ fn missing_image() -> ImageSource {
     ImageSource::from(PathBuf::new())
 }
 
-/// A regular file small enough to show: not a device, FIFO or folder, and
-/// not too big once decoded.
-fn loadable(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() <= crate::image::MAX_IMAGE_BYTES)
-        && crate::image::file_fits_in_memory(path)
+/// What a look at an image file found.
+enum Found {
+    /// The stamp of what is shown: not read again.
+    Same,
+    /// Bytes to show, checked, and the stamp from before they were read (a
+    /// change after that is seen the next time).
+    Read {
+        stamp: Stamp,
+        format: ImageFormat,
+        bytes: Vec<u8>,
+    },
+    /// Not a regular file (a device, FIFO or folder), too big, or too big
+    /// once decoded.
+    Nothing,
+}
+
+/// Reads an image for the preview, unless its stamp is still `shown`. GPUI
+/// gets these bytes, not the path: what it decodes is what was checked
+/// ([`crate::image::read`] reads no more than the limit).
+fn read_image(path: &Path, shown: Option<Stamp>) -> Found {
+    let stamp = std::fs::metadata(path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| fsops::stamp_of(&m));
+    let (Some(stamp), Some(name)) = (stamp, path.to_str()) else {
+        return Found::Nothing;
+    };
+    if shown == Some(stamp) {
+        return Found::Same;
+    }
+    match crate::image::read(name, None) {
+        Ok(bytes) if crate::image::fits_in_memory(&bytes) => Found::Read {
+            stamp,
+            format: crate::image::format_of(name)
+                .unwrap_or_else(|| crate::image::format_in(&bytes)),
+            bytes,
+        },
+        _ => Found::Nothing,
+    }
 }
 
 /// A path's answer is looked at again after this long.
 const RECHECK: Duration = Duration::from_secs(10);
+/// An image no frame drew for this long is let go (with its bytes).
+const FORGET: Duration = Duration::from_secs(60);
+
+/// What a preview shows for one image path.
+struct Known {
+    /// The image and the stamp it was read at; `None`: nothing to show.
+    shown: Option<(Stamp, Arc<Image>)>,
+    /// When it was looked at.
+    at: Instant,
+    /// When a frame last drew it.
+    asked: Instant,
+}
 
 /// Which of a preview's images may be shown. Drawing only reads it; the
 /// files are looked at on a worker after the frame.
 #[derive(Default)]
 struct ImageChecks {
-    /// Whether each path is [`loadable`], and when that was found.
-    known: HashMap<PathBuf, (bool, Instant)>,
+    /// What each path shows.
+    known: HashMap<PathBuf, Known>,
     /// Paths drawn without an answer, or with an old one.
     wanted: HashSet<PathBuf>,
     /// A check is queued or running.
@@ -159,32 +206,65 @@ struct ImageChecks {
 }
 
 impl ImageChecks {
-    /// The answer for `path` so far (not shown while unknown); asks for a
-    /// check when there is none or it is old.
-    fn answer(&mut self, path: &Path) -> bool {
-        match self.known.get(path) {
-            Some(&(ok, at)) => {
-                if at.elapsed() > RECHECK {
+    /// The image for `path` so far (none while unknown); asks for a check
+    /// when there is no answer or it is old.
+    fn answer(&mut self, path: &Path) -> Option<Arc<Image>> {
+        match self.known.get_mut(path) {
+            Some(known) => {
+                known.asked = Instant::now();
+                if known.at.elapsed() > RECHECK {
                     self.wanted.insert(path.to_owned());
                 }
-                self.missing |= !ok;
-                ok
+                self.missing |= known.shown.is_none();
+                known.shown.as_ref().map(|(_, image)| image.clone())
             }
             None => {
                 self.wanted.insert(path.to_owned());
                 self.missing = true;
-                false
+                None
             }
         }
     }
 
-    /// Records answers; true when one changed what is shown.
-    fn record(&mut self, answers: Vec<(PathBuf, bool)>) -> bool {
+    /// The paths to look at, each with the stamp of what it shows.
+    fn take_wanted(&mut self) -> Vec<(PathBuf, Option<Stamp>)> {
+        let wanted: Vec<PathBuf> = self.wanted.drain().collect();
+        wanted
+            .into_iter()
+            .map(|path| {
+                let shown = self.known.get(&path).and_then(|k| k.shown.as_ref());
+                let stamp = shown.map(|(stamp, _)| *stamp);
+                (path, stamp)
+            })
+            .collect()
+    }
+
+    /// Records answers; true when one changed what is shown (an image
+    /// replaced at the same path too). Lets go of images not drawn lately.
+    fn record(&mut self, answers: Vec<(PathBuf, Found)>) -> bool {
         let now = Instant::now();
+        self.known
+            .retain(|_, k| now.duration_since(k.asked) < FORGET);
         let mut changed = false;
-        for (path, ok) in answers {
-            let before = self.known.insert(path, (ok, now)).map(|(was, _)| was);
-            changed |= before != Some(ok);
+        for (path, found) in answers {
+            let known = self.known.entry(path).or_insert(Known {
+                shown: None,
+                at: now,
+                asked: now,
+            });
+            known.at = now;
+            match found {
+                Found::Same => {}
+                Found::Read {
+                    stamp,
+                    format,
+                    bytes,
+                } => {
+                    known.shown = Some((stamp, Arc::new(Image::from_bytes(format, bytes))));
+                    changed = true;
+                }
+                Found::Nothing => changed |= known.shown.take().is_some(),
+            }
         }
         changed
     }
@@ -240,20 +320,20 @@ impl MarkdownView {
             let mut changed = false;
             // Frames drawn meanwhile may ask for more.
             loop {
-                let wanted: Vec<PathBuf> = {
+                let wanted = {
                     let mut checks = images.lock().unwrap_or_else(|e| e.into_inner());
                     if checks.wanted.is_empty() {
                         checks.busy = false;
                         break;
                     }
-                    checks.wanted.drain().collect()
+                    checks.take_wanted()
                 };
                 let answers = docs::blocking(move || {
                     wanted
                         .into_iter()
-                        .map(|path| {
-                            let ok = loadable(&path);
-                            (path, ok)
+                        .map(|(path, shown)| {
+                            let found = read_image(&path, shown);
+                            (path, found)
                         })
                         .collect()
                 })
@@ -374,18 +454,14 @@ impl Render for MarkdownView {
                 .style(self.style(cx))
                 .shared_code_block_highlighter(self.highlighter.clone())
                 .image_source(move |uri: &SharedUri| {
-                    match image_path(uri.as_ref(), base.as_deref()) {
-                        Some(path)
-                            if !remote
-                                && images
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .answer(&path) =>
-                        {
-                            ImageSource::from(path)
-                        }
-                        _ => missing_image(),
-                    }
+                    let path = image_path(uri.as_ref(), base.as_deref()).filter(|_| !remote);
+                    let image = path.and_then(|path| {
+                        images
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .answer(&path)
+                    });
+                    image.map_or_else(missing_image, ImageSource::Image)
                 })
                 .on_link_click(|url, _, _, cx| {
                     if opens_outside(url) {
@@ -522,42 +598,99 @@ mod tests {
     }
 
     #[test]
-    fn only_regular_files_within_the_limit_are_read() {
+    fn only_regular_files_within_the_limits_are_read() {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("a.png");
         std::fs::write(&png, b"not really a png").unwrap();
-        assert!(loadable(&png));
-        assert!(!loadable(dir.path()));
-        assert!(!loadable(&dir.path().join("missing.png")));
+        let Found::Read {
+            stamp,
+            format,
+            bytes,
+        } = read_image(&png, None)
+        else {
+            panic!("not read");
+        };
+        assert_eq!(
+            (format, bytes.as_slice()),
+            (ImageFormat::Png, &b"not really a png"[..])
+        );
+        // Unchanged since it was read: not read again.
+        assert!(matches!(read_image(&png, Some(stamp)), Found::Same));
+        // No extension: the format from its bytes.
+        let bare = dir.path().join("picture");
+        std::fs::write(&bare, crate::image::test_gif(1, 1)).unwrap();
+        assert!(matches!(
+            read_image(&bare, None),
+            Found::Read {
+                format: ImageFormat::Gif,
+                ..
+            }
+        ));
+        // Too big once decoded.
+        let big = dir.path().join("big.gif");
+        std::fs::write(&big, crate::image::test_gif(8192, 3)).unwrap();
+        assert!(matches!(read_image(&big, None), Found::Nothing));
+        assert!(matches!(read_image(dir.path(), None), Found::Nothing));
+        assert!(matches!(
+            read_image(&dir.path().join("missing.png"), None),
+            Found::Nothing
+        ));
         #[cfg(unix)]
         {
-            assert!(!loadable(Path::new("/dev/zero")));
+            assert!(matches!(
+                read_image(Path::new("/dev/zero"), None),
+                Found::Nothing
+            ));
             let link = dir.path().join("zero.png");
             std::os::unix::fs::symlink("/dev/zero", &link).unwrap();
-            assert!(!loadable(&link));
+            assert!(matches!(read_image(&link, None), Found::Nothing));
         }
     }
 
     #[test]
     fn image_answers_wait_for_a_check_and_are_looked_at_again() {
+        let stamp = |len| Stamp { len, mtime_ms: 1 };
+        let read = |len| Found::Read {
+            stamp: stamp(len),
+            format: ImageFormat::Png,
+            bytes: vec![0; len as usize],
+        };
         let mut checks = ImageChecks::default();
         let (a, b) = (Path::new("/r/a.png"), Path::new("/r/b.png"));
-        assert!(!checks.answer(a));
-        assert!(!checks.answer(b));
+        assert!(checks.answer(a).is_none());
+        assert!(checks.answer(b).is_none());
         assert_eq!(checks.wanted.len(), 2);
         checks.wanted.clear();
-        assert!(checks.record(vec![(a.to_owned(), true), (b.to_owned(), false)]));
-        assert!(checks.answer(a));
-        assert!(!checks.answer(b));
+        assert!(checks.record(vec![
+            (a.to_owned(), read(1)),
+            (b.to_owned(), Found::Nothing)
+        ]));
+        let shown = checks.answer(a).unwrap();
+        assert!(checks.answer(b).is_none());
         assert!(checks.wanted.is_empty());
-        // The same answers again change nothing shown.
-        assert!(!checks.record(vec![(a.to_owned(), true), (b.to_owned(), false)]));
+        // Looked at again with the stamp it shows; unchanged, nothing changes.
+        checks.wanted.insert(a.to_owned());
+        assert_eq!(checks.take_wanted(), [(a.to_owned(), Some(stamp(1)))]);
+        assert!(!checks.record(vec![
+            (a.to_owned(), Found::Same),
+            (b.to_owned(), Found::Nothing)
+        ]));
+        assert!(Arc::ptr_eq(&checks.answer(a).unwrap(), &shown));
+        // Replaced at the same path: the new image is shown.
+        assert!(checks.record(vec![(a.to_owned(), read(2))]));
+        assert!(!Arc::ptr_eq(&checks.answer(a).unwrap(), &shown));
+        // Gone: nothing shown.
+        assert!(checks.record(vec![(a.to_owned(), Found::Nothing)]));
+        assert!(checks.answer(a).is_none());
         // An old answer is still used while it is checked again.
-        checks
-            .known
-            .insert(a.to_owned(), (true, Instant::now() - RECHECK * 2));
-        assert!(checks.answer(a));
+        checks.record(vec![(a.to_owned(), read(3))]);
+        checks.known.get_mut(a).unwrap().at = Instant::now() - RECHECK * 2;
+        assert!(checks.answer(a).is_some());
         assert!(checks.wanted.contains(a));
+        // One no frame drew for a while is let go.
+        checks.known.get_mut(b).unwrap().asked = Instant::now() - FORGET * 2;
+        checks.record(vec![]);
+        assert!(!checks.known.contains_key(b) && checks.known.contains_key(a));
     }
 
     #[gpui::test]

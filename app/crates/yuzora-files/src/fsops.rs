@@ -364,7 +364,7 @@ pub fn stat(path: &str, on: Option<&str>) -> Result<Option<Stamp>, String> {
     }
 }
 
-fn stamp_of(m: &std::fs::Metadata) -> Stamp {
+pub(crate) fn stamp_of(m: &std::fs::Metadata) -> Stamp {
     let mtime_ms = match m.modified().map(|t| t.duration_since(UNIX_EPOCH)) {
         Ok(Ok(d)) => d.as_millis() as i64,
         Ok(Err(before)) => -(before.duration().as_millis() as i64),
