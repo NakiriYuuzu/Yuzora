@@ -2,6 +2,8 @@ import { extractReleaseNotes } from "../src/lib/releaseNotes"
 import { versionFromTag } from "./release-version"
 
 // The release body carries both changelogs, English first, each under its own heading.
+// The headings are "### " because that is the only level the installed apps' update
+// notes render (parseReleaseNoteLines); a "## " line would show up with its hash marks.
 export const CHANGELOGS = [
   { path: "CHANGELOG.md", title: "English" },
   { path: "CHANGELOG.zh-TW.md", title: "繁體中文" },
@@ -14,7 +16,7 @@ export function releaseNotesForTag(changelogs: Changelogs, tag: string): string 
   return CHANGELOGS.map(({ path, title }) => {
     const notes = extractReleaseNotes(changelogs[path], version)
     if (!notes) throw new Error(`${path} must include version ${version}`)
-    return `## ${title}\n\n${notes}`
+    return `### ${title}\n\n${notes}`
   }).join("\n\n")
 }
 

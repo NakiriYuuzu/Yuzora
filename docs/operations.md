@@ -192,7 +192,7 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）中對應完整 version 的使用者可讀章節，兩份的版本、段落與項目一一對應（`scripts/release-notes.test.ts` 會比對），例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
 - 必要的 release／updater contract 修改與測試。
 
-兩份 CHANGELOG 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由兩份的該版本章節自動產生（英文在前，各自放在 `## English`、`## 繁體中文` 標題下），因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
+兩份 CHANGELOG 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由兩份的該版本章節自動產生（英文在前，各自放在 `### English`、`### 繁體中文` 標題下；已安裝的 App 更新說明只把 `###` 畫成標題），因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
 
 修改上述 `Cargo.toml` version 後，先讓 Cargo 更新根 `Cargo.lock` 中這些 workspace member 的 entry（在 workspace 內執行任一 cargo 指令都會更新整份 lock），再確認根 `Cargo.lock` 沒有意外的 dependency 變動：
 

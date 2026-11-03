@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 
 import { describe, expect, it } from "vitest"
+import { parseReleaseNoteLines } from "../src/lib/releaseNotes"
 import { CHANGELOGS, releaseNotesForTag, type Changelogs } from "./release-notes"
 
 function repositoryChangelogs(): Changelogs {
@@ -34,7 +35,7 @@ describe("releaseNotesForTag", () => {
     const notes = releaseNotesForTag(repositoryChangelogs(), "v0.0.9")
     expect(notes).toContain("未經 Apple Developer ID 簽章或公證")
     expect(notes).toContain("Tauri updater 簽章")
-    const english = notes.slice(0, notes.indexOf("## 繁體中文"))
+    const english = notes.slice(0, notes.indexOf("### 繁體中文"))
     expect(english).toContain("Apple Developer ID")
     expect(english).toContain("Gatekeeper")
   })
@@ -72,8 +73,8 @@ describe("releaseNotesForTag", () => {
     }
 
     expect(releaseNotesForTag(changelogs, "v0.0.3")).toBe(
-      "## English\n\n### Improved\n\n- After an update, the app shows what this version changed.\n\n" +
-        "## 繁體中文\n\n### 改善\n\n- 更新後會清楚顯示這個版本帶來的改變。"
+      "### English\n\n### Improved\n\n- After an update, the app shows what this version changed.\n\n" +
+        "### 繁體中文\n\n### 改善\n\n- 更新後會清楚顯示這個版本帶來的改變。"
     )
   })
 
@@ -102,8 +103,16 @@ describe("releaseNotesForTag", () => {
     }
 
     expect(releaseNotesForTag(changelogs, "v0.0.9-beta.1")).toBe(
-      "## English\n\n### Known limitations\n\n- Manual download only.\n\n## 繁體中文\n\n### 已知限制\n\n- 僅供手動下載。"
+      "### English\n\n### Known limitations\n\n- Manual download only.\n\n### 繁體中文\n\n### 已知限制\n\n- 僅供手動下載。"
     )
+  })
+
+  it("titles each language with a heading the installed apps' update notes render", () => {
+    const lines = parseReleaseNoteLines(releaseNotesForTag(repositoryChangelogs(), "v0.0.9"))
+    const headings = lines.filter((line) => line.kind === "heading").map((line) => line.text)
+    expect(headings[0]).toBe("English")
+    expect(headings).toContain("繁體中文")
+    expect(lines.filter((line) => line.kind === "text" && line.text.startsWith("#"))).toEqual([])
   })
 
   it("writes the actual changelog notes to the handoff file instead of verifier stdout", () => {
