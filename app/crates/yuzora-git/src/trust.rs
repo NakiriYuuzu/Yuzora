@@ -25,7 +25,7 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::Value;
 use yuzora_core::git_trust;
 
-use crate::exec::{Git, GitError, GitResult, Output};
+use crate::exec::{Git, GitError, GitResult, Output, Place};
 use crate::repo::Repo;
 
 /// An empty folder of ours for `core.hooksPath` when hooks must not run.
@@ -60,19 +60,36 @@ fn trusted() -> BTreeSet<String> {
     git_trust::trusted_from(&file())
 }
 
-/// What keeps git from running on its own in this repo: its program keys,
-/// and the remote helpers [`reach`] kept out, unless the folder is trusted
-/// (empty: nothing does).
+/// What keeps git from running on its own in this repo, unless the folder
+/// is trusted (empty: nothing does): its program keys, what makes it a
+/// partial clone ([`partial_clone_keys`]), and the remote helpers git kept
+/// out of a command there ([`heard`]).
 pub fn pending(repo: &Repo) -> GitResult<Vec<String>> {
     if trusted_folder(repo) {
         return Ok(Vec::new());
     }
-    let mut keys = repo_programs(repo)?;
+    let mut keys: BTreeSet<String> = repo_programs(repo)?.into_iter().collect();
+    keys.extend(partial_clone_keys(repo));
     keys.extend(kept_out().lock().unwrap_or_else(|e| e.into_inner()).get(&repo.id).into_iter().flatten().cloned());
-    Ok(keys)
+    Ok(keys.into_iter().collect())
 }
 
-/// The remote helpers [`reach`] kept out this session, by repo.
+/// The keys that make the repo a partial clone, as git's own
+/// `repo_has_promisor_remote` reads them: `extensions.partialClone`, a remote
+/// marked `promisor`. Such a clone fetches what it lacks from that remote as
+/// it reads: every command there would fail or come back short until the
+/// folder is trusted ([`guard`]), so it waits from the start.
+pub fn partial_clone_keys(repo: &Repo) -> Vec<String> {
+    let read = |args: &[&str]| repo.run(offline(Git::read(["config"]).args(args.iter().copied()))).ok().filter(|o| o.ok()).map(|o| o.stdout_text()).unwrap_or_default();
+    let mut keys = Vec::new();
+    if !read(&["--get", "extensions.partialClone"]).trim().is_empty() {
+        keys.push("extensions.partialclone".to_owned());
+    }
+    keys.extend(read(&["--type=bool", "--get-regexp", r"^remote\..*\.promisor$"]).lines().filter_map(|l| l.strip_suffix(" true")).map(str::to_owned));
+    keys
+}
+
+/// What git kept out this session in a folder not trusted yet ([`heard`]), by repo.
 fn kept_out() -> &'static Mutex<BTreeMap<String, BTreeSet<String>>> {
     static KEPT: OnceLock<Mutex<BTreeMap<String, BTreeSet<String>>>> = OnceLock::new();
     KEPT.get_or_init(Mutex::default)
@@ -81,28 +98,64 @@ fn kept_out() -> &'static Mutex<BTreeMap<String, BTreeSet<String>>> {
 /// git's own transports: anything else is a remote helper.
 const OWN_TRANSPORTS: [&str; 5] = ["file", "git", "http", "https", "ssh"];
 
+/// What [`guard`] decided for a command: the folder, and whether a helper
+/// git kept out there waits for trust (not for a read that chose to be offline).
+pub(crate) struct Guarded {
+    id: String,
+    listens: bool,
+}
+
+/// Every git command the engine starts passes here first (`exec`'s one way
+/// to start git, here and through `hc exec`). Until the folder is trusted it
+/// runs offline: `GIT_ALLOW_PROTOCOL` empty (no transport, so no remote
+/// helper, however a URL names one) and `GIT_NO_LAZY_FETCH=1` (a git before
+/// 2.44 ignores it; the empty list stops it there too). A command that chose
+/// its own keeps it: [`reach`] lists git's own transports, [`offline`] reads
+/// quietly.
+pub(crate) fn guard(place: &Place, mut cmd: Git) -> (Git, Option<Guarded>) {
+    let id = crate::repo::repo_id(place.on.as_deref(), &place.root);
+    if trusted().contains(&id) {
+        return (cmd, None);
+    }
+    let own = |cmd: &Git, k: &str| cmd.env.iter().rev().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    let list = own(&cmd, "GIT_ALLOW_PROTOCOL");
+    if list.is_none() {
+        cmd = cmd.env("GIT_ALLOW_PROTOCOL", "");
+    }
+    if own(&cmd, "GIT_NO_LAZY_FETCH").is_none() {
+        cmd = cmd.env("GIT_NO_LAZY_FETCH", "1");
+    }
+    (cmd, Some(Guarded { id, listens: list.as_deref() != Some("") }))
+}
+
+/// After a guarded command: a remote helper git kept out (in its words, in
+/// English here: `transport '<name>' not allowed`) waits for trust from then
+/// on, so the sidebar asks. The scan can't see every URL that names one.
+pub(crate) fn heard(guarded: Guarded, out: &Output) {
+    if !guarded.listens {
+        return;
+    }
+    let stderr = out.stderr_text();
+    let kept = stderr.lines().filter_map(|l| l.split_once("transport '")?.1.strip_suffix("' not allowed")).filter(|t| !OWN_TRANSPORTS.contains(t));
+    let kept: BTreeSet<String> = kept.map(|t| format!("transport '{t}'")).collect();
+    if !kept.is_empty() {
+        kept_out().lock().unwrap_or_else(|e| e.into_inner()).entry(guarded.id).or_default().extend(kept);
+    }
+}
+
 /// Runs a command that reaches a remote (fetch, pull, push, submodule
-/// update). Until the folder is trusted it uses no remote helper (`ext::`
-/// runs its command), whatever names one: the scan can't see them all (a
-/// tracked `.gitmodules`, a nested one `--recursive` meets on the way, an
-/// unpopulated submodule's git dir, the person's own `insteadOf`).
-/// `GIT_ALLOW_PROTOCOL` lists git's own transports the person's config
-/// allows ([`transports`]). A helper git kept out waits for trust from then
-/// on, so the sidebar asks.
+/// update). Until the folder is trusted it may use git's own transports the
+/// person's config allows ([`transports`]), never a remote helper, whatever
+/// names one: the scan can't see them all (a tracked `.gitmodules`, a nested
+/// one `--recursive` meets on the way, an unpopulated submodule's git dir,
+/// the person's own `insteadOf`). It fetches nothing a partial clone lacks
+/// either ([`guard`]).
 pub fn reach(repo: &Repo, cmd: Git, from_user: bool) -> GitResult<Output> {
     if trusted_folder(repo) {
         return repo.run(cmd);
     }
     let config = repo.run(Git::read(["config", "--get-regexp", r"^protocol\."]))?.stdout_text();
-    let out = repo.run(cmd.env("GIT_ALLOW_PROTOCOL", transports(&config, from_user)))?;
-    // git's words (its messages are in English here): `transport '<name>' not allowed`.
-    let stderr = out.stderr_text();
-    let kept = stderr.lines().filter_map(|l| l.split_once("transport '")?.1.strip_suffix("' not allowed")).filter(|t| !OWN_TRANSPORTS.contains(t));
-    let kept: BTreeSet<String> = kept.map(|t| format!("transport '{t}'")).collect();
-    if !kept.is_empty() {
-        kept_out().lock().unwrap_or_else(|e| e.into_inner()).entry(repo.id.clone()).or_default().extend(kept);
-    }
-    Ok(out)
+    repo.run(cmd.env("GIT_ALLOW_PROTOCOL", transports(&config, from_user)))
 }
 
 /// Which of git's own transports the person's config allows, as git decides
@@ -125,12 +178,9 @@ pub fn trusted_folder(repo: &Repo) -> bool {
     trusted().contains(&repo.id)
 }
 
-/// A read that runs on its own (opening, refreshing, following refs): until
-/// the folder is trusted it fetches nothing a partial clone lacks from the
-/// remote the repo names. `GIT_NO_LAZY_FETCH` says so since git 2.44; an
-/// older git ignores it, but an empty `GIT_ALLOW_PROTOCOL` refuses every
-/// transport there too. A repo whose settings name no program doesn't wait
-/// for trust, so this is all that keeps such reads off its remote.
+/// A read that runs on its own (opening, refreshing, following refs): offline
+/// until the folder is trusted, as [`guard`] makes every command, and quiet
+/// about a helper git kept out (the person didn't start it).
 pub fn own_read(repo: &Repo, cmd: Git) -> Git {
     if trusted_folder(repo) { cmd } else { offline(cmd) }
 }
@@ -157,10 +207,6 @@ pub fn check(repo: &Repo) -> GitResult<()> {
 
 /// The start of [`check`]'s error, for the panes to recognise.
 pub const UNTRUSTED: &str = "untrusted folder: trust it in the Git sidebar first";
-
-/// The start of a log's error when, before the folder is trusted, it needs
-/// objects its partial clone lacks (it fetches none until then).
-pub const LAZY_FETCH: &str = "objects missing from this partial clone: trust the folder to fetch them";
 
 /// Trusts the repo's folder (here or on its machine) from now on.
 pub fn trust(repo: &Repo) -> GitResult<Value> {
@@ -258,6 +304,94 @@ mod tests {
         trust(&s.repo).unwrap();
         crate::ops::submodule_update(&s.repo, None).unwrap();
         assert!(mark.exists(), "trusted, git didn't run it either: this proves nothing");
+    }
+
+    // The engine starts git one way (`exec::run_streaming`), here and through
+    // `hc exec`: until the folder is trusted every command there runs
+    // offline, whatever its caller built.
+    #[test]
+    fn every_git_command_in_an_untrusted_folder_runs_offline() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        let lines = |out: Output| {
+            let mut v: Vec<String> = out.stdout_text().lines().filter(|l| l.starts_with("GIT_ALLOW_PROTOCOL=") || l.starts_with("GIT_NO_LAZY_FETCH=")).map(str::to_owned).collect();
+            v.sort();
+            v
+        };
+        let env = ["-c", "alias.yz-env=!env", "yz-env"];
+        let offline = ["GIT_ALLOW_PROTOCOL=", "GIT_NO_LAZY_FETCH=1"];
+        let there = crate::repo::testing::on_machine(&s);
+        for repo in [&s.repo, &there] {
+            assert_eq!(lines(repo.run(Git::read(env)).unwrap()), offline, "{}", repo.id);
+            assert_eq!(lines(repo.run(Git::write(env)).unwrap()), offline, "{}", repo.id);
+        }
+        // A command that reaches a remote: git's own transports the person allows.
+        let config = s.repo.run(Git::read(["config", "--get-regexp", r"^protocol\."])).unwrap().stdout_text();
+        let listed = transports(&config, true);
+        assert!(!listed.is_empty() && !listed.contains("ext"), "{listed}");
+        assert_eq!(lines(reach(&s.repo, Git::read(env), true).unwrap()), [format!("GIT_ALLOW_PROTOCOL={listed}"), "GIT_NO_LAZY_FETCH=1".into()]);
+        trust(&s.repo).unwrap();
+        assert_eq!(lines(s.repo.run(Git::read(env)).unwrap()), Vec::<String>::new(), "trusted: as git in a terminal");
+        assert_eq!(lines(there.run(Git::read(env)).unwrap()), offline, "another machine's folder of the same path is another folder");
+    }
+
+    // A URL whose scheme git doesn't serve itself (`zz://`, `ext://`) names a
+    // remote helper too, and a partial clone fetches what it lacks through
+    // it. Before trust a commit's details and its diff start none, even
+    // called past the gate.
+    #[test]
+    fn an_untrusted_partial_clone_starts_no_helper_for_details_or_a_diff() {
+        for url in ["zz://payload", "ext://x/run"] {
+            let s = scratch();
+            let mark = s.dir.path().join("ran");
+            let bin = s.dir.path().join("bin");
+            // A helper the person installed; `ext://x/run` runs `ext:/x/run`, which the repo can hold.
+            for at in [bin.join("git-remote-zz"), std::path::Path::new(s.root()).join("ext:/x/run")] {
+                std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                std::fs::write(&at, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", mark.display())).unwrap();
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+            crate::exec::TEST_ENV.with(|t| *t.borrow_mut() = vec![("PATH".into(), path)]);
+            let one = s.commit("a.txt", "1\n", "one");
+            let two = s.commit("a.txt", "2\n", "two");
+            // `protocol.ext.allow` stands for the person's global config.
+            for (k, v) in [("remote.origin.url", url), ("remote.origin.promisor", "true"), ("protocol.ext.allow", "always")] {
+                s.git(&["config", k, v]);
+            }
+            std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &one[..2], &one[2..]))).unwrap();
+            // The gate is shut from the start (a partial clone waits); these are called past it.
+            assert!(pending(&s.repo).unwrap().contains(&"remote.origin.promisor".to_string()), "{url}: {:?}", pending(&s.repo));
+            let diff = || _ = crate::diffview::DiffSession::load(s.repo.clone(), "a.txt".into(), None, crate::diffview::Mode::Commit(two.clone()));
+            let details = crate::log::details(&s.repo, &one);
+            assert!(!mark.exists(), "{url}: a commit's details started a helper before the folder was trusted");
+            assert!(details.is_err(), "{url}: {details:?}");
+            diff();
+            assert!(!mark.exists(), "{url}: a diff started a helper before the folder was trusted");
+            trust(&s.repo).unwrap();
+            let _ = crate::log::details(&s.repo, &one);
+            let details_ran = mark.exists();
+            let _ = std::fs::remove_file(&mark);
+            diff();
+            crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
+            assert!(details_ran && mark.exists(), "{url}: trusted, git didn't start the helper either ({details_ran}): this proves nothing");
+        }
+    }
+
+    #[test]
+    fn a_partial_clone_waits_for_trust_by_the_keys_git_reads() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        assert_eq!(partial_clone_keys(&s.repo), Vec::<String>::new());
+        s.git(&["config", "remote.origin.promisor", "false"]);
+        assert_eq!(partial_clone_keys(&s.repo), Vec::<String>::new());
+        s.git(&["config", "remote.origin.promisor", "yes"]);
+        assert_eq!(pending(&s.repo).unwrap(), ["remote.origin.promisor"]);
+        s.git(&["config", "--unset", "remote.origin.promisor"]);
+        s.git(&["config", "extensions.partialClone", "origin"]);
+        assert_eq!(pending(&s.repo).unwrap(), ["extensions.partialclone"]);
+        trust(&s.repo).unwrap();
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new());
     }
 
     #[test]

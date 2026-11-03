@@ -568,8 +568,11 @@ pub mod testing {
         pub fn root(&self) -> &str {
             &self.repo.place.root
         }
+        /// git as the person runs it in a terminal: not offline the way git
+        /// the engine starts is before the folder is trusted.
         pub fn git(&self, args: &[&str]) -> String {
-            let out = self.repo.run(Git::write(args.iter().map(|s| s.to_string()))).unwrap();
+            let cmd = Git::write(args.iter().map(|s| s.to_string())).env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh").env("GIT_NO_LAZY_FETCH", "0");
+            let out = self.repo.run(cmd).unwrap();
             assert!(out.ok(), "git {args:?}: {}", out.stderr_text());
             out.stdout_text()
         }

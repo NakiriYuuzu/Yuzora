@@ -60,7 +60,7 @@ export interface Status {
 }
 export interface Outcome { ok: boolean; output?: string; conflicts?: string[]; operation?: string; [k: string]: unknown }
 export interface LogFilter { branches?: string[]; users?: string[]; since?: string; until?: string; paths?: string[]; text?: string; regex?: boolean; matchCase?: boolean; hashes?: string[]; range?: string; noMerges?: boolean; follow?: boolean }
-export interface LogInfo { id: number; generation: number; rows: number; loading: boolean; stage: string; complete: boolean; error: string | null; lazyFetch: boolean; graph: boolean; width: number; firstMs: number | null; fullMs: number | null; branch: string | null }
+export interface LogInfo { id: number; generation: number; rows: number; loading: boolean; stage: string; complete: boolean; error: string | null; graph: boolean; width: number; firstMs: number | null; fullMs: number | null; branch: string | null }
 export interface LogRow { row: number; hash: string; short: string; subject: string | null; author: string | null; email: string | null; time: number | null; refs: { name: string; kind: "head" | "local" | "remote" | "tag" }[]; head: boolean; merge: boolean }
 /** The yuzora-git crate's version (Yuzora's). */
 export function version(): string;

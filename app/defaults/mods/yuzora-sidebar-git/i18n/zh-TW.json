@@ -64,7 +64,7 @@
   "menu.discardSure": "捨棄：再按一次確認",
   "history.short": "歷史",
   "trust.title": "要信任這個資料夾嗎？",
-  "trust.body": "這個 repo 自己的 Git 設定指定了 Git 會自動執行的程式：{keys}。信任這個資料夾之後，Yuzora 才會自動讀取它的 Git 狀態。",
+  "trust.body": "這個 repo 自己的 Git 設定指定了 Git 會自動執行的程式，或是 Git 讀取時會連到的 remote：{keys}。信任這個資料夾之後，Yuzora 才會自動讀取它的 Git 狀態。",
   "trust.button": "信任並讀取",
   "trust.status": "未信任的資料夾",
   "trust.refused": "這個資料夾還沒有信任：請先在 Git 側欄信任它（{keys}）。",

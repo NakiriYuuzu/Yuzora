@@ -842,9 +842,9 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         assert!(took < std::time::Duration::from_secs(2), "{took:?} for 40 000 paths");
     }
 
-    // A promisor remote with a plain URL names no program, so the status of
-    // an untrusted folder runs; `--branch` counts ahead/behind and would
-    // fetch the upstream commit the partial clone lacks.
+    // A partial clone fetches what it lacks from its remote as it reads:
+    // `--branch` counts ahead/behind and would fetch the upstream commit. It
+    // waits for trust from the start, and git run past the gate stays offline.
     #[test]
     fn an_untrusted_partial_clone_fetches_nothing_for_its_status() {
         let s = scratch();
@@ -861,19 +861,16 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &two[..2], &two[2..]))).unwrap();
         let present = || s.repo.run(Git::read(["cat-file", "-e", &two]).env("GIT_NO_LAZY_FETCH", "1")).unwrap().ok();
         assert!(!present());
-        assert_eq!(crate::trust::pending(&s.repo).unwrap(), Vec::<String>::new());
         let v = read(&s.repo, true).unwrap();
-        assert!(!present(), "status fetched from the promisor remote before the folder was trusted: {}", v["branch"]);
-        assert_eq!(v["branch"]["head"], "main", "{v}");
-        // A git before 2.44 (Ubuntu 22.04 has 2.34) ignores GIT_NO_LAZY_FETCH:
-        // what else the read carries keeps it off the remote alone.
-        let mut older = crate::trust::own_read(&s.repo, Git::read(["status", "--porcelain=v2", "--branch"]));
-        older.env.retain(|(k, _)| k != "GIT_NO_LAZY_FETCH");
-        s.repo.run(older).unwrap();
+        assert_eq!(v["trust"], serde_json::json!(["remote.origin.promisor"]), "{v}");
+        assert!(!present(), "status fetched from the promisor remote before the folder was trusted");
+        // Past the gate, as a git before 2.44 (Ubuntu 22.04 has 2.34) that
+        // ignores GIT_NO_LAZY_FETCH: the empty GIT_ALLOW_PROTOCOL stops it alone.
+        s.repo.run(status_cmd(&s.repo, OUTPUT_CAP).env("GIT_NO_LAZY_FETCH", "0")).unwrap();
         assert!(!present(), "a git that ignores GIT_NO_LAZY_FETCH fetched");
         crate::trust::trust(&s.repo).unwrap();
-        read(&s.repo, true).unwrap();
-        assert!(present(), "status didn't fetch once trusted, so this test proves nothing");
+        let v = read(&s.repo, true).unwrap();
+        assert!(present(), "status didn't fetch once trusted, so this test proves nothing: {v}");
     }
 
     #[test]

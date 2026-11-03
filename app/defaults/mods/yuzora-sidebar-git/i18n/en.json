@@ -64,7 +64,7 @@
   "menu.discardSure": "Discard: click again to confirm",
   "history.short": "History",
   "trust.title": "Trust this folder?",
-  "trust.body": "This repository's own Git config names programs Git would run on its own: {keys}. Yuzora reads its Git status only once you trust the folder.",
+  "trust.body": "This repository's own Git config names programs Git would run on its own, or a remote Git would reach as it reads: {keys}. Yuzora reads its Git status only once you trust the folder.",
   "trust.button": "Trust and read",
   "trust.status": "untrusted folder",
   "trust.refused": "This folder isn't trusted yet: trust it in the Git sidebar first ({keys}).",

@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     // The sidebar reads the messages on its own as it opens: in an untrusted
-    // partial clone, a commit it lacks stays unfetched, as for status.
+    // partial clone, a commit it lacks stays unfetched.
     #[test]
     fn an_untrusted_partial_clone_fetches_nothing_for_its_messages() {
         let s = scratch();
@@ -1226,7 +1226,8 @@ mod tests {
         std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &two[..2], &two[2..]))).unwrap();
         let present = || s.repo.run(Git::read(["cat-file", "-e", &two]).env("GIT_NO_LAZY_FETCH", "1")).unwrap().ok();
         assert!(!present());
-        assert_eq!(crate::trust::pending(&s.repo).unwrap(), Vec::<String>::new());
+        // The gate is shut (a partial clone waits); called past it, it still reads offline.
+        assert_eq!(crate::trust::pending(&s.repo).unwrap(), ["remote.origin.promisor"]);
         let m = messages(&s.repo).unwrap();
         assert!(!present(), "messages fetched from the promisor remote before the folder was trusted");
         assert_eq!(m["last"], Value::Null, "{m}");
