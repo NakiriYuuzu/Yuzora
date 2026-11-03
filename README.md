@@ -195,9 +195,10 @@ own Spaces, tabs and layout. The terminals belong to herdr-core, so both apps se
   into `~/.config/yuzora/mods/`, or pick that folder in Settings › Mods › Install from folder… (which never overwrites
   a mod you have). `keys.json` and themes can be copied the same way; don't copy `installed.json`. Yuzora's own
   `yuzora-*` mods don't load in Herdr.
-- **Machines and agent templates are shared.** Both apps use herdr-core's machine list and
-  `~/.config/herdr-core/templates/`. A machine you add, rename or remove, or a template you edit in Yuzora's Settings,
-  changes for Herdr as well.
+- **Machines and agent templates are shared.** Both apps use herdr-core's machine list and its templates folder
+  (`~/.config/herdr-core/templates/`; on Windows `%APPDATA%\herdr-core\templates`; `$XDG_CONFIG_HOME/herdr-core/templates/`
+  when that is set). A machine you add, rename or remove, or a template you edit in Yuzora's Settings, changes for
+  Herdr as well.
 
 Details and the decisions behind this: [docs/beta2/herdr-compat.md](docs/beta2/herdr-compat.md).
 <!-- yuzora:lane:L9:end -->

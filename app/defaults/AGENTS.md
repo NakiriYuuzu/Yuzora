@@ -1145,5 +1145,7 @@ The person may run the official Herdr app on the same herdr-core. Its spaces and
 - Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from
   `~/.config/herdr-app/mods/<name>` to `mods/<name>` in this folder (never `installed.json`); a mod that writes under
   `~/.config/herdr-app` is refused here. `yuzora-*` mods don't load in Herdr.
-- `hc machine add`, `rm` and `rename`, and edits under `~/.config/herdr-core/templates/`, change them for Herdr too.
+- `hc machine add`, `rm` and `rename`, and edits in herdr-core's templates folder, change them for Herdr too. The
+  folder is `$XDG_CONFIG_HOME/herdr-core/templates/` when that is set, else `%APPDATA%\herdr-core\templates` on
+  Windows and `~/.config/herdr-core/templates/` elsewhere (`hc templates` lists what's there).
 <!-- yuzora:lane:L9:end -->
