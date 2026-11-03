@@ -179,6 +179,29 @@ it. `yuzora:perf` (`app/crates/yuzora-perf`) samples on a worker thread every 2 
 Details: [docs/beta2/perf.md](docs/beta2/perf.md).
 <!-- yuzora:lane:L8:end -->
 
+<!-- yuzora:lane:L9:start -->
+### L9 · Using Yuzora beside Herdr
+
+Yuzora and the official Herdr app can run at the same time on one herdr-core (its default session). Each keeps its
+own Spaces, tabs and layout. The terminals belong to herdr-core, so both apps see them. Keep in mind:
+
+- **Closing a Space, tab or pane ends its terminals, whichever app opened them.** Each app gathers the other's
+  terminals into Spaces of its own. Closing one of those in Yuzora ends the terminal in Herdr too, and the other way
+  round. To close work Herdr opened, close it in Herdr.
+- **herdr-core starts again while either app is open.** After `hc server stop`, the open app starts the core again
+  within about a second, and every program in its terminals ends (kept terminals come back with a fresh shell). To
+  stop the core for good, quit both apps first.
+- **Herdr's settings and mods aren't imported.** To bring a mod over, copy its folder from `~/.config/herdr-app/mods/`
+  into `~/.config/yuzora/mods/`, or pick that folder in Settings › Mods › Install from folder… (which never overwrites
+  a mod you have). `keys.json` and themes can be copied the same way; don't copy `installed.json`. Yuzora's own
+  `yuzora-*` mods don't load in Herdr.
+- **Machines and agent templates are shared.** Both apps use herdr-core's machine list and
+  `~/.config/herdr-core/templates/`. A machine you add, rename or remove, or a template you edit in Yuzora's Settings,
+  changes for Herdr as well.
+
+Details and the decisions behind this: [docs/beta2/herdr-compat.md](docs/beta2/herdr-compat.md).
+<!-- yuzora:lane:L9:end -->
+
 ## License
 
 The beta.2 app builds on [herdr-app](https://github.com/herdrdev/herdr-app) (Apache-2.0); its license and

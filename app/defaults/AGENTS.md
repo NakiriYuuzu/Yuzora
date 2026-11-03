@@ -1130,3 +1130,20 @@ with these differences.
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
   `{cpu, memory, count}`: cpu is one core = 100, summed; memory is RSS in bytes. The categories add up to total.
 <!-- yuzora:lane:L8:end -->
+
+<!-- yuzora:lane:L9:start -->
+### Beside the Herdr app
+
+The person may run the official Herdr app on the same herdr-core. Its spaces and tabs are its own (layout document
+`herdr-app`); terminals, machines and templates are shared.
+
+- Terminals Herdr opened show up here in spaces of their own, and Yuzora's show up in Herdr. `space.close`,
+  `tab.close`, `pane.close` and `terminal.kill` end the terminal in herdr-core, so it is gone from both apps. Ask the
+  person before closing a space, tab or pane that may hold Herdr's terminals.
+- Don't use `hc server stop` to stop the core: while either app is open it starts again within a second, and every
+  program in its terminals ends. To stop it for good, the person quits both apps first.
+- Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from
+  `~/.config/herdr-app/mods/<name>` to `mods/<name>` in this folder (never `installed.json`); a mod that writes under
+  `~/.config/herdr-app` is refused here. `yuzora-*` mods don't load in Herdr.
+- `hc machine add`, `rm` and `rename`, and edits under `~/.config/herdr-core/templates/`, change them for Herdr too.
+<!-- yuzora:lane:L9:end -->

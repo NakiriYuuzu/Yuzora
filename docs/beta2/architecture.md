@@ -62,7 +62,7 @@ herdr-core 每台機器依名稱存一份 layout 文件（`doc.get`／`doc.set {
 - **理由**：使用者可能同時裝官方 Herdr 與 Yuzora，兩者連到同一個 core（預設 session）。若共用 `herdr-app`，兩個 app 會互相覆寫對方的 spaces、tabs 與 layout，而且上游 layout 格式隨版本演進，Yuzora 落後上游時可能寫出對方讀不懂的內容。
 - **代價**：
   - 第一次啟動 Yuzora 時沒有既有的 space 配置，會從空白開始；不會搬移官方 Herdr 的配置。
-  - core 的終端機本來就是共享的。兩個 app 都會看到對方開的終端機，並各自收進自己的 space；兩邊寫的 terminal label（`herdr.space`、`herdr.seen`、`where`）可能互相改動。這不會關閉或刪除終端機。
+  - core 的終端機本來就是共享的。兩個 app 都會看到對方開的終端機，並各自收進自己的 space；兩邊寫的 terminal label（`herdr.space`、`herdr.seen`、`where`）可能互相改動，label 的改動不會關閉終端機。但收進來的終端機在任一個 app 關閉（Space、tab、pane 或 `terminal.kill`）都會在 core 結束，另一個 app 也跟著失去它（2026-11-03 L9 實測更正，見 [herdr-compat.md](herdr-compat.md) A5 與決定 1）。
 - 驗證：隔離 core 上 `doc.get yuzora` 有 Yuzora 的 space，`doc.get herdr-app` 為 null。
 
 ### D5. binary／package 名稱：beta.2 期間維持 `herdr-app`
@@ -181,6 +181,8 @@ git submodule update --init app/vendor/ghostty
 3. `app/.gitmodules` 與 root `.gitmodules` 的 ghostty URL 一致。
 4. `app/Cargo.lock` 有變動時，重產 `app/THIRD-PARTY-NOTICES`（見 lanes.md）。
 5. 跑完整的 app 測試與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
+
+subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods。說明見 [herdr-compat.md](herdr-compat.md) C2。
 
 ## 合併規則
 
