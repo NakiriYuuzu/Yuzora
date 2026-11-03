@@ -183,6 +183,17 @@ mod tests {
     }
 
     #[test]
+    fn this_build_is_the_running_version() {
+        for settings in [Value::Null, json!({"channel": "beta"}), json!({"channel": "stable"})] {
+            assert_eq!(Channel::of_this_build(&settings), Channel::chosen_from(&settings, env!("CARGO_PKG_VERSION")));
+        }
+        // The crate's own version decides: a beta build never lands on beta.
+        if env!("CARGO_PKG_VERSION").contains('-') {
+            assert_eq!(Channel::of_this_build(&json!({"channel": "beta"})), Channel::Stable);
+        }
+    }
+
+    #[test]
     fn a_beta_build_set_to_beta_sees_0_1_0_but_no_newer_beta() {
         let settings = json!({"channel": "beta"});
         let channel = Channel::chosen_from(&settings, "0.1.0-beta.2");
