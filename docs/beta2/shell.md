@@ -30,7 +30,7 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `hostname()` | 這台電腦的名稱（去掉網域），側欄「這台電腦」列使用 |
 | `agentBrand(app, key)` | agent 品牌（`claude`／`codex`／`pi`／`gemini`），決定徽章色 |
 | `gitStatus(cwd, {on})` | branch、upstream、ahead、behind（本機或 `hc exec --on`，每步 10 秒上限）；不在 repo 時回傳 null。只讀 ref、config 與 commit（`symbolic-ref`、`config`、`for-each-ref`），不跑 `git status`，所以 repo 自己設定的程式（clean filter、fsmonitor hook、ssh 指令）都不會執行，也不會在 `.git` 寫東西。`changed`、`conflicted` 需要 `git status`，在 folder 被信任前固定是 null（見「設計決策」） |
-| `planSpace(folder, spaces, {on})` | 新 Space 的資料夾在它所屬的機器上解析成實際路徑（`~`、symlink、結尾分隔符號），回傳 `{folder, name, existing}`：`name` 是最後一段、`existing` 是 `spaces`（同一台機器的 `{id, folder}`）裡根目錄相同的 Space。遠端用 `hc exec --on` 跑固定的 `sh` 腳本，路徑當參數傳，不拼進指令；10 秒上限。失敗回傳 `{error: "not_a_folder" \| "unreachable", detail}` |
+| `planSpace(folder, spaces, {on})` | 新 Space 的資料夾在它所屬的機器上解析成實際路徑（`~`、symlink、結尾分隔符號），回傳 `{folder, name, existing}`：`name` 是最後一段、`existing` 是 `spaces`（同一台機器的 `{id, folder}`）裡根目錄相同的 Space。遠端用 `hc exec --on` 跑固定的 `sh` 腳本，路徑當參數傳，不拼進指令；那台機器沒有 `sh`（Windows）時改用 `powershell.exe`（和上游在 Windows 開終端機的做法一樣），路徑寫成單引號字串（裡面不展開任何東西），不跟隨連結；10 秒上限。失敗回傳 `{error: "not_a_folder" \| "unreachable", detail}` |
 | `beginSpace(machine)`／`endSpace(machine)` | 同一台機器同時只開一個新增 Space 對話框；`beginSpace` 在另一個還沒結束時回傳 false |
 
 worktree 的分組依 agent 所在 pane 的 branch 與資料夾；不在 git 裡的 agent 以資料夾名稱分組。同一個 Space 裡兩個資料夾剛好在同名 branch 時是兩列，各自帶資料夾名稱（列的 `detail`），「＋」開在該列自己的資料夾。`hosts` 照 `hc machine ls --json` 的樣子傳入；欄位型別不符（例如 `via` 是布林）只會略過該欄位，不會讓整個側欄失敗。

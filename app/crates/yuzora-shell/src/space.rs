@@ -7,7 +7,7 @@
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use yuzora_core::remote::{ExecRequest, run};
+use yuzora_core::remote::{ExecError, ExecRequest, run};
 
 /// How long resolving folders on a machine may take.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
@@ -20,6 +20,41 @@ for p do
   case $p in "" | "~") p=$HOME ;; "~/"*) p=$HOME/${p#"~/"} ;; esac
   (CDPATH= cd -- "$p" 2>/dev/null && pwd -P) || echo
 done"#;
+
+/// RESOLVE for a machine without `sh` (Windows), run by its PowerShell as one
+/// line. `-Command` reads extra arguments as code, so the folders go into
+/// `@(FOLDERS)` as single-quoted strings, where nothing expands. Links are not
+/// followed there.
+pub const RESOLVE_PS: &str = r#"$ErrorActionPreference = 'SilentlyContinue';
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false } catch {};
+Set-Location -LiteralPath $HOME;
+foreach ($p in @(FOLDERS)) {
+  if ($p -eq '' -or $p -eq '~') { $p = $HOME } elseif ($p.StartsWith('~/') -or $p.StartsWith('~\')) { $p = Join-Path $HOME ($p.Substring(2)) };
+  $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue;
+  $f = if ($i -and $i.PSIsContainer) { $i.FullName } else { '' };
+  if ($f.Length -gt 3) { $f = $f.TrimEnd('\', '/') };
+  [Console]::Out.Write($f + [char]10)
+}"#;
+
+/// PowerShell's single quotes, the curly ones too (as `programs::powershell_line`).
+const PS_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+/// `powershell.exe`'s arguments for RESOLVE_PS with `folders`.
+fn powershell_args(folders: &[String]) -> Vec<String> {
+    let quote = |f: &String| {
+        let mut s = String::from("'");
+        for ch in f.chars() {
+            if PS_QUOTES.contains(&ch) {
+                s.push(ch);
+            }
+            s.push(ch);
+        }
+        s + "'"
+    };
+    let list = folders.iter().map(quote).collect::<Vec<_>>().join(",");
+    let script = RESOLVE_PS.lines().map(str::trim).collect::<Vec<_>>().join(" ").replacen("FOLDERS", &list, 1);
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"].into_iter().map(String::from).chain([script]).collect()
+}
 
 /// Where a new Space for a folder would start, and the Space already there.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -91,14 +126,23 @@ pub fn resolve(folders: &[String], on: Option<&str>) -> Result<Vec<Option<String
     let Some(machine) = on.filter(|m| !m.is_empty()) else {
         return Ok(folders.iter().map(|f| resolve_here(f)).collect());
     };
+    let ask = |program: &str, args: Vec<String>| run(&ExecRequest::new(program, args).on(Some(machine)).timeout(TIMEOUT).max_output(1 << 20));
     let mut args = vec!["-c".to_owned(), RESOLVE.to_owned(), "sh".to_owned()];
     args.extend(folders.iter().cloned());
-    let req = ExecRequest::new("sh", args).on(Some(machine)).timeout(TIMEOUT).max_output(1 << 20);
-    let out = run(&req).map_err(|e| Problem::Unreachable(e.to_string()))?;
+    let out = match ask("sh", args) {
+        // No `sh` there (Windows): its PowerShell, as for terminals there. When
+        // that can't start either, sh's error says more.
+        Err(ExecError::Remote(why)) => ask("powershell.exe", powershell_args(folders)).map_err(|e| match e {
+            ExecError::Remote(_) => Problem::Unreachable(why),
+            e => Problem::Unreachable(e.to_string()),
+        })?,
+        r => r.map_err(|e| Problem::Unreachable(e.to_string()))?,
+    };
     if out.code != 0 {
         return Err(Problem::Unreachable(out.stderr_text().trim().to_owned()));
     }
-    lines(&out.stdout_text(), folders.len())
+    let text = out.stdout_text();
+    lines(text.strip_prefix('\u{feff}').unwrap_or(&text), folders.len())
 }
 
 /// The script's answer: one line per folder.
@@ -285,6 +329,49 @@ mod tests {
             ]
         );
         assert!(!s.0.join("pwned").exists() && !s.0.join("pwned2").exists(), "a path ran as code");
+    }
+
+    #[test]
+    fn the_powershell_script_holds_folders_as_quoted_text() {
+        let args = powershell_args(&["it's ‘q’".into(), "$(calc)".into()]);
+        assert_eq!(args[..4], ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+        assert_eq!(args.len(), 5);
+        assert!(args[4].contains("@('it''s ‘‘q’’','$(calc)')"), "{}", args[4]);
+        assert!(!args[4].contains(['\n', '"', '`']), "one line, nothing that expands: {}", args[4]);
+        assert!(powershell_args(&[])[4].contains("@()"));
+    }
+
+    // RESOLVE_PS runs on Windows machines through `hc exec`; here it runs in
+    // pwsh (CI's runners have it) the same way, with a scratch HOME.
+    #[cfg(unix)]
+    #[test]
+    fn the_powershell_script_resolves_and_never_runs_a_path() {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let Some(pwsh) = std::env::split_paths(&path).map(|d| d.join("pwsh")).find(|p| p.is_file()) else {
+            eprintln!("skipped: no pwsh on PATH");
+            return;
+        };
+        let s = Scratch::new("powershell");
+        for dir in ["src/my app", "$(New-Item pwned)", "it's ‘q’"] {
+            std::fs::create_dir_all(s.0.join(dir)).unwrap();
+        }
+        let home = s.0.to_string_lossy().into_owned();
+        let folders: Vec<String> = ["~", "", "~/src/my app/", "src", "/nonexistent-yuzora", "$(New-Item pwned)", "it's ‘q’"].map(String::from).into();
+        let out = std::process::Command::new(pwsh).args(powershell_args(&folders)).env("HOME", &s.0).current_dir(&s.0).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            lines(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap(),
+            vec![
+                Some(home.clone()),
+                Some(home.clone()),
+                Some(format!("{home}/src/my app")),
+                Some(format!("{home}/src")),
+                None,
+                Some(format!("{home}/$(New-Item pwned)")),
+                Some(format!("{home}/it's ‘q’")),
+            ]
+        );
+        assert!(!s.0.join("pwned").exists(), "a path ran as code");
     }
 
     #[test]

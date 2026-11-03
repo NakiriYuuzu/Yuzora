@@ -1033,6 +1033,10 @@ with these differences.
 - The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+- A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
+  `yuzora-new-space` dialog to pick the folder and answers `{"asked": "folder"}`; no Space exists yet. A folder
+  that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with
+  `name`, `folder`, `tab`, `argv` or `task` create the Space as above.
 - Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
   `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
 - `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`
