@@ -15,7 +15,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 | L7 發布更新 | 打包、簽章、更新通道（GitHub Releases）、binary 最終名稱 | 不另設 crate；app 端 glue 放 `app/src/yuzora/update.rs` 等新檔 | | `app/scripts/yuzora/bundle-*`、`app/assets/icons/yuzora*`、新的 app 發布 workflow | `docs/beta2/release.md` | slot-4 |
 | L8 效能監控 | 右下角的資源用量 chip 與 popover：App 本體、herdr-core（終端機與 agents）、Yuzora 工具 | `yuzora-perf`（`yuzora:perf`） | `yuzora-perf` | 總指揮特准：`app/Cargo.toml` 與 `app/src/yuzora/mod.rs` 掛上 crate、`app/defaults/layouts/yuzora.json` 的 `status` 節點 | `docs/beta2/perf.md` | 無固定（slot-1～4 擇未上鎖者） |
 | L9 Herdr 相容與上游更新 | 與官方 Herdr.app 共用 herdr-core 的盤點與修正、herdr-app 上游同步、herdr-core 版本把關 | 不另設 crate；app 端 glue 放 `app/src/yuzora/herdr_compat.rs` | | `app/scripts/yuzora/sync-check`、上游同步 PR（`git subtree pull`，merge commit 合併） | `docs/beta2/herdr-compat.md` | 依總指揮指派 |
-| L10 文件與官網收斂 | 對外文件與官網反映 integration 上實際做出來的東西 | | | `README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 標記區塊外的內容；`README.zh-TW.md`（沒有標記區塊，跟著英文版同步）；根目錄 `CHANGELOG.md`；`docs/operations.md`；`site/` | 本檔與 PR 描述 | slot-3（只在需要自己截圖時建置） |
+| L10 文件與官網收斂 | 對外文件與官網反映 integration 上實際做出來的東西 | | | `README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md` 標記區塊外的內容；`README.zh-TW.md`（沒有標記區塊，跟著英文版同步）；根目錄 `CHANGELOG.md`、`CHANGELOG.zh-TW.md`；`docs/operations.md`；`site/` | 本檔與 PR 描述 | slot-3（只在需要自己截圖時建置） |
 
 - 「`yuzora-<x>-*`」是 mod 名稱前綴，例如 L2 的 tool pane 叫 `yuzora-git-log`、`yuzora-git-diff`。
 - 每個 crate 的 `Cargo.toml`、原始碼與測試都歸該 lane。lane 的 Rust 字串目錄放在 crate 內（例如 `app/crates/yuzora-git/i18n/`），mod 的字串放在 mod 內的 `i18n/`。
@@ -72,6 +72,8 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
   ```
 
 - `app/CHANGELOG.md` 第一筆必須是 `0.1.0-beta.2`（`update_notes` 測試）。各 lane 在該筆底下加自己的條目即可，不要新增版本標題。
+- App 內的更新說明分成兩份（#206 起）：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本）。lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
+- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁中）是 GitHub Release 的內文，由 L10 維護，兩份的版本、段落與項目要一一對應（`scripts/release-notes.test.ts` 會比對）。
 
 ## 分支與 PR 流程
 
