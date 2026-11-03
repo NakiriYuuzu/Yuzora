@@ -74,6 +74,7 @@ pub fn todo_text(entries: &[Entry]) -> GitResult<String> {
 
 /// The commits `base..HEAD`, oldest first, as the pane lists them.
 pub fn todo_list(repo: &Repo, base: &str) -> GitResult<Value> {
+    crate::log::not_an_option(base)?;
     let out = repo.text(Git::read(["log", "--reverse", "--format=%x01%x01%H%x02%x02%P%x02%x02%s%x02%x02%an%x02%x02%at%x02%x02%B%x03%x03", &format!("{base}..HEAD"), "--"]))?;
     let mut list = Vec::new();
     for rec in out.split(crate::log::RECORD_START).filter_map(|r| r.split(crate::log::RECORD_END).next()).filter(|r| !r.trim().is_empty()) {
@@ -94,6 +95,8 @@ pub fn todo_list(repo: &Repo, base: &str) -> GitResult<Value> {
 
 /// Runs `git rebase -i <base>` with the pane's todo and messages.
 pub fn run(repo: &Repo, base: &str, entries: &[Entry], update_refs: bool) -> GitResult<Value> {
+    // After `rebase -i`'s options: `--exec=<cmd>` would run the command.
+    crate::log::not_an_option(base)?;
     // The messages of a stopped rebase are still waiting in DIR.
     let op = crate::repo::operation(repo);
     if !op.kind.is_empty() {
@@ -283,5 +286,23 @@ mod tests {
         assert_eq!(s.git(&["log", "--format=%s"]), "last\nmiddle, better\nfirst\n");
         assert_eq!(s.read("a.txt"), "edited\n");
         assert_eq!(s.git(&["status", "--porcelain"]), " M a.txt\n?? dirty.txt\n");
+    }
+
+    #[test]
+    fn a_base_is_never_read_as_an_option() {
+        let s = scratch();
+        let base = s.commit("base.txt", "0\n", "base");
+        let a = s.commit("a.txt", "1\n", "a");
+        let file = s.dir.path().join("written");
+        // What git writes is named after the whole argument (`written..HEAD`).
+        let written = || std::fs::read_dir(s.dir.path()).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("written"));
+        let output = format!("--output={}", file.display());
+        assert!(todo_list(&s.repo, &output).is_err_and(|e| e.to_string().starts_with("not a revision")));
+        assert!(!written(), "the list's log took the base for an option");
+        // `rebase -i --exec=<cmd>` would run the command after each commit.
+        let exec = format!("--exec=touch {}", file.display());
+        assert!(run(&s.repo, &exec, &[entry("pick", &a, None)], false).is_err_and(|e| e.to_string().starts_with("not a revision")));
+        assert!(!written(), "the rebase took the base for an option");
+        assert!(todo_list(&s.repo, &base).is_ok());
     }
 }

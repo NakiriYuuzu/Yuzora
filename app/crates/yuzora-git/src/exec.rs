@@ -74,7 +74,8 @@ pub struct Place {
     pub root: String,
     /// A machine from `hc machine ls`; `None` is this computer.
     pub on: Option<String>,
-    /// The git program (the `git.executable` setting, else `git`).
+    /// The program to run; empty: the `git.executable` setting (else `git`)
+    /// at each call, so a change applies to the repos already open.
     pub git: String,
     pub write_lock: Arc<Mutex<()>>,
 }
@@ -82,6 +83,10 @@ pub struct Place {
 impl Place {
     pub fn local(root: impl Into<String>) -> Self {
         Self { root: root.into(), on: None, git: "git".into(), write_lock: Arc::default() }
+    }
+
+    pub fn program(&self) -> String {
+        if self.git.is_empty() { crate::settings::executable() } else { self.git.clone() }
     }
     pub fn is_remote(&self) -> bool {
         self.on.is_some()
@@ -348,7 +353,8 @@ fn lock<'a>(m: &'a Mutex<()>, cancel: Option<&Cancel>) -> GitResult<std::sync::M
 }
 
 fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) -> bool>) -> GitResult<Output> {
-    let mut c = Command::new(&place.git);
+    let git = place.program();
+    let mut c = Command::new(&git);
     c.args(base_args(cmd.kind)).args(&cmd.args).current_dir(&place.root);
     for (k, v) in environment(cmd.kind, false, &cmd.env) {
         c.env(k, v);
@@ -368,14 +374,14 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
         const CREATE_SUSPENDED: u32 = 0x0000_0004;
         c.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
-    let mut child = c.spawn().map_err(|e| GitError::Spawn(format!("cannot run {}: {e}", place.git)))?;
+    let mut child = c.spawn().map_err(|e| GitError::Spawn(format!("cannot run {git}: {e}")))?;
     #[cfg(windows)]
     let tree: Tree = match job::adopt(&child) {
         Ok(job) => job,
         Err(e) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(GitError::Spawn(format!("cannot start {}: {e}", place.git)));
+            return Err(GitError::Spawn(format!("cannot start {git}: {e}")));
         }
     };
     #[cfg(not(windows))]
@@ -645,7 +651,7 @@ pub fn hc_args(place: &Place, cmd: &Git) -> Vec<String> {
         a.push("--stdin".into());
     }
     a.push("--".into());
-    a.push(place.git.clone());
+    a.push(place.program());
     a.extend(base_args(cmd.kind));
     a.extend(cmd.args.iter().cloned());
     a

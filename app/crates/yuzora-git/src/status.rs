@@ -12,7 +12,7 @@
 //! limit, means the whole root. Anything under `.git` (index, HEAD, refs)
 //! makes everything dirty.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::{Value, json};
 
@@ -131,25 +131,31 @@ fn fold(mut paths: BTreeSet<String>) -> Dirty {
         for p in &paths {
             *per_dir.entry(parent(p)).or_default() += 1;
         }
-        let crowded: Vec<String> = per_dir.into_iter().filter(|(_, n)| *n > FOLD_CHILDREN).map(|(d, _)| d.to_owned()).collect();
+        let crowded: HashSet<String> = per_dir.into_iter().filter(|(_, n)| *n > FOLD_CHILDREN).map(|(d, _)| d.to_owned()).collect();
         if crowded.is_empty() {
-            // A directory already in the set covers its children.
-            let dirs: Vec<String> = paths.iter().cloned().collect();
-            paths.retain(|p| !dirs.iter().any(|d| d != p && covers(d, p)));
+            // A directory already in the set covers its children: look up
+            // each path's ancestors, never every other path.
+            let covered: Vec<String> = paths.iter().filter(|p| ancestors(p).any(|d| paths.contains(d))).cloned().collect();
+            for p in covered {
+                paths.remove(&p);
+            }
             return Dirty::Paths(paths);
         }
-        for d in crowded {
-            if d.is_empty() {
-                return Dirty::All;
-            }
-            paths.retain(|p| parent(p) != d);
-            paths.insert(d);
+        if crowded.contains("") {
+            return Dirty::All;
         }
+        paths.retain(|p| !crowded.contains(parent(p)));
+        paths.extend(crowded);
     }
 }
 
 fn parent(p: &str) -> &str {
     p.rfind('/').map_or("", |i| &p[..i])
+}
+
+/// `a/b` and `a` for `a/b/c`.
+fn ancestors(p: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(Some(parent(p)), |d| Some(parent(d))).take_while(|d| !d.is_empty())
 }
 
 /// Whether pathspec `spec` (a file or a directory) covers `path`.
@@ -628,5 +634,22 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
         refresh(&s.repo).unwrap();
         assert_eq!(snapshot(&s.repo)["counts"]["total"], 0, "the old gitlink entry stayed");
+    }
+
+    #[test]
+    fn many_paths_in_their_own_folders_fold_without_comparing_every_pair() {
+        // One path per folder, none crowded: nothing folds, every path is checked.
+        let paths: Vec<String> = (0..40_000).map(|i| format!("d{i}/f.txt")).collect();
+        let mut c = StatusCache { loaded: true, ..Default::default() };
+        let started = std::time::Instant::now();
+        c.dirty(Scope::Paths(paths.clone()));
+        c.dirty(Scope::Paths(vec!["d7".into()]));
+        let took = started.elapsed();
+        match c.pending.clone().unwrap() {
+            // `d7` covers `d7/f.txt`.
+            Dirty::Paths(p) => assert_eq!((p.len(), p.contains("d7"), p.contains("d7/f.txt")), (40_000, true, false)),
+            Dirty::All => panic!("folded too far"),
+        }
+        assert!(took < std::time::Duration::from_secs(2), "{took:?} for 40 000 paths");
     }
 }

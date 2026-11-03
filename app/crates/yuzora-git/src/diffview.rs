@@ -76,6 +76,9 @@ pub struct DiffSession {
     pub index_entry: Option<(String, String)>,
     pub binary: bool,
     pub too_large: bool,
+    /// The modes on each side when they differ (a file made a program, or
+    /// one no longer): unstaged and staged diffs, as git sees them.
+    pub modes: Option<(String, String)>,
     /// Exact changes (what staging uses).
     pub changes: Vec<Change>,
 }
@@ -84,6 +87,23 @@ pub struct DiffSession {
 pub fn blob(repo: &Repo, spec: &str) -> GitResult<Option<Vec<u8>>> {
     let out = repo.run(Git::read(["cat-file", "--filters", spec]).max_output(MAX_SIDE + 1))?;
     Ok(out.ok().then_some(out.stdout))
+}
+
+/// The modes on each side of an unstaged (index → work tree) or staged
+/// (HEAD → index) diff, when git sees them differ (`core.fileMode` too).
+fn changed_modes(repo: &Repo, path: &str, staged: bool) -> GitResult<Option<(String, String)>> {
+    let mut cmd = Git::read(["diff", "--raw", "-z", "--no-renames"]);
+    if staged {
+        cmd = cmd.arg("--cached");
+    }
+    let out = repo.run(cmd.arg("--").arg(path))?.text()?;
+    // `:<old mode> <new mode> <oid> <oid> <status>\0<path>\0`
+    let meta = out.split('\0').next().unwrap_or_default();
+    let f: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+    Ok(match f.as_slice() {
+        [a, b, ..] if a != b && *a != "000000" && *b != "000000" => Some((a.to_string(), b.to_string())),
+        _ => None,
+    })
 }
 
 /// The stage-0 index entry of a path: (mode, oid).
@@ -136,8 +156,13 @@ impl DiffSession {
             let (l, r) = (left.as_deref().unwrap_or_default(), right.as_deref().unwrap_or_default());
             diff::diff_lines(&diff::lines(l), &diff::lines(r), Whitespace::Exact)
         };
+        let modes = match &mode {
+            Mode::Unstaged => changed_modes(&repo, &path, false)?,
+            Mode::Staged => changed_modes(&repo, &path, true)?,
+            _ => None,
+        };
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, changes })
+        Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, modes, changes })
     }
 
     /// The view: hunks and rows (`side` or `unified`), `context` lines around
@@ -161,7 +186,8 @@ impl DiffSession {
             "tooLarge": self.too_large,
             "leftExists": self.left.is_some(),
             "rightExists": self.right.is_some(),
-            "identical": changes.is_empty() && self.left == self.right,
+            "identical": changes.is_empty() && self.left == self.right && self.modes.is_none(),
+            "modes": self.modes.as_ref().map(|(a, b)| [a, b]),
             "add": add,
             "del": del,
             "hunks": hunks,
@@ -416,7 +442,7 @@ impl DiffSession {
         crate::trust::check(&self.repo)?;
         self.check_index()?;
         let p = vec![self.path.clone()];
-        if sel.covers_all(&self.changes) || (self.changes.is_empty() && self.left != self.right) {
+        if sel.covers_all(&self.changes) || (self.changes.is_empty() && (self.left != self.right || self.modes.is_some())) {
             // Whole file: let git record deletions, modes and new files itself.
             self.repo.run(Git::write(["add", "-A"]).pathspec(&p))?.into_result()?;
         } else {
@@ -474,7 +500,8 @@ impl DiffSession {
         }
         let (l, r) = self.sides();
         let abs = self.repo.abs(&self.path);
-        let all = sel.covers_all(&self.changes);
+        // A change of mode alone goes back whole (git restores the mode).
+        let all = sel.covers_all(&self.changes) || (self.changes.is_empty() && self.modes.is_some());
         let p = vec![self.path.clone()];
         if all && self.left.is_none() {
             crate::repo::remove_path(&self.repo.place, &abs)?;
@@ -727,5 +754,29 @@ mod tests {
         s.git(&["commit", "-qm", "elsewhere"]);
         assert!(st.unstage(&sel_all(&[0])).is_err());
         assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "", "a stale unstage staged a change");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_of_mode_alone_shows_and_stages_unstages_and_discards() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("run.sh", "echo\n", "first");
+        let index_mode = || s.git(&["ls-files", "-s", "--", "run.sh"]).split(' ').next().unwrap_or_default().to_owned();
+        let abs = s.repo.abs("run.sh");
+        std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let open = |mode: Mode| DiffSession::load(s.repo.clone(), "run.sh".into(), None, mode).unwrap();
+        let d = open(Mode::Unstaged);
+        let v = d.view("side", 3, Whitespace::Exact);
+        assert_eq!((v["identical"].clone(), v["modes"].clone()), (json!(false), json!(["100644", "100755"])), "{v}");
+        d.stage(&sel_all(&[0])).unwrap();
+        assert_eq!(index_mode(), "100755", "staging from the pane kept the old mode");
+        let d = open(Mode::Staged);
+        assert_eq!(d.view("side", 3, Whitespace::Exact)["modes"], json!(["100644", "100755"]));
+        d.unstage(&sel_all(&[0])).unwrap();
+        assert_eq!(index_mode(), "100644");
+        open(Mode::Unstaged).discard(&sel_all(&[0])).unwrap();
+        assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o111, 0, "discarding left it a program");
+        assert_eq!(s.git(&["status", "--porcelain"]), "");
     }
 }

@@ -231,6 +231,9 @@ export default class GitDiff extends View {
     const picked = this.picked(), npicked = Object.values(picked).reduce((n, s) => n + s.del.length + s.add.length, 0);
     const stageable = Boolean(v?.stageable) && !this.busy;
     const hunks = v?.hunks.length ?? 0;
+    // A change of mode alone (a file made a program): the whole file goes.
+    const modeOnly = Boolean(v?.modes) && hunks === 0;
+    const label = (act) => npicked ? t(`${act}.lines`, { count: npicked }) : t(modeOnly ? `${act}.file` : `${act}.hunk`);
     const header = h_flex().h(28).px(8).gap(7).flex_none().items_center().border_b(1).border_color(th.border).text_size(12)
       .child(div().font_semibold().child(t("title")))
       .child(div().min_w(0).truncate().text_color(th.muted).child(spec.orig && spec.orig !== spec.path ? `${spec.orig} → ${spec.path}` : spec.path))
@@ -250,10 +253,10 @@ export default class GitDiff extends View {
       .child(div().text_size(11).text_color(th.dim).child(hunks ? `${this.hunk + 1}/${hunks}` : "0/0"))
       .child(this.pill("next", "↓", false, th, (cx) => this.go(cx, 1)))
       .when(spec.mode === "unstaged", (el) => el
-        .child(this.button("stage", npicked ? t("stage.lines", { count: npicked }) : t("stage.hunk"), th, stageable && hunks > 0, (cx) => this.apply(cx, "stage", npicked ? [] : [this.hunk], picked)))
-        .child(this.button("discard", npicked ? t("discard.lines", { count: npicked }) : t("discard.hunk"), th, stageable && hunks > 0, (cx) => { this.askDiscard = { hunks: npicked ? [] : [this.hunk], lines: picked }; cx.notify(); })))
+        .child(this.button("stage", label("stage"), th, stageable && (hunks > 0 || modeOnly), (cx) => this.apply(cx, "stage", npicked ? [] : [this.hunk], picked)))
+        .child(this.button("discard", label("discard"), th, stageable && (hunks > 0 || modeOnly), (cx) => { this.askDiscard = { hunks: npicked ? [] : [this.hunk], lines: picked }; cx.notify(); })))
       .when(spec.mode === "staged", (el) => el
-        .child(this.button("unstage", npicked ? t("unstage.lines", { count: npicked }) : t("unstage.hunk"), th, stageable && hunks > 0, (cx) => this.apply(cx, "unstage", npicked ? [] : [this.hunk], picked))))
+        .child(this.button("unstage", label("unstage"), th, stageable && (hunks > 0 || modeOnly), (cx) => this.apply(cx, "unstage", npicked ? [] : [this.hunk], picked))))
       .child(this.button("blame", t("annotate"), th, Boolean(this.repo), () => run("tab.new", { name: `${t("annotate")} · ${spec.path.split("/").pop()}`, mod: "yuzora-git-blame", props: { cwd: spec.cwd, on: spec.on ?? null, path: spec.path, rev: spec.mode === "commit" ? spec.rev : null } })))
       .child(this.button("history", t("history"), th, Boolean(this.repo), () => run("tab.new", { name: `${t("history")} · ${spec.path.split("/").pop()}`, mod: "yuzora-git-log", props: { cwd: spec.cwd, on: spec.on ?? null, filter: { paths: [spec.path], follow: true } } })));
 
@@ -262,7 +265,7 @@ export default class GitDiff extends View {
     else if (!v) body = div().p(16).text_color(th.dim).child(t("loading"));
     else if (v.tooLarge) body = div().p(16).text_color(th.dim).child(t("tooLarge"));
     else if (v.binary) body = div().p(16).text_color(th.dim).child(t("binary"));
-    else if (v.identical || !v.rows.length) body = div().p(16).text_color(th.dim).child(!v.leftExists && !v.rightExists ? t("missing") : t("identical"));
+    else if (v.identical || !v.rows.length) body = div().p(16).text_color(th.dim).child(!v.leftExists && !v.rightExists ? t("missing") : v.modes ? t("modes", { from: v.modes[0], to: v.modes[1] }) : t("identical"));
     else {
       const longest = Math.min(2000, v.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0));
       const width = longest * CHAR + 24;
@@ -287,6 +290,7 @@ export default class GitDiff extends View {
     return root.child(header)
       .when(Boolean(ask), (el) => el.child(ask))
       .when(Boolean(this.note), (el) => el.child(div().px(10).py(4).text_size(11.5).text_color(th.ansi1).child(this.note)))
+      .when(Boolean(v?.modes) && v.rows.length > 0, (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.muted).child(t("modes", { from: v.modes[0], to: v.modes[1] }))))
       .when(Boolean(v) && !v.stageable && (spec.mode === "unstaged" || spec.mode === "staged") && this.whitespace !== "none", (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.dim).child(t("wsNoStage"))))
       .child(body);
   }

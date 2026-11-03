@@ -404,8 +404,8 @@ pub fn get(id: &str) -> GitResult<Arc<Repo>> {
 
 /// The repo holding `cwd` (here, or on machine `on`), opened once and shared.
 pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
-    let git = crate::settings::executable();
-    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: git.clone(), write_lock: Arc::default() };
+    // No program named: each call runs the git the settings name then.
+    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), write_lock: Arc::default() };
     let out = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]))?;
     if !out.ok() {
         return Err(GitError::Other(not_a_repo(&out.stderr_text())));
@@ -422,7 +422,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
         r.used();
         return Ok(r);
     }
-    let place = Place { root: root.to_owned(), on: probe.on.clone(), git, write_lock: Arc::default() };
+    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), write_lock: Arc::default() };
     let repo = Arc::new(Repo::new(id.clone(), place, git_dir.to_owned(), common.to_owned()));
     all.insert(id, repo.clone());
     drop(all);
@@ -760,6 +760,34 @@ pub(crate) mod tests {
         assert!(wait_until(|| r.watch.lock().unwrap().is_some()));
         let on = crate::watch::started_on(&r.id);
         assert!(on.is_some() && on != Some(me), "restarted on the caller's thread");
+        close(&r.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_open_repo_runs_the_git_the_settings_name_now() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let r = open(s.root(), None).unwrap();
+        // A git that leaves a mark, then runs the one on PATH. It stays for
+        // the whole run: other tests may call it while the setting names it.
+        let dir = crate::settings::own_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mine, mark) = (dir.join("my-git"), dir.join("my-git-ran"));
+        std::fs::write(&mine, format!("#!/bin/sh\ntouch '{}'\nexec git \"$@\"\n", mark.display())).unwrap();
+        std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let set = |exe: &str| yuzora_core::settings::set_section_at(&crate::settings::file(), crate::settings::SECTION, serde_json::json!({ "executable": exe })).unwrap();
+        set(&mine.to_string_lossy());
+        // Opening again finds the root with it (a probe); the open repo's own calls follow.
+        let again = open(s.root(), None).unwrap();
+        let _ = std::fs::remove_file(&mark);
+        let ran = again.run(Git::read(["--version"])).map(|o| o.ok());
+        let used = mark.exists();
+        set("");
+        assert_eq!(ran, Ok(true));
+        assert!(Arc::ptr_eq(&r, &again));
+        assert!(used, "the open repo kept the git it was opened with");
         close(&r.id);
     }
 }
