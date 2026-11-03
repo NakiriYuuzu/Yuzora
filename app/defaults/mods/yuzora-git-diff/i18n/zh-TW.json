@@ -36,5 +36,7 @@
   "discard.ask": "要從工作目錄捨棄這些變更嗎？此動作無法復原。",
   "cancel": "取消",
   "annotate": "Annotate",
-  "history": "歷史"
+  "history": "歷史",
+  "tab.diff": "差異",
+  "keep": "保留"
 }

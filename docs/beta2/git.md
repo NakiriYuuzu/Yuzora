@@ -27,7 +27,7 @@ yuzora-git-settings ┘
 | `yuzora-sidebar-git` | 側欄模式 | 分支按鈕（↑↓，開分支 popup）、操作中橫幅（繼續／中止／略過）、衝突／已暫存／變更三段清單（數量、全部暫存／取消、列尾 +／−／↺）、右鍵選單、commit 訊息（歷史、範本、amend、sign-off、略過 hooks、作者）、Commit／Commit 並 Push／Push ↑N、「分支圖」。寫 `yuzora.badge.git`、`yuzora.status.git` |
 | `yuzora-git-branches` | popup | 搜尋、更新專案、Fetch、Push…、新分支、checkout revision、stash；最近／本地／遠端／tags；每個 ref 的動作（checkout、smart／強制 checkout、從此建分支、比較、merge／rebase 進目前分支、改名、upstream、刪除、tag push／刪除） |
 | `yuzora-git-push` | 對話框 | 目標 remote／分支、要送出的 commits、force（lease／force，受保護分支禁止）、tags（none／follow／all）、略過 hooks、新分支自動 set-upstream、被拒時依設定自動更新 |
-| `yuzora-git-diff` | tool pane | 並排／合併、字詞高亮、空白（精確／忽略頭尾／全部忽略）、context（3 行／整檔）、hunk 導覽、暫存／取消暫存／捨棄 hunk 或選取的行、Annotate、歷史；即時更新 |
+| `yuzora-git-diff` | modal 或 tool pane | 預設開成 modal（dialog overlay），「保留」把它移到 pane（預設分割在目前 pane 右側，可改成新分頁）；並排／合併、字詞高亮、空白（精確／忽略頭尾／全部忽略）、context（3 行／整檔）、hunk 導覽、暫存／取消暫存／捨棄 hunk 或選取的行、Annotate、歷史；即時更新 |
 | `yuzora-git-log` | tool pane | 提交紀錄＋分支圖（`GraphCell`）、篩選、詳情、右鍵選單、分支比較、檔案歷史 |
 | `yuzora-git-merge` | tool pane | 衝突檔案清單、整檔接受 yours／theirs、三方合併（套用非衝突、自動解決簡單衝突、逐塊選擇或手動編輯） |
 | `yuzora-git-rebase` | tool pane | 互動式 rebase 編輯器（pick／reword／edit／squash／fixup／drop、拖曳排序、update-ref）、記憶體內改寫訊息 |
@@ -38,7 +38,12 @@ yuzora-git-settings ┘
 ### pane 之間的約定
 
 - 每個 mod 用 `open(cwd, on)` 取得 repo（同一個 `<machine>:<root>` 只開一次，watcher 也只有一個），之後的函式都帶 `repo.id`。
-- 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求。log、blame、repo pane 用 props，可以同時開多個。
+- 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求。
+- diff 例外，依 Git 設定開啟（側欄、log 詳情、blame、repo pane 四個入口各帶一份相同的 `showDiff`／`placeDiff`，`scripts/yuzora-git-diff-open.test.ts` 守住四份一致與各種設定）：
+  - 已有 diff pane 且 `diffFollowPane`（預設開）：照上面的 shared key 交棒。
+  - 否則 `diffOpenIn: "modal"`（預設）：`openOverlay({mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props})`。modal 只看自己的 props，不跟 shared key；Esc、✕ 或點旁邊關閉；Annotate、歷史開新分頁後也關閉。
+  - `diffOpenIn: "pane"`：直接開在「保留」會放的位置。
+  - 「保留」：依 `diffKeepIn`，`split`（預設）在焦點 pane 右側 `pane.split {direction: "right", mod, props}`，沒有焦點 pane 或設成 `tab` 時 `tab.new`；新 pane 帶著 modal 裡的檢視（並排／合併、空白、context），然後關閉 modal。log、blame、repo pane 用 props，可以同時開多個。
 - 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。本機 repo 的 watcher 啟動失敗時（例如系統的監看數用完），等待逾時就把整個 repo 與 refs 視為已變更，generation 前進，各 pane 照常重讀。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
 - 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
 
@@ -236,7 +241,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - ✅ Push：force-with-lease、被拒時自動更新、push tags、顯示 push 對話框、受保護分支。
 - ✅ Update／Fetch：更新方式、更新時自動 stash、fetch tags、fetch prune、自動 fetch 間隔。
 - ✅ Log：最近 commit 數（第一階段）、顯示 tags、顯示遠端分支。
-- ✅ Diff／Annotate／Merge：預設檢視、空白、context、annotate 忽略空白與偵測移動、rebase 時對調左右。
+- ✅ Diff／Annotate／Merge（實機截圖：`evidence/l2-diff-modal.png`、`l2-diff-keep.png`）：diff 開啟方式（modal／pane）、保留的位置（分割在目前 pane 旁／新分頁）、已開的 diff pane 是否顯示下一個檔案、預設檢視、空白、context、annotate 忽略空白與偵測移動、rebase 時對調左右。
 - 🟡 GPG 與身分在 repo pane 編輯（repo 或 global 層）。⏳ credential helper 選項、多 repo 同步。
 
 ## 已知限制與後續

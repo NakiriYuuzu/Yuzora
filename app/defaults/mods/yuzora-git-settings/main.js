@@ -43,6 +43,9 @@ const GROUPS = [
     { key: "logShowRemotes", type: "bool" },
   ] },
   { id: "diff", items: [
+    { key: "diffOpenIn", type: "select", options: ["modal", "pane"] },
+    { key: "diffKeepIn", type: "select", options: ["split", "tab"] },
+    { key: "diffFollowPane", type: "bool" },
     { key: "diffMode", type: "select", options: ["side", "unified"] },
     { key: "diffIgnoreWhitespace", type: "select", options: ["none", "trim", "all"] },
     { key: "diffContext", type: "number", min: -1, max: 1000 },

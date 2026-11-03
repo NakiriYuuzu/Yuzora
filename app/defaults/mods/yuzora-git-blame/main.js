@@ -4,7 +4,7 @@
 // the file as that commit's parent had it (renames followed by git itself).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar } from "gpui-base";
-import { theme, props, settings, run, panes, setShared } from "herdr";
+import { theme, props, settings, run, panes, setShared, focused, openOverlay } from "herdr";
 import { t } from "yuzora:core";
 import { open, blame, commitDetails, settings as gitSettings } from "yuzora:git";
 
@@ -110,10 +110,7 @@ export default class GitBlame extends View {
   compare(hash, c, prev) {
     const repo = this.repo, path = c.filename ?? this.cur.path;
     const spec = { cwd: repo.root, on: repo.machine, path, orig: prev && prev.path !== path ? prev.path : null, mode: "commit", rev: hash, at: Date.now() };
-    setShared("yuzora.git.diff", spec);
-    const pane = panes().find((p) => p.mod === "yuzora-git-diff");
-    if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: "Diff", mod: "yuzora-git-diff", props: spec });
+    showDiff(spec);
   }
 
   pill(id, label, on, th, action) {
@@ -199,4 +196,24 @@ export default class GitBlame extends View {
 
     return root.child(toolbar).child(body).when(Boolean(d && this.pick), (el) => el.child(this.panel(th, mono)));
   }
+}
+
+// A diff pane beside the focused pane, or in a tab of its own (Git settings).
+function placeDiff(spec, where) {
+  const pane = where !== "tab" && focused()?.pane;
+  if (pane) run("pane.split", { direction: "right", pane, mod: "yuzora-git-diff", props: spec });
+  else run("tab.new", { name: t("tab.diff"), mod: "yuzora-git-diff", props: spec });
+}
+
+// Where a diff opens (Git settings): into the open diff pane, which follows
+// the shared request; else a modal, or straight into a pane as Keep would.
+function showDiff(spec) {
+  const s = gitSettings();
+  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  if (pane) {
+    setShared("yuzora.git.diff", spec);
+    return run("pane.focus", { pane: pane.pane });
+  }
+  if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);
+  openOverlay({ mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props: spec });
 }
