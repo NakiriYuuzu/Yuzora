@@ -144,8 +144,8 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
     - 內文用一行寫原因，例如「目前是 0.1.10，Yuzora 需要 0.1.11 以上」「可能是 Herdr 把它換成第 2 代」。
     - toast mod 的標題和內文都只顯示一行，放不下的字會被截掉，所以測試會檢查兩者的寬度。
   - 點 toast 會開啟設定的 Updates 頁（`app.settings {section: "updates"}`），在那裡可以更新 herdr-core，也可以檢查 Yuzora 的更新。
-  - toast 會一直留著，直到 core 恢復或使用者點掉。一般 error toast 8 秒就消失，但這段時間 Yuzora 一直處於斷線狀態，pane 只顯示「reconnecting to core…」，所以原因要一直看得到。
-  - 同一種不符不重複顯示，點掉之後也不再出現；換成另一種不符時，改顯示新的內容。
+  - toast 會留 24 小時，直到 core 恢復或使用者點掉。一般 error toast 8 秒就消失，但這段時間 Yuzora 一直處於斷線狀態，pane 只顯示「reconnecting to core…」，所以原因要一直看得到。
+  - 同一種不符在 24 小時內不重複顯示。toast 到期或被點掉之後，只要不符還在，滿 24 小時會再顯示一次。換成另一種不符時，立刻改顯示新的內容。
   - 改成每 5 秒重試一次，不再每秒重試。
 - core 被修好（更新或換回）之後，Yuzora 會自動接上，並收掉 toast。
 - 通過時行為完全不變。
