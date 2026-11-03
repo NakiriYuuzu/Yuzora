@@ -13,7 +13,7 @@
 > **beta.2（`app/`，herdr-app 基底）**：打包、更新 manifest、金鑰用途、beta.1 升級與建議的發布步驟見 [`docs/beta2/release.md`](beta2/release.md)。beta.2 的發布 workflow 尚未實作（release.md §6，需使用者授權發布方式與 secrets 的 environment）；在它取代現行流程之前，本手冊 §4–§10 描述的是 v0.1.0-beta.1 以前的 Tauri App 發布。與 Tauri 版的差異：
 >
 > - Windows 改用 per-user NSIS 安裝程式，固定檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI，MSI `ProductVersion` 編碼也不適用；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`。macOS 仍只有 Apple Silicon（`Yuzora-macos-aarch64.dmg`）。
-> - App 自己的更新改讀 `yuzora-update.json`，以 Tauri updater 同一把 minisign 金鑰簽章（`.sig`），App 驗不過就不更新。要讓 beta.1 的預覽通道升級到 beta.2 時，另附 Tauri 格式的 `latest.json`（Stable 不附，以免 0.0.19 的 stable 通道讀到）。
+> - App 自己的更新改讀 `yuzora-update.json`，以 Tauri updater 同一把 minisign 金鑰簽章（`.sig`），App 驗不過就不更新。beta.2 **不附** Tauri 格式的 `latest.json`（2026-11-03 使用者決定：安裝方式不同，新版本等 0.1.0 Stable 才經更新提供），所以 0.0.x 與 beta.1 的更新通道都看不到它，使用者要手動下載安裝，release notes 與 README 都寫明這點（`docs/beta2/release.md` §5「不可行時的退路」）。0.1.0 Stable 怎麼讓舊版 App 更新到新版，發布前再決定。
 > - 固定下載別名仍只上傳到 Stable；Beta 只有版本化檔名。
 > - `.github/workflows/app-package.yml` 只產出四平台 artifacts 與未簽章的 manifest，不建 tag、不發布、不讀 secret。
 
@@ -444,7 +444,7 @@ Windows 只發行 MSI；`Yuzora-windows-x64-setup.exe` 固定連結已停止更�
 
 固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。
 
-beta.2 的 Windows 固定檔名改為 `Yuzora-windows-x64-setup.exe`（per-user NSIS），macOS 不變；beta.2 的發布 workflow 必須在 Stable release 上傳這兩個別名。產品頁在 0.1.0 Stable 之前維持 Tauri 版與 v0.0.19 的下載（`.msi`），換成 beta.2 檔名的產品頁在 [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)，0.1.0 Stable 才合併（見 §11）。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
+beta.2 的 Windows 固定檔名改為 `Yuzora-windows-x64-setup.exe`（per-user NSIS），macOS 不變；beta.2 的發布 workflow 必須在 Stable release 上傳這兩個別名。2026-11-03 使用者決定：beta.2 的安裝方式不同，新版本等 0.1.0 Stable 才提供更新。因此 beta.2 不附 `latest.json`，0.0.x 與 beta.1 的 App 內更新不會看到它，使用者要手動下載安裝；產品頁在 0.1.0 Stable 之前也維持 Tauri 版與 v0.0.19 的下載（`.msi`），換成 beta.2 檔名的產品頁在 [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)，0.1.0 Stable 才合併（見 §11）。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
 
 ### 7.4 Finalize updater metadata
 
@@ -637,7 +637,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
-- beta.2 期間產品頁維持 Tauri 版（下載仍是 v0.0.19），0.1.0 Stable 才換成介紹 beta.2 的產品頁（2026-11-03 使用者決定：安裝方式不同，新版本等 Stable 再提供）。新產品頁在 draft PR [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)：影片與 poster 改成靜態截圖、移除互動 Demo、不列 Linux。
+- beta.2 期間產品頁維持 Tauri 版（下載仍是 v0.0.19），0.1.0 Stable 才換成介紹 beta.2 的產品頁（2026-11-03 使用者決定：安裝方式不同，新版本等 Stable 再提供；beta.2 也不附 `latest.json`，舊版 App 內更新不會提供 beta.2，見 §7.3）。新產品頁在 draft PR [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)：影片與 poster 改成靜態截圖、移除互動 Demo、不列 Linux。
 
 ### 產品頁 smoke test
 

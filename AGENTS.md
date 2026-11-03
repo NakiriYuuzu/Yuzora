@@ -161,7 +161,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須 Tauri updater 簽章。正式 build 不可使用會一併停用 updater 簽章的 `--no-sign`；README 與 release notes 須說明 Gatekeeper 提示。
 - beta.2（`app/`）起：
   - Windows 改用 per-user NSIS 安裝程式，固定下載檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`（沒有固定別名）。固定下載別名只上傳到 Stable release，Beta 只有版本化檔名（`docs/beta2/release.md` §6）。
-  - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章。
+  - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章（beta.2 依使用者 2026-11-03 的決定不附 `latest.json`，舊版 App 內更新要等 0.1.0 Stable）。
   - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在發布步驟；私鑰永遠不進 repo。
   - macOS 只做 ad-hoc 簽章（`codesign --sign -`），Windows 沒有 Authenticode；README 與 release notes 須說明 Gatekeeper 與 SmartScreen 提示。
 

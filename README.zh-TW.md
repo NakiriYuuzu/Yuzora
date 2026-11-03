@@ -209,8 +209,8 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
   清單必須以 release 金鑰簽章，每個檔案也必須符合它的 SHA-256，否則什麼都不會安裝。beta build 走 beta 通道
   （Pre-release 與正式版都收），正式 build 走 stable 通道；要改通道，在 `~/.config/yuzora/yuzora/settings.json` 寫
   `"update": {"channel": "stable"}`。
-- **從 0.1.0-beta.1 升級。** beta.2 的 release 提供時，beta.1 自己的更新功能（設定 › 更新，預覽通道）會帶你升到
-  beta.2；否則請用上面的下載檔。beta.1 的資料留在原處；連線與設定的搬移還沒接上，目前要重新設定。Windows 的安裝程式
+- **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 beta.2（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供
+  beta.2，要等 0.1.0 Stable 才能在舊版 App 裡更新到新版。beta.1 的資料留在原處；連線與設定的搬移還沒接上，目前要重新設定。Windows 的安裝程式
   會詢問是否移除舊的全機安裝。
 - **命令列程式叫 `yuzora`**（指令和 `herdr-app` 相同：`yuzora status`、`yuzora do …`）。Yuzora 不會在 PATH 放
   `herdr-app`，官方 Herdr 的 CLI 不受影響。

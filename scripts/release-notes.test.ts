@@ -14,17 +14,18 @@ function repositoryChangelogs(): Changelogs {
   }
 }
 
-// Each version's heading (未發布 and Unreleased are the same), with its section and item counts.
+// Each version's heading (未發布 and Unreleased are the same), with the item and nested-item counts of
+// each section; the first entry counts the items before the version's first "### " heading.
 function outline(changelog: string) {
-  const versions: { heading: string; sections: number; items: number; nested: number }[] = []
+  const versions: { heading: string; sections: { items: number; nested: number }[] }[] = []
   for (const line of changelog.split(/\r?\n/)) {
     if (line.startsWith("## [")) {
-      versions.push({ heading: line.replace(/ - 未發布$/, " - Unreleased"), sections: 0, items: 0, nested: 0 })
+      versions.push({ heading: line.replace(/ - 未發布$/, " - Unreleased"), sections: [{ items: 0, nested: 0 }] })
     } else if (versions.length > 0) {
-      const current = versions[versions.length - 1]
-      if (line.startsWith("### ")) current.sections += 1
-      else if (line.startsWith("- ")) current.items += 1
-      else if (/^\s+- /.test(line)) current.nested += 1
+      const sections = versions[versions.length - 1].sections
+      if (line.startsWith("### ")) sections.push({ items: 0, nested: 0 })
+      else if (line.startsWith("- ")) sections[sections.length - 1].items += 1
+      else if (/^\s+- /.test(line)) sections[sections.length - 1].nested += 1
     }
   }
   return versions
@@ -38,6 +39,19 @@ describe("releaseNotesForTag", () => {
     const english = notes.slice(0, notes.indexOf("### 繁體中文"))
     expect(english).toContain("Apple Developer ID")
     expect(english).toContain("Gatekeeper")
+  })
+
+  it("tells beta.2's readers in both languages about Gatekeeper and SmartScreen, and to install it by hand", () => {
+    const notes = releaseNotesForTag(repositoryChangelogs(), "v0.1.0-beta.2")
+    const split = notes.indexOf("### 繁體中文")
+    const english = notes.slice(0, split)
+    const chinese = notes.slice(split)
+    for (const part of [english, chinese]) {
+      expect(part).toContain("Gatekeeper")
+      expect(part).toContain("SmartScreen")
+    }
+    expect(english).toContain("download and install beta.2 yourself")
+    expect(chinese).toContain("請自行下載安裝 beta.2")
   })
 
   it("returns the release tag's section from both changelogs, English first", () => {
@@ -148,7 +162,7 @@ describe("releaseNotesForTag", () => {
 })
 
 describe("the English and Traditional Chinese changelogs", () => {
-  it("list the same versions with the same sections and items", () => {
+  it("list the same versions with the same items in each section", () => {
     const changelogs = repositoryChangelogs()
     const english = outline(changelogs["CHANGELOG.md"])
     const chinese = outline(changelogs["CHANGELOG.zh-TW.md"])
