@@ -749,17 +749,29 @@ impl LogSession {
 /// (opening, refs moving), so until the person trusts the folder a partial
 /// clone never fetches what it lacks: that contacts the remote the repo's
 /// own config names, plain URL or not. A trusted folder fetches as git does.
-/// A log that git failed to read in an untrusted partial clone most likely
-/// needed objects it may not fetch yet ([`log_read`]): says so, so the pane
-/// can offer to trust the folder (the sidebar offers it only when the repo's
-/// settings name programs).
+/// A log that git failed to read in an untrusted partial clone because it
+/// needed an object it may not fetch yet ([`log_read`]): says so, so the
+/// pane can offer to trust the folder (the sidebar offers it only when the
+/// repo's settings name programs). Any other failure (a bad range, a bad
+/// regex) stays git's own.
 fn lazy_fetch_refused(repo: &Repo, e: GitError) -> GitError {
     match &e {
-        GitError::Failed { .. } if !crate::trust::trusted_folder(repo) && partial_clone(repo) => {
+        GitError::Failed { message, .. } if !crate::trust::trusted_folder(repo) && partial_clone(repo) && names_a_missing_object(repo, message) => {
             GitError::Other(format!("{} ({e})", crate::trust::LAZY_FETCH))
         }
         _ => e,
     }
+}
+
+/// Whether git's message names an object the repository lacks: git names
+/// the one it couldn't read in full (`unable to read tree (…)`, `bad object
+/// …`), whatever the words around it.
+fn names_a_missing_object(repo: &Repo, message: &str) -> bool {
+    message
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .filter(|w| w.len() == 40 || w.len() == 64)
+        .take(8)
+        .any(|id| repo.run(crate::trust::offline(Git::read(["cat-file", "-e", id]))).is_ok_and(|o| !o.ok()))
 }
 
 /// Whether git would fetch missing objects here: `extensions.partialClone`
@@ -771,8 +783,7 @@ fn partial_clone(repo: &Repo) -> bool {
 }
 
 fn log_read<'a>(repo: &Repo, args: impl IntoIterator<Item = &'a str>) -> Git {
-    let cmd = Git::read(["log"]).args(args);
-    if crate::trust::trusted_folder(repo) { cmd } else { cmd.env("GIT_NO_LAZY_FETCH", "1") }
+    crate::trust::own_read(repo, Git::read(["log"]).args(args))
 }
 
 /// HEAD (when there is one), branches, remotes, and on the full read, tags.
@@ -1254,6 +1265,28 @@ mod tests {
         s.git(&["config", "--unset", "remote.origin.promisor"]);
         s.git(&["config", "extensions.partialClone", "origin"]);
         assert!(partial_clone(&s.repo));
+    }
+
+    // Trust and fetch is for objects the clone lacks: a bad range or regex
+    // in an untrusted partial clone says git's own words, as anywhere else.
+    #[test]
+    fn an_untrusted_partial_clones_other_failures_are_said_as_they_are() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        for (key, value) in [("remote.origin.url", "file:///nowhere.invalid"), ("remote.origin.promisor", "true")] {
+            s.git(&["config", key, value]);
+        }
+        for (filter, says) in [
+            (Filter { range: Some("nope..nada".into()), ..Filter::default() }, "nope"),
+            (Filter { text: Some("(".into()), regex: true, ..Filter::default() }, "("),
+        ] {
+            let log = open(s.repo.clone(), filter);
+            wait_loaded(&log);
+            let info = log.info();
+            close(log.id);
+            assert_eq!(info["lazyFetch"], false, "{info}");
+            assert!(info["error"].as_str().is_some_and(|e| e.contains(says) && !e.starts_with(crate::trust::LAZY_FETCH)), "{info}");
+        }
     }
 
     #[test]

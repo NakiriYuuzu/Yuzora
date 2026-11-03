@@ -70,6 +70,21 @@ pub fn trusted_folder(repo: &Repo) -> bool {
     trusted().contains(&repo.id)
 }
 
+/// A read that runs on its own (opening, refreshing, following refs): until
+/// the folder is trusted it fetches nothing a partial clone lacks from the
+/// remote the repo names. `GIT_NO_LAZY_FETCH` says so since git 2.44; an
+/// older git ignores it, but an empty `GIT_ALLOW_PROTOCOL` refuses every
+/// transport there too. A repo whose settings name no program doesn't wait
+/// for trust, so this is all that keeps such reads off its remote.
+pub fn own_read(repo: &Repo, cmd: Git) -> Git {
+    if trusted_folder(repo) { cmd } else { offline(cmd) }
+}
+
+/// A read that never fetches what the repository lacks ([`own_read`]).
+pub fn offline(cmd: Git) -> Git {
+    cmd.env("GIT_NO_LAZY_FETCH", "1").env("GIT_ALLOW_PROTOCOL", "")
+}
+
 /// Every other call on the repo goes through here first: while the folder
 /// waits for trust, the panes (log, diff, merge...) stay off as the sidebar
 /// does, so no filter or other program of the repo's runs through them.

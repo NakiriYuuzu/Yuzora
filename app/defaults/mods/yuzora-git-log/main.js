@@ -95,7 +95,7 @@ export default class GitLog extends View {
 
   initLog(cx) {
     const f = this.p.filter ?? {};
-    this.repo = null; this.id = null; this.error = null; this.sel = null; this.detail = null; this.showDetail = false;
+    this.repo = null; this.id = null; this.error = null; this.lazyErr = null; this.sel = null; this.detail = null; this.showDetail = false;
     this.w = 900; this.vis = { start: 0, end: 0 }; this.rows0 = -1; this.applied = "{}";
     this.typing = new Set(); this.dd = false; this.ddQuery = ""; this.bl = null;
     this.regex = Boolean(f.regex); this.matchCase = Boolean(f.matchCase); this.noMerges = Boolean(f.noMerges); this.follow = Boolean(f.follow);
