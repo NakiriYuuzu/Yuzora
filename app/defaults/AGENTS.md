@@ -1139,7 +1139,7 @@ The person may run the official Herdr app on the same herdr-core. Its spaces and
 
 - Terminals Herdr opened show up here in spaces of their own, and Yuzora's show up in Herdr. `space.close`,
   `tab.close`, `pane.close` and `terminal.kill` end the terminal in herdr-core, so it is gone from both apps. Ask the
-  person before closing a space, tab or pane that may hold Herdr's terminals.
+  person before closing a space, tab or pane, or running `terminal.kill`, on what may be Herdr's terminals.
 - Don't use `hc server stop` to stop the core: while either app is open it starts again within a second, and every
   program in its terminals ends. To stop it for good, the person quits both apps first.
 - Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from `mods/<name>` in
