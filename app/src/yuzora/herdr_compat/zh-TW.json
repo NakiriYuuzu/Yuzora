@@ -1,0 +1,38 @@
+{
+  "setup": {
+    "shared": "更新會重新啟動 herdr-core，所有使用它的 app（例如 Herdr）都會受影響，但終端機會繼續執行。",
+    "update": "也可以自己更新：hc update",
+    "install": {
+      "title": "Yuzora 需要 herdr-core",
+      "body": "herdr-core 負責執行終端機與 Agent，視窗關閉後也讓它們繼續執行。Yuzora 在這台電腦上找不到它。",
+      "foot": "「Install it for me」會用 herdr-core 自己的安裝程式，把它裝到 {place}（含 hc）：{install}"
+    },
+    "old": {
+      "title": "Yuzora 需要較新的 herdr-core",
+      "body": "目前是 {have}，Yuzora 需要 {need} 以上。{shared}"
+    },
+    "missing": {
+      "title": "Yuzora 需要較新的 herdr-core",
+      "body": "你的 herdr-core 缺少 Yuzora 需要的功能（{methods}）。{shared}"
+    },
+    "newer": {
+      "title": "這個 Yuzora 比 herdr-core 舊",
+      "body": "你的 herdr-core 使用較新的協定（第 {generation} 代），這個 Yuzora 只懂第 {ours} 代。可能是共用它的其他 app（例如 Herdr）更新了它。請更新 Yuzora，終端機會繼續執行。",
+      "foot": "更新 Yuzora：{app}"
+    }
+  },
+  "refused": {
+    "old": {
+      "title": "請更新 herdr-core 才能使用 Yuzora",
+      "body": "目前是 {have}，Yuzora 需要 {need} 以上"
+    },
+    "missing": {
+      "title": "請更新 herdr-core 才能使用 Yuzora",
+      "body": "缺少 {methods}"
+    },
+    "newer": {
+      "title": "請更新 Yuzora 才能使用這個 herdr-core",
+      "body": "可能是 Herdr 把它換成第 {generation} 代"
+    }
+  }
+}

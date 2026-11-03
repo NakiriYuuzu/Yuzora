@@ -12,6 +12,7 @@
 use gpui_shell::policy::Policy;
 use std::path::{Path, PathBuf};
 
+pub mod herdr_compat;
 pub mod release;
 pub mod shell;
 
