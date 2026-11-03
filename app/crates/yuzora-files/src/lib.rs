@@ -99,7 +99,7 @@ export function copyText(text: string): null;
  *  neither git nor ripgrep, so ignored files are included. `skipped`: a folder could not be read. */
 export function findFiles(root: string, query: string, options?: On & { hidden?: boolean; limit?: number; fresh?: boolean }): Promise<{ matches: { path: string; score: number; indices: number[] }[];
   /** More files matched than `limit` (default 100): only the best are in `matches`. */
-  more: boolean; truncated: boolean; unfiltered: boolean; skipped: boolean }>;
+  more: boolean; truncated: boolean; unfiltered: boolean; skipped: boolean; tooLong: boolean }>;
 /** Content search: ripgrep where it is installed, else a built-in search on this machine; `available` is false on another machine without rg.
  *  `skipped`: a file or folder could not be read, so hits may be missing. */
 export function grep(root: string, query: string, options?: On & { regex?: boolean; caseSensitive?: boolean; hidden?: boolean; limit?: number }): Promise<{ available: boolean; hits: GrepHit[]; truncated: boolean; files: number; skipped: boolean }>;
@@ -412,6 +412,12 @@ pub fn host_module() -> HostModule {
             );
             Ok(job(
                 move || {
+                    if search::query_too_long(&query) {
+                        return Ok(serde_json::json!({
+                            "matches": [], "more": false, "truncated": false,
+                            "unfiltered": false, "skipped": false, "tooLong": true,
+                        }));
+                    }
                     let list = listing(&root, on.as_deref(), hidden, fresh)?;
                     let (matches, more) = search::fuzzy_top(&query, &list.files, limit);
                     Ok(serde_json::json!({
@@ -420,6 +426,7 @@ pub fn host_module() -> HostModule {
                         "truncated": list.truncated,
                         "unfiltered": list.unfiltered,
                         "skipped": list.skipped,
+                        "tooLong": false,
                     }))
                 },
                 json,
@@ -692,6 +699,54 @@ mod tests {
         let got: Vec<String> = context.with(|ctx| ctx.eval(script).unwrap());
         let want: Vec<&str> = cases.iter().map(|(_, want)| *want).collect();
         assert_eq!(got, want);
+    }
+
+    /// `readGit` is the only thing between `gitStatus` and the tree: "not a
+    /// repo" (null) and "could not be read" (a rejection) must stay apart.
+    #[test]
+    fn sidebar_git_state_tells_a_failure_from_not_a_repo() {
+        let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/git-state.js")
+            .replace("export async function", "async function");
+        let script = format!(
+            r#"(async () => {{ {src}
+const a = await readGit(async () => null, "/x", {{}});
+const b = await readGit(async () => ({{ top: "/r" }}), "/r", {{}});
+const c = await readGit(async () => {{ throw new Error("timed out"); }}, "/r", {{}});
+const d = await readGit(() => {{ throw "boom"; }}, "/r", {{}});
+return JSON.stringify([a, b, c, d]); }})()"#
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let got: String = context.with(|ctx| {
+            let promise: quickjs::Promise = ctx.eval(script).unwrap();
+            promise.finish().unwrap()
+        });
+        assert_eq!(
+            got,
+            r#"[{"git":null,"failed":null},{"git":{"top":"/r"},"failed":null},{"git":null,"failed":"timed out"},{"git":null,"failed":"boom"}]"#
+        );
+    }
+
+    /// What a unit test of `readGit` cannot see: the sidebar uses it, shows
+    /// its failure and the too-long query note, and does not swallow errors.
+    #[test]
+    fn the_files_sidebar_is_wired_to_git_failures_and_long_queries() {
+        let main = include_str!("../../../defaults/mods/yuzora-sidebar-files/main.js");
+        for needle in [
+            "await readGit(gitStatus, here.cwd, { on: here.on })",
+            "here.gitFailed = failed;",
+            r#"Boolean(here.gitFailed), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.failed")))"#,
+            r#"found.tooLong ? t("search.too_long")"#,
+        ] {
+            assert_eq!(main.matches(needle).count(), 1, "{needle}");
+        }
+        let lib = include_str!("lib.rs");
+        let code = lib.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        assert_eq!(
+            code.matches("if search::query_too_long(&query) {").count(),
+            1
+        );
+        assert!(!main.contains("gitStatus(here.cwd, { on: here.on }).catch"));
     }
 
     #[test]
