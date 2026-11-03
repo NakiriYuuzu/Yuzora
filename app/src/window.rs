@@ -5132,6 +5132,7 @@ mod tests {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", &format!("window::tests::{name}"), "--nocapture", "--test-threads=1"])
             .env("HERDR_APP_HOME", &home)
+            .env("YUZORA_APP_HOME", &home) // yuzora(L9): Yuzora reads only YUZORA_APP_HOME; without it the test used ~/.config/yuzora
             .env("HERDR_TEST_WINDOW", name)
             .output()
             .unwrap();
