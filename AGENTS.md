@@ -65,6 +65,9 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
+- L4（SSH／SFTP）：crate `app/crates/yuzora-ssh`（`yuzora:ssh`），mods `yuzora-sidebar-ssh`、`yuzora-sftp`、`yuzora-ssh-{prompt,host,known-hosts,herdr}`。設計與 tunnel API：`docs/beta2/ssh.md`。
+- 測試：`cargo test --locked -p yuzora-ssh`。整合測試在測試行程內起 russh SSH 伺服器，SFTP 用系統的 OpenSSH `sftp-server`（沒有時 skip），一律用暫存目錄與記憶體憑證庫。
+- 絕不寫入使用者的 `~/.ssh`：known_hosts 只寫 `<app home>/yuzora/known_hosts`，`~/.ssh` 唯讀；密碼與密語只在使用者勾選時存進系統鑰匙圈（namespace `ssh`）。
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->

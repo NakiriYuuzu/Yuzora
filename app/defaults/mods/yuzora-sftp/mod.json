@@ -1,0 +1,5 @@
+{
+  "place": "none",
+  "title": "SFTP",
+  "yuzora": { "pane": { "title": "pane.title", "icon": "mods/yuzora-sidebar-ssh/icons/folder.svg", "order": 40, "props": {} } }
+}
