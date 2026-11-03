@@ -78,7 +78,7 @@
        2. channel::pick_in：非 draft、tag 是 v<semver>、屬於本通道、比目前新、
           帶 yuzora-update.json 與 .sig 的 release 中，版本最大的一個
        3. 下載 manifest 與簽章 → manifest::read：先驗簽章，再驗內容
-       4. 有 changelog 就下載（驗 sha256）給「新功能」說明
+       4. 英文與繁中的 changelog 各下載一份（驗 sha256）給「新功能」說明（見下方〈更新說明〉）
        5. crate::update::stage：下載本機 target 的 archive、驗 sha256、
           解開、執行 --version 確認版本、放到 <安裝位置>.new
   └─ 設定畫面顯示「重新啟動」；重啟或下次結束時交換（上游 swap/apply）
@@ -101,6 +101,7 @@
   "channel": "beta",
   "pub_date": "2026-11-03T00:00:00Z",
   "notes": { "url": ".../v0.1.0-beta.3/changelog.md", "sha256": "…", "size": 1234 },
+  "localized_notes": { "zh-TW": { "url": ".../v0.1.0-beta.3/changelog.zh-TW.md", "sha256": "…", "size": 1234 } },
   "targets": {
     "macos-aarch64": { "url": ".../v0.1.0-beta.3/yuzora-0.1.0-beta.3-macos-aarch64.tar.gz", "sha256": "…", "size": 1 },
     "windows-x86_64": { … },
@@ -114,10 +115,28 @@
 
 1. **簽章先驗**：`yuzora-update.json.sig` 是 minisign 對 manifest **原始位元組**的簽章，只接受 prehashed（`ED`）演算法；base64 包裝（`tauri signer sign` 的格式）或原始文字都可以。驗不過就不解析內容。
 2. `schema` 必須是 1（新格式一律拒絕，請使用者手動更新）、`name` 是 `yuzora`、`version` 等於 release tag 的版本、`channel` 與版本一致（帶 `-` 就是 beta）。
-3. 每個檔案的 URL 都必須在 `https://github.com/NakiriYuuzu/Yuzora/releases/download/v<version>/` 底下，檔名只能有英數與 `._-`；`sha256` 必須是 64 個小寫 hex。
+3. 每個檔案（含 `notes` 與 `localized_notes` 裡每個語系的 changelog）的 URL 都必須在 `https://github.com/NakiriYuuzu/Yuzora/releases/download/v<version>/` 底下，檔名只能有英數與 `._-`；`sha256` 必須是 64 個小寫 hex。app 不認得的語系一樣要通過這些檢查，但不會因為不認得而拒絕整份 manifest（以後加語系時，舊版 app 照樣能更新）。
 4. 下載後由上游 `unpack` 比對 sha256，再執行新 binary 的 `--version` 確認版本。
 
 簽章保證「這份清單是 Yuzora 發的」，清單裡的 sha256 保證「下載的檔案就是清單上的那個」。舊版 manifest 不會被接受成新版（版本必須比目前新），換 tag 冒用也不行（版本必須等於 tag）。
+
+### 更新說明（notes）
+
+「新功能」與「重新啟動」畫面的更新說明依目前語系（`yuzora_core::i18n::current()`，跟著 `general.locale`）顯示：zh-TW 顯示繁中，其他語系顯示英文。
+
+- **manifest**：英文是 `notes`（`changelog.md`），繁中是 `localized_notes["zh-TW"]`（`changelog.zh-TW.md`）；`manifest.ts` 看到 dist 裡有哪份就寫哪份。`localized_notes` 是新增欄位，`schema` 維持 1：沒有這個欄位的舊 manifest 照樣能讀，繁中退回英文；舊版 app 讀到新 manifest 會略過這個欄位，只用 `notes`。
+- **下載**：找到新版時，每個語系各下載一份：繁中用 `localized_notes["zh-TW"]`，沒有就用英文 `notes`。每份都比對 manifest 裡的 sha256，不符就丟掉並記 log，**不會改用另一份**；更新說明是選用的，失敗不影響更新本身。
+- **快取**：app home 裡一個語系一份，`update-notes-cache.md`（英文，上游原本的檔名）與 `update-notes-cache.zh-TW.md`，所以切換語系後馬上顯示另一份，不必重新下載。
+- **兩份 changelog**：
+  - `app/CHANGELOG.md`（上游檔）是英文，Yuzora 的段落在 Herdr 的上面。上游的解析器、`scripts/yuzora/sync-check` 與 justfile 都照舊可用。
+  - `app/CHANGELOG.zh-TW.md`（Yuzora 自有）只放 Yuzora 的段落，是同一批版本的繁中版。標題仍用英文的 `### New`／`### Fixed`，因為 App 靠這個標題判斷 Fixed。
+  - 兩份都內嵌進 build（`release::notes::bundled`）。zh-TW 先取中文，中文檔沒有的版本（例如 Herdr 的版本）逐版改用英文；其他語系一律英文。
+  - 發布時 `app-package.yml` 把兩份複製成 `dist/changelog.md`、`dist/changelog.zh-TW.md`，manifest 帶兩份的 sha256。
+- **新增條目**：每筆都要兩份各加一行，英文進 `app/CHANGELOG.md`，繁中進 `app/CHANGELOG.zh-TW.md`。測試會擋下這些情況：
+  - 任一份的第一段不是 `CARGO_PKG_VERSION`；
+  - 中文有、英文沒有的版本；
+  - 同一版本兩份的日期、spotlight，或各標題下的項目數不同。
+- **上游的接點**：`update_notes.rs` 只改了標 `yuzora(L7)` 的幾行，把快取與內建說明改成依語系取得。
 
 ## 4. 金鑰管理
 
@@ -176,7 +195,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 現行 `release.yml` 是 Tauri app 的發布：main 一 push 就自動 tag 與發布。beta.2 **不改它的觸發行為**。建議另開一個 beta.2 發布 workflow（或在 release PR 中改寫 `release.yml`，由使用者決定），步驟：
 
 1. 觸發 `app-package.yml`（workflow_dispatch）取得四個平台的 artifacts 與未簽章 manifest。
-2. 在 protected environment（required reviewer）下載 artifacts，加入 `changelog.md`（`app/CHANGELOG.md`），重產並簽 `yuzora-update.json` → `.sig`。
+2. 在 protected environment（required reviewer）下載 artifacts，加入 `changelog.md`（`app/CHANGELOG.md`）與 `changelog.zh-TW.md`（`app/CHANGELOG.zh-TW.md`；`app-package.yml` 的 artifact 已帶兩份），重產並簽 `yuzora-update.json` → `.sig`。
 3. 若要帶 beta.1：簽 macOS archive 與 NSIS 安裝程式，產生 `latest.json`（§5）。
 4. 建 draft release `v<version>`（beta：`prerelease=true`、不設 Latest），上傳：
 
@@ -184,7 +203,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
    | --- | --- | --- |
    | `yuzora-<version>-<target>.tar.gz`（4 個） | ✓ | ✓ |
    | `yuzora-update.json`、`yuzora-update.json.sig` | ✓ | ✓ |
-   | `changelog.md` | ✓ | ✓ |
+   | `changelog.md`、`changelog.zh-TW.md` | ✓ | ✓ |
    | `Yuzora_<version>_aarch64.dmg`、`Yuzora_<version>_x64-setup.exe`（版本化） | ✓ | ✓ |
    | `Yuzora-macos-aarch64.dmg`、`Yuzora-windows-x64-setup.exe`（固定別名） | ✗ | ✓ |
    | `latest.json`＋兩個 `.sig`（帶 beta.1） | 選擇性 | 不要（stable 的 `latest.json` 會被 0.0.19 的 stable 通道讀到） |

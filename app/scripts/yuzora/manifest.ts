@@ -6,7 +6,8 @@
 //
 // yuzora-update.json is what Yuzora 0.1.0-beta.2 and later read
 // (src/yuzora/release/manifest.rs): every update archive with its sha256 and
-// size, and changelog.md if it's there. The release signs it into
+// size, and changelog.md (English) and changelog.zh-TW.md if they're there.
+// The release signs it into
 // yuzora-update.json.sig; nothing here signs.
 //
 // latest.json is for the Tauri app (0.1.0-beta.1 and older): its updater
@@ -27,6 +28,8 @@ export const REPO = "NakiriYuuzu/Yuzora";
 /// What the app accepts (src/yuzora/release.rs `target()`); the macOS app is Apple Silicon only.
 export const TARGETS = ["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"];
 export const SCHEMA = 1;
+/// The notes in other languages, by the app's i18n locale, beside changelog.md.
+export const LOCALIZED_NOTES: Record<string, string> = { "zh-TW": "changelog.zh-TW.md" };
 
 export function checkVersion(version: string) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/.test(version)) throw new Error(`not a release version: ${version}`);
@@ -70,6 +73,9 @@ export function yuzoraManifest(dist: string, version: string, downloads = downlo
   if (Object.keys(targets).length === 0) throw new Error(`no yuzora-${version}-*.tar.gz in ${dist}`);
   const doc: Record<string, unknown> = { schema: SCHEMA, name: "yuzora", version, channel: channelOf(version), pub_date: date.toISOString().replace(/\.\d+Z$/, "Z") };
   if (existsSync(join(dist, "changelog.md"))) doc.notes = asset(dist, "changelog.md", downloads);
+  const localized: Record<string, Asset> = {};
+  for (const [locale, name] of Object.entries(LOCALIZED_NOTES)) if (existsSync(join(dist, name))) localized[locale] = asset(dist, name, downloads);
+  if (Object.keys(localized).length > 0) doc.localized_notes = localized;
   doc.targets = targets;
   return doc;
 }
