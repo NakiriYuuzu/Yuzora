@@ -39,14 +39,15 @@ use std::time::Duration;
 use crate::remote::{self, ExecRequest};
 
 /// Config keys (lowercased by git) that name a program run without asking.
-pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs|url|pushurl)|url\..+\.(insteadof|pushinsteadof)|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
+pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs|url|pushurl)|url\..+\.(insteadof|pushinsteadof)|extensions\.partialclone|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
 
 /// Whether a matched key's value runs something: fsmonitor as a boolean is
 /// git's own daemon, and a submodule's update mode is a command only after
 /// `!`. Only the exact values git takes that way pass (no trimming, ASCII
 /// case as git compares); anything else counts. A remote's URL counts when
-/// it names a remote helper (`ext::` runs its command), and so does an
-/// `insteadOf` that makes URLs into one.
+/// it names a remote helper (`ext::` runs its command), and so does a
+/// partial clone's promisor remote given as a URL, and an `insteadOf` whose
+/// replacement a URL's rest can make into one (`ext:` and `:sh …`).
 pub fn names_program(key: &str, value: &str) -> bool {
     let any = |list: &[&str]| list.iter().any(|v| value.eq_ignore_ascii_case(v));
     if key == "core.fsmonitor" {
@@ -58,8 +59,11 @@ pub fn names_program(key: &str, value: &str) -> bool {
     if key.starts_with("remote.") && (key.ends_with(".url") || key.ends_with(".pushurl")) {
         return names_helper(value);
     }
+    if key == "extensions.partialclone" {
+        return names_helper(value);
+    }
     if let Some(to) = key.strip_prefix("url.").and_then(|k| k.strip_suffix(".insteadof").or_else(|| k.strip_suffix(".pushinsteadof"))) {
-        return names_helper(to);
+        return may_name_helper(to);
     }
     true
 }
@@ -68,8 +72,18 @@ pub fn names_program(key: &str, value: &str) -> bool {
 /// `transport_get` reads it (letters and digits, then `+`, `-` or `.` too;
 /// even none).
 fn names_helper(url: &str) -> bool {
-    let n = url.char_indices().take_while(|&(i, c)| c.is_ascii_alphanumeric() || (i > 0 && "+-.".contains(c))).count();
-    url[n..].starts_with("::")
+    url[scheme_len(url)..].starts_with("::")
+}
+
+/// Whether a URL starting with `start` may name a remote helper, whatever
+/// follows: it does already, or its scheme (maybe empty) has at most one `:`
+/// after it so far.
+fn may_name_helper(start: &str) -> bool {
+    matches!(&start[scheme_len(start)..], "" | ":") || names_helper(start)
+}
+
+fn scheme_len(url: &str) -> usize {
+    url.char_indices().take_while(|&(i, c)| c.is_ascii_alphanumeric() || (i > 0 && "+-.".contains(c))).count()
 }
 
 /// Stands for the keys when the config couldn't be read: the gate stays shut.
@@ -154,11 +168,14 @@ const SCAN: &str = "yuzora-trust-scan";
 /// feed (`$(…)` drops one at the end,
 /// so the scan would read another folder: `rev-parse`'s answer is taken with
 /// a `.` after it, and must be two lines then), and more than 16 levels can't
-/// be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a
-/// sparse index in a partial clone never fetches with the repo's ssh.
+/// be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH` (and an
+/// empty `GIT_ALLOW_PROTOCOL` for a git before 2.44, which ignores it):
+/// listing a sparse index in a partial clone never fetches with the repo's
+/// ssh. Each repo's remote files (`remotes/`, `branches/` in its common
+/// dir) count too: git reads remotes from them besides the config.
 const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
-GIT_NO_LAZY_FETCH=1
-export GIT_NO_LAZY_FETCH
+GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=
+export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL
 tab=$(printf '\t') nl='
 '
 IFS=$nl
@@ -183,6 +200,18 @@ scan() {
   [ -n "$links" ] || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
   for line in $links; do
     [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
+  done
+}
+legacy() {
+  c=$("$@" rev-parse --path-format=absolute --git-common-dir && echo .) || c=
+  case "$c" in *"$nl"*"$nl"*) printf 'err\0commondir\0'; return ;; ?*"$nl.") c=${c%"$nl."} ;; *) printf 'err\0commondir\0'; return ;; esac
+  for d in remotes branches; do
+    if [ -d "$c/$d" ] && [ ! -L "$c/$d" ]; then
+      l=$(ls -A "$c/$d" && echo .) || l=x
+      [ "$l" = . ] || printf 'legacy\0.git/%s\0' "$d"
+    elif [ -e "$c/$d" ] || [ -L "$c/$d" ]; then
+      printf 'legacy\0.git/%s\0' "$d"
+    fi
   done
 }
 gone() {
@@ -213,11 +242,14 @@ enter() {
   case "$5" in *"$node"*) printf 'err\0cycle\0'; return ;; esac
   case "$seen" in *"$node"*) return ;; esac
   seen=$seen$node
+  legacy env GIT_DIR=.git git -C "$4"
   scan "$1$4/" $(($2 + 1)) "$gd" "$top" "$5$node"
 }
 if w=$(git rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w"; then
   unset GIT_DIR GIT_WORK_TREE
   seen=$node
+  printf 'sub\0\0'
+  legacy git
   scan "" 0 "$gd" "$top" "$node"
 else
   printf 'sub\0.\0err\0worktree\0'
@@ -238,6 +270,10 @@ fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
             "sub" => place = c[1].to_owned(),
             "err" => {
                 keys.insert(format!("{place}: {UNREADABLE}"));
+            }
+            // Files git reads remotes from besides the config (any there counts).
+            "legacy" => {
+                keys.insert(if place.is_empty() { c[1].to_owned() } else { format!("{place}: {}", c[1]) });
             }
             "local" | "worktree" => {
                 let (key, value) = c[1].split_once('\n').unwrap_or((c[1], "true"));
@@ -331,6 +367,11 @@ mod tests {
         assert!(names_program("remote.origin.url", "ext::sh -c touch% x") && names_program("remote.o.pushurl", "Ext::x") && names_program("remote.o.url", "fd::0") && names_program("remote.o.url", "1x+y::z") && names_program("remote.o.url", "::z"));
         assert!(!names_program("remote.o.url", "https://example.com/r.git") && !names_program("remote.o.url", "git@host:r.git") && !names_program("remote.o.url", "/srv/r") && !names_program("remote.o.url", "c:/srv/r") && !names_program("remote.o.url", ".x::y") && !names_program("remote.o.url", "a b::y"));
         assert!(names_program("url.ext::sh -c x.insteadof", "https://") && names_program("url.ext::x.pushinsteadof", "git@") && !names_program("url.https://mirror/.insteadof", "https://"));
+        // An insteadOf whose replacement a URL's rest can make one (`ext:` + `:sh …`).
+        assert!(names_program("url.ext:.insteadof", "P") && names_program("url.ext.insteadof", "P") && names_program("url..insteadof", "P") && names_program("url.x+y:.pushinsteadof", "P"));
+        assert!(!names_program("url.git@github.com:.insteadof", "gh:") && !names_program("url.ssh://host/.insteadof", "h:") && !names_program("url.a:b.insteadof", "P"));
+        // The promisor remote of a partial clone, by name or as a URL.
+        assert!(names_program("extensions.partialclone", "ext::sh -c x") && !names_program("extensions.partialclone", "origin"));
     }
 
     #[test]
@@ -357,6 +398,9 @@ mod tests {
         let subs = &format!("sub\0vendor/a\0local\0filter.y.clean\ncat\0sub\0vendor/b\0err\0128\0{END}");
         assert_eq!(answer((1, ""), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"], "no key above: the submodules still count");
         assert_eq!(answer((0, "global\0core.askpass\nx\0"), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"]);
+        // Remote files beside a config, the top's and a submodule's.
+        let legacy = &format!("sub\0\0legacy\0.git/remotes\0sub\0vendor/a\0legacy\0.git/branches\0{END}");
+        assert_eq!(answer((1, ""), (0, legacy)).0, [".git/remotes", "vendor/a: .git/branches"]);
         assert!(answer((0, ""), (2, "")).0.contains(&UNREADABLE.to_string()));
         // A scan that stopped part way (exit 0, records missing) keeps it shut.
         assert_eq!(answer((1, ""), (0, "")).0, [UNREADABLE]);
@@ -717,6 +761,50 @@ mod tests {
         assert_eq!(direct, Ok(vec!["remote.origin.url".to_string()]));
         assert_eq!(plain, Ok(Vec::new()));
         assert_eq!(rewritten, Ok(vec![format!("url.{ext}.insteadof")]));
+    }
+
+    // A remote helper git reaches without a remote URL saying `ext::`: the
+    // URL split between it and an insteadOf, the remote files git still
+    // reads (`.git/remotes/<name>`, `.git/branches/<name>`), and the promisor
+    // remote a partial clone fetches from by name.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_helper_named_any_other_way_waits_for_trust() {
+        // A case's setup: the top, the command to run, and git there.
+        type Setup = dyn Fn(&Path, &str, &dyn Fn(&str, &[&str]) -> String);
+        let case = |name: &str, setup: &Setup, runs: &[&str]| {
+            let (dir, top, git) = scratch_dir(name);
+            git("", &["init", "-q"]);
+            git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+            let mark = dir.join("ran");
+            setup(Path::new(&top), &format!("sh -c touch% {}", mark.display()), &git);
+            let keys = programs_within(None, &top, Duration::from_secs(30));
+            // As a person's global config may allow it.
+            let _ = std::process::Command::new("git").args(["-c", "protocol.ext.allow=always"]).args(runs).current_dir(&top).output();
+            let ran = mark.exists();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(ran, "{name}: git didn't run the command, so this proves nothing");
+            keys
+        };
+        let split = case("ext-split", &|_, cmd, git| {
+            git("", &["remote", "add", "origin", &format!("P:{cmd}")]);
+            git("", &["config", "url.ext:.insteadOf", "P"]);
+        }, &["fetch", "-q", "origin"]);
+        let remotes = case("ext-remotes", &|top, cmd, _| {
+            std::fs::create_dir_all(top.join(".git/remotes")).unwrap();
+            std::fs::write(top.join(".git/remotes/origin"), format!("URL: ext::{cmd}\n")).unwrap();
+        }, &["fetch", "-q", "origin"]);
+        let branches = case("ext-branches", &|top, cmd, _| {
+            std::fs::create_dir_all(top.join(".git/branches")).unwrap();
+            std::fs::write(top.join(".git/branches/origin"), format!("ext::{cmd}\n")).unwrap();
+        }, &["fetch", "-q", "origin"]);
+        let promisor = case("ext-promisor", &|_, cmd, git| {
+            git("", &["config", "extensions.partialClone", &format!("ext::{cmd}")]);
+        }, &["cat-file", "-e", "1111111111111111111111111111111111111111"]);
+        assert_eq!(split, Ok(vec!["url.ext:.insteadof".to_string()]));
+        assert_eq!(remotes, Ok(vec![".git/remotes".to_string()]));
+        assert_eq!(branches, Ok(vec![".git/branches".to_string()]));
+        assert_eq!(promisor, Ok(vec!["extensions.partialclone".to_string()]));
     }
 
     #[cfg(unix)]
