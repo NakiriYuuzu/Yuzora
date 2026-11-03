@@ -13,7 +13,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::{Duration, UNIX_EPOCH};
 
-use yuzora_core::remote::{self, ExecOutput, ExecRequest};
+use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -188,6 +188,26 @@ pub(crate) fn machine(on: Option<&str>) -> Option<&str> {
     on.filter(|m| !m.is_empty())
 }
 
+/// Set on everything this crate runs, here or on a machine. The file tree's
+/// marks and the search need no network: git fetches nothing a partial clone
+/// lacks (`GIT_NO_LAZY_FETCH`, git 2.44 and later) and reaches no remote but
+/// a local one (`GIT_ALLOW_PROTOCOL`, which no config of the repo's widens;
+/// it stops an older git's fetch too). Otherwise a promisor remote's URL
+/// picks the transport, or the remote helper, git starts for it.
+pub(crate) const OFFLINE: [(&str, &str); 2] =
+    [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "file")];
+
+/// Runs `req` here or on its machine with [`OFFLINE`] set: the one way this
+/// crate runs a program (a test holds it to that).
+pub(crate) fn run(req: ExecRequest) -> Result<ExecOutput, ExecError> {
+    remote::run(&offline(req))
+}
+
+/// `req` with [`OFFLINE`] set.
+fn offline(req: ExecRequest) -> ExecRequest {
+    OFFLINE.iter().fold(req, |req, (k, v)| req.env(*k, *v))
+}
+
 /// Runs `script` with `sh -c script sh args…` here (`on = None`) or on a machine.
 pub(crate) fn run_sh(
     on: Option<&str>,
@@ -196,12 +216,22 @@ pub(crate) fn run_sh(
     timeout: Duration,
     max_output: u64,
 ) -> Result<ExecOutput, String> {
+    run(sh_request(on, script, args, timeout, max_output)).map_err(|e| e.to_string())
+}
+
+/// What [`run_sh`] runs, before [`OFFLINE`].
+pub(crate) fn sh_request(
+    on: Option<&str>,
+    script: &str,
+    args: &[&str],
+    timeout: Duration,
+    max_output: u64,
+) -> ExecRequest {
     let argv = ["-c", script, "sh"].into_iter().chain(args.iter().copied());
-    let req = ExecRequest::new("sh", argv)
+    ExecRequest::new("sh", argv)
         .on(on)
         .timeout(timeout)
-        .max_output(max_output);
-    remote::run(&req).map_err(|e| e.to_string())
+        .max_output(max_output)
 }
 
 /// The program's stderr, else a line naming the exit code.
@@ -1320,6 +1350,51 @@ pub fn valid_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn everything_it_runs_runs_offline() {
+        assert_eq!(
+            OFFLINE,
+            [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "file")]
+        );
+        let req = offline(ExecRequest::new("git", ["status"]).env("PATH", "/bin"));
+        let set = |k: &str, v: &str| req.env.contains(&(k.to_owned(), v.to_owned()));
+        assert!(set("PATH", "/bin") && OFFLINE.iter().all(|(k, v)| set(k, v)));
+        // [`run`] is the only way out: no other `remote::run` (nor one
+        // imported by name) and no git started by hand outside the tests.
+        fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs")
+                    && path.file_name().is_some_and(|n| n != "tests.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let code = text.split("#[cfg(test)]\nmod tests {").next().unwrap();
+                    out.push((path.display().to_string(), code.to_owned()));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        assert!(files.len() > 5, "no sources found");
+        let by_name = regex::Regex::new(r"remote::\{[^}]*\brun\b").unwrap();
+        let by_hand = regex::Regex::new(r#"Command::new\([^)]*git"#).unwrap();
+        let mut runs = Vec::new();
+        for (path, code) in &files {
+            runs.extend(code.matches("remote::run").map(|_| path.as_str()));
+            assert!(!by_name.is_match(code), "{path} imports remote::run");
+            assert!(!by_hand.is_match(code), "{path} starts git by hand");
+        }
+        assert!(
+            matches!(runs[..], [one] if one.ends_with("fsops.rs")),
+            "{runs:?}"
+        );
+    }
 
     fn p(dir: &tempfile::TempDir, rel: &str) -> String {
         dir.path().join(rel).to_string_lossy().into_owned()

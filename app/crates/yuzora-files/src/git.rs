@@ -8,14 +8,23 @@ use std::path::Path;
 use std::time::Duration;
 
 use yuzora_core::git_trust;
-use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
+use yuzora_core::remote::{ExecError, ExecOutput, ExecRequest};
 
-use crate::fsops::join;
+use crate::fsops::{self, join};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// Config keys that make a remote a promisor one: git fetches what's missing from it.
 const PROMISOR: &str = r"^(extensions\.partialclone|remote\..+\.(promisor|partialclonefilter))$";
 const MAX_OUTPUT: u64 = 16 << 20;
+/// What [`status`] asks git for.
+const STATUS: [&str; 6] = [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--branch",
+    "--no-renames",
+    "--untracked-files=all",
+];
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct GitStatus {
@@ -49,19 +58,21 @@ impl GitStatus {
 }
 
 /// git in `cwd` (on `on`): never an fsmonitor command (it would run per
-/// call) nor an index lock.
+/// call) nor an index lock. [`fsops::run`] adds that it fetches nothing.
+fn request(cwd: &str, on: Option<&str>, args: &[&str]) -> ExecRequest {
+    ExecRequest::new("git", git_trust::READ_FLAGS.iter().chain(args).copied())
+        .on(on)
+        .cwd(Some(cwd))
+        .timeout(TIMEOUT)
+        .max_output(MAX_OUTPUT)
+}
+
+/// Runs a [`request`] for each list of arguments.
 fn runner<'a>(
     cwd: &'a str,
     on: Option<&'a str>,
 ) -> impl Fn(&[&str]) -> Result<ExecOutput, ExecError> + 'a {
-    move |args| {
-        let req = ExecRequest::new("git", git_trust::READ_FLAGS.iter().chain(args).copied())
-            .on(on)
-            .cwd(Some(cwd))
-            .timeout(TIMEOUT)
-            .max_output(MAX_OUTPUT);
-        remote::run(&req)
-    }
+    move |args| fsops::run(request(cwd, on, args))
 }
 
 /// The status of the work tree around `cwd`; `None` when `cwd` is not inside
@@ -84,14 +95,7 @@ fn status_with(
     if waits(trusted, on, &dir, &top) {
         return refs_only(&git, &top).map(Some);
     }
-    let out = match git(&[
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--branch",
-        "--no-renames",
-        "--untracked-files=all",
-    ]) {
+    let out = match git(&STATUS) {
         Ok(out) if out.code == 0 => out,
         Ok(out) => {
             return Err(match out.stderr_text().trim() {
@@ -791,6 +795,65 @@ mod tests {
         assert!(
             marker.exists(),
             "rev-list did not fetch, so this proves nothing"
+        );
+    }
+
+    /// A promisor remote whose URL names a remote helper, and an object the
+    /// clone lacks: git starts the helper to fetch it. The marks never do.
+    #[cfg(unix)]
+    #[test]
+    fn marks_fetch_nothing_a_partial_clone_lacks() {
+        use std::os::unix::fs::PermissionsExt;
+        if !git_present() {
+            eprintln!("git not found: skipping");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git_in(&root, &["init", "-q"]);
+        std::fs::write(root.join("a.txt"), "1\n").unwrap();
+        git_in(&root, &["add", "-A"]);
+        git_in(&root, &["commit", "-q", "-m", "one"]);
+        git_in(&root, &["config", "remote.origin.url", "zz://payload"]);
+        git_in(&root, &["config", "remote.origin.promisor", "true"]);
+        // HEAD's tree is what git would fetch.
+        let tree = Command::new("git")
+            .args(["rev-parse", "HEAD^{tree}"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let tree = String::from_utf8_lossy(&tree.stdout).trim().to_owned();
+        std::fs::remove_file(root.join(format!(".git/objects/{}/{}", &tree[..2], &tree[2..])))
+            .unwrap();
+        // The helper git finds on PATH for `zz://` leaves a mark.
+        let (bin, marker) = (tmp.path().join("bin"), tmp.path().join("ran"));
+        std::fs::create_dir(&bin).unwrap();
+        let helper = bin.join("git-remote-zz");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let cwd = root.to_string_lossy().into_owned();
+        let status = || request(&cwd, None, &STATUS).env("PATH", &path);
+
+        let _ = fsops::run(status());
+        assert!(
+            !marker.exists(),
+            "git status started the promisor's remote helper"
+        );
+        // Run as it was before, it does: the marker is a live oracle.
+        let _ = yuzora_core::remote::run(&status());
+        assert!(
+            marker.exists(),
+            "git status never started the helper, so this proves nothing"
         );
     }
 

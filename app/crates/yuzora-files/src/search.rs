@@ -12,9 +12,9 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::Value;
 use yuzora_core::git_trust;
-use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
+use yuzora_core::remote::{ExecError, ExecOutput, ExecRequest};
 
-use crate::fsops::{failure, machine, run_sh};
+use crate::fsops::{self, failure, machine, run_sh};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 const LIST_MAX_OUTPUT: u64 = 32 << 20;
@@ -452,7 +452,7 @@ pub fn ripgrep_available(on: Option<&str>) -> bool {
         .on(machine(on))
         .timeout(RG_PROBE_TIMEOUT)
         .max_output(4 << 10);
-    let yes = match remote::run(&req) {
+    let yes = match fsops::run(req) {
         Ok(out) => out.code == 0,
         Err(ExecError::Spawn(_)) => false,
         Err(_) => return false,
@@ -550,7 +550,7 @@ fn grep_with(
         .cwd(Some(root))
         .timeout(GREP_TIMEOUT)
         .max_output(GREP_MAX_OUTPUT);
-    let out = match remote::run(&req) {
+    let out = match fsops::run(req) {
         Ok(out) => out,
         Err(ExecError::Spawn(_)) if machine(on).is_none() => {
             return Err("ripgrep (rg) is not installed".into());
@@ -1334,6 +1334,95 @@ mod tests {
             listed(&format!("{root}/nope"), false, 10)
                 .unwrap_err()
                 .contains("cannot open")
+        );
+    }
+
+    /// A sparse index whose folder's tree the clone lacks, from a promisor
+    /// remote whose URL names a remote helper: `ls-files` starts the helper
+    /// to fetch it. The listing never does.
+    #[cfg(unix)]
+    #[test]
+    fn the_listing_fetches_nothing_a_partial_clone_lacks() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(git) = tool("git") else {
+            eprintln!("git not found: skipping");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join("in")).unwrap();
+        std::fs::create_dir_all(root.join("out/deep")).unwrap();
+        for (f, body) in [("a.txt", "1"), ("in/b.txt", "2"), ("out/deep/c.txt", "3")] {
+            std::fs::write(root.join(f), body).unwrap();
+        }
+        let run = |args: &[&str]| {
+            let out = Command::new(&git)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .current_dir(&root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&out.stdout).trim_end().to_owned()
+        };
+        run(&["init", "-q"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "one"]);
+        run(&["sparse-checkout", "set", "--cone", "--sparse-index", "in"]);
+        run(&["config", "remote.origin.url", "zz://payload"]);
+        run(&["config", "remote.origin.promisor", "true"]);
+        // `out`'s tree is what git would fetch to expand the index.
+        let tree = run(&["rev-parse", "HEAD:out"]);
+        std::fs::remove_file(root.join(format!(".git/objects/{}/{}", &tree[..2], &tree[2..])))
+            .unwrap();
+        // The helper git finds on PATH for `zz://` leaves a mark.
+        let (bin, marker) = (tmp.path().join("bin"), tmp.path().join("ran"));
+        std::fs::create_dir(&bin).unwrap();
+        let helper = bin.join("git-remote-zz");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let top = root.to_string_lossy().into_owned();
+        // The listing as `list_sh` runs it, git allowed.
+        let listing = || {
+            fsops::sh_request(
+                None,
+                LIST_SCRIPT,
+                &[&top, "0", "1"],
+                LIST_TIMEOUT,
+                LIST_MAX_OUTPUT,
+            )
+            .env("PATH", &path)
+        };
+
+        let out = fsops::run(listing()).unwrap();
+        assert!(
+            !marker.exists(),
+            "the listing started the promisor's remote helper"
+        );
+        assert!(out.stdout.starts_with(b"git\0"), "git did not list it");
+        assert!(
+            read_listing(&out, false, 100)
+                .unwrap()
+                .files
+                .iter()
+                .any(|f| f == "a.txt")
+        );
+        // Run as it was before, it does: the marker is a live oracle.
+        let _ = yuzora_core::remote::run(&listing());
+        assert!(
+            marker.exists(),
+            "ls-files never started the helper, so this proves nothing"
         );
     }
 

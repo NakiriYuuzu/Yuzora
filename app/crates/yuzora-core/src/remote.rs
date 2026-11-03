@@ -52,6 +52,10 @@ pub struct ExecRequest {
     pub on: Option<String>,
     pub timeout: Duration,
     pub max_output: u64,
+    /// Set on top of the environment it starts with (`hc exec --env` on a
+    /// machine). Keys are `[A-Z0-9_]`, values hold no NUL: [`run`] refuses
+    /// anything else.
+    pub env: Vec<(String, String)>,
 }
 
 impl ExecRequest {
@@ -63,6 +67,7 @@ impl ExecRequest {
             on: None,
             timeout: DEFAULT_TIMEOUT,
             max_output: DEFAULT_MAX_OUTPUT,
+            env: Vec::new(),
         }
     }
 
@@ -85,6 +90,18 @@ impl ExecRequest {
         self.max_output = bytes;
         self
     }
+
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+}
+
+/// The first of the request's variables [`run`] won't set: a key that isn't
+/// `[A-Z0-9_]+`, or a value with a NUL.
+fn refused_env(req: &ExecRequest) -> Option<&str> {
+    let key_ok = |k: &str| !k.is_empty() && k.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    req.env.iter().find(|(k, v)| !key_ok(k) || v.contains('\0')).map(|(k, _)| k.as_str())
 }
 
 /// What the program printed and how it ended.
@@ -137,6 +154,9 @@ pub fn hc_exec_args(req: &ExecRequest) -> Option<Vec<String>> {
     if let Some(cwd) = &req.cwd {
         args.extend(["--cwd".into(), cwd.clone()]);
     }
+    for (k, v) in &req.env {
+        args.extend(["--env".into(), format!("{k}={v}")]);
+    }
     args.push("--".into());
     args.push(req.program.clone());
     args.extend(req.args.iter().cloned());
@@ -172,6 +192,9 @@ pub fn parse_hc_exec(stdout: &str, stderr: &str, req: &ExecRequest) -> Result<Ex
 
 /// Runs the request and waits for it (blocking).
 pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
+    if let Some(key) = refused_env(req) {
+        return Err(ExecError::Spawn(format!("cannot run {}: {key:?} is not an environment variable it may set", req.program)));
+    }
     match hc_exec_args(req) {
         Some(args) => {
             // hc's JSON carries both streams in base64 (4/3 the size), whole:
@@ -184,6 +207,7 @@ pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
                 on: None,
                 timeout: req.timeout + REMOTE_GRACE,
                 max_output: answer,
+                env: Vec::new(),
             };
             let out = run_local(&local)?;
             if out.stdout.len() as u64 >= answer {
@@ -195,13 +219,19 @@ pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     }
 }
 
-fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
+/// The program `req` names, set up as [`run_local`] starts it here.
+fn command(req: &ExecRequest) -> Command {
     let mut cmd = Command::new(&req.program);
-    cmd.args(&req.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
     // Its own process group, so a timeout can end everything it started.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd
+}
+
+fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
+    let mut cmd = command(req);
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
@@ -362,6 +392,49 @@ mod tests {
         assert_eq!(hc_exec_args(&ExecRequest::new("ls", Vec::<String>::new()).on(Some(""))), None);
         let tiny = ExecRequest::new("true", Vec::<String>::new()).on(Some("m")).timeout(Duration::from_millis(1));
         assert_eq!(hc_exec_args(&tiny).unwrap()[5], "1");
+    }
+
+    #[test]
+    fn variables_are_set_only_when_asked_for() {
+        // None asked for: the hc arguments and the local command are as they were.
+        let plain = ExecRequest::new("git", ["status"]).on(Some("m")).cwd(Some("/r"));
+        assert_eq!(hc_exec_args(&plain).unwrap(), ["exec", "--json", "--on", "m", "--timeout", "30", "--cwd", "/r", "--", "git", "status"]);
+        let cmd = command(&plain);
+        assert_eq!(cmd.get_envs().count(), 0);
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["status"]);
+        // Asked for: on top of the rest, there and here.
+        let set = plain.env("GIT_NO_LAZY_FETCH", "1").env("A_9", "x=y");
+        assert_eq!(
+            hc_exec_args(&set).unwrap(),
+            ["exec", "--json", "--on", "m", "--timeout", "30", "--cwd", "/r", "--env", "GIT_NO_LAZY_FETCH=1", "--env", "A_9=x=y", "--", "git", "status"]
+        );
+        let cmd = command(&set);
+        let envs: Vec<_> = cmd.get_envs().map(|(k, v)| (k.to_str().unwrap(), v.and_then(|v| v.to_str()))).collect();
+        assert_eq!(envs, [("A_9", Some("x=y")), ("GIT_NO_LAZY_FETCH", Some("1"))]);
+        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["status"]);
+    }
+
+    #[test]
+    fn variables_it_may_not_set_are_refused() {
+        for (k, v) in [("lower", "1"), ("A=B", "1"), ("", "1"), ("A-B", "1"), ("PATH ", "1"), ("\u{c9}", "1"), ("OK", "a\0b")] {
+            let req = ExecRequest::new("git", ["status"]).env("OK", "1").env(k, v);
+            assert_eq!(refused_env(&req), Some(k), "{k:?}={v:?}");
+            assert_eq!(refused_env(&req.on(Some("m"))), Some(k));
+        }
+        assert_eq!(refused_env(&ExecRequest::new("git", ["status"]).env("GIT_ALLOW_PROTOCOL", "").env("_1", "a b")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_local_run_sees_its_variables_and_runs_none_it_refuses() {
+        let out = run(&ExecRequest::new("sh", ["-c", "printf %s \"$YZ_EXEC_T\""]).env("YZ_EXEC_T", "set")).unwrap();
+        assert_eq!(out.stdout_text(), "set");
+        let mark = std::env::temp_dir().join(format!("yuzora-exec-env-{}", std::process::id()));
+        let _ = std::fs::remove_file(&mark);
+        let script = format!("touch '{}'", mark.display());
+        let refused = run(&ExecRequest::new("sh", ["-c", script.as_str()]).env("bad", "1"));
+        assert!(matches!(&refused, Err(ExecError::Spawn(e)) if e.contains("\"bad\"")), "{refused:?}");
+        assert!(!mark.exists(), "it ran");
     }
 
     #[test]
