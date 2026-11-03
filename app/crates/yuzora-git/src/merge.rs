@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Value, json};
 
 use crate::diff::{self, Change};
-use crate::diffview::{MAX_SIDE, blob, worktree, write_index};
+use crate::diffview::{blob, is_too_large, worktree, write_index};
 use crate::exec::{Git, GitError, GitResult};
 use crate::lru::Lru;
 use crate::repo::Repo;
@@ -161,8 +161,9 @@ pub struct ConflictSession {
     /// resolving checks them.
     stages: String,
     file: Option<Vec<u8>>,
-    /// A side or the file is past [`MAX_SIDE`], so only its start was read:
-    /// nothing is merged here, sides are taken whole ([`accept`]).
+    /// A side or the file is past [`is_too_large`] (over 16 MiB, when only
+    /// its start was read, or of too many lines): nothing is merged here,
+    /// sides are taken whole ([`accept`]).
     too_large: bool,
 }
 
@@ -196,7 +197,7 @@ impl ConflictSession {
             std::mem::swap(&mut ours, &mut theirs);
         }
         let (stages, file) = (stages(&repo, path)?, worktree(&repo, path));
-        let too_large = [&base, &ours, &theirs, &file].iter().any(|s| s.as_ref().is_some_and(|x| x.len() > MAX_SIDE));
+        let too_large = [&base, &ours, &theirs, &file].iter().any(|s| s.as_deref().is_some_and(is_too_large));
         let chunks = if too_large {
             Vec::new()
         } else {
@@ -210,6 +211,10 @@ impl ConflictSession {
     }
 
     fn sides(&self) -> [Vec<&[u8]>; 3] {
+        // Too large: no chunks to show, so no lines either.
+        if self.too_large {
+            return [Vec::new(), Vec::new(), Vec::new()];
+        }
         let empty: &[u8] = &[];
         [diff::lines(self.base.as_deref().unwrap_or(empty)), diff::lines(self.ours.as_deref().unwrap_or(empty)), diff::lines(self.theirs.as_deref().unwrap_or(empty))]
     }
@@ -266,7 +271,7 @@ impl ConflictSession {
     /// unless `markers` (git's conflict markers are written).
     pub fn result(&self, choices: &Value, markers: bool) -> GitResult<Vec<u8>> {
         if self.too_large {
-            return Err(GitError::Other(format!("{}: too large to merge here (over 16 MiB); take one side whole", self.path)));
+            return Err(GitError::Other(format!("{}: too large to merge here (over 16 MiB or 1,000,000 lines); take one side whole", self.path)));
         }
         let [b, o, t] = self.sides();
         let crlf = [&b, &o, &t].iter().any(|s| s.iter().any(|l| l.ends_with(b"\r\n")));
@@ -376,6 +381,13 @@ pub fn accept(repo: &Repo, paths: &[String], side: &str) -> GitResult<Value> {
         _ => return Err(GitError::Other(format!("unknown side {side}"))),
     };
     let stage = if git_side == "ours" { 2 } else { 3 };
+    // Resolved elsewhere since the pane read it: a missing side is then no
+    // deletion, and taking a side would undo what was done there.
+    for p in paths {
+        if repo.run(Git::read(["ls-files", "-u", "-z", "--", p]))?.into_result()?.is_empty() {
+            return Err(GitError::Other(format!("{p} is no longer in conflict; reload it")));
+        }
+    }
     for p in paths {
         // A side that deleted the file: accepting it deletes the file.
         let exists = repo.run(Git::read(["cat-file", "-e", &format!(":{stage}:{p}")]))?.ok();
@@ -506,6 +518,20 @@ mod tests {
     }
 
     #[test]
+    fn taking_a_side_of_a_conflict_resolved_elsewhere_deletes_nothing() {
+        let s = conflicted();
+        // Resolved in a terminal before the pane refreshed: back to ours,
+        // which is HEAD, so `git rm` would take it.
+        s.git(&["checkout", "--ours", "--", "f.txt"]);
+        s.git(&["add", "--", "f.txt"]);
+        let r = accept(&s.repo, &["f.txt".into()], "theirs");
+        assert!(std::path::Path::new(&s.repo.abs("f.txt")).exists(), "took the missing side as a deletion");
+        assert!(r.as_ref().is_err_and(|e| e.to_string().contains("no longer in conflict")), "{r:?}");
+        assert_eq!(s.read("f.txt"), "TOP\nOURS\nend\n");
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "");
+    }
+
+    #[test]
     fn an_open_conflict_stops_once_its_folder_needs_trust() {
         let s = conflicted();
         let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
@@ -625,6 +651,21 @@ mod tests {
         assert!(c.result(&json!({}), true).is_err());
         assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
         assert!(!s.git(&["ls-files", "-u", "--", "f.txt"]).is_empty(), "still conflicted");
+    }
+
+    #[test]
+    fn a_conflict_of_too_many_lines_is_refused_too() {
+        let s = scratch();
+        s.commit("f.txt", "top\nbase\n", "base");
+        s.git(&["switch", "-q", "-c", "other"]);
+        s.commit("f.txt", "top\nTHEIRS\n", "theirs");
+        s.git(&["switch", "-q", "main"]);
+        s.commit("f.txt", &format!("top\nOURS\n{}", "\n".repeat(crate::diffview::MAX_LINES)), "ours");
+        assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        let v = c.view();
+        assert_eq!((v["tooLarge"].clone(), v["chunks"].as_array().map(Vec::len)), (json!(true), Some(0)));
+        assert!(c.resolve(&json!({ "1": "ours" })).unwrap_err().to_string().contains("too large"));
     }
 
     #[test]

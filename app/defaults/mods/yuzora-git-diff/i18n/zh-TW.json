@@ -4,7 +4,7 @@
   "empty": "在 Git 側欄選一個變更的檔案，差異會顯示在這裡。",
   "loading": "正在讀取檔案…",
   "failed": "Git 執行失敗。",
-  "tooLarge": "檔案太大（超過 16 MiB），無法比較。",
+  "tooLarge": "檔案太大（超過 16 MiB 或 100 萬行），無法比較。",
   "binary": "二進位檔案：沒有文字差異。",
   "identical": "沒有差異。",
   "modes": "檔案模式 {from} → {to}",

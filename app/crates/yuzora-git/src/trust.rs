@@ -62,7 +62,12 @@ fn trusted() -> BTreeSet<String> {
 /// What keeps git from running on its own in this repo: its program keys,
 /// unless the folder is trusted (empty: nothing does).
 pub fn pending(repo: &Repo) -> GitResult<Vec<String>> {
-    if trusted().contains(&repo.id) { Ok(Vec::new()) } else { repo_programs(repo) }
+    if trusted_folder(repo) { Ok(Vec::new()) } else { repo_programs(repo) }
+}
+
+/// Whether the person trusted the folder (not only that nothing waits).
+pub fn trusted_folder(repo: &Repo) -> bool {
+    trusted().contains(&repo.id)
 }
 
 /// Every other call on the repo goes through here first: while the folder
@@ -82,6 +87,10 @@ pub fn check(repo: &Repo) -> GitResult<()> {
 
 /// The start of [`check`]'s error, for the panes to recognise.
 pub const UNTRUSTED: &str = "untrusted folder: trust it in the Git sidebar first";
+
+/// The start of a log's error when, before the folder is trusted, it needs
+/// objects its partial clone lacks (it fetches none until then).
+pub const LAZY_FETCH: &str = "objects missing from this partial clone: trust the folder to fetch them";
 
 /// Trusts the repo's folder (here or on its machine) from now on.
 pub fn trust(repo: &Repo) -> GitResult<Value> {

@@ -510,11 +510,16 @@ fn count_untracked<'a>(repo: &Repo, paths: impl Iterator<Item = &'a String>) -> 
         .take(500)
         .filter_map(|p| {
             let abs = repo.abs(p);
-            let meta = std::fs::metadata(&abs).ok()?;
-            if !meta.is_file() || meta.len() > COUNT_LINES_MAX {
+            // A link counts as git records it, its target: never the file
+            // it points to (which may be outside the work tree).
+            let meta = std::fs::symlink_metadata(&abs).ok()?;
+            let bytes = if meta.file_type().is_symlink() {
+                crate::repo::link_bytes(std::fs::read_link(&abs).ok()?)
+            } else if meta.is_file() && meta.len() <= COUNT_LINES_MAX {
+                std::fs::read(&abs).ok()?
+            } else {
                 return None;
-            }
-            let bytes = std::fs::read(&abs).ok()?;
+            };
             if bytes[..bytes.len().min(8000)].contains(&0) {
                 return None;
             }
@@ -714,6 +719,22 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         assert_eq!(v["counts"]["unstaged"], 0);
         assert_eq!(v["counts"]["staged"], 1, "the rename stays");
         assert_eq!(v["counts"]["untracked"], 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_untracked_link_counts_its_target_not_the_file_it_points_to() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        // A link to a three-line file outside the repo: git records the
+        // link's target (one line), and nothing reads the file.
+        let out = tempfile::tempdir().unwrap();
+        std::fs::write(out.path().join("far.txt"), "1\n2\n3\n").unwrap();
+        std::os::unix::fs::symlink(out.path().join("far.txt"), format!("{}/link", s.root())).unwrap();
+        refresh(&s.repo).unwrap();
+        let v = snapshot(&s.repo);
+        assert_eq!(v["untracked"][0]["path"], "link");
+        assert_eq!(v["untracked"][0]["add"], 1);
     }
 
     #[cfg(unix)]

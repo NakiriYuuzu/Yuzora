@@ -60,7 +60,7 @@ export interface Status {
 }
 export interface Outcome { ok: boolean; output?: string; conflicts?: string[]; operation?: string; [k: string]: unknown }
 export interface LogFilter { branches?: string[]; users?: string[]; since?: string; until?: string; paths?: string[]; text?: string; regex?: boolean; matchCase?: boolean; hashes?: string[]; range?: string; noMerges?: boolean; follow?: boolean }
-export interface LogInfo { id: number; generation: number; rows: number; loading: boolean; stage: string; complete: boolean; error: string | null; graph: boolean; width: number; firstMs: number | null; fullMs: number | null; branch: string | null }
+export interface LogInfo { id: number; generation: number; rows: number; loading: boolean; stage: string; complete: boolean; error: string | null; lazyFetch: boolean; graph: boolean; width: number; firstMs: number | null; fullMs: number | null; branch: string | null }
 export interface LogRow { row: number; hash: string; short: string; subject: string | null; author: string | null; email: string | null; time: number | null; refs: { name: string; kind: "head" | "local" | "remote" | "tag" }[]; head: boolean; merge: boolean }
 /** The yuzora-git crate's version (Yuzora's). */
 export function version(): string;
@@ -429,7 +429,7 @@ pub fn host_module() -> HostModule {
         let folder = s(a.get(1).unwrap_or(&Value::Null)).ok_or_else(|| GitError::other("patchSave needs a folder"))?;
         let name = s(a.get(2).unwrap_or(&Value::Null)).unwrap_or("changes.patch").replace(['/', '\\'], "-");
         let path = std::path::Path::new(folder).join(&name);
-        std::fs::write(&path, text).map_err(|e| GitError::Other(format!("cannot write {}: {e}", path.display())))?;
+        write_not_through_a_link(&path, text.as_bytes()).map_err(|e| GitError::Other(format!("cannot write {}: {e}", path.display())))?;
         Ok(json!(path.to_string_lossy()))
     });
     m = repo_fn(m, "patchApply", |r, a| ops::patch_apply(&r, a.first().and_then(Value::as_str).unwrap_or_default(), a.get(1).unwrap_or(&Value::Null)));
@@ -463,6 +463,20 @@ pub fn host_module() -> HostModule {
     });
     m = repo_fn(m, "rewordInMemory", |r, a| rebase::reword_in_memory(&r, s(&a[0]).unwrap_or_default(), a.get(1).and_then(Value::as_str).unwrap_or_default()));
     m
+}
+
+/// Writes a saved file, never through a symlink in its place (a repo can
+/// put one where the patch goes, pointing at a file of the person's).
+fn write_not_through_a_link(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::other("a symbolic link: not followed"));
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    // Also when one appears between the look and the open.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NOFOLLOW);
+    std::io::Write::write_all(&mut o.open(path)?, bytes)
 }
 
 /// `from_host` re-exported for tests.
@@ -519,6 +533,31 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("the log never loaded");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_patch_never_goes_through_a_link() {
+        let s = crate::repo::testing::scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.write("a.txt", "2\n");
+        // The repo's own `changes.patch`, a link to a file outside it.
+        let out = tempfile::tempdir().unwrap();
+        let outside = out.path().join("keep.txt");
+        std::fs::write(&outside, "outside\n").unwrap();
+        std::os::unix::fs::symlink(&outside, format!("{}/changes.patch", s.root())).unwrap();
+        let r = repo::open(s.root(), None).unwrap();
+        let m = host_module();
+        let save = |name: &str| {
+            let args = HostArguments::new([HostValue::Str(r.id.clone()), to_host(&json!({})), HostValue::Str(s.root().to_owned()), HostValue::Str(name.to_owned())]);
+            crate::repo::tests::futures_lite_block(m.begin("patchSave", &args).unwrap())
+        };
+        let e = save("changes.patch").unwrap_err();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside\n", "wrote through the link");
+        assert!(e.message().contains("symbolic link"), "{}", e.message());
+        // Another name saves as before.
+        save("other.patch").unwrap();
+        assert!(std::fs::read_to_string(format!("{}/other.patch", s.root())).unwrap().contains("+2"));
     }
 
     #[cfg(unix)]

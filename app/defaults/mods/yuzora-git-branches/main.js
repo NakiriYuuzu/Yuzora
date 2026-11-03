@@ -4,7 +4,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { props, closeOverlay, openOverlay, theme, run, panes, setShared, notify } from "herdr";
-import { t } from "yuzora:core";
+import { t, tokens } from "yuzora:core";
 import { open, branches, checkout, branchCreate, branchRename, branchDelete, branchTrack, merge, rebase, fetch, pull, stashPush, tagDelete, tagPush, cancel, settings as gitSettings } from "yuzora:git";
 
 const LIMIT = 30;
@@ -264,7 +264,7 @@ export default class GitBranches extends View {
       .when(isRef, (el) => el.child(div().w(12).text_color(e.current ? th.accent : th.dim).child(e.kind === "tag" ? "◆" : e.current ? "●" : "⎇")))
       .child(div().flex_1().min_w(0).truncate().child(isRef ? e.name : e.label))
       .when(e.kind === "local" && (e.ahead || e.behind), (el) => el.child(div().text_size(10.5).text_color(th.muted).child(`↑${e.ahead} ↓${e.behind}`)))
-      .when(e.kind === "local" && e.gone, (el) => el.child(div().text_size(10.5).text_color(th.ansi1).child(t("gone"))))
+      .when(e.kind === "local" && e.gone, (el) => el.child(div().text_size(10.5).text_color(tokens().file_status?.deleted ?? th.ansi1).child(t("gone"))))
       .when(Boolean(e.worktree), (el) => el.child(div().text_size(10.5).text_color(th.dim).child(t("worktree"))))
       .when(isRef, (el) => el.child(div().text_size(10).text_color(th.dim).child("›")));
   }
