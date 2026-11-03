@@ -36,7 +36,7 @@ describe("GitHub Pages product page", () => {
 
   it("contains the current product narrative and download surfaces", () => {
     expect(page.querySelectorAll(".loop-card")).toHaveLength(3)
-    expect(page.querySelectorAll("img[data-imgstem]")).toHaveLength(4)
+    expect(page.querySelectorAll("img[data-imgstem]")).toHaveLength(5)
     expect(page.querySelector("video")).toBeNull()
     expect(page.querySelectorAll(".bento-card")).toHaveLength(5)
     expect(page.querySelectorAll(".flow-node")).toHaveLength(2)
@@ -117,7 +117,7 @@ describe("GitHub Pages product page", () => {
   it("ships every zh/en screenshot at the size its markup reserves", () => {
     const images = [...page.querySelectorAll("img[data-imgstem]")]
     expect(images.map((image) => image.dataset.imgstem)).toEqual([
-      "yuzora-workspace", "feature-spaces-agents", "feature-database", "feature-git",
+      "yuzora-workspace", "feature-spaces-agents", "feature-files", "feature-database", "feature-git",
     ])
     for (const image of images) {
       const size = [Number(image.getAttribute("width")), Number(image.getAttribute("height"))]
@@ -142,7 +142,7 @@ describe("GitHub Pages product page", () => {
     expect(page.title).toBe(I18N["zh-Hant"]["meta.title"])
     expect(page.querySelector('meta[name="description"]').content).toBe(I18N["zh-Hant"]["meta.description"])
     expect(page.querySelector('meta[property="og:image"]').content).toMatch(/^https:\/\//)
-    expect(page.querySelectorAll("img[data-imgstem][data-i18n-alt]")).toHaveLength(4)
+    expect(page.querySelectorAll("img[data-imgstem][data-i18n-alt]")).toHaveLength(5)
     expect(page.querySelector("#gh-stars[data-i18n-aria-label='github.stars']")).not.toBeNull()
     expect(appSource).toContain('I18N[currentLang]["github.stars"]')
     expect(appSource).toContain('replace("{{count}}", starsNum.textContent)')

@@ -617,14 +617,14 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - `src/demo/`（Tauri 版的互動 Demo，已不部署）使用正式 AppShell 與隔離的記憶體 transport，範例終端機、檔案、Git 與 SQL 不連接真實 host；桌面 entry 不引用 Demo。不可把 Demo 擴充成公開的原生 IPC／主機代理。
 - 中文首頁與 `/en/` 各有 canonical、hreflang、社群預覽及 SoftwareApplication JSON-LD。語言切換使用真實連結，不以 localStorage 覆寫網址的語言。新增 markup key 時，`site/i18n.js` 的 `zh-Hant` 與 `en` dictionaries 必須同時提供，中文 HTML 也須同步；`site:seo` 在建置時轉換英文截圖與可及性標籤。詳見 [SEO 維護與搜尋收錄](seo.md)。
 - Theme 遵循系統偏好並保存至 `yuzora-theme`；no-JS、mobile 與 `prefers-reduced-motion` 必須保持內容可讀，不得依賴動畫才能看見主要資訊。
-- Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
+- Hero、四段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
 
 ### 產品頁 smoke test
 
 - 中英文 canonical URL 可開啟，HTTP 正確導向 HTTPS；`/Yuzora/sitemap.xml` 只列出兩個正式語言網址。
-- Hero、三步工作流、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 可讀。
+- Hero、三步工作流、四段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 可讀。
 - 中文／英文切換後，全部截圖、placeholder、meta content 與 accessibility labels 正確。
 - Light/dark theme 初始值、手動切換與 persistence 正確；mobile 沒有水平捲軸，no-JS 與 reduced motion 不會隱藏主要內容。
 - 裝置偵測只推薦支援的平台與架構，主要下載 CTA 指向固定檔名 Release assets。
@@ -634,7 +634,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 
 ### 產品頁截圖
 
-Hero 與三段 feature 都是 beta.2 App 的靜態截圖，中英文各一張：`site/assets/yuzora-workspace-{zh,en}.png`（Hero，也是社群預覽圖）與 `feature-{spaces-agents,database,git}-{zh,en}.png`。尺寸一律 1600×1025，與 `<img>` 的 `width`／`height` 及 `og:image:width`／`height` 相同（`tests/site-page.test.js`、`tests/site-seo.test.js` 會讀 PNG 檔頭比對）。
+Hero 與四段 feature 都是 beta.2 App 的靜態截圖，中英文各一張：`site/assets/yuzora-workspace-{zh,en}.png`（Hero，也是社群預覽圖）與 `feature-{spaces-agents,files,database,git}-{zh,en}.png`。尺寸一律 1600×1025，與 `<img>` 的 `width`／`height` 及 `og:image:width`／`height` 相同（`tests/site-page.test.js`、`tests/site-seo.test.js` 會讀 PNG 檔頭比對）。
 
 重拍時照 AGENTS.md 的隔離規則執行 `herdr-app`，不得碰到真實的 app home、herdr-core session 或 repo：
 
@@ -642,12 +642,12 @@ Hero 與三段 feature 都是 beta.2 App 的靜態截圖，中英文各一張：
 2. 素材全部放在暫存目錄：一個有分支、tag、merge 與已暫存／未暫存／未追蹤變更的 Git repo，一個 SQLite 資料庫，再加兩個空 repo 當其他 Space。作者、email 與資料都用虛構內容。
 3. 啟動前在 app home 寫入 `shared.json` 的 `"frame.welcomed": "skipped"`，以及 `yuzora/settings.json` 的 `general.locale`（`zh-TW`／`en`）、`git.diffMode: "unified"`（窄 pane 的並排 diff 只看得到舊版）與 SQLite 連線。
 4. 新 home 第一次啟動會出現「已更新到新版」提示：先 `do space.new` 建好三個 Space（argv 用假 agent，`printf '\033]7501;state=<working|blocked|done>:app=<claude|codex|pi>\033\\'` 後 `sleep`），`do app.quit` 後再啟動一次。
-5. 側欄會顯示本機 hostname。第二次啟動後，只在這個隔離 home 的 `mods/yuzora-sidebar-workspace/main.js` 把 `this.host = hostname();` 換成固定名稱，等熱載入後再拍。
+5. 側欄會顯示本機 hostname。第二次啟動後，只在這個隔離 home 的 `mods/yuzora-sidebar-workspace/main.js` 把 `this.host = hostname();` 換成固定名稱，等熱載入後再拍。檔案樹的資料夾要點開才會展開；Files 截圖同樣只在隔離 home 的 `mods/yuzora-sidebar-files/main.js` 把 `this.open` 的初始值設成 `["src"]`。
 6. 用 `do space.select`、`do pane.split --mod <mod> --props …`、`do layout.select '{"stack":"yuzora-sidebar","child":"yuzora-sidebar-<模式>"}'` 排出畫面，等幾秒讓資料載完後 `shot <png>`。
 7. 每個 locale 拍完 `do app.quit`，並對該隔離 `HC_SESSION` 執行 `hc server stop`。
 8. `shot` 輸出 2560×1640，以 `sips -Z 1600` 縮成 1600×1025 後覆寫 `site/assets/`。中英文要逐張檢查：沒有提示 toast、沒有真實 hostname、使用者名稱或路徑。
 
-改動畫面內容時同步 `site/index.html` 的 `alt` 與 `site/i18n.js` 的 `media.*`／`hero.alt`。Files 側欄的截圖等 L5（#192）合併後補拍。Browser visual QA 仍需當次明確授權，不能以靜態檢查取代。
+改動畫面內容時同步 `site/index.html` 的 `alt` 與 `site/i18n.js` 的 `media.*`／`hero.alt`。Browser visual QA 仍需當次明確授權，不能以靜態檢查取代。
 
 ---
 
