@@ -1038,6 +1038,11 @@ with these differences.
 - The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+- A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
+  `yuzora-new-space` dialog to pick the folder and answers `{"asked": "folder"}`; no Space exists yet. A folder
+  that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with
+  `name`, `folder`, `tab`, `argv` or `task` create the Space as above. A person's `tab.new` with no arguments
+  while no Space is open would start one, so it opens the dialog too.
 - Herdr's Files and Changes panels are off in Yuzora until turned on (the welcome's third page, or Settings >
   Yuzora > General > Panels): shared `"workspace.panels"` lists the ones on, and unset means none. The tab bar
   shows a button only for those; Yuzora's sidebar has its own Files and Git modes.

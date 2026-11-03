@@ -7,9 +7,11 @@
 //! - [`workspace`]: the workspace sidebar's tree, attention list and scopes.
 //! - [`badges`]: Spaces' badges (initial and kept color), for every header.
 //! - [`git`]: a folder's branch and ahead/behind for the status bar.
+//! - [`space`]: a new Space's folder, resolved where it will live, and the Space already there.
 
 pub mod badges;
 pub mod git;
+pub mod space;
 pub mod workspace;
 
 use yuzora_core::host::{arg, error, opt_str, to_host};
@@ -64,11 +66,29 @@ export function agentBrand(app: string | null, key: string | null): string | nul
  *  commits only, so nothing the repo's own config names (filters, hooks, ssh) runs. changed and conflicted need
  *  git status: null until the folder is trusted. */
 export function gitStatus(cwd: string, options?: { on?: string | null }): Promise<GitSummary | null>;
+/** Where a new Space for folder would start on machine on (null: this one), 10 s at most there: the folder's real path
+ *  (symlinks, ~ and trailing separators resolved), its last name, and the id of a Space among spaces (that machine's)
+ *  already rooted there. error: "not_a_folder", or "unreachable" with detail when the machine didn't answer. */
+export function planSpace(folder: string, spaces: { id: string; folder: string }[], options?: { on?: string | null }): Promise<{ folder: string; name: string; existing: string | null } | { error: "not_a_folder" | "unreachable"; detail?: string }>;
+/** Starts making a Space on machine (null: this computer): this dialog's lease, or null while another dialog holds one
+ *  there. With lease, holds it again right before making the Space: null if another dialog took it meanwhile (a lease
+ *  not held again for 10 minutes can be taken). Call endSpace with it after. */
+export function beginSpace(machine: string | null, lease?: number | null): number | null;
+/** The Space that lease started is made or abandoned; another dialog's lease stays. */
+export function endSpace(machine: string | null, lease: number): null;
 "#;
 
 /// A host name without its domain; None when there's nothing left.
 fn short_host(name: &str) -> Option<String> {
     Some(name.trim().split('.').next().unwrap_or_default().to_owned()).filter(|s| !s.is_empty())
+}
+
+/// A Space as `planSpace` takes it.
+#[derive(serde::Deserialize)]
+struct Rooted {
+    id: String,
+    #[serde(default)]
+    folder: String,
 }
 
 /// A Space as `spaceBadges` takes it.
@@ -115,6 +135,33 @@ pub fn host_module() -> HostModule {
                 Ok(found.map_or(HostValue::Null, |s| to_host(&s.to_json())))
             })
         })
+        .async_function("planSpace", |a| {
+            let folder = a.string(0)?.to_owned();
+            let spaces: Vec<Rooted> = serde_json::from_value(arg(a, 1)).map_err(|e| error(format!("planSpace: {e}")))?;
+            let spaces: Vec<(String, String)> = spaces.into_iter().map(|s| (s.id, s.folder)).collect();
+            let on = opt_str(a, 2, "on");
+            let (tx, rx) = async_channel::bounded(1);
+            std::thread::Builder::new()
+                .name("yuzora-shell-space".into())
+                .spawn(move || {
+                    let _ = tx.send_blocking(space::plan(&folder, &spaces, on.as_deref()));
+                })
+                .map_err(error)?;
+            Ok(async move {
+                let planned = rx.recv().await.map_err(|_| error("the folder check was lost"))?;
+                Ok(to_host(&planned.map_or_else(|p| p.to_json(), |p| serde_json::to_value(p).unwrap_or_default())))
+            })
+        })
+        .function("beginSpace", |a| {
+            let lease = a.get(1).and_then(HostValue::as_number).map(|n| n as u64);
+            Ok(space::begin(a.get(0).and_then(HostValue::as_str).unwrap_or_default(), lease).map_or(HostValue::Null, |l| HostValue::Number(l as f64)))
+        })
+        .function("endSpace", |a| {
+            if let Some(lease) = a.get(1).and_then(HostValue::as_number) {
+                space::end(a.get(0).and_then(HostValue::as_str).unwrap_or_default(), lease as u64);
+            }
+            Ok(HostValue::Null)
+        })
 }
 
 #[cfg(test)]
@@ -130,6 +177,16 @@ mod tests {
         assert_eq!(m.name(), "yuzora:shell");
         assert_eq!(m.call("version", &HostArguments::new([])).unwrap(), HostValue::Str(yuzora_core::VERSION.into()));
         assert!(m.is_async("gitStatus"));
+        assert!(m.is_async("planSpace"));
+        let busy = |f: &str, lease: HostValue| m.call(f, &HostArguments::new([HostValue::Str("lib-test".into()), lease])).unwrap();
+        let first = busy("beginSpace", HostValue::Null);
+        assert!(first.as_number().is_some(), "{first:?}");
+        assert_eq!(busy("beginSpace", HostValue::Null), HostValue::Null, "one dialog per machine");
+        assert_eq!(busy("beginSpace", first.clone()), first, "the dialog holds its own lease again");
+        assert_eq!(busy("endSpace", first), HostValue::Null);
+        let second = busy("beginSpace", HostValue::Null);
+        assert!(second.as_number().is_some());
+        busy("endSpace", second);
         assert_eq!(short_host("yuzu-mbp.local\n"), Some("yuzu-mbp".into()));
         assert_eq!(short_host(".local"), None);
         assert!(matches!(m.call("hostname", &HostArguments::new([])).unwrap(), HostValue::Str(_) | HostValue::Null));
