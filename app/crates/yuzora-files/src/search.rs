@@ -1405,19 +1405,14 @@ mod tests {
             .env("PATH", &path)
         };
 
+        // Without the tree git can't list it: some versions say so, some
+        // list what they have, some crash. None may fetch it.
         let out = fsops::run(listing()).unwrap();
         assert!(
             !marker.exists(),
             "the listing started the promisor's remote helper"
         );
         assert!(out.stdout.starts_with(b"git\0"), "git did not list it");
-        assert!(
-            read_listing(&out, false, 100)
-                .unwrap()
-                .files
-                .iter()
-                .any(|f| f == "a.txt")
-        );
         // Run as it was before, it does: the marker is a live oracle.
         let _ = yuzora_core::remote::run(&listing());
         assert!(
