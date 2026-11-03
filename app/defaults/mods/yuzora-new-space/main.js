@@ -73,8 +73,9 @@ export default class NewSpace extends View {
   }
 
   submit(cx) {
-    const folder = this.input.value().trim();
-    if (!folder || this.state === "checking") return;
+    // As typed: a folder's name may end in a space.
+    const folder = this.input.value();
+    if (!folder.trim() || this.state === "checking") return;
     cx.spawn(async (cx) => this.create(folder, cx));
   }
 
