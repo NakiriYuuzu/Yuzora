@@ -10,6 +10,7 @@ import { t, tokens } from "yuzora:core";
 import {
   open, changed, cancel, branches, stashes, stashPush, stashAction, commitDetails, tagCreate, tagDelete, tagPush, remotes, remoteEdit,
   fetch as gitFetch, worktrees, worktreeAction, submodules, submoduleUpdate, patchCreate, patchSave, patchApply, config, setConfig,
+  settings as gitSettings,
 } from "yuzora:git";
 
 const TABS = ["stashes", "tags", "remotes", "worktrees", "submodules", "patches", "identity"];

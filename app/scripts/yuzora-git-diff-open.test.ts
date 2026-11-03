@@ -24,6 +24,21 @@ test("each opener has the same showDiff and placeDiff, and the diff pane the sam
   expect(fn(sources["yuzora-git-diff"], "placeDiff")).toBe(place);
 });
 
+// world() below hands the helpers every name they call, so only this catches
+// a mod that calls one it never imported (a ReferenceError on the first click).
+test("every function the diff helpers call is imported by the mod they live in", () => {
+  const imported = (src: string) =>
+    new Set([...src.matchAll(/^import\s*\{([\s\S]*?)\}\s*from/gm)].flatMap((m) => m[1].split(",").map((s) => s.trim().split(/\s+as\s+/).pop()!).filter(Boolean)));
+  const missing: string[] = [];
+  for (const [m, src] of Object.entries(sources)) {
+    const known = new Set([...imported(src), ...[...src.matchAll(/^function ([\w$]+)\(/gm)].map((f) => f[1]), "if", "return"]);
+    const code = [fn(src, "showDiff"), fn(src, "placeDiff"), src.match(/\n {2}keep\(\) (\{[\s\S]*?\n {2}})\n/)?.[1]].filter(Boolean).join("\n");
+    expect(code).toContain("placeDiff");
+    for (const c of code.matchAll(/(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(/g)) if (!known.has(c[1])) missing.push(`${m}: ${c[1]}`);
+  }
+  expect([...new Set(missing)]).toEqual([]);
+});
+
 // The functions with herdr and the settings stubbed: what they asked for.
 function world(settings: object, diffPane: string | null, focusedPane: string | null = "p1") {
   const calls: unknown[][] = [];

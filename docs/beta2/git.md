@@ -38,12 +38,12 @@ yuzora-git-settings ┘
 ### pane 之間的約定
 
 - 每個 mod 用 `open(cwd, on)` 取得 repo（同一個 `<machine>:<root>` 只開一次，watcher 也只有一個），之後的函式都帶 `repo.id`。
-- 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求。
-- diff 例外，依 Git 設定開啟（側欄、log 詳情、blame、repo pane 四個入口各帶一份相同的 `showDiff`／`placeDiff`，`scripts/yuzora-git-diff-open.test.ts` 守住四份一致與各種設定）：
+- 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求。log、blame、repo pane 用 props，可以同時開多個。
+- diff 例外，依 Git 設定開啟（側欄、log 詳情、blame、repo pane 四個入口各帶一份相同的 `showDiff`／`placeDiff`，`scripts/yuzora-git-diff-open.test.ts` 守住四份一致、每個 mod 都 import 了它們呼叫的函式，以及各種設定）：
   - 已有 diff pane 且 `diffFollowPane`（預設開）：照上面的 shared key 交棒。
   - 否則 `diffOpenIn: "modal"`（預設）：`openOverlay({mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props})`。modal 只看自己的 props，不跟 shared key；Esc、✕ 或點旁邊關閉；Annotate、歷史開新分頁後也關閉。
   - `diffOpenIn: "pane"`：直接開在「保留」會放的位置。
-  - 「保留」：依 `diffKeepIn`，`split`（預設）在焦點 pane 右側 `pane.split {direction: "right", mod, props}`，沒有焦點 pane 或設成 `tab` 時 `tab.new`；新 pane 帶著 modal 裡的檢視（並排／合併、空白、context），然後關閉 modal。log、blame、repo pane 用 props，可以同時開多個。
+  - 「保留」：依 `diffKeepIn`，`split`（預設）在焦點 pane 右側 `pane.split {direction: "right", mod, props}`，沒有焦點 pane 或設成 `tab` 時 `tab.new`；新 pane 帶著 modal 裡的檢視（並排／合併、空白、context），然後關閉 modal。`run()` 只把指令排進佇列、不回傳錯誤，所以 split 或 `tab.new` 失敗時 modal 照樣關閉，pane 也不會出現。
 - 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。本機 repo 的 watcher 啟動失敗時（例如系統的監看數用完），等待逾時就把整個 repo 與 refs 視為已變更，generation 前進，各 pane 照常重讀。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
 - 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
 
@@ -253,6 +253,8 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - **遠端 repo 沒有 watcher**：靠 `changed()` 約 25 秒逾時輪詢一次 status。
 - **持久化 log index**：未做；圖只依賴 `RawCommit`，第二階段來源可以換成 index（見〈Log〉）。
 - **記憶體內編輯**只有 reword。
+- **diff 的跟隨請求不分 pane**（Codex 對 #208 的 P2，延後）：先關掉 `diffFollowPane`、開出好幾個 diff pane、再打開它時，`yuzora.git.diff` 會讓每個 diff pane 都換檔，`showDiff` 卻只 focus 其中一個。mod pane 不知道自己的 pane id（herdr 只把 `props().pane` 給 pane 標頭 mod，`run()` 回傳 `null`），要改上游 API 或另做 opener 與 pane 的 key 對應。
+- **props 沒帶 `at` 的 diff pane 會顯示舊檔案**（既有，reviewer 對 #208 指出）：`wanted()` 把沒有 `at` 的 props 當成 0，已持久化的 `yuzora.git.diff` 請求永遠比它新。agent 照 `defaults/AGENTS.md` 用 `tab.new --props` 開 diff 時，可能看到上一次的檔案。
 - 列出的 ⏳ 項目。
 
 ### #194 合併後的 follow-up
