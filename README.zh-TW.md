@@ -170,14 +170,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 ### L5 · 檔案與編輯器
 
 <!-- TODO(L10): #192 合併後依英文版的 L5 區塊同步。 -->
-- 側欄「檔案」模式：以目前 pane 所在的 repo 為根的檔案樹，帶 Git 標記（M／A／D／U／?）；新增檔案與資料夾、重新
-  命名、移到垃圾桶、複製路徑、在 Finder 中顯示；模糊檔名搜尋與內容搜尋（有 ripgrep 就用它，沒有時用內建搜尋）。
-- 編輯器 pane：tree-sitter 上色 14 種語言，存檔前檢查衝突（⌘S），尋找與取代（⌘F／⌘H）。磁碟上的檔案被改動時會跟著
-  更新，agent 也在改同一個檔案時會標示出來。
-- Markdown pane：邊打邊更新的 GFM 預覽，可切換預覽與原始碼。另有圖片與 SVG 檢視。
-- beta.2 可以瀏覽並以唯讀開啟其他機器（遠端 Space）上的檔案。
-
-細節見 `docs/beta2/files.md`（#192）。
+尚未開始。
 
 ### L6 · 設定、mods 與模板
 
