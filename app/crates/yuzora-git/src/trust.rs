@@ -88,6 +88,10 @@ pub fn check(repo: &Repo) -> GitResult<()> {
 /// The start of [`check`]'s error, for the panes to recognise.
 pub const UNTRUSTED: &str = "untrusted folder: trust it in the Git sidebar first";
 
+/// The start of a log's error when, before the folder is trusted, it needs
+/// objects its partial clone lacks (it fetches none until then).
+pub const LAZY_FETCH: &str = "objects missing from this partial clone: trust the folder to fetch them";
+
 /// Trusts the repo's folder (here or on its machine) from now on.
 pub fn trust(repo: &Repo) -> GitResult<Value> {
     git_trust::trust_at(&file(), &repo.id).map_err(GitError::other)?;
