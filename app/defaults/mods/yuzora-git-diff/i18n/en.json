@@ -36,5 +36,7 @@
   "discard.ask": "Discard these changes from the working tree? This cannot be undone.",
   "cancel": "Cancel",
   "annotate": "Annotate",
-  "history": "History"
+  "history": "History",
+  "tab.diff": "Diff",
+  "keep": "Keep"
 }

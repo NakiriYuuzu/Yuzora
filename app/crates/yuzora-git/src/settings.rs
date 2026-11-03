@@ -51,6 +51,11 @@ pub fn defaults() -> Value {
         "logShowTags": true,
         "logShowRemotes": true,
         // Diff and annotate
+        // A diff opens in a modal (Keep moves it beside the focused pane);
+        // an open diff pane takes the next file instead.
+        "diffOpenIn": "modal",
+        "diffKeepIn": "split",
+        "diffFollowPane": true,
         "diffMode": "side",
         "diffIgnoreWhitespace": "none",
         "diffContext": 3,
@@ -127,6 +132,31 @@ mod tests {
         assert_eq!(d["updateMethod"], "merge");
         assert_eq!(d["largeFileMb"], 50);
         assert!(regex::Regex::new(d["protectedBranches"].as_str().unwrap()).unwrap().is_match("main"));
+    }
+
+    // The settings page (yuzora-git-settings) lists keys this file must
+    // have a default for, with their strings in both languages.
+    #[test]
+    fn every_setting_on_the_page_has_a_default_and_its_strings() {
+        const PAGE: &str = include_str!("../../../defaults/mods/yuzora-git-settings/main.js");
+        let langs = [include_str!("../../../defaults/mods/yuzora-git-settings/i18n/en.json"), include_str!("../../../defaults/mods/yuzora-git-settings/i18n/zh-TW.json")]
+            .map(|s| serde_json::from_str::<Value>(s).unwrap());
+        let d = defaults();
+        let items: Vec<&str> = PAGE.lines().filter_map(|l| l.trim().strip_prefix("{ key: \"")).collect();
+        assert!(items.len() > 20, "{}", items.len());
+        for item in items {
+            let key = &item[..item.find('"').unwrap()];
+            assert!(d.get(key).is_some(), "{key} has no default");
+            let options: Vec<&str> = item.split_once("options: [").map(|(_, o)| o[..o.find(']').unwrap()].split(", ").map(|x| x.trim_matches('"')).collect()).unwrap_or_default();
+            if !options.is_empty() {
+                assert!(d[key].as_str().is_some_and(|v| options.contains(&v)), "{key}'s default {} isn't one of {options:?}", d[key]);
+            }
+            for l in &langs {
+                for s in [format!("s.{key}"), format!("s.{key}.desc")].into_iter().chain(options.iter().map(|o| format!("opt.{key}.{o}"))) {
+                    assert!(l[&s].is_string(), "no string {s}");
+                }
+            }
+        }
     }
 
     #[test]

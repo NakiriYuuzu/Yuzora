@@ -117,5 +117,6 @@
   "identity.unchanged": "沒有變更。",
   "identity.saved": "已儲存 {count} 項設定。",
   "identity.version": "Git 版本",
-  "identity.executable": "執行檔"
+  "identity.executable": "執行檔",
+  "tab.diff": "差異"
 }
