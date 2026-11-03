@@ -231,4 +231,33 @@ mod tests {
         // The same on a machine (through `hc exec`).
         assert_eq!(pending(&crate::repo::testing::on_machine(&s)).unwrap(), vec!["sub: filter.evil.clean".to_string()]);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_filter_behind_a_work_tree_name_ending_in_a_newline_waits_for_trust() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let id = ["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false"];
+        let repo = |at: &str| {
+            s.write(&format!("{at}/f"), "x\n");
+            s.git(&["-C", at, "init", "-q"]);
+            s.git(&["-C", at, "add", "."]);
+            s.git(&[&["-C", at][..], &id[..], &["commit", "-qm", "s"][..]].concat());
+            s.git(&["-C", at, "rev-parse", "HEAD"]).trim().to_owned()
+        };
+        let head = repo("s");
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{head},s")]);
+        // `s` works in `wt<LF>`, where a repo with a clean filter is; `wt` is a decoy.
+        std::fs::create_dir_all(format!("{}/wt", s.root())).unwrap();
+        let mark = format!("{}/ran", s.root());
+        s.write("wt\n/evil/.gitattributes", "* filter=evil\n");
+        let evil = repo("wt\n/evil");
+        s.git(&["-C", "wt\n/evil", "config", "filter.evil.clean", &format!("touch '{mark}'; cat")]);
+        s.git(&["-C", "s", "update-index", "--add", "--cacheinfo", &format!("160000,{evil},evil")]);
+        s.git(&["-C", "s", "config", "core.worktree", "../../wt\n"]);
+        std::fs::File::options().write(true).open(format!("{}/wt\n/evil/f", s.root())).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(946_684_800)).unwrap();
+        let v = crate::status::read(&s.repo, false).unwrap();
+        assert!(!std::path::Path::new(&mark).exists(), "status ran the nested repo's clean filter before the folder was trusted");
+        assert_eq!(v["trust"], serde_json::json!(["s: (unreadable config)"]));
+    }
 }

@@ -125,8 +125,11 @@ const SCAN: &str = "yuzora-trust-scan";
 /// in one shell that remembers them: met again below itself, it is a way
 /// back up that git would follow without end, and counts as unreadable; met
 /// again elsewhere, its keys are in already. A quoted path (a `"`, `\` or
-/// control character) can't be followed, nor more than 16 levels: both
-/// count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a sparse index in a
+/// control character), an absolute one (git goes there; the scan would look
+/// under the top), a work tree whose name has a line feed (`$(…)` drops one
+/// at the end, so the scan would read another folder: `rev-parse`'s answer
+/// is taken with a `.` after it, and must be two lines then), and more than
+/// 16 levels can't be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a sparse index in a
 /// partial clone never fetches with the repo's ssh.
 const SCAN_SCRIPT: &str = r#"unset GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
 GIT_NO_LAZY_FETCH=1
@@ -136,7 +139,8 @@ tab=$(printf '\t') nl='
 IFS=$nl
 set -f
 where() {
-  case "$1" in *"$nl"*"$nl"*) return 1 ;; ?*"$nl"?*) ;; *) return 1 ;; esac
+  case "$1" in *"$nl"*"$nl"*"$nl"*) return 1 ;; ?*"$nl"?*"$nl.") ;; *) return 1 ;; esac
+  set -- "${1%"$nl."}"
   gd=${1%%"$nl"*}
   top=${1#*"$nl"}
   node="${nl}g:$gd${nl}t:$top$nl"
@@ -156,19 +160,19 @@ scan() {
   done
 }
 enter() {
-  case "$4" in \"*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
+  case "$4" in \"*|/*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
   [ -e "$3/$4/.git" ] || return 0
   printf 'sub\0%s%s\0' "$1" "$4"
   GIT_DIR=.git git -C "$3/$4" config --show-scope -z --get-regexp '@PROGRAMS@'
   c=$?
   if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; return; fi
-  w=$(GIT_DIR=.git git -C "$3/$4" rev-parse --absolute-git-dir --show-toplevel) && where "$w" || { printf 'err\0worktree\0'; return; }
+  w=$(GIT_DIR=.git git -C "$3/$4" rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w" || { printf 'err\0worktree\0'; return; }
   case "$5" in *"$node"*) printf 'err\0cycle\0'; return ;; esac
   case "$seen" in *"$node"*) return ;; esac
   seen=$seen$node
   scan "$1$4/" $(($2 + 1)) "$gd" "$top" "$5$node"
 }
-if w=$(git rev-parse --absolute-git-dir --show-toplevel) && where "$w"; then
+if w=$(git rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w"; then
   unset GIT_DIR GIT_WORK_TREE
   seen=$node
   scan "" 0 "$gd" "$top" "$node"
@@ -410,6 +414,111 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim().to_owned()
         };
         (dir, top, git)
+    }
+
+    /// A repo at `at` whose clean filter leaves `mark` behind; its HEAD.
+    fn evil_repo(git: &impl Fn(&str, &[&str]) -> String, top: &str, at: &str, mark: &Path) -> String {
+        git(at, &["init", "-q"]);
+        let here = Path::new(top).join(at);
+        std::fs::write(here.join("f"), "x\n").unwrap();
+        std::fs::write(here.join(".gitattributes"), "* filter=evil\n").unwrap();
+        git(at, &["add", "f", ".gitattributes"]);
+        git(at, &["commit", "-qm", "s"]);
+        git(at, &["config", "filter.evil.clean", &format!("touch '{}'; cat", mark.display())]);
+        git(at, &["rev-parse", "HEAD"])
+    }
+
+    /// Whether `git status` at `cwd` runs the clean filter of the repo at
+    /// `evil` (its `f` made to look changed, so status cleans it again).
+    fn status_runs_the_filter(cwd: &str, evil: &Path, mark: &Path) -> bool {
+        let _ = std::fs::remove_file(mark);
+        std::fs::File::options().write(true).open(evil.join("f")).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)).unwrap();
+        let _ = std::process::Command::new("git").args(["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--untracked-files=no"]).current_dir(cwd).output();
+        mark.exists()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_work_tree_name_ending_in_a_newline_shuts_the_gate() {
+        // `$(…)` drops the newline: `wt` (a decoy) for `wt<LF>`, and the top
+        // itself for `<LF>`; status goes into the real one.
+        for (name, wt, decoy) in [("nl-wt", "wt\n", "wt"), ("nl-top", "\n", "")] {
+            let (dir, top, git) = scratch_dir(name);
+            let repo = |at: &str| {
+                git(at, &["init", "-q"]);
+                std::fs::write(Path::new(&top).join(at).join("f"), "x\n").unwrap();
+                git(at, &["add", "f"]);
+                git(at, &["commit", "-qm", "s"]);
+                git(at, &["rev-parse", "HEAD"])
+            };
+            repo("");
+            let s = repo("s");
+            git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{s},s")]);
+            std::fs::create_dir_all(Path::new(&top).join(decoy)).unwrap();
+            let mark = dir.join("ran");
+            let evil = evil_repo(&git, &top, &format!("{wt}/evil"), &mark);
+            git("s", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},evil")]);
+            git("s", &["config", "core.worktree", &format!("../../{wt}")]);
+            let got = programs_within(None, &top, Duration::from_secs(30));
+            let ran = status_runs_the_filter(&top, &Path::new(&top).join(format!("{wt}/evil")), &mark);
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(ran, "{name}: status didn't run the filter, so this proves nothing");
+            assert_eq!(got, Ok(vec![format!("s: {UNREADABLE}")]), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_top_whose_work_tree_name_ends_in_a_newline_shuts_the_gate() {
+        let (dir, top, git) = scratch_dir("nl-root");
+        // The git dir in `repo`, its work tree `wt<LF>`; `wt` is a decoy.
+        git("repo", &["init", "-q"]);
+        git("repo", &["config", "core.worktree", &format!("{top}/wt\n")]);
+        std::fs::create_dir_all(Path::new(&top).join("wt")).unwrap();
+        let mark = dir.join("ran");
+        let evil = evil_repo(&git, &top, "wt\n/s", &mark);
+        git("repo", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},s")]);
+        let repo = format!("{top}/repo");
+        let got = programs_within(None, &repo, Duration::from_secs(30));
+        let ran = status_runs_the_filter(&repo, &Path::new(&top).join("wt\n/s"), &mark);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(ran, "status didn't run the filter, so this proves nothing");
+        assert_eq!(got, Ok(vec![format!(".: {UNREADABLE}")]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gitlink_named_by_an_absolute_path_shuts_the_gate() {
+        let (dir, top, git) = scratch_dir("abs-link");
+        git("", &["init", "-q"]);
+        std::fs::write(Path::new(&top).join("f"), "x\n").unwrap();
+        git("", &["add", "f"]);
+        git("", &["commit", "-qm", "s"]);
+        let (other, elsewhere, git_there) = scratch_dir("abs-link-ev");
+        let mark = other.join("ran");
+        let evil = evil_repo(&git_there, &elsewhere, "ev", &mark);
+        let abs = format!("{elsewhere}/ev");
+        // git takes no such name: a stand-in of the same length, renamed in
+        // the index file (and its checksum written again).
+        let stand_in = "Q".repeat(abs.len());
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},{stand_in}")]);
+        let index = Path::new(&top).join(".git/index");
+        let bytes = std::fs::read(&index).unwrap();
+        let mut body = bytes[..bytes.len() - 20].to_vec();
+        let at = body.windows(abs.len()).position(|w| w == stand_in.as_bytes()).unwrap();
+        body[at..at + abs.len()].copy_from_slice(abs.as_bytes());
+        let mut sha = std::process::Command::new("sha1sum").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        std::io::Write::write_all(&mut sha.stdin.take().unwrap(), &body).unwrap();
+        let hex = String::from_utf8(sha.wait_with_output().unwrap().stdout).unwrap();
+        let sum: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        std::fs::write(&index, [body, sum].concat()).unwrap();
+        assert!(git("", &["ls-files", "-s"]).contains(&format!("\t{abs}")));
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        let ran = status_runs_the_filter(&top, Path::new(&abs), &mark);
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_dir_all(&other).unwrap();
+        assert!(ran, "status didn't run the filter, so this proves nothing");
+        assert_eq!(got, Ok(vec![format!("{abs}: {UNREADABLE}")]));
     }
 
     #[cfg(unix)]
