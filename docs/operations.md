@@ -444,7 +444,7 @@ Windows 只發行 MSI；`Yuzora-windows-x64-setup.exe` 固定連結已停止更�
 
 固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。
 
-beta.2 的 Windows 固定檔名改為 `Yuzora-windows-x64-setup.exe`（per-user NSIS），macOS 不變。產品頁（`site/index.html`、`site/downloads.js`、`tests/site-downloads.test.js`）已先改成 beta.2 的檔名；beta.2 的發布 workflow 必須在 Stable release 上傳這兩個別名。在第一個帶這兩個別名的 Stable release 發布前，`releases/latest/download/Yuzora-windows-x64-setup.exe` 找不到檔案（v0.0.19 只有 `.msi`），macOS 的固定連結則仍下載 v0.0.19 的 Tauri App；Pages 部署 beta.2 產品頁之前必須先決定如何處理（見 §11）。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
+beta.2 的 Windows 固定檔名改為 `Yuzora-windows-x64-setup.exe`（per-user NSIS），macOS 不變；beta.2 的發布 workflow 必須在 Stable release 上傳這兩個別名。產品頁在 0.1.0 Stable 之前維持 Tauri 版與 v0.0.19 的下載（`.msi`），換成 beta.2 檔名的產品頁在 [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)，0.1.0 Stable 才合併（見 §11）。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
 
 ### 7.4 Finalize updater metadata
 
@@ -637,10 +637,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
-- 產品頁內容已改為介紹 beta.2（herdr-app 基底的原生 App）。尚待決定：
-  - Pages 在 beta.2（Pre-release）合併進 `main` 時就會部署，但產品頁的固定下載連結要等 Stable 0.1.0 才有 beta.2 的檔案（見 §7.3）。
-  - 是否在產品頁提供 Linux 下載（目前只有 macOS 與 Windows；`tests/site-page.test.js` 守著沒有 Linux 列）。
-  - 三段功能影片與它們的 poster、互動 Demo（`src/demo/`）仍是 Tauri 版介面；hero 與社群預覽圖暫用 `docs/beta2/evidence/` 的截圖，檔案（L5）合併後再換最終截圖。
+- beta.2 期間產品頁維持 Tauri 版（下載仍是 v0.0.19），0.1.0 Stable 才換成介紹 beta.2 的產品頁（2026-11-03 使用者決定：安裝方式不同，新版本等 Stable 再提供）。新產品頁在 draft PR [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)：影片與 poster 改成靜態截圖、移除互動 Demo、不列 Linux。
 
 ### 產品頁 smoke test
 

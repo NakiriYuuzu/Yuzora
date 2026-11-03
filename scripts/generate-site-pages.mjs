@@ -14,7 +14,7 @@ const escapeHtml = (value) => value.replaceAll("&", "&amp;").replaceAll('"', "&q
 function seoHead(lang) {
   const dict = I18N[lang];
   const canonical = locales[lang];
-  const image = `${siteUrl}assets/yuzora-workspace-${lang === "en" ? "en" : "zh"}.png`;
+  const image = `${siteUrl}assets/ade-herdr-runtime-${lang === "en" ? "en" : "zh"}.png`;
   const schema = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -46,8 +46,8 @@ ${Object.entries(locales).map(([locale, href]) => `<link rel="alternate" hreflan
 <meta property="og:title" content="${escapeHtml(dict["meta.title"])}">
 <meta property="og:description" content="${escapeHtml(dict["meta.ogDescription"])}">
 <meta property="og:image" content="${image}">
-<meta property="og:image:width" content="1280">
-<meta property="og:image:height" content="820">
+<meta property="og:image:width" content="1440">
+<meta property="og:image:height" content="960">
 <meta property="og:image:alt" content="${escapeHtml(dict["hero.alt"])}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${escapeHtml(dict["meta.title"])}">

@@ -67,14 +67,14 @@ Not in beta.2: the Browser, Companion and AgentZone.
 
 ## Download and install
 
-beta.2 is a pre-release on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases): take the files from
-its release page.
+beta.2 is a pre-release: download it from its page on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases).
+The website keeps offering v0.0.19, the last stable Tauri release, until 0.1.0 is stable.
 
 | Platform | File | Installs to |
 |:--|:--|:--|
 | **macOS**, Apple Silicon (M series) only | `Yuzora_<version>_aarch64.dmg`: drag Yuzora onto Applications | `/Applications/Yuzora.app`; the app adds `~/.local/bin/yuzora` |
 | **Windows** x64 | `Yuzora_<version>_x64-setup.exe`, no admin rights needed | `%LOCALAPPDATA%\Programs\Yuzora`, with `yuzora` on your PATH |
-| **Linux** x86_64 / aarch64 | `yuzora-<version>-linux-<arch>.tar.gz`, then run `yuzora/install` | `~/.local/share/yuzora` and `~/.local/bin/yuzora` |
+| **Linux** x86_64 / aarch64, experimental | `yuzora-<version>-linux-<arch>.tar.gz`, then run `yuzora/install` | `~/.local/share/yuzora` and `~/.local/bin/yuzora` |
 
 Stable releases also carry fixed names that always point to the newest stable one:
 `releases/latest/download/Yuzora-macos-aarch64.dmg` and `releases/latest/download/Yuzora-windows-x64-setup.exe`.
@@ -85,6 +85,7 @@ Until 0.1.0 is stable, `releases/latest` is v0.0.19, the last stable Tauri relea
   `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this
   repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
 - **Windows: no Authenticode signature.** SmartScreen may warn; choose More info › Run anyway.
+- **Linux is experimental.** The tar.gz and `install` have only passed CI; they haven't been tried on a real machine.
 - **herdr-core.** Terminals and agents run in herdr-core (`hc`), version 0.1.11 or newer. If it isn't installed, the
   first screen offers to install it with herdr-core's own installer.
 - Starting with v0.0.9, the macOS app requires Apple Silicon. Intel Macs remain supported as remote hosts.

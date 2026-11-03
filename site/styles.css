@@ -847,10 +847,6 @@ section[id], header[id] { scroll-margin-top: 92px; }
 }
 .dl-card .get .arrow-dot { width: 26px; height: 26px; background: #101422; color: var(--paper); }
 .dl-card:hover .get .arrow-dot { transform: translateX(3px); }
-.finale-gatekeeper {
-  margin: 26px auto 0; max-width: 560px; text-align: center;
-  font-size: 13.5px; line-height: 1.6; color: rgba(244, 242, 236, 0.72);
-}
 .finale-notes {
   margin-top: 34px;
   display: flex; justify-content: center; gap: 10px 28px; flex-wrap: wrap;

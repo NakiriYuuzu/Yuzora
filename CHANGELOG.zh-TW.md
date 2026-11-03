@@ -43,7 +43,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 
 - macOS App 僅支援 Apple Silicon，只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證；第一次開啟要到「系統設定 › 隱私權與安全性」按「仍要打開」。每次更新後 macOS 可能會再詢問一次麥克風、相機或資料夾權限。
 - Windows 改用免系統管理員權限的 NSIS 安裝程式 `Yuzora_<version>_x64-setup.exe`（安裝到 `%LOCALAPPDATA%\Programs\Yuzora`），不再出 MSI；安裝完會詢問是否移除 beta.1 的全機安裝。Authenticode 尚未啟用，可能出現 SmartScreen 提示。
-- Linux 提供 x86_64 與 aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install`。
+- Linux（實驗性）提供 x86_64 與 aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install`；目前只通過 CI，尚未在實機上驗證。
 - 需要 herdr-core 0.1.11 以上；沒有安裝時，第一次開啟的畫面會提供安裝。
 - beta.1 的預覽通道會在 beta.2 的 release 提供升級檔時帶你升級；否則請手動下載。
 

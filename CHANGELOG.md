@@ -43,7 +43,7 @@ Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herd
 
 - The macOS app supports only Apple Silicon and has only an ad-hoc signature, with no Apple Developer ID signature or notarization. The first time you open it, go to "System Settings › Privacy & Security" and click "Open Anyway". After each update, macOS may ask again for microphone, camera or folder access.
 - Windows uses a per-user NSIS installer that needs no admin rights, `Yuzora_<version>_x64-setup.exe` (installs to `%LOCALAPPDATA%\Programs\Yuzora`), and no longer ships an MSI. After installing, it asks whether to remove the beta.1 all-users install. Authenticode isn't enabled yet, so SmartScreen may show a warning.
-- Linux provides `yuzora-<version>-linux-<arch>.tar.gz` for x86_64 and aarch64. Unpack it and run `yuzora/install`.
+- Linux (experimental) provides `yuzora-<version>-linux-<arch>.tar.gz` for x86_64 and aarch64. Unpack it and run `yuzora/install`. It has only passed CI and hasn't been tried on a real machine.
 - Requires herdr-core 0.1.11 or newer. If it isn't installed, the first screen offers to install it.
 - beta.1's preview channel upgrades you when the beta.2 release offers an upgrade file. Otherwise, download it manually.
 

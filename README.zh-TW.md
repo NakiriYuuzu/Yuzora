@@ -64,14 +64,14 @@ beta.2 不包含：Browser、Companion 與 AgentZone。
 
 ## 下載與安裝
 
-beta.2 是 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 上的 Pre-release，請從該版本的 release
-頁面下載。
+beta.2 是 Pre-release，目前請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 上該版本的頁面下載。
+官方網站在 0.1.0 正式版發布前，仍提供 Tauri 版最後一個正式版 v0.0.19。
 
 | 平台 | 檔案 | 安裝位置 |
 |:--|:--|:--|
 | **macOS**，僅支援 Apple Silicon（M 系列） | `Yuzora_<version>_aarch64.dmg`：把 Yuzora 拖進「應用程式」 | `/Applications/Yuzora.app`；App 會建立 `~/.local/bin/yuzora` |
 | **Windows** x64 | `Yuzora_<version>_x64-setup.exe`，不需要系統管理員權限 | `%LOCALAPPDATA%\Programs\Yuzora`，並把 `yuzora` 加進 PATH |
-| **Linux** x86_64／aarch64 | `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install` | `~/.local/share/yuzora` 與 `~/.local/bin/yuzora` |
+| **Linux** x86_64／aarch64，實驗性 | `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install` | `~/.local/share/yuzora` 與 `~/.local/bin/yuzora` |
 
 正式版另外提供固定檔名，永遠指向最新的正式版：`releases/latest/download/Yuzora-macos-aarch64.dmg` 與
 `releases/latest/download/Yuzora-windows-x64-setup.exe`。在 0.1.0 正式版發布前，`releases/latest` 仍是 Tauri 版最後
@@ -81,6 +81,7 @@ beta.2 是 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 上
   「系統設定 › 隱私權與安全性」按「仍要打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
   只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
 - **Windows 沒有 Authenticode 簽章。** SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
+- **Linux 是實驗性的。** tar.gz 與 `install` 目前只通過 CI，尚未在實機上驗證。
 - **herdr-core。** 終端機與 agent 由 herdr-core（`hc`）執行，需要 0.1.11 以上。還沒安裝時，第一次開啟的畫面會提供
   「幫我安裝」，使用 herdr-core 官方的安裝程式。
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel Mac 仍可當遠端主機。
