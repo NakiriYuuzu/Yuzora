@@ -241,7 +241,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - ✅ Push：force-with-lease、被拒時自動更新、push tags、顯示 push 對話框、受保護分支。
 - ✅ Update／Fetch：更新方式、更新時自動 stash、fetch tags、fetch prune、自動 fetch 間隔。
 - ✅ Log：最近 commit 數（第一階段）、顯示 tags、顯示遠端分支。
-- ✅ Diff／Annotate／Merge（實機截圖：`evidence/l2-diff-modal.png`、`l2-diff-keep.png`）：diff 開啟方式（modal／pane）、保留的位置（分割在目前 pane 旁／新分頁）、已開的 diff pane 是否顯示下一個檔案、預設檢視、空白、context、annotate 忽略空白與偵測移動、rebase 時對調左右。
+- ✅ Diff／Annotate／Merge（實機點擊截圖：`evidence/l2-diff-modal.png`、`l2-diff-keep.png`、`l2-diff-follow.png`）：diff 開啟方式（modal／pane）、保留的位置（分割在目前 pane 旁／新分頁）、已開的 diff pane 是否顯示下一個檔案、預設檢視、空白、context、annotate 忽略空白與偵測移動、rebase 時對調左右。
 - 🟡 GPG 與身分在 repo pane 編輯（repo 或 global 層）。⏳ credential helper 選項、多 repo 同步。
 
 ## 已知限制與後續
