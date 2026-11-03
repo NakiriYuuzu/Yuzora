@@ -98,7 +98,7 @@ pub fn check(root: &Path) -> Result<Option<String>, String> {
 /// The notes to download for `found`: per language, the asset that language
 /// shows (its own, else the English one), unless `has(locale, version)` says
 /// that language's notes are already kept.
-fn notes_to_fetch<'a>(found: &'a Manifest, has: impl Fn(&'static str, &str) -> bool) -> Vec<(&'static str, &'a manifest::Asset)> {
+fn notes_to_fetch(found: &Manifest, has: impl Fn(&'static str, &str) -> bool) -> Vec<(&'static str, &manifest::Asset)> {
     yuzora_core::i18n::LOCALES.iter().filter_map(|&locale| Some((locale, found.notes_in(locale)?))).filter(|(locale, _)| !has(locale, &found.version)).collect()
 }
 
