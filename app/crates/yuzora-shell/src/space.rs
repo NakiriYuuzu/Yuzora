@@ -6,6 +6,7 @@
 
 use serde::Serialize;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use yuzora_core::remote::{ExecError, ExecRequest, run};
 
@@ -86,30 +87,37 @@ impl Problem {
 /// itself and `C:\` is `C:`.
 pub fn folder_name(path: &str) -> String {
     let p = normalize(path);
-    match p.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next() {
+    let seps = separators(&p);
+    match p.trim_end_matches(seps).rsplit(seps).next() {
         Some(last) if !last.is_empty() => last.to_owned(),
         _ => p,
     }
 }
 
+/// A Windows path (`C:\…`, `\\host\share`, `\\?\…`) separates with `\` too; anywhere
+/// else `\` is a character a name may have (`/tmp/a\b` is the folder `a\b`).
+fn separators(path: &str) -> &'static [char] {
+    let b = path.as_bytes();
+    if path.starts_with(r"\\") || (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':') { &['/', '\\'] } else { &['/'] }
+}
+
 /// A path as two that name the same folder compare: no `\\?\` (`\\?\UNC\host\share`
 /// is `\\host\share`), no repeated or trailing separators (a root keeps its own, a
-/// share its leading `\\`).
+/// share its leading `\\`). Nothing else changes: a name may end in a space.
 pub fn normalize(path: &str) -> String {
-    let p = path.trim();
-    let (share, p) = match p.strip_prefix(r"\\?\") {
+    let seps = separators(path);
+    let (share, p) = match path.strip_prefix(r"\\?\") {
         Some(rest) => rest.strip_prefix(r"UNC\").map_or((false, rest), |s| (true, s)),
-        None => p.strip_prefix(r"\\").map_or((false, p), |s| (true, s)),
+        None => path.strip_prefix(r"\\").map_or((false, path), |s| (true, s)),
     };
     let mut out = String::from(if share { r"\\" } else { "" });
     for c in p.chars() {
-        let sep = c == '/' || c == '\\';
-        if !(sep && out.ends_with(['/', '\\'])) {
+        if !(seps.contains(&c) && out.ends_with(seps)) {
             out.push(c);
         }
     }
     let root = |s: &str| s.len() == 1 || (s.len() == 3 && s.as_bytes()[1] == b':') || (share && s.len() == 2);
-    while out.ends_with(['/', '\\']) && !root(&out) {
+    while out.ends_with(seps) && !root(&out) {
         out.pop();
     }
     out
@@ -156,10 +164,11 @@ fn lines(stdout: &str, count: usize) -> Result<Vec<Option<String>>, Problem> {
 
 fn resolve_here(folder: &str) -> Option<String> {
     let home = yuzora_core::paths::home_dir();
-    let f = folder.trim();
-    let path = match f {
+    // The path as picked, spaces and all. `~\` is home only on Windows: elsewhere `\` is
+    // part of a name.
+    let path = match folder {
         "" | "~" => home,
-        _ => match f.strip_prefix("~/").or_else(|| f.strip_prefix("~\\")) {
+        f => match f.strip_prefix("~/").or_else(|| f.strip_prefix("~\\").filter(|_| cfg!(windows))) {
             Some(rest) => home.join(rest),
             None => home.join(f), // an absolute path replaces home
         },
@@ -179,25 +188,36 @@ pub fn plan(folder: &str, spaces: &[(String, String)], on: Option<&str>) -> Resu
     Ok(Plan { name: folder_name(&real), existing: existing(&real, &known), folder: real })
 }
 
-/// Machines with a new-Space dialog open ("" is this computer), and since when.
-static BUSY: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
-/// A dialog that never said it closed stops counting after this.
+/// Machines with a new-Space dialog open ("" is this computer): each dialog's lease, and
+/// since when it was last held.
+static BUSY: Mutex<Vec<(String, u64, Instant)>> = Mutex::new(Vec::new());
+static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
+/// A lease not held again for this long (a dialog that never said it closed) can be
+/// taken by another dialog; the old one then finds it gone before it makes anything.
 const STALE: Duration = Duration::from_secs(600);
 
-/// Starts a new Space on `machine`: false while another is being made there.
-pub fn begin(machine: &str) -> bool {
+/// Starts a new Space on `machine`: a lease, or None while another dialog holds one there.
+/// With `lease`, holds that one again (before making the Space): None if another took it.
+pub fn begin(machine: &str, lease: Option<u64>) -> Option<u64> {
     let mut busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
-    busy.retain(|(_, since)| since.elapsed() < STALE);
-    if busy.iter().any(|(m, _)| m == machine) {
-        return false;
+    busy.retain(|(_, _, since)| since.elapsed() < STALE);
+    match busy.iter_mut().find(|(m, _, _)| m == machine) {
+        Some((_, held, since)) if Some(*held) == lease => {
+            *since = Instant::now();
+            lease
+        }
+        Some(_) => None,
+        None => {
+            let lease = lease.unwrap_or_else(|| NEXT_LEASE.fetch_add(1, Ordering::Relaxed));
+            busy.push((machine.to_owned(), lease, Instant::now()));
+            Some(lease)
+        }
     }
-    busy.push((machine.to_owned(), Instant::now()));
-    true
 }
 
-/// That Space is made (or abandoned).
-pub fn end(machine: &str) {
-    BUSY.lock().unwrap_or_else(|e| e.into_inner()).retain(|(m, _)| m != machine);
+/// That dialog's Space is made (or abandoned); another dialog's lease stays.
+pub fn end(machine: &str, lease: u64) {
+    BUSY.lock().unwrap_or_else(|e| e.into_inner()).retain(|(m, held, _)| !(m == machine && *held == lease));
 }
 
 #[cfg(test)]
@@ -233,12 +253,18 @@ mod tests {
         assert_eq!(folder_name("/"), "/");
         assert_eq!(folder_name(r"C:\"), "C:");
         assert_eq!(folder_name(""), "");
+        // Outside Windows paths `\` and a trailing space belong to the name.
+        assert_eq!(folder_name(r"/tmp/a\b"), r"a\b");
+        assert_eq!(folder_name(r"/tmp/project\"), r"project\");
+        assert_eq!(folder_name("/tmp/project "), "project ");
     }
 
     #[test]
     fn normalizes_separators_but_keeps_roots() {
         assert_eq!(normalize("/a//b/"), "/a/b");
-        assert_eq!(normalize("  /a/b///  "), "/a/b");
+        assert_eq!(normalize("/a/b /"), "/a/b ", "a name may end in a space");
+        assert_eq!(normalize(r"/tmp/project\"), r"/tmp/project\", "on POSIX \\ is part of a name");
+        assert_eq!(normalize(r"C:/work//api/"), r"C:/work/api");
         assert_eq!(normalize("/"), "/");
         assert_eq!(normalize("//"), "/");
         assert_eq!(normalize(r"\\?\C:\a\b\"), r"C:\a\b");
@@ -261,6 +287,10 @@ mod tests {
         assert_eq!(existing("/private/tmp/web", &spaces), Some("sp2".into()));
         assert_eq!(existing("/srv/api/v2", &spaces), None);
         assert_eq!(existing("/srv", &spaces), None);
+        // /tmp/project\ and /tmp/project are two folders on POSIX.
+        let spaces = vec![("sp3".to_owned(), "/tmp/project".to_owned(), None)];
+        assert_eq!(existing(r"/tmp/project\", &spaces), None);
+        assert_eq!(existing("/tmp/project ", &spaces), None);
     }
 
     #[test]
@@ -281,6 +311,14 @@ mod tests {
         {
             let via = plan(&s.path("link"), &spaces, None).unwrap();
             assert_eq!((via.folder.as_str(), via.existing.as_deref()), (real.as_str(), Some("sp9")));
+        }
+
+        // A picked folder is used as it is: a trailing space (and on POSIX a trailing `\`) is its name.
+        #[cfg(unix)]
+        for odd in ["project ", r"project\"] {
+            std::fs::create_dir_all(s.0.join(odd)).unwrap();
+            let picked = plan(&s.path(odd), &spaces, None).unwrap();
+            assert_eq!((picked.folder, picked.name, picked.existing), (s.path(odd), odd.to_owned(), None));
         }
 
         assert_eq!(plan(&s.path("note.txt"), &[], None), Err(Problem::NotAFolder));
@@ -341,8 +379,54 @@ mod tests {
         assert!(powershell_args(&[])[4].contains("@()"));
     }
 
-    // RESOLVE_PS runs on Windows machines through `hc exec`; here it runs in
-    // pwsh (CI's runners have it) the same way, with a scratch HOME.
+    // RESOLVE_PS runs on Windows machines through `hc exec`, in their
+    // powershell.exe. Here it runs the same way: on Windows in powershell.exe
+    // (Windows paths, a drive root, `~` as the real home, since $HOME there
+    // doesn't follow the environment), elsewhere in pwsh with a scratch HOME.
+    fn powershell(program: &str, folders: &[String], home: Option<&Path>, cwd: &Path) -> Vec<Option<String>> {
+        let mut run = std::process::Command::new(program);
+        run.args(powershell_args(folders)).current_dir(cwd);
+        if let Some(home) = home {
+            run.env("HOME", home);
+        }
+        let out = run.output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        lines(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_powershell_script_resolves_windows_folders_and_never_runs_a_path() {
+        let s = Scratch::new("powershell");
+        for dir in [r"src\my app", "$(New-Item pwned)", "it's ‘q’"] {
+            std::fs::create_dir_all(s.0.join(dir)).unwrap();
+        }
+        let base = normalize(&s.0.to_string_lossy()); // no \\?\
+        let folders: Vec<String> = vec![
+            format!(r"{base}\src\my app\"),
+            format!(r"{base}\src"),
+            format!(r"{base}\nonexistent-yuzora"),
+            format!(r"{base}\$(New-Item pwned)"),
+            format!(r"{base}\it's ‘q’"),
+            base[..3].to_owned(), // the drive root, as C:\
+            "~".to_owned(),
+        ];
+        let home = std::env::var("USERPROFILE").unwrap();
+        assert_eq!(
+            powershell("powershell.exe", &folders, None, &s.0),
+            vec![
+                Some(format!(r"{base}\src\my app")),
+                Some(format!(r"{base}\src")),
+                None,
+                Some(format!(r"{base}\$(New-Item pwned)")),
+                Some(format!(r"{base}\it's ‘q’")),
+                Some(base[..3].to_owned()),
+                Some(normalize(&home)),
+            ]
+        );
+        assert!(!s.0.join("pwned").exists() && !Path::new(&home).join("pwned").exists(), "a path ran as code");
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_powershell_script_resolves_and_never_runs_a_path() {
@@ -357,10 +441,8 @@ mod tests {
         }
         let home = s.0.to_string_lossy().into_owned();
         let folders: Vec<String> = ["~", "", "~/src/my app/", "src", "/nonexistent-yuzora", "$(New-Item pwned)", "it's ‘q’"].map(String::from).into();
-        let out = std::process::Command::new(pwsh).args(powershell_args(&folders)).env("HOME", &s.0).current_dir(&s.0).output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(
-            lines(&String::from_utf8_lossy(&out.stdout), folders.len()).unwrap(),
+            powershell(&pwsh.to_string_lossy(), &folders, Some(&s.0), &s.0),
             vec![
                 Some(home.clone()),
                 Some(home.clone()),
@@ -383,12 +465,33 @@ mod tests {
 
     #[test]
     fn one_new_space_per_machine_at_a_time() {
-        assert!(begin("test-lab"));
-        assert!(!begin("test-lab"));
-        assert!(begin("test-other"));
-        end("test-lab");
-        assert!(begin("test-lab"));
-        end("test-lab");
-        end("test-other");
+        let lab = begin("test-lab", None).unwrap();
+        assert_eq!(begin("test-lab", None), None, "a second dialog for the machine");
+        let other = begin("test-other", None).unwrap();
+        assert_eq!(begin("test-lab", Some(lab)), Some(lab), "the dialog holds its lease again");
+        end("test-lab", lab);
+        let next = begin("test-lab", None).unwrap();
+        assert_ne!(next, lab);
+        // A dialog that closes late (its lease long taken) leaves the new one's alone.
+        end("test-lab", lab);
+        assert_eq!(begin("test-lab", None), None);
+        assert_eq!(begin("test-lab", Some(lab)), None, "the old dialog finds its lease gone");
+        end("test-lab", next);
+        end("test-other", other);
+    }
+
+    #[test]
+    fn a_lease_nobody_held_for_long_can_be_taken() {
+        // A clock that started less than STALE ago (a fresh machine) can't be wound back that far.
+        let Some(long_ago) = Instant::now().checked_sub(STALE) else { return };
+        let old = begin("test-stale", None).unwrap();
+        for lease in BUSY.lock().unwrap().iter_mut().filter(|(m, _, _)| m == "test-stale") {
+            lease.2 = long_ago;
+        }
+        let new = begin("test-stale", None).expect("a stale lease is taken");
+        assert_eq!(begin("test-stale", Some(old)), None, "the old dialog can't make its Space");
+        end("test-stale", old);
+        assert_eq!(begin("test-stale", Some(new)), Some(new), "closing the old dialog left the new lease");
+        end("test-stale", new);
     }
 }

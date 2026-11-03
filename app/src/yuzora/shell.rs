@@ -16,10 +16,12 @@ pub const NEW_SPACE_MOD: &str = "yuzora-new-space";
 
 /// A person's space.new that says nothing but (maybe) the machine: keys, the
 /// palette, menus, "+" buttons. It asks for a folder first, as beta.1 did.
-/// One that brings a name, folder, tab, agent or task (worktrees, ssh, the
-/// dialog itself) runs as it is.
-pub fn asks_folder(args: &Value) -> bool {
-    args.as_object().is_none_or(|a| a.iter().all(|(k, v)| k == "machine" || v.is_null()))
+/// So does a bare tab.new while no Space is open (`has_space` false), which
+/// would start one. One that brings a name, folder, tab, agent or task
+/// (worktrees, ssh, the dialog itself) runs as it is.
+pub fn asks_folder(command: &str, args: &Value, has_space: bool) -> bool {
+    let bare = args.as_object().is_none_or(|a| a.iter().all(|(k, v)| k == "machine" || v.is_null()));
+    bare && (command == "space.new" || (command == "tab.new" && !has_space))
 }
 
 /// The folder dialog for a new Space on `machine` (None: this computer).
@@ -96,7 +98,7 @@ mod tests {
     fn only_a_bare_new_space_asks_for_its_folder() {
         // Keys and the palette (nothing or {}), menus and "+" buttons (a machine, "" for this one).
         for bare in [Value::Null, json!({}), json!({ "machine": "" }), json!({ "machine": "lab-01" }), json!({ "machine": null, "name": null })] {
-            assert!(asks_folder(&bare), "{bare} asks");
+            assert!(asks_folder("space.new", &bare, true), "{bare} asks");
         }
         // Worktrees, ssh sessions, scripts naming it and the dialog itself bring what they want.
         for full in [
@@ -106,8 +108,17 @@ mod tests {
             json!({ "task": "fix it" }),
             json!({ "name": "app", "folder": "/srv/app", "machine": "" }),
         ] {
-            assert!(!asks_folder(&full), "{full} runs as it is");
+            assert!(!asks_folder("space.new", &full, false), "{full} runs as it is");
         }
+        // A bare new tab with no Space open would start one in the home folder: it asks too.
+        for bare in [Value::Null, json!({})] {
+            assert!(asks_folder("tab.new", &bare, false), "{bare} asks with no Space");
+            assert!(!asks_folder("tab.new", &bare, true), "{bare} opens a tab in the Space");
+        }
+        for full in [json!({ "argv": ["pi"] }), json!({ "folder": "/srv/app" }), json!({ "mod": "yuzora-db-query" }), json!({ "name": "notes" })] {
+            assert!(!asks_folder("tab.new", &full, false), "{full} runs as it is");
+        }
+        assert!(!asks_folder("space.rename", &json!({}), false));
     }
 
     #[test]

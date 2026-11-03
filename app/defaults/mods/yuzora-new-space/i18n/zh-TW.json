@@ -23,6 +23,8 @@
     "not_a_folder_here": "這台電腦上找不到這個資料夾。",
     "unreachable": "{machine} 沒有回應：{detail}",
     "machine_gone": "Space 建立前，{machine} 已離線。",
-    "pick_failed": "無法開啟資料夾選擇視窗：{detail}"
+    "pick_failed": "無法開啟資料夾選擇視窗：{detail}",
+    "taken": "這個視窗等候期間，另一個在 {machine} 建立 Space 的視窗已經接手，請改用那個視窗。",
+    "taken_here": "這個視窗等候期間，另一個在這台電腦建立 Space 的視窗已經接手，請改用那個視窗。"
   }
 }

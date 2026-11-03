@@ -1036,7 +1036,8 @@ with these differences.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
   `yuzora-new-space` dialog to pick the folder and answers `{"asked": "folder"}`; no Space exists yet. A folder
   that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with
-  `name`, `folder`, `tab`, `argv` or `task` create the Space as above.
+  `name`, `folder`, `tab`, `argv` or `task` create the Space as above. A person's `tab.new` with no arguments
+  while no Space is open would start one, so it opens the dialog too.
 - Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
   `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
 - `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`

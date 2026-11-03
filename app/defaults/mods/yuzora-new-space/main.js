@@ -16,7 +16,8 @@ export default class NewSpace extends View {
     this.handle = cx.focus_handle();
     this.state = "picking"; // picking | input | checking | error
     this.error = null;
-    this.held = beginSpace(this.machine);
+    this.lease = beginSpace(this.machine);
+    this.held = this.lease !== null;
     if (!this.held) {
       notify({ title: this.say("busy"), level: "info", timeout: 4000 });
       closeOverlay(props().overlay);
@@ -40,7 +41,7 @@ export default class NewSpace extends View {
   }
 
   release() {
-    if (this.held) endSpace(this.machine);
+    if (this.held) endSpace(this.machine, this.lease);
     this.held = false;
   }
 
@@ -51,7 +52,7 @@ export default class NewSpace extends View {
 
   // This computer has its own sentences (no machine name to put in).
   say(key, vars = {}) {
-    const here = !this.machine && ["busy", "error.not_a_folder"].includes(key);
+    const here = !this.machine && ["busy", "error.not_a_folder", "error.taken"].includes(key);
     return t(here ? `${key}_here` : key, { machine: this.machine ?? "", ...vars });
   }
 
@@ -92,6 +93,8 @@ export default class NewSpace extends View {
     if (plan.error) return this.fail(plan.error, plan.detail, cx);
     // The machine left while its folder was chosen: don't start a Space nobody can reach.
     if (this.machine && machines().find((m) => m.name === this.machine)?.layout !== "ready") return this.fail("machine_gone", null, cx);
+    // Hold the lease again: a dialog left waiting a long time may have lost the machine to another.
+    if (beginSpace(this.machine, this.lease) === null) return this.fail("taken", null, cx);
     if (plan.existing) {
       run("space.select", { id: plan.existing });
       notify({ title: t("existing", { name: spaces().find((s) => s.id === plan.existing)?.name ?? plan.name }), level: "info", timeout: 4000 });

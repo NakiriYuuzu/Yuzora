@@ -2709,8 +2709,8 @@ impl AppWindow {
         if person {
             crate::telemetry::command(command.name);
         }
-        // yuzora(L1): a person's bare space.new asks for the folder first (beta.1's "open a folder").
-        if person && name == "space.new" && crate::yuzora::shell::asks_folder(&args) && self.folders.contains_key(crate::yuzora::shell::NEW_SPACE_MOD) {
+        // yuzora(L1): a person's bare space.new asks for the folder first (beta.1's "open a folder"), as does a bare tab.new that would start a Space.
+        if person && crate::yuzora::shell::asks_folder(name, &args, self.model.active_space().is_some()) && self.folders.contains_key(crate::yuzora::shell::NEW_SPACE_MOD) {
             let spec = crate::yuzora::shell::new_space_dialog(new_space_machine(&args, person, &self.model));
             self.open_overlay(mods::new_overlay_id(), spec, window, cx);
             return json!({ "asked": "folder" });

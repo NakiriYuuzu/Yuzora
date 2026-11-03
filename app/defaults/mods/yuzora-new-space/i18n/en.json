@@ -23,6 +23,8 @@
     "not_a_folder_here": "There's no such folder on this computer.",
     "unreachable": "{machine} didn't answer: {detail}",
     "machine_gone": "{machine} went offline before the Space was made.",
-    "pick_failed": "The folder picker didn't open: {detail}"
+    "pick_failed": "The folder picker didn't open: {detail}",
+    "taken": "Another new Space window for {machine} took over while this one waited. Use that one.",
+    "taken_here": "Another new Space window for this computer took over while this one waited. Use that one."
   }
 }
