@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -801,7 +801,9 @@ fn write_in_place(target: &Path, bytes: &[u8], backups: &Path) -> io::Result<()>
 }
 
 /// `write` puts what it reads into a file; the old content goes to the
-/// backup and back from it a chunk at a time, however big the file is.
+/// backup and back from it a chunk at a time, however big the file is. It
+/// is put back through the handle the backup was made with, never by name:
+/// the folder may be someone else's to write in too.
 fn write_in_place_with(
     target: &Path,
     bytes: &[u8],
@@ -815,15 +817,18 @@ fn write_in_place_with(
         let _ = std::fs::remove_file(&backup);
         return Err(e);
     }
-    drop((old, file));
+    drop(old);
     let Err(e) = write(target, &mut &bytes[..]) else {
+        drop(file);
         let _ = std::fs::remove_file(&backup);
         return Ok(());
     };
-    if std::fs::File::open(&backup)
-        .and_then(|mut b| write(target, &mut b))
+    if file
+        .rewind()
+        .and_then(|()| write(target, &mut file))
         .is_ok()
     {
+        drop(file);
         let _ = std::fs::remove_file(&backup);
         return Err(e);
     }
@@ -834,13 +839,14 @@ fn write_in_place_with(
 }
 
 /// A backup file made in `dir`: always a new file (never an existing path or
-/// a link left there), its owner's only, written through the handle given.
+/// a link left there), its owner's only, written and read back through the
+/// handle given.
 fn new_backup(dir: &Path) -> io::Result<(PathBuf, std::fs::File)> {
     let mut taken = None;
     for _ in 0..8 {
         let path = scratch_path(dir);
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
+        options.read(true).write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         match options.open(&path) {
@@ -1578,6 +1584,29 @@ mod tests {
             let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        // The backup is put back from its own handle: another file moved
+        // in under its name meanwhile is not what the target gets.
+        std::fs::remove_file(&backup).unwrap();
+        std::fs::write(target, b"mine\n").unwrap();
+        let swap = |path: &Path, from: &mut dyn Read| {
+            let mut bytes = Vec::new();
+            from.read_to_end(&mut bytes)?;
+            if bytes == b"newer\n" {
+                let name = std::fs::read_dir(&backups)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                let evil = d.path().join("evil");
+                std::fs::write(&evil, b"not yours\n").unwrap();
+                std::fs::rename(&evil, &name).unwrap();
+                return Err(io::Error::other("no space left"));
+            }
+            overwrite(path, &mut &bytes[..])
+        };
+        write_in_place_with(target, b"newer\n", &backups, swap).unwrap_err();
+        assert_eq!(std::fs::read(target).unwrap(), b"mine\n");
         // A backup is always a new file, never one already there.
         let (path, _) = new_backup(&backups).unwrap();
         assert!(path != backup && path.exists());
