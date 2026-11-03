@@ -322,43 +322,34 @@ export default class FilesSidebar extends View {
     this.requests(cx);
     if (where(this.here)?.key !== this.here?.key) this.relocate(cx);
     const th = theme(), tk = tokens(), here = this.here;
-    const space = spaces().find(s => s.id === here?.space) ?? spaces().find(s => s.active);
-    const badges = tk.space_badges ?? ["#4f6bed"];
-    const badgeBg = space ? badges[(space.index - 1) % badges.length] : badges[0];
     const local = !here?.on;
-    // Icon buttons in pairs on a raised strip: no background until hovered; a toggle that's on is selected.
+    // Ghost icon buttons, as on the other sidebars' title rows; a toggle that's on is selected.
     const action = (id, icon, label, onClick, on = false, enabled = true) =>
-      div().id(id).w(24).h(24).flex().items_center().justify_center().rounded(5).flex_none()
+      div().id(id).size(22).flex().flex_none().items_center().justify_center().rounded(5)
         .bg(on ? th.selected : "#00000000").text_color(enabled ? (on ? th.foreground : th.muted) : th.dim)
         .when(enabled, el => el.cursor_pointer().hover(s => s.bg(on ? th.selected : th.hover).text_color(th.foreground)).on_click(onClick))
         .tooltip(label)
         .child(svg(`mods/${ME}/icons/${icon}.svg`).size(14));
-    const pair = (a, b) => h_flex().flex_none().p(1).rounded(6).bg(th.raised).child(a).child(b);
     // New files and folders: off on another machine (read-only there), which the tooltip says.
     const canAdd = local && Boolean(here?.root);
     const addTip = label => (local ? label : t("remote.readonly"));
     // The folder above (shrinks first) and the folder's own name; "~" only on this machine.
     const head = here?.root ? heading(here.root, local ? home() : null, here.branch) : null;
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
-      .child(h_flex().flex_none().pt(2).px(12).gap(6).items_center()
-        .child(div().w(16).h(16).flex_none().rounded(4).bg(badgeBg).text_color(tk.text.on_badge).text_size(10).font_bold().flex().items_center().justify_center()
-          .child((space?.name ?? "?").slice(0, 1).toUpperCase()))
+      .child(h_flex().h(32).px(12).flex_none().items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
-        .child(h_flex().flex_none().gap(4)
-          .child(pair(
-            action("new-file", "new-file", addTip(t("action.new_file")), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd),
-            action("new-folder", "new-folder", addTip(t("action.new_folder")), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd)))
-          .child(pair(
-            action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }),
-            action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx))))
-          .child(pair(
-            action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching),
-            action("hidden", "eye", t("action.hidden"), (_e, cx) => {
-              this.hidden = !this.hidden; localStorage.setItem("hidden", this.hidden ? "1" : "0"); this.version++;
-              if (this.searching) this.search(cx);
-              cx.notify();
-            }, this.hidden)))))
-      .when(Boolean(head), el => el.child(v_flex().flex_none().mt(8).mx(10).mb(6).py(6).px(8).gap(4).rounded(7)
+        .child(h_flex().flex_none().gap(2)
+          .child(action("new-file", "new-file", addTip(t("action.new_file")), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("new-folder", "new-folder", addTip(t("action.new_folder")), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }))
+          .child(action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx)))
+          .child(action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching))
+          .child(action("hidden", "eye", t("action.hidden"), (_e, cx) => {
+            this.hidden = !this.hidden; localStorage.setItem("hidden", this.hidden ? "1" : "0"); this.version++;
+            if (this.searching) this.search(cx);
+            cx.notify();
+          }, this.hidden))))
+      .when(Boolean(head), el => el.child(v_flex().flex_none().mt(4).mx(10).mb(6).py(6).px(8).gap(4).rounded(7)
         .bg(th.raised).border_1().border_color(th.border)
         .child(h_flex().gap(6).items_center().min_w(0)
           .child(svg(`mods/${ME}/icons/files/folder.svg`).size(14).flex_none().text_color(th.muted))
