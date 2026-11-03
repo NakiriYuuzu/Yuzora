@@ -1135,7 +1135,8 @@ with these differences.
 ### Beside the Herdr app
 
 The person may run the official Herdr app on the same herdr-core. Its spaces and tabs are its own (layout document
-`herdr-app`); terminals, machines and templates are shared.
+`herdr-app`). When both apps use the same core session (the default one, unless `HC_SESSION` picks another), terminals
+and machines are shared; templates are shared whatever the session.
 
 - Terminals Herdr opened show up here in spaces of their own, and Yuzora's show up in Herdr. `space.close`,
   `tab.close`, `pane.close` and `terminal.kill` end the terminal in herdr-core, so it is gone from both apps. Ask the
@@ -1145,7 +1146,8 @@ The person may run the official Herdr app on the same herdr-core. Its spaces and
 - Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from `mods/<name>` in
   Herdr's home to `mods/<name>` in this folder (never `installed.json`). Herdr's home is `$XDG_CONFIG_HOME/herdr-app`
   when that is set, else `~/.config/herdr-app`, unless the person moved it with `HERDR_APP_HOME` (ask if it isn't
-  there). A mod that writes under Herdr's home is refused here. `yuzora-*` mods don't load in Herdr.
+  there). A copied mod's `fs` writes under Herdr's home are refused here, but the commands it runs aren't limited.
+  `yuzora-*` mods don't load in Herdr.
 - `hc machine add`, `rm` and `rename`, and edits in herdr-core's templates folder, change them for Herdr too. The
   folder is `$XDG_CONFIG_HOME/herdr-core/templates/` when that is set, else `%APPDATA%\herdr-core\templates` on
   Windows and `~/.config/herdr-core/templates/` elsewhere (`hc templates` lists what's there).
