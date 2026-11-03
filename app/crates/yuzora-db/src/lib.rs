@@ -125,7 +125,7 @@ export function editorText(id: string): { text: string; selection: string; state
 export function setEditorText(id: string, text: string): null;
 /** Waits for the editor's next action: `"run"` (⌘↵ / Ctrl+Enter). */
 export function editorAction(id: string): Promise<string>;
-/** A result's rows in the native grid (kept until `release(owner)` for ids `"<owner>:…"`). props: `{ result: number | null, colors?: Record<string, string> }` (theme hex colors: foreground, muted, dim, divider, header, hover, selected, accent, editedRow, warning, error, button, buttonBorder, background). */
+/** A result's rows in the native grid (kept until `release(owner)` for ids `"<owner>:…"`). props: `{ result: number | null, colors?: Record<string, string> }` (theme hex colors: foreground, muted, dim, divider, header, hover, selected, accent, editedRow, warning, error, button, buttonText, buttonBorder, background). */
 export const DataGrid: { new(id: string, props: HostValue): NativeElement };
 /** A SQL editor with highlighting. props: `{ engine?: Engine, value?: string, readonly?: boolean }`; `value` is its text when first made (then `setEditorText`). Kept until `release(owner)` for ids `"<owner>:…"`. */
 export const SqlEditor: { new(id: string, props: HostValue): NativeElement };

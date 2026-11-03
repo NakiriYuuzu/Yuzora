@@ -26,9 +26,14 @@ pub fn is_light(hex: &str) -> bool {
     0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0) > 0.5
 }
 
+/// Whether the theme showing is light (false until the app says how to tell).
+pub fn light() -> bool {
+    LIGHT.get().is_some_and(|light| light())
+}
+
 /// The tokens for the theme showing.
 pub fn tokens() -> Value {
-    for_theme(LIGHT.get().is_some_and(|light| light()))
+    for_theme(light())
 }
 
 /// The tokens for a dark (`false`) or a light (`true`) theme.
@@ -73,6 +78,12 @@ mod tests {
             }
             for k in ["claude", "codex", "pi", "gemini"] {
                 assert!(is_hex(&t["agents"][k]), "agents.{k}");
+            }
+            for k in ["table", "view", "edited_row", "error"] {
+                assert!(is_hex(&t["database"][k]), "database.{k}");
+            }
+            for k in ["keyword", "type", "string", "number", "comment", "function"] {
+                assert!(is_hex(&t["sql"][k]), "sql.{k}");
             }
             assert!(t["space_badges"].as_array().is_some_and(|l| !l.is_empty() && l.iter().all(is_hex)));
             for k in ["working", "blocked", "done", "idle", "unknown"] {
@@ -157,6 +168,23 @@ mod tests {
             let s = |a: &str, b: &str| t.pointer(&format!("/{a}/{b}")).and_then(Value::as_str).unwrap().to_owned();
             for (fg, bg) in [(s("diff", "added"), s("diff", "added_bg")), (s("diff", "removed"), s("diff", "removed_bg")), (s("attention", "text"), s("attention", "background"))] {
                 assert!(contrast(&fg, &bg) >= 4.5, "light={light}: {fg} on {bg}");
+            }
+            // Databases: SQL on the editor and grid, an edited row, an error, the tree's icons.
+            let edited = s("database", "edited_row");
+            for (k, v) in t["sql"].as_object().unwrap() {
+                for bg in [c("background"), c("raised"), c("chrome"), c("popover"), edited.clone()] {
+                    let r = contrast(v.as_str().unwrap(), &bg);
+                    assert!(r >= 4.5, "light={light}: sql.{k} on {bg} is {r:.2}");
+                }
+            }
+            assert!(contrast(&c("foreground"), &edited) >= 4.5, "light={light}: an edited row's text");
+            for bg in [c("background"), c("raised"), edited.clone()] {
+                assert!(contrast(&s("database", "error"), &bg) >= 4.5, "light={light}: database.error on {bg}");
+            }
+            for k in ["table", "view"] {
+                for bg in ["chrome", "selected"] {
+                    assert!(contrast(&s("database", k), &c(bg)) >= 3.0, "light={light}: database.{k} on {bg}");
+                }
             }
             for b in t["space_badges"].as_array().unwrap() {
                 assert!(contrast(t["text"]["on_badge"].as_str().unwrap(), b.as_str().unwrap()) >= 4.5, "badge {b}");

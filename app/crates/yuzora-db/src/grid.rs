@@ -57,11 +57,12 @@ pub struct Colors {
     pub warning: Hsla,
     pub error: Hsla,
     pub button: Hsla,
+    pub button_text: Hsla,
     pub button_border: Hsla,
     pub background: Hsla,
 }
 
-fn hex(s: &str) -> Option<Hsla> {
+pub(crate) fn hex(s: &str) -> Option<Hsla> {
     let s = s.trim().strip_prefix('#')?;
     let v = u32::from_str_radix(s, 16).ok()?;
     let rgba = match s.len() {
@@ -90,6 +91,7 @@ impl Colors {
             warning: pick("warning", "#f5b453"),
             error: pick("error", "#f08a8a"),
             button: pick("button", "#60a5fa"),
+            button_text: pick("buttonText", "#0b1220"),
             button_border: pick("buttonBorder", "#34353a"),
             background: pick("background", "#131417"),
         }
@@ -652,7 +654,7 @@ impl Grid {
                 .items_center()
                 .rounded(px(4.0))
                 .cursor_pointer()
-                .when(primary, |d| d.bg(c.button).text_color(gpui::rgb(0x0b1220)).font_weight(gpui::FontWeight::SEMIBOLD))
+                .when(primary, |d| d.bg(c.button).text_color(c.button_text).font_weight(gpui::FontWeight::SEMIBOLD))
                 .when(!primary, |d| d.border_1().border_color(c.button_border).text_color(c.foreground))
                 .hover(|s| s.opacity(0.88))
                 .child(label)
