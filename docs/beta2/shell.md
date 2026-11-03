@@ -6,12 +6,13 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 
 | 路徑 | 內容 |
 | --- | --- |
-| `app/crates/yuzora-shell/` | `yuzora:shell`：工作區樹模型、Space 徽章色、git 摘要 |
-| `app/src/yuzora/shell.rs` | app 端 glue：pane 外框的 `blocked` 邊框 |
+| `app/crates/yuzora-shell/` | `yuzora:shell`：工作區樹模型、Space 徽章色、git 摘要、新 Space 的資料夾 |
+| `app/src/yuzora/shell.rs` | app 端 glue：pane 外框的 `blocked` 邊框；人執行的 `space.new` 改開資料夾對話框 |
 | `app/defaults/mods/yuzora-sidebar-workspace/` | 側欄工作區模式；`status/*.svg` 是 5 種 agent 狀態的形狀，其他 L1 mod 也引用 |
 | `app/defaults/mods/yuzora-modebar/` | 模式列：切換 5 個模式、徽章、設定齒輪 |
 | `app/defaults/mods/yuzora-shell-tabs/` | tab 列與「＋ 新增 pane ▾」選單 |
 | `app/defaults/mods/yuzora-shell-pane/` | pane 標頭 |
+| `app/defaults/mods/yuzora-new-space/` | 新增 Space 的資料夾對話框 |
 | `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
 | `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列：標誌與搜尋（開指令面板） |
 | `app/defaults/layouts/yuzora.json` | 預設 layout：改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型 |
@@ -29,6 +30,8 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `hostname()` | 這台電腦的名稱（去掉網域），側欄「這台電腦」列使用 |
 | `agentBrand(app, key)` | agent 品牌（`claude`／`codex`／`pi`／`gemini`），決定徽章色 |
 | `gitStatus(cwd, {on})` | branch、upstream、ahead、behind（本機或 `hc exec --on`，每步 10 秒上限）；不在 repo 時回傳 null。只讀 ref、config 與 commit（`symbolic-ref`、`config`、`for-each-ref`），不跑 `git status`，所以 repo 自己設定的程式（clean filter、fsmonitor hook、ssh 指令）都不會執行，也不會在 `.git` 寫東西。`changed`、`conflicted` 需要 `git status`，在 folder 被信任前固定是 null（見「設計決策」） |
+| `planSpace(folder, spaces, {on})` | 新 Space 的資料夾在它所屬的機器上解析成實際路徑（`~`、symlink、結尾分隔符號；只有 Windows 路徑把 `\` 當分隔符號，其他系統上的 `\` 和結尾空白都是名稱的一部分），回傳 `{folder, name, existing}`：`name` 是最後一段、`existing` 是 `spaces`（同一台機器的 `{id, folder}`）裡根目錄相同的 Space。遠端用 `hc exec --on` 跑固定的 `sh` 腳本，路徑當參數傳，不拼進指令，結果每筆以 NUL 結尾（名稱可以含換行）；那台機器沒有 `sh`（Windows）時改用 `powershell.exe`（和上游在 Windows 開終端機的做法一樣），路徑寫成單引號字串（裡面不展開任何東西），不跟隨連結；10 秒上限。失敗回傳 `{error: "not_a_folder" \| "unreachable", detail}` |
+| `beginSpace(machine, lease?)`／`endSpace(machine, lease)` | 同一台機器同時只開一個新增 Space 對話框。`beginSpace` 回傳這個對話框的租約編號，另一個還開著時回傳 null；建立 Space 前帶著租約再呼叫一次，確認還握著。`endSpace` 只放掉自己的租約，不會清掉別的對話框的。10 分鐘沒有再握的租約（對話框沒說自己關了）可以被新對話框接手，舊對話框這時建立會被拒絕 |
 
 worktree 的分組依 agent 所在 pane 的 branch 與資料夾；不在 git 裡的 agent 以資料夾名稱分組。同一個 Space 裡兩個資料夾剛好在同名 branch 時是兩列，各自帶資料夾名稱（列的 `detail`），「＋」開在該列自己的資料夾。`hosts` 照 `hc machine ls --json` 的樣子傳入；欄位型別不符（例如 `via` 是布林）只會略過該欄位，不會讓整個側欄失敗。
 
@@ -70,6 +73,7 @@ L1 讀的 key：
 - **鍵盤與腳本入口**：`yuzora-shell-tabs.new-pane` 開新增 pane 選單（沒有滑鼠位置可對齊，所以置中顯示；點按鈕時則開在游標下）；`yuzora-sidebar-workspace.spaces`／`agents` 切換分頁，`add`／`tools` 開對應選單。可綁進 `keys.json`（`"alt-n": "yuzora-shell-tabs:new-pane"`），也可用 `herdr-app do yuzora-shell-tabs.new-pane`。
 - **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。放開在其他地方或拖出側欄就取消。
 - **機器的「新增 Space」**：只在該機器的 layout 已讀到（LED 綠燈）時提供；讀取中 Herdr 會拒絕結構性指令。狀態列的 git 摘要在 focus 的終端機所屬機器上執行（終端機位址 `<machine>/<id>`），不是目前 Space 的機器。
+- **新增 Space 先選資料夾**（beta.1 的「開啟資料夾成為 Space」）：人執行、而且只帶 `machine`（或什麼都不帶）的 `space.new`，以及沒有任何 Space 時不帶參數的 `tab.new`（它會順便建立 Space）——快捷鍵、指令面板、選單、側欄與 picker 的「＋」——由 `window.rs` 的 `run_as` 攔下，改開 `yuzora-new-space` 對話框（`shell.rs` 的 `asks_folder`）；沒帶 machine 時沿用上游規則，用目前 Space 的機器。帶 name、folder、tab、argv 或 task 的呼叫（worktree、SSH session、腳本、對話框自己）照原樣執行；`herdr-app do`（腳本與 agent）也不攔。本機開系統的資料夾選擇器（`pickFolder`），取消就關閉、什麼都不建；遠端機器不能用本機選擇器，改輸入路徑（預設 `~/`），由 `planSpace` 在那台機器上確認，所以不會拿本機路徑去建遠端 Space。L4 的 SFTP 瀏覽要先過 SSH 認證、herdr 也沒有列目錄的 API，所以先用輸入框。解析後的實際路徑若已是同一台機器上某個 Space 的根目錄（folder 空白的 Space 視為家目錄），就切換到它並提示，不建第二個。對話框開著時同一台機器不能再開一個（`beginSpace`），檢查中顯示狀態，錯誤（找不到資料夾、機器沒回應或離線、選擇器開不起來）以 en／zh-TW 顯示在對話框裡。**不保留「不選資料夾」的捷徑**：每個 Space 都有有意義的根目錄，去重才有依據；要在家目錄開就選家目錄；腳本仍可直接 `space.new`。
 - **狀態列的 git 不跑 `git status`**：終端機一 `cd` 進資料夾，狀態列就會自動查詢，那個 repo 可能是剛下載、不可信的。`git status` 會看工作樹，並執行 repo 自己 config 指定的程式（`filter.<x>.clean`／`process`、`core.fsmonitor` 等），所以只讀 ref 與 commit：`symbolic-ref` 取 branch，`for-each-ref` 的 `%(upstream:short)`、`%(upstream:track)` 取 upstream 與 ↑↓。partial clone（promisor remote）缺 commit 時，走訪 commit 會用 repo 的 ssh 指令 lazy fetch，所以這種 repo 加 `--no-lazy-fetch`（git 2.44 起）；更舊的 git 不顯示 ↑↓。變更數與衝突數要等 L2 的 trust 判斷搬進 `yuzora-core`（#194）後，只在 folder 已信任時才用 `git status` 查；在那之前回傳 null，狀態列本來就只畫 branch 與 ↑↓。測試用會留下標記檔的 clean filter 與 ssh 指令當 oracle，並確認舊指令確實會觸發它們。
 - **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動還沒列出）或離線（LED 熄滅）時先顯示全部，機器回來後自動回到該機器；連線中（LED 琥珀）時維持原 scope。
 - **新增 pane 選單的高度**：跟著列數長高，最高 520px（`MENU_MAX`）；超過時位置切換列固定、下方清單捲動。popup 會依內容決定高度（`set_fit_content`，`height` 只是上限），所以選單裡不能有等待「填滿高度」的元素：根元素不用 `size_full`，清單不用 `flex_1`，也不用 `overflow_y_scrollbar`（它的捲動區會填滿父層，改用 `overflow_y_scroll`，和上游的 machine-add、picker 一樣），否則清單高度會塌成 0，只剩位置切換列（曾經發生過，`render_tests.rs` 的 `yuzora_new_pane_menu_*` 鎖住）。選中的位置用 accent 底色，點了立即更新，也記在 `yuzora.shell.split` 給下一次用（截圖：`evidence/l1-pane-menu-before.png` 修正前、`l1-pane-menu-popup.png` 修正後、`l1-pane-menu-below.png` 選「下方」）。沒有工具 pane 或 agent 時顯示說明。還沒有 Space 時工具 pane 停用並註明「需要先有 Space」（`tab.new` 可以替終端機或 agent 順便建立 Space，mod 不行）。
@@ -98,7 +102,7 @@ L1 讀的 key：
 | 檔案 | 改動 |
 | --- | --- |
 | `app/src/layout.rs` | `PaneFrame` 新增 `blocked: Option<Line>` 欄位 |
-| `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框 |
+| `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框；`run_as` 在 `space.new` 前多一段：人執行的 bare `space.new`（以及沒有 Space 時的 bare `tab.new`）改開資料夾對話框 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
 | `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora；新增 `yuzora_new_pane_menu_*` 兩個測試（新增 pane 選單在 popup 裡的版面、點選後的指令）與 `yuzora_herdr_panels_start_off`（Herdr panel 預設關閉、設定頁開關） |
 | `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確）；`panels()` 沒有設定時視為沒有 panel |
@@ -112,8 +116,8 @@ L1 讀的 key：
 
 ```bash
 cd app
-cargo test --locked -p yuzora-shell        # 樹模型、徽章色、git 解析與不執行 repo 程式、HostModule 宣告
-cargo test --locked --bin herdr-app yuzora # blocked 邊框、layout 引用的 mod 都有出貨
+cargo test --locked -p yuzora-shell        # 樹模型、徽章色、git 解析與不執行 repo 程式、新 Space 的資料夾、HostModule 宣告
+cargo test --locked --bin herdr-app yuzora # blocked 邊框、layout 引用的 mod 都有出貨、哪些 space.new 先問資料夾
 scripts/yuzora/check-mods
 ```
 
@@ -129,11 +133,16 @@ printf '\033]7501;state=blocked:app=codex\033\\'; exec sleep 100000
 hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 ```
 
+新增 Space 的流程用 `herdr-app do mod.open --name <探針>` 驅動，探針只放在測試 app home：`yuzora-new-space` 的複本，只把系統選擇器換成讀固定檔案（本機）、或把路徑自動填入並送出（lab-01）；另一個探針以 mod 的 `run("space.new", …)`（算人執行）觸發攔截，開的是出貨的對話框。驗過：本機選 `/tmp/…/alpha-app` 建出 `alpha-app`，終端機 cwd 是 `/private/tmp/…/alpha-app`；再選 `link-to-alpha/`（symlink 加結尾斜線）切回同一個 Space、不新增；lab-01 輸入含引號、`&`、空白的路徑建出同名 Space，cwd 正確、沒有多出檔案；再輸入 `/tmp//…/` 切回它；目前 Space 在 lab-01 時不帶參數的 `space.new` 開 lab-01 的對話框；對話框開著時再開一次只跳提示；取消（選擇器回 null）什麼都不建，之後可以再開。系統的資料夾選擇器本身（`pickFolder`）要手動驗收。
+
 截圖在 `docs/beta2/evidence/`：
 
 | 檔案 | 內容 |
 | --- | --- |
 | `l1-workspace.png` | 本機＋lab-01 的樹、scope chips、需要注意、模式列徽章、tab 列、pane 標頭、狀態列（含其他 lane 的狀態） |
+| `l1-new-space-remote.png` | 在 lab-01 新增 Space：路徑輸入框（由人執行的 `space.new {machine: "lab-01"}` 開啟） |
+| `l1-new-space-existing.png` | 本機再選同一個資料夾（經 symlink）：切回 `alpha-app` 並提示，沒有新增 |
+| `l1-new-space-errors.png` | lab-01 找不到資料夾的錯誤，以及同一台機器的對話框已開著時的提示 |
 | `l1-scope-after-restart.png` | 選 lab-01 後重啟，scope 仍在 |
 | `l1-blocked-and-badge.png` | 側欄在 Git 模式時新增 blocked agent：工作區徽章變 3、pane 琥珀外框與標頭 |
 | `l1-agents-tab.png` | Agents 分頁（最急的在前） |
@@ -157,6 +166,7 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 - **L6**：設定框架合併後，模式列齒輪改開 Yuzora 的設定（`yuzora-modebar/main.js` 的 `app.settings`）。外觀設定頁可編輯 `yuzora.space.colors`（Space 徽章色）。
 - **L2**：#194 把 trust 判斷搬進 `yuzora-core` 後，`gitStatus` 改接那個 API：folder 已信任時再跑一次 `git status` 補上 `changed`、`conflicted`，未信任時維持現在的行為（只有 branch 與 ↑↓，不報錯）。
 - **L2–L5**：側欄模式的標頭可用 `spaceBadges()` 畫 Space 徽章（用法見上）；徽章數與狀態列文字照「共享狀態」的 key 寫入。工具 pane 在 `mod.json` 宣告 `"yuzora": {"pane": …}` 就會出現在「＋ 新增 pane」選單。
+- **L4**：`yuzora-ssh-herdr`、`yuzora-sidebar-ssh` 只帶 `machine` 的 `space.new`（在 herdr 機器新增 Space）現在也會先開資料夾對話框；帶 `argv` 的 SSH session 不受影響。之後若 L4 提供遠端目錄瀏覽，可以接進 `yuzora-new-space` 取代路徑輸入框。
 - **L2、L5**：#194、#192 在淺色主題下的對比問題（git graph 色盤、ref chip、編輯器與 Markdown 的 One Dark 語法色、警告橫幅等）已列給總指揮轉交。原則同上：顏色從 theme 名稱或 `tokens()` 取，不寫死。
 - **L8**：狀態列最右端（指令面板快捷鍵右邊）保留給 L8 的 `yuzora-perf`，由 L8 把 layout 的 `status` 節點改成 row。L1 維持 `status` 的 id 與 26px 高度，不在快捷鍵右邊加東西；`yuzora-statusbar` 根元素的背景（`theme().chrome`）或上緣分隔線（1px，`theme().divider ?? theme().border`）若要改，要在 PR 註明讓 L8 對齊。
 - **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。

@@ -8,6 +8,7 @@
 - Yuzora 主題改用品牌的藍與青，並新增淺色版 yuzora-light；預設跟隨系統的淺色／深色模式。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issues；App 自我更新暫停，之後改由 GitHub Releases 提供。
 - 工作區側欄：Spaces／Agents 分頁、每台機器的 scope chip（LED 顯示連線狀態）、「需要注意」區，以及機器 → Space → worktree → Agent 的樹；Agent 狀態同時以顏色與形狀表示。
+- 新增 Space 會先選資料夾（遠端機器輸入路徑並在那台機器上確認），Space 以資料夾命名、終端機從那裡開始；同一個資料夾已有 Space 時直接切換過去。
 - 模式列顯示各模式的徽章數；tab 列每個 tab 帶 Space 徽章與狀態，「＋ 新增 pane」可把工具 pane、終端機、Agent 混合分割進同一個 tab。
 - pane 標頭與外框：focus 時邊框變亮，Agent 需要回覆時邊框與標頭轉為琥珀色；狀態列顯示 pane／Space／Agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本。
 - 歡迎、新功能、意見回饋畫面改為 Yuzora 品牌；介面字型改用系統字型。
@@ -26,6 +27,7 @@
 - 檔案側欄：跟隨目前 pane 的 repo，顯示 git 標記與依類型上色的檔案 icon；新增、重新命名、刪除到垃圾桶、複製路徑、在 Finder 中顯示；檔名模糊搜尋與內容搜尋（有 ripgrep 就用，否則用內建搜尋）。
 - 程式碼編輯器：14 種語言的 tree-sitter 上色、存檔衝突檢查、搜尋與取代；檔案在磁碟上被修改時自動重新載入，有 Agent 在改同一個檔案時會提示。
 - Markdown 預覽（與編輯器即時同步，可切換原始碼）與圖片／SVG 檢視。遠端 Space 的檔案可以瀏覽與唯讀開啟。
+- Git（以 IntelliJ IDEA 為基準）：側欄 Git 模式可暫存、提交（amend、sign-off、略過 hooks、訊息歷史與範本）、推送；diff pane 可暫存或捨棄單一 hunk 或選取的行；提交紀錄與分支圖、篩選與右鍵操作；分支 popup（smart checkout、merge、rebase、比較）；三方合併解衝突；互動式 rebase；Annotate；stash、tag、remote、worktree、patch 管理；Git 設定頁。
 - 同步 herdr-app 上游到 f6fe216（v0.1.12 之後）：可選用終端機字型連字（`settings.json` 的 `font_ligatures`，預設關閉）、快捷鍵說明再按一次就關閉，並修正 pane 程式的啟動尺寸、焦點框與控制鍵別名等問題。
 
 ## [0.1.12] - 2026-11-02

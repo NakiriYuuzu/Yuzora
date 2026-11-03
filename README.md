@@ -117,7 +117,14 @@ holds the sidebar's model, Space badges and a small Git summary. Details: [docs/
 <!-- yuzora:lane:L2:start -->
 ### L2 · Git
 
-Not started.
+Git modelled on JetBrains IntelliJ IDEA Community, with the staging area:
+the sidebar's Git mode (changes, staging, commit, push), a diff pane with
+hunk and line staging, the commit log with its branch graph, the branches
+popup, push dialog, three-way merge, interactive rebase, annotate, and a
+repository pane (stashes, tags, remotes, worktrees, submodules, patches).
+All git work runs in Rust (`app/crates/yuzora-git`, the `yuzora:git`
+module), never on the UI thread. Design and the IntelliJ checklist:
+[docs/beta2/git.md](docs/beta2/git.md).
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
@@ -183,6 +190,31 @@ the terminals and agents in it, and the tools the app starts) as `{cpu}% · {mem
 it. `yuzora:perf` (`app/crates/yuzora-perf`) samples on a worker thread every 2 s while the window is in front.
 Details: [docs/beta2/perf.md](docs/beta2/perf.md).
 <!-- yuzora:lane:L8:end -->
+
+<!-- yuzora:lane:L9:start -->
+### L9 · Using Yuzora beside Herdr
+
+Yuzora and the official Herdr app can run at the same time on one herdr-core (its default session). Each keeps its
+own Spaces, tabs and layout. The terminals belong to herdr-core, so both apps see them. Keep in mind:
+
+- **Closing a Space, tab or pane ends its terminals, whichever app opened them.** Each app gathers the other's
+  terminals into Spaces of its own. Closing one of those in Yuzora ends the terminal in Herdr too, and the other way
+  round. To close work Herdr opened, close it in Herdr.
+- **herdr-core starts again while either app is open.** After `hc server stop`, the open app starts the core again
+  within about a second, and every program in its terminals ends (kept terminals come back with a fresh shell). To
+  stop the core for good, quit both apps first.
+- **Herdr's settings and mods aren't imported.** To bring a mod over, copy its folder from Herdr's `mods/` into
+  Yuzora's: `~/.config/herdr-app/mods/` and `~/.config/yuzora/mods/` by default, under `XDG_CONFIG_HOME` when that is
+  set, or in the folders `HERDR_APP_HOME` and `YUZORA_APP_HOME` name if you set them. Or pick the mod's folder in
+  Settings › Mods › Install from folder… (which never overwrites a mod you have). `keys.json` and themes can be copied the same way; don't copy
+  `installed.json`. Yuzora's own `yuzora-*` mods don't load in Herdr.
+- **Machines and agent templates are shared.** Both apps use herdr-core's machine list and its templates folder
+  (`~/.config/herdr-core/templates/`; on Windows `%APPDATA%\herdr-core\templates`; `$XDG_CONFIG_HOME/herdr-core/templates/`
+  when that is set). A machine you add, rename or remove, or a template you edit in Yuzora's Settings, changes for
+  Herdr as well.
+
+Details and the decisions behind this: [docs/beta2/herdr-compat.md](docs/beta2/herdr-compat.md).
+<!-- yuzora:lane:L9:end -->
 
 ## License
 

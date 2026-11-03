@@ -1038,6 +1038,11 @@ with these differences.
 - The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+- A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
+  `yuzora-new-space` dialog to pick the folder and answers `{"asked": "folder"}`; no Space exists yet. A folder
+  that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with
+  `name`, `folder`, `tab`, `argv` or `task` create the Space as above. A person's `tab.new` with no arguments
+  while no Space is open would start one, so it opens the dialog too.
 - Herdr's Files and Changes panels are off in Yuzora until turned on (the welcome's third page, or Settings >
   Yuzora > General > Panels): shared `"workspace.panels"` lists the ones on, and unset means none. The tab bar
   shows a button only for those; Yuzora's sidebar has its own Files and Git modes.
@@ -1054,6 +1059,24 @@ with these differences.
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
+### Git (`yuzora:git`)
+
+- The sidebar's Git mode is `yuzora-sidebar-git`. Tool panes: `yuzora-git-log`
+  (props `{cwd, on, filter?, compare?}`; `filter: {paths: [p], follow: true}`
+  is a file's history), `yuzora-git-diff` (`{cwd, on, path, mode: "unstaged" |
+  "staged" | "commit" | "compare", rev?, to?}`), `yuzora-git-merge`,
+  `yuzora-git-rebase` (`{cwd, on, base}`), `yuzora-git-blame` (`{cwd, on,
+  path, rev?}`), `yuzora-git-repo` (`{cwd, on}`). Open one with
+  `herdr-app do tab.new --name Log --mod yuzora-git-log --props '{"cwd": "/path/to/repo"}'`.
+- In a mod, `open(cwd, on)` from `yuzora:git` gives the repository (`id`,
+  `root`, `machine`); every other function takes that `id`. `changed(id, since)`
+  resolves when the repository changed. Git runs in the app (never on the UI
+  thread), with locks for writes and a timeout; don't run `git` with `exec`
+  for things `yuzora:git` does.
+- Git settings are the `git` section of `yuzora/settings.json` (`settings()` /
+  `setSettings({...})` in `yuzora:git`): e.g. `logRecentCount`,
+  `forceWithLease`, `protectedBranches` (a regex), `updateMethod`,
+  `swapSidesInRebase`.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
@@ -1150,3 +1173,26 @@ with these differences.
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
   `{cpu, memory, count}`: cpu is one core = 100, summed; memory is RSS in bytes. The categories add up to total.
 <!-- yuzora:lane:L8:end -->
+
+<!-- yuzora:lane:L9:start -->
+### Beside the Herdr app
+
+The person may run the official Herdr app on the same herdr-core. Its spaces and tabs are its own (layout document
+`herdr-app`). When both apps use the same core session (the default one, unless `HC_SESSION` picks another), terminals
+and machines are shared; templates are shared whatever the session.
+
+- Terminals Herdr opened show up here in spaces of their own, and Yuzora's show up in Herdr. `space.close`,
+  `tab.close`, `pane.close` and `terminal.kill` end the terminal in herdr-core, so it is gone from both apps. Ask the
+  person before closing a space, tab or pane, or running `terminal.kill`, on what may be Herdr's terminals.
+- Don't use `hc server stop` to stop the core: while either app is open it starts again within a second, and every
+  program in its terminals ends. To stop it for good, the person quits both apps first.
+- Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from `mods/<name>` in
+  Herdr's home to `mods/<name>` in this folder (never `installed.json`). If `mods/<name>` is already here, don't copy
+  over it: ask the person, or point them to Settings › Mods › Install from folder…, which picks a free name. Herdr's
+  home is `$XDG_CONFIG_HOME/herdr-app` when that is set, else `~/.config/herdr-app`, unless the person moved it with
+  `HERDR_APP_HOME` (ask if it isn't there). A copied mod's `fs` writes under Herdr's home are refused here, but the commands it runs aren't limited.
+  `yuzora-*` mods don't load in Herdr.
+- `hc machine add`, `rm` and `rename`, and edits in herdr-core's templates folder, change them for Herdr too. The
+  folder is `$XDG_CONFIG_HOME/herdr-core/templates/` when that is set, else `%APPDATA%\herdr-core\templates` on
+  Windows and `~/.config/herdr-core/templates/` elsewhere (`hc templates` lists what's there).
+<!-- yuzora:lane:L9:end -->

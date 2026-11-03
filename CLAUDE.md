@@ -96,6 +96,7 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
+- L2 Git：pane 之間用 shared key（`yuzora.git.diff`／`merge`／`rebase`）交棒、`changed(repo, since)` 即時更新、`yuzora.badge.git`／`yuzora.status.git` 給 L1，細節在 `docs/beta2/git.md`〈pane 之間的約定〉。
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->

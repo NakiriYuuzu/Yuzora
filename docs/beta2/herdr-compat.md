@@ -5,7 +5,7 @@ lane L9 負責兩件事：
 - 讓 Yuzora 和使用者同時安裝的官方 Herdr.app 盡量互不干擾。
 - 維持 herdr-app 上游與 herdr-core 的更新。
 
-本文是相容性盤點、已修項目、待決策清單，以及上游同步的做法。架構決策見 [architecture.md](architecture.md)（D1 subtree、D3 外連、D4 layout 名稱），lane 流程見 [lanes.md](lanes.md)。
+本文是相容性盤點、已修項目、已決定的取捨（2026-11-03，使用者），以及上游同步的做法。給使用者的說明在根目錄 `README.md` 與 `app/defaults/AGENTS.md` 的 L9 區塊。架構決策見 [architecture.md](architecture.md)（D1 subtree、D3 外連、D4 layout 名稱），lane 流程見 [lanes.md](lanes.md)。
 
 - 盤點環境（2026-11-03，macOS aarch64）：
   - Yuzora：`beta2/integration` `ca2a08c7`，herdr-app 上游 `9c678b0`。
@@ -22,18 +22,18 @@ lane L9 負責兩件事：
 | layout 文件（`doc.*`） | 分開：Yuzora 寫 `yuzora`，Herdr 寫 `herdr-app` | 無 | 維持（D4） |
 | app home（settings、keys、themes、layouts、mods、shared） | 分開：`~/.config/yuzora` 與 `~/.config/herdr-app` | 無 | 維持（D3） |
 | 終端機 label | 兩邊寫同一組 `herdr.*` 與 `where` | 低：`where` 最後寫入者勝，只影響顯示 | 記錄 |
-| **收養與關閉** | 兩邊都把對方的終端機收進自己的 Space；**在任一邊關閉 pane／tab／Space 會在 core 結束它** | **高**：會誤殺對方的終端機 | **待決策 1**；D4 的描述需要更正 |
+| **收養與關閉** | 兩邊都把對方的終端機收進自己的 Space；**在任一邊關閉 pane／tab／Space 會在 core 結束它** | **高**：會誤殺對方的終端機 | **決定 1**：維持，使用說明寫清楚；D4 已更正 |
 | machines catalog | core 的，兩邊共用 | 中：一邊移除或改名，另一邊跟著變 | 記錄（設計如此） |
 | herdr-core 模板 | Yuzora（L6）直接寫 core 的 templates 資料夾；Herdr 只讀 | 低：改了模板，兩邊的 `hc run <模板>` 都會變 | 記錄（設計如此） |
 | `config.toml`、agent hooks | 兩邊都不寫 | 無 | — |
-| `hc server stop` | 任何一個 app 開著時，1 秒內會被它重新啟動 | 中：所有程式結束，kept 終端機換成新 shell | 記錄；**待決策 4** |
+| `hc server stop` | 任何一個 app 開著時，1 秒內會被它重新啟動 | 中：所有程式結束，kept 終端機換成新 shell | 決定 4：維持，使用說明寫清楚 |
 | `hc server restart`、`hc update` | 兩邊約 1 秒內重連，程式不中斷 | 低 | 記錄 |
-| Yuzora 自動升級 core | Yuzora 自我更新後，第一次啟動會把共用 core 升到最新同代版本 | 低：Herdr 的 core 也跟著重啟 | **待決策 5** |
+| Yuzora 自動升級 core | Yuzora 自我更新後，第一次啟動會把共用 core 升到最新同代版本 | 低：Herdr 的 core 也跟著重啟 | 決定 5：維持 |
 | 版本 gating（啟動時） | 會擋，但 setup 畫面寫的是「Herdr」 | 低：使用者看不懂 | **已修 B1** |
 | 版本 gating（重連時） | **不檢查**：別的 app 換掉 core 後，Yuzora 默默接上不相容的 core | 中：之後的呼叫用難懂的方式失敗 | **已修 B2** |
-| mods | Herdr 的 mod 可直接裝進 Yuzora；Yuzora 的 `yuzora-*` mod 在 Herdr 載入時明確失敗 | 低 | 記錄；匯入見**待決策 3** |
+| mods | Herdr 的 mod 可直接裝進 Yuzora；Yuzora 的 `yuzora-*` mod 在 Herdr 載入時明確失敗 | 低 | 決定 3：不匯入，使用說明寫手動複製 |
 | keymap、themes、settings.json | 格式相同，可互相複製 | 低 | 記錄 |
-| Space、tab | 不共用；終端機共用 | 見「收養與關閉」 | **待決策 2** |
+| Space、tab | 不共用；終端機共用 | 見「收養與關閉」 | 決定 2：維持分開 |
 
 ## A. 盤點
 
@@ -118,7 +118,7 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
   - `space.close`、`tab.close`、`pane.close` 和 `terminal.kill` 都會對該 pane 的終端機呼叫 `terminal.kill`（`window.rs:2591`、`:2613`）。
   - 實測：在 Yuzora 關閉收養來的 `hd-space`（`space.close --confirmed true`）後，core 裡的 `t2` 變成 `finished／killed`，Herdr.app 的 `hd-space` 也整個消失。
   - 收養來的 tab 或 pane，在 Yuzora 關掉同樣會在 Herdr 消失，反過來也一樣。
-- **D4 的描述需要更正**。architecture.md D4「代價」寫「這不會關閉或刪除終端機」，只對 label 改動成立。被收養的終端機，在任一個 app 關閉時都會結束。請總指揮更正（`docs/beta2/` 不屬於 L9）。
+- **D4 已更正**（2026-11-03）。architecture.md D4「代價」原本寫「這不會關閉或刪除終端機」，只對 label 改動成立；現在寫明被收養的終端機在任一個 app 關閉時都會結束。
 - 不會發生的事：Yuzora 不會結束它沒有 pane 的終端機。終端機在別處結束時，Yuzora 只把 pane 從自己的畫面移除（`window.rs` `check_closed`）。
 
 ## B. 已修（不改變產品行為）
@@ -166,7 +166,7 @@ toast 的樣子（隔離環境 zh-TW，假 core 回報 generation 2）：
 | 項目 | 理由 |
 | --- | --- |
 | 「不在另一個 app 連線時擅自停止 core」 | Yuzora 本來就不停止 core。`hc update` 等同 restart，程式不中斷 |
-| 「避免覆寫對方的資料」 | layout 文件和 app home 已經分開。label 是 core 的共用設計：`where` 只影響顯示；`herdr.seen` 和 pin 本來就要共用。真正會傷到對方的只有「收養後關閉」，但改它會改變產品行為，列為待決策 1 |
+| 「避免覆寫對方的資料」 | layout 文件和 app home 已經分開。label 是 core 的共用設計：`where` 只影響顯示；`herdr.seen` 和 pin 本來就要共用。真正會傷到對方的只有「收養後關閉」，但改它會改變產品行為，交給使用者決定（決定 1：維持） |
 
 ## C. 上游與 core 的更新
 
@@ -224,7 +224,9 @@ app/scripts/yuzora/sync-check --quick    # 只跑 1–4 與掃描
 
 CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本身只透過 D3 保留的 core 安裝與更新通道連到 `releases.herdr.dev`：`core/latest.json`，以及 `after_update`、setup 的安裝。
 
-## 待決策（會改變產品行為，由使用者決定）
+## 已決定（2026-11-03，使用者）
+
+下面六項都會改變產品行為，所以交給使用者決定。使用者在 2026-11-03 全部採用建議：1 選 a、2 選 a、3 選 a、4 選 a 加 c、5 選 a、6 選 a，也就是全部維持現況，並在使用說明寫清楚。選項與取捨保留在下面，條件改變時重新評估。
 
 ### 1. 收養來的終端機，關閉時要不要結束它
 
@@ -235,7 +237,13 @@ CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本
 | c. Yuzora 不收養指向其他 layout 文件 Space 的終端機 | 兩個 app 完全分開顯示 | 看不到 Herdr 開的 agent；要能判斷「別的文件的 Space」（core 不提供，需要讀 `herdr-app` 文件，等於依賴 Herdr 的格式） |
 | d. Yuzora 改用自己的 core session（見決策 6） | 零干擾 | 見決策 6 |
 
-建議：先選 a 並在文件說明；若常同時使用兩個 app，再做 b。
+**決定**：a，維持上游行為，在使用說明寫清楚：要關掉另一個 app 開的工作，在那個 app 關。
+
+**何時重新評估**：
+
+- 出現誤殺的回報，也就是在 Yuzora 關掉 Space、tab 或 pane，結束了 Herdr 那邊的終端機，或反過來。或者使用者普遍同時開著兩個 app。這時做 b。
+- 上游 Herdr 自己加上「誰建立的」label，或關閉外來終端機時改成 park。這時跟著上游做，不必自己改 `window.rs`。
+- core 提供「這個 Space 屬於哪份 layout 文件」的資訊。這時 c 不用讀 Herdr 的格式也做得到，可以和 b 一起比較。
 
 ### 2. Space／layout 要不要和 Herdr 共用
 
@@ -245,6 +253,10 @@ CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本
 | b. 第一次啟動時，從 `herdr-app` 文件匯入一次 Space 配置，之後各自獨立 | 換到 Yuzora 時不用重排 | 要讀 Herdr 的格式（目前相同，未來可能漂移）；只匯入一次 |
 | c. 共用 `herdr-app` 文件 | 完全同步 | **不建議**：兩邊會互相覆寫；版本不同時可能寫出對方讀不懂的內容；Yuzora layout 用到的 mods Herdr 沒有 |
 
+**決定**：a，維持分開（D4）。
+
+**何時重新評估**：從 Herdr 換到 Yuzora 的使用者，常要求保留原本的 Space 配置，而且上游把 `herdr-app` 文件的格式文件化或加上版本，讀它不再是依賴內部格式。這時做 b（只匯入一次）。c 不重新評估。
+
 ### 3. 要不要匯入 Herdr 的設定與 mods
 
 | 選項 | 好處 | 代價 |
@@ -252,6 +264,10 @@ CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本
 | a. 不匯入（現況）；文件說明可以手動複製 `keys.json`、themes 與自訂 mods | 沒有風險 | 使用者要自己來 |
 | b. 設定裡加「從 Herdr 匯入」，一次性複製 `keys.json`、`themes/`、使用者自己的 mods（不含內建與 `installed.json`）、字型與外觀設定 | 換過來比較方便 | 要處理名稱衝突與 `-edited` 改名；放在 L6 的設定框架 |
 | c. 持續同步 | — | **不建議**：Yuzora 的 mods 在 Herdr 不能用，雙向同步會產生錯誤 |
+
+**決定**：a，不匯入。使用說明寫明可以手動複製 mod 資料夾、`keys.json` 與 themes；單一 mod 也可以用設定的 Mods 頁「Install from folder…」安裝，它不會覆寫既有的 mod，也會先列出要安裝的內容。
+
+**何時重新評估**：有多位使用者要求一鍵匯入。或者 L6 的設定框架或 beta.1 遷移（`yuzora_core::migrate` 的 `Importer`）已經有可以重用的匯入流程，b 的成本變低。
 
 ### 4. 被刻意停止的 core，要不要自動重新啟動
 
@@ -263,6 +279,10 @@ CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本
 | b. 請上游 hc 分辨「被刻意停止」和「當掉」（例如 `hc connect --no-start`，或在狀態檔留下標記），app 遇到刻意停止時不重新啟動，並提示 | 行為符合預期 | 依賴上游 hc；Herdr 也要跟進才有完整效果 |
 | c. 在 Yuzora 文件與 UI 說明：要真的停止 core，先關掉兩個 app | 不改程式 | 只是說明 |
 
+**決定**：a，維持，加上 c 的說明。目前寫在使用說明，UI 沒有改。
+
+**何時重新評估**：上游 hc 能分辨「被刻意停止」和「當掉」時（例如 `hc connect --no-start`，或在狀態檔留下標記）。上游同步或 sync-check 看到這類改動，就照 b 跟進。若 Herdr 也採用，就和 Herdr 一致。
+
 ### 5. Yuzora 更新後，要不要自動升級共用的 core
 
 現況（上游行為）：Yuzora 自我更新後第一次啟動，會把 core 升到最新的同代 release，同時重啟 Herdr 那邊的 core（程式不中斷）。
@@ -273,12 +293,26 @@ CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本
 | b. 只升到 Yuzora 需要的最低版本（`core-version`） | 只有必要時才動到共用 core | core 可能停在較舊版本；要改上游 `update.rs` |
 | c. 先問使用者 | 使用者可以控制 | 多一個提示 |
 
+**決定**：a，維持：Yuzora 更新後把 core 升到最新的同代版本。
+
+**何時重新評估**：
+
+- 同代的 core 更新不再能讓程式繼續執行（restart 會結束程式）。
+- 使用者反映每次 Yuzora 更新都打斷 Herdr。
+- Yuzora 的發布頻率遠高於 core。
+
+符合上面任一項時，改成 b（只升到 `core-version`）或 c。
+
 ### 6. 預設要不要用自己的 core session
 
 | 選項 | 好處 | 代價 |
 | --- | --- | --- |
 | a. 和 Herdr 共用預設 session（現況） | 兩邊看得到同一批終端機與 agent；`hc` CLI 和 agent 的 `hc` 指令預設就找得到；machines 只要加一次 | 上面 1、4、5 的干擾 |
 | b. Yuzora 預設用自己的 session（例如 `HC_SESSION=yuzora`，或連線時加 `--session`） | 完全不干擾；`stop`、升級只影響自己 | 兩個 app 看不到彼此的終端機；machines 要重新加；**在終端機外**（例如另一個終端程式）執行 `hc ls`／`hc run` 時，預設連到另一個 session，要另外指定。core 的 binary 仍然共用，跨代升級照樣會影響兩邊 |
+
+**決定**：a，維持共用預設 session。
+
+**何時重新評估**：1、4、5 的干擾在實際使用中造成問題，而決定 1 的 b 也解決不了。或者使用者需要完全分開，例如一邊用 Herdr 做正式工作，一邊試 Yuzora 的 beta。這時改成 b，或提供切換 session 的設定。跨代時兩邊仍然共用同一個 binary，這一點 b 也解決不了。
 
 ## 實測紀錄
 

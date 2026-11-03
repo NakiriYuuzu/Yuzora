@@ -48,14 +48,23 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L1:start -->
 #### L1 外殼工作區
 
-- 文件：`docs/beta2/shell.md`。mods：`yuzora-sidebar-workspace`、`yuzora-modebar`、`yuzora-statusbar`、`yuzora-shell-tabs`（tab 列＋新增 pane 選單）、`yuzora-shell-pane`（pane 標頭）；crate `yuzora-shell`（`workspace()`、`spaceBadges()`、`hostname()`、`agentBrand()`、`gitStatus()`）。
+- 文件：`docs/beta2/shell.md`。mods：`yuzora-sidebar-workspace`、`yuzora-modebar`、`yuzora-statusbar`、`yuzora-shell-tabs`（tab 列＋新增 pane 選單）、`yuzora-shell-pane`（pane 標頭）、`yuzora-new-space`（新增 Space 的資料夾對話框）；crate `yuzora-shell`（`workspace()`、`spaceBadges()`、`hostname()`、`agentBrand()`、`gitStatus()`、`planSpace()`）。
 - 側欄模型在 Rust（`app/crates/yuzora-shell/src/workspace.rs`，純函式＋單元測試），mod 只負責畫。改分組、排序或計數先改測試。
 - 5 種 agent 狀態形狀是 `yuzora-sidebar-workspace/status/*.svg`，其他 mod 以路徑引用，不要複製；顏色取 `tokens().status.<狀態>.mark`。
-- 上游改動只有 `PaneFrame.blocked`（`app/src/layout.rs`、`app/src/window.rs` 各一處，邏輯在 `app/src/yuzora/shell.rs`）與 welcome／whatsnew／feedback 的品牌字樣，都標 `// yuzora(L1):`。
+- 上游改動只有 `PaneFrame.blocked`（`app/src/layout.rs`、`app/src/window.rs` 各一處）、人執行的 bare `space.new` 改開資料夾對話框（`app/src/window.rs` 的 `run_as`），邏輯都在 `app/src/yuzora/shell.rs`；另有 welcome／whatsnew／feedback 的品牌字樣，都標 `// yuzora(L1):`。
 - 實機假 agent：`printf '\033]7501;state=blocked:app=codex\033\\'; exec sleep 100000`（state 可為 working／blocked／done／idle）。
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
+### L2 · Git（`yuzora-git`、`yuzora-sidebar-git`、`yuzora-git-*`）
+
+- 設計、A1–A12 完成度與效能數據：`docs/beta2/git.md`。git 只走 CLI（不用 libgit2），一律經 `crates/yuzora-git/src/exec.rs` 的執行器（讀取不拿鎖、寫入拿 repo 鎖、可取消、逾時、遠端走 `hc exec --on`）；不要在 mod 裡用 herdr 的 `exec("git", …)`。
+- 路徑一律是字面路徑（`GIT_LITERAL_PATHSPECS=1`）。自動執行的讀取不能讓 repo 自己的設定挑程式來跑：讀取關掉 fsmonitor、簽章檢查用使用者自己的 gpg、blame 不跑 textconv；repo 本地設定若有 filter／ssh／credential 等程式，所有 `yuzora:git` 呼叫（`status` 只回傳提示）都要等使用者信任資料夾（`trust.rs`，在 `repo_fn` 統一檢查，log 的載入與 diff／merge session 的寫入不經過 `repo_fn`，各自檢查；偵測與信任清單在 `yuzora_core::git_trust`，其他 lane 自己跑 git 時也用它）。新增函式一律走 `repo_fn`，新增讀取照這個原則。
+- merge pane 的編輯與結果邏輯有 bun 測試：`bun test scripts/yuzora-git-merge.test.ts`（在 `app/` 下執行）。
+- 測試不得讀寫真實的 app home：Yuzora 自己的檔案一律經 `settings::own_dir()`（測試時指向暫存目錄）。
+- 測試：`cargo test --locked -p yuzora-git`（每個測試在暫存 repo 上跑真的 git）。大型 repo 效能：`YUZORA_GIT_PERF_REPO=<repo> cargo test -p yuzora-git --lib --config 'profile.dev.package.yuzora-git.opt-level=2' -- --ignored --nocapture perf`，只對 clone 出來的複本量。
+- mods 的 `v_virtual_list` item renderer 裡不能註冊事件（gpui-shell 會丟例外、清單整個不畫，`check-mods` 抓不到）：用清單的 `on_item_click`／`on_item_secondary_click`。
+- 實機時 mods 可以熱更新：app 執行中把 `app/defaults/mods/<mod>` 複製到隔離 app home 的 `mods/<mod>`（換新 binary 重啟時，與內建版本不同的副本會被搬到 `<mod>-edited`，改裝內建版本）；`herdr-app do tab.new` 要用旗標形式（`--mod … --props '{…}'`），單一 JSON 物件會掉 `mod`。
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
