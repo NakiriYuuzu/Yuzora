@@ -1,0 +1,141 @@
+#!/bin/bash
+# yuzora(L9): the five checks after `git subtree pull --prefix=app …`
+# (docs/beta2/architecture.md, "上游同步流程"). Run from anywhere in the repo,
+# after the subtree merge is committed:
+#
+#   app/scripts/yuzora/sync-check            # all five, tests included
+#   app/scripts/yuzora/sync-check --quick    # 1–4 and the URL scan, no cargo
+#
+# It compares three trees, all already in the repo (no network):
+#   OLD   the upstream tree of the previous squash commit (git-subtree-split)
+#   NEW   the upstream tree of the latest squash commit
+#   BASE  app/ before the sync: the first parent of the merge that brought NEW
+# Override with SYNC_BASE=<ref> (and SYNC_OLD / SYNC_NEW=<squash commit>).
+#
+# Tests (5) use $CARGO_TARGET_DIR like every lane build; see lanes.md for the
+# slot and the zig PATH. Exit status: 0 when every check passes.
+set -euo pipefail
+
+quick=0
+[[ ${1:-} == --quick ]] && quick=1
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+failed=0
+fail() { echo "  FAIL: $*"; failed=1; }
+warn() { echo "  warn: $*"; }
+ok() { echo "  ok: $*"; }
+
+# --- the three trees ---------------------------------------------------------
+squashes=$(git log --format=%H --grep='^git-subtree-dir: app$' HEAD)
+new=${SYNC_NEW:-$(sed -n 1p <<<"$squashes")}
+old=${SYNC_OLD:-$(sed -n 2p <<<"$squashes")}
+[[ -n $new && -n $old ]] || { echo "need two squash commits with git-subtree-dir: app" >&2; exit 2; }
+if [[ -n ${SYNC_BASE:-} ]]; then
+  base=$SYNC_BASE
+else
+  merge=$(git rev-list --merges --ancestry-path --reverse "$new..HEAD" | while read -r m; do
+    [[ $(git rev-parse "$m^2") == "$new" ]] && { echo "$m"; break; }
+  done)
+  [[ -n $merge ]] || { echo "no merge of $new on HEAD; set SYNC_BASE" >&2; exit 2; }
+  base=$(git rev-parse "$merge^1")
+fi
+split() { git log -1 --format=%B "$1" | sed -n 's/^git-subtree-split: //p'; }
+echo "upstream $(split "$old" | cut -c1-12) → $(split "$new" | cut -c1-12); app before the sync: $(git rev-parse --short "$base")"
+
+# Upstream files Yuzora had changed before the sync, and changes now.
+changed_before=$(git diff --name-only --diff-filter=M "$old" "$base:app" | sort)
+changed_after=$(git diff --name-only --diff-filter=M "$new" "HEAD:app" | sort)
+# The marker comment of every `yuzora` line, from the comment on: code beside
+# it may change with upstream, the note must not disappear.
+markers() { git show "$1:app/$2" 2>/dev/null | grep -oE '(//|#|<!--|/\*) ?yuzora.*' | sed 's/[[:space:]]*$//' | sort || true; }
+
+# --- 1. Yuzora's changes to upstream files are still there ----------------------
+echo "1. Yuzora's changes to upstream files"
+lost=$(comm -23 <(echo "$changed_before") <(echo "$changed_after"))
+for f in $lost; do
+  if git cat-file -e "$new:$f" 2>/dev/null; then
+    fail "app/$f is upstream's again: Yuzora's change is gone"
+  else
+    warn "app/$f: upstream removed it (Yuzora had changed it)"
+  fi
+done
+missing_any=0
+for f in $changed_before; do
+  gone=$(comm -23 <(markers "$base" "$f") <(markers HEAD "$f"))
+  [[ -z $gone ]] && continue
+  missing_any=1
+  while IFS= read -r line; do fail "app/$f lost the marker: $line"; done <<<"$gone"
+done
+unmarked=""
+for f in $changed_after; do
+  case $f in Cargo.lock | THIRD-PARTY-NOTICES) continue ;; esac # generated (check 4)
+  [[ -z $(markers HEAD "$f") ]] && unmarked+=" app/$f"
+done
+[[ -n $unmarked ]] && warn "changed from upstream without a yuzora marker:$unmarked"
+[[ -z $lost && $missing_any == 0 ]] && ok "$(wc -w <<<"$changed_after" | tr -d ' ') upstream files carry Yuzora changes; every marker is still there"
+overlap=$(comm -12 <(echo "$changed_before") <(git diff --name-only "$old" "$new" | sort))
+[[ -n $overlap ]] && echo "  touched by both (re-read these):" $(sed 's|^|app/|' <<<"$overlap")
+
+# --- 2. CHANGELOG: Yuzora's version first ----------------------------------------
+echo "2. app/CHANGELOG.md"
+version=$(awk '/^\[workspace.package\]/{p=1;next} /^\[/{p=0} p&&/^version *=/{gsub(/.*= *"|".*/,"");print;exit}' app/Cargo.toml)
+first=$(grep -m1 -oE '^## \[[^]]+\]' app/CHANGELOG.md | sed 's/^## \[//;s/\]$//')
+if [[ $first == "$version" ]]; then ok "first entry is $first (workspace version)"; else fail "first entry is $first, the workspace version is $version (update_notes test)"; fi
+new_versions=$(git show "$new:CHANGELOG.md" | grep -oE '^## \[[^]]+\]' | head -3 | tr '\n' ' ')
+echo "  upstream's latest entries: $new_versions"
+
+# --- 3. ghostty: the same submodule in both .gitmodules ----------------------------
+echo "3. ghostty submodule"
+up_url=$(git config -f app/.gitmodules submodule.vendor/ghostty.url || true)
+our_url=$(git config -f .gitmodules submodule.app/vendor/ghostty.url || true)
+if [[ -n $up_url && $up_url == "$our_url" ]]; then ok "url $our_url"; else fail "app/.gitmodules says '$up_url', root .gitmodules says '$our_url'"; fi
+up_link=$(git ls-tree "$new" vendor/ghostty | awk '{print $3}')
+our_link=$(git ls-tree HEAD app/vendor/ghostty | awk '{print $3}')
+if [[ $up_link == "$our_link" ]]; then ok "gitlink ${our_link:0:12} matches upstream"; else fail "gitlink ${our_link:0:12}, upstream has ${up_link:0:12}"; fi
+case $(git submodule status app/vendor/ghostty | cut -c1) in
+  " ") ok "checked out at the gitlink" ;;
+  *) fail "not checked out at the gitlink: git submodule update --init app/vendor/ghostty" ;;
+esac
+
+# --- 4. Cargo.lock → THIRD-PARTY-NOTICES -------------------------------------------
+echo "4. app/Cargo.lock and app/THIRD-PARTY-NOTICES"
+if git diff --quiet "$base" -- app/Cargo.lock; then
+  ok "Cargo.lock unchanged"
+elif git diff --quiet "$base" -- app/THIRD-PARTY-NOTICES; then
+  fail "Cargo.lock changed but THIRD-PARTY-NOTICES did not: cd app && CARGO_ABOUT=/tmp/yuzora-tools/bin/cargo-about bun scripts/notices.ts (lanes.md)"
+else
+  ok "Cargo.lock and THIRD-PARTY-NOTICES both changed (tests/notices.rs checks they agree)"
+fi
+
+# --- 5. outbound endpoints, then the tests ------------------------------------------
+echo "5. new upstream URLs (D3: telemetry, feedback, updates need Yuzora's switch), test homes, tests"
+urls=$(git diff "$old" "$new" -- . ':!*.md' ':!tests' ':!scripts/*.test.ts' ':!vendor' | grep -E '^\+[^+]' | grep -oE 'https?://[A-Za-z0-9._~:/?#@!$&*+,;=%-]+' | sort -u || true)
+if [[ -z $urls ]]; then
+  ok "no new URLs in upstream code"
+else
+  while IFS= read -r u; do
+    case $u in
+      *herdr.dev*) warn "new herdr.dev URL, check it is behind a D3 switch: $u" ;;
+      *) echo "  new URL: $u" ;;
+    esac
+  done <<<"$urls"
+fi
+# Yuzora never reads HERDR_APP_HOME: a test that isolates its home with it
+# alone runs on the person's real ~/.config/yuzora. Found before running them.
+leaks=$(git grep -n -E '\.env\("HERDR_APP_HOME"' HEAD -- app/src app/tests | while IFS=: read -r _ file line _; do
+  git show "HEAD:$file" | sed -n "$((line > 2 ? line - 2 : 1)),$((line + 2))p" | grep -q YUZORA_APP_HOME || echo "$file:$line"
+done)
+for l in $leaks; do fail "$l sets HERDR_APP_HOME without YUZORA_APP_HOME: the test would write the real ~/.config/yuzora"; done
+if [[ $quick == 1 ]]; then
+  echo "  (--quick: cargo test and check-mods skipped)"
+elif [[ -n $leaks ]]; then
+  echo "  (cargo test skipped until those tests set YUZORA_APP_HOME)"
+else
+  (cd app && cargo test --locked) || fail "cargo test --locked"
+  app/scripts/yuzora/check-mods || fail "scripts/yuzora/check-mods"
+fi
+
+echo
+if [[ $failed == 0 ]]; then echo "sync-check: all checks passed"; else echo "sync-check: some checks failed"; fi
+exit $failed
