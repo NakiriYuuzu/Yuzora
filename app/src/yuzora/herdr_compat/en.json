@@ -22,18 +22,17 @@
     }
   },
   "refused": {
-    "waits": "Until then Yuzora stays disconnected; your terminals keep running.",
     "old": {
       "title": "Update herdr-core to use Yuzora",
-      "body": "It came back as {have}; Yuzora needs {need} or newer (hc update). {waits}"
+      "body": "It's {have}; Yuzora needs {need} or newer"
     },
     "missing": {
       "title": "Update herdr-core to use Yuzora",
-      "body": "It came back without {methods} (hc update). {waits}"
+      "body": "It lacks {methods}"
     },
     "newer": {
       "title": "Update Yuzora to use this herdr-core",
-      "body": "Another app such as Herdr moved it to generation {generation}; this Yuzora speaks {ours}. Get a newer Yuzora: {app}. {waits}"
+      "body": "Herdr may have moved it to generation {generation}"
     }
   }
 }

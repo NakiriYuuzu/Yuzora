@@ -22,18 +22,17 @@
     }
   },
   "refused": {
-    "waits": "在那之前 Yuzora 保持離線，終端機會繼續執行。",
     "old": {
       "title": "請更新 herdr-core 才能使用 Yuzora",
-      "body": "重新啟動後的 herdr-core 是 {have}，Yuzora 需要 {need} 以上（hc update）。{waits}"
+      "body": "目前是 {have}，Yuzora 需要 {need} 以上"
     },
     "missing": {
       "title": "請更新 herdr-core 才能使用 Yuzora",
-      "body": "重新啟動後的 herdr-core 缺少 {methods}（hc update）。{waits}"
+      "body": "缺少 {methods}"
     },
     "newer": {
       "title": "請更新 Yuzora 才能使用這個 herdr-core",
-      "body": "其他 app（例如 Herdr）把它換成第 {generation} 代，這個 Yuzora 只懂第 {ours} 代。新版 Yuzora：{app}。{waits}"
+      "body": "可能是 Herdr 把它換成第 {generation} 代"
     }
   }
 }

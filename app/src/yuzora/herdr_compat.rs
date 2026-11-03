@@ -71,18 +71,17 @@ fn serves_in(c: &Catalog, hello: &Value, told: &mut Option<Mismatch>) -> Result<
     if told.as_ref() == Some(&mismatch) {
         return Err(None);
     }
-    let waits = ("waits", c.t("refused.waits", &[]));
+    // The toast shows one line of each: the title says what to update, the body why.
     let (title, body) = match &mismatch {
-        Mismatch::TooOld { have, need } => (c.t("refused.old.title", &[]), c.t("refused.old.body", &[("have", have.clone()), ("need", need.clone()), waits])),
-        Mismatch::Missing(methods) => (c.t("refused.missing.title", &[]), c.t("refused.missing.body", &[("methods", methods.join(", ")), waits])),
-        Mismatch::Newer { generation } => (
-            c.t("refused.newer.title", &[]),
-            c.t("refused.newer.body", &[("generation", generation.to_string()), ("ours", GENERATION.to_string()), ("app", super::RELEASES_URL.into()), waits]),
-        ),
+        Mismatch::TooOld { have, need } => (c.t("refused.old.title", &[]), c.t("refused.old.body", &[("have", have.clone()), ("need", need.clone())])),
+        Mismatch::Missing(methods) => (c.t("refused.missing.title", &[]), c.t("refused.missing.body", &[("methods", methods.join(", "))])),
+        Mismatch::Newer { generation } => (c.t("refused.newer.title", &[]), c.t("refused.newer.body", &[("generation", generation.to_string())])),
     };
     *told = Some(mismatch);
     // Up while Yuzora stays disconnected (a day, or until clicked): it's why the panes wait.
-    Err(Some(json!({"kind": "toast", "notification": {"title": title, "body": body, "level": "error", "timeout": 86_400_000}})))
+    // A click opens Updates, where both the core and Yuzora are updated.
+    let updates = json!({"name": "app.settings", "args": {"section": "updates"}});
+    Err(Some(json!({"kind": "toast", "notification": {"title": title, "body": body, "level": "error", "timeout": 86_400_000, "action": updates}})))
 }
 
 #[cfg(test)]
@@ -93,8 +92,15 @@ mod tests {
         [Catalog::from_json(EN, None), Catalog::from_json(EN, Some(ZH_TW))]
     }
 
+    const USES_BUT_ONE: &[&str] = &["terminal.run", "terminal.list", "terminal.kill", "terminal.label", "terminal.attach", "terminal.keep", "doc.get", "doc.set"];
+
     fn hello(generation: u64, version: &str) -> Value {
         json!({"generation": generation, "version": version, "methods": crate::hc::USES})
+    }
+
+    /// About how wide a line is in the toast: CJK and fullwidth count twice.
+    fn width(text: &str) -> usize {
+        text.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum()
     }
 
     fn keys(json: &str) -> Vec<String> {
@@ -153,15 +159,24 @@ mod tests {
             assert_eq!(newer["kind"], "toast");
             assert_eq!(note["level"], "error");
             assert!(note["timeout"].as_u64().unwrap() >= 3_600_000, "stays while Yuzora waits");
+            assert_eq!(note["action"], json!({"name": "app.settings", "args": {"section": "updates"}}), "a click opens Updates");
             assert!(note["title"].as_str().unwrap().contains("Yuzora"));
             let body = note["body"].as_str().unwrap();
-            assert!(body.contains("Herdr") && body.contains(crate::yuzora::RELEASES_URL) && !body.contains('{'), "{body}");
+            assert!(body.contains("Herdr") && body.contains('2') && !body.contains('{'), "{body}");
             assert_eq!(serves_in(c, &hello(GENERATION + 1, "9.9.9"), &mut told), Err(None), "the same mismatch again: no new toast");
 
-            let old = serves_in(c, &hello(GENERATION, "0.0.1"), &mut told).unwrap_err().expect("another mismatch: a toast");
-            assert!(old["notification"]["body"].as_str().unwrap().contains("0.0.1"));
-            let missing = serves_in(c, &json!({"generation": GENERATION, "version": "9.9.9", "methods": []}), &mut told).unwrap_err().expect("a toast");
-            assert!(missing["notification"]["body"].as_str().unwrap().contains("doc.set"));
+            let old = serves_in(c, &hello(GENERATION, "0.1.10"), &mut told).unwrap_err().expect("another mismatch: a toast");
+            assert!(old["notification"]["body"].as_str().unwrap().contains("0.1.10"));
+            let missing = serves_in(c, &json!({"generation": GENERATION, "version": "9.9.9", "methods": USES_BUT_ONE}), &mut told).unwrap_err().expect("a toast");
+            assert!(missing["notification"]["body"].as_str().unwrap().contains("events.subscribe"));
+            // The toast truncates title and body to one line each (mods/toast, 340 px):
+            // what to do and why must fit, or the person never reads it.
+            for toast in [&newer, &old, &missing] {
+                for (part, max) in [("title", 42), ("body", 44)] {
+                    let text = toast["notification"][part].as_str().unwrap();
+                    assert!(width(text) <= max, "{part} too long for one line: {text}");
+                }
+            }
             assert_eq!(serves_in(c, &hello(GENERATION, "9.9.9"), &mut told), Ok(true), "a core that serves is used again; close the toast");
             assert_eq!(told, None);
         }

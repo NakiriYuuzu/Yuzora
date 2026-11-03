@@ -69,7 +69,7 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
 | `hc server stop` | 兩個 app 的重連迴圈每秒執行一次 `hc connect`，而 `hc connect` 在沒有 core 時會啟動 core（`app/src/hc.rs:275`）。實測停止後約 1 秒，core 就被 Herdr.app 的 `hc connect` 重新啟動（新 pid 97885，父行程是 Herdr）。**程式全部結束**：kept 的 `t1` 換成新 shell（pid 95144 → 97894），非 kept 的終端機則結束 |
 | 關閉其中一個 app | core 繼續執行（實測結束 Herdr.app 後，core pid 97885 沒變，改由 launchd 收養） |
 | `hc update`（同一代） | 等同 restart，程式不中斷，另一個 app 自動重連 |
-| 升級到新一代（generation） | `hc update` 不會跨代，除非加 `--force`；要跨代只能重新安裝。之後舊代的 app 不能用這個 core（見 A3） |
+| 升級到新一代（generation） | `hc update` 預設不跨代；要跨代得加 `--force`（`hc update --help`：允許另一代的 release），或重新安裝。app 自己的更新路徑都不帶 `--force`。換代之後，舊代的 app 不能用這個 core（見 A3） |
 
 結論：
 
@@ -139,8 +139,13 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
 - core 重啟後，新連上的 core 也要通過 `hc::check`，和啟動時相同。
 - 不通過時：
   - 不接上這個 core，丟掉這條連線。
-  - 顯示錯誤 toast（固定 id `yuzora-core-refused`），說明原因和解法：更新 core（`hc update`），或更新 Yuzora。若是「core 比較新」，會指出可能是 Herdr 更新的。
-  - toast 會一直留著，直到 core 恢復或使用者點掉。一般 error toast 8 秒就消失，但 Yuzora 這段時間一直處於斷線狀態，pane 只顯示「reconnecting to core…」，所以原因要一直看得到。同一種不符不重複顯示；換成另一種不符時，改顯示新的內容。
+  - 顯示錯誤 toast（固定 id `yuzora-core-refused`）：
+    - 標題寫要更新哪一個，例如「請更新 herdr-core 才能使用 Yuzora」「請更新 Yuzora 才能使用這個 herdr-core」。
+    - 內文用一行寫原因，例如「目前是 0.1.10，Yuzora 需要 0.1.11 以上」「可能是 Herdr 把它換成第 2 代」。
+    - toast mod 的標題和內文都只顯示一行，放不下的字會被截掉，所以測試會檢查兩者的寬度。
+  - 點 toast 會開啟設定的 Updates 頁（`app.settings {section: "updates"}`），在那裡可以更新 herdr-core，也可以檢查 Yuzora 的更新。
+  - toast 會一直留著，直到 core 恢復或使用者點掉。一般 error toast 8 秒就消失，但這段時間 Yuzora 一直處於斷線狀態，pane 只顯示「reconnecting to core…」，所以原因要一直看得到。
+  - 同一種不符不重複顯示，點掉之後也不再出現；換成另一種不符時，改顯示新的內容。
   - 改成每 5 秒重試一次，不再每秒重試。
 - core 被修好（更新或換回）之後，Yuzora 會自動接上，並收掉 toast。
 - 通過時行為完全不變。
@@ -217,7 +222,7 @@ app/scripts/yuzora/sync-check --quick    # 只跑 1–4 與掃描
 3. **Herdr.app**：讀 `https://releases.herdr.dev/app/latest.json` 的版本，列入報告。這只是參考，用來知道使用者的 Herdr 可能已經要求較新的 core。
 4. 結果寫成一則 issue（標 `needs-triage`），同一個上游 commit 不重複開。
 
-CI 連到 herdr.dev 只發生在 CI，不影響 app 的 D3（app 本身不連）。
+CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本身只透過 D3 保留的 core 安裝與更新通道連到 `releases.herdr.dev`：`core/latest.json`，以及 `after_update`、setup 的安裝。
 
 ## 待決策（會改變產品行為，由使用者決定）
 
