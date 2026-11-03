@@ -39,15 +39,18 @@ use std::time::Duration;
 use crate::remote::{self, ExecRequest};
 
 /// Config keys (lowercased by git) that name a program run without asking.
-pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs|url|pushurl)|url\..+\.(insteadof|pushinsteadof)|extensions\.partialclone|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
+pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remotes?\..+|branch\..+\.(remote|pushremote)|url\..+\.(insteadof|pushinsteadof)|extensions\.partialclone|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.(update|url))$";
 
 /// Whether a matched key's value runs something: fsmonitor as a boolean is
 /// git's own daemon, and a submodule's update mode is a command only after
 /// `!`. Only the exact values git takes that way pass (no trimming, ASCII
-/// case as git compares); anything else counts. A remote's URL counts when
-/// it names a remote helper (`ext::` runs its command), and so does a
-/// partial clone's promisor remote given as a URL, and an `insteadOf` whose
-/// replacement a URL's rest can make into one (`ext:` and `:sh …`).
+/// case as git compares); anything else counts. A URL counts when it names a
+/// remote helper (`ext::` runs its command): a remote's or a submodule's,
+/// and a remote's name too, which git takes for the URL when the remote has
+/// none. So do the remote names that stand where a remote is wanted (a
+/// branch's remote or push remote, the push default, a group's members, a
+/// partial clone's promisor remote), and an `insteadOf` whose replacement a
+/// URL's rest can make into one (`ext:` and `:sh …`).
 pub fn names_program(key: &str, value: &str) -> bool {
     let any = |list: &[&str]| list.iter().any(|v| value.eq_ignore_ascii_case(v));
     if key == "core.fsmonitor" {
@@ -56,11 +59,20 @@ pub fn names_program(key: &str, value: &str) -> bool {
     if key.starts_with("submodule.") && key.ends_with(".update") {
         return !any(&["checkout", "rebase", "merge", "none"]);
     }
-    if key.starts_with("remote.") && (key.ends_with(".url") || key.ends_with(".pushurl")) {
+    if key.starts_with("submodule.") && key.ends_with(".url") {
         return names_helper(value);
     }
-    if key == "extensions.partialclone" {
+    let branch_remote = key.starts_with("branch.") && (key.ends_with(".remote") || key.ends_with(".pushremote"));
+    if branch_remote || key == "remote.pushdefault" || key == "extensions.partialclone" {
         return names_helper(value);
+    }
+    if key.starts_with("remotes.") {
+        // A group's members, split as git splits them.
+        return value.split([' ', '\t', '\n']).any(names_helper);
+    }
+    // `remote.<name>.<key>`: the name may stand for the URL whatever the key.
+    if let Some((name, var)) = key.strip_prefix("remote.").and_then(|k| k.rsplit_once('.')) {
+        return names_helper(name) || matches!(var, "uploadpack" | "receivepack" | "vcs") || (matches!(var, "url" | "pushurl") && names_helper(value));
     }
     if let Some(to) = key.strip_prefix("url.").and_then(|k| k.strip_suffix(".insteadof").or_else(|| k.strip_suffix(".pushinsteadof"))) {
         return may_name_helper(to);
@@ -372,6 +384,14 @@ mod tests {
         assert!(!names_program("url.git@github.com:.insteadof", "gh:") && !names_program("url.ssh://host/.insteadof", "h:") && !names_program("url.a:b.insteadof", "P"));
         // The promisor remote of a partial clone, by name or as a URL.
         assert!(names_program("extensions.partialclone", "ext::sh -c x") && !names_program("extensions.partialclone", "origin"));
+        // A remote's name, which stands for its URL when it has none, whatever the key.
+        assert!(names_program("remote.ext::sh -c x.fetch", "+refs/heads/*:refs/remotes/x/*") && names_program("remote.zz::p.promisor", "true") && names_program("remote.a.b.vcs", "hg"));
+        assert!(!names_program("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*") && !names_program("remote.team/a.b.promisor", "true") && !names_program("remote.origin.tagopt", "--no-tags"));
+        // Remote names where a remote is wanted, and a submodule's URL.
+        assert!(names_program("branch.main.remote", "zz::p") && names_program("branch.a.b.pushremote", "Ext::x") && names_program("remote.pushdefault", "ext::x"));
+        assert!(!names_program("branch.main.remote", "origin") && !names_program("branch.main.pushremote", ".") && !names_program("remote.pushdefault", "fork"));
+        assert!(names_program("remotes.all", "origin\text::x") && !names_program("remotes.all", "origin  upstream"));
+        assert!(names_program("submodule.s.url", "ext::sh -c x") && !names_program("submodule.s.url", "../s.git"));
     }
 
     #[test]
@@ -805,6 +825,81 @@ mod tests {
         assert_eq!(remotes, Ok(vec![".git/remotes".to_string()]));
         assert_eq!(branches, Ok(vec![".git/branches".to_string()]));
         assert_eq!(promisor, Ok(vec!["extensions.partialclone".to_string()]));
+    }
+
+    // git takes a remote's name for its URL when the remote has none: a
+    // remote the config names by a helper URL (whatever its keys), or such a
+    // name where a remote is wanted (a branch's remote, the push default, a
+    // group), runs the helper. Also with git's default policy, through a
+    // helper the person installed (`zz::`).
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_named_by_a_helper_url_waits_for_trust() {
+        use std::os::unix::fs::PermissionsExt;
+        // A case's setup: an `ext::` URL that runs one program, and git there.
+        type Setup = dyn Fn(&str, &dyn Fn(&str, &[&str]) -> String);
+        let case = |name: &str, setup: &Setup, runs: &[&str]| {
+            let (dir, top, git) = scratch_dir(name);
+            git("", &["init", "-q", "-b", "main"]);
+            git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+            let mark = dir.join("ran");
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            for program in ["hit", "git-remote-zz"] {
+                std::fs::write(bin.join(program), format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+                std::fs::set_permissions(bin.join(program), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let cmd = format!("ext::{}", bin.join("hit").display());
+            setup(&cmd, &git);
+            let keys = programs_within(None, &top, Duration::from_secs(30));
+            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+            // As a person's global config may allow `ext`; `zz` needs nothing.
+            let _ = std::process::Command::new("git").args(["-c", "protocol.ext.allow=always"]).args(runs).current_dir(&top).env("PATH", path).output();
+            let ran = mark.exists();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(ran, "{name}: git didn't run the helper, so this proves nothing");
+            keys.map(|keys| keys.into_iter().map(|k| k.replace(&cmd, "<ext>")).collect::<Vec<_>>())
+        };
+        let fetch_all: &[&str] = &["fetch", "-q", "--all"];
+        let got = [
+            case("name-fetch", &|cmd, git| _ = git("", &["config", &format!("remote.{cmd}.fetch"), "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("name-skip", &|cmd, git| _ = git("", &["config", &format!("remote.{cmd}.skipDefaultUpdate"), "false"]), fetch_all),
+            case("name-promisor", &|cmd, git| _ = git("", &["config", &format!("remote.{cmd}.promisor"), "true"]), &["cat-file", "-e", "1111111111111111111111111111111111111111"]),
+            case("branch-remote", &|cmd, git| _ = git("", &["config", "branch.main.remote", cmd]), &["fetch", "-q"]),
+            // Pushing elsewhere than the branch's remote: git needs no upstream then.
+            case("branch-pushremote", &|cmd, git| {
+                git("", &["config", "branch.main.remote", "origin"]);
+                git("", &["config", "branch.main.pushRemote", cmd]);
+            }, &["push", "-q"]),
+            case("push-default", &|cmd, git| {
+                git("", &["config", "branch.main.remote", "origin"]);
+                git("", &["config", "remote.pushDefault", cmd]);
+            }, &["push", "-q"]),
+            // A group of one is fetched as the remote of its own name: two.
+            case("group", &|cmd, git| _ = git("", &["config", "remotes.all", &format!("origin {cmd}")]), &["fetch", "-q", "all"]),
+            case("submodule-url", &|cmd, git| {
+                git("", &["config", "-f", ".gitmodules", "submodule.s.path", "s"]);
+                git("", &["config", "-f", ".gitmodules", "submodule.s.url", "https://example.invalid/s"]);
+                let head = git("", &["rev-parse", "HEAD"]);
+                git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{head},s")]);
+                git("", &["config", "submodule.s.url", cmd]);
+            }, &["submodule", "-q", "update", "--init"]),
+            case("zz-name", &|_, git| _ = git("", &["config", "remote.zz::payload.fetch", "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("zz-branch", &|_, git| _ = git("", &["config", "branch.main.remote", "zz::payload"]), &["fetch", "-q"]),
+        ];
+        let want = [
+            "remote.<ext>.fetch",
+            "remote.<ext>.skipdefaultupdate",
+            "remote.<ext>.promisor",
+            "branch.main.remote",
+            "branch.main.pushremote",
+            "remote.pushdefault",
+            "remotes.all",
+            "submodule.s.url",
+            "remote.zz::payload.fetch",
+            "branch.main.remote",
+        ];
+        assert_eq!(got.to_vec(), want.map(|k| Ok(vec![k.to_string()])));
     }
 
     #[cfg(unix)]
