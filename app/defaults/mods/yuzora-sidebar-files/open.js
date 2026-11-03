@@ -41,3 +41,26 @@ export function openFile(path, on, at = {}) {
     if (opened && opened !== pane?.pane && panes().some(p => p.pane === opened && p.mod === MOD.image)) imagePanes.set(imageKey(path, on), opened);
   }
 }
+
+/**
+ * After `from` was renamed to `to`: an image pane opened from here showing it
+ * (or a file under it) shows the new path instead, in the same place. Props
+ * can't change, so a new pane takes the old one's place; focus stays put.
+ */
+export function moved(from, to, on) {
+  const before = focused()?.pane;
+  for (const [key, pane] of [...imagePanes]) {
+    const [machine, path] = key.split("\0");
+    if (machine !== (on ?? "")) continue;
+    const rest = path === from ? "" : path.startsWith(from + "/") ? path.slice(from.length) : null;
+    if (rest === null) continue;
+    imagePanes.delete(key);
+    if (!panes().some(p => p.pane === pane && p.mod === MOD.image)) continue;
+    const next = to + rest;
+    run("pane.split", { direction: "right", pane, mod: MOD.image, props: { path: next, on: on ?? null, opened: Date.now() } });
+    const opened = focused()?.pane;
+    run("pane.close", { pane });
+    if (opened && opened !== pane && panes().some(p => p.pane === opened && p.mod === MOD.image)) imagePanes.set(imageKey(next, on), opened);
+  }
+  if (before && before !== focused()?.pane && panes().some(p => p.pane === before)) run("pane.focus", { pane: before });
+}

@@ -6,7 +6,7 @@ import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { listDir, gitStatus, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
-import { openFile, join, parent, base, rel } from "./open.js";
+import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 
 const ME = "yuzora-sidebar-files";
@@ -75,7 +75,7 @@ export default class FilesSidebar extends View {
     if (next?.key === this.here?.key && next?.space === this.here?.space) return;
     if (this.here?.root) this.saved.set(this.here.key, { open: this.open, selected: this.selected });
     const saved = next ? this.saved.get(next.key) : null;
-    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false } : null;
+    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false, skipped: false } : null;
     this.entries = new Map(); this.open = new Set(saved?.open); this.pending = new Set();
     this.marks = {}; this.dirMarks = new Map(); this.selected = saved?.selected ?? null; this.version++;
     this.watching = null;
@@ -151,10 +151,11 @@ export default class FilesSidebar extends View {
 
   async loadFolder(folder, here) {
     const path = folder ? join(here.root, folder) : here.root;
-    const { entries, truncated } = await listDir(path, { on: here.on, limit: PER_FOLDER });
+    const { entries, truncated, skipped } = await listDir(path, { on: here.on, limit: PER_FOLDER });
     if (!this.current(here)) return;
     this.entries.set(folder, entries);
     if (truncated) here.limited = true;
+    if (skipped) here.skipped = true;
     if (!folder) here.rootCut = truncated;
     this.version++;
   }
@@ -257,7 +258,7 @@ export default class FilesSidebar extends View {
       try {
         if (edit.kind === "new-file") { await createFile(target); openFile(target, null); }
         else if (edit.kind === "new-folder") await createFolder(target);
-        else if (target !== edit.path) await rename(edit.path, target);
+        else if (target !== edit.path) { await rename(edit.path, target); moved(edit.path, target); }
         const r = rel(here.root, edit.dir);
         if (r) this.open.add(r);
         this.selected = rel(here.root, target);
@@ -380,7 +381,8 @@ export default class FilesSidebar extends View {
     if (here.error && !this.entries.get("")) return div().p(12).text_size(12).text_color(th.blocked).child(here.error);
     const rows = this.visible();
     // The folder was cut, and every entry that made the cut is hidden: there may be more.
-    const empty = here.loading ? t("empty.loading") : here.rootCut ? t("empty.hidden_only", { count: PER_FOLDER }) : t("empty.no_files");
+    const empty = here.loading ? t("empty.loading") : here.rootCut ? t("empty.hidden_only", { count: PER_FOLDER })
+      : here.skipped ? t("empty.skipped") : t("empty.no_files");
     if (!rows.length) return div().p(12).text_size(12).text_color(th.dim).child(empty);
     const fs = tk.file_status ?? {};
     const markColor = m => m === "A" ? fs.added : m === "D" || m === "U" ? fs.deleted : m === "?" ? fs.untracked : fs.modified;
@@ -399,6 +401,7 @@ export default class FilesSidebar extends View {
         .on_item_secondary_click((key, e, cx) => this.openMenu(key, e, cx)))
       .child(Scrollbar.vertical("tree").absolute().inset_0())
       .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))))
+      .when(here.skipped, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.skipped"))))
       .when(Boolean(this.rowsCapped), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.rows", { count: ROWS }))));
     // The folder could not be listed again: the rows are from before.
     if (!here.error) return tree;

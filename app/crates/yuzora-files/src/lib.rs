@@ -73,8 +73,9 @@ export function languages(): Language[];
 /** Which pane opens a file: the image viewer, the Markdown preview, or the editor. */
 export function kindOf(path: string): "image" | "markdown" | "text";
 
-/** A folder's entries, folders first. Skips .git and .DS_Store. */
-export function listDir(path: string, options?: On & { limit?: number }): Promise<{ entries: FileEntry[]; truncated: boolean }>;
+/** A folder's entries, folders first. Skips .git and .DS_Store. `skipped`: some names are
+ *  not UTF-8 and are left out (a stand-in name could open another entry). */
+export function listDir(path: string, options?: On & { limit?: number }): Promise<{ entries: FileEntry[]; truncated: boolean; skipped: boolean }>;
 /** git status for the repo `cwd` is in; null outside a repo. Writes nothing under .git. */
 export function gitStatus(cwd: string, options?: On): Promise<GitMarks | null>;
 export function stat(path: string, options?: On): Promise<{ len: number; mtime_ms: number } | null>;
@@ -313,10 +314,11 @@ pub fn host_module() -> HostModule {
             );
             Ok(job(
                 move || fsops::list_dir(&path, on.as_deref(), limit),
-                |(entries, truncated)| {
+                |list| {
                     HostObject::new()
-                        .field("entries", json(entries))
-                        .field("truncated", truncated)
+                        .field("entries", json(list.entries))
+                        .field("truncated", list.truncated)
+                        .field("skipped", list.skipped)
                         .into()
                 },
             ))
@@ -782,6 +784,79 @@ mod tests {
             )
             .unwrap(),
             HostValue::Null
+        );
+    }
+
+    #[test]
+    fn a_renamed_image_is_shown_in_the_same_place_under_its_new_path() {
+        let paths = include_str!("../../../defaults/mods/yuzora-sidebar-files/paths.js")
+            .replace("export const", "const");
+        let open = include_str!("../../../defaults/mods/yuzora-sidebar-files/open.js")
+            .lines()
+            .filter(|l| !l.starts_with("import ") && !l.starts_with("export {"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("export function", "function");
+        // A fake Herdr: one row of panes, the focused one, a split's props.
+        let fake = r#"
+            let all = [{ pane: "p1", mod: "yuzora-editor" }], focus = "p1", n = 1;
+            const given = {};
+            const panes = () => all.map(p => ({ ...p }));
+            const focused = () => ({ pane: focus });
+            const run = (name, a) => {
+              if (name === "pane.split") {
+                const id = `p${++n}`;
+                all.splice(all.findIndex(p => p.pane === a.pane) + 1, 0, { pane: id, mod: a.mod });
+                given[id] = a.props; focus = id;
+              } else if (name === "pane.close") {
+                all = all.filter(p => p.pane !== a.pane);
+                if (focus === a.pane) focus = all[0]?.pane ?? null;
+              } else if (name === "pane.focus") focus = a.pane;
+              else throw new Error(name);
+            };
+            const kindOf = p => (p.endsWith(".png") ? "image" : "text");
+            const documentFor = () => null, focusDocument = () => {}, revealLine = () => {};
+            const shown = () => [all.map(p => (p.mod === "yuzora-files-image" ? given[p.pane].path : p.mod)), focus];
+        "#;
+        let body = r#"
+            const out = [];
+            openFile("/r/a.png", null);
+            run("pane.focus", { pane: "p1" });
+            moved("/r/a.png", "/r/b.png");
+            out.push(shown());
+            // Opening the new name finds that pane.
+            openFile("/r/b.png", null);
+            out.push(shown());
+            run("pane.focus", { pane: "p1" });
+            openFile("/r/img/c.png", null);
+            moved("/r/im", "/r/x");
+            moved("/r/img", "/r/pics");
+            out.push(shown());
+            // A pane closed meanwhile is not opened again.
+            run("pane.close", { pane: "p3" });
+            moved("/r/b.png", "/r/d.png");
+            out.push(shown());
+            return JSON.stringify(out);
+        "#;
+        let script = ["(() => {", &paths, fake, &open, body, "})()"].join("\n");
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let got: Vec<(Vec<String>, String)> = serde_json::from_str(&out).unwrap();
+        let step = |panes: &[&str], focus: &str| {
+            (
+                panes.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+                focus.to_owned(),
+            )
+        };
+        assert_eq!(
+            got,
+            [
+                step(&["yuzora-editor", "/r/b.png"], "p1"),
+                step(&["yuzora-editor", "/r/b.png"], "p3"),
+                step(&["yuzora-editor", "/r/pics/c.png", "/r/b.png"], "p5"),
+                step(&["yuzora-editor", "/r/pics/c.png"], "p5"),
+            ]
         );
     }
 

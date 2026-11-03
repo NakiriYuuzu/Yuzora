@@ -115,6 +115,17 @@ pub struct Entry {
     pub size: u64,
 }
 
+/// A folder's entries, as [`list_dir`] gives them.
+#[derive(Debug, Default, PartialEq)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    /// There were more than the limit.
+    pub truncated: bool,
+    /// Some names are not UTF-8 and are left out: a stand-in for one (with
+    /// U+FFFD) could open or rename another entry.
+    pub skipped: bool,
+}
+
 /// What a file looked like when it was read; a save compares against it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Stamp {
@@ -203,9 +214,9 @@ pub(crate) fn failure(out: &ExecOutput, what: &str) -> String {
 // ---- listing ----
 
 /// Folders first, then case-insensitive natural name order. Skips `.git` and
-/// `.DS_Store`. At most `limit` entries; the flag says there were more. On
-/// another machine the cut is made on the unsorted listing.
-pub fn list_dir(path: &str, on: Option<&str>, limit: usize) -> Result<(Vec<Entry>, bool), String> {
+/// `.DS_Store`. At most `limit` entries ([`Listing::truncated`] says there
+/// were more). On another machine the cut is made on the unsorted listing.
+pub fn list_dir(path: &str, on: Option<&str>, limit: usize) -> Result<Listing, String> {
     match machine(on) {
         Some(m) => list_sh(path, Some(m), limit),
         None => list_local(path, limit),
@@ -218,14 +229,18 @@ fn skipped(name: &str) -> bool {
     name == ".git" || name == ".DS_Store" || is_scratch_name(name)
 }
 
-fn list_local(path: &str, limit: usize) -> Result<(Vec<Entry>, bool), String> {
+fn list_local(path: &str, limit: usize) -> Result<Listing, String> {
     let read = std::fs::read_dir(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     // However big the folder, only the first `limit + 1` (sorted) are kept:
     // past twice that, the rest are dropped as it goes.
     let keep = limit.saturating_add(1);
     let mut entries = Vec::new();
+    let mut unreadable = false;
     for ent in read.flatten() {
-        let name = ent.file_name().to_string_lossy().into_owned();
+        let Ok(name) = ent.file_name().into_string() else {
+            unreadable = true;
+            continue;
+        };
         let Ok(kind) = ent.file_type() else { continue };
         if skipped(&name) {
             continue;
@@ -254,24 +269,25 @@ fn list_local(path: &str, limit: usize) -> Result<(Vec<Entry>, bool), String> {
     for e in entries.iter_mut().filter(|e| !e.dir && !e.link) {
         e.size = std::fs::metadata(Path::new(path).join(&e.name)).map_or(0, |m| m.len());
     }
-    Ok((entries, truncated))
+    Ok(Listing {
+        entries,
+        truncated,
+        skipped: unreadable,
+    })
 }
 
-fn list_sh(path: &str, on: Option<&str>, limit: usize) -> Result<(Vec<Entry>, bool), String> {
+fn list_sh(path: &str, on: Option<&str>, limit: usize) -> Result<Listing, String> {
     let max = limit.saturating_add(1).to_string();
     let out = run_sh(on, LIST_SCRIPT, &[path, &max], LIST_TIMEOUT, 16 << 20)?;
     if out.code != 0 {
         return Err(failure(&out, "listing"));
     }
-    let mut entries = parse_listing(&out.stdout);
-    sort_entries(&mut entries);
-    let truncated = entries.len() > limit;
-    entries.truncate(limit);
-    Ok((entries, truncated))
+    Ok(parse_listing(&out.stdout, limit))
 }
 
-/// Reads [`LIST_SCRIPT`]'s output.
-fn parse_listing(out: &[u8]) -> Vec<Entry> {
+/// Reads [`LIST_SCRIPT`]'s output (run with `limit + 1`). A name left out
+/// still counts toward the cut: past it there may be more.
+fn parse_listing(out: &[u8], limit: usize) -> Listing {
     let mut parts = out.split(|b| *b == 0);
     let mut rows = Vec::new();
     let mut sizes = &b""[..];
@@ -281,30 +297,45 @@ fn parse_listing(out: &[u8]) -> Vec<Entry> {
             break;
         }
         let Some(name) = parts.next() else { break };
-        rows.push((
-            kind.first().copied().unwrap_or(b'f'),
-            String::from_utf8_lossy(name).into_owned(),
-        ));
+        rows.push((kind.first().copied().unwrap_or(b'f'), name));
     }
+    let printed = rows.len();
+    let mut unreadable = false;
     let sizes: Vec<u64> = String::from_utf8_lossy(sizes)
         .lines()
         .map(|l| l.trim().parse().unwrap_or(0))
         .collect();
     let mut sizes = sizes.into_iter();
-    rows.into_iter()
-        .map(|(kind, name)| Entry {
-            hidden: name.starts_with('.'),
-            dir: matches!(kind, b'd' | b'L'),
-            link: matches!(kind, b'l' | b'L'),
-            size: if kind == b'f' {
+    let mut entries: Vec<Entry> = rows
+        .into_iter()
+        .filter_map(|(kind, name)| {
+            // Sizes come one per file, so a file left out still takes its own.
+            let size = if kind == b'f' {
                 sizes.next().unwrap_or(0)
             } else {
                 0
-            },
-            name,
+            };
+            let Ok(name) = std::str::from_utf8(name) else {
+                unreadable = true;
+                return None;
+            };
+            Some(Entry {
+                hidden: name.starts_with('.'),
+                dir: matches!(kind, b'd' | b'L'),
+                link: matches!(kind, b'l' | b'L'),
+                size,
+                name: name.to_owned(),
+            })
         })
         .filter(|e| !skipped(&e.name))
-        .collect()
+        .collect();
+    sort_entries(&mut entries);
+    entries.truncate(limit);
+    Listing {
+        entries,
+        truncated: printed > limit,
+        skipped: unreadable,
+    }
 }
 
 fn sort_entries(entries: &mut [Entry]) {
@@ -1182,7 +1213,9 @@ mod tests {
     #[test]
     fn list_dir_sorts_folders_first_naturally_and_skips_noise() {
         let d = fixture();
-        let (entries, truncated) = list_dir(&p(&d, ""), None, 100).unwrap();
+        let Listing {
+            entries, truncated, ..
+        } = list_dir(&p(&d, ""), None, 100).unwrap();
         assert!(!truncated);
         assert_eq!(
             names(&entries),
@@ -1214,7 +1247,9 @@ mod tests {
             put(&d, &format!("f{}.txt", (i * 37) % 60), b"");
         }
         std::fs::create_dir(d.path().join("zdir")).unwrap();
-        let (entries, truncated) = list_dir(&p(&d, ""), None, 4).unwrap();
+        let Listing {
+            entries, truncated, ..
+        } = list_dir(&p(&d, ""), None, 4).unwrap();
         assert!(truncated);
         assert_eq!(names(&entries), ["zdir", "f0.txt", "f1.txt", "f2.txt"]);
     }
@@ -1222,12 +1257,24 @@ mod tests {
     #[test]
     fn list_dir_limit_cuts_the_sorted_listing() {
         let d = fixture();
-        let (entries, truncated) = list_dir(&p(&d, ""), None, 3).unwrap();
+        let Listing {
+            entries, truncated, ..
+        } = list_dir(&p(&d, ""), None, 3).unwrap();
         assert!(truncated);
         assert_eq!(names(&entries), [".cfg", "A", "b"]);
-        let (all, truncated) = list_dir(&p(&d, ""), None, 7).unwrap();
+        let Listing {
+            entries: all,
+            truncated,
+            ..
+        } = list_dir(&p(&d, ""), None, 7).unwrap();
         assert_eq!((all.len(), truncated), (7, false));
-        assert_eq!(list_dir(&p(&d, ""), None, 0).unwrap(), (vec![], true));
+        assert_eq!(
+            list_dir(&p(&d, ""), None, 0).unwrap(),
+            Listing {
+                truncated: true,
+                ..Listing::default()
+            }
+        );
         assert!(list_dir(&p(&d, "nope"), None, 10).is_err());
         assert!(list_dir(&p(&d, "File1.txt"), None, 10).is_err());
     }
@@ -1241,7 +1288,7 @@ mod tests {
         std::os::unix::fs::symlink(d.path().join("real"), d.path().join("to-dir")).unwrap();
         std::os::unix::fs::symlink(d.path().join("f.txt"), d.path().join("to-file")).unwrap();
         std::os::unix::fs::symlink(d.path().join("gone"), d.path().join("dangling")).unwrap();
-        let (entries, _) = list_dir(&p(&d, ""), None, 10).unwrap();
+        let Listing { entries, .. } = list_dir(&p(&d, ""), None, 10).unwrap();
         let get = |n: &str| entries.iter().find(|e| e.name == n).unwrap();
         assert_eq!((get("to-dir").dir, get("to-dir").link), (true, true));
         assert_eq!(
@@ -1251,7 +1298,9 @@ mod tests {
         assert_eq!((get("dangling").dir, get("dangling").link), (false, true));
         assert_eq!((get("real").dir, get("real").link), (true, false));
         // The remote script says the same.
-        let (remote, _) = list_sh(&p(&d, ""), None, 10).unwrap();
+        let Listing {
+            entries: remote, ..
+        } = list_sh(&p(&d, ""), None, 10).unwrap();
         assert_eq!(remote, entries);
     }
 
@@ -1261,20 +1310,64 @@ mod tests {
         let d = fixture();
         std::fs::write(d.path().join("with space.txt"), "abc").unwrap();
         std::fs::write(d.path().join("-dash"), "abcd").unwrap();
-        let (local, _) = list_dir(&p(&d, ""), None, 100).unwrap();
-        let (remote, truncated) = list_sh(&p(&d, ""), None, 100).unwrap();
+        let Listing { entries: local, .. } = list_dir(&p(&d, ""), None, 100).unwrap();
+        let Listing {
+            entries: remote,
+            truncated,
+            ..
+        } = list_sh(&p(&d, ""), None, 100).unwrap();
         assert!(!truncated);
         assert_eq!(remote, local);
         assert!(names(&remote).contains(&".hidden") && names(&remote).contains(&"with space.txt"));
-        let (cut, truncated) = list_sh(&p(&d, ""), None, 4).unwrap();
+        let Listing {
+            entries: cut,
+            truncated,
+            ..
+        } = list_sh(&p(&d, ""), None, 4).unwrap();
         assert_eq!((cut.len(), truncated), (4, true));
         let empty = tempfile::tempdir().unwrap();
-        assert_eq!(list_sh(&p(&empty, ""), None, 4).unwrap(), (vec![], false));
+        assert_eq!(
+            list_sh(&p(&empty, ""), None, 4).unwrap(),
+            Listing::default()
+        );
         assert!(
             list_sh(&p(&d, "nope"), None, 4)
                 .unwrap_err()
                 .contains("cannot open")
         );
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_is_left_out_of_a_listing_and_said_to_be() {
+        // As the listing script prints it: `b\xff.txt` (3 bytes) before `a.txt` (5).
+        let listing = parse_listing(b"f\0b\xff.txt\0f\0a.txt\0d\0dir\0-\x003\n5\n", 10);
+        assert!(listing.skipped && !listing.truncated);
+        assert_eq!(names(&listing.entries), ["dir", "a.txt"]);
+        assert_eq!(listing.entries[1].size, 5);
+        // One left out still counts toward the cut.
+        let cut = parse_listing(b"f\0b\xff\0f\0a\0-\x001\n2\n", 1);
+        assert_eq!(
+            (names(&cut.entries), cut.truncated, cut.skipped),
+            (vec!["a"], true, true)
+        );
+        // Here, on a file system that takes such a name (not APFS).
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let d = tempfile::tempdir().unwrap();
+            let odd = d.path().join(std::ffi::OsStr::from_bytes(b"b\xff.txt"));
+            if std::fs::write(odd, "x").is_err() {
+                eprintln!("skipped: this file system takes only UTF-8 names");
+                return;
+            }
+            put(&d, "a.txt", b"x");
+            let local = list_dir(&p(&d, ""), None, 10).unwrap();
+            assert_eq!(
+                (names(&local.entries), local.skipped),
+                (vec!["a.txt"], true)
+            );
+            assert_eq!(list_sh(&p(&d, ""), None, 10).unwrap(), local);
+        }
     }
 
     #[test]
@@ -1849,7 +1942,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let from = put(&d, "readme.md", b"x");
         rename(&from, &p(&d, "README.md"), None).unwrap();
-        let (entries, _) = list_dir(&p(&d, ""), None, 10).unwrap();
+        let Listing { entries, .. } = list_dir(&p(&d, ""), None, 10).unwrap();
         assert_eq!(names(&entries), ["README.md"]);
     }
 
