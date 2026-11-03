@@ -20,6 +20,7 @@
     "agents": "Agents",
     "checking": "Checking installed agents…",
     "failed": "Couldn't list agents",
+    "no_agents": "No agents found on this machine.",
     "not_installed": "not installed",
     "needs_space": "Needs a Space"
   },

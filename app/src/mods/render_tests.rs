@@ -790,3 +790,156 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
     assert!(tree.contains("commands"), "unbound hint still offers commands: {tree}");
     assert!(!tree.contains("Shift P"), "unbound hint must not invent a key: {tree}");
 }
+
+// yuzora(L1): Yuzora's new-pane menu opens as a popup, which is as tall as its content. Its
+// list must not wait for a height to fill: with flex_1 and overflow_y_scrollbar (a scroll area
+// that fills its parent) it drew nothing under the place pills.
+#[gpui::test]
+fn yuzora_new_pane_menu_shows_its_list_in_a_popup(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let menu = json!({"menu":"pane","overlay":"o1"});
+    let line = |tree: &str, id: &str| tree.lines().find(|l| l.contains(&format!("\"{id}\""))).unwrap_or_else(|| panic!("{id} missing: {tree}")).to_owned();
+    let agents = "this.agents = Array.from({length: 30}, (_, i) => ({key: `a${i}`, name: `Agent ${i}`, icon: null, tint: true, installed: true, run: [`a${i}`]})); this.listed = true;";
+    let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", true, menu.clone(), updates("current", "current"), Some(agents)).unwrap();
+    let root = line(&tree, "pane-menu");
+    assert!(!root.contains(".size_full") && !root.contains(".h_full"), "the menu takes its rows' height: {root}");
+    assert!(root.contains(".max_h[Number(520.0)]") && root.contains(".min_h[Number(0.0)]"), "{root}");
+    let list = line(&tree, "pane-menu-list");
+    assert!(!list.contains(".flex_1") && !list.contains(".size_full") && !list.contains("overflow_y_scrollbar"), "a list that waits to fill is empty in a popup: {list}");
+    assert!(list.contains(".min_h[Number(0.0)]") && list.contains("overflow_y_scroll"), "a long list scrolls: {list}");
+    for id in ["terminal", "agent-a0", "agent-a29"] {
+        assert!(line(&tree, id).contains(".flex_none"), "rows keep their height: {tree}");
+    }
+    // The chosen place is unmistakable: the accent, the other one plain.
+    let theme = crate::settings::theme();
+    let (accent, ink) = (theme["accent"].as_str(), theme["accent_foreground"].as_str());
+    let (right, down) = (line(&tree, "dir-right"), line(&tree, "dir-down"));
+    assert!(right.contains(&format!(".bg[Str(\"{accent}\")]")) && right.contains(&format!(".text_color[Str(\"{ink}\")]")), "{right}");
+    assert!(!down.contains(&format!(".bg[Str(\"{accent}\")]")), "{down}");
+
+    // Nothing to offer still says so.
+    let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", true, menu.clone(), updates("current", "current"),
+        Some("this.tools = () => []; this.agents = []; this.listed = true;")).unwrap();
+    assert!(tree.contains("menu.no_tools") && tree.contains("menu.no_agents") && !tree.contains("menu.checking"), "{tree}");
+    let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", true, menu, updates("current", "current"),
+        Some("this.agents = []; this.failed = true; this.listed = true;")).unwrap();
+    assert!(tree.contains("menu.failed") && !tree.contains("menu.no_agents"), "{tree}");
+}
+
+// yuzora(L1): a picked row closes the menu and goes where the pills say: beside the focused
+// pane, or a new tab when nothing is focused.
+#[gpui::test]
+fn yuzora_new_pane_menu_puts_a_pick_where_the_pills_say(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut picks = |populated: bool, setup: &str| {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        let values = fixture(populated, json!({"menu":"pane","overlay":"o1"}), updates("current", "current"));
+        let policy = Policy::new()
+            .with_storage_path(staged.0.join("store-pick.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(values, calls.clone()))
+            .unwrap();
+        let policy = crate::yuzora::with_modules(policy, "");
+        let root = staged.wrapper("mods/yuzora-shell-tabs", setup);
+        let window = cx.add_window(|_, _| Empty);
+        window.update(cx, |_, window, cx| {
+            let mut session = DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap();
+            session.describe(window, cx).unwrap();
+            window.remove_window();
+        }).unwrap();
+        let calls = calls.borrow();
+        assert!(calls.unexpected.is_empty(), "{:?}", calls.unexpected);
+        let runs: Vec<Value> = calls.effects.iter().filter(|(n, _)| n == "run").map(|(_, a)| json!(a)).collect();
+        assert!(calls.effects.iter().any(|(n, a)| n == "closeOverlay" && a == &[json!("o1")]), "the menu closes");
+        (runs, calls.shared.get("yuzora.shell.split").cloned())
+    };
+    let (runs, _) = picks(true, "this.choose({kind: 'terminal'});");
+    assert_eq!(runs, [json!(["pane.split", {"direction": "right", "pane": "p1"}])]);
+    let (runs, split) = picks(true, "this.place('down', cx); this.choose({kind: 'agent', name: 'Pi', run: ['pi']});");
+    assert_eq!(runs, [json!(["terminal.open", {"argv": ["pi"], "place": "down"}])]);
+    assert_eq!(split, Some(json!("down")), "the next menu starts below too");
+    let (runs, _) = picks(true, "this.choose({kind: 'tool', mod: 'yuzora-db-query'});");
+    assert_eq!(runs, [json!(["pane.split", {"direction": "right", "pane": "p1", "mod": "yuzora-db-query", "props": {}}])]);
+    let (runs, _) = picks(false, "this.choose({kind: 'terminal'});");
+    assert_eq!(runs, [json!(["tab.new", {}])], "nothing focused: a new tab");
+}
+
+// yuzora(L1): Herdr's own Files and Changes panels start off in Yuzora (its sidebar has Files and
+// Git): no saved choice means none, a saved one stays, and Settings > General turns them on and off.
+#[gpui::test]
+fn yuzora_herdr_panels_start_off(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let shown: Value = serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap();
+    let mut session = |entry: &str, layout: &Value, saved: Option<Value>, setup: Option<&str>| {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        if let Some(saved) = saved {
+            calls.borrow_mut().shared.insert("workspace.panels".into(), saved);
+        }
+        let mut values = fixture(true, json!({}), updates("current", "current"));
+        values.insert("layout".into(), layout.clone());
+        let policy = Policy::new()
+            .with_storage_path(staged.0.join("store-panels.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(values, calls.clone()))
+            .unwrap();
+        let policy = crate::yuzora::with_modules(policy, "");
+        let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
+        let window = cx.add_window(|_, _| Empty);
+        let tree = window.update(cx, |_, window, cx| {
+            let mut session = DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap();
+            session.describe(window, cx).unwrap();
+            let tree = session.describe(window, cx).unwrap();
+            window.remove_window();
+            tree
+        }).unwrap();
+        let calls = calls.borrow();
+        assert!(calls.unexpected.is_empty(), "{entry}: {:?}", calls.unexpected);
+        let runs: Vec<Value> = calls.effects.iter().filter(|(n, _)| n == "run").map(|(_, a)| json!(a)).collect();
+        (tree, calls.shared.get("workspace.panels").cloned(), runs)
+    };
+
+    // The default itself.
+    std::fs::write(staged.0.join("main.js"), "import { View, div } from 'gpui-kit'; import { panelsOn } from './mods/yuzora-shell-tabs/main.js'; \
+        export default class Check extends View { render() { return div().child(JSON.stringify([undefined, null, [], ['files'], 'files'].map((v) => panelsOn(v)))); } }").unwrap();
+    let (tree, ..) = session("", &shown, None, None);
+    assert!(tree.contains(r#"[[],[],[],[\"files\"],[]]"#), "{tree}");
+
+    // The tab bar shows a button only for a panel that's on, and never writes the choice.
+    let button = |tree: &str, id: &str| tree.contains(&format!("\"panel-{id}\""));
+    for (saved, files, changes) in [
+        (None, false, false),
+        (Some(Value::Null), false, false),
+        (Some(json!([])), false, false),
+        (Some(json!(["files"])), true, false),
+        (Some(json!(["files", "changes"])), true, true),
+    ] {
+        let (tree, kept, _) = session("mods/yuzora-shell-tabs", &shown, saved.clone(), None);
+        assert_eq!((button(&tree, "files"), button(&tree, "changes")), (files, changes), "{saved:?}: {tree}");
+        assert_eq!(kept, saved, "the tab bar keeps the saved choice");
+    }
+
+    // Settings > General shows a switch for each and turns them on and off.
+    let accent = crate::settings::theme()["accent"].clone();
+    let switch = |tree: &str, id: &str| tree.lines().find(|l| l.contains(&format!("\"gn-panel-{id}\""))).unwrap_or_else(|| panic!("{id}: {tree}")).contains(&format!(".bg[Str({accent:?})]"));
+    let (tree, kept, _) = session("mods/yuzora-settings-general", &shown, Some(json!(["changes"])), None);
+    assert_eq!((switch(&tree, "files"), switch(&tree, "changes")), (false, true), "{tree}");
+    assert_eq!(kept, Some(json!(["changes"])), "showing the page changes nothing");
+    let (_, kept, runs) = session("mods/yuzora-settings-general", &shown, None, Some("this.setPanel('files', true);"));
+    assert_eq!((kept, runs), (Some(json!(["files"])), vec![]));
+    // Turning off the panel that's showing closes it.
+    let mut open = shown.clone();
+    fn show(node: &mut Value) {
+        if node["id"] == "panel" {
+            node["hidden"] = json!(false);
+        }
+        for child in node.get_mut("children").and_then(Value::as_array_mut).into_iter().flatten() {
+            show(child);
+        }
+    }
+    show(&mut open);
+    let (_, kept, runs) = session("mods/yuzora-settings-general", &open, Some(json!(["files", "changes"])), Some("this.setPanel('files', false);"));
+    assert_eq!((kept, runs), (Some(json!(["changes"])), vec![json!(["layout.hide", {"id": "panel"}])]));
+}

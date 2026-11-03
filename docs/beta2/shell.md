@@ -72,7 +72,8 @@ L1 讀的 key：
 - **機器的「新增 Space」**：只在該機器的 layout 已讀到（LED 綠燈）時提供；讀取中 Herdr 會拒絕結構性指令。狀態列的 git 摘要在 focus 的終端機所屬機器上執行（終端機位址 `<machine>/<id>`），不是目前 Space 的機器。
 - **狀態列的 git 不跑 `git status`**：終端機一 `cd` 進資料夾，狀態列就會自動查詢，那個 repo 可能是剛下載、不可信的。`git status` 會看工作樹，並執行 repo 自己 config 指定的程式（`filter.<x>.clean`／`process`、`core.fsmonitor` 等），所以只讀 ref 與 commit：`symbolic-ref` 取 branch，`for-each-ref` 的 `%(upstream:short)`、`%(upstream:track)` 取 upstream 與 ↑↓。partial clone（promisor remote）缺 commit 時，走訪 commit 會用 repo 的 ssh 指令 lazy fetch，所以這種 repo 加 `--no-lazy-fetch`（git 2.44 起）；更舊的 git 不顯示 ↑↓。變更數與衝突數要等 L2 的 trust 判斷搬進 `yuzora-core`（#194）後，只在 folder 已信任時才用 `git status` 查；在那之前回傳 null，狀態列本來就只畫 branch 與 ↑↓。測試用會留下標記檔的 clean filter 與 ssh 指令當 oracle，並確認舊指令確實會觸發它們。
 - **scope**：記住的是使用者選的 chip。選的機器暫時不在（剛啟動還沒列出）或離線（LED 熄滅）時先顯示全部，機器回來後自動回到該機器；連線中（LED 琥珀）時維持原 scope。
-- **新增 pane 選單的高度**：依工具 pane 與 agent 數量（上次 `knownAgents()` 的快取）決定，最高 520px；超過時位置切換列固定、下方清單捲動。還沒有 Space 時工具 pane 停用並註明「需要先有 Space」（`tab.new` 可以替終端機或 agent 順便建立 Space，mod 不行）。
+- **新增 pane 選單的高度**：跟著列數長高，最高 520px（`MENU_MAX`）；超過時位置切換列固定、下方清單捲動。popup 會依內容決定高度（`set_fit_content`，`height` 只是上限），所以選單裡不能有等待「填滿高度」的元素：根元素不用 `size_full`，清單不用 `flex_1`，也不用 `overflow_y_scrollbar`（它的捲動區會填滿父層，改用 `overflow_y_scroll`，和上游的 machine-add、picker 一樣），否則清單高度會塌成 0，只剩位置切換列（曾經發生過，`render_tests.rs` 的 `yuzora_new_pane_menu_*` 鎖住）。選中的位置用 accent 底色，點了立即更新，也記在 `yuzora.shell.split` 給下一次用（截圖：`evidence/l1-pane-menu-before.png` 修正前、`l1-pane-menu-popup.png` 修正後、`l1-pane-menu-below.png` 選「下方」）。沒有工具 pane 或 agent 時顯示說明。還沒有 Space 時工具 pane 停用並註明「需要先有 Space」（`tab.new` 可以替終端機或 agent 順便建立 Space，mod 不行）。
+- **Herdr 的「檔案」「變更」panel 預設關閉**：Yuzora 的側欄已有檔案（L5）與 Git（L2）模式，兩個原生 panel 重複。shared `workspace.panels` 沒有值（undefined／null）時視為 `[]`（`yuzora-shell-tabs` 的 `panelsOn`、welcome frame 的 `panels()`，後者標 `// yuzora(L1):`），tab 列就不顯示這兩顆按鈕；使用者存過的值照舊。layout 的 `panel` 節點維持 `hidden: true`。重新開啟的入口：welcome 第三頁的開關，以及 L6 一般設定頁新增的「Panel」區塊（兩個開關，關掉正在顯示的那個會一併收起）。不放指令面板：它的指令名稱是上游寫死的英文清單，沒有 i18n，也看不出目前是開是關（截圖：`evidence/l1-panels-off.png` 預設的 tab 列、`l1-panels-settings.png` 設定頁）。上游的 `tabs` mod 不在 Yuzora layout 裡，不動。
 - **側欄的＋選單**依列數決定高度（最高 360px，超過時捲動）；「需要注意」最多 5 列高，更多時在框內捲動，下方的樹不會被擠出畫面。
 - **狀態列**：各 lane 的狀態文字共用中間剩下的寬度，太長就截短（再不夠就裁掉），右側的 HERDR 版本與指令面板快捷鍵一定看得到。
 - **Space 徽章色放 shared state**：不寫 Yuzora `settings.json`，所以測試與 render 不會碰 app home 以外的檔案，也不會蓋掉別的設定；L6 若要在外觀頁讓使用者改色，改寫 `yuzora.space.colors` 即可。
@@ -99,8 +100,8 @@ L1 讀的 key：
 | `app/src/layout.rs` | `PaneFrame` 新增 `blocked: Option<Line>` 欄位 |
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
-| `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora |
-| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確） |
+| `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora；新增 `yuzora_new_pane_menu_*` 兩個測試（新增 pane 選單在 popup 裡的版面、點選後的指令）與 `yuzora_herdr_panels_start_off`（Herdr panel 預設關閉、設定頁開關） |
+| `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確）；`panels()` 沒有設定時視為沒有 panel |
 | `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
 | `app/defaults/frame/feedback/main.js` | 送出後的感謝文字 |
 | `app/defaults/frame/welcome/yuzora.png` | 新檔：Yuzora 圖示（160px，由 `assets/icons/yuzora.png` 縮圖） |

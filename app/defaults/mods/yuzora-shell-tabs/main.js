@@ -31,10 +31,15 @@ export function choicesOf(agents) {
   return [...agents.filter((a) => a.installed), ...agents.filter((a) => !a.installed).slice(0, 2)];
 }
 
-// The new-pane menu's height for so many tool panes and agents (rows are 30px), at most
-// 520: past that its list scrolls.
-export function menuHeight(tools, agents) {
-  return Math.min(520, 10 + 32 + 26 + Math.max(tools, 1) * 30 + 11 + 30 + 26 + Math.max(agents, 1) * 30 + 4);
+// The new-pane menu is as tall as its rows, at most this: past it the list under the place
+// pills scrolls. (A popup sizes to its content, so nothing in it may wait for a height to fill.)
+export const MENU_MAX = 520;
+
+// Herdr's own Files and Changes panels that are on (shared "workspace.panels"): none until
+// someone turns one on (the welcome's third page, Settings > General), since Yuzora's
+// sidebar has Files and Git. A list someone saved stays as it is.
+export function panelsOn(saved) {
+  return Array.isArray(saved) ? saved : [];
 }
 
 function find(node, id) {
@@ -60,6 +65,16 @@ export function placeIn(f, space, dir) {
   return f?.pane ? { split: { direction: dir, pane: f.pane } } : { tab: space ? { space: space.id } : {} };
 }
 
+// The command a picked row runs, [name, args]: a tool pane ({kind: "tool", mod, props}), a
+// terminal ({kind: "terminal"}) or an agent ({kind: "agent", name, run}), at `at` (placeIn).
+export function paneCommand(item, at, dir) {
+  if (item.kind === "agent") {
+    return at.split ? ["terminal.open", { argv: item.run, place: dir }] : ["tab.new", { ...at.tab, name: item.name, argv: item.run }];
+  }
+  const extra = item.kind === "tool" ? { mod: item.mod, props: item.props ?? {} } : {};
+  return at.split ? ["pane.split", { ...at.split, ...extra }] : ["tab.new", { ...at.tab, ...extra }];
+}
+
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
@@ -74,11 +89,13 @@ export default class Tabs extends View {
     const machine = spaces().find((s) => s.active)?.machine ?? null;
     const where = machine ?? "";
     this.agents = this.cachedAgents();
+    this.dir = shared(SPLIT) === "down" ? "down" : "right";
     cx.spawn(async (cx) => {
       try {
         this.agents = await knownAgents({ on: machine });
         setShared(AGENTS, { ...(shared(AGENTS) ?? {}), [where]: this.agents });
       } catch { this.failed = true; }
+      this.listed = true;
       cx.notify();
     });
   }
@@ -91,53 +108,73 @@ export default class Tabs extends View {
   }
 
   // Under the pointer from the button; centered from a key or script (nothing to point at).
-  // As tall as its rows when the agents were listed before; the most otherwise.
+  // No height: it's as tall as its rows (MENU_MAX at most).
   openPaneMenu(kind = "popup") {
-    const cached = this.cachedAgents();
-    const height = cached.length ? menuHeight(toolPanes().length, choicesOf(cached).length) : 520;
-    openOverlay({ mod: SELF, kind, width: 280, height, props: { menu: "pane" } });
+    openOverlay({ mod: SELF, kind, width: 280, props: { menu: "pane" } });
   }
 
-  menuRow(th, id, icon, label, action, hint = "", enabled = true) {
+  // The tool panes offered (yuzora:core panes()).
+  tools() {
+    return toolPanes();
+  }
+
+  // A row was picked: close the menu and put it where the pills say.
+  choose(item) {
+    closeOverlay(props().overlay);
+    const [name, args] = paneCommand(item, placeIn(focused(), spaces().find((s) => s.active), this.dir), this.dir);
+    run(name, args);
+  }
+
+  // The pills: shown at once (this copy), and remembered for the next menu (shared).
+  place(dir, cx) {
+    this.dir = dir;
+    setShared(SPLIT, dir);
+    cx.notify();
+  }
+
+  menuRow(th, id, icon, label, item, hint = "", enabled = true) {
     return h_flex().id(id).h(30).px(9).gap(10).rounded(6).items_center().flex_none()
-      .text_color(enabled ? th.foreground : th.dim).when(enabled, (el) => el.hover((s) => s.bg(th.selected)))
-      .on_click(() => { if (!enabled) return; closeOverlay(props().overlay); action(); })
+      .text_color(enabled ? th.foreground : th.dim).when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(th.selected)))
+      .on_click(() => { if (enabled) this.choose(item); })
       .child(h_flex().w(14).flex_none().items_center().justify_center().child(icon))
       .child(div().flex_1().min_w(0).truncate().child(label))
       .when(Boolean(hint), (el) => el.child(div().flex_none().text_size(11).text_color(th.dim).child(hint)));
   }
 
-  menu(th, tk) {
-    const dir = shared(SPLIT) === "down" ? "down" : "right";
+  menu(th) {
+    const dir = this.dir;
     const space = spaces().find((s) => s.active);
-    const f = focused();
-    const at = placeIn(f, space, dir);
-    const open = (extra) => at.split ? run("pane.split", { ...at.split, ...extra }) : run("tab.new", { ...at.tab, ...extra });
+    const at = placeIn(focused(), space, dir);
     const icon = (path, tint, color) => (path ? (tint ? svg(path).size(14).text_color(color) : image(path).size(14)) : div());
     const label = (text) => div().px(9).pt(8).pb(3).text_size(11).text_color(th.dim).child(text);
+    const note = (text) => div().px(9).py(5).text_size(12).text_color(th.muted).child(text);
+    // The chosen place is the accent; the other a plain outline.
     const pill = (id, value) => div().id(`dir-${id}`).h(22).px(10).flex().items_center().rounded(11).text_size(11.5)
-      .border(1).border_color(dir === value ? th.input : th.border).bg(dir === value ? th.selected : th.popover)
-      .text_color(dir === value ? tk.text.strong : th.muted).cursor_pointer()
-      .on_click(() => setShared(SPLIT, value)).child(t(`menu.${id}`));
-    const tools = toolPanes();
+      .border(1).border_color(dir === value ? th.accent : th.input).bg(dir === value ? th.accent : th.popover)
+      .text_color(dir === value ? th.accent_foreground : th.muted).cursor_pointer()
+      .when(dir !== value, (el) => el.hover((s) => s.bg(th.hover).text_color(th.foreground)))
+      .on_click((_e, cx) => this.place(value, cx)).child(t(`menu.${id}`));
+    const tools = this.tools();
     const choices = choicesOf(this.agents);
-    // The place pills stay put; the list under them scrolls when it's taller than the menu.
-    return v_flex().id("pane-menu").size_full().p(5).bg(th.popover).text_size(12.5)
+    const agentsNote = choices.length ? null : this.failed ? "menu.failed" : this.listed ? "menu.no_agents" : "menu.checking";
+    // A popup is as tall as what's in it: the column takes its rows' height (MENU_MAX at most)
+    // and only then does the list shrink and scroll. Nothing here waits for a height to fill:
+    // not flex_1, and not overflow_y_scrollbar, whose scroll area fills its parent.
+    return v_flex().id("pane-menu").w_full().max_h(MENU_MAX).min_h(0).p(5).bg(th.popover).text_size(12.5)
       .child(h_flex().h(32).flex_none().px(9).gap(6).items_center().text_size(11.5).text_color(th.dim)
         .child(div().flex_1().child(t("menu.where"))).child(pill("right", "right")).child(pill("down", "down")))
-      .child(v_flex().id("pane-menu-list").flex_1().min_h(0).overflow_y_scrollbar()
+      .child(v_flex().id("pane-menu-list").min_h(0).overflow_y_scroll()
         .child(label(t("menu.tools")))
         // A tool pane needs a Space to go in (tab.new can start one for a terminal, not for a mod).
-      .children(tools.map((p) => this.menuRow(th, `tool-${p.mod}`, icon(p.icon, true, th.muted), p.label,
-          () => open({ mod: p.mod, props: p.props ?? {} }), at.split || space ? "" : t("menu.needs_space"), Boolean(at.split || space))))
-        .when(tools.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t("menu.no_tools"))))
-        .child(div().h(1).mx(4).my(5).bg(th.border))
-        .child(this.menuRow(th, "terminal", icon("icons/shell.svg", true, th.muted), t("menu.terminal"), () => open({})))
+        .children(tools.map((p) => this.menuRow(th, `tool-${p.mod}`, icon(p.icon, true, th.muted), p.label,
+          { kind: "tool", mod: p.mod, props: p.props }, at.split || space ? "" : t("menu.needs_space"), Boolean(at.split || space))))
+        .when(tools.length === 0, (el) => el.child(note(t("menu.no_tools"))))
+        .child(div().h(1).mx(4).my(5).flex_none().bg(th.border))
+        .child(this.menuRow(th, "terminal", icon("icons/shell.svg", true, th.muted), t("menu.terminal"), { kind: "terminal" }))
         .child(label(t("menu.agents")))
         .children(choices.map((a) => this.menuRow(th, `agent-${a.key}`, icon(a.icon, a.tint, th.foreground), a.name,
-          () => (at.split ? run("terminal.open", { argv: a.run, place: dir }) : run("tab.new", { ...at.tab, name: a.name, argv: a.run })),
-          a.installed ? "" : t("menu.not_installed"), a.installed)))
-        .when(this.agents.length === 0, (el) => el.child(div().px(9).py(5).text_size(12).text_color(th.dim).child(t(this.failed ? "menu.failed" : "menu.checking")))));
+          { kind: "agent", name: a.name, run: a.run }, a.installed ? "" : t("menu.not_installed"), a.installed)))
+        .when(Boolean(agentsNote), (el) => el.child(note(t(agentsNote)))));
   }
 
   // ---- the bar --------------------------------------------------------------------
@@ -173,7 +210,7 @@ export default class Tabs extends View {
 
   render() {
     const th = theme(), tk = tokens();
-    if (props()?.menu === "pane") return this.menu(th, tk);
+    if (props()?.menu === "pane") return this.menu(th);
     const sp = spaces(), ps = panes(), badges = badgesOf(sp);
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, child, tip, action, w = 28) => div().id(id).w(w).h(26).flex_none().flex().items_center().justify_center().rounded(6)
@@ -216,7 +253,7 @@ export default class Tabs extends View {
       : 6;
     const winIcon = (name, glyph) => (w.platform === "windows" ? svg(`mods/tabs/win-${name}.svg`).size(16) : glyph);
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    const enabled = panelsOn(shared("workspace.panels"));
     this.syncPanel(sp.find((s) => s.active), panel, body, enabled);
     const panelButton = (id, icon) => {
       const open = panel && !panel.hidden && body?.active === id;
