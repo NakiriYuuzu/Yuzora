@@ -341,8 +341,14 @@ impl Selection {
         s
     }
 
+    /// Every hunk, whole or each of its lines picked one by one.
     fn covers_all(&self, changes: &[Change]) -> bool {
-        !changes.is_empty() && (0..changes.len()).all(|h| matches!(self.hunks.get(&h), Some(None)))
+        !changes.is_empty()
+            && changes.iter().enumerate().all(|(h, c)| match self.hunks.get(&h) {
+                Some(None) => true,
+                Some(Some((del, add))) => c.a.clone().all(|k| del.contains(&k)) && c.b.clone().all(|k| add.contains(&k)),
+                None => false,
+            })
     }
 }
 
@@ -748,6 +754,20 @@ mod tests {
         d.stage(&lines(&[], &[0])).unwrap();
         let entry = s.git(&["ls-files", "-s", "link"]);
         assert!(entry.starts_with("120000 "), "{entry}");
+    }
+
+    #[test]
+    fn every_line_picked_one_by_one_is_the_whole_file() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.write("new.txt", "one\ntwo\n");
+        s.git(&["add", "new.txt"]);
+        // Every added line of a staged new file, picked as lines.
+        let lines = Selection::from_json(&json!([]), &json!({ "0": { "del": [], "add": [0, 1] } }));
+        let d = DiffSession::load(s.repo.clone(), "new.txt".into(), None, Mode::Staged).unwrap();
+        d.unstage(&lines).unwrap();
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "", "an empty file stayed staged in its place");
+        assert_eq!(s.read("new.txt"), "one\ntwo\n");
     }
 
     #[test]

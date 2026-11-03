@@ -310,7 +310,7 @@ fn joined<T>(h: std::thread::ScopedJoinHandle<'_, GitResult<T>>) -> GitResult<T>
 fn full(repo: &Repo) -> GitResult<()> {
     // The reads don't depend on each other (and take no lock): side by side,
     // a full refresh costs its slowest command rather than their sum.
-    let (st, untracked, ignored_dirs) = std::thread::scope(|s| {
+    let (st, untracked, ignored_dirs, gitlinks) = std::thread::scope(|s| {
         let untracked = s.spawn(|| -> GitResult<BTreeSet<String>> { Ok(split_z(&repo.run(Git::read(["ls-files", "--others", "--exclude-standard", "-z"]))?.into_result()?).collect()) });
         let ignored = s.spawn(|| -> GitResult<Vec<String>> {
             if repo.place.is_remote() {
@@ -320,8 +320,9 @@ fn full(repo: &Repo) -> GitResult<()> {
                 .filter_map(|p| p.strip_suffix('/').map(str::to_owned))
                 .collect())
         });
+        let links = s.spawn(|| gitlinks(repo));
         let st = repo.run(status_cmd()).and_then(|o| o.into_result()).map(|o| parse_porcelain_v2(&o));
-        (st, joined(untracked), joined(ignored))
+        (st, joined(untracked), joined(ignored), links.join().unwrap_or_default())
     });
     let (st, untracked, ignored_dirs) = (st?, untracked?, ignored_dirs?);
     let changed = st.entries.len();
@@ -336,7 +337,6 @@ fn full(repo: &Repo) -> GitResult<()> {
     };
     let lines = count_untracked(repo, untracked.iter());
     let operation = crate::repo::operation(repo);
-    let gitlinks = gitlinks(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
     c.gitlinks = gitlinks;
     c.branch = st.branch;
@@ -353,11 +353,14 @@ fn full(repo: &Repo) -> GitResult<()> {
     Ok(())
 }
 
-/// The submodule paths `.gitmodules` lists.
+/// The gitlinks in the index, whether or not `.gitmodules` names them:
+/// status reports what changed inside one as the gitlink.
 fn gitlinks(repo: &Repo) -> Vec<String> {
-    let out = repo.run(Git::read(["config", "--file", ".gitmodules", "-z", "--get-regexp", r"^submodule\..*\.path$"])).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
-    // `-z`: `key\nvalue\0` per entry.
-    String::from_utf8_lossy(&out).split('\0').filter_map(|e| e.split_once('\n')).map(|(_, v)| v.trim_end_matches('/').to_owned()).filter(|v| !v.is_empty()).collect()
+    let out = repo.run(Git::read(["ls-files", "-s", "-z"])).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
+    // `<mode> <oid> <stage>\t<path>\0`; a conflict lists a path once per stage.
+    let mut links: Vec<String> = split_z(&out).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
+    links.dedup();
+    links
 }
 
 fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
@@ -634,6 +637,27 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
         refresh(&s.repo).unwrap();
         assert_eq!(snapshot(&s.repo)["counts"]["total"], 0, "the old gitlink entry stayed");
+    }
+
+    #[test]
+    fn a_change_inside_a_gitlink_no_gitmodules_names_refreshes_it() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        // A repo inside, linked in the index only (no `submodule add`).
+        s.write("sub/f.txt", "1\n");
+        s.git(&["-C", "sub", "init", "-q"]);
+        s.git(&["-C", "sub", "add", "f.txt"]);
+        s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "-qm", "s"]);
+        let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]);
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", head.trim())]);
+        s.git(&["commit", "-qm", "sub"]);
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["counts"]["total"], 0);
+        // What the watcher sees is the file inside; the change is the gitlink's.
+        s.write("sub/f.txt", "2\n");
+        s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["unstaged"][0]["path"], "sub", "the cached clean gitlink stayed");
     }
 
     #[test]

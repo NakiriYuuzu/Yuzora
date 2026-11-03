@@ -150,7 +150,7 @@ mod tests {
         s.write("sub/f", "x\n");
         s.git(&["-C", "sub", "init", "-q"]);
         s.git(&["-C", "sub", "add", "f"]);
-        s.git(&["-C", "sub", "commit", "-qm", "s"]);
+        s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "-qm", "s"]);
         let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]);
         s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", head.trim())]);
         // A submodule config git waits on forever.
@@ -221,7 +221,7 @@ mod tests {
         s.git(&["init", "-q", "sub"]);
         s.write("sub/f", "x\n");
         s.git(&["-C", "sub", "add", "f"]);
-        s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "s"]);
+        s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "-qm", "s"]);
         let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]).trim().to_owned();
         s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{head},sub")]);
         assert!(pending(&s.repo).unwrap().is_empty());

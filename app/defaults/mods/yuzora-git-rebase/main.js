@@ -281,7 +281,7 @@ export default class GitRebase extends View {
     cx.notify();
   }
 
-  // In-memory editing (rewordInMemory) rewrites the commit and every later one with commit-tree, so
+  // In-memory editing (rewordInMemory) rewrites the commit and every later one, so
   // only a straight, unreordered pick/reword list qualifies. It goes newest first: a reword changes
   // the hashes of that commit and the newer ones, never the older ones still waiting in the list.
   memOk() {
@@ -403,7 +403,6 @@ export default class GitRebase extends View {
       .child(div().w(58).flex_none().text_size(11).text_color(th.dim).font_family(settings().font_family ?? "JetBrains Mono").child(r.short))
       .when(joined, (el) => el.child(div().w(10).flex_none().text_color(th.dim).child("↳")))
       .child(div().flex_1().min_w(0).truncate().when(dropped, (el) => el.line_through().text_color(th.dim)).child(r.subject || t("noSubject")))
-      .when(r.merge, (el) => el.child(div().flex_none().px(4).rounded(3).text_size(10).text_color(th.blocked).border_1().border_color(th.border).child("merge")))
       .child(div().w(90).flex_none().truncate().text_size(11).text_color(th.dim).child(r.author))
       .child(div().w(66).flex_none().text_size(11).text_color(th.dim).child(r.time ? new Date(r.time * 1000).toISOString().slice(0, 10) : ""))
       .child(arrow("up", "↑", -1, t("moveUp")))

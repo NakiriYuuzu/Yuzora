@@ -72,25 +72,30 @@ pub fn todo_text(entries: &[Entry]) -> GitResult<String> {
         .collect())
 }
 
-/// The commits `base..HEAD`, oldest first, as the pane lists them.
+/// The commits `base..HEAD`, oldest first, as the pane lists them: without
+/// merges, which `rebase -i` flattens (`hasMerges` says there were some).
 pub fn todo_list(repo: &Repo, base: &str) -> GitResult<Value> {
     crate::log::not_an_option(base)?;
     let out = repo.text(Git::read(["log", "--reverse", "--format=%x01%x01%H%x02%x02%P%x02%x02%s%x02%x02%an%x02%x02%at%x02%x02%B%x03%x03", &format!("{base}..HEAD"), "--"]))?;
-    let mut list = Vec::new();
+    let (mut list, mut merges) = (Vec::new(), false);
     for rec in out.split(crate::log::RECORD_START).filter_map(|r| r.split(crate::log::RECORD_END).next()).filter(|r| !r.trim().is_empty()) {
         let f: Vec<&str> = rec.split(crate::log::FIELD).collect();
         if f.len() < 6 {
             continue;
         }
-        let merge = f[1].split_whitespace().count() > 1;
-        list.push(json!({ "hash": f[0], "short": &f[0][..f[0].len().min(8)], "subject": f[2], "author": f[3], "time": f[4].parse::<i64>().unwrap_or(0), "message": f[5].trim_end(), "merge": merge }));
+        // `pick` refuses a merge: listed, the default todo would stop there.
+        if f[1].split_whitespace().count() > 1 {
+            merges = true;
+            continue;
+        }
+        list.push(json!({ "hash": f[0], "short": &f[0][..f[0].len().min(8)], "subject": f[2], "author": f[3], "time": f[4].parse::<i64>().unwrap_or(0), "message": f[5].trim_end() }));
     }
     // Branches pointing into the range (for update-ref).
     let refs = repo.text(Git::read(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"]))?;
     let current = repo.run(Git::read(["symbolic-ref", "-q", "HEAD"]))?.stdout_text().trim().to_owned();
     let hashes: Vec<String> = list.iter().filter_map(|c| c["hash"].as_str().map(str::to_owned)).collect();
     let pointing: Vec<Value> = refs.lines().filter_map(|l| l.split_once(' ')).filter(|(r, h)| *r != current && hashes.iter().any(|x| x == h)).map(|(r, h)| json!({ "ref": r, "hash": h })).collect();
-    Ok(json!({ "commits": list, "refs": pointing, "hasMerges": list.iter().any(|c| c["merge"] == true) }))
+    Ok(json!({ "commits": list, "refs": pointing, "hasMerges": merges }))
 }
 
 /// Runs `git rebase -i <base>` with the pane's todo and messages.
@@ -301,6 +306,25 @@ mod tests {
         let cont = crate::ops::sequencer(&s.repo, "continue").unwrap();
         assert_eq!(cont["ok"], true, "{cont}");
         assert_eq!(s.git(&["log", "-1", "--format=%s"]).trim(), "B, later");
+    }
+
+    #[test]
+    fn a_range_with_a_merge_rebases_flat_as_listed() {
+        let s = scratch();
+        let base = s.commit("base.txt", "0\n", "base");
+        s.git(&["switch", "-q", "-c", "side"]);
+        s.commit("side.txt", "s\n", "on side");
+        s.git(&["switch", "-q", "main"]);
+        s.commit("main.txt", "m\n", "on main");
+        s.git(&["merge", "-q", "--no-edit", "--no-ff", "side"]);
+        s.commit("after.txt", "a\n", "after");
+        let list = todo_list(&s.repo, &base).unwrap();
+        assert_eq!(list["hasMerges"], true, "the pane warns that merges go");
+        // Git flattens them: the list holds what it will pick, every row runnable as is.
+        let entries: Vec<Entry> = list["commits"].as_array().unwrap().iter().map(|c| entry("pick", c["hash"].as_str().unwrap(), None)).collect();
+        let r = run(&s.repo, &base, &entries, false).unwrap();
+        assert_eq!((r["ok"].clone(), r["stopped"].clone()), (json!(true), json!(false)), "{r}");
+        assert_eq!(s.git(&["log", "--format=%s", &format!("{base}..HEAD")]).lines().count(), 3);
     }
 
     #[test]
