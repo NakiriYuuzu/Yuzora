@@ -10,8 +10,8 @@
     "help": "Herdr manual"
   },
   "menu": {
-    "new_space": "New Space",
-    "new_space_on": "New Space on {machine}",
+    "new_space": "New Space…",
+    "new_space_on": "New Space on {machine}…",
     "worktree": "New worktree…",
     "machine": "Connect a machine…"
   },
@@ -27,7 +27,7 @@
   "machine": {
     "local": "This computer · {host}",
     "local_bare": "This computer",
-    "add_space": "New Space on this machine",
+    "add_space": "New Space on this machine…",
     "fold": "Fold {name}",
     "unfold": "Unfold {name}"
   },

@@ -48,10 +48,10 @@ scripts/yuzora/check-mods          # 每個 yuzora-* mod 的 herdr-app check
 <!-- yuzora:lane:L1:start -->
 #### L1 外殼工作區
 
-- 文件：`docs/beta2/shell.md`。mods：`yuzora-sidebar-workspace`、`yuzora-modebar`、`yuzora-statusbar`、`yuzora-shell-tabs`（tab 列＋新增 pane 選單）、`yuzora-shell-pane`（pane 標頭）；crate `yuzora-shell`（`workspace()`、`spaceBadges()`、`hostname()`、`agentBrand()`、`gitStatus()`）。
+- 文件：`docs/beta2/shell.md`。mods：`yuzora-sidebar-workspace`、`yuzora-modebar`、`yuzora-statusbar`、`yuzora-shell-tabs`（tab 列＋新增 pane 選單）、`yuzora-shell-pane`（pane 標頭）、`yuzora-new-space`（新增 Space 的資料夾對話框）；crate `yuzora-shell`（`workspace()`、`spaceBadges()`、`hostname()`、`agentBrand()`、`gitStatus()`、`planSpace()`）。
 - 側欄模型在 Rust（`app/crates/yuzora-shell/src/workspace.rs`，純函式＋單元測試），mod 只負責畫。改分組、排序或計數先改測試。
 - 5 種 agent 狀態形狀是 `yuzora-sidebar-workspace/status/*.svg`，其他 mod 以路徑引用，不要複製；顏色取 `tokens().status.<狀態>.mark`。
-- 上游改動只有 `PaneFrame.blocked`（`app/src/layout.rs`、`app/src/window.rs` 各一處，邏輯在 `app/src/yuzora/shell.rs`）與 welcome／whatsnew／feedback 的品牌字樣，都標 `// yuzora(L1):`。
+- 上游改動只有 `PaneFrame.blocked`（`app/src/layout.rs`、`app/src/window.rs` 各一處）、人執行的 bare `space.new` 改開資料夾對話框（`app/src/window.rs` 的 `run_as`），邏輯都在 `app/src/yuzora/shell.rs`；另有 welcome／whatsnew／feedback 的品牌字樣，都標 `// yuzora(L1):`。
 - 實機假 agent：`printf '\033]7501;state=blocked:app=codex\033\\'; exec sleep 100000`（state 可為 working／blocked／done／idle）。
 <!-- yuzora:lane:L1:end -->
 
