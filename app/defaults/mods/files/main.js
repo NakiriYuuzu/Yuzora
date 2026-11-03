@@ -2,6 +2,9 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window } from "herdr";
+// yuzora(L2c): whether the folder waits for trust, and the note saying so.
+import { t as tr } from "yuzora:core";
+import { open as gitOpen, status as gitStatus } from "yuzora:git";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -10,6 +13,12 @@ function location() {
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on, space: space?.id };
 }
 const key = () => JSON.stringify(location());
+// yuzora(L2c): git status runs the programs a repo's own config names (a clean
+// filter on a touched file): marks only once the folder is trusted, which the
+// Git sidebar asks. The config keys that wait, else null.
+async function untrusted(cwd, on) {
+  return (await gitStatus((await gitOpen(cwd, on ?? null)).id)).trust ?? null;
+}
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const PER_FOLDER = 500, TOTAL = 5000;
 
@@ -69,7 +78,7 @@ export default class Files extends View {
       if (this.context) this.saved.set(this.context.key, { folders: this.folders, file: this.file });
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
-      this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false;
+      this.pending = new Set(); this.marks = {}; this.show(null); this.watched = null; this.error = null; this.limited = false; this.untrusted = null;
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
     }
@@ -85,7 +94,10 @@ export default class Files extends View {
         }
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
         const marks = {};
-        if (top?.code === 0) {
+        // yuzora(L2c): couldn't tell counts as waiting (no marks), without the note.
+        const waits = top?.code === 0 ? await untrusted(top.stdout.trim(), on).catch(() => []) : null;
+        const untrustedNote = waits?.length ? tr("untrusted", { keys: waits.join(", ") }) : null; // yuzora(L2c)
+        if (top?.code === 0 && !waits) { // yuzora(L2c): && !waits
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
           const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], { cwd, on }).catch(() => null);
           if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
@@ -94,7 +106,7 @@ export default class Files extends View {
           }
         }
         if (!this.current(context)) return;
-        this.marks = marks; this.error = null; this.watch(cwd, cx);
+        this.marks = marks; this.untrusted = untrustedNote; this.error = null; this.watch(cwd, cx); // yuzora(L2c): untrusted
       } catch (e) { if (this.current(context)) this.error = String(e); }
       finally { if (this.context === context) this.loading = false; cx.notify(); }
     });
@@ -167,7 +179,8 @@ export default class Files extends View {
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
       .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
-        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
+        .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))
+        .when(Boolean(this.untrusted), el => el.child(div().p(8).text_size(11).text_color(t.dim).child(this.untrusted))))) // yuzora(L2c)
       .when(Boolean(this.file), el => el.child(this.code ? Editor.new(this.code).flex_1().min_h(0) : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…")));
   }
 }

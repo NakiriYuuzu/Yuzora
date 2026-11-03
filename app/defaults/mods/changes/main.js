@@ -1,6 +1,9 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings } from "herdr";
+// yuzora(L2c): whether the folder waits for trust, and the note saying so.
+import { t as tr } from "yuzora:core";
+import { open as gitOpen, status as gitStatus } from "yuzora:git";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -12,6 +15,12 @@ const key = () => JSON.stringify(location());
 // Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie):
 // the folder watch would see it, and every refresh would start the next one.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+// yuzora(L2c): status and diff run the programs a repo's own config names (a
+// clean filter on a touched file): only once the folder is trusted, which the
+// Git sidebar asks. The config keys that wait, else null.
+async function untrusted(cwd, on) {
+  return (await gitStatus((await gitOpen(cwd, on ?? null)).id)).trust ?? null;
+}
 const countLines = (text) => text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
 // Numbers each diff line once, so a frame only draws the rows on screen.
@@ -72,6 +81,9 @@ export default class Changes extends View {
         if (key() !== context) return;
         if (top.code !== 0) { this.root = null; this.files = []; this.setLines([]); this.open = null; this.error = "Not a git repository"; return; }
         const root = top.stdout.trim(), git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
+        const waits = await untrusted(root, on); // yuzora(L2c)
+        if (key() !== context) return; // yuzora(L2c)
+        if (waits) { this.root = null; this.files = []; this.setLines([]); this.open = null; this.error = tr("untrusted", { keys: waits.join(", ") }); return; } // yuzora(L2c)
         const status = await git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]);
         if (status.code !== 0) throw new Error(status.stderr);
         const head = await git(["rev-parse", "--verify", "HEAD"]);

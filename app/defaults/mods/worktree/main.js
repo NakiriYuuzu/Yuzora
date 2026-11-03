@@ -4,6 +4,9 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { run, props, closeOverlay, theme, spaces, panes, exec, home } from "herdr";
+// yuzora(L2c): whether the folder waits for trust, and the note saying so.
+import { t as tr } from "yuzora:core";
+import { open as gitOpen, status as gitStatus } from "yuzora:git";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
@@ -51,6 +54,14 @@ function spaceOf(path, all, on) {
     if (!at || !inside(at, path)) return false;
     return !all.some((c) => c.path !== path && c.path.length > path.length && inside(at, c.path));
   })());
+}
+
+// yuzora(L2c): status, worktree add and remove run the programs a repo's own
+// config names (clean and smudge filters), and reading commits may fetch with
+// its ssh command (a partial clone): only once the folder is trusted, which the
+// Git sidebar asks. The config keys that wait, else null.
+async function untrusted(cwd, on) {
+  return (await gitStatus((await gitOpen(cwd, on ?? null)).id)).trust ?? null;
 }
 
 async function git(cwd, args, on) {
@@ -141,6 +152,8 @@ export default class Worktree extends View {
         this.folder = props()?.folder || place(this.space()) || this.userHome;
         // The repo is set last: Enter does nothing until the warnings it consents to are known.
         const repo = await repoOf(this.folder, this.on);
+        const waits = repo ? await untrusted(repo.top, this.on) : null; // yuzora(L2c)
+        if (waits) { this.untrusted = tr("untrusted", { keys: waits.join(", ") }); this.repo = repo; return cx.notify(); } // yuzora(L2c)
         if (repo && props().action === "remove") {
           this.dirty = (await git(repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on)).out !== "";
           this.unpushed = (await submodules(repo.top, this.on)).unpushed;
@@ -168,7 +181,7 @@ export default class Worktree extends View {
   }
 
   async work(cx) {
-    if (this.busy || !this.repo) return;
+    if (this.busy || !this.repo || this.untrusted) return; // yuzora(L2c): untrusted
     this.busy = true;
     this.error = "";
     cx.notify();
@@ -278,7 +291,8 @@ export default class Worktree extends View {
       .bg(t.popover)
       .text_size(13)
       .child(h_flex().child(div().flex_1().font_semibold().text_color(t.foreground).child(`Open worktree${r ? ` of ${r.name}` : ""}`)).child(div().text_size(11).text_color(t.dim).child(r ? count : "")))
-      .when(r === undefined || (r && this.list === undefined), (el) => el.child(div().text_color(t.muted).child("\u2026")))
+      .when(r === undefined || (r && this.list === undefined && !this.untrusted), (el) => el.child(div().text_color(t.muted).child("\u2026"))) // yuzora(L2c): !this.untrusted
+      .when(Boolean(this.untrusted), (el) => el.child(div().text_color(t.muted).child(this.untrusted))) // yuzora(L2c)
       .when(r === null, (el) => el.child(div().text_color(t.muted).child(`${this.folder ? tilde(this.folder, this.userHome ?? "") : "This folder"} is not in a git repository.`)))
       .when(Boolean(r && this.list), (el) =>
         el
@@ -309,7 +323,7 @@ export default class Worktree extends View {
     const s = this.space();
     const r = this.repo;
     const title = remove ? `Remove worktree ${s?.name ?? ""}?` : `New worktree${r ? ` of ${r.name}` : ""}`;
-    const detail =
+    const detail = this.untrusted || ( // yuzora(L2c): this.untrusted
       r === undefined
         ? "…"
         : r === null
@@ -318,8 +332,8 @@ export default class Worktree extends View {
             ? !r.linked
               ? "This is the repository's main checkout, not a worktree."
               : `Closes the space and deletes ${tilde(r.top, this.userHome)}. The branch stays.`
-            : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. A branch that exists is checked out; a new one starts from here.`;
-    const blocked = !r || (remove && !r.linked);
+            : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. A branch that exists is checked out; a new one starts from here.`);
+    const blocked = !r || Boolean(this.untrusted) || (remove && !r.linked); // yuzora(L2c): this.untrusted
     return v_flex()
       .id("worktree")
       .track_focus(this.handle)

@@ -114,7 +114,8 @@ mod linux {
 
     /// Git supplies its own ignore semantics, including global and nested rules.
     fn ignored_directories(root: &Path) -> HashSet<PathBuf> {
-        let Ok(output) = std::process::Command::new("git").arg("-C").arg(root).args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).output() else {
+        // yuzora(L2c): ls-files reads the index (a repo's fsmonitor hook runs): none until the folder is trusted.
+        let Ok(output) = crate::yuzora::trust::in_work_tree(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]) else {
             return HashSet::new();
         };
         if !output.status.success() {

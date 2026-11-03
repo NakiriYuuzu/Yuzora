@@ -78,6 +78,55 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - 遠端 space：同一個執行器改走 `hc exec --json --on <machine> --cwd --timeout --env … [--stdin] -- git …`（`yuzora_core::remote`）。
 - 輸出可以邊讀邊解析（`run_streaming`），log 用這條路。
 
+### `yuzora:git` 以外的入口（L2c）
+
+app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些地方一樣遵守信任資料夾：未信任時只跑上面白名單裡只讀 refs 的指令，讀 index 或工作樹的指令要等 `pending` 為空。
+
+實測（git 2.50，repo 自己設定 clean／smudge filter 與 fsmonitor hook，另有 stat 變動的檔案）：
+
+- 會執行 repo 的程式：
+  - `status`（即使帶 `--no-optional-locks -c core.fsmonitor=false`）、`diff HEAD --numstat`、單檔 `diff --no-ext-diff --no-textconv`：都會執行 clean filter。
+  - `ls-files --others --ignored`：沒帶 `core.fsmonitor=false` 時執行 fsmonitor hook。
+  - `worktree add`：執行 smudge。
+  - `worktree remove`、`add -A`：執行 clean。
+- 不會執行：`rev-parse`、`symbolic-ref`、`for-each-ref`、`show-ref`、`config --get-regexp`、`branch --show-current`、`worktree list`。
+
+| 位置 | 指令 | 結論 |
+|---|---|---|
+| `app/defaults/mods/changes/main.js` | `rev-parse --show-toplevel` | 白名單 |
+| 同上 | `status`、`rev-parse --verify HEAD`、`diff HEAD --numstat`、單檔 `diff`、Commit 的 `add -A`＋`commit` | 已改：先問 `yuzora:git` 是否還在等信任。未信任時清單位置顯示提示，後面的指令都不跑，Commit 停用 |
+| `app/defaults/mods/files/main.js` | `rev-parse --show-toplevel` | 白名單 |
+| 同上 | `status --porcelain=v1`（檔案的 Git 標記） | 已改：未信任時不標記，清單下方顯示提示；`yuzora:git` 回答不了時也不標記，但不顯示提示 |
+| `app/defaults/mods/worktree/main.js` | `rev-parse`（`repoOf`） | 白名單 |
+| 同上 | `status --porcelain`、submodule 檢查（`rev-parse HEAD:<path>`、`cat-file -e`、`rev-list`）、`worktree list`＋`for-each-ref` 的 `committerdate`、`show-ref`、`worktree add`／`remove` | 已改：未信任時對話框顯示提示，新增、開啟、移除都不能執行。讀 commit 的指令在 partial clone 可能用 repo 的 ssh 指令去抓物件，所以開啟也一起擋 |
+| `app/defaults/mods/spaces/main.js` | `status --porcelain=v2 --branch` | 已改：改用 `yuzora:shell` 的 `gitStatus`（只讀 refs、config 與 commit，partial clone 帶 `--no-lazy-fetch`），不論是否信任都不再跑 status。分離的 HEAD 顯示成 `detached` |
+| 同上 | `rev-parse --show-toplevel`、`--git-common-dir` | 白名單 |
+| `app/defaults/mods/menu/main.js` | `rev-parse --show-toplevel`、`--git-common-dir` | 白名單 |
+| `app/src/files.rs`（Linux 的 `watchFolder`） | `ls-files --others --ignored --exclude-standard --directory` | 已改：經 `app/src/yuzora/trust.rs` 的 `in_work_tree`，未信任時不讀 |
+| 同上 | `rev-parse --path-format=absolute --git-dir --git-common-dir` | 白名單 |
+| `app/src/window.rs` 的 `folder_info`（tab 的資料夾與分支） | `rev-parse --show-toplevel --abbrev-ref HEAD` | 白名單 |
+| `app/crates/yuzora-shell/src/git.rs` 的 `status`（`gitStatus`，狀態列與 Spaces） | `symbolic-ref`、`config --get-regexp`、`for-each-ref`（partial clone 帶 `--no-lazy-fetch`） | 白名單，L1 的 `a_repos_own_filter_never_runs` 守住。同檔另外兩處是測試 |
+| `app/defaults/AGENTS.md` 給使用者 mod 的範例 | `branch --show-current` | 白名單 |
+| `app/vendor/gpui-kit/crates/shell/src/dependencies.rs` | mod 的 git 依賴（clone、fetch） | 不在使用者資料夾，在 `~/.gpui-shell/cache/dependencies` |
+| `yuzora-git` 的 `exec.rs`、`yuzora-core` 的 `git_trust.rs` | | `yuzora:git` 的單一入口與信任掃描本身 |
+| `src-tauri/` | | 凍結的移植來源，beta.2 不出貨 |
+
+其他命中都是測試。`yuzora-statusbar`、`yuzora-modebar`、`yuzora-settings-general` 裡的 `"git"` 是模式名稱，不跑 git。
+
+- 判斷方式：
+  - mods 用 `yuzora:git` 的 `open(cwd, on)` 與 `status(id)`，`trust` 有值就是未信任。這和 Git 側欄是同一份答案，遠端 machine 也適用。已信任的資料夾，引擎會順便讀一次 status（有快取與 watcher）。
+  - Rust 用 `yuzora_core::git_trust::pending(None, top)`，`top` 是帶 `READ_FLAGS` 的 `rev-parse --show-toplevel` 的輸出。讀不到、不是 UTF-8 或 `Err` 都當成未信任。
+- 提示文字放在各 mod 自己的 `i18n/{en,zh-TW}.json`（`changes`、`files`、`worktree`），其他文字維持上游的英文。
+- 測試：
+  - `app/src/yuzora/trust.rs`：fixture 用自己的 HOME 建立，斷言未信任時沒有任何程式執行、信任後照舊（fixture 的程式真的會被 git 執行）。白名單指令同樣在這個 fixture 跑過。Linux 上另外從 `watchFolder` 端到端跑一次。
+  - `app/scripts/yuzora-trust-mods.test.ts`：真實的 git，`yuzora:git` 的回答用 stub。也守住 default mods 跑 git 的位置數，上游同步多了新的入口時會失敗，要重新判斷。
+  - 拿掉任一處檢查，對應的測試都會失敗。
+- 已知限制：
+  - Linux 上未信任的 repo 不知道哪些資料夾被忽略，`watchFolder` 會連 `node_modules` 這類資料夾一起監看，超過 4096 個資料夾時改成定時重讀（原本就有的退路）。
+  - 這個信任掃描在 `watchFolder` 啟動時同步執行，和原本同步執行的 `ls-files` 在同一個位置，多幾次 git 呼叫（20 萬筆 entry 的 index 約 115 ms）。
+  - 和引擎一樣以檢查當下為準：信任是對資料夾，信任之後 repo 設定再多出程式也照樣執行。
+  - Spaces 清單：git 拒絕讀的 repo（例如擁有者不符）現在記成「不是 repo」，fallback 時不重問；切換資料夾或指令結束時仍會重問。
+
 ### Status（`status.rs`、`watch.rs`）
 
 - `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）；untracked 檔案直接數行（前 500 個），symlink 數它的目標字串（git 記錄的內容），不跟到目標檔案（可能在工作樹外）。全量刷新時這幾個讀取並行執行。status 與 untracked 清單超過輸出上限（64 MiB）時會被截斷，所以超過就回傳錯誤，不把只有前段的清單當成完整的存進快取（下次全部重讀）。

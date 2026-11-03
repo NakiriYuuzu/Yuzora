@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 pub mod herdr_compat;
 pub mod release;
 pub mod shell;
+pub mod trust;
 
 /// The name people see (window title, setup screen).
 pub const APP_NAME: &str = "Yuzora";
