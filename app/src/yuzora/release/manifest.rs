@@ -10,6 +10,7 @@
 //! ```json
 //! { "schema": 1, "name": "yuzora", "version": "0.1.0-beta.3", "channel": "beta",
 //!   "notes": { "url": ".../v0.1.0-beta.3/changelog.md", "sha256": "…" },
+//!   "localized_notes": { "zh-TW": { "url": ".../v0.1.0-beta.3/changelog.zh-TW.md", "sha256": "…" } },
 //!   "targets": { "macos-aarch64": { "url": ".../v0.1.0-beta.3/yuzora-0.1.0-beta.3-macos-aarch64.tar.gz",
 //!                                   "sha256": "…", "size": 123 } } }
 //! ```
@@ -43,7 +44,18 @@ pub struct Manifest {
     /// The release's CHANGELOG.md, for the "what's new" notes.
     #[serde(default)]
     pub notes: Option<Asset>,
+    /// The same notes in another language, by i18n locale (`zh-TW`). Older
+    /// manifests have none; an older app skips them and keeps `notes`.
+    #[serde(default)]
+    pub localized_notes: BTreeMap<String, Asset>,
     pub targets: BTreeMap<String, Asset>,
+}
+
+impl Manifest {
+    /// The notes in `locale`, or the English ones when the release has none in it.
+    pub fn notes_in(&self, locale: &str) -> Option<&Asset> {
+        self.localized_notes.get(locale).or(self.notes.as_ref())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -79,7 +91,11 @@ fn checks(m: &Manifest, version: &str, downloads: &str) -> Result<(), String> {
         return Err(format!("{MANIFEST}: channel {:?} for {version}", m.channel));
     }
     let prefix = format!("{downloads}/v{version}/");
-    for (what, asset) in m.targets.iter().map(|(t, a)| (t.as_str(), a)).chain(m.notes.iter().map(|a| ("notes", a))) {
+    // Every file, notes in any language too. A locale this app doesn't show
+    // is still checked, and never refused for being unknown.
+    let notes = m.notes.iter().map(|a| ("notes".to_owned(), a));
+    let localized = m.localized_notes.iter().map(|(locale, a)| (format!("notes {locale}"), a));
+    for (what, asset) in m.targets.iter().map(|(t, a)| (t.clone(), a)).chain(notes).chain(localized) {
         let name = asset.url.strip_prefix(&prefix).ok_or_else(|| format!("{MANIFEST}: {what} is not in this release: {}", asset.url))?;
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) {
             return Err(format!("{MANIFEST}: {what}: odd file name {name:?}"));
@@ -139,6 +155,27 @@ mod tests {
         assert_eq!((m.name.as_str(), m.version.as_str(), m.channel.as_str()), ("yuzora", "0.1.0-beta.3", "beta"));
         assert!(m.targets.contains_key("macos-aarch64") && m.targets.contains_key("windows-x86_64"));
         assert!(m.notes.is_some());
+        // Written before notes came in more languages: Chinese falls back to English.
+        assert!(m.localized_notes.is_empty());
+        assert_eq!(m.notes_in(yuzora_core::i18n::ZH_TW), m.notes.as_ref());
+    }
+
+    #[test]
+    fn notes_in_the_shown_language_or_english() {
+        let good: serde_json::Value = serde_json::from_slice(MANIFEST_FIXTURE).unwrap();
+        let url = |name: &str| format!("{DOWNLOADS}/v0.1.0-beta.3/{name}");
+        let mut m = good.clone();
+        m["localized_notes"] = serde_json::json!({ "zh-TW": { "url": url("changelog.zh-TW.md"), "sha256": "5".repeat(64) } });
+        let m: Manifest = serde_json::from_value(m).unwrap();
+        assert!(checks(&m, "0.1.0-beta.3", DOWNLOADS).is_ok());
+        assert_eq!(m.notes_in(yuzora_core::i18n::ZH_TW).unwrap().url, url("changelog.zh-TW.md"));
+        assert_eq!(m.notes_in(yuzora_core::i18n::EN).unwrap().url, url("changelog.md"));
+        // Notes only in a language this app doesn't show: still checked, and Chinese gets English.
+        let mut m = good;
+        m["localized_notes"] = serde_json::json!({ "ja": { "url": url("changelog.ja.md"), "sha256": "6".repeat(64) } });
+        let m: Manifest = serde_json::from_value(m).unwrap();
+        assert!(checks(&m, "0.1.0-beta.3", DOWNLOADS).is_ok());
+        assert_eq!(m.notes_in(yuzora_core::i18n::ZH_TW).unwrap().url, url("changelog.md"));
     }
 
     #[test]
@@ -203,8 +240,20 @@ mod tests {
         let mut m = good.clone();
         m["targets"]["macos-aarch64"]["sha256"] = "ABC".into();
         assert!(check(m, "0.1.0-beta.3").unwrap_err().contains("sha256"));
-        let mut m = good;
+        let mut m = good.clone();
         m["notes"]["url"] = "https://media.herdr.dev/x.md".into();
         assert!(check(m, "0.1.0-beta.3").unwrap_err().contains("notes"));
+        // The Chinese notes are held to the same rules.
+        let zh = |url: String, sha256: String| {
+            let mut m = good.clone();
+            m["localized_notes"] = serde_json::json!({ "zh-TW": { "url": url, "sha256": sha256 } });
+            check(m, "0.1.0-beta.3")
+        };
+        let err = zh(format!("{DOWNLOADS}/v0.1.0-beta.3/changelog.zh-TW.md"), "A".repeat(64)).unwrap_err();
+        assert!(err.contains("notes zh-TW: sha256"), "{err}");
+        let err = zh("https://media.herdr.dev/changelog.zh-TW.md".into(), "5".repeat(64)).unwrap_err();
+        assert!(err.contains("notes zh-TW is not in this release"), "{err}");
+        let err = zh(format!("{DOWNLOADS}/v0.1.0-beta.3/zh/../changelog.md"), "5".repeat(64)).unwrap_err();
+        assert!(err.contains("notes zh-TW: odd file name"), "{err}");
     }
 }
