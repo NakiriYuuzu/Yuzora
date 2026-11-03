@@ -59,17 +59,12 @@ pub fn checks_app(root: Option<PathBuf>) -> Option<PathBuf> {
 /// Whether a staged `version` may still be applied: the channel this install
 /// follows now takes it (upstream's `staged_version` asks).
 pub fn keeps(version: &str) -> bool {
-    keeps_on(Channel::chosen(), version)
+    keeps_given(&yuzora_core::settings::section(channel::SECTION), version)
 }
 
-/// [`keeps`] for the channel a build of `running` follows given `settings`.
-#[cfg(test)]
-fn keeps_for(settings: &serde_json::Value, running: &str, version: &str) -> bool {
-    keeps_on(Channel::chosen_from(settings, running), version)
-}
-
-fn keeps_on(channel: Channel, version: &str) -> bool {
-    channel.takes(version, false)
+/// [`keeps`] with the `update` section passed in.
+fn keeps_given(settings: &serde_json::Value, version: &str) -> bool {
+    Channel::of_this_build(settings).takes(version, false)
 }
 
 /// Upstream's `check`, for Yuzora: Ok(Some(version)) once a newer version is
@@ -353,21 +348,17 @@ mod tests {
     }
 
     #[test]
-    fn a_beta_staged_before_picking_stable_is_not_kept() {
-        assert!(keeps_on(Channel::Beta, "0.2.0-beta.1"));
-        assert!(keeps_on(Channel::Beta, "0.2.0"));
-        assert!(keeps_on(Channel::Stable, "0.2.0"));
-        assert!(!keeps_on(Channel::Stable, "0.2.0-beta.1"));
-    }
-
-    #[test]
-    fn a_beta_build_drops_a_staged_beta_but_keeps_stable() {
+    fn keeps_follows_the_running_builds_channel() {
         let beta = serde_json::json!({"channel": "beta"});
-        for settings in [serde_json::Value::Null, beta.clone()] {
-            assert!(!keeps_for(&settings, "0.1.0-beta.2", "0.1.0-beta.3"), "{settings}");
-            assert!(keeps_for(&settings, "0.1.0-beta.2", "0.1.0"), "{settings}");
+        let stable = serde_json::json!({"channel": "stable"});
+        let running_a_beta = env!("CARGO_PKG_VERSION").contains('-');
+        for settings in [serde_json::Value::Null, stable.clone()] {
+            assert!(keeps_given(&settings, "0.2.0"), "{settings}");
+            assert!(!keeps_given(&settings, "0.2.0-beta.1"), "{settings}");
         }
-        // A stable build set to beta keeps a staged beta, as before.
-        assert!(keeps_for(&beta, "0.1.0", "0.2.0-beta.1"));
+        assert!(keeps_given(&beta, "0.2.0"));
+        // A beta build takes only stable releases even when set to beta; a
+        // stable build set to beta keeps a staged beta.
+        assert_eq!(keeps_given(&beta, "0.2.0-beta.1"), !running_a_beta);
     }
 }

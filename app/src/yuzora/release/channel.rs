@@ -46,7 +46,12 @@ impl Channel {
 
     /// The channel this install follows now.
     pub fn chosen() -> Channel {
-        Channel::chosen_from(&yuzora_core::settings::section(SECTION), env!("CARGO_PKG_VERSION"))
+        Channel::of_this_build(&yuzora_core::settings::section(SECTION))
+    }
+
+    /// [`chosen_from`](Channel::chosen_from) for the running build's version.
+    pub fn of_this_build(settings: &Value) -> Channel {
+        Channel::chosen_from(settings, env!("CARGO_PKG_VERSION"))
     }
 
     /// Whether a release of `version` belongs on this channel.

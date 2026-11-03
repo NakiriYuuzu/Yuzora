@@ -1175,9 +1175,9 @@ with these differences.
   PATH, if there is one, is the official Herdr app: it drives another window
   with another home, never this one.
 - Yuzora updates itself from the GitHub releases of NakiriYuuzu/Yuzora, and
-  only from a manifest signed with the release key. A beta
-  build only updates to a stable release, never to another beta. A stable
-  build follows stable; `"update": {"channel": "beta"}` in
+  only from a manifest signed with the release key. A beta build only
+  updates to a stable release, never to another beta. A stable build
+  follows stable; `"update": {"channel": "beta"}` in
   `yuzora/settings.json` makes it take pre-releases too. An update waiting
   shows in Settings and goes in when Yuzora restarts.
 - What's new follows the language shown (`general.locale`): Chinese

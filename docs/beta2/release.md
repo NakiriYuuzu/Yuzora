@@ -159,7 +159,7 @@
 
 ## 5. beta.1 → beta.2 升級
 
-### 結論：技術上可以用 Tauri updater 直接帶過來（macOS 與 Windows）；但 beta.2 不附 `latest.json`（見本節末與 §3）
+### 結論：技術上可以用 Tauri updater 直接帶過來（macOS 與 Windows）；但 beta.2 不附 `latest.json`（見本節末）
 
 依 beta.1 的程式（`src-tauri/src/update_channel.rs`）與 tauri-plugin-updater 2.14.1 原始碼：
 
@@ -196,7 +196,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 1. 觸發 `app-package.yml`（workflow_dispatch）取得四個平台的 artifacts 與未簽章 manifest。
 2. 在 protected environment（required reviewer）下載 artifacts，加入 `changelog.md`（`app/CHANGELOG.md`）與 `changelog.zh-TW.md`（`app/CHANGELOG.zh-TW.md`；`app-package.yml` 的 artifact 已帶兩份），重產並簽 `yuzora-update.json` → `.sig`。
-3. 若要帶 beta.1：簽 macOS archive 與 NSIS 安裝程式，產生 `latest.json`（§5）。
+3. beta.2 不附 `latest.json`（§5 末段的既定決定），這一步略過。日後若決定帶 beta.1 升級，才簽 macOS archive 與 NSIS 安裝程式、產生 `latest.json`（§5）。
 4. 建 draft release `v<version>`（beta：`prerelease=true`、不設 Latest），上傳：
 
    | 檔案 | beta | stable |
@@ -292,7 +292,7 @@ L0 PR #187 最後一次成功的執行（run 41480446879）：
 
 **後續整合（合併後由總指揮串接）**
 
-- L6：設定頁加「更新通道」選擇（寫 `update` section 的 `channel`，`stable`／`beta`），以及顯示目前通道；可以從 `yuzora:core` 的 `getSetting`／`setSetting` 讀寫。
+- L6：設定頁加「更新通道」選擇（寫 `update` section 的 `channel`，`stable`／`beta`），以及顯示目前通道。beta build 上這個選項沒有效果（一律只收 Stable，§3），顯示目前通道要用 `Channel::chosen()` 的結果，不能直接顯示 `update.channel` 的值，否則會在 beta build 上顯示「beta」、實際卻走 stable；可以從 `yuzora:core` 的 `getSetting`／`setSetting` 讀寫。
 - L3／L4／L6：各自實作 `migrate::Importer`（§7 表），總指揮在啟動流程接上 `migrate::run` 與結果顯示。
 - 發布 workflow（§6）：需要使用者授權發布方式與 secrets 的 environment。
 
