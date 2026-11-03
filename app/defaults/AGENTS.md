@@ -1140,3 +1140,26 @@ with these differences.
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
   `{cpu, memory, count}`: cpu is one core = 100, summed; memory is RSS in bytes. The categories add up to total.
 <!-- yuzora:lane:L8:end -->
+
+<!-- yuzora:lane:L9:start -->
+### Beside the Herdr app
+
+The person may run the official Herdr app on the same herdr-core. Its spaces and tabs are its own (layout document
+`herdr-app`). When both apps use the same core session (the default one, unless `HC_SESSION` picks another), terminals
+and machines are shared; templates are shared whatever the session.
+
+- Terminals Herdr opened show up here in spaces of their own, and Yuzora's show up in Herdr. `space.close`,
+  `tab.close`, `pane.close` and `terminal.kill` end the terminal in herdr-core, so it is gone from both apps. Ask the
+  person before closing a space, tab or pane, or running `terminal.kill`, on what may be Herdr's terminals.
+- Don't use `hc server stop` to stop the core: while either app is open it starts again within a second, and every
+  program in its terminals ends. To stop it for good, the person quits both apps first.
+- Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from `mods/<name>` in
+  Herdr's home to `mods/<name>` in this folder (never `installed.json`). If `mods/<name>` is already here, don't copy
+  over it: ask the person, or point them to Settings › Mods › Install from folder…, which picks a free name. Herdr's
+  home is `$XDG_CONFIG_HOME/herdr-app` when that is set, else `~/.config/herdr-app`, unless the person moved it with
+  `HERDR_APP_HOME` (ask if it isn't there). A copied mod's `fs` writes under Herdr's home are refused here, but the commands it runs aren't limited.
+  `yuzora-*` mods don't load in Herdr.
+- `hc machine add`, `rm` and `rename`, and edits in herdr-core's templates folder, change them for Herdr too. The
+  folder is `$XDG_CONFIG_HOME/herdr-core/templates/` when that is set, else `%APPDATA%\herdr-core\templates` on
+  Windows and `~/.config/herdr-core/templates/` elsewhere (`hc templates` lists what's there).
+<!-- yuzora:lane:L9:end -->
