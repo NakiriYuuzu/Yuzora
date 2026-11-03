@@ -250,8 +250,15 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - **記憶體內編輯**只有 reword。
 - 列出的 ⏳ 項目。
 
-### #194 合併後的 follow-up（延後的 Codex P2）
+### #194 合併後的 follow-up
 
-合併關卡調整後，不影響安全、修正需要另外決定的 P2 延到合併後的 follow-up PR：
+合併關卡調整後，不影響安全、修正需要另外決定的項目延到合併後的 follow-up PR：
 
 - **diff 的記憶體上限**（`diff.rs` 的 Myers，對 `ebb78888` 的留言）：兩個 16 MiB、每行一個位元組的檔案，`V` 緩衝區照 n+m 配置約 512 MiB，`lines()` 的切片與行號又約 700 MiB。修法：`V` 依編輯預算（`budget / 2 + 2`）配置，並設行數上限（超過就跟超過 16 MiB 一樣不比較並告知）；上限值與畫面文字要一起決定。
+- **淺色主題（yuzora-light）的對比**（L1 對 `ebb78888` 的清單，5 處，標準為文字 4.5:1、大字與圖示 3:1）：
+  - log 圖的 lane 色與 HEAD 點（`graph_view.rs` 的預設色在白底只有 1.53–2.65）：`tokens.json` 新增 `git_graph {lanes, head}`（深色與 light 都要），log pane 傳給 `GraphCell`。`tokens.json` 與 `yuzora-core` 的 `tokens.rs`（對比測試）屬於 L1，由總指揮授權修改。
+  - ref chip 的字改用 `foreground`（底色與邊框保留）。
+  - 信任按鈕的字改用 `accent_foreground`，hover 改用透明度回饋。
+  - selected／hover 上的紅綠文字改用 `file_status.deleted`／`diff.added`。
+  - rebase 的 `dim` 不再乘透明度；Git 設定頁停用列的透明度至少 0.75。
+  - 用 yuzora-light 在隔離環境實機截圖：graph、ref chip、信任按鈕各一張。
