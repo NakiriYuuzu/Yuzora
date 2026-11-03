@@ -574,7 +574,7 @@ The main ones:
   (personal tree edits; on shipped layouts only click/look fields change),
   `layout.reset {name?}` (reset a shipped layout and its clicks),
   `layout.clone {name, as?}` (duplicate, then switch; default `<name>-copy`).
-- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help`, `app.palette` (again: closes it), `app.settings {section?}`
+- App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
   (sections: `look`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do).
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
@@ -627,6 +627,9 @@ What's about the user, never a look:
   cargo). Read at start.
 - `font`, `font_size`, `ui_font`: used where the layout doesn't set its
   own. Herdr (main) leaves these unset. Bigger panels: `zoom`.
+- `font_ligatures`: programming ligatures are off by default; set `true` to
+  enable them in terminal fonts such as JetBrains Mono and Fira Code. The cursor
+  and background changes (including selections) break ligatures so individual cells stay clear.
 - `theme`: a theme name or `{light, dark}`; used where the layout sets none.
   The theme picker overrides any layout and stays on that layout.
 - `colors`: theme color overrides (`{"accent":"#ff8800"}`), with the same
@@ -1006,9 +1009,11 @@ with these differences.
   with `layout.select {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}`,
   and the tab bar, the active tab and `yuzora-statusbar` on the right. It is
   shipped: clone it before changing its structure, as with Herdr's layouts.
-- Theme `yuzora-dark`. Design values a theme has no name for (diff colors,
-  agent brand colors, Space badge colors, the agent states' shapes, sizes)
-  come from `tokens()`.
+- Themes `yuzora-dark` and `yuzora-light`: the layout shows the one for the
+  system's appearance (or settings.json's `appearance`). Design values a theme
+  has no name for (diff colors, agent brand colors, Space badge colors, the
+  agent states' shapes, sizes) come from `tokens()`, which gives a light theme
+  its own text, diff and status colors.
 - Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
@@ -1038,6 +1043,9 @@ with these differences.
   that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with
   `name`, `folder`, `tab`, `argv` or `task` create the Space as above. A person's `tab.new` with no arguments
   while no Space is open would start one, so it opens the dialog too.
+- Herdr's Files and Changes panels are off in Yuzora until turned on (the welcome's third page, or Settings >
+  Yuzora > General > Panels): shared `"workspace.panels"` lists the ones on, and unset means none. The tab bar
+  shows a button only for those; Yuzora's sidebar has its own Files and Git modes.
 - Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
   `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
 - `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`

@@ -98,8 +98,9 @@ const THEMES: &[(&str, &str)] = &[
     ("atom-one-dark", include_str!("../defaults/themes/atom-one-dark.json")),
     ("win98", include_str!("../defaults/themes/win98.json")),
     ("yuzora-dark", include_str!("../defaults/themes/yuzora-dark.json")), // yuzora:
+    ("yuzora-light", include_str!("../defaults/themes/yuzora-light.json")), // yuzora(L1):
 ];
-pub const SHIPPED_THEMES: &[&str] = &["atom-one-dark", "win98", "yuzora-dark"]; // yuzora: + yuzora-dark
+pub const SHIPPED_THEMES: &[&str] = &["atom-one-dark", "win98", "yuzora-dark", "yuzora-light"]; // yuzora: + yuzora-dark, yuzora-light
 
 /// `themes/<name>.json`: a palette, plus `colors` overrides like settings.json's.
 #[derive(Deserialize)]
@@ -158,6 +159,45 @@ const PREVIOUS_THEMES: &[(&str, &str)] = &[
     "done": "#0000ff",
     "idle": "#808080",
     "unknown": "#808080"
+  }
+}
+"##),
+    // yuzora(L1): yuzora-dark before the brand colors.
+    ("yuzora-dark", r##"{
+  "background": "#17181b",
+  "foreground": "#e4e4e7",
+  "selection": "#34353a",
+  "cursor": "#e4e4e7",
+  "ansi": [
+    "#2a2b30", "#f08a8a", "#86d17a", "#f5b453", "#93c5fd", "#c678dd", "#56b6c2", "#d4d4d8",
+    "#6f7078", "#f5a3a3", "#a3e09a", "#f7c77a", "#b4d5fe", "#d7a1e7", "#7fcfd8", "#f4f4f5"
+  ],
+  "colors": {
+    "background": "#17181b",
+    "terminal_foreground": "#e4e4e7",
+    "foreground": "#e4e4e7",
+    "surface": "#17181b",
+    "canvas": "#131417",
+    "chrome": "#151619",
+    "popover": "#1b1c20",
+    "raised": "#222327",
+    "hover": "#222328",
+    "selected": "#2a2b31",
+    "border": "#2a2b30",
+    "input": "#2c2d32",
+    "divider": "#24252a",
+    "muted": "#a1a1aa",
+    "dim": "#8b8b94",
+    "accent": "#4f6bed",
+    "accent_foreground": "#ffffff",
+    "solid": "#e4e4e7",
+    "solid_foreground": "#131417",
+    "ring": "#55565c",
+    "working": "#86d17a",
+    "blocked": "#f5b453",
+    "done": "#93c5fd",
+    "idle": "#8b8b94",
+    "unknown": "#8b8b94"
   }
 }
 "##),
@@ -227,7 +267,7 @@ fn shipped_theme_upgrades_preserve_personal_edits() {
         std::fs::write(&path, previous).unwrap();
         install_theme(&path, name, current);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
-        let edited = previous.replace("#abb2bf", "#abcdef").replace("#c0c0c0", "#abcdef");
+        let edited = previous.replace("#abb2bf", "#abcdef").replace("#c0c0c0", "#abcdef").replace("#17181b", "#abcdef"); // yuzora(L1): + yuzora-dark
         std::fs::write(&path, &edited).unwrap();
         install_theme(&path, name, current);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
@@ -379,6 +419,8 @@ pub struct Person {
     pub font: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_size: Option<f32>,
+    /// Enable programming ligatures in terminal fonts.
+    pub font_ligatures: bool,
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
@@ -446,6 +488,7 @@ impl Default for Person {
             core: None,
             font: None,
             font_size: None,
+            font_ligatures: false,
             ui_font: None,
             telemetry: true,
             clipboard_write: true,
@@ -465,6 +508,7 @@ impl Default for Person {
 pub struct Settings {
     pub font_family: String,
     pub font_size: f32,
+    pub font_ligatures: bool,
     pub ui_font_family: String,
     pub ui_font_size: f32,
     /// How big the whole app is drawn (1 = as designed). The zoom keys change it.
@@ -512,6 +556,7 @@ impl Default for Settings {
         Settings {
             font_family: DEFAULT_FONT.into(),
             font_size: 14.0,
+            font_ligatures: false,
             ui_font_family: "Geist".into(),
             ui_font_size: 13.0,
             zoom: 1.0,
@@ -548,6 +593,7 @@ impl Settings {
             // The layout's own, else the person's, else Herdr's.
             font_family: look.font.clone().or(person.font.clone()).unwrap_or(d.font_family),
             font_size: look.font_size.or(person.font_size).unwrap_or(d.font_size),
+            font_ligatures: person.font_ligatures,
             ui_font_family: look.ui_font.clone().or(person.ui_font.clone()).unwrap_or(d.ui_font_family),
             ui_font_size: d.ui_font_size,
             zoom: person.zoom,
@@ -829,6 +875,19 @@ pub const DEFAULT_FONT: &str = "JetBrains Mono";
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn terminal_ligatures_default_off_and_can_be_enabled() {
+        use super::*;
+        let person: Person = serde_json::from_str("{}").unwrap();
+        assert!(!Settings::compose(&person, &crate::layout::Look::default(), true).font_ligatures);
+        assert!(!Settings::default().font_ligatures);
+        let person: Person = serde_json::from_str(r#"{"font_ligatures":true}"#).unwrap();
+        let saved = serde_json::to_string(&person).unwrap();
+        let restored: Person = serde_json::from_str(&saved).unwrap();
+        assert!(Settings::compose(&restored, &crate::layout::Look::default(), true).font_ligatures);
+        assert!(serde_json::from_str::<Person>(r#"{"font_ligatures":"yes"}"#).is_err());
+    }
+
     use super::*;
 
     #[test]

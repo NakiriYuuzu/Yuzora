@@ -44,6 +44,12 @@
       "ssh": "SSH"
     }
   },
+  "panels": {
+    "heading": "Panel",
+    "about": "Herdr 內建的「檔案」與「變更」panel，由 tab 列的按鈕開在終端機旁邊。Yuzora 的側欄已經有自己的檔案與 Git 模式，所以兩者預設關閉。",
+    "files": "檔案 panel",
+    "changes": "變更 panel"
+  },
   "security": {
     "heading": "終端機剪貼簿",
     "clipboard": "允許程式寫入剪貼簿",

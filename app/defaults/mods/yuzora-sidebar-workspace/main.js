@@ -159,7 +159,7 @@ export default class SidebarWorkspace extends View {
 
   scopes(th, tk, tree) {
     const chip = (id, label, led, on, value) => h_flex().id(id).h(22).px(9).gap(5).flex_none().items_center().rounded(11)
-      .border(1).border_color(on ? "#3a3b40" : th.border).bg(on ? th.selected : th.chrome)
+      .border(1).border_color(on ? th.ring : th.border).bg(on ? th.selected : th.chrome)
       .text_size(11.5).text_color(on ? tk.text.strong : tk.text.soft).cursor_pointer()
       .when(!on, (el) => el.hover((s) => s.bg(th.hover)))
       .on_click((_e, cx) => { this.scope = value; this.save(); cx.notify(); })

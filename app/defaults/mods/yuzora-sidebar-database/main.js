@@ -176,7 +176,7 @@ export default class SidebarDatabase extends View {
     if (r.folder !== undefined) {
       return base
         .child(div().w(10).flex_none().text_size(10).text_color(th.dim).child(r.open ? "▾" : "▸"))
-        .child(svg("mods/yuzora-sidebar-database/folder.svg").w(13).h(10).flex_none().text_color("#6f7078"))
+        .child(svg("mods/yuzora-sidebar-database/folder.svg").w(13).h(10).flex_none().text_color(th.dim))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).child(r.folder || "main"))
         .child(div().flex_none().text_size(11).text_color(th.dim).child(String(r.count)));
     }
@@ -184,7 +184,7 @@ export default class SidebarDatabase extends View {
     const isTable = o.kind === "table";
     const isView = o.kind === "view" || o.kind === "materialized_view";
     const icon = isTable ? "table" : isView ? "view" : o.kind === "function" || o.kind === "procedure" ? "routine" : "other";
-    const color = isTable ? tk.database?.table ?? "#7dd3fc" : isView ? tk.database?.view ?? "#a78bfa" : th.dim;
+    const color = isTable ? tk.database.table : isView ? tk.database.view : th.dim;
     const meta = isTable ? short(o.rows) : isView ? t(`kind.${o.kind}`) : o.detail;
     return base
       .child(div().w(10).flex_none())
