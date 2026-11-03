@@ -519,13 +519,31 @@ fn decode(bytes: Vec<u8>, stamp: Stamp, readonly: bool, max_bytes: u64) -> TextF
     }
 }
 
+/// Opens `path` to read it, if it is a regular file. Opened without waiting
+/// and checked through the handle: a FIFO put in its place after a look at
+/// it would otherwise wait for a writer, and a device never end.
+pub(crate) fn open_regular(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // A regular file reads the same either way.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 fn read_local(path: &str, max_bytes: u64) -> Result<TextFile, String> {
     let err = |e: io::Error| format!("cannot read {path}: {e}");
-    // Looked at before opening: opening a FIFO would wait for a writer.
-    if !std::fs::metadata(path).map_err(err)?.is_file() {
-        return Err(format!("{path} is not a regular file"));
-    }
-    let mut file = std::fs::File::open(path).map_err(err)?;
+    let mut file = open_regular(Path::new(path)).map_err(err)?;
     let meta = file.metadata().map_err(err)?;
     let stamp = stamp_of(&meta);
     let readonly = readonly_of(Path::new(path), &meta);
@@ -661,7 +679,7 @@ fn unchanged(target: &Path, expected: Option<(Stamp, u64)>) -> io::Result<bool> 
 /// most one byte more, however much it grew since it was looked at.
 fn holds(path: &Path, len: u64, hash: u64) -> io::Result<bool> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
+    open_regular(path)?
         .take(len.saturating_add(1))
         .read_to_end(&mut bytes)?;
     Ok(bytes.len() as u64 == len && content_hash(&bytes) == hash)
@@ -810,7 +828,7 @@ fn write_in_place_with(
     backups: &Path,
     write: impl Fn(&Path, &mut dyn Read) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut old = std::fs::File::open(target)?;
+    let mut old = open_regular(target)?;
     let (backup, mut file) = new_backup(backups)?;
     if let Err(e) = io::copy(&mut old, &mut file).and_then(|_| file.sync_all()) {
         drop(file);
@@ -1326,8 +1344,8 @@ mod tests {
         assert!(holds(Path::new(&f), 5, hash).unwrap());
         std::fs::write(&f, b"mine\nand more\n").unwrap();
         assert!(!holds(Path::new(&f), 5, hash).unwrap());
-        // A file that never ends (one that kept growing) is not read whole.
-        assert!(!holds(Path::new("/dev/zero"), 5, hash).unwrap());
+        // A device that never ends is not read at all.
+        assert!(holds(Path::new("/dev/zero"), 5, hash).is_err());
     }
 
     #[test]
@@ -1463,6 +1481,35 @@ mod tests {
                 .unwrap_err()
                 .contains("not a regular file")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_never_waited_on() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let fifo = d.path().join("pipe");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        // As if it took a regular file's place after a look at it: opened
+        // with no writer, it is refused at once.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_regular(&path).map(drop).map_err(|e| e.to_string()));
+        });
+        let opened = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("waited for a writer");
+        assert_eq!(opened, Err("not a regular file".to_owned()));
+        let file = d.path().join("a.txt");
+        std::fs::write(&file, "a\n").unwrap();
+        let mut text = String::new();
+        open_regular(&file)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "a\n");
     }
 
     #[test]

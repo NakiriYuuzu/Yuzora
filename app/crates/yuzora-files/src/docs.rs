@@ -37,6 +37,10 @@ pub const MAX_OPEN_BYTES: u64 = 16 << 20;
 /// unseen.
 const SETTLE_MS: u64 = 2_000;
 
+/// A line asked while there was no editor yet is gone to if one is made
+/// within this long (the panes' own window for a line to go to).
+const HOLD_MS: u64 = 10_000;
+
 /// Which file a document holds. `on`: a machine from `hc machine ls`, `None` here.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DocKey {
@@ -203,13 +207,15 @@ fn moved(from: &str, to: &str, cx: &mut App) {
     }
 }
 
-/// `path` after `from` moved to `to`, if it is `from` or inside it.
+/// `path` after `from` moved to `to`, if it is `from` or inside it. Only on
+/// Windows is `\` a separator too: elsewhere it is part of a name.
 fn renamed(path: &str, from: &str, to: &str) -> Option<String> {
     if path == from {
         return Some(to.to_owned());
     }
     let rest = path.strip_prefix(from)?;
-    rest.starts_with(['/', '\\']).then(|| format!("{to}{rest}"))
+    rest.starts_with(|c| c == '/' || (cfg!(windows) && c == '\\'))
+        .then(|| format!("{to}{rest}"))
 }
 
 /// The document already open for a file, if any.
@@ -380,6 +386,9 @@ pub struct DocView {
     /// The last line asked to be shown from outside its panes (id, line,
     /// column): a pane showing the preview switches to the source for it.
     reveal: Option<(u64, u32, u32)>,
+    /// That line, asked before there was an editor (still loading), and
+    /// when: gone to once one is made, within [`HOLD_MS`].
+    held: Option<(u32, u32, u64)>,
     seq: u64,
     waiters: Vec<oneshot::Sender<u64>>,
     look: Look,
@@ -462,6 +471,7 @@ impl DocView {
             focused: false,
             pane: None,
             reveal: None,
+            held: None,
             seq: 1,
             waiters: Vec::new(),
             look: Look::default(),
@@ -736,6 +746,12 @@ impl DocView {
         }
         self.state = Some(state);
         self.dirty = self.compute_dirty(cx);
+        let held = self.held.take();
+        if let Some((line, column, _)) =
+            held.filter(|(.., at)| now_ms().saturating_sub(*at) < HOLD_MS)
+        {
+            self.goto(line, column, cx);
+        }
         // Scripts waiting on this (a line to go to, focus on open) can act now.
         self.bump(cx);
     }
@@ -1179,7 +1195,11 @@ impl DocView {
     pub fn reveal(&mut self, line: u32, column: u32, cx: &mut Context<Self>) {
         let id = self.reveal.map_or(1, |(id, ..)| id + 1);
         self.reveal = Some((id, line, column));
-        self.goto(line, column, cx);
+        if self.state.is_some() {
+            self.goto(line, column, cx);
+        } else {
+            self.held = Some((line, column, now_ms()));
+        }
         self.bump(cx);
     }
 
@@ -1479,6 +1499,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_line_asked_while_loading_is_gone_to_once_there_is_an_editor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let key = DocKey {
+            on: None,
+            path: path.to_string_lossy().into_owned(),
+        };
+        let id = cx.update(|cx| open(key, cx));
+        let view = cx.update(|cx| get(id, cx).unwrap());
+        // Still loading: no editor to put the cursor in yet.
+        cx.update(|cx| assert!(view.read(cx).state.is_none()));
+        view.update(cx, |doc, cx| doc.reveal(3, 2, cx));
+        cx.run_until_parked();
+        let window = cx.add_window(|_, _| gpui::Empty);
+        window
+            .update(cx, |_, window, cx| {
+                view.update(cx, |doc, cx| {
+                    doc.prepare(Look::default(), true, "One Dark".into(), window, cx)
+                })
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let at = cx.update(|cx| {
+            let p = view
+                .read(cx)
+                .state
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .cursor_position();
+            (p.line, p.character)
+        });
+        assert_eq!(at, (2, 1));
+    }
+
+    #[gpui::test]
     fn a_check_begun_before_a_rename_is_dropped(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
@@ -1684,6 +1743,11 @@ mod tests {
         );
         assert_eq!(renamed("/r/dd/a.txt", "/r/d", "/r/e"), None);
         assert_eq!(renamed("/r/a.txt", "/r/b.txt", "/r/c.txt"), None);
+        // `d\a.txt` is in `d` on Windows, and next to it elsewhere.
+        assert_eq!(
+            renamed(r"/r/d\a.txt", "/r/d", "/r/e").as_deref(),
+            cfg!(windows).then_some(r"/r/e\a.txt")
+        );
     }
 
     #[gpui::test]

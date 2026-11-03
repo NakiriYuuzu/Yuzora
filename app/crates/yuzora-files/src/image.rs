@@ -148,7 +148,7 @@ pub fn format_of(path: &str) -> Option<ImageFormat> {
 pub(crate) fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
     match machine(on) {
         None => {
-            // Looked at before opening: a FIFO would wait, a device never ends.
+            // Looked at first for the answer; `open_regular` guards the open itself.
             let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
             if !meta.is_file() {
                 return Err("unsupported".into());
@@ -157,7 +157,7 @@ pub(crate) fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
                 return Err("too_large".into());
             }
             let mut bytes = Vec::new();
-            std::fs::File::open(path)
+            crate::fsops::open_regular(std::path::Path::new(path))
                 .and_then(|f| f.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes))
                 .map_err(|e| e.to_string())?;
             if bytes.len() as u64 > MAX_IMAGE_BYTES {

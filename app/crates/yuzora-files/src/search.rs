@@ -729,7 +729,7 @@ fn chars_before(raw: &[u8], byte: usize) -> usize {
 /// A file's bytes if it holds at most `cap`; reads one byte past it at most.
 fn read_at_most(path: &Path, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
+    crate::fsops::open_regular(path)?
         .take(cap.saturating_add(1))
         .read_to_end(&mut bytes)?;
     Ok((bytes.len() as u64 <= cap).then_some(bytes))
@@ -1064,8 +1064,8 @@ mod tests {
             Some(&b"0123456789"[..])
         );
         assert_eq!(read_at_most(&f, 9).unwrap(), None);
-        // A file that keeps growing (one being written) is not read whole.
-        assert_eq!(read_at_most(Path::new("/dev/zero"), 16).unwrap(), None);
+        // A device that never ends is not read at all.
+        assert!(read_at_most(Path::new("/dev/zero"), 16).is_err());
     }
 
     #[test]
