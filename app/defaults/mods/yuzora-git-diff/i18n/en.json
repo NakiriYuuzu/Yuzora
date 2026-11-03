@@ -4,7 +4,7 @@
   "empty": "Pick a changed file in the Git sidebar to see its diff here.",
   "loading": "Reading the file…",
   "failed": "Git failed.",
-  "tooLarge": "This file is too large to compare (over 16 MiB).",
+  "tooLarge": "This file is too large to compare (over 16 MiB or 1,000,000 lines).",
   "binary": "Binary file: no text diff.",
   "identical": "No differences.",
   "modes": "File mode {from} → {to}",
@@ -36,5 +36,7 @@
   "discard.ask": "Discard these changes from the working tree? This cannot be undone.",
   "cancel": "Cancel",
   "annotate": "Annotate",
-  "history": "History"
+  "history": "History",
+  "tab.diff": "Diff",
+  "keep": "Keep"
 }

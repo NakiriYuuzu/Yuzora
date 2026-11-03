@@ -362,7 +362,7 @@ pub fn kind(place: &Place, path: &str) -> GitResult<PathKind> {
 }
 
 /// A link's target as git records it: on unix, its bytes as they are.
-fn link_bytes(target: std::path::PathBuf) -> Vec<u8> {
+pub(crate) fn link_bytes(target: std::path::PathBuf) -> Vec<u8> {
     #[cfg(unix)]
     return std::os::unix::ffi::OsStringExt::into_vec(target.into_os_string());
     #[cfg(not(unix))]
@@ -378,7 +378,8 @@ pub fn exists(place: &Place, path: &str) -> bool {
 }
 
 /// The shell check of [`no_link_above`]: `$1` the path, `$2` the root.
-const NO_LINK_ABOVE: &str = r#"case $1 in "$2"/*) p=$(dirname -- "$1"); while [ "$p" != "$2" ]; do if [ -L "$p" ]; then echo "$p is a symbolic link: not followed" >&2; exit 3; fi; p=$(dirname -- "$p"); done;; esac; "#;
+/// `${p%/*}`, not `$(dirname …)`: `$(…)` drops a name's trailing line feeds.
+const NO_LINK_ABOVE: &str = r#"case $1 in "$2"/*) p=${1%/*}; while [ "$p" != "$2" ]; do if [ -L "$p" ]; then echo "$p is a symbolic link: not followed" >&2; exit 3; fi; p=${p%/*}; done;; esac; "#;
 
 /// Refuses a path in the work tree below a symlinked folder: git doesn't
 /// go through those (`beyond a symbolic link`), and a write or a removal
@@ -400,7 +401,7 @@ fn no_link_above(place: &Place, path: &str) -> GitResult<()> {
 /// and one above it in the work tree refuses the write.
 pub fn write_file(place: &Place, path: &str, bytes: &[u8]) -> GitResult<()> {
     if place.is_remote() {
-        let script = format!(r#"{NO_LINK_ABOVE}if [ -L "$1" ]; then rm -f -- "$1"; fi; mkdir -p "$(dirname -- "$1")" && cat > "$1""#);
+        let script = format!(r#"{NO_LINK_ABOVE}if [ -L "$1" ]; then rm -f -- "$1"; fi; d=${{1%/*}}; mkdir -p -- "${{d:-/}}" && cat > "$1""#);
         let out = remote_sh(place, &script, &[path, &place.root], Some(bytes.to_vec()))?;
         out.into_result().map(|_| ())
     } else {
@@ -455,8 +456,19 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
         return Err(GitError::Other(not_a_repo(&out.stderr_text())));
     }
     let text = out.stdout_text();
-    let mut lines = text.lines();
-    let (Some(root), Some(git_dir), Some(common)) = (lines.next(), lines.next(), lines.next()) else {
+    // A path a line, unless one has a line feed in it (git prints it as it
+    // is): then each on its own.
+    let paths: Vec<String> = if text.matches('\n').count() == 3 {
+        text.lines().map(str::to_owned).collect()
+    } else {
+        let mut each = Vec::new();
+        for flag in ["--show-toplevel", "--git-dir", "--git-common-dir"] {
+            let one = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", flag]))?.text()?;
+            each.push(one.strip_suffix('\n').unwrap_or(&one).to_owned());
+        }
+        each
+    };
+    let [root, git_dir, common] = &paths[..] else {
         return Err(GitError::Other(format!("git rev-parse said: {text}")));
     };
     let id = repo_id(probe.on.as_deref(), root);
@@ -656,6 +668,21 @@ pub(crate) mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_work_tree_with_a_line_feed_in_its_path_opens_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = format!("{}/a\nb", std::fs::canonicalize(dir.path()).unwrap().display());
+        std::fs::create_dir(&root).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap().success());
+        let r = open(&root, None).unwrap();
+        assert_eq!(r.place.root, root);
+        assert_eq!(r.git_dir, format!("{root}/.git"));
+        assert_eq!(r.common_dir, format!("{root}/.git"));
+        assert!(r.run(Git::read(["status", "--porcelain"])).unwrap().ok());
+        close(&r.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn writes_never_go_through_a_linked_folder() {
         let s = testing::scratch();
         s.commit("dir/f.txt", "1\n", "first");
@@ -666,11 +693,16 @@ pub(crate) mod tests {
         std::fs::write(out.path().join("sub/g.txt"), "outside\n").unwrap();
         std::fs::remove_dir_all(format!("{}/dir", s.root())).unwrap();
         std::os::unix::fs::symlink(out.path(), format!("{}/dir", s.root())).unwrap();
+        // One whose name ends in a line feed, which `$(…)` would drop.
+        std::os::unix::fs::symlink(out.path(), format!("{}/link\n", s.root())).unwrap();
         let remote = testing::on_machine(&s);
         for r in [&s.repo, &remote] {
             assert!(r.write_file(&r.abs("dir/f.txt"), b"x\n").is_err(), "wrote through the link");
             assert!(r.write_file(&r.abs("dir/sub/g.txt"), b"x\n").is_err(), "wrote through the link above");
             assert!(remove_path(&r.place, &r.abs("dir/sub/g.txt")).is_err(), "removed through the link");
+            assert!(r.write_file(&r.abs("link\n/f.txt"), b"x\n").is_err(), "wrote through the link named with a line feed");
+            assert!(r.write_file(&r.abs("link\n/sub/g.txt"), b"x\n").is_err(), "wrote through the link named with a line feed above");
+            assert!(remove_path(&r.place, &r.abs("link\n/sub/g.txt")).is_err(), "removed through the link named with a line feed");
             // Elsewhere writes go on as before.
             r.write_file(&r.abs("new/h.txt"), b"h\n").unwrap();
         }

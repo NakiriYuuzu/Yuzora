@@ -114,6 +114,10 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
+### L5
+
+- 一個檔案只有一個 `DocView`，同一時間只有一個 pane 畫它的編輯器（owner）；不要讓同一個 `EditorState` entity 在同一個 frame 被畫兩次。
+- mod pane 不知道自己的 pane id：編輯器取得焦點時用 `focused().pane` 記到文件（`notePane`），開檔時靠它 `pane.focus` 回去。
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

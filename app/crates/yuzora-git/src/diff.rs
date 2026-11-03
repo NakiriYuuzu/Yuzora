@@ -98,13 +98,19 @@ pub fn budget(n: usize, m: usize) -> usize {
 
 /// Myers in linear space, giving up (None) past `budget` edits.
 pub fn myers(a: &[u32], b: &[u32], budget: usize) -> Option<Vec<Change>> {
-    let max = (a.len() + b.len() + 1) / 2 + 1;
+    let max = diagonals(a.len(), b.len(), budget);
     let mut vf = V::new(max);
     let mut vb = V::new(max);
     let mut out = Vec::new();
     let mut work = Work { budget, edits: 0 };
     conquer(a, 0..a.len(), b, 0..b.len(), &mut vf, &mut vb, &mut out, &mut work)?;
     Some(merge(out))
+}
+
+/// How far from the main diagonal Myers may go: half the edits it may
+/// make (it gives up past the budget), and never past the sides.
+fn diagonals(n: usize, m: usize, budget: usize) -> usize {
+    ((n + m).div_ceil(2) + 1).min(budget / 2 + 2)
 }
 
 struct Work {
@@ -434,6 +440,22 @@ mod tests {
             assert_eq!(edits, a.len() + b.len() - 2 * lcs(&a, &b), "minimal for {a:?} → {b:?}: {cs:?}");
             let p = patience(&a, &b);
             check(&a, &b, &p);
+        }
+    }
+
+    #[test]
+    fn myers_keeps_its_arrays_to_the_budget() {
+        // Two 16 MiB sides of one-byte lines: arrays as long as the sides
+        // would take half a GiB; the budget bounds how far Myers goes.
+        let n = 16 << 20;
+        assert!(diagonals(n, n, budget(n, n)) <= budget(n, n) / 2 + 2, "{}", diagonals(n, n, budget(n, n)));
+        // Small budgets still find minimal changes or give up.
+        let mut r = Rng(7);
+        for budget in 0..60 {
+            let (a, b) = (r.seq(40, 3), r.seq(40, 3));
+            if let Some(cs) = myers(&a, &b, budget) {
+                assert_eq!(check(&a, &b, &cs), a.len() + b.len() - 2 * lcs(&a, &b), "budget {budget}");
+            }
         }
     }
 

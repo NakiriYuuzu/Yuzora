@@ -1080,6 +1080,15 @@ with these differences.
   `setSettings({...})` in `yuzora:git`): e.g. `logRecentCount`,
   `forceWithLease`, `protectedBranches` (a regex), `updateMethod`,
   `swapSidesInRebase`.
+- A file clicked in the sidebar, a commit's files, Annotate or the repository
+  pane shows its diff as the `git` settings say: `diffOpenIn` is `"modal"`
+  (the default: a dialog over the window, whose Keep button moves the diff into
+  a pane) or `"pane"`; `diffKeepIn` is where Keep and `"pane"` put it,
+  `"split"` (the default: beside the focused pane) or `"tab"`; with
+  `diffFollowPane` (default `true`) a diff pane already open shows the next
+  file instead. A diff pane's props can also set its view: `layout: "side" |
+  "unified"`, `whitespace: "none" | "trim" | "all"`, `context` (lines; `-1` is
+  the whole file).
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
@@ -1116,6 +1125,21 @@ with these differences.
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
+### Files and the editor
+
+- The sidebar's Files mode shows the focused pane's repo. Files open beside the
+  focused pane: `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or
+  source), `yuzora-files-image` (images and SVG). Open one yourself with
+  `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
+  (`on`: a machine for a remote space's file).
+- The editor follows the disk: a file with no unsaved changes reloads when it
+  changes; with unsaved changes the person is asked. While you (an agent) are
+  working in a folder that holds an open file you just changed, its pane shows
+  "<agent> is editing too".
+- `yuzora:files` (types in `yuzora.d.ts`): `listDir`, `gitStatus`, `findFiles`,
+  `grep`, `openDocument` / `documentState` / `saveDocument`, the native
+  components `Editor`, `Markdown`, `ImageView`, and more.
+- Files on another machine can be browsed and opened, read-only in this version.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
@@ -1154,6 +1178,11 @@ with these differences.
   only from a manifest signed with the release key. `"update": {"channel":
   "stable"}` (or `"beta"`) in `yuzora/settings.json` picks the channel; an
   update waiting shows in Settings and goes in when Yuzora restarts.
+- What's new follows the language shown (`general.locale`): Chinese
+  (zh-TW) from the bundled `CHANGELOG.zh-TW.md`, English from
+  `CHANGELOG.md`; a version without Chinese notes shows in English. A newer
+  release's notes are kept per language, `update-notes-cache.md` (English)
+  and `update-notes-cache.zh-TW.md`.
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->

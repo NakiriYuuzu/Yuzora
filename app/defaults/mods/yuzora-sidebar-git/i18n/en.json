@@ -68,5 +68,6 @@
   "trust.button": "Trust and read",
   "trust.status": "untrusted folder",
   "trust.refused": "This folder isn't trusted yet: trust it in the Git sidebar first ({keys}).",
-  "path.lossy": "{path}: this name isn't UTF-8, so Yuzora can't hand it to git as it is. Use a terminal for it."
+  "path.lossy": "{path}: this name isn't UTF-8, so Yuzora can't hand it to git as it is. Use a terminal for it.",
+  "tab.diff": "Diff"
 }

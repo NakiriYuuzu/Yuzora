@@ -102,6 +102,14 @@ pub struct SvgRenderer {
 /// scales should retain this value to avoid re-paying the parse cost.
 pub struct ParsedSvg(usvg::Tree);
 
+// yuzora(L5): what was parsed, for a caller to weigh before rasterizing it.
+impl ParsedSvg {
+    /// The parsed tree.
+    pub fn tree(&self) -> &usvg::Tree {
+        &self.0
+    }
+}
+
 /// The size in which to rasterize the SVG.
 #[derive(Clone, Copy)]
 pub enum SvgSize {
@@ -177,6 +185,15 @@ impl SvgRenderer {
             font_resolver: usvg::FontResolver {
                 select_font: font_resolver,
                 select_fallback: fallback_selection,
+            },
+            // yuzora(L5): usvg's default reads whatever local path an <image> names
+            // (whole, any size, devices and FIFOs, a UNC share), keeps any raster a
+            // data URI carries for resvg to decode at the size its header claims, and
+            // parses an SVG one carries with this same resolver, nested without end.
+            // SVGs come from repos and agents here: an <image> shows nothing.
+            image_href_resolver: usvg::ImageHrefResolver {
+                resolve_data: Box::new(|_: &str, _, _: &usvg::Options| None),
+                resolve_string: Box::new(|_: &str, _: &usvg::Options| None),
             },
             ..Default::default()
         };

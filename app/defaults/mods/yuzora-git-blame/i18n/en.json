@@ -17,5 +17,6 @@
   "log.tab": "Git log",
   "commit.log": "Show in log",
   "commit.previous": "Annotate previous revision",
-  "commit.diff": "Compare with previous"
+  "commit.diff": "Compare with previous",
+  "tab.diff": "Diff"
 }

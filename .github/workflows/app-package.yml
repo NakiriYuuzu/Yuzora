@@ -218,6 +218,7 @@ jobs:
       - name: Write the manifest
         run: |
           cp CHANGELOG.md dist/changelog.md
+          cp CHANGELOG.zh-TW.md dist/changelog.zh-TW.md
           bun scripts/yuzora/manifest.ts yuzora dist
           ls -la dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -226,6 +227,7 @@ jobs:
           path: |
             app/dist/yuzora-update.json
             app/dist/changelog.md
+            app/dist/changelog.zh-TW.md
           if-no-files-found: error
           retention-days: 7
 

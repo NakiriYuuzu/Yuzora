@@ -43,6 +43,9 @@ const GROUPS = [
     { key: "logShowRemotes", type: "bool" },
   ] },
   { id: "diff", items: [
+    { key: "diffOpenIn", type: "select", options: ["modal", "pane"] },
+    { key: "diffKeepIn", type: "select", options: ["split", "tab"] },
+    { key: "diffFollowPane", type: "bool" },
     { key: "diffMode", type: "select", options: ["side", "unified"] },
     { key: "diffIgnoreWhitespace", type: "select", options: ["none", "trim", "all"] },
     { key: "diffContext", type: "number", min: -1, max: 1000 },
@@ -118,7 +121,7 @@ export default class GitSettings extends View {
 
   row(it, th) {
     const off = it.needs && !this.s[it.needs];
-    return h_flex().id(`row-${it.key}`).py(9).gap(16).items_center().border_b(1).border_color(th.divider ?? th.border).when(off, (el) => el.opacity(0.5))
+    return h_flex().id(`row-${it.key}`).py(9).gap(16).items_center().border_b(1).border_color(th.divider ?? th.border).when(off, (el) => el.opacity(0.75))
       .child(v_flex().flex_1().min_w(0).gap(2)
         .child(div().text_size(12.5).child(t(`s.${it.key}`)))
         .child(div().text_size(11).text_color(th.dim).child(t(`s.${it.key}.desc`)))

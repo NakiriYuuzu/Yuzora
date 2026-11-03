@@ -39,12 +39,14 @@ use std::time::Duration;
 use crate::remote::{self, ExecRequest};
 
 /// Config keys (lowercased by git) that name a program run without asking.
-pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs)|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
+pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs|url|pushurl)|url\..+\.(insteadof|pushinsteadof)|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
 
 /// Whether a matched key's value runs something: fsmonitor as a boolean is
 /// git's own daemon, and a submodule's update mode is a command only after
 /// `!`. Only the exact values git takes that way pass (no trimming, ASCII
-/// case as git compares); anything else counts.
+/// case as git compares); anything else counts. A remote's URL counts when
+/// it names a remote helper (`ext::` runs its command), and so does an
+/// `insteadOf` that makes URLs into one.
 pub fn names_program(key: &str, value: &str) -> bool {
     let any = |list: &[&str]| list.iter().any(|v| value.eq_ignore_ascii_case(v));
     if key == "core.fsmonitor" {
@@ -53,7 +55,21 @@ pub fn names_program(key: &str, value: &str) -> bool {
     if key.starts_with("submodule.") && key.ends_with(".update") {
         return !any(&["checkout", "rebase", "merge", "none"]);
     }
+    if key.starts_with("remote.") && (key.ends_with(".url") || key.ends_with(".pushurl")) {
+        return names_helper(value);
+    }
+    if let Some(to) = key.strip_prefix("url.").and_then(|k| k.strip_suffix(".insteadof").or_else(|| k.strip_suffix(".pushinsteadof"))) {
+        return names_helper(to);
+    }
     true
+}
+
+/// A URL git hands to a remote helper: `<scheme>::…`, the scheme as git's
+/// `transport_get` reads it (letters and digits, then `+`, `-` or `.` too;
+/// even none).
+fn names_helper(url: &str) -> bool {
+    let n = url.char_indices().take_while(|&(i, c)| c.is_ascii_alphanumeric() || (i > 0 && "+-.".contains(c))).count();
+    url[n..].starts_with("::")
 }
 
 /// Stands for the keys when the config couldn't be read: the gate stays shut.
@@ -128,11 +144,14 @@ const SCAN: &str = "yuzora-trust-scan";
 /// each work tree, by the gitlink's name as it is (one path from the root
 /// could pass PATH_MAX where git's doesn't), and a `.git` it can't see is
 /// passed over only when the gitlink is surely not there: a folder on its way
-/// can be entered and lacks the next part, or is a file. A quoted path (a
+/// can be entered and lacks the next part, or is a file (`gone` goes into
+/// that folder; each `enter` starts with its own `cd`). A quoted path (a
 /// `"`, `\` or control character), an absolute one (git goes there; the scan
 /// would look under the top), one git never writes (a `.`, `..` or empty
-/// part, or a drive letter), a gitlink that may be there but can't be looked
-/// at, a work tree whose name has a line feed (`$(…)` drops one at the end,
+/// part), on a Windows host one Win32 reads otherwise (a `:`, a drive or a
+/// stream; a part ending in `.` or a space, which it drops), a gitlink that
+/// may be there but can't be looked at, a work tree whose name has a line
+/// feed (`$(…)` drops one at the end,
 /// so the scan would read another folder: `rev-parse`'s answer is taken with
 /// a `.` after it, and must be two lines then), and more than 16 levels can't
 /// be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a
@@ -144,6 +163,7 @@ tab=$(printf '\t') nl='
 '
 IFS=$nl
 set -f
+case ${OS-}:$(uname -s 2>/dev/null) in Windows_NT:*|*:CYGWIN*|*:MINGW*|*:MSYS*) win=1 ;; *) win= ;; esac
 where() {
   case "$1" in *"$nl"*"$nl"*"$nl"*) return 1 ;; ?*"$nl"?*"$nl.") ;; *) return 1 ;; esac
   set -- "${1%"$nl."}"
@@ -168,7 +188,7 @@ scan() {
 gone() {
   case "$1" in */*) up=${1%/*} ;; *) up=. ;; esac
   if [ -d "$up" ]; then
-    (cd "./$up" && [ ! -e "./${1##*/}" ] && [ ! -L "./${1##*/}" ]) 2>/dev/null
+    cd "./$up" 2>/dev/null && [ ! -e "./${1##*/}" ] && [ ! -L "./${1##*/}" ]
   elif [ -e "$up" ]; then
     :
   else
@@ -176,7 +196,10 @@ gone() {
   fi
 }
 enter() {
-  case "/$4/" in /\"*|/?:*|*/./*|*/../*|*//*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
+  case "/$4/" in /\"*|*/./*|*/../*|*//*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
+  if [ -n "$win" ]; then
+    case "/$4/" in *:*|*./*|*" /"*) printf 'sub\0%s%s\0err\0name\0' "$1" "$4"; return ;; esac
+  fi
   cd "$3/" || { printf 'sub\0%s%s\0err\0path\0' "$1" "$4"; return; }
   if [ ! -e "$4/.git" ]; then
     gone "$4/.git" || printf 'sub\0%s%s\0err\0path\0' "$1" "$4"
@@ -304,6 +327,10 @@ mod tests {
         assert!(names_program("core.fsmonitor", "true\u{a0}") && names_program("core.fsmonitor", " true") && names_program("core.fsmonitor", "2"));
         assert!(!names_program("submodule.x.update", "rebase") && names_program("submodule.x.update", " rebase") && names_program("submodule.x.update", "!touch x"));
         assert!(names_program("filter.x.clean", "cat") && names_program("core.sshcommand", "ssh"));
+        // A remote helper (`<scheme>::…`; `ext::` runs its command) as a remote's URL, or as what insteadOf makes of one.
+        assert!(names_program("remote.origin.url", "ext::sh -c touch% x") && names_program("remote.o.pushurl", "Ext::x") && names_program("remote.o.url", "fd::0") && names_program("remote.o.url", "1x+y::z") && names_program("remote.o.url", "::z"));
+        assert!(!names_program("remote.o.url", "https://example.com/r.git") && !names_program("remote.o.url", "git@host:r.git") && !names_program("remote.o.url", "/srv/r") && !names_program("remote.o.url", "c:/srv/r") && !names_program("remote.o.url", ".x::y") && !names_program("remote.o.url", "a b::y"));
+        assert!(names_program("url.ext::sh -c x.insteadof", "https://") && names_program("url.ext::x.pushinsteadof", "git@") && !names_program("url.https://mirror/.insteadof", "https://"));
     }
 
     #[test]
@@ -467,11 +494,48 @@ mod tests {
         let mut body = bytes[..bytes.len() - 20].to_vec();
         let at = body.windows(name.len()).position(|w| w == stand_in.as_bytes()).unwrap();
         body[at..at + name.len()].copy_from_slice(name.as_bytes());
-        let mut sha = std::process::Command::new("shasum").args(["-a", "1"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
-        std::io::Write::write_all(&mut sha.stdin.take().unwrap(), &body).unwrap();
-        let hex = String::from_utf8(sha.wait_with_output().unwrap().stdout).unwrap();
-        let sum: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
-        std::fs::write(&index, [body, sum].concat()).unwrap();
+        let sum = sha1(&body);
+        std::fs::write(&index, [&body[..], &sum].concat()).unwrap();
+    }
+
+    /// SHA-1, for an index file's checksum (`sha1sum` and `shasum` aren't on
+    /// every system).
+    fn sha1(data: &[u8]) -> [u8; 20] {
+        let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+        let mut m = data.to_vec();
+        m.push(0x80);
+        while m.len() % 64 != 56 {
+            m.push(0);
+        }
+        m.extend_from_slice(&(data.len() as u64 * 8).to_be_bytes());
+        for block in m.chunks(64) {
+            let mut w = [0u32; 80];
+            for (i, word) in block.chunks(4).enumerate() {
+                w[i] = u32::from_be_bytes(word.try_into().unwrap());
+            }
+            for i in 16..80 {
+                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+            }
+            let [mut a, mut b, mut c, mut d, mut e] = h;
+            for (i, wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                    20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                    _ => (b ^ c ^ d, 0xCA62_C1D6),
+                };
+                let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+                (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
+            }
+            for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
+                *x = x.wrapping_add(y);
+            }
+        }
+        let mut out = [0; 20];
+        for (i, x) in h.iter().enumerate() {
+            out[4 * i..4 * i + 4].copy_from_slice(&x.to_be_bytes());
+        }
+        out
     }
 
     /// Whether `git status` at `cwd` runs the clean filter of the repo at
@@ -581,6 +645,82 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_gitlink_name_with_a_colon_is_read_where_git_writes_it() {
+        // `git add` writes these; only a Windows host takes `a:` for a drive.
+        for (tag, name) in [("colon-ab", "a:b"), ("colon-1", "1:"), ("colon-xyz", "x:y/z")] {
+            let (dir, top, git) = scratch_dir(tag);
+            git("", &["init", "-q"]);
+            evil_repo(&git, &top, name, &dir.join("ran"));
+            git("", &["add", name]);
+            let got = programs_within(None, &top, Duration::from_secs(30));
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert_eq!(got, Ok(vec![format!("{name}: filter.evil.clean")]), "{tag}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn on_a_windows_host_names_win32_reads_otherwise_shut_the_gate() {
+        // Win32 takes `a:` for a drive (or `a:b` for a stream) and drops a
+        // part's last `.` or space: git would go where the name doesn't say.
+        let (dir, top, git) = scratch_dir("win");
+        git("", &["init", "-q"]);
+        let names = ["a:b", "ev.", "ev ", "d/ev./x", "ok"];
+        for name in names {
+            evil_repo(&git, &top, name, &dir.join("ran"));
+            git("", &["add", name]);
+        }
+        let scan = |env: &[(&str, String)]| {
+            repo_programs(|args| {
+                let out = std::process::Command::new("git").args(READ_FLAGS).args(args).envs(env.iter().map(|(k, v)| (k, v))).current_dir(&top).output().map_err(|e| e.to_string())?;
+                Ok::<_, String>(whole(out.status.code().unwrap_or(-1), out.stdout))
+            })
+        };
+        let here = scan(&[]);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("uname"), "#!/bin/sh\necho MINGW64_NT-10.0-19045\n").unwrap();
+        std::fs::set_permissions(bin.join("uname"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let by_uname = scan(&[("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))]);
+        let by_os = scan(&[("OS", "Windows_NT".into())]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let keys = |shut: bool| -> Vec<String> { names.iter().map(|n| format!("{n}: {}", if shut && *n != "ok" { UNREADABLE } else { "filter.evil.clean" })).collect::<BTreeSet<_>>().into_iter().collect() };
+        assert_eq!(here, Ok(keys(false)), "not Windows: all read");
+        assert_eq!(by_uname, Ok(keys(true)), "uname says MINGW");
+        assert_eq!(by_os, Ok(keys(true)), "OS=Windows_NT");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_that_runs_a_command_waits_for_trust() {
+        let (dir, top, git) = scratch_dir("ext");
+        git("", &["init", "-q"]);
+        let mark = dir.join("ran");
+        let ext = format!("ext::sh -c touch% {}", mark.display());
+        let fetch_runs_it = || {
+            let _ = std::fs::remove_file(&mark);
+            // As a person's global config may allow it.
+            let _ = std::process::Command::new("git").args(["-c", "protocol.ext.allow=always", "fetch", "-q", "origin"]).current_dir(&top).output();
+            mark.exists()
+        };
+        git("", &["remote", "add", "origin", &ext]);
+        let direct = programs_within(None, &top, Duration::from_secs(30));
+        let direct_runs = fetch_runs_it();
+        // A plain URL that the repo's insteadOf makes one.
+        git("", &["remote", "set-url", "origin", "https://example.invalid/r.git"]);
+        let plain = programs_within(None, &top, Duration::from_secs(30));
+        git("", &["config", &format!("url.{ext}.insteadOf"), "https://example.invalid/r.git"]);
+        let rewritten = programs_within(None, &top, Duration::from_secs(30));
+        let rewritten_runs = fetch_runs_it();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(direct_runs && rewritten_runs, "fetch didn't run the command, so this proves nothing");
+        assert_eq!(direct, Ok(vec!["remote.origin.url".to_string()]));
+        assert_eq!(plain, Ok(Vec::new()));
+        assert_eq!(rewritten, Ok(vec![format!("url.{ext}.insteadof")]));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_gitlink_the_scan_cant_look_into_shuts_the_gate() {
         use std::os::unix::fs::PermissionsExt;
         let (dir, top, git) = scratch_dir("locked");
@@ -588,6 +728,8 @@ mod tests {
         let evil = evil_repo(&git, &top, "ev", &dir.join("ran"));
         git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},ev")]);
         // A folder that lists but can't be gone into: `ev/.git` may be there.
+        // git can't look either and passes it over; the scan can't tell
+        // that from a lookup failing for another reason, so it shuts on purpose.
         let ev = Path::new(&top).join("ev");
         std::fs::set_permissions(&ev, std::fs::Permissions::from_mode(0o600)).unwrap();
         let hidden = std::fs::metadata(ev.join(".git")).is_err(); // not for root
@@ -603,8 +745,10 @@ mod tests {
     #[test]
     fn a_gitlink_past_the_longest_path_from_the_root_is_read_by_its_name() {
         // `top/name/.git` is past PATH_MAX; git's `name/.git` isn't. Its
-        // config is read by that name; past it the scan goes by paths from
-        // the root (its git dir's is too long), so it's unreadable too.
+        // config is read by that name; below it the scan goes by its git
+        // dir's path from the root, too long here (`--absolute-git-dir`
+        // fails; a few bytes shorter, its index can't be opened), so it's
+        // unreadable too.
         let (dir, top, git) = scratch_dir("deep");
         git("", &["init", "-q"]);
         let mark = dir.join("ran");

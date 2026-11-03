@@ -6,6 +6,8 @@
   "empty": "No commits match these filters.",
   "failed": "Git failed.",
   "cancel": "Cancel",
+  "lazy.body": "This partial clone lacks objects the log needs. Yuzora fetches them from the remote only once you trust this folder.",
+  "lazy.button": "Trust and fetch",
   "refresh": "Read the log again",
   "conflicts": "{count} files have conflicts.",
   "working": "Working…",

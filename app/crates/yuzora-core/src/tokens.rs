@@ -105,6 +105,13 @@ mod tests {
                         walk(v, &base[k], &format!("{path}{k}."));
                     }
                 }
+                // A list (the graph's lanes) replaces one as long, color for color.
+                Value::Array(a) => {
+                    assert_eq!(base.as_array().map(Vec::len), Some(a.len()), "light.{path}: {over} replaces {base}");
+                    for (i, v) in a.iter().enumerate() {
+                        walk(v, &base[i], &format!("{path}{i}."));
+                    }
+                }
                 v => assert!(is_hex(v) && is_hex(base), "light.{path}: {v} replaces {base}"),
             }
         }
@@ -186,8 +193,23 @@ mod tests {
                     assert!(contrast(&s("database", k), &c(bg)) >= 3.0, "light={light}: database.{k} on {bg}");
                 }
             }
+            // The Files sidebar's path card: the folder's place, name and branch on raised, the machine chip on hover.
+            for (fg, bg) in [("dim", "raised"), ("foreground", "raised"), ("accent", "raised"), ("muted", "hover")] {
+                let r = contrast(&c(fg), &c(bg));
+                assert!(r >= 4.5, "light={light}: path card {fg} on {bg} is {r:.2}");
+            }
             for b in t["space_badges"].as_array().unwrap() {
                 assert!(contrast(t["text"]["on_badge"].as_str().unwrap(), b.as_str().unwrap()) >= 4.5, "badge {b}");
+            }
+            // Git's log graph: a lane for each of the graph's eight colors and
+            // HEAD's dot, marks on a row as it is plain, hovered and selected.
+            let lanes = t["git_graph"]["lanes"].as_array().unwrap();
+            assert_eq!(lanes.len(), 8, "light={light}: git_graph.lanes");
+            for v in lanes.iter().chain([&t["git_graph"]["head"]]) {
+                for bg in ["background", "hover", "selected"] {
+                    let r = contrast(v.as_str().unwrap(), &c(bg));
+                    assert!(r >= 3.0, "light={light}: git_graph {v} on {bg} is {r:.2}");
+                }
             }
             // The terminal: every color but black on the terminal's background.
             let bg = theme["background"].as_str().unwrap();

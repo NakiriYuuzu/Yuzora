@@ -91,6 +91,16 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
+### L5 檔案＋編輯器（`yuzora-files`）
+
+- 設計、API 與待辦：`docs/beta2/files.md`。
+- 測試：`cargo test --locked -p yuzora-files`；mods：`scripts/yuzora/check-mods yuzora-sidebar-files yuzora-editor yuzora-markdown yuzora-files-image`。
+- `yuzora-editor/doc-pane.js` 與 `yuzora-markdown/doc-pane.js` 必須完全相同（測試守著）：改一份就複製到另一份。
+- 上色在 `src/highlight/`：新增語言＝加語法 crate、`Lang` 加一項、補測試樣本。其他 crate 要編輯器時用 `yuzora_files::editor::new_code_editor` 與 `code_editor`。
+- 執行任何程式（本機或 `hc exec --on`）一律經 `fsops::run`：它帶上 `GIT_NO_LAZY_FETCH=1`、`GIT_ALLOW_PROTOCOL=file`（`fsops::tests::everything_it_runs_runs_offline` 守著）。
+- 磁碟 I/O 一律在 worker thread。需要 `Window` 的操作（`set_value`、focus、取代）延後到 foreground task 執行，不要在 host function 裡同步做：host function 執行時 window 正在更新。
+- 上游改動只有標 `// yuzora(L5):` 的地方：`app/src/main.rs` 開頭的 SVG 子行程入口（`--yuzora-rasterize-svg`）、vendored gpui-pre 的 `svg_renderer.rs`（`image_href_resolver` 什麼都不載入，SVG 的 `<image>` 不讀路徑、不解任何 data URI；`ParsedSvg::tree()`）與 `assets.rs`（`RenderImage::with_scale_factor`）。上游同步時保留它們；回歸測試在 `yuzora-files` 的 `image::tests::an_svg_*`、`svgs_nested_in_data_*` 與 `tests/svg_child.rs`。
+- repo 的 SVG（圖片 pane、Markdown 預覽）一律經 `yuzora_files::svg` 交給子行程點陣化（逾時、記憶體上限、被殺掉），App 本體不解析，也不要交給 GPUI 的 `Image`／`img(path)`；`yuzora-files` 不依賴 usvg／resvg（測試守著）。上限與失敗行為見 `docs/beta2/files.md`「repo 的 SVG」。
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
@@ -117,6 +127,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release，不改 `release.yml`。
 - 本機測完整更新流程：debug build 加 `YUZORA_UPDATE_URL=<仿 GitHub 路徑的測試伺服器>` 與 `YUZORA_UPDATE_TEST_KEY=<一次性公鑰>`（測試金鑰只有 debug build 會讀；`YUZORA_UPDATE_URL` 任何 build 都會讀，但簽章一樣只認信任的金鑰），一律在 lanes.md 的隔離環境下跑。
 - beta.1 資料遷移：`yuzora_core::migrate`。beta.1 的資料只讀不寫；各 lane 實作自己的 `Importer`。
+- App 內的更新說明有兩份：`app/CHANGELOG.md`（英文）與 `app/CHANGELOG.zh-TW.md`（繁中，只放 Yuzora 的段落）。每筆條目兩份都要加，版本、標題與項目數要一致，測試會檢查。
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->

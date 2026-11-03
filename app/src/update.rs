@@ -286,10 +286,11 @@ fn check_from(root: &Path, releases: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
     // Notes are optional: a missing feed must never hold up the update.
-    if !crate::update_notes::has(version)
+    // yuzora(L7): Herdr's feed is English.
+    if !crate::update_notes::has(yuzora_core::i18n::EN, version)
         && let Ok(text) = curl_text(&format!("{releases}/app/{version}/changelog.md"))
     {
-        crate::update_notes::cache(&text);
+        crate::update_notes::cache(yuzora_core::i18n::EN, &text);
     }
     let entry = &manifest["targets"][target()];
     let (Some(url), Some(sha)) = (entry["url"].as_str(), entry["sha256"].as_str()) else {

@@ -6,6 +6,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+// yuzora(L2c): branch and ahead/behind without git status.
+import { gitStatus } from "yuzora:shell";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -199,12 +201,11 @@ export default class Spaces extends View {
     this.checked[key] = Date.now();
     this.unsure.delete(key);
     try {
-      // No optional locks: a status that touched the index would wake the watch again.
-      // Writes nothing under .git (index lock, fsmonitor cookie): watch() would wake on it.
-      const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
-      if (r.code !== 0) {
-        // Only git's own "no" is remembered as no repo; anything else is asked again.
-        if (!/not a git repository/i.test(r.stderr)) this.unsure.add(key);
+      // yuzora(L2c): refs, config and commits only (yuzora:shell). git status ran the
+      // programs a repo's own config names (a clean filter on a touched file), in
+      // folders nobody trusted. null: not a repo; a machine away throws (asked again).
+      const g = await gitStatus(cwd, { on });
+      if (!g) {
         this.git[key] = null;
         return;
       }
@@ -213,15 +214,7 @@ export default class Spaces extends View {
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
-      for (const line of r.stdout.split("\n")) {
-        if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
-        else if (line.startsWith("# branch.ab ")) {
-          const [a, b] = line.slice(12).split(" ");
-          info.ahead = Math.abs(parseInt(a, 10)) || 0;
-          info.behind = Math.abs(parseInt(b, 10)) || 0;
-        }
-      }
+      const info = { name, branch: g.branch, ahead: g.ahead, behind: g.behind, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` }; // yuzora(L2c): from g
       this.git[key] = info;
       if (!on) this.watch(repo, cx);
     } catch {

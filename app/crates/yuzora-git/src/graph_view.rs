@@ -7,10 +7,7 @@
 use gpui::{BorderStyle, Bounds, Hsla, IntoElement, PathBuilder, Pixels, Styled, Window, canvas, point, px, quad, size};
 use yuzora_core::HostValue;
 
-use crate::graph::{PALETTE_SIZE, RowPrint};
-
-/// The design's branch colors (blue first: HEAD's branch).
-pub const PALETTE: [u32; PALETTE_SIZE] = [0x4f6bed, 0xe8a27f, 0x86d17a, 0xc084fc, 0x93c5fd, 0xf472b6, 0xfacc15, 0x2dd4bf];
+use crate::graph::RowPrint;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellStyle {
@@ -36,14 +33,19 @@ pub fn hex_color(s: &str) -> Option<Hsla> {
 impl CellStyle {
     pub fn from_props(p: &HostValue) -> Self {
         let num = |k: &str, d: f32| p.get(k).and_then(HostValue::as_number).map_or(d, |n| n as f32);
-        let color = |k: &str, d: u32| p.get(k).and_then(HostValue::as_str).and_then(hex_color).unwrap_or_else(|| gpui::rgb(d).into());
+        let color = |k: &str| p.get(k).and_then(HostValue::as_str).and_then(hex_color);
+        // Unset (the log pane passes them), the theme's own: the tokens'
+        // `git_graph` (lanes blue first: HEAD's branch).
+        let theirs = || yuzora_core::tokens::tokens()["git_graph"].take();
         let colors = p
             .get("colors")
             .and_then(HostValue::as_array)
             .map(|a| a.iter().filter_map(|c| c.as_str().and_then(hex_color)).collect::<Vec<_>>())
             .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| PALETTE.iter().map(|c| gpui::rgb(*c).into()).collect());
-        CellStyle { lane: num("lane", 16.0), height: num("height", 26.0), dot: num("dot", 9.0), stroke: num("stroke", 1.6), background: color("background", 0x17181b), head: color("headColor", 0x93c5fd), colors }
+            .unwrap_or_else(|| theirs()["lanes"].as_array().map(|a| a.iter().filter_map(|c| c.as_str().and_then(hex_color)).collect()).unwrap_or_default());
+        let head = color("headColor").or_else(|| theirs()["head"].as_str().and_then(hex_color)).unwrap_or(colors[0]);
+        let background = color("background").unwrap_or_else(|| gpui::rgb(if yuzora_core::tokens::light() { 0xffffff } else { 0x17181b }).into());
+        CellStyle { lane: num("lane", 16.0), height: num("height", 26.0), dot: num("dot", 9.0), stroke: num("stroke", 1.6), background, head, colors }
     }
 
     fn color(&self, i: u8) -> Hsla {
@@ -117,6 +119,7 @@ pub fn paint_row(p: &RowPrint, style: &CellStyle, head: bool, bounds: Bounds<Pix
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::PALETTE_SIZE;
 
     #[test]
     fn props_choose_the_look() {
@@ -125,7 +128,12 @@ mod tests {
         assert_eq!(s.lane, 12.0);
         assert_eq!(s.colors.len(), 1);
         assert_eq!(s.color(5), s.colors[0]);
-        assert_eq!(CellStyle::from_props(&HostValue::Null).colors.len(), PALETTE_SIZE);
+        // Unset, the theme's own: the tokens' `git_graph`.
+        let d = CellStyle::from_props(&HostValue::Null);
+        let tk = &yuzora_core::tokens::tokens()["git_graph"];
+        assert_eq!(d.colors.len(), PALETTE_SIZE);
+        assert_eq!(Some(d.colors[0]), tk["lanes"][0].as_str().and_then(hex_color));
+        assert_eq!(Some(d.head), tk["head"].as_str().and_then(hex_color));
         assert!(hex_color("#4f6bed").is_some() && hex_color("zz").is_none());
     }
 }

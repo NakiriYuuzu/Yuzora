@@ -151,10 +151,7 @@ export default class SidebarGit extends View {
     const mode = section === "staged" ? "staged" : "unstaged";
     if (section === "conflicts") return this.openMerge(f.path);
     const spec = { cwd: repo.root, on: repo.machine, path: f.path, orig: f.orig ?? null, mode, at: Date.now() };
-    setShared("yuzora.git.diff", spec);
-    const pane = panes().find((p) => p.mod === "yuzora-git-diff");
-    if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: "Diff", mod: "yuzora-git-diff", props: spec });
+    showDiff(spec);
   }
 
   openMerge(path) {
@@ -413,7 +410,7 @@ export default class SidebarGit extends View {
           .child(div().font_semibold().child(t("trust.title")))
           .child(div().text_size(11.5).text_color(th.muted).child(t("trust.body", { keys: st.trust.join(", ") })))
           .child(div().id("trust").h(24).px(10).flex().items_center().justify_center().rounded(4).cursor_pointer()
-            .bg(th.accent).text_color(th.background).hover((s) => s.text_color(th.foreground))
+            .bg(th.accent).text_color(th.accent_foreground).hover((s) => s.opacity(0.88))
             .on_click((_e, cx) => cx.spawn(async (cx) => {
               try { await trust(repo.id); } catch (e) { this.error = String(e); }
               await this.reload(cx, true);
@@ -487,4 +484,24 @@ export default class SidebarGit extends View {
       .child(list)
       .child(commitBox);
   }
+}
+
+// A diff pane beside the focused pane, or in a tab of its own (Git settings).
+function placeDiff(spec, where) {
+  const pane = where !== "tab" && focused()?.pane;
+  if (pane) run("pane.split", { direction: "right", pane, mod: "yuzora-git-diff", props: spec });
+  else run("tab.new", { name: t("tab.diff"), mod: "yuzora-git-diff", props: spec });
+}
+
+// Where a diff opens (Git settings): into the open diff pane, which follows
+// the shared request; else a modal, or straight into a pane as Keep would.
+function showDiff(spec) {
+  const s = gitSettings();
+  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  if (pane) {
+    setShared("yuzora.git.diff", spec);
+    return run("pane.focus", { pane: pane.pane });
+  }
+  if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);
+  openOverlay({ mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props: spec });
 }
